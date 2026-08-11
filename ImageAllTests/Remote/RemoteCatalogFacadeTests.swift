@@ -1435,6 +1435,25 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         XCTAssertEqual(client.personalCapabilityCount, 1)
     }
 
+    func testTrainingCommandServiceStartsSuggestionRunnerThroughProtocolWitness() async {
+        let review = RemoteReviewPortStub(page: ReviewQueuePage(items: [], nextCursor: nil))
+        let service = RemoteTrainingCommandService(
+            catalog: RemoteCatalogServingStub(),
+            review: review,
+            centroidRebuilder: nil,
+            adamWRebuilder: nil,
+            embeddingCache: nil
+        )
+        let commands: any RemoteTrainingCommandPort = service
+
+        await commands.ensureSuggestionRunnerRunning()
+        for _ in 0..<50 where review.suggestionRunnerPassCount == 0 {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+
+        XCTAssertEqual(review.suggestionRunnerPassCount, 1)
+    }
+
     func testSampleSuggestionServiceUsesReviewSourceFilterForLibrarySample() async throws {
         let operationID = UUID(uuidString: "99888888-8888-8888-8888-888888888888")!
         let sourceID = UUID(uuidString: "99899999-9999-9999-9999-999999999999")!
@@ -2437,6 +2456,7 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         let receipt = LibrarySlimmingRemovalCommandRequestSnapshot(
             id: UUID(),
             operationID: operationID,
+            scope: .analysisCluster,
             jobID: jobID,
             clusterID: clusterID,
             mediaKind: .image,
@@ -2507,6 +2527,22 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         XCTAssertEqual(response.phase, .completed)
         XCTAssertEqual(commands.lastRemovalCommand?.assetIDs, assetIDs)
         XCTAssertEqual(commands.lastRemovalCommand?.clusterID, clusterID)
+
+        _ = try await facade.submitLibrarySlimmingRemoval(
+            RemoteLibrarySlimmingRemovalSubmitRequest(
+                operationID: UUID(),
+                jobID: nil,
+                clusterID: nil,
+                scope: .gallerySelection,
+                mediaKind: .image,
+                assetIDs: [assetIDs[0]],
+                mode: .releaseSourceSpace
+            )
+        )
+        XCTAssertEqual(commands.lastRemovalCommand?.scope, .gallerySelection)
+        XCTAssertNil(commands.lastRemovalCommand?.jobID)
+        XCTAssertNil(commands.lastRemovalCommand?.clusterID)
+        XCTAssertEqual(commands.lastRemovalCommand?.mode, .releaseSourceSpace)
     }
 
     func testLibrarySlimmingProgressiveWindowCanPassFormerFiveHundredClusterBoundary() async throws {
@@ -4109,6 +4145,7 @@ private final class RemoteReviewPortStub: PersonalizationReviewPort, @unchecked 
     private var storedStandardSuggestionEnqueueCount = 0
     private var storedPersonalSuggestionEnqueueCount = 0
     private var storedStandardSuggestionReplacementCount = 0
+    private var storedSuggestionRunnerPassCount = 0
 
     var lastRequestedTagID: UUID? {
         lock.lock()
@@ -4140,6 +4177,9 @@ private final class RemoteReviewPortStub: PersonalizationReviewPort, @unchecked 
     }
     var standardSuggestionReplacementCount: Int {
         lock.withLock { storedStandardSuggestionReplacementCount }
+    }
+    var suggestionRunnerPassCount: Int {
+        lock.withLock { storedSuggestionRunnerPassCount }
     }
 
     init(
@@ -4308,7 +4348,11 @@ private final class RemoteReviewPortStub: PersonalizationReviewPort, @unchecked 
     }
     func cancelSuggestionJob(jobID: UUID) throws {}
     func runPendingSuggestionJobs(maxSteps: Int?) throws -> Bool { false }
-    func runPendingSuggestionJobsAsync(maxSteps: Int?) async throws -> Bool { false }
+    func runPendingSuggestionJobsAsync(maxSteps: Int?) async throws -> Bool {
+        _ = maxSteps
+        lock.withLock { storedSuggestionRunnerPassCount += 1 }
+        return false
+    }
     func nextSuggestionRetryDelayNanoseconds() throws -> UInt64? { nil }
 }
 

@@ -61,7 +61,10 @@ enum PersonalizationSuggestionRunner {
                     }.value
                     guard let retryDelay else { return }
                     await refresh()
-                    try? await Task.sleep(nanoseconds: max(1_000_000, retryDelay))
+                    // A due job can be temporarily blocked by catalog reconcile.
+                    // Keep this runner alive, but retain the normal refresh cadence
+                    // instead of spinning at 1 ms until the catalog becomes clean.
+                    try? await Task.sleep(nanoseconds: max(refreshIntervalNs, retryDelay))
                 }
             }
         }

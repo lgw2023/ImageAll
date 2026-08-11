@@ -1521,6 +1521,30 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
             assetIDs: assetIDs,
             mode: .recoverableRecycle
         ))
+        try assertRoundTrip(RemoteLibrarySlimmingRemovalSubmitRequest(
+            operationID: UUID(),
+            jobID: nil,
+            clusterID: nil,
+            scope: .gallerySelection,
+            mediaKind: .video,
+            assetIDs: [UUID()],
+            mode: .releaseSourceSpace
+        ))
+        try assertRoundTrip(RemoteLibrarySlimmingRemovalRequestSnapshot(
+            id: UUID(),
+            operationID: UUID(),
+            jobID: nil,
+            clusterID: nil,
+            scope: .gallerySelection,
+            mediaKind: .image,
+            assetIDs: [UUID()],
+            mode: .releaseSourceSpace,
+            phase: .awaitingMac,
+            progress: nil,
+            audit: nil,
+            message: "请回到 Mac 核对并确认删除当前图库选区",
+            updatedAtMs: 1_700_000_006_001
+        ))
     }
 
     func testLibrarySlimmingIdenticalCleanupPlanExecutionAndVerificationRoundTrip() throws {

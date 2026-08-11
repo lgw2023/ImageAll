@@ -268,7 +268,9 @@ const elements = {
   selectionInspectorPrepareFeaturesButton: $("#selectionInspectorPrepareFeaturesButton"),
   selectionInspectorGenerateSuggestionsButton: $("#selectionInspectorGenerateSuggestionsButton"),
   selectionInspectorFindSimilarButton: $("#selectionInspectorFindSimilarButton"),
+  selectionInspectorDeleteButton: $("#selectionInspectorDeleteButton"),
   selectionInspectorToolStatus: $("#selectionInspectorToolStatus"),
+  selectionInspectorRemovalStatus: $("#selectionInspectorRemovalStatus"),
   selectionInspectorCancelPreparationButton: $("#selectionInspectorCancelPreparationButton"),
   selectionInspectorPrimary: $("#selectionInspectorPrimary"),
   selectionInspectorPrimaryPreview: $("#selectionInspectorPrimaryPreview"),
@@ -304,6 +306,9 @@ const elements = {
   assetFileName: $("#assetFileName"),
   assetMetadata: $("#assetMetadata"),
   openOriginalButton: $("#openOriginalButton"),
+  inspectorDeleteButton: $("#inspectorDeleteButton"),
+  inspectorDeleteButtonLabel: $("#inspectorDeleteButtonLabel"),
+  inspectorDeleteHint: $("#inspectorDeleteHint"),
   inspectorFavoriteButton: $("#inspectorFavoriteButton"),
   inspectorFavoriteButtonIcon: $("#inspectorFavoriteButtonIcon"),
   inspectorFavoriteButtonLabel: $("#inspectorFavoriteButtonLabel"),
@@ -386,6 +391,8 @@ const elements = {
   findSimilarSelectionButton: $("#findSimilarSelectionButton"),
   favoriteSelectedButton: $("#favoriteSelectedButton"),
   unfavoriteSelectedButton: $("#unfavoriteSelectedButton"),
+  deleteSelectedButton: $("#deleteSelectedButton"),
+  galleryRemovalStatus: $("#galleryRemovalStatus"),
   embeddingPreparationStatus: $("#embeddingPreparationStatus"),
   cancelEmbeddingPreparationButton: $("#cancelEmbeddingPreparationButton"),
   cancelSelectionButton: $("#cancelSelectionButton"),
@@ -773,6 +780,7 @@ const elements = {
   closeShortcutButton: $("#closeShortcutButton"),
   assetContextMenu: $("#assetContextMenu"),
   assetFavoriteContextAction: $("#assetFavoriteContextAction"),
+  assetDeleteContextAction: $("#assetDeleteContextAction"),
   sourceContextMenu: $("#sourceContextMenu"),
   sourceContextMenuTitle: $("#sourceContextMenuTitle"),
   sourceContextMenuActions: $("#sourceContextMenuActions"),
@@ -906,6 +914,15 @@ const state = {
   selectionMode: false,
   selectedAssetIDs: new Set(),
   selectionAnchorID: null,
+  galleryRemoval: {
+    requests: [],
+    loading: false,
+    submitting: false,
+    requestGeneration: 0,
+    pollTimer: null,
+    seenTerminalRequestIDs: new Set(),
+    contexts: new Map(),
+  },
   embeddingPreparation: {
     isAvailable: false,
     activities: [],
@@ -998,6 +1015,7 @@ const state = {
     deferredQueueRefresh: false,
     autoLoadFrame: null,
     loading: false,
+    appending: false,
     mutating: false,
     requestGeneration: 0,
     loadedScopeKey: null,
@@ -1224,9 +1242,10 @@ const state = {
   refreshRetryAttempt: 0,
   toastTimer: null,
   undo: {
-    tag: { id: null, operationID: null, mutating: false },
-    review: { id: null, operationID: null, mutating: false },
+    tag: { id: null, operationID: null, mutating: false, sequence: 0 },
+    review: { id: null, operationID: null, mutating: false, sequence: 0 },
   },
+  undoSequence: 0,
   toastUndoKind: null,
   pendingConfirmAction: null,
   newTagOperationID: null,
@@ -3899,6 +3918,7 @@ function undoToast(message, undoID, kind = "tag") {
   const nextUndoID = undoID || null;
   if (channel.id !== nextUndoID) {
     channel.operationID = nextUndoID ? crypto.randomUUID() : null;
+    channel.sequence = nextUndoID ? ++state.undoSequence : 0;
   } else if (nextUndoID && !channel.operationID) {
     channel.operationID = crypto.randomUUID();
   }
@@ -4027,6 +4047,7 @@ function syncWriteActionControls() {
   if (elements.sourceManagerDialog.open) renderSourceManagement();
   if (elements.storageDialog.open) renderStorageMaintenance();
   renderFavoriteControls();
+  renderGalleryRemovalControls();
   renderUndoControls();
   elements.openOriginalButton.disabled = !state.online
     || state.selectedDetail?.availability !== "available"
@@ -4628,6 +4649,7 @@ async function switchMediaKind(mediaKind) {
     preserveUnchangedGrid: Boolean(saved),
     preserveLoadedWindow: Boolean(saved),
   });
+  if (supportsLibrarySlimming()) await loadGalleryRemovals({ quiet: true });
   if (!state.selectionMode && state.selectedAssetID) {
     await loadInspector(state.selectedAssetID, {
       preserveExisting: Boolean(saved?.selectedDetail),
@@ -5685,6 +5707,10 @@ function restoreConfirmationReturnFocus(pending) {
         elements.lightboxDeleteButton.focus({ preventScroll: true });
         return;
       }
+      if (pending.libraryAssetID) {
+        assetCardFocusTarget(pending.libraryAssetID)?.focus({ preventScroll: true });
+        return;
+      }
       const card = elements.slimmingMemberGrid.querySelector(
         `[data-slimming-member-id="${CSS.escape(pending.slimmingMemberID || pending.lightboxAssetID)}"]`
       );
@@ -5926,6 +5952,7 @@ async function undoLatestDecision(kind) {
     if (generation !== state.workspaceGeneration) return;
     channel.id = null;
     channel.operationID = null;
+    channel.sequence = 0;
     if (state.toastUndoKind === kind) state.toastUndoKind = null;
     await refreshWorkspace({
       quiet: true,
@@ -5945,6 +5972,29 @@ async function undoLatestDecision(kind) {
       syncWriteActionControls();
     }
   }
+}
+
+function latestUndoKind() {
+  const candidates = ["tag", "review"]
+    .filter((kind) => {
+      const channel = state.undo[kind];
+      return state.online && channel?.id && !channel.mutating;
+    })
+    .sort((lhs, rhs) => {
+      const sequenceDelta = (state.undo[rhs].sequence || 0) - (state.undo[lhs].sequence || 0);
+      if (sequenceDelta !== 0) return sequenceDelta;
+      if (state.toastUndoKind === lhs) return -1;
+      if (state.toastUndoKind === rhs) return 1;
+      return lhs.localeCompare(rhs);
+    });
+  return candidates[0] || null;
+}
+
+function undoLatestAvailableDecision() {
+  const kind = latestUndoKind();
+  if (!kind) return false;
+  void undoLatestDecision(kind);
+  return true;
 }
 
 function sourceSidebarHelpDetail(source) {
@@ -8523,7 +8573,7 @@ function syncAssetCardPosition(button, index) {
   }
 }
 
-function renderAssets() {
+function renderAssetCollectionSummary() {
   renderLibraryEmptyState();
   elements.emptyState.classList.toggle("hidden", state.assets.length > 0 || state.loadingAssets);
   elements.loadMoreButton.classList.toggle("hidden", !state.nextCursor);
@@ -8539,6 +8589,10 @@ function renderAssets() {
   elements.assetSummary.textContent = state.assets.length
     ? `已载入 ${state.assets.length} 项${state.nextCursor ? " · 还有更多" : ""}`
     : "";
+}
+
+function renderAssets() {
+  renderAssetCollectionSummary();
 
   const existing = new Map(
     [...elements.assetGrid.querySelectorAll(":scope > .asset-card")]
@@ -8560,6 +8614,33 @@ function renderAssets() {
   }
   updateInspectorNavigation();
   renderFavoriteControls();
+}
+
+function appendAssetCards(assets) {
+  if (!assets.length) return;
+  const fragment = document.createDocumentFragment();
+  for (const asset of assets) {
+    const card = document.createElement("div");
+    syncAssetCard(card, asset);
+    fragment.append(card);
+  }
+  elements.assetGrid.append(fragment);
+  updateInspectorNavigation();
+  renderFavoriteControls();
+}
+
+function renderAssetCardsForIDs(assetIDs) {
+  const requestedIDs = new Set(assetIDs);
+  if (!requestedIDs.size) return;
+  const assetsByID = new Map(
+    state.assets
+      .filter((asset) => requestedIDs.has(asset.id))
+      .map((asset) => [asset.id, asset])
+  );
+  for (const card of elements.assetGrid.querySelectorAll(":scope > .asset-card")) {
+    const asset = assetsByID.get(card.dataset.assetId);
+    if (asset) syncAssetCard(card, asset);
+  }
 }
 
 function metadataRow(label, value) {
@@ -9490,6 +9571,7 @@ function renderInspector(detail) {
   for (const pair of rows) elements.assetMetadata.append(...pair);
   syncInspectorOpenOriginalControl(detail);
   renderFavoriteControls();
+  renderGalleryRemovalControls();
 
   clearElement(elements.inspectorTags);
   const tagQuery = state.inspectorTagSearchText.toLocaleLowerCase("zh-CN");
@@ -9698,6 +9780,14 @@ async function loadSelectionPrimaryDetail() {
   }
 }
 
+function renderSelectionInspectorHeader({ pending = false } = {}) {
+  const total = state.selectedAssetIDs.size;
+  elements.selectionInspectorTitle.textContent = `已选择 ${mediaItemCountText(total)}`;
+  elements.selectionInspectorTags.setAttribute("aria-busy", String(pending));
+  if (pending && total) elements.batchAggregate.textContent = "正在统计…";
+  renderSelectionPrimary();
+}
+
 function renderSelectionInspector() {
   if (elements.selectionInspectorTags.dataset.activeTagDrag) {
     // Loading the batch aggregate must not replace the DOM node that currently
@@ -9709,8 +9799,7 @@ function renderSelectionInspector() {
   state.sidebarDrag.pendingSelectionRender = false;
   const total = state.selectedAssetIDs.size;
   renderFavoriteControls();
-  elements.selectionInspectorTitle.textContent = `已选择 ${mediaItemCountText(total)}`;
-  renderSelectionPrimary();
+  renderSelectionInspectorHeader({ pending: state.loadingAggregate });
   clearElement(elements.selectionInspectorTags);
   const aggregates = new Map(
     state.selectionAggregates.map((aggregate) => [aggregate.tagID, aggregate])
@@ -9790,6 +9879,17 @@ function renderInspectorSurface() {
     renderSelectionInspector();
   } else if (showsSelection) {
     renderSelectionInspector();
+  }
+}
+
+function renderSelectionMutation() {
+  const showsSelection = state.selectionMode && state.selectedAssetIDs.size > 0;
+  const selectionSurfaceVisible = !elements.selectionInspector.classList.contains("hidden");
+  renderSelectionBar({ updateInspector: false });
+  if (showsSelection && selectionSurfaceVisible) {
+    renderSelectionInspectorHeader({ pending: true });
+  } else {
+    renderInspectorSurface();
   }
 }
 
@@ -10211,26 +10311,49 @@ function appendAdvancedFilterQuery(query, filters = state.filters) {
   if (filters.tagPresence !== "any") query.set("tagPresence", filters.tagPresence);
 }
 
+function assetCardFingerprint(asset) {
+  return JSON.stringify([
+    asset.id,
+    asset.sourceID,
+    asset.sourceName,
+    asset.fileName,
+    asset.relativePath,
+    asset.mediaKind,
+    asset.mediaType,
+    asset.availability,
+    asset.contentRevision,
+    asset.acceptedTagCount,
+    asset.rejectedTagCount,
+    asset.mediaCreatedAtMs,
+    asset.mediaModifiedAtMs,
+    asset.width,
+    asset.height,
+    asset.durationMs,
+    asset.fingerprintSizeBytes,
+    asset.favorite?.isFavorite ?? null,
+    asset.favorite?.photosObservedValue ?? null,
+    asset.favorite?.syncStatus ?? null,
+    asset.favorite?.lastErrorCode ?? null,
+  ]);
+}
+
 function assetPageFingerprint(items, nextCursor) {
   return JSON.stringify([
     nextCursor || null,
-    items.map((asset) => [
-      asset.id,
-      asset.sourceID,
-      asset.sourceName,
-      asset.fileName,
-      asset.mediaType,
-      asset.availability,
-      asset.contentRevision,
-      asset.acceptedTagCount,
-      asset.rejectedTagCount,
-      asset.mediaCreatedAtMs,
-      asset.width,
-      asset.height,
-      asset.favorite?.isFavorite ?? null,
-      asset.favorite?.syncStatus ?? null,
-    ]),
+    items.map(assetCardFingerprint),
   ]);
+}
+
+function assetPageStructureMatches(leftItems, leftCursor, rightItems, rightCursor) {
+  return (leftCursor || null) === (rightCursor || null)
+    && leftItems.length === rightItems.length
+    && leftItems.every((asset, index) => asset.id === rightItems[index]?.id);
+}
+
+function renderedAssetGridMatches(items) {
+  const cards = [...elements.assetGrid.querySelectorAll(":scope > .asset-card")];
+  return cards.length === items.length
+    && cards.every((card, index) => card.dataset.assetId === items[index]?.id);
 }
 
 function assetQuerySnapshot() {
@@ -10355,6 +10478,8 @@ async function loadAssets(options = {}) {
   state.loadingAssets = true;
   elements.loadMoreButton.disabled = true;
   let shouldRender = !preserveUnchangedGrid;
+  let changedAssetIDs = null;
+  let appendedAssets = null;
   if (!append) {
     if (!preserveSelection) {
       state.selectedAssetIDs.clear();
@@ -10384,6 +10509,38 @@ async function loadAssets(options = {}) {
       || state.assetRenderedQuerySignature !== requestSignature
       || assetPageFingerprint(state.assets, state.nextCursor)
         !== assetPageFingerprint(nextAssets, nextCursor);
+    const canRenderChangedCardsOnly = !append
+      && preserveUnchangedGrid
+      && state.assetRenderedQuerySignature === requestSignature
+      && renderedAssetGridMatches(existingAssets)
+      && assetPageStructureMatches(
+        existingAssets,
+        existingCursor,
+        nextAssets,
+        nextCursor
+      );
+    if (canRenderChangedCardsOnly) {
+      changedAssetIDs = nextAssets
+        .filter((asset, index) => (
+          assetCardFingerprint(asset) !== assetCardFingerprint(existingAssets[index])
+        ))
+        .map((asset) => asset.id);
+    }
+    const existingAssetIDs = append
+      ? new Set(existingAssets.map((asset) => asset.id))
+      : null;
+    const appendedAssetIDs = append ? new Set() : null;
+    const canAppendCardsOnly = append
+      && state.assetRenderedQuerySignature === requestSignature
+      && renderedAssetGridMatches(existingAssets)
+      && page.items.every((asset) => {
+        if (!asset.id
+          || existingAssetIDs.has(asset.id)
+          || appendedAssetIDs.has(asset.id)) return false;
+        appendedAssetIDs.add(asset.id);
+        return true;
+      });
+    if (canAppendCardsOnly) appendedAssets = page.items;
     state.assets = nextAssets;
     state.nextCursor = nextCursor;
     const visibleIDs = new Set(state.assets.map((asset) => asset.id));
@@ -10402,9 +10559,20 @@ async function loadAssets(options = {}) {
     state.loadingAssets = false;
     elements.loadMoreButton.disabled = false;
     if (shouldRender) {
-      renderAssets();
+      if (appendedAssets !== null) {
+        renderAssetCollectionSummary();
+        appendAssetCards(appendedAssets);
+        renderSelectionBar({ updateInspector: false });
+      } else if (changedAssetIDs !== null) {
+        renderAssetCardsForIDs(changedAssetIDs);
+        updateInspectorNavigation();
+        renderFavoriteControls();
+        renderSelectionBar({ updateInspector: false });
+      } else {
+        renderAssets();
+        renderSelectionBar();
+      }
       state.assetRenderedQuerySignature = requestSignature;
-      renderSelectionBar();
     }
     finishAssetLoad();
     state.assetLoadPromise = null;
@@ -10430,7 +10598,7 @@ async function loadInspector(assetID, {
   state.selectedAssetID = assetID;
   if (!keepExisting) {
     state.selectedDetail = null;
-    renderAssets();
+    renderAssetSelectionState();
     renderInspectorSurface();
     elements.previewLoading.classList.remove("hidden");
   }
@@ -10832,8 +11000,12 @@ async function applyFavoriteMutation(assetIDs, isFavorite) {
       }
     }
 
-    renderAssets();
-    renderSelectionBar();
+    if (state.libraryScope === "favorites" && !isFavorite) {
+      renderAssets();
+    } else {
+      renderAssetCardsForIDs(statesByID.keys());
+    }
+    renderSelectionBar({ updateInspector: false });
     renderFavoriteControls();
     if (!state.selectionMode && nextSelectedAssetID && !state.selectedDetail) {
       await loadInspector(nextSelectedAssetID, { reveal: true, quiet: true });
@@ -10902,8 +11074,8 @@ function setSelectionMode(enabled, { seedCurrent = false } = {}) {
     state.selectionPrimaryRequestGeneration += 1;
   }
   syncSelectionModeControls();
-  renderAssets();
-  renderSelectionBar();
+  renderAssetSelectionState();
+  renderSelectionMutation();
 }
 
 function toggleAssetSelection(assetID) {
@@ -10915,8 +11087,8 @@ function toggleAssetSelection(assetID) {
   state.selectedAssetID = state.selectedAssetIDs.has(assetID)
     ? assetID
     : ([...state.selectedAssetIDs][0] || null);
-  renderAssets();
-  renderSelectionBar();
+  renderAssetSelectionState();
+  renderSelectionMutation();
   scheduleSelectionAggregate();
 }
 
@@ -10932,8 +11104,8 @@ function selectAssetRange(assetID, additive = false) {
   state.selectedAssetIDs = next;
   state.selectedAssetID = assetID;
   state.selectionAnchorID = anchorID;
-  renderAssets();
-  renderSelectionBar();
+  renderAssetSelectionState();
+  renderSelectionMutation();
   scheduleSelectionAggregate();
 }
 
@@ -10953,8 +11125,8 @@ function handleAssetSelection(assetID, { additive = false, range = false } = {})
     state.selectedAssetIDs = new Set([assetID]);
     state.selectedAssetID = assetID;
     state.selectionAnchorID = assetID;
-    renderAssets();
-    renderSelectionBar();
+    renderAssetSelectionState();
+    renderSelectionMutation();
     scheduleSelectionAggregate();
     return;
   }
@@ -10970,14 +11142,317 @@ function selectAllLoadedAssets() {
     : state.assets[0]?.id;
   state.selectedAssetID = primaryID || null;
   state.selectionAnchorID = primaryID || null;
-  renderAssets();
-  renderSelectionBar();
+  renderAssetSelectionState();
+  renderSelectionMutation();
   scheduleSelectionAggregate();
 }
 
 function currentTagTargetAssetIDs() {
   if (state.selectionMode) return [...state.selectedAssetIDs];
   return state.selectedAssetID ? [state.selectedAssetID] : [];
+}
+
+function galleryRemovalTargetAssetIDs(requestedAssetIDs = null) {
+  const visibleByID = new Map(state.assets.map((asset) => [asset.id, asset]));
+  return [...new Set(requestedAssetIDs || currentTagTargetAssetIDs())].filter((assetID) => {
+    const asset = visibleByID.get(assetID);
+    if (!asset || asset.availability !== "available") return false;
+    return !asset.mediaKind || asset.mediaKind === state.mediaKind;
+  });
+}
+
+function activeGalleryRemovalRequest() {
+  return state.galleryRemoval.requests.find(
+    (request) => request.phase === "awaitingMac" || request.phase === "running"
+  ) || null;
+}
+
+function galleryRemovalStatusText(request) {
+  if (!request) return "";
+  if (request.scope !== "gallerySelection") {
+    return request.phase === "awaitingMac"
+      ? "另一项删除或回收正在等待 Mac 确认"
+      : "Mac 正在处理另一项删除或回收";
+  }
+  if (request.phase === "awaitingMac") return "等待 Mac 原生确认";
+  const total = Math.max(0, Number(request.progress?.totalAssetCount || request.assetIDs?.length || 0));
+  const completed = Math.min(total, Math.max(0, Number(request.progress?.completedAssetCount || 0)));
+  return total > 0 ? `正在删除 ${completed} / ${total}` : "Mac 正在安全删除并核验";
+}
+
+function renderGalleryRemovalControls() {
+  const targetIDs = galleryRemovalTargetAssetIDs();
+  const active = activeGalleryRemovalRequest();
+  const unavailable = !supportsLibrarySlimming()
+    || !state.online
+    || state.galleryRemoval.submitting
+    || Boolean(active)
+    || targetIDs.length === 0;
+  const activeText = galleryRemovalStatusText(active);
+  const noun = state.mediaKind === "video" ? "个视频" : "张照片";
+  const targetLabel = targetIDs.length > 1 ? `删除 ${targetIDs.length} 项` : "删除";
+  for (const button of [
+    elements.deleteSelectedButton,
+    elements.selectionInspectorDeleteButton,
+    elements.inspectorDeleteButton,
+  ]) {
+    button.classList.toggle("hidden", !supportsLibrarySlimming());
+    button.disabled = unavailable;
+    button.title = !supportsLibrarySlimming()
+      ? "当前 Mac Host 不支持图库快速删除"
+      : activeText || (targetIDs.length
+        ? `立即删除选中的 ${targetIDs.length} ${noun}；仍需在 Mac 原生窗口确认`
+        : `请先选择要删除的${currentMediaNoun()}`);
+    button.setAttribute("aria-label", button.title);
+  }
+  elements.deleteSelectedButton.textContent = state.galleryRemoval.submitting
+    ? "正在交给 Mac…"
+    : (activeText || targetLabel);
+  elements.selectionInspectorDeleteButton.textContent = state.galleryRemoval.submitting
+    ? "正在交给 Mac…"
+    : (activeText || targetLabel);
+  elements.inspectorDeleteButtonLabel.textContent = state.galleryRemoval.submitting
+    ? "正在交给 Mac…"
+    : (activeText || "删除");
+
+  const showsStatus = Boolean(activeText);
+  for (const status of [elements.galleryRemovalStatus, elements.selectionInspectorRemovalStatus]) {
+    status.classList.toggle("hidden", !showsStatus);
+    status.textContent = activeText;
+  }
+  const favoriteCount = targetIDs.filter(
+    (assetID) => favoriteStateForAssetID(assetID)?.isFavorite === true
+  ).length;
+  elements.inspectorDeleteHint.textContent = favoriteCount
+    ? `其中 ${favoriteCount} 项有红心；红心只用于整理，不会阻止删除。文件夹原始媒体将永久删除，Apple Photos 项进入系统“最近删除”。`
+    : "文件夹原始媒体将永久删除；Apple Photos 项进入系统“最近删除”。";
+  if (elements.assetDeleteContextAction) {
+    const contextAsset = state.assets.find((asset) => asset.id === state.contextAssetID);
+    elements.assetDeleteContextAction.classList.toggle("hidden", !supportsLibrarySlimming());
+    elements.assetDeleteContextAction.disabled = !state.online
+      || state.galleryRemoval.submitting
+      || Boolean(active)
+      || contextAsset?.availability !== "available";
+  }
+}
+
+function galleryRemovalConfirmationMessage(assetIDs) {
+  const favoriteCount = assetIDs.filter(
+    (assetID) => favoriteStateForAssetID(assetID)?.isFavorite === true
+  ).length;
+  const favoriteWarning = favoriteCount
+    ? `其中 ${favoriteCount} 项有红心；红心只用于整理，不会暂停本次删除。`
+    : "";
+  return `${favoriteWarning}文件夹来源会在身份核验后永久删除，无法从 ImageAll 恢复；Apple Photos 项只会进入系统“最近删除”。提交后还需要在 Mac 原生窗口再次确认。`;
+}
+
+function galleryRemovalReturnFocus(previewAssetID = null) {
+  if (previewAssetID) {
+    return {
+      lightboxAssetID: previewAssetID,
+      libraryAssetID: previewAssetID,
+    };
+  }
+  return { element: document.activeElement };
+}
+
+async function submitGalleryRemoval({
+  assetIDs: requestedAssetIDs = null,
+  previewAssetID = null,
+  returnFocus = null,
+  confirmed = false,
+} = {}) {
+  const assetIDs = galleryRemovalTargetAssetIDs(requestedAssetIDs);
+  const active = activeGalleryRemovalRequest();
+  if (!supportsLibrarySlimming()) {
+    toast("请先更新并重启 Mac Host 后再使用图库快速删除");
+    return;
+  }
+  if (!assetIDs.length) {
+    toast(`请先选择至少${mediaItemCountText(1)}`);
+    return;
+  }
+  if (active || state.galleryRemoval.submitting) {
+    toast(galleryRemovalStatusText(active) || "已有删除或回收正在处理");
+    return;
+  }
+  const noun = state.mediaKind === "video" ? "个视频" : "张照片";
+  if (!confirmed) {
+    requestConfirmation({
+      eyebrow: "QUICK DELETE",
+      title: `立即删除选中的 ${assetIDs.length} ${noun}？`,
+      message: galleryRemovalConfirmationMessage(assetIDs),
+      actionLabel: "删除",
+      tone: "danger",
+      returnFocus: returnFocus || galleryRemovalReturnFocus(previewAssetID),
+      action: () => submitGalleryRemoval({
+        assetIDs,
+        previewAssetID,
+        returnFocus,
+        confirmed: true,
+      }),
+    });
+    return;
+  }
+
+  const workspaceGeneration = state.workspaceGeneration;
+  const scrollTop = elements.libraryScroll.scrollTop;
+  state.galleryRemoval.submitting = true;
+  renderGalleryRemovalControls();
+  if (previewAssetID && state.lightboxContext === "library") renderLightbox();
+  try {
+    const request = await api("/v1/library-slimming/removals", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        operationID: crypto.randomUUID(),
+        scope: "gallerySelection",
+        jobID: null,
+        clusterID: null,
+        mediaKind: state.mediaKind,
+        assetIDs,
+        mode: "releaseSourceSpace",
+      }),
+    });
+    if (workspaceGeneration !== state.workspaceGeneration) return;
+    state.galleryRemoval.requests = [
+      request,
+      ...state.galleryRemoval.requests.filter((item) => item.id !== request.id),
+    ];
+    state.slimming.removal.requests = [
+      request,
+      ...state.slimming.removal.requests.filter((item) => item.id !== request.id),
+    ];
+    state.galleryRemoval.contexts.set(request.id, {
+      mediaKind: state.mediaKind,
+      assetIDs: state.assets.map((asset) => asset.id),
+      selectedAssetID: state.selectedAssetID,
+      selectedAssetIDs: [...state.selectedAssetIDs],
+      selectionAnchorID: state.selectionAnchorID,
+      selectionMode: state.selectionMode,
+      scrollTop,
+      previewAssetID,
+    });
+    toast("已冻结当前选区，请回到 Mac 核对并确认");
+  } catch (error) {
+    if (workspaceGeneration === state.workspaceGeneration) {
+      toast(error.message || "图库删除提交失败");
+    }
+  } finally {
+    if (workspaceGeneration === state.workspaceGeneration) {
+      state.galleryRemoval.submitting = false;
+      renderGalleryRemovalControls();
+      if (previewAssetID && state.lightboxContext === "library"
+        && !elements.lightbox.classList.contains("hidden")) renderLightbox();
+      scheduleGalleryRemovalPoll();
+    }
+  }
+}
+
+function scheduleGalleryRemovalPoll() {
+  clearTimeout(state.galleryRemoval.pollTimer);
+  state.galleryRemoval.pollTimer = null;
+  if (!state.galleryRemoval.requests.some(
+    (request) => request.phase === "awaitingMac" || request.phase === "running"
+  )) return;
+  state.galleryRemoval.pollTimer = setTimeout(
+    () => loadGalleryRemovals({ quiet: true }),
+    900
+  );
+}
+
+async function applyGalleryRemovalTerminal(request) {
+  const context = state.galleryRemoval.contexts.get(request.id) || null;
+  state.galleryRemoval.contexts.delete(request.id);
+  const hidden = new Set(request.audit?.hiddenAssetIDs || []);
+  if (hidden.size && request.mediaKind === state.mediaKind) {
+    const scrollTop = elements.libraryScroll.scrollTop;
+    state.selectedAssetIDs = new Set(
+      [...state.selectedAssetIDs].filter((assetID) => !hidden.has(assetID))
+    );
+    if (state.selectionAnchorID && hidden.has(state.selectionAnchorID)) {
+      state.selectionAnchorID = null;
+    }
+    if (state.selectedAssetID && hidden.has(state.selectedAssetID)) {
+      state.selectedAssetID = null;
+      state.selectedDetail = null;
+      state.inspectorRequestGeneration += 1;
+    }
+    for (const assetID of hidden) state.lightboxFavoriteStates.delete(assetID);
+    if (state.lightboxContext === "library" && hidden.has(state.lightboxAssetID)) {
+      closeLightbox();
+    }
+    await loadAssets({
+      preserveSelection: true,
+      preserveUnchangedGrid: true,
+      preserveLoadedWindow: true,
+    });
+    elements.libraryScroll.scrollTop = scrollTop;
+    if (state.selectionMode && state.selectedAssetIDs.size) scheduleSelectionAggregate();
+    else renderInspectorSurface();
+  } else if (hidden.size) {
+    const session = state.mediaSessions[request.mediaKind];
+    if (session) {
+      session.assets = session.assets.filter((asset) => !hidden.has(asset.id));
+      session.selectedAssetIDs = session.selectedAssetIDs.filter((assetID) => !hidden.has(assetID));
+      if (hidden.has(session.selectedAssetID)) {
+        session.selectedAssetID = null;
+        session.selectedDetail = null;
+      }
+      if (hidden.has(session.selectionAnchorID)) session.selectionAnchorID = null;
+    }
+  }
+  if (context?.scrollTop != null && request.mediaKind === state.mediaKind) {
+    // Only restore the submission position when the user has not intentionally
+    // moved elsewhere while the Mac confirmation was pending.
+    const delta = Math.abs(elements.libraryScroll.scrollTop - context.scrollTop);
+    if (delta < 2) elements.libraryScroll.scrollTop = context.scrollTop;
+  }
+  toast(request.message || "图库删除已结束");
+  renderGalleryRemovalControls();
+}
+
+async function loadGalleryRemovals({ quiet = false } = {}) {
+  if (!supportsLibrarySlimming()) return;
+  const generation = ++state.galleryRemoval.requestGeneration;
+  const workspaceGeneration = state.workspaceGeneration;
+  const previouslyActiveIDs = new Set(
+    state.galleryRemoval.requests
+      .filter((request) => request.scope === "gallerySelection"
+        && (request.phase === "awaitingMac" || request.phase === "running"))
+      .map((request) => request.id)
+  );
+  state.galleryRemoval.loading = true;
+  try {
+    const query = new URLSearchParams({ mediaKind: state.mediaKind });
+    const snapshot = await api(`/v1/library-slimming/removals?${query}`);
+    if (generation !== state.galleryRemoval.requestGeneration
+      || workspaceGeneration !== state.workspaceGeneration) return;
+    state.galleryRemoval.requests = snapshot.requests || [];
+    const terminal = state.galleryRemoval.requests.find((request) => (
+      request.scope === "gallerySelection"
+        && ["completed", "cancelled", "failed"].includes(request.phase)
+        && (previouslyActiveIDs.has(request.id)
+          || state.galleryRemoval.contexts.has(request.id))
+        && !state.galleryRemoval.seenTerminalRequestIDs.has(request.id)
+    ));
+    if (terminal) {
+      state.galleryRemoval.seenTerminalRequestIDs.add(terminal.id);
+      await applyGalleryRemovalTerminal(terminal);
+    }
+  } catch (error) {
+    if (generation === state.galleryRemoval.requestGeneration
+      && workspaceGeneration === state.workspaceGeneration && !quiet) {
+      toast(error.message || "图库删除状态载入失败");
+    }
+  } finally {
+    if (generation === state.galleryRemoval.requestGeneration
+      && workspaceGeneration === state.workspaceGeneration) {
+      state.galleryRemoval.loading = false;
+      renderGalleryRemovalControls();
+      scheduleGalleryRemovalPoll();
+    }
+  }
 }
 
 function closeNewTagDialog() {
@@ -11191,6 +11666,7 @@ function renderSelectionBar({ updateInspector = true } = {}) {
   });
   if (!count) elements.batchAggregate.textContent = `选择${currentMediaNoun()}后可查看标签汇总`;
   renderFavoriteControls();
+  renderGalleryRemovalControls();
   renderPersonalModelControls();
   renderEmbeddingPreparation();
   renderSampleSuggestions();
@@ -12463,17 +12939,30 @@ async function findSimilarFromSelection() {
 }
 
 function renderAssetSelectionState() {
-  for (const button of elements.assetGrid.querySelectorAll(":scope > .asset-card")) {
-    const selected = state.selectedAssetIDs.has(button.dataset.assetId);
-    button.classList.toggle("batch-selected", selected);
-    assetCardMainButton(button)?.setAttribute("aria-pressed", String(selected));
-    syncAssetCardSelectionMark(button);
+  for (const card of elements.assetGrid.querySelectorAll(":scope > .asset-card")) {
+    const assetID = card.dataset.assetId;
+    const isBatchSelected = state.selectedAssetIDs.has(assetID);
+    card.classList.toggle(
+      "selected",
+      state.selectedAssetID === assetID && !state.selectionMode
+    );
+    card.classList.toggle("batch-selected", isBatchSelected);
+    assetCardMainButton(card)?.setAttribute(
+      "aria-pressed",
+      String(state.selectionMode ? isBatchSelected : state.selectedAssetID === assetID)
+    );
+    syncAssetCardSelectionMark(card);
   }
+  updateInspectorNavigation();
 }
 
 function scheduleSelectionAggregate() {
   clearTimeout(state.aggregateTimer);
-  state.aggregateTimer = setTimeout(loadSelectionAggregate, 120);
+  state.aggregateTimer = setTimeout(() => {
+    state.aggregateTimer = null;
+    void loadSelectionAggregate();
+  }, 120);
+  renderSelectionInspectorHeader({ pending: true });
   void loadSelectionPrimaryDetail();
 }
 
@@ -12487,14 +12976,15 @@ async function loadSelectionAggregate() {
   }
   if (state.loadingAggregate) {
     state.aggregateGeneration += 1;
-    renderSelectionBar();
+    renderSelectionBar({ updateInspector: false });
+    renderSelectionInspectorHeader({ pending: true });
     return;
   }
   const generation = ++state.aggregateGeneration;
   state.loadingAggregate = true;
   state.selectionAggregates = [];
   elements.batchAggregate.textContent = "正在统计…";
-  renderSelectionInspector();
+  renderSelectionInspectorHeader({ pending: true });
   try {
     const aggregates = await api("/v1/tags/selection", {
       method: "POST",
@@ -12514,7 +13004,7 @@ async function loadSelectionAggregate() {
   } finally {
     state.loadingAggregate = false;
     if (generation === state.aggregateGeneration) {
-      renderSelectionBar();
+      renderSelectionBar({ updateInspector: false });
       renderSelectionInspector();
     } else {
       setTimeout(loadSelectionAggregate, 0);
@@ -12567,7 +13057,7 @@ async function applyBatchTagDecision(action, requestedTagID = null) {
   } finally {
     if (generation === state.workspaceGeneration) {
       state.tagMutating = false;
-      renderSelectionBar();
+      renderSelectionBar({ updateInspector: false });
       syncWriteActionControls();
       if (state.selectionMode && state.selectedAssetIDs.size) renderSelectionInspector();
     }
@@ -13203,12 +13693,14 @@ function syncReviewControls() {
   const controlsLocked = state.review.loading
     || state.review.overviewLoading
     || state.review.mutating;
+  const selectionControlsLocked = state.review.overviewLoading
+    || state.review.mutating;
   const hasSelection = state.review.selectedAssetIDs.size > 0;
   elements.loadMoreReviewButton.disabled = controlsLocked;
   elements.reviewTagSelect.disabled = controlsLocked || activeTags().length === 0;
   elements.refreshReviewButton.disabled = controlsLocked;
   elements.reviewBackButton.disabled = controlsLocked;
-  syncReviewSelectionModeControls({ controlsLocked });
+  syncReviewSelectionModeControls({ controlsLocked: selectionControlsLocked });
   elements.reviewThumbnailLayoutControls.classList.toggle(
     "hidden",
     state.review.mode !== "queue" || state.review.items.length === 0
@@ -13872,12 +14364,13 @@ function renderReviewSelectionState({ renderDetail = true } = {}) {
     if (button) syncReviewCardSelection(button, item, index);
   });
   const count = state.review.selectedAssetIDs.size;
-  elements.reviewSummary.textContent = state.review.loading
+  elements.reviewSummary.textContent = state.review.loading && !state.review.appending
     ? "正在载入…"
     : `待审核 ${state.review.items.length} 项${state.review.nextCursor ? " · 还有更多" : ""}`
-      + (count > 1 ? ` · 已选择 ${count} 项` : "");
+      + (count > 1 ? ` · 已选择 ${count} 项` : "")
+      + (state.review.appending ? " · 正在载入更多…" : "");
   syncReviewSelectionModeControls({
-    controlsLocked: state.review.loading || state.review.overviewLoading || state.review.mutating,
+    controlsLocked: state.review.overviewLoading || state.review.mutating,
   });
   if (renderDetail) renderReviewDetail();
 }
@@ -13908,66 +14401,85 @@ function selectAllSlimmingMembers() {
     : elements.closeSlimmingButton);
 }
 
-function renderReview() {
+function renderReviewCollectionSummary() {
   elements.reviewEmpty.classList.toggle("hidden", state.review.items.length > 0);
   elements.loadMoreReviewButton.classList.toggle("hidden", !state.review.nextCursor);
-  elements.reviewSummary.textContent = state.review.loading
+  elements.reviewSummary.textContent = state.review.loading && !state.review.appending
     ? "正在载入…"
-    : `待审核 ${state.review.items.length} 项${state.review.nextCursor ? " · 还有更多" : ""}`;
+    : `待审核 ${state.review.items.length} 项${state.review.nextCursor ? " · 还有更多" : ""}`
+      + (state.review.appending ? " · 正在载入更多…" : "");
   elements.reviewNavigationCount.textContent = state.review.overviewTotal
     ? String(state.review.overviewTotal)
     : "";
   syncReviewControls();
+}
 
+function syncReviewCard(card, item, index) {
+  card.className = "review-card";
+  card.dataset.reviewKey = reviewItemKey(item);
+  card.dataset.reviewIndex = String(index);
+  card.dataset.reviewAssetId = item.assetID;
+  if (Number(item.width) > 0 && Number(item.height) > 0) {
+    card.style.setProperty(
+      "--review-card-aspect",
+      `${Number(item.width)} / ${Number(item.height)}`
+    );
+  } else {
+    card.style.removeProperty("--review-card-aspect");
+  }
+  const mainButton = reviewCardMainButton(card, { create: true });
+  mainButton.setAttribute("aria-label", `${item.fileName || "未命名照片"}，${reviewOriginText(item.suggestionOrigin)}`);
+  syncAssetCardImage(card, item);
+  syncReviewCardSelection(card, item, index);
+  syncReviewCardFavoriteButton(card, item);
+  let origin = card.querySelector(".review-origin-badge");
+  if (!origin) {
+    origin = document.createElement("span");
+    origin.className = "review-origin-badge";
+    card.append(origin);
+  }
+  origin.textContent = reviewOriginText(item.suggestionOrigin).replace("建议", "");
+  let score = card.querySelector(".review-score");
+  if (item.score != null) {
+    if (!score) {
+      score = document.createElement("span");
+      score.className = "review-score";
+      card.append(score);
+    }
+    score.textContent = `${Math.round(item.score * 100)}%`;
+  } else {
+    score?.remove();
+  }
+}
+
+function renderReview() {
+  renderReviewCollectionSummary();
   const existing = new Map(
     [...elements.reviewGrid.querySelectorAll(":scope > .review-card")]
       .map((button) => [button.dataset.reviewKey, button])
   );
   state.review.items.forEach((item, index) => {
     const key = reviewItemKey(item);
-    const button = existing.get(key) || document.createElement("div");
+    const card = existing.get(key) || document.createElement("div");
     existing.delete(key);
-    button.className = "review-card";
-    button.dataset.reviewKey = key;
-    button.dataset.reviewIndex = String(index);
-    button.dataset.reviewAssetId = item.assetID;
-    if (Number(item.width) > 0 && Number(item.height) > 0) {
-      button.style.setProperty(
-        "--review-card-aspect",
-        `${Number(item.width)} / ${Number(item.height)}`
-      );
-    } else {
-      button.style.removeProperty("--review-card-aspect");
-    }
-    const mainButton = reviewCardMainButton(button, { create: true });
-    mainButton.setAttribute("aria-label", `${item.fileName || "未命名照片"}，${reviewOriginText(item.suggestionOrigin)}`);
-    syncAssetCardImage(button, item);
-    syncReviewCardSelection(button, item, index);
-    syncReviewCardFavoriteButton(button, item);
-    let origin = button.querySelector(".review-origin-badge");
-    if (!origin) {
-      origin = document.createElement("span");
-      origin.className = "review-origin-badge";
-      button.append(origin);
-    }
-    origin.textContent = reviewOriginText(item.suggestionOrigin).replace("建议", "");
-    let score = button.querySelector(".review-score");
-    if (item.score != null) {
-      if (!score) {
-        score = document.createElement("span");
-        score.className = "review-score";
-        button.append(score);
-      }
-      score.textContent = `${Math.round(item.score * 100)}%`;
-    } else {
-      score?.remove();
-    }
-    elements.reviewGrid.append(button);
+    syncReviewCard(card, item, index);
+    elements.reviewGrid.append(card);
   });
-  for (const button of existing.values()) {
-    button.querySelectorAll("img[data-protected-path]").forEach(clearProtectedImageSource);
-    button.remove();
+  for (const card of existing.values()) {
+    card.querySelectorAll("img[data-protected-path]").forEach(clearProtectedImageSource);
+    card.remove();
   }
+  renderReviewDetail();
+}
+
+function appendReviewCards(items, startIndex) {
+  const fragment = document.createDocumentFragment();
+  items.forEach((item, offset) => {
+    const card = document.createElement("div");
+    syncReviewCard(card, item, startIndex + offset);
+    fragment.append(card);
+  });
+  elements.reviewGrid.append(fragment);
   renderReviewDetail();
 }
 
@@ -14126,6 +14638,15 @@ function reviewItemKey(item) {
   return item ? `${item.assetID}:${item.suggestionOrigin}` : null;
 }
 
+function renderedReviewGridMatches(items) {
+  const cards = [...elements.reviewGrid.querySelectorAll(":scope > .review-card")];
+  return cards.length === items.length
+    && cards.every((card, index) => (
+      card.dataset.reviewKey === reviewItemKey(items[index])
+      && card.dataset.reviewIndex === String(index)
+    ));
+}
+
 function currentReviewScopeKey() {
   const sourceIDs = resolvedReviewSourceFilter();
   return JSON.stringify({
@@ -14217,10 +14738,15 @@ async function loadReviewQueue({
     ? Math.max(48, state.review.items.length)
     : 48;
   const generation = ++state.review.requestGeneration;
+  const existingItems = state.review.items;
+  const existingLoadedScopeKey = state.review.loadedScopeKey;
   const selectedKey = reviewItemKey(state.review.items[state.review.selectedIndex]);
   const selectedAssetIDs = new Set(state.review.selectedAssetIDs);
   const anchorAssetID = state.review.items[state.review.selectionAnchorIndex]?.assetID || null;
   const previousIndex = state.review.selectedIndex;
+  const previousScrollTop = elements.reviewQueuePane.scrollTop;
+  const focusedReviewKey = document.activeElement
+    ?.closest(".review-card")?.dataset.reviewKey || null;
   if (!tagID) {
     state.review.items = [];
     state.review.nextCursor = null;
@@ -14229,6 +14755,7 @@ async function loadReviewQueue({
     state.review.selectionAnchorIndex = -1;
     state.review.loadedScopeKey = scopeKey;
     state.review.loading = false;
+    state.review.appending = false;
     renderReview();
     return true;
   }
@@ -14241,13 +14768,16 @@ async function loadReviewQueue({
     state.review.selectionAnchorIndex = -1;
     state.review.loadedScopeKey = scopeKey;
     state.review.loading = false;
+    state.review.appending = false;
     renderReview();
     return true;
   }
 
   state.review.loading = true;
+  state.review.appending = append;
   let shouldRender = !preserveUnchangedGrid;
   let deferredForMarquee = false;
+  let appendedItems = null;
   if (!append) {
     if (!preserveUnchangedGrid || state.review.loadedScopeKey !== scopeKey) {
       state.review.items = [];
@@ -14298,6 +14828,20 @@ async function loadReviewQueue({
     shouldRender = shouldRender
       || reviewPageFingerprint(state.review.items, state.review.nextCursor)
         !== reviewPageFingerprint(nextItems, nextCursor);
+    const existingKeys = append
+      ? new Set(existingItems.map(reviewItemKey))
+      : null;
+    const appendedKeys = append ? new Set() : null;
+    const canAppendCardsOnly = append
+      && existingLoadedScopeKey === scopeKey
+      && renderedReviewGridMatches(existingItems)
+      && page.items.every((item) => {
+        const key = reviewItemKey(item);
+        if (!key || existingKeys.has(key) || appendedKeys.has(key)) return false;
+        appendedKeys.add(key);
+        return true;
+      });
+    if (canAppendCardsOnly) appendedItems = page.items;
     state.review.items = nextItems;
     state.review.nextCursor = nextCursor;
     state.review.loadedScopeKey = scopeKey;
@@ -14333,10 +14877,26 @@ async function loadReviewQueue({
   } finally {
     if (generation === state.review.requestGeneration) {
       state.review.loading = false;
+      state.review.appending = false;
       if (shouldRender) {
-        renderReview();
+        if (appendedItems !== null) {
+          renderReviewCollectionSummary();
+          appendReviewCards(appendedItems, existingItems.length);
+        } else {
+          renderReview();
+        }
       } else {
         syncReviewControls();
+      }
+      if (append || preserveUnchangedGrid) {
+        elements.reviewQueuePane.scrollTop = previousScrollTop;
+      }
+      if (focusedReviewKey
+        && document.activeElement?.closest(".review-card")?.dataset.reviewKey
+          !== focusedReviewKey) {
+        reviewCardMainButton(elements.reviewGrid.querySelector(
+          `[data-review-key="${CSS.escape(focusedReviewKey)}"]`
+        ))?.focus({ preventScroll: true });
       }
       if (!deferredForMarquee && schedulePagination) scheduleReviewAutoPagination();
       if (deferredForMarquee) flushDeferredReviewQueueRefresh();
@@ -19881,12 +20441,16 @@ function renderLightbox() {
     state.lightboxContext !== "review"
   );
   elements.lightbox.classList.toggle("reviewing", state.lightboxContext === "review");
-  const showsDelete = state.lightboxContext === "slimming";
+  const showsDelete = state.lightboxContext === "slimming"
+    || state.lightboxContext === "library";
   elements.lightboxDeleteButton.classList.toggle("hidden", !showsDelete);
   elements.lightboxDeleteButton.disabled = !state.online
     || state.lightboxNavigating
-    || state.slimming.removal.submitting
-    || Boolean(activeSlimmingRemovalPhase(item.id));
+    || (state.lightboxContext === "slimming"
+      ? state.slimming.removal.submitting || Boolean(activeSlimmingRemovalPhase(item.id))
+      : !supportsLibrarySlimming()
+        || state.galleryRemoval.submitting
+        || Boolean(activeGalleryRemovalRequest()));
   elements.lightboxDeleteButton.setAttribute(
     "aria-label",
     `处理当前预览${noun}：${item.fileName || `未命名${noun}`}`
@@ -19942,8 +20506,9 @@ async function syncLibraryLightboxSelection(assetID) {
     state.selectedAssetIDs = new Set([assetID]);
     state.selectionAnchorID = assetID;
   }
-  renderAssets();
-  renderSelectionBar();
+  renderAssetSelectionState();
+  if (state.selectionMode) renderSelectionMutation();
+  else renderSelectionBar();
   const card = elements.assetGrid.querySelector(`[data-asset-id="${CSS.escape(assetID)}"]`);
   card?.scrollIntoView({ block: "nearest", inline: "nearest" });
   if (card) state.lightboxReturnFocus = assetCardMainButton(card);
@@ -20064,13 +20629,13 @@ async function selectLibraryAssetByIndex(
       state.selectionAnchorID = assetID;
     }
     state.selectedAssetID = assetID;
-    renderAssets();
-    renderSelectionBar();
+    renderAssetSelectionState();
+    renderSelectionMutation();
     scheduleSelectionAggregate();
   } else {
     state.selectedAssetID = assetID;
     state.selectedDetail = null;
-    renderAssets();
+    renderAssetSelectionState();
     renderInspectorSurface();
   }
   const card = elements.assetGrid.querySelector(`[data-asset-id="${assetID}"]`);
@@ -20195,7 +20760,10 @@ async function loadWorkspace() {
   await loadAssets();
   if (generation !== state.workspaceGeneration) return;
   if (supportsLibrarySlimming()) {
-    await loadSlimmingIdenticalCleanupRequests({ quiet: true });
+    await Promise.all([
+      loadSlimmingIdenticalCleanupRequests({ quiet: true }),
+      loadGalleryRemovals({ quiet: true }),
+    ]);
   }
   if (generation !== state.workspaceGeneration) return;
   captureMediaSession();
@@ -20686,6 +21254,14 @@ function resetWorkspaceSessionState() {
   state.selectionMode = false;
   state.selectedAssetIDs.clear();
   state.selectionAnchorID = null;
+  clearTimeout(state.galleryRemoval.pollTimer);
+  state.galleryRemoval.pollTimer = null;
+  state.galleryRemoval.requests = [];
+  state.galleryRemoval.loading = false;
+  state.galleryRemoval.submitting = false;
+  state.galleryRemoval.requestGeneration += 1;
+  state.galleryRemoval.seenTerminalRequestIDs.clear();
+  state.galleryRemoval.contexts.clear();
   state.selectionPrimaryDetail = null;
   state.selectionPrimaryLoadingAssetID = null;
   state.selectionPrimaryRequestGeneration += 1;
@@ -20743,8 +21319,9 @@ function resetWorkspaceSessionState() {
   state.favoriteRetrying = false;
   state.tagManagementMutating = false;
   state.openingOriginal = false;
-  state.undo.tag = { id: null, operationID: null, mutating: false };
-  state.undo.review = { id: null, operationID: null, mutating: false };
+  state.undo.tag = { id: null, operationID: null, mutating: false, sequence: 0 };
+  state.undo.review = { id: null, operationID: null, mutating: false, sequence: 0 };
+  state.undoSequence = 0;
   state.toastUndoKind = null;
   state.jobMutatingIDs.clear();
   state.review.items = [];
@@ -20764,6 +21341,7 @@ function resetWorkspaceSessionState() {
   state.review.marqueeGeneration += 1;
   state.review.deferredQueueRefresh = false;
   state.review.loading = false;
+  state.review.appending = false;
   state.review.mutating = false;
   state.review.requestGeneration += 1;
   state.review.loadedScopeKey = null;
@@ -21469,6 +22047,7 @@ function availableCommands() {
   const route = commandContextRoute();
   const lightboxOpen = commandContextHasLightbox();
   const selectionContext = commandSelectionContext(route);
+  const preferredUndoKind = latestUndoKind();
   const mediaKind = route === "training"
     ? state.training.mediaKind
     : route === "slimming"
@@ -21503,7 +22082,7 @@ function availableCommands() {
       id: "undoTag",
       icon: "↶",
       title: "撤销最近一次标签操作",
-      hint: "标签",
+      hint: preferredUndoKind === "tag" ? "⌘Z" : "标签",
       disabled: !state.online || !state.undo.tag.id || state.undo.tag.mutating,
     },
     { id: "openGalleryOverview", icon: "▥", title: "打开图库总览", hint: "" },
@@ -21636,7 +22215,7 @@ function availableCommands() {
       id: "undoReview",
       icon: "↶✓",
       title: "撤销最近一次审核操作",
-      hint: "审核",
+      hint: preferredUndoKind === "review" ? "⌘Z" : "审核",
       disabled: !state.online || state.undo.review.mutating,
     });
   }
@@ -21699,6 +22278,16 @@ function availableCommands() {
         title: `从所选${currentMediaNoun()}查找相似项`,
         hint: "图库瘦身",
         disabled: !state.online,
+      },
+      {
+        id: "deleteGallerySelection",
+        icon: "⌫",
+        title: `删除所选${selectionContext.noun}并释放空间`,
+        hint: "Delete · Mac 确认",
+        disabled: !supportsLibrarySlimming()
+          || !state.online
+          || state.galleryRemoval.submitting
+          || Boolean(activeGalleryRemovalRequest()),
       });
     for (const tag of activeTags()) {
       commands.push(
@@ -21837,6 +22426,7 @@ function availableCommands() {
     "prepareSelectedFeatures",
     "generateSelectedSuggestions",
     "findSimilarSelection",
+    "deleteGallerySelection",
     "toggleSidebar",
     "toggleInspector",
   ]);
@@ -22032,6 +22622,15 @@ async function executeCommand(commandID) {
   case "findSimilarSelection":
     await findSimilarFromSelection();
     break;
+  case "deleteGallerySelection":
+    {
+      const context = commandSelectionContext("gallery");
+      await submitGalleryRemoval({
+        assetIDs: context?.selectedIDs || [],
+        returnFocus: { element: assetCardFocusTarget(context?.primaryID) },
+      });
+    }
+    break;
   case "connectFolder":
     await openSourceManager();
     await submitSourceManagementAction("connectFolder");
@@ -22187,6 +22786,7 @@ function showAssetContextMenu(clientX, clientY, assetID) {
   elements.assetFavoriteContextAction.classList.toggle("hidden", !supportsFavorites());
   elements.assetFavoriteContextAction.disabled = !state.online || state.favoriteMutating;
   elements.assetFavoriteContextAction.dataset.favorite = String(favorite?.isFavorite === true);
+  renderGalleryRemovalControls();
   elements.assetContextMenu.classList.remove("hidden");
   positionContextMenu(elements.assetContextMenu, clientX, clientY);
   restoreOverlayFocus(
@@ -22555,7 +23155,7 @@ function finishMarqueeSelection(event = null) {
   elements.marqueeSelection.classList.add("hidden");
   elements.assetGrid.classList.remove("marquee-active");
   if (moved) {
-    renderSelectionBar();
+    renderSelectionMutation();
     scheduleSelectionAggregate();
   }
 }
@@ -23584,6 +24184,17 @@ function bindEvents() {
   elements.inspectorPreviousButton.addEventListener("click", () => navigateLibrarySelection(-1));
   elements.inspectorNextButton.addEventListener("click", () => navigateLibrarySelection(1));
   elements.openOriginalButton.addEventListener("click", openSelectedOriginalOnMac);
+  elements.inspectorDeleteButton.addEventListener("click", () => {
+    void submitGalleryRemoval();
+  });
+  for (const button of [
+    elements.deleteSelectedButton,
+    elements.selectionInspectorDeleteButton,
+  ]) {
+    button.addEventListener("click", () => {
+      void submitGalleryRemoval({ assetIDs: [...state.selectedAssetIDs] });
+    });
+  }
   elements.inspectorFavoriteButton.addEventListener("click", () => {
     const assetID = state.selectedDetail?.assetID;
     if (!assetID) return;
@@ -23724,8 +24335,8 @@ function bindEvents() {
     if (state.selectedAssetIDs.size === state.assets.length && state.assets.length) {
       state.selectedAssetIDs.clear();
       state.selectionAnchorID = null;
-      renderAssets();
-      renderSelectionBar();
+      renderAssetSelectionState();
+      renderSelectionMutation();
       scheduleSelectionAggregate();
     } else {
       selectAllLoadedAssets();
@@ -24902,11 +25513,17 @@ function bindEvents() {
     void toggleLightboxFavorite();
   });
   elements.lightboxDeleteButton.addEventListener("click", () => {
-    if (state.lightboxContext !== "slimming") return;
-    void submitSlimmingRemoval("releaseSourceSpace", {
-      assetIDs: [state.lightboxAssetID],
-      previewAssetID: state.lightboxAssetID,
-    });
+    if (state.lightboxContext === "slimming") {
+      void submitSlimmingRemoval("releaseSourceSpace", {
+        assetIDs: [state.lightboxAssetID],
+        previewAssetID: state.lightboxAssetID,
+      });
+    } else if (state.lightboxContext === "library") {
+      void submitGalleryRemoval({
+        assetIDs: [state.lightboxAssetID],
+        previewAssetID: state.lightboxAssetID,
+      });
+    }
   });
   elements.lightboxZoomOutButton.addEventListener("click", () => zoomLightboxBy(0.8));
   elements.lightboxZoomResetButton.addEventListener("click", () => setLightboxScale(1));
@@ -25016,6 +25633,11 @@ function bindEvents() {
       const isFavorite = favoriteStateForAssetID(assetID)?.isFavorite === true;
       await applyFavoriteMutation([assetID], !isFavorite);
       restoreOverlayFocus(assetCardFocusTarget(assetID));
+    } else if (action === "delete") {
+      await submitGalleryRemoval({
+        assetIDs: [assetID],
+        returnFocus: { element: assetCardFocusTarget(assetID) },
+      });
     } else if (action === "filterSource") {
       const asset = state.assets.find((item) => item.id === assetID);
       if (asset) {
@@ -25518,6 +26140,15 @@ function bindEvents() {
       return;
     }
     if (isTextInputTarget(event.target)) return;
+    if ((event.metaKey || event.ctrlKey)
+      && !event.altKey
+      && !event.shiftKey
+      && event.key.toLowerCase() === "z"
+      && latestUndoKind()) {
+      event.preventDefault();
+      undoLatestAvailableDecision();
+      return;
+    }
     if (lightboxOpen) {
       if (lightboxMediaKind() !== "video"
         && !event.metaKey && !event.ctrlKey && !event.altKey) {
@@ -25545,6 +26176,19 @@ function bindEvents() {
         && ["Backspace", "Delete"].includes(event.key)) {
         event.preventDefault();
         void submitSlimmingRemoval("releaseSourceSpace", {
+          assetIDs: [state.lightboxAssetID],
+          previewAssetID: state.lightboxAssetID,
+        });
+        return;
+      }
+      if (state.lightboxContext === "library"
+        && !event.repeat
+        && !event.metaKey
+        && !event.ctrlKey
+        && !event.altKey
+        && ["Backspace", "Delete"].includes(event.key)) {
+        event.preventDefault();
+        void submitGalleryRemoval({
           assetIDs: [state.lightboxAssetID],
           previewAssetID: state.lightboxAssetID,
         });
@@ -25718,6 +26362,14 @@ function bindEvents() {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a") {
       event.preventDefault();
       selectAllLoadedAssets();
+      return;
+    }
+    if (!event.repeat && !event.metaKey && !event.ctrlKey && !event.altKey
+      && ["Backspace", "Delete"].includes(event.key)
+      && !isTextInputTarget(event.target)
+      && currentTagTargetAssetIDs().length > 0) {
+      event.preventDefault();
+      void submitGalleryRemoval();
       return;
     }
     if (!event.repeat && !event.metaKey && !event.ctrlKey && !event.altKey

@@ -10,8 +10,8 @@
   <meta name="apple-mobile-web-app-title" content="ImageAll">
   <title>ImageAll 网页版</title>
   <link rel="manifest" href="/manifest.webmanifest">
-    <link rel="stylesheet" href="/app.css?v=20260810-72">
-    <script src="/app.js?v=20260810-72" defer></script>
+    <link rel="stylesheet" href="/app.css?v=20260811-79">
+    <script src="/app.js?v=20260811-79" defer></script>
 </head>
 <body>
   <div id="bootView" class="centered-state">
@@ -138,11 +138,11 @@
         </button>
         <div class="titlebar-undo-group" role="group" aria-label="撤销最近操作">
           <button id="undoTagButton" class="icon-button" type="button"
-            aria-label="撤销标签操作" title="撤销最近一次标签操作"
-            data-help-detail="撤销最近一次标签创建、确认、拒绝或清除；不会影响审核撤销记录。" disabled>↶</button>
+            aria-label="撤销标签操作" aria-keyshortcuts="Meta+Z Control+Z" title="撤销最近一次标签操作"
+            data-help-detail="撤销最近一次标签创建、确认、拒绝或清除；按 ⌘Z 会优先撤销标签和审核中最后发生的一项。" disabled>↶</button>
           <button id="undoReviewButton" class="icon-button hidden" type="button"
-            aria-label="撤销审核操作" title="撤销最近一次审核操作"
-            data-help-detail="撤销最近一次审核接受或拒绝；不会覆盖标签操作的撤销记录。">↶✓</button>
+            aria-label="撤销审核操作" aria-keyshortcuts="Meta+Z Control+Z" title="撤销最近一次审核操作"
+            data-help-detail="撤销最近一次审核接受或拒绝；按 ⌘Z 会优先撤销标签和审核中最后发生的一项。">↶✓</button>
         </div>
         <button id="worldMapButton" class="button button-compact" type="button" title="打开世界地图"
           data-help-detail="按地点浏览照片塔，并可下钻回当前图库的精确照片范围。">
@@ -612,8 +612,11 @@
               title="对所选项目生成个人模型建议并加入审核队列">生成建议</button>
             <button id="findSimilarSelectionButton" class="button" type="button"
               title="以所选项目为种子在图库瘦身中查找相似项">查找相似</button>
+            <button id="deleteSelectedButton" class="button button-danger write-action" type="button"
+              title="立即删除所选项目并释放来源空间；仍需在 Mac 原生窗口确认">删除</button>
           </div>
           <span id="embeddingPreparationStatus" class="selection-tool-status hidden" role="status"></span>
+          <span id="galleryRemovalStatus" class="selection-tool-status hidden" role="status"></span>
           <button id="cancelEmbeddingPreparationButton" class="button button-plain hidden" type="button">
             停止准备
           </button>
@@ -705,7 +708,10 @@
             <button id="selectionInspectorFindSimilarButton" class="button" type="button">
               查找相似
             </button>
+            <button id="selectionInspectorDeleteButton"
+              class="button button-danger write-action" type="button">删除</button>
             <span id="selectionInspectorToolStatus" class="secondary hidden" role="status"></span>
+            <span id="selectionInspectorRemovalStatus" class="secondary hidden" role="status"></span>
             <button id="selectionInspectorCancelPreparationButton"
               class="button button-plain hidden" type="button">停止</button>
           </div>
@@ -813,7 +819,14 @@
                   <span id="openOriginalButtonIcon" aria-hidden="true">↗</span>
                   <span id="openOriginalButtonLabel">在 Mac 上打开原图</span>
                 </button>
+                <button id="inspectorDeleteButton"
+                  class="button button-danger write-action" type="button">
+                  <span aria-hidden="true">⌫</span><span id="inspectorDeleteButtonLabel">删除</span>
+                </button>
                 <p id="openOriginalHint" class="secondary">以只读方式在运行 ImageAll 的这台 Mac 上打开</p>
+                <p id="inspectorDeleteHint" class="secondary inspector-delete-hint">
+                  文件夹原始媒体将永久删除；Apple Photos 项进入系统“最近删除”。
+                </p>
               </div>
             </section>
             <section class="inspector-section tag-section">
@@ -2505,6 +2518,7 @@
       <dl>
         <div><dt>打开命令面板</dt><dd><kbd>⌘K</kbd></dd></div>
         <div><dt>打开通用设置</dt><dd><kbd>⌘,</kbd></dd></div>
+        <div><dt>撤销最近标签或审核操作</dt><dd><kbd>⌘Z</kbd></dd></div>
         <div><dt>全选当前项目</dt><dd><kbd>⌘A</kbd></dd></div>
         <div><dt>切换单图查看</dt><dd><kbd>Space</kbd></dd></div>
         <div><dt>返回媒体网格</dt><dd><kbd>Esc</kbd></dd></div>
@@ -2530,6 +2544,8 @@
       data-context-action="favorite">加入红心</button>
     <button type="button" role="menuitem" data-context-action="toggleSelection">加入或移出选择</button>
     <button type="button" role="menuitem" data-context-action="filterSource">只看此来源</button>
+    <button id="assetDeleteContextAction" class="danger" type="button" role="menuitem"
+      data-context-action="delete">删除… <kbd>Delete</kbd></button>
   </div>
 
   <div id="sourceContextMenu" class="context-menu hidden" role="menu" aria-label="来源操作">

@@ -136,10 +136,16 @@ enum LibrarySlimmingRemovalCommandMode: String, Equatable, Sendable {
     case releaseSourceSpace
 }
 
+enum LibrarySlimmingRemovalCommandScope: String, Equatable, Sendable {
+    case analysisCluster
+    case gallerySelection
+}
+
 struct LibrarySlimmingRemovalCommand: Equatable, Sendable {
     let operationID: UUID
-    let jobID: UUID
-    let clusterID: UUID
+    let scope: LibrarySlimmingRemovalCommandScope
+    let jobID: UUID?
+    let clusterID: UUID?
     let mediaKind: MediaKind
     let assetIDs: [UUID]
     let mode: LibrarySlimmingRemovalCommandMode
@@ -172,8 +178,9 @@ struct LibrarySlimmingRemovalCommandAudit: Equatable, Sendable {
 struct LibrarySlimmingRemovalCommandRequestSnapshot: Equatable, Sendable {
     let id: UUID
     let operationID: UUID
-    let jobID: UUID
-    let clusterID: UUID
+    let scope: LibrarySlimmingRemovalCommandScope
+    let jobID: UUID?
+    let clusterID: UUID?
     let mediaKind: MediaKind
     let assetIDs: [UUID]
     let mode: LibrarySlimmingRemovalCommandMode

@@ -606,9 +606,10 @@ revision 后，才能成为标准概念。
 
 - 标签定义和正负样本都属于当前目录库；用户输入新标签并应用到当前选择时，原子创建标签和
   `manualAccepted`；
-- 只有 `manualAccepted` 和 `manualRejected` 进入训练 manifest，未标注资产不得当作负例；
-- 未达到当前 `2 + 2` 硬门时不生成个人模型建议；达到门槛后使用冻结 embedding 加每标签轻量
-  分类器，并随用户反馈生成新的不可变 bundle revision；
+- 训练 manifest 只能来自 `manualAccepted` / `manualRejected`，未标注资产不得当作负例；具体方法
+  只冻结自己实际使用的角色：Feature KNN 使用正反样本，正质心与 AdamW 个人模型只使用正样本；
+- Feature KNN 未达到 `2 accepted + 2 rejected` 硬门时不生成相似照片建议；正质心与 AdamW
+  个人模型每标签至少需要 `2 accepted`，明确拒绝和未标注照片都不会被它们静默当成负例；
 - 个人模型只能返回已存在的个人 `tag_id`，不得根据自由文本自动扩充用户词表；
 - 模型 bundle 绑定目录库作用域、标签稳定顺序、encoder/preprocessing revision 和人工决策快照
   revision，不得与其他目录库或用户混用。

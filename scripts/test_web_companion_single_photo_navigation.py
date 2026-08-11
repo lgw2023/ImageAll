@@ -89,6 +89,8 @@ def main():
     review_queries = []
     review_decisions = []
     review_undos = []
+    tag_undos = []
+    review_pagination_enabled = {"value": False}
     page_errors = []
     console_errors = []
 
@@ -96,6 +98,7 @@ def main():
     second_page = [asset_summary(index) for index in range(73, 75)]
     first_review_page = [review_item(index) for index in range(1, 49)]
     second_review_page = [review_item(49)]
+    third_review_page = [review_item(50)]
     index_by_id = {
         asset_id(index): index for index in range(1, 75)
     }
@@ -241,15 +244,15 @@ def main():
             lambda route: fulfill_json(
                 route,
                 {
-                    "totalPendingSuggestionCount": 49,
+                    "totalPendingSuggestionCount": 50,
                     "tags": [{
                         "id": REVIEW_TAG_ID,
                         "displayName": "猫",
                         "acceptedSampleCount": 8,
                         "rejectedSampleCount": 4,
-                        "pendingSuggestionCount": 49,
+                        "pendingSuggestionCount": 50,
                         "pendingSuggestionCounts": {
-                            "featurePrint": 49,
+                            "featurePrint": 50,
                             "standardModel": 0,
                             "personalModel": 0,
                             "personalAdamW": 0,
@@ -269,12 +272,22 @@ def main():
         def route_review_queue(route):
             query = parse_qs(urlparse(route.request.url).query)
             review_queries.append(query)
+            if query.get("cursor") == ["review-page-3"]:
+                fulfill_json(route, {"items": third_review_page, "nextCursor": None})
+                return
             if query.get("cursor") == ["review-page-2"]:
-                fulfill_json(route, {"items": second_review_page, "nextCursor": None})
+                fulfill_json(
+                    route,
+                    {"items": second_review_page, "nextCursor": "review-page-3"},
+                )
             else:
                 fulfill_json(
                     route,
-                    {"items": first_review_page, "nextCursor": "review-page-2"},
+                    {
+                        "items": first_review_page,
+                        "nextCursor": "review-page-2"
+                        if review_pagination_enabled["value"] else None,
+                    },
                 )
 
         page.route("**/v1/review/queue?**", route_review_queue)
@@ -308,6 +321,20 @@ def main():
 
         page.route("**/v1/review/decisions/undo", route_review_undo)
 
+        def route_tag_undo(route):
+            payload = route.request.post_data_json
+            tag_undos.append(payload)
+            fulfill_json(
+                route,
+                {
+                    "operationID": payload["operationID"],
+                    "restoredAssetCount": 1,
+                    "replayed": False,
+                },
+            )
+
+        page.route("**/v1/tag-decisions/undo", route_tag_undo)
+
         def route_asset_detail(route):
             current_id = urlparse(route.request.url).path.rsplit("/", 1)[-1]
             fulfill_json(route, asset_detail(index_by_id[current_id]))
@@ -327,6 +354,31 @@ def main():
             "() => document.querySelectorAll('#assetGrid > .asset-card').length === 72"
         )
         assert not any(query.get("cursor") == ["page-2"] for query in asset_queries)
+
+        # Command-Z follows the most recent Host undo channel while leaving
+        # native text-field undo untouched.
+        page.evaluate(
+            """
+            () => {
+              undoToast("标签已更新", "11111111-1111-4111-8111-111111111111", "tag");
+              undoToast("审核已更新", "22222222-2222-4222-8222-222222222222", "review");
+            }
+            """
+        )
+        page.keyboard.press("Meta+z")
+        page.wait_for_function("() => state.undo.review.id === null")
+        assert review_undos[-1]["undoID"] == "22222222-2222-4222-8222-222222222222"
+        assert page.evaluate("() => state.undo.tag.id") == "11111111-1111-4111-8111-111111111111"
+
+        page.locator("#searchInput").focus()
+        tag_undo_count = len(tag_undos)
+        page.keyboard.press("Meta+z")
+        assert len(tag_undos) == tag_undo_count
+
+        page.locator("#assetGrid .asset-card-main").first.click()
+        page.keyboard.press("Meta+z")
+        page.wait_for_function("() => state.undo.tag.id === null")
+        assert tag_undos[-1]["undoID"] == "11111111-1111-4111-8111-111111111111"
 
         last_first_page = page.locator(
             f'#assetGrid > .asset-card[data-asset-id="{asset_id(72)}"]'
@@ -456,8 +508,112 @@ def main():
         page.locator(f'[data-review-overview-tag-id="{REVIEW_TAG_ID}"]').click()
         page.locator("#reviewQueueLayout:not(.hidden)").wait_for()
         page.wait_for_function(
-            "() => document.querySelectorAll('#reviewGrid > .review-card').length === 48"
+            "() => document.querySelectorAll('#reviewGrid > .review-card').length >= 48"
         )
+
+        review_pagination_enabled["value"] = True
+        page.locator('[data-review-index="20"] > .review-card-main').click()
+        page.locator("#reviewQueuePane").evaluate("element => { element.scrollTop = 320; }")
+        review_append_baseline = page.evaluate(
+            """
+            () => {
+              const originalSyncReviewCardSelection = syncReviewCardSelection;
+              globalThis.__reviewSyncCardCalls = 0;
+              globalThis.__reviewBaselineCards = [
+                ...document.querySelectorAll("#reviewGrid > .review-card")
+              ];
+              syncReviewCardSelection = (...args) => {
+                globalThis.__reviewSyncCardCalls += 1;
+                return originalSyncReviewCardSelection(...args);
+              };
+              return {
+                count: globalThis.__reviewBaselineCards.length,
+                scrollTop: document.querySelector("#reviewQueuePane").scrollTop,
+                selectedIDs: [...state.review.selectedAssetIDs],
+                focusedKey: document.activeElement?.closest(".review-card")
+                  ?.dataset.reviewKey || null,
+              };
+            }
+            """
+        )
+        assert review_append_baseline["count"] == 48
+        assert review_append_baseline["scrollTop"] > 0
+        page.evaluate(
+            """() => {
+              if (state.review.autoLoadFrame != null) {
+                cancelAnimationFrame(state.review.autoLoadFrame);
+                state.review.autoLoadFrame = null;
+              }
+              state.review.nextCursor = "review-page-2";
+              return loadReviewQueue({
+                append: true,
+                preserveUnchangedGrid: true,
+                schedulePagination: false,
+              });
+            }"""
+        )
+        page.wait_for_function(
+            "() => state.review.items.length === 49 "
+            "&& state.review.nextCursor === 'review-page-3'"
+        )
+        review_append_sync = page.evaluate(
+            """
+            () => ({
+              count: globalThis.__reviewSyncCardCalls,
+              retained: globalThis.__reviewBaselineCards.every(
+                (card, index) => document.querySelector("#reviewGrid").children[index] === card
+              ),
+              scrollTop: document.querySelector("#reviewQueuePane").scrollTop,
+              selectedIDs: [...state.review.selectedAssetIDs],
+              focusedKey: document.activeElement?.closest(".review-card")
+                ?.dataset.reviewKey || null,
+            })
+            """
+        )
+        assert review_append_sync["count"] == 1, review_append_sync
+        assert review_append_sync["retained"] is True, review_append_sync
+        assert review_append_sync["scrollTop"] == review_append_baseline["scrollTop"], (
+            review_append_baseline,
+            review_append_sync,
+        )
+        assert review_append_sync["selectedIDs"] == review_append_baseline["selectedIDs"]
+        assert review_append_sync["focusedKey"] == review_append_baseline["focusedKey"]
+
+        page.evaluate(
+            """
+            () => {
+              const stale = document.createElement("div");
+              stale.className = "review-card";
+              stale.dataset.reviewKey = "stale-review-dom-only";
+              document.querySelector("#reviewGrid").append(stale);
+              globalThis.__reviewSyncCardCalls = 0;
+            }
+            """
+        )
+        page.evaluate(
+            "() => loadReviewQueue({ append: true, preserveUnchangedGrid: true, "
+            "schedulePagination: false })"
+        )
+        page.wait_for_function(
+            "() => state.review.items.length === 50 && state.review.nextCursor === null"
+        )
+        review_append_fallback = page.evaluate(
+            """
+            () => ({
+              count: globalThis.__reviewSyncCardCalls,
+              staleCount: document.querySelectorAll(
+                '#reviewGrid > [data-review-key="stale-review-dom-only"]'
+              ).length,
+              cardCount: document.querySelectorAll("#reviewGrid > .review-card").length,
+              scrollTop: document.querySelector("#reviewQueuePane").scrollTop,
+            })
+            """
+        )
+        assert review_append_fallback["count"] == 50, review_append_fallback
+        assert review_append_fallback["staleCount"] == 0, review_append_fallback
+        assert review_append_fallback["cardCount"] == 50, review_append_fallback
+        assert review_append_fallback["scrollTop"] == review_append_baseline["scrollTop"]
+        page.locator("#reviewQueuePane").evaluate("element => { element.scrollTop = 0; }")
 
         # Review selection mirrors the Mac grid: marquee, Command-click,
         # Shift-click, Command-A and P/X/U all target the full frozen selection.
@@ -512,7 +668,7 @@ def main():
         assert undo_dimensions["scroll"] <= undo_dimensions["viewport"], undo_dimensions
         page.screenshot(path="/tmp/imageall-review-undo-toolbar-narrow.png", full_page=True)
         page.set_viewport_size({"width": 1440, "height": 900})
-        page.locator("#reviewUndoButton").click()
+        page.keyboard.press("Meta+z")
         page.wait_for_function(
             "() => document.querySelector('#undoReviewButton')?.classList.contains('hidden')"
             " && document.querySelector('#reviewUndoButton')?.classList.contains('hidden')"
@@ -527,10 +683,19 @@ def main():
         assert page.locator('[data-review-index="0"]').get_attribute("data-review-key").startswith(asset_id(1))
 
         page.keyboard.press("Meta+a")
-        assert page.locator(
-            '#reviewGrid > .review-card > .review-card-main[aria-pressed="true"]'
-        ).count() == 48
-        assert "已选择 48 项" in page.locator("#reviewSummary").inner_text()
+        page.wait_for_function(
+            """
+            () => {
+              const cards = document.querySelectorAll('#reviewGrid > .review-card');
+              const selected = document.querySelectorAll(
+                '#reviewGrid > .review-card > .review-card-main[aria-pressed="true"]'
+              );
+              return cards.length > 0 && selected.length === cards.length;
+            }
+            """
+        )
+        loaded_review_count = page.locator("#reviewGrid > .review-card").count()
+        assert f"已选择 {loaded_review_count} 项" in page.locator("#reviewSummary").inner_text()
         page.screenshot(path="/tmp/imageall-review-multiselection-synthetic.png", full_page=True)
         page.set_viewport_size({"width": 390, "height": 844})
         page.wait_for_timeout(100)
@@ -570,7 +735,7 @@ def main():
             "() => document.querySelector('#lightboxTitle')?.textContent === 'REVIEW_049.JPG'"
             " && document.querySelector('#reviewFileName')?.textContent === 'REVIEW_049.JPG'"
         )
-        assert page.locator("#lightboxPosition").inner_text() == "49 / 49"
+        assert page.locator("#lightboxPosition").inner_text() == "49 / 50"
         assert page.locator(
             '[data-review-index="48"] > .review-card-main'
         ).get_attribute("aria-pressed") == "true"
@@ -590,7 +755,8 @@ def main():
     print(
         "single-photo-navigation-browser: ok; "
         f"asset requests={len(asset_queries)}; loaded=74; "
-        f"review batch decisions={len(review_decisions)}; review undos={len(review_undos)}"
+        f"review batch decisions={len(review_decisions)}; review undos={len(review_undos)}; "
+        f"tag undos={len(tag_undos)}"
     )
 
 

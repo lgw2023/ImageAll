@@ -430,6 +430,77 @@ final class RemoteSourceManagementCommandServiceTests: XCTestCase {
 
 @MainActor
 final class RemoteLibrarySlimmingSourceMaintenanceServiceTests: XCTestCase {
+    func testGalleryRemovalRequiresAvailableMatchingMediaAndFastDeleteScope() async throws {
+        let workspace = RemoteSlimmingMaintenanceWorkspaceStub()
+        let service = makeService(workspace: workspace)
+        let commandPort: any RemoteLibrarySlimmingCommandPort = service
+        let assetID = workspace.galleryAssetID
+
+        let accepted = try await commandPort.submitRemoval(
+            LibrarySlimmingRemovalCommand(
+                operationID: UUID(),
+                scope: .gallerySelection,
+                jobID: nil,
+                clusterID: nil,
+                mediaKind: .image,
+                assetIDs: [assetID, assetID],
+                mode: .releaseSourceSpace
+            )
+        )
+        XCTAssertEqual(accepted.scope, .gallerySelection)
+        XCTAssertEqual(accepted.assetIDs, [assetID])
+        XCTAssertNil(accepted.jobID)
+        XCTAssertNil(accepted.clusterID)
+        XCTAssertEqual(accepted.phase, .awaitingMac)
+
+        var terminalPhase: LibrarySlimmingRecycleCommandPhase?
+        for _ in 0 ..< 100 {
+            terminalPhase = (try await commandPort.removalSnapshot(
+                mediaKind: .image
+            )).requests.first?.phase
+            if terminalPhase == .cancelled { break }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(terminalPhase, .cancelled)
+
+        for command in [
+            LibrarySlimmingRemovalCommand(
+                operationID: UUID(),
+                scope: .gallerySelection,
+                jobID: nil,
+                clusterID: nil,
+                mediaKind: .image,
+                assetIDs: [assetID],
+                mode: .recoverableRecycle
+            ),
+            LibrarySlimmingRemovalCommand(
+                operationID: UUID(),
+                scope: .gallerySelection,
+                jobID: nil,
+                clusterID: nil,
+                mediaKind: .video,
+                assetIDs: [assetID],
+                mode: .releaseSourceSpace
+            ),
+            LibrarySlimmingRemovalCommand(
+                operationID: UUID(),
+                scope: .gallerySelection,
+                jobID: UUID(),
+                clusterID: nil,
+                mediaKind: .image,
+                assetIDs: [assetID],
+                mode: .releaseSourceSpace
+            ),
+        ] {
+            do {
+                _ = try await commandPort.submitRemoval(command)
+                XCTFail("Invalid gallery removal must be rejected")
+            } catch {
+                XCTAssertEqual(error as? LibrarySlimmingCommandError, .invalidSelection)
+            }
+        }
+    }
+
     func testRefreshCatalogAcceptsOnlyActiveSubsetAndStartsBothRunners() async throws {
         let workspace = RemoteSlimmingMaintenanceWorkspaceStub()
         let service = makeService(workspace: workspace)
@@ -958,6 +1029,7 @@ private final class RemoteSlimmingMaintenanceWorkspaceStub:
         displayName: "Unavailable",
         state: .unavailable
     )
+    let galleryAssetID = UUID(uuidString: "71000000-0000-0000-0000-000000000010")!
     private var storedEnqueuedSourceIDs: [UUID] = []
     private var storedFolderRunnerCount = 0
     private var storedPhotosRunnerCount = 0
@@ -1005,8 +1077,29 @@ private final class RemoteSlimmingMaintenanceWorkspaceStub:
         throw CatalogQueryError.notFound
     }
 
-    func fetchInspectorDetail(assetID _: UUID) throws -> AssetInspectorDetail {
-        throw CatalogQueryError.notFound
+    func fetchInspectorDetail(assetID: UUID) throws -> AssetInspectorDetail {
+        guard assetID == galleryAssetID else { throw CatalogQueryError.notFound }
+        return AssetInspectorDetail(
+            assetID: galleryAssetID,
+            sourceID: activeSources[0].id,
+            sourceDisplayName: activeSources[0].displayName,
+            sourceState: .active,
+            relativePath: "gallery.jpg",
+            fileName: "gallery.jpg",
+            mediaKind: .image,
+            mediaType: "public.jpeg",
+            mediaCreatedAtMs: 123,
+            mediaModifiedAtMs: 456,
+            width: 100,
+            height: 80,
+            availability: .available,
+            contentRevision: 1,
+            acceptedTagCount: 0,
+            rejectedTagCount: 0,
+            fingerprintSizeBytes: 1_024,
+            fingerprintModifiedAtNs: 456_000_000,
+            tags: []
+        )
     }
 
     func selectionAggregate(

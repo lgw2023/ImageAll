@@ -4796,7 +4796,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             LibraryWorkspaceCommandItem(
                 command: .createTag,
                 title: "新建标签",
-                systemImage: "tag.badge.plus",
+                systemImage: "tag.fill",
                 isEnabled: hasSelection
             ),
             LibraryWorkspaceCommandItem(
@@ -4845,13 +4845,16 @@ final class LibraryWorkspaceModel: ObservableObject {
         _ = try? await Self.offMain(priority: .utility) {
             try favoriteService.retryPendingFavoriteSync(sourceIDs: nil)
         }
-        for source in sources where source.kind == .photos && source.state == .active {
-            await ensurePhotosLibraryIndexed(sourceID: source.id)
-        }
+        // Resume durable work before the potentially expensive PhotoKit count
+        // used by first-connect reconciliation. A large Photos library must not
+        // delay an already queued folder-only personalization task.
         if !isCatalogScanning {
             startCatalogReconcileRunnerIfNeeded()
         }
         startPersonalizationRunnerIfNeeded()
+        for source in sources where source.kind == .photos && source.state == .active {
+            await ensurePhotosLibraryIndexed(sourceID: source.id)
+        }
         startIdleThumbnailPrewarmIfNeeded()
     }
 
@@ -5791,7 +5794,17 @@ final class LibraryWorkspaceModel: ObservableObject {
                 return try service.fetchJobActivity()
             }
             if action == .resume {
-                startPersonalizationRunnerIfNeeded()
+                switch item.kind {
+                case .folderReconcile, .photosReconcile:
+                    startCatalogReconcileRunnerIfNeeded()
+                case .personalizationSuggestions, .standardSuggestions:
+                    startPersonalizationRunnerIfNeeded()
+                case .librarySlimmingAnalysis,
+                     .librarySlimmingSourceIndex,
+                     .librarySlimmingPurge,
+                     .background:
+                    break
+                }
             }
             await refreshReviewState()
         } catch {
@@ -6211,6 +6224,28 @@ final class LibraryWorkspaceModel: ObservableObject {
     private func ensurePhotosLibraryIndexed(sourceID: UUID) async {
         let service = service
         do {
+            let hasActiveReconcile = try await Self.offMain {
+                try service.fetchJobActivity().contains { item in
+                    guard item.sourceID == sourceID,
+                          item.kind == .photosReconcile
+                    else {
+                        return false
+                    }
+                    switch item.state {
+                    case .pending, .running, .paused, .retryableFailed:
+                        return true
+                    case .completed, .terminalFailed, .cancelled:
+                        return false
+                    }
+                }
+            }
+            if hasActiveReconcile {
+                // The queued/running reconcile already owns the complete
+                // PhotoKit enumeration. Avoid a second startup count walking
+                // every asset in parallel and competing with that durable job.
+                startCatalogReconcileRunnerIfNeeded()
+                return
+            }
             let needsFullRepair = try await Self.offMain {
                 let libraryCount = try service.photosLibrarySupportedImageCount()
                 let catalogCount = try service.photosCatalogAssetCount(sourceID: sourceID)
@@ -12237,7 +12272,7 @@ struct LibraryWorkspaceView: View {
                 Button {
                     Task { await model.installPresetTags() }
                 } label: {
-                    Label("添加常用标签", systemImage: "tag.badge.plus")
+                    Label("添加常用标签", systemImage: "tag.fill")
                 }
                 .buttonStyle(.plain)
                 .disabled(model.isBusy)

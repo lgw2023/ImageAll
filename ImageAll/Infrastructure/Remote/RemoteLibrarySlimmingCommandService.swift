@@ -371,7 +371,7 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
         searchText: String?,
         scope: LibrarySlimmingRecycleCommandScope,
         limit: Int
-    ) throws -> LibrarySlimmingRecycleCommandSnapshot {
+    ) async throws -> LibrarySlimmingRecycleCommandSnapshot {
         let sourceNames = Dictionary(
             uniqueKeysWithValues: try catalog.fetchSources().map { ($0.id, $0.displayName) }
         )
@@ -438,7 +438,7 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
 
     func submitRecycle(
         _ command: LibrarySlimmingRecycleCommandRequest
-    ) throws -> LibrarySlimmingRecycleCommandRequestSnapshot {
+    ) async throws -> LibrarySlimmingRecycleCommandRequestSnapshot {
         if acceptedRemovalOperations[command.operationID] != nil
             || acceptedIdenticalCleanupOperations[command.operationID] != nil
         {
@@ -492,7 +492,7 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
 
     func removalSnapshot(
         mediaKind: MediaKind
-    ) -> LibrarySlimmingRemovalCommandSnapshot {
+    ) async throws -> LibrarySlimmingRemovalCommandSnapshot {
         LibrarySlimmingRemovalCommandSnapshot(
             requests: removalRequestsByID.values
                 .filter { $0.mediaKind == mediaKind }
@@ -507,7 +507,7 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
 
     func submitRemoval(
         _ requested: LibrarySlimmingRemovalCommand
-    ) throws -> LibrarySlimmingRemovalCommandRequestSnapshot {
+    ) async throws -> LibrarySlimmingRemovalCommandRequestSnapshot {
         if acceptedRecycleOperations[requested.operationID] != nil
             || acceptedIdenticalCleanupOperations[requested.operationID] != nil
         {
@@ -516,6 +516,7 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
         let canonicalAssetIDs = Array(Set(requested.assetIDs)).sorted(by: Self.uuidLessThan)
         let command = LibrarySlimmingRemovalCommand(
             operationID: requested.operationID,
+            scope: requested.scope,
             jobID: requested.jobID,
             clusterID: requested.clusterID,
             mediaKind: requested.mediaKind,
@@ -541,36 +542,59 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
         guard !canonicalAssetIDs.isEmpty, canonicalAssetIDs.count <= 5_000 else {
             throw LibrarySlimmingCommandError.invalidSelection
         }
-        let summaries = try analysis.listJobs(mediaKind: command.mediaKind)
-        guard summaries.contains(where: { $0.jobID == command.jobID }) else {
-            throw LibrarySlimmingCommandError.jobNotFound
-        }
-        let snapshot = try analysis.snapshot(jobID: command.jobID)
-        let resultClusters = snapshot.result?.clusters ?? []
-        let clusterAssetIDs: Set<UUID>?
-        if let cluster = resultClusters.first(where: { $0.id == command.clusterID }) {
-            clusterAssetIDs = Set(cluster.memberAssetIDs)
-        } else if resultClusters.isEmpty, !snapshot.seedAssetIDs.isEmpty {
-            let seedClusterID = NearDuplicateSceneClusterService.stableClusterID(
-                kind: .nearDuplicateScene,
-                members: snapshot.seedAssetIDs
-            )
-            clusterAssetIDs = seedClusterID == command.clusterID
-                ? Set(snapshot.seedAssetIDs)
-                : nil
-        } else {
-            clusterAssetIDs = nil
-        }
-        guard let clusterAssetIDs,
-              Set(canonicalAssetIDs).isSubset(of: clusterAssetIDs)
-        else {
-            throw LibrarySlimmingCommandError.invalidSelection
+        switch command.scope {
+        case .analysisCluster:
+            guard let jobID = command.jobID, let clusterID = command.clusterID else {
+                throw LibrarySlimmingCommandError.invalidSelection
+            }
+            let summaries = try analysis.listJobs(mediaKind: command.mediaKind)
+            guard summaries.contains(where: { $0.jobID == jobID }) else {
+                throw LibrarySlimmingCommandError.jobNotFound
+            }
+            let snapshot = try analysis.snapshot(jobID: jobID)
+            let resultClusters = snapshot.result?.clusters ?? []
+            let clusterAssetIDs: Set<UUID>?
+            if let cluster = resultClusters.first(where: { $0.id == clusterID }) {
+                clusterAssetIDs = Set(cluster.memberAssetIDs)
+            } else if resultClusters.isEmpty, !snapshot.seedAssetIDs.isEmpty {
+                let seedClusterID = NearDuplicateSceneClusterService.stableClusterID(
+                    kind: .nearDuplicateScene,
+                    members: snapshot.seedAssetIDs
+                )
+                clusterAssetIDs = seedClusterID == clusterID
+                    ? Set(snapshot.seedAssetIDs)
+                    : nil
+            } else {
+                clusterAssetIDs = nil
+            }
+            guard let clusterAssetIDs,
+                  Set(canonicalAssetIDs).isSubset(of: clusterAssetIDs)
+            else {
+                throw LibrarySlimmingCommandError.invalidSelection
+            }
+        case .gallerySelection:
+            guard command.jobID == nil,
+                  command.clusterID == nil,
+                  command.mode == .releaseSourceSpace
+            else {
+                throw LibrarySlimmingCommandError.invalidSelection
+            }
+            for assetID in canonicalAssetIDs {
+                guard let detail = try? catalog.fetchInspectorDetail(assetID: assetID),
+                      detail.assetID == assetID,
+                      detail.mediaKind == command.mediaKind,
+                      detail.availability == .available
+                else {
+                    throw LibrarySlimmingCommandError.invalidSelection
+                }
+            }
         }
 
         let requestID = UUID()
         let request = LibrarySlimmingRemovalCommandRequestSnapshot(
             id: requestID,
             operationID: command.operationID,
+            scope: command.scope,
             jobID: command.jobID,
             clusterID: command.clusterID,
             mediaKind: command.mediaKind,
@@ -579,7 +603,9 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
             phase: .awaitingMac,
             progress: nil,
             audit: nil,
-            message: "请回到 Mac 核对并确认这次批量操作",
+            message: command.scope == .gallerySelection
+                ? "请回到 Mac 核对并确认删除当前图库选区"
+                : "请回到 Mac 核对并确认这次批量操作",
             updatedAtMs: clock.nowMs
         )
         removalRequestsByID[requestID] = request
@@ -596,7 +622,7 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
     func prepareIdenticalCleanup(
         jobID: UUID,
         mediaKind: MediaKind
-    ) throws -> LibrarySlimmingIdenticalCleanupPlanSnapshot {
+    ) async throws -> LibrarySlimmingIdenticalCleanupPlanSnapshot {
         guard !hasActiveRemovalRequest, !hasActiveIdenticalCleanupRequest,
               !recycleRequestsByID.values.contains(where: {
                   $0.phase == .awaitingMac || $0.phase == .running
@@ -642,7 +668,7 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
 
     func identicalCleanupSnapshot(
         mediaKind: MediaKind
-    ) -> LibrarySlimmingIdenticalCleanupSnapshot {
+    ) async throws -> LibrarySlimmingIdenticalCleanupSnapshot {
         LibrarySlimmingIdenticalCleanupSnapshot(
             requests: identicalCleanupRequestsByID.values
                 .filter { $0.mediaKind == mediaKind }
@@ -657,7 +683,7 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
 
     func submitIdenticalCleanup(
         _ command: LibrarySlimmingIdenticalCleanupCommand
-    ) throws -> LibrarySlimmingIdenticalCleanupRequestSnapshot {
+    ) async throws -> LibrarySlimmingIdenticalCleanupRequestSnapshot {
         if acceptedRecycleOperations[command.operationID] != nil
             || acceptedRemovalOperations[command.operationID] != nil
         {
@@ -1204,6 +1230,7 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
         removalRequestsByID[requestID] = LibrarySlimmingRemovalCommandRequestSnapshot(
             id: current.id,
             operationID: current.operationID,
+            scope: current.scope,
             jobID: current.jobID,
             clusterID: current.clusterID,
             mediaKind: current.mediaKind,
@@ -1243,6 +1270,7 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
         removalRequestsByID[requestID] = LibrarySlimmingRemovalCommandRequestSnapshot(
             id: current.id,
             operationID: current.operationID,
+            scope: current.scope,
             jobID: current.jobID,
             clusterID: current.clusterID,
             mediaKind: current.mediaKind,

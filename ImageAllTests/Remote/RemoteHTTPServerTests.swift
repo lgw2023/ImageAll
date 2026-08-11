@@ -536,6 +536,34 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(receipt.assetIDs, assetIDs)
         XCTAssertEqual(commands.lastRemovalCommand?.operationID, operationID)
         XCTAssertEqual(commands.lastRemovalCommand?.clusterID, clusterID)
+
+        let galleryOperationID = UUID()
+        var gallerySubmit = authorizedRequest(
+            path: RemoteHTTPPaths.librarySlimmingRemovals,
+            method: "POST"
+        )
+        gallerySubmit.httpBody = try JSONEncoder().encode(
+            RemoteLibrarySlimmingRemovalSubmitRequest(
+                operationID: galleryOperationID,
+                jobID: nil,
+                clusterID: nil,
+                scope: .gallerySelection,
+                mediaKind: .image,
+                assetIDs: [assetIDs[0]],
+                mode: .releaseSourceSpace
+            )
+        )
+        let (galleryData, galleryResponse) = try await URLSession.shared.data(for: gallerySubmit)
+        XCTAssertEqual(try XCTUnwrap(galleryResponse as? HTTPURLResponse).statusCode, 202)
+        let galleryReceipt = try JSONDecoder().decode(
+            RemoteLibrarySlimmingRemovalRequestSnapshot.self,
+            from: galleryData
+        )
+        XCTAssertEqual(galleryReceipt.scope, .gallerySelection)
+        XCTAssertNil(galleryReceipt.jobID)
+        XCTAssertNil(galleryReceipt.clusterID)
+        XCTAssertEqual(commands.lastRemovalCommand?.scope, .gallerySelection)
+        XCTAssertEqual(commands.lastRemovalCommand?.mode, .releaseSourceSpace)
     }
 
     func testLibrarySlimmingIdenticalCleanupRoutesPrepareServerPlanAndSubmitPlanID() async throws {
@@ -4784,6 +4812,7 @@ private final class RemoteHTTPSlimmingCommandStub:
             LibrarySlimmingRemovalCommandRequestSnapshot(
                 id: UUID(),
                 operationID: UUID(),
+                scope: .analysisCluster,
                 jobID: jobID,
                 clusterID: UUID(),
                 mediaKind: mediaKind,
@@ -4811,6 +4840,7 @@ private final class RemoteHTTPSlimmingCommandStub:
         return LibrarySlimmingRemovalCommandRequestSnapshot(
             id: UUID(),
             operationID: command.operationID,
+            scope: command.scope,
             jobID: command.jobID,
             clusterID: command.clusterID,
             mediaKind: command.mediaKind,

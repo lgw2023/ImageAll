@@ -809,8 +809,7 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
             kinds.append(PersonalModelRebuildJobFactory.kind)
         }
         let placeholders = Array(repeating: "?", count: kinds.count).joined(separator: ", ")
-        var arguments = kinds.map { $0 as any DatabaseValueConvertible }
-        arguments.append(clock.nowMs)
+        let arguments = kinds.map { $0 as any DatabaseValueConvertible }
         let nextNotBeforeMs: Int64? = try database.pool.read { db in
             try Int64.fetchOne(
                 db,
@@ -818,7 +817,7 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
                 SELECT MIN(not_before_ms) FROM job
                 WHERE kind IN (\(placeholders))
                     AND (
-                        (state = 'pending' AND not_before_ms > ?)
+                        state = 'pending'
                         OR (state = 'retryableFailed' AND attempts < max_attempts)
                     )
                 """,

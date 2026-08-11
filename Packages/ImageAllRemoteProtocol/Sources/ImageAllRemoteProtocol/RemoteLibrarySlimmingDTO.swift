@@ -871,11 +871,18 @@ public struct RemoteLibrarySlimmingRemovalAudit: Codable, Sendable, Equatable {
     }
 }
 
+public enum RemoteLibrarySlimmingRemovalScope: String, Codable, Sendable, Equatable {
+    case analysisCluster
+    case gallerySelection
+}
+
 public struct RemoteLibrarySlimmingRemovalRequestSnapshot: Codable, Sendable, Equatable, Identifiable {
     public let id: UUID
     public let operationID: UUID
-    public let jobID: UUID
-    public let clusterID: UUID
+    /// `nil` decodes legacy Host snapshots as analysis-cluster removals.
+    public let scope: RemoteLibrarySlimmingRemovalScope?
+    public let jobID: UUID?
+    public let clusterID: UUID?
     public let mediaKind: RemoteAssetMediaKind
     /// Immutable, canonical selection captured when the Host accepts the command.
     public let assetIDs: [UUID]
@@ -889,8 +896,9 @@ public struct RemoteLibrarySlimmingRemovalRequestSnapshot: Codable, Sendable, Eq
     public init(
         id: UUID,
         operationID: UUID,
-        jobID: UUID,
-        clusterID: UUID,
+        jobID: UUID?,
+        clusterID: UUID?,
+        scope: RemoteLibrarySlimmingRemovalScope? = nil,
         mediaKind: RemoteAssetMediaKind,
         assetIDs: [UUID],
         mode: RemoteLibrarySlimmingRemovalMode,
@@ -902,6 +910,7 @@ public struct RemoteLibrarySlimmingRemovalRequestSnapshot: Codable, Sendable, Eq
     ) {
         self.id = id
         self.operationID = operationID
+        self.scope = scope
         self.jobID = jobID
         self.clusterID = clusterID
         self.mediaKind = mediaKind
@@ -930,21 +939,25 @@ public struct RemoteLibrarySlimmingRemovalSnapshot: Codable, Sendable, Equatable
 
 public struct RemoteLibrarySlimmingRemovalSubmitRequest: Codable, Sendable, Equatable {
     public let operationID: UUID
-    public let jobID: UUID
-    public let clusterID: UUID
+    /// Missing scope preserves the legacy analysis-cluster request contract.
+    public let scope: RemoteLibrarySlimmingRemovalScope?
+    public let jobID: UUID?
+    public let clusterID: UUID?
     public let mediaKind: RemoteAssetMediaKind
     public let assetIDs: [UUID]
     public let mode: RemoteLibrarySlimmingRemovalMode
 
     public init(
         operationID: UUID,
-        jobID: UUID,
-        clusterID: UUID,
+        jobID: UUID?,
+        clusterID: UUID?,
+        scope: RemoteLibrarySlimmingRemovalScope? = nil,
         mediaKind: RemoteAssetMediaKind,
         assetIDs: [UUID],
         mode: RemoteLibrarySlimmingRemovalMode
     ) {
         self.operationID = operationID
+        self.scope = scope
         self.jobID = jobID
         self.clusterID = clusterID
         self.mediaKind = mediaKind

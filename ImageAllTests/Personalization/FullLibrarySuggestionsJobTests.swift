@@ -4133,6 +4133,11 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
             cutoffMs: fixture.cutoffMs,
             database: fixture.database
         )
+        XCTAssertEqual(
+            try reviewService.nextSuggestionRetryDelayNanoseconds(),
+            0,
+            "A due personalization job must keep the runner awake while reconcile blocks it."
+        )
 
         XCTAssertFalse(try reviewService.runPendingSuggestionJobs(maxSteps: 1))
         XCTAssertEqual(try fixture.queue.fetchJob(id: photosJobID).state, .pending)
@@ -4182,6 +4187,15 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         runner.cancel()
 
         XCTAssertEqual(review.runCount, 1)
+    }
+
+    func testRunnerRetriesDueWorkAfterTemporaryBlock() async {
+        let review = TemporarilyBlockedPersonalizationReviewPort()
+        let runner = await PersonalizationSuggestionRunner.startLoop(review: review) {}
+
+        await runner.value
+
+        XCTAssertEqual(review.runCount, 3)
     }
 
     func testRunnerDoesNotRefreshAfterIdleStep() async {
@@ -5175,6 +5189,47 @@ private final class IdlePersonalizationReviewPort: PersonalizationReviewPort, @u
     func runPendingSuggestionJobs(maxSteps: Int?) throws -> Bool {
         lock.withLock { storedRunCount += 1 }
         return false
+    }
+}
+
+private final class TemporarilyBlockedPersonalizationReviewPort:
+    PersonalizationReviewPort,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var storedRunCount = 0
+
+    var runCount: Int {
+        lock.withLock { storedRunCount }
+    }
+
+    func totalPendingSuggestionCount(sourceIDs _: [UUID]?) throws -> Int { 0 }
+    func tagOverviews(sourceIDs _: [UUID]?) throws -> [SuggestionTagOverview] { [] }
+    func fetchReviewQueue(
+        tagID _: UUID,
+        sourceIDs _: [UUID]?,
+        cursor _: ReviewQueueCursor?,
+        limit _: Int
+    ) throws -> ReviewQueuePage {
+        ReviewQueuePage(items: [], nextCursor: nil)
+    }
+    func pendingSuggestionsForAsset(assetID _: UUID) throws -> [AssetPendingSuggestion] { [] }
+    func enqueueFullLibrarySuggestions(
+        tagID _: UUID,
+        mode _: PersonalizationReviewEnqueueMode,
+        sourceIDs _: [UUID]?
+    ) throws -> UUID { UUID() }
+    func pauseSuggestionJob(jobID _: UUID) throws {}
+    func resumeSuggestionJob(jobID _: UUID) throws {}
+    func cancelSuggestionJob(jobID _: UUID) throws {}
+    func runPendingSuggestionJobs(maxSteps _: Int?) throws -> Bool {
+        lock.withLock {
+            storedRunCount += 1
+            return storedRunCount == 2
+        }
+    }
+    func nextSuggestionRetryDelayNanoseconds() throws -> UInt64? {
+        lock.withLock { storedRunCount < 2 ? 0 : nil }
     }
 }
 

@@ -2422,6 +2422,7 @@ html.split-resizing * {
 
 .selection-inspector-tools {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   padding: 8px 12px;
@@ -2490,6 +2491,12 @@ html.split-resizing * {
   min-width: 0;
   margin-left: auto;
   font-size: 10px;
+}
+
+#selectionInspectorRemovalStatus {
+  flex-basis: 100%;
+  margin-left: 0;
+  color: var(--red);
 }
 
 .selection-inspector-primary {
@@ -3098,6 +3105,10 @@ html.split-resizing * {
 
 .button-danger {
   color: var(--red);
+}
+
+.button-danger:not(:disabled) {
+  border-color: color-mix(in srgb, var(--red), transparent 62%);
 }
 
 .app-shell[data-toolbar-display-mode="iconOnly"] .titlebar-actions > .button-compact > span:nth-child(2) {
@@ -4397,6 +4408,16 @@ html.split-resizing * {
 #inspectorFavoriteButton[data-favorite="true"] {
   border-color: color-mix(in srgb, var(--red), transparent 48%);
   background: color-mix(in srgb, var(--red), transparent 88%);
+}
+
+#inspectorDeleteButton:not(:disabled) {
+  border-color: color-mix(in srgb, var(--red), transparent 58%);
+  background: color-mix(in srgb, var(--red), transparent 92%);
+  color: var(--red);
+}
+
+.inspector-source-actions .inspector-delete-hint {
+  color: color-mix(in srgb, var(--red), var(--secondary) 62%);
 }
 
 .inspector-source-actions p {

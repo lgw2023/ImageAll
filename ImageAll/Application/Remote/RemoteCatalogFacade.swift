@@ -1558,6 +1558,9 @@ actor RemoteCatalogFacade {
             let snapshot = try await librarySlimmingCommands.submitRemoval(
                 LibrarySlimmingRemovalCommand(
                     operationID: request.operationID,
+                    scope: request.scope == .gallerySelection
+                        ? .gallerySelection
+                        : .analysisCluster,
                     jobID: request.jobID,
                     clusterID: request.clusterID,
                     mediaKind: Self.mapMediaKind(request.mediaKind),
@@ -3422,6 +3425,9 @@ actor RemoteCatalogFacade {
             operationID: request.operationID,
             jobID: request.jobID,
             clusterID: request.clusterID,
+            scope: request.scope == .gallerySelection
+                ? .gallerySelection
+                : .analysisCluster,
             mediaKind: request.mediaKind == .video ? .video : .image,
             assetIDs: request.assetIDs,
             mode: request.mode == .releaseSourceSpace
@@ -3477,6 +3483,7 @@ actor RemoteCatalogFacade {
         let removal = LibrarySlimmingRemovalCommandRequestSnapshot(
             id: request.id,
             operationID: request.operationID,
+            scope: .analysisCluster,
             jobID: request.jobID,
             clusterID: request.planID,
             mediaKind: request.mediaKind,

@@ -575,6 +575,39 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertNil(model.notice)
     }
 
+    func testResumingPhotosActivityRestartsCatalogRunner() async {
+        let sourceID = UUID()
+        let jobID = UUID()
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                kind: .photos,
+                displayName: "Apple Photos",
+                state: .active
+            ),
+            reconciledItems: [],
+            startsConnected: true,
+            jobActivityItems: [
+                JobActivityItem(
+                    id: jobID,
+                    sourceID: sourceID,
+                    kind: .photosReconcile,
+                    state: .paused,
+                    controlRequest: .none,
+                    progress: JobProgress(completed: 10, total: 20)
+                ),
+            ]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        await model.refreshJobActivity()
+
+        await model.applyJobActivityAction(.resume, to: jobID)
+        await waitForCatalogScanToFinish(model)
+
+        XCTAssertEqual(service.jobActivityActionCallCount, 1)
+        XCTAssertEqual(service.photosReconcileRunCount, 1)
+    }
+
     func testJobActivityActionFailureRequeriesCurrentFactsAndPublishesSafeNotice() async {
         let jobID = UUID()
         let completed = JobActivityItem(
@@ -8048,6 +8081,40 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         XCTAssertEqual(repairCountAfterStart, 1)
         XCTAssertEqual(service.photosFullRepairCallCount, 1)
+        XCTAssertEqual(service.photosSyncCallCount, 0)
+    }
+
+    func testStartupDoesNotDuplicatePhotoKitEnumerationForActiveReconcile() async {
+        let sourceID = UUID()
+        let source = LibrarySourceSummary(
+            id: sourceID,
+            kind: .photos,
+            displayName: "Apple Photos",
+            state: .active
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: source,
+            reconciledItems: [],
+            startsConnected: true,
+            jobActivityItems: [
+                JobActivityItem(
+                    id: UUID(),
+                    sourceID: sourceID,
+                    kind: .photosReconcile,
+                    state: .running,
+                    controlRequest: .none,
+                    progress: JobProgress(completed: 10, total: 120)
+                ),
+            ],
+            photosLibrarySupportedImageCount: 120,
+            photosCatalogAssetCount: 40
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        await waitForCatalogScanToFinish(model)
+
+        XCTAssertEqual(service.photosFullRepairCallCount, 0)
         XCTAssertEqual(service.photosSyncCallCount, 0)
     }
 
