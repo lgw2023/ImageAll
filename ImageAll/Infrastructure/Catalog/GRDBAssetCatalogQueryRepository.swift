@@ -107,251 +107,135 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
     func fetchGalleryOverview() throws -> GalleryOverviewSnapshot {
         try CatalogQueryErrorMapping.perform {
             try database.pool.read { db in
-                let exactRows = try Row.fetchAll(
-                    db,
-                    sql: """
-                    \(Self.galleryOverviewAssetCTE),
-                    exact_group AS (
-                        SELECT
-                            overview_asset.media_kind,
-                            fingerprint.content_sha256,
-                            COUNT(*) AS member_count
-                        FROM overview_asset
-                        JOIN asset_similarity_fingerprint AS fingerprint
-                          ON fingerprint.asset_id = overview_asset.id
-                         AND fingerprint.content_revision = overview_asset.content_revision
-                        WHERE fingerprint.content_digest_origin = 'verifiedOriginalBytes'
-                          AND fingerprint.content_sha256 IS NOT NULL
-                        GROUP BY overview_asset.media_kind, fingerprint.content_sha256
-                    )
-                    SELECT
-                        media_kind,
-                        SUM(member_count) AS fingerprint_count,
-                        SUM(CASE WHEN member_count > 1 THEN member_count - 1 ELSE 0 END)
-                            AS redundant_count
-                    FROM exact_group
-                    GROUP BY media_kind
-                    """
-                )
-                let exactByKind = Dictionary(
-                    uniqueKeysWithValues: exactRows.compactMap { row -> (MediaKind, (Int, Int))? in
-                        guard let raw: String = row["media_kind"],
-                              let mediaKind = MediaKind(rawValue: raw)
-                        else { return nil }
-                        let fingerprintCount: Int = row["fingerprint_count"]
-                        let redundantCount: Int = row["redundant_count"]
-                        return (mediaKind, (fingerprintCount, redundantCount))
-                    }
-                )
-                let mediaCountRows = try Row.fetchAll(
-                    db,
-                    sql: """
-                    \(Self.galleryOverviewAssetCTE)
-                    SELECT media_kind, COUNT(*) AS total_count
-                    FROM overview_asset
-                    GROUP BY media_kind
-                    """
-                )
-                let totalByKind = Dictionary(
-                    uniqueKeysWithValues: mediaCountRows.compactMap { row -> (MediaKind, Int)? in
-                        guard let raw: String = row["media_kind"],
-                              let mediaKind = MediaKind(rawValue: raw)
-                        else { return nil }
-                        let count: Int = row["total_count"]
-                        return (mediaKind, count)
-                    }
-                )
-                let media = MediaKind.allCases.map { mediaKind in
-                    let totalCount = totalByKind[mediaKind, default: 0]
-                    let exact = exactByKind[mediaKind] ?? (0, 0)
-                    return GalleryOverviewMediaSummary(
-                        mediaKind: mediaKind,
-                        totalCount: totalCount,
-                        exactUniqueCount: max(0, totalCount - exact.1),
-                        exactRedundantCount: exact.1,
-                        exactFingerprintCount: exact.0
-                    )
-                }
-
-                let sourceRows = try Row.fetchAll(
-                    db,
-                    sql: """
-                    \(Self.galleryOverviewAssetCTE)
-                    SELECT
-                        source_id,
-                        source_display_name,
-                        source_kind,
-                        source_state,
-                        SUM(CASE WHEN media_kind = 'image' THEN 1 ELSE 0 END) AS image_count,
-                        SUM(CASE WHEN media_kind = 'video' THEN 1 ELSE 0 END) AS video_count,
-                        COUNT(*) AS total_count
-                    FROM overview_asset
-                    GROUP BY source_id, source_display_name, source_kind, source_state
-                    ORDER BY total_count DESC, source_display_name COLLATE NOCASE, source_id
-                    """
-                )
-                let sources = try sourceRows.map { row -> GalleryOverviewSourceSummary in
-                    guard let rawID: String = row["source_id"],
-                          let sourceID = UUID(uuidString: rawID),
-                          let kindRaw: String = row["source_kind"],
-                          let kind = SourceKind(rawValue: kindRaw),
-                          let stateRaw: String = row["source_state"],
-                          let state = SourceState(rawValue: stateRaw)
-                    else { throw CatalogQueryError.persistenceFailure }
-                    return GalleryOverviewSourceSummary(
-                        sourceID: sourceID,
-                        displayName: row["source_display_name"],
-                        kind: kind,
-                        state: state,
-                        imageCount: row["image_count"],
-                        videoCount: row["video_count"]
-                    )
-                }
-
-                let tagRows = try Row.fetchAll(
-                    db,
-                    sql: """
-                    \(Self.galleryOverviewAssetCTE)
-                    SELECT
-                        tag.id AS tag_id,
-                        tag.name AS tag_name,
-                        SUM(CASE WHEN overview_asset.media_kind = 'image' THEN 1 ELSE 0 END)
-                            AS image_count,
-                        SUM(CASE WHEN overview_asset.media_kind = 'video' THEN 1 ELSE 0 END)
-                            AS video_count,
-                        COUNT(*) AS total_count
-                    FROM asset_tag_decision AS decision
-                    JOIN overview_asset ON overview_asset.id = decision.asset_id
-                    JOIN tag ON tag.id = decision.tag_id
-                    WHERE decision.decision = 'accepted'
-                      AND tag.state = 'active'
-                    GROUP BY tag.id, tag.name, tag.normalized_name
-                    ORDER BY total_count DESC, tag.normalized_name COLLATE BINARY, tag.id
-                    LIMIT 12
-                    """
-                )
-                let positiveTags = try tagRows.map { row -> GalleryOverviewTagSummary in
-                    guard let rawID: String = row["tag_id"],
-                          let tagID = UUID(uuidString: rawID)
-                    else { throw CatalogQueryError.persistenceFailure }
-                    return GalleryOverviewTagSummary(
-                        tagID: tagID,
-                        displayName: row["tag_name"],
-                        imageCount: row["image_count"],
-                        videoCount: row["video_count"]
-                    )
-                }
-
-                let positiveCounts = try Row.fetchOne(
-                    db,
-                    sql: """
-                    \(Self.galleryOverviewAssetCTE)
-                    SELECT
-                        COUNT(DISTINCT decision.asset_id) AS asset_count,
-                        COUNT(*) AS decision_count
-                    FROM asset_tag_decision AS decision
-                    JOIN overview_asset ON overview_asset.id = decision.asset_id
-                    JOIN tag ON tag.id = decision.tag_id
-                    WHERE decision.decision = 'accepted'
-                      AND tag.state = 'active'
-                    """
-                )
-
-                let yearRows = try Row.fetchAll(
-                    db,
-                    sql: """
-                    \(Self.galleryOverviewAssetCTE)
-                    SELECT
-                        CAST(strftime('%Y', media_time_ms / 1000, 'unixepoch') AS INTEGER) AS year,
-                        SUM(CASE WHEN media_kind = 'image' THEN 1 ELSE 0 END) AS image_count,
-                        SUM(CASE WHEN media_kind = 'video' THEN 1 ELSE 0 END) AS video_count
-                    FROM overview_asset
-                    WHERE media_time_ms IS NOT NULL
-                    GROUP BY year
-                    ORDER BY year
-                    """
-                )
-                let years = yearRows.map { row in
-                    GalleryOverviewYearSummary(
-                        year: row["year"],
-                        imageCount: row["image_count"],
-                        videoCount: row["video_count"]
-                    )
-                }
-                let undatedCount = try Int.fetchOne(
-                    db,
-                    sql: """
-                    \(Self.galleryOverviewAssetCTE)
-                    SELECT COUNT(*) FROM overview_asset WHERE media_time_ms IS NULL
-                    """
-                ) ?? 0
-
-                let availabilityRows = try Row.fetchAll(
-                    db,
-                    sql: """
-                    \(Self.galleryOverviewAssetCTE)
-                    SELECT
-                        availability,
-                        SUM(CASE WHEN media_kind = 'image' THEN 1 ELSE 0 END) AS image_count,
-                        SUM(CASE WHEN media_kind = 'video' THEN 1 ELSE 0 END) AS video_count
-                    FROM overview_asset
-                    GROUP BY availability
-                    ORDER BY CASE availability
-                        WHEN 'available' THEN 0
-                        WHEN 'missing' THEN 1
-                        WHEN 'unreadable' THEN 2
-                        WHEN 'unsupported' THEN 3
-                        ELSE 4
-                    END
-                    """
-                )
-                let availability = try availabilityRows.map { row -> GalleryOverviewAvailabilitySummary in
-                    guard let raw: String = row["availability"],
-                          let value = AssetAvailability(rawValue: raw)
-                    else { throw CatalogQueryError.persistenceFailure }
-                    return GalleryOverviewAvailabilitySummary(
-                        availability: value,
-                        imageCount: row["image_count"],
-                        videoCount: row["video_count"]
-                    )
-                }
-
-                let favoriteRows = try Row.fetchAll(
-                    db,
-                    sql: """
-                    \(Self.galleryOverviewAssetCTE)
-                    SELECT overview_asset.media_kind, COUNT(*) AS favorite_count
-                    FROM overview_asset
-                    JOIN asset_favorite_state AS favorite
-                      ON favorite.asset_id = overview_asset.id
-                     AND favorite.desired_value = 1
-                    GROUP BY overview_asset.media_kind
-                    ORDER BY overview_asset.media_kind
-                    """
-                )
-                let favorites = favoriteRows.compactMap { row -> GalleryOverviewFavoriteSummary? in
-                    guard let raw: String = row["media_kind"],
-                          let mediaKind = MediaKind(rawValue: raw)
-                    else { return nil }
-                    return GalleryOverviewFavoriteSummary(
-                        mediaKind: mediaKind,
-                        count: row["favorite_count"]
-                    )
-                }
-
-                return GalleryOverviewSnapshot(
-                    media: media,
-                    sources: sources,
-                    positiveTags: positiveTags,
-                    years: years,
-                    availability: availability,
-                    undatedCount: undatedCount,
-                    positiveLabeledAssetCount: positiveCounts?["asset_count"] ?? 0,
-                    acceptedDecisionCount: positiveCounts?["decision_count"] ?? 0,
-                    favorites: favorites
-                )
+                let rows = try Row.fetchAll(db, sql: Self.galleryOverviewSQL)
+                return try makeGalleryOverview(rows: rows)
             }
         }
+    }
+
+    private func makeGalleryOverview(rows: [Row]) throws -> GalleryOverviewSnapshot {
+        var totalByKind: [MediaKind: Int] = [:]
+        var exactByKind: [MediaKind: (fingerprints: Int, redundant: Int)] = [:]
+        var sources: [GalleryOverviewSourceSummary] = []
+        var positiveTags: [GalleryOverviewTagSummary] = []
+        var years: [GalleryOverviewYearSummary] = []
+        var availability: [GalleryOverviewAvailabilitySummary] = []
+        var favorites: [GalleryOverviewFavoriteSummary] = []
+        var undatedCount = 0
+        var positiveLabeledAssetCount = 0
+        var acceptedDecisionCount = 0
+
+        for row in rows {
+            guard let section: String = row["section"] else {
+                throw CatalogQueryError.persistenceFailure
+            }
+            switch section {
+            case "media":
+                guard let raw: String = row["key1"],
+                      let mediaKind = MediaKind(rawValue: raw)
+                else { throw CatalogQueryError.persistenceFailure }
+                totalByKind[mediaKind] = row.intValue(named: "value1")
+            case "exact":
+                guard let raw: String = row["key1"],
+                      let mediaKind = MediaKind(rawValue: raw)
+                else { throw CatalogQueryError.persistenceFailure }
+                exactByKind[mediaKind] = (
+                    row.intValue(named: "value1"),
+                    row.intValue(named: "value2")
+                )
+            case "source":
+                guard let rawID: String = row["key1"],
+                      let sourceID = UUID(uuidString: rawID),
+                      let displayName: String = row["text1"],
+                      let kindRaw: String = row["text2"],
+                      let kind = SourceKind(rawValue: kindRaw),
+                      let stateRaw: String = row["text3"],
+                      let state = SourceState(rawValue: stateRaw)
+                else { throw CatalogQueryError.persistenceFailure }
+                sources.append(
+                    GalleryOverviewSourceSummary(
+                        sourceID: sourceID,
+                        displayName: displayName,
+                        kind: kind,
+                        state: state,
+                        imageCount: row.intValue(named: "value1"),
+                        videoCount: row.intValue(named: "value2")
+                    )
+                )
+            case "tag":
+                guard let rawID: String = row["key1"],
+                      let tagID = UUID(uuidString: rawID),
+                      let displayName: String = row["text1"]
+                else { throw CatalogQueryError.persistenceFailure }
+                positiveTags.append(
+                    GalleryOverviewTagSummary(
+                        tagID: tagID,
+                        displayName: displayName,
+                        imageCount: row.intValue(named: "value1"),
+                        videoCount: row.intValue(named: "value2")
+                    )
+                )
+            case "positive":
+                positiveLabeledAssetCount = row.intValue(named: "value1")
+                acceptedDecisionCount = row.intValue(named: "value2")
+            case "year":
+                years.append(
+                    GalleryOverviewYearSummary(
+                        year: row.intValue(named: "value1"),
+                        imageCount: row.intValue(named: "value2"),
+                        videoCount: row.intValue(named: "value3")
+                    )
+                )
+            case "undated":
+                undatedCount = row.intValue(named: "value1")
+            case "availability":
+                guard let raw: String = row["key1"],
+                      let value = AssetAvailability(rawValue: raw)
+                else { throw CatalogQueryError.persistenceFailure }
+                availability.append(
+                    GalleryOverviewAvailabilitySummary(
+                        availability: value,
+                        imageCount: row.intValue(named: "value1"),
+                        videoCount: row.intValue(named: "value2")
+                    )
+                )
+            case "favorite":
+                guard let raw: String = row["key1"],
+                      let mediaKind = MediaKind(rawValue: raw)
+                else { throw CatalogQueryError.persistenceFailure }
+                favorites.append(
+                    GalleryOverviewFavoriteSummary(
+                        mediaKind: mediaKind,
+                        count: row.intValue(named: "value1")
+                    )
+                )
+            default:
+                throw CatalogQueryError.persistenceFailure
+            }
+        }
+
+        let media = MediaKind.allCases.map { mediaKind in
+            let totalCount = totalByKind[mediaKind, default: 0]
+            let exact = exactByKind[mediaKind] ?? (0, 0)
+            return GalleryOverviewMediaSummary(
+                mediaKind: mediaKind,
+                totalCount: totalCount,
+                exactUniqueCount: max(0, totalCount - exact.redundant),
+                exactRedundantCount: exact.redundant,
+                exactFingerprintCount: exact.fingerprints
+            )
+        }
+        return GalleryOverviewSnapshot(
+            media: media,
+            sources: sources,
+            positiveTags: positiveTags,
+            years: years,
+            availability: availability,
+            undatedCount: undatedCount,
+            positiveLabeledAssetCount: positiveLabeledAssetCount,
+            acceptedDecisionCount: acceptedDecisionCount,
+            favorites: favorites
+        )
     }
 
     func fetchInspectorDetail(assetID: UUID) throws -> AssetInspectorDetail {
@@ -974,8 +858,8 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
     )
     """
 
-    private static let galleryOverviewAssetCTE = """
-    WITH overview_asset AS (
+    private static let galleryOverviewSQL = """
+    WITH overview_asset AS MATERIALIZED (
         SELECT
             asset.id,
             asset.source_id,
@@ -991,7 +875,179 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
         WHERE asset.locator_state = 'current'
           AND asset.availability != 'recycled'
           AND \(nonBrowseableRecycleEntryExclusionSQL)
+    ),
+    exact_group AS (
+        SELECT
+            overview_asset.media_kind,
+            fingerprint.content_sha256,
+            COUNT(*) AS member_count
+        FROM overview_asset
+        JOIN asset_similarity_fingerprint AS fingerprint
+          ON fingerprint.asset_id = overview_asset.id
+         AND fingerprint.content_revision = overview_asset.content_revision
+        WHERE fingerprint.content_digest_origin = 'verifiedOriginalBytes'
+          AND fingerprint.content_sha256 IS NOT NULL
+        GROUP BY overview_asset.media_kind, fingerprint.content_sha256
+    ),
+    exact_summary AS (
+        SELECT
+            media_kind,
+            SUM(member_count) AS fingerprint_count,
+            SUM(CASE WHEN member_count > 1 THEN member_count - 1 ELSE 0 END)
+                AS redundant_count
+        FROM exact_group
+        GROUP BY media_kind
+    ),
+    media_summary AS (
+        SELECT media_kind, COUNT(*) AS total_count
+        FROM overview_asset
+        GROUP BY media_kind
+    ),
+    source_summary AS (
+        SELECT
+            source_id,
+            source_display_name,
+            source_kind,
+            source_state,
+            SUM(CASE WHEN media_kind = 'image' THEN 1 ELSE 0 END) AS image_count,
+            SUM(CASE WHEN media_kind = 'video' THEN 1 ELSE 0 END) AS video_count,
+            COUNT(*) AS total_count
+        FROM overview_asset
+        GROUP BY source_id, source_display_name, source_kind, source_state
+    ),
+    source_ranked AS (
+        SELECT *, ROW_NUMBER() OVER (
+            ORDER BY total_count DESC, source_display_name COLLATE NOCASE, source_id
+        ) AS row_position
+        FROM source_summary
+    ),
+    tag_summary AS (
+        SELECT
+            tag.id AS tag_id,
+            tag.name AS tag_name,
+            tag.normalized_name,
+            SUM(CASE WHEN overview_asset.media_kind = 'image' THEN 1 ELSE 0 END)
+                AS image_count,
+            SUM(CASE WHEN overview_asset.media_kind = 'video' THEN 1 ELSE 0 END)
+                AS video_count,
+            COUNT(*) AS total_count
+        FROM asset_tag_decision AS decision
+        JOIN overview_asset ON overview_asset.id = decision.asset_id
+        JOIN tag ON tag.id = decision.tag_id
+        WHERE decision.decision = 'accepted'
+          AND tag.state = 'active'
+        GROUP BY tag.id, tag.name, tag.normalized_name
+    ),
+    tag_ranked AS (
+        SELECT *, ROW_NUMBER() OVER (
+            ORDER BY total_count DESC, normalized_name COLLATE BINARY, tag_id
+        ) AS row_position
+        FROM tag_summary
+    ),
+    positive_summary AS (
+        SELECT
+            COUNT(DISTINCT decision.asset_id) AS asset_count,
+            COUNT(*) AS decision_count
+        FROM asset_tag_decision AS decision
+        JOIN overview_asset ON overview_asset.id = decision.asset_id
+        JOIN tag ON tag.id = decision.tag_id
+        WHERE decision.decision = 'accepted'
+          AND tag.state = 'active'
+    ),
+    year_summary AS (
+        SELECT
+            CAST(strftime('%Y', media_time_ms / 1000, 'unixepoch') AS INTEGER) AS year,
+            SUM(CASE WHEN media_kind = 'image' THEN 1 ELSE 0 END) AS image_count,
+            SUM(CASE WHEN media_kind = 'video' THEN 1 ELSE 0 END) AS video_count
+        FROM overview_asset
+        WHERE media_time_ms IS NOT NULL
+        GROUP BY year
+    ),
+    availability_summary AS (
+        SELECT
+            availability,
+            SUM(CASE WHEN media_kind = 'image' THEN 1 ELSE 0 END) AS image_count,
+            SUM(CASE WHEN media_kind = 'video' THEN 1 ELSE 0 END) AS video_count
+        FROM overview_asset
+        GROUP BY availability
+    ),
+    favorite_summary AS (
+        SELECT overview_asset.media_kind, COUNT(*) AS favorite_count
+        FROM overview_asset
+        JOIN asset_favorite_state AS favorite
+          ON favorite.asset_id = overview_asset.id
+         AND favorite.desired_value = 1
+        GROUP BY overview_asset.media_kind
     )
+    SELECT
+        0 AS section_order,
+        CASE media_kind WHEN 'image' THEN 0 ELSE 1 END AS position,
+        'media' AS section,
+        media_kind AS key1,
+        NULL AS text1,
+        NULL AS text2,
+        NULL AS text3,
+        total_count AS value1,
+        NULL AS value2,
+        NULL AS value3
+    FROM media_summary
+    UNION ALL
+    SELECT
+        1,
+        CASE media_kind WHEN 'image' THEN 0 ELSE 1 END,
+        'exact', media_kind, NULL, NULL, NULL,
+        fingerprint_count, redundant_count, NULL
+    FROM exact_summary
+    UNION ALL
+    SELECT
+        2, row_position, 'source', source_id,
+        source_display_name, source_kind, source_state,
+        image_count, video_count, NULL
+    FROM source_ranked
+    UNION ALL
+    SELECT
+        3, row_position, 'tag', tag_id,
+        tag_name, NULL, NULL,
+        image_count, video_count, NULL
+    FROM tag_ranked
+    WHERE row_position <= 12
+    UNION ALL
+    SELECT
+        4, 0, 'positive', NULL, NULL, NULL, NULL,
+        asset_count, decision_count, NULL
+    FROM positive_summary
+    UNION ALL
+    SELECT
+        5, year, 'year', NULL, NULL, NULL, NULL,
+        year, image_count, video_count
+    FROM year_summary
+    UNION ALL
+    SELECT
+        6, 0, 'undated', NULL, NULL, NULL, NULL,
+        COUNT(*), NULL, NULL
+    FROM overview_asset
+    WHERE media_time_ms IS NULL
+    UNION ALL
+    SELECT
+        7,
+        CASE availability
+            WHEN 'available' THEN 0
+            WHEN 'missing' THEN 1
+            WHEN 'unreadable' THEN 2
+            WHEN 'unsupported' THEN 3
+            ELSE 4
+        END,
+        'availability', availability, NULL, NULL, NULL,
+        image_count, video_count, NULL
+    FROM availability_summary
+    UNION ALL
+    SELECT
+        8,
+        CASE media_kind WHEN 'image' THEN 0 ELSE 1 END,
+        'favorite', media_kind, NULL, NULL, NULL,
+        favorite_count, NULL, NULL
+    FROM favorite_summary
+    ORDER BY section_order, position
     """
 }
 

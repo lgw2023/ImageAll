@@ -247,6 +247,13 @@ struct StandardLibrarySuggestionJobProjection: Equatable, Sendable {
     let lastErrorCode: JobSafeErrorCode?
 }
 
+struct PersonalizationReviewStateSnapshot: Equatable, Sendable {
+    let totalPendingSuggestionCount: Int
+    let tagOverviews: [SuggestionTagOverview]
+    let personalLibrarySuggestionJob: PersonalLibrarySuggestionJobProjection?
+    let standardLibrarySuggestionJob: StandardLibrarySuggestionJobProjection?
+}
+
 struct FeatureSuggestionJobProjection: Equatable, Sendable {
     let id: UUID
     let state: JobState
@@ -341,6 +348,11 @@ protocol PersonalizationReviewPort: Sendable {
     func standardLibrarySuggestionJob(
         mediaKind: MediaKind
     ) throws -> StandardLibrarySuggestionJobProjection?
+    /// Reads the review overview from one logical catalog snapshot when supported.
+    func reviewStateSnapshot(
+        mediaKind: MediaKind,
+        sourceIDs: [UUID]?
+    ) throws -> PersonalizationReviewStateSnapshot
     func pauseSuggestionJob(jobID: UUID) throws
     func resumeSuggestionJob(jobID: UUID) throws
     func cancelSuggestionJob(jobID: UUID) throws
@@ -384,6 +396,28 @@ protocol PersonalizationReviewPort: Sendable {
 }
 
 extension PersonalizationReviewPort {
+    func reviewStateSnapshot(
+        mediaKind: MediaKind,
+        sourceIDs: [UUID]?
+    ) throws -> PersonalizationReviewStateSnapshot {
+        PersonalizationReviewStateSnapshot(
+            totalPendingSuggestionCount: try totalPendingSuggestionCount(
+                mediaKind: mediaKind,
+                sourceIDs: sourceIDs
+            ),
+            tagOverviews: try tagOverviews(
+                mediaKind: mediaKind,
+                sourceIDs: sourceIDs
+            ),
+            personalLibrarySuggestionJob: try personalLibrarySuggestionJob(
+                mediaKind: mediaKind
+            ),
+            standardLibrarySuggestionJob: try standardLibrarySuggestionJob(
+                mediaKind: mediaKind
+            )
+        )
+    }
+
     func enqueuePersonalLibrarySuggestions(
         capability: PersonalModelSuggestionCapability,
         sourceIDs: [UUID]?,

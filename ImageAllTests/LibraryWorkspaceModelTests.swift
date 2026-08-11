@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Foundation
 import GRDB
 import Photos
@@ -9,6 +10,55 @@ import XCTest
 
 @MainActor
 final class LibraryWorkspaceModelTests: XCTestCase {
+    func testReviewRefreshUsesSnapshotAndDoesNotRepublishUnchangedState() async {
+        let tagID = UUID(uuidString: "73000000-0000-4000-8000-000000000001")!
+        let overview = SuggestionTagOverview(
+            id: tagID,
+            displayName: "家人",
+            acceptedSampleCount: 4,
+            rejectedSampleCount: 4,
+            pendingSuggestionCount: 3,
+            taskStatus: .ready,
+            checkedCount: 0,
+            totalCount: nil,
+            skippedCount: 0,
+            missingPositiveCount: 0,
+            missingNegativeCount: 0,
+            canGenerate: true,
+            canUpdate: false,
+            canGeneratePersonalModel: true,
+            canReview: true,
+            canPause: false,
+            canResume: false,
+            canCancel: false,
+            activeJobID: nil
+        )
+        let review = FakePersonalizationReviewPort(overviews: [overview])
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: UUID(),
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: []
+            ),
+            review: review
+        )
+
+        await model.refreshReviewState(reloadActiveQueue: false)
+        XCTAssertEqual(model.pendingSuggestionTotal, 0)
+        XCTAssertEqual(model.suggestionOverviews, [overview])
+
+        var publicationCount = 0
+        let cancellable = model.objectWillChange.sink { publicationCount += 1 }
+        await model.refreshReviewState(reloadActiveQueue: false)
+
+        XCTAssertEqual(publicationCount, 0)
+        XCTAssertEqual(review.reviewStateSnapshotCallCount, 2)
+        withExtendedLifetime(cancellable) {}
+    }
+
     func testLimitedPhotoKitAuthorizationRequiresSettingsInsteadOfRetryingPrompt() {
         XCTAssertEqual(
             PhotoKitPhotosLibraryMutationAdapter.mapAuthorizationForMutation(.limited),
@@ -16829,6 +16879,7 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
     private var storedPersonalSuggestionInvalidationCallCount = 0
     private var storedPersonalModelRebuildEnqueueCallCount = 0
     private var storedQueueFetchCallCount = 0
+    private var storedReviewStateSnapshotCallCount = 0
     private let queuePageSize: Int?
     private let trainingSnapshot: PersonalTrainingSnapshot?
     private let standardSuggestionReplacementFails: Bool
@@ -16910,6 +16961,10 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
         lock.withLock { storedQueueFetchCallCount }
     }
 
+    var reviewStateSnapshotCallCount: Int {
+        lock.withLock { storedReviewStateSnapshotCallCount }
+    }
+
     private(set) var lastEnqueuedSourceIDs: [UUID]?
     private(set) var lastPendingCountSourceIDs: [UUID]?
     private(set) var lastOverviewSourceIDs: [UUID]?
@@ -16926,6 +16981,23 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
         lock.withLock {
             lastOverviewSourceIDs = sourceIDs
             return storedOverviews
+        }
+    }
+
+    func reviewStateSnapshot(
+        mediaKind: MediaKind,
+        sourceIDs: [UUID]?
+    ) throws -> PersonalizationReviewStateSnapshot {
+        lock.withLock {
+            storedReviewStateSnapshotCallCount += 1
+            lastPendingCountSourceIDs = sourceIDs
+            lastOverviewSourceIDs = sourceIDs
+            return PersonalizationReviewStateSnapshot(
+                totalPendingSuggestionCount: mediaKind == .image ? storedQueueItems.count : 0,
+                tagOverviews: mediaKind == .image ? storedOverviews : [],
+                personalLibrarySuggestionJob: mediaKind == .image ? storedPersonalLibraryJob : nil,
+                standardLibrarySuggestionJob: mediaKind == .image ? storedStandardLibraryJob : nil
+            )
         }
     }
 

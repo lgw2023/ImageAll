@@ -9551,47 +9551,57 @@ extension LibraryWorkspaceModel {
         let sourceFilter = resolvedReviewSourceFilter
         let mediaKind = selectedMediaKind
         do {
-            pendingSuggestionTotal = try await Self.offMain {
-                try reviewPort.totalPendingSuggestionCount(
+            let snapshot = try await Self.offMain {
+                try reviewPort.reviewStateSnapshot(
                     mediaKind: mediaKind,
                     sourceIDs: sourceFilter
                 )
             }
-            suggestionOverviews = try await Self.offMain {
-                try reviewPort.tagOverviews(
-                    mediaKind: mediaKind,
-                    sourceIDs: sourceFilter
-                )
+            if pendingSuggestionTotal != snapshot.totalPendingSuggestionCount {
+                pendingSuggestionTotal = snapshot.totalPendingSuggestionCount
             }
-            let personalJob = try await Self.offMain {
-                try reviewPort.personalLibrarySuggestionJob(mediaKind: mediaKind)
+            if suggestionOverviews != snapshot.tagOverviews {
+                suggestionOverviews = snapshot.tagOverviews
             }
+            let personalJob = snapshot.personalLibrarySuggestionJob
             if let personalJob {
-                personalLibrarySuggestionJobID = personalJob.id
-                personalLibrarySuggestionState = Self.personalLibraryPresentation(
-                    for: personalJob
-                )
+                if personalLibrarySuggestionJobID != personalJob.id {
+                    personalLibrarySuggestionJobID = personalJob.id
+                }
+                let presentation = Self.personalLibraryPresentation(for: personalJob)
+                if personalLibrarySuggestionState != presentation {
+                    personalLibrarySuggestionState = presentation
+                }
             } else {
-                personalLibrarySuggestionJobID = nil
-                personalLibrarySuggestionState = .idle
+                if personalLibrarySuggestionJobID != nil {
+                    personalLibrarySuggestionJobID = nil
+                }
+                if personalLibrarySuggestionState != .idle {
+                    personalLibrarySuggestionState = .idle
+                }
             }
-            let standardJob = try await Self.offMain {
-                try reviewPort.standardLibrarySuggestionJob(mediaKind: mediaKind)
-            }
+            let standardJob = snapshot.standardLibrarySuggestionJob
             if let standardJob {
-                standardLibrarySuggestionJobID = standardJob.id
-                standardLibrarySuggestionState = Self.standardLibraryPresentation(
-                    for: standardJob
-                )
+                if standardLibrarySuggestionJobID != standardJob.id {
+                    standardLibrarySuggestionJobID = standardJob.id
+                }
+                let presentation = Self.standardLibraryPresentation(for: standardJob)
+                if standardLibrarySuggestionState != presentation {
+                    standardLibrarySuggestionState = presentation
+                }
             } else {
-                standardLibrarySuggestionJobID = nil
-                standardLibrarySuggestionState = .idle
+                if standardLibrarySuggestionJobID != nil {
+                    standardLibrarySuggestionJobID = nil
+                }
+                if standardLibrarySuggestionState != .idle {
+                    standardLibrarySuggestionState = .idle
+                }
             }
             if reviewMode == .overview {
                 let service = service
                 if let activity = try? await Self.offMain({
                     try service.fetchJobActivity()
-                }) {
+                }), jobActivityItems != activity {
                     jobActivityItems = activity
                 }
             }
@@ -9601,15 +9611,22 @@ extension LibraryWorkspaceModel {
                 await loadReviewQueueFirstPage(tagID: tagID)
             }
             if let assetID = primarySelectedAssetID, reviewMode == nil {
-                assetPendingSuggestions = try await Self.offMain {
+                let pending = try await Self.offMain {
                     try reviewPort.pendingSuggestionsForAsset(assetID: assetID)
                 }
-            } else {
+                if assetPendingSuggestions != pending {
+                    assetPendingSuggestions = pending
+                }
+            } else if !assetPendingSuggestions.isEmpty {
                 assetPendingSuggestions = []
             }
         } catch {
-            suggestionOverviews = []
-            pendingSuggestionTotal = 0
+            if !suggestionOverviews.isEmpty {
+                suggestionOverviews = []
+            }
+            if pendingSuggestionTotal != 0 {
+                pendingSuggestionTotal = 0
+            }
         }
     }
 

@@ -24,6 +24,20 @@ private struct MappedStandardSuggestion {
     }
 }
 
+struct PersonalizationReviewOverviewInputs: Sendable {
+    struct SampleCounts: Sendable {
+        let accepted: Int
+        let rejected: Int
+    }
+
+    let tags: [TagListItem]
+    let sampleCountsByTagID: [UUID: SampleCounts]
+    let pendingCountsByTagID: [UUID: SuggestionOriginCounts]
+    let currentModelTagIDs: Set<UUID>
+    let standardTagIDs: Set<UUID>
+    let activeJobsByTagID: [UUID: JobRecordSnapshot]
+}
+
 struct GRDBPersonalizationReviewRepository: Sendable {
     let database: CatalogDatabase
 
@@ -116,6 +130,239 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                 )
             ) ?? 0
         }
+    }
+
+    func overviewInputs(
+        mediaKind: MediaKind,
+        sourceIDs: [UUID]?,
+        on db: Database
+    ) throws -> PersonalizationReviewOverviewInputs {
+        let tags = try Row.fetchAll(
+            db,
+            sql: """
+            SELECT tag.id, tag.name
+            FROM tag
+            LEFT JOIN standard_tag_binding binding ON binding.tag_id = tag.id
+            LEFT JOIN ontology_concept concept
+                ON concept.ontology_id = binding.ontology_id
+                AND concept.ontology_revision = binding.ontology_revision
+                AND concept.concept_id = binding.concept_id
+            WHERE tag.state = 'active'
+            ORDER BY coalesce(concept.normalized_name, tag.normalized_name) COLLATE BINARY, tag.id
+            """
+        ).map { row -> TagListItem in
+            guard let rawID: String = row["id"],
+                  let tagID = UUID(uuidString: rawID),
+                  let displayName: String = row["name"]
+            else {
+                throw PersonalizationReviewError.persistenceFailure
+            }
+            return TagListItem(id: tagID, displayName: displayName, state: .active)
+        }
+
+        let sampleRows = try Row.fetchAll(
+            db,
+            sql: """
+            SELECT
+                d.tag_id,
+                SUM(CASE WHEN d.decision = 'accepted' THEN 1 ELSE 0 END) AS accepted_count,
+                SUM(CASE WHEN d.decision = 'rejected' THEN 1 ELSE 0 END) AS rejected_count
+            FROM asset_tag_decision d
+            JOIN asset a ON a.id = d.asset_id
+            JOIN source s ON s.id = a.source_id
+            WHERE a.media_kind = ?
+                AND a.locator_state = 'current'
+                AND a.availability = 'available'
+                AND s.state = 'active'
+                AND (
+                    (s.kind = 'folder' AND a.locator_kind = 'file')
+                    OR (s.kind = 'photos' AND a.locator_kind = 'photos')
+                )
+            GROUP BY d.tag_id
+            """,
+            arguments: [mediaKind.rawValue]
+        )
+        var sampleCountsByTagID: [UUID: PersonalizationReviewOverviewInputs.SampleCounts] = [:]
+        for row in sampleRows {
+            guard let rawID: String = row["tag_id"],
+                  let tagID = UUID(uuidString: rawID)
+            else { continue }
+            sampleCountsByTagID[tagID] = .init(
+                accepted: row["accepted_count"],
+                rejected: row["rejected_count"]
+            )
+        }
+
+        let pendingCountsByTagID = try overviewPendingCounts(
+            mediaKind: mediaKind,
+            sourceIDs: sourceIDs,
+            on: db
+        )
+        let currentModelTagIDs = try Set(
+            String.fetchAll(
+                db,
+                sql: "SELECT tag_id FROM tag_model WHERE media_kind = ?",
+                arguments: [mediaKind.rawValue]
+            ).compactMap(UUID.init(uuidString:))
+        )
+        let standardTagIDs = try Set(
+            String.fetchAll(
+                db,
+                sql: "SELECT DISTINCT tag_id FROM standard_tag_binding"
+            ).compactMap(UUID.init(uuidString:))
+        )
+
+        let activeRows = try Row.fetchAll(
+            db,
+            sql: """
+            SELECT * FROM job
+            WHERE kind = ?
+                AND state IN ('pending', 'running', 'paused', 'retryableFailed')
+            ORDER BY created_at_ms DESC
+            """,
+            arguments: [FullLibrarySuggestionsJobFactory.kind]
+        )
+        let tagIDsByCoalescingKey = Dictionary(
+            uniqueKeysWithValues: tags.map {
+                // Preserve the existing overview contract, whose tag-scoped job lookup
+                // uses the image overload even while other counts are media-partitioned.
+                (FullLibrarySuggestionsJobFactory.coalescingKey(tagID: $0.id), $0.id)
+            }
+        )
+        var activeJobsByTagID: [UUID: JobRecordSnapshot] = [:]
+        for row in activeRows {
+            let snapshot = try JobPersistenceMapping.snapshot(from: row)
+            guard let key = snapshot.coalescingKey,
+                  let tagID = tagIDsByCoalescingKey[key],
+                  activeJobsByTagID[tagID] == nil
+            else { continue }
+            activeJobsByTagID[tagID] = snapshot
+        }
+
+        return PersonalizationReviewOverviewInputs(
+            tags: tags,
+            sampleCountsByTagID: sampleCountsByTagID,
+            pendingCountsByTagID: pendingCountsByTagID,
+            currentModelTagIDs: currentModelTagIDs,
+            standardTagIDs: standardTagIDs,
+            activeJobsByTagID: activeJobsByTagID
+        )
+    }
+
+    private func overviewPendingCounts(
+        mediaKind: MediaKind,
+        sourceIDs: [UUID]?,
+        on db: Database
+    ) throws -> [UUID: SuggestionOriginCounts] {
+        if let sourceIDs, sourceIDs.isEmpty { return [:] }
+        var sourceClause = ""
+        var sourceArguments: [DatabaseValueConvertible] = []
+        if let sourceIDs {
+            let placeholders = Array(repeating: "?", count: sourceIDs.count).joined(separator: ", ")
+            sourceClause = " AND a.source_id IN (\(placeholders))"
+            sourceArguments = sourceIDs.map { uuid($0) }
+        }
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+            WITH pending_rows AS (
+                SELECT p.tag_id, 'featurePrint' AS suggestion_origin
+                FROM prediction p
+                JOIN tag_model m
+                    ON m.media_kind = p.media_kind
+                    AND m.tag_id = p.tag_id
+                    AND m.current_revision = p.model_revision
+                JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
+                JOIN asset a
+                    ON a.id = p.asset_id
+                    AND a.content_revision = p.content_revision
+                    AND a.locator_state = 'current'
+                    AND a.availability = 'available'
+                LEFT JOIN asset_tag_decision d
+                    ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
+                WHERE p.media_kind = ?
+                    AND a.media_kind = ?
+                    AND p.state = 'pendingReview'
+                    AND d.asset_id IS NULL\(sourceClause)
+                UNION ALL
+                SELECT p.tag_id, 'standardModel' AS suggestion_origin
+                FROM standard_prediction p
+                JOIN ontology_pack pack
+                    ON pack.standard_pack_id = p.standard_pack_id
+                    AND pack.standard_pack_revision = p.standard_pack_revision
+                    AND pack.state = 'active'
+                JOIN standard_tag_binding binding
+                    ON binding.tag_id = p.tag_id
+                    AND binding.ontology_id = pack.ontology_id
+                    AND binding.ontology_revision = pack.ontology_revision
+                JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
+                JOIN asset a
+                    ON a.id = p.asset_id
+                    AND a.content_revision = p.content_revision
+                    AND a.locator_state = 'current'
+                    AND a.availability = 'available'
+                LEFT JOIN asset_tag_decision d
+                    ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
+                WHERE a.media_kind = ?
+                    AND p.state = 'pendingReview'
+                    AND d.asset_id IS NULL\(sourceClause)
+                UNION ALL
+                SELECT p.tag_id, CASE
+                    WHEN p.method = 'personalAdamW' THEN 'personalAdamW'
+                    ELSE 'personalModel'
+                END AS suggestion_origin
+                FROM personal_prediction p
+                JOIN personal_suggestion_model m
+                    ON m.media_kind = p.media_kind
+                    AND m.method = p.method AND m.tag_id = p.tag_id
+                JOIN personal_suggestion_tag pst
+                    ON pst.media_kind = p.media_kind
+                    AND pst.method = p.method AND pst.tag_id = p.tag_id
+                JOIN tag t ON t.id = p.tag_id AND t.state = 'active'
+                JOIN asset a
+                    ON a.id = p.asset_id
+                    AND a.content_revision = p.content_revision
+                    AND a.locator_state = 'current'
+                    AND a.availability = 'available'
+                LEFT JOIN asset_tag_decision d
+                    ON d.asset_id = p.asset_id AND d.tag_id = p.tag_id
+                WHERE p.media_kind = ?
+                    AND a.media_kind = ?
+                    AND p.state = 'pendingReview'
+                    AND d.asset_id IS NULL\(sourceClause)
+            )
+            SELECT
+                tag_id,
+                SUM(CASE WHEN suggestion_origin = 'featurePrint' THEN 1 ELSE 0 END)
+                    AS feature_print_count,
+                SUM(CASE WHEN suggestion_origin = 'standardModel' THEN 1 ELSE 0 END)
+                    AS standard_model_count,
+                SUM(CASE WHEN suggestion_origin = 'personalModel' THEN 1 ELSE 0 END)
+                    AS personal_model_count,
+                SUM(CASE WHEN suggestion_origin = 'personalAdamW' THEN 1 ELSE 0 END)
+                    AS personal_adamw_count
+            FROM pending_rows
+            GROUP BY tag_id
+            """,
+            arguments: StatementArguments(
+                [mediaKind.rawValue, mediaKind.rawValue] + sourceArguments
+                    + [mediaKind.rawValue] + sourceArguments
+                    + [mediaKind.rawValue, mediaKind.rawValue] + sourceArguments
+            )
+        )
+        var result: [UUID: SuggestionOriginCounts] = [:]
+        for row in rows {
+            guard let rawID: String = row["tag_id"],
+                  let tagID = UUID(uuidString: rawID)
+            else { continue }
+            result[tagID] = SuggestionOriginCounts(
+                featurePrint: row["feature_print_count"],
+                standardModel: row["standard_model_count"],
+                personalModel: row["personal_model_count"],
+                personalAdamW: row["personal_adamw_count"]
+            )
+        }
+        return result
     }
 
     func pendingCount(tagID: UUID, sourceIDs: [UUID]? = nil) throws -> Int {
@@ -1995,33 +2242,40 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         mediaKind: MediaKind
     ) throws -> JobRecordSnapshot? {
         try database.pool.read { db in
-            let rows = try Row.fetchAll(
-                db,
-                sql: """
-                SELECT * FROM job
-                WHERE kind = ?
-                ORDER BY
-                    CASE
-                        WHEN state IN ('pending', 'running', 'paused', 'retryableFailed') THEN 0
-                        ELSE 1
-                    END ASC,
-                    created_at_ms DESC,
-                    id DESC
-                LIMIT 100
-                """,
-                arguments: [PersonalLibrarySuggestionsJobFactory.kind]
-            )
-            for row in rows {
-                let snapshot = try JobPersistenceMapping.snapshot(from: row)
-                guard let payload = try? PersonalLibrarySuggestionsCodec.decodePayload(
-                    snapshot.payload
-                ) else { continue }
-                if payload.capability.target.mediaKind == mediaKind {
-                    return snapshot
-                }
-            }
-            return nil
+            try latestPersonalLibrarySuggestionJob(mediaKind: mediaKind, on: db)
         }
+    }
+
+    func latestPersonalLibrarySuggestionJob(
+        mediaKind: MediaKind,
+        on db: Database
+    ) throws -> JobRecordSnapshot? {
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+            SELECT * FROM job
+            WHERE kind = ?
+            ORDER BY
+                CASE
+                    WHEN state IN ('pending', 'running', 'paused', 'retryableFailed') THEN 0
+                    ELSE 1
+                END ASC,
+                created_at_ms DESC,
+                id DESC
+            LIMIT 100
+            """,
+            arguments: [PersonalLibrarySuggestionsJobFactory.kind]
+        )
+        for row in rows {
+            let snapshot = try JobPersistenceMapping.snapshot(from: row)
+            guard let payload = try? PersonalLibrarySuggestionsCodec.decodePayload(
+                snapshot.payload
+            ) else { continue }
+            if payload.capability.target.mediaKind == mediaKind {
+                return snapshot
+            }
+        }
+        return nil
     }
 
     func latestStandardLibrarySuggestionJob() throws -> JobRecordSnapshot? {
@@ -2032,33 +2286,40 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         mediaKind: MediaKind
     ) throws -> JobRecordSnapshot? {
         try database.pool.read { db in
-            let rows = try Row.fetchAll(
-                db,
-                sql: """
-                SELECT * FROM job
-                WHERE kind = ?
-                ORDER BY
-                    CASE
-                        WHEN state IN ('pending', 'running', 'paused', 'retryableFailed') THEN 0
-                        ELSE 1
-                    END ASC,
-                    created_at_ms DESC,
-                    id DESC
-                LIMIT 100
-                """,
-                arguments: [StandardLibrarySuggestionsJobFactory.kind]
-            )
-            for row in rows {
-                let snapshot = try JobPersistenceMapping.snapshot(from: row)
-                guard let payload = try? StandardLibrarySuggestionsCodec.decodePayload(
-                    snapshot.payload
-                ) else { continue }
-                if payload.mediaKind == mediaKind {
-                    return snapshot
-                }
-            }
-            return nil
+            try latestStandardLibrarySuggestionJob(mediaKind: mediaKind, on: db)
         }
+    }
+
+    func latestStandardLibrarySuggestionJob(
+        mediaKind: MediaKind,
+        on db: Database
+    ) throws -> JobRecordSnapshot? {
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+            SELECT * FROM job
+            WHERE kind = ?
+            ORDER BY
+                CASE
+                    WHEN state IN ('pending', 'running', 'paused', 'retryableFailed') THEN 0
+                    ELSE 1
+                END ASC,
+                created_at_ms DESC,
+                id DESC
+            LIMIT 100
+            """,
+            arguments: [StandardLibrarySuggestionsJobFactory.kind]
+        )
+        for row in rows {
+            let snapshot = try JobPersistenceMapping.snapshot(from: row)
+            guard let payload = try? StandardLibrarySuggestionsCodec.decodePayload(
+                snapshot.payload
+            ) else { continue }
+            if payload.mediaKind == mediaKind {
+                return snapshot
+            }
+        }
+        return nil
     }
 
     func nextModelRevision(tagID: UUID) throws -> Int {

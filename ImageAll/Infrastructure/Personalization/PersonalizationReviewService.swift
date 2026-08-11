@@ -58,26 +58,62 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         mediaKind: MediaKind,
         sourceIDs: [UUID]?
     ) throws -> [SuggestionTagOverview] {
-        let tags = try tags.listTags(includeArchived: false)
-        return try tags.map { tag in
-            let samples = try review.sampleCounts(
+        try database.pool.read { db in
+            let inputs = try review.overviewInputs(
                 mediaKind: mediaKind,
-                tagID: tag.id
+                sourceIDs: sourceIDs,
+                on: db
             )
-            let pendingCounts = try review.pendingCounts(
+            return try makeTagOverviews(from: inputs)
+        }
+    }
+
+    func reviewStateSnapshot(
+        mediaKind: MediaKind,
+        sourceIDs: [UUID]?
+    ) throws -> PersonalizationReviewStateSnapshot {
+        try database.pool.read { db in
+            let inputs = try review.overviewInputs(
                 mediaKind: mediaKind,
-                tagID: tag.id,
-                sourceIDs: sourceIDs
+                sourceIDs: sourceIDs,
+                on: db
             )
+            let overviews = try makeTagOverviews(from: inputs)
+            let personalJob = try review.latestPersonalLibrarySuggestionJob(
+                mediaKind: mediaKind,
+                on: db
+            )
+            let standardJob = try review.latestStandardLibrarySuggestionJob(
+                mediaKind: mediaKind,
+                on: db
+            )
+            return PersonalizationReviewStateSnapshot(
+                totalPendingSuggestionCount: overviews.reduce(0) {
+                    $0 + $1.pendingSuggestionCount
+                },
+                tagOverviews: overviews,
+                personalLibrarySuggestionJob: personalJob.map(personalLibraryProjection),
+                standardLibrarySuggestionJob: standardJob.map(standardLibraryProjection)
+            )
+        }
+    }
+
+    private func makeTagOverviews(
+        from inputs: PersonalizationReviewOverviewInputs
+    ) throws -> [SuggestionTagOverview] {
+        try inputs.tags.map { tag in
+            let sampleInput = inputs.sampleCountsByTagID[tag.id]
+            let samples = (
+                accepted: sampleInput?.accepted ?? 0,
+                rejected: sampleInput?.rejected ?? 0
+            )
+            let pendingCounts = inputs.pendingCountsByTagID[tag.id] ?? .zero
             let pending = pendingCounts.total
-            let job = try review.activeSuggestionJob(tagID: tag.id)
+            let job = inputs.activeJobsByTagID[tag.id]
             let status = mapTaskStatus(tag: tag, samples: samples, job: job)
             let checkpoint = try job.flatMap { try FullLibrarySuggestionsCodec.checkpoint(from: $0.checkpoint) }
-            let hasModel = try review.tagHasCurrentModel(
-                mediaKind: mediaKind,
-                tagID: tag.id
-            )
-            let isStandard = try review.tagIsStandard(tagID: tag.id)
+            let hasModel = inputs.currentModelTagIDs.contains(tag.id)
+            let isStandard = inputs.standardTagIDs.contains(tag.id)
             let missingPositive = max(0, 2 - samples.accepted)
             let missingNegative = max(0, 2 - samples.rejected)
             let samplesReady = missingPositive == 0 && missingNegative == 0
@@ -537,6 +573,12 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         guard let job = try review.latestPersonalLibrarySuggestionJob(
             mediaKind: mediaKind
         ) else { return nil }
+        return personalLibraryProjection(job)
+    }
+
+    private func personalLibraryProjection(
+        _ job: JobRecordSnapshot
+    ) -> PersonalLibrarySuggestionJobProjection {
         let checkpoint = (try? PersonalLibrarySuggestionsCodec.checkpoint(from: job.checkpoint))
             ?? .empty
         return PersonalLibrarySuggestionJobProjection(
@@ -634,6 +676,12 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         guard let job = try review.latestStandardLibrarySuggestionJob(
             mediaKind: mediaKind
         ) else { return nil }
+        return standardLibraryProjection(job)
+    }
+
+    private func standardLibraryProjection(
+        _ job: JobRecordSnapshot
+    ) -> StandardLibrarySuggestionJobProjection {
         let checkpoint = (try? StandardLibrarySuggestionsCodec.checkpoint(from: job.checkpoint))
             ?? .empty
         return StandardLibrarySuggestionJobProjection(

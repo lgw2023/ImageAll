@@ -2,6 +2,29 @@ import XCTest
 @testable import ImageAll
 
 final class AssetCatalogQueryTests: XCTestCase {
+    func testGalleryOverviewExecutesAsOneAggregateStatement() throws {
+        let fixture = try CatalogQueryTestSupport.openGalleryOverviewDatabase()
+        let counter = CatalogSQLStatementCounter()
+        try fixture.database.pool.read { db in
+            db.trace { event in
+                guard case let .statement(statement) = event else { return }
+                let sql = statement.sql.uppercased()
+                if sql.hasPrefix("SELECT") || sql.hasPrefix("WITH") {
+                    counter.increment()
+                }
+            }
+        }
+        defer {
+            try? fixture.database.pool.read { db in
+                db.trace(options: [])
+            }
+        }
+
+        _ = try fixture.query.fetchGalleryOverview()
+
+        XCTAssertEqual(counter.value, 1)
+    }
+
     func testGalleryOverviewAggregatesExactUniqueSourcesPositiveTagsAndYears() throws {
         let fixture = try CatalogQueryTestSupport.openGalleryOverviewDatabase()
 
@@ -939,5 +962,18 @@ final class AssetCatalogQueryTests: XCTestCase {
             XCTAssertFalse(description.contains("SELECT"))
             XCTAssertFalse(description.contains("secret-path"))
         }
+    }
+}
+
+private final class CatalogSQLStatementCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValue = 0
+
+    var value: Int {
+        lock.withLock { storedValue }
+    }
+
+    func increment() {
+        lock.withLock { storedValue += 1 }
     }
 }

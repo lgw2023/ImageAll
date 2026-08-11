@@ -7,6 +7,177 @@ import XCTest
 @testable import ImageAll
 
 final class FullLibrarySuggestionsJobTests: XCTestCase {
+    func testReviewStateSnapshotUsesFixedQueryCountAsTagCountGrows() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 12, preseedPredictions: 4)
+        try fixture.database.pool.write { db in
+            for index in 0 ..< 32 {
+                try db.execute(
+                    sql: """
+                    INSERT INTO tag (
+                        id, name, normalized_name, state, created_at_ms, updated_at_ms
+                    ) VALUES (?, ?, ?, 'active', ?, ?)
+                    """,
+                    arguments: [
+                        UUID().uuidString.lowercased(),
+                        "批量标签 \(index)",
+                        String(format: "batch-%02d", index),
+                        fixture.cutoffMs,
+                        fixture.cutoffMs,
+                    ]
+                )
+            }
+        }
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: fixture.queue,
+            executionCoordinator: makeCoordinator(
+                database: fixture.database,
+                handler: makeHandler(
+                    database: fixture.database,
+                    loader: fixture.loader,
+                    queue: fixture.queue
+                ),
+                queue: fixture.queue
+            ),
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs)
+        )
+        let counter = ReviewSQLStatementCounter()
+        try fixture.database.pool.read { db in
+            db.trace { event in
+                guard case let .statement(statement) = event else { return }
+                let sql = statement.sql.uppercased()
+                if sql.hasPrefix("SELECT") || sql.hasPrefix("WITH") {
+                    counter.increment()
+                }
+            }
+        }
+        defer {
+            try? fixture.database.pool.read { db in
+                db.trace(options: [])
+            }
+        }
+
+        let snapshot = try service.reviewStateSnapshot(mediaKind: .image, sourceIDs: nil)
+
+        XCTAssertGreaterThanOrEqual(snapshot.tagOverviews.count, 32)
+        XCTAssertEqual(counter.value, 8)
+        try fixture.database.pool.read { db in
+            db.trace(options: [])
+        }
+
+        let repository = GRDBPersonalizationReviewRepository(database: fixture.database)
+        func legacyRefreshRead() throws -> Int {
+            var checksum = try repository.totalPendingSuggestionCount(
+                mediaKind: .image,
+                sourceIDs: nil
+            )
+            for tag in try fixture.tags.listTags(includeArchived: false) {
+                let samples = try repository.sampleCounts(mediaKind: .image, tagID: tag.id)
+                let pending = try repository.pendingCounts(
+                    mediaKind: .image,
+                    tagID: tag.id,
+                    sourceIDs: nil
+                )
+                checksum &+= samples.accepted
+                checksum &+= samples.rejected
+                checksum &+= pending.total
+                checksum &+= try repository.activeSuggestionJob(
+                    mediaKind: .image,
+                    tagID: tag.id
+                ) == nil ? 0 : 1
+                checksum &+= try repository.tagHasCurrentModel(
+                    mediaKind: .image,
+                    tagID: tag.id
+                ) ? 1 : 0
+                checksum &+= try repository.tagIsStandard(tagID: tag.id) ? 1 : 0
+            }
+            checksum &+= try repository.latestPersonalLibrarySuggestionJob(
+                mediaKind: .image
+            ) == nil ? 0 : 1
+            checksum &+= try repository.latestStandardLibrarySuggestionJob(
+                mediaKind: .image
+            ) == nil ? 0 : 1
+            return checksum
+        }
+        func batchedRefreshRead() throws -> Int {
+            let value = try service.reviewStateSnapshot(mediaKind: .image, sourceIDs: nil)
+            return value.tagOverviews.reduce(value.totalPendingSuggestionCount) {
+                $0 &+ $1.acceptedSampleCount &+ $1.rejectedSampleCount
+                    &+ $1.pendingSuggestionCount
+            }
+        }
+
+        _ = try legacyRefreshRead()
+        _ = try batchedRefreshRead()
+        var legacyNanoseconds: [UInt64] = []
+        var batchedNanoseconds: [UInt64] = []
+        for _ in 0 ..< 5 {
+            var startedAt = DispatchTime.now().uptimeNanoseconds
+            _ = try batchedRefreshRead()
+            batchedNanoseconds.append(DispatchTime.now().uptimeNanoseconds - startedAt)
+            startedAt = DispatchTime.now().uptimeNanoseconds
+            _ = try legacyRefreshRead()
+            legacyNanoseconds.append(DispatchTime.now().uptimeNanoseconds - startedAt)
+        }
+        let batchedMedian = batchedNanoseconds.sorted()[2]
+        let legacyMedian = legacyNanoseconds.sorted()[2]
+        let attachment = XCTAttachment(
+            string: "batch_median_ns=\(batchedMedian) legacy_median_ns=\(legacyMedian)"
+        )
+        attachment.name = "Review snapshot five-run warm median"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        XCTAssertLessThan(batchedMedian * 100, legacyMedian * 80)
+    }
+
+    func testReviewStateSnapshotMatchesLegacyReviewProjections() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 12, preseedPredictions: 4)
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: fixture.queue,
+            executionCoordinator: makeCoordinator(
+                database: fixture.database,
+                handler: makeHandler(
+                    database: fixture.database,
+                    loader: fixture.loader,
+                    queue: fixture.queue
+                ),
+                queue: fixture.queue
+            ),
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs)
+        )
+
+        let snapshot = try service.reviewStateSnapshot(
+            mediaKind: .image,
+            sourceIDs: [fixture.sourceID]
+        )
+
+        XCTAssertEqual(
+            snapshot.totalPendingSuggestionCount,
+            try service.totalPendingSuggestionCount(
+                mediaKind: .image,
+                sourceIDs: [fixture.sourceID]
+            )
+        )
+        XCTAssertEqual(
+            snapshot.tagOverviews,
+            try service.tagOverviews(
+                mediaKind: .image,
+                sourceIDs: [fixture.sourceID]
+            )
+        )
+        XCTAssertEqual(
+            snapshot.personalLibrarySuggestionJob,
+            try service.personalLibrarySuggestionJob(mediaKind: .image)
+        )
+        XCTAssertEqual(
+            snapshot.standardLibrarySuggestionJob,
+            try service.standardLibrarySuggestionJob(mediaKind: .image)
+        )
+    }
+
     func testReviewServiceEnqueuesDebouncedCacheOnlyPersonalRebuild() throws {
         let fixture = try makeLargeLibraryFixture(assetCount: 8)
         let service = PersonalizationReviewService(
@@ -3941,6 +4112,19 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         await runner.value
 
         XCTAssertEqual(counter.value, 0)
+    }
+}
+
+private final class ReviewSQLStatementCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValue = 0
+
+    var value: Int {
+        lock.withLock { storedValue }
+    }
+
+    func increment() {
+        lock.withLock { storedValue += 1 }
     }
 }
 
