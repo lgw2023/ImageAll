@@ -159,8 +159,34 @@ struct FolderMediaClassifier: Sendable {
             )
         }
 
-        guard declaredType.conforms(to: .image) else {
+        guard declaredType.conforms(to: .image)
+            || ApprovedSourceMediaTypes.isVectorDocumentMediaType(candidateUTI)
+        else {
             return .ignored
+        }
+
+        if ApprovedSourceMediaTypes.isVectorDocumentMediaType(candidateUTI) {
+            if ApprovedSourceMediaTypes.isPDFCompatibleVectorMediaType(candidateUTI),
+               let pageCount = cascade.pdfCompatiblePageCount(fileURL: fileURL),
+               pageCount != 1 {
+                return .unsupported(
+                    FolderMediaMetadata(
+                        mediaType: candidateUTI,
+                        width: nil,
+                        height: nil,
+                        mediaCreatedAtMs: nil,
+                        sizeBytes: fingerprint.sizeBytes,
+                        modifiedAtNs: fingerprint.modifiedAtNs,
+                        resourceID: fingerprint.resourceID
+                    )
+                )
+            }
+            return classifyWithCascadeFallback(
+                fileURL: fileURL,
+                candidateUTI: candidateUTI,
+                fingerprint: fingerprint,
+                failureReason: .cascadeProbeFailed
+            )
         }
 
         guard let source = CGImageSourceCreateWithURL(fileURL as CFURL, nil) else {
@@ -255,7 +281,9 @@ struct FolderMediaClassifier: Sendable {
     ) -> FolderMediaClassification {
         let rawLikely = ApprovedSourceMediaTypes.isCameraRaw(candidateUTI)
             || ApprovedSourceMediaTypes.isLikelyCameraRawFileName(fileURL.lastPathComponent)
-        if rawLikely, let probe = cascade.probeFile(fileURL: fileURL, candidateUTI: candidateUTI) {
+        let cascadeEligible = rawLikely
+            || ApprovedSourceMediaTypes.isVectorDocumentMediaType(candidateUTI)
+        if cascadeEligible, let probe = cascade.probeFile(fileURL: fileURL, candidateUTI: candidateUTI) {
             return .available(
                 FolderMediaMetadata(
                     mediaType: probe.mediaType,
@@ -277,7 +305,7 @@ struct FolderMediaClassifier: Sendable {
                 sizeBytes: fingerprint.sizeBytes,
                 modifiedAtNs: fingerprint.modifiedAtNs,
                 resourceID: fingerprint.resourceID,
-                classificationFailureReason: rawLikely ? .cascadeProbeFailed : failureReason
+                classificationFailureReason: cascadeEligible ? .cascadeProbeFailed : failureReason
             )
         )
     }

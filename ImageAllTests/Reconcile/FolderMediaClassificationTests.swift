@@ -254,12 +254,18 @@ final class FolderMediaClassificationTests: XCTestCase {
         XCTAssertEqual(metadata.mediaType, UTType.gif.identifier)
     }
 
-    func testPDFWithPDFExtensionIgnored() throws {
+    func testCorruptPDFWithPDFExtensionIsUnreadable() throws {
         let fixture = FolderReconcileTestSupport.TempFixtureRoot()
         defer { fixture.cleanup() }
         let root = try fixture.makeRoot(label: "pdf")
         let file = try fixture.writeFile(root: root, relativePath: "doc.pdf", contents: Data("%PDF-1.4".utf8))
-        XCTAssertEqual(FolderMediaClassifier().classify(fileURL: file, fileName: "doc.pdf"), .ignored)
+        guard case let .unreadable(metadata) = FolderMediaClassifier().classify(
+            fileURL: file,
+            fileName: "doc.pdf"
+        ) else {
+            return XCTFail("recognized but corrupt PDF must remain visible as unreadable")
+        }
+        XCTAssertEqual(metadata.mediaType, ApprovedSourceMediaTypes.pdfIdentifier)
     }
 
     func testScanPreservesDetailedSourceSnapshot() throws {

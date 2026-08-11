@@ -1,3 +1,4 @@
+import AppKit
 import CoreImage
 import CoreGraphics
 import Foundation
@@ -13,6 +14,7 @@ struct MediaDecodeProbe: Equatable, Sendable {
 
 enum MediaDecodeStage: String, Equatable, Sendable {
     case imageIO
+    case appKitVector
     case coreImage
     case libRaw
 }
@@ -74,6 +76,10 @@ struct LibRawPreviewDecoder: LibRawPreviewDecoding {
 
 struct MediaDecodeCascade: Sendable {
     var libRaw: any LibRawPreviewDecoding = LibRawPreviewDecoder()
+
+    func pdfCompatiblePageCount(fileURL: URL) -> Int? {
+        CGPDFDocument(fileURL as CFURL)?.numberOfPages
+    }
 
     func primaryFrameIndex(source: CGImageSource, isCameraRaw: Bool) -> Int {
         let count = CGImageSourceGetCount(source)
@@ -140,6 +146,31 @@ struct MediaDecodeCascade: Sendable {
             }
         }
 
+        if ApprovedSourceMediaTypes.isPDFCompatibleVectorMediaType(candidateUTI),
+           let size = singlePagePDFSize(fileURL: fileURL)
+        {
+            return MediaDecodeProbe(
+                mediaType: candidateUTI,
+                width: size.width,
+                height: size.height,
+                decoder: .appKitVector
+            )
+        }
+
+        if candidateUTI.lowercased() == ApprovedSourceMediaTypes.svgIdentifier,
+           let image = NSImage(contentsOf: fileURL) {
+            let width = Int(image.size.width.rounded())
+            let height = Int(image.size.height.rounded())
+            if width > 0, height > 0 {
+                return MediaDecodeProbe(
+                    mediaType: candidateUTI,
+                    width: width,
+                    height: height,
+                    decoder: .appKitVector
+                )
+            }
+        }
+
         let rawCandidate = ApprovedSourceMediaTypes.isCameraRaw(candidateUTI)
             || ApprovedSourceMediaTypes.isLikelyCameraRawFileName(fileURL.lastPathComponent)
         guard rawCandidate else { return nil }
@@ -165,6 +196,7 @@ struct MediaDecodeCascade: Sendable {
     func preparedImageIOSource(
         sourceBytes: Data,
         expectedMediaType: String?,
+        maximumPixelSize: Int = 2_048,
         libRawSpy: (any LibRawPreviewDecoding)? = nil
     ) throws -> (source: CGImageSource, type: String, stage: MediaDecodeStage) {
         let rawDecoder = libRawSpy ?? libRaw
@@ -179,6 +211,17 @@ struct MediaDecodeCascade: Sendable {
             {
                 return (source, type, .imageIO)
             }
+        }
+
+        if let expectedMediaType,
+           ApprovedSourceMediaTypes.isVectorDocumentMediaType(expectedMediaType),
+           let source = rasterizedVectorImageSource(
+               sourceBytes: sourceBytes,
+               expectedMediaType: expectedMediaType,
+               maximumPixelSize: maximumPixelSize
+           )
+        {
+            return (source, expectedMediaType, .appKitVector)
         }
 
         let expectsRaw = expectedMediaType.map(ApprovedSourceMediaTypes.isCameraRaw) ?? false
@@ -200,6 +243,98 @@ struct MediaDecodeCascade: Sendable {
             return (source, type, .libRaw)
         }
         throw DerivedImageError.derivedDecodeFailed
+    }
+
+    private func rasterizedVectorImageSource(
+        sourceBytes: Data,
+        expectedMediaType: String,
+        maximumPixelSize: Int
+    ) -> CGImageSource? {
+        if ApprovedSourceMediaTypes.isPDFCompatibleVectorMediaType(expectedMediaType),
+           singlePagePDFSize(data: sourceBytes) == nil {
+            return nil
+        }
+        guard maximumPixelSize > 0,
+              let image = NSImage(data: sourceBytes)
+        else {
+            return nil
+        }
+        let logicalSize = image.size
+        guard logicalSize.width > 0, logicalSize.height > 0 else {
+            return nil
+        }
+        let scale = min(
+            1,
+            CGFloat(maximumPixelSize) / max(logicalSize.width, logicalSize.height)
+        )
+        let pixelWidth = max(1, Int((logicalSize.width * scale).rounded()))
+        let pixelHeight = max(1, Int((logicalSize.height * scale).rounded()))
+        guard let bitmap = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: pixelWidth,
+            pixelsHigh: pixelHeight,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: NSColorSpaceName.deviceRGB,
+            bitmapFormat: [],
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ), let context = NSGraphicsContext(bitmapImageRep: bitmap)
+        else {
+            return nil
+        }
+        bitmap.size = logicalSize
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        context.cgContext.clear(
+            CGRect(origin: .zero, size: CGSize(width: pixelWidth, height: pixelHeight))
+        )
+        image.draw(
+            in: CGRect(origin: .zero, size: logicalSize),
+            from: .zero,
+            operation: .copy,
+            fraction: 1,
+            respectFlipped: false,
+            hints: [.interpolation: NSImageInterpolation.high]
+        )
+        context.flushGraphics()
+        NSGraphicsContext.restoreGraphicsState()
+        guard let png = bitmap.representation(
+            using: NSBitmapImageRep.FileType.png,
+            properties: [:]
+        ) else {
+            return nil
+        }
+        return CGImageSourceCreateWithData(png as CFData, nil)
+    }
+
+    private func singlePagePDFSize(fileURL: URL) -> (width: Int, height: Int)? {
+        guard let document = CGPDFDocument(fileURL as CFURL) else { return nil }
+        return singlePagePDFSize(document: document)
+    }
+
+    private func singlePagePDFSize(data: Data) -> (width: Int, height: Int)? {
+        guard let provider = CGDataProvider(data: data as CFData),
+              let document = CGPDFDocument(provider)
+        else {
+            return nil
+        }
+        return singlePagePDFSize(document: document)
+    }
+
+    private func singlePagePDFSize(document: CGPDFDocument) -> (width: Int, height: Int)? {
+        guard document.numberOfPages == 1,
+              let page = document.page(at: 1)
+        else {
+            return nil
+        }
+        let box = page.getBoxRect(.mediaBox)
+        let width = Int(abs(box.width).rounded())
+        let height = Int(abs(box.height).rounded())
+        guard width > 0, height > 0 else { return nil }
+        return (width, height)
     }
 
     private func looksLikeRawBytes(_ data: Data) -> Bool {

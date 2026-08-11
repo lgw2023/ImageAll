@@ -11,6 +11,9 @@ enum ApprovedSourceMediaTypes: Sendable {
         UTType.webP.identifier,
         "public.jpeg-2000",
         UTType.gif.identifier,
+        "public.svg-image",
+        UTType.pdf.identifier,
+        "com.adobe.illustrator.ai-image",
         "com.fuji.raw-image",
         "com.adobe.raw-image",
     ]
@@ -18,6 +21,9 @@ enum ApprovedSourceMediaTypes: Sendable {
     static let fujiRawIdentifier = "com.fuji.raw-image"
     static let adobeRawIdentifier = "com.adobe.raw-image"
     static let jpeg2000Identifier = "public.jpeg-2000"
+    static let svgIdentifier = "public.svg-image"
+    static let pdfIdentifier = UTType.pdf.identifier
+    static let illustratorIdentifier = "com.adobe.illustrator.ai-image"
 
     static func contains(_ mediaType: String) -> Bool {
         let lowered = mediaType.lowercased()
@@ -54,6 +60,24 @@ enum ApprovedSourceMediaTypes: Sendable {
         }
     }
 
+    static func isVectorDocumentMediaType(_ mediaType: String) -> Bool {
+        switch mediaType.lowercased() {
+        case svgIdentifier, pdfIdentifier, illustratorIdentifier:
+            return true
+        default:
+            return false
+        }
+    }
+
+    static func isPDFCompatibleVectorMediaType(_ mediaType: String) -> Bool {
+        switch mediaType.lowercased() {
+        case pdfIdentifier, illustratorIdentifier:
+            return true
+        default:
+            return false
+        }
+    }
+
     /// Folder enumeration may skip unsupported files before classification to
     /// avoid unnecessary metadata work on large sources.
     static func shouldSkipUnsupportedFileName(_ fileName: String) -> Bool {
@@ -68,6 +92,9 @@ enum ApprovedSourceMediaTypes: Sendable {
             return true
         }
         if isVideoUTI(type) {
+            return false
+        }
+        if isVectorDocumentMediaType(type.identifier) {
             return false
         }
         return !type.conforms(to: .image)

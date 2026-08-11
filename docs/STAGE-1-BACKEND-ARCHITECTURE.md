@@ -36,7 +36,7 @@
 ### 2.2 本文不设计的内容
 
 - Apple Photos / PhotoKit、iCloud 下载与 Photos 权限；
-- RAW、Live Photo、视频、PDF、OCR、embedding、模型和预测；
+- 矢量原件编辑、PDF/AI 多页管理、Live Photo 视频伴随资源、OCR、embedding、模型和预测；
 - 删除、移动、重命名、覆盖、去重或原地编辑来源文件；
 - XMP/JSON sidecar；
 - 跨来源资产合并；
@@ -188,7 +188,7 @@ ImageAll 还必须施加更严格的产品边界：
 | 可识别为图片但产品明确排除的格式 | 创建/更新 Asset，`unsupported` |
 | 声称是支持图片但容器或属性无法读取 | 创建/更新 Asset，`unreadable` |
 
-按 ADR-041，批准清单在 JPEG、PNG、HEIC/HEIF、TIFF、WebP 基础上纳入 camera-raw（含富士/Adobe）、JPEG 2000 与静态 GIF；解码级联为 Image I/O → Core Image RAW → LibRaw。动画 GIF、非 RAW 多帧、SVG、Illustrator AI、PDF、视频和 Live Photo 视频轨仍不进入 `available`。
+按 ADR-041，批准清单在 JPEG、PNG、HEIC/HEIF、TIFF、WebP 基础上纳入 camera-raw（含富士/Adobe）、JPEG 2000、静态 GIF、SVG、单页 PDF 与单页 PDF 兼容 Illustrator AI；解码级联为 Image I/O → 矢量文档验证/栅格化 → Core Image RAW → LibRaw。动画 GIF、非 RAW 多帧、多页 PDF/AI、传统非 PDF AI、EPS、SVGZ 和 Live Photo 视频轨仍不进入 `available`。
 
 ### 7.2 首轮元数据
 

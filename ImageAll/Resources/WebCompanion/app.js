@@ -42,6 +42,18 @@ const MEDIA_FORMAT_GROUPS = [
     mediaTypes: ["com.compuserve.gif"],
   },
   {
+    id: "svg",
+    label: "SVG",
+    mediaKinds: ["image"],
+    mediaTypes: ["public.svg-image"],
+  },
+  {
+    id: "pdfai",
+    label: "PDF / AI",
+    mediaKinds: ["image"],
+    mediaTypes: ["com.adobe.pdf", "com.adobe.illustrator.ai-image"],
+  },
+  {
     id: "raw",
     label: "RAW",
     mediaKinds: ["image"],

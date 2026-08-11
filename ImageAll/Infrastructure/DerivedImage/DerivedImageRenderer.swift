@@ -40,7 +40,8 @@ struct DerivedImageRenderer: Sendable {
     ) throws -> DerivedImageEncodedArtifact {
         let prepared = try cascade.preparedImageIOSource(
             sourceBytes: sourceBytes,
-            expectedMediaType: expectedMediaType
+            expectedMediaType: expectedMediaType,
+            maximumPixelSize: Self.thumbnailMaxPixelSize(for: variant)
         )
         let source = prepared.source
         let type = prepared.type

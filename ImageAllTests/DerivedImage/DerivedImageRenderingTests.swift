@@ -45,6 +45,89 @@ final class DerivedImageRenderingTests: XCTestCase {
         try assertFormatGenerates(expectedUTI: UTType.png.identifier, sourceData: data)
     }
 
+    func testSVGPreviewRasterizesLogicalCanvasAndPreservesTransparency() throws {
+        let svg = Data(
+            """
+            <svg xmlns="http://www.w3.org/2000/svg" width="120" height="80" viewBox="0 0 120 80">
+              <rect x="60" width="60" height="80" fill="#336699"/>
+            </svg>
+            """.utf8
+        )
+
+        let artifact = try renderer.render(
+            sourceBytes: svg,
+            variant: .preview,
+            expectedMediaType: ApprovedSourceMediaTypes.svgIdentifier
+        )
+
+        XCTAssertEqual(artifact.pixelWidth, 120)
+        XCTAssertEqual(artifact.pixelHeight, 80)
+        XCTAssertEqual(artifact.storageFormat, .png)
+        let image = try Fixtures.decodeImage(from: artifact)
+        XCTAssertLessThan(try Fixtures.rgbaPixel(in: image, x: 10, y: 40).a, 10)
+        XCTAssertGreaterThan(try Fixtures.rgbaPixel(in: image, x: 90, y: 40).a, 245)
+    }
+
+    func testSVGUsesExistingDerivedImageCachePipeline() async throws {
+        let env = try DerivedImageTestSupport.TempEnvironment(label: "svg-cache")
+        defer { env.cleanup() }
+        let svg = Data(
+            """
+            <svg xmlns="http://www.w3.org/2000/svg" width="120" height="80" viewBox="0 0 120 80">
+              <rect width="120" height="80" fill="#336699"/>
+            </svg>
+            """.utf8
+        )
+        try env.seedAvailableAsset(
+            relativePath: "vectors/sample.svg",
+            fileName: "sample.svg",
+            mediaType: ApprovedSourceMediaTypes.svgIdentifier,
+            contents: svg
+        )
+        let (service, _) = env.makeService(volumeReader: DerivedImageTestSupport.generousVolume)
+
+        let generated = try await service.loadOrGenerate(
+            DerivedImageRequest(assetID: env.assetID, variant: .preview)
+        )
+        XCTAssertEqual(generated.origin, .generated)
+        XCTAssertEqual(generated.pixelWidth, 120)
+        XCTAssertEqual(generated.pixelHeight, 80)
+
+        let cached = try await service.loadOrGenerate(
+            DerivedImageRequest(assetID: env.assetID, variant: .preview)
+        )
+        XCTAssertEqual(cached.origin, .cacheHit)
+        XCTAssertEqual(cached.encodedBytes, generated.encodedBytes)
+    }
+
+    func testSinglePagePDFPreviewRasterizesAtPageDimensions() throws {
+        let pdf = try XCTUnwrap(FolderReconcileTestSupport.minimalPDFData())
+
+        let artifact = try renderer.render(
+            sourceBytes: pdf,
+            variant: .preview,
+            expectedMediaType: ApprovedSourceMediaTypes.pdfIdentifier
+        )
+
+        try Fixtures.assertArtifactSelfConsistent(artifact)
+        XCTAssertEqual(artifact.pixelWidth, 200)
+        XCTAssertEqual(artifact.pixelHeight, 100)
+    }
+
+    func testPDFCompatibleAIPreviewUsesVectorRasterizer() throws {
+        let ai = try XCTUnwrap(FolderReconcileTestSupport.minimalPDFData(width: 180, height: 120))
+
+        let artifact = try renderer.render(
+            sourceBytes: ai,
+            variant: .preview,
+            expectedMediaType: ApprovedSourceMediaTypes.illustratorIdentifier
+        )
+
+        try Fixtures.assertArtifactSelfConsistent(artifact)
+        XCTAssertEqual(artifact.pixelWidth, 180)
+        XCTAssertEqual(artifact.pixelHeight, 120)
+    }
+
     func testVideoPosterUsesExistingDerivedImageCachePipeline() async throws {
         let env = try DerivedImageTestSupport.TempEnvironment(label: "video-poster-cache")
         defer { env.cleanup() }

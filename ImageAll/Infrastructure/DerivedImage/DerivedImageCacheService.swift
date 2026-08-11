@@ -977,7 +977,8 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
                     }
                     let rendered = try self.renderer.render(
                         sourceBytes: initial.bytes,
-                        variant: request.variant
+                        variant: request.variant,
+                        expectedMediaType: context.mediaType
                     )
                     let reopened = try self.sourceReader.reopenedLocatorFingerprint(
                         rootURL: quarantineRootURL,
@@ -1162,7 +1163,8 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
                         }
                         let rendered = try self.renderer.render(
                             sourceBytes: initial.bytes,
-                            variant: request.variant
+                            variant: request.variant,
+                            expectedMediaType: context.mediaType
                         )
                         let reopened = try self.sourceReader.reopenedLocatorFingerprint(
                             rootURL: rootURL,

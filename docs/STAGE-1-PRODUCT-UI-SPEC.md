@@ -414,8 +414,8 @@ Toolbar 提供连续或分档的缩略图尺寸调节，但 UI 尺寸不等于�
 |---|---|
 | `UI-001`～`UI-011` | 本文第 4～10 节全部产品、交互与视觉基线 |
 | 平台 | macOS 15+、Apple Silicon only；不支持 Intel |
-| 静态/RAW 允许清单 | JPEG、PNG、HEIC/HEIF、TIFF、WebP、JPEG 2000、静态 GIF、camera-raw（含富士 RAF、Adobe DNG 等）；见 ADR-041 |
-| 明确排除 | 动画 GIF、非 RAW 多帧、SVG、Illustrator AI、PDF、视频与 Live Photo 视频轨 |
+| 静态/RAW/矢量允许清单 | JPEG、PNG、HEIC/HEIF、TIFF、WebP、JPEG 2000、静态 GIF、camera-raw（含富士 RAF、Adobe DNG 等）、SVG、单页 PDF、单页 PDF 兼容 Illustrator AI；见 ADR-041 |
+| 明确排除 | 动画 GIF、非 RAW 多帧、多页 PDF/AI、传统非 PDF AI、EPS、SVGZ 与 Live Photo 视频轨 |
 | 分发 | 阶段 1 继续本地开发/自用签名；Developer ID 与 Mac App Store 留待发布阶段 |
 
 批准表示可以据此生成实施规格和 Cursor 切片，不表示代码已经实现。若后续实测要求改变导航模型、标签语义、格式边界或缓存 variant，必须先修改本规格并由项目所有者重新确认。

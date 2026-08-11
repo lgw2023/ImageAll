@@ -162,7 +162,7 @@ final class FolderEnumerationTests: XCTestCase {
         XCTAssertEqual(candidates, ["real.png"])
     }
 
-    func testVideoFilesBecomeCandidatesWhileOtherNonImagesStayIgnored() throws {
+    func testVideoAndSupportedVectorFilesBecomeCandidatesWhileOtherNonImagesStayIgnored() throws {
         let fixture = FolderReconcileTestSupport.TempFixtureRoot()
         defer { fixture.cleanup() }
         let root = try fixture.makeRoot(label: "nonimage")
@@ -173,6 +173,9 @@ final class FolderEnumerationTests: XCTestCase {
         )
         _ = try fixture.writeFile(root: root, relativePath: "clip.mov", contents: Data("mov".utf8))
         _ = try fixture.writeFile(root: root, relativePath: "clip.mp4", contents: Data("mp4".utf8))
+        _ = try fixture.writeFile(root: root, relativePath: "diagram.svg", contents: Data("svg".utf8))
+        _ = try fixture.writeFile(root: root, relativePath: "document.pdf", contents: Data("pdf".utf8))
+        _ = try fixture.writeFile(root: root, relativePath: "drawing.ai", contents: Data("ai".utf8))
         _ = try fixture.writeFile(root: root, relativePath: "notes.txt", contents: Data("txt".utf8))
         var candidates: [String] = []
         var ignored = 0
@@ -187,7 +190,10 @@ final class FolderEnumerationTests: XCTestCase {
                 XCTFail("unexpected unsafe path")
             }
         }
-        XCTAssertEqual(Set(candidates), ["clip.mov", "clip.mp4", "keep.png"])
+        XCTAssertEqual(
+            Set(candidates),
+            ["clip.mov", "clip.mp4", "diagram.svg", "document.pdf", "drawing.ai", "keep.png"]
+        )
         XCTAssertGreaterThanOrEqual(ignored, 1)
     }
 

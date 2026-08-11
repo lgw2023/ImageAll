@@ -877,6 +877,8 @@ def main():
 
         page.locator("#filterButton").click()
         assert page.locator('#mediaTypeFilter input[value="jpeg2000"]').count() == 1
+        assert page.locator('#mediaTypeFilter input[value="svg"]').count() == 1
+        assert page.locator('#mediaTypeFilter input[value="pdfai"]').count() == 1
         assert page.locator('#mediaTypeFilter input[value="raw"]').count() == 1
         page.locator('#availabilityFilter input[value="available"]').check()
         page.locator('#availabilityFilter input[value="missing"]').check()

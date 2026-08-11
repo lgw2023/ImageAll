@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import GRDB
 import ImageIO
@@ -8,6 +9,27 @@ import XCTest
 enum FolderReconcileTestSupport {
     static let baseTimeMs: Int64 = 1_700_000_200_000
     static let leaseDurationMs: Int64 = 60_000
+
+    static func minimalPDFData(
+        pageCount: Int = 1,
+        width: CGFloat = 200,
+        height: CGFloat = 100
+    ) -> Data? {
+        guard pageCount > 0 else { return nil }
+        let data = NSMutableData()
+        guard let consumer = CGDataConsumer(data: data as CFMutableData) else { return nil }
+        var mediaBox = CGRect(x: 0, y: 0, width: width, height: height)
+        guard let context = CGContext(consumer: consumer, mediaBox: &mediaBox, nil) else { return nil }
+        for pageIndex in 0 ..< pageCount {
+            context.beginPDFPage(nil)
+            let shade = CGFloat(pageIndex + 1) / CGFloat(pageCount + 1)
+            context.setFillColor(CGColor(red: shade, green: 0.4, blue: 0.6, alpha: 1))
+            context.fill(mediaBox)
+            context.endPDFPage()
+        }
+        context.closePDF()
+        return data as Data
+    }
 
     final class TempFixtureRoot {
         private static let prefix = "ImageAllReconcileTests-"

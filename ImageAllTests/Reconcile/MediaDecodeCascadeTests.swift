@@ -1,16 +1,18 @@
+import CoreGraphics
 import UniformTypeIdentifiers
 import XCTest
 @testable import ImageAll
 
 final class MediaDecodeCascadeTests: XCTestCase {
-    func testApprovedTypesIncludeFujiAdobeJPEG2000AndGIF() {
+    func testApprovedTypesIncludeRasterRawAndSupportedVectorDocuments() {
         XCTAssertTrue(ApprovedSourceMediaTypes.contains(ApprovedSourceMediaTypes.fujiRawIdentifier))
         XCTAssertTrue(ApprovedSourceMediaTypes.contains(ApprovedSourceMediaTypes.adobeRawIdentifier))
         XCTAssertTrue(ApprovedSourceMediaTypes.contains(ApprovedSourceMediaTypes.jpeg2000Identifier))
         XCTAssertTrue(ApprovedSourceMediaTypes.contains(UTType.gif.identifier))
         XCTAssertTrue(ApprovedSourceMediaTypes.isCameraRaw(ApprovedSourceMediaTypes.fujiRawIdentifier))
-        XCTAssertFalse(ApprovedSourceMediaTypes.contains("public.svg-image"))
-        XCTAssertFalse(ApprovedSourceMediaTypes.contains("com.adobe.illustrator.ai-image"))
+        XCTAssertTrue(ApprovedSourceMediaTypes.contains(ApprovedSourceMediaTypes.svgIdentifier))
+        XCTAssertTrue(ApprovedSourceMediaTypes.contains(ApprovedSourceMediaTypes.pdfIdentifier))
+        XCTAssertTrue(ApprovedSourceMediaTypes.contains(ApprovedSourceMediaTypes.illustratorIdentifier))
     }
 
     func testStaticGIFAvailableAndRecordsNoFailureReason() throws {
@@ -28,6 +30,122 @@ final class MediaDecodeCascadeTests: XCTestCase {
         }
         XCTAssertEqual(metadata.mediaType, UTType.gif.identifier)
         XCTAssertNil(metadata.classificationFailureReason)
+    }
+
+    func testValidSVGIsAvailableWithLogicalCanvasDimensions() throws {
+        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
+        defer { fixture.cleanup() }
+        let root = try fixture.makeRoot(label: "svg")
+        let svg = Data(
+            """
+            <svg xmlns="http://www.w3.org/2000/svg" width="120" height="80" viewBox="0 0 120 80">
+              <rect width="120" height="80" fill="#336699"/>
+            </svg>
+            """.utf8
+        )
+        let file = try fixture.writeFile(root: root, relativePath: "vector.svg", contents: svg)
+
+        guard case let .available(metadata) = FolderMediaClassifier().classify(
+            fileURL: file,
+            fileName: "vector.svg"
+        ) else {
+            return XCTFail("valid SVG must be available")
+        }
+        XCTAssertEqual(metadata.mediaType, "public.svg-image")
+        XCTAssertEqual(metadata.width, 120)
+        XCTAssertEqual(metadata.height, 80)
+        XCTAssertNil(metadata.classificationFailureReason)
+    }
+
+    func testSinglePagePDFIsAvailableWithPageDimensions() throws {
+        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
+        defer { fixture.cleanup() }
+        let root = try fixture.makeRoot(label: "pdf")
+        let data = try XCTUnwrap(FolderReconcileTestSupport.minimalPDFData())
+        let file = try fixture.writeFile(root: root, relativePath: "document.pdf", contents: data)
+
+        guard case let .available(metadata) = FolderMediaClassifier().classify(
+            fileURL: file,
+            fileName: "document.pdf"
+        ) else {
+            return XCTFail("single-page PDF must be available")
+        }
+        XCTAssertEqual(metadata.mediaType, UTType.pdf.identifier)
+        XCTAssertEqual(metadata.width, 200)
+        XCTAssertEqual(metadata.height, 100)
+        XCTAssertNil(metadata.classificationFailureReason)
+    }
+
+    func testMultiPagePDFIsUnsupportedInsteadOfSilentlyUsingFirstPage() throws {
+        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
+        defer { fixture.cleanup() }
+        let root = try fixture.makeRoot(label: "multi-page-pdf")
+        let data = try XCTUnwrap(FolderReconcileTestSupport.minimalPDFData(pageCount: 2))
+        let file = try fixture.writeFile(root: root, relativePath: "document.pdf", contents: data)
+
+        guard case let .unsupported(metadata) = FolderMediaClassifier().classify(
+            fileURL: file,
+            fileName: "document.pdf"
+        ) else {
+            return XCTFail("multi-page PDF must be explicitly unsupported")
+        }
+        XCTAssertEqual(metadata.mediaType, UTType.pdf.identifier)
+        XCTAssertNil(metadata.width)
+        XCTAssertNil(metadata.height)
+    }
+
+    func testPDFCompatibleSinglePageAIIsAvailableAsIllustratorMedia() throws {
+        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
+        defer { fixture.cleanup() }
+        let root = try fixture.makeRoot(label: "pdf-compatible-ai")
+        let data = try XCTUnwrap(FolderReconcileTestSupport.minimalPDFData(width: 180, height: 120))
+        let file = try fixture.writeFile(root: root, relativePath: "vector.ai", contents: data)
+
+        guard case let .available(metadata) = FolderMediaClassifier().classify(
+            fileURL: file,
+            fileName: "vector.ai"
+        ) else {
+            return XCTFail("single-page PDF-compatible AI must be available")
+        }
+        XCTAssertEqual(metadata.mediaType, "com.adobe.illustrator.ai-image")
+        XCTAssertEqual(metadata.width, 180)
+        XCTAssertEqual(metadata.height, 120)
+    }
+
+    func testMultiPagePDFCompatibleAIIsUnsupported() throws {
+        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
+        defer { fixture.cleanup() }
+        let root = try fixture.makeRoot(label: "multi-page-ai")
+        let data = try XCTUnwrap(FolderReconcileTestSupport.minimalPDFData(pageCount: 2))
+        let file = try fixture.writeFile(root: root, relativePath: "vector.ai", contents: data)
+
+        guard case let .unsupported(metadata) = FolderMediaClassifier().classify(
+            fileURL: file,
+            fileName: "vector.ai"
+        ) else {
+            return XCTFail("multi-page PDF-compatible AI must be unsupported")
+        }
+        XCTAssertEqual(metadata.mediaType, ApprovedSourceMediaTypes.illustratorIdentifier)
+    }
+
+    func testLegacyAIWithoutPDFPayloadIsUnreadable() throws {
+        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
+        defer { fixture.cleanup() }
+        let root = try fixture.makeRoot(label: "legacy-ai")
+        let file = try fixture.writeFile(
+            root: root,
+            relativePath: "legacy.ai",
+            contents: Data("%!PS-Adobe-3.0\n%%Creator: Illustrator".utf8)
+        )
+
+        guard case let .unreadable(metadata) = FolderMediaClassifier().classify(
+            fileURL: file,
+            fileName: "legacy.ai"
+        ) else {
+            return XCTFail("legacy non-PDF AI must remain visible as unreadable")
+        }
+        XCTAssertEqual(metadata.mediaType, ApprovedSourceMediaTypes.illustratorIdentifier)
+        XCTAssertEqual(metadata.classificationFailureReason, .cascadeProbeFailed)
     }
 
     func testCorruptJPEGRecordsSourceOrDimensionFailureReason() throws {

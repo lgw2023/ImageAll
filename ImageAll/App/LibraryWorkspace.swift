@@ -11049,6 +11049,14 @@ struct LibraryWorkspaceView: View {
         LibraryMediaFormatFilterOption(title: "WebP", mediaTypes: [UTType.webP.identifier]),
         LibraryMediaFormatFilterOption(title: "JPEG 2000", mediaTypes: [ApprovedSourceMediaTypes.jpeg2000Identifier]),
         LibraryMediaFormatFilterOption(title: "GIF", mediaTypes: [UTType.gif.identifier]),
+        LibraryMediaFormatFilterOption(title: "SVG", mediaTypes: [ApprovedSourceMediaTypes.svgIdentifier]),
+        LibraryMediaFormatFilterOption(
+            title: "PDF / AI",
+            mediaTypes: [
+                ApprovedSourceMediaTypes.pdfIdentifier,
+                ApprovedSourceMediaTypes.illustratorIdentifier,
+            ]
+        ),
         LibraryMediaFormatFilterOption(
             title: "RAW",
             mediaTypes: [
@@ -13079,7 +13087,7 @@ struct LibraryWorkspaceView: View {
                             )
                         } description: {
                             if model.selectedMediaKind == .image {
-                                Text("支持 JPEG、PNG、HEIC/HEIF、TIFF、WebP、JPEG 2000、静态 GIF 和 RAW（富士/Adobe 等）。")
+                                Text("支持常用静态图片、RAW、SVG，以及单页 PDF / PDF 兼容 AI。")
                             } else {
                                 Text("支持系统可读取的 MOV、MP4、M4V 等视频；视频以代表缩略图显示。")
                             }
