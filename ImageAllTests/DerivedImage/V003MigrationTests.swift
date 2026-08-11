@@ -546,6 +546,13 @@ final class V003MigrationTests: XCTestCase {
             "library_slimming_scan_result",
             "source_similarity_index",
             "source_similarity_bucket_member",
+            "asset_favorite_state",
+            "asset_location",
+            "library_slimming_cluster_review",
+            "place",
+            "tag_place_binding",
+            "tag_place_candidate",
+            "training_run_sample",
         ])
         for table in CatalogSchemaExpectations.businessTables
             where table != "derived_image_cache_entry"

@@ -369,6 +369,7 @@ Photos 的 `localIdentifier` 只在当前本地照片库上下文中使用。跨
 | `evaluation_assignment`（规划） | `asset_id`, `tag_id`, `cohort_id`, `split`, `content_hash` | 稳定的训练/验证/测试归属；当前 v004 尚未建立 |
 | `prediction` | `asset_id`, `tag_id`, `track`, `content_revision`, `model_revision`, `policy_revision`, `score`, `state`, `created_at` | Feature Print 等可丢弃建议；状态为 `autoAssigned` 或 `suggested` / pending Review |
 | `training_run`（见 ADR-038） | `id`, `method`, `state`, 时间戳, `catalog_scope_id`, `job_id?`, `sample_summary_json`, `config_json`, `metrics_json`, artifact 指针, `result_summary_json` | 每次训练的可审计追加型工程记录；三方法共用 |
+| `training_run_sample` | `training_run_id`, `tag_id`, `asset_id`, `content_revision`, `role`, `rank` | v036 固化每次 Run 的有序正负样本清单；资产或标签后来变化时仍保留历史身份 |
 | `personal_suggestion_model` | `method` 主键（`personalCentroid` / `personalAdamW`），废止全局 singleton 互顶；见 ADR-039 | 当前已发布个人头 capability；每槽独立 published |
 | `personal_prediction` | PK 含 `method`，与对应槽级联 | 个人轨可重建待审建议；质心与 AdamW 并存 |
 | `job` | `id`, `kind`, `payload_version`, `payload`, `source_id`, `checkpoint_version`, `checkpoint`, `scan_generation`, `started_dirty_epoch`, `state`, `control_request`, `priority`, `attempts`, `lease`, `last_error` | 可恢复后台任务 |
@@ -392,7 +393,8 @@ v011 沿精确 ontology revision 展开祖先并记录 direct concept 来源；�
 - `tag_model_revision(tag_id, revision)` 唯一，`tag_model_sample(tag_id, model_revision, asset_id)` 唯一；`tag_model(tag_id, current_revision)` 必须引用已存在的 revision；
 - `tag_model` 与 `tag_model_sample` 只服务 `personal` 标签；标准模型版本不能混入用户个人样本；
 - `personal_suggestion_model` 按 method 至多一行；`personal_prediction(method, asset_id, tag_id, content_revision)` 唯一；质心与 AdamW 预测不得互相级联删除；
-- `training_run` 为追加型历史，成功 Run 不因后续训练删除；
+- `training_run` 为追加型历史，成功 Run 不因后续训练删除；每次有样本的 Run 必须在同一事务写入
+  `training_run_sample`，其稳定 JSONL 的 SHA-256 必须等于 `training_run.sample_manifest_sha256`；
 - 每个 Source 内同一 locator 只能有一个 `locator_state = current` 的 Asset；Source 离线或 Asset 缺失不释放当前 locator，只有确认路径复用或移动重连时才在事务内变更绑定；
 - 删除标签默认采用归档，不级联删除人工历史；
 - 移除来源默认只停用 Source，保留 Asset、人工决定和派生数据；永久清除必须再次确认，并先提供可移植导出。永久清除后才允许删除该 Source 的 Asset、人工决定和缓存。

@@ -57,6 +57,8 @@ enum CatalogMigrationID {
         "v034_backfill_slimming_confirmed_history"
     static let v035AddAssetFavoriteState =
         "v035_add_asset_favorite_state"
+    static let v036AddTrainingRunSampleManifest =
+        "v036_add_training_run_sample_manifest"
 
     static let knownOrdered: [String] = [
         v001CreateCatalogCore,
@@ -94,5 +96,6 @@ enum CatalogMigrationID {
         v033AddSlimmingClusterReviewQueue,
         v034BackfillSlimmingConfirmedHistory,
         v035AddAssetFavoriteState,
+        v036AddTrainingRunSampleManifest,
     ]
 }

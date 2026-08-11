@@ -1,5 +1,72 @@
+import CryptoKit
 import Foundation
 import GRDB
+
+struct TrainingRunSampleRecord: Equatable, Sendable {
+    let trainingRunID: UUID
+    let tagID: UUID
+    let assetID: UUID
+    let contentRevision: Int
+    let role: ModelSampleRole
+    let rank: Int
+}
+
+enum TrainingRunSampleManifest {
+    static func sha256(_ samples: [TrainingRunSampleRecord]) throws -> String {
+        let data = try canonicalData(samples)
+        return SHA256.hash(data: data)
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
+
+    static func canonicalData(_ samples: [TrainingRunSampleRecord]) throws -> Data {
+        var data = Data()
+        for sample in samples.sorted(by: isOrderedBefore) {
+            guard sample.contentRevision > 0, sample.rank >= 0 else {
+                throw PersonalizationReviewError.persistenceFailure
+            }
+            let object: [String: Any] = [
+                "asset_id": sample.assetID.uuidString.lowercased(),
+                "content_revision": sample.contentRevision,
+                "rank": sample.rank,
+                "role": sample.role.rawValue,
+                "tag_id": sample.tagID.uuidString.lowercased(),
+                "training_run_id": sample.trainingRunID.uuidString.lowercased(),
+            ]
+            data.append(try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]))
+            data.append(0x0a)
+        }
+        return data
+    }
+
+    private static func isOrderedBefore(
+        _ lhs: TrainingRunSampleRecord,
+        _ rhs: TrainingRunSampleRecord
+    ) -> Bool {
+        let lhsKey = (
+            lhs.trainingRunID.uuidString.lowercased(),
+            lhs.tagID.uuidString.lowercased(),
+            lhs.role.rawValue,
+            lhs.rank,
+            lhs.assetID.uuidString.lowercased(),
+            lhs.contentRevision
+        )
+        let rhsKey = (
+            rhs.trainingRunID.uuidString.lowercased(),
+            rhs.tagID.uuidString.lowercased(),
+            rhs.role.rawValue,
+            rhs.rank,
+            rhs.assetID.uuidString.lowercased(),
+            rhs.contentRevision
+        )
+        if lhsKey.0 != rhsKey.0 { return lhsKey.0 < rhsKey.0 }
+        if lhsKey.1 != rhsKey.1 { return lhsKey.1 < rhsKey.1 }
+        if lhsKey.2 != rhsKey.2 { return lhsKey.2 < rhsKey.2 }
+        if lhsKey.3 != rhsKey.3 { return lhsKey.3 < rhsKey.3 }
+        if lhsKey.4 != rhsKey.4 { return lhsKey.4 < rhsKey.4 }
+        return lhsKey.5 < rhsKey.5
+    }
+}
 
 struct GRDBTrainingRunRepository: Sendable {
     let database: CatalogDatabase
@@ -56,6 +123,69 @@ struct GRDBTrainingRunRepository: Sendable {
                 run.errorCode,
             ]
         )
+    }
+
+    func insert(
+        _ run: TrainingRunRecord,
+        samples: [TrainingRunSampleRecord],
+        on db: Database
+    ) throws {
+        guard !samples.isEmpty,
+              samples.allSatisfy({ $0.trainingRunID == run.id }),
+              run.sampleManifestSHA256 == (try TrainingRunSampleManifest.sha256(samples))
+        else {
+            throw PersonalizationReviewError.persistenceFailure
+        }
+        try insert(run, on: db)
+        for sample in samples {
+            try db.execute(
+                sql: """
+                INSERT INTO training_run_sample (
+                    training_run_id, tag_id, asset_id, content_revision, role, rank
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                arguments: [
+                    sample.trainingRunID.uuidString.lowercased(),
+                    sample.tagID.uuidString.lowercased(),
+                    sample.assetID.uuidString.lowercased(),
+                    sample.contentRevision,
+                    sample.role.rawValue,
+                    sample.rank,
+                ]
+            )
+        }
+    }
+
+    func fetchSamples(trainingRunID: UUID) throws -> [TrainingRunSampleRecord] {
+        try database.pool.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT training_run_id, tag_id, asset_id, content_revision, role, rank
+                FROM training_run_sample
+                WHERE training_run_id = ?
+                ORDER BY tag_id, role, rank, asset_id, content_revision
+                """,
+                arguments: [trainingRunID.uuidString.lowercased()]
+            )
+            return try rows.map { row in
+                guard let runID = UUID(uuidString: row["training_run_id"]),
+                      let tagID = UUID(uuidString: row["tag_id"]),
+                      let assetID = UUID(uuidString: row["asset_id"]),
+                      let role = ModelSampleRole(rawValue: row["role"])
+                else {
+                    throw PersonalizationReviewError.persistenceFailure
+                }
+                return TrainingRunSampleRecord(
+                    trainingRunID: runID,
+                    tagID: tagID,
+                    assetID: assetID,
+                    contentRevision: row["content_revision"],
+                    role: role,
+                    rank: row["rank"]
+                )
+            }
+        }
     }
 
     func update(

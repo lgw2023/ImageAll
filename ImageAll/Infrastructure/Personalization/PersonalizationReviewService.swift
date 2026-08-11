@@ -387,6 +387,25 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
             frozenNegativeSamples: samples.negatives,
             notBeforeMs: nowMs
         )
+        let runSamples = samples.positives.enumerated().map { rank, sample in
+            TrainingRunSampleRecord(
+                trainingRunID: runID,
+                tagID: tagID,
+                assetID: sample.assetID,
+                contentRevision: sample.contentRevision,
+                role: .positive,
+                rank: rank
+            )
+        } + samples.negatives.enumerated().map { rank, sample in
+            TrainingRunSampleRecord(
+                trainingRunID: runID,
+                tagID: tagID,
+                assetID: sample.assetID,
+                contentRevision: sample.contentRevision,
+                role: .negative,
+                rank: rank
+            )
+        }
         let run = TrainingRunRecord(
             id: runID,
             mediaKind: mediaKind,
@@ -413,7 +432,7 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
                     .map { String(format: "%02x", $0) }
                     .joined(),
             ]),
-            sampleManifestSHA256: nil,
+            sampleManifestSHA256: try TrainingRunSampleManifest.sha256(runSamples),
             configJSON: try TrainingRunJSON.encode([
                 "mediaKind": mediaKind.rawValue,
                 "action": mode == .generate ? "generate" : "update",
@@ -438,7 +457,11 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
                     command: command,
                     nowMs: nowMs
                 )
-                try GRDBTrainingRunRepository(database: database).insert(run, on: db)
+                try GRDBTrainingRunRepository(database: database).insert(
+                    run,
+                    samples: runSamples,
+                    on: db
+                )
             }
         } catch JobQueueError.activeCoalescingConflict {
             throw PersonalizationReviewError.activeJobConflict

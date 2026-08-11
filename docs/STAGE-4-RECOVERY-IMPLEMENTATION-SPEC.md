@@ -39,7 +39,9 @@
 
 ### 2.2 数据包格式
 
-数据包格式固定为 `imageall-portable-export` version `1`，UTF-8 JSONL 每行一个 JSON 对象，字段名
+当前数据包格式为 `imageall-portable-export` version `2`。v2 保留 v1 文件和既有字段，并追加当前
+macOS 目录库中已经成为用户事实的媒体域、标签分组、阈值、个人模型和训练审计数据；不再生成会遗漏
+这些事实的 v1 数据包。UTF-8 JSONL 每行一个 JSON 对象，字段名
 使用 snake_case，文件末尾保留换行。UUID 是小写规范字符串；时间是 Unix epoch 的有符号 64 位
 毫秒整数，只有 `modified_at_ns` 使用纳秒；SHA-256 是 64 字符（256 位）小写十六进制字符串；枚举使用下表列出的
 持久 raw value。可空键始终存在并写为 JSON `null`。字段按名称排序，记录按稳定主键升序写出。
@@ -53,14 +55,22 @@
 | `sources.jsonl` | Source ID、种类、显示名、状态和记录时间 | `id` |
 | `assets.jsonl` | Source 关联、文件相对路径或 Photos local identifier、媒体元数据、内容 revision、可用性 | `id` |
 | `file_fingerprints.jsonl` | 文件大小、mtime 与已有 SHA-256；不含 resource identifier | `asset_id` |
-| `tags.jsonl` | 标签 ID、名称、归一化名称、状态和记录时间 | `id` |
+| `tags.jsonl` | 标签 ID、名称、个人/标准种类、分组、状态和记录时间 | `id` |
+| `tag_groups.jsonl` | 标签分组、顺序和系统分组标记 | `sort_order, id` |
+| `standard_tag_bindings.jsonl` | 标准标签到 ontology concept 的稳定绑定 | `tag_id` |
 | `decisions.jsonl` | 资产、标签、人工接受/拒绝和更新时间 | `asset_id, tag_id` |
-| `tag_models.jsonl` | 标签当前模型 revision 与更新时间 | `tag_id` |
-| `model_revisions.jsonl` | provider、特征版本、阈值、样本预算和建立时间 | `tag_id, revision` |
-| `model_samples.jsonl` | revision 的资产关联、内容 revision、正负角色、rank 与特征版本 | `tag_id, model_revision, role, rank, asset_id` |
+| `favorites.jsonl` | 独立红心目标、Photos 观测和同步状态 | `asset_id` |
+| `tag_models.jsonl` | 标签当前模型 revision 与更新时间 | `media_kind, tag_id` |
+| `model_revisions.jsonl` | provider、特征版本、阈值、样本预算和建立时间 | `media_kind, tag_id, revision` |
+| `model_samples.jsonl` | revision 的资产关联、内容 revision、正负角色、rank 与特征版本 | `media_kind, tag_id, model_revision, role, rank, asset_id` |
+| `suggestion_threshold_defaults.jsonl` | 每种建议方法的默认最低分 | `method` |
+| `suggestion_threshold_overrides.jsonl` | 标签级方法阈值覆盖 | `tag_id, method` |
+| `personal_models.jsonl` | 已发布个人模型槽、bundle/hash/policy 身份及发布 Run | `media_kind, method, tag_id` |
+| `training_runs.jsonl` | 追加型训练 Run、样本摘要/哈希、配置、指标和结果 | `created_at_ms, id` |
+| `training_run_samples.jsonl` | Run 的有序正负样本及内容 revision | `training_run_id, tag_id, role, rank, asset_id, content_revision` |
 | `manifest.json` | 格式、版本、建立时间、目录库 migration、逐文件记录数、字节数和 SHA-256 | 文件名升序 |
 
-JSONL v1 精确字段如下，除标有 `null` 的值外都必填：
+下表保留 JSONL v1 基线字段定义，除标有 `null` 的值外都必填：
 
 | 文件 | 字段与 JSON 类型 |
 |---|---|
@@ -73,19 +83,25 @@ JSONL v1 精确字段如下，除标有 `null` 的值外都必填：
 | `model_revisions.jsonl` | `tag_id:string`, `revision:integer`, `provider:string`, `request_revision:integer`, `preprocessing_revision:integer`, `threshold:number`, `positive_count:integer`, `negative_count:integer`, `neighbor_count:integer`, `sample_budget_per_role:integer`, `created_at_ms:integer` |
 | `model_samples.jsonl` | `tag_id:string`, `model_revision:integer`, `asset_id:string`, `content_revision:integer`, `role:string(positive\|negative)`, `rank:integer`, `provider:string`, `request_revision:integer`, `preprocessing_revision:integer` |
 
+v2 在 `assets.jsonl` 增加 `media_kind` 和 `duration_ms`，在 `tags.jsonl` 增加 `kind` 和 `group_id`，
+并在 `tag_models.jsonl`、`model_revisions.jsonl`、`model_samples.jsonl` 增加 `media_kind`。上表新增的
+七类事实文件与既有 `favorites.jsonl` 一并纳入 manifest；当前 manifest 共列出 16 个 JSONL。
+`training_runs.jsonl` 不导出内部 `job_id` 或 artifact 路径，只导出 artifact 种类与 SHA-256；其中
+`sample_summary`、`config`、`metrics`、`result_summary` 重新编码为结构化 JSON，并递归移除授权、bookmark、
+credential、password、path、secret、token 键以及绝对路径值。
+
 `manifest.json` 精确包含 `format:string`、`format_version:integer`、`created_at_ms:integer`、
 `app_version:string`、`applied_migrations:[string]` 和 `files:[object]`。每个 file object 含
-`filename:string`、`record_count:integer`、`byte_count:integer`、`sha256:string`；`files` 只列上述八个
+`filename:string`、`record_count:integer`、`byte_count:integer`、`sha256:string`；`files` 只列上述 16 个
 JSONL，不列 manifest 自身，避免递归校验。
 
 导出明确排除 bookmark、sync cursor、resource identifier、原图字节、缩略图、下载预览、Feature
 Print 向量与 cache key、prediction、Job payload/checkpoint/lease/错误、日志和任何绝对路径。Photos local
 identifier 仅用于同一 System Photo Library 的最佳努力重连，不承诺跨设备恢复。
 
-v1 导出全部当前已持久化的模型 revision 与代表样本元数据。`metrics`、`selection_policy` 和
-`evaluation_assignment` 尚未进入当前 v004 schema，且三个真实标签 evaluation cohort 仍延期；它们
-不是被判定为可丢弃，而是当前不存在可导出的事实。以后新增这些不可重建字段时必须同步演进导出格式，
-不能继续生成遗漏事实的 v1 数据包。
+v2 导出当前已持久化的模型 revision、代表样本、个人模型槽、训练 Run 与 Run 级样本清单。
+`evaluation_assignment` 尚未进入当前 schema；它不是被判定为可丢弃，而是当前不存在可导出的事实。
+以后新增不可重建字段时必须同步演进导出格式，不能继续生成遗漏事实的旧版本数据包。
 
 ### 2.3 一致性与发布
 
@@ -364,6 +380,10 @@ xcodebuild test-without-building -xctestrun "$MILLION_XCTESTRUN" \
   -destination 'platform=macOS,arch=arm64' \
   -only-testing:ImageAllTests/PortableCatalogExportTests/testExportsConfiguredSyntheticAssetsWithVerifiedManifest
 ```
+
+2026-08-11 使用同一显式注入入口对当前 v2 工作树复验：1,000,000 个 Asset、100,000 条决定以及
+v2 新增的系统分组/阈值事实合计 1,100,013 条记录，测试 78.838 秒通过。该结果确认 v2 仍满足 90 秒
+门，并把本节历史 v1 的 1,100,003 条记录基线更新为 v2 口径；它不替代发布签名或真实照片 I/O 验收。
 
 停止位置：本 Slice 关闭合成元数据的 100 万 JSONL 导出正确性与同机时间门，不测导入、压缩、加密、
 峰值 RSS、真实图片字节、PhotoKit/iCloud 或用户所选外置卷写入；这些结果不能单独升级为端到端 100 万

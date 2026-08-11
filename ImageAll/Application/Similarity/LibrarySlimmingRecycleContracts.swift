@@ -574,6 +574,137 @@ struct LibrarySlimmingRecycleMoveOutcome: Sendable, Equatable {
     }
 }
 
+enum LibrarySlimmingRemovalAuthorizationGate: Sendable, Equatable {
+    case folderMutation
+    case photosLibrary
+}
+
+/// Reconciles a retry with earlier batch results without losing completed work
+/// or leaving a stale failure classification attached to a retried asset.
+enum LibrarySlimmingRemovalOutcomeMerger {
+    static func merge(
+        _ retry: LibrarySlimmingRecycleMoveOutcome,
+        into accumulated: inout LibrarySlimmingRecycleMoveOutcome,
+        replacingFailuresFor retriedAssetIDs: [UUID],
+        authorizationGate: LibrarySlimmingRemovalAuthorizationGate
+    ) {
+        let retried = Set(retriedAssetIDs)
+
+        accumulated.recycledEntryIDs.append(contentsOf: retry.recycledEntryIDs)
+        accumulated.permanentlyDeletedAssetIDs.append(
+            contentsOf: retry.permanentlyDeletedAssetIDs
+        )
+        accumulated.durabilityPendingAssetIDs.append(
+            contentsOf: retry.durabilityPendingAssetIDs
+        )
+        accumulated.skippedPhotosAssetIDs.append(contentsOf: retry.skippedPhotosAssetIDs)
+
+        replaceAssets(
+            in: &accumulated.failedAssetIDs,
+            retried: retried,
+            with: retry.failedAssetIDs
+        )
+        replaceAssets(
+            in: &accumulated.authorizationRequiredAssetIDs,
+            retried: retried,
+            with: retry.authorizationRequiredAssetIDs
+        )
+        replaceAssets(
+            in: &accumulated.authorizationDeniedPhotosAssetIDs,
+            retried: retried,
+            with: retry.authorizationDeniedPhotosAssetIDs
+        )
+        replaceAssets(
+            in: &accumulated.mutationAuthorizationInvalidAssetIDs,
+            retried: retried,
+            with: retry.mutationAuthorizationInvalidAssetIDs
+        )
+        replaceAssets(
+            in: &accumulated.photosMutationFailedAssetIDs,
+            retried: retried,
+            with: retry.photosMutationFailedAssetIDs
+        )
+        replaceAssets(
+            in: &accumulated.sourceChangedAssetIDs,
+            retried: retried,
+            with: retry.sourceChangedAssetIDs
+        )
+
+        switch authorizationGate {
+        case .folderMutation:
+            accumulated.authorizationRequiredSourceIDs =
+                retry.authorizationRequiredSourceIDs
+        case .photosLibrary:
+            accumulated.authorizationRequiredSourceIDs.append(
+                contentsOf: retry.authorizationRequiredSourceIDs
+            )
+        }
+
+        accumulated.photosMutationFailureCategories.append(
+            contentsOf: retry.photosMutationFailureCategories
+        )
+        accumulated.photosMutationFailureCodes.append(
+            contentsOf: retry.photosMutationFailureCodes
+        )
+
+        accumulated.recycledEntryIDs = uniqued(accumulated.recycledEntryIDs)
+        accumulated.permanentlyDeletedAssetIDs = uniqued(
+            accumulated.permanentlyDeletedAssetIDs
+        )
+        accumulated.durabilityPendingAssetIDs = uniqued(
+            accumulated.durabilityPendingAssetIDs
+        )
+        accumulated.skippedPhotosAssetIDs = uniqued(accumulated.skippedPhotosAssetIDs)
+        accumulated.failedAssetIDs = uniqued(accumulated.failedAssetIDs)
+        accumulated.authorizationRequiredSourceIDs = uniqued(
+            accumulated.authorizationRequiredSourceIDs
+        )
+        accumulated.authorizationRequiredAssetIDs = uniqued(
+            accumulated.authorizationRequiredAssetIDs
+        )
+        accumulated.authorizationDeniedPhotosAssetIDs = uniqued(
+            accumulated.authorizationDeniedPhotosAssetIDs
+        )
+        accumulated.mutationAuthorizationInvalidAssetIDs = uniqued(
+            accumulated.mutationAuthorizationInvalidAssetIDs
+        )
+        accumulated.photosMutationFailedAssetIDs = uniqued(
+            accumulated.photosMutationFailedAssetIDs
+        )
+        accumulated.photosMutationFailureCategories = uniquedEquatable(
+            accumulated.photosMutationFailureCategories
+        )
+        accumulated.photosMutationFailureCodes = uniqued(
+            accumulated.photosMutationFailureCodes
+        )
+        accumulated.sourceChangedAssetIDs = uniqued(accumulated.sourceChangedAssetIDs)
+    }
+
+    private static func replaceAssets(
+        in accumulated: inout [UUID],
+        retried: Set<UUID>,
+        with retry: [UUID]
+    ) {
+        accumulated.removeAll { retried.contains($0) }
+        accumulated.append(contentsOf: retry)
+    }
+
+    private static func uniqued<Element: Hashable>(_ values: [Element]) -> [Element] {
+        var seen = Set<Element>()
+        return values.filter { seen.insert($0).inserted }
+    }
+
+    private static func uniquedEquatable<Element: Equatable>(
+        _ values: [Element]
+    ) -> [Element] {
+        values.reduce(into: []) { result, value in
+            if !result.contains(value) {
+                result.append(value)
+            }
+        }
+    }
+}
+
 enum LibrarySlimmingRecycleMovePhase: String, Sendable, Equatable {
     case waitingForBackgroundIO
     case preparing
@@ -735,6 +866,42 @@ extension LibrarySlimmingRecyclePort {
 
     func restoredAssetReplacements(from _: [UUID]) throws -> [UUID: UUID] {
         [:]
+    }
+}
+
+/// The single application-level dispatch boundary for destructive slimming work.
+/// UI code owns confirmation and authorization prompts; this executor owns the
+/// exact recycle/delete operation selected by the reviewed plan and mode.
+enum LibrarySlimmingRemovalExecutor {
+    static func perform(
+        recycle: any LibrarySlimmingRecyclePort,
+        assetIDs: [UUID],
+        identicalCleanupPlan: LibrarySlimmingIdenticalCleanupPlan?,
+        removalMode: LibrarySlimmingRemovalMode,
+        onProgress: @escaping LibrarySlimmingRecycleMoveProgressHandler
+    ) throws -> LibrarySlimmingRecycleMoveOutcome {
+        switch (removalMode, identicalCleanupPlan) {
+        case let (.recoverableRecycle, .some(plan)):
+            try recycle.moveIdenticalCleanupAssetsToRecycle(
+                plan: plan,
+                onProgress: onProgress
+            )
+        case (.recoverableRecycle, .none):
+            try recycle.moveAssetsToRecycle(
+                assetIDs: assetIDs,
+                onProgress: onProgress
+            )
+        case let (.releaseSourceSpace, .some(plan)):
+            try recycle.deleteIdenticalCleanupAssetsImmediately(
+                plan: plan,
+                onProgress: onProgress
+            )
+        case (.releaseSourceSpace, .none):
+            try recycle.deleteAssetsImmediately(
+                assetIDs: assetIDs,
+                onProgress: onProgress
+            )
+        }
     }
 }
 

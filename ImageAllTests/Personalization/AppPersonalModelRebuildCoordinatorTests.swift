@@ -294,6 +294,13 @@ final class AppPersonalModelRebuildCoordinatorTests: XCTestCase {
         let restartedRuns = GRDBTrainingRunRepository(database: database)
         let run = try XCTUnwrap(restartedRuns.list(method: .personalAdamW).only)
         XCTAssertEqual(run.state, .succeeded)
+        let sampleManifestSHA256 = try XCTUnwrap(run.sampleManifestSHA256)
+        let persistedSamples = try restartedRuns.fetchSamples(trainingRunID: run.id)
+        XCTAssertEqual(persistedSamples.count, snapshot.decisions.count)
+        XCTAssertEqual(
+            try TrainingRunSampleManifest.sha256(persistedSamples),
+            sampleManifestSHA256
+        )
         XCTAssertNotNil(run.finishedAtMs)
         XCTAssertEqual(run.artifactKind, "personalAdamWHead")
         XCTAssertTrue(run.artifactRef?.hasPrefix("PersonalModels/AdamWHead/v1/objects/") == true)

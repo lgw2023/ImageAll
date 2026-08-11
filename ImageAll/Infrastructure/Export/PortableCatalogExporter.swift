@@ -151,6 +151,8 @@ struct NoPortableExportFaultInjector: PortableExportFaultInjecting {
 }
 
 struct PortableCatalogExporter: Sendable {
+    static let currentFormatVersion = 2
+
     let database: CatalogDatabase
 
     func export(
@@ -222,7 +224,7 @@ struct PortableCatalogExporter: Sendable {
 
             let manifest = PortableExportManifest(
                 format: "imageall-portable-export",
-                formatVersion: 1,
+                formatVersion: Self.currentFormatVersion,
                 createdAtMs: request.createdAtMs,
                 appVersion: request.appVersion,
                 appliedMigrations: appliedMigrations,
@@ -421,6 +423,7 @@ private struct PortableExportFileSpec {
         case requiredInteger
         case optionalInteger
         case requiredNumber
+        case requiredJSONObject
     }
 
     struct Field {
@@ -457,6 +460,13 @@ private struct PortableExportFileSpec {
                     throw PortableCatalogExportError.validationFailed
                 }
                 object[field.name] = value
+            case .requiredJSONObject:
+                guard let value: String = row[field.name] else {
+                    throw PortableCatalogExportError.validationFailed
+                }
+                object[field.name] = try PortableExportJSONSanitizer.sanitizedObject(
+                    encoded: value
+                )
             }
         }
         return object
@@ -484,7 +494,7 @@ private struct PortableExportFileSpec {
             filename: "assets.jsonl",
             sql: """
                 SELECT id, source_id, locator_kind, relative_path, photos_local_identifier,
-                       locator_state, file_name, media_type, width, height,
+                       locator_state, file_name, media_kind, media_type, width, height, duration_ms,
                        media_created_at_ms, media_modified_at_ms, content_revision,
                        availability, record_created_at_ms, record_updated_at_ms
                 FROM asset ORDER BY id
@@ -494,9 +504,10 @@ private struct PortableExportFileSpec {
                 + [Field(name: "photos_local_identifier", kind: .optionalString)]
                 + strings("locator_state")
                 + [Field(name: "file_name", kind: .optionalString)]
-                + strings("media_type")
+                + strings("media_kind", "media_type")
                 + [Field(name: "width", kind: .optionalInteger)]
                 + [Field(name: "height", kind: .optionalInteger)]
+                + [Field(name: "duration_ms", kind: .optionalInteger)]
                 + [Field(name: "media_created_at_ms", kind: .optionalInteger)]
                 + [Field(name: "media_modified_at_ms", kind: .optionalInteger)]
                 + integers("content_revision")
@@ -517,11 +528,34 @@ private struct PortableExportFileSpec {
         PortableExportFileSpec(
             filename: "tags.jsonl",
             sql: """
-                SELECT id, name, normalized_name, state, created_at_ms, updated_at_ms
-                FROM tag ORDER BY id
+                SELECT tag.id, tag.name, tag.normalized_name,
+                       CASE WHEN binding.tag_id IS NULL THEN 'personal' ELSE 'standard' END AS kind,
+                       tag.group_id, tag.state, tag.created_at_ms, tag.updated_at_ms
+                FROM tag
+                LEFT JOIN standard_tag_binding AS binding ON binding.tag_id = tag.id
+                ORDER BY tag.id
                 """,
-            fields: strings("id", "name", "normalized_name", "state")
+            fields: strings("id", "name", "normalized_name", "kind")
+                + [Field(name: "group_id", kind: .optionalString)]
+                + strings("state")
                 + integers("created_at_ms", "updated_at_ms")
+        ),
+        PortableExportFileSpec(
+            filename: "tag_groups.jsonl",
+            sql: """
+                SELECT id, name, sort_order, is_system, created_at_ms, updated_at_ms
+                FROM tag_group ORDER BY sort_order, id
+                """,
+            fields: strings("id", "name")
+                + integers("sort_order", "is_system", "created_at_ms", "updated_at_ms")
+        ),
+        PortableExportFileSpec(
+            filename: "standard_tag_bindings.jsonl",
+            sql: """
+                SELECT tag_id, ontology_id, ontology_revision, concept_id
+                FROM standard_tag_binding ORDER BY tag_id
+                """,
+            fields: strings("tag_id", "ontology_id", "ontology_revision", "concept_id")
         ),
         PortableExportFileSpec(
             filename: "decisions.jsonl",
@@ -551,20 +585,21 @@ private struct PortableExportFileSpec {
         PortableExportFileSpec(
             filename: "tag_models.jsonl",
             sql: """
-                SELECT tag_id, current_revision, updated_at_ms
-                FROM tag_model ORDER BY tag_id
+                SELECT media_kind, tag_id, current_revision, updated_at_ms
+                FROM tag_model ORDER BY media_kind, tag_id
                 """,
-            fields: strings("tag_id") + integers("current_revision", "updated_at_ms")
+            fields: strings("media_kind", "tag_id")
+                + integers("current_revision", "updated_at_ms")
         ),
         PortableExportFileSpec(
             filename: "model_revisions.jsonl",
             sql: """
-                SELECT tag_id, revision, provider, request_revision, preprocessing_revision,
+                SELECT media_kind, tag_id, revision, provider, request_revision, preprocessing_revision,
                        threshold, positive_count, negative_count, neighbor_count,
                        sample_budget_per_role, created_at_ms
-                FROM tag_model_revision ORDER BY tag_id, revision
+                FROM tag_model_revision ORDER BY media_kind, tag_id, revision
                 """,
-            fields: strings("tag_id")
+            fields: strings("media_kind", "tag_id")
                 + integers("revision")
                 + strings("provider")
                 + integers("request_revision", "preprocessing_revision")
@@ -577,12 +612,12 @@ private struct PortableExportFileSpec {
         PortableExportFileSpec(
             filename: "model_samples.jsonl",
             sql: """
-                SELECT tag_id, model_revision, asset_id, content_revision, role, rank,
+                SELECT media_kind, tag_id, model_revision, asset_id, content_revision, role, rank,
                        provider, request_revision, preprocessing_revision
                 FROM tag_model_sample
-                ORDER BY tag_id, model_revision, role, rank, asset_id
+                ORDER BY media_kind, tag_id, model_revision, role, rank, asset_id
                 """,
-            fields: strings("tag_id")
+            fields: strings("media_kind", "tag_id")
                 + integers("model_revision")
                 + strings("asset_id")
                 + integers("content_revision")
@@ -591,5 +626,131 @@ private struct PortableExportFileSpec {
                 + strings("provider")
                 + integers("request_revision", "preprocessing_revision")
         ),
+        PortableExportFileSpec(
+            filename: "suggestion_threshold_defaults.jsonl",
+            sql: """
+                SELECT method, min_score, updated_at_ms
+                FROM suggestion_score_threshold_default ORDER BY method
+                """,
+            fields: strings("method")
+                + [Field(name: "min_score", kind: .requiredNumber)]
+                + integers("updated_at_ms")
+        ),
+        PortableExportFileSpec(
+            filename: "suggestion_threshold_overrides.jsonl",
+            sql: """
+                SELECT tag_id, method, min_score, updated_at_ms
+                FROM suggestion_score_threshold_override ORDER BY tag_id, method
+                """,
+            fields: strings("tag_id", "method")
+                + [Field(name: "min_score", kind: .requiredNumber)]
+                + integers("updated_at_ms")
+        ),
+        PortableExportFileSpec(
+            filename: "personal_models.jsonl",
+            sql: """
+                SELECT media_kind, method, tag_id, catalog_scope_id, bundle_id,
+                       bundle_revision, provider, model_id, model_revision,
+                       preprocessing_revision, element_count, label_vocabulary_revision,
+                       weights_sha256, policy_revision, activated_at_ms, published_run_id
+                FROM personal_suggestion_model ORDER BY media_kind, method, tag_id
+                """,
+            fields: strings(
+                "media_kind", "method", "tag_id", "catalog_scope_id", "bundle_id",
+                "bundle_revision", "provider", "model_id", "model_revision",
+                "preprocessing_revision"
+            )
+                + integers("element_count")
+                + strings("label_vocabulary_revision", "weights_sha256", "policy_revision")
+                + integers("activated_at_ms")
+                + [Field(name: "published_run_id", kind: .optionalString)]
+        ),
+        PortableExportFileSpec(
+            filename: "training_runs.jsonl",
+            sql: """
+                SELECT id, media_kind, method, state, created_at_ms, started_at_ms,
+                       finished_at_ms, catalog_scope_id, tag_id, sample_manifest_sha256,
+                       sample_summary_json AS sample_summary,
+                       config_json AS config, metrics_json AS metrics,
+                       artifact_kind, artifact_sha256,
+                       result_summary_json AS result_summary, error_code
+                FROM training_run ORDER BY created_at_ms, id
+                """,
+            fields: strings("id", "media_kind", "method", "state")
+                + integers("created_at_ms")
+                + [Field(name: "started_at_ms", kind: .optionalInteger)]
+                + [Field(name: "finished_at_ms", kind: .optionalInteger)]
+                + strings("catalog_scope_id")
+                + [Field(name: "tag_id", kind: .optionalString)]
+                + [Field(name: "sample_manifest_sha256", kind: .optionalString)]
+                + [Field(name: "sample_summary", kind: .requiredJSONObject)]
+                + [Field(name: "config", kind: .requiredJSONObject)]
+                + [Field(name: "metrics", kind: .requiredJSONObject)]
+                + [Field(name: "artifact_kind", kind: .optionalString)]
+                + [Field(name: "artifact_sha256", kind: .optionalString)]
+                + [Field(name: "result_summary", kind: .requiredJSONObject)]
+                + [Field(name: "error_code", kind: .optionalString)]
+        ),
+        PortableExportFileSpec(
+            filename: "training_run_samples.jsonl",
+            sql: """
+                SELECT training_run_id, tag_id, asset_id, content_revision, role, rank
+                FROM training_run_sample
+                ORDER BY training_run_id, tag_id, role, rank, asset_id, content_revision
+                """,
+            fields: strings("training_run_id", "tag_id", "asset_id")
+                + integers("content_revision")
+                + strings("role")
+                + integers("rank")
+        ),
     ]
+}
+
+private enum PortableExportJSONSanitizer {
+    private static let sensitiveKeyFragments = [
+        "authorization", "bookmark", "credential", "password", "path", "secret", "token",
+    ]
+
+    static func sanitizedObject(encoded: String) throws -> Any {
+        let value: Any
+        do {
+            value = try JSONSerialization.jsonObject(with: Data(encoded.utf8))
+        } catch {
+            throw PortableCatalogExportError.validationFailed
+        }
+        guard value is [String: Any] else {
+            throw PortableCatalogExportError.validationFailed
+        }
+        return sanitize(value)
+    }
+
+    private static func sanitize(_ value: Any) -> Any {
+        if let dictionary = value as? [String: Any] {
+            return dictionary.reduce(into: [String: Any]()) { result, entry in
+                let normalizedKey = entry.key.lowercased()
+                guard !sensitiveKeyFragments.contains(where: normalizedKey.contains) else {
+                    return
+                }
+                result[entry.key] = sanitize(entry.value)
+            }
+        }
+        if let array = value as? [Any] {
+            return array.map(sanitize)
+        }
+        if let string = value as? String, isAbsolutePathLike(string) {
+            return "[redacted]"
+        }
+        return value
+    }
+
+    private static func isAbsolutePathLike(_ value: String) -> Bool {
+        if value.hasPrefix("/") || value.hasPrefix("~/") || value.hasPrefix("file://") {
+            return true
+        }
+        let scalars = Array(value.unicodeScalars)
+        return scalars.count >= 3
+            && CharacterSet.letters.contains(scalars[0])
+            && scalars[1] == ":"
+            && (scalars[2] == "\\" || scalars[2] == "/")
+    }
 }

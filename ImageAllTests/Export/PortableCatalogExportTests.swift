@@ -156,13 +156,12 @@ final class PortableCatalogExportTests: XCTestCase {
             )
         )
 
-        XCTAssertEqual(result.totalRecordCount, 12)
         XCTAssertEqual(result.bundleURL.lastPathComponent, "ImageAll-Export-20260717-010203Z")
 
         let manifestData = try Data(contentsOf: result.bundleURL.appendingPathComponent("manifest.json"))
         let manifest = try JSONDecoder().decode(PortableExportManifest.self, from: manifestData)
         XCTAssertEqual(manifest.format, "imageall-portable-export")
-        XCTAssertEqual(manifest.formatVersion, 1)
+        XCTAssertEqual(manifest.formatVersion, 2)
         XCTAssertEqual(manifest.createdAtMs, 1_752_695_723_000)
         XCTAssertEqual(manifest.appVersion, "1.0-test")
         XCTAssertEqual(manifest.appliedMigrations, CatalogMigrationID.knownOrdered)
@@ -174,10 +173,18 @@ final class PortableCatalogExportTests: XCTestCase {
             "file_fingerprints.jsonl": 1,
             "model_revisions.jsonl": 1,
             "model_samples.jsonl": 2,
+            "personal_models.jsonl": 0,
             "sources.jsonl": 2,
+            "standard_tag_bindings.jsonl": 0,
+            "suggestion_threshold_defaults.jsonl": TrainingRunMethod.allCases.count,
+            "suggestion_threshold_overrides.jsonl": 0,
+            "tag_groups.jsonl": TagGroupSeed.allCases.count,
             "tag_models.jsonl": 1,
             "tags.jsonl": 1,
+            "training_run_samples.jsonl": 0,
+            "training_runs.jsonl": 0,
         ]
+        XCTAssertEqual(result.totalRecordCount, expectedCounts.values.reduce(0, +))
         XCTAssertEqual(manifest.files.map(\.filename), expectedCounts.keys.sorted())
         XCTAssertEqual(Dictionary(uniqueKeysWithValues: manifest.files.map { ($0.filename, $0.recordCount) }), expectedCounts)
 
@@ -201,6 +208,17 @@ final class PortableCatalogExportTests: XCTestCase {
         let assets = try jsonLines(at: result.bundleURL.appendingPathComponent("assets.jsonl"))
         XCTAssertTrue(assets[0]["photos_local_identifier"] is NSNull)
         XCTAssertTrue(assets[1]["relative_path"] is NSNull)
+        XCTAssertEqual(assets[0]["media_kind"] as? String, "image")
+        XCTAssertTrue(assets[0]["duration_ms"] is NSNull)
+
+        let tags = try jsonLines(at: result.bundleURL.appendingPathComponent("tags.jsonl"))
+        XCTAssertEqual(tags[0]["kind"] as? String, "personal")
+        XCTAssertNotNil(tags[0]["group_id"] as? String)
+
+        let modelRevisions = try jsonLines(
+            at: result.bundleURL.appendingPathComponent("model_revisions.jsonl")
+        )
+        XCTAssertEqual(modelRevisions[0]["media_kind"] as? String, "image")
 
         let exportedText = try (["manifest.json"] + manifest.files.map(\.filename))
             .map { try String(contentsOf: result.bundleURL.appendingPathComponent($0), encoding: .utf8) }
@@ -225,6 +243,71 @@ final class PortableCatalogExportTests: XCTestCase {
                 .unsupportedExportAssetCount("10000")
             )
         }
+    }
+
+    func testV2TrainingMetadataExportsManifestWithoutAbsolutePaths() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ImageAll-PortableTrainingExport-\(UUID().uuidString)", isDirectory: true)
+        let exportParent = root.appendingPathComponent("Exports", isDirectory: true)
+        try FileManager.default.createDirectory(at: exportParent, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let database = try CatalogDatabase.open(at: root.appendingPathComponent("catalog.sqlite"))
+        let runID = UUID(uuidString: "10000000-0000-4000-8000-000000000001")!
+        let tagID = UUID(uuidString: "10000000-0000-4000-8000-000000000002")!
+        let samples = [
+            TrainingRunSampleRecord(
+                trainingRunID: runID,
+                tagID: tagID,
+                assetID: UUID(uuidString: "10000000-0000-4000-8000-000000000003")!,
+                contentRevision: 2,
+                role: .positive,
+                rank: 0
+            ),
+        ]
+        let manifestSHA256 = try TrainingRunSampleManifest.sha256(samples)
+        let run = TrainingRunRecord(
+            id: runID,
+            method: .personalCentroid,
+            state: .succeeded,
+            createdAtMs: 100,
+            startedAtMs: 101,
+            finishedAtMs: 102,
+            catalogScopeID: try database.catalogScopeID(),
+            jobID: nil,
+            tagID: nil,
+            sampleSummaryJSON: #"{"sampleCount":1,"sourcePath":"/private/source.jpg"}"#,
+            sampleManifestSHA256: manifestSHA256,
+            configJSON: #"{"algorithmRevision":"v1","artifactPath":"/private/model.bin"}"#,
+            metricsJSON: #"{"loss":0.25}"#,
+            artifactKind: "personalCentroidHead",
+            artifactRef: "/private/model.bin",
+            artifactSHA256: String(repeating: "a", count: 64),
+            resultSummaryJSON: #"{"published":true}"#,
+            errorCode: nil
+        )
+        try database.pool.write { db in
+            try GRDBTrainingRunRepository(database: database).insert(run, samples: samples, on: db)
+        }
+
+        let result = try PortableCatalogExporter(database: database).export(
+            PortableCatalogExportRequest(
+                parentDirectoryURL: exportParent,
+                bundleName: "ImageAll-Export-Training-V2",
+                createdAtMs: 200,
+                appVersion: "2.0-test"
+            )
+        )
+
+        let exportedSamples = try Data(
+            contentsOf: result.bundleURL.appendingPathComponent("training_run_samples.jsonl")
+        )
+        XCTAssertEqual(PortableExportHashing.sha256Hex(exportedSamples), manifestSHA256)
+        let exportedRunText = try String(
+            contentsOf: result.bundleURL.appendingPathComponent("training_runs.jsonl"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(exportedRunText.contains(manifestSHA256))
+        XCTAssertFalse(exportedRunText.contains("/private/"))
     }
 
     func testExportsConfiguredSyntheticAssetsWithVerifiedManifest() throws {
@@ -386,10 +469,12 @@ final class PortableCatalogExportTests: XCTestCase {
             )
             try db.execute(
                 sql: """
-                INSERT INTO tag (id, name, normalized_name, state, created_at_ms, updated_at_ms)
-                VALUES (?, 'Favorite', 'favorite', 'active', 40, 41)
+                INSERT INTO tag (
+                    id, name, normalized_name, group_id, state, created_at_ms, updated_at_ms
+                )
+                VALUES (?, 'Favorite', 'favorite', ?, 'active', 40, 41)
                 """,
-                arguments: [tagID]
+                arguments: [tagID, TagGroupSeed.other.id.uuidString.lowercased()]
             )
             try db.execute(
                 sql: """

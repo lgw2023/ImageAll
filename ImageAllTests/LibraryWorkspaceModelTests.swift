@@ -5692,7 +5692,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         XCTAssertEqual(
             model.librarySlimmingMoveToRecycleDisabledReason,
-            "请先选择要移入回收站的照片"
+            "请先选择要删除或回收的照片"
         )
         model.selectLibrarySlimmingMember(a, additive: false)
         XCTAssertNil(model.librarySlimmingMoveToRecycleDisabledReason)
@@ -5884,7 +5884,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.selectedAssetDeletionFavoriteProtectionCount, 1)
     }
 
-    func testLibrarySlimmingRecyclePublishesPendingStateBeforePhysicalMoveFinishes() async {
+    func testLibrarySlimmingRecyclePublishesPendingStateBeforePhysicalMoveFinishes() async throws {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "slow-disk.jpg")
         let cluster = SlimmingCluster(
@@ -5918,7 +5918,8 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         await model.selectAssets([asset.assetID])
         await model.findLibrarySlimmingFromSelection()
         await model.analyzeLibrarySlimming(mode: .seeds)
-        model.selectLibrarySlimmingCluster(cluster.id)
+        let presentedClusterID = try XCTUnwrap(model.librarySlimmingClusters.first?.id)
+        model.selectLibrarySlimmingCluster(presentedClusterID)
         model.selectLibrarySlimmingMember(asset.assetID, additive: false)
 
         let moveTask = Task { @MainActor in
@@ -5945,7 +5946,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         await moveTask.value
         XCTAssertTrue(model.librarySlimmingRecyclePendingAssetIDs.isEmpty)
         XCTAssertFalse(model.isMutatingLibrarySlimmingRecycle)
-        XCTAssertEqual(model.librarySlimmingClusters.map(\.id), [cluster.id])
+        XCTAssertEqual(model.librarySlimmingClusters.map(\.id), [presentedClusterID])
         XCTAssertEqual(model.selectedLibrarySlimmingMemberIDs, [asset.assetID])
     }
 
@@ -7443,7 +7444,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         await model.selectAssets([asset.assetID], additive: false)
         await model.findLibrarySlimmingFromSelection()
         await model.analyzeLibrarySlimming(mode: .seeds)
-        model.selectLibrarySlimmingCluster(cluster.id)
+        model.selectLibrarySlimmingCluster(model.librarySlimmingClusters.first?.id)
         model.selectLibrarySlimmingMember(asset.assetID, additive: false)
 
         let staleRequest = Task { await model.submitSearchText("old") }
@@ -7627,7 +7628,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         await model.selectAssets([asset.assetID])
         await model.findLibrarySlimmingFromSelection()
         await model.analyzeLibrarySlimming(mode: .seeds)
-        model.selectLibrarySlimmingCluster(cluster.id)
+        model.selectLibrarySlimmingCluster(model.librarySlimmingClusters.first?.id)
         model.selectLibrarySlimmingMember(asset.assetID, additive: false)
 
         await model.moveSelectedLibrarySlimmingMembersToRecycle()
@@ -7686,7 +7687,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         await model.selectAssets([asset.assetID])
         await model.findLibrarySlimmingFromSelection()
         await model.analyzeLibrarySlimming(mode: .seeds)
-        model.selectLibrarySlimmingCluster(cluster.id)
+        model.selectLibrarySlimmingCluster(model.librarySlimmingClusters.first?.id)
         model.selectLibrarySlimmingMember(asset.assetID, additive: false)
 
         await model.moveSelectedLibrarySlimmingMembersToRecycle()
@@ -7745,7 +7746,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         await model.selectAssets([asset.assetID])
         await model.findLibrarySlimmingFromSelection()
         await model.analyzeLibrarySlimming(mode: .seeds)
-        model.selectLibrarySlimmingCluster(cluster.id)
+        model.selectLibrarySlimmingCluster(model.librarySlimmingClusters.first?.id)
         model.selectLibrarySlimmingMember(asset.assetID, additive: false)
 
         let moveTask = Task { @MainActor in
@@ -7812,17 +7813,17 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         await model.selectAssets([asset.assetID])
         await model.findLibrarySlimmingFromSelection()
         await model.analyzeLibrarySlimming(mode: .seeds)
-        model.selectLibrarySlimmingCluster(cluster.id)
+        model.selectLibrarySlimmingCluster(model.librarySlimmingClusters.first?.id)
         model.selectLibrarySlimmingMember(asset.assetID, additive: false)
 
         await model.moveSelectedLibrarySlimmingMembersToRecycle()
 
         XCTAssertEqual(
-            model.librarySlimmingStatusMessage,
+            model.librarySlimmingRecycleActionMessage,
             "失败 1 张（系统照片服务未完成操作，照片仍保留；请重试，若持续失败请打开「照片」App确认系统图库可用；诊断码 PHPhotosErrorDomain#-1）"
         )
         XCTAssertFalse(
-            model.librarySlimmingStatusMessage?.contains("更新回收权限") == true
+            model.librarySlimmingRecycleActionMessage?.contains("更新回收权限") == true
         )
     }
 
@@ -10058,10 +10059,10 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         let defaults = UserDefaults(suiteName: suiteName)!
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let groupID = TagGroupSeed.food.id
-        let first = TagListItem(id: UUID(), displayName: "一", state: .active, groupID: groupID)
-        let second = TagListItem(id: UUID(), displayName: "二", state: .active, groupID: groupID)
-        let third = TagListItem(id: UUID(), displayName: "三", state: .active, groupID: groupID)
-        let later = TagListItem(id: UUID(), displayName: "四", state: .active, groupID: groupID)
+        let first = TagListItem(id: UUID(), displayName: "A", state: .active, groupID: groupID)
+        let second = TagListItem(id: UUID(), displayName: "B", state: .active, groupID: groupID)
+        let third = TagListItem(id: UUID(), displayName: "C", state: .active, groupID: groupID)
+        let later = TagListItem(id: UUID(), displayName: "D", state: .active, groupID: groupID)
 
         let preferences = LibraryTagOrderPreferences(defaults: defaults)
         preferences.move(
@@ -10083,9 +10084,9 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         let defaults = UserDefaults(suiteName: suiteName)!
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let groupID = TagGroupSeed.placesAndScenes.id
-        let first = TagListItem(id: UUID(), displayName: "一", state: .active, groupID: groupID)
-        let second = TagListItem(id: UUID(), displayName: "二", state: .active, groupID: groupID)
-        let third = TagListItem(id: UUID(), displayName: "三", state: .active, groupID: groupID)
+        let first = TagListItem(id: UUID(), displayName: "A", state: .active, groupID: groupID)
+        let second = TagListItem(id: UUID(), displayName: "B", state: .active, groupID: groupID)
+        let third = TagListItem(id: UUID(), displayName: "C", state: .active, groupID: groupID)
         let preferences = LibraryTagOrderPreferences(defaults: defaults)
 
         preferences.move(

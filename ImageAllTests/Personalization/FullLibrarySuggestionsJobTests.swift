@@ -2547,6 +2547,12 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         )
         XCTAssertEqual(run.state, .queued)
         XCTAssertEqual(run.jobID, jobID)
+        let manifestSHA256 = try XCTUnwrap(run.sampleManifestSHA256)
+        let persistedSamples = try GRDBTrainingRunRepository(database: fixture.database)
+            .fetchSamples(trainingRunID: run.id)
+        XCTAssertEqual(persistedSamples.filter { $0.role == .positive }.count, payload.frozenPositiveSamples.count)
+        XCTAssertEqual(persistedSamples.filter { $0.role == .negative }.count, payload.frozenNegativeSamples.count)
+        XCTAssertEqual(try TrainingRunSampleManifest.sha256(persistedSamples), manifestSHA256)
         XCTAssertNil(run.startedAtMs)
         XCTAssertNil(run.finishedAtMs)
         let summary = try XCTUnwrap(

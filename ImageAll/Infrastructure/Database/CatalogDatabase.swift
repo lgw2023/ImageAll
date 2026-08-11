@@ -41,6 +41,7 @@ struct CatalogDatabase: Sendable {
         V033AddSlimmingClusterReviewQueueMigration.register(on: &migrator)
         V034BackfillSlimmingConfirmedHistoryMigration.register(on: &migrator)
         V035AddAssetFavoriteStateMigration.register(on: &migrator)
+        V036AddTrainingRunSampleManifestMigration.register(on: &migrator)
         return migrator
     }
 
@@ -400,6 +401,38 @@ struct CatalogDatabase: Sendable {
         try closeQueueOnce(queue, closed: &closed)
         try CatalogDatabaseSidecarHelpers.removeSidecarsIfPresent(at: url)
         try CatalogDatabaseSidecarHelpers.requireNoSidecars(at: url)
+    }
+}
+
+enum V036AddTrainingRunSampleManifestMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v036AddTrainingRunSampleManifest) { db in
+            try db.execute(
+                sql: """
+                CREATE TABLE training_run_sample (
+                    training_run_id TEXT NOT NULL
+                        REFERENCES training_run(id) ON DELETE CASCADE,
+                    tag_id TEXT NOT NULL CHECK(
+                        length(tag_id) = 36 AND tag_id GLOB '*-*-*-*-*'
+                    ),
+                    asset_id TEXT NOT NULL CHECK(
+                        length(asset_id) = 36 AND asset_id GLOB '*-*-*-*-*'
+                    ),
+                    content_revision INTEGER NOT NULL CHECK(content_revision > 0),
+                    role TEXT NOT NULL CHECK(role IN ('positive', 'negative')),
+                    rank INTEGER NOT NULL CHECK(rank >= 0),
+                    PRIMARY KEY(training_run_id, tag_id, asset_id, content_revision),
+                    UNIQUE(training_run_id, tag_id, role, rank)
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE INDEX training_run_sample_asset_idx
+                ON training_run_sample(asset_id, content_revision, training_run_id)
+                """
+            )
+        }
     }
 }
 

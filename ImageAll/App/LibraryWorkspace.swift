@@ -2730,7 +2730,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                 removalMode: removalMode
             )
             var outcome = try await Self.offMain {
-                try Self.performLibrarySlimmingRemoval(
+                try LibrarySlimmingRemovalExecutor.perform(
                     recycle: recycle,
                     assetIDs: assetIDs,
                     identicalCleanupPlan: identicalCleanupPlan,
@@ -2785,12 +2785,8 @@ final class LibraryWorkspaceModel: ObservableObject {
                         overallTotalAssetCount: totalAssetCount,
                         removalMode: removalMode
                     )
-                    let authorizationFailures = Set(retryAssetIDs)
-                    let otherFailedAssetIDs = outcome.failedAssetIDs.filter {
-                        !authorizationFailures.contains($0)
-                    }
                     let retry = try await Self.offMain {
-                        try Self.performLibrarySlimmingRemoval(
+                        try LibrarySlimmingRemovalExecutor.perform(
                             recycle: recycle,
                             assetIDs: retryAssetIDs,
                             identicalCleanupPlan: identicalCleanupPlan,
@@ -2801,38 +2797,11 @@ final class LibraryWorkspaceModel: ObservableObject {
                     if identicalCleanupPlan != nil {
                         outcome = retry
                     } else {
-                        outcome.recycledEntryIDs.append(contentsOf: retry.recycledEntryIDs)
-                        outcome.permanentlyDeletedAssetIDs.append(
-                            contentsOf: retry.permanentlyDeletedAssetIDs
-                        )
-                        outcome.durabilityPendingAssetIDs.append(
-                            contentsOf: retry.durabilityPendingAssetIDs
-                        )
-                        outcome.skippedPhotosAssetIDs.append(
-                            contentsOf: retry.skippedPhotosAssetIDs
-                        )
-                        outcome.authorizationDeniedPhotosAssetIDs.append(
-                            contentsOf: retry.authorizationDeniedPhotosAssetIDs
-                        )
-                        outcome.failedAssetIDs = otherFailedAssetIDs + retry.failedAssetIDs
-                        outcome.authorizationRequiredSourceIDs =
-                            retry.authorizationRequiredSourceIDs
-                        outcome.authorizationRequiredAssetIDs =
-                            retry.authorizationRequiredAssetIDs
-                        outcome.mutationAuthorizationInvalidAssetIDs.append(
-                            contentsOf: retry.mutationAuthorizationInvalidAssetIDs
-                        )
-                        outcome.photosMutationFailedAssetIDs.append(
-                            contentsOf: retry.photosMutationFailedAssetIDs
-                        )
-                        outcome.photosMutationFailureCategories.append(
-                            contentsOf: retry.photosMutationFailureCategories
-                        )
-                        outcome.photosMutationFailureCodes.append(
-                            contentsOf: retry.photosMutationFailureCodes
-                        )
-                        outcome.sourceChangedAssetIDs.append(
-                            contentsOf: retry.sourceChangedAssetIDs
+                        LibrarySlimmingRemovalOutcomeMerger.merge(
+                            retry,
+                            into: &outcome,
+                            replacingFailuresFor: retryAssetIDs,
+                            authorizationGate: .folderMutation
                         )
                     }
                 }
@@ -2873,12 +2842,8 @@ final class LibraryWorkspaceModel: ObservableObject {
                         overallTotalAssetCount: totalAssetCount,
                         removalMode: removalMode
                     )
-                    let photosAuthorizationFailures = Set(retryAssetIDs)
-                    let otherFailedAssetIDs = outcome.failedAssetIDs.filter {
-                        !photosAuthorizationFailures.contains($0)
-                    }
                     let retry = try await Self.offMain {
-                        try Self.performLibrarySlimmingRemoval(
+                        try LibrarySlimmingRemovalExecutor.perform(
                             recycle: recycle,
                             assetIDs: retryAssetIDs,
                             identicalCleanupPlan: identicalCleanupPlan,
@@ -2889,39 +2854,11 @@ final class LibraryWorkspaceModel: ObservableObject {
                     if identicalCleanupPlan != nil {
                         outcome = retry
                     } else {
-                        outcome.recycledEntryIDs.append(contentsOf: retry.recycledEntryIDs)
-                        outcome.permanentlyDeletedAssetIDs.append(
-                            contentsOf: retry.permanentlyDeletedAssetIDs
-                        )
-                        outcome.durabilityPendingAssetIDs.append(
-                            contentsOf: retry.durabilityPendingAssetIDs
-                        )
-                        outcome.skippedPhotosAssetIDs.append(
-                            contentsOf: retry.skippedPhotosAssetIDs
-                        )
-                        outcome.authorizationDeniedPhotosAssetIDs =
-                            retry.authorizationDeniedPhotosAssetIDs
-                        outcome.failedAssetIDs = otherFailedAssetIDs + retry.failedAssetIDs
-                        outcome.authorizationRequiredSourceIDs.append(
-                            contentsOf: retry.authorizationRequiredSourceIDs
-                        )
-                        outcome.authorizationRequiredAssetIDs.append(
-                            contentsOf: retry.authorizationRequiredAssetIDs
-                        )
-                        outcome.mutationAuthorizationInvalidAssetIDs.append(
-                            contentsOf: retry.mutationAuthorizationInvalidAssetIDs
-                        )
-                        outcome.photosMutationFailedAssetIDs.append(
-                            contentsOf: retry.photosMutationFailedAssetIDs
-                        )
-                        outcome.photosMutationFailureCategories.append(
-                            contentsOf: retry.photosMutationFailureCategories
-                        )
-                        outcome.photosMutationFailureCodes.append(
-                            contentsOf: retry.photosMutationFailureCodes
-                        )
-                        outcome.sourceChangedAssetIDs.append(
-                            contentsOf: retry.sourceChangedAssetIDs
+                        LibrarySlimmingRemovalOutcomeMerger.merge(
+                            retry,
+                            into: &outcome,
+                            replacingFailuresFor: retryAssetIDs,
+                            authorizationGate: .photosLibrary
                         )
                     }
                 }
@@ -3073,37 +3010,6 @@ final class LibraryWorkspaceModel: ObservableObject {
                     removalMode: removalMode
                 )
             }
-        }
-    }
-
-    nonisolated private static func performLibrarySlimmingRemoval(
-        recycle: any LibrarySlimmingRecyclePort,
-        assetIDs: [UUID],
-        identicalCleanupPlan: LibrarySlimmingIdenticalCleanupPlan?,
-        removalMode: LibrarySlimmingRemovalMode,
-        onProgress: @escaping LibrarySlimmingRecycleMoveProgressHandler
-    ) throws -> LibrarySlimmingRecycleMoveOutcome {
-        switch (removalMode, identicalCleanupPlan) {
-        case let (.recoverableRecycle, .some(plan)):
-            try recycle.moveIdenticalCleanupAssetsToRecycle(
-                plan: plan,
-                onProgress: onProgress
-            )
-        case (.recoverableRecycle, .none):
-            try recycle.moveAssetsToRecycle(
-                assetIDs: assetIDs,
-                onProgress: onProgress
-            )
-        case let (.releaseSourceSpace, .some(plan)):
-            try recycle.deleteIdenticalCleanupAssetsImmediately(
-                plan: plan,
-                onProgress: onProgress
-            )
-        case (.releaseSourceSpace, .none):
-            try recycle.deleteAssetsImmediately(
-                assetIDs: assetIDs,
-                onProgress: onProgress
-            )
         }
     }
 
@@ -3674,6 +3580,12 @@ final class LibraryWorkspaceModel: ObservableObject {
     func analyzeLibrarySlimming(mode: LibrarySlimmingAnalyzeMode? = nil) async {
         guard let librarySlimming else { return }
         let resolvedMode = mode ?? librarySlimmingAnalyzeMode
+        if resolvedMode == .seeds {
+            // A direct/manual seed analysis consumes the same one-shot request
+            // used by navigation. Leaving it armed can start a duplicate scan
+            // later and overwrite the result of a recycle/delete action.
+            cancelPendingLibrarySlimmingSeedAnalyze()
+        }
         let catalogSourceIDs = resolvedLibrarySlimmingCatalogSourceIDs
         if resolvedMode == .catalog, catalogSourceIDs.isEmpty {
             librarySlimmingStatusMessage = "请至少选择一个要分析的来源。"

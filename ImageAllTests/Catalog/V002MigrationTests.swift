@@ -188,6 +188,13 @@ final class V002MigrationTests: XCTestCase {
                 "library_slimming_scan_result",
                 "source_similarity_index",
                 "source_similarity_bucket_member",
+                "asset_favorite_state",
+                "asset_location",
+                "library_slimming_cluster_review",
+                "place",
+                "tag_place_binding",
+                "tag_place_candidate",
+                "training_run_sample",
             ].contains($0)
         }
         let v001Dump = try v001Only.pool.read { db in

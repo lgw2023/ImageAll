@@ -189,6 +189,88 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         XCTAssertFalse(photosMixed.hasOnlyPhotosMutationFailures)
     }
 
+    func testFolderAuthorizationRetryMergeReplacesOnlyRetriedFailures() {
+        let baseEntryID = UUID()
+        let retryEntryID = UUID()
+        let alreadyDeletedID = UUID()
+        let durabilityPendingID = UUID()
+        let retriedAssetID = UUID()
+        let untouchedFailureID = UUID()
+        let oldSourceID = UUID()
+        var accumulated = LibrarySlimmingRecycleMoveOutcome(
+            recycledEntryIDs: [baseEntryID],
+            permanentlyDeletedAssetIDs: [alreadyDeletedID],
+            durabilityPendingAssetIDs: [durabilityPendingID],
+            skippedPhotosAssetIDs: [],
+            failedAssetIDs: [retriedAssetID, untouchedFailureID],
+            authorizationRequiredSourceIDs: [oldSourceID],
+            authorizationRequiredAssetIDs: [retriedAssetID],
+            authorizationDeniedPhotosAssetIDs: [],
+            mutationAuthorizationInvalidAssetIDs: [untouchedFailureID]
+        )
+        let retry = LibrarySlimmingRecycleMoveOutcome(
+            recycledEntryIDs: [retryEntryID],
+            skippedPhotosAssetIDs: [],
+            failedAssetIDs: [retriedAssetID],
+            authorizationRequiredSourceIDs: [],
+            authorizationRequiredAssetIDs: [],
+            authorizationDeniedPhotosAssetIDs: [],
+            sourceChangedAssetIDs: [retriedAssetID]
+        )
+
+        LibrarySlimmingRemovalOutcomeMerger.merge(
+            retry,
+            into: &accumulated,
+            replacingFailuresFor: [retriedAssetID],
+            authorizationGate: .folderMutation
+        )
+
+        XCTAssertEqual(accumulated.recycledEntryIDs, [baseEntryID, retryEntryID])
+        XCTAssertEqual(accumulated.permanentlyDeletedAssetIDs, [alreadyDeletedID])
+        XCTAssertEqual(accumulated.durabilityPendingAssetIDs, [durabilityPendingID])
+        XCTAssertEqual(Set(accumulated.failedAssetIDs), [untouchedFailureID, retriedAssetID])
+        XCTAssertTrue(accumulated.authorizationRequiredSourceIDs.isEmpty)
+        XCTAssertTrue(accumulated.authorizationRequiredAssetIDs.isEmpty)
+        XCTAssertEqual(accumulated.mutationAuthorizationInvalidAssetIDs, [untouchedFailureID])
+        XCTAssertEqual(accumulated.sourceChangedAssetIDs, [retriedAssetID])
+    }
+
+    func testPhotosAuthorizationRetryMergeKeepsUnresolvedFolderGate() {
+        let folderAssetID = UUID()
+        let photosAssetID = UUID()
+        let folderSourceID = UUID()
+        let retryEntryID = UUID()
+        var accumulated = LibrarySlimmingRecycleMoveOutcome(
+            recycledEntryIDs: [],
+            skippedPhotosAssetIDs: [],
+            failedAssetIDs: [folderAssetID, photosAssetID],
+            authorizationRequiredSourceIDs: [folderSourceID],
+            authorizationRequiredAssetIDs: [folderAssetID],
+            authorizationDeniedPhotosAssetIDs: [photosAssetID]
+        )
+        let retry = LibrarySlimmingRecycleMoveOutcome(
+            recycledEntryIDs: [retryEntryID],
+            skippedPhotosAssetIDs: [],
+            failedAssetIDs: [],
+            authorizationRequiredSourceIDs: [],
+            authorizationRequiredAssetIDs: [],
+            authorizationDeniedPhotosAssetIDs: []
+        )
+
+        LibrarySlimmingRemovalOutcomeMerger.merge(
+            retry,
+            into: &accumulated,
+            replacingFailuresFor: [photosAssetID],
+            authorizationGate: .photosLibrary
+        )
+
+        XCTAssertEqual(accumulated.recycledEntryIDs, [retryEntryID])
+        XCTAssertEqual(accumulated.failedAssetIDs, [folderAssetID])
+        XCTAssertEqual(accumulated.authorizationRequiredSourceIDs, [folderSourceID])
+        XCTAssertEqual(accumulated.authorizationRequiredAssetIDs, [folderAssetID])
+        XCTAssertTrue(accumulated.authorizationDeniedPhotosAssetIDs.isEmpty)
+    }
+
     func testMoveConfirmationPolicyOnlySkipsOrdinaryBatchesUpToFive() {
         for count in 1 ... 5 {
             XCTAssertFalse(

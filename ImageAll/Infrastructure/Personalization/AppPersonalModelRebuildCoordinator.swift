@@ -200,6 +200,7 @@ actor AppPersonalModelRebuildRuntime: AppPersonalModelRebuilding {
         let runID = UUID()
         let nowMs = clock.nowMs
         let runs = GRDBTrainingRunRepository(database: database)
+        let samples = Self.trainingRunSamples(snapshot: snapshot, runID: runID)
         try database.pool.write { db in
             try runs.insert(
                 TrainingRunRecord(
@@ -216,7 +217,7 @@ actor AppPersonalModelRebuildRuntime: AppPersonalModelRebuilding {
                         ? snapshot.personalTagIDs.first
                         : nil,
                     sampleSummaryJSON: try Self.sampleSummary(snapshot: snapshot),
-                    sampleManifestSHA256: nil,
+                    sampleManifestSHA256: try TrainingRunSampleManifest.sha256(samples),
                     configJSON: try Self.configJSON(
                         mediaKind: snapshot.mediaKind,
                         family: family
@@ -228,6 +229,7 @@ actor AppPersonalModelRebuildRuntime: AppPersonalModelRebuilding {
                     resultSummaryJSON: "{}",
                     errorCode: nil
                 ),
+                samples: samples,
                 on: db
             )
             try runs.update(
@@ -238,6 +240,36 @@ actor AppPersonalModelRebuildRuntime: AppPersonalModelRebuilding {
             )
         }
         return runID
+    }
+
+    private static func trainingRunSamples(
+        snapshot: PersonalTrainingSnapshot,
+        runID: UUID
+    ) -> [TrainingRunSampleRecord] {
+        snapshot.personalTagIDs.sorted {
+            $0.uuidString.lowercased() < $1.uuidString.lowercased()
+        }.flatMap { tagID in
+            let tagDecisions = snapshot.decisions.filter { $0.tagID == tagID }
+            return [PersonalTrainingDecisionState.manualAccepted, .manualRejected].flatMap { state in
+                let role: ModelSampleRole = state == .manualAccepted ? .positive : .negative
+                return tagDecisions.filter { $0.state == state }.sorted { lhs, rhs in
+                    let lhsID = lhs.assetID.uuidString.lowercased()
+                    let rhsID = rhs.assetID.uuidString.lowercased()
+                    return lhsID == rhsID
+                        ? lhs.contentRevision < rhs.contentRevision
+                        : lhsID < rhsID
+                }.enumerated().map { rank, decision in
+                    TrainingRunSampleRecord(
+                        trainingRunID: runID,
+                        tagID: tagID,
+                        assetID: decision.assetID,
+                        contentRevision: decision.contentRevision,
+                        role: role,
+                        rank: rank
+                    )
+                }
+            }
+        }
     }
 
     private static func sampleSummary(snapshot: PersonalTrainingSnapshot) throws -> String {

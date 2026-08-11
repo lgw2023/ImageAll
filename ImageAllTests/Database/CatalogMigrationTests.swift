@@ -295,7 +295,7 @@ final class CatalogMigrationTests: XCTestCase {
                     ]
                 )
             }
-            try Self.dropV035Tables(db)
+            try Self.dropV035AndLaterTables(db)
             try db.execute(
                 sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?)",
                 arguments: [
@@ -356,7 +356,7 @@ final class CatalogMigrationTests: XCTestCase {
             try Self.dropV023Tables(db)
             try Self.dropV032Tables(db)
             try Self.dropV033Tables(db)
-            try Self.dropV035Tables(db)
+            try Self.dropV035AndLaterTables(db)
             try db.execute(sql: "DROP TABLE IF EXISTS asset_location")
             try db.execute(
                 sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -423,7 +423,7 @@ final class CatalogMigrationTests: XCTestCase {
             try Self.stripV030FingerprintProvenance(db)
             try Self.dropV032Tables(db)
             try Self.dropV033Tables(db)
-            try Self.dropV035Tables(db)
+            try Self.dropV035AndLaterTables(db)
             try db.execute(sql: "DROP TABLE IF EXISTS asset_location")
             try db.execute(
                 sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -505,7 +505,7 @@ final class CatalogMigrationTests: XCTestCase {
             try Self.dropV023Tables(db)
             try Self.dropV032Tables(db)
             try Self.dropV033Tables(db)
-            try Self.dropV035Tables(db)
+            try Self.dropV035AndLaterTables(db)
             try db.execute(sql: "DROP TABLE IF EXISTS asset_location")
             try db.execute(
                 sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -602,7 +602,7 @@ final class CatalogMigrationTests: XCTestCase {
             try Self.dropV023Tables(db)
             try Self.dropV032Tables(db)
             try Self.dropV033Tables(db)
-            try Self.dropV035Tables(db)
+            try Self.dropV035AndLaterTables(db)
             try db.execute(sql: "DROP TABLE IF EXISTS asset_location")
             try db.execute(
                 sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -665,7 +665,7 @@ final class CatalogMigrationTests: XCTestCase {
             try Self.dropV023Tables(db)
             try Self.dropV032Tables(db)
             try Self.dropV033Tables(db)
-            try Self.dropV035Tables(db)
+            try Self.dropV035AndLaterTables(db)
             try db.execute(sql: "DROP TABLE IF EXISTS asset_location")
             try db.execute(
                 sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1202,8 +1202,13 @@ final class CatalogMigrationTests: XCTestCase {
         try db.execute(sql: "DROP TABLE IF EXISTS library_slimming_cluster_review")
     }
 
-    private static func dropV035Tables(_ db: Database) throws {
+    private static func dropV035AndLaterTables(_ db: Database) throws {
+        try db.execute(sql: "DROP TABLE IF EXISTS training_run_sample")
         try db.execute(sql: "DROP TABLE IF EXISTS asset_favorite_state")
+        try db.execute(
+            sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
+            arguments: [CatalogMigrationID.v036AddTrainingRunSampleManifest]
+        )
     }
 
     /// Rebuild `asset_similarity_fingerprint` back to its pre-v022 (v018) shape so v022 can

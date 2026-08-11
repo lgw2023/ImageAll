@@ -440,7 +440,9 @@ enum CatalogQueryTestSupport {
     }
 
     static func scalePortableRecordCount(assetCount: Int) -> Int {
-        assetCount + scaleDecisionCount(assetCount: assetCount) + 3
+        // Portable Export v2 adds ten seeded tag-group and threshold records to
+        // the three source/tag rows already present in the scale fixture.
+        assetCount + scaleDecisionCount(assetCount: assetCount) + 13
     }
 
     static func openFaultDatabase() throws -> (

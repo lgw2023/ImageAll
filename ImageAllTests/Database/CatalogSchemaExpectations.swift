@@ -119,6 +119,7 @@ enum CatalogSchemaExpectations {
         "tag_place_binding",
         "tag_place_candidate",
         "training_run",
+        "training_run_sample",
     ]
 
     static let businessIndexes = [
@@ -162,6 +163,7 @@ enum CatalogSchemaExpectations {
         "tag_place_binding_status_idx",
         "training_run_method_created_idx",
         "training_run_media_kind_method_created_idx",
+        "training_run_sample_asset_idx",
         "training_run_state_created_idx",
     ]
 
@@ -297,6 +299,14 @@ enum CatalogSchemaExpectations {
             .init(name: "error_code", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "tag_id", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "media_kind", type: "TEXT", notNull: true, defaultValue: "'image'", primaryKeyOrder: 0),
+        ],
+        "training_run_sample": [
+            .init(name: "training_run_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "tag_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
+            .init(name: "asset_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 3),
+            .init(name: "content_revision", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 4),
+            .init(name: "role", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "rank", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
         ],
         "source": [
             .init(name: "id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
@@ -646,6 +656,9 @@ enum CatalogSchemaExpectations {
             .init(from: "job_id", toTable: "job", to: "id", onDelete: "SET NULL"),
             .init(from: "tag_id", toTable: "tag", to: "id", onDelete: "SET NULL"),
         ],
+        "training_run_sample": [
+            .init(from: "training_run_id", toTable: "training_run", to: "id", onDelete: "CASCADE"),
+        ],
         "asset": [
             .init(from: "source_id", toTable: "source", to: "id", onDelete: "RESTRICT"),
         ],
@@ -773,6 +786,7 @@ enum CatalogSchemaExpectations {
         "prediction_review_rank_idx": "prediction",
         "training_run_method_created_idx": "training_run",
         "training_run_media_kind_method_created_idx": "training_run",
+        "training_run_sample_asset_idx": "training_run_sample",
         "training_run_state_created_idx": "training_run",
         "standard_prediction_review_rank_idx": "standard_prediction",
         "tag_model_sample_feature_idx": "tag_model_sample",
@@ -1141,6 +1155,15 @@ enum CatalogSchemaExpectations {
                 .init(name: "method", descending: false, collation: "BINARY"),
                 .init(name: "created_at_ms", descending: true, collation: "BINARY"),
                 .init(name: "id", descending: false, collation: "BINARY"),
+            ],
+            unique: false
+        ),
+        .init(
+            name: "training_run_sample_asset_idx",
+            keyColumns: [
+                .init(name: "asset_id", descending: false, collation: "BINARY"),
+                .init(name: "content_revision", descending: false, collation: "BINARY"),
+                .init(name: "training_run_id", descending: false, collation: "BINARY"),
             ],
             unique: false
         ),

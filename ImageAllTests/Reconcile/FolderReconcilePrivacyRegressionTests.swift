@@ -58,6 +58,7 @@ final class FolderReconcilePrivacyRegressionTests: XCTestCase {
             CatalogMigrationID.v033AddSlimmingClusterReviewQueue,
             CatalogMigrationID.v034BackfillSlimmingConfirmedHistory,
             CatalogMigrationID.v035AddAssetFavoriteState,
+            CatalogMigrationID.v036AddTrainingRunSampleManifest,
         ])
     }
 }
