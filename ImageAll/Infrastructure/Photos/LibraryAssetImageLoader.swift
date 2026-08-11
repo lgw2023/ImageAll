@@ -84,14 +84,15 @@ struct LibraryAssetImageLoader: Sendable {
         variant: PhotosImageVariant,
         filePersistence: DerivedImagePersistence?
     ) async throws -> Data {
-        // Acquire on the caller's task so SwiftUI/task cancellation removes waiters.
-        // Coalesce afterwards so remounted cells can still share one decode/fetch.
-        try await loadCoordinator.run(lane: .lane(for: variant)) { [self] in
-            try await inFlight.run(
-                assetID: assetID,
-                variant: variant,
-                filePersistence: filePersistence
-            ) { [self] in
+        // Coalesce first so remounted cells do not consume multiple bounded I/O
+        // slots while awaiting the same decode/fetch. Unique requests still use
+        // the existing cancellation-safe grid/preview lanes unchanged.
+        try await inFlight.run(
+            assetID: assetID,
+            variant: variant,
+            filePersistence: filePersistence
+        ) { [self] in
+            try await loadCoordinator.run(lane: .lane(for: variant)) { [self] in
                 try await loadWithoutConcurrencyLimit(
                     assetID: assetID,
                     variant: variant,
@@ -389,7 +390,18 @@ actor LibraryAssetImageInFlightCoordinator {
         let filePersistence: DerivedImagePersistence?
     }
 
-    private var tasks: [Key: Task<Data, Error>] = [:]
+    private struct Waiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Data, Error>
+    }
+
+    private struct Entry {
+        let id: UUID
+        var task: Task<Void, Never>?
+        var waiters: [Waiter]
+    }
+
+    private var entries: [Key: Entry] = [:]
 
     func run(
         assetID: UUID,
@@ -402,14 +414,66 @@ actor LibraryAssetImageInFlightCoordinator {
             variant: variant,
             filePersistence: filePersistence
         )
-        if let existing = tasks[key] {
-            return try await existing.value
+        try Task.checkCancellation()
+        let waiterID = UUID()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                guard !Task.isCancelled else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                register(
+                    waiter: Waiter(id: waiterID, continuation: continuation),
+                    key: key,
+                    operation: operation
+                )
+            }
+        } onCancel: {
+            Task { await self.cancelWaiter(id: waiterID, key: key) }
         }
-        let task = Task {
-            try await operation()
+    }
+
+    private func register(
+        waiter: Waiter,
+        key: Key,
+        operation: @Sendable @escaping () async throws -> Data
+    ) {
+        if entries[key] != nil {
+            entries[key]?.waiters.append(waiter)
+            return
         }
-        tasks[key] = task
-        defer { tasks[key] = nil }
-        return try await task.value
+        let entryID = UUID()
+        entries[key] = Entry(id: entryID, task: nil, waiters: [waiter])
+        let task = Task { [self] in
+            do {
+                finish(key: key, entryID: entryID, result: .success(try await operation()))
+            } catch {
+                finish(key: key, entryID: entryID, result: .failure(error))
+            }
+        }
+        entries[key]?.task = task
+    }
+
+    private func cancelWaiter(id: UUID, key: Key) {
+        guard var entry = entries[key],
+              let index = entry.waiters.firstIndex(where: { $0.id == id })
+        else { return }
+        let waiter = entry.waiters.remove(at: index)
+        waiter.continuation.resume(throwing: CancellationError())
+        if entry.waiters.isEmpty {
+            entries.removeValue(forKey: key)
+            entry.task?.cancel()
+        } else {
+            entries[key] = entry
+        }
+    }
+
+    private func finish(key: Key, entryID: UUID, result: Result<Data, Error>) {
+        guard entries[key]?.id == entryID,
+              let entry = entries.removeValue(forKey: key)
+        else { return }
+        for waiter in entry.waiters {
+            waiter.continuation.resume(with: result)
+        }
     }
 }

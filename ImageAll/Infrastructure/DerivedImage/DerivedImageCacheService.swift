@@ -245,23 +245,24 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
         operationGate.beginAccess()
         defer { operationGate.endAccess() }
         do {
-            if try repository.assetExists(assetID: request.assetID) == false {
-                throw DerivedImageError.derivedAssetNotFound
-            }
-            guard let lookup = try repository.fetchCacheLookupContext(assetID: request.assetID) else {
+            guard let snapshot = try repository.fetchLoadSnapshot(
+                assetID: request.assetID,
+                representationVersion: DerivedImageRepresentationVersion.production,
+                variant: request.variant
+            ) else {
                 throw DerivedImageError.derivedAssetNotFound
             }
 
             let key = DerivedImageInFlightCoordinator.DerivedImageCacheKey(
                 assetID: request.assetID,
-                contentRevision: lookup.contentRevision,
+                contentRevision: snapshot.lookup.contentRevision,
                 representationVersion: DerivedImageRepresentationVersion.production,
                 variant: request.variant,
                 persistence: request.persistence
             )
 
             return try await inFlight.run(key: key) { [self] in
-                try await self.loadOrGenerateInternal(request: request, lookup: lookup)
+                try await self.loadOrGenerateInternal(request: request, snapshot: snapshot)
             }
         } catch let error as DerivedImageError {
             throw error
@@ -320,13 +321,11 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
         operationGate.beginAccess()
         defer { operationGate.endAccess() }
         do {
-            guard let lookup = try repository.fetchCacheLookupContext(assetID: request.assetID),
-                  let entry = try repository.fetchEntry(
-                      assetID: request.assetID,
-                      contentRevision: lookup.contentRevision,
-                      representationVersion: DerivedImageRepresentationVersion.production,
-                      variant: request.variant
-                  )
+            guard let snapshot = try repository.fetchLoadSnapshot(
+                assetID: request.assetID,
+                representationVersion: DerivedImageRepresentationVersion.production,
+                variant: request.variant
+            ), let entry = snapshot.entry
             else {
                 return nil
             }
@@ -372,15 +371,14 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
         operationGate.beginAccess()
         defer { operationGate.endAccess() }
         do {
-            guard let lookup = try repository.fetchCacheLookupContext(assetID: assetID) else {
-                return nil
-            }
-            var entry = try repository.fetchEntry(
+            guard let snapshot = try repository.fetchLoadSnapshot(
                 assetID: assetID,
-                contentRevision: lookup.contentRevision,
                 representationVersion: DerivedImageRepresentationVersion.production,
                 variant: variant
-            )
+            ) else {
+                return nil
+            }
+            var entry = snapshot.entry
             if entry == nil {
                 entry = try repository.fetchLatestRecycledPhotosEntry(
                     assetID: assetID,
@@ -495,18 +493,13 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
 
     private func loadOrGenerateInternal(
         request: DerivedImageRequest,
-        lookup: DerivedImageCacheLookupContext
+        snapshot: DerivedImageCacheLoadSnapshot
     ) async throws -> DerivedImagePayload {
         let session = try store.ensureLayout()
         defer { session.closeHandles() }
 
         var replacementCandidate: DerivedImageCacheEntryRow?
-        if let entry = try repository.fetchEntry(
-            assetID: lookup.assetID,
-            contentRevision: lookup.contentRevision,
-            representationVersion: DerivedImageRepresentationVersion.production,
-            variant: request.variant
-        ) {
+        if let entry = snapshot.entry {
             switch try validateHit(entry: entry, session: session) {
             case let .valid(payload):
                 return payload
@@ -515,9 +508,27 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
             }
         }
 
-        guard let context = try repository.fetchGenerationContext(assetID: request.assetID) else {
+        guard let generation = try repository.fetchGenerationSnapshot(
+            assetID: request.assetID,
+            representationVersion: DerivedImageRepresentationVersion.production
+        ) else {
             throw DerivedImageError.derivedAssetIneligible
         }
+        // A previous identical request can publish after this caller captured
+        // its hot-path snapshot but before it became the in-flight owner. Reuse
+        // that exact entry from the already-required cold snapshot instead of
+        // decoding the source a second time.
+        if let refreshedEntry = generation.entry(for: request.variant),
+           refreshedEntry.id != snapshot.entry?.id
+        {
+            switch try validateHit(entry: refreshedEntry, session: session) {
+            case let .valid(payload):
+                return payload
+            case let .invalid(candidate):
+                replacementCandidate = candidate
+            }
+        }
+        let context = generation.context
         guard context.isEligibleForGeneration else {
             throw DerivedImageError.derivedAssetIneligible
         }
@@ -529,6 +540,7 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
         if let derived = try await materializeFromCachedLargerVariantIfPossible(
             request: request,
             context: context,
+            cachedEntries: generation.entries,
             session: session,
             replacementCandidate: replacementCandidate
         ) {
@@ -580,6 +592,7 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
     private func materializeFromCachedLargerVariantIfPossible(
         request: DerivedImageRequest,
         context: DerivedImageAssetGenerationContext,
+        cachedEntries: [DerivedImageCacheEntryRow],
         session: DerivedImageAnchoredCacheSession,
         replacementCandidate: DerivedImageCacheEntryRow?
     ) async throws -> DerivedImagePayload? {
@@ -596,12 +609,7 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
         }
 
         for donorVariant in donorVariants {
-            guard let entry = try repository.fetchEntry(
-                assetID: context.assetID,
-                contentRevision: context.contentRevision,
-                representationVersion: DerivedImageRepresentationVersion.production,
-                variant: donorVariant
-            ) else {
+            guard let entry = cachedEntries.first(where: { $0.variant == donorVariant }) else {
                 continue
             }
 

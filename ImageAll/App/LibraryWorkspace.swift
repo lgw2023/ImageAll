@@ -1059,6 +1059,182 @@ private actor LibraryThumbnailLoadGate {
     }
 }
 
+/// Coalesces identical visible-cell requests before they consume one of the
+/// four UI thumbnail permits. The epoch keeps source deletion/invalidation
+/// isolated from older work without retaining a stale result cache.
+private actor LibraryThumbnailLoadInFlightCoordinator {
+    private struct Key: Hashable, Sendable {
+        let assetID: UUID
+        let epoch: Int
+    }
+
+    private struct Waiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Data, Error>
+    }
+
+    private struct Entry {
+        let id: UUID
+        var task: Task<Void, Never>?
+        var waiters: [Waiter]
+    }
+
+    private var entries: [Key: Entry] = [:]
+
+    func run(
+        assetID: UUID,
+        epoch: Int,
+        operation: @Sendable @escaping () async throws -> Data
+    ) async throws -> Data {
+        let key = Key(assetID: assetID, epoch: epoch)
+        try Task.checkCancellation()
+        let waiterID = UUID()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                guard !Task.isCancelled else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                register(
+                    waiter: Waiter(id: waiterID, continuation: continuation),
+                    key: key,
+                    operation: operation
+                )
+            }
+        } onCancel: {
+            Task { await self.cancelWaiter(id: waiterID, key: key) }
+        }
+    }
+
+    private func register(
+        waiter: Waiter,
+        key: Key,
+        operation: @Sendable @escaping () async throws -> Data
+    ) {
+        if entries[key] != nil {
+            entries[key]?.waiters.append(waiter)
+            return
+        }
+        let entryID = UUID()
+        entries[key] = Entry(id: entryID, task: nil, waiters: [waiter])
+        let task = Task { [self] in
+            do {
+                finish(key: key, entryID: entryID, result: .success(try await operation()))
+            } catch {
+                finish(key: key, entryID: entryID, result: .failure(error))
+            }
+        }
+        entries[key]?.task = task
+    }
+
+    private func cancelWaiter(id: UUID, key: Key) {
+        guard var entry = entries[key],
+              let index = entry.waiters.firstIndex(where: { $0.id == id })
+        else { return }
+        let waiter = entry.waiters.remove(at: index)
+        waiter.continuation.resume(throwing: CancellationError())
+        if entry.waiters.isEmpty {
+            entries.removeValue(forKey: key)
+            entry.task?.cancel()
+        } else {
+            entries[key] = entry
+        }
+    }
+
+    private func finish(key: Key, entryID: UUID, result: Result<Data, Error>) {
+        guard entries[key]?.id == entryID,
+              let entry = entries.removeValue(forKey: key)
+        else { return }
+        for waiter in entry.waiters {
+            waiter.continuation.resume(with: result)
+        }
+    }
+}
+
+/// Main-actor thumbnail bytes with the same 3,000-entry insertion/LRU-like
+/// contract as the former dictionaries plus array. Generation-stamped order
+/// records avoid O(n) `removeAll` and `removeFirst` work on every cache write.
+struct LibraryThumbnailMemoryCache {
+    private struct OrderRecord {
+        let assetID: UUID
+        let generation: UInt64
+    }
+
+    private let capacity: Int
+    private var dataByAssetID: [UUID: Data] = [:]
+    private var versionsByAssetID: [UUID: Int] = [:]
+    private var latestGenerationByAssetID: [UUID: UInt64] = [:]
+    private var order: [OrderRecord] = []
+    private var orderHead = 0
+    private var nextGeneration: UInt64 = 0
+
+    init(capacity: Int) {
+        precondition(capacity > 0)
+        self.capacity = capacity
+        dataByAssetID.reserveCapacity(capacity)
+        versionsByAssetID.reserveCapacity(capacity)
+        latestGenerationByAssetID.reserveCapacity(capacity)
+        order.reserveCapacity(capacity)
+    }
+
+    var count: Int { dataByAssetID.count }
+
+    func data(for assetID: UUID) -> Data? {
+        dataByAssetID[assetID]
+    }
+
+    func version(for assetID: UUID) -> Int {
+        versionsByAssetID[assetID, default: 0]
+    }
+
+    @discardableResult
+    mutating func store(_ data: Data, for assetID: UUID) -> Bool {
+        guard !data.isEmpty else { return false }
+        if dataByAssetID[assetID] == data { return false }
+
+        nextGeneration &+= 1
+        dataByAssetID[assetID] = data
+        versionsByAssetID[assetID, default: 0] &+= 1
+        latestGenerationByAssetID[assetID] = nextGeneration
+        order.append(OrderRecord(assetID: assetID, generation: nextGeneration))
+
+        evictIfNeeded()
+        compactOrderIfNeeded()
+        return true
+    }
+
+    mutating func removeAll() {
+        dataByAssetID.removeAll(keepingCapacity: true)
+        versionsByAssetID.removeAll(keepingCapacity: true)
+        latestGenerationByAssetID.removeAll(keepingCapacity: true)
+        order.removeAll(keepingCapacity: true)
+        orderHead = 0
+    }
+
+    private mutating func evictIfNeeded() {
+        while dataByAssetID.count > capacity, orderHead < order.count {
+            let candidate = order[orderHead]
+            orderHead += 1
+            guard latestGenerationByAssetID[candidate.assetID] == candidate.generation else {
+                continue
+            }
+            dataByAssetID.removeValue(forKey: candidate.assetID)
+            versionsByAssetID.removeValue(forKey: candidate.assetID)
+            latestGenerationByAssetID.removeValue(forKey: candidate.assetID)
+        }
+    }
+
+    private mutating func compactOrderIfNeeded() {
+        let liveCount = max(dataByAssetID.count, 1)
+        let maximumRecords = max(capacity * 2, liveCount * 4)
+        guard orderHead > capacity || order.count > maximumRecords else { return }
+        order = order[orderHead...].filter { record in
+            latestGenerationByAssetID[record.assetID] == record.generation
+        }
+        orderHead = 0
+    }
+}
+
 enum AssetThumbnailLoadResult: Equatable, Sendable {
     case loaded(Data)
     case cloudOnly
@@ -1279,11 +1455,9 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var assetPageRequestID: UUID?
     private var reviewPageRequestID: UUID?
     private var hiddenRecycledAssetIDs: Set<UUID> = []
-    private var thumbnailDataCache: [UUID: Data] = [:]
-    private var thumbnailCacheVersions: [UUID: Int] = [:]
-    private var thumbnailCacheOrder: [UUID] = []
-    private let thumbnailCacheCapacity = 3_000
+    private var thumbnailMemoryCache = LibraryThumbnailMemoryCache(capacity: 3_000)
     private let thumbnailLoadGate: LibraryThumbnailLoadGate
+    private let thumbnailLoadInFlight = LibraryThumbnailLoadInFlightCoordinator()
     private var thumbnailLoadEpoch = 0
     private let idleThumbnailPrewarmPreferenceStore: any IdleThumbnailPrewarmPreferenceStore
     private let pendingSuggestionCountPreferences: any PendingSuggestionCountPreferenceStore
@@ -5981,9 +6155,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             assetPageRequestID = UUID()
             reviewPageRequestID = UUID()
             thumbnailLoadEpoch &+= 1
-            thumbnailDataCache.removeAll()
-            thumbnailCacheVersions.removeAll()
-            thumbnailCacheOrder.removeAll()
+            thumbnailMemoryCache.removeAll()
             selectedAssetIDs = []
             selectedReviewItemID = nil
             isSinglePhotoPresented = false
@@ -6344,25 +6516,15 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     func cachedThumbnailData(for assetID: UUID) -> Data? {
-        thumbnailDataCache[assetID]
+        thumbnailMemoryCache.data(for: assetID)
     }
 
     func thumbnailCacheVersion(for assetID: UUID) -> Int {
-        thumbnailCacheVersions[assetID, default: 0]
+        thumbnailMemoryCache.version(for: assetID)
     }
 
     func rememberThumbnailData(_ data: Data, for assetID: UUID) {
-        guard !data.isEmpty else { return }
-        if thumbnailDataCache[assetID] == data { return }
-        thumbnailDataCache[assetID] = data
-        thumbnailCacheVersions[assetID, default: 0] &+= 1
-        thumbnailCacheOrder.removeAll { $0 == assetID }
-        thumbnailCacheOrder.append(assetID)
-        while thumbnailCacheOrder.count > thumbnailCacheCapacity {
-            let evicted = thumbnailCacheOrder.removeFirst()
-            thumbnailDataCache.removeValue(forKey: evicted)
-            thumbnailCacheVersions.removeValue(forKey: evicted)
-        }
+        thumbnailMemoryCache.store(data, for: assetID)
     }
 
     func loadThumbnailResult(assetID: UUID) async -> AssetThumbnailLoadResult {
@@ -6371,10 +6533,16 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
         let service = service
         let loadEpoch = thumbnailLoadEpoch
+        let loadGate = thumbnailLoadGate
         do {
-            let data = try await thumbnailLoadGate.withPermit {
-                try Task.checkCancellation()
-                return try await service.loadThumbnail(assetID: assetID)
+            let data = try await thumbnailLoadInFlight.run(
+                assetID: assetID,
+                epoch: loadEpoch
+            ) {
+                try await loadGate.withPermit {
+                    try Task.checkCancellation()
+                    return try await service.loadThumbnail(assetID: assetID)
+                }
             }
             guard loadEpoch == thumbnailLoadEpoch else {
                 return .cancelled

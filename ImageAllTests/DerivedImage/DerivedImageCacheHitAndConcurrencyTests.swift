@@ -6,6 +6,100 @@ final class DerivedImageCacheHitAndConcurrencyTests: XCTestCase {
     private let generateClockMs: Int64 = FolderReconcileTestSupport.baseTimeMs
     private let hitClockMs: Int64 = FolderReconcileTestSupport.baseTimeMs + 60_000
 
+    func testWarmCacheHitUsesOneCatalogReadSnapshot() async throws {
+        let env = try DerivedImageTestSupport.TempEnvironment(label: "one-read-hit")
+        defer { env.cleanup() }
+        _ = try env.seedAvailableAsset()
+        let (service, _) = env.makeService(
+            volumeReader: DerivedImageTestSupport.generousVolume
+        )
+        let request = DerivedImageRequest(assetID: env.assetID, variant: .gridRegular)
+        let generated = try await service.loadOrGenerate(request)
+        XCTAssertEqual(generated.origin, .generated)
+
+        let counter = DerivedImageSQLStatementCounter()
+        try await env.database.pool.read { db in
+            db.trace { event in
+                guard case let .statement(statement) = event else { return }
+                let sql = statement.sql.uppercased()
+                if sql.hasPrefix("SELECT") || sql.hasPrefix("WITH") {
+                    counter.increment()
+                }
+            }
+        }
+        let hit = try await service.loadOrGenerate(request)
+        try await env.database.pool.read { db in db.trace(options: []) }
+
+        XCTAssertEqual(hit.origin, .cacheHit)
+        XCTAssertEqual(hit.entryID, generated.entryID)
+        XCTAssertEqual(hit.encodedBytes, generated.encodedBytes)
+        XCTAssertEqual(counter.value, 1)
+    }
+
+    func testLoadSnapshotMatchesLegacyReadsAndImprovesFiveRunWarmMedian() async throws {
+        let env = try DerivedImageTestSupport.TempEnvironment(label: "load-snapshot-benchmark")
+        defer { env.cleanup() }
+        _ = try env.seedAvailableAsset()
+        let (service, _) = env.makeService(
+            volumeReader: DerivedImageTestSupport.generousVolume
+        )
+        let request = DerivedImageRequest(assetID: env.assetID, variant: .gridRegular)
+        _ = try await service.loadOrGenerate(request)
+        let repository = GRDBDerivedImageCacheRepository(database: env.database)
+
+        func legacyRead() throws -> (DerivedImageCacheLookupContext, DerivedImageCacheEntryRow) {
+            XCTAssertTrue(try repository.assetExists(assetID: env.assetID))
+            let lookup = try XCTUnwrap(repository.fetchCacheLookupContext(assetID: env.assetID))
+            let entry = try XCTUnwrap(repository.fetchEntry(
+                assetID: env.assetID,
+                contentRevision: lookup.contentRevision,
+                representationVersion: DerivedImageRepresentationVersion.production,
+                variant: .gridRegular
+            ))
+            return (lookup, entry)
+        }
+
+        func snapshotRead() throws -> DerivedImageCacheLoadSnapshot {
+            try XCTUnwrap(repository.fetchLoadSnapshot(
+                assetID: env.assetID,
+                representationVersion: DerivedImageRepresentationVersion.production,
+                variant: .gridRegular
+            ))
+        }
+
+        let legacy = try legacyRead()
+        let snapshot = try snapshotRead()
+        XCTAssertEqual(snapshot.lookup, legacy.0)
+        XCTAssertEqual(snapshot.entry, legacy.1)
+        let generation = try XCTUnwrap(repository.fetchGenerationSnapshot(
+            assetID: env.assetID,
+            representationVersion: DerivedImageRepresentationVersion.production
+        ))
+        XCTAssertEqual(generation.entry(for: .gridRegular), legacy.1)
+
+        _ = try legacyRead()
+        _ = try snapshotRead()
+        var legacyNanoseconds: [UInt64] = []
+        var snapshotNanoseconds: [UInt64] = []
+        for _ in 0 ..< 5 {
+            var startedAt = DispatchTime.now().uptimeNanoseconds
+            _ = try snapshotRead()
+            snapshotNanoseconds.append(DispatchTime.now().uptimeNanoseconds - startedAt)
+            startedAt = DispatchTime.now().uptimeNanoseconds
+            _ = try legacyRead()
+            legacyNanoseconds.append(DispatchTime.now().uptimeNanoseconds - startedAt)
+        }
+        let snapshotMedian = snapshotNanoseconds.sorted()[2]
+        let legacyMedian = legacyNanoseconds.sorted()[2]
+        let attachment = XCTAttachment(
+            string: "snapshot_median_ns=\(snapshotMedian) legacy_median_ns=\(legacyMedian)"
+        )
+        attachment.name = "Derived image cache lookup five-run warm median"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        XCTAssertLessThan(snapshotMedian * 100, legacyMedian * 80)
+    }
+
     func testValidExactKeyHitTouchesLastAccessedAndPreservesCatalog() async throws {
         let env = try DerivedImageTestSupport.TempEnvironment(label: "valid-hit")
         defer { env.cleanup() }
@@ -420,6 +514,17 @@ final class DerivedImageCacheHitAndConcurrencyTests: XCTestCase {
             jobBefore: jobBefore,
             tagBefore: tagBefore
         )
+    }
+}
+
+private final class DerivedImageSQLStatementCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValue = 0
+
+    var value: Int { lock.withLock { storedValue } }
+
+    func increment() {
+        lock.withLock { storedValue += 1 }
     }
 }
 

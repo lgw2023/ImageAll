@@ -11,6 +11,20 @@ struct DerivedImageCacheLookupContext: Equatable, Sendable {
     let sourceState: String
 }
 
+struct DerivedImageCacheLoadSnapshot: Equatable, Sendable {
+    let lookup: DerivedImageCacheLookupContext
+    let entry: DerivedImageCacheEntryRow?
+}
+
+struct DerivedImageCacheGenerationSnapshot: Equatable, Sendable {
+    let context: DerivedImageAssetGenerationContext
+    let entries: [DerivedImageCacheEntryRow]
+
+    func entry(for variant: DerivedImageVariant) -> DerivedImageCacheEntryRow? {
+        entries.first { $0.variant == variant }
+    }
+}
+
 struct GRDBDerivedImageCacheRepository: Sendable {
     let database: CatalogDatabase
     let faultInjector: any DerivedImageRepositoryFaultInjecting
@@ -42,6 +56,130 @@ struct GRDBDerivedImageCacheRepository: Sendable {
     func fetchGenerationContext(assetID: UUID) throws -> DerivedImageAssetGenerationContext? {
         try database.pool.read { db in
             try fetchGenerationContext(db: db, assetID: assetID)
+        }
+    }
+
+    /// One stable read snapshot for the cache hot path. It replaces separate
+    /// asset-existence, lookup-context, target-entry and donor-entry reads while
+    /// retaining final publish revalidation for source changes.
+    func fetchLoadSnapshot(
+        assetID: UUID,
+        representationVersion: Int,
+        variant: DerivedImageVariant
+    ) throws -> DerivedImageCacheLoadSnapshot? {
+        try database.pool.read { db in
+            let request = SQLRequest<Row>(
+                sql: """
+                SELECT
+                    a.id AS asset_id,
+                    a.content_revision,
+                    a.availability,
+                    a.locator_state,
+                    a.locator_kind,
+                    s.state AS source_state,
+                    s.kind AS source_kind,
+                    e.id AS entry_id,
+                    e.asset_id AS entry_asset_id,
+                    e.content_revision AS entry_content_revision,
+                    e.representation_version AS entry_representation_version,
+                    e.variant AS entry_variant,
+                    e.storage_format AS entry_storage_format,
+                    e.pixel_width AS entry_pixel_width,
+                    e.pixel_height AS entry_pixel_height,
+                    e.byte_size AS entry_byte_size,
+                    e.encoded_sha256 AS entry_encoded_sha256,
+                    e.created_at_ms AS entry_created_at_ms,
+                    e.last_accessed_at_ms AS entry_last_accessed_at_ms
+                FROM asset a
+                JOIN source s ON s.id = a.source_id
+                LEFT JOIN derived_image_cache_entry e
+                  ON e.asset_id = a.id
+                 AND e.content_revision = a.content_revision
+                 AND e.representation_version = ?
+                 AND e.variant = ?
+                WHERE a.id = ?
+                """,
+                arguments: [
+                    representationVersion,
+                    variant.rawValue,
+                    assetID.uuidString.lowercased(),
+                ],
+                cached: true
+            )
+            guard let row = try request.fetchOne(db) else {
+                return nil
+            }
+            return DerivedImageCacheLoadSnapshot(
+                lookup: mapLookupContext(row),
+                entry: try mapLoadEntry(row)
+            )
+        }
+    }
+
+    /// Loaded only after a target cache miss. It batches generation facts and
+    /// all current donor variants so cold work does not regress to per-variant
+    /// queries while keeping the warm-hit row intentionally small.
+    func fetchGenerationSnapshot(
+        assetID: UUID,
+        representationVersion: Int
+    ) throws -> DerivedImageCacheGenerationSnapshot? {
+        try database.pool.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT
+                    a.id AS asset_id,
+                    a.source_id,
+                    a.content_revision,
+                    a.relative_path,
+                    a.file_name,
+                    a.media_kind,
+                    a.media_type,
+                    a.duration_ms,
+                    a.availability,
+                    a.locator_state,
+                    a.locator_kind,
+                    s.state AS source_state,
+                    s.kind AS source_kind,
+                    f.size_bytes,
+                    f.modified_at_ns,
+                    f.resource_id,
+                    e.id AS entry_id,
+                    e.asset_id AS entry_asset_id,
+                    e.content_revision AS entry_content_revision,
+                    e.representation_version AS entry_representation_version,
+                    e.variant AS entry_variant,
+                    e.storage_format AS entry_storage_format,
+                    e.pixel_width AS entry_pixel_width,
+                    e.pixel_height AS entry_pixel_height,
+                    e.byte_size AS entry_byte_size,
+                    e.encoded_sha256 AS entry_encoded_sha256,
+                    e.created_at_ms AS entry_created_at_ms,
+                    e.last_accessed_at_ms AS entry_last_accessed_at_ms
+                FROM asset a
+                JOIN source s ON s.id = a.source_id
+                LEFT JOIN file_fingerprint f ON f.asset_id = a.id
+                LEFT JOIN derived_image_cache_entry e
+                  ON e.asset_id = a.id
+                 AND e.content_revision = a.content_revision
+                 AND e.representation_version = ?
+                WHERE a.id = ?
+                ORDER BY e.variant ASC
+                """,
+                arguments: [
+                    representationVersion,
+                    assetID.uuidString.lowercased(),
+                ]
+            )
+            guard let first = rows.first,
+                  let context = mapGenerationContext(first)
+            else {
+                return nil
+            }
+            return DerivedImageCacheGenerationSnapshot(
+                context: context,
+                entries: try rows.compactMap { try mapLoadEntry($0) }
+            )
         }
     }
 
@@ -445,31 +583,7 @@ struct GRDBDerivedImageCacheRepository: Sendable {
         ) else {
             return nil
         }
-        guard let relativePath: String = row["relative_path"],
-              let fileName: String = row["file_name"],
-              let sizeBytes: Int64 = row["size_bytes"],
-              let modifiedAtNs: Int64 = row["modified_at_ns"]
-        else {
-            return nil
-        }
-        return DerivedImageAssetGenerationContext(
-            assetID: UUID(uuidString: row["asset_id"])!,
-            sourceID: UUID(uuidString: row["source_id"])!,
-            contentRevision: row["content_revision"],
-            relativePath: relativePath,
-            fileName: fileName,
-            mediaKind: MediaKind(rawValue: row["media_kind"]) ?? .image,
-            mediaType: row["media_type"],
-            durationMs: row["duration_ms"],
-            availability: row["availability"],
-            locatorState: row["locator_state"],
-            locatorKind: row["locator_kind"],
-            sourceState: row["source_state"],
-            sourceKind: row["source_kind"],
-            fingerprintSizeBytes: sizeBytes,
-            fingerprintModifiedAtNs: modifiedAtNs,
-            fingerprintResourceID: row["resource_id"]
-        )
+        return mapGenerationContext(row)
     }
 
     private func fetchRecycledFileThumbnailGenerationContext(
@@ -552,7 +666,11 @@ struct GRDBDerivedImageCacheRepository: Sendable {
         ) else {
             return nil
         }
-        return DerivedImageCacheLookupContext(
+        return mapLookupContext(row)
+    }
+
+    private func mapLookupContext(_ row: Row) -> DerivedImageCacheLookupContext {
+        DerivedImageCacheLookupContext(
             assetID: UUID(uuidString: row["asset_id"])!,
             contentRevision: row["content_revision"],
             locatorKind: row["locator_kind"],
@@ -560,6 +678,52 @@ struct GRDBDerivedImageCacheRepository: Sendable {
             availability: row["availability"],
             sourceKind: row["source_kind"],
             sourceState: row["source_state"]
+        )
+    }
+
+    private func mapGenerationContext(_ row: Row) -> DerivedImageAssetGenerationContext? {
+        guard let relativePath: String = row["relative_path"],
+              let fileName: String = row["file_name"],
+              let sizeBytes: Int64 = row["size_bytes"],
+              let modifiedAtNs: Int64 = row["modified_at_ns"]
+        else {
+            return nil
+        }
+        return DerivedImageAssetGenerationContext(
+            assetID: UUID(uuidString: row["asset_id"])!,
+            sourceID: UUID(uuidString: row["source_id"])!,
+            contentRevision: row["content_revision"],
+            relativePath: relativePath,
+            fileName: fileName,
+            mediaKind: MediaKind(rawValue: row["media_kind"]) ?? .image,
+            mediaType: row["media_type"],
+            durationMs: row["duration_ms"],
+            availability: row["availability"],
+            locatorState: row["locator_state"],
+            locatorKind: row["locator_kind"],
+            sourceState: row["source_state"],
+            sourceKind: row["source_kind"],
+            fingerprintSizeBytes: sizeBytes,
+            fingerprintModifiedAtNs: modifiedAtNs,
+            fingerprintResourceID: row["resource_id"]
+        )
+    }
+
+    private func mapLoadEntry(_ row: Row) throws -> DerivedImageCacheEntryRow? {
+        guard let idString: String = row["entry_id"] else { return nil }
+        return DerivedImageCacheEntryRow(
+            id: UUID(uuidString: idString)!,
+            assetID: UUID(uuidString: row["entry_asset_id"])!,
+            contentRevision: row["entry_content_revision"],
+            representationVersion: row["entry_representation_version"],
+            variant: DerivedImageVariant(rawValue: row["entry_variant"])!,
+            storageFormat: DerivedImageStorageFormat(rawValue: row["entry_storage_format"])!,
+            pixelWidth: row["entry_pixel_width"],
+            pixelHeight: row["entry_pixel_height"],
+            byteSize: row["entry_byte_size"],
+            encodedSHA256: row["entry_encoded_sha256"],
+            createdAtMs: row["entry_created_at_ms"],
+            lastAccessedAtMs: row["entry_last_accessed_at_ms"]
         )
     }
 

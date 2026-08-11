@@ -10,6 +10,81 @@ import XCTest
 
 @MainActor
 final class LibraryWorkspaceModelTests: XCTestCase {
+    func testThumbnailMemoryCachePreservesCapacityVersionAndOrderingSemantics() {
+        let ids = (0 ..< 5).map { _ in UUID() }
+        var cache = LibraryThumbnailMemoryCache(capacity: 3)
+
+        XCTAssertTrue(cache.store(Data([1]), for: ids[0]))
+        XCTAssertTrue(cache.store(Data([2]), for: ids[1]))
+        XCTAssertTrue(cache.store(Data([3]), for: ids[2]))
+        XCTAssertFalse(cache.store(Data([1]), for: ids[0]))
+        XCTAssertEqual(cache.version(for: ids[0]), 1)
+
+        XCTAssertTrue(cache.store(Data([4]), for: ids[3]))
+        XCTAssertNil(cache.data(for: ids[0]))
+        XCTAssertEqual(cache.version(for: ids[0]), 0)
+        XCTAssertEqual(cache.count, 3)
+
+        XCTAssertTrue(cache.store(Data([22]), for: ids[1]))
+        XCTAssertEqual(cache.version(for: ids[1]), 2)
+        XCTAssertTrue(cache.store(Data([5]), for: ids[4]))
+        XCTAssertNil(cache.data(for: ids[2]))
+        XCTAssertEqual(cache.data(for: ids[1]), Data([22]))
+        XCTAssertEqual(cache.data(for: ids[3]), Data([4]))
+        XCTAssertEqual(cache.data(for: ids[4]), Data([5]))
+    }
+
+    func testThumbnailMemoryCacheImprovesFiveRunWarmMedianOverLegacyArray() {
+        let capacity = 1_000
+        let ids = (0 ..< 6_000).map { _ in UUID() }
+        let payload = Data(repeating: 0xA5, count: 64)
+
+        func legacyRun() -> Int {
+            var dataByAssetID: [UUID: Data] = [:]
+            var order: [UUID] = []
+            for assetID in ids {
+                if dataByAssetID[assetID] == payload { continue }
+                dataByAssetID[assetID] = payload
+                order.removeAll { $0 == assetID }
+                order.append(assetID)
+                while order.count > capacity {
+                    dataByAssetID.removeValue(forKey: order.removeFirst())
+                }
+            }
+            return dataByAssetID.count
+        }
+
+        func optimizedRun() -> Int {
+            var cache = LibraryThumbnailMemoryCache(capacity: capacity)
+            for assetID in ids {
+                cache.store(payload, for: assetID)
+            }
+            return cache.count
+        }
+
+        XCTAssertEqual(legacyRun(), capacity)
+        XCTAssertEqual(optimizedRun(), capacity)
+        var legacyNanoseconds: [UInt64] = []
+        var optimizedNanoseconds: [UInt64] = []
+        for _ in 0 ..< 5 {
+            var startedAt = DispatchTime.now().uptimeNanoseconds
+            _ = optimizedRun()
+            optimizedNanoseconds.append(DispatchTime.now().uptimeNanoseconds - startedAt)
+            startedAt = DispatchTime.now().uptimeNanoseconds
+            _ = legacyRun()
+            legacyNanoseconds.append(DispatchTime.now().uptimeNanoseconds - startedAt)
+        }
+        let optimizedMedian = optimizedNanoseconds.sorted()[2]
+        let legacyMedian = legacyNanoseconds.sorted()[2]
+        let attachment = XCTAttachment(
+            string: "optimized_median_ns=\(optimizedMedian) legacy_median_ns=\(legacyMedian)"
+        )
+        attachment.name = "Thumbnail memory cache five-run warm median"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        XCTAssertLessThan(optimizedMedian * 100, legacyMedian * 80)
+    }
+
     func testReviewRefreshUsesSnapshotAndDoesNotRepublishUnchangedState() async {
         let tagID = UUID(uuidString: "73000000-0000-4000-8000-000000000001")!
         let overview = SuggestionTagOverview(
@@ -1589,6 +1664,74 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(service.thumbnailLoadCallCount, assets.count)
         XCTAssertLessThanOrEqual(service.peakConcurrentThumbnailLoads, 4)
         XCTAssertGreaterThan(service.peakConcurrentThumbnailLoads, 1)
+    }
+
+    func testConcurrentIdenticalThumbnailLoadsShareOneUIPermitAndServiceCall() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "duplicate-thumb.jpg")
+        let payload = Data("thumbnail".utf8)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                kind: .folder,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset],
+            startsConnected: true,
+            thumbnailData: payload,
+            thumbnailLoadDelayNanoseconds: 80_000_000
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            thumbnailLoadConcurrencyLimit: 4
+        )
+        await model.start()
+
+        async let first = model.loadThumbnailResult(assetID: asset.assetID)
+        async let second = model.loadThumbnailResult(assetID: asset.assetID)
+        async let third = model.loadThumbnailResult(assetID: asset.assetID)
+        let results = await [first, second, third]
+
+        XCTAssertEqual(results, [.loaded(payload), .loaded(payload), .loaded(payload)])
+        XCTAssertEqual(service.thumbnailLoadCallCount, 1)
+        XCTAssertEqual(service.peakConcurrentThumbnailLoads, 1)
+    }
+
+    func testCancellingOneIdenticalThumbnailWaiterKeepsSharedLoadForSurvivor() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "shared-survivor.jpg")
+        let payload = Data("thumbnail".utf8)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                kind: .folder,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset],
+            startsConnected: true,
+            thumbnailData: payload,
+            thumbnailLoadDelayNanoseconds: 200_000_000
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        await model.start()
+
+        let cancelled = Task { await model.loadThumbnailResult(assetID: asset.assetID) }
+        while service.thumbnailLoadCallCount == 0 {
+            await Task.yield()
+        }
+        let survivor = Task { await model.loadThumbnailResult(assetID: asset.assetID) }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+        cancelled.cancel()
+
+        let cancelledResult = await cancelled.value
+        let survivorResult = await survivor.value
+        XCTAssertEqual(cancelledResult, .cancelled)
+        XCTAssertEqual(survivorResult, .loaded(payload))
+        XCTAssertEqual(service.thumbnailLoadCallCount, 1)
     }
 
     func testCancelledThumbnailWaitersDoNotStarveLaterLoads() async {
