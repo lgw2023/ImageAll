@@ -99,6 +99,9 @@ Slice G 不新增 migration。多个历史 unavailable Photos Source 可以共�
 任务 payload 只保存 `source_id`。checkpoint 只保存 generation、下一批偏移和聚合计数，不保存 Photos
 identifier。每批 Asset upsert、`last_seen_generation` 和 checkpoint 必须在同一 lease-protected 事务提交。
 只有完整枚举成功后才把本 generation 未见的 Photos 资产标为 missing；中断不得推断批量删除。
+Photos `missing` 资产不进入普通图库分页、来源页、检查器或图库总览，即使显式选择“文件缺失”筛选也不
+重新暴露问号缩略图。目录行不硬删除，以便同一 local identifier 日后重新出现时恢复原有 Asset ID、人工
+标签与红心；文件夹来源的 `missing` 诊断语义保持不变。
 
 ### 3.3 图片请求
 
@@ -228,7 +231,8 @@ smoke 仍开放。
 2. 授权拒绝不创建 active 来源，Workspace 呈现安全失败；
 3. 两批合成 Photo metadata 渐进入库，统一图库和 Photos 来源筛选均可查询；
 4. video 被排除；Live Photo 只纳入静态主图；静态 JPEG/PNG/HEIC/TIFF/WebP 元数据保留；
-5. 中断批次保留已提交项且不标记未见项 missing；完整 generation 才执行 missing 收敛；
+5. 中断批次保留已提交项且不标记未见项 missing；完整 generation 或 PhotoKit 删除变化才执行 missing
+   收敛；Photos missing 从普通浏览、显式缺失筛选、检查器和总览移除，但目录行保留并可在重新出现后恢复；
 6. Photos 资产缩略图走 local-only provider 后持久化为 `gridRegular` 派生项，跨服务重建复用且损坏可失效
    重建；file 资产仍走既有 Derived Image 路径；cloud-only 返回占位且测试证明没有 network-enabled 请求；
 7. SwiftUI 模型证明连接入口触发 Photos 用例，成功后 Photos 来源与资产出现；

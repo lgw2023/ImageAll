@@ -164,6 +164,96 @@ final class AssetCatalogQueryTests: XCTestCase {
         XCTAssertEqual(recyclePage.items.map(\.assetID), [fixture.ids.assetNewest])
     }
 
+    func testMissingPhotosAssetsAreSoftRemovedFromBrowseQueriesWhileMissingFilesRemainDiagnosable() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+        try fixture.database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE asset SET availability = 'missing' WHERE id = ?",
+                arguments: [fixture.ids.assetAuthRequired.uuidString.lowercased()]
+            )
+        }
+
+        let defaultPage = try fixture.query.fetchAssetPage(
+            AssetPageRequest(filter: AssetPageFilter(), sort: .newest, cursor: nil, limit: 200)
+        )
+        XCTAssertFalse(defaultPage.items.contains { $0.assetID == fixture.ids.assetAuthRequired })
+
+        let missingPage = try fixture.query.fetchAssetPage(
+            AssetPageRequest(
+                filter: AssetPageFilter(availabilities: [.missing]),
+                sort: .newest,
+                cursor: nil,
+                limit: 200
+            )
+        )
+        XCTAssertFalse(missingPage.items.contains { $0.assetID == fixture.ids.assetAuthRequired })
+        XCTAssertTrue(missingPage.items.contains { $0.assetID == fixture.ids.assetOldest })
+        XCTAssertThrowsError(
+            try fixture.query.fetchInspectorDetail(assetID: fixture.ids.assetAuthRequired)
+        ) { error in
+            XCTAssertEqual(error as? CatalogQueryError, .notFound)
+        }
+        XCTAssertNoThrow(try fixture.query.fetchInspectorDetail(assetID: fixture.ids.assetOldest))
+
+        let retainedMissingPhotosCount = try fixture.database.pool.read { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM asset WHERE id = ? AND availability = 'missing'",
+                arguments: [fixture.ids.assetAuthRequired.uuidString.lowercased()]
+            ) ?? 0
+        }
+        XCTAssertEqual(retainedMissingPhotosCount, 1)
+
+        try fixture.database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE asset SET availability = 'available' WHERE id = ?",
+                arguments: [fixture.ids.assetAuthRequired.uuidString.lowercased()]
+            )
+        }
+        let restoredPage = try fixture.query.fetchAssetPage(
+            AssetPageRequest(filter: AssetPageFilter(), sort: .newest, cursor: nil, limit: 200)
+        )
+        XCTAssertTrue(restoredPage.items.contains { $0.assetID == fixture.ids.assetAuthRequired })
+        XCTAssertNoThrow(try fixture.query.fetchInspectorDetail(assetID: fixture.ids.assetAuthRequired))
+    }
+
+    func testGalleryOverviewExcludesMissingPhotosAssetsButKeepsMissingFolderAssets() throws {
+        let fixture = try CatalogQueryTestSupport.openGalleryOverviewDatabase()
+        try fixture.database.pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE asset
+                SET availability = 'missing'
+                WHERE locator_kind = 'photos' AND media_kind = 'image'
+                """
+            )
+        }
+
+        let overview = try fixture.query.fetchGalleryOverview()
+
+        XCTAssertEqual(overview.totalCount, 5)
+        XCTAssertEqual(overview.summary(for: .image).totalCount, 3)
+        XCTAssertEqual(
+            overview.sources.first { $0.kind == .photos },
+            GalleryOverviewSourceSummary(
+                sourceID: UUID(uuidString: "41000000-0000-4000-8000-000000000002")!,
+                displayName: "Apple Photos",
+                kind: .photos,
+                state: .active,
+                imageCount: 0,
+                videoCount: 1
+            )
+        )
+        XCTAssertEqual(
+            overview.availability.first { $0.availability == .missing },
+            GalleryOverviewAvailabilitySummary(
+                availability: .missing,
+                imageCount: 1,
+                videoCount: 0
+            )
+        )
+    }
+
     func testPhotosRecycleEntryRemainsHiddenAfterReconcileMarksAssetMissingAndRepositoryReloads() throws {
         let fixture = try CatalogQueryTestSupport.openQueryDatabase()
         let recycleEntryID = UUID(uuidString: "70000000-0000-4000-8000-000000000001")!

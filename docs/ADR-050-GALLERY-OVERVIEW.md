@@ -28,7 +28,10 @@
 - 只统计 `asset.locator_state = current`；
 - 排除 `availability = recycled`；
 - 排除处于 `pending / recycled / restoring / purging / purged` 回收生命周期的资产；
-- 保留 `available / missing / unreadable / unsupported` 并单独展示可用状态分布。
+- 排除 PhotoKit 完整对账或删除变化已经确认不可见的 Apple Photos `missing` 资产；其目录行暂留，若相同
+  PhotoKit 标识重新出现可恢复原有 ImageAll 身份、标签与红心；
+- 文件夹来源继续保留 `available / missing / unreadable / unsupported` 并单独展示可用状态分布，便于定位
+  离线卷或路径问题。
 
 因此页面表达的是 ImageAll 当前目录事实，不宣称是 Apple Photos 或磁盘来源的实时全量。来源尚未完成
 同步时，刷新总览不会隐式同步。

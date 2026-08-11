@@ -277,6 +277,7 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
                 LEFT JOIN file_fingerprint ON file_fingerprint.asset_id = asset.id
                 WHERE asset.id = ?
                     AND asset.locator_state = 'current'
+                    AND \(Self.missingPhotosBrowseExclusionSQL)
                     AND \(Self.nonBrowseableRecycleEntryExclusionSQL)
                 """,
                 arguments: [CatalogQuerySQLHelpers.lowercaseUUID(assetID)]
@@ -578,6 +579,8 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
             arguments += [AssetAvailability.recycled.rawValue]
         }
 
+        clauses.append(Self.missingPhotosBrowseExclusionSQL)
+
         if !filter.availabilities.contains(.recycled) {
             clauses.append(Self.nonBrowseableRecycleEntryExclusionSQL)
         }
@@ -858,6 +861,18 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
     )
     """
 
+    /// A completed Photos reconciliation is authoritative for whether an
+    /// Apple Photos asset remains browseable. Keep the catalog row so a later
+    /// PhotoKit upsert can restore its stable ImageAll identity, tags, and
+    /// favorite state, but do not expose an unresolvable item as a broken tile.
+    /// Folder-source `missing` rows remain browseable for path diagnostics.
+    private static let missingPhotosBrowseExclusionSQL = """
+    NOT (
+        source.kind = 'photos'
+        AND asset.availability = 'missing'
+    )
+    """
+
     private static let galleryOverviewSQL = """
     WITH overview_asset AS MATERIALIZED (
         SELECT
@@ -874,6 +889,7 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
         JOIN source ON source.id = asset.source_id
         WHERE asset.locator_state = 'current'
           AND asset.availability != 'recycled'
+          AND \(missingPhotosBrowseExclusionSQL)
           AND \(nonBrowseableRecycleEntryExclusionSQL)
     ),
     exact_group AS (
