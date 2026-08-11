@@ -343,12 +343,13 @@ private extension PersonalLibrarySuggestionsHandler {
                 var candidates: [PersonalSuggestionCandidate] = []
                 candidates.reserveCapacity(assetIDs.count)
                 var ineligibleCount = 0
+                let contexts = try review.frozenAssetProcessingContexts(
+                    mediaKind: payload.capability.target.mediaKind,
+                    tagID: tagID,
+                    assetIDs: assetIDs
+                )
                 for assetID in assetIDs {
-                    guard let context = try review.frozenAssetProcessingContext(
-                        mediaKind: payload.capability.target.mediaKind,
-                        tagID: tagID,
-                        assetID: assetID
-                    ),
+                    guard let context = contexts[assetID],
                     !context.hasDecision,
                     context.recordUpdatedAtMs <= payload.catalogCutoffMs,
                     context.locatorState == AssetLocatorState.current.rawValue,
@@ -390,11 +391,7 @@ private extension PersonalLibrarySuggestionsHandler {
                             }
                         )
                     }
-                    let cached = try await embeddingCache.cacheSelectedAssets(
-                        requests,
-                        maximumConcurrentImageLoads:
-                            AppPersonalTagLibrarySuggestionLimits.maximumConcurrentImageLoads
-                    )
+                    let cached = try await embeddingCache.cacheSelectedAssets(requests)
                     let embeddings = cached.map { value in
                         value.map {
                             AppCoreMLEmbedding(identity: $0.identity, values: $0.values)

@@ -292,8 +292,9 @@ struct NearDuplicateSceneClusterService: Sendable {
         let seeds = Array(Set(seedAssetIDs))
             .filter { featurePrints[$0] != nil && embeddings[$0] != nil }
             .sorted { $0.uuidString.lowercased() < $1.uuidString.lowercased() }
+        let seedSet = Set(seeds)
         let candidates = featurePrints.keys
-            .filter { embeddings[$0] != nil && !seeds.contains($0) }
+            .filter { embeddings[$0] != nil && !seedSet.contains($0) }
             .sorted { $0.uuidString.lowercased() < $1.uuidString.lowercased() }
         guard !seeds.isEmpty, !candidates.isEmpty else { return [] }
 

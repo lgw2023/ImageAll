@@ -5,11 +5,6 @@ struct LibraryAssetImageLoadLimits: Equatable, Sendable {
     var maximumConcurrentGridLoads: Int
     var maximumConcurrentPreviewLoads: Int
 
-    static let `default` = LibraryAssetImageLoadLimits(
-        maximumConcurrentGridLoads: 16,
-        maximumConcurrentPreviewLoads: 4
-    )
-
     init(maximumConcurrentGridLoads: Int, maximumConcurrentPreviewLoads: Int) {
         precondition(maximumConcurrentGridLoads > 0)
         precondition(maximumConcurrentPreviewLoads > 0)
@@ -33,7 +28,7 @@ struct LibraryAssetImageLoader: Sendable {
     let cloudPreviews: (any PhotosCloudPreviewPort)?
     let downloadedPreviews: (any DownloadedPreviewCachePort)?
     let photoThumbnails: (any PhotoThumbnailCachePort)?
-    private let loadCoordinator: LibraryAssetImageLoadCoordinator
+    private let loadCoordinator: LibraryAssetImageLoadCoordinator?
     private let inFlight: LibraryAssetImageInFlightCoordinator
 
     init(
@@ -43,7 +38,7 @@ struct LibraryAssetImageLoader: Sendable {
         cloudPreviews: (any PhotosCloudPreviewPort)? = nil,
         downloadedPreviews: (any DownloadedPreviewCachePort)? = nil,
         photoThumbnails: (any PhotoThumbnailCachePort)? = nil,
-        maximumConcurrentLoads: Int = LibraryAssetImageLoadLimits.default.maximumConcurrentGridLoads,
+        maximumConcurrentLoads: Int? = nil,
         limits: LibraryAssetImageLoadLimits? = nil
     ) {
         self.database = database
@@ -52,11 +47,10 @@ struct LibraryAssetImageLoader: Sendable {
         self.cloudPreviews = cloudPreviews
         self.downloadedPreviews = downloadedPreviews
         self.photoThumbnails = photoThumbnails
-        let resolvedLimits = limits ?? LibraryAssetImageLoadLimits(
-            maximumConcurrentGridLoads: maximumConcurrentLoads,
-            maximumConcurrentPreviewLoads: LibraryAssetImageLoadLimits.default.maximumConcurrentPreviewLoads
-        )
-        loadCoordinator = LibraryAssetImageLoadCoordinator(limits: resolvedLimits)
+        let resolvedLimits = limits ?? maximumConcurrentLoads.map {
+            LibraryAssetImageLoadLimits(maximumConcurrentLoads: $0)
+        }
+        loadCoordinator = resolvedLimits.map { LibraryAssetImageLoadCoordinator(limits: $0) }
         inFlight = LibraryAssetImageInFlightCoordinator()
     }
 
@@ -84,21 +78,29 @@ struct LibraryAssetImageLoader: Sendable {
         variant: PhotosImageVariant,
         filePersistence: DerivedImagePersistence?
     ) async throws -> Data {
-        // Coalesce first so remounted cells do not consume multiple bounded I/O
-        // slots while awaiting the same decode/fetch. Unique requests still use
-        // the existing cancellation-safe grid/preview lanes unchanged.
+        // Coalesce remounted cells before starting I/O. Production leaves unique
+        // requests to Swift's executor and the underlying frameworks instead of
+        // imposing an app-level concurrency ceiling. A bounded coordinator is
+        // retained only as an injectable test seam.
         try await inFlight.run(
             assetID: assetID,
             variant: variant,
             filePersistence: filePersistence
         ) { [self] in
-            try await loadCoordinator.run(lane: .lane(for: variant)) { [self] in
-                try await loadWithoutConcurrencyLimit(
-                    assetID: assetID,
-                    variant: variant,
-                    filePersistence: filePersistence
-                )
+            if let loadCoordinator {
+                return try await loadCoordinator.run(lane: .lane(for: variant)) { [self] in
+                    try await loadWithoutConcurrencyLimit(
+                        assetID: assetID,
+                        variant: variant,
+                        filePersistence: filePersistence
+                    )
+                }
             }
+            return try await loadWithoutConcurrencyLimit(
+                assetID: assetID,
+                variant: variant,
+                filePersistence: filePersistence
+            )
         }
     }
 
@@ -138,7 +140,7 @@ struct LibraryAssetImageLoader: Sendable {
         assetID: UUID,
         onProgress: @escaping @Sendable (Double) -> Void
     ) async throws -> Data {
-        try await loadCoordinator.run(lane: .preview) { [self] in
+        let operation: @Sendable () async throws -> Data = { [self] in
             guard let cloudPreviews, let downloadedPreviews else {
                 throw PhotosLibraryError.libraryUnavailable
             }
@@ -159,6 +161,10 @@ struct LibraryAssetImageLoader: Sendable {
                 sourceBytes: sourceBytes
             )
         }
+        if let loadCoordinator {
+            return try await loadCoordinator.run(lane: .preview, operation)
+        }
+        return try await operation()
     }
 
     private func loadWithoutConcurrencyLimit(
@@ -282,7 +288,7 @@ enum LibraryAssetImageLoadLane: Hashable, Sendable {
     }
 }
 
-/// Cancellation-safe bounded concurrency gate with independent grid/preview lanes.
+/// Cancellation-safe bounded test seam. Production does not construct it.
 actor LibraryAssetImageLoadCoordinator {
     private struct Waiter {
         let id: UUID

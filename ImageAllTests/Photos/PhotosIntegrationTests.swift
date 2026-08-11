@@ -2224,7 +2224,7 @@ final class PhotosIntegrationTests: XCTestCase {
         XCTAssertEqual(cloud.requestedLocalIdentifiers.count, 1)
     }
 
-    func testConcurrentFileImageLoadsAreBounded() async throws {
+    func testDefaultFileImageLoadsHaveNoApplicationConcurrencyCeiling() async throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         let sourceID = UUID()
         let assetIDs = (0 ..< 20).map { _ in UUID() }
@@ -2256,34 +2256,35 @@ final class PhotosIntegrationTests: XCTestCase {
             }
         }
         let probe = ConcurrentLoadProbe()
-        let files = ConcurrencyProbingFakeDerivedImageCache(probe: probe)
-        let limits = LibraryAssetImageLoadLimits(
-            maximumConcurrentGridLoads: 4,
-            maximumConcurrentPreviewLoads: 2
-        )
+        let files = GateableConcurrencyProbingFakeDerivedImageCache(probe: probe)
         let loader = LibraryAssetImageLoader(
             database: database,
             fileImages: files,
-            photosImages: FakePhotosLibraryAccess(state: .authorized),
-            limits: limits
+            photosImages: FakePhotosLibraryAccess(state: .authorized)
         )
 
-        let loaded = try await withThrowingTaskGroup(of: Data.self) { group in
-            for assetID in assetIDs {
-                group.addTask {
-                    try await loader.load(assetID: assetID, variant: .grid)
+        let loadTask = Task {
+            try await withThrowingTaskGroup(of: Data.self) { group in
+                for assetID in assetIDs {
+                    group.addTask {
+                        try await loader.load(assetID: assetID, variant: .grid)
+                    }
                 }
+                var results: [Data] = []
+                for try await result in group {
+                    results.append(result)
+                }
+                return results
             }
-            var results: [Data] = []
-            for try await result in group {
-                results.append(result)
-            }
-            return results
         }
+        await files.waitUntilActiveCount(assetIDs.count)
+        XCTAssertEqual(files.currentStartedCount, assetIDs.count)
+        await files.releaseAll()
+        let loaded = try await loadTask.value
 
         XCTAssertEqual(loaded.count, assetIDs.count)
         let peakConcurrentLoads = await probe.peakConcurrentLoads
-        XCTAssertLessThanOrEqual(peakConcurrentLoads, limits.maximumConcurrentGridLoads)
+        XCTAssertEqual(peakConcurrentLoads, assetIDs.count)
     }
 
     func testCancelledGridWaitersDoNotConsumeConcurrencySlots() async throws {

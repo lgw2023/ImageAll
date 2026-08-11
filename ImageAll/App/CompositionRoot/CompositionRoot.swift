@@ -216,8 +216,7 @@ struct CompositionRoot {
             photosImages: photosAccess,
             cloudPreviews: photosAccess,
             downloadedPreviews: derivedImages,
-            photoThumbnails: derivedImages,
-            limits: .default
+            photoThumbnails: derivedImages
         )
         let catalogScopeID = try? runtime.database.catalogScopeID()
         let appPersonalModelRebuilder: AppPersonalModelRebuildRuntime?

@@ -337,9 +337,12 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
         var clusters: [SlimmingCluster] = []
         for key in buckets.keys.sorted() {
             guard let members = buckets[key], members.count >= 2 else { continue }
-            let memberSet = Set(members)
-            let bucketFeaturePrints = featurePrints.filter { memberSet.contains($0.key) }
-            let bucketEmbeddings = embeddings.filter { memberSet.contains($0.key) }
+            let bucketFeaturePrints = Dictionary(uniqueKeysWithValues: members.compactMap { assetID in
+                featurePrints[assetID].map { (assetID, $0) }
+            })
+            let bucketEmbeddings = Dictionary(uniqueKeysWithValues: members.compactMap { assetID in
+                embeddings[assetID].map { (assetID, $0) }
+            })
             let completedBeforeBucket = clusteringCompleted
             clusters.append(
                 contentsOf: service.cluster(
@@ -484,6 +487,7 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
         onProgress: LibrarySlimmingScanProgressHandler?
     ) throws -> (featurePrints: [UUID: [Float]], embeddings: [UUID: [Float]], pending: [UUID]) {
         var pending: [UUID] = []
+        var pendingSet = Set<UUID>()
         var featurePrints: [UUID: [Float]] = [:]
         var embeddings: [UUID: [Float]] = [:]
 
@@ -498,6 +502,7 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
             )
             guard let feature = try featureLoader.featureVector(assetID: assetID) else {
                 pending.append(assetID)
+                pendingSet.insert(assetID)
                 continue
             }
             featurePrints[assetID] = feature
@@ -510,7 +515,7 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
             )
         )
 
-        let embeddingCandidates = assetIDs.filter { !pending.contains($0) }
+        let embeddingCandidates = assetIDs.filter { !pendingSet.contains($0) }
         let embeddingTotal = embeddingCandidates.count
         for (index, assetID) in embeddingCandidates.enumerated() {
             onProgress?(
@@ -522,6 +527,7 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
             )
             guard let embedding = try embeddingLoader.embedding(assetID: assetID) else {
                 pending.append(assetID)
+                pendingSet.insert(assetID)
                 continue
             }
             embeddings[assetID] = embedding

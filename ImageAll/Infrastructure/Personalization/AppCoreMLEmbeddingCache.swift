@@ -832,8 +832,7 @@ actor AppSelectedAssetEmbeddingCacheRuntime: AppSelectedAssetEmbeddingCaching {
     }
 
     func cacheSelectedAssets(
-        _ requests: [AppSelectedAssetEmbeddingRequest],
-        maximumConcurrentImageLoads: Int
+        _ requests: [AppSelectedAssetEmbeddingRequest]
     ) async throws -> [AppCoreMLCachedEmbedding?] {
         guard let service = await activationCoordinator.readyService(),
               case let .ready(identity) = service.availability
@@ -841,7 +840,10 @@ actor AppSelectedAssetEmbeddingCacheRuntime: AppSelectedAssetEmbeddingCaching {
             throw AppSelectedAssetEmbeddingCacheError.modelUnavailable
         }
         let cache = embeddingCache(service: service)
-        let concurrency = max(1, min(4, maximumConcurrentImageLoads))
+        // Start every unique source request immediately. Swift's executor and
+        // the source frameworks provide resource backpressure; the app no
+        // longer applies a fixed prefetch ceiling.
+        let concurrency = max(1, requests.count)
         var results = Array<AppCoreMLCachedEmbedding?>(repeating: nil, count: requests.count)
         var resolved = Set<Int>()
         var preparedImages: [Int: CGImage] = [:]
@@ -902,8 +904,8 @@ actor AppSelectedAssetEmbeddingCacheRuntime: AppSelectedAssetEmbeddingCaching {
                     prepared = cached
                 } else if let task = loadTasks.removeValue(forKey: index) {
                     let data = try await task.value
-                    // Refill before inference so two source reads remain in flight
-                    // while the single Core ML lane processes this candidate.
+                    // Refill before inference so source work remains available
+                    // while the serialized Core ML/cache lane processes this candidate.
                     scheduleMore()
                     let image = try Self.decodeSingleImage(data)
                     prepared = try service.preparedModelInputImage(for: image)

@@ -807,11 +807,30 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         tagID: UUID,
         assetID: UUID
     ) throws -> FrozenAssetProcessingContext? {
-        try database.pool.read { db in
-            guard let row = try Row.fetchOne(
+        try frozenAssetProcessingContexts(
+            mediaKind: mediaKind,
+            tagID: tagID,
+            assetIDs: [assetID]
+        )[assetID]
+    }
+
+    func frozenAssetProcessingContexts(
+        mediaKind: MediaKind,
+        tagID: UUID,
+        assetIDs: [UUID]
+    ) throws -> [UUID: FrozenAssetProcessingContext] {
+        var seen = Set<UUID>()
+        let uniqueAssetIDs = assetIDs.filter { seen.insert($0).inserted }
+        guard !uniqueAssetIDs.isEmpty else { return [:] }
+        let placeholders = Array(repeating: "?", count: uniqueAssetIDs.count)
+            .joined(separator: ", ")
+        let arguments = [uuid(tagID), mediaKind.rawValue] + uniqueAssetIDs.map(uuid)
+        return try database.pool.read { db in
+            let rows = try Row.fetchAll(
                 db,
                 sql: """
-                SELECT a.content_revision, a.availability, a.locator_state, a.record_updated_at_ms,
+                SELECT a.id AS asset_id,
+                    a.content_revision, a.availability, a.locator_state, a.record_updated_at_ms,
                     s.state AS source_state,
                     EXISTS(
                         SELECT 1 FROM asset_tag_decision d
@@ -819,24 +838,30 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     ) AS has_decision
                 FROM asset a
                 JOIN source s ON s.id = a.source_id
-                WHERE a.id = ?
-                    AND a.media_kind = ?
+                WHERE a.media_kind = ?
+                    AND a.id IN (\(placeholders))
                     AND a.locator_state = 'current'
                     AND (
                         (s.kind = 'folder' AND a.locator_kind = 'file')
                         OR (s.kind = 'photos' AND a.locator_kind = 'photos')
                     )
                 """,
-                arguments: [uuid(tagID), uuid(assetID), mediaKind.rawValue]
-            ) else { return nil }
-            return FrozenAssetProcessingContext(
-                contentRevision: row["content_revision"],
-                availability: row["availability"],
-                sourceState: row["source_state"],
-                locatorState: row["locator_state"],
-                recordUpdatedAtMs: row["record_updated_at_ms"],
-                hasDecision: row["has_decision"]
+                arguments: StatementArguments(arguments)
             )
+            return Dictionary(uniqueKeysWithValues: rows.compactMap { row in
+                guard let assetID = UUID(uuidString: row["asset_id"]) else { return nil }
+                return (
+                    assetID,
+                    FrozenAssetProcessingContext(
+                        contentRevision: row["content_revision"],
+                        availability: row["availability"],
+                        sourceState: row["source_state"],
+                        locatorState: row["locator_state"],
+                        recordUpdatedAtMs: row["record_updated_at_ms"],
+                        hasDecision: row["has_decision"]
+                    )
+                )
+            })
         }
     }
 

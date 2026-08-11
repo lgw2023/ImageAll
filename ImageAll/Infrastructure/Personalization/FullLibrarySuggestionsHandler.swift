@@ -197,14 +197,15 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
             var predictions: [PredictionRegistration] = []
             var batchAssetIDs: [UUID] = []
             let catalogCutoffMs = decodedPayload.catalogCutoffMs
+            let contexts = try review.frozenAssetProcessingContexts(
+                mediaKind: decodedPayload.mediaKind,
+                tagID: decodedPayload.tagID,
+                assetIDs: batch
+            )
 
             for assetID in batch {
                 checkedDelta += 1
-                guard let context = try review.frozenAssetProcessingContext(
-                    mediaKind: decodedPayload.mediaKind,
-                    tagID: decodedPayload.tagID,
-                    assetID: assetID
-                ) else {
+                guard let context = contexts[assetID] else {
                     skippedDelta += 1
                     continue
                 }

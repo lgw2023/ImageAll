@@ -31,7 +31,6 @@ struct FoundationDerivedImageVolumeCapacityReader: DerivedImageVolumeCapacityRea
 }
 
 enum DerivedImageQuotaPolicy {
-    static let publishedQuotaBytes: UInt64 = 20 * 1024 * 1024 * 1024
     static let minimumReserveBytes: UInt64 = 5 * 1024 * 1024 * 1024
 
     static func reserveBytes(totalVolumeBytes: UInt64) -> UInt64? {

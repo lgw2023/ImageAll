@@ -666,10 +666,6 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
                 origin: .memoryOnly
             )
         }
-        if incomingBytes > DerivedImageQuotaPolicy.publishedQuotaBytes {
-            throw DerivedImageError.derivedInsufficientSpace
-        }
-
         do {
             try await evictIfNeeded(incomingBytes: incomingBytes, session: session)
         } catch DerivedImageError.derivedInsufficientSpace
@@ -1036,9 +1032,7 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
         guard artifact.byteSize > 0 else {
             throw DerivedImageError.derivedEncodeFailed
         }
-        guard let incomingBytes = UInt64(exactly: artifact.byteSize),
-              incomingBytes <= DerivedImageQuotaPolicy.publishedQuotaBytes
-        else {
+        guard let incomingBytes = UInt64(exactly: artifact.byteSize) else {
             throw DerivedImageError.derivedInsufficientSpace
         }
         try await evictIfNeeded(incomingBytes: incomingBytes, session: session)
@@ -1248,10 +1242,6 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
                 origin: .memoryOnly
             )
         }
-        if incomingBytes > DerivedImageQuotaPolicy.publishedQuotaBytes {
-            throw DerivedImageError.derivedInsufficientSpace
-        }
-
         do {
             try await evictIfNeeded(incomingBytes: incomingBytes, session: session)
         } catch DerivedImageError.derivedInsufficientSpace
@@ -1356,18 +1346,10 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
             throw DerivedImageError.derivedCapacityUnavailable
         }
 
-        var published = try repository.publishedByteTotal()
         var available = facts.availableBytes
         var lastAvailableAfterSuccessfulDelete = available
 
         while true {
-            let needsQuotaEviction: Bool
-            if let combined = DerivedImageQuotaPolicy.adding(published, incomingBytes) {
-                needsQuotaEviction = combined > DerivedImageQuotaPolicy.publishedQuotaBytes
-            } else {
-                throw DerivedImageError.derivedCapacityUnavailable
-            }
-
             let needsReserveEviction: Bool
             if let required = DerivedImageQuotaPolicy.adding(reserve, incomingBytes) {
                 needsReserveEviction = available < required
@@ -1375,7 +1357,7 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
                 throw DerivedImageError.derivedCapacityUnavailable
             }
 
-            if !needsQuotaEviction && !needsReserveEviction {
+            if !needsReserveEviction {
                 return
             }
 
@@ -1385,12 +1367,6 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
             }
 
             try repository.deleteEntry(id: victim.id)
-            if let victimBytes = UInt64(exactly: victim.byteSize),
-               let reduced = DerivedImageQuotaPolicy.subtracting(published, victimBytes)
-            {
-                published = reduced
-            }
-
             let objectDeleted = (try? store.deleteObjectDuringEviction(
                 entryID: victim.id,
                 format: victim.storageFormat,

@@ -1000,8 +1000,8 @@ struct LibraryWorkspaceCommandItem: Identifiable, Equatable {
     var id: LibraryWorkspaceCommand { command }
 }
 
-/// Limits concurrent grid thumbnail loads so sidebar navigation and inspector
-/// fetches stay responsive while a catalog scan keeps cells visible.
+/// Optional bounded test seam for thumbnail loads. Production runs without an
+/// app-level ceiling and lets Swift plus the image frameworks schedule work.
 private actor LibraryThumbnailLoadGate {
     private var available: Int
     private var waiters: [Waiter] = []
@@ -1059,9 +1059,26 @@ private actor LibraryThumbnailLoadGate {
     }
 }
 
-/// Coalesces identical visible-cell requests before they consume one of the
-/// four UI thumbnail permits. The epoch keeps source deletion/invalidation
-/// isolated from older work without retaining a stale result cache.
+private struct LibraryThumbnailLoadScheduler: Sendable {
+    private let gate: LibraryThumbnailLoadGate?
+
+    init(limit: Int?) {
+        gate = limit.map { LibraryThumbnailLoadGate(limit: $0) }
+    }
+
+    func withPermit<T: Sendable>(
+        _ operation: @Sendable () async throws -> T
+    ) async throws -> T {
+        if let gate {
+            return try await gate.withPermit(operation)
+        }
+        return try await operation()
+    }
+}
+
+/// Coalesces identical visible-cell requests before any optional test gate.
+/// The epoch keeps source deletion/invalidation isolated from older work
+/// without retaining a stale result cache.
 private actor LibraryThumbnailLoadInFlightCoordinator {
     private struct Key: Hashable, Sendable {
         let assetID: UUID
@@ -1456,7 +1473,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var reviewPageRequestID: UUID?
     private var hiddenRecycledAssetIDs: Set<UUID> = []
     private var thumbnailMemoryCache = LibraryThumbnailMemoryCache(capacity: 3_000)
-    private let thumbnailLoadGate: LibraryThumbnailLoadGate
+    private let thumbnailLoadGate: LibraryThumbnailLoadScheduler
     private let thumbnailLoadInFlight = LibraryThumbnailLoadInFlightCoordinator()
     private var thumbnailLoadEpoch = 0
     private let idleThumbnailPrewarmPreferenceStore: any IdleThumbnailPrewarmPreferenceStore
@@ -1540,7 +1557,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         catalogProgressRefreshInterval: Duration = .milliseconds(750),
         searchDebounceInterval: Duration = .milliseconds(300),
         videoHoverDelay: Duration = .milliseconds(350),
-        thumbnailLoadConcurrencyLimit: Int = 4,
+        thumbnailLoadConcurrencyLimit: Int? = nil,
         idleThumbnailPrewarmPreferenceStore: any IdleThumbnailPrewarmPreferenceStore =
             UserDefaultsIdleThumbnailPrewarmPreferenceStore(),
         idlePrewarmClock: any IdlePrewarmClock = SystemIdlePrewarmClock(),
@@ -1587,7 +1604,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         self.catalogProgressRefreshInterval = catalogProgressRefreshInterval
         self.searchDebounceInterval = searchDebounceInterval
         self.videoHoverDelay = videoHoverDelay
-        self.thumbnailLoadGate = LibraryThumbnailLoadGate(limit: thumbnailLoadConcurrencyLimit)
+        self.thumbnailLoadGate = LibraryThumbnailLoadScheduler(limit: thumbnailLoadConcurrencyLimit)
     }
 
     var suggestionThresholdPortForSettings: (any SuggestionThresholdPort)? {

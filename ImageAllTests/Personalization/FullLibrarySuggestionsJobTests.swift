@@ -7,6 +7,84 @@ import XCTest
 @testable import ImageAll
 
 final class FullLibrarySuggestionsJobTests: XCTestCase {
+    func testFrozenAssetProcessingContextBatchUsesOneReadAndBeatsPerAssetReads() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 128)
+        let assetIDs = try fixture.database.pool.read { db in
+            try String.fetchAll(
+                db,
+                sql: "SELECT id FROM asset WHERE id LIKE '21000000-%' ORDER BY id"
+            ).compactMap(UUID.init(uuidString:))
+        }
+        XCTAssertEqual(assetIDs.count, 128)
+        let repository = GRDBPersonalizationReviewRepository(database: fixture.database)
+        let counter = ReviewSQLStatementCounter()
+        try fixture.database.pool.read { db in
+            db.trace { event in
+                guard case let .statement(statement) = event else { return }
+                let sql = statement.sql.uppercased()
+                if sql.hasPrefix("SELECT") || sql.hasPrefix("WITH") {
+                    counter.increment()
+                }
+            }
+        }
+        defer {
+            try? fixture.database.pool.read { db in db.trace(options: []) }
+        }
+
+        let contexts = try repository.frozenAssetProcessingContexts(
+            mediaKind: .image,
+            tagID: fixture.tagID,
+            assetIDs: assetIDs
+        )
+
+        XCTAssertEqual(contexts.count, assetIDs.count)
+        XCTAssertEqual(counter.value, 1)
+        try fixture.database.pool.read { db in db.trace(options: []) }
+
+        func legacyRead() throws -> Int {
+            try assetIDs.reduce(into: 0) { checksum, assetID in
+                if let context = try repository.frozenAssetProcessingContext(
+                    mediaKind: .image,
+                    tagID: fixture.tagID,
+                    assetID: assetID
+                ) {
+                    checksum &+= context.contentRevision
+                    checksum &+= context.hasDecision ? 1 : 0
+                }
+            }
+        }
+        func batchedRead() throws -> Int {
+            try repository.frozenAssetProcessingContexts(
+                mediaKind: .image,
+                tagID: fixture.tagID,
+                assetIDs: assetIDs
+            ).values.reduce(0) {
+                $0 &+ $1.contentRevision &+ ($1.hasDecision ? 1 : 0)
+            }
+        }
+
+        XCTAssertEqual(try batchedRead(), try legacyRead())
+        var legacyNanoseconds: [UInt64] = []
+        var batchedNanoseconds: [UInt64] = []
+        for _ in 0 ..< 5 {
+            var startedAt = DispatchTime.now().uptimeNanoseconds
+            _ = try batchedRead()
+            batchedNanoseconds.append(DispatchTime.now().uptimeNanoseconds - startedAt)
+            startedAt = DispatchTime.now().uptimeNanoseconds
+            _ = try legacyRead()
+            legacyNanoseconds.append(DispatchTime.now().uptimeNanoseconds - startedAt)
+        }
+        let batchedMedian = batchedNanoseconds.sorted()[2]
+        let legacyMedian = legacyNanoseconds.sorted()[2]
+        let attachment = XCTAttachment(
+            string: "batch_median_ns=\(batchedMedian) legacy_median_ns=\(legacyMedian)"
+        )
+        attachment.name = "Suggestion context five-run warm median"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        XCTAssertLessThan(batchedMedian * 100, legacyMedian * 80)
+    }
+
     func testReviewStateSnapshotUsesFixedQueryCountAsTagCountGrows() throws {
         let fixture = try makeLargeLibraryFixture(assetCount: 12, preseedPredictions: 4)
         try fixture.database.pool.write { db in
@@ -694,7 +772,6 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
             from: completed.checkpoint
         )
         let embeddingBatchSizes = await embeddingCache.batchSizes
-        let embeddingConcurrency = await embeddingCache.requestedConcurrency
         let suggestionBatchSizes = await suggester.batchSizes
         XCTAssertEqual(completed.state, .completed)
         XCTAssertEqual(completed.progress.total, 130)
@@ -704,7 +781,6 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         XCTAssertEqual(checkpoint.suggestedCount, 5)
         XCTAssertEqual(checkpoint.topHits.count, 5)
         XCTAssertEqual(embeddingBatchSizes, [64, 64, 2])
-        XCTAssertEqual(embeddingConcurrency, [2, 2, 2])
         XCTAssertEqual(suggestionBatchSizes, [64, 64, 2])
         XCTAssertEqual(try service.totalPendingSuggestionCount(), 5)
     }
@@ -4148,7 +4224,6 @@ private actor StubPersonalLibrarySuggestionImages: PersonalLibrarySuggestionImag
 
 private actor RecordingBatchAppEmbeddingCache: AppSelectedAssetEmbeddingCaching {
     private(set) var batchSizes: [Int] = []
-    private(set) var requestedConcurrency: [Int] = []
     private let identity = makeBatchAppEncoderIdentity()
 
     func cacheSelectedAsset(
@@ -4160,11 +4235,9 @@ private actor RecordingBatchAppEmbeddingCache: AppSelectedAssetEmbeddingCaching 
     }
 
     func cacheSelectedAssets(
-        _ requests: [AppSelectedAssetEmbeddingRequest],
-        maximumConcurrentImageLoads: Int
+        _ requests: [AppSelectedAssetEmbeddingRequest]
     ) async throws -> [AppCoreMLCachedEmbedding?] {
         batchSizes.append(requests.count)
-        requestedConcurrency.append(maximumConcurrentImageLoads)
         return requests.map { _ in cachedEmbedding() }
     }
 

@@ -4,11 +4,9 @@ import XCTest
 final class DerivedImageQuotaTests: XCTestCase {
     private let gib = DerivedImageTestSupport.gib
 
-    // MARK: - 1. Fixed integer policy boundaries
+    // MARK: - 1. Resource-based capacity policy boundaries
 
-    func testQuotaPolicyPublishedQuotaReserveAndArithmeticBoundaries() {
-        XCTAssertEqual(DerivedImageQuotaPolicy.publishedQuotaBytes, 20 * gib)
-
+    func testCapacityPolicyReserveAndArithmeticBoundaries() {
         let total100GiBMinus1 = (100 * gib) - 1
         XCTAssertEqual(
             DerivedImageQuotaPolicy.reserveBytes(totalVolumeBytes: total100GiBMinus1),
@@ -264,9 +262,9 @@ final class DerivedImageQuotaTests: XCTestCase {
         _ = fileURL
     }
 
-    // MARK: - 5. Published quota and stable LRU tie-break
+    // MARK: - 5. No fixed published-byte quota
 
-    func testPublishedQuotaEvictsStableLRUSmallerUUIDWhenLastAccessedEqual() async throws {
+    func testPublishedBytesAboveFormerTwentyGiBLimitAreRetainedWhenVolumeHasCapacity() async throws {
         let env = try DerivedImageTestSupport.TempEnvironment(label: "quota-lru-stable")
         defer { env.cleanup() }
         let fileURL = try env.seedAvailableAsset(relativePath: "a.jpg", fileName: "a.jpg")
@@ -327,9 +325,9 @@ final class DerivedImageQuotaTests: XCTestCase {
         )
         let smallerExists = try await env.cacheEntryExists(id: smallerID)
         let largerExists = try await env.cacheEntryExists(id: largerID)
-        XCTAssertFalse(smallerExists, "stable LRU must evict lexicographically smaller UUID at tied timestamp")
+        XCTAssertTrue(smallerExists)
         XCTAssertTrue(largerExists)
-        XCTAssertFalse(env.finalObjectExists(entryID: smallerID, format: .jpeg))
+        XCTAssertTrue(env.finalObjectExists(entryID: smallerID, format: .jpeg))
         XCTAssertTrue(env.finalObjectExists(entryID: largerID, format: .jpeg))
         let catalogAfter = try await DerivedImageTestSupport.captureFaultMatrixCatalogSnapshot(env: env)
         XCTAssertEqual(catalogAfter.catalogFacts, catalogBefore.catalogFacts)

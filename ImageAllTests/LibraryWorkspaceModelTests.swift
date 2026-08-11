@@ -1629,7 +1629,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(service.thumbnailLoadCallCount, 2)
     }
 
-    func testGridThumbnailLoadsRespectConcurrencyLimit() async {
+    func testGridThumbnailLoadsHaveNoProductionConcurrencyCeiling() async {
         let sourceID = UUID()
         let assets = (0 ..< 12).map {
             Self.makeAsset(sourceID: sourceID, fileName: "thumb-\($0).jpg")
@@ -1647,10 +1647,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             thumbnailData: Data("thumb".utf8),
             thumbnailLoadDelayNanoseconds: 80_000_000
         )
-        let model = LibraryWorkspaceModel(
-            service: service,
-            thumbnailLoadConcurrencyLimit: 4
-        )
+        let model = LibraryWorkspaceModel(service: service)
         await model.start()
 
         await withTaskGroup(of: Void.self) { group in
@@ -1662,8 +1659,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         }
 
         XCTAssertEqual(service.thumbnailLoadCallCount, assets.count)
-        XCTAssertLessThanOrEqual(service.peakConcurrentThumbnailLoads, 4)
-        XCTAssertGreaterThan(service.peakConcurrentThumbnailLoads, 1)
+        XCTAssertEqual(service.peakConcurrentThumbnailLoads, assets.count)
     }
 
     func testConcurrentIdenticalThumbnailLoadsShareOneUIPermitAndServiceCall() async {

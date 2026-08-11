@@ -26,8 +26,7 @@ protocol AppSelectedAssetEmbeddingCaching: Sendable {
     ) async throws -> AppCoreMLCachedEmbedding
 
     func cacheSelectedAssets(
-        _ requests: [AppSelectedAssetEmbeddingRequest],
-        maximumConcurrentImageLoads: Int
+        _ requests: [AppSelectedAssetEmbeddingRequest]
     ) async throws -> [AppCoreMLCachedEmbedding?]
 }
 
@@ -49,8 +48,7 @@ struct AppSelectedAssetEmbeddingRequest: Sendable {
 
 extension AppSelectedAssetEmbeddingCaching {
     func cacheSelectedAssets(
-        _ requests: [AppSelectedAssetEmbeddingRequest],
-        maximumConcurrentImageLoads _: Int = 2
+        _ requests: [AppSelectedAssetEmbeddingRequest]
     ) async throws -> [AppCoreMLCachedEmbedding?] {
         var results: [AppCoreMLCachedEmbedding?] = []
         results.reserveCapacity(requests.count)

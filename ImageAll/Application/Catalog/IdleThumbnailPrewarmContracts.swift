@@ -15,5 +15,4 @@ struct SystemIdlePrewarmClock: IdlePrewarmClock {
 enum IdleThumbnailPrewarmDefaults {
     static let idleThresholdSeconds: TimeInterval = 180
     static let monitorTickSeconds: TimeInterval = 1
-    static let prewarmConcurrencyLimit = 1
 }

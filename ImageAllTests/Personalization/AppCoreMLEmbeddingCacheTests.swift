@@ -154,7 +154,7 @@ final class AppCoreMLEmbeddingCacheTests: XCTestCase {
         XCTAssertEqual(modelInputCacheFiles(under: root).count, 1)
     }
 
-    func testBatchRuntimeKeepsTwoImageLoadsInFlight() async throws {
+    func testBatchRuntimeStartsAllImageLoadsWithoutApplicationCeiling() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -189,16 +189,24 @@ final class AppCoreMLEmbeddingCacheTests: XCTestCase {
             )
         }
 
-        let results = try await runtime.cacheSelectedAssets(
-            requests,
-            maximumConcurrentImageLoads: 2
-        )
+        let cachingTask = Task {
+            try await runtime.cacheSelectedAssets(requests)
+        }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while await probe.loadCount < requests.count,
+              ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let allLoadsStartedTogether = await probe.loadCount == requests.count
+        await probe.releaseAll()
+        let results = try await cachingTask.value
         let loadCount = await probe.loadCount
         let maximumActiveLoads = await probe.maximumActiveLoads
 
         XCTAssertEqual(results.compactMap { $0 }.count, requests.count)
         XCTAssertEqual(loadCount, requests.count)
-        XCTAssertEqual(maximumActiveLoads, 2)
+        XCTAssertTrue(allLoadsStartedTogether)
+        XCTAssertEqual(maximumActiveLoads, requests.count)
     }
 
     func testProgressGateCoalescesFastPerAssetUpdatesAndAlwaysEmitsFinal() {
@@ -973,8 +981,8 @@ private actor ConcurrentImageLoadProbe {
     private var activeLoads = 0
     private var storedMaximumActiveLoads = 0
     private var storedLoadCount = 0
-    private var releasedInitialPair = false
-    private var initialWaiters: [CheckedContinuation<Void, Never>] = []
+    private var released = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
 
     var maximumActiveLoads: Int { storedMaximumActiveLoads }
     var loadCount: Int { storedLoadCount }
@@ -983,19 +991,18 @@ private actor ConcurrentImageLoadProbe {
         activeLoads += 1
         storedLoadCount += 1
         storedMaximumActiveLoads = max(storedMaximumActiveLoads, activeLoads)
-        if !releasedInitialPair {
-            if activeLoads < 2 {
-                await withCheckedContinuation { initialWaiters.append($0) }
-            } else {
-                releasedInitialPair = true
-                let waiters = initialWaiters
-                initialWaiters.removeAll()
-                waiters.forEach { $0.resume() }
-            }
+        if !released {
+            await withCheckedContinuation { waiters.append($0) }
         }
-        try? await Task.sleep(nanoseconds: 20_000_000)
         activeLoads -= 1
         return data
+    }
+
+    func releaseAll() {
+        released = true
+        let blockedLoads = waiters
+        waiters.removeAll()
+        blockedLoads.forEach { $0.resume() }
     }
 }
 
