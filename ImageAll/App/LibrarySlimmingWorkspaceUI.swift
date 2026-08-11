@@ -594,7 +594,7 @@ struct LibrarySlimmingWorkspaceView: View {
             )
         }
         .sheet(isPresented: $confirmFastDelete) {
-            LibrarySlimmingFastDeleteConfirmationSheet(
+            LibraryFastDeleteConfirmationSheet(
                 selectedCount: model.selectedLibrarySlimmingMemberIDs.count,
                 mediaKind: model.selectedMediaKind,
                 favoriteCount: model.selectedLibrarySlimmingFavoriteProtectionCount,
@@ -3041,7 +3041,7 @@ private struct LibrarySlimmingMoveToRecycleConfirmationSheet: View {
     }
 }
 
-private struct LibrarySlimmingFastDeleteConfirmationSheet: View {
+struct LibraryFastDeleteConfirmationSheet: View {
     let selectedCount: Int
     let mediaKind: MediaKind
     let favoriteCount: Int

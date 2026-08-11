@@ -1585,6 +1585,29 @@ final class LibraryWorkspaceModel: ObservableObject {
         librarySlimmingRecycle != nil
     }
 
+    var selectedAssetDeleteDisabledReason: String? {
+        if !supportsLibrarySlimmingRecycle {
+            return "删除服务未就绪"
+        }
+        if isMutatingLibrarySlimmingRecycle {
+            return "正在处理删除或回收…"
+        }
+        if selectedAssetIDs.isEmpty {
+            return "请先选择要删除的照片或视频"
+        }
+        return nil
+    }
+
+    var canDeleteSelectedAssetsImmediately: Bool {
+        selectedAssetDeleteDisabledReason == nil
+    }
+
+    var selectedAssetDeletionFavoriteProtectionCount: Int {
+        selectedAssetIDs.lazy.filter {
+            self.favoriteState(for: $0).isDeletionProtected
+        }.count
+    }
+
     var supportsLibrarySlimmingThresholds: Bool {
         librarySlimmingThresholds != nil
     }
@@ -2344,6 +2367,18 @@ final class LibraryWorkspaceModel: ObservableObject {
         else { return }
         await moveLibrarySlimmingAssetsToRecycle(
             Array(selectedLibrarySlimmingMemberIDs),
+            identicalCleanupPlan: nil,
+            removalMode: .releaseSourceSpace
+        )
+    }
+
+    func deleteSelectedAssetsImmediately() async {
+        guard canDeleteSelectedAssetsImmediately else { return }
+        let assetIDs = selectedAssetIDs.sorted {
+            $0.uuidString.lowercased() < $1.uuidString.lowercased()
+        }
+        await moveLibrarySlimmingAssetsToRecycle(
+            assetIDs,
             identicalCleanupPlan: nil,
             removalMode: .releaseSourceSpace
         )
@@ -10898,6 +10933,7 @@ struct LibraryWorkspaceView: View {
     @State private var showPreviewCacheClearConfirmation = false
     @State private var showPhotosOriginalStorageClearConfirmation = false
     @State private var showJobActivityPanel = false
+    @State private var showSelectedAssetDeleteConfirmation = false
     @State private var activeSheet: LibraryWorkspaceSheet?
     @State private var commandSearchText = ""
     @State private var gridColumnCount = 1
@@ -10951,6 +10987,20 @@ struct LibraryWorkspaceView: View {
             )
         ) { pending in
             SuggestionEnqueueConfirmationSheet(model: model, pending: pending)
+        }
+        .sheet(isPresented: $showSelectedAssetDeleteConfirmation) {
+            LibraryFastDeleteConfirmationSheet(
+                selectedCount: model.selectedAssetIDs.count,
+                mediaKind: model.selectedMediaKind,
+                favoriteCount: model.selectedAssetDeletionFavoriteProtectionCount,
+                onConfirm: {
+                    showSelectedAssetDeleteConfirmation = false
+                    Task { await model.deleteSelectedAssetsImmediately() }
+                },
+                onCancel: {
+                    showSelectedAssetDeleteConfirmation = false
+                }
+            )
         }
         .toolbar {
             ToolbarItemGroup {
@@ -13061,6 +13111,15 @@ struct LibraryWorkspaceView: View {
                                 )
                             }
                         }
+                        Button("删除", systemImage: "trash", role: .destructive) {
+                            showSelectedAssetDeleteConfirmation = true
+                        }
+                        .disabled(!model.canDeleteSelectedAssetsImmediately)
+                        .tint(.red)
+                        .persistentHelp(
+                            model.selectedAssetDeleteDisabledReason
+                                ?? "打开删除确认；文件夹原始媒体将永久删除，Apple Photos 资产将由系统移入“最近删除”。"
+                        )
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)

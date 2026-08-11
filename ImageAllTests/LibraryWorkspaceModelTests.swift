@@ -5561,7 +5561,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(recycle.moveAssetIDCalls, [[a]])
     }
 
-    func testLibrarySlimmingSpaceFirstDeleteUsesPermanentDeletePath() async {
+    func testLibrarySlimmingSpaceFirstDeleteUsesPermanentDeletePath() async throws {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "fast-delete.jpg")
         let cluster = SlimmingCluster(
@@ -5595,7 +5595,8 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         await model.selectAssets([asset.assetID])
         await model.findLibrarySlimmingFromSelection()
         await model.analyzeLibrarySlimming(mode: .seeds)
-        model.selectLibrarySlimmingCluster(cluster.id)
+        let presentedClusterID = try XCTUnwrap(model.librarySlimmingClusters.first?.id)
+        model.selectLibrarySlimmingCluster(presentedClusterID)
         model.selectLibrarySlimmingMember(asset.assetID, additive: false)
 
         await model.deleteSelectedLibrarySlimmingMembersImmediately()
@@ -5607,6 +5608,91 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             model.librarySlimmingStatusMessage,
             "已永久删除 1 张，来源空间已可回收"
         )
+    }
+
+    func testInspectorDeleteUsesLibrarySlimmingFastDeleteAndRemovesAssetFromGallery() async {
+        let sourceID = UUID()
+        let assets = (0 ..< 3).map {
+            Self.makeAsset(sourceID: sourceID, fileName: "gallery-\($0).jpg")
+        }
+        let recycle = FakeLibrarySlimmingRecyclePort()
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: assets,
+                initialItems: assets,
+                startsConnected: true,
+                hasPendingCatalogReconcileJobs: false
+            ),
+            librarySlimmingRecycle: recycle,
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.start()
+        await model.selectAssets([assets[1].assetID])
+
+        XCTAssertTrue(model.canDeleteSelectedAssetsImmediately)
+
+        await model.deleteSelectedAssetsImmediately()
+
+        XCTAssertEqual(recycle.fastDeleteAssetIDCalls, [[assets[1].assetID]])
+        XCTAssertTrue(recycle.moveAssetIDCalls.isEmpty)
+        XCTAssertEqual(model.items.map(\.assetID), [assets[0].assetID, assets[2].assetID])
+        XCTAssertFalse(model.selectedAssetIDs.contains(assets[1].assetID))
+        XCTAssertEqual(
+            model.librarySlimmingRecycleActionMessage,
+            "已永久删除 1 张，来源空间已可回收"
+        )
+    }
+
+    func testInspectorDeleteAvailabilityAndFavoriteWarningFollowCurrentSelection() async {
+        let sourceID = UUID()
+        let assets = (0 ..< 2).map {
+            Self.makeAsset(sourceID: sourceID, fileName: "protected-\($0).jpg")
+        }
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: assets,
+                initialItems: assets,
+                startsConnected: true,
+                hasPendingCatalogReconcileJobs: false,
+                favoriteStates: [
+                    assets[0].assetID: MediaFavoriteState(
+                        assetID: assets[0].assetID,
+                        isFavorite: true,
+                        photosObservedValue: nil,
+                        syncStatus: .localOnly,
+                        intentRevision: 1,
+                        requestedAtMs: 1,
+                        photosObservedModifiedAtMs: nil,
+                        lastErrorCode: nil
+                    ),
+                ]
+            ),
+            librarySlimmingRecycle: FakeLibrarySlimmingRecyclePort(),
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.start()
+
+        XCTAssertFalse(model.canDeleteSelectedAssetsImmediately)
+        XCTAssertEqual(
+            model.selectedAssetDeleteDisabledReason,
+            "请先选择要删除的照片或视频"
+        )
+
+        await model.selectAssets(Set(assets.map(\.assetID)))
+
+        XCTAssertTrue(model.canDeleteSelectedAssetsImmediately)
+        XCTAssertNil(model.selectedAssetDeleteDisabledReason)
+        XCTAssertEqual(model.selectedAssetDeletionFavoriteProtectionCount, 1)
     }
 
     func testLibrarySlimmingRecyclePublishesPendingStateBeforePhysicalMoveFinishes() async {
