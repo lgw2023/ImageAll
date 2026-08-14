@@ -1469,6 +1469,9 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var videoHoverTask: Task<Void, Never>?
     private var videoHoverRequestID: UUID?
     private var pendingVideoHoverAssetID: UUID?
+    private var pendingFavoriteStateLoadAssetIDs: Set<UUID> = []
+    private var favoriteStateLoadInFlightAssetIDs: Set<UUID> = []
+    private var favoriteStateLoadTask: Task<Void, Never>?
     private var assetPageRequestID: UUID?
     private var reviewPageRequestID: UUID?
     private var hiddenRecycledAssetIDs: Set<UUID> = []
@@ -9199,17 +9202,48 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     func ensureFavoriteStatesLoaded(assetIDs: [UUID]) async {
-        let missingIDs = Array(Set(assetIDs)).filter { favoriteStates[$0] == nil }
-        guard !missingIDs.isEmpty else { return }
-        let service = service
-        do {
-            let fetched = try await Self.offMain {
-                try service.fetchFavoriteStates(assetIDs: missingIDs)
+        let requestedIDs = Set(assetIDs)
+        let missingIDs = requestedIDs.filter { favoriteStates[$0] == nil }
+        pendingFavoriteStateLoadAssetIDs.formUnion(
+            missingIDs.subtracting(favoriteStateLoadInFlightAssetIDs)
+        )
+        let joinsInFlightLoad = !requestedIDs.isDisjoint(
+            with: favoriteStateLoadInFlightAssetIDs
+        )
+        guard !pendingFavoriteStateLoadAssetIDs.isEmpty || joinsInFlightLoad else { return }
+
+        if favoriteStateLoadTask == nil {
+            favoriteStateLoadTask = Task { [weak self] in
+                guard let self else { return }
+                await self.drainFavoriteStateLoadQueue()
             }
-            favoriteStates.merge(fetched) { _, newest in newest }
-        } catch {
-            favoriteStatusMessage = "无法读取红心状态。"
         }
+        await favoriteStateLoadTask?.value
+    }
+
+    private func drainFavoriteStateLoadQueue() async {
+        await Task.yield()
+        while !pendingFavoriteStateLoadAssetIDs.isEmpty {
+            let queuedIDs = pendingFavoriteStateLoadAssetIDs
+            pendingFavoriteStateLoadAssetIDs.removeAll()
+            let batchIDs = queuedIDs.filter {
+                favoriteStates[$0] == nil
+            }
+            guard !batchIDs.isEmpty else { continue }
+
+            favoriteStateLoadInFlightAssetIDs.formUnion(batchIDs)
+            let service = service
+            do {
+                let fetched = try await Self.offMain(priority: .utility) {
+                    try service.fetchFavoriteStates(assetIDs: Array(batchIDs))
+                }
+                favoriteStates.merge(fetched) { _, newest in newest }
+            } catch {
+                favoriteStatusMessage = "无法读取红心状态。"
+            }
+            favoriteStateLoadInFlightAssetIDs.subtract(batchIDs)
+        }
+        favoriteStateLoadTask = nil
     }
 
     func toggleFavorite(assetID: UUID) async {

@@ -4591,6 +4591,56 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertTrue(model.favoriteState(for: favorite.assetID).isFavorite)
     }
 
+    func testConcurrentFavoriteStateRequestsUseBoundedBatchedLoads() async {
+        let sourceID = UUID()
+        let assets = (0 ..< 12).map {
+            Self.makeAsset(sourceID: sourceID, fileName: "favorite-state-\($0).jpg")
+        }
+        let favoriteStates = Dictionary(uniqueKeysWithValues: assets.map { asset in
+            (
+                asset.assetID,
+                MediaFavoriteState(
+                    assetID: asset.assetID,
+                    isFavorite: true,
+                    photosObservedValue: nil,
+                    syncStatus: .localOnly,
+                    intentRevision: 1,
+                    requestedAtMs: 1,
+                    photosObservedModifiedAtMs: nil,
+                    lastErrorCode: nil
+                )
+            )
+        })
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: assets,
+            initialItems: assets,
+            startsConnected: true,
+            favoriteStates: favoriteStates,
+            favoriteStateFetchDelayNanoseconds: 80_000_000
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            idlePrewarmInstallEventMonitor: false
+        )
+
+        await withTaskGroup(of: Void.self) { group in
+            for asset in assets {
+                group.addTask {
+                    await model.ensureFavoriteStatesLoaded(assetIDs: [asset.assetID])
+                }
+            }
+        }
+
+        XCTAssertTrue(assets.allSatisfy { model.favoriteState(for: $0.assetID).isFavorite })
+        XCTAssertEqual(service.peakConcurrentFavoriteStateFetches, 1)
+        XCTAssertLessThan(service.favoriteStateFetchCallCount, assets.count)
+    }
+
     func testCancellingFavoriteInFavoritesKeepsLoadedWindowAndSelectsFollowingItem() async {
         let sourceID = UUID()
         let assets = (0 ..< 3).map {
@@ -15267,12 +15317,16 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
     private var storedCloudPreviewDownloadCallCount = 0
     private var storedCloudPreviewCancellationCount = 0
     private var storedThumbnailLoadCallCount = 0
+    private var storedFavoriteStateFetchCallCount = 0
+    private var storedActiveFavoriteStateFetches = 0
+    private var storedPeakConcurrentFavoriteStateFetches = 0
     private var storedRecycledThumbnailPrewarmAssetIDs: [UUID] = []
     private var storedSquareCacheInventoryCallCount = 0
     private var storedSquareThumbnailAssetIDs: Set<UUID> = []
     private var storedActiveThumbnailLoads = 0
     private var storedPeakConcurrentThumbnailLoads = 0
     private let thumbnailLoadDelayNanoseconds: UInt64
+    private let favoriteStateFetchDelayNanoseconds: UInt64
     private var storedPreviewLoadCallCount = 0
     private var storedOriginalAspectPrewarmCallCount = 0
     private var storedOriginalAspectCacheInventoryCallCount = 0
@@ -15369,7 +15423,8 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
         hasPendingCatalogReconcileJobs: Bool? = nil,
         blocksInspectorDetailFetches: Int = 0,
         blocksCatalogSourceMonitoring: Bool = false,
-        favoriteStates: [UUID: MediaFavoriteState] = [:]
+        favoriteStates: [UUID: MediaFavoriteState] = [:],
+        favoriteStateFetchDelayNanoseconds: UInt64 = 0
     ) {
         self.connectedSource = connectedSource
         self.reconciledItems = reconciledItems
@@ -15392,6 +15447,7 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
         self.thumbnailFailureError = thumbnailFailureError
         self.thumbnailCancelOnCall = thumbnailCancelOnCall
         self.thumbnailLoadDelayNanoseconds = thumbnailLoadDelayNanoseconds
+        self.favoriteStateFetchDelayNanoseconds = favoriteStateFetchDelayNanoseconds
         storedRemainingThumbnailFailures = thumbnailFailureCount
         self.cloudPreviewData = cloudPreviewData
         self.cloudPreviewProgress = cloudPreviewProgress
@@ -15543,6 +15599,14 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
 
     var thumbnailLoadCallCount: Int {
         lock.withLock { storedThumbnailLoadCallCount }
+    }
+
+    var favoriteStateFetchCallCount: Int {
+        lock.withLock { storedFavoriteStateFetchCallCount }
+    }
+
+    var peakConcurrentFavoriteStateFetches: Int {
+        lock.withLock { storedPeakConcurrentFavoriteStateFetches }
     }
 
     var recycledThumbnailPrewarmAssetIDs: [UUID] {
@@ -16109,7 +16173,21 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
 
     func fetchFavoriteStates(assetIDs: [UUID]) throws -> [UUID: MediaFavoriteState] {
         lock.withLock {
-            Dictionary(uniqueKeysWithValues: Set(assetIDs).map { assetID in
+            storedFavoriteStateFetchCallCount += 1
+            storedActiveFavoriteStateFetches += 1
+            storedPeakConcurrentFavoriteStateFetches = max(
+                storedPeakConcurrentFavoriteStateFetches,
+                storedActiveFavoriteStateFetches
+            )
+        }
+        if favoriteStateFetchDelayNanoseconds > 0 {
+            Thread.sleep(
+                forTimeInterval: Double(favoriteStateFetchDelayNanoseconds) / 1_000_000_000
+            )
+        }
+        return lock.withLock {
+            defer { storedActiveFavoriteStateFetches -= 1 }
+            return Dictionary(uniqueKeysWithValues: Set(assetIDs).map { assetID in
                 (assetID, storedFavoriteStates[assetID] ?? .none(assetID: assetID))
             })
         }
