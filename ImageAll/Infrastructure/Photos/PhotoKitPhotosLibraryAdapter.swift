@@ -317,32 +317,43 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
         case .preview: NSSize(width: 2_048, height: 2_048)
         }
 
-        return try await withCheckedThrowingContinuation { continuation in
-            let completion = OneShotImageContinuation(continuation)
-            imageManager.requestImage(
-                for: asset,
-                targetSize: targetSize,
-                contentMode: .aspectFit,
-                options: options
-            ) { image, info in
-                if let image, let data = image.tiffRepresentation {
-                    completion.resume(returning: data)
-                    return
-                }
-                if (info?[PHImageResultIsInCloudKey] as? Bool) == true {
-                    completion.resume(throwing: PhotosLibraryError.cloudOnly)
-                    return
-                }
-                if let error = info?[PHImageErrorKey] as? Error {
-                    completion.resume(throwing: error)
-                    return
-                }
-                if (info?[PHImageCancelledKey] as? Bool) == true {
+        let cancellation = PhotoKitImageRequestCancellation(manager: imageManager)
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let completion = OneShotContinuation(continuation)
+                let requestID = imageManager.requestImage(
+                    for: asset,
+                    targetSize: targetSize,
+                    contentMode: .aspectFit,
+                    options: options
+                ) { image, info in
+                    if (info?[PHImageResultIsDegradedKey] as? Bool) == true {
+                        return
+                    }
+                    if let image, let data = image.tiffRepresentation {
+                        completion.resume(returning: data)
+                        return
+                    }
+                    if (info?[PHImageResultIsInCloudKey] as? Bool) == true {
+                        completion.resume(throwing: PhotosLibraryError.cloudOnly)
+                        return
+                    }
+                    if let error = info?[PHImageErrorKey] as? Error {
+                        completion.resume(throwing: error)
+                        return
+                    }
+                    if (info?[PHImageCancelledKey] as? Bool) == true {
+                        completion.resume(throwing: CancellationError())
+                        return
+                    }
                     completion.resume(throwing: PhotosLibraryError.libraryUnavailable)
-                    return
                 }
-                completion.resume(throwing: PhotosLibraryError.libraryUnavailable)
+                cancellation.install(requestID: requestID) {
+                    completion.resume(throwing: CancellationError())
+                }
             }
+        } onCancel: {
+            cancellation.cancel()
         }
     }
 
@@ -384,29 +395,38 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
             throw PhotosLibraryError.libraryUnavailable
         }
 
-        return try await withCheckedThrowingContinuation { continuation in
-            imageManager.requestAVAsset(
-                forVideo: asset,
-                options: Self.makeLocalOnlyOriginalVideoRequestOptions()
-            ) { avAsset, _, info in
-                if let url = (avAsset as? AVURLAsset)?.url {
-                    continuation.resume(returning: url)
-                    return
+        let cancellation = PhotoKitImageRequestCancellation(manager: imageManager)
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let completion = OneShotContinuation(continuation)
+                let requestID = imageManager.requestAVAsset(
+                    forVideo: asset,
+                    options: Self.makeLocalOnlyOriginalVideoRequestOptions()
+                ) { avAsset, _, info in
+                    if let url = (avAsset as? AVURLAsset)?.url {
+                        completion.resume(returning: url)
+                        return
+                    }
+                    if (info?[PHImageResultIsInCloudKey] as? Bool) == true {
+                        completion.resume(throwing: PhotosLibraryError.cloudOnly)
+                        return
+                    }
+                    if let error = info?[PHImageErrorKey] as? Error {
+                        completion.resume(throwing: error)
+                        return
+                    }
+                    if (info?[PHImageCancelledKey] as? Bool) == true {
+                        completion.resume(throwing: CancellationError())
+                        return
+                    }
+                    completion.resume(throwing: PhotosLibraryError.libraryUnavailable)
                 }
-                if (info?[PHImageResultIsInCloudKey] as? Bool) == true {
-                    continuation.resume(throwing: PhotosLibraryError.cloudOnly)
-                    return
+                cancellation.install(requestID: requestID) {
+                    completion.resume(throwing: CancellationError())
                 }
-                if let error = info?[PHImageErrorKey] as? Error {
-                    continuation.resume(throwing: error)
-                    return
-                }
-                if (info?[PHImageCancelledKey] as? Bool) == true {
-                    continuation.resume(throwing: CancellationError())
-                    return
-                }
-                continuation.resume(throwing: PhotosLibraryError.libraryUnavailable)
             }
+        } onCancel: {
+            cancellation.cancel()
         }
     }
 
@@ -434,7 +454,7 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
         let cancellation = PhotoKitImageRequestCancellation(manager: imageManager)
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
-                let completion = OneShotImageContinuation(continuation)
+                let completion = OneShotContinuation(continuation)
                 let requestID = imageManager.requestImage(
                     for: asset,
                     targetSize: Self.cloudPreviewTargetSize,
@@ -459,7 +479,9 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
                     }
                     completion.resume(throwing: PhotosLibraryError.libraryUnavailable)
                 }
-                cancellation.install(requestID: requestID, completion: completion)
+                cancellation.install(requestID: requestID) {
+                    completion.resume(throwing: CancellationError())
+                }
             }
         } onCancel: {
             cancellation.cancel()
@@ -742,23 +764,23 @@ private final class SynchronousImageResult: @unchecked Sendable {
     }
 }
 
-private final class OneShotImageContinuation: @unchecked Sendable {
+private final class OneShotContinuation<Value: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
-    private var continuation: CheckedContinuation<Data, Error>?
+    private var continuation: CheckedContinuation<Value, Error>?
 
-    init(_ continuation: CheckedContinuation<Data, Error>) {
+    init(_ continuation: CheckedContinuation<Value, Error>) {
         self.continuation = continuation
     }
 
-    func resume(returning data: Data) {
-        take()?.resume(returning: data)
+    func resume(returning value: sending Value) {
+        take()?.resume(returning: value)
     }
 
     func resume(throwing error: Error) {
         take()?.resume(throwing: error)
     }
 
-    private func take() -> CheckedContinuation<Data, Error>? {
+    private func take() -> CheckedContinuation<Value, Error>? {
         lock.withLock {
             defer { continuation = nil }
             return continuation
@@ -766,41 +788,55 @@ private final class OneShotImageContinuation: @unchecked Sendable {
     }
 }
 
-private final class PhotoKitImageRequestCancellation: @unchecked Sendable {
+final class PhotoKitImageRequestCancellation: @unchecked Sendable {
     private struct State {
         var requestID: PHImageRequestID?
-        var completion: OneShotImageContinuation?
+        var cancellationCompletion: (() -> Void)?
         var isCancelled = false
     }
 
-    private let manager: PHImageManager
+    private let cancelRequest: (PHImageRequestID) -> Void
     private let lock = NSLock()
     private var state = State()
 
     init(manager: PHImageManager) {
-        self.manager = manager
+        cancelRequest = { requestID in
+            manager.cancelImageRequest(requestID)
+        }
     }
 
-    func install(requestID: PHImageRequestID, completion: OneShotImageContinuation) {
+    init(cancelRequest: @escaping (PHImageRequestID) -> Void) {
+        self.cancelRequest = cancelRequest
+    }
+
+    func install(
+        requestID: PHImageRequestID,
+        onCancellation: @escaping () -> Void
+    ) {
         let shouldCancel = lock.withLock { () -> Bool in
+            guard !state.isCancelled else { return true }
             state.requestID = requestID
-            state.completion = completion
-            return state.isCancelled
+            state.cancellationCompletion = onCancellation
+            return false
         }
         if shouldCancel {
-            manager.cancelImageRequest(requestID)
-            completion.resume(throwing: CancellationError())
+            cancelRequest(requestID)
+            onCancellation()
         }
     }
 
     func cancel() {
-        let current = lock.withLock { () -> (PHImageRequestID?, OneShotImageContinuation?) in
+        let current = lock.withLock { () -> (PHImageRequestID?, (() -> Void)?) in
+            guard !state.isCancelled else { return (nil, nil) }
             state.isCancelled = true
-            return (state.requestID, state.completion)
+            let current = (state.requestID, state.cancellationCompletion)
+            state.requestID = nil
+            state.cancellationCompletion = nil
+            return current
         }
         if let requestID = current.0 {
-            manager.cancelImageRequest(requestID)
+            cancelRequest(requestID)
         }
-        current.1?.resume(throwing: CancellationError())
+        current.1?()
     }
 }

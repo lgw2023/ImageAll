@@ -924,7 +924,12 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
             return .invalid(candidate: entry)
         }
         let nowMs = clock.nowMs
-        try repository.touchEntry(id: entry.id, accessedAtMs: nowMs)
+        if DerivedImageLRUTouchPolicy.shouldTouch(
+            lastAccessedAtMs: entry.lastAccessedAtMs,
+            nowMs: nowMs
+        ) {
+            try repository.touchEntry(id: entry.id, accessedAtMs: nowMs)
+        }
         return .valid(
             DerivedImagePayload(
                 entryID: entry.id,

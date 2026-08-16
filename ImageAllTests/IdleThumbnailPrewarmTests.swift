@@ -1,8 +1,135 @@
+import AppKit
 import XCTest
 @testable import ImageAll
 
 @MainActor
 final class IdleThumbnailPrewarmTests: XCTestCase {
+    func testThumbnailPresentationStateChangesOnlyForCellVisibleInputs() {
+        let item = makeAsset(sourceID: UUID(), fileName: "visible.jpg")
+        let base = AssetThumbnailPresentationState(
+            item: item,
+            isSelected: false,
+            favoriteState: .none(assetID: item.assetID),
+            aspectMode: .square,
+            usesDownloadedCloudPreview: false,
+            cacheVersion: 1,
+            originalAspectGeneration: 0,
+            hoverPlaybackIdentity: nil
+        )
+
+        XCTAssertEqual(base, base)
+        XCTAssertNotEqual(
+            base,
+            AssetThumbnailPresentationState(
+                item: item,
+                isSelected: true,
+                favoriteState: .none(assetID: item.assetID),
+                aspectMode: .square,
+                usesDownloadedCloudPreview: false,
+                cacheVersion: 1,
+                originalAspectGeneration: 0,
+                hoverPlaybackIdentity: nil
+            )
+        )
+        XCTAssertNotEqual(
+            base,
+            AssetThumbnailPresentationState(
+                item: item,
+                isSelected: false,
+                favoriteState: .none(assetID: item.assetID),
+                aspectMode: .square,
+                usesDownloadedCloudPreview: false,
+                cacheVersion: 2,
+                originalAspectGeneration: 0,
+                hoverPlaybackIdentity: nil
+            )
+        )
+    }
+
+    func testDecodedThumbnailCacheReusesImageUntilPresentationRevisionChanges() {
+        let assetID = UUID()
+        let image = NSImage(size: NSSize(width: 64, height: 64))
+        let cache = LibraryDecodedThumbnailCache(physicalMemoryBytes: 8 * 1_024 * 1_024 * 1_024)
+
+        cache.store(
+            image,
+            assetID: assetID,
+            cacheVersion: 3,
+            aspectMode: .square,
+            originalAspectGeneration: 0
+        )
+
+        XCTAssertTrue(
+            cache.image(
+                assetID: assetID,
+                cacheVersion: 3,
+                aspectMode: .square,
+                originalAspectGeneration: 0
+            ) === image
+        )
+        XCTAssertNil(
+            cache.image(
+                assetID: assetID,
+                cacheVersion: 4,
+                aspectMode: .square,
+                originalAspectGeneration: 0
+            )
+        )
+        XCTAssertNil(
+            cache.image(
+                assetID: assetID,
+                cacheVersion: 3,
+                aspectMode: .original,
+                originalAspectGeneration: 0
+            )
+        )
+        XCTAssertEqual(cache.totalCostLimit, 64 * 1_024 * 1_024)
+    }
+
+    func testThumbnailMemoryCacheKeepsRecentlyReadEntry() {
+        let oldest = UUID()
+        let recentlyRead = UUID()
+        let newest = UUID()
+        var cache = LibraryThumbnailMemoryCache(capacity: 2)
+
+        cache.store(Data([1]), for: recentlyRead)
+        cache.store(Data([2]), for: oldest)
+        XCTAssertEqual(cache.data(for: recentlyRead), Data([1]))
+
+        cache.store(Data([3]), for: newest)
+
+        XCTAssertEqual(cache.data(for: recentlyRead), Data([1]))
+        XCTAssertNil(cache.data(for: oldest))
+        XCTAssertEqual(cache.data(for: newest), Data([3]))
+    }
+
+    func testGridPagingBeginsBeforeTheLastVisibleCell() {
+        let assetIDs = (0 ..< 40).map { _ in UUID() }
+
+        XCTAssertFalse(
+            LibraryGridPagingPolicy.shouldLoadMore(
+                currentAssetID: assetIDs[27],
+                orderedAssetIDs: assetIDs,
+                visibleItemCount: 12
+            )
+        )
+        XCTAssertTrue(
+            LibraryGridPagingPolicy.shouldLoadMore(
+                currentAssetID: assetIDs[28],
+                orderedAssetIDs: assetIDs,
+                visibleItemCount: 12
+            ),
+            "entering the final visible page should overlap catalog I/O with scrolling"
+        )
+        XCTAssertTrue(
+            LibraryGridPagingPolicy.shouldLoadMore(
+                currentAssetID: assetIDs.last!,
+                orderedAssetIDs: assetIDs,
+                visibleItemCount: 12
+            )
+        )
+    }
+
     func testPreferenceDefaultsToEnabledWhenUnset() {
         let suiteName = "IdlePrewarmPrefs.default.\(UUID().uuidString)"
         let defaults = try! XCTUnwrap(UserDefaults(suiteName: suiteName))

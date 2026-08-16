@@ -147,6 +147,38 @@ final class DerivedImageCacheHitAndConcurrencyTests: XCTestCase {
         )
     }
 
+    func testRepeatedWarmHitsWithinOneMinuteDoNotRewriteLRU() async throws {
+        let env = try DerivedImageTestSupport.TempEnvironment(label: "coalesced-lru-touch")
+        defer { env.cleanup() }
+        _ = try env.seedAvailableAsset()
+        let clock = MutableJobClock(nowMs: generateClockMs)
+        let (service, _) = env.makeService(
+            volumeReader: DerivedImageTestSupport.generousVolume,
+            clock: clock
+        )
+        let generated = try await service.loadOrGenerate(
+            DerivedImageRequest(assetID: env.assetID, variant: .gridRegular)
+        )
+
+        clock.setNowMs(generateClockMs + 1_000)
+        let firstHit = try await service.loadOrGenerate(
+            DerivedImageRequest(assetID: env.assetID, variant: .gridRegular)
+        )
+        clock.setNowMs(generateClockMs + 30_000)
+        let secondHit = try await service.loadOrGenerate(
+            DerivedImageRequest(assetID: env.assetID, variant: .gridRegular)
+        )
+
+        XCTAssertEqual(firstHit.origin, .cacheHit)
+        XCTAssertEqual(secondHit.origin, .cacheHit)
+        let lastAccessedMs = try await env.entryLastAccessedMs(id: generated.entryID)
+        XCTAssertEqual(
+            lastAccessedMs,
+            generateClockMs,
+            "rapid scrolling should not turn every cache hit into a SQLite write"
+        )
+    }
+
     func testCacheOnlyOriginalAspectLookupNeverReadsSourceOrGenerates() async throws {
         let env = try DerivedImageTestSupport.TempEnvironment(label: "original-aspect-cache-only")
         defer { env.cleanup() }

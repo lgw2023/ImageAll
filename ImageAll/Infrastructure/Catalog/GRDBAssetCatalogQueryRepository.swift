@@ -17,6 +17,7 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
             var arguments = StatementArguments()
             let whereClause = try buildWhereClause(db: db, filter: request.filter, arguments: &arguments)
             let orderClause = orderClause(for: request.sort)
+            let assetFromClause = assetFromClause(for: request.sort)
             if let cursor = request.cursor {
                 let cursorClause = try buildCursorClause(cursor: cursor, arguments: &arguments)
                 let sql = """
@@ -48,7 +49,7 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
                         FROM asset_tag_decision d
                         WHERE d.asset_id = asset.id AND d.decision = 'rejected'
                     ) AS rejected_tag_count
-                FROM asset
+                \(assetFromClause)
                 INNER JOIN source ON source.id = asset.source_id
                 WHERE asset.locator_state = 'current'
                     AND \(whereClause)
@@ -90,7 +91,7 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
                     FROM asset_tag_decision d
                     WHERE d.asset_id = asset.id AND d.decision = 'rejected'
                 ) AS rejected_tag_count
-            FROM asset
+            \(assetFromClause)
             INNER JOIN source ON source.id = asset.source_id
             WHERE asset.locator_state = 'current'
                 AND \(whereClause)
@@ -438,6 +439,20 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
             asset.file_name COLLATE NOCASE ASC,
             asset.id ASC
             """
+        }
+    }
+
+    /// Broad gallery pages are already ordered by one of these partial indexes.
+    /// Pinning that access path prevents the media-kind index from winning the
+    /// cost estimate and forcing SQLite to sort the whole matching result set.
+    private func assetFromClause(for sort: AssetPageSort) -> String {
+        switch sort {
+        case .newest:
+            return "FROM asset INDEXED BY asset_current_time_desc_idx"
+        case .oldest:
+            return "FROM asset INDEXED BY asset_current_time_idx"
+        case .fileNameAscending:
+            return "FROM asset INDEXED BY asset_current_file_name_all_idx"
         }
     }
 

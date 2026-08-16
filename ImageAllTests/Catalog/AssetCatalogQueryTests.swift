@@ -2,6 +2,41 @@ import XCTest
 @testable import ImageAll
 
 final class AssetCatalogQueryTests: XCTestCase {
+    func testBroadAssetPagesFollowTheRequestedSortIndex() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+        var statements: [String] = []
+        try fixture.database.pool.read { db in
+            db.trace { event in
+                guard case let .statement(statement) = event else { return }
+                let sql = statement.sql
+                if sql.contains("FROM asset") && sql.contains("ORDER BY") {
+                    statements.append(sql)
+                }
+            }
+        }
+        defer {
+            try? fixture.database.pool.read { db in
+                db.trace(options: [])
+            }
+        }
+
+        for sort in [AssetPageSort.newest, .oldest, .fileNameAscending] {
+            _ = try fixture.query.fetchAssetPage(
+                AssetPageRequest(
+                    filter: AssetPageFilter(),
+                    sort: sort,
+                    cursor: nil,
+                    limit: 100
+                )
+            )
+        }
+
+        XCTAssertEqual(statements.count, 3)
+        XCTAssertTrue(statements[0].contains("INDEXED BY asset_current_time_desc_idx"))
+        XCTAssertTrue(statements[1].contains("INDEXED BY asset_current_time_idx"))
+        XCTAssertTrue(statements[2].contains("INDEXED BY asset_current_file_name_all_idx"))
+    }
+
     func testGalleryOverviewExecutesAsOneAggregateStatement() throws {
         let fixture = try CatalogQueryTestSupport.openGalleryOverviewDatabase()
         let counter = CatalogSQLStatementCounter()

@@ -1,3 +1,4 @@
+import Charts
 import Foundation
 import SwiftUI
 
@@ -1250,6 +1251,20 @@ private struct TrainingWorkspaceArtifactSection: View {
 private struct TrainingWorkspaceMetricsSection: View {
     let json: String
 
+    private var metrics: [TrainingWorkspaceMetricPoint] {
+        TrainingWorkspaceJSONPresentation.metricCurve(json)
+    }
+
+    private var bestMetric: TrainingWorkspaceMetricPoint? {
+        metrics.min { lhs, rhs in
+            lhs.loss == rhs.loss ? lhs.epoch < rhs.epoch : lhs.loss < rhs.loss
+        }
+    }
+
+    private var latestMetric: TrainingWorkspaceMetricPoint? {
+        metrics.last
+    }
+
     var body: some View {
         TrainingWorkspaceDetailSection(
             "训练过程",
@@ -1263,13 +1278,146 @@ private struct TrainingWorkspaceMetricsSection: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
-            DisclosureGroup("查看原始训练指标") {
-                Text(TrainingWorkspaceJSONPresentation.prettyMetrics(json) ?? "没有过程指标")
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 6)
+
+            if metrics.isEmpty {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "chart.line.downtrend.xyaxis")
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("没有可绘制的训练曲线")
+                            .font(.subheadline.weight(.semibold))
+                        Text("训练完成并记录逐轮损失后，曲线会显示在这里。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+                .background(
+                    .secondary.opacity(0.055),
+                    in: RoundedRectangle(cornerRadius: 8)
+                )
+            } else {
+                metricHighlights
+                lossChart
             }
         }
+    }
+
+    private var metricHighlights: some View {
+        LazyVGrid(
+            columns: [GridItem(.adaptive(minimum: 120), spacing: 10)],
+            alignment: .leading,
+            spacing: 10
+        ) {
+            metricHighlight(
+                title: "训练轮次",
+                value: metrics.count.formatted(),
+                systemImage: "repeat"
+            )
+            metricHighlight(
+                title: "最佳损失",
+                value: formattedLoss(bestMetric?.loss),
+                systemImage: "arrow.down.to.line"
+            )
+            metricHighlight(
+                title: "最终损失",
+                value: formattedLoss(latestMetric?.loss),
+                systemImage: "flag.checkered"
+            )
+        }
+    }
+
+    private var lossChart: some View {
+        Chart {
+            ForEach(metrics) { metric in
+                LineMark(
+                    x: .value("训练轮次", metric.epoch),
+                    y: .value("评估损失", metric.loss)
+                )
+                .foregroundStyle(Color.accentColor)
+                .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round))
+                .interpolationMethod(.monotone)
+            }
+
+            if let bestMetric {
+                RuleMark(y: .value("最佳损失", bestMetric.loss))
+                    .foregroundStyle(Color.green.opacity(0.55))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                PointMark(
+                    x: .value("最佳轮次", bestMetric.epoch),
+                    y: .value("最佳损失", bestMetric.loss)
+                )
+                .foregroundStyle(Color.green)
+                .symbolSize(42)
+            }
+        }
+        .chartLegend(.hidden)
+        .chartXAxisLabel("训练轮次")
+        .chartYAxisLabel("评估损失")
+        .chartXAxis {
+            AxisMarks(values: .automatic(desiredCount: 6)) {
+                AxisGridLine().foregroundStyle(.secondary.opacity(0.14))
+                AxisTick()
+                AxisValueLabel()
+            }
+        }
+        .chartYAxis {
+            AxisMarks(position: .leading, values: .automatic(desiredCount: 5)) {
+                AxisGridLine().foregroundStyle(.secondary.opacity(0.14))
+                AxisTick()
+                AxisValueLabel()
+            }
+        }
+        .frame(height: 230)
+        .padding(.horizontal, 8)
+        .padding(.top, 12)
+        .padding(.bottom, 8)
+        .background(
+            .secondary.opacity(0.04),
+            in: RoundedRectangle(cornerRadius: 10)
+        )
+        .accessibilityLabel("训练损失曲线")
+        .accessibilityValue(accessibilitySummary)
+    }
+
+    private func metricHighlight(
+        title: String,
+        value: String,
+        systemImage: String
+    ) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: systemImage)
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(value)
+                    .font(.subheadline.weight(.semibold).monospacedDigit())
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(
+            Color.accentColor.opacity(0.065),
+            in: RoundedRectangle(cornerRadius: 8)
+        )
+    }
+
+    private func formattedLoss(_ loss: Double?) -> String {
+        guard let loss else { return "—" }
+        return loss.formatted(.number.precision(.significantDigits(3 ... 5)))
+    }
+
+    private var accessibilitySummary: String {
+        guard let bestMetric, let latestMetric else { return "没有过程指标" }
+        return """
+        共 \(metrics.count) 轮，最佳损失 \(formattedLoss(bestMetric.loss))，\
+        最终损失 \(formattedLoss(latestMetric.loss))
+        """
     }
 }
 
@@ -1402,16 +1550,29 @@ enum TrainingWorkspaceJSONPresentation {
         }
     }
 
-    static func prettyMetrics(_ json: String) -> String? {
-        pretty(json)?
-            .replacingOccurrences(
-                of: "\"bestValidationLoss\"",
-                with: "\"legacyEvaluationLoss\""
-            )
-            .replacingOccurrences(
-                of: "\"validationLoss\"",
-                with: "\"legacyEvaluationLoss\""
-            )
+    static func metricCurve(_ json: String) -> [TrainingWorkspaceMetricPoint] {
+        guard let metrics = try? JSONSerialization.jsonObject(with: Data(json.utf8))
+            as? [String: Any],
+              let epochs = metrics["epochs"] as? [[String: Any]]
+        else {
+            return []
+        }
+        var lossByEpoch: [Int: Double] = [:]
+        for item in epochs {
+            guard let epoch = item["epoch"] as? Int,
+                  epoch > 0,
+                  let number = (item["evaluationLoss"] ?? item["validationLoss"])
+                    as? NSNumber
+            else {
+                continue
+            }
+            let loss = number.doubleValue
+            guard loss.isFinite, loss >= 0 else { continue }
+            lossByEpoch[epoch] = loss
+        }
+        return lossByEpoch
+            .map { TrainingWorkspaceMetricPoint(epoch: $0.key, loss: $0.value) }
+            .sorted { $0.epoch < $1.epoch }
     }
 
     static func safeArtifactReference(_ value: String?) -> String? {
@@ -1445,6 +1606,13 @@ enum TrainingWorkspaceJSONPresentation {
         }
         return value
     }
+}
+
+struct TrainingWorkspaceMetricPoint: Identifiable, Equatable {
+    let epoch: Int
+    let loss: Double
+
+    var id: Int { epoch }
 }
 
 enum TrainingWorkspaceActivityPresentation {

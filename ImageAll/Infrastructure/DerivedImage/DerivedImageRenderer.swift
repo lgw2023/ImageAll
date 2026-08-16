@@ -121,8 +121,7 @@ struct DerivedImageRenderer: Sendable {
             artifact.bytes,
             format: expectedFormat,
             width: expectedWidth,
-            height: expectedHeight,
-            sha256: artifact.sha256
+            height: expectedHeight
         ) else {
             throw DerivedImageError.derivedEncodeFailed
         }
@@ -139,8 +138,7 @@ struct DerivedImageRenderer: Sendable {
             bytes,
             format: entry.storageFormat,
             width: entry.pixelWidth,
-            height: entry.pixelHeight,
-            sha256: entry.encodedSHA256
+            height: entry.pixelHeight
         )
     }
 
@@ -230,8 +228,7 @@ struct DerivedImageRenderer: Sendable {
         _ bytes: Data,
         format: DerivedImageStorageFormat,
         width: Int,
-        height: Int,
-        sha256: Data
+        height: Int
     ) throws -> Bool {
         guard let source = CGImageSourceCreateWithData(bytes as CFData, nil) else {
             return false
@@ -240,9 +237,7 @@ struct DerivedImageRenderer: Sendable {
         let expectedUTI = (format == .jpeg ? UTType.jpeg : UTType.png).identifier
         guard (CGImageSourceGetType(source) as String?) == expectedUTI else { return false }
         guard let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return false }
-        guard image.width == width, image.height == height else { return false }
-        let digest = SHA256.hash(data: bytes)
-        return Data(digest) == sha256
+        return image.width == width && image.height == height
     }
 
     private func sourceImageHasAlpha(source: CGImageSource, index: Int) -> Bool {

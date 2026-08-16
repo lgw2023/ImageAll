@@ -440,6 +440,18 @@ enum LibraryGridLayout {
     }
 }
 
+enum LibraryGridPagingPolicy {
+    static func shouldLoadMore<AssetIDs: RandomAccessCollection>(
+        currentAssetID: UUID,
+        orderedAssetIDs: AssetIDs,
+        visibleItemCount: Int
+    ) -> Bool where AssetIDs.Element == UUID {
+        guard !orderedAssetIDs.isEmpty else { return false }
+        let prefetchDistance = min(max(visibleItemCount, 1), orderedAssetIDs.count)
+        return orderedAssetIDs.suffix(prefetchDistance).contains(currentAssetID)
+    }
+}
+
 enum LibraryAssetDetailText {
     static func hoverText(_ item: AssetGridItemProjection) -> String {
         var lines = [
@@ -1168,9 +1180,9 @@ private actor LibraryThumbnailLoadInFlightCoordinator {
     }
 }
 
-/// Main-actor thumbnail bytes with the same 3,000-entry insertion/LRU-like
-/// contract as the former dictionaries plus array. Generation-stamped order
-/// records avoid O(n) `removeAll` and `removeFirst` work on every cache write.
+/// Main-actor thumbnail bytes with a true least-recently-used eviction order.
+/// Generation-stamped records keep both reads and writes O(1) in the common
+/// path while avoiding `removeAll` and `removeFirst` work during scrolling.
 struct LibraryThumbnailMemoryCache {
     private struct OrderRecord {
         let assetID: UUID
@@ -1196,8 +1208,11 @@ struct LibraryThumbnailMemoryCache {
 
     var count: Int { dataByAssetID.count }
 
-    func data(for assetID: UUID) -> Data? {
-        dataByAssetID[assetID]
+    mutating func data(for assetID: UUID) -> Data? {
+        guard let data = dataByAssetID[assetID] else { return nil }
+        recordAccess(for: assetID)
+        compactOrderIfNeeded()
+        return data
     }
 
     func version(for assetID: UUID) -> Int {
@@ -1228,6 +1243,12 @@ struct LibraryThumbnailMemoryCache {
         orderHead = 0
     }
 
+    private mutating func recordAccess(for assetID: UUID) {
+        nextGeneration &+= 1
+        latestGenerationByAssetID[assetID] = nextGeneration
+        order.append(OrderRecord(assetID: assetID, generation: nextGeneration))
+    }
+
     private mutating func evictIfNeeded() {
         while dataByAssetID.count > capacity, orderHead < order.count {
             let candidate = order[orderHead]
@@ -1249,6 +1270,75 @@ struct LibraryThumbnailMemoryCache {
             latestGenerationByAssetID[record.assetID] == record.generation
         }
         orderHead = 0
+    }
+}
+
+@MainActor
+final class LibraryDecodedThumbnailCache {
+    private let cache = NSCache<NSString, NSImage>()
+    let totalCostLimit: Int
+
+    init(physicalMemoryBytes: UInt64 = ProcessInfo.processInfo.physicalMemory) {
+        let proportionalBudget = physicalMemoryBytes / 128
+        totalCostLimit = proportionalBudget > UInt64(Int.max)
+            ? Int.max
+            : Int(proportionalBudget)
+        cache.totalCostLimit = totalCostLimit
+    }
+
+    func image(
+        assetID: UUID,
+        cacheVersion: Int,
+        aspectMode: LibraryThumbnailAspectMode,
+        originalAspectGeneration: Int
+    ) -> NSImage? {
+        cache.object(
+            forKey: key(
+                assetID: assetID,
+                cacheVersion: cacheVersion,
+                aspectMode: aspectMode,
+                originalAspectGeneration: originalAspectGeneration
+            )
+        )
+    }
+
+    func store(
+        _ image: NSImage,
+        assetID: UUID,
+        cacheVersion: Int,
+        aspectMode: LibraryThumbnailAspectMode,
+        originalAspectGeneration: Int
+    ) {
+        let width = max(Int(image.size.width.rounded(.up)), 1)
+        let height = max(Int(image.size.height.rounded(.up)), 1)
+        let (pixelCount, pixelOverflow) = width.multipliedReportingOverflow(by: height)
+        let (byteCount, byteOverflow) = pixelCount.multipliedReportingOverflow(by: 4)
+        let cost = pixelOverflow || byteOverflow ? Int.max : byteCount
+        cache.setObject(
+            image,
+            forKey: key(
+                assetID: assetID,
+                cacheVersion: cacheVersion,
+                aspectMode: aspectMode,
+                originalAspectGeneration: originalAspectGeneration
+            ),
+            cost: cost
+        )
+    }
+
+    func removeAll() {
+        cache.removeAllObjects()
+    }
+
+    private func key(
+        assetID: UUID,
+        cacheVersion: Int,
+        aspectMode: LibraryThumbnailAspectMode,
+        originalAspectGeneration: Int
+    ) -> NSString {
+        let rawKey = "\(assetID.uuidString.lowercased())|\(cacheVersion)"
+            + "|\(aspectMode.rawValue)|\(originalAspectGeneration)"
+        return rawKey as NSString
     }
 }
 
@@ -1476,6 +1566,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var reviewPageRequestID: UUID?
     private var hiddenRecycledAssetIDs: Set<UUID> = []
     private var thumbnailMemoryCache = LibraryThumbnailMemoryCache(capacity: 3_000)
+    private let decodedThumbnailCache = LibraryDecodedThumbnailCache()
     private let thumbnailLoadGate: LibraryThumbnailLoadScheduler
     private let thumbnailLoadInFlight = LibraryThumbnailLoadInFlightCoordinator()
     private var thumbnailLoadEpoch = 0
@@ -6101,6 +6192,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             reviewPageRequestID = UUID()
             thumbnailLoadEpoch &+= 1
             thumbnailMemoryCache.removeAll()
+            decodedThumbnailCache.removeAll()
             selectedAssetIDs = []
             selectedReviewItemID = nil
             isSinglePhotoPresented = false
@@ -6428,8 +6520,15 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
     }
 
-    func loadMoreIfNeeded(currentAssetID: UUID) async {
-        guard currentAssetID == items.last?.assetID,
+    func loadMoreIfNeeded(
+        currentAssetID: UUID,
+        visibleItemCount: Int = 1
+    ) async {
+        guard LibraryGridPagingPolicy.shouldLoadMore(
+            currentAssetID: currentAssetID,
+            orderedAssetIDs: items.lazy.map(\.assetID),
+            visibleItemCount: visibleItemCount
+        ),
               let cursor = nextCursor,
               !isLoadingMore
         else {
@@ -6488,6 +6587,36 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     func thumbnailCacheVersion(for assetID: UUID) -> Int {
         thumbnailMemoryCache.version(for: assetID)
+    }
+
+    func cachedThumbnailImage(
+        for assetID: UUID,
+        aspectMode: LibraryThumbnailAspectMode
+    ) -> NSImage? {
+        decodedThumbnailCache.image(
+            assetID: assetID,
+            cacheVersion: thumbnailCacheVersion(for: assetID),
+            aspectMode: aspectMode,
+            originalAspectGeneration: aspectMode == .original
+                ? originalAspectThumbnailCacheGeneration
+                : 0
+        )
+    }
+
+    func rememberThumbnailImage(
+        _ image: NSImage,
+        for assetID: UUID,
+        aspectMode: LibraryThumbnailAspectMode
+    ) {
+        decodedThumbnailCache.store(
+            image,
+            assetID: assetID,
+            cacheVersion: thumbnailCacheVersion(for: assetID),
+            aspectMode: aspectMode,
+            originalAspectGeneration: aspectMode == .original
+                ? originalAspectThumbnailCacheGeneration
+                : 0
+        )
     }
 
     func rememberThumbnailData(_ data: Data, for assetID: UUID) {
@@ -13193,10 +13322,31 @@ struct LibraryWorkspaceView: View {
                             spacing: LibraryGridLayout.spacing
                         ) {
                             ForEach(model.items, id: \.assetID) { item in
+                                let hoverPlayback = model.videoHoverPlayback?.assetID
+                                    == item.assetID ? model.videoHoverPlayback : nil
+                                let usesDownloadedCloudPreview: Bool = if case let .downloaded(
+                                    assetID,
+                                    _
+                                ) = model.cloudPreviewState {
+                                    assetID == item.assetID
+                                } else {
+                                    false
+                                }
                                 AssetThumbnailView(
-                                    item: item,
+                                    state: AssetThumbnailPresentationState(
+                                        item: item,
+                                        isSelected: model.selectedAssetIDs.contains(item.assetID),
+                                        favoriteState: model.favoriteState(for: item.assetID),
+                                        aspectMode: model.thumbnailAspectMode,
+                                        usesDownloadedCloudPreview: usesDownloadedCloudPreview,
+                                        cacheVersion: model.thumbnailCacheVersion(for: item.assetID),
+                                        originalAspectGeneration: model.thumbnailAspectMode == .original
+                                            ? model.originalAspectThumbnailCacheGeneration
+                                            : 0,
+                                        hoverPlaybackIdentity: hoverPlayback.map(ObjectIdentifier.init)
+                                    ),
                                     model: model,
-                                    isSelected: model.selectedAssetIDs.contains(item.assetID),
+                                    hoverPlayback: hoverPlayback,
                                     onSelect: {
                                         guard !isMarqueeSelecting else { return }
                                         contentFocused = true
@@ -13216,10 +13366,14 @@ struct LibraryWorkspaceView: View {
                                         }
                                     }
                                 )
+                                    .equatable()
                                     .libraryGridCellFrameReporter(assetID: item.assetID)
                                     .id(item.assetID)
                                     .task {
-                                        await model.loadMoreIfNeeded(currentAssetID: item.assetID)
+                                        await model.loadMoreIfNeeded(
+                                            currentAssetID: item.assetID,
+                                            visibleItemCount: gridPageItemCount
+                                        )
                                     }
                             }
                         }
@@ -15121,10 +15275,22 @@ struct MediaFavoriteButton: View {
     }
 }
 
-private struct AssetThumbnailView: View {
+struct AssetThumbnailPresentationState: Equatable {
     let item: AssetGridItemProjection
-    @ObservedObject var model: LibraryWorkspaceModel
     let isSelected: Bool
+    let favoriteState: MediaFavoriteState
+    let aspectMode: LibraryThumbnailAspectMode
+    let usesDownloadedCloudPreview: Bool
+    let cacheVersion: Int
+    let originalAspectGeneration: Int
+    let hoverPlaybackIdentity: ObjectIdentifier?
+}
+
+@MainActor
+private struct AssetThumbnailView: View, @MainActor Equatable {
+    let state: AssetThumbnailPresentationState
+    let model: LibraryWorkspaceModel
+    let hoverPlayback: LibraryVideoHoverPlayback?
     let onSelect: () -> Void
     let onOpen: () -> Void
     @State private var image: NSImage?
@@ -15138,19 +15304,18 @@ private struct AssetThumbnailView: View {
                 if let image {
                     Image(nsImage: image)
                         .resizable()
-                        .aspectRatio(contentMode: model.thumbnailAspectMode.imageContentMode)
+                        .aspectRatio(contentMode: state.aspectMode.imageContentMode)
                         .frame(width: proxy.size.width, height: proxy.size.height)
                 } else {
                     Image(systemName: emptyThumbnailSymbol)
                         .font(.title)
                         .foregroundStyle(.secondary)
                 }
-                if let playback = model.videoHoverPlayback,
-                   playback.assetID == item.assetID
+                if let hoverPlayback
                 {
                     LibraryHoverVideoPlaybackView(
-                        playback: playback,
-                        aspectMode: model.thumbnailAspectMode
+                        playback: hoverPlayback,
+                        aspectMode: state.aspectMode
                     )
                     .allowsHitTesting(false)
                     .transition(.opacity)
@@ -15190,7 +15355,7 @@ private struct AssetThumbnailView: View {
             }
             .overlay(alignment: .topTrailing) {
                 MediaFavoriteButton(
-                    state: model.favoriteState(for: item.assetID),
+                    state: state.favoriteState,
                     isVisible: isHovered || isSelected
                 ) {
                     Task { await model.toggleFavorite(assetID: item.assetID) }
@@ -15226,8 +15391,7 @@ private struct AssetThumbnailView: View {
             onOpen()
         }
         .contextMenu {
-            let state = model.favoriteState(for: item.assetID)
-            Button(state.isFavorite ? "取消红心" : "加入红心") {
+            Button(state.favoriteState.isFavorite ? "取消红心" : "加入红心") {
                 Task { await model.toggleFavorite(assetID: item.assetID) }
             }
         }
@@ -15254,11 +15418,23 @@ private struct AssetThumbnailView: View {
             return
         }
 
-        let aspectMode = model.thumbnailAspectMode
+        let aspectMode = state.aspectMode
+        if let cachedImage = model.cachedThumbnailImage(
+            for: item.assetID,
+            aspectMode: aspectMode
+        ) {
+            image = cachedImage
+            return
+        }
         if aspectMode == .square,
            let cached = model.cachedThumbnailData(for: item.assetID),
            let cachedImage = LibraryGridThumbnailImageFactory.image(from: cached)
         {
+            model.rememberThumbnailImage(
+                cachedImage,
+                for: item.assetID,
+                aspectMode: aspectMode
+            )
             image = cachedImage
             return
         }
@@ -15275,6 +15451,11 @@ private struct AssetThumbnailView: View {
                     if aspectMode == .square {
                         model.rememberThumbnailData(data, for: item.assetID)
                     }
+                    model.rememberThumbnailImage(
+                        decoded,
+                        for: item.assetID,
+                        aspectMode: aspectMode
+                    )
                     image = decoded
                     return
                 }
@@ -15312,25 +15493,19 @@ private struct AssetThumbnailView: View {
     }
 
     private var thumbnailLoadID: AssetThumbnailLoadID {
-        let usesDownloadedCloudPreview: Bool
-        if case let .downloaded(assetID, _) = model.cloudPreviewState {
-            usesDownloadedCloudPreview = assetID == item.assetID
-        } else {
-            usesDownloadedCloudPreview = false
-        }
         return AssetThumbnailLoadID(
             assetID: item.assetID,
-            usesDownloadedCloudPreview: usesDownloadedCloudPreview,
-            cacheVersion: model.thumbnailCacheVersion(for: item.assetID),
-            aspectMode: model.thumbnailAspectMode,
-            originalAspectCacheGeneration: model.originalAspectThumbnailCacheGeneration
+            usesDownloadedCloudPreview: state.usesDownloadedCloudPreview,
+            cacheVersion: state.cacheVersion,
+            aspectMode: state.aspectMode,
+            originalAspectCacheGeneration: state.originalAspectGeneration
         )
     }
 
     private var thumbnailFrameAspectRatio: CGFloat {
         // Catalog dimensions alone do not prove that the manually generated
         // original-aspect cache exists. Stay square until cache bytes load.
-        model.thumbnailAspectMode.frameAspectRatio(imageSize: image?.size)
+        state.aspectMode.frameAspectRatio(imageSize: image?.size)
     }
 
     private var emptyThumbnailSymbol: String {
@@ -15351,6 +15526,13 @@ private struct AssetThumbnailView: View {
         case .unsupported: return "nosign"
         case .recycled: return "trash"
         }
+    }
+
+    private var item: AssetGridItemProjection { state.item }
+    private var isSelected: Bool { state.isSelected }
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.state == rhs.state
     }
 }
 

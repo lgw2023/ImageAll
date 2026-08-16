@@ -361,7 +361,8 @@ struct MediaDecodeCascade: Sendable {
         // Tiny/synthetic buffers are not camera RAW; CIRAWFilter can stall on garbage.
         guard bytes.count > 4_096 else { return nil }
         guard let filter = CIRAWFilter(imageData: bytes) else { return nil }
-        filter.isGamutMappingEnabled = true
+        // Gamut mapping defaults to enabled. Avoid its setter because some Core Image
+        // implementations expose it in the SDK but do not respond to the selector at runtime.
         guard let output = filter.outputImage else { return nil }
         let context = CIContext(options: [.useSoftwareRenderer: false])
         let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()

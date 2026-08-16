@@ -222,9 +222,9 @@ final class MediaDecodeCascadeTests: XCTestCase {
         let spy = Spy()
         var cascade = MediaDecodeCascade()
         cascade.libRaw = spy
-        // Prefix that trips looksLikeRawBytes but is not a real ImageIO RAW.
+        // Prefix and size that enter the Core Image RAW branch but are not a real RAW image.
         var bytes = Data("FUJIFILMCCD-RAW ".utf8)
-        bytes.append(Data(repeating: 0, count: 64))
+        bytes.append(Data(repeating: 0, count: 8_192))
         let prepared = try cascade.preparedImageIOSource(
             sourceBytes: bytes,
             expectedMediaType: ApprovedSourceMediaTypes.fujiRawIdentifier,

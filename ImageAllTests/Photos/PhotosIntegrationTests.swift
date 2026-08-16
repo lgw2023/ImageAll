@@ -5,6 +5,30 @@ import XCTest
 @testable import ImageAll
 
 final class PhotosIntegrationTests: XCTestCase {
+    func testPhotoKitImageRequestCancellationHandlesBothInstallationOrdersOnce() {
+        var cancelledRequestIDs: [PHImageRequestID] = []
+        var cancellationCompletions = 0
+        let installedFirst = PhotoKitImageRequestCancellation { requestID in
+            cancelledRequestIDs.append(requestID)
+        }
+        installedFirst.install(requestID: 41) {
+            cancellationCompletions += 1
+        }
+        installedFirst.cancel()
+        installedFirst.cancel()
+
+        let cancelledFirst = PhotoKitImageRequestCancellation { requestID in
+            cancelledRequestIDs.append(requestID)
+        }
+        cancelledFirst.cancel()
+        cancelledFirst.install(requestID: 42) {
+            cancellationCompletions += 1
+        }
+
+        XCTAssertEqual(cancelledRequestIDs, [41, 42])
+        XCTAssertEqual(cancellationCompletions, 2)
+    }
+
     func testPhotoKitPolicyIncludesLivePhotoStillImageButExcludesVideoAndNetwork() {
         let supportedTypes = [
             "public.jpeg", "public.png", "public.heic", "public.heif",

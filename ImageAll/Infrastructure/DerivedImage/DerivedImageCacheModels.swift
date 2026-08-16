@@ -58,6 +58,17 @@ enum DownloadedPreviewCachePolicy {
     static let publishedQuotaBytes: UInt64 = 512 * 1024 * 1024
 }
 
+enum DerivedImageLRUTouchPolicy {
+    /// A minute is precise enough for eviction ordering while collapsing the
+    /// burst of repeated hits produced by cell remounts during fast scrolling.
+    static let minimumIntervalMs: Int64 = 60_000
+
+    static func shouldTouch(lastAccessedAtMs: Int64, nowMs: Int64) -> Bool {
+        guard nowMs >= lastAccessedAtMs else { return false }
+        return nowMs - lastAccessedAtMs >= minimumIntervalMs
+    }
+}
+
 struct DerivedImageCacheEntryRow: Equatable, Sendable {
     let id: UUID
     let assetID: UUID

@@ -11810,11 +11810,6 @@ final class LibraryWorkspaceModelTests: XCTestCase {
                 TrainingWorkspaceJSONPresentation.metricsSummary(legacyMetrics)
             ).contains("切分未记录")
         )
-        XCTAssertFalse(
-            try XCTUnwrap(
-                TrainingWorkspaceJSONPresentation.prettyMetrics(legacyMetrics)
-            ).contains("validationLoss")
-        )
         XCTAssertNil(
             TrainingWorkspaceJSONPresentation.safeArtifactReference(
                 "/protected/model.json"
@@ -11826,6 +11821,32 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             ),
             "PersonalModels/AdamWHead/v1/objects/model.json"
         )
+    }
+
+    func testTrainingWorkspaceMetricCurveParsesCurrentAndLegacyEpochs() {
+        let currentMetrics = #"{"epochs":[{"epoch":2,"evaluationLoss":0.31},{"epoch":1,"evaluationLoss":0.42}]}"#
+        XCTAssertEqual(
+            TrainingWorkspaceJSONPresentation.metricCurve(currentMetrics),
+            [
+                TrainingWorkspaceMetricPoint(epoch: 1, loss: 0.42),
+                TrainingWorkspaceMetricPoint(epoch: 2, loss: 0.31),
+            ]
+        )
+
+        let legacyMetrics = #"{"epochs":[{"epoch":1,"validationLoss":0.5},{"epoch":2,"validationLoss":0.4}]}"#
+        XCTAssertEqual(
+            TrainingWorkspaceJSONPresentation.metricCurve(legacyMetrics),
+            [
+                TrainingWorkspaceMetricPoint(epoch: 1, loss: 0.5),
+                TrainingWorkspaceMetricPoint(epoch: 2, loss: 0.4),
+            ]
+        )
+        XCTAssertTrue(
+            TrainingWorkspaceJSONPresentation.metricCurve(
+                #"{"epochs":[{"epoch":0,"evaluationLoss":0.2},{"epoch":1,"evaluationLoss":"bad"}]}"#
+            ).isEmpty
+        )
+        XCTAssertTrue(TrainingWorkspaceJSONPresentation.metricCurve("{}").isEmpty)
     }
 
     func testTrainingWorkspaceViewRendersSelectedRunDetailWithFixtureData() async {
@@ -11841,7 +11862,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             sampleSummaryJSON: #"{"scopeKind":"resolvedSnapshot","sampleCount":4}"#,
             sampleManifestSHA256: nil,
             configJSON: #"{"maxEpochs":10}"#,
-            metricsJSON: #"{"schemaVersion":1,"evaluationSplit":"trainFallback","trainSampleCount":4,"validationSampleCount":0,"epochs":[]}"#,
+            metricsJSON: #"{"schemaVersion":1,"evaluationSplit":"trainFallback","trainSampleCount":4,"validationSampleCount":0,"epochs":[{"epoch":1,"evaluationLoss":0.42},{"epoch":2,"evaluationLoss":0.31}]}"#,
             artifactKind: "personalAdamWHead",
             artifactRef: "PersonalModels/AdamWHead/v1/objects/fixture.json",
             artifactSHA256: String(repeating: "a", count: 64),

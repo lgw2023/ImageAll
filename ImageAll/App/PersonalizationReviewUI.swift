@@ -1513,10 +1513,22 @@ private struct ReviewThumbnailView: View {
         }
 
         let aspectMode = model.thumbnailAspectMode
+        if let cachedImage = model.cachedThumbnailImage(
+            for: item.assetID,
+            aspectMode: aspectMode
+        ) {
+            image = cachedImage
+            return
+        }
         if aspectMode == .square,
            let cached = model.cachedThumbnailData(for: item.assetID),
            let cachedImage = LibraryGridThumbnailImageFactory.image(from: cached)
         {
+            model.rememberThumbnailImage(
+                cachedImage,
+                for: item.assetID,
+                aspectMode: aspectMode
+            )
             image = cachedImage
             return
         }
@@ -1533,6 +1545,11 @@ private struct ReviewThumbnailView: View {
                     if aspectMode == .square {
                         model.rememberThumbnailData(data, for: item.assetID)
                     }
+                    model.rememberThumbnailImage(
+                        decoded,
+                        for: item.assetID,
+                        aspectMode: aspectMode
+                    )
                     image = decoded
                     return
                 }
