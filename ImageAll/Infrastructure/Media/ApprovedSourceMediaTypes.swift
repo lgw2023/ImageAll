@@ -50,6 +50,21 @@ enum ApprovedSourceMediaTypes: Sendable {
         return type.conforms(to: .rawImage)
     }
 
+    static func isCompatibleObservedMediaType(
+        _ observedMediaType: String,
+        expected expectedMediaType: String
+    ) -> Bool {
+        let observed = observedMediaType.lowercased()
+        let expected = expectedMediaType.lowercased()
+        if observed == expected {
+            return true
+        }
+        // NEF and ARW are TIFF-based RAW containers. ImageIO preserves their
+        // camera-specific UTI when opening a file URL, but can report public.tiff
+        // after the same bytes are read through the race-safe file descriptor.
+        return isCameraRaw(expectedMediaType) && observed == UTType.tiff.identifier
+    }
+
     static func isLikelyCameraRawFileName(_ fileName: String) -> Bool {
         let ext = (fileName as NSString).pathExtension.lowercased()
         switch ext {

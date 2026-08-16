@@ -564,4 +564,33 @@ final class DerivedImageRenderingTests: XCTestCase {
         XCTAssertEqual(jobCountAfter, jobCountBefore)
         XCTAssertEqual(tagCountAfter, tagCountBefore)
     }
+
+    func testServiceGeneratesCameraRAWThumbnailWhenImageIOExposesTIFFContainer() async throws {
+        let env = try DerivedImageTestSupport.TempEnvironment(label: "render-raw-tiff-container")
+        defer { env.cleanup() }
+        let sourceData = try XCTUnwrap(FolderReconcileTestSupport.minimalTIFFData())
+        XCTAssertEqual(try Fixtures.canonicalUTI(for: sourceData), UTType.tiff.identifier)
+        try env.seedAvailableAsset(
+            relativePath: "photos/sample.nef",
+            fileName: "sample.nef",
+            mediaType: "com.nikon.raw-image",
+            contents: sourceData
+        )
+        let (service, _) = env.makeService(
+            volumeReader: DerivedImageTestSupport.generousVolume
+        )
+
+        let generated = try await service.loadOrGenerate(
+            DerivedImageRequest(assetID: env.assetID, variant: .gridRegular)
+        )
+
+        XCTAssertEqual(generated.origin, .generated)
+        XCTAssertEqual(generated.pixelWidth, 512)
+        XCTAssertEqual(generated.pixelHeight, 512)
+        let cached = try await service.loadOrGenerate(
+            DerivedImageRequest(assetID: env.assetID, variant: .gridRegular)
+        )
+        XCTAssertEqual(cached.origin, .cacheHit)
+        XCTAssertEqual(cached.encodedBytes, generated.encodedBytes)
+    }
 }

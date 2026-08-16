@@ -976,7 +976,10 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
                     }
                     if let source = CGImageSourceCreateWithData(initial.bytes as CFData, nil),
                        let actualUTI = CGImageSourceGetType(source) as String?,
-                       actualUTI != context.mediaType
+                       !ApprovedSourceMediaTypes.isCompatibleObservedMediaType(
+                           actualUTI,
+                           expected: context.mediaType
+                       )
                     {
                         throw DerivedImageError.derivedSourceChanged
                     }
@@ -1162,7 +1165,10 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
                         }
                         if let source = CGImageSourceCreateWithData(initial.bytes as CFData, nil),
                            let actualUTI = CGImageSourceGetType(source) as String?,
-                           actualUTI != context.mediaType
+                           !ApprovedSourceMediaTypes.isCompatibleObservedMediaType(
+                               actualUTI,
+                               expected: context.mediaType
+                           )
                         {
                             throw DerivedImageError.derivedSourceChanged
                         }

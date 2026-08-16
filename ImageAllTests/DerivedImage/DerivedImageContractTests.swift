@@ -66,6 +66,71 @@ final class DerivedImageContractTests: XCTestCase {
         XCTAssertEqual(bookmarkPort.scopeStartCount, 0, "backfill must not reopen the source folder")
     }
 
+    func testRecycleThumbnailBackfillAcceptsCameraRAWExposedAsTIFFContainer() async throws {
+        let env = try DerivedImageTestSupport.TempEnvironment(label: "recycle-raw-tiff-container")
+        defer { env.cleanup() }
+        let sourceData = try XCTUnwrap(FolderReconcileTestSupport.minimalTIFFData())
+        let sourceURL = try env.seedAvailableAsset(
+            relativePath: "photos/sample.nef",
+            fileName: "sample.nef",
+            mediaType: "com.nikon.raw-image",
+            contents: sourceData
+        )
+        let quarantineRoot = env.root.appendingPathComponent("Quarantine", isDirectory: true)
+        let quarantineRelativePath = QuarantinePathLayout.relativePath(
+            sourceID: env.sourceID,
+            assetID: env.assetID,
+            fileName: "sample.nef"
+        )
+        let quarantineURL = quarantineRoot.appendingPathComponent(quarantineRelativePath)
+        try FileManager.default.createDirectory(
+            at: quarantineURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.moveItem(at: sourceURL, to: quarantineURL)
+        let entryID = UUID()
+        try await env.database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE asset SET availability = 'recycled' WHERE id = ?",
+                arguments: [env.assetID.uuidString.lowercased()]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO recycle_entry (
+                    id, asset_id, source_kind, trashed_at_ms, purge_after_ms, state,
+                    quarantine_relative_path, original_relative_path, photos_local_identifier,
+                    error_code, created_at_ms, updated_at_ms
+                ) VALUES (?, ?, 'file', ?, ?, 'recycled', ?, 'photos/sample.nef', NULL, NULL, ?, ?)
+                """,
+                arguments: [
+                    entryID.uuidString.lowercased(),
+                    env.assetID.uuidString.lowercased(),
+                    FolderReconcileTestSupport.baseTimeMs,
+                    FolderReconcileTestSupport.baseTimeMs + LibrarySlimmingRecyclePolicy.dayMs,
+                    quarantineRelativePath,
+                    FolderReconcileTestSupport.baseTimeMs,
+                    FolderReconcileTestSupport.baseTimeMs,
+                ]
+            )
+        }
+        let (service, bookmarkPort) = env.makeService(
+            volumeReader: DerivedImageTestSupport.generousVolume
+        )
+
+        let generated = try await service.loadOrGenerateRecycledFileThumbnail(
+            assetID: env.assetID,
+            quarantineRootURL: quarantineRoot
+        )
+        let cached = try await service.loadCached(
+            DerivedImageRequest(assetID: env.assetID, variant: .gridRegular)
+        )
+
+        XCTAssertFalse(generated.isEmpty)
+        XCTAssertEqual(cached?.encodedBytes, generated)
+        XCTAssertEqual(cached?.origin, .cacheHit)
+        XCTAssertEqual(bookmarkPort.scopeStartCount, 0, "backfill must not reopen the source folder")
+    }
+
     func testRecycleThumbnailBackfillRejectsTerminalLifecycle() async throws {
         let env = try DerivedImageTestSupport.TempEnvironment(label: "recycle-thumbnail-terminal")
         defer { env.cleanup() }
