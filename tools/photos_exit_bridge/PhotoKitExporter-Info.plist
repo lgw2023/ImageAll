@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.gwlee.PhotosExitBridge.v1</string>
+    <key>CFBundleExecutable</key>
+    <string>photos-exit-exporter</string>
+    <key>CFBundleName</key>
+    <string>Photos Exit Exporter</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>只读盘点并导出您选择为系统照片图库的照片和视频。</string>
+</dict>
+</plist>
