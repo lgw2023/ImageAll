@@ -131,7 +131,7 @@ private struct PhotosExitExporter {
             case .help:
                 printHelp()
             case .authorize:
-                try await requirePhotoAuthorization(showPrimer: true)
+                try await requirePhotoAuthorization()
                 print("photos_access=authorized network_access=0 writes=0")
             case .count:
                 try await requirePhotoAuthorization()
@@ -308,6 +308,7 @@ private struct PhotosExitExporter {
 
     private static func requirePhotoAuthorization(showPrimer: Bool = false) async throws {
         let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        emitProgress("photos_authorization_status_initial=\(authorizationStatusName(status))")
         let resolved: PHAuthorizationStatus
         if status == .notDetermined {
             let shouldContinue = await MainActor.run {
@@ -327,6 +328,7 @@ private struct PhotosExitExporter {
         } else {
             resolved = status
         }
+        emitProgress("photos_authorization_status_resolved=\(authorizationStatusName(resolved))")
         guard resolved == .authorized || resolved == .limited else {
             throw ExporterError.authorizationDenied
         }
@@ -390,6 +392,7 @@ private struct PhotosExitExporter {
         var other = 0
         var resourceCount = 0
         var ambiguous = 0
+        emitProgress("count_progress=0 assets_total=\(assets.count) network_access=0 writes=0")
         for index in 0 ..< assets.count {
             let asset = assets.object(at: index)
             switch asset.mediaType {
@@ -401,6 +404,13 @@ private struct PhotosExitExporter {
             resourceCount += resources.count
             if primaryResourceIndex(mediaType: asset.mediaType, resources: resources) == nil {
                 ambiguous += 1
+            }
+            let processed = index + 1
+            if processed.isMultiple(of: 1_000) || processed == assets.count {
+                emitProgress(
+                    "count_progress=\(processed) assets_total=\(assets.count) "
+                        + "resources=\(resourceCount) ambiguous=\(ambiguous)"
+                )
             }
         }
         print(
@@ -475,10 +485,21 @@ private struct PhotosExitExporter {
         let assets = fetchAssets()
         var completed = 0
         var incomplete = 0
+        emitProgress(
+            "export_progress=0 assets_total=\(assets.count) complete=0 incomplete=0 "
+                + "network_access=\(allowNetworkAccess ? 1 : 0)"
+        )
         for index in 0 ..< assets.count {
             let asset = assets.object(at: index)
             if resumeState.completedIdentifiers.contains(asset.localIdentifier) {
                 completed += 1
+                let processed = index + 1
+                if processed.isMultiple(of: 100) || processed == assets.count {
+                    emitProgress(
+                        "export_progress=\(processed) assets_total=\(assets.count) "
+                            + "complete=\(completed) incomplete=\(incomplete)"
+                    )
+                }
                 continue
             }
             let sourceResources = PHAssetResource.assetResources(for: asset)
@@ -593,6 +614,13 @@ private struct PhotosExitExporter {
             } else {
                 incomplete += 1
             }
+            let processed = index + 1
+            if processed.isMultiple(of: 100) || processed == assets.count {
+                emitProgress(
+                    "export_progress=\(processed) assets_total=\(assets.count) "
+                        + "complete=\(completed) incomplete=\(incomplete)"
+                )
+            }
         }
         if incomplete == 0,
            (try? FileManager.default.contentsOfDirectory(atPath: stagingRoot.path).isEmpty) == true
@@ -657,9 +685,23 @@ private struct PhotosExitExporter {
         let options = PHFetchOptions()
         options.sortDescriptors = [
             NSSortDescriptor(key: "creationDate", ascending: true),
-            NSSortDescriptor(key: "localIdentifier", ascending: true),
         ]
         return PHAsset.fetchAssets(with: options)
+    }
+
+    private static func emitProgress(_ line: String) {
+        FileHandle.standardOutput.write(Data((line + "\n").utf8))
+    }
+
+    private static func authorizationStatusName(_ status: PHAuthorizationStatus) -> String {
+        switch status {
+        case .notDetermined: "not_determined"
+        case .restricted: "restricted"
+        case .denied: "denied"
+        case .authorized: "authorized"
+        case .limited: "limited"
+        @unknown default: "unknown"
+        }
     }
 
     private static func assetRecord(

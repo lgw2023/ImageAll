@@ -13,6 +13,7 @@ mkdir -p "${macos_dir}"
 cp "${bridge_dir}/PhotoKitExporter-Info.plist" "${contents_dir}/Info.plist"
 
 output_binary="${macos_dir}/photos-exit-exporter"
+signing_identity=${PHOTOS_EXIT_CODESIGN_IDENTITY:--}
 xcrun swiftc \
     -parse-as-library \
     -framework AppKit \
@@ -21,5 +22,5 @@ xcrun swiftc \
     "${bridge_dir}/PhotoKitExporter.swift" \
     -o "${output_binary}"
 
-codesign --force --deep --sign - "${app_bundle}" >/dev/null
+codesign --force --deep --sign "${signing_identity}" "${app_bundle}" >/dev/null
 print -r -- "${output_binary}"

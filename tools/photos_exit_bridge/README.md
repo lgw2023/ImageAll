@@ -24,11 +24,14 @@
 ## 构建
 
 ```zsh
-tools/photos_exit_bridge/build_photokit_exporter.sh \
+PHOTOS_EXIT_CODESIGN_IDENTITY="<代码签名证书名称或 SHA-1>" \
+  tools/photos_exit_bridge/build_photokit_exporter.sh \
   /一个仅用于工具二进制的目录
 ```
 
-生成 `photos-exit-exporter`。首次读取 PhotoKit 时 macOS 会要求照片权限。
+生成 `Photos Exit Exporter.app`。真实迁移应使用稳定代码签名，并把 App 复制到固定位置（例如用户级
+`Applications`）后再申请权限；重复 ad-hoc 签名会使 TCC 记录绑定到旧 CDHash。首次读取 PhotoKit 时
+macOS 会要求照片权限。
 
 先通过 LaunchServices 注册并申请权限（只申请权限，不枚举资产）：
 
@@ -37,7 +40,7 @@ tools/photos_exit_bridge/authorize_photokit_exporter.sh \
   "/工具目录/Photos Exit Exporter.app"
 ```
 
-随后使用 App bundle 内的 CLI：
+`--help` 不访问 PhotoKit，可以直接运行 App bundle 内的 CLI：
 
 ```zsh
 "/工具目录/Photos Exit Exporter.app/Contents/MacOS/photos-exit-exporter" --help
@@ -70,7 +73,13 @@ Photos `asset_id` 冲突。后续导出和数据库处理期间保持 ImageAll �
 ### 2. 聚合只读盘点
 
 ```zsh
-/工具目录/photos-exit-exporter count
+run_log=$(mktemp -d /tmp/photos-exit-count.XXXXXX)
+touch "$run_log/stdout" "$run_log/stderr"
+open -W -n "/固定路径/Photos Exit Exporter.app" \
+  --stdout "$run_log/stdout" --stderr "$run_log/stderr" \
+  --args count
+sed -n '1,120p' "$run_log/stdout"
+sed -n '1,120p' "$run_log/stderr"
 ```
 
 只输出照片、视频、其它资产、公开资源和主资源歧义的聚合数量，不写文件、不触发 iCloud 下载。
@@ -78,8 +87,8 @@ Photos `asset_id` 冲突。后续导出和数据库处理期间保持 ImageAll �
 如需生成逐项元数据清单：
 
 ```zsh
-/工具目录/photos-exit-exporter inventory \
-  --manifest /私人工作目录/photos-inventory.jsonl
+open -W -n "/固定路径/Photos Exit Exporter.app" \
+  --args inventory --manifest /私人工作目录/photos-inventory.jsonl
 ```
 
 Inventory 不是可迁移导出清单，因为它没有资源文件、字节数和 SHA-256。
@@ -89,9 +98,11 @@ Inventory 不是可迁移导出清单，因为它没有资源文件、字节数�
 在已经授权且仍为空的导出根目录执行：
 
 ```zsh
-/工具目录/photos-exit-exporter export \
-  --output-root /导出根目录 \
-  --allow-network-access
+touch /私人工作目录/export.stdout.log /私人工作目录/export.stderr.log
+open -n "/固定路径/Photos Exit Exporter.app" \
+  --stdout /私人工作目录/export.stdout.log \
+  --stderr /私人工作目录/export.stderr.log \
+  --args export --output-root /导出根目录 --allow-network-access
 ```
 
 `--allow-network-access` 只在本次已经取得 `CloudDownloadGrant` 时使用；否则省略，iCloud-only 项目会记为
@@ -102,10 +113,10 @@ Inventory 不是可迁移导出清单，因为它没有资源文件、字节数�
 中断后使用相同网络策略恢复：
 
 ```zsh
-/工具目录/photos-exit-exporter export \
-  --output-root /导出根目录 \
-  --allow-network-access \
-  --resume
+open -n "/固定路径/Photos Exit Exporter.app" \
+  --stdout /私人工作目录/export-resume.stdout.log \
+  --stderr /私人工作目录/export-resume.stderr.log \
+  --args export --output-root /导出根目录 --allow-network-access --resume
 ```
 
 恢复会跳过已完成清单记录，并删除后重试工具自有的
