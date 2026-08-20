@@ -2632,6 +2632,7 @@ final class RemoteHTTPServerTests: XCTestCase {
             "slimmingJobContextMenuTitle",
             "slimmingJobContextMenuActions",
             "sourceManagerButton",
+            "sourceSectionHeading",
             "sourceAllActionsButton",
             "sourceActionsPopover",
             "sourceActionsSummary",
@@ -2927,6 +2928,13 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(stylesheet.contains(".lightbox-cloud-preview-recovery"))
         XCTAssertTrue(script.contains("submitSourceManagementAction(\"refreshAll\")"))
         XCTAssertTrue(script.contains("async function viewAllSourcesFromActionMenu"))
+        XCTAssertTrue(script.contains("function openSourceActionsContextMenu"))
+        XCTAssertTrue(script.contains("target.closest(\"#sourceSectionHeading\")"))
+        XCTAssertTrue(
+            script.contains(
+                "elements.sourceSectionHeading.addEventListener(\"contextmenu\""
+            )
+        )
         XCTAssertTrue(
             script.contains(
                 "[\"gallery\", \"galleryOverview\", \"worldMap\", \"review\", \"training\", \"slimming\"]"

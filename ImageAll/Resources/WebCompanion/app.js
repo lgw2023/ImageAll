@@ -129,6 +129,7 @@ const elements = {
   libraryNavigation: $("#libraryNavigation"),
   sourceList: $("#sourceList"),
   sourceEmpty: $("#sourceEmpty"),
+  sourceSectionHeading: $("#sourceSectionHeading"),
   sourceAllActionsButton: $("#sourceAllActionsButton"),
   sourceManagerButton: $("#sourceManagerButton"),
   sourceActionsPopover: $("#sourceActionsPopover"),
@@ -9870,6 +9871,12 @@ async function viewAllSourcesFromActionMenu() {
     ? elements.sidebarToggle
     : allMediaButton;
   restoreOverlayFocus(stableReturnFocusTarget(target, elements.sidebarToggle));
+}
+
+function openSourceActionsContextMenu(clientX, clientY) {
+  openActionMenu("sourceActions");
+  if (elements.sourceActionsPopover.classList.contains("hidden")) return;
+  positionContextMenu(elements.sourceActionsPopover, clientX, clientY);
 }
 
 function renderSourceActionsMenu() {
@@ -32570,6 +32577,14 @@ let contextLongPressSuppression = null;
 function contextLongPressDescriptor(target) {
   if (!(target instanceof Element)) return null;
 
+  const sourceHeading = target.closest("#sourceSectionHeading");
+  if (sourceHeading) {
+    return {
+      target: sourceHeading,
+      open: openSourceActionsContextMenu,
+    };
+  }
+
   const source = target.closest("#sourceList [data-source-id]");
   if (source) {
     return {
@@ -33673,6 +33688,16 @@ function bindEvents() {
   });
   elements.sourceAllActionsButton.addEventListener("click", () => {
     toggleActionMenu("sourceActions");
+  });
+  elements.sourceSectionHeading.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    openSourceActionsContextMenu(event.clientX, event.clientY);
+  });
+  elements.sourceAllActionsButton.addEventListener("keydown", (event) => {
+    if (!(event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))) return;
+    event.preventDefault();
+    const rect = elements.sourceAllActionsButton.getBoundingClientRect();
+    openSourceActionsContextMenu(rect.left + 12, rect.bottom + 4);
   });
   elements.sourceActionsPopover.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-source-all-action]");

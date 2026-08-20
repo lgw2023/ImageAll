@@ -10,8 +10,8 @@
   <meta name="apple-mobile-web-app-title" content="ImageAll">
   <title>ImageAll 网页版</title>
   <link rel="manifest" href="/manifest.webmanifest">
-    <link rel="stylesheet" href="/app.css?v=20260821-130">
-    <script src="/app.js?v=20260821-130" defer></script>
+    <link rel="stylesheet" href="/app.css?v=20260821-131">
+    <script src="/app.js?v=20260821-131" defer></script>
 </head>
 <body>
   <div id="bootView" class="centered-state">
@@ -332,12 +332,15 @@
           </nav>
         </div>
         <div class="sidebar-section source-section">
-          <div class="sidebar-section-heading">
+          <div id="sourceSectionHeading" class="sidebar-section-heading">
             <h2>来源</h2>
             <div class="sidebar-heading-actions">
               <button id="sourceAllActionsButton" class="sidebar-add-button"
                 type="button" aria-label="所有来源操作" aria-expanded="false"
-                aria-controls="sourceActionsPopover" title="更新、缓存或批量处理来源">•••</button>
+                aria-controls="sourceActionsPopover" aria-haspopup="menu"
+                aria-keyshortcuts="Shift+F10 ContextMenu"
+                data-help-detail="像 Mac 来源标题一样，点击、右键、Shift-F10 或触控长按可查看全部来源操作。"
+                title="更新、缓存或批量处理来源">•••</button>
               <button id="sourceManagerButton" class="sidebar-add-button write-action" type="button"
                 aria-label="打开来源管理" title="连接、授权或管理来源">⚙</button>
             </div>

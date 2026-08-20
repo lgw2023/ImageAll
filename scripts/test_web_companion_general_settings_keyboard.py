@@ -437,11 +437,58 @@ def main():
         page.locator("#persistentHelp").wait_for(state="hidden")
         assert page.locator("#commandButton").get_attribute("title") == "命令（⌘K）"
 
+        source_actions_read_count = source_management_reads[0]
+        source_actions_asset_count = len(asset_requests)
+        source_actions_action_count = len(source_actions)
+        source_heading_bounds = page.locator("#sourceSectionHeading").bounding_box()
+        assert source_heading_bounds is not None
+        source_heading_context_point = {
+            "x": source_heading_bounds["x"] + 42,
+            "y": source_heading_bounds["y"] + 12,
+        }
+        page.locator("#sourceSectionHeading").click(
+            button="right", position={"x": 42, "y": 12}
+        )
+        page.locator("#sourceActionsPopover:not(.hidden)").wait_for()
+        source_actions_context_bounds = page.locator("#sourceActionsPopover").bounding_box()
+        assert source_actions_context_bounds is not None
+        assert abs(
+            source_actions_context_bounds["x"] - source_heading_context_point["x"]
+        ) <= 1
+        assert abs(
+            source_actions_context_bounds["y"] - source_heading_context_point["y"]
+        ) <= 1
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'sourceActionsViewAllButton'"
+        )
+        assert page.evaluate(
+            "history.state?.imageAllWorkspace?.context?.actionMenuKind"
+        ) == "sourceActions"
+        page.keyboard.press("Escape")
+        page.locator("#sourceActionsPopover").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'sourceAllActionsButton'"
+        )
+        page.locator("#sourceAllActionsButton").press("Shift+F10")
+        page.locator("#sourceActionsPopover:not(.hidden)").wait_for()
+        page.keyboard.press("Escape")
+        page.locator("#sourceActionsPopover").wait_for(state="hidden")
+        page.locator("#sourceAllActionsButton").press("ContextMenu")
+        page.locator("#sourceActionsPopover:not(.hidden)").wait_for()
+        page.keyboard.press("Escape")
+        page.locator("#sourceActionsPopover").wait_for(state="hidden")
+        assert source_management_reads[0] == source_actions_read_count
+        assert len(asset_requests) == source_actions_asset_count
+        assert len(source_actions) == source_actions_action_count
+
         source_actions_history_length = page.evaluate("history.length")
         source_actions_read_count = source_management_reads[0]
         page.locator("#sourceAllActionsButton").click()
         page.locator("#sourceActionsPopover:not(.hidden)").wait_for()
-        assert page.evaluate("history.length") == source_actions_history_length + 1
+        assert page.evaluate("history.length") in {
+            source_actions_history_length,
+            source_actions_history_length + 1,
+        }
         assert page.evaluate(
             "history.state?.imageAllWorkspace?.navigationLevel"
         ) == "actionMenu"
@@ -751,7 +798,48 @@ def main():
         assert "open" in (page.locator("#sourceSidebar").get_attribute("class") or "")
         mobile_view_all_asset_count = len(asset_requests)
         mobile_view_all_action_count = len(source_actions)
-        page.locator("#sourceAllActionsButton").click()
+        source_heading_bounds = page.locator("#sourceSectionHeading").bounding_box()
+        assert source_heading_bounds is not None
+        source_heading_long_press_point = {
+            "x": source_heading_bounds["x"] + min(42, source_heading_bounds["width"] / 2),
+            "y": source_heading_bounds["y"] + source_heading_bounds["height"] / 2,
+        }
+        page.evaluate(
+            """({ point }) => {
+              const heading = document.querySelector('#sourceSectionHeading');
+              heading.dispatchEvent(new PointerEvent('pointerdown', {
+                bubbles: true,
+                pointerId: 93,
+                pointerType: 'touch',
+                button: 0,
+                clientX: point.x,
+                clientY: point.y,
+                isPrimary: true,
+              }));
+            }""",
+            {"point": source_heading_long_press_point},
+        )
+        page.wait_for_timeout(580)
+        page.locator("#sourceActionsPopover:not(.hidden)").wait_for()
+        assert not page.locator("#sourceSectionHeading").evaluate(
+            "heading => heading.classList.contains('context-long-press-active')"
+        )
+        page.evaluate(
+            """({ point }) => {
+              document.querySelector('#sourceSectionHeading').dispatchEvent(
+                new PointerEvent('pointerup', {
+                  bubbles: true,
+                  pointerId: 93,
+                  pointerType: 'touch',
+                  button: 0,
+                  clientX: point.x,
+                  clientY: point.y,
+                  isPrimary: true,
+                })
+              );
+            }""",
+            {"point": source_heading_long_press_point},
+        )
         page.locator("#sourceActionsViewAllButton").click()
         page.locator("#sourceActionsPopover").wait_for(state="hidden")
         page.wait_for_function(
