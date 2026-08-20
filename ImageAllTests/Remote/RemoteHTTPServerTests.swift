@@ -3474,6 +3474,8 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(html.contains("aria-keyshortcuts=\"J\""))
         XCTAssertTrue(html.contains("打开或关闭活动（训练时定位关联任务）"))
         XCTAssertTrue(stylesheet.contains("z-index: 150;"))
+        XCTAssertTrue(html.contains("aria-keyshortcuts=\"Meta+, Control+,\""))
+        XCTAssertTrue(script.contains("if (blockingDialogOpen || elements.commandPalette.open) return;"))
         XCTAssertTrue(script.contains("(showsSelection || showsDetail)"))
         XCTAssertTrue(script.contains("&& !state.inspectorDismissed"))
         XCTAssertTrue(html.contains("id=\"selectionInspectorOverlayButton\""))

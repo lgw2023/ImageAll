@@ -36905,7 +36905,7 @@ function bindEvents() {
     if ((event.metaKey || event.ctrlKey) && event.key === ",") {
       event.preventDefault();
       if (elements.generalSettingsDialog.open) return;
-      if (blockingDialogOpen || customOverlayOpen || elements.commandPalette.open) return;
+      if (blockingDialogOpen || elements.commandPalette.open) return;
       void openGeneralSettings();
       return;
     }

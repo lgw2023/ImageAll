@@ -715,6 +715,33 @@ def main():
         assert "77777777-0000-4000-8000-777777777777" not in jobs_history
         assert "photosReconcile" not in jobs_history
         assert "Apple Photos · 照片图库同步" in page.locator("#jobsList").inner_text()
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.jobRowId "
+            "=== '77777777-0000-4000-8000-777777777777'"
+        )
+        jobs_settings_history_length = page.evaluate("history.length")
+        jobs_settings_fetches = catalog_job_fetches[0]
+        with page.expect_response("**/v1/settings/general", timeout=3000):
+            page.keyboard.press("Meta+,")
+        page.locator("#generalSettingsDialog[open]").wait_for()
+        assert page.locator("#jobsPopover:not(.hidden)").is_visible()
+        assert page.evaluate("history.length") == jobs_settings_history_length + 1
+        assert page.evaluate(
+            "history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "generalSettings"
+        page.screenshot(
+            path="/tmp/imageall-settings-over-activity-390.png",
+            full_page=True,
+        )
+        page.keyboard.press("Escape")
+        page.locator("#generalSettingsDialog").wait_for(state="hidden")
+        page.locator("#jobsPopover:not(.hidden)").wait_for()
+        page.wait_for_function(
+            "() => history.state?.imageAllWorkspace?.navigationLevel === 'jobs' "
+            "&& document.activeElement?.dataset.jobRowId "
+            "=== '77777777-0000-4000-8000-777777777777'"
+        )
+        assert catalog_job_fetches[0] == jobs_settings_fetches
         page.locator("#closeJobsButton").click()
         page.locator("#jobsPopover").wait_for(state="hidden")
         page.wait_for_function(

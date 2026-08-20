@@ -1933,8 +1933,10 @@ def main():
             "&& !state.generalSettings.loading"
         )
         review_cat_card.hover()
-        page.locator("#persistentHelp:not(.hidden)").wait_for()
-        assert page.locator("#persistentHelp").get_attribute("data-kind") == "review"
+        page.wait_for_function(
+            "() => !document.querySelector('#persistentHelp').classList.contains('hidden') "
+            "&& document.querySelector('#persistentHelp').dataset.kind === 'review'"
+        )
         assert page.locator("#persistentHelpTitle").inner_text() == "审核“猫”"
         assert review_cat_card.get_attribute("data-help-owner") == (
             f"review-overview:{CAT_TAG_ID}"
@@ -2151,8 +2153,10 @@ def main():
         assert page.evaluate(
             "() => document.activeElement?.dataset?.reviewOverviewTagId"
         ) == CAT_TAG_ID
-        page.locator("#persistentHelp:not(.hidden)").wait_for()
-        assert page.locator("#persistentHelp").get_attribute("data-kind") == "review"
+        page.wait_for_function(
+            "() => !document.querySelector('#persistentHelp').classList.contains('hidden') "
+            "&& document.querySelector('#persistentHelp').dataset.kind === 'review'"
+        )
         narrow_review_help_bounds = page.locator("#persistentHelp").bounding_box()
         assert narrow_review_help_bounds is not None
         assert narrow_review_help_bounds["x"] >= 8
