@@ -37124,6 +37124,12 @@ function bindEvents() {
       return;
     }
     if (event.key === "Escape") {
+      if (event.target === elements.searchInput
+        && (elements.searchInput.value || state.searchText)) {
+        event.preventDefault();
+        void clearLibrarySearch();
+        return;
+      }
       event.preventDefault();
       if (elements.confirmDialog.open) {
         void returnFromConfirmation();

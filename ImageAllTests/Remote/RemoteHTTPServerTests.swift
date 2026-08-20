@@ -2932,6 +2932,8 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(html.contains("<dt>返回图库并搜索</dt><dd><kbd>⌘F</kbd>"))
         XCTAssertTrue(script.contains("async function focusLibrarySearch"))
         XCTAssertTrue(script.contains("void focusLibrarySearch()"))
+        XCTAssertTrue(script.contains("event.target === elements.searchInput"))
+        XCTAssertTrue(script.contains("elements.searchInput.value || state.searchText"))
         XCTAssertTrue(script.contains("function renderLightboxMedia"))
         XCTAssertTrue(script.contains("function cloudPreviewCurrentAssetID"))
         XCTAssertTrue(

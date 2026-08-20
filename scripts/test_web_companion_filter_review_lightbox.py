@@ -1237,6 +1237,27 @@ def main():
         assert page.evaluate("() => document.activeElement?.id") == "searchInput"
         assert "q" not in asset_queries[-1]
 
+        # The main search field keeps native Mac search behavior: Escape clears
+        # a non-empty query before it can act on the surrounding workspace.
+        page.locator("#selectionModeButton").click()
+        page.wait_for_function("() => state.selectionMode === true")
+        page.locator("#searchInput").fill("不存在")
+        page.locator("#emptyState:not(.hidden)").wait_for()
+        search_escape_queries = len(asset_queries)
+        page.locator("#searchInput").press("Escape")
+        page.locator(f'[data-asset-id="{IMAGE_IDS[0]}"]').wait_for()
+        assert page.locator("#searchInput").input_value() == ""
+        assert page.evaluate("() => state.searchText") == ""
+        assert page.evaluate("() => state.selectionMode") is True
+        assert page.evaluate("() => document.activeElement?.id") == "searchInput"
+        escaped_search_queries = asset_queries[search_escape_queries:]
+        assert escaped_search_queries
+        assert all("q" not in query for query in escaped_search_queries)
+        assert len({query.get("cursor", [""])[0] for query in escaped_search_queries}) \
+            == len(escaped_search_queries)
+        page.locator("#selectionModeButton").click()
+        page.wait_for_function("() => state.selectionMode === false")
+
         page.locator("#searchInput").fill("不存在")
         page.locator("#emptyState:not(.hidden)").wait_for()
         page.locator("#filterButton").click()
