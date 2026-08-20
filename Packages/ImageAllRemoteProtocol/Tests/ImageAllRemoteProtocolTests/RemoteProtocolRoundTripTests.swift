@@ -1930,6 +1930,13 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
                 entryCount: 3,
                 registeredBytes: 9_000_000
             ),
+            clearPreviewCacheAvailability: RemoteStorageMaintenanceActionAvailability(
+                isAvailable: true
+            ),
+            clearPhotosOriginalsAvailability: RemoteStorageMaintenanceActionAvailability(
+                isAvailable: false,
+                reason: .librarySlimmingAnalysisInProgress
+            ),
             appStorage: RemoteAppStorageSummary(
                 kind: .internalStorage,
                 requiresRestart: true,
@@ -1941,6 +1948,25 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
             operationID: operationID,
             action: .exportPortableData
         ))
+    }
+
+    func testLegacyStorageMaintenanceSnapshotDecodesWithoutActionAvailability() throws {
+        let payload = Data(#"""
+        {
+          "previewCache": {"entryCount": 12, "registeredBytes": 1500000},
+          "photosOriginals": {"entryCount": 3, "registeredBytes": 9000000},
+          "appStorage": {"kind": "internalStorage", "requiresRestart": false},
+          "requests": []
+        }
+        """#.utf8)
+
+        let snapshot = try JSONDecoder().decode(
+            RemoteStorageMaintenanceSnapshot.self,
+            from: payload
+        )
+
+        XCTAssertNil(snapshot.clearPreviewCacheAvailability)
+        XCTAssertNil(snapshot.clearPhotosOriginalsAvailability)
     }
 
     func testWorkspaceNoticeProjectionAndDismissRoundTrip() throws {

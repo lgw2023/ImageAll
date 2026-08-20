@@ -205,6 +205,45 @@ def main():
             )
 
         page.route("**/v1/review/queue?**", route_review_queue)
+
+        def route_asset_detail(route):
+            asset_id = route.request.url.rsplit("/", 1)[-1]
+            index = REVIEW_IDS.index(asset_id)
+            fulfill_json(
+                route,
+                {
+                    "assetID": asset_id,
+                    "sourceID": SOURCE_IDS[0],
+                    "sourceName": "Apple Photos",
+                    "fileName": f"CAT_{index + 1:04}.JPG",
+                    "relativePath": None,
+                    "mediaType": "public.jpeg",
+                    "availability": "available",
+                    "contentRevision": 1,
+                    "acceptedTagCount": 0,
+                    "rejectedTagCount": 0,
+                    "mediaCreatedAtMs": 1_700_000_000_000 + index,
+                    "mediaModifiedAtMs": 1_700_000_100_000 + index,
+                    "width": 1200,
+                    "height": 900,
+                    "fingerprintSizeBytes": 800_000,
+                    "tags": [{
+                        "tagID": TAG_ID,
+                        "displayName": "猫",
+                        "decision": "unknown",
+                    }],
+                    "pendingSuggestions": [{
+                        "tagID": TAG_ID,
+                        "displayName": "猫",
+                        "suggestionOrigin": "personalModel",
+                    }],
+                },
+            )
+
+        page.route(
+            re.compile(r".*/v1/assets/[0-9a-f-]+$"),
+            route_asset_detail,
+        )
         page.route(
             re.compile(r".*/v1/assets/[0-9a-f-]+/(thumbnail|preview)(\?.*)?$"),
             lambda route: route.fulfill(status=200, content_type="image/png", body=PIXEL),

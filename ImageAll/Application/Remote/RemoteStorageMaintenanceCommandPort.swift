@@ -26,6 +26,24 @@ struct StorageMaintenanceUsageSummary: Equatable, Sendable {
     let registeredBytes: Int64
 }
 
+enum StorageMaintenanceActionUnavailabilityReason: String, Equatable, Sendable {
+    case empty
+    case librarySlimmingAnalysisInProgress
+}
+
+struct StorageMaintenanceActionAvailability: Equatable, Sendable {
+    let isAvailable: Bool
+    let reason: StorageMaintenanceActionUnavailabilityReason?
+
+    init(
+        isAvailable: Bool,
+        reason: StorageMaintenanceActionUnavailabilityReason? = nil
+    ) {
+        self.isAvailable = isAvailable
+        self.reason = reason
+    }
+}
+
 enum StorageMaintenanceAppStorageKind: String, Equatable, Sendable {
     case internalStorage
     case externalStorage
@@ -80,6 +98,8 @@ struct StorageMaintenanceCommandRequestSnapshot: Equatable, Sendable {
 struct StorageMaintenanceCommandSnapshot: Equatable, Sendable {
     let previewCache: StorageMaintenanceUsageSummary
     let photosOriginals: StorageMaintenanceUsageSummary
+    let clearPreviewCacheAvailability: StorageMaintenanceActionAvailability
+    let clearPhotosOriginalsAvailability: StorageMaintenanceActionAvailability
     let appStorage: StorageMaintenanceAppStorageSummary
     let requests: [StorageMaintenanceCommandRequestSnapshot]
 }
@@ -97,6 +117,7 @@ protocol RemoteStorageMaintenanceWorkspacePort: Sendable {
     func fetchPreviewCacheUsage() throws -> DerivedImageCacheUsage
     func clearPreviewCache() async throws -> DerivedImageCacheClearResult
     func fetchPhotosOriginalStorageUsage() throws -> PhotosOriginalStorageUsage
+    func isLibrarySlimmingAnalysisInProgress() throws -> Bool
     func clearPhotosOriginalStorage() throws -> PhotosOriginalStorageClearResult
     func fetchAppStorageLocation() -> AppStorageLocationStatus
     @MainActor

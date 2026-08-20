@@ -11,6 +11,7 @@ BASE_URL = "http://127.0.0.1:8800"
 SOURCE_ID = "aaaaaaaa-1111-2222-3333-aaaaaaaaaaaa"
 CAT_TAG_ID = "bbbbbbbb-1111-2222-3333-bbbbbbbbbbbb"
 TRAVEL_TAG_ID = "cccccccc-1111-2222-3333-cccccccccccc"
+NEW_REVIEW_TAG_ID = "dddddddd-2222-3333-4444-dddddddddddd"
 SUBJECT_GROUP_ID = "eeeeeeee-1111-2222-3333-eeeeeeeeeeee"
 SCENE_GROUP_ID = "ffffffff-1111-2222-3333-ffffffffffff"
 IMAGE_IDS = [
@@ -72,7 +73,11 @@ def original_thumbnail_svg(asset_id):
     dimensions = {
         REVIEW_IDS[0]: (1200, 900),
         REVIEW_IDS[1]: (900, 1200),
-        REVIEW_IDS[2]: (1600, 900),
+        # The Host intentionally falls back to the existing square thumbnail
+        # when an original-aspect cache has not been generated yet. Web must
+        # keep this item square, matching the Mac grid instead of stretching a
+        # square fallback into the asset metadata ratio.
+        REVIEW_IDS[2]: (512, 512),
     }
     width, height = dimensions.get(asset_id, (1200, 900))
     return f"""\
@@ -243,6 +248,7 @@ def review_item(asset_id, index):
 def main():
     asset_queries = []
     tag_decisions = []
+    created_tag_applications = []
     review_decisions = []
     review_queue_queries = []
     source_actions = []
@@ -250,9 +256,27 @@ def main():
     media_requests = []
     opened_originals = []
     favorite_mutations = []
+    submitted_review_removals = []
+    review_removal = {"request": None}
     thumbnail_queries = []
     workspace_notice_actions = []
     recycle_queries = []
+    storage_requests = []
+    storage_snapshot = {
+        "previewCache": {"entryCount": 12, "registeredBytes": 1_500_000},
+        "photosOriginals": {"entryCount": 3, "registeredBytes": 9_000_000},
+        "clearPreviewCacheAvailability": {"isAvailable": True, "reason": None},
+        "clearPhotosOriginalsAvailability": {
+            "isAvailable": False,
+            "reason": "librarySlimmingAnalysisInProgress",
+        },
+        "appStorage": {
+            "kind": "internalStorage",
+            "requiresRestart": False,
+            "pendingExternalRootName": None,
+        },
+        "requests": [],
+    }
     catalog_jobs = []
     catalog_job_fetches = [0]
     favorite_states = {
@@ -334,7 +358,12 @@ def main():
                     "hostID": "dddddddd-1111-2222-3333-dddddddddddd",
                     "hostDisplayName": "Synthetic Mac",
                     "hostAppVersion": "test",
-                    "capabilities": ["sourceManagement", "favorites", "workspaceNotices"],
+                    "capabilities": [
+                        "sourceManagement",
+                        "favorites",
+                        "librarySlimming",
+                        "workspaceNotices",
+                    ],
                 },
             ),
         )
@@ -443,6 +472,10 @@ def main():
             "**/v1/tag-library-suggestions?**",
             lambda route: fulfill_json(route, {"mediaKind": "image", "maximumPendingCount": 500, "personalCentroidAvailable": False, "personalAdamWAvailable": False, "tags": [], "activities": []}),
         )
+        page.route(
+            "**/v1/training/activities?**",
+            lambda route: fulfill_json(route, []),
+        )
         def route_source_management(route):
             if source_requests and source_requests[0]["phase"] == "running":
                 prewarm_poll_count[0] += 1
@@ -544,6 +577,32 @@ def main():
 
         page.route("**/v1/source-management/requests", route_source_action)
 
+        def route_storage_maintenance(route):
+            fulfill_json(route, storage_snapshot)
+
+        def route_storage_maintenance_request(route):
+            payload = route.request.post_data_json
+            storage_requests.append(payload)
+            fulfill_json(
+                route,
+                {
+                    "id": "99999999-9999-4999-8999-999999999999",
+                    "operationID": payload["operationID"],
+                    "action": payload["action"],
+                    "phase": "awaitingMac",
+                    "message": "请回到 Mac 确认清理操作",
+                    "updatedAtMs": 1_700_000_000_900,
+                    "result": None,
+                },
+                status=202,
+            )
+
+        page.route(
+            "**/v1/storage-maintenance/requests",
+            route_storage_maintenance_request,
+        )
+        page.route("**/v1/storage-maintenance", route_storage_maintenance)
+
         def route_assets(route):
             query = parse_qs(urlparse(route.request.url).query)
             asset_queries.append(query)
@@ -589,9 +648,27 @@ def main():
             asset_id = urlparse(route.request.url).path.rsplit("/", 1)[-1]
             if asset_id == VIDEO_ID:
                 detail = asset_detail(asset_id, "CLIP_0001.MP4", "public.mpeg-4")
-            else:
-                index = (IMAGE_IDS + REVIEW_IDS).index(asset_id) + 1
+            elif asset_id in VIDEO_PAGE_2_IDS:
+                detail = asset_detail(
+                    asset_id,
+                    f"CLIP_{VIDEO_PAGE_2_IDS.index(asset_id) + 2:04d}.MP4",
+                    "public.mpeg-4",
+                )
+            elif asset_id in REVIEW_IDS:
+                detail = asset_detail(
+                    asset_id,
+                    f"REVIEW_{REVIEW_IDS.index(asset_id) + 1}.JPG",
+                )
+            elif asset_id in IMAGE_PAGE_2_IDS:
+                detail = asset_detail(
+                    asset_id,
+                    f"PHOTO_{IMAGE_PAGE_2_IDS.index(asset_id) + 3:04d}.JPG",
+                )
+            elif asset_id in IMAGE_IDS:
+                index = IMAGE_IDS.index(asset_id) + 1
                 detail = asset_detail(asset_id, f"PHOTO_{index:04d}.JPG")
+            else:
+                detail = asset_detail(asset_id, "PHOTO_DETAIL.JPG")
             detail["favorite"] = {
                 "assetID": asset_id,
                 "isFavorite": favorite_states[asset_id],
@@ -599,6 +676,15 @@ def main():
                 "syncStatus": "synced",
                 "lastErrorCode": None,
             }
+            for application in created_tag_applications:
+                if asset_id not in application["assetIDs"]:
+                    continue
+                detail["tags"].append({
+                    "tagID": NEW_REVIEW_TAG_ID,
+                    "displayName": application["name"],
+                    "decision": "accepted",
+                })
+                detail["acceptedTagCount"] += 1
             fulfill_json(route, detail)
 
         page.route(re.compile(r".*/v1/assets/[0-9a-f-]+$"), route_asset_detail)
@@ -629,6 +715,45 @@ def main():
             )
 
         page.route("**/v1/favorites", route_favorite_mutation)
+
+        def route_review_removal(route):
+            if route.request.method == "POST":
+                payload = route.request.post_data_json
+                submitted_review_removals.append(payload)
+                canonical_ids = sorted(set(payload["assetIDs"]))
+                review_removal["request"] = {
+                    "id": "aaaaaaaa-4444-5555-6666-aaaaaaaaaaaa",
+                    "operationID": payload["operationID"],
+                    "scope": payload.get("scope"),
+                    "jobID": payload.get("jobID"),
+                    "clusterID": payload.get("clusterID"),
+                    "mediaKind": payload["mediaKind"],
+                    "assetIDs": canonical_ids,
+                    "mode": payload["mode"],
+                    "phase": "awaitingMac",
+                    "progress": None,
+                    "audit": None,
+                    "message": "请回到 Mac 核对并确认删除审核选区",
+                    "updatedAtMs": 1_700_000_020_000,
+                }
+                fulfill_json(route, review_removal["request"], status=202)
+                return
+            fulfill_json(route, {
+                "mediaKind": "image",
+                "requests": [review_removal["request"]]
+                if review_removal["request"] else [],
+            })
+
+        page.route("**/v1/library-slimming/removals", route_review_removal)
+        page.route("**/v1/library-slimming/removals?**", route_review_removal)
+        page.route(
+            "**/v1/library-slimming/identical-cleanup/requests?**",
+            lambda route: fulfill_json(route, {
+                "mediaKind": "video" if "mediaKind=video" in route.request.url else "image",
+                "requests": [],
+            }),
+        )
+
         def route_asset_image(route):
             parsed = urlparse(route.request.url)
             path = parsed.path
@@ -722,6 +847,55 @@ def main():
             )
 
         page.route("**/v1/tag-decisions/batch", route_tag_decision)
+
+        def route_tag_selection(route):
+            payload = route.request.post_data_json
+            asset_ids = payload["assetIDs"]
+            aggregates = []
+            for tag_id in payload["tagIDs"]:
+                created = next((
+                    application for application in created_tag_applications
+                    if tag_id == NEW_REVIEW_TAG_ID
+                ), None)
+                accepted_count = sum(
+                    1 for asset_id in asset_ids
+                    if tag_id == CAT_TAG_ID
+                    or (created is not None and asset_id in created["assetIDs"])
+                )
+                aggregates.append({
+                    "tagID": tag_id,
+                    "acceptedCount": accepted_count,
+                    "rejectedCount": 0,
+                    "unknownCount": len(asset_ids) - accepted_count,
+                })
+            fulfill_json(route, aggregates)
+
+        page.route("**/v1/tags/selection", route_tag_selection)
+
+        def route_create_tag_and_apply(route):
+            payload = route.request.post_data_json
+            application = {
+                "name": payload["name"],
+                "assetIDs": payload["assetIDs"],
+            }
+            created_tag_applications.append(application)
+            if not any(tag["id"] == NEW_REVIEW_TAG_ID for tag in tags):
+                tags.append({
+                    "id": NEW_REVIEW_TAG_ID,
+                    "displayName": payload["name"],
+                    "state": "active",
+                    "groupID": SUBJECT_GROUP_ID,
+                })
+            fulfill_json(route, {
+                "operationID": payload["operationID"],
+                "tagID": NEW_REVIEW_TAG_ID,
+                "displayName": payload["name"],
+                "appliedAssetCount": len(payload["assetIDs"]),
+                "replayed": False,
+                "undoID": "99999999-9999-9999-9999-999999999999",
+            })
+
+        page.route("**/v1/tags/create-and-apply", route_create_tag_and_apply)
         page.route(
             "**/v1/review/overview?**",
             lambda route: fulfill_json(
@@ -785,6 +959,7 @@ def main():
         page.route("**/v1/review/decisions/batch", route_review_decision)
 
         page.goto(BASE_URL, wait_until="networkidle")
+
         page.locator('[data-workspace-notice-action-id="openRecycleBin"]').click()
         page.wait_for_function(
             "() => state.workspaceNotice.notice?.id === 'notice-source-recycle-new'"
@@ -1092,10 +1267,13 @@ def main():
         persistent_help.wait_for(timeout=1_000)
         assert "persistentHelp" in (first_asset_main.get_attribute("aria-describedby") or "")
         page.set_viewport_size({"width": 390, "height": 844})
-        page.locator("#searchInput").focus()
-        page.keyboard.press("Tab")
+        page.locator("#sidebarToggle").focus()
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'sidebarToggle'"
+        )
+        page.wait_for_timeout(120)
         first_asset_main.focus()
-        persistent_help.wait_for(timeout=1_000)
+        persistent_help.wait_for(timeout=2_000)
         narrow_help_bounds = persistent_help.bounding_box()
         assert narrow_help_bounds is not None
         assert narrow_help_bounds["x"] >= 8
@@ -1121,7 +1299,7 @@ def main():
         page.keyboard.press("End")
         assert page.evaluate(
             "() => document.activeElement?.dataset.contextAction"
-        ) == "filterSource"
+        ) == "delete"
         page.keyboard.press("ArrowDown")
         assert page.evaluate(
             "() => document.activeElement?.dataset.contextAction"
@@ -1143,6 +1321,7 @@ def main():
             "() => document.activeElement?.dataset.contextAction === 'preview'"
         )
         page.keyboard.press("End")
+        page.keyboard.press("ArrowUp")
         page.keyboard.press("ArrowUp")
         assert page.evaluate(
             "() => document.activeElement?.dataset.contextAction"
@@ -1236,7 +1415,7 @@ def main():
             "(tagID) => document.activeElement?.dataset.tagId === tagID",
             arg=TRAVEL_TAG_ID,
         )
-        assert tag_decisions[-1]["action"] == "reject"
+        assert tag_decisions[-1]["action"] == "reject", tag_decisions[-1]
 
         page.locator("#searchInput").focus()
         page.keyboard.press("Meta+K")
@@ -1460,8 +1639,19 @@ def main():
         page.wait_for_function(
             "() => !document.querySelector('#sourceRefreshAllMutationAuthorizationButton').disabled"
         )
-        page.set_viewport_size({"width": 1440, "height": 960})
+        page.set_viewport_size({"width": 2200, "height": 960})
         page.locator("#sourceManagerCloseButton").click()
+
+        page.locator("#toolbarConnectFolderButton").click()
+        page.wait_for_function("() => document.querySelector('#sourceManagerDialog').open === true")
+        page.wait_for_function("() => document.querySelector('#sourceManagerPending').textContent.includes('等待 Mac')")
+        assert source_actions[-1]["action"] == "connectFolder"
+        assert source_actions[-1].get("sourceID") is None
+        page.locator("#sourceManagerCloseButton").click()
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'sourceManagerButton'"
+        )
+        page.set_viewport_size({"width": 1440, "height": 960})
 
         page.locator("#commandButton").click()
         page.locator("#commandSearchInput").fill("连接文件夹来源")
@@ -1474,6 +1664,54 @@ def main():
 
         page.locator("#reviewNavigationButton").click()
         page.locator("#reviewOverview:not(.hidden)").wait_for()
+        review_desktop_presentation = page.evaluate(
+            """() => {
+              const app = document.querySelector('#appView');
+              const workspace = document.querySelector('#reviewWorkspace');
+              const library = document.querySelector('#libraryPane');
+              const sourceSidebar = document.querySelector('#sourceSidebar');
+              const reviewBounds = workspace.getBoundingClientRect();
+              const libraryBounds = library.getBoundingClientRect();
+              const sourceBounds = sourceSidebar.getBoundingClientRect();
+              return {
+                appInert: app.inert,
+                role: workspace.getAttribute('role'),
+                ariaModal: workspace.getAttribute('aria-modal'),
+                integrated: workspace.classList.contains('integrated'),
+                reviewLeft: reviewBounds.left,
+                reviewTop: reviewBounds.top,
+                reviewBottom: reviewBounds.bottom,
+                libraryLeft: libraryBounds.left,
+                libraryTop: libraryBounds.top,
+                libraryBottom: libraryBounds.bottom,
+                sourceVisible: sourceBounds.width > 0 && sourceBounds.height > 0,
+                reviewSelected: document.querySelector('#reviewNavigationButton')
+                  .classList.contains('selected'),
+                reviewCurrent: document.querySelector('#reviewNavigationButton')
+                  .getAttribute('aria-current'),
+                title: document.querySelector('#libraryTitle').textContent,
+                galleryToolbarIsolated: document.querySelector('#libraryPane > .toolbar')
+                  .dataset.integratedWorkspaceIsolated || null,
+              };
+            }"""
+        )
+        assert review_desktop_presentation == {
+            "appInert": False,
+            "role": "region",
+            "ariaModal": None,
+            "integrated": True,
+            "reviewLeft": review_desktop_presentation["libraryLeft"],
+            "reviewTop": review_desktop_presentation["libraryTop"],
+            "reviewBottom": review_desktop_presentation["libraryBottom"],
+            "libraryLeft": review_desktop_presentation["libraryLeft"],
+            "libraryTop": review_desktop_presentation["libraryTop"],
+            "libraryBottom": review_desktop_presentation["libraryBottom"],
+            "sourceVisible": True,
+            "reviewSelected": True,
+            "reviewCurrent": "page",
+            "title": "待审核建议",
+            "galleryToolbarIsolated": "true",
+        }, review_desktop_presentation
         review_cat_card = page.locator(f'[data-review-overview-tag-id="{CAT_TAG_ID}"]')
         review_cat_card.wait_for()
         page.wait_for_function(
@@ -1488,13 +1726,54 @@ def main():
         assert page.locator("#persistentHelpTitle").inner_text() == "审核“猫”"
         review_help_detail = page.locator("#persistentHelpDetail").inner_text()
         assert "P 属于、X 不属于、U 稍后" in review_help_detail
+        review_connection_stability = page.evaluate(
+            """async tagID => {
+              const originalRenderReviewOverview = renderReviewOverview;
+              const card = document.querySelector(
+                `[data-review-overview-tag-id="${CSS.escape(tagID)}"]`
+              );
+              const connectionLabelBefore = document.querySelector(
+                '.connection-label'
+              ).textContent;
+              let renderCalls = 0;
+              renderReviewOverview = (...args) => {
+                renderCalls += 1;
+                return originalRenderReviewOverview(...args);
+              };
+              try {
+                await api('/v1/jobs');
+                return {
+                  renderCalls,
+                  retainedCard: card?.isConnected === true,
+                  sameCard: document.querySelector(
+                    `[data-review-overview-tag-id="${CSS.escape(tagID)}"]`
+                  ) === card,
+                  sameHelpTarget: persistentHelpTarget === card,
+                  helpVisible: !document.querySelector('#persistentHelp').classList.contains('hidden'),
+                  connectionLabelBefore,
+                  connectionLabelAfter: document.querySelector('.connection-label').textContent,
+                };
+              } finally {
+                renderReviewOverview = originalRenderReviewOverview;
+              }
+            }""",
+            CAT_TAG_ID,
+        )
+        assert review_connection_stability["renderCalls"] == 0, review_connection_stability
+        assert review_connection_stability["retainedCard"] is True, review_connection_stability
+        assert review_connection_stability["sameCard"] is True, review_connection_stability
+        assert review_connection_stability["sameHelpTarget"] is True, review_connection_stability
+        assert review_connection_stability["helpVisible"] is True, review_connection_stability
+        assert review_connection_stability["connectionLabelAfter"] == (
+            review_connection_stability["connectionLabelBefore"]
+        ), review_connection_stability
         review_help_bounds = page.locator("#persistentHelp").bounding_box()
         assert review_help_bounds is not None
         assert review_help_bounds["x"] >= 8 and review_help_bounds["y"] >= 8
         assert review_help_bounds["x"] + review_help_bounds["width"] <= 1432
         assert page.locator("#persistentHelp").is_visible()
         page.screenshot(path="/tmp/imageall-review-persistent-help.png", full_page=True)
-        page.mouse.move(4, 4)
+        page.locator("#reviewSummary").click()
         page.wait_for_function(
             "() => document.querySelector('#persistentHelp').classList.contains('hidden')"
         )
@@ -1553,6 +1832,14 @@ def main():
         assert review_handle.get_attribute("aria-valuenow") == "288"
         page.screenshot(path="/tmp/imageall-review-overview-split.png", full_page=True)
         page.set_viewport_size({"width": 390, "height": 844})
+        page.wait_for_function(
+            "() => !document.querySelector('#reviewWorkspace').classList.contains('integrated')"
+        )
+        assert page.evaluate(
+            "() => ({ appInert: document.querySelector('#appView').inert, "
+            "role: document.querySelector('#reviewWorkspace').getAttribute('role'), "
+            "ariaModal: document.querySelector('#reviewWorkspace').getAttribute('aria-modal') })"
+        ) == {"appInert": True, "role": "dialog", "ariaModal": "true"}
         assert review_handle.is_hidden()
         assert page.evaluate("() => document.documentElement.scrollWidth <= 390")
         review_group_toggle = page.locator("[data-review-overview-group-toggle]").first
@@ -1571,6 +1858,14 @@ def main():
         page.wait_for_timeout(180)
         page.screenshot(path="/tmp/imageall-review-persistent-help-390.png", full_page=True)
         page.set_viewport_size({"width": 1440, "height": 960})
+        page.wait_for_function(
+            "() => document.querySelector('#reviewWorkspace').classList.contains('integrated')"
+        )
+        assert page.evaluate(
+            "() => !document.querySelector('#appView').inert "
+            "&& document.querySelector('#reviewWorkspace').getAttribute('role') === 'region' "
+            "&& !document.querySelector('#reviewWorkspace').hasAttribute('aria-modal')"
+        ) is True
         page.locator("#reviewOverviewGrid").evaluate(
             "element => { element.style.paddingBottom = ''; "
             "element.closest('.review-overview-content').scrollTop = 0; }"
@@ -1582,11 +1877,73 @@ def main():
             "() => document.querySelectorAll('#reviewGrid > .review-card').length === 3 "
             "&& state.review.nextCursor === null"
         )
+        page.wait_for_function(
+            f"() => state.review.detail?.assetID === '{REVIEW_IDS[0]}' "
+            "&& !state.review.detailLoadingAssetID"
+        )
+        assert "Apple Photos" in page.locator("#reviewAssetMetadata").inner_text()
+        assert "1200 × 900" in page.locator("#reviewAssetMetadata").inner_text()
+        assert page.locator("#reviewOpenOriginalButton").is_enabled()
+        page.locator("#reviewOpenOriginalButton").click()
+        page.wait_for_function(
+            f"() => state.openingOriginal === false "
+            f"&& document.querySelector('#reviewOpenOriginalButton').dataset.assetId === '{REVIEW_IDS[0]}'"
+        )
+        assert opened_originals[-1] == REVIEW_IDS[0]
+        review_travel_accept = page.locator(
+            f'#reviewTags [data-tag-id="{TRAVEL_TAG_ID}"][data-action="accept"]'
+        )
+        with page.expect_response("**/v1/tag-decisions/batch"):
+            review_travel_accept.click()
+        page.wait_for_function("() => !state.tagMutating && !state.review.mutating")
+        assert tag_decisions[-1]["tagID"] == TRAVEL_TAG_ID
+        assert tag_decisions[-1]["action"] == "accept"
+        assert tag_decisions[-1]["assetIDs"] == [REVIEW_IDS[0]]
+        page.locator('[data-review-index="1"] > .review-card-main').click(
+            modifiers=["Meta"]
+        )
+        page.wait_for_function(
+            "() => state.review.selectedAssetIDs.size === 2 "
+            "&& state.review.detailSelectionKey?.split('|').length === 2"
+        )
+        review_travel_reject = page.locator(
+            f'#reviewTags [data-tag-id="{TRAVEL_TAG_ID}"][data-action="reject"]'
+        )
+        with page.expect_response("**/v1/tag-decisions/batch"):
+            review_travel_reject.click()
+        page.wait_for_function("() => !state.tagMutating && !state.review.mutating")
+        assert tag_decisions[-1]["tagID"] == TRAVEL_TAG_ID
+        assert tag_decisions[-1]["action"] == "reject"
+        assert set(tag_decisions[-1]["assetIDs"]) == set(REVIEW_IDS[:2])
+        page.locator("#reviewInlineTagName").fill("网页审核新标签")
+        with page.expect_response("**/v1/tags/create-and-apply"):
+            page.locator("#reviewInlineTagForm").press("Enter")
+        page.wait_for_function("() => !state.tagMutating && !state.review.mutating")
+        assert created_tag_applications[-1] == {
+            "name": "网页审核新标签",
+            "assetIDs": REVIEW_IDS[:2],
+        }
+        page.locator(
+            f'#reviewTags [data-tag-chip-action][data-tag-id="{NEW_REVIEW_TAG_ID}"]'
+        ).wait_for()
+        page.locator("#reviewTagSearch").fill("旅行")
+        assert page.locator("#reviewTags [data-tag-chip-action]").count() == 1
+        assert page.locator(
+            f'#reviewTags [data-tag-chip-action][data-tag-id="{TRAVEL_TAG_ID}"]'
+        ).is_visible()
+        page.locator("#reviewTagSearch").fill("")
+        page.locator('[data-review-index="0"] > .review-card-main').click()
+        page.wait_for_function(
+            f"() => state.review.selectedAssetIDs.size === 1 "
+            f"&& state.review.detail?.assetID === '{REVIEW_IDS[0]}' "
+            "&& !state.review.detailLoadingAssetID"
+        )
         assert any(query.get("cursor") == ["review-page-2"] for query in review_queue_queries)
         first_review_card = page.locator(f'[data-review-index="0"]')
         first_review_main = first_review_card.locator(":scope > .review-card-main")
         first_review_favorite = first_review_card.locator(":scope > .review-card-favorite")
         assert first_review_main.get_attribute("aria-pressed") == "true"
+        page.locator("#reviewSummary").hover()
         first_review_main.hover()
         page.locator("#persistentHelp:not(.hidden)").wait_for()
         assert page.locator("#persistentHelp").get_attribute("data-kind") == "review"
@@ -1594,7 +1951,7 @@ def main():
         assert "当前主项目并已选择" in queue_help_detail
         assert "Command/Ctrl-A 全选已载入项目" in queue_help_detail
         assert "P X U" in first_review_main.get_attribute("aria-keyshortcuts")
-        page.mouse.move(4, 4)
+        page.locator("#reviewSummary").hover()
         page.wait_for_function(
             "() => document.querySelector('#persistentHelp').classList.contains('hidden')"
         )
@@ -1700,14 +2057,106 @@ def main():
             "selectedAssetIDs: [...state.review.selectedAssetIDs], "
             "scrollTop: document.querySelector('#reviewQueuePane').scrollTop })"
         )
-        page.locator("#reviewGridDensitySlider").fill("8")
-        assert page.locator("#gridDensitySlider").input_value() == "8"
-        assert page.locator("#slimmingGridDensitySlider").input_value() == "8"
+        page.evaluate(
+            "() => { globalThis.__densityPreservedReviewCard = "
+            "document.querySelector('#reviewGrid .review-card'); }"
+        )
+        review_density_button = page.locator("#reviewGridDensityButton")
+        review_density_button.click()
+        review_density_menu = page.locator("#reviewGridDensityPopover:not(.hidden)")
+        review_density_menu.wait_for()
+        assert review_density_menu.locator("[data-grid-density]").all_inner_texts() == [
+            "微缩", "精细", "紧凑", "标准", "大图", "较大", "很大", "特大", "巨大",
+        ]
+        assert review_density_menu.locator(
+            '[data-grid-density="3"]'
+        ).get_attribute("aria-checked") == "true"
+        assert page.evaluate(
+            "() => migrateLegacyGridDensity(4) === 3 "
+            "&& migrateLegacyGridDensity(8) === 5"
+        )
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.gridDensity === '3'"
+        )
+        page.keyboard.press("Home")
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.gridDensity === '0'"
+        )
+        page.keyboard.press("End")
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.gridDensity === '8'"
+        )
+        page.keyboard.press("Escape")
+        assert review_density_menu.is_hidden()
+        assert page.evaluate(
+            "() => document.activeElement?.id === 'reviewGridDensityButton'"
+        )
+        review_density_button.click()
+        page.screenshot(path="/tmp/imageall-density-menu-desktop.png", full_page=True)
+        review_density_menu.locator('[data-grid-density="8"]').click()
+        assert review_density_button.get_attribute("aria-expanded") == "false"
+        assert review_density_button.get_attribute("aria-label") == "缩略图大小：巨大"
+        assert page.locator("#gridDensityButton").get_attribute("aria-label") == "缩略图大小：巨大"
+        assert page.locator("#slimmingGridDensityButton").get_attribute("aria-label") == "缩略图大小：巨大"
         assert page.evaluate(
             "() => getComputedStyle(document.documentElement)"
             ".getPropertyValue('--asset-min-width').trim()"
-        ) == "268px"
-        page.locator("#reviewThumbnailAspectButton").click()
+        ) == "620px"
+        stored_giant_layout = page.evaluate(
+            "() => JSON.parse(localStorage.getItem('imageall.web.workspace-preferences'))"
+        )
+        assert stored_giant_layout["density"] == 8
+        assert stored_giant_layout["densityScaleVersion"] == 2
+        review_density_button.click()
+        page.locator(
+            '#reviewGridDensityPopover:not(.hidden) [data-grid-density="5"]'
+        ).click()
+        assert page.evaluate(
+            "() => getComputedStyle(document.documentElement)"
+            ".getPropertyValue('--asset-min-width').trim()"
+        ) == "245px"
+        assert page.evaluate(
+            "() => globalThis.__densityPreservedReviewCard "
+            "=== document.querySelector('#reviewGrid .review-card')"
+        )
+        assert page.evaluate(
+            """() => {
+              const original = loadAssets;
+              let calls = 0;
+              loadAssets = (...args) => { calls += 1; return original(...args); };
+              try { applyGridDensity(8); applyGridDensity(5); return calls; }
+              finally { loadAssets = original; }
+            }"""
+        ) == 0
+        aspect_controls = [
+            "#thumbnailAspectButton",
+            "#reviewThumbnailAspectButton",
+            "#slimmingThumbnailAspectButton",
+        ]
+        for selector in aspect_controls:
+            control = page.locator(selector)
+            assert control.get_attribute("data-aspect-mode") == "square"
+            assert control.get_attribute("aria-label") == "缩略图比例：正方形"
+            assert control.locator(".thumbnail-aspect-label").text_content() == "正方形"
+        assert "当前缩略图为正方形" in page.locator(
+            "#reviewThumbnailAspectButton"
+        ).get_attribute("data-help-detail")
+        page.evaluate(
+            "() => { globalThis.__aspectPreservedReviewCard = "
+            "document.querySelector('#reviewGrid .review-card'); }"
+        )
+        aspect_asset_load_calls = page.evaluate(
+            """() => {
+              const original = loadAssets;
+              let calls = 0;
+              loadAssets = (...args) => { calls += 1; return original(...args); };
+              try {
+                document.querySelector('#reviewThumbnailAspectButton').click();
+                return calls;
+              } finally { loadAssets = original; }
+            }"""
+        )
+        assert aspect_asset_load_calls == 0
         page.wait_for_function(
             "() => [...document.querySelectorAll('#reviewGrid .review-card img')]"
             ".every(image => image.naturalWidth > 1 && image.naturalHeight > 1)"
@@ -1715,17 +2164,30 @@ def main():
         assert page.evaluate(
             "() => [...document.querySelectorAll('#reviewGrid .review-card img')]"
             ".map(image => [image.naturalWidth, image.naturalHeight])"
-        ) == [[1200, 900], [900, 1200], [1600, 900]]
+        ) == [[1200, 900], [900, 1200], [512, 512]]
         assert page.locator("#reviewGrid").get_attribute("class").find("original-aspect") >= 0
         assert page.locator("#assetGrid").get_attribute("class").find("original-aspect") >= 0
-        assert page.locator("#thumbnailAspectButton").get_attribute("aria-pressed") == "true"
-        assert page.locator("#slimmingThumbnailAspectButton").get_attribute("aria-pressed") == "true"
-        assert page.locator("#reviewThumbnailAspectButton").get_attribute("aria-pressed") == "true"
+        for selector in aspect_controls:
+            control = page.locator(selector)
+            assert control.get_attribute("data-aspect-mode") == "original"
+            assert control.get_attribute("aria-label") == "缩略图比例：原比例"
+            assert control.locator(".thumbnail-aspect-label").text_content() == "原比例"
+            assert control.get_attribute("aria-pressed") is None
+        assert "当前优先显示已手动缓存的原比例缩略图" in page.locator(
+            "#reviewThumbnailAspectButton"
+        ).get_attribute("data-help-detail")
+        assert page.evaluate(
+            "() => globalThis.__aspectPreservedReviewCard "
+            "=== document.querySelector('#reviewGrid .review-card')"
+        )
         first_box = first_review_card.bounding_box()
         second_box = page.locator('[data-review-index="1"]').bounding_box()
         assert first_box is not None and second_box is not None
         assert abs(first_box["width"] / first_box["height"] - 4 / 3) < 0.08, first_box
         assert abs(second_box["width"] / second_box["height"] - 3 / 4) < 0.08, second_box
+        third_box = page.locator('[data-review-index="2"]').bounding_box()
+        assert third_box is not None
+        assert abs(third_box["width"] / third_box["height"] - 1) < 0.08, third_box
         assert {item["assetID"] for item in thumbnail_queries if item["aspect"] == "original"} \
             >= set(REVIEW_IDS)
         review_selection_after_layout = page.evaluate(
@@ -1740,7 +2202,8 @@ def main():
         stored_layout = page.evaluate(
             "() => JSON.parse(localStorage.getItem('imageall.web.workspace-preferences'))"
         )
-        assert stored_layout["density"] == 8
+        assert stored_layout["density"] == 5
+        assert stored_layout["densityScaleVersion"] == 2
         assert stored_layout["aspectMode"] == "original"
         original_review_count = len(review_items)
         marquee_review_ids = []
@@ -1789,6 +2252,11 @@ def main():
               return loadReviewQueue({ preserveLoadedWindow: true });
             }"""
         )
+        page.wait_for_function(
+            "expected => !state.review.marquee && !state.review.loading "
+            "&& state.review.items.length === expected",
+            arg=len(REVIEW_IDS),
+        )
         page.keyboard.press("Meta+K")
         page.locator('[data-command-id="selectAll"]').click()
         page.wait_for_function(
@@ -1800,16 +2268,27 @@ def main():
         assert page.locator('[data-command-id="reviewRejectSelection"]').count() == 1
         assert page.locator('[data-command-id="reviewDeferSelection"]').count() == 1
         page.screenshot(path="/tmp/imageall-review-command-actions.png", full_page=True)
+        page.keyboard.press("Escape")
+        review_action_title = page.locator("#reviewInspectorSelectionTitle")
+        review_favorite_action = page.locator("#reviewInspectorFavoriteButton")
+        review_unfavorite_action = page.locator("#reviewInspectorUnfavoriteButton")
+        review_delete_action = page.locator("#reviewInspectorDeleteButton")
+        assert review_action_title.inner_text() == "已选择 3 张照片"
+        assert review_favorite_action.is_visible()
+        assert review_unfavorite_action.is_visible()
+        assert review_delete_action.is_visible()
+        assert review_favorite_action.is_enabled()
+        assert review_unfavorite_action.is_enabled()
+        assert review_delete_action.is_enabled()
         with page.expect_response("**/v1/favorites"):
-            page.locator('[data-command-id="favoriteSelection"]').click()
+            review_favorite_action.click()
         page.wait_for_function(
             "() => state.review.items.every(item => item.favorite?.isFavorite === true)"
         )
         assert set(favorite_mutations[-1]["assetIDs"]) == set(REVIEW_IDS)
         assert favorite_mutations[-1]["isFavorite"] is True
-        page.keyboard.press("Meta+K")
         with page.expect_response("**/v1/favorites"):
-            page.locator('[data-command-id="unfavoriteSelection"]').click()
+            review_unfavorite_action.click()
         page.wait_for_function(
             "() => state.review.items.every(item => item.favorite?.isFavorite === false)"
         )
@@ -1862,13 +2341,13 @@ def main():
         assert review_select_all.is_visible()
         page.locator('[data-review-index="1"] > .review-card-main').click()
         page.locator('[data-review-index="2"] > .review-card-main').click()
-        assert page.evaluate("() => state.review.selectedAssetIDs.size") == 3
+        page.wait_for_function("() => state.review.selectedAssetIDs.size === 3")
         assert review_select_all.is_disabled()
         page.locator('[data-review-index="1"] > .review-card-main').click()
         page.wait_for_function("() => state.review.selectedAssetIDs.size === 2")
         assert review_select_all.is_enabled()
         review_select_all.click()
-        assert page.evaluate("() => state.review.selectedAssetIDs.size") == 3
+        page.wait_for_function("() => state.review.selectedAssetIDs.size === 3")
         page.screenshot(
             path="/tmp/imageall-review-touch-selection-active-390.png",
             full_page=True,
@@ -1896,7 +2375,8 @@ def main():
         review_toolbar_bounds = page.evaluate(
             "() => Object.fromEntries(["
             "'reviewTagSelect', 'reviewSourceFilterButton', 'reviewSuggestionLimitControl', "
-            "'reviewThumbnailAspectButton', 'reviewSelectionModeButton', 'refreshReviewButton'"
+            "'reviewThumbnailAspectButton', 'reviewGridDensityButton', "
+            "'reviewSelectionModeButton', 'refreshReviewButton'"
             "].map(id => { const rect = document.getElementById(id).getBoundingClientRect(); "
             "return [id, { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom }]; }))"
         )
@@ -1911,15 +2391,82 @@ def main():
             "() => ({ viewport: innerWidth, scroll: document.documentElement.scrollWidth })"
         )
         assert review_dimensions["scroll"] <= review_dimensions["viewport"], review_dimensions
+        review_density_button.click()
+        mobile_density_bounds = page.locator(
+            "#reviewGridDensityPopover:not(.hidden)"
+        ).evaluate(
+            "element => { const rect = element.getBoundingClientRect(); return ({ "
+            "left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, "
+            "width: innerWidth, height: innerHeight, scroll: document.documentElement.scrollWidth "
+            "}); }"
+        )
+        assert mobile_density_bounds["left"] >= 8, mobile_density_bounds
+        assert mobile_density_bounds["right"] <= mobile_density_bounds["width"] - 8, (
+            mobile_density_bounds
+        )
+        assert mobile_density_bounds["top"] >= 8, mobile_density_bounds
+        assert mobile_density_bounds["bottom"] <= mobile_density_bounds["height"] - 8, (
+            mobile_density_bounds
+        )
+        assert mobile_density_bounds["scroll"] <= mobile_density_bounds["width"], (
+            mobile_density_bounds
+        )
+        page.screenshot(path="/tmp/imageall-density-menu-390.png", full_page=True)
+        page.keyboard.press("Escape")
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'reviewGridDensityButton'"
+        )
         page.screenshot(path="/tmp/imageall-review-card-favorite-390.png", full_page=True)
         page.set_viewport_size({"width": 1440, "height": 960})
 
         page.locator("#reviewOpenLightboxButton").click()
         page.locator("#lightboxReviewActions:not(.hidden)").wait_for()
         assert "REVIEW_1.JPG" in page.locator("#lightboxTitle").inner_text()
+        review_lightbox_layout = page.evaluate(
+            """() => {
+              const lightbox = document.querySelector('#lightbox');
+              const queue = document.querySelector('#reviewQueuePane');
+              const detail = document.querySelector('.review-detail-pane');
+              const lightboxBounds = lightbox.getBoundingClientRect();
+              const queueBounds = queue.getBoundingClientRect();
+              const detailBounds = detail.getBoundingClientRect();
+              return {
+                docked: lightbox.classList.contains('review-docked'),
+                modal: lightbox.getAttribute('aria-modal'),
+                appInert: document.querySelector('#appView').inert,
+                reviewInert: document.querySelector('#reviewWorkspace').inert,
+                queueInert: queue.inert,
+                titlebarInert: document.querySelector('.titlebar').inert,
+                sidebarInert: document.querySelector('#sourceSidebar').inert,
+                frameMatches: Math.abs(lightboxBounds.left - queueBounds.left) < 1
+                  && Math.abs(lightboxBounds.top - queueBounds.top) < 1
+                  && Math.abs(lightboxBounds.right - queueBounds.right) < 1
+                  && Math.abs(lightboxBounds.bottom - queueBounds.bottom) < 1,
+                detailClear: lightboxBounds.right <= detailBounds.left + 1,
+              };
+            }"""
+        )
+        assert review_lightbox_layout == {
+            "docked": True,
+            "modal": "false",
+            "appInert": False,
+            "reviewInert": False,
+            "queueInert": True,
+            "titlebarInert": True,
+            "sidebarInert": True,
+            "frameMatches": True,
+            "detailClear": True,
+        }, review_lightbox_layout
+        page.locator("#reviewTagSearch").focus()
+        page.locator("#reviewTagSearch").fill("旅行")
+        assert page.locator(
+            f'#reviewTags [data-tag-chip-action][data-tag-id="{TRAVEL_TAG_ID}"]'
+        ).is_visible()
+        assert "REVIEW_1.JPG" in page.locator("#lightboxTitle").inner_text()
+        page.locator("#reviewTagSearch").fill("")
+        page.locator("#lightboxZoomInButton").focus()
         zoom_controls = page.locator("#lightboxZoomControls")
         assert zoom_controls.is_visible()
-        page.locator("#lightboxZoomInButton").focus()
         page.keyboard.press("Meta+K")
         page.locator("#commandPalette[open]").wait_for()
         assert page.locator("#commandContextLabel").inner_text() == "当前：全屏预览 · 建议审核队列"
@@ -1952,6 +2499,12 @@ def main():
         )
         assert constrained == {"x": 50, "y": -25}, constrained
         page.set_viewport_size({"width": 390, "height": 844})
+        page.wait_for_function(
+            "() => !document.querySelector('#lightbox').classList.contains('review-docked')"
+            " && document.querySelector('#lightbox').getAttribute('aria-modal') === 'true'"
+            " && document.querySelector('#appView').inert"
+            " && document.querySelector('#reviewWorkspace').inert"
+        )
         zoom_dimensions = page.evaluate(
             "() => ({ viewport: innerWidth, scroll: document.documentElement.scrollWidth, "
             "toolbarRight: document.querySelector('.lightbox-toolbar-actions')"
@@ -1980,6 +2533,12 @@ def main():
         assert page.locator("#lightboxZoomPercentage").inner_text() == "100%"
         assert page.evaluate("() => state.lightboxViewportOffsetX") == 0
         page.set_viewport_size({"width": 1440, "height": 960})
+        page.wait_for_function(
+            "() => document.querySelector('#lightbox').classList.contains('review-docked')"
+            " && !document.querySelector('#appView').inert"
+            " && !document.querySelector('#reviewWorkspace').inert"
+            " && document.querySelector('#reviewQueuePane').inert"
+        )
         page.locator("#lightboxNextButton").click()
         page.wait_for_function(
             "() => document.querySelector('#lightboxTitle').textContent.includes('REVIEW_2.JPG')"
@@ -2001,21 +2560,89 @@ def main():
         assert favorite_mutations[-1]["isFavorite"] is True
         assert "REVIEW_1.JPG" in page.locator("#lightboxTitle").inner_text()
         page.screenshot(path="/tmp/imageall-review-lightbox-synthetic.png", full_page=True)
+
+        review_delete_action = page.locator("#reviewInspectorDeleteButton")
+        review_delete_action.click()
+        page.locator("#confirmDialog[open]").wait_for()
+        assert page.locator("#confirmDialog").get_attribute("data-tone") == "danger"
+        review_delete_confirmation = page.locator("#confirmDialogMessage").inner_text()
+        assert "文件夹来源会在身份核验后永久删除" in review_delete_confirmation
+        assert "Apple Photos 项只会进入系统“最近删除”" in review_delete_confirmation
+        assert not submitted_review_removals
+        page.locator("#confirmActionButton").click()
+        page.wait_for_function(
+            "() => document.querySelector('#reviewInspectorActionStatus')"
+            ".textContent.includes('等待 Mac')"
+        )
+        assert len(submitted_review_removals) == 1
+        review_removal_payload = submitted_review_removals[0]
+        assert review_removal_payload["scope"] == "gallerySelection"
+        assert review_removal_payload["jobID"] is None
+        assert review_removal_payload["clusterID"] is None
+        assert review_removal_payload["mode"] == "releaseSourceSpace"
+        assert review_removal_payload["assetIDs"] == [REVIEW_IDS[0]]
+
+        review_items[:] = review_items[1:]
+        review_removal["request"].update({
+            "phase": "completed",
+            "progress": {
+                "phase": "completedAsset",
+                "completedAssetCount": 1,
+                "totalAssetCount": 1,
+                "copiedBytes": 0,
+                "totalFileBytes": 0,
+            },
+            "audit": {
+                "hiddenAssetIDs": [REVIEW_IDS[0]],
+                "recycledEntryIDs": [],
+                "permanentlyDeletedAssetIDs": [REVIEW_IDS[0]],
+                "durabilityPendingAssetIDs": [],
+                "failedAssetIDs": [],
+                "authorizationRequiredSourceIDs": [],
+                "authorizationRequiredAssetIDs": [],
+                "authorizationDeniedPhotosAssetIDs": [],
+                "mutationAuthorizationInvalidAssetIDs": [],
+                "photosMutationFailedAssetIDs": [],
+                "photosMutationFailureCategories": [],
+                "photosMutationFailureCodes": [],
+                "sourceChangedAssetIDs": [],
+            },
+            "message": "已永久删除 1 张，来源空间已可回收",
+            "updatedAtMs": 1_700_000_021_000,
+        })
+        page.wait_for_function(
+            f"() => state.review.items.length === 2 "
+            f"&& state.review.items[0].assetID === '{REVIEW_IDS[1]}' "
+            f"&& state.review.selectedAssetIDs.size === 1 "
+            f"&& state.review.selectedAssetIDs.has('{REVIEW_IDS[1]}') "
+            f"&& state.lightboxAssetID === '{REVIEW_IDS[1]}' "
+            "&& state.galleryRemoval.contexts.size === 0 "
+            "&& document.querySelector('#lightboxTitle').textContent.includes('REVIEW_2.JPG') "
+            "&& document.querySelector('#reviewFileName').textContent === 'REVIEW_2.JPG'"
+        )
+        assert page.locator("#lightbox").get_attribute("aria-modal") == "false"
+        assert page.locator("#reviewQueuePane").evaluate("element => element.inert")
+
         accept_review_action = page.locator(
             '#lightboxReviewActions [data-action="accept"]'
         )
         assert accept_review_action.is_enabled()
         with page.expect_response("**/v1/review/decisions/batch"):
             accept_review_action.click()
-        page.wait_for_function("() => document.querySelector('#lightboxTitle').textContent.includes('REVIEW_2.JPG')")
+        page.wait_for_function("() => document.querySelector('#lightboxTitle').textContent.includes('REVIEW_3.JPG')")
         assert review_decisions[-1]["action"] == "accept"
         page.keyboard.press("u")
         page.wait_for_function("() => document.querySelector('#lightboxTitle').textContent.includes('REVIEW_3.JPG')")
         assert len(review_decisions) == 1, review_decisions
         page.keyboard.press("x")
-        page.wait_for_function("() => document.querySelector('#lightboxTitle').textContent.includes('REVIEW_2.JPG')")
+        page.locator("#lightbox").wait_for(state="hidden")
         assert review_decisions[-1]["action"] == "reject"
-        page.locator("#closeLightboxButton").click()
+        page.wait_for_function(
+            "() => state.review.items.length === 0 "
+            "&& state.review.selectedAssetIDs.size === 0 "
+            "&& document.querySelector('#reviewEmpty')?.offsetParent !== null"
+        )
+        assert page.locator("#reviewDetail").is_hidden()
         page.locator("#closeReviewButton").click()
         page.locator("#reviewWorkspace").wait_for(state="hidden")
         page.wait_for_function(f"() => state.assets.length === {len(IMAGE_IDS + IMAGE_PAGE_2_IDS)}")
@@ -2099,7 +2726,7 @@ def main():
         page.wait_for_function(
             "() => document.querySelector('#toastMessage').textContent.includes('系统播放器')"
         )
-        assert opened_originals == [VIDEO_ID]
+        assert opened_originals == [REVIEW_IDS[0], VIDEO_ID]
         assert page.locator("#lightbox:not(.hidden)").is_visible()
         page.set_viewport_size({"width": 1440, "height": 960})
         page.locator("#closeLightboxButton").click()
@@ -2107,8 +2734,233 @@ def main():
         page.locator("#searchInput").fill("CLIP")
         page.locator("#searchInput").press("Enter")
         page.wait_for_function("() => state.searchText === 'CLIP' && !state.loadingAssets")
-        page.locator("#sortSelect").select_option("oldest")
+        sort_button = page.locator("#sortButton")
+        assert page.locator("#sortButtonLabel").text_content() == "文件名升序"
+        assert sort_button.get_attribute("aria-label") == "排序：文件名升序"
+        sort_button.click()
+        page.locator("#sortPopover:not(.hidden)").wait_for()
+        assert sort_button.get_attribute("aria-expanded") == "true"
+        assert page.locator(
+            '#sortPopover [data-sort="fileNameAscending"]'
+        ).get_attribute("aria-checked") == "true"
+        with page.expect_response("**/v1/assets?**"):
+            page.locator('#sortPopover [data-sort="oldest"]').click()
         page.wait_for_function("() => state.sort === 'oldest' && !state.loadingAssets")
+        assert page.locator("#sortButtonLabel").text_content() == "最早优先"
+        assert sort_button.get_attribute("aria-label") == "排序：最早优先"
+        assert sort_button.get_attribute("aria-expanded") == "false"
+        page.wait_for_function("() => document.activeElement?.id === 'sortButton'")
+        page.wait_for_function(
+            f"() => !state.loadingAssets "
+            "&& !state.assetLoadPromise "
+            "&& !state.queuedAssetLoadOptions "
+            "&& state.assetRenderedQuerySignature === assetQuerySignature() "
+            f"&& state.assets.length === {1 + len(VIDEO_PAGE_2_IDS)}"
+        )
+        sort_button.click()
+        page.locator('#sortPopover [data-sort="oldest"]').press("ArrowUp")
+        page.wait_for_function(
+            "() => document.activeElement?.dataset?.sort === 'newest'"
+        )
+        page.locator('#sortPopover [data-sort="newest"]').press("Escape")
+        assert page.locator("#sortPopover").is_hidden()
+        page.wait_for_function("() => document.activeElement?.id === 'sortButton'")
+        # Every toolbar surface can also be opened indirectly (for example from a
+        # task row or the compact command menu). Those entry points must enforce
+        # the same one-popover-at-a-time rule as direct pointer clicks, otherwise
+        # the Mac-style sort menu can remain layered underneath the new surface.
+        sort_button.click()
+        page.locator("#sortPopover:not(.hidden)").wait_for()
+        toolbar_asset_load_calls = page.evaluate(
+            """() => {
+              const original = loadAssets;
+              let calls = 0;
+              loadAssets = (...args) => { calls += 1; return original(...args); };
+              try { openJobsPopover({ refreshProjection: false }); return calls; }
+              finally { loadAssets = original; }
+            }"""
+        )
+        assert toolbar_asset_load_calls == 0
+        page.locator("#jobsPopover:not(.hidden)").wait_for()
+        assert page.locator("#sortPopover").is_hidden()
+        assert sort_button.get_attribute("aria-expanded") == "false"
+        page.evaluate("() => closeJobsPopover({ restoreFocus: false })")
+
+        sort_button.click()
+        page.locator("#sortPopover:not(.hidden)").wait_for()
+        toolbar_asset_load_calls = page.evaluate(
+            """() => {
+              const original = loadAssets;
+              let calls = 0;
+              loadAssets = (...args) => { calls += 1; return original(...args); };
+              try { togglePersonalModelPopover(); return calls; }
+              finally { loadAssets = original; }
+            }"""
+        )
+        assert toolbar_asset_load_calls == 0
+        page.locator("#personalModelPopover:not(.hidden)").wait_for()
+        assert page.locator("#sortPopover").is_hidden()
+        assert sort_button.get_attribute("aria-expanded") == "false"
+        page.screenshot(
+            path="/tmp/imageall-toolbar-popover-personal.png",
+            full_page=True,
+        )
+        page.evaluate("() => closePersonalModelPopover({ restoreFocus: false })")
+
+        original_toolbar_mode = page.locator("#appView").get_attribute(
+            "data-toolbar-display-mode"
+        )
+        page.set_viewport_size({"width": 1440, "height": 960})
+        page.locator("#appView").evaluate(
+            "element => { element.dataset.toolbarDisplayMode = 'iconAndTitle'; }"
+        )
+        toolbar_mode_labels = [
+            "#sortButtonLabel",
+            "#filterButton .library-toolbar-label",
+            "#selectionModeButton .library-toolbar-label",
+            "#personalModelButton .library-toolbar-label",
+            "#thumbnailAspectButton .thumbnail-aspect-label",
+            "#gridDensityButtonLabel",
+        ]
+        for selector in toolbar_mode_labels:
+            assert page.locator(selector).is_visible(), selector
+        page.set_viewport_size({"width": 2200, "height": 960})
+        titlebar_toolbar_labels = [
+            "#sidebarVisibilityLabel",
+            "#commandButtonLabel",
+            "#undoTagButtonLabel",
+            "#toolbarConnectFolderLabel",
+            "#toolbarExportPortableDataLabel",
+            "#storageStatusLabel",
+            "#jobsButtonLabel",
+            "#currentSourceRefreshLabel",
+            "#inspectorVisibilityLabel",
+        ]
+        for selector in titlebar_toolbar_labels:
+            assert page.locator(selector).is_visible(), selector
+        native_titlebar_buttons = page.locator(
+            "#storageButton, #jobsButton, #currentSourceRefreshButton"
+        )
+        assert native_titlebar_buttons.evaluate_all(
+            "buttons => buttons.every(button => "
+            "button.classList.contains('library-toolbar-mode-button'))"
+        )
+        assert page.locator("#storageStatusLabel").inner_text() == "预览缓存"
+        assert page.locator("#jobsButtonLabel").inner_text() == "活动"
+        assert page.locator("#currentSourceRefreshLabel").inner_text() in {
+            "立即重扫",
+            "立即同步",
+        }
+        sort_button.click()
+        page.screenshot(path="/tmp/imageall-sort-menu-desktop.png", full_page=True)
+        page.locator('#sortPopover [data-sort="oldest"]').press("Escape")
+        page.locator("#appView").evaluate(
+            "element => { element.dataset.toolbarDisplayMode = 'iconOnly'; }"
+        )
+        for selector in toolbar_mode_labels + titlebar_toolbar_labels:
+            assert page.locator(selector).is_hidden(), selector
+        assert page.locator(
+            "#sidebarVisibilityButton, #commandButton, #toolbarConnectFolderButton, "
+            "#toolbarExportPortableDataButton, #storageButton, #jobsButton, "
+            "#currentSourceRefreshButton, #inspectorVisibilityButton"
+        ).evaluate_all(
+            "buttons => buttons.every(button => [29, 30].includes("
+            "Math.round(button.getBoundingClientRect().width)))"
+        )
+        page.set_viewport_size({"width": 1440, "height": 960})
+        compact_library_buttons = page.locator(
+            "#sortButton, #filterButton, #selectionModeButton, #personalModelButton, "
+            "#thumbnailAspectButton, #gridDensityButton"
+        )
+        assert compact_library_buttons.evaluate_all(
+            "buttons => buttons.every(button => Math.round(button.getBoundingClientRect().width) === 29)"
+        )
+        page.set_viewport_size({"width": 390, "height": 844})
+        if page.locator("#inspector.open #closeInspectorButton").is_visible():
+            page.locator("#closeInspectorButton").click()
+        sort_button.click()
+        page.locator("#sortPopover:not(.hidden)").wait_for()
+        toolbar_asset_load_calls = page.evaluate(
+            """() => {
+              const original = loadAssets;
+              let calls = 0;
+              loadAssets = (...args) => { calls += 1; return original(...args); };
+              try { openCompactToolbarMenu(); return calls; }
+              finally { loadAssets = original; }
+            }"""
+        )
+        assert toolbar_asset_load_calls == 0
+        page.locator("#compactToolbarMenu:not(.hidden)").wait_for()
+        assert page.locator("#sortPopover").is_hidden()
+        assert sort_button.get_attribute("aria-expanded") == "false"
+        assert page.locator(
+            '[data-compact-toolbar-target="toolbarConnectFolderButton"]'
+        ).is_visible()
+        assert page.locator(
+            '[data-compact-toolbar-target="toolbarExportPortableDataButton"]'
+        ).is_visible()
+        assert page.locator(
+            '[data-compact-toolbar-target="storageButton"]'
+        ).is_visible()
+        assert page.locator(
+            '[data-compact-toolbar-target="currentSourceRefreshButton"]'
+        ).is_visible()
+        assert page.locator("#jobsButton").is_visible()
+        page.evaluate("() => closeCompactToolbarMenu({ restoreFocus: false })")
+        sort_button.click()
+        sort_popover_bounds = page.locator("#sortPopover").bounding_box()
+        assert sort_popover_bounds is not None
+        assert sort_popover_bounds["x"] >= 8
+        assert sort_popover_bounds["x"] + sort_popover_bounds["width"] <= 382
+        assert page.evaluate("() => document.documentElement.scrollWidth <= 390")
+        page.screenshot(path="/tmp/imageall-sort-menu-390.png", full_page=True)
+        page.locator('#sortPopover [data-sort="oldest"]').press("Escape")
+        page.set_viewport_size({"width": 1440, "height": 960})
+        page.locator("#appView").evaluate(
+            "(element, mode) => { element.dataset.toolbarDisplayMode = mode; }",
+            original_toolbar_mode,
+        )
+
+        # Storage maintenance must expose the same long-term retention policy
+        # and analysis-time clear lock as Mac before the user reaches a native
+        # approval. The disabled action must not emit a request.
+        page.locator("#storageButton").click()
+        page.locator("#storageDialog[open]").wait_for()
+        page.wait_for_function("() => !state.storageMaintenance.loading")
+        assert page.locator("#photosOriginalsPolicy").inner_text() == (
+            "保留策略：默认长期保留，不自动过期或按容量淘汰；仅由你在这里手动清理。"
+        )
+        assert page.locator("#photosOriginalsBlocked").is_visible()
+        assert page.locator("#photosOriginalsBlocked").inner_text() == (
+            "相同检测运行期间不能清理；暂停或完成后可操作。"
+        )
+        assert page.locator("#clearPhotosOriginalsButton").is_disabled()
+        page.locator("#clearPhotosOriginalsButton").click(force=True)
+        page.wait_for_timeout(50)
+        assert storage_requests == []
+        page.screenshot(path="/tmp/imageall-storage-analysis-lock.png")
+        page.set_viewport_size({"width": 390, "height": 844})
+        storage_bounds = page.locator("#storageDialog").bounding_box()
+        assert storage_bounds is not None
+        assert storage_bounds["x"] >= 0
+        assert storage_bounds["x"] + storage_bounds["width"] <= 390
+        assert page.evaluate("() => document.documentElement.scrollWidth <= 390")
+        page.screenshot(path="/tmp/imageall-storage-analysis-lock-390.png")
+        page.set_viewport_size({"width": 1440, "height": 960})
+
+        storage_snapshot["clearPhotosOriginalsAvailability"] = {
+            "isAvailable": True,
+            "reason": None,
+        }
+        page.wait_for_function(
+            "() => !state.storageMaintenance.loading "
+            "&& !document.querySelector('#clearPhotosOriginalsButton').disabled",
+            timeout=2500,
+        )
+        assert page.locator("#photosOriginalsBlocked").is_hidden()
+        page.locator("#storageCloseButton").click()
+        page.locator("#storageDialog").wait_for(state="hidden")
+
         page.wait_for_function(
             f"() => state.assets.length === {1 + len(VIDEO_PAGE_2_IDS)}"
         )
@@ -2171,6 +3023,21 @@ def main():
         assert page.locator("#activeFilterBar").is_visible()
         page.screenshot(path="/tmp/imageall-filter-review-lightbox-synthetic.png", full_page=True)
 
+        page.set_viewport_size({"width": 2200, "height": 960})
+        storage_request_count = len(storage_requests)
+        page.locator("#toolbarExportPortableDataButton").click()
+        page.locator("#storageDialog[open]").wait_for()
+        page.wait_for_function(
+            "() => state.storageMaintenance.snapshot?.requests?.some("
+            "request => request.action === 'exportPortableData')"
+        )
+        assert len(storage_requests) == storage_request_count + 1
+        assert storage_requests[-1]["action"] == "exportPortableData"
+        page.locator("#storageCloseButton").click()
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'storageButton'"
+        )
+
         assert not page_errors, page_errors
         unexpected_console_errors = [
             message for message in console_errors
@@ -2191,7 +3058,8 @@ def main():
         "filter/review/lightbox browser flow passed; "
         f"asset queries={len(asset_queries)}; tag decisions={len(tag_decisions)}; "
         f"review decisions={len(review_decisions)}; source actions={len(source_actions)}; "
-        f"media requests={len(media_requests)}; favorites={len(favorite_mutations)}"
+        f"media requests={len(media_requests)}; favorites={len(favorite_mutations)}; "
+        f"storage requests={len(storage_requests)}"
     )
 
 

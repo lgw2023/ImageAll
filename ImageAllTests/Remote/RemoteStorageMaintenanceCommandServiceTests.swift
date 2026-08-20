@@ -23,6 +23,10 @@ final class RemoteStorageMaintenanceCommandServiceTests: XCTestCase {
         XCTAssertEqual(snapshot.previewCache.entryCount, 12)
         XCTAssertEqual(snapshot.previewCache.registeredBytes, 1_500_000)
         XCTAssertEqual(snapshot.photosOriginals.entryCount, 3)
+        XCTAssertTrue(snapshot.clearPreviewCacheAvailability.isAvailable)
+        XCTAssertNil(snapshot.clearPreviewCacheAvailability.reason)
+        XCTAssertTrue(snapshot.clearPhotosOriginalsAvailability.isAvailable)
+        XCTAssertNil(snapshot.clearPhotosOriginalsAvailability.reason)
         XCTAssertEqual(snapshot.appStorage.kind, .internalStorage)
         XCTAssertTrue(snapshot.appStorage.requiresRestart)
         XCTAssertEqual(snapshot.appStorage.pendingExternalRootName, "ImageAll-External")
@@ -72,6 +76,35 @@ final class RemoteStorageMaintenanceCommandServiceTests: XCTestCase {
         XCTAssertEqual(terminal.message, "已在 Mac 上取消选择外置存储")
     }
 
+    func testPhotosOriginalClearIsUnavailableAndRejectedWhileSlimmingAnalysisRuns() async throws {
+        let workspace = RemoteStorageMaintenanceWorkspaceStub()
+        workspace.librarySlimmingAnalysisInProgress = true
+        let approval = RemoteStorageApprovalStub(approved: true)
+        let service = RemoteStorageMaintenanceCommandService(
+            workspace: workspace,
+            approvalPresenter: approval,
+            clock: FixedJobClock(nowMs: 790)
+        )
+
+        let snapshot = try await service.snapshot()
+        XCTAssertFalse(snapshot.clearPhotosOriginalsAvailability.isAvailable)
+        XCTAssertEqual(
+            snapshot.clearPhotosOriginalsAvailability.reason,
+            .librarySlimmingAnalysisInProgress
+        )
+
+        do {
+            _ = try await service.submit(StorageMaintenanceCommandRequest(
+                operationID: UUID(),
+                action: .clearPhotosOriginals
+            ))
+            XCTFail("Expected the Host to reject a clear request while analysis is active")
+        } catch {
+            XCTAssertEqual(error as? StorageMaintenanceCommandError, .invalidAction)
+        }
+        XCTAssertNil(approval.lastApproval)
+    }
+
     private func waitForTerminalRequest(
         _ service: RemoteStorageMaintenanceCommandService,
         id: UUID
@@ -102,6 +135,7 @@ private final class RemoteStorageMaintenanceWorkspaceStub:
         usesExternalStorage: false,
         requiresRestart: false
     )
+    var librarySlimmingAnalysisInProgress = false
 
     var clearPreviewCallCount: Int {
         lock.withLock { storedClearPreviewCallCount }
@@ -136,6 +170,10 @@ private final class RemoteStorageMaintenanceWorkspaceStub:
 
     func fetchPhotosOriginalStorageUsage() throws -> PhotosOriginalStorageUsage {
         PhotosOriginalStorageUsage(entryCount: 3, registeredBytes: 9_000_000)
+    }
+
+    func isLibrarySlimmingAnalysisInProgress() throws -> Bool {
+        librarySlimmingAnalysisInProgress
     }
 
     func clearPhotosOriginalStorage() throws -> PhotosOriginalStorageClearResult {

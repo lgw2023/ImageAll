@@ -236,6 +236,10 @@ def main():
             "**/v1/library-suggestions?**",
             lambda route: fulfill_json(route, library_suggestions()),
         )
+        page.route(
+            "**/v1/training/activities?**",
+            lambda route: fulfill_json(route, []),
+        )
 
         def route_library_suggestion_launch(route):
             payload = route.request.post_data_json
@@ -320,6 +324,39 @@ def main():
         page.route(
             "**/v1/review/queue?**",
             route_review_queue,
+        )
+        page.route(
+            f"**/v1/assets/{ASSET_ID}",
+            lambda route: fulfill_json(
+                route,
+                {
+                    "assetID": ASSET_ID,
+                    "sourceID": SOURCE_IDS[0],
+                    "sourceName": "Apple Photos",
+                    "fileName": "CAT_FEATURE.JPG",
+                    "relativePath": None,
+                    "mediaType": "public.jpeg",
+                    "availability": "available",
+                    "contentRevision": 1,
+                    "acceptedTagCount": 1,
+                    "rejectedTagCount": 0,
+                    "mediaCreatedAtMs": 1_700_000_000_000,
+                    "mediaModifiedAtMs": 1_700_000_100_000,
+                    "width": 1200,
+                    "height": 900,
+                    "fingerprintSizeBytes": 800_000,
+                    "tags": [{
+                        "tagID": TAG_ID,
+                        "displayName": "猫",
+                        "decision": "accepted",
+                    }],
+                    "pendingSuggestions": [{
+                        "tagID": TAG_ID,
+                        "displayName": "猫",
+                        "suggestionOrigin": "featurePrint",
+                    }],
+                },
+            ),
         )
         page.route(
             re.compile(r".*/v1/assets/[0-9a-f-]+/(thumbnail|preview)(\?.*)?$"),
@@ -428,7 +465,12 @@ def main():
         page.route("**/v1/training/launch", route_training_launch)
 
         page.goto(BASE_URL, wait_until="networkidle")
-        page.locator("#reviewButton").click()
+        review_button = page.locator("#reviewButton")
+        if review_button.is_visible():
+            review_button.click()
+        else:
+            page.locator("#compactToolbarMenuButton").click()
+            page.locator('[data-compact-toolbar-target="reviewButton"]').click()
         card = page.locator(".review-overview-card")
         card.wait_for(state="visible")
         source_button = page.locator("#reviewSourceFilterButton")

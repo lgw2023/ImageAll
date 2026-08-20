@@ -57,6 +57,9 @@ def main():
     fail_next_move = [False]
     page_errors = []
     console_errors = []
+    unsupported_requests = []
+    unexpected_tag_decisions = []
+    test_phase = ["setup"]
 
     def source_names(page):
         return page.locator("#sourceList [data-source-id] > span:nth-child(2)").all_inner_texts()
@@ -104,6 +107,21 @@ def main():
             if message.type == "error" else None,
         )
         page.on("pageerror", lambda error: page_errors.append(str(error)))
+        page.on(
+            "response",
+            lambda response: unsupported_requests.append(
+                f"{response.request.method} {response.url}"
+            ) if response.status == 501 else None,
+        )
+        page.on(
+            "request",
+            lambda request: unexpected_tag_decisions.append(
+                {
+                    "phase": test_phase[0],
+                    "payload": request.post_data_json,
+                }
+            ) if request.url.endswith("/v1/tag-decisions/batch") else None,
+        )
         page.route("**/favicon.ico", lambda route: route.fulfill(status=204, body=""))
         page.route(
             "**/world-map/index.html",
@@ -260,6 +278,10 @@ def main():
                 },
             ),
         )
+        page.route(
+            "**/v1/training/activities?**",
+            lambda route: fulfill_json(route, []),
+        )
 
         def move_tag(route):
             tag_id = urlparse(route.request.url).path.split("/")[-2]
@@ -317,7 +339,70 @@ def main():
         page.route(re.compile(r".*/v1/tags/[0-9a-f-]+/archive$"), archive_tag)
         page.route(re.compile(r".*/v1/tag-groups/[0-9a-f-]+/rename$"), rename_group)
 
+        test_phase[0] = "initial-load"
         page.goto(BASE_URL, wait_until="networkidle")
+        placeholder_state = page.evaluate(
+            """() => ({
+              appVisible: !document.querySelector('#appView').classList.contains('hidden'),
+              inspectorHidden: document.querySelector('#workspace').classList.contains('inspector-hidden'),
+              placeholderHidden: document.querySelector('#inspectorPlaceholder').classList.contains('hidden'),
+              selectedAssetID: state.selectedAssetID,
+              selectedDetailID: state.selectedDetail?.assetID || null,
+              sourceCount: state.sources.length,
+            })"""
+        )
+        assert page.locator("#inspectorPlaceholderTagEditor").is_visible(), (
+            placeholder_state,
+            page_errors,
+            console_errors,
+        )
+        assert inspector_group_names(
+            page, "inspectorPlaceholderTags", GROUP_SUBJECT
+        ) == ["猫", "狗"]
+        placeholder_dog = page.locator(
+            f'#inspectorPlaceholderTags [data-tag-reorder-surface="placeholder"]'
+            f'[data-tag-id="{TAG_DOG}"]'
+        )
+        placeholder_cat = page.locator(
+            f'#inspectorPlaceholderTags [data-tag-reorder-surface="placeholder"]'
+            f'[data-tag-id="{TAG_CAT}"]'
+        )
+        assert placeholder_dog.get_attribute("aria-disabled") == "true"
+        assert placeholder_dog.get_attribute("draggable") == "true"
+        assert page.evaluate(
+            "id => !document.querySelector("
+            "`#inspectorPlaceholderTags [data-tag-id=\"${id}\"]`"
+            ").disabled",
+            TAG_DOG,
+        )
+        test_phase[0] = "placeholder-reorder"
+        placeholder_dog.drag_to(placeholder_cat)
+        page.wait_for_function(
+            "id => document.activeElement?.dataset.tagId === id "
+            "&& document.activeElement?.dataset.tagReorderSurface === 'placeholder'",
+            arg=TAG_DOG,
+        )
+        assert inspector_group_names(
+            page, "inspectorPlaceholderTags", GROUP_SUBJECT
+        ) == ["狗", "猫"]
+        assert sidebar_group_names(page, GROUP_SUBJECT) == ["狗", "猫"]
+        assert not tag_moves
+        placeholder_dog = page.locator(
+            f'#inspectorPlaceholderTags [data-tag-reorder-surface="placeholder"]'
+            f'[data-tag-id="{TAG_DOG}"]'
+        )
+        placeholder_dog.focus()
+        placeholder_dog.press("Alt+ArrowDown")
+        assert inspector_group_names(
+            page, "inspectorPlaceholderTags", GROUP_SUBJECT
+        ) == ["猫", "狗"]
+        assert sidebar_group_names(page, GROUP_SUBJECT) == ["猫", "狗"]
+        assert not tag_moves
+        page.screenshot(
+            path="/tmp/imageall-inspector-placeholder-tags.png",
+            full_page=True,
+        )
+        test_phase[0] = "source-reorder"
         assert source_names(page) == ["Apple Photos", "Downloads"]
         page.locator(f'[data-source-id="{SOURCE_FOLDER}"]').drag_to(
             page.locator(f'[data-source-id="{SOURCE_PHOTOS}"]')
@@ -368,6 +453,7 @@ def main():
         subject_toggle.click()
         assert subject_toggle.get_attribute("aria-expanded") == "true"
 
+        test_phase[0] = "sidebar-tag-reorder"
         assert sidebar_group_names(page, GROUP_SUBJECT) == ["猫", "狗"]
         page.locator(f'[data-quick-tag-id="{TAG_DOG}"]').drag_to(
             page.locator(f'[data-quick-tag-id="{TAG_CAT}"]')
@@ -379,6 +465,7 @@ def main():
         assert sidebar_group_names(page, GROUP_SUBJECT) == ["狗", "猫"]
         assert not tag_moves
 
+        test_phase[0] = "single-inspector-open"
         page.locator("#assetGrid > .asset-card").click()
         page.locator("#inspectorContent:not(.hidden)").wait_for()
         assert inspector_group_names(page, "inspectorTags", GROUP_SUBJECT) == ["狗", "猫"]
@@ -392,6 +479,9 @@ def main():
             ")?.getAttribute('aria-expanded') === 'false' "
             "&& document.querySelector("
             "`#inspectorTags [data-inspector-tag-group-toggle=\"${groupID}\"]`"
+            ")?.getAttribute('aria-expanded') === 'false' "
+            "&& document.querySelector("
+            "`#inspectorPlaceholderTags [data-inspector-tag-group-toggle=\"${groupID}\"]`"
             ")?.getAttribute('aria-expanded') === 'false'",
             arg=GROUP_SUBJECT,
         )
@@ -465,6 +555,7 @@ def main():
         assert sidebar_group_names(page, GROUP_SCENE) == ["旅行", "狗"]
         assert inspector_group_names(page, "inspectorTags", GROUP_SUBJECT) == ["猫"]
 
+        test_phase[0] = "single-inspector-reorder"
         page.locator(
             f'#inspectorTags [data-tag-reorder-surface="single"][data-tag-id="{TAG_DOG}"]'
         ).drag_to(page.locator(
@@ -500,6 +591,7 @@ def main():
         assert source_names(page) == ["Apple Photos", "Downloads"]
         assert sidebar_group_names(page, GROUP_SUBJECT) == ["猫", "狗"]
         assert sidebar_group_names(page, GROUP_SCENE) == ["旅行"]
+        test_phase[0] = "selection-reorder"
         page.locator("#selectionModeButton").click()
         page.locator("#assetGrid > .asset-card").click()
         page.locator("#selectionInspector:not(.hidden)").wait_for()
@@ -554,6 +646,7 @@ def main():
         assert sidebar_group_names(page, GROUP_SUBJECT) == ["狗", "猫"]
         assert len(tag_moves) == 3
 
+        test_phase[0] = "responsive-group-collapse"
         page.set_viewport_size({"width": 390, "height": 844})
         page.locator("#sidebarToggle").click()
         page.locator("#sourceSidebar.open").wait_for()
@@ -582,6 +675,7 @@ def main():
         ) == "true"
 
         page.wait_for_timeout(300)
+        test_phase[0] = "tag-filtering"
         dog_chip = page.locator(f'[data-quick-tag-id="{TAG_DOG}"]')
         travel_chip = page.locator(f'[data-quick-tag-id="{TAG_TRAVEL}"]')
         dog_chip.click()
@@ -599,6 +693,7 @@ def main():
         assert query["acceptedTagIDs"] == [TAG_TRAVEL]
         assert query["excludedTagIDs"] == [TAG_DOG]
 
+        test_phase[0] = "tag-context-menu"
         dog_chip.click(button="right")
         tag_menu = page.locator("#tagContextMenu:not(.hidden)")
         tag_menu.wait_for()
@@ -613,8 +708,13 @@ def main():
         tag_menu.locator('[data-tag-context-action="filterOnly"]').click()
         assert dog_chip.get_attribute("data-tag-filter-state") == "included"
         assert travel_chip.get_attribute("data-tag-filter-state") == "none"
+        page.wait_for_function("() => !state.loadingAssets")
 
         dog_chip.focus()
+        page.wait_for_function(
+            "id => document.activeElement?.dataset.quickTagId === id",
+            arg=TAG_DOG,
+        )
         dog_chip.press("Shift+F10")
         tag_menu.wait_for()
         page.wait_for_function(
@@ -704,11 +804,16 @@ def main():
         page.screenshot(path="/tmp/imageall-sidebar-reordering-synthetic.png", full_page=True)
 
         assert not page_errors, page_errors
+        assert not unexpected_tag_decisions, unexpected_tag_decisions
         unexpected_console_errors = [
             message for message in console_errors
             if "status of 409" not in message
         ]
-        assert not unexpected_console_errors, unexpected_console_errors
+        assert not unexpected_console_errors, {
+            "console": unexpected_console_errors,
+            "unsupportedRequests": unsupported_requests,
+            "unexpectedTagDecisions": unexpected_tag_decisions,
+        }
         assert any("status of 409" in message for message in console_errors)
         browser.close()
 

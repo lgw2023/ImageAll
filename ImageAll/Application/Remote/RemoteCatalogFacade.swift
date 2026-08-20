@@ -916,6 +916,17 @@ actor RemoteCatalogFacade {
         )
     }
 
+    func fetchTrainingActivities(
+        mediaKind: RemoteAssetMediaKind
+    ) async throws -> [RemoteTrainingActivity] {
+        guard let trainingCommands else {
+            throw RemoteAPIError(code: .notFound, message: "训练活动当前不可用")
+        }
+        return await trainingCommands.activities(
+            mediaKind: Self.mapMediaKind(mediaKind)
+        ).map(Self.mapTrainingActivity)
+    }
+
     func fetchTrainingSetup(
         mediaKind: RemoteAssetMediaKind
     ) async throws -> RemoteTrainingSetupSnapshot {
@@ -1045,7 +1056,10 @@ actor RemoteCatalogFacade {
             let originalMemberCount = cluster.memberAssetIDs.count
             let remaining = cluster.memberAssetIDs.filter { !hiddenAssetIDs.contains($0) }
             let isSeedOnlyResult = cluster.id == seedOnlyCluster?.id
-            let minimumMemberCount = isSeedOnlyResult ? 1 : 2
+            // Preserve authoritative one-member records from older scans. Only
+            // hide a cluster when post-processing shrinks a formerly grouped
+            // result below the size it originally required.
+            let minimumMemberCount = isSeedOnlyResult ? 1 : min(2, originalMemberCount)
             let disposition = reviewDispositions[cluster.id]
             guard remaining.count >= minimumMemberCount || disposition != nil else {
                 return nil
@@ -2637,6 +2651,18 @@ actor RemoteCatalogFacade {
                 entryCount: snapshot.photosOriginals.entryCount,
                 registeredBytes: snapshot.photosOriginals.registeredBytes
             ),
+            clearPreviewCacheAvailability: RemoteStorageMaintenanceActionAvailability(
+                isAvailable: snapshot.clearPreviewCacheAvailability.isAvailable,
+                reason: mapStorageMaintenanceUnavailabilityReason(
+                    snapshot.clearPreviewCacheAvailability.reason
+                )
+            ),
+            clearPhotosOriginalsAvailability: RemoteStorageMaintenanceActionAvailability(
+                isAvailable: snapshot.clearPhotosOriginalsAvailability.isAvailable,
+                reason: mapStorageMaintenanceUnavailabilityReason(
+                    snapshot.clearPhotosOriginalsAvailability.reason
+                )
+            ),
             appStorage: RemoteAppStorageSummary(
                 kind: snapshot.appStorage.kind == .externalStorage
                     ? .externalStorage : .internalStorage,
@@ -2645,6 +2671,16 @@ actor RemoteCatalogFacade {
             ),
             requests: snapshot.requests.map(Self.mapStorageMaintenanceRequest)
         )
+    }
+
+    private static func mapStorageMaintenanceUnavailabilityReason(
+        _ reason: StorageMaintenanceActionUnavailabilityReason?
+    ) -> RemoteStorageMaintenanceActionUnavailabilityReason? {
+        switch reason {
+        case .empty: .empty
+        case .librarySlimmingAnalysisInProgress: .librarySlimmingAnalysisInProgress
+        case nil: nil
+        }
     }
 
     private static func mapStorageMaintenanceRequest(

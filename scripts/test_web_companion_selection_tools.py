@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import argparse
 import base64
 import json
 from urllib.parse import parse_qs, urlparse
@@ -26,6 +27,12 @@ SLIMMING_HISTORY_JOB_IDS = [
 SLIMMING_CLUSTER_ID = "55555555-4444-4444-4444-444444444444"
 SLIMMING_CONFIRMED_CLUSTER_ID = "55555555-4444-4444-4444-444444444445"
 SLIMMING_IGNORED_CLUSTER_ID = "55555555-4444-4444-4444-444444444446"
+SLIMMING_PAGINATION_CLUSTER_IDS = [
+    f"55555556-4444-4444-4444-{index:012d}" for index in range(1, 106)
+]
+SLIMMING_PAGINATION_ASSET_IDS = [
+    f"33333334-1111-1111-1111-{index:012d}" for index in range(1, 206)
+]
 SLIMMING_RECYCLE_IDS = [
     "66666666-4444-4444-4444-444444444441",
     "66666666-4444-4444-4444-444444444442",
@@ -34,6 +41,12 @@ SLIMMING_RECYCLE_IDS = [
     "66666666-4444-4444-4444-444444444445",
     "66666666-4444-4444-4444-444444444446",
     "66666666-4444-4444-4444-444444444447",
+]
+SLIMMING_RECYCLE_PAGINATION_IDS = [
+    f"66666667-4444-4444-4444-{index:012d}" for index in range(1, 136)
+]
+SLIMMING_RECYCLE_PAGINATION_ASSET_IDS = [
+    f"33333335-1111-1111-1111-{index:012d}" for index in range(1, 136)
 ]
 SAMPLE_SUGGESTION_ID = "77777777-7777-7777-7777-777777777777"
 CAT_TAG_ID = "88888888-8888-8888-8888-888888888888"
@@ -95,7 +108,7 @@ def drag_marquee_to_bottom_edge(page, container_selector, grid_selector):
     return scrolled
 
 
-def main():
+def main(*, inspector_actions_only=False):
     submitted_preparations = []
     submitted_slimming = []
     submitted_slimming_cluster_reviews = []
@@ -120,12 +133,19 @@ def main():
     }
     preparation_reads = 0
     preparation_active = False
+    active_preparation_id = None
     sample_reads = 0
     sample_active = False
     active_slimming_removal = None
     hidden_slimming_asset_ids = set()
     deleted_slimming_job_ids = set()
+    slimming_job_states = {
+        SLIMMING_JOB_ID: "completed",
+        SLIMMING_SECOND_JOB_ID: "completed",
+    }
     expanded_slimming_history_enabled = False
+    expanded_slimming_pagination_enabled = False
+    expanded_slimming_recycle_pagination_enabled = False
     source_index_reads = 0
     source_index_building = False
     active_slimming_thresholds = {
@@ -165,10 +185,10 @@ def main():
     created_tag_results = {}
     create_attempts_by_name = {}
 
-    def preparation_activity(phase):
+    def preparation_activity(phase, operation_id=PREPARATION_ID):
         completed = 2 if phase == "completed" else 1
         return {
-            "operationID": PREPARATION_ID,
+            "operationID": operation_id,
             "mediaKind": "image",
             "phase": phase,
             "completedUnitCount": completed,
@@ -249,7 +269,7 @@ def main():
                     "hostID": "55555555-5555-5555-5555-555555555555",
                     "hostDisplayName": "Synthetic Mac",
                     "hostAppVersion": "test",
-                    "capabilities": ["favorites", "sourceManagement"],
+                    "capabilities": ["favorites", "sourceManagement", "librarySlimming"],
                 },
             ),
         )
@@ -349,9 +369,9 @@ def main():
         def favorite_state(asset_id):
             return {
                 "assetID": asset_id,
-                "isFavorite": favorite_states[asset_id],
-                "photosObservedValue": favorite_states[asset_id],
-                "syncStatus": favorite_sync_status[asset_id],
+                "isFavorite": favorite_states.get(asset_id, False),
+                "photosObservedValue": favorite_states.get(asset_id, False),
+                "syncStatus": favorite_sync_status.get(asset_id, "synced"),
                 "lastErrorCode": None,
             }
 
@@ -535,15 +555,19 @@ def main():
         )
 
         def handle_preparation(route):
-            nonlocal preparation_reads, preparation_active
+            nonlocal preparation_reads, preparation_active, active_preparation_id
             if route.request.method == "POST":
                 payload = route.request.post_data_json
                 submitted_preparations.append(payload)
                 preparation_active = True
                 preparation_reads = 0
+                active_preparation_id = payload["operationID"]
                 fulfill_json(
                     route,
-                    {"activity": preparation_activity("running"), "replayed": False},
+                    {
+                        "activity": preparation_activity("running", active_preparation_id),
+                        "replayed": False,
+                    },
                     status=202,
                 )
                 return
@@ -551,9 +575,10 @@ def main():
             if preparation_active:
                 preparation_reads += 1
                 phase = "completed" if preparation_reads >= 2 else "running"
-                activities = [preparation_activity(phase)]
+                activities = [preparation_activity(phase, active_preparation_id)]
                 if phase == "completed":
                     preparation_active = False
+                    active_preparation_id = None
             fulfill_json(
                 route,
                 {"mediaKind": "image", "isAvailable": True, "activities": activities},
@@ -596,6 +621,10 @@ def main():
         page.route(
             "**/v1/tag-library-suggestions?**",
             lambda route: fulfill_json(route, {"mediaKind": "image", "maximumPendingCount": 500, "personalCentroidAvailable": False, "personalAdamWAvailable": False, "tags": [], "activities": []}),
+        )
+        page.route(
+            "**/v1/training/activities?**",
+            lambda route: fulfill_json(route, []),
         )
 
         def handle_slimming_launch(route):
@@ -712,11 +741,12 @@ def main():
         )
 
         def slimming_job(job_id, media_kind, mode="seeds"):
+            state = slimming_job_states.get(job_id, "completed")
             return {
                 "id": job_id,
                 "mode": mode,
                 "mediaKind": media_kind,
-                "state": "completed",
+                "state": state,
                 "attempts": 1,
                 "maxAttempts": 10,
                 "memberCount": len(SLIMMING_ASSET_IDS),
@@ -726,7 +756,11 @@ def main():
                 "createdAtMs": 1_700_000_000_000,
                 "updatedAtMs": 1_700_000_001_000 if job_id == SLIMMING_JOB_ID else 1_699_999_999_000,
                 "sourceNames": ["Apple Photos"],
-                "availableActions": [],
+                "availableActions": {
+                    "running": ["pause"],
+                    "paused": ["resume"],
+                    "retryableFailed": ["resume"],
+                }.get(state, []),
             }
 
         def handle_slimming_workspace(route):
@@ -760,25 +794,41 @@ def main():
                 )
                 job_limit = max(job_limit, selected_job_index + 1)
             jobs = jobs[:job_limit]
-            cluster_members = {
-                SLIMMING_CLUSTER_ID: visible_slimming_asset_ids,
-                SLIMMING_CONFIRMED_CLUSTER_ID: [],
-                SLIMMING_IGNORED_CLUSTER_ID: visible_slimming_asset_ids[:1],
-            }
+            if expanded_slimming_pagination_enabled and selected_job_id == SLIMMING_JOB_ID:
+                cluster_members = {
+                    cluster_id: (
+                        SLIMMING_PAGINATION_ASSET_IDS
+                        if cluster_id == SLIMMING_PAGINATION_CLUSTER_IDS[0]
+                        else SLIMMING_PAGINATION_ASSET_IDS[:2]
+                    )
+                    for cluster_id in SLIMMING_PAGINATION_CLUSTER_IDS
+                }
+                cluster_dispositions = {
+                    cluster_id: None for cluster_id in SLIMMING_PAGINATION_CLUSTER_IDS
+                }
+            else:
+                cluster_members = {
+                    SLIMMING_CLUSTER_ID: visible_slimming_asset_ids,
+                    SLIMMING_CONFIRMED_CLUSTER_ID: [],
+                    SLIMMING_IGNORED_CLUSTER_ID: visible_slimming_asset_ids[:1],
+                }
+                cluster_dispositions = slimming_cluster_dispositions
             eligible_cluster_ids = [
-                cluster_id for cluster_id, disposition in slimming_cluster_dispositions.items()
+                cluster_id for cluster_id, disposition in cluster_dispositions.items()
                 if disposition is not None or len(cluster_members[cluster_id]) >= 2
             ]
-            scoped_cluster_ids = [
-                cluster_id for cluster_id, disposition in slimming_cluster_dispositions.items()
+            all_scoped_cluster_ids = [
+                cluster_id for cluster_id, disposition in cluster_dispositions.items()
                 if cluster_id in eligible_cluster_ids
                 if (cluster_scope == "pending" and disposition is None)
                 or disposition == cluster_scope
             ] if selected_job_id == SLIMMING_JOB_ID else []
             requested_cluster_id = query.get("clusterID", [None])[0]
             selected_cluster_id = requested_cluster_id \
-                if requested_cluster_id in scoped_cluster_ids \
-                else (scoped_cluster_ids[0] if scoped_cluster_ids else None)
+                if requested_cluster_id in all_scoped_cluster_ids \
+                else (all_scoped_cluster_ids[0] if all_scoped_cluster_ids else None)
+            cluster_limit = max(1, int(query.get("clusterLimit", ["48"])[0]))
+            scoped_cluster_ids = all_scoped_cluster_ids[:cluster_limit]
             clusters = [{
                 "id": cluster_id,
                 "kind": "nearDuplicateScene",
@@ -790,11 +840,15 @@ def main():
                 ),
                 "score": 0.94 - index * 0.02,
                 "isSeedOnlyResult": False,
-                "reviewDisposition": slimming_cluster_dispositions[cluster_id],
-                "originalMemberCount": len(SLIMMING_ASSET_IDS),
-                "isHistoricalProcessedRecord": len(cluster_members[cluster_id]) < len(SLIMMING_ASSET_IDS),
+                "reviewDisposition": cluster_dispositions[cluster_id],
+                "originalMemberCount": len(cluster_members[cluster_id]),
+                "isHistoricalProcessedRecord": (
+                    not expanded_slimming_pagination_enabled
+                    and len(cluster_members[cluster_id]) < len(SLIMMING_ASSET_IDS)
+                ),
             } for index, cluster_id in enumerate(scoped_cluster_ids)]
-            selected_member_ids = cluster_members.get(selected_cluster_id, [])
+            member_limit = max(1, int(query.get("memberLimit", ["96"])[0]))
+            selected_member_ids = cluster_members.get(selected_cluster_id, [])[:member_limit]
             fulfill_json(
                 route,
                 {
@@ -808,7 +862,10 @@ def main():
                         "id": asset_id,
                         "sourceID": SOURCE_ID,
                         "sourceName": "Apple Photos",
-                        "fileName": f"SLIM_{SLIMMING_ASSET_IDS.index(asset_id) + 1:04}.{'MOV' if media_kind == 'video' else 'JPG'}",
+                        "fileName": (
+                            f"SLIM_{(SLIMMING_ASSET_IDS.index(asset_id) + 1) if asset_id in SLIMMING_ASSET_IDS else (index + 1):04}."
+                            f"{'MOV' if media_kind == 'video' else 'JPG'}"
+                        ),
                         "mediaType": "public.mpeg-4" if media_kind == "video" else "public.jpeg",
                         "availability": "available",
                         "contentRevision": 2,
@@ -823,15 +880,15 @@ def main():
                     "policyVersion": "librarySlimming.v1",
                     "clusterScopeCounts": {
                         "pending": sum(
-                            slimming_cluster_dispositions[cluster_id] is None
+                            cluster_dispositions[cluster_id] is None
                             for cluster_id in eligible_cluster_ids
                         ) if selected_job_id == SLIMMING_JOB_ID else 0,
                         "confirmed": sum(
-                            slimming_cluster_dispositions[cluster_id] == "confirmed"
+                            cluster_dispositions[cluster_id] == "confirmed"
                             for cluster_id in eligible_cluster_ids
                         ) if selected_job_id == SLIMMING_JOB_ID else 0,
                         "ignored": sum(
-                            slimming_cluster_dispositions[cluster_id] == "ignored"
+                            cluster_dispositions[cluster_id] == "ignored"
                             for cluster_id in eligible_cluster_ids
                         ) if selected_job_id == SLIMMING_JOB_ID else 0,
                     },
@@ -863,6 +920,10 @@ def main():
             submitted_slimming_job_actions.append({"jobID": job_id, **payload})
             if payload["action"] == "deleteRecord":
                 deleted_slimming_job_ids.add(job_id)
+            elif payload["action"] == "pause":
+                slimming_job_states[job_id] = "paused"
+            elif payload["action"] == "resume":
+                slimming_job_states[job_id] = "running"
             fulfill_json(route, {
                 "operationID": payload["operationID"],
                 "jobID": job_id,
@@ -1007,18 +1068,48 @@ def main():
                 },
             ]
             entries = []
-            for index, (entry_id, spec) in enumerate(zip(SLIMMING_RECYCLE_IDS, entry_specs)):
-                asset_id = SLIMMING_ASSET_IDS[index % len(SLIMMING_ASSET_IDS)]
-                entries.append({
-                    "id": entry_id,
-                    "assetID": asset_id,
-                    "mediaKind": media_kind,
-                    "fileName": f"RECYCLE_{index + 1:04}.{'MOV' if media_kind == 'video' else 'JPG'}",
-                    "trashedAtMs": 1_700_000_000_000,
-                    "purgeAfterMs": 4_102_444_800_000,
-                    "favorite": favorite_state(asset_id),
-                    **spec,
-                })
+            if expanded_slimming_recycle_pagination_enabled:
+                for index, (entry_id, asset_id) in enumerate(zip(
+                    SLIMMING_RECYCLE_PAGINATION_IDS,
+                    SLIMMING_RECYCLE_PAGINATION_ASSET_IDS,
+                )):
+                    photos = index % 3 == 0
+                    entries.append({
+                        "id": entry_id,
+                        "assetID": asset_id,
+                        "mediaKind": media_kind,
+                        "fileName": f"RECYCLE_PAGE_{index + 1:04}.{'MOV' if media_kind == 'video' else 'JPG'}",
+                        "sourceID": SOURCE_ID if photos else SECOND_SOURCE_ID,
+                        "sourceDisplayName": "Apple Photos" if photos else "旅行归档",
+                        "sourceKind": "photos" if photos else "file",
+                        "state": "recycled",
+                        "errorCode": None,
+                        "problem": None,
+                        "resolution": "photosManagedBySystem" if photos else "restoreOrPurge",
+                        "availableActions": [] if photos else ["restore", "purge"],
+                        "stateMessage": "可恢复",
+                        "policyMessage": (
+                            "恢复与永久删除由“照片”App 管理"
+                            if photos else "文件夹媒体仍在 ImageAll 回收站保护期内"
+                        ),
+                        "explanationMessage": None,
+                        "trashedAtMs": 1_700_000_000_000 + index,
+                        "purgeAfterMs": 4_102_444_800_000,
+                        "favorite": favorite_state(asset_id),
+                    })
+            else:
+                for index, (entry_id, spec) in enumerate(zip(SLIMMING_RECYCLE_IDS, entry_specs)):
+                    asset_id = SLIMMING_ASSET_IDS[index % len(SLIMMING_ASSET_IDS)]
+                    entries.append({
+                        "id": entry_id,
+                        "assetID": asset_id,
+                        "mediaKind": media_kind,
+                        "fileName": f"RECYCLE_{index + 1:04}.{'MOV' if media_kind == 'video' else 'JPG'}",
+                        "trashedAtMs": 1_700_000_000_000,
+                        "purgeAfterMs": 4_102_444_800_000,
+                        "favorite": favorite_state(asset_id),
+                        **spec,
+                    })
             source_id = query.get("sourceID", [None])[0]
             search = query.get("search", [""])[0].strip().casefold()
             filtered_entries = [
@@ -1046,12 +1137,15 @@ def main():
                 ]
             else:
                 visible_entries = filtered_entries
+            total_visible_count = len(visible_entries)
+            limit = max(1, int(query.get("limit", ["60"])[0]))
+            visible_entries = visible_entries[:limit]
             fulfill_json(
                 route,
                 {
                     "mediaKind": media_kind,
                     "entries": visible_entries,
-                    "totalCount": len(visible_entries),
+                    "totalCount": total_visible_count,
                     "requests": [],
                     "scopeCounts": scope_counts,
                 },
@@ -1083,6 +1177,34 @@ def main():
         )
 
         page.goto(BASE_URL, wait_until="networkidle")
+        assert page.locator("#inspectorPlaceholder").is_visible()
+        assert page.locator("#inspectorPlaceholderTagEditor").is_visible()
+        assert page.locator("#inspectorPlaceholderTitle").inner_text() == "未选择照片"
+        assert page.locator("#inspectorPlaceholderText").inner_text() == (
+            "选择一张或多张照片后，可左键打上标签、右键取消标签。"
+        )
+        assert page.locator("#inspectorPlaceholderTags [data-tag-reorder-surface=placeholder]").count() == 2
+        placeholder_cat_chip = page.locator(
+            f'#inspectorPlaceholderTags [data-tag-id="{CAT_TAG_ID}"]'
+        )
+        assert placeholder_cat_chip.get_attribute("aria-disabled") == "true"
+        assert placeholder_cat_chip.get_attribute("draggable") == "true"
+        placeholder_cat_chip.hover()
+        page.locator("#persistentHelp:not(.hidden)").wait_for(timeout=2_000)
+        placeholder_help = page.locator("#persistentHelpDetail").inner_text()
+        assert "选择照片后" in placeholder_help
+        assert "拖动可调整顺序或分组" in placeholder_help
+        placeholder_decision_count = len(submitted_tag_decisions)
+        placeholder_cat_chip.dispatch_event("click")
+        assert len(submitted_tag_decisions) == placeholder_decision_count
+        assert page.evaluate("() => state.selectedAssetID === null")
+        placeholder_group_toggle = page.locator(
+            f'#inspectorPlaceholderTags [data-inspector-tag-group-toggle="{SUBJECT_GROUP_ID}"]'
+        )
+        placeholder_group_toggle.click()
+        assert placeholder_group_toggle.get_attribute("aria-expanded") == "false"
+        placeholder_group_toggle.click()
+        assert placeholder_group_toggle.get_attribute("aria-expanded") == "true"
         assert page.locator("#favoritesNavigationButton").is_visible()
         assert page.locator("#retryFavoriteSyncButton").is_visible()
         assert page.locator("#retryFavoriteSyncCount").inner_text() == "1"
@@ -1302,6 +1424,88 @@ def main():
             "id => state.selectedAssetID === id && state.selectedDetail?.assetID === id",
             arg=ASSET_IDS[0],
         )
+        assert page.locator("#inspectorSelectionHeading").is_visible()
+        assert page.locator("#inspectorSelectionTitle").inner_text() == "已选择 1 张照片"
+        assert page.locator("#inspectorFavoriteButton").inner_text().strip() == "♥ 加入红心"
+        assert page.locator("#inspectorUnfavoriteButton").inner_text().strip() == "♡ 取消红心"
+        assert page.locator("#inspectorDeleteButton").is_visible()
+        single_inspector_layout = page.evaluate(
+            """() => ({
+              headingBottom: document.querySelector('#inspectorSelectionHeading')
+                .getBoundingClientRect().bottom,
+              previewTop: document.querySelector('#inspectorContent .preview-wrap')
+                .getBoundingClientRect().top,
+            })"""
+        )
+        assert single_inspector_layout["previewTop"] >= single_inspector_layout["headingBottom"] - 1
+        page.screenshot(path="/tmp/imageall-single-inspector-action-strip.png", full_page=True)
+        single_action_favorite_count = len(submitted_favorites)
+        page.locator("#inspectorFavoriteButton").click()
+        page.wait_for_function(
+            "id => state.selectedDetail?.assetID === id "
+            "&& state.selectedDetail.favorite?.isFavorite === true",
+            arg=ASSET_IDS[0],
+        )
+        assert len(submitted_favorites) == single_action_favorite_count + 1
+        assert submitted_favorites[-1]["isFavorite"] is True
+        page.locator("#inspectorUnfavoriteButton").click()
+        page.wait_for_function(
+            "id => state.selectedDetail?.assetID === id "
+            "&& state.selectedDetail.favorite?.isFavorite === false",
+            arg=ASSET_IDS[0],
+        )
+        assert len(submitted_favorites) == single_action_favorite_count + 2
+        assert submitted_favorites[-1]["isFavorite"] is False
+        if inspector_actions_only:
+            page.set_viewport_size({"width": 390, "height": 844})
+            page.wait_for_timeout(120)
+            narrow_single_inspector = page.evaluate(
+                """() => {
+                  const heading = document.querySelector('#inspectorSelectionHeading')
+                    .getBoundingClientRect();
+                  const actions = [...document.querySelectorAll(
+                    '#inspectorSelectionHeading .inspector-single-actions .button'
+                  )].map(button => button.getBoundingClientRect());
+                  const close = document.querySelector('#closeInspectorButton')
+                    .getBoundingClientRect();
+                  return {
+                    viewport: innerWidth,
+                    pageScrollWidth: document.documentElement.scrollWidth,
+                    heading: { left: heading.left, right: heading.right },
+                    actions: actions.map(rect => ({ left: rect.left, right: rect.right })),
+                    close: {
+                      left: close.left,
+                      right: close.right,
+                      top: close.top,
+                      bottom: close.bottom,
+                    },
+                  };
+                }"""
+            )
+            assert narrow_single_inspector["pageScrollWidth"] <= 390, narrow_single_inspector
+            assert narrow_single_inspector["heading"]["left"] >= 0, narrow_single_inspector
+            assert narrow_single_inspector["heading"]["right"] <= 390, narrow_single_inspector
+            assert all(
+                bounds["left"] >= 0 and bounds["right"] <= 390
+                for bounds in narrow_single_inspector["actions"]
+            ), narrow_single_inspector
+            assert page.locator("#closeInspectorButton").is_visible(), narrow_single_inspector
+            assert narrow_single_inspector["close"]["left"] >= 0, narrow_single_inspector
+            assert narrow_single_inspector["close"]["right"] <= 390, narrow_single_inspector
+            page.screenshot(
+                path="/tmp/imageall-single-inspector-action-strip-390.png",
+                full_page=True,
+            )
+            assert not page_errors, page_errors
+            assert not console_errors, console_errors
+            assert not unexpected_dialogs, unexpected_dialogs
+            context.close()
+            browser.close()
+            print(
+                "single inspector action strip browser flow passed; "
+                f"favorites={len(submitted_favorites)}"
+            )
+            return
         assert single_inline_input.is_visible()
         assert not page.locator("#newTagDialog").evaluate("element => element.open")
         single_inline_snapshot = page.evaluate(
@@ -1525,6 +1729,7 @@ def main():
             })"""
         )
         selection_inline_input = page.locator("#selectionInspectorInlineTagName")
+        assert selection_inline_input.is_enabled()
         selection_inline_input.fill("家人")
         selection_inline_input.press("Enter")
         page.wait_for_function(
@@ -1577,6 +1782,7 @@ def main():
         family_chip = page.locator(
             f'#selectionInspectorTags [data-tag-chip-action][data-tag-id="{SELECTION_CREATED_TAG_ID}"]'
         )
+        page.locator("#selectionTagSearch").focus()
         family_chip.focus()
         page.locator("#persistentHelp:not(.hidden)").wait_for(timeout=2_000)
         page.wait_for_timeout(150)
@@ -1626,14 +1832,205 @@ def main():
         assert submitted_tag_decisions[-1]["action"] == "clear"
         assert not unexpected_dialogs, unexpected_dialogs
 
-        page.locator("#favoriteSelectedButton").click()
+        # Mac exposes both favorite mutations directly in the main toolbar
+        # whenever the current selection and available width permit it. The
+        # existing batch bar remains the compact-width fallback, but the two
+        # surfaces must never be visible as duplicate actions at once.
+        page.locator("#appView").evaluate(
+            "element => { element.dataset.toolbarDisplayMode = 'iconAndTitle'; }"
+        )
+        page.set_viewport_size({"width": 1280, "height": 960})
+        page.wait_for_timeout(100)
+        assert page.locator("#selectionFavoriteToolbarActions").is_hidden()
+        assert page.locator("#batchFavoriteActions").is_visible()
+        assert page.locator("#personalModelToolbarActions").is_hidden()
+        assert page.locator("#batchPersonalModelActions").is_visible()
+        page.locator("#personalModelButton").click()
+        page.locator("#personalModelPopover:not(.hidden)").wait_for()
+        assert page.locator("#preparePersonalSelectionButton").is_visible()
+        assert page.locator("#findSimilarPersonalSelectionButton").is_visible()
+        page.keyboard.press("Escape")
+        page.locator("#personalModelPopover").wait_for(state="hidden")
+
+        page.set_viewport_size({"width": 2200, "height": 960})
+        page.wait_for_function(
+            "() => getComputedStyle(document.querySelector("
+            "'#selectionFavoriteToolbarActions')).display !== 'none'"
+        )
+        direct_favorite_group = page.locator("#selectionFavoriteToolbarActions")
+        direct_favorite = page.locator("#toolbarFavoriteSelectedButton")
+        direct_unfavorite = page.locator("#toolbarUnfavoriteSelectedButton")
+        direct_prepare = page.locator("#toolbarPrepareSelectedFeaturesButton")
+        direct_find_similar = page.locator("#toolbarFindSimilarSelectionButton")
+        assert direct_favorite_group.is_visible()
+        assert direct_favorite.is_visible()
+        assert direct_unfavorite.is_visible()
+        assert direct_favorite.inner_text().strip() == "♥\n加入红心"
+        assert direct_unfavorite.inner_text().strip() == "♡\n取消红心"
+        assert page.locator("#batchFavoriteActions").is_hidden()
+        assert direct_prepare.is_visible()
+        assert direct_find_similar.is_visible()
+        assert direct_prepare.inner_text().strip() == "✦\n准备选中照片特征"
+        assert direct_find_similar.inner_text().strip() == "▧\n在图库瘦身中查找"
+        assert page.locator("#batchPersonalModelActions").is_hidden()
+        toolbar_mode_asset_request_count = len(asset_request_urls)
+        page.locator("#appView").evaluate(
+            "element => { element.dataset.toolbarDisplayMode = 'iconOnly'; }"
+        )
+        assert direct_favorite.locator(".library-toolbar-label").is_hidden()
+        assert direct_unfavorite.locator(".library-toolbar-label").is_hidden()
+        assert direct_prepare.locator(".library-toolbar-label").is_hidden()
+        assert direct_find_similar.locator(".library-toolbar-label").is_hidden()
+        assert direct_favorite.evaluate(
+            "button => Math.round(button.getBoundingClientRect().width)"
+        ) == 29
+        assert direct_unfavorite.evaluate(
+            "button => Math.round(button.getBoundingClientRect().width)"
+        ) == 29
+        assert direct_prepare.evaluate(
+            "button => Math.round(button.getBoundingClientRect().width)"
+        ) == 29
+        assert direct_find_similar.evaluate(
+            "button => Math.round(button.getBoundingClientRect().width)"
+        ) == 29
+        page.locator("#appView").evaluate(
+            "element => { element.dataset.toolbarDisplayMode = 'iconAndTitle'; }"
+        )
+        assert direct_favorite.locator(".library-toolbar-label").is_visible()
+        assert direct_unfavorite.locator(".library-toolbar-label").is_visible()
+        assert direct_prepare.locator(".library-toolbar-label").is_visible()
+        assert direct_find_similar.locator(".library-toolbar-label").is_visible()
+        assert len(asset_request_urls) == toolbar_mode_asset_request_count
+        page.screenshot(
+            path="/tmp/imageall-selection-favorite-toolbar-wide.png",
+            full_page=False,
+        )
+        direct_snapshot = page.evaluate(
+            """() => ({
+              selectedAssetID: state.selectedAssetID,
+              selectedAssetIDs: [...state.selectedAssetIDs],
+              selectionAnchorID: state.selectionAnchorID,
+              scrollTop: document.querySelector('#libraryScroll').scrollTop,
+              loadedIDs: state.assets.map((asset) => asset.id),
+            })"""
+        )
+        favorite_request_count = len(submitted_favorites)
+        direct_favorite.click()
         page.wait_for_function(
             "() => document.querySelectorAll("
             "'#assetGrid .asset-card-favorite[data-favorite=\"true\"]'"
             ").length === 2"
         )
+        assert len(submitted_favorites) == favorite_request_count + 1
         assert submitted_favorites[-1]["isFavorite"] is True
         assert set(submitted_favorites[-1]["assetIDs"]) == set(ASSET_IDS)
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'toolbarFavoriteSelectedButton'"
+        )
+        assert page.evaluate(
+            """() => ({
+              selectedAssetID: state.selectedAssetID,
+              selectedAssetIDs: [...state.selectedAssetIDs],
+              selectionAnchorID: state.selectionAnchorID,
+              scrollTop: document.querySelector('#libraryScroll').scrollTop,
+              loadedIDs: state.assets.map((asset) => asset.id),
+            })"""
+        ) == direct_snapshot
+
+        direct_unfavorite.click()
+        page.wait_for_function(
+            "() => document.querySelectorAll("
+            "'#assetGrid .asset-card-favorite[data-favorite=\"true\"]'"
+            ").length === 0"
+        )
+        assert len(submitted_favorites) == favorite_request_count + 2
+        assert submitted_favorites[-1]["isFavorite"] is False
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'toolbarUnfavoriteSelectedButton'"
+        )
+        direct_favorite.click()
+        page.wait_for_function(
+            "() => document.querySelectorAll("
+            "'#assetGrid .asset-card-favorite[data-favorite=\"true\"]'"
+            ").length === 2"
+        )
+        assert len(submitted_favorites) == favorite_request_count + 3
+        assert submitted_favorites[-1]["isFavorite"] is True
+
+        preparation_request_count = len(submitted_preparations)
+        direct_prepare.click()
+        page.locator("#embeddingPreparationStatus:not(.hidden)").wait_for()
+        assert len(submitted_preparations) == preparation_request_count + 1
+        assert submitted_preparations[-1]["mediaKind"] == "image"
+        assert set(submitted_preparations[-1]["assetIDs"]) == set(ASSET_IDS)
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'cancelEmbeddingPreparationButton'"
+        )
+        assert direct_prepare.get_attribute("aria-busy") == "true"
+        page.wait_for_function(
+            "() => document.querySelector('#toastMessage').textContent.includes('新准备 2')",
+            timeout=5_000,
+        )
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'toolbarPrepareSelectedFeaturesButton'"
+        )
+        assert direct_prepare.get_attribute("aria-busy") == "false"
+        assert page.evaluate(
+            """() => ({
+              selectedAssetID: state.selectedAssetID,
+              selectedAssetIDs: [...state.selectedAssetIDs],
+              selectionAnchorID: state.selectionAnchorID,
+              scrollTop: document.querySelector('#libraryScroll').scrollTop,
+              loadedIDs: state.assets.map((asset) => asset.id),
+            })"""
+        ) == direct_snapshot
+
+        slimming_request_count = len(submitted_slimming)
+        direct_find_similar.click()
+        page.locator("#slimmingWorkspace:not(.hidden)").wait_for()
+        assert len(submitted_slimming) == slimming_request_count + 1
+        assert submitted_slimming[-1]["mode"] == "seeds"
+        assert set(submitted_slimming[-1]["seedAssetIDs"]) == set(ASSET_IDS)
+        page.locator("#closeSlimmingButton").click()
+        page.locator("#slimmingWorkspace").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'toolbarFindSimilarSelectionButton'"
+        )
+
+        direct_prepare.focus()
+        page.set_viewport_size({"width": 1280, "height": 960})
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'prepareSelectedFeaturesButton'"
+        )
+        assert page.locator("#batchPersonalModelActions").is_visible()
+        page.set_viewport_size({"width": 2200, "height": 960})
+        page.wait_for_function(
+            "() => document.querySelector('#toolbarPrepareSelectedFeaturesButton')"
+            "?.getClientRects().length > 0"
+        )
+
+        # Shrinking while a direct action owns focus must move focus to the
+        # equivalent compact action instead of leaving it on a hidden node.
+        direct_favorite.focus()
+        page.set_viewport_size({"width": 1280, "height": 960})
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'favoriteSelectedButton'"
+        )
+        assert direct_favorite_group.is_hidden()
+        assert page.locator("#batchFavoriteActions").is_visible()
+        assert page.locator("#batchPersonalModelActions").is_visible()
+        page.set_viewport_size({"width": 390, "height": 844})
+        page.wait_for_timeout(100)
+        assert direct_favorite_group.is_hidden()
+        assert page.locator("#batchFavoriteActions").is_visible()
+        assert page.locator("#batchPersonalModelActions").is_visible()
+        assert page.evaluate("() => document.documentElement.scrollWidth <= 390")
+        page.screenshot(
+            path="/tmp/imageall-selection-favorite-toolbar-390.png",
+            full_page=False,
+        )
+        page.set_viewport_size({"width": 1440, "height": 960})
+        page.wait_for_timeout(100)
 
         page.locator("#prepareSelectedFeaturesButton").click()
         page.locator("#embeddingPreparationStatus:not(.hidden)").wait_for()
@@ -1659,6 +2056,55 @@ def main():
         page.locator("#reviewWorkspace").wait_for(state="hidden")
         page.locator("#findSimilarSelectionButton").click()
         page.locator("#slimmingWorkspace:not(.hidden)").wait_for()
+        slimming_desktop_presentation = page.evaluate(
+            """() => {
+              const workspace = document.querySelector('#slimmingWorkspace');
+              const libraryPane = document.querySelector('#libraryPane');
+              const workspaceRect = workspace.getBoundingClientRect();
+              const libraryRect = libraryPane.getBoundingClientRect();
+              return {
+                appInert: document.querySelector('#appView').inert,
+                role: workspace.getAttribute('role'),
+                ariaModal: workspace.getAttribute('aria-modal'),
+                integrated: workspace.classList.contains('integrated'),
+                libraryTitle: document.querySelector('#libraryTitle').textContent.trim(),
+                navigationCurrent: document.querySelector('#slimmingNavigationButton')
+                  .getAttribute('aria-current'),
+                sourceSidebarVisible: document.querySelector('#sourceSidebar').offsetParent !== null,
+                inspectorVisible: document.querySelector('#inspector').offsetParent !== null,
+                searchInert: document.querySelector('#searchForm').closest('[inert]') !== null,
+                contained: workspaceRect.left >= libraryRect.left - 1
+                  && workspaceRect.right <= libraryRect.right + 1
+                  && workspaceRect.top >= libraryRect.top - 1
+                  && workspaceRect.bottom <= libraryRect.bottom + 1,
+              };
+            }"""
+        )
+        assert slimming_desktop_presentation == {
+            "appInert": False,
+            "role": "region",
+            "ariaModal": None,
+            "integrated": True,
+            "libraryTitle": "图库瘦身",
+            "navigationCurrent": "page",
+            "sourceSidebarVisible": True,
+            "inspectorVisible": True,
+            "searchInert": True,
+            "contained": True,
+        }, slimming_desktop_presentation
+        slimming_workspace_inspector = page.locator(
+            "#inspectorSlimmingWorkspace:not(.hidden)"
+        )
+        slimming_workspace_inspector.wait_for()
+        assert "分析记录" in slimming_workspace_inspector.inner_text()
+        assert "2 条" in slimming_workspace_inspector.inner_text()
+        assert "从所选项目查找" in slimming_workspace_inspector.inner_text()
+        assert "Apple Photos" in slimming_workspace_inspector.inner_text()
+        assert "已完成" in slimming_workspace_inspector.inner_text()
+        assert "3 张" in slimming_workspace_inspector.inner_text()
+        assert "2 张" in slimming_workspace_inspector.inner_text()
+        assert page.locator("#slimmingInspector").is_hidden()
+        page.screenshot(path="/tmp/imageall-slimming-integrated.png", full_page=False)
         assert page.locator("#closeSlimmingButton").get_attribute("aria-label") == "返回图库"
         assert page.evaluate(
             "() => history.state?.imageAllWorkspace?.route"
@@ -1693,6 +2139,85 @@ def main():
             "() => ({ jobID: state.slimming.selectedJobID, "
             "clusterID: state.slimming.selectedClusterID, mediaKind: state.slimming.mediaKind })"
         ) == slimming_context_before_command
+
+        page.wait_for_function(
+            "() => document.querySelector('#slimmingCatalogAnalyzeButton')?.disabled === false "
+            "&& document.querySelector('#slimmingCatalogSourceButton')?.textContent.includes('全部来源（2）')"
+        )
+        assert "分析全部来源" in page.locator(
+            "#slimmingCatalogAnalyzeButton"
+        ).inner_text()
+        page.locator("#slimmingCatalogSourceButton").click()
+        source_popover = page.locator("#slimmingCatalogSourcePopover:not(.hidden)")
+        source_popover.wait_for()
+        catalog_sources = page.locator(
+            "#slimmingCatalogSourceOptions [data-slimming-catalog-source-id]"
+        )
+        assert catalog_sources.count() == 2
+        assert "全部 2 个" in page.locator(
+            "#slimmingCatalogSourceSummary"
+        ).inner_text()
+        catalog_sources.nth(1).uncheck()
+        page.wait_for_function(
+            "() => document.querySelector('#slimmingCatalogSourceButton')"
+            ".textContent.includes('Apple Photos') "
+            "&& document.querySelector('#slimmingCatalogAnalyzeButton')"
+            ".textContent.includes('分析所选来源')"
+        )
+        page.keyboard.press("Escape")
+        source_popover.wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'slimmingCatalogSourceButton'"
+        )
+        with page.expect_request(
+            lambda request: request.url.endswith("/v1/library-slimming/launch")
+            and request.method == "POST"
+        ):
+            page.locator("#slimmingCatalogAnalyzeButton").click()
+        page.wait_for_function(
+            "() => document.querySelector('#slimmingCatalogAnalyzeButton')?.disabled === false"
+        )
+        assert submitted_slimming[-1]["mode"] == "catalog"
+        assert submitted_slimming[-1]["sourceIDs"] == [SOURCE_ID]
+        assert submitted_slimming[-1]["seedAssetIDs"] == []
+        assert submitted_slimming[-1]["filter"] is None
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'slimmingCatalogAnalyzeButton'"
+        )
+
+        page.locator("#slimmingAnalysisOptionsButton").click()
+        page.locator("#slimmingAnalysisOptionsPopover:not(.hidden)").wait_for()
+        page.locator("#slimmingAnalysisOptionsContent:not(.hidden)").wait_for()
+        assert page.locator("#slimmingCurrentFilterAnalysisButton").is_enabled()
+        assert "按种子查找（2）" in page.locator(
+            "#slimmingSeedAnalysisButton"
+        ).inner_text()
+        assert page.locator("#openSlimmingSetupButton").is_visible()
+        with page.expect_request(
+            lambda request: request.url.endswith("/v1/library-slimming/launch")
+            and request.method == "POST"
+        ):
+            page.locator("#slimmingCurrentFilterAnalysisButton").click()
+        page.wait_for_function(
+            "() => !state.slimming.quickLaunchMode "
+            "&& document.querySelector('#slimmingAnalysisOptionsPopover').classList.contains('hidden')"
+        )
+        assert submitted_slimming[-1]["mode"] == "currentFilter"
+        assert submitted_slimming[-1]["sourceIDs"] is None
+        assert submitted_slimming[-1]["seedAssetIDs"] == []
+        assert submitted_slimming[-1]["filter"]["mediaKinds"] == ["image"]
+
+        page.locator("#slimmingAnalysisOptionsButton").click()
+        page.locator("#slimmingAnalysisOptionsContent:not(.hidden)").wait_for()
+        with page.expect_request(
+            lambda request: request.url.endswith("/v1/library-slimming/launch")
+            and request.method == "POST"
+        ):
+            page.locator("#slimmingSeedAnalysisButton").click()
+        page.wait_for_function("() => !state.slimming.quickLaunchMode")
+        assert submitted_slimming[-1]["mode"] == "seeds"
+        assert set(submitted_slimming[-1]["seedAssetIDs"]) == set(ASSET_IDS)
+        assert submitted_slimming[-1]["sourceIDs"] is None
 
         page.locator("#slimmingAnalysisOptionsButton").click()
         page.locator("#slimmingAnalysisOptionsPopover:not(.hidden)").wait_for()
@@ -1749,12 +2274,107 @@ def main():
         ) == slimming_context_before_thresholds
         page.locator("#slimmingAnalysisOptionsButton").click()
         page.locator("#slimmingAnalysisOptionsContent:not(.hidden)").wait_for()
+        assert page.locator("#slimmingCurrentJobSection").is_visible()
+        assert "从所选项目查找" in page.locator(
+            "#slimmingCurrentJobSummary"
+        ).inner_text()
+        assert "已完成" in page.locator("#slimmingCurrentJobState").inner_text()
+        assert page.locator(
+            '#slimmingCurrentJobActions [data-action="deleteRecord"]'
+        ).is_visible()
+        current_delete = page.locator(
+            '#slimmingCurrentJobActions [data-action="deleteRecord"]'
+        )
+        current_delete.click()
+        page.locator("#confirmDialog[open]").wait_for()
+        assert "不会读取、移动或删除任何原始媒体" in page.locator(
+            "#confirmDialogMessage"
+        ).inner_text()
+        page.locator("#cancelConfirmButton").click()
+        assert page.locator("#slimmingAnalysisOptionsPopover").is_visible()
+        assert page.locator("#slimmingWorkspace").is_visible()
+        page.wait_for_function(
+            "jobID => document.activeElement?.dataset.slimmingJobActionId === jobID "
+            "&& document.activeElement?.dataset.action === 'deleteRecord'",
+            arg=SLIMMING_JOB_ID,
+        )
+
+        page.keyboard.press("Escape")
+        page.locator("#slimmingAnalysisOptionsPopover").wait_for(state="hidden")
+        page.evaluate("() => toggleSlimmingNavigator()")
+        assert page.locator("#slimmingAnalysisBody").evaluate(
+            "element => element.classList.contains('navigator-hidden')"
+        )
+        slimming_job_states[SLIMMING_JOB_ID] = "running"
+        page.evaluate("async () => { await loadSlimmingWorkspace({ quiet: true }); }")
+        page.evaluate("() => openSlimmingAnalysisOptions()")
+        page.wait_for_function(
+            "() => document.querySelector('#slimmingCurrentJobState')?.textContent === '进行中'"
+        )
+        pause_current = page.locator(
+            '#slimmingCurrentJobActions [data-action="pause"]'
+        )
+        assert pause_current.is_visible()
+        assert page.locator(
+            '#slimmingCurrentJobActions [data-action="deleteRecord"]'
+        ).count() == 0
+        pause_current.click()
+        page.wait_for_function(
+            "() => document.querySelector('#slimmingCurrentJobState')?.textContent === '已暂停'"
+        )
+        assert submitted_slimming_job_actions[-1]["jobID"] == SLIMMING_JOB_ID
+        assert submitted_slimming_job_actions[-1]["action"] == "pause"
+        assert page.locator("#slimmingAnalysisOptionsPopover").is_visible()
+        assert page.locator("#slimmingAnalysisBody").evaluate(
+            "element => element.classList.contains('navigator-hidden')"
+        )
+        page.wait_for_function(
+            "jobID => document.activeElement?.dataset.slimmingJobActionId === jobID "
+            "&& document.activeElement?.dataset.action === 'resume'",
+            arg=SLIMMING_JOB_ID,
+        )
+
+        paused_delete = page.locator(
+            '#slimmingCurrentJobActions [data-action="deleteRecord"]'
+        )
+        paused_delete.click()
+        page.locator("#confirmDialog[open]").wait_for()
+        page.locator("#cancelConfirmButton").click()
+        assert page.locator("#slimmingAnalysisOptionsPopover").is_visible()
+        assert page.locator("#slimmingWorkspace").is_visible()
+        page.wait_for_function(
+            "jobID => document.activeElement?.dataset.slimmingJobActionId === jobID "
+            "&& document.activeElement?.dataset.action === 'deleteRecord'",
+            arg=SLIMMING_JOB_ID,
+        )
+        page.locator('#slimmingCurrentJobActions [data-action="resume"]').click()
+        page.wait_for_function(
+            "() => document.querySelector('#slimmingCurrentJobState')?.textContent === '进行中'"
+        )
+        assert submitted_slimming_job_actions[-1]["action"] == "resume"
+        page.wait_for_function(
+            "jobID => document.activeElement?.dataset.slimmingJobActionId === jobID "
+            "&& document.activeElement?.dataset.action === 'pause'",
+            arg=SLIMMING_JOB_ID,
+        )
+
+        slimming_job_states[SLIMMING_JOB_ID] = "completed"
+        page.evaluate("async () => { await loadSlimmingWorkspace({ quiet: true }); }")
+        page.keyboard.press("Escape")
+        page.locator("#slimmingAnalysisOptionsPopover").wait_for(state="hidden")
+        page.evaluate("() => toggleSlimmingNavigator()")
+        assert not page.locator("#slimmingAnalysisBody").evaluate(
+            "element => element.classList.contains('navigator-hidden')"
+        )
+        page.evaluate("() => openSlimmingAnalysisOptions()")
+        page.locator("#slimmingAnalysisOptionsContent:not(.hidden)").wait_for()
         maintenance_sources = page.locator(
             "#slimmingMaintenanceSourceOptions [data-slimming-maintenance-source-id]"
         )
         assert maintenance_sources.count() == 2
-        assert "全部 2 个" in page.locator("#slimmingMaintenanceSourceSummary").inner_text()
-        maintenance_sources.nth(1).uncheck()
+        assert "1 / 2" in page.locator("#slimmingMaintenanceSourceSummary").inner_text()
+        assert maintenance_sources.nth(0).is_checked()
+        assert not maintenance_sources.nth(1).is_checked()
         page.locator("#refreshSlimmingSourcesButton").click()
         page.wait_for_function(
             "() => document.querySelector('#toastMessage').textContent.includes('刷新 1 个来源')"
@@ -1960,6 +2580,16 @@ def main():
         )
         page.set_viewport_size({"width": 390, "height": 844})
         page.wait_for_timeout(100)
+        assert page.evaluate(
+            """() => {
+              const workspace = document.querySelector('#slimmingWorkspace');
+              return document.querySelector('#appView').inert
+                && workspace.getAttribute('role') === 'dialog'
+                && workspace.getAttribute('aria-modal') === 'true'
+                && !workspace.classList.contains('integrated');
+            }"""
+        )
+        assert page.locator("#slimmingInspector").is_visible()
         slimming_selection_mode = page.locator("#slimmingSelectionModeButton")
         slimming_select_all = page.locator("#slimmingSelectAllButton")
         assert slimming_selection_mode.is_visible()
@@ -2335,8 +2965,8 @@ def main():
         assert page.locator("#slimmingClusterScopeTitle").inner_text() == "待处理"
         page.screenshot(path="/tmp/imageall-slimming-single-navigator.png", full_page=True)
         slimming_inspector = page.locator("#slimmingInspector")
-        slimming_inspector_summary = slimming_inspector.locator(":scope > summary")
         assert slimming_inspector.get_attribute("open") is None
+        assert slimming_inspector.is_hidden()
         grid_geometry_before_inspector = page.locator("#slimmingMemberGrid").evaluate(
             "element => { const rect = element.getBoundingClientRect(); "
             "return { top: rect.top, height: rect.height, scrollTop: element.scrollTop }; }"
@@ -2344,9 +2974,8 @@ def main():
         selection_before_inspector = page.locator(
             "#slimmingMemberGrid > .slimming-member-card.selected"
         ).evaluate_all("cards => cards.map(card => card.dataset.slimmingMemberId)")
-        slimming_inspector_summary.click()
-        assert slimming_inspector.get_attribute("open") == ""
-        assert page.locator("#slimmingInspectorContent").is_visible()
+        assert page.locator("#inspectorSlimmingWorkspace").is_visible()
+        assert page.locator("#inspectorSlimmingWorkspaceContent").is_visible()
         assert page.locator("#slimmingMemberGrid").evaluate(
             "element => { const rect = element.getBoundingClientRect(); "
             "return { top: rect.top, height: rect.height, scrollTop: element.scrollTop }; }"
@@ -2356,12 +2985,7 @@ def main():
         ).evaluate_all(
             "cards => cards.map(card => card.dataset.slimmingMemberId)"
         ) == selection_before_inspector
-        page.screenshot(path="/tmp/imageall-slimming-inspector-overlay.png", full_page=True)
-        slimming_inspector_summary.press("Escape")
-        assert slimming_inspector.get_attribute("open") is None
-        assert page.evaluate(
-            "() => document.activeElement === document.querySelector('#slimmingInspector > summary')"
-        )
+        page.screenshot(path="/tmp/imageall-slimming-inspector-column.png", full_page=True)
         slimming_navigator_button.click()
         assert page.locator("#slimmingAnalysisBody").evaluate(
             "element => element.classList.contains('navigator-hidden')"
@@ -2389,7 +3013,7 @@ def main():
         assert page.locator("#slimmingAnalysisBody > #slimmingNavigatorPane").is_visible()
         assert page.locator("#slimmingNavigatorPane > .slimming-job-pane").is_visible()
         assert page.locator("#slimmingNavigatorPane > .slimming-cluster-pane").is_visible()
-        slimming_density_metrics = page.locator("#slimmingGridDensitySlider").evaluate(
+        slimming_density_metrics = page.locator("#slimmingGridDensityButton").evaluate(
             "element => ({ width: element.offsetWidth, height: element.offsetHeight, "
             "display: getComputedStyle(element).display, "
             "computedWidth: getComputedStyle(element).width, "
@@ -2403,14 +3027,23 @@ def main():
         )
         assert slimming_density_metrics["width"] > 0, slimming_density_metrics
         assert slimming_density_metrics["height"] > 0, slimming_density_metrics
-        page.locator("#slimmingGridDensitySlider").evaluate(
-            "element => { element.value = '8'; "
-            "element.dispatchEvent(new Event('input', { bubbles: true })); }"
-        )
-        assert page.locator("#gridDensitySlider").input_value() == "8"
+        page.locator("#slimmingGridDensityButton").click()
+        page.locator(
+            '#slimmingGridDensityPopover:not(.hidden) [data-grid-density="8"]'
+        ).click()
+        assert page.locator("#gridDensityButton").get_attribute("aria-label") \
+            == "缩略图大小：巨大"
         assert page.evaluate(
             "() => getComputedStyle(document.documentElement)"
-            ".getPropertyValue('--slimming-member-min-width').trim() === '268px'"
+            ".getPropertyValue('--slimming-member-min-width').trim() === '620px'"
+        )
+        page.locator("#slimmingGridDensityButton").click()
+        page.locator(
+            '#slimmingGridDensityPopover:not(.hidden) [data-grid-density="3"]'
+        ).click()
+        assert page.evaluate(
+            "() => getComputedStyle(document.documentElement)"
+            ".getPropertyValue('--slimming-member-min-width').trim() === '132px'"
         )
         assert page.locator(
             "#slimmingMemberGrid > .slimming-member-card.selected"
@@ -2462,7 +3095,16 @@ def main():
         assert page.locator("#slimmingMemberGrid").evaluate(
             "element => element.classList.contains('original-aspect')"
         )
-        assert page.locator("#thumbnailAspectButton").get_attribute("aria-pressed") == "true"
+        for selector in [
+            "#thumbnailAspectButton",
+            "#reviewThumbnailAspectButton",
+            "#slimmingThumbnailAspectButton",
+        ]:
+            control = page.locator(selector)
+            assert control.get_attribute("data-aspect-mode") == "original"
+            assert control.get_attribute("aria-label") == "缩略图比例：原比例"
+            assert control.locator(".thumbnail-aspect-label").text_content() == "原比例"
+            assert control.get_attribute("aria-pressed") is None
         assert page.locator(
             "#slimmingMemberGrid > .slimming-member-card.selected"
         ).evaluate_all(
@@ -2844,6 +3486,144 @@ def main():
         page.wait_for_timeout(100)
         assert submitted_slimming_recycle_actions[-1]["action"] == "discardPreflightFailure"
 
+        expanded_slimming_recycle_pagination_enabled = True
+        page.evaluate(
+            """async () => {
+              state.slimming.recycle.scope = 'all';
+              state.slimming.recycle.sourceID = '';
+              state.slimming.recycle.searchText = '';
+              state.slimming.recycle.limit = 60;
+              await loadSlimmingRecycle({ quiet: true });
+            }"""
+        )
+        page.wait_for_function(
+            "() => document.querySelectorAll('#slimmingRecycleList .slimming-recycle-row').length === 60"
+        )
+        recycle_append_progress = page.evaluate(
+            """() => {
+              state.slimming.recycle.loading = true;
+              state.slimming.recycle.appending = true;
+              renderSlimmingWorkspace({ preserveRecycle: true });
+              const result = {
+                summary: document.querySelector('#slimmingSummary').textContent,
+                count: document.querySelector('#slimmingRecycleCount').textContent,
+                buttonText: document.querySelector('#slimmingRecycleLoadMoreButton').textContent,
+                actionDisabled: document.querySelector(
+                  '#slimmingRecycleList [data-slimming-recycle-entry-id]'
+                )?.disabled,
+                favoriteDisabled: document.querySelector(
+                  '#slimmingRecycleList .slimming-recycle-favorite'
+                )?.disabled,
+              };
+              state.slimming.recycle.loading = false;
+              state.slimming.recycle.appending = false;
+              renderSlimmingWorkspace({ preserveRecycle: true });
+              return result;
+            }"""
+        )
+        assert "正在载入更多回收项目" in recycle_append_progress["summary"]
+        assert "正在载入更多" in recycle_append_progress["count"]
+        assert recycle_append_progress["buttonText"] == "正在载入更多回收项目…"
+        assert recycle_append_progress["actionDisabled"] is True
+        assert recycle_append_progress["favoriteDisabled"] is True
+
+        recycle_append_baseline = page.evaluate(
+            """() => {
+              clearTimeout(state.slimming.recycle.pollTimer);
+              state.slimming.recycle.pollTimer = null;
+              const originalSyncSlimmingRecycleRow = syncSlimmingRecycleRow;
+              globalThis.__slimmingRecycleSyncCalls = 0;
+              globalThis.__slimmingRecycleBaselineRows = [
+                ...document.querySelectorAll('#slimmingRecycleList .slimming-recycle-row')
+              ];
+              syncSlimmingRecycleRow = (...args) => {
+                globalThis.__slimmingRecycleSyncCalls += 1;
+                return originalSyncSlimmingRecycleRow(...args);
+              };
+              const body = document.querySelector('#slimmingRecycleBody');
+              body.scrollTop = 480;
+              const favorite = globalThis.__slimmingRecycleBaselineRows[20]
+                .querySelector('.slimming-recycle-favorite');
+              favorite.focus({ preventScroll: true });
+              return {
+                scrollTop: body.scrollTop,
+                focusedEntryID: favorite.closest('[data-slimming-recycle-row-id]')
+                  .dataset.slimmingRecycleRowId,
+              };
+            }"""
+        )
+        page.locator("#slimmingRecycleLoadMoreButton").evaluate("button => button.click()")
+        page.wait_for_function(
+            "() => !state.slimming.recycle.loading "
+            "&& document.querySelectorAll('#slimmingRecycleList .slimming-recycle-row').length === 120"
+        )
+        recycle_append = page.evaluate(
+            """() => ({
+              syncCalls: globalThis.__slimmingRecycleSyncCalls,
+              retained: globalThis.__slimmingRecycleBaselineRows.every(
+                (row, index) => document.querySelector('#slimmingRecycleList').children[index] === row
+              ),
+              scrollTop: document.querySelector('#slimmingRecycleBody').scrollTop,
+              focusedEntryID: document.activeElement?.closest('[data-slimming-recycle-row-id]')
+                ?.dataset.slimmingRecycleRowId || null,
+              focusedFavorite: document.activeElement?.classList.contains(
+                'slimming-recycle-favorite'
+              ),
+            })"""
+        )
+        assert recycle_append["syncCalls"] == 60, recycle_append
+        assert recycle_append["retained"] is True, recycle_append
+        assert recycle_append["scrollTop"] == recycle_append_baseline["scrollTop"]
+        assert recycle_append["focusedEntryID"] == recycle_append_baseline["focusedEntryID"]
+        assert recycle_append["focusedFavorite"] is True
+
+        page.evaluate(
+            """() => {
+              clearTimeout(state.slimming.recycle.pollTimer);
+              state.slimming.recycle.pollTimer = null;
+              globalThis.__slimmingRecycleSyncCalls = 0;
+              const stale = document.createElement('article');
+              stale.className = 'slimming-recycle-row';
+              stale.dataset.slimmingRecycleRowId = 'stale-recycle-entry';
+              document.querySelector('#slimmingRecycleList').append(stale);
+            }"""
+        )
+        page.locator("#slimmingRecycleLoadMoreButton").evaluate("button => button.click()")
+        page.wait_for_function(
+            "() => !state.slimming.recycle.loading "
+            "&& document.querySelectorAll('#slimmingRecycleList .slimming-recycle-row').length === 135"
+        )
+        recycle_fallback = page.evaluate(
+            """() => ({
+              syncCalls: globalThis.__slimmingRecycleSyncCalls,
+              staleCount: document.querySelectorAll(
+                '#slimmingRecycleList [data-slimming-recycle-row-id="stale-recycle-entry"]'
+              ).length,
+              scrollTop: document.querySelector('#slimmingRecycleBody').scrollTop,
+              focusedEntryID: document.activeElement?.closest('[data-slimming-recycle-row-id]')
+                ?.dataset.slimmingRecycleRowId || null,
+              focusedFavorite: document.activeElement?.classList.contains(
+                'slimming-recycle-favorite'
+              ),
+            })"""
+        )
+        assert recycle_fallback["syncCalls"] == 135, recycle_fallback
+        assert recycle_fallback["staleCount"] == 0, recycle_fallback
+        assert recycle_fallback["scrollTop"] == recycle_append_baseline["scrollTop"]
+        assert recycle_fallback["focusedEntryID"] == recycle_append_baseline["focusedEntryID"]
+        assert recycle_fallback["focusedFavorite"] is True
+
+        expanded_slimming_recycle_pagination_enabled = False
+        page.evaluate(
+            """async () => {
+              state.slimming.recycle.limit = 60;
+              await loadSlimmingRecycle({ quiet: true });
+            }"""
+        )
+        page.wait_for_function(
+            "() => document.querySelectorAll('#slimmingRecycleList .slimming-recycle-row').length === 7"
+        )
+
         retry_from_analysis_row = page.locator(
             f'[data-slimming-recycle-row-id="{SLIMMING_RECYCLE_IDS[5]}"]'
         )
@@ -2869,11 +3649,64 @@ def main():
         load_more_jobs = page.locator("#slimmingLoadMoreJobsButton")
         assert load_more_jobs.is_visible()
         assert "剩余 119" in load_more_jobs.inner_text()
+        job_append_baseline = page.evaluate(
+            """() => {
+              const originalSyncSlimmingJobRow = syncSlimmingJobRow;
+              globalThis.__slimmingJobSyncCalls = 0;
+              globalThis.__slimmingJobBaselineRows = [
+                ...document.querySelectorAll('#slimmingJobList [data-slimming-job-id]')
+              ];
+              globalThis.__slimmingJobBaselineClusters = [
+                ...document.querySelectorAll('#slimmingClusterList .slimming-cluster-row')
+              ];
+              globalThis.__slimmingJobBaselineMembers = [
+                ...document.querySelectorAll('#slimmingMemberGrid > .slimming-member-card')
+              ];
+              syncSlimmingJobRow = (...args) => {
+                globalThis.__slimmingJobSyncCalls += 1;
+                return originalSyncSlimmingJobRow(...args);
+              };
+              return {
+                rowCount: globalThis.__slimmingJobBaselineRows.length,
+                selectedJobID: state.slimming.selectedJobID,
+              };
+            }"""
+        )
+        assert job_append_baseline["rowCount"] == 2
         load_more_jobs.click()
         page.wait_for_function(
             "() => document.querySelectorAll('#slimmingJobList [data-slimming-job-id]').length === 102"
         )
+        job_append = page.evaluate(
+            """() => ({
+              syncCalls: globalThis.__slimmingJobSyncCalls,
+              retainedRows: globalThis.__slimmingJobBaselineRows.every(
+                (row, index) => document.querySelector('#slimmingJobList').children[index] === row
+              ),
+              retainedClusters: globalThis.__slimmingJobBaselineClusters.every(
+                (row, index) => document.querySelector('#slimmingClusterList').children[index] === row
+              ),
+              retainedMembers: globalThis.__slimmingJobBaselineMembers.every(
+                (card, index) => document.querySelector('#slimmingMemberGrid').children[index] === card
+              ),
+              selectedJobID: state.slimming.selectedJobID,
+            })"""
+        )
+        assert job_append["syncCalls"] == 100, job_append
+        assert job_append["retainedRows"] is True, job_append
+        assert job_append["retainedClusters"] is True, job_append
+        assert job_append["retainedMembers"] is True, job_append
+        assert job_append["selectedJobID"] == job_append_baseline["selectedJobID"]
         assert "剩余 19" in load_more_jobs.inner_text()
+        page.evaluate(
+            """() => {
+              globalThis.__slimmingJobSyncCalls = 0;
+              const stale = document.createElement('button');
+              stale.className = 'slimming-job-row';
+              stale.dataset.slimmingJobId = 'stale-job';
+              document.querySelector('#slimmingJobList').append(stale);
+            }"""
+        )
         page.locator("#slimmingNavigatorPane").evaluate(
             "element => { element.scrollTop = 120; }"
         )
@@ -2885,6 +3718,16 @@ def main():
         page.wait_for_function(
             "() => document.querySelectorAll('#slimmingJobList [data-slimming-job-id]').length === 121"
         )
+        job_fallback = page.evaluate(
+            """() => ({
+              syncCalls: globalThis.__slimmingJobSyncCalls,
+              staleCount: document.querySelectorAll(
+                '#slimmingJobList [data-slimming-job-id="stale-job"]'
+              ).length,
+            })"""
+        )
+        assert job_fallback["syncCalls"] == 121, job_fallback
+        assert job_fallback["staleCount"] == 0, job_fallback
         page.wait_for_function(
             "scrollTop => document.querySelector('#slimmingNavigatorPane').scrollTop === scrollTop",
             arg=navigator_scroll_before_final_page,
@@ -2914,6 +3757,234 @@ def main():
             "state.slimming.selectedClusterID = null; await loadSlimmingWorkspace({ quiet: true }); }",
             SLIMMING_JOB_ID,
         )
+        expanded_slimming_pagination_enabled = True
+        page.evaluate(
+            """async jobID => {
+              state.slimming.jobLimit = 2;
+              state.slimming.clusterScope = 'pending';
+              state.slimming.clusterLimit = 48;
+              state.slimming.memberLimit = 96;
+              state.slimming.selectedJobID = jobID;
+              state.slimming.selectedClusterID = null;
+              state.slimming.selectedMemberIDs.clear();
+              state.slimming.selectionAnchorID = null;
+              await loadSlimmingWorkspace({ quiet: true });
+            }""",
+            SLIMMING_JOB_ID,
+        )
+        page.wait_for_function(
+            "() => document.querySelectorAll('#slimmingClusterList .slimming-cluster-row').length === 48 "
+            "&& document.querySelectorAll('#slimmingMemberGrid > .slimming-member-card').length === 96"
+        )
+        append_progress = page.evaluate(
+            """() => {
+              const memberID = state.slimming.members[0].id;
+              state.slimming.selectedMemberIDs = new Set([memberID]);
+              state.slimming.selectionAnchorID = memberID;
+              state.slimming.selectionMode = true;
+              state.slimming.loading = true;
+              state.slimming.appending = 'members';
+              renderSlimmingWorkspace({
+                preserveJobs: true,
+                preserveClusters: true,
+                preserveMembers: true,
+              });
+              const result = {
+                summary: document.querySelector('#slimmingSummary').textContent,
+                buttonText: document.querySelector('#slimmingLoadMoreMembersButton').textContent,
+                selectionModeDisabled: document.querySelector('#slimmingSelectionModeButton').disabled,
+                selectAllDisabled: document.querySelector('#slimmingSelectAllButton').disabled,
+                recycleDisabled: document.querySelector('#slimmingMoveToRecycleButton').disabled,
+                deleteDisabled: document.querySelector('#slimmingReleaseSpaceButton').disabled,
+                clusterDisabled: document.querySelector('[data-slimming-cluster-id]').disabled,
+                jobActionDisabled: document.querySelector('[data-slimming-job-action-id]')?.disabled,
+              };
+              state.slimming.loading = false;
+              state.slimming.appending = null;
+              renderSlimmingWorkspace({
+                preserveJobs: true,
+                preserveClusters: true,
+                preserveMembers: true,
+              });
+              return result;
+            }"""
+        )
+        assert "正在载入更多成员" in append_progress["summary"]
+        assert append_progress["buttonText"] == "正在载入更多成员…"
+        assert append_progress["selectionModeDisabled"] is False
+        assert append_progress["selectAllDisabled"] is False
+        assert append_progress["recycleDisabled"] is True
+        assert append_progress["deleteDisabled"] is True
+        assert append_progress["clusterDisabled"] is True
+        assert append_progress["jobActionDisabled"] is True
+        pagination_baseline = page.evaluate(
+            """() => {
+              const originalSyncSlimmingClusterRow = syncSlimmingClusterRow;
+              const originalSyncSlimmingMemberCard = syncSlimmingMemberCard;
+              globalThis.__slimmingClusterSyncCalls = 0;
+              globalThis.__slimmingMemberSyncCalls = 0;
+              syncSlimmingClusterRow = (...args) => {
+                globalThis.__slimmingClusterSyncCalls += 1;
+                return originalSyncSlimmingClusterRow(...args);
+              };
+              syncSlimmingMemberCard = (...args) => {
+                globalThis.__slimmingMemberSyncCalls += 1;
+                return originalSyncSlimmingMemberCard(...args);
+              };
+              globalThis.__slimmingBaselineClusters = [
+                ...document.querySelectorAll('#slimmingClusterList .slimming-cluster-row')
+              ];
+              globalThis.__slimmingBaselineMembers = [
+                ...document.querySelectorAll('#slimmingMemberGrid > .slimming-member-card')
+              ];
+              const navigator = document.querySelector('#slimmingNavigatorPane');
+              const memberScroll = slimmingMemberScrollContainer();
+              navigator.scrollTop = 420;
+              memberScroll.scrollTop = 520;
+              const memberID = state.slimming.members[40].id;
+              selectSlimmingMember(memberID, {}, { forceReplace: true });
+              document.querySelector(`[data-slimming-member-id="${memberID}"]`)
+                .querySelector('.slimming-member-main').focus({ preventScroll: true });
+              return {
+                navigatorScrollTop: navigator.scrollTop,
+                memberScrollTop: memberScroll.scrollTop,
+                memberID,
+              };
+            }"""
+        )
+        page.locator("#slimmingLoadMoreClustersButton").evaluate("button => button.click()")
+        page.wait_for_function(
+            "() => !state.slimming.loading "
+            "&& document.querySelectorAll('#slimmingClusterList .slimming-cluster-row').length === 96"
+        )
+        cluster_append = page.evaluate(
+            """baseline => ({
+              syncCalls: globalThis.__slimmingClusterSyncCalls,
+              memberSyncCalls: globalThis.__slimmingMemberSyncCalls,
+              retainedClusters: globalThis.__slimmingBaselineClusters.every(
+                (row, index) => document.querySelector('#slimmingClusterList').children[index] === row
+              ),
+              retainedMembers: globalThis.__slimmingBaselineMembers.every(
+                (card, index) => document.querySelector('#slimmingMemberGrid').children[index] === card
+              ),
+              navigatorScrollTop: document.querySelector('#slimmingNavigatorPane').scrollTop,
+              memberScrollTop: slimmingMemberScrollContainer().scrollTop,
+              selectedIDs: [...state.slimming.selectedMemberIDs],
+              focusedMemberID: document.activeElement?.closest('[data-slimming-member-id]')
+                ?.dataset.slimmingMemberId || null,
+            })""",
+            pagination_baseline,
+        )
+        assert cluster_append["syncCalls"] == 48, cluster_append
+        assert cluster_append["memberSyncCalls"] == 0, cluster_append
+        assert cluster_append["retainedClusters"] is True, cluster_append
+        assert cluster_append["retainedMembers"] is True, cluster_append
+        assert cluster_append["navigatorScrollTop"] == pagination_baseline["navigatorScrollTop"]
+        assert cluster_append["memberScrollTop"] == pagination_baseline["memberScrollTop"], (
+            pagination_baseline,
+            cluster_append,
+        )
+        assert cluster_append["selectedIDs"] == [pagination_baseline["memberID"]]
+        assert cluster_append["focusedMemberID"] == pagination_baseline["memberID"]
+
+        page.evaluate(
+            """() => {
+              globalThis.__slimmingClusterSyncCalls = 0;
+              const stale = document.createElement('div');
+              stale.className = 'slimming-cluster-row';
+              stale.dataset.slimmingClusterRowId = 'stale-cluster';
+              document.querySelector('#slimmingClusterList').append(stale);
+            }"""
+        )
+        page.locator("#slimmingLoadMoreClustersButton").evaluate("button => button.click()")
+        page.wait_for_function(
+            "() => !state.slimming.loading "
+            "&& document.querySelectorAll('#slimmingClusterList .slimming-cluster-row').length === 105"
+        )
+        cluster_fallback = page.evaluate(
+            """() => ({
+              syncCalls: globalThis.__slimmingClusterSyncCalls,
+              staleCount: document.querySelectorAll(
+                '#slimmingClusterList [data-slimming-cluster-row-id="stale-cluster"]'
+              ).length,
+            })"""
+        )
+        assert cluster_fallback["syncCalls"] == 105, cluster_fallback
+        assert cluster_fallback["staleCount"] == 0, cluster_fallback
+
+        page.evaluate(
+            """() => {
+              globalThis.__slimmingMemberSyncCalls = 0;
+              globalThis.__slimmingMemberAppendBaseline = [
+                ...document.querySelectorAll('#slimmingMemberGrid > .slimming-member-card')
+              ];
+            }"""
+        )
+        page.locator("#slimmingLoadMoreMembersButton").evaluate("button => button.click()")
+        page.wait_for_function(
+            "() => !state.slimming.loading "
+            "&& document.querySelectorAll('#slimmingMemberGrid > .slimming-member-card').length === 192"
+        )
+        member_append = page.evaluate(
+            """baseline => ({
+              syncCalls: globalThis.__slimmingMemberSyncCalls,
+              retained: globalThis.__slimmingMemberAppendBaseline.every(
+                (card, index) => document.querySelector('#slimmingMemberGrid').children[index] === card
+              ),
+              selectedIDs: [...state.slimming.selectedMemberIDs],
+              focusedMemberID: document.activeElement?.closest('[data-slimming-member-id]')
+                ?.dataset.slimmingMemberId || null,
+              memberScrollTop: slimmingMemberScrollContainer().scrollTop,
+            })""",
+            pagination_baseline,
+        )
+        assert member_append["syncCalls"] == 96, member_append
+        assert member_append["retained"] is True, member_append
+        assert member_append["selectedIDs"] == [pagination_baseline["memberID"]]
+        assert member_append["focusedMemberID"] == pagination_baseline["memberID"]
+        assert member_append["memberScrollTop"] == pagination_baseline["memberScrollTop"], (
+            pagination_baseline,
+            member_append,
+        )
+
+        page.evaluate(
+            """() => {
+              globalThis.__slimmingMemberSyncCalls = 0;
+              const stale = document.createElement('div');
+              stale.className = 'slimming-member-card';
+              stale.dataset.slimmingMemberId = 'stale-member';
+              document.querySelector('#slimmingMemberGrid').append(stale);
+            }"""
+        )
+        page.locator("#slimmingLoadMoreMembersButton").evaluate("button => button.click()")
+        page.wait_for_function(
+            "() => !state.slimming.loading "
+            "&& document.querySelectorAll('#slimmingMemberGrid > .slimming-member-card').length === 205"
+        )
+        member_fallback = page.evaluate(
+            """() => ({
+              syncCalls: globalThis.__slimmingMemberSyncCalls,
+              staleCount: document.querySelectorAll(
+                '#slimmingMemberGrid [data-slimming-member-id="stale-member"]'
+              ).length,
+            })"""
+        )
+        assert member_fallback["syncCalls"] == 205, member_fallback
+        assert member_fallback["staleCount"] == 0, member_fallback
+
+        expanded_slimming_pagination_enabled = False
+        page.evaluate(
+            """async jobID => {
+              state.slimming.clusterLimit = 48;
+              state.slimming.memberLimit = 96;
+              state.slimming.selectedJobID = jobID;
+              state.slimming.selectedClusterID = null;
+              state.slimming.selectedMemberIDs.clear();
+              state.slimming.selectionAnchorID = null;
+              await loadSlimmingWorkspace({ quiet: true });
+            }""",
+            SLIMMING_JOB_ID,
+        )
         page.locator('[data-slimming-view="recycle"]').click()
 
         page.set_viewport_size({"width": 390, "height": 844})
@@ -2927,6 +3998,34 @@ def main():
 
         page.locator("#slimmingThumbnailAspectButton").click()
         page.locator('[data-slimming-view="analysis"]').click()
+        page.locator("#slimmingCatalogSourceButton").click()
+        page.locator("#slimmingCatalogSourcePopover:not(.hidden)").wait_for()
+        catalog_source_dimensions = page.evaluate(
+            "() => { const rect = document.querySelector('#slimmingCatalogSourcePopover')"
+            ".getBoundingClientRect(); return { viewport: innerWidth, "
+            "scroll: document.documentElement.scrollWidth, left: rect.left, "
+            "right: rect.right, top: rect.top, bottom: rect.bottom, height: innerHeight }; }"
+        )
+        assert catalog_source_dimensions["scroll"] <= catalog_source_dimensions["viewport"], (
+            catalog_source_dimensions
+        )
+        assert catalog_source_dimensions["left"] >= 0, catalog_source_dimensions
+        assert catalog_source_dimensions["right"] <= catalog_source_dimensions["viewport"], (
+            catalog_source_dimensions
+        )
+        assert catalog_source_dimensions["top"] >= 0, catalog_source_dimensions
+        assert catalog_source_dimensions["bottom"] <= catalog_source_dimensions["height"], (
+            catalog_source_dimensions
+        )
+        page.screenshot(
+            path="/tmp/imageall-slimming-catalog-sources-390.png",
+            full_page=True,
+        )
+        page.keyboard.press("Escape")
+        page.locator("#slimmingCatalogSourcePopover").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'slimmingCatalogSourceButton'"
+        )
         page.locator("#slimmingAnalysisOptionsButton").click()
         page.locator("#slimmingAnalysisOptionsPopover:not(.hidden)").wait_for()
         page.locator("#slimmingAnalysisOptionsContent:not(.hidden)").wait_for()
@@ -2977,10 +4076,10 @@ def main():
         page.wait_for_function(
             "() => document.activeElement?.id === 'slimmingAnalysisOptionsButton'"
         )
-        page.locator("#slimmingGridDensitySlider").evaluate(
-            "element => { element.value = '4'; "
-            "element.dispatchEvent(new Event('input', { bubbles: true })); }"
-        )
+        page.locator("#slimmingGridDensityButton").click()
+        page.locator(
+            '#slimmingGridDensityPopover:not(.hidden) [data-grid-density="3"]'
+        ).click()
         page.wait_for_timeout(100)
         analysis_dimensions = page.evaluate(
             "() => ({ viewport: innerWidth, scroll: document.documentElement.scrollWidth, "
@@ -3179,4 +4278,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--inspector-actions-only",
+        action="store_true",
+        help="Stop after the focused single-inspector action-strip regression.",
+    )
+    arguments = parser.parse_args()
+    main(inspector_actions_only=arguments.inspector_actions_only)

@@ -90,6 +90,8 @@ const elements = {
   titlebarLeading: $(".titlebar-leading"),
   titlebarActions: $(".titlebar-actions"),
   libraryTitle: $("#libraryTitle"),
+  sidebarVisibilityLabel: $("#sidebarVisibilityLabel"),
+  inspectorVisibilityLabel: $("#inspectorVisibilityLabel"),
   connectionStatus: $("#connectionStatus"),
   connectionLabel: $(".connection-label"),
   compactToolbarMenuButton: $("#compactToolbarMenuButton"),
@@ -159,6 +161,8 @@ const elements = {
   suggestionThresholdError: $("#suggestionThresholdError"),
   storageButton: $("#storageButton"),
   storageStatusLabel: $("#storageStatusLabel"),
+  toolbarConnectFolderButton: $("#toolbarConnectFolderButton"),
+  toolbarExportPortableDataButton: $("#toolbarExportPortableDataButton"),
   sourcePrewarmStatusButton: $("#sourcePrewarmStatusButton"),
   sourcePrewarmStatusLabel: $("#sourcePrewarmStatusLabel"),
   sourcePrewarmCancelButton: $("#sourcePrewarmCancelButton"),
@@ -173,6 +177,7 @@ const elements = {
   previewCacheEntries: $("#previewCacheEntries"),
   photosOriginalsSize: $("#photosOriginalsSize"),
   photosOriginalsEntries: $("#photosOriginalsEntries"),
+  photosOriginalsBlocked: $("#photosOriginalsBlocked"),
   appStorageKind: $("#appStorageKind"),
   appStorageDetail: $("#appStorageDetail"),
   clearPreviewCacheButton: $("#clearPreviewCacheButton"),
@@ -206,6 +211,7 @@ const elements = {
   galleryOverviewSummary: $("#galleryOverviewSummary"),
   galleryOverviewRefreshedAt: $("#galleryOverviewRefreshedAt"),
   galleryOverviewStatus: $("#galleryOverviewStatus"),
+  galleryOverviewEmpty: $("#galleryOverviewEmpty"),
   galleryOverviewBody: $("#galleryOverviewBody"),
   galleryOverviewTotalMetric: $("#galleryOverviewTotalMetric"),
   galleryOverviewUniqueMetric: $("#galleryOverviewUniqueMetric"),
@@ -241,6 +247,9 @@ const elements = {
   searchInput: $("#searchInput"),
   clearSearchButton: $("#clearSearchButton"),
   sortSelect: $("#sortSelect"),
+  sortButton: $("#sortButton"),
+  sortButtonLabel: $("#sortButtonLabel"),
+  sortPopover: $("#sortPopover"),
   assetSummary: $("#assetSummary"),
   assetGrid: $("#assetGrid"),
   libraryScroll: $("#libraryScroll"),
@@ -262,12 +271,37 @@ const elements = {
   emptyOpenPhotosSettingsButton: $("#emptyOpenPhotosSettingsButton"),
   emptyOpenSourceManagerButton: $("#emptyOpenSourceManagerButton"),
   loadMoreButton: $("#loadMoreButton"),
-  gridDensitySlider: $("#gridDensitySlider"),
+  gridDensityButton: $("#gridDensityButton"),
+  gridDensityButtonLabel: $("#gridDensityButtonLabel"),
+  gridDensityPopover: $("#gridDensityPopover"),
   thumbnailAspectButton: $("#thumbnailAspectButton"),
   inspector: $("#inspector"),
   inspectorResizeHandle: $("#inspectorResizeHandle"),
+  inspectorWorkspacePlaceholder: $("#inspectorWorkspacePlaceholder"),
+  inspectorWorkspacePlaceholderSymbol: $("#inspectorWorkspacePlaceholderSymbol"),
+  inspectorWorkspacePlaceholderTitle: $("#inspectorWorkspacePlaceholderTitle"),
+  inspectorWorkspacePlaceholderText: $("#inspectorWorkspacePlaceholderText"),
+  inspectorTrainingWorkspace: $("#inspectorTrainingWorkspace"),
+  inspectorTrainingWorkspaceActivity: $("#inspectorTrainingWorkspaceActivity"),
+  inspectorTrainingWorkspaceActivityTitle: $("#inspectorTrainingWorkspaceActivityTitle"),
+  inspectorTrainingWorkspaceActivityDetail: $("#inspectorTrainingWorkspaceActivityDetail"),
+  inspectorTrainingWorkspaceActivityPhase: $("#inspectorTrainingWorkspaceActivityPhase"),
+  inspectorTrainingWorkspaceRun: $("#inspectorTrainingWorkspaceRun"),
+  inspectorTrainingWorkspaceTask: $("#inspectorTrainingWorkspaceTask"),
+  inspectorTrainingWorkspaceMethod: $("#inspectorTrainingWorkspaceMethod"),
+  inspectorTrainingWorkspaceState: $("#inspectorTrainingWorkspaceState"),
+  inspectorTrainingWorkspaceCreated: $("#inspectorTrainingWorkspaceCreated"),
+  inspectorTrainingWorkspaceIdentifier: $("#inspectorTrainingWorkspaceIdentifier"),
+  inspectorTrainingWorkspaceEmpty: $("#inspectorTrainingWorkspaceEmpty"),
+  inspectorTrainingFeatureRequirement: $("#inspectorTrainingFeatureRequirement"),
+  inspectorSlimmingWorkspace: $("#inspectorSlimmingWorkspace"),
+  inspectorSlimmingWorkspaceDescription: $("#inspectorSlimmingWorkspaceDescription"),
+  inspectorSlimmingWorkspaceContent: $("#inspectorSlimmingWorkspaceContent"),
+  inspectorSlimmingWorkspacePending: $("#inspectorSlimmingWorkspacePending"),
   inspectorPlaceholder: $("#inspectorPlaceholder"),
   inspectorPlaceholderText: $("#inspectorPlaceholderText"),
+  inspectorPlaceholderTagEditor: $("#inspectorPlaceholderTagEditor"),
+  inspectorPlaceholderTags: $("#inspectorPlaceholderTags"),
   selectionInspector: $("#selectionInspector"),
   selectionInspectorTitle: $("#selectionInspectorTitle"),
   selectionInspectorTags: $("#selectionInspectorTags"),
@@ -292,6 +326,8 @@ const elements = {
   selectionInspectorPrimaryMetadata: $("#selectionInspectorPrimaryMetadata"),
   selectionTagSearch: $("#selectionTagSearch"),
   inspectorContent: $("#inspectorContent"),
+  inspectorSelectionHeading: $("#inspectorSelectionHeading"),
+  inspectorSelectionTitle: $("#inspectorSelectionTitle"),
   previewPlaceholderImage: $("#previewPlaceholderImage"),
   previewImage: $("#previewImage"),
   previewVideo: $("#previewVideo"),
@@ -322,6 +358,7 @@ const elements = {
   inspectorDeleteButtonLabel: $("#inspectorDeleteButtonLabel"),
   inspectorDeleteHint: $("#inspectorDeleteHint"),
   inspectorFavoriteButton: $("#inspectorFavoriteButton"),
+  inspectorUnfavoriteButton: $("#inspectorUnfavoriteButton"),
   inspectorFavoriteButtonIcon: $("#inspectorFavoriteButtonIcon"),
   inspectorFavoriteButtonLabel: $("#inspectorFavoriteButtonLabel"),
   openOriginalButtonIcon: $("#openOriginalButtonIcon"),
@@ -384,14 +421,29 @@ const elements = {
   activeFilterRelation: $("#activeFilterRelation"),
   clearActiveFiltersButton: $("#clearActiveFiltersButton"),
   selectionModeButton: $("#selectionModeButton"),
+  selectionFavoriteToolbarActions: $("#selectionFavoriteToolbarActions"),
+  toolbarFavoriteSelectedButton: $("#toolbarFavoriteSelectedButton"),
+  toolbarUnfavoriteSelectedButton: $("#toolbarUnfavoriteSelectedButton"),
   personalModelButton: $("#personalModelButton"),
+  personalModelToolbarActions: $("#personalModelToolbarActions"),
+  toolbarRebuildPersonalModelButton: $("#toolbarRebuildPersonalModelButton"),
+  toolbarRebuildPersonalAdamWButton: $("#toolbarRebuildPersonalAdamWButton"),
+  toolbarGeneratePersonalSuggestionsButton: $("#toolbarGeneratePersonalSuggestionsButton"),
+  toolbarGeneratePersonalSuggestionsLabel: $("#toolbarGeneratePersonalSuggestionsLabel"),
+  toolbarPrepareSelectedFeaturesButton: $("#toolbarPrepareSelectedFeaturesButton"),
+  toolbarFindSimilarSelectionButton: $("#toolbarFindSimilarSelectionButton"),
   personalModelPopover: $("#personalModelPopover"),
   personalModelScopeSummary: $("#personalModelScopeSummary"),
   rebuildPersonalModelButton: $("#rebuildPersonalModelButton"),
+  rebuildPersonalModelTitle: $("#rebuildPersonalModelTitle"),
   rebuildPersonalAdamWButton: $("#rebuildPersonalAdamWButton"),
+  rebuildPersonalAdamWTitle: $("#rebuildPersonalAdamWTitle"),
   generatePersonalSuggestionsButton: $("#generatePersonalSuggestionsButton"),
   generatePersonalSuggestionsTitle: $("#generatePersonalSuggestionsTitle"),
   generatePersonalSuggestionsDetail: $("#generatePersonalSuggestionsDetail"),
+  preparePersonalSelectionButton: $("#preparePersonalSelectionButton"),
+  preparePersonalSelectionTitle: $("#preparePersonalSelectionTitle"),
+  findSimilarPersonalSelectionButton: $("#findSimilarPersonalSelectionButton"),
   batchBar: $("#batchBar"),
   selectionSummary: $("#selectionSummary"),
   selectAllLoadedButton: $("#selectAllLoadedButton"),
@@ -401,6 +453,8 @@ const elements = {
   prepareSelectedFeaturesButton: $("#prepareSelectedFeaturesButton"),
   generateSelectedSuggestionsButton: $("#generateSelectedSuggestionsButton"),
   findSimilarSelectionButton: $("#findSimilarSelectionButton"),
+  batchPersonalModelActions: $("#batchPersonalModelActions"),
+  batchFavoriteActions: $("#batchFavoriteActions"),
   favoriteSelectedButton: $("#favoriteSelectedButton"),
   unfavoriteSelectedButton: $("#unfavoriteSelectedButton"),
   deleteSelectedButton: $("#deleteSelectedButton"),
@@ -481,12 +535,26 @@ const elements = {
   reviewGrid: $("#reviewGrid"),
   reviewThumbnailLayoutControls: $("#reviewThumbnailLayoutControls"),
   reviewThumbnailAspectButton: $("#reviewThumbnailAspectButton"),
-  reviewGridDensitySlider: $("#reviewGridDensitySlider"),
+  reviewGridDensityButton: $("#reviewGridDensityButton"),
+  reviewGridDensityButtonLabel: $("#reviewGridDensityButtonLabel"),
+  reviewGridDensityPopover: $("#reviewGridDensityPopover"),
   reviewEmpty: $("#reviewEmpty"),
   loadMoreReviewButton: $("#loadMoreReviewButton"),
   reviewPlaceholder: $("#reviewPlaceholder"),
   reviewDetail: $("#reviewDetail"),
+  reviewInspectorSelectionTitle: $("#reviewInspectorSelectionTitle"),
+  reviewInspectorFavoriteButton: $("#reviewInspectorFavoriteButton"),
+  reviewInspectorUnfavoriteButton: $("#reviewInspectorUnfavoriteButton"),
+  reviewInspectorDeleteButton: $("#reviewInspectorDeleteButton"),
+  reviewInspectorDeleteButtonLabel: $("#reviewInspectorDeleteButtonLabel"),
+  reviewInspectorActionStatus: $("#reviewInspectorActionStatus"),
   reviewPreviewImage: $("#reviewPreviewImage"),
+  reviewCloudPreviewRecovery: $("#reviewCloudPreviewRecovery"),
+  reviewCloudPreviewIcon: $("#reviewCloudPreviewIcon"),
+  reviewCloudPreviewTitle: $("#reviewCloudPreviewTitle"),
+  reviewCloudPreviewMessage: $("#reviewCloudPreviewMessage"),
+  reviewCloudPreviewProgress: $("#reviewCloudPreviewProgress"),
+  reviewCloudPreviewButton: $("#reviewCloudPreviewButton"),
   reviewOpenLightboxButton: $("#reviewOpenLightboxButton"),
   reviewFileName: $("#reviewFileName"),
   reviewOrigin: $("#reviewOrigin"),
@@ -494,6 +562,20 @@ const elements = {
   reviewPosition: $("#reviewPosition"),
   previousReviewButton: $("#previousReviewButton"),
   nextReviewButton: $("#nextReviewButton"),
+  reviewMetadataState: $("#reviewMetadataState"),
+  reviewAssetMetadata: $("#reviewAssetMetadata"),
+  reviewOpenOriginalButton: $("#reviewOpenOriginalButton"),
+  reviewOpenOriginalButtonIcon: $("#reviewOpenOriginalButtonIcon"),
+  reviewOpenOriginalButtonLabel: $("#reviewOpenOriginalButtonLabel"),
+  reviewOpenOriginalHint: $("#reviewOpenOriginalHint"),
+  reviewTagSummary: $("#reviewTagSummary"),
+  reviewInlineTagForm: $("#reviewInlineTagForm"),
+  reviewInlineTagName: $("#reviewInlineTagName"),
+  reviewNewTagButton: $("#reviewNewTagButton"),
+  reviewInlineTagError: $("#reviewInlineTagError"),
+  reviewTagSearch: $("#reviewTagSearch"),
+  reviewTags: $("#reviewTags"),
+  reviewTagEmpty: $("#reviewTagEmpty"),
   trainingWorkspace: $("#trainingWorkspace"),
   closeTrainingButton: $("#closeTrainingButton"),
   trainingSummary: $("#trainingSummary"),
@@ -528,6 +610,9 @@ const elements = {
   trainingErrorAction: $("#trainingErrorAction"),
   trainingErrorCode: $("#trainingErrorCode"),
   trainingMetricsSummary: $("#trainingMetricsSummary"),
+  trainingMetricHighlights: $("#trainingMetricHighlights"),
+  trainingLossChart: $("#trainingLossChart"),
+  trainingMetricEmpty: $("#trainingMetricEmpty"),
   trainingMetricsJSON: $("#trainingMetricsJSON"),
   trainingArtifactLedger: $("#trainingArtifactLedger"),
   trainingTechnicalBlocks: $("#trainingTechnicalBlocks"),
@@ -556,12 +641,32 @@ const elements = {
   slimmingMediaKindTabs: $("#slimmingMediaKindTabs"),
   slimmingThumbnailLayoutControls: $("#slimmingThumbnailLayoutControls"),
   slimmingThumbnailAspectButton: $("#slimmingThumbnailAspectButton"),
-  slimmingGridDensitySlider: $("#slimmingGridDensitySlider"),
+  slimmingGridDensityButton: $("#slimmingGridDensityButton"),
+  slimmingGridDensityButtonLabel: $("#slimmingGridDensityButtonLabel"),
+  slimmingGridDensityPopover: $("#slimmingGridDensityPopover"),
   slimmingNavigatorButton: $("#slimmingNavigatorButton"),
   slimmingNoticeText: $("#slimmingNoticeText"),
+  slimmingCatalogAnalyzeButton: $("#slimmingCatalogAnalyzeButton"),
+  slimmingCatalogSourceButton: $("#slimmingCatalogSourceButton"),
+  slimmingCatalogSourcePopover: $("#slimmingCatalogSourcePopover"),
+  closeSlimmingCatalogSourceButton: $("#closeSlimmingCatalogSourceButton"),
+  slimmingCatalogSourceSummary: $("#slimmingCatalogSourceSummary"),
+  selectAllSlimmingCatalogSourcesButton:
+    $("#selectAllSlimmingCatalogSourcesButton"),
+  clearSlimmingCatalogSourcesButton: $("#clearSlimmingCatalogSourcesButton"),
+  slimmingCatalogSourceOptions: $("#slimmingCatalogSourceOptions"),
+  slimmingCatalogSourceError: $("#slimmingCatalogSourceError"),
   slimmingAnalysisOptionsButton: $("#slimmingAnalysisOptionsButton"),
   slimmingAnalysisOptionsPopover: $("#slimmingAnalysisOptionsPopover"),
   closeSlimmingAnalysisOptionsButton: $("#closeSlimmingAnalysisOptionsButton"),
+  slimmingCurrentFilterAnalysisButton: $("#slimmingCurrentFilterAnalysisButton"),
+  slimmingSeedAnalysisButton: $("#slimmingSeedAnalysisButton"),
+  openSlimmingSetupButton: $("#openSlimmingSetupButton"),
+  slimmingCurrentJobSection: $("#slimmingCurrentJobSection"),
+  slimmingCurrentJobSummary: $("#slimmingCurrentJobSummary"),
+  slimmingCurrentJobState: $("#slimmingCurrentJobState"),
+  slimmingCurrentJobProgress: $("#slimmingCurrentJobProgress"),
+  slimmingCurrentJobActions: $("#slimmingCurrentJobActions"),
   openSlimmingThresholdEditorButton: $("#openSlimmingThresholdEditorButton"),
   slimmingAnalysisOptionsLoading: $("#slimmingAnalysisOptionsLoading"),
   slimmingAnalysisOptionsContent: $("#slimmingAnalysisOptionsContent"),
@@ -595,7 +700,6 @@ const elements = {
   slimmingThresholdDialogError: $("#slimmingThresholdDialogError"),
   resetSlimmingThresholdDialogButton: $("#resetSlimmingThresholdDialogButton"),
   applySlimmingThresholdDialogButton: $("#applySlimmingThresholdDialogButton"),
-  newSlimmingAnalysisButton: $("#newSlimmingAnalysisButton"),
   slimmingIdenticalCleanupButton: $("#slimmingIdenticalCleanupButton"),
   refreshSlimmingButton: $("#refreshSlimmingButton"),
   slimmingAnalysisBody: $("#slimmingAnalysisBody"),
@@ -762,6 +866,12 @@ const elements = {
   lightboxStage: $("#lightboxStage"),
   lightboxImage: $("#lightboxImage"),
   lightboxVideo: $("#lightboxVideo"),
+  lightboxCloudPreviewRecovery: $("#lightboxCloudPreviewRecovery"),
+  lightboxCloudPreviewIcon: $("#lightboxCloudPreviewIcon"),
+  lightboxCloudPreviewTitle: $("#lightboxCloudPreviewTitle"),
+  lightboxCloudPreviewMessage: $("#lightboxCloudPreviewMessage"),
+  lightboxCloudPreviewProgress: $("#lightboxCloudPreviewProgress"),
+  lightboxCloudPreviewButton: $("#lightboxCloudPreviewButton"),
   lightboxZoomControls: $("#lightboxZoomControls"),
   lightboxZoomOutButton: $("#lightboxZoomOutButton"),
   lightboxZoomResetButton: $("#lightboxZoomResetButton"),
@@ -781,9 +891,12 @@ const elements = {
   lightboxDeleteButton: $("#lightboxDeleteButton"),
   closeLightboxButton: $("#closeLightboxButton"),
   commandButton: $("#commandButton"),
+  commandButtonLabel: $("#commandButtonLabel"),
   shortcutButton: $("#shortcutButton"),
   undoTagButton: $("#undoTagButton"),
+  undoTagButtonLabel: $("#undoTagButtonLabel"),
   undoReviewButton: $("#undoReviewButton"),
+  undoReviewButtonLabel: $("#undoReviewButtonLabel"),
   commandPalette: $("#commandPalette"),
   commandSearchInput: $("#commandSearchInput"),
   commandList: $("#commandList"),
@@ -834,6 +947,12 @@ const elements = {
   cancelConfirmButton: $("#cancelConfirmButton"),
   confirmActionButton: $("#confirmActionButton"),
 };
+
+const galleryOverviewPortal = {
+  parent: elements.galleryOverviewWorkspace.parentElement,
+  nextSibling: elements.galleryOverviewWorkspace.nextSibling,
+};
+const galleryOverviewLayoutQuery = globalThis.matchMedia("(min-width: 981px)");
 
 const emptyFilters = () => ({
   mediaKind: "image",
@@ -944,6 +1063,8 @@ const state = {
     requestGeneration: 0,
     pollTimer: null,
     seenTerminalOperationIDs: new Set(),
+    returnFocus: null,
+    cancelFocus: null,
   },
   sampleSuggestions: {
     isAvailable: false,
@@ -979,6 +1100,13 @@ const state = {
       returnFocus: null,
     },
   },
+  personalModelActivities: {
+    mediaKind: "image",
+    items: [],
+    loading: false,
+    requestGeneration: 0,
+    pollTimer: null,
+  },
   inspectorDismissed: false,
   online: false,
   authMode: null,
@@ -994,9 +1122,15 @@ const state = {
   inlineTagOperations: {
     single: null,
     selection: null,
+    review: null,
   },
   favoriteMutating: false,
   favoriteRetrying: false,
+  findingSimilarFromSelection: false,
+  personalModelToolbarWasVisible: false,
+  personalModelToolbarFocusedAction: null,
+  selectionFavoriteToolbarWasVisible: false,
+  selectionFavoriteToolbarFocusedAction: null,
   tagManagementMutating: false,
   installingPresetTags: false,
   presetTagOperationID: null,
@@ -1031,6 +1165,21 @@ const state = {
     mutating: false,
     requestGeneration: 0,
     loadedScopeKey: null,
+    detail: null,
+    detailLoadingAssetID: null,
+    detailLoadingSelectionKey: null,
+    detailSelectionKey: null,
+    detailRequestGeneration: 0,
+    cloudPreview: {
+      assetID: null,
+      status: "hidden",
+      operationID: null,
+      progress: 0,
+      pollTimer: null,
+      requestGeneration: 0,
+    },
+    tagAggregates: [],
+    tagSearchText: "",
     returnTarget: null,
     pendingFocusTrainingJobID: null,
     expandedControlTagIDs: new Set(),
@@ -1095,12 +1244,20 @@ const state = {
     contextJobID: null,
     marquee: null,
     loading: false,
+    appending: null,
     requestGeneration: 0,
     clusterLimit: 48,
     memberLimit: 96,
     inspectorCompactInitialized: false,
     navigatorVisible: true,
     catalogSourceIDs: null,
+    quickLaunchMode: null,
+    catalogSources: {
+      loading: false,
+      snapshot: null,
+      error: "",
+      requestGeneration: 0,
+    },
     jobMutatingIDs: new Set(),
     removal: {
       requests: [],
@@ -1133,6 +1290,7 @@ const state = {
       searchText: "",
       limit: 60,
       loading: false,
+      appending: false,
       mutatingEntryIDs: new Set(),
       requestGeneration: 0,
       pollTimer: null,
@@ -1153,6 +1311,7 @@ const state = {
       requestGeneration: 0,
       thresholdOperationID: null,
       launchOperationID: null,
+      returnFocus: null,
     },
     sourceMaintenance: {
       loading: false,
@@ -1320,7 +1479,7 @@ const state = {
     reviewModelWidth: REVIEW_MODEL_WIDTH.default,
     reviewInspectorWidth: REVIEW_INSPECTOR_WIDTH.default,
     trainingNavigatorVisible: true,
-    density: 4,
+    density: 3,
     aspectMode: "square",
     collapsedTagGroupIDs: new Set(),
     collapsedReviewTagGroupIDs: new Set(),
@@ -1329,7 +1488,19 @@ const state = {
   },
 };
 
-const densityWidths = [74, 86, 100, 116, 132, 156, 184, 220, 268];
+const GRID_DENSITY_SCALE_VERSION = 2;
+const GRID_DENSITY_OPTIONS = [
+  { value: 0, title: "微缩", width: 51 },
+  { value: 1, title: "精细", width: 70 },
+  { value: 2, title: "紧凑", width: 96 },
+  { value: 3, title: "标准", width: 132 },
+  { value: 4, title: "大图", width: 180 },
+  { value: 5, title: "较大", width: 245 },
+  { value: 6, title: "很大", width: 334 },
+  { value: 7, title: "特大", width: 455 },
+  { value: 8, title: "巨大", width: 620 },
+];
+const LEGACY_DENSITY_WIDTHS = [74, 86, 100, 116, 132, 156, 184, 220, 268];
 const protectedImageRequests = new WeakMap();
 const protectedImageAbortControllers = new WeakMap();
 let protectedImageRequestSequence = 0;
@@ -1622,6 +1793,7 @@ function closeOverlays() {
   hidePersistentHelp();
   closeIdenticalCleanupBlockingOverlay({ restoreFocus: false });
   closeCompactToolbarMenu({ restoreFocus: false });
+  closeGridDensityPopovers({ restoreFocus: false });
   elements.filterPopover.classList.add("hidden");
   elements.filterButton.setAttribute("aria-expanded", "false");
   closePersonalModelPopover({ restoreFocus: false });
@@ -1654,16 +1826,19 @@ function closeOverlays() {
   state.pendingConfirmAction = null;
   elements.reviewWorkspace.classList.add("hidden");
   elements.reviewWorkspace.inert = false;
+  syncReviewPresentation({ renderSurfaces: false });
   elements.trainingWorkspace.classList.add("hidden");
   elements.trainingWorkspace.inert = false;
+  syncTrainingPresentation({ renderSurfaces: false });
   elements.slimmingWorkspace.classList.add("hidden");
   elements.slimmingWorkspace.inert = false;
+  syncSlimmingPresentation({ renderSurfaces: false });
   clearTimeout(state.worldMap.cameraTimer);
   state.worldMap.cameraTimer = null;
   elements.worldMapWorkspace.classList.add("hidden");
-  elements.worldMapWorkspace.inert = false;
+  syncWorldMapPresentation({ renderSurfaces: false });
   elements.galleryOverviewWorkspace.classList.add("hidden");
-  elements.galleryOverviewWorkspace.inert = false;
+  syncGalleryOverviewPresentation({ renderSurfaces: false });
   elements.lightbox.classList.add("hidden");
   elements.lightbox.classList.remove("reviewing");
   elements.appView.inert = false;
@@ -1861,6 +2036,7 @@ function stableReturnFocusTarget(target, fallback) {
     && document.contains(target)
     && target !== document.body
     && target !== document.documentElement
+    && !(target instanceof HTMLButtonElement && target.disabled)
     && target.getClientRects().length > 0
     && !target.closest("[inert]")) return target;
   return fallback;
@@ -2146,15 +2322,120 @@ function returnFromWorkspace(route = visibleWorkspaceRoute()) {
   return Promise.resolve();
 }
 
+function reviewWorkspaceIsOpen() {
+  return !elements.reviewWorkspace.classList.contains("hidden");
+}
+
+function reviewWorkspaceUsesIntegratedLayout() {
+  return galleryOverviewLayoutQuery.matches;
+}
+
+function clearIntegratedReviewFrame() {
+  elements.reviewWorkspace.classList.remove("integrated", "inspector-hidden");
+  for (const property of [
+    "--review-workspace-top",
+    "--review-workspace-right",
+    "--review-workspace-bottom",
+    "--review-workspace-left",
+  ]) {
+    elements.reviewWorkspace.style.removeProperty(property);
+  }
+}
+
+function syncIntegratedReviewFrame() {
+  if (!reviewWorkspaceIsOpen() || !reviewWorkspaceUsesIntegratedLayout()) return;
+  const libraryBounds = elements.libraryPane.getBoundingClientRect();
+  const workspaceBounds = elements.workspace.getBoundingClientRect();
+  elements.reviewWorkspace.classList.add("integrated");
+  elements.reviewWorkspace.style.setProperty(
+    "--review-workspace-top",
+    `${libraryBounds.top}px`
+  );
+  elements.reviewWorkspace.style.setProperty(
+    "--review-workspace-right",
+    `${Math.max(0, globalThis.innerWidth - workspaceBounds.right)}px`
+  );
+  elements.reviewWorkspace.style.setProperty(
+    "--review-workspace-bottom",
+    `${Math.max(0, globalThis.innerHeight - libraryBounds.bottom)}px`
+  );
+  elements.reviewWorkspace.style.setProperty(
+    "--review-workspace-left",
+    `${libraryBounds.left}px`
+  );
+  elements.reviewWorkspace.classList.toggle(
+    "inspector-hidden",
+    !state.layout.inspectorVisible
+  );
+}
+
+function setIntegratedReviewSurfaceIsolation(isolated) {
+  for (const surface of [elements.inspectorResizeHandle, elements.inspector]) {
+    if (isolated) {
+      surface.dataset.reviewWorkspaceIsolated = "true";
+      surface.inert = true;
+      surface.setAttribute("aria-hidden", "true");
+    } else if (surface.dataset.reviewWorkspaceIsolated === "true") {
+      surface.inert = false;
+      surface.removeAttribute("aria-hidden");
+      delete surface.dataset.reviewWorkspaceIsolated;
+    }
+  }
+}
+
+function syncReviewPresentation({ focus = false, renderSurfaces = true } = {}) {
+  const open = reviewWorkspaceIsOpen();
+  const integrated = open && reviewWorkspaceUsesIntegratedLayout();
+  const lightboxOpen = !elements.lightbox.classList.contains("hidden")
+    && state.lightboxContext === "review";
+  const dockedLightbox = lightboxOpen
+    && elements.lightbox.classList.contains("review-docked");
+
+  if (integrated) {
+    elements.appView.inert = lightboxOpen && !dockedLightbox;
+    elements.appView.classList.add("review-workspace-integrated");
+    syncIntegratedReviewFrame();
+    elements.reviewWorkspace.setAttribute("role", "region");
+    elements.reviewWorkspace.removeAttribute("aria-modal");
+    setIntegratedLibraryWorkspaceIsolation(elements.reviewWorkspace, true);
+    setIntegratedReviewSurfaceIsolation(true);
+  } else {
+    setIntegratedLibraryWorkspaceIsolation(elements.reviewWorkspace, false);
+    setIntegratedReviewSurfaceIsolation(false);
+    clearIntegratedReviewFrame();
+    elements.appView.classList.remove("review-workspace-integrated");
+    elements.reviewWorkspace.setAttribute("role", "dialog");
+    elements.reviewWorkspace.setAttribute("aria-modal", "true");
+    elements.appView.inert = open;
+  }
+  elements.reviewWorkspace.inert = lightboxOpen && !dockedLightbox;
+
+  if (renderSurfaces) {
+    renderSources();
+    renderInspectorSurface();
+    updateLibraryTitle();
+  }
+  if (focus && open && !lightboxOpen) {
+    requestAnimationFrame(() => elements.closeReviewButton.focus({ preventScroll: true }));
+  }
+}
+
+function leaveIntegratedReviewForLibrary({ historyMode = "push" } = {}) {
+  if (!reviewWorkspaceIsOpen() || !reviewWorkspaceUsesIntegratedLayout()) return false;
+  closeReviewWorkspace({ restoreFocus: false });
+  recordWorkspaceHistory("gallery", null, historyMode);
+  return true;
+}
+
 function closeReviewWorkspace({ restoreFocus = true } = {}) {
   if (elements.tagSuggestionDialog.open) closeTagSuggestionDialog();
   closeReviewSourceFilter({ restoreFocus: false });
   finishReviewMarqueeSelection();
+  resetReviewCloudPreviewRecovery();
   state.review.selectionMode = false;
   elements.reviewWorkspace.classList.remove("touch-selection-mode");
   elements.reviewWorkspace.classList.add("hidden");
-  elements.reviewWorkspace.inert = false;
-  elements.appView.inert = false;
+  syncReviewPresentation();
   const returnFocus = state.reviewReturnFocus;
   state.reviewReturnFocus = null;
   const returnTarget = state.review.returnTarget;
@@ -2163,7 +2444,6 @@ function closeReviewWorkspace({ restoreFocus = true } = {}) {
   syncReviewClosePresentation();
   if (returnTarget?.workspace === "training") {
     elements.trainingWorkspace.classList.remove("hidden");
-    elements.appView.inert = true;
     if (state.training.runs.some((run) => run.id === returnTarget.runID)) {
       state.training.selectedRunID = returnTarget.runID;
     }
@@ -2171,6 +2451,7 @@ function closeReviewWorkspace({ restoreFocus = true } = {}) {
       ? state.training.selectedRunID
       : null;
     renderTrainingWorkspace();
+    syncTrainingPresentation();
     stabilizeDismissedOverlayFocus(
       () => {
         const runID = state.training.selectedRunID;
@@ -2194,7 +2475,7 @@ function closeTrainingWorkspace({ restoreFocus = true } = {}) {
   if (elements.trainingSetupDialog.open) closeTrainingSetupDialog();
   elements.trainingWorkspace.classList.add("hidden");
   elements.trainingWorkspace.inert = false;
-  elements.appView.inert = false;
+  syncTrainingPresentation();
   const returnFocus = state.trainingReturnFocus;
   state.trainingReturnFocus = null;
   const returnTarget = state.training.returnTarget;
@@ -2203,12 +2484,12 @@ function closeTrainingWorkspace({ restoreFocus = true } = {}) {
   syncTrainingClosePresentation();
   if (returnTarget?.workspace === "review") {
     elements.reviewWorkspace.classList.remove("hidden");
-    elements.appView.inert = true;
     const returnMode = returnTarget.mode || "overview";
     if (state.review.mode !== returnMode) {
       state.review.mode = returnMode;
       renderReviewMode();
     }
+    syncReviewPresentation();
     stabilizeDismissedOverlayFocus(
       () => {
         if (returnTarget.jobID) state.review.pendingFocusTrainingJobID = returnTarget.jobID;
@@ -2258,11 +2539,162 @@ function syncTrainingClosePresentation() {
   );
 }
 
+function trainingWorkspaceIsOpen() {
+  return !elements.trainingWorkspace.classList.contains("hidden");
+}
+
+function trainingWorkspaceUsesIntegratedLayout() {
+  return galleryOverviewLayoutQuery.matches;
+}
+
+function clearIntegratedTrainingFrame() {
+  elements.trainingWorkspace.classList.remove("integrated");
+  for (const property of [
+    "--training-workspace-top",
+    "--training-workspace-right",
+    "--training-workspace-bottom",
+    "--training-workspace-left",
+  ]) {
+    elements.trainingWorkspace.style.removeProperty(property);
+  }
+}
+
+function syncIntegratedTrainingFrame() {
+  if (!trainingWorkspaceIsOpen() || !trainingWorkspaceUsesIntegratedLayout()) return;
+  const bounds = elements.libraryPane.getBoundingClientRect();
+  elements.trainingWorkspace.classList.add("integrated");
+  elements.trainingWorkspace.style.setProperty("--training-workspace-top", `${bounds.top}px`);
+  elements.trainingWorkspace.style.setProperty(
+    "--training-workspace-right",
+    `${Math.max(0, globalThis.innerWidth - bounds.right)}px`
+  );
+  elements.trainingWorkspace.style.setProperty(
+    "--training-workspace-bottom",
+    `${Math.max(0, globalThis.innerHeight - bounds.bottom)}px`
+  );
+  elements.trainingWorkspace.style.setProperty("--training-workspace-left", `${bounds.left}px`);
+}
+
+function syncTrainingPresentation({ focus = false, renderSurfaces = true } = {}) {
+  const open = trainingWorkspaceIsOpen();
+  const integrated = open && trainingWorkspaceUsesIntegratedLayout();
+
+  if (integrated) {
+    elements.appView.inert = false;
+    elements.appView.classList.add("training-workspace-integrated");
+    syncIntegratedTrainingFrame();
+    elements.trainingWorkspace.setAttribute("role", "region");
+    elements.trainingWorkspace.removeAttribute("aria-modal");
+    setIntegratedLibraryWorkspaceIsolation(elements.trainingWorkspace, true);
+  } else {
+    setIntegratedLibraryWorkspaceIsolation(elements.trainingWorkspace, false);
+    clearIntegratedTrainingFrame();
+    elements.appView.classList.remove("training-workspace-integrated");
+    elements.trainingWorkspace.setAttribute("role", "dialog");
+    elements.trainingWorkspace.setAttribute("aria-modal", "true");
+    elements.appView.inert = open;
+  }
+  elements.trainingWorkspace.inert = false;
+
+  if (renderSurfaces) {
+    renderSources();
+    renderInspectorSurface();
+    updateLibraryTitle();
+  }
+  if (focus && open) {
+    requestAnimationFrame(() => elements.closeTrainingButton.focus({ preventScroll: true }));
+  }
+}
+
+function leaveIntegratedTrainingForLibrary({ historyMode = "push" } = {}) {
+  if (!trainingWorkspaceIsOpen() || !trainingWorkspaceUsesIntegratedLayout()) return false;
+  closeTrainingWorkspace({ restoreFocus: false });
+  recordWorkspaceHistory("gallery", null, historyMode);
+  return true;
+}
+
+function slimmingWorkspaceIsOpen() {
+  return !elements.slimmingWorkspace.classList.contains("hidden");
+}
+
+function slimmingWorkspaceUsesIntegratedLayout() {
+  return galleryOverviewLayoutQuery.matches;
+}
+
+function clearIntegratedSlimmingFrame() {
+  elements.slimmingWorkspace.classList.remove("integrated");
+  for (const property of [
+    "--slimming-workspace-top",
+    "--slimming-workspace-right",
+    "--slimming-workspace-bottom",
+    "--slimming-workspace-left",
+  ]) {
+    elements.slimmingWorkspace.style.removeProperty(property);
+  }
+}
+
+function syncIntegratedSlimmingFrame() {
+  if (!slimmingWorkspaceIsOpen() || !slimmingWorkspaceUsesIntegratedLayout()) return;
+  const bounds = elements.libraryPane.getBoundingClientRect();
+  elements.slimmingWorkspace.classList.add("integrated");
+  elements.slimmingWorkspace.style.setProperty("--slimming-workspace-top", `${bounds.top}px`);
+  elements.slimmingWorkspace.style.setProperty(
+    "--slimming-workspace-right",
+    `${Math.max(0, globalThis.innerWidth - bounds.right)}px`
+  );
+  elements.slimmingWorkspace.style.setProperty(
+    "--slimming-workspace-bottom",
+    `${Math.max(0, globalThis.innerHeight - bounds.bottom)}px`
+  );
+  elements.slimmingWorkspace.style.setProperty("--slimming-workspace-left", `${bounds.left}px`);
+}
+
+function syncSlimmingPresentation({ focus = false, renderSurfaces = true } = {}) {
+  const open = slimmingWorkspaceIsOpen();
+  const integrated = open && slimmingWorkspaceUsesIntegratedLayout();
+  const lightboxOpen = !elements.lightbox.classList.contains("hidden")
+    && state.lightboxContext === "slimming";
+
+  if (integrated) {
+    elements.appView.inert = lightboxOpen;
+    elements.appView.classList.add("slimming-workspace-integrated");
+    syncIntegratedSlimmingFrame();
+    elements.slimmingWorkspace.setAttribute("role", "region");
+    elements.slimmingWorkspace.removeAttribute("aria-modal");
+    setIntegratedLibraryWorkspaceIsolation(elements.slimmingWorkspace, true);
+  } else {
+    setIntegratedLibraryWorkspaceIsolation(elements.slimmingWorkspace, false);
+    clearIntegratedSlimmingFrame();
+    elements.appView.classList.remove("slimming-workspace-integrated");
+    elements.slimmingWorkspace.setAttribute("role", "dialog");
+    elements.slimmingWorkspace.setAttribute("aria-modal", "true");
+    elements.appView.inert = open;
+  }
+  elements.slimmingWorkspace.inert = lightboxOpen;
+
+  if (renderSurfaces) {
+    renderSources();
+    renderInspectorSurface();
+    updateLibraryTitle();
+  }
+  if (focus && open && !lightboxOpen) {
+    requestAnimationFrame(() => elements.closeSlimmingButton.focus({ preventScroll: true }));
+  }
+}
+
+function leaveIntegratedSlimmingForLibrary({ historyMode = "push" } = {}) {
+  if (!slimmingWorkspaceIsOpen() || !slimmingWorkspaceUsesIntegratedLayout()) return false;
+  closeSlimmingWorkspace({ restoreFocus: false });
+  recordWorkspaceHistory("gallery", null, historyMode);
+  return true;
+}
+
 function closeSlimmingWorkspace({ restoreFocus = true } = {}) {
   finishSlimmingMarqueeSelection();
   state.slimming.selectionMode = false;
   elements.slimmingWorkspace.classList.remove("touch-selection-mode");
   hideContextMenus();
+  closeSlimmingCatalogSourcePicker({ restoreFocus: false });
   closeSlimmingAnalysisOptions({ restoreFocus: false });
   if (elements.slimmingIdenticalCleanupDialog.open) {
     closeSlimmingIdenticalCleanupDialog();
@@ -2275,8 +2707,7 @@ function closeSlimmingWorkspace({ restoreFocus = true } = {}) {
   state.slimming.recycle.searchTimer = null;
   state.slimming.removal.pollTimer = null;
   elements.slimmingWorkspace.classList.add("hidden");
-  elements.slimmingWorkspace.inert = false;
-  elements.appView.inert = false;
+  syncSlimmingPresentation();
   const returnFocus = state.slimmingReturnFocus;
   state.slimmingReturnFocus = null;
   if (restoreFocus) restoreOverlayFocus(stableReturnFocusTarget(
@@ -2486,8 +2917,13 @@ function renderGalleryOverview() {
     "selected",
     !elements.galleryOverviewWorkspace.classList.contains("hidden")
   );
+  const totalCount = snapshot
+    ? (snapshot.media || []).reduce((sum, item) => sum + Number(item.totalCount || 0), 0)
+    : 0;
+  const isEmpty = Boolean(snapshot) && totalCount === 0;
   elements.galleryOverviewStatus.classList.toggle("hidden", Boolean(snapshot));
-  elements.galleryOverviewBody.classList.toggle("hidden", !snapshot);
+  elements.galleryOverviewEmpty.classList.toggle("hidden", !isEmpty);
+  elements.galleryOverviewBody.classList.toggle("hidden", !snapshot || isEmpty);
   elements.retryGalleryOverviewButton.classList.toggle("hidden", !overview.error);
   elements.galleryOverviewStatus.dataset.state = overview.error ? "error" : "loading";
   elements.galleryOverviewStatus.querySelector("strong").textContent = overview.error
@@ -2498,7 +2934,6 @@ function renderGalleryOverview() {
     : "只读取 ImageAll 目录库，不访问原照片。";
   if (!snapshot) return;
 
-  const totalCount = (snapshot.media || []).reduce((sum, item) => sum + Number(item.totalCount || 0), 0);
   const exactUniqueCount = (snapshot.media || []).reduce((sum, item) => sum + Number(item.exactUniqueCount || 0), 0);
   const exactRedundantCount = (snapshot.media || []).reduce((sum, item) => sum + Number(item.exactRedundantCount || 0), 0);
   const exactFingerprintCount = (snapshot.media || []).reduce((sum, item) => sum + Number(item.exactFingerprintCount || 0), 0);
@@ -2573,13 +3008,93 @@ async function loadGalleryOverview({ quiet = false, throwOnError = false } = {})
   }
 }
 
+function galleryOverviewIsOpen() {
+  return !elements.galleryOverviewWorkspace.classList.contains("hidden");
+}
+
+function galleryOverviewUsesIntegratedLayout() {
+  return galleryOverviewLayoutQuery.matches;
+}
+
+function setIntegratedLibraryWorkspaceIsolation(activeWorkspace, isolated) {
+  for (const child of elements.libraryPane.children) {
+    if (child === activeWorkspace) continue;
+    if (isolated) {
+      child.dataset.integratedWorkspaceIsolated = "true";
+      child.inert = true;
+      child.setAttribute("aria-hidden", "true");
+    } else if (child.dataset.integratedWorkspaceIsolated === "true") {
+      child.inert = false;
+      child.removeAttribute("aria-hidden");
+      delete child.dataset.integratedWorkspaceIsolated;
+    }
+  }
+}
+
+function restoreWorkspacePortal(workspace, portal) {
+  if (workspace.parentElement === portal.parent) return;
+  const anchor = portal.nextSibling?.parentElement === portal.parent
+    ? portal.nextSibling
+    : null;
+  portal.parent.insertBefore(workspace, anchor);
+}
+
+function syncGalleryOverviewPresentation({ focus = false, renderSurfaces = true } = {}) {
+  const open = galleryOverviewIsOpen();
+  const integrated = open && galleryOverviewUsesIntegratedLayout();
+
+  if (integrated) {
+    elements.appView.inert = false;
+    elements.libraryPane.append(elements.galleryOverviewWorkspace);
+    elements.appView.classList.add("gallery-overview-integrated");
+    elements.galleryOverviewWorkspace.setAttribute("role", "region");
+    elements.galleryOverviewWorkspace.removeAttribute("aria-modal");
+    elements.closeGalleryOverviewButton.classList.add("hidden");
+    setIntegratedLibraryWorkspaceIsolation(elements.galleryOverviewWorkspace, true);
+  } else {
+    setIntegratedLibraryWorkspaceIsolation(elements.galleryOverviewWorkspace, false);
+    restoreWorkspacePortal(elements.galleryOverviewWorkspace, galleryOverviewPortal);
+    elements.appView.classList.remove("gallery-overview-integrated");
+    elements.galleryOverviewWorkspace.setAttribute("role", "dialog");
+    elements.galleryOverviewWorkspace.setAttribute("aria-modal", "true");
+    elements.closeGalleryOverviewButton.classList.remove("hidden");
+    elements.appView.inert = open;
+  }
+  elements.galleryOverviewWorkspace.inert = false;
+
+  if (renderSurfaces) {
+    renderSources();
+    renderInspectorSurface();
+    updateLibraryTitle();
+  }
+  if (focus && open) {
+    requestAnimationFrame(() => {
+      const target = integrated
+        ? elements.refreshGalleryOverviewButton
+        : elements.closeGalleryOverviewButton;
+      target.focus({ preventScroll: true });
+    });
+  }
+}
+
+function leaveIntegratedGalleryOverviewForLibrary({ historyMode = "push" } = {}) {
+  if (!galleryOverviewIsOpen() || !galleryOverviewUsesIntegratedLayout()) return false;
+  closeGalleryOverviewWorkspace({ restoreFocus: false });
+  recordWorkspaceHistory("gallery", null, historyMode);
+  return true;
+}
+
 async function openGalleryOverviewWorkspace({ historyMode = "push" } = {}) {
+  leaveIntegratedWorldMapForLibrary({ historyMode: "none" });
   if (elements.trainingSetupDialog.open) closeTrainingSetupDialog();
   elements.reviewWorkspace.classList.add("hidden");
+  syncReviewPresentation({ renderSurfaces: false });
   state.reviewReturnFocus = null;
   elements.trainingWorkspace.classList.add("hidden");
+  syncTrainingPresentation({ renderSurfaces: false });
   state.trainingReturnFocus = null;
   elements.slimmingWorkspace.classList.add("hidden");
+  syncSlimmingPresentation({ renderSurfaces: false });
   state.slimmingReturnFocus = null;
   elements.worldMapWorkspace.classList.add("hidden");
   state.worldMapReturnFocus = null;
@@ -2589,18 +3104,16 @@ async function openGalleryOverviewWorkspace({ historyMode = "push" } = {}) {
   if (elements.galleryOverviewWorkspace.classList.contains("hidden")) {
     state.galleryOverviewReturnFocus = document.activeElement;
   }
-  elements.appView.inert = true;
   elements.galleryOverviewWorkspace.classList.remove("hidden");
+  syncGalleryOverviewPresentation({ focus: true });
   recordWorkspaceHistory("galleryOverview", null, historyMode);
   renderGalleryOverview();
-  requestAnimationFrame(() => elements.closeGalleryOverviewButton.focus({ preventScroll: true }));
   if (!state.galleryOverview.snapshot) await loadGalleryOverview();
 }
 
 function closeGalleryOverviewWorkspace({ restoreFocus = true } = {}) {
   elements.galleryOverviewWorkspace.classList.add("hidden");
-  elements.galleryOverviewWorkspace.inert = false;
-  elements.appView.inert = false;
+  syncGalleryOverviewPresentation();
   renderGalleryOverview();
   const returnFocus = state.galleryOverviewReturnFocus;
   state.galleryOverviewReturnFocus = null;
@@ -2906,13 +3419,100 @@ async function loadWorldMapSelection(clusterID) {
   }
 }
 
+function worldMapIsOpen() {
+  return !elements.worldMapWorkspace.classList.contains("hidden");
+}
+
+function worldMapUsesIntegratedLayout() {
+  return galleryOverviewLayoutQuery.matches;
+}
+
+function clearIntegratedWorldMapFrame() {
+  elements.worldMapWorkspace.classList.remove("integrated");
+  for (const property of [
+    "--world-map-top",
+    "--world-map-right",
+    "--world-map-bottom",
+    "--world-map-left",
+  ]) {
+    elements.worldMapWorkspace.style.removeProperty(property);
+  }
+}
+
+function syncIntegratedWorldMapFrame() {
+  if (!worldMapIsOpen() || !worldMapUsesIntegratedLayout()) return;
+  const bounds = elements.libraryPane.getBoundingClientRect();
+  elements.worldMapWorkspace.classList.add("integrated");
+  elements.worldMapWorkspace.style.setProperty("--world-map-top", `${bounds.top}px`);
+  elements.worldMapWorkspace.style.setProperty(
+    "--world-map-right",
+    `${Math.max(0, globalThis.innerWidth - bounds.right)}px`
+  );
+  elements.worldMapWorkspace.style.setProperty(
+    "--world-map-bottom",
+    `${Math.max(0, globalThis.innerHeight - bounds.bottom)}px`
+  );
+  elements.worldMapWorkspace.style.setProperty("--world-map-left", `${bounds.left}px`);
+}
+
+function syncWorldMapPresentation({ focus = false, renderSurfaces = true } = {}) {
+  const open = worldMapIsOpen();
+  const integrated = open && worldMapUsesIntegratedLayout();
+  const lightboxOpen = !elements.lightbox.classList.contains("hidden")
+    && state.lightboxContext === "worldMap";
+
+  if (integrated) {
+    elements.appView.inert = lightboxOpen;
+    elements.appView.classList.add("world-map-integrated");
+    syncIntegratedWorldMapFrame();
+    elements.worldMapWorkspace.setAttribute("role", "region");
+    elements.worldMapWorkspace.removeAttribute("aria-modal");
+    elements.closeWorldMapButton.classList.add("hidden");
+    setIntegratedLibraryWorkspaceIsolation(elements.worldMapWorkspace, true);
+  } else {
+    setIntegratedLibraryWorkspaceIsolation(elements.worldMapWorkspace, false);
+    clearIntegratedWorldMapFrame();
+    elements.appView.classList.remove("world-map-integrated");
+    elements.worldMapWorkspace.setAttribute("role", "dialog");
+    elements.worldMapWorkspace.setAttribute("aria-modal", "true");
+    elements.closeWorldMapButton.classList.remove("hidden");
+    elements.appView.inert = open;
+  }
+  elements.worldMapWorkspace.inert = lightboxOpen;
+
+  if (renderSurfaces) {
+    renderSources();
+    renderInspectorSurface();
+    updateLibraryTitle();
+  }
+  if (focus && open && !lightboxOpen) {
+    requestAnimationFrame(() => {
+      const target = integrated
+        ? elements.refreshWorldMapButton
+        : elements.closeWorldMapButton;
+      target.focus({ preventScroll: true });
+    });
+  }
+}
+
+function leaveIntegratedWorldMapForLibrary({ historyMode = "push" } = {}) {
+  if (!worldMapIsOpen() || !worldMapUsesIntegratedLayout()) return false;
+  closeWorldMapWorkspace({ restoreFocus: false });
+  recordWorkspaceHistory("gallery", null, historyMode);
+  return true;
+}
+
 async function openWorldMapWorkspace({ historyMode = "push" } = {}) {
+  leaveIntegratedGalleryOverviewForLibrary({ historyMode: "none" });
   if (elements.trainingSetupDialog.open) closeTrainingSetupDialog();
   elements.reviewWorkspace.classList.add("hidden");
+  syncReviewPresentation({ renderSurfaces: false });
   state.reviewReturnFocus = null;
   elements.trainingWorkspace.classList.add("hidden");
+  syncTrainingPresentation({ renderSurfaces: false });
   state.trainingReturnFocus = null;
   elements.slimmingWorkspace.classList.add("hidden");
+  syncSlimmingPresentation({ renderSurfaces: false });
   state.slimmingReturnFocus = null;
   closeJobsPopover({ restoreFocus: false });
   elements.filterPopover.classList.add("hidden");
@@ -2920,11 +3520,10 @@ async function openWorldMapWorkspace({ historyMode = "push" } = {}) {
   if (elements.worldMapWorkspace.classList.contains("hidden")) {
     state.worldMapReturnFocus = document.activeElement;
   }
-  elements.appView.inert = true;
   elements.worldMapWorkspace.classList.remove("hidden");
+  syncWorldMapPresentation({ focus: true });
   recordWorkspaceHistory("worldMap", null, historyMode);
   renderWorldMap();
-  requestAnimationFrame(() => elements.closeWorldMapButton.focus({ preventScroll: true }));
   if (!state.worldMap.snapshot) await loadWorldMapSnapshot();
   else pushWorldMapClusters();
 }
@@ -2939,8 +3538,7 @@ function closeWorldMapWorkspace({ restoreFocus = true } = {}) {
   clearTimeout(state.worldMap.cameraTimer);
   state.worldMap.cameraTimer = null;
   elements.worldMapWorkspace.classList.add("hidden");
-  elements.worldMapWorkspace.inert = false;
-  elements.appView.inert = false;
+  syncWorldMapPresentation();
   const returnFocus = state.worldMapReturnFocus;
   state.worldMapReturnFocus = null;
   if (restoreFocus) restoreOverlayFocus(stableReturnFocusTarget(
@@ -3382,6 +3980,7 @@ function captureWorldMapPlaceFocus() {
     return {
       kind: "query",
       tagID: query.dataset.placeTagQuery,
+      value: query.value,
       selectionStart: query.selectionStart,
       selectionEnd: query.selectionEnd,
       viewportOffset,
@@ -3425,6 +4024,9 @@ function restoreWorldMapPlaceFocus(snapshot, preservedScrollTop) {
   let remainingFrames = 2;
   const restore = () => {
     if (!target.isConnected || !elements.worldMapPlaceTagDialog.open) return;
+    if (snapshot.kind === "query"
+      && typeof snapshot.value === "string"
+      && target.value !== snapshot.value) return;
     if (Number.isFinite(snapshot.viewportOffset)) {
       const currentOffset = target.getBoundingClientRect().top
         - elements.worldMapPlaceTagBody.getBoundingClientRect().top;
@@ -3432,8 +4034,11 @@ function restoreWorldMapPlaceFocus(snapshot, preservedScrollTop) {
     } else {
       elements.worldMapPlaceTagBody.scrollTop = preservedScrollTop;
     }
-    target.focus({ preventScroll: true });
-    if (snapshot.kind === "query" && typeof target.setSelectionRange === "function") {
+    const alreadyFocused = document.activeElement === target;
+    if (!alreadyFocused) target.focus({ preventScroll: true });
+    if (!alreadyFocused
+      && snapshot.kind === "query"
+      && typeof target.setSelectionRange === "function") {
       const end = target.value.length;
       target.setSelectionRange(
         Math.min(snapshot.selectionStart ?? end, end),
@@ -3724,6 +4329,7 @@ function handleWorldMapMessage(event) {
 }
 
 function closeLightbox({ restoreFocus = true } = {}) {
+  const closingContext = state.lightboxContext;
   elements.lightbox.classList.add("hidden");
   elements.lightbox.classList.remove("reviewing");
   elements.lightbox.removeAttribute("aria-busy");
@@ -3741,10 +4347,17 @@ function closeLightbox({ restoreFocus = true } = {}) {
   state.lightboxAssetID = null;
   resetLightboxViewport(null);
   renderLightboxFavorite();
+  renderReviewCloudPreviewRecovery();
   elements.reviewWorkspace.inert = false;
   elements.slimmingWorkspace.inert = false;
   elements.worldMapWorkspace.inert = false;
-  if (elements.reviewWorkspace.classList.contains("hidden")
+  if (closingContext === "review" && reviewWorkspaceIsOpen()) {
+    syncReviewPresentation({ renderSurfaces: false });
+  } else if (closingContext === "worldMap" && worldMapIsOpen()) {
+    syncWorldMapPresentation({ renderSurfaces: false });
+  } else if (closingContext === "slimming" && slimmingWorkspaceIsOpen()) {
+    syncSlimmingPresentation({ renderSurfaces: false });
+  } else if (elements.reviewWorkspace.classList.contains("hidden")
     && elements.slimmingWorkspace.classList.contains("hidden")
     && elements.worldMapWorkspace.classList.contains("hidden")) {
     elements.appView.inert = false;
@@ -3786,13 +4399,18 @@ function trapOverlayFocus(event, container) {
 }
 
 function trapLibraryLightboxFocus(event) {
-  if (!elements.lightbox.classList.contains("library-docked")) {
+  const libraryDocked = elements.lightbox.classList.contains("library-docked");
+  const reviewDocked = elements.lightbox.classList.contains("review-docked");
+  if (!libraryDocked && !reviewDocked) {
     return trapOverlayFocus(event, elements.lightbox);
   }
   if (event.key !== "Tab") return false;
+  const adjacentInspector = reviewDocked
+    ? elements.reviewWorkspace.querySelector(".review-detail-pane")
+    : elements.inspector;
   const focusable = [
     ...focusableOverlayElements(elements.lightbox),
-    ...focusableOverlayElements(elements.inspector),
+    ...focusableOverlayElements(adjacentInspector),
   ];
   if (!focusable.length) return false;
   const first = focusable[0];
@@ -3816,7 +4434,7 @@ function trapLibraryLightboxFocus(event) {
 }
 
 function clearLibraryLightboxIsolation() {
-  elements.lightbox.classList.remove("library-docked");
+  elements.lightbox.classList.remove("library-docked", "review-docked");
   elements.lightbox.style.removeProperty("--lightbox-top");
   elements.lightbox.style.removeProperty("--lightbox-right");
   elements.lightbox.style.removeProperty("--lightbox-bottom");
@@ -3824,41 +4442,57 @@ function clearLibraryLightboxIsolation() {
   elements.titlebar.inert = false;
   elements.sourceSidebar.inert = false;
   elements.libraryPane.inert = false;
+  elements.reviewQueuePane.inert = false;
   const statusStack = elements.appView.querySelector(".status-banner-stack");
   if (statusStack) statusStack.inert = false;
 }
 
 function syncLightboxWorkspaceFrame() {
   clearLibraryLightboxIsolation();
-  if (state.lightboxContext !== "library") return;
+  const libraryPreview = state.lightboxContext === "library";
+  const reviewPreview = state.lightboxContext === "review"
+    && reviewWorkspaceIsOpen()
+    && state.review.mode === "queue";
+  if (!libraryPreview && !reviewPreview) return;
 
-  const libraryBounds = elements.libraryPane.getBoundingClientRect();
-  const docked = globalThis.innerWidth > 720
-    && libraryBounds.width > 0
-    && libraryBounds.height > 0;
+  const previewSurface = reviewPreview ? elements.reviewQueuePane : elements.libraryPane;
+  const previewBounds = previewSurface.getBoundingClientRect();
+  const docked = (reviewPreview
+    ? reviewWorkspaceUsesIntegratedLayout()
+    : globalThis.innerWidth > 720)
+    && previewBounds.width > 0
+    && previewBounds.height > 0;
   elements.lightbox.setAttribute("aria-modal", String(!docked));
   if (!docked) {
     elements.appView.inert = true;
+    if (reviewPreview) elements.reviewWorkspace.inert = true;
     return;
   }
 
   elements.appView.inert = false;
   elements.titlebar.inert = true;
   elements.sourceSidebar.inert = true;
-  elements.libraryPane.inert = true;
   const statusStack = elements.appView.querySelector(".status-banner-stack");
   if (statusStack) statusStack.inert = true;
-  elements.lightbox.classList.add("library-docked");
-  elements.lightbox.style.setProperty("--lightbox-top", `${libraryBounds.top}px`);
+  if (reviewPreview) {
+    elements.libraryPane.inert = true;
+    elements.reviewWorkspace.inert = false;
+    elements.reviewQueuePane.inert = true;
+    elements.lightbox.classList.add("review-docked");
+  } else {
+    elements.libraryPane.inert = true;
+    elements.lightbox.classList.add("library-docked");
+  }
+  elements.lightbox.style.setProperty("--lightbox-top", `${previewBounds.top}px`);
   elements.lightbox.style.setProperty(
     "--lightbox-right",
-    `${Math.max(0, globalThis.innerWidth - libraryBounds.right)}px`
+    `${Math.max(0, globalThis.innerWidth - previewBounds.right)}px`
   );
   elements.lightbox.style.setProperty(
     "--lightbox-bottom",
-    `${Math.max(0, globalThis.innerHeight - libraryBounds.bottom)}px`
+    `${Math.max(0, globalThis.innerHeight - previewBounds.bottom)}px`
   );
-  elements.lightbox.style.setProperty("--lightbox-left", `${libraryBounds.left}px`);
+  elements.lightbox.style.setProperty("--lightbox-left", `${previewBounds.left}px`);
 }
 
 function selectAuthMethod(method) {
@@ -3895,11 +4529,23 @@ function showApp() {
 }
 
 function setConnection(online, label) {
+  const previousOnline = state.online;
+  const previousLabel = elements.connectionLabel.textContent.trim();
+  const connectionChanged = previousOnline !== online;
+  const nextLabel = label || (
+    online && previousOnline && previousLabel
+      ? previousLabel
+      : (online ? "已连接" : "Mac 离线")
+  );
   state.online = online;
   const status = online ? "online" : "offline";
   elements.connectionStatus.dataset.state = status;
-  elements.connectionLabel.textContent = label || (online ? "已连接" : "Mac 离线");
+  elements.connectionLabel.textContent = nextLabel;
   elements.offlineBanner.classList.toggle("hidden", online);
+  if (!connectionChanged) {
+    if (nextLabel !== previousLabel) syncCompactToolbarMenu();
+    return;
+  }
   syncWriteActionControls();
   renderPersonalModelControls();
   renderEmbeddingPreparation();
@@ -4004,15 +4650,33 @@ function syncWriteActionControls() {
     const trainingActivityUnavailable = Boolean(button.dataset.trainingActivityId)
       && state.training.activityMutatingIDs.has(button.dataset.trainingActivityId);
     const favoriteUnavailable = button.matches(
-      "#favoriteSelectedButton, #unfavoriteSelectedButton, "
+      "#toolbarFavoriteSelectedButton, #toolbarUnfavoriteSelectedButton, "
+        + "#favoriteSelectedButton, #unfavoriteSelectedButton, "
         + "#selectionInspectorFavoriteButton, #selectionInspectorUnfavoriteButton, "
-        + "#inspectorFavoriteButton, #retryFavoriteSyncButton, #lightboxFavoriteButton, "
+        + "#inspectorFavoriteButton, #inspectorUnfavoriteButton, "
+        + "#reviewInspectorFavoriteButton, #reviewInspectorUnfavoriteButton, "
+        + "#retryFavoriteSyncButton, #lightboxFavoriteButton, "
         + ".asset-card-favorite, .review-card-favorite, .world-map-photo-favorite, "
         + ".slimming-member-favorite, .slimming-recycle-favorite"
     )
       && (!supportsFavorites() || state.favoriteMutating || state.favoriteRetrying);
     const slimmingLaunchUnavailable = button === elements.launchSlimmingButton
       && !canLaunchSlimmingSetup();
+    const slimmingQuickLaunchUnavailable = (
+      button === elements.slimmingCatalogAnalyzeButton
+        && (Boolean(state.slimming.quickLaunchMode)
+          || state.slimming.catalogSources.loading
+          || selectedSlimmingCatalogSources().length === 0)
+    ) || (
+      button === elements.slimmingCurrentFilterAnalysisButton
+        && (Boolean(state.slimming.quickLaunchMode)
+          || state.mediaKind !== state.slimming.mediaKind)
+    ) || (
+      button === elements.slimmingSeedAnalysisButton
+        && (Boolean(state.slimming.quickLaunchMode)
+          || state.mediaKind !== state.slimming.mediaKind
+          || currentSlimmingSeedIDs().length === 0)
+    );
     const slimmingSaveUnavailable = button === elements.saveSlimmingThresholdsButton
       && !canSaveSlimmingThresholds();
     const slimmingThresholdEditorUnavailable = (
@@ -4027,7 +4691,8 @@ function syncWriteActionControls() {
           || state.slimming.thresholdEditor.saving)
     );
     const slimmingJobUnavailable = Boolean(button.dataset.slimmingJobActionId)
-      && state.slimming.jobMutatingIDs.has(button.dataset.slimmingJobActionId);
+      && (state.slimming.jobMutatingIDs.has(button.dataset.slimmingJobActionId)
+        || Boolean(state.slimming.appending));
     const slimmingRecycleUnavailable = Boolean(button.dataset.slimmingRecycleEntryId)
       && state.slimming.recycle.mutatingEntryIDs.has(button.dataset.slimmingRecycleEntryId);
     const slimmingRecycleRecoveryUnavailable = button.dataset.slimmingRecycleRecoveryKind === "source"
@@ -4049,6 +4714,7 @@ function syncWriteActionControls() {
       || trainingActivityUnavailable
       || favoriteUnavailable
       || slimmingLaunchUnavailable
+      || slimmingQuickLaunchUnavailable
       || slimmingSaveUnavailable
       || slimmingThresholdEditorUnavailable
       || slimmingJobUnavailable
@@ -4056,6 +4722,10 @@ function syncWriteActionControls() {
       || slimmingRecycleRecoveryUnavailable
       || assetLocalSuggestionUnavailable;
   });
+  elements.toolbarExportPortableDataButton.disabled = !state.online
+    || state.storageMaintenance.loading
+    || state.storageMaintenance.submitting
+    || storageMaintenanceHasActiveRequest();
   if (elements.sourceManagerDialog.open) renderSourceManagement();
   if (elements.storageDialog.open) renderStorageMaintenance();
   renderFavoriteControls();
@@ -4075,6 +4745,17 @@ function clampSplitWidth(value, range) {
   return Math.round(Math.min(range.max, Math.max(range.min, numeric)));
 }
 
+function migrateLegacyGridDensity(value) {
+  const legacyWidth = LEGACY_DENSITY_WIDTHS[value];
+  if (!Number.isFinite(legacyWidth)) return 3;
+  return GRID_DENSITY_OPTIONS.reduce((nearest, option) => (
+    Math.abs(option.width - legacyWidth)
+      < Math.abs(GRID_DENSITY_OPTIONS[nearest].width - legacyWidth)
+      ? option.value
+      : nearest
+  ), 0);
+}
+
 function persistWorkspacePreferences() {
   localStorage.setItem("imageall.web.workspace-preferences", JSON.stringify({
     sidebarVisible: state.layout.sidebarVisible,
@@ -4085,6 +4766,7 @@ function persistWorkspacePreferences() {
     reviewInspectorWidth: state.layout.reviewInspectorWidth,
     trainingNavigatorVisible: state.layout.trainingNavigatorVisible,
     density: state.layout.density,
+    densityScaleVersion: GRID_DENSITY_SCALE_VERSION,
     aspectMode: state.layout.aspectMode,
     collapsedTagGroupIDs: [...state.layout.collapsedTagGroupIDs],
     // Keep legacy keys synchronized so an older Web Companion build does not
@@ -4130,7 +4812,9 @@ function loadWorkspacePreferences() {
       state.layout.trainingNavigatorVisible = saved.trainingNavigatorVisible;
     }
     if (Number.isInteger(saved.density) && saved.density >= 0 && saved.density <= 8) {
-      state.layout.density = saved.density;
+      state.layout.density = saved.densityScaleVersion === GRID_DENSITY_SCALE_VERSION
+        ? saved.density
+        : migrateLegacyGridDensity(saved.density);
     }
     if (["square", "original"].includes(saved.aspectMode)) {
       state.layout.aspectMode = saved.aspectMode;
@@ -4171,6 +4855,75 @@ function loadWorkspacePreferences() {
   } catch {
     // Invalid UI preferences are ignored; credentials are never stored here.
   }
+}
+
+function gridDensityControls() {
+  return [
+    {
+      button: elements.gridDensityButton,
+      label: elements.gridDensityButtonLabel,
+      popover: elements.gridDensityPopover,
+      surface: "图库",
+    },
+    {
+      button: elements.reviewGridDensityButton,
+      label: elements.reviewGridDensityButtonLabel,
+      popover: elements.reviewGridDensityPopover,
+      surface: "待审核",
+    },
+    {
+      button: elements.slimmingGridDensityButton,
+      label: elements.slimmingGridDensityButtonLabel,
+      popover: elements.slimmingGridDensityPopover,
+      surface: "图库瘦身",
+    },
+  ];
+}
+
+function gridDensityOption(value = state.layout.density) {
+  return GRID_DENSITY_OPTIONS.find((option) => option.value === Number(value))
+    || GRID_DENSITY_OPTIONS[3];
+}
+
+function ensureGridDensityMenuItems(control) {
+  if (control.popover.childElementCount === GRID_DENSITY_OPTIONS.length) return;
+  clearElement(control.popover);
+  for (const option of GRID_DENSITY_OPTIONS) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.setAttribute("role", "menuitemradio");
+    button.dataset.gridDensity = String(option.value);
+    button.textContent = option.title;
+    control.popover.append(button);
+  }
+}
+
+function renderGridDensityControls() {
+  const selected = gridDensityOption();
+  for (const control of gridDensityControls()) {
+    ensureGridDensityMenuItems(control);
+    control.label.textContent = selected.title;
+    control.button.setAttribute("aria-label", `缩略图大小：${selected.title}`);
+    control.button.title = `缩略图大小：${selected.title}`;
+    configurePersistentHelp(control.button, {
+      title: `缩略图大小：${selected.title}`,
+      detail: `调整${control.surface}网格。九档大小与 Mac 一致，当前为“${selected.title}”。`,
+    });
+    for (const button of control.popover.querySelectorAll("[data-grid-density]")) {
+      const option = gridDensityOption(button.dataset.gridDensity);
+      const isSelected = option.value === selected.value;
+      button.setAttribute("aria-checked", String(isSelected));
+      configurePersistentHelp(button, {
+        title: option.title,
+        detail: `把图库、待审核和图库瘦身的共享缩略图大小切换为“${option.title}”。`,
+      });
+    }
+  }
+  document.documentElement.style.setProperty("--asset-min-width", `${selected.width}px`);
+  document.documentElement.style.setProperty(
+    "--slimming-member-min-width",
+    `${selected.width}px`
+  );
 }
 
 function renderLayoutPreferences() {
@@ -4220,6 +4973,9 @@ function renderLayoutPreferences() {
   );
   elements.workspace.classList.toggle("sidebar-hidden", !state.layout.sidebarVisible);
   elements.workspace.classList.toggle("inspector-hidden", !state.layout.inspectorVisible);
+  if (reviewWorkspaceIsOpen() && reviewWorkspaceUsesIntegratedLayout()) {
+    syncIntegratedReviewFrame();
+  }
   elements.sidebarVisibilityButton.setAttribute(
     "aria-pressed",
     String(state.layout.sidebarVisible)
@@ -4228,6 +4984,9 @@ function renderLayoutPreferences() {
     "aria-label",
     state.layout.sidebarVisible ? "隐藏侧栏" : "显示侧栏"
   );
+  elements.sidebarVisibilityLabel.textContent = state.layout.sidebarVisible
+    ? "隐藏侧栏"
+    : "显示侧栏";
   elements.sidebarVisibilityButton.title = state.layout.sidebarVisible ? "隐藏侧栏" : "显示侧栏";
   elements.inspectorVisibilityButton.setAttribute(
     "aria-pressed",
@@ -4237,46 +4996,55 @@ function renderLayoutPreferences() {
     "aria-label",
     state.layout.inspectorVisible ? "隐藏检查器" : "显示检查器"
   );
+  elements.inspectorVisibilityLabel.textContent = state.layout.inspectorVisible
+    ? "隐藏检查器"
+    : "显示检查器";
   elements.inspectorVisibilityButton.title = state.layout.inspectorVisible
     ? "隐藏检查器"
     : "显示检查器";
-  elements.gridDensitySlider.value = String(state.layout.density);
-  document.documentElement.style.setProperty(
-    "--asset-min-width",
-    `${densityWidths[state.layout.density]}px`
-  );
-  elements.slimmingGridDensitySlider.value = String(state.layout.density);
-  elements.reviewGridDensitySlider.value = String(state.layout.density);
-  document.documentElement.style.setProperty(
-    "--slimming-member-min-width",
-    `${densityWidths[state.layout.density]}px`
-  );
+  renderGridDensityControls();
   const originalAspect = state.layout.aspectMode === "original";
   elements.assetGrid.classList.toggle("original-aspect", originalAspect);
   elements.reviewGrid.classList.toggle("original-aspect", originalAspect);
   elements.slimmingMemberGrid.classList.toggle("original-aspect", originalAspect);
   elements.slimmingRecycleList.classList.toggle("original-aspect", originalAspect);
-  elements.thumbnailAspectButton.setAttribute("aria-pressed", String(originalAspect));
-  elements.thumbnailAspectButton.textContent = originalAspect ? "填充" : "适应";
-  elements.thumbnailAspectButton.title = originalAspect
-    ? "裁切为方形缩略图"
-    : "完整显示照片宽高比";
-  elements.slimmingThumbnailAspectButton.setAttribute(
-    "aria-pressed",
-    String(originalAspect)
-  );
-  elements.slimmingThumbnailAspectButton.textContent = originalAspect ? "填充" : "适应";
-  elements.slimmingThumbnailAspectButton.title = originalAspect
-    ? "裁切为填充缩略图"
-    : "完整显示媒体宽高比";
-  elements.reviewThumbnailAspectButton.setAttribute(
-    "aria-pressed",
-    String(originalAspect)
-  );
-  elements.reviewThumbnailAspectButton.textContent = originalAspect ? "填充" : "适应";
-  elements.reviewThumbnailAspectButton.title = originalAspect
-    ? "裁切为方形缩略图"
-    : "完整显示待审核媒体宽高比";
+  renderThumbnailAspectControls();
+}
+
+function thumbnailAspectPresentation(aspectMode = state.layout.aspectMode) {
+  return aspectMode === "original"
+    ? {
+      mode: "original",
+      title: "原比例",
+      help: "当前优先显示已手动缓存的原比例缩略图，未缓存项目仍为正方形。点击切回全部正方形。",
+    }
+    : {
+      mode: "square",
+      title: "正方形",
+      help: "当前缩略图为正方形。点击后，仅手动生成过原比例缓存的照片和视频会完整显示；其余项目保持正方形。",
+    };
+}
+
+function renderThumbnailAspectControls() {
+  const presentation = thumbnailAspectPresentation();
+  const controls = [
+    [elements.thumbnailAspectButton, "control"],
+    [elements.reviewThumbnailAspectButton, "review"],
+    [elements.slimmingThumbnailAspectButton, "slimming"],
+  ];
+  for (const [control, kind] of controls) {
+    control.dataset.aspectMode = presentation.mode;
+    control.removeAttribute("aria-pressed");
+    control.setAttribute("aria-label", `缩略图比例：${presentation.title}`);
+    control.title = `缩略图比例：${presentation.title}`;
+    const label = control.querySelector(".thumbnail-aspect-label");
+    if (label) label.textContent = presentation.title;
+    configurePersistentHelp(control, {
+      title: `缩略图比例：${presentation.title}`,
+      detail: presentation.help,
+      kind,
+    });
+  }
 }
 
 function setSidebarVisible(visible) {
@@ -4430,7 +5198,12 @@ function renderMediaKindLabels() {
   elements.tagPresenceAnyOption.textContent = `全部${noun}`;
   renderLibraryEmptyState();
   elements.inspector.setAttribute("aria-label", `${noun}检查器`);
-  elements.inspectorPlaceholderText.textContent = `选择一个${noun}以查看详细信息和标签`;
+  elements.inspectorSelectionTitle.textContent = state.mediaKind === "video"
+    ? "已选择 1 个视频"
+    : "已选择 1 张照片";
+  elements.inspectorPlaceholderText.textContent = state.mediaKind === "video"
+    ? "选择一个或多个视频后，可左键打上标签、右键取消标签。"
+    : "选择一张或多张照片后，可左键打上标签、右键取消标签。";
   elements.inspectorNavigation.setAttribute("aria-label", `${noun}导航`);
   elements.inspectorPreviousButton.setAttribute("aria-label", `上一个${noun}`);
   elements.inspectorNextButton.setAttribute("aria-label", `下一个${noun}`);
@@ -4588,13 +5361,22 @@ function renderMediaKindTabs() {
 
 function syncSelectionModeControls() {
   elements.selectionModeButton.setAttribute("aria-pressed", String(state.selectionMode));
-  elements.selectionModeButton.textContent = state.selectionMode ? "完成" : "选择";
+  const selectionModeTitle = state.selectionMode ? "完成选择" : "选择";
+  elements.selectionModeButton.setAttribute("aria-label", selectionModeTitle);
+  elements.selectionModeButton.title = selectionModeTitle;
+  const selectionModeLabel = elements.selectionModeButton.querySelector(
+    ".library-toolbar-label"
+  );
+  if (selectionModeLabel) {
+    selectionModeLabel.textContent = state.selectionMode ? "完成" : "选择";
+  }
   elements.batchBar.classList.toggle("hidden", !state.selectionMode);
 }
 
 async function switchMediaKind(mediaKind) {
   if (!["image", "video"].includes(mediaKind) || mediaKind === state.mediaKind) return;
   stopAssetHoverVideo();
+  closeSortPopover({ restoreFocus: false });
   clearTimeout(state.searchTimer);
   state.searchTimer = null;
   cancelPendingFilterApply();
@@ -4640,7 +5422,7 @@ async function switchMediaKind(mediaKind) {
 
   elements.searchInput.value = state.searchText;
   elements.clearSearchButton.classList.toggle("hidden", !state.searchText);
-  elements.sortSelect.value = state.sort;
+  renderSortControls();
   renderMediaKindTabs();
   renderSources();
   renderTagNavigation();
@@ -4673,6 +5455,7 @@ async function switchMediaKind(mediaKind) {
   await loadEmbeddingPreparation({ quiet: true });
   await loadSampleSuggestions({ quiet: true });
   await loadTagLibrarySuggestions({ quiet: true });
+  await loadTrainingActivities({ quiet: true });
 }
 
 function formatDate(milliseconds) {
@@ -4927,18 +5710,27 @@ function toggleInspectorTagGroup(groupID) {
   toggleSharedTagGroupCollapsed(groupID);
   persistWorkspacePreferences();
   renderTagNavigation();
+  renderPlaceholderTagEditor();
   if (state.selectionMode && state.selectedAssetIDs.size) renderSelectionInspector();
   else if (state.selectedDetail) renderInspector(state.selectedDetail);
+  if (state.review.mode === "queue" && reviewWorkspaceIsOpen()) renderReviewDetail();
 }
 
 function rememberInspectorTagFocus(surface, kind, id, action = null) {
   state.pendingInspectorTagFocus = { surface, kind, id, action };
 }
 
-function setupInspectorTagInteractions(container, surface, batch) {
+function setupInspectorTagInteractions(
+  container,
+  surface,
+  batch,
+  { labelingEnabled = true, applyDecisionOverride = null } = {}
+) {
   const applyDecision = (action, tagID, kind = "chip") => {
+    if (!labelingEnabled) return;
     rememberInspectorTagFocus(surface, kind, tagID, action);
-    if (batch) applyBatchTagDecision(action, tagID);
+    if (applyDecisionOverride) applyDecisionOverride(action, tagID);
+    else if (batch) applyBatchTagDecision(action, tagID);
     else mutateTag(tagID, action);
   };
 
@@ -4957,7 +5749,10 @@ function setupInspectorTagInteractions(container, surface, batch) {
       return;
     }
     const chip = event.target.closest("[data-tag-chip-action][data-tag-id]");
-    if (chip) applyDecision("accept", chip.dataset.tagId);
+    if (chip) {
+      if (!labelingEnabled) chip.focus({ preventScroll: true });
+      else applyDecision("accept", chip.dataset.tagId);
+    }
   });
 
   container.addEventListener("contextmenu", (event) => {
@@ -4972,6 +5767,11 @@ function setupInspectorTagInteractions(container, surface, batch) {
     }
     const chip = event.target.closest("[data-tag-chip-action][data-tag-id]");
     if (!chip || chip.disabled) return;
+    if (!labelingEnabled) {
+      event.preventDefault();
+      chip.focus({ preventScroll: true });
+      return;
+    }
     event.preventDefault();
     applyDecision("clear", chip.dataset.tagId);
   });
@@ -5026,6 +5826,8 @@ function setupInspectorTagInteractions(container, surface, batch) {
           surface
         );
       }
+    } else if (!labelingEnabled) {
+      return;
     } else if (event.key === "Delete" || event.key === "Backspace") {
       event.preventDefault();
       applyDecision("clear", chip.dataset.tagId);
@@ -5070,6 +5872,7 @@ function setupInspectorTagInteractions(container, surface, batch) {
     if (!tagID || !section) return;
     event.preventDefault();
     const target = event.target.closest(`[data-tag-reorder-surface="${surface}"]`);
+    const dropTargetTagID = target?.dataset.tagId || null;
     let beforeTagID = null;
     if (target && target.dataset.tagId !== tagID) {
       if (target.classList.contains("drop-after")) {
@@ -5088,12 +5891,24 @@ function setupInspectorTagInteractions(container, surface, batch) {
     state.sidebarDrag.tagID = null;
     state.sidebarDrag.tagSurface = null;
     delete container.dataset.activeTagDrag;
-    moveSidebarTag(
-      tagID,
-      section.dataset.inspectorTagDropGroupId,
-      beforeTagID,
-      surface
-    );
+    const targetGroupID = section.dataset.inspectorTagDropGroupId;
+    // Let the native drop/dragend sequence finish while the dragged element is
+    // still attached. Repainting synchronously here makes Chromium focus the
+    // drop target after the logical dragged chip has already been detached.
+    setTimeout(() => {
+      void moveSidebarTag(tagID, targetGroupID, beforeTagID, surface);
+    }, 0);
+    setTimeout(() => {
+      const active = document.activeElement;
+      const browserFocusedDropTarget = dropTargetTagID
+        && active?.dataset?.tagReorderSurface === surface
+        && active?.dataset?.tagId === dropTargetTagID;
+      if (active === document.body
+        || active === document.documentElement
+        || browserFocusedDropTarget) {
+        focusTagOrderingSurface(tagID, surface);
+      }
+    }, 250);
     state.sidebarDrag.suppressClickUntil = performance.now() + 250;
     clearSidebarDropIndicators();
   });
@@ -5148,6 +5963,7 @@ function renderTagSelects() {
     || state.review.loading
     || state.review.mutating;
   renderTagNavigation();
+  renderPlaceholderTagEditor();
   renderActiveFilterBar();
   renderTagManager();
   renderCommandItems();
@@ -5167,6 +5983,7 @@ function toggleSidebarTagGroup(groupID) {
   toggleSharedTagGroupCollapsed(groupID);
   persistWorkspacePreferences();
   renderTagNavigation();
+  renderPlaceholderTagEditor();
   if (state.selectionMode && state.selectedAssetIDs.size) renderSelectionInspector();
   else if (state.selectedDetail) renderInspector(state.selectedDetail);
   requestAnimationFrame(() => {
@@ -5369,6 +6186,11 @@ function renderTagNavigation() {
 }
 
 async function applyQuickTagFilter(tagID) {
+  leaveIntegratedReviewForLibrary();
+  leaveIntegratedGalleryOverviewForLibrary();
+  leaveIntegratedWorldMapForLibrary();
+  leaveIntegratedTrainingForLibrary();
+  leaveIntegratedSlimmingForLibrary();
   const alreadySelected = quickIncludedTagID() === tagID
     && state.filters.tagPresence === "any";
   state.filters.tagConditions = alreadySelected
@@ -5386,6 +6208,11 @@ async function applyQuickTagFilter(tagID) {
 }
 
 async function filterToSingleSidebarTag(tagID) {
+  leaveIntegratedReviewForLibrary();
+  leaveIntegratedGalleryOverviewForLibrary();
+  leaveIntegratedWorldMapForLibrary();
+  leaveIntegratedTrainingForLibrary();
+  leaveIntegratedSlimmingForLibrary();
   state.filters.tagConditions = [{ tagID, decision: "accepted" }];
   state.filters.tagPresence = "any";
   state.libraryScope = "all";
@@ -5400,6 +6227,11 @@ async function filterToSingleSidebarTag(tagID) {
 }
 
 async function toggleSidebarTagFilter(tagID, { matchMode = "any", excluded = false } = {}) {
+  leaveIntegratedReviewForLibrary();
+  leaveIntegratedGalleryOverviewForLibrary();
+  leaveIntegratedWorldMapForLibrary();
+  leaveIntegratedTrainingForLibrary();
+  leaveIntegratedSlimmingForLibrary();
   const current = state.filters.tagConditions.find((item) => item.tagID === tagID);
   const togglesOff = excluded
     ? current?.decision === "excluded"
@@ -5426,6 +6258,11 @@ async function toggleSidebarTagFilter(tagID, { matchMode = "any", excluded = fal
 }
 
 async function applyUntaggedFilter() {
+  leaveIntegratedReviewForLibrary();
+  leaveIntegratedGalleryOverviewForLibrary();
+  leaveIntegratedWorldMapForLibrary();
+  leaveIntegratedTrainingForLibrary();
+  leaveIntegratedSlimmingForLibrary();
   const clearing = state.libraryScope === "all"
     && state.filters.tagPresence === "untagged";
   state.libraryScope = "all";
@@ -5444,6 +6281,11 @@ async function applyFavoritesFilter() {
     toast("请先更新并重启 Mac Host 后再使用红心收藏");
     return;
   }
+  leaveIntegratedReviewForLibrary();
+  leaveIntegratedGalleryOverviewForLibrary();
+  leaveIntegratedWorldMapForLibrary();
+  leaveIntegratedTrainingForLibrary();
+  leaveIntegratedSlimmingForLibrary();
   if (state.selectionMode) setSelectionMode(false);
   state.libraryScope = "favorites";
   state.worldMapGalleryScope = null;
@@ -5537,6 +6379,8 @@ function tagReturnFocusDescriptor(element, { tagID = null, groupID = null } = {}
   let surface = null;
   if (element?.closest?.("#selectionInspectorTags")) surface = "selection";
   else if (element?.closest?.("#inspectorTags")) surface = "single";
+  else if (element?.closest?.("#reviewTags")) surface = "review";
+  else if (element?.closest?.("#inspectorPlaceholderTags")) surface = "placeholder";
   else if (element?.closest?.("#tagNavigation")) surface = "sidebar";
   return { element, tagID, groupID, surface };
 }
@@ -5548,7 +6392,11 @@ function resolveTagReturnFocusTarget(pending) {
     ? elements.selectionInspectorTags
     : pending.surface === "single"
       ? elements.inspectorTags
-      : elements.tagNavigation;
+      : pending.surface === "review"
+        ? elements.reviewTags
+        : pending.surface === "placeholder"
+          ? elements.inspectorPlaceholderTags
+          : elements.tagNavigation;
   if (pending.tagID) {
     const selector = pending.surface === "sidebar"
       ? `[data-quick-tag-id="${CSS.escape(pending.tagID)}"]`
@@ -5699,6 +6547,20 @@ function restoreConfirmationReturnFocus(pending) {
         state.storageMaintenance.pendingReturnAction = pending.storageAction;
         (elements.storageCloseButton || elements.storageButton)?.focus({ preventScroll: true });
       }
+    });
+    return;
+  }
+  if (pending.slimmingJobID && pending.slimmingJobActionSurface === "options") {
+    requestAnimationFrame(() => {
+      const action = elements.slimmingCurrentJobActions.querySelector(
+        `[data-slimming-job-action-id="${CSS.escape(pending.slimmingJobID)}"]`
+        + `[data-action="${CSS.escape(pending.slimmingJobAction || "")}"]`
+      );
+      const fallback = elements.slimmingCurrentJobActions.querySelector(
+        "[data-slimming-job-action-id]:not(:disabled)"
+      );
+      (action || fallback || elements.closeSlimmingAnalysisOptionsButton)
+        ?.focus({ preventScroll: true });
     });
     return;
   }
@@ -6032,6 +6894,17 @@ function sourceSidebarHelpDetail(source) {
 function renderSources() {
   clearElement(elements.sourceList);
   elements.sourceEmpty.classList.toggle("hidden", state.sources.length > 0);
+  const galleryOverviewSelected = galleryOverviewIsOpen()
+    && galleryOverviewUsesIntegratedLayout();
+  const worldMapSelected = worldMapIsOpen() && worldMapUsesIntegratedLayout();
+  const reviewSelected = reviewWorkspaceIsOpen() && reviewWorkspaceUsesIntegratedLayout();
+  const trainingSelected = trainingWorkspaceIsOpen() && trainingWorkspaceUsesIntegratedLayout();
+  const slimmingSelected = slimmingWorkspaceIsOpen() && slimmingWorkspaceUsesIntegratedLayout();
+  const integratedWorkspaceSelected = galleryOverviewSelected
+    || worldMapSelected
+    || reviewSelected
+    || trainingSelected
+    || slimmingSelected;
 
   for (const source of orderedSources()) {
     const button = document.createElement("button");
@@ -6050,9 +6923,13 @@ function renderSources() {
     button.dataset.helpDetail = sourceSidebarHelpDetail(source);
     button.classList.toggle(
       "selected",
-      state.libraryScope === "all" && state.selectedSourceID === source.id
+      !integratedWorkspaceSelected
+        && state.libraryScope === "all"
+        && state.selectedSourceID === source.id
     );
-    if (state.libraryScope === "all" && state.selectedSourceID === source.id) {
+    if (!integratedWorkspaceSelected
+      && state.libraryScope === "all"
+      && state.selectedSourceID === source.id) {
       button.setAttribute("aria-current", "page");
     }
     button.classList.toggle("unavailable", source.state !== "active");
@@ -6071,19 +6948,54 @@ function renderSources() {
   }
 
   const allMediaButton = document.querySelector('[data-source-id=""]');
-  const allMediaSelected = state.libraryScope === "all" && state.selectedSourceID === "";
+  const allMediaSelected = !integratedWorkspaceSelected
+    && state.libraryScope === "all"
+    && state.selectedSourceID === "";
   allMediaButton?.classList.toggle("selected", allMediaSelected);
   if (allMediaSelected) allMediaButton?.setAttribute("aria-current", "page");
   else allMediaButton?.removeAttribute("aria-current");
   elements.favoritesNavigationButton.classList.toggle("hidden", !supportsFavorites());
   elements.favoritesNavigationButton.classList.toggle(
     "selected",
-    state.libraryScope === "favorites"
+    !integratedWorkspaceSelected && state.libraryScope === "favorites"
   );
-  if (state.libraryScope === "favorites") {
+  if (!integratedWorkspaceSelected && state.libraryScope === "favorites") {
     elements.favoritesNavigationButton.setAttribute("aria-current", "page");
   } else {
     elements.favoritesNavigationButton.removeAttribute("aria-current");
+  }
+  elements.galleryOverviewNavigationButton.classList.toggle(
+    "selected",
+    galleryOverviewSelected
+  );
+  if (galleryOverviewSelected) {
+    elements.galleryOverviewNavigationButton.setAttribute("aria-current", "page");
+  } else {
+    elements.galleryOverviewNavigationButton.removeAttribute("aria-current");
+  }
+  elements.worldMapNavigationButton.classList.toggle("selected", worldMapSelected);
+  if (worldMapSelected) {
+    elements.worldMapNavigationButton.setAttribute("aria-current", "page");
+  } else {
+    elements.worldMapNavigationButton.removeAttribute("aria-current");
+  }
+  elements.reviewNavigationButton.classList.toggle("selected", reviewSelected);
+  if (reviewSelected) {
+    elements.reviewNavigationButton.setAttribute("aria-current", "page");
+  } else {
+    elements.reviewNavigationButton.removeAttribute("aria-current");
+  }
+  elements.trainingNavigationButton.classList.toggle("selected", trainingSelected);
+  if (trainingSelected) {
+    elements.trainingNavigationButton.setAttribute("aria-current", "page");
+  } else {
+    elements.trainingNavigationButton.removeAttribute("aria-current");
+  }
+  elements.slimmingNavigationButton.classList.toggle("selected", slimmingSelected);
+  if (slimmingSelected) {
+    elements.slimmingNavigationButton.setAttribute("aria-current", "page");
+  } else {
+    elements.slimmingNavigationButton.removeAttribute("aria-current");
   }
   renderSidebarSourceActions();
   syncCurrentSourceRefreshControl();
@@ -6159,7 +7071,11 @@ function focusTagOrderingSurface(tagID, surface = "sidebar") {
   const restore = () => {
     const container = surface === "selection"
       ? elements.selectionInspectorTags
-      : elements.inspectorTags;
+      : surface === "placeholder"
+        ? elements.inspectorPlaceholderTags
+        : surface === "review"
+          ? elements.reviewTags
+          : elements.inspectorTags;
     const target = container.querySelector(
       `[data-tag-reorder-surface="${CSS.escape(surface)}"]`
         + `[data-tag-id="${CSS.escape(tagID)}"]`
@@ -6186,6 +7102,7 @@ function renderTagOrderingSurfaces(focusTagID = null, focusSurface = "sidebar") 
   } else if (state.selectedDetail) {
     renderInspector(state.selectedDetail);
   }
+  if (state.review.mode === "queue" && reviewWorkspaceIsOpen()) renderReviewDetail();
   if (focusTagID) focusTagOrderingSurface(focusTagID, focusSurface);
 }
 
@@ -6228,6 +7145,8 @@ function applyLocalTagOrder(groupID, ids) {
 function tagReorderSearchActive(surface) {
   if (surface === "single") return Boolean(state.inspectorTagSearchText.trim());
   if (surface === "selection") return Boolean(state.selectionTagSearchText.trim());
+  if (surface === "review") return Boolean(state.review.tagSearchText.trim());
+  if (surface === "placeholder") return false;
   return Boolean(elements.tagNavigationSearch.value.trim());
 }
 
@@ -6316,7 +7235,11 @@ function clearSidebarDropIndicators() {
   ).forEach((item) => {
     item.classList.remove("drop-before", "drop-after", "drag-over-group");
   });
-  [elements.inspectorTags, elements.selectionInspectorTags].forEach((container) => {
+  [
+    elements.inspectorTags,
+    elements.selectionInspectorTags,
+    elements.inspectorPlaceholderTags,
+  ].forEach((container) => {
     container.querySelectorAll(
       ".drop-before, .drop-after, .drag-over-group"
     ).forEach((item) => {
@@ -6513,6 +7436,10 @@ function supportsLibrarySuggestions() {
   return state.capabilities?.capabilities?.includes("librarySuggestions") === true;
 }
 
+function supportsTrainingActivities() {
+  return state.capabilities?.capabilities?.includes("trainingActivities") === true;
+}
+
 function supportsAssetLocalSuggestions() {
   return state.capabilities?.capabilities?.includes("assetLocalSuggestions") === true;
 }
@@ -6537,6 +7464,7 @@ function renderSidebarSourceActions() {
   const canConnectPhotos = snapshot?.canConnectPhotos ?? photosSources.length === 0;
 
   elements.sidebarConnectFolderButton.disabled = !state.online || busy;
+  elements.toolbarConnectFolderButton.disabled = !state.online || busy;
   elements.sidebarConnectPhotosButton.classList.toggle("hidden", photosSources.length > 0);
   elements.sidebarConnectPhotosButton.disabled = !state.online || busy || !canConnectPhotos;
   elements.sidebarPhotosConnectedStatus.classList.toggle("hidden", !activePhotosSource);
@@ -6568,6 +7496,10 @@ function applyToolbarDisplayMode(mode) {
     button.tabIndex = selected ? 0 : -1;
   }
   scheduleAdaptiveToolbarSync();
+  requestAnimationFrame(() => {
+    syncPersonalModelToolbarPresentation();
+    syncSelectionFavoriteToolbarPresentation();
+  });
 }
 
 const suggestionThresholdMethodLabels = {
@@ -7146,7 +8078,16 @@ function closeGeneralSettings({ restoreFocus = true } = {}) {
   const returnFocus = state.generalSettings.returnFocus;
   state.generalSettings.returnFocus = null;
   if (elements.generalSettingsDialog.open) elements.generalSettingsDialog.close();
-  if (restoreFocus) restoreOverlayFocus(returnFocus || elements.settingsButton);
+  if (restoreFocus) {
+    const toolbarFallback = stableReturnFocusTarget(
+      elements.compactToolbarMenuButton,
+      elements.commandButton
+    );
+    restoreOverlayFocus(stableReturnFocusTarget(
+      returnFocus || elements.settingsButton,
+      toolbarFallback
+    ));
+  }
 }
 
 function moveDialogButtonFocus(event, dialog) {
@@ -7939,6 +8880,13 @@ function storageMaintenanceHasActiveRequest() {
   return Boolean(storageMaintenanceActiveRequest());
 }
 
+function storageMaintenanceNeedsPoll() {
+  if (storageMaintenanceHasActiveRequest()) return true;
+  if (!elements.storageDialog.open) return false;
+  return storageActionAvailability("clearPhotosOriginals").reason
+    === "librarySlimmingAnalysisInProgress";
+}
+
 function storageActionLabel(action) {
   return {
     exportPortableData: "导出用户数据",
@@ -7957,6 +8905,33 @@ function storageActionButton(action) {
   }[action] || null;
 }
 
+function storageActionAvailability(action, snapshot = state.storageMaintenance.snapshot) {
+  if (!snapshot) return { isAvailable: false, reason: null };
+  const projected = action === "clearPreviewCache"
+    ? snapshot.clearPreviewCacheAvailability
+    : action === "clearPhotosOriginals"
+      ? snapshot.clearPhotosOriginalsAvailability
+      : null;
+  if (typeof projected?.isAvailable === "boolean") return projected;
+
+  // Older Hosts do not project action availability. Keep browsing compatible,
+  // while still matching Mac's empty-cache behavior from the redacted counts.
+  const usage = action === "clearPreviewCache"
+    ? snapshot.previewCache
+    : action === "clearPhotosOriginals" ? snapshot.photosOriginals : null;
+  if (usage && Number(usage.entryCount || 0) <= 0) {
+    return { isAvailable: false, reason: "empty" };
+  }
+  return { isAvailable: true, reason: null };
+}
+
+function storageActionUnavailableMessage(reason) {
+  return {
+    empty: "当前没有可清理的内容。",
+    librarySlimmingAnalysisInProgress: "相同检测运行期间不能清理；暂停或完成后可操作。",
+  }[reason] || "当前不能执行此操作。";
+}
+
 function storageRequestMark(phase) {
   return {
     awaitingMac: "◷",
@@ -7973,10 +8948,12 @@ function renderStorageMaintenance() {
   const activeRequest = storageMaintenanceActiveRequest();
   const busy = manager.loading || manager.submitting || Boolean(activeRequest);
   const hasSnapshot = Boolean(snapshot);
+  const previewClearAvailability = storageActionAvailability("clearPreviewCache", snapshot);
+  const originalsClearAvailability = storageActionAvailability("clearPhotosOriginals", snapshot);
 
   const storageStatus = activeRequest?.phase === "awaitingMac"
     ? "等待 Mac"
-    : activeRequest ? "存储处理中" : "存储";
+    : activeRequest ? "存储处理中" : "预览缓存";
   elements.storageStatusLabel.textContent = storageStatus;
   elements.storageButton.classList.toggle("busy", Boolean(activeRequest));
   elements.storageButton.setAttribute("aria-busy", String(Boolean(activeRequest)));
@@ -7989,6 +8966,11 @@ function renderStorageMaintenance() {
   elements.storageButton.title = activeRequest
     ? `${activeRequest.message}（可继续浏览，点击查看）`
     : "应用存储与预览缓存";
+  elements.toolbarExportPortableDataButton.disabled = !state.online || busy;
+  elements.toolbarExportPortableDataButton.setAttribute("aria-busy", String(Boolean(activeRequest)));
+  elements.toolbarExportPortableDataButton.title = activeRequest
+    ? `${activeRequest.message}（当前不能再次导出）`
+    : "导出用户数据";
   syncCompactToolbarMenu();
 
   elements.storageLoading.classList.toggle("hidden", hasSnapshot || !manager.loading);
@@ -8002,6 +8984,14 @@ function renderStorageMaintenance() {
   ]) {
     button.disabled = busy || !state.online || !hasSnapshot;
   }
+  elements.clearPreviewCacheButton.disabled ||= !previewClearAvailability.isAvailable;
+  elements.clearPhotosOriginalsButton.disabled ||= !originalsClearAvailability.isAvailable;
+  const originalsBlockedByAnalysis = originalsClearAvailability.reason
+    === "librarySlimmingAnalysisInProgress";
+  elements.photosOriginalsBlocked.classList.toggle("hidden", !originalsBlockedByAnalysis);
+  elements.clearPhotosOriginalsButton.title = originalsClearAvailability.isAvailable
+    ? "打开清理确认；删除 ImageAll 自有的 Photos 原图副本，不修改 Apple Photos。"
+    : storageActionUnavailableMessage(originalsClearAvailability.reason);
   if (manager.pendingReturnAction && !busy && elements.storageDialog.open) {
     const returnButton = storageActionButton(manager.pendingReturnAction);
     manager.pendingReturnAction = null;
@@ -8059,7 +9049,7 @@ function renderStorageMaintenance() {
 function scheduleStorageMaintenancePoll() {
   clearTimeout(state.storageMaintenance.pollTimer);
   state.storageMaintenance.pollTimer = null;
-  if (!storageMaintenanceHasActiveRequest()) return;
+  if (!storageMaintenanceNeedsPoll()) return;
   state.storageMaintenance.pollTimer = setTimeout(() => {
     loadStorageMaintenance({ quiet: true, notifyTerminal: true });
   }, 1_000);
@@ -8119,13 +9109,33 @@ function closeStorageMaintenance({ restoreFocus = true } = {}) {
   const returnFocus = state.storageReturnFocus;
   state.storageReturnFocus = null;
   if (elements.storageDialog.open) elements.storageDialog.close();
-  if (restoreFocus) restoreOverlayFocus(returnFocus || elements.storageButton);
+  if (restoreFocus) {
+    const toolbarFallback = stableReturnFocusTarget(
+      elements.compactToolbarMenuButton,
+      elements.commandButton
+    );
+    const storageFallback = stableReturnFocusTarget(
+      elements.storageButton,
+      toolbarFallback
+    );
+    restoreOverlayFocus(stableReturnFocusTarget(
+      returnFocus,
+      storageFallback
+    ));
+  }
   if (keepsTracking) scheduleStorageMaintenancePoll();
 }
 
 async function submitStorageMaintenanceAction(action) {
   const manager = state.storageMaintenance;
   if (!state.online || manager.submitting || storageMaintenanceHasActiveRequest()) return;
+  if (["clearPreviewCache", "clearPhotosOriginals"].includes(action)) {
+    const availability = storageActionAvailability(action);
+    if (!availability.isAvailable) {
+      toast(storageActionUnavailableMessage(availability.reason));
+      return;
+    }
+  }
   manager.submitting = true;
   elements.storageError.classList.add("hidden");
   renderStorageMaintenance();
@@ -8153,6 +9163,13 @@ async function submitStorageMaintenanceAction(action) {
 }
 
 function requestStorageMaintenanceAction(action) {
+  if (["clearPreviewCache", "clearPhotosOriginals"].includes(action)) {
+    const availability = storageActionAvailability(action);
+    if (!availability.isAvailable) {
+      toast(storageActionUnavailableMessage(availability.reason));
+      return;
+    }
+  }
   const confirmations = {
     clearPreviewCache: {
       eyebrow: "PREVIEW CACHE",
@@ -8194,10 +9211,55 @@ function thumbnailRequestPath(assetID, { width = 420, revision = null } = {}) {
   return `/v1/assets/${encodeURIComponent(assetID)}/thumbnail?${query}`;
 }
 
+function syncThumbnailRenderedAspect(image) {
+  if (!(image instanceof HTMLImageElement)
+    || state.layout.aspectMode !== "original"
+    || !image.dataset.protectedPath?.includes("aspect=original")
+    || image.naturalWidth <= 0
+    || image.naturalHeight <= 0) return;
+  const aspect = `${image.naturalWidth} / ${image.naturalHeight}`;
+  const assetCard = image.closest(".asset-card");
+  const reviewCard = image.closest(".review-card");
+  const slimmingMemberCard = image.closest(".slimming-member-card");
+  const scrollContainer = assetCard
+    ? elements.libraryScroll
+    : reviewCard
+      ? elements.reviewQueuePane
+      : slimmingMemberCard
+        ? slimmingMemberScrollContainer()
+        : null;
+  const scrollTop = scrollContainer?.scrollTop ?? null;
+  if (assetCard) assetCard.style.setProperty("--asset-aspect", aspect);
+  if (reviewCard) reviewCard.style.setProperty("--review-card-aspect", aspect);
+  if (slimmingMemberCard) {
+    slimmingMemberCard.style.setProperty("--slimming-member-aspect", aspect);
+  }
+  const changedCard = assetCard || reviewCard || slimmingMemberCard;
+  if (scrollContainer && changedCard && scrollTop != null) {
+    // Resolving a lazily loaded original-aspect request can change a row from
+    // its metadata ratio to a square Host fallback. Force that reflow now and
+    // restore the user's exact scroll position so browser scroll anchoring does
+    // not move the workspace while thumbnails arrive.
+    void changedCard.offsetHeight;
+    scrollContainer.scrollTop = scrollTop;
+  }
+}
+
+function bindThumbnailRenderedAspect(image) {
+  if (!(image instanceof HTMLImageElement)
+    || image.dataset.thumbnailAspectBound === "true") return;
+  image.dataset.thumbnailAspectBound = "true";
+  image.addEventListener("load", () => syncThumbnailRenderedAspect(image));
+}
+
 function syncProtectedThumbnailSource(image, assetID, options = {}) {
   if (!(image instanceof HTMLImageElement) || !assetID) return;
+  bindThumbnailRenderedAspect(image);
   const path = thumbnailRequestPath(assetID, options);
-  if (image.dataset.protectedPath === path) return;
+  if (image.dataset.protectedPath === path) {
+    syncThumbnailRenderedAspect(image);
+    return;
+  }
   setProtectedImageSource(image, path);
 }
 
@@ -8954,6 +10016,311 @@ async function downloadSelectedCloudPreview() {
   }
 }
 
+function reviewCloudPreviewCurrentAssetID() {
+  if (state.lightboxContext === "review" && state.lightboxAssetID) {
+    return state.lightboxAssetID;
+  }
+  return state.review.items[state.review.selectedIndex]?.assetID || null;
+}
+
+function reviewCloudPreviewControls() {
+  return [{
+    container: elements.reviewCloudPreviewRecovery,
+    icon: elements.reviewCloudPreviewIcon,
+    title: elements.reviewCloudPreviewTitle,
+    message: elements.reviewCloudPreviewMessage,
+    progress: elements.reviewCloudPreviewProgress,
+    button: elements.reviewCloudPreviewButton,
+    lightbox: false,
+  }, {
+    container: elements.lightboxCloudPreviewRecovery,
+    icon: elements.lightboxCloudPreviewIcon,
+    title: elements.lightboxCloudPreviewTitle,
+    message: elements.lightboxCloudPreviewMessage,
+    progress: elements.lightboxCloudPreviewProgress,
+    button: elements.lightboxCloudPreviewButton,
+    lightbox: true,
+  }];
+}
+
+function syncReviewCloudPreviewControl(controls, recovery, visible) {
+  controls.container.classList.toggle("hidden", !visible);
+  if (!visible) return;
+  const downloading = recovery.status === "downloading";
+  const cancelling = recovery.status === "cancelling";
+  const failed = recovery.status === "failed";
+  const lifecycle = supportsCloudPreviewLifecycle();
+  const percent = Math.max(0, Math.min(100, Math.round(recovery.progress * 100)));
+  controls.icon.classList.toggle("spinner", downloading || cancelling);
+  controls.icon.textContent = downloading || cancelling ? "" : (failed ? "⚠︎" : "☁︎");
+  controls.title.textContent = cancelling
+    ? "正在取消 iCloud 预览"
+    : (downloading
+      ? "正在从 iCloud 获取预览"
+      : (failed ? "无法获取 iCloud 预览" : "此照片仅存储在 iCloud"));
+  controls.message.textContent = cancelling
+    ? "正在通知这台 Mac 停止当前照片的下载。"
+    : (downloading
+      ? (lifecycle
+        ? `只获取当前照片的标准预览 · ${percent}%`
+        : "只获取当前照片的标准预览；完成后会自动显示。")
+      : (failed
+        ? "请确认网络与“照片”访问权限后重试。"
+        : "仅在你明确操作后，才会从 iCloud 获取这张照片的标准预览。"));
+  controls.progress.classList.toggle("hidden", !downloading || !lifecycle);
+  controls.progress.value = recovery.progress;
+  controls.progress.setAttribute("aria-valuetext", `${percent}%`);
+  controls.button.classList.toggle("hidden", downloading && !lifecycle);
+  controls.button.textContent = cancelling
+    ? "正在取消…"
+    : (downloading ? "取消" : (failed ? "重试" : "从 iCloud 获取预览"));
+  controls.button.disabled = cancelling || !state.online;
+}
+
+function renderReviewCloudPreviewRecovery() {
+  const recovery = state.review.cloudPreview;
+  const selectedAssetID = state.review.items[state.review.selectedIndex]?.assetID || null;
+  const reviewVisible = recovery.status !== "hidden"
+    && recovery.assetID === selectedAssetID
+    && state.mediaKind === "image"
+    && state.review.mode === "queue"
+    && !elements.reviewWorkspace.classList.contains("hidden");
+  const lightboxVisible = recovery.status !== "hidden"
+    && recovery.assetID === state.lightboxAssetID
+    && state.lightboxContext === "review"
+    && !elements.lightbox.classList.contains("hidden");
+  for (const controls of reviewCloudPreviewControls()) {
+    syncReviewCloudPreviewControl(
+      controls,
+      recovery,
+      controls.lightbox ? lightboxVisible : reviewVisible
+    );
+  }
+}
+
+function stopReviewCloudPreviewPolling() {
+  clearTimeout(state.review.cloudPreview.pollTimer);
+  state.review.cloudPreview.pollTimer = null;
+}
+
+function resetReviewCloudPreviewRecovery({ cancelActive = true } = {}) {
+  const recovery = state.review.cloudPreview;
+  const activeAssetID = recovery.assetID;
+  const activeOperationID = recovery.operationID;
+  const shouldCancel = cancelActive
+    && recovery.status === "downloading"
+    && activeAssetID
+    && activeOperationID
+    && supportsCloudPreviewLifecycle();
+  stopReviewCloudPreviewPolling();
+  recovery.requestGeneration += 1;
+  recovery.assetID = null;
+  recovery.status = "hidden";
+  recovery.operationID = null;
+  recovery.progress = 0;
+  renderReviewCloudPreviewRecovery();
+  if (shouldCancel) {
+    void api(`/v1/assets/${activeAssetID}/cloud-preview-requests/cancel`, {
+      method: "POST",
+      body: JSON.stringify({ operationID: activeOperationID }),
+    }).catch(() => {});
+  }
+}
+
+function showReviewCloudPreviewRecovery(assetID, status = "available") {
+  const recovery = state.review.cloudPreview;
+  if (recovery.assetID === assetID && recovery.status !== "hidden") {
+    renderReviewCloudPreviewRecovery();
+    return;
+  }
+  stopReviewCloudPreviewPolling();
+  const generation = ++recovery.requestGeneration;
+  recovery.assetID = assetID;
+  recovery.status = status;
+  recovery.operationID = null;
+  recovery.progress = 0;
+  elements.reviewPreviewImage.classList.add("hidden");
+  renderReviewCloudPreviewRecovery();
+  if (status === "available" && supportsCloudPreviewLifecycle()) {
+    void resumeReviewCloudPreviewLifecycle(assetID, generation);
+  }
+}
+
+function reviewCloudPreviewIsCurrent(assetID, generation) {
+  return generation === state.review.cloudPreview.requestGeneration
+    && state.review.cloudPreview.assetID === assetID
+    && reviewCloudPreviewCurrentAssetID() === assetID;
+}
+
+function displayDownloadedReviewCloudPreview(assetID, generation) {
+  if (!reviewCloudPreviewIsCurrent(assetID, generation)) return;
+  const recovery = state.review.cloudPreview;
+  stopReviewCloudPreviewPolling();
+  recovery.status = "hidden";
+  recovery.operationID = null;
+  recovery.progress = 1;
+  renderReviewCloudPreviewRecovery();
+  const revision = state.review.detail?.assetID === assetID
+    ? state.review.detail.contentRevision
+    : null;
+  const query = new URLSearchParams({ cloud: "1" });
+  if (revision != null) query.set("r", String(revision));
+  const previewPath = `/v1/assets/${assetID}/preview?${query}`;
+  elements.reviewPreviewImage.classList.remove("hidden");
+  setProtectedImageSource(elements.reviewPreviewImage, previewPath, {
+    priority: "high",
+    forceFetch: true,
+  });
+  if (state.lightboxContext === "review" && state.lightboxAssetID === assetID) {
+    elements.lightboxImage.classList.remove("hidden");
+    setProtectedImageSource(elements.lightboxImage, previewPath, {
+      priority: "high",
+      forceFetch: true,
+    });
+  }
+  toast("iCloud 预览已获取");
+}
+
+function scheduleReviewCloudPreviewPoll(assetID, generation) {
+  stopReviewCloudPreviewPolling();
+  state.review.cloudPreview.pollTimer = setTimeout(() => {
+    void pollReviewCloudPreviewLifecycle(assetID, generation);
+  }, 320);
+}
+
+function applyReviewCloudPreviewSnapshot(snapshot, assetID, generation) {
+  if (!reviewCloudPreviewIsCurrent(assetID, generation)
+    || snapshot?.assetID !== assetID) return;
+  const recovery = state.review.cloudPreview;
+  recovery.operationID = snapshot.operationID || null;
+  recovery.progress = Number(snapshot.progress) || 0;
+  if (snapshot.phase === "downloading") {
+    recovery.status = "downloading";
+    renderReviewCloudPreviewRecovery();
+    scheduleReviewCloudPreviewPoll(assetID, generation);
+    return;
+  }
+  if (snapshot.phase === "completed") {
+    displayDownloadedReviewCloudPreview(assetID, generation);
+    return;
+  }
+  stopReviewCloudPreviewPolling();
+  recovery.operationID = null;
+  recovery.status = snapshot.phase === "cancelled" ? "available" : "failed";
+  renderReviewCloudPreviewRecovery();
+  if (snapshot.phase === "cancelled") toast("已停止获取 iCloud 预览");
+  else toast(snapshot.message || "无法获取 iCloud 预览");
+}
+
+async function resumeReviewCloudPreviewLifecycle(assetID, generation) {
+  try {
+    const snapshot = await api(`/v1/assets/${assetID}/cloud-preview-requests`);
+    if (snapshot.phase === "downloading") {
+      applyReviewCloudPreviewSnapshot(snapshot, assetID, generation);
+    }
+  } catch (error) {
+    if (error?.status !== 404) {
+      console.debug("review cloud preview resume unavailable", error);
+    }
+  }
+}
+
+async function pollReviewCloudPreviewLifecycle(assetID, generation) {
+  const recovery = state.review.cloudPreview;
+  if (!reviewCloudPreviewIsCurrent(assetID, generation)
+    || recovery.status !== "downloading") return;
+  try {
+    const snapshot = await api(`/v1/assets/${assetID}/cloud-preview-requests`);
+    applyReviewCloudPreviewSnapshot(snapshot, assetID, generation);
+  } catch (error) {
+    if (!reviewCloudPreviewIsCurrent(assetID, generation)) return;
+    stopReviewCloudPreviewPolling();
+    recovery.operationID = null;
+    recovery.status = "failed";
+    renderReviewCloudPreviewRecovery();
+    toast(error.message || "无法读取 iCloud 预览进度");
+  }
+}
+
+async function cancelReviewCloudPreview() {
+  const recovery = state.review.cloudPreview;
+  const assetID = reviewCloudPreviewCurrentAssetID();
+  if (!assetID || recovery.assetID !== assetID
+    || recovery.status !== "downloading" || !recovery.operationID) return;
+  const operationID = recovery.operationID;
+  const generation = recovery.requestGeneration;
+  stopReviewCloudPreviewPolling();
+  recovery.status = "cancelling";
+  renderReviewCloudPreviewRecovery();
+  try {
+    const snapshot = await api(`/v1/assets/${assetID}/cloud-preview-requests/cancel`, {
+      method: "POST",
+      body: JSON.stringify({ operationID }),
+    });
+    applyReviewCloudPreviewSnapshot(snapshot, assetID, generation);
+  } catch (error) {
+    if (!reviewCloudPreviewIsCurrent(assetID, generation)) return;
+    recovery.status = "downloading";
+    renderReviewCloudPreviewRecovery();
+    scheduleReviewCloudPreviewPoll(assetID, generation);
+    toast(error.message || "无法取消 iCloud 预览");
+  }
+}
+
+async function downloadReviewCloudPreview() {
+  const recovery = state.review.cloudPreview;
+  const assetID = reviewCloudPreviewCurrentAssetID();
+  if (!assetID || state.mediaKind !== "image" || !state.online) return;
+  if (recovery.status === "downloading" && supportsCloudPreviewLifecycle()) {
+    await cancelReviewCloudPreview();
+    return;
+  }
+  const generation = ++recovery.requestGeneration;
+  recovery.assetID = assetID;
+  recovery.status = "downloading";
+  recovery.progress = 0;
+  recovery.operationID = supportsCloudPreviewLifecycle() ? crypto.randomUUID() : null;
+  renderReviewCloudPreviewRecovery();
+
+  if (supportsCloudPreviewLifecycle()) {
+    const operationID = recovery.operationID;
+    try {
+      const snapshot = await api(`/v1/assets/${assetID}/cloud-preview-requests`, {
+        method: "POST",
+        body: JSON.stringify({ operationID }),
+      });
+      applyReviewCloudPreviewSnapshot(snapshot, assetID, generation);
+    } catch (error) {
+      if (!reviewCloudPreviewIsCurrent(assetID, generation)) return;
+      recovery.operationID = null;
+      recovery.status = "failed";
+      renderReviewCloudPreviewRecovery();
+      toast(error.message || "无法获取 iCloud 预览");
+    }
+    return;
+  }
+
+  try {
+    const response = await rawFetch(`/v1/assets/${assetID}/cloud-preview`, { method: "POST" });
+    if (!response.ok) {
+      const payload = await parseResponse(response).catch(() => null);
+      throw new APIError(response.status, typeof payload === "object" ? payload : {
+        message: `获取预览失败（${response.status}）`,
+      });
+    }
+    const downloaded = await response.blob();
+    if (!downloaded.type.startsWith("image/")) {
+      throw new Error("Host 未返回可显示的预览");
+    }
+    displayDownloadedReviewCloudPreview(assetID, generation);
+  } catch (error) {
+    if (!reviewCloudPreviewIsCurrent(assetID, generation)) return;
+    recovery.status = "failed";
+    renderReviewCloudPreviewRecovery();
+    toast(error.message || "无法获取 iCloud 预览");
+  }
+}
+
 function stopInspectorVideo() {
   elements.previewVideo.pause();
   elements.previewVideo.removeAttribute("src");
@@ -9086,6 +10453,46 @@ function configureInspectorTagReordering(chip, surface, searchActive) {
     : "\n拖动可调整顺序或分组；Option + 上/下调整顺序，Option + 左/右移动分组。";
 }
 
+function renderPlaceholderTagEditor() {
+  const container = elements.inspectorPlaceholderTags;
+  if (!container || container.dataset.activeTagDrag) return;
+  clearElement(container);
+  const tags = orderedActiveTags();
+  appendInspectorTagGroups(container, tags, (parent, tag) => {
+    const row = document.createElement("div");
+    row.className = "tag-row inspector-placeholder-tag-row";
+    const chip = createInspectorTagChip({
+      tagID: tag.id,
+      displayName: tag.displayName,
+      decision: "unknown",
+      summary: "选择照片后可应用",
+    });
+    chip.classList.add("labeling-disabled");
+    chip.setAttribute("aria-disabled", "true");
+    chip.setAttribute(
+      "aria-label",
+      `${tag.displayName}，当前未选择照片；可整理顺序或移动分组`
+    );
+    chip.title = `选择照片后可应用“${tag.displayName}”；当前可拖动整理`;
+    chip.dataset.helpTitle = tag.displayName;
+    chip.dataset.helpKind = "tag";
+    chip.dataset.helpDetail = [
+      "当前没有选择照片；点击、右键、X 或 Delete 不会写入标签决定。",
+      "选择照片后可在同一检查器直接确认、拒绝或清除这个标签。",
+    ].join("\n");
+    configureInspectorTagReordering(chip, "placeholder", false);
+    row.append(chip);
+    parent.append(row);
+  });
+  if (!tags.length) {
+    const empty = document.createElement("p");
+    empty.className = "sidebar-empty";
+    empty.textContent = "尚无活动标签；选择照片后可新建并应用。";
+    container.append(empty);
+  }
+  restoreInspectorTagFocus("placeholder");
+}
+
 function inspectorTagFocusSelector(pending) {
   if (!pending) return null;
   if (pending.kind === "group") {
@@ -9104,7 +10511,11 @@ function restoreInspectorTagFocus(surface) {
   requestAnimationFrame(() => {
     const container = surface === "selection"
       ? elements.selectionInspectorTags
-      : elements.inspectorTags;
+      : surface === "placeholder"
+        ? elements.inspectorPlaceholderTags
+        : surface === "review"
+          ? elements.reviewTags
+          : elements.inspectorTags;
     const selector = inspectorTagFocusSelector(pending);
     const target = selector ? container.querySelector(selector) : null;
     if (!target) return;
@@ -9533,6 +10944,9 @@ function renderInspector(detail) {
   }
   state.selectedDetail = detail;
   if (!state.inspectorDismissed) elements.inspector.classList.add("open");
+  elements.inspectorSelectionTitle.textContent = state.mediaKind === "video"
+    ? "已选择 1 个视频"
+    : "已选择 1 张照片";
   elements.assetFileName.textContent = detail.fileName || "未命名照片";
   renderInspectorLocalSuggestions(detail);
   renderInspectorSuggestions(detail);
@@ -9626,6 +11040,13 @@ async function openOriginalAssetOnMac(assetID, mediaKind, availability) {
   if (!assetID || availability !== "available" || !state.online || state.openingOriginal) return;
   state.openingOriginal = true;
   if (state.selectedDetail) syncInspectorOpenOriginalControl(state.selectedDetail);
+  const reviewItem = state.review.items[state.review.selectedIndex];
+  if (reviewWorkspaceIsOpen() && reviewItem) {
+    syncReviewOpenOriginalControl(
+      reviewInspectorDetailMatches(reviewItem) ? state.review.detail : null,
+      reviewItem
+    );
+  }
   const lightboxItem = lightboxItems().find((item) => item.id === state.lightboxAssetID);
   if (lightboxItem) syncLightboxOpenOriginalControl(lightboxItem);
   try {
@@ -9636,6 +11057,13 @@ async function openOriginalAssetOnMac(assetID, mediaKind, availability) {
   } finally {
     state.openingOriginal = false;
     if (state.selectedDetail) syncInspectorOpenOriginalControl(state.selectedDetail);
+    const currentReviewItem = state.review.items[state.review.selectedIndex];
+    if (reviewWorkspaceIsOpen() && currentReviewItem) {
+      syncReviewOpenOriginalControl(
+        reviewInspectorDetailMatches(currentReviewItem) ? state.review.detail : null,
+        currentReviewItem
+      );
+    }
     const currentLightboxItem = lightboxItems().find(
       (item) => item.id === state.lightboxAssetID
     );
@@ -9876,22 +11304,66 @@ function renderSelectionInspector() {
 }
 
 function renderInspectorSurface() {
+  const workspacePresentation = galleryOverviewIsOpen() && galleryOverviewUsesIntegratedLayout()
+    ? {
+      symbol: "▥",
+      title: "图库总览",
+      description: "总览页已在主窗口展示聚合统计。",
+    }
+    : (worldMapIsOpen() && worldMapUsesIntegratedLayout()
+      ? {
+        symbol: "◎",
+        title: "照片世界",
+        description: "在主窗口拖拽、缩放和选择照片建筑。",
+      }
+      : null);
+  const showsWorkspace = Boolean(workspacePresentation);
+  const showsTrainingWorkspace = trainingWorkspaceIsOpen()
+    && trainingWorkspaceUsesIntegratedLayout();
+  const showsSlimmingWorkspace = slimmingWorkspaceIsOpen()
+    && slimmingWorkspaceUsesIntegratedLayout();
+  const showsIntegratedWorkspace = showsWorkspace
+    || showsTrainingWorkspace
+    || showsSlimmingWorkspace;
+  if (workspacePresentation) {
+    elements.inspectorWorkspacePlaceholderSymbol.textContent = workspacePresentation.symbol;
+    elements.inspectorWorkspacePlaceholderTitle.textContent = workspacePresentation.title;
+    elements.inspectorWorkspacePlaceholderText.textContent = workspacePresentation.description;
+  }
   const showsSelection = state.selectionMode && state.selectedAssetIDs.size > 0;
   const showsDetail = !showsSelection && Boolean(state.selectedDetail);
-  elements.inspectorPlaceholder.classList.toggle("hidden", showsSelection || showsDetail);
-  elements.selectionInspector.classList.toggle("hidden", !showsSelection);
-  elements.inspectorContent.classList.toggle("hidden", !showsDetail);
+  elements.inspectorWorkspacePlaceholder.classList.toggle("hidden", !showsWorkspace);
+  elements.inspectorTrainingWorkspace.classList.toggle("hidden", !showsTrainingWorkspace);
+  if (showsTrainingWorkspace) renderTrainingWorkspaceInspector();
+  elements.inspectorSlimmingWorkspace.classList.toggle("hidden", !showsSlimmingWorkspace);
+  if (showsSlimmingWorkspace) renderSlimmingInspector();
+  elements.inspectorPlaceholder.classList.toggle(
+    "hidden",
+    showsIntegratedWorkspace || showsSelection || showsDetail
+  );
+  elements.selectionInspector.classList.toggle(
+    "hidden",
+    showsIntegratedWorkspace || !showsSelection
+  );
+  elements.inspectorContent.classList.toggle(
+    "hidden",
+    showsIntegratedWorkspace || !showsDetail
+  );
   if (!showsDetail) {
     hidePreviewPlaceholder();
     stopInspectorVideo();
     resetCloudPreviewRecovery();
   }
-  if (showsSelection && !state.inspectorDismissed) {
+  if (!showsIntegratedWorkspace && !showsSelection && !showsDetail) {
+    renderPlaceholderTagEditor();
+  }
+  if (!showsIntegratedWorkspace && showsSelection && !state.inspectorDismissed) {
     elements.inspector.classList.add("open");
     renderSelectionInspector();
-  } else if (showsSelection) {
+  } else if (!showsIntegratedWorkspace && showsSelection) {
     renderSelectionInspector();
   }
+  syncInlineTagCreationControls();
 }
 
 function renderSelectionMutation() {
@@ -9908,7 +11380,17 @@ function renderSelectionMutation() {
 function updateLibraryTitle() {
   const source = state.sources.find((item) => item.id === state.selectedSourceID);
   const mediaTitle = state.mediaKind === "video" ? "视频" : "照片";
-  if (state.libraryScope === "worldMapGallery" && state.worldMapGalleryScope) {
+  if (galleryOverviewIsOpen() && galleryOverviewUsesIntegratedLayout()) {
+    elements.libraryTitle.textContent = "图库总览";
+  } else if (worldMapIsOpen() && worldMapUsesIntegratedLayout()) {
+    elements.libraryTitle.textContent = "照片世界";
+  } else if (reviewWorkspaceIsOpen() && reviewWorkspaceUsesIntegratedLayout()) {
+    elements.libraryTitle.textContent = "待审核建议";
+  } else if (trainingWorkspaceIsOpen() && trainingWorkspaceUsesIntegratedLayout()) {
+    elements.libraryTitle.textContent = "训练工程";
+  } else if (slimmingWorkspaceIsOpen() && slimmingWorkspaceUsesIntegratedLayout()) {
+    elements.libraryTitle.textContent = "图库瘦身";
+  } else if (state.libraryScope === "worldMapGallery" && state.worldMapGalleryScope) {
     elements.libraryTitle.textContent = `${state.worldMapGalleryScope.displayName} · 照片世界`;
   } else if (state.libraryScope === "favorites") {
     elements.libraryTitle.textContent = `红心收藏 · ${mediaTitle}`;
@@ -10035,6 +11517,50 @@ function libraryPersonalTrainingTagIDs() {
     .map((condition) => condition.tagID);
 }
 
+function activePersonalModelTrainingActivity() {
+  return state.personalModelActivities.items.find((activity) =>
+    ["personalCentroid", "personalAdamW"].includes(activity.method)
+      && isActiveTrainingActivity(activity)
+  ) || null;
+}
+
+function personalModelOperationState() {
+  const training = activePersonalModelTrainingActivity();
+  const sampleSuggestion = activeSampleSuggestion();
+  const tagSuggestion = activeTagLibrarySuggestion();
+  const librarySuggestion = activeLibrarySuggestionJobs()[0] || null;
+  const suggestion = sampleSuggestion || tagSuggestion || librarySuggestion;
+  const summary = training?.method === "personalAdamW"
+    ? "正在训练超级个人模型"
+    : training
+      ? "正在重建个人模型"
+      : suggestion
+        ? "正在生成个人建议"
+        : "";
+  return {
+    training,
+    suggestion,
+    busy: Boolean(training || suggestion),
+    summary,
+  };
+}
+
+function syncPersonalModelActionPresentation(
+  button,
+  { running, idleTitle, runningTitle, idleIcon, busy, busySummary }
+) {
+  const icon = button.querySelector(".library-toolbar-icon, .personal-model-action-icon");
+  const label = button.querySelector(".library-toolbar-label");
+  button.classList.toggle("is-running", running);
+  button.setAttribute("aria-busy", String(running));
+  button.setAttribute("aria-label", running ? runningTitle : idleTitle);
+  button.title = running
+    ? runningTitle
+    : (busy ? `${idleTitle}（${busySummary}）` : idleTitle);
+  if (icon) icon.textContent = running ? "" : idleIcon;
+  if (label) label.textContent = running ? runningTitle.replace("个人模型", "").trim() : idleTitle;
+}
+
 function renderPersonalModelControls() {
   const tagIDs = libraryPersonalTrainingTagIDs();
   const tagNames = tagIDs
@@ -10047,10 +11573,65 @@ function renderPersonalModelControls() {
   elements.personalModelScopeSummary.textContent = tagNames.length
     ? `${tagNames.join("、")} · ${scope}`
     : `请先选择已确认标签 · ${scope}`;
-  const disabled = !state.online;
-  elements.personalModelButton.disabled = disabled;
-  elements.rebuildPersonalModelButton.disabled = disabled;
-  elements.rebuildPersonalAdamWButton.disabled = disabled;
+  const offline = !state.online;
+  const operation = personalModelOperationState();
+  const centroidRunning = operation.training?.method === "personalCentroid";
+  const adamWRunning = operation.training?.method === "personalAdamW";
+  const suggestionRunning = Boolean(operation.suggestion);
+  elements.personalModelButton.disabled = offline;
+  elements.personalModelButton.classList.toggle("has-running-action", operation.busy);
+  elements.personalModelButton.setAttribute("aria-busy", String(operation.busy));
+  elements.personalModelButton.setAttribute(
+    "aria-label",
+    operation.busy ? `个人模型：${operation.summary}` : "个人模型"
+  );
+  elements.personalModelButton.title = operation.busy
+    ? `${operation.summary}；打开查看状态`
+    : "重建或训练个人模型";
+  const personalModelIcon = elements.personalModelButton.querySelector(".library-toolbar-icon");
+  if (personalModelIcon) personalModelIcon.textContent = operation.busy ? "" : "◎";
+  elements.rebuildPersonalModelButton.disabled = offline || operation.busy;
+  elements.rebuildPersonalAdamWButton.disabled = offline || operation.busy;
+  elements.toolbarRebuildPersonalModelButton.disabled = offline || operation.busy;
+  elements.toolbarRebuildPersonalAdamWButton.disabled = offline || operation.busy;
+  syncPersonalModelActionPresentation(elements.toolbarRebuildPersonalModelButton, {
+    running: centroidRunning,
+    idleTitle: "重建个人模型",
+    runningTitle: "正在重建…",
+    idleIcon: "◎",
+    busy: operation.busy,
+    busySummary: operation.summary,
+  });
+  syncPersonalModelActionPresentation(elements.toolbarRebuildPersonalAdamWButton, {
+    running: adamWRunning,
+    idleTitle: "训练超级个人模型",
+    runningTitle: "正在训练…",
+    idleIcon: "✦",
+    busy: operation.busy,
+    busySummary: operation.summary,
+  });
+  syncPersonalModelActionPresentation(elements.rebuildPersonalModelButton, {
+    running: centroidRunning,
+    idleTitle: "重建个人模型",
+    runningTitle: "正在重建个人模型…",
+    idleIcon: "◎",
+    busy: operation.busy,
+    busySummary: operation.summary,
+  });
+  syncPersonalModelActionPresentation(elements.rebuildPersonalAdamWButton, {
+    running: adamWRunning,
+    idleTitle: "训练超级个人模型",
+    runningTitle: "正在训练超级个人模型…",
+    idleIcon: "✦",
+    busy: operation.busy,
+    busySummary: operation.summary,
+  });
+  elements.rebuildPersonalModelTitle.textContent = centroidRunning
+    ? "正在重建个人模型…"
+    : "重建个人模型";
+  elements.rebuildPersonalAdamWTitle.textContent = adamWRunning
+    ? "正在训练超级个人模型…"
+    : "训练超级个人模型";
   const fullLibrary = state.librarySuggestions.snapshot?.personalMode === "fullLibrary";
   const activeSuggestion = fullLibrary
     ? activeLibrarySuggestionJobs().length > 0
@@ -10058,18 +11639,211 @@ function renderPersonalModelControls() {
   elements.generatePersonalSuggestionsTitle.textContent = fullLibrary
     ? "使用个人模型扫描全库"
     : `抽 ${state.sampleSuggestions.maximumSampleCount || 500} 张生成建议`;
+  elements.toolbarGeneratePersonalSuggestionsLabel.textContent =
+    elements.generatePersonalSuggestionsTitle.textContent;
+  elements.toolbarGeneratePersonalSuggestionsButton.setAttribute(
+    "aria-label",
+    elements.generatePersonalSuggestionsTitle.textContent
+  );
+  elements.toolbarGeneratePersonalSuggestionsButton.title =
+    elements.generatePersonalSuggestionsTitle.textContent;
   elements.generatePersonalSuggestionsDetail.textContent = fullLibrary
     ? "按已确认标签扫描图库，结果进入待审核建议"
     : "从当前审核来源抽样，结果进入待审核建议";
-  elements.generatePersonalSuggestionsButton.disabled = disabled
+  elements.generatePersonalSuggestionsButton.disabled = offline
+    || operation.busy
     || state.mediaKind !== "image"
     || activeSuggestion
     || (!fullLibrary && !state.sampleSuggestions.isAvailable);
+  elements.toolbarGeneratePersonalSuggestionsButton.disabled =
+    elements.generatePersonalSuggestionsButton.disabled;
+  syncPersonalModelActionPresentation(elements.toolbarGeneratePersonalSuggestionsButton, {
+    running: suggestionRunning,
+    idleTitle: elements.generatePersonalSuggestionsTitle.textContent,
+    runningTitle: fullLibrary ? "正在扫描全库…" : "正在生成建议…",
+    idleIcon: "✦",
+    busy: operation.busy,
+    busySummary: operation.summary,
+  });
+  elements.generatePersonalSuggestionsButton.classList.toggle("is-running", suggestionRunning);
+  elements.generatePersonalSuggestionsButton.setAttribute(
+    "aria-busy",
+    String(suggestionRunning)
+  );
+  elements.generatePersonalSuggestionsTitle.textContent = suggestionRunning
+    ? (fullLibrary ? "正在扫描全库…" : "正在生成建议…")
+    : elements.toolbarGeneratePersonalSuggestionsLabel.textContent;
   elements.generatePersonalSuggestionsButton.title = state.mediaKind !== "image"
     ? "个人建议目前仅支持照片"
-    : activeSuggestion
-      ? "已有个人建议任务正在运行"
+    : operation.busy
+      ? operation.summary
       : elements.generatePersonalSuggestionsDetail.textContent;
+  elements.toolbarGeneratePersonalSuggestionsButton.dataset.helpDetail = fullLibrary
+    ? "按顶部审核来源范围使用 Mac 本地个人模型扫描全库；结果进入待审核队列。"
+    : state.selectedAssetIDs.size
+      ? `对当前选中的 ${Math.min(
+        state.selectedAssetIDs.size,
+        state.sampleSuggestions.maximumSampleCount || 500
+      )} 项${noun}生成建议；结果进入待审核队列，可用 P 接受、X 拒绝。`
+      : `从库中抽最多 ${state.sampleSuggestions.maximumSampleCount || 500} 张${noun}生成建议；结果进入待审核队列，可用 P 接受、X 拒绝。`;
+  const hasSelection = state.selectedAssetIDs.size > 0;
+  const canPrepareSelection = hasSelection && state.embeddingPreparation.isAvailable;
+  const canFindSelection = hasSelection && supportsLibrarySlimming();
+  for (const button of [
+    elements.toolbarPrepareSelectedFeaturesButton,
+    elements.preparePersonalSelectionButton,
+  ]) {
+    button.classList.toggle("hidden", !canPrepareSelection);
+  }
+  for (const button of [
+    elements.toolbarFindSimilarSelectionButton,
+    elements.findSimilarPersonalSelectionButton,
+  ]) {
+    button.classList.toggle("hidden", !canFindSelection);
+  }
+  requestAnimationFrame(syncPersonalModelToolbarPresentation);
+}
+
+function scheduleTrainingActivityPoll() {
+  clearTimeout(state.personalModelActivities.pollTimer);
+  state.personalModelActivities.pollTimer = null;
+  if (!activePersonalModelTrainingActivity()) return;
+  state.personalModelActivities.pollTimer = setTimeout(
+    () => loadTrainingActivities({ quiet: true }),
+    900
+  );
+}
+
+async function loadTrainingActivities({ quiet = false } = {}) {
+  const projection = state.personalModelActivities;
+  if (!supportsTrainingActivities()) {
+    projection.mediaKind = state.mediaKind;
+    projection.items = [];
+    projection.loading = false;
+    renderPersonalModelControls();
+    return;
+  }
+  const generation = ++projection.requestGeneration;
+  const mediaKind = state.mediaKind;
+  projection.loading = true;
+  try {
+    const query = new URLSearchParams({ mediaKind });
+    const activities = await api(`/v1/training/activities?${query}`);
+    if (generation !== projection.requestGeneration || mediaKind !== state.mediaKind) return;
+    projection.mediaKind = mediaKind;
+    projection.items = Array.isArray(activities) ? activities : [];
+  } catch (error) {
+    if (generation === projection.requestGeneration && !quiet) {
+      toast(error.message || "无法读取个人模型训练状态");
+    }
+  } finally {
+    if (generation === projection.requestGeneration) {
+      projection.loading = false;
+      renderPersonalModelControls();
+      scheduleTrainingActivityPoll();
+    }
+  }
+}
+
+function syncPersonalModelToolbarPresentation() {
+  const directActionsVisible = getComputedStyle(
+    elements.personalModelToolbarActions
+  ).display !== "none";
+  syncPersonalModelSelectionActionPresentation(directActionsVisible);
+  elements.personalModelToolbarActions.setAttribute(
+    "aria-hidden",
+    String(!directActionsVisible)
+  );
+  if (directActionsVisible && !elements.personalModelPopover.classList.contains("hidden")) {
+    closePersonalModelPopover({ restoreFocus: false });
+  }
+}
+
+function personalModelToolbarActionKind(button) {
+  return new Map([
+    [elements.toolbarRebuildPersonalModelButton, "rebuild"],
+    [elements.toolbarRebuildPersonalAdamWButton, "adamw"],
+    [elements.toolbarGeneratePersonalSuggestionsButton, "suggestions"],
+    [elements.toolbarPrepareSelectedFeaturesButton, "prepare"],
+    [elements.toolbarFindSimilarSelectionButton, "find"],
+  ]).get(button) || null;
+}
+
+function syncPersonalModelSelectionActionPresentation(directActionsVisible) {
+  const group = elements.personalModelToolbarActions;
+  const wasVisible = state.personalModelToolbarWasVisible;
+  const selectedDirectActionsVisible = directActionsVisible
+    && state.selectedAssetIDs.size > 0;
+  state.personalModelToolbarWasVisible = directActionsVisible;
+  elements.batchPersonalModelActions.classList.toggle(
+    "toolbar-personal-model-fallback-hidden",
+    selectedDirectActionsVisible
+  );
+  elements.batchPersonalModelActions.setAttribute(
+    "aria-hidden",
+    String(selectedDirectActionsVisible)
+  );
+
+  const focusedAction = state.personalModelToolbarFocusedAction;
+  const focusedButton = {
+    rebuild: elements.toolbarRebuildPersonalModelButton,
+    adamw: elements.toolbarRebuildPersonalAdamWButton,
+    suggestions: elements.toolbarGeneratePersonalSuggestionsButton,
+    prepare: elements.toolbarPrepareSelectedFeaturesButton,
+    find: elements.toolbarFindSimilarSelectionButton,
+  }[focusedAction] || null;
+  const focusedActionStillVisible = directActionsVisible
+    && focusedButton?.getClientRects().length > 0;
+  const focusStayedInCollapsedGroup = group.contains(document.activeElement);
+  if (!focusedAction
+    || focusedActionStillVisible
+    || (!wasVisible && !focusStayedInCollapsedGroup)) return;
+
+  const compactTarget = {
+    suggestions: elements.generateSelectedSuggestionsButton,
+    prepare: elements.prepareSelectedFeaturesButton,
+    find: elements.findSimilarSelectionButton,
+  }[focusedAction] || null;
+  const compactTargetVisible = compactTarget
+    && !elements.batchBar.classList.contains("hidden")
+    && compactTarget.getClientRects().length > 0;
+  const fallback = compactTargetVisible
+    ? compactTarget
+    : elements.personalModelButton.getClientRects().length > 0
+      ? elements.personalModelButton
+      : elements.selectionModeButton;
+  fallback.focus({ preventScroll: true });
+  state.personalModelToolbarFocusedAction = null;
+}
+
+function syncSelectionFavoriteToolbarPresentation() {
+  const group = elements.selectionFavoriteToolbarActions;
+  const wasVisible = state.selectionFavoriteToolbarWasVisible;
+  const directActionsVisible = !group.classList.contains("hidden")
+    && getComputedStyle(group).display !== "none";
+  state.selectionFavoriteToolbarWasVisible = directActionsVisible;
+  group.setAttribute("aria-hidden", String(!directActionsVisible));
+  elements.batchFavoriteActions.classList.toggle(
+    "toolbar-favorite-fallback-hidden",
+    directActionsVisible
+  );
+  elements.batchFavoriteActions.setAttribute(
+    "aria-hidden",
+    String(directActionsVisible)
+  );
+
+  const focusedAction = state.selectionFavoriteToolbarFocusedAction;
+  const focusStayedInCollapsedGroup = group.contains(document.activeElement);
+  if (directActionsVisible
+    || !focusedAction
+    || (!wasVisible && !focusStayedInCollapsedGroup)) return;
+  const fallback = focusedAction === "unfavorite"
+    ? elements.unfavoriteSelectedButton
+    : elements.favoriteSelectedButton;
+  const fallbackVisible = !elements.batchBar.classList.contains("hidden")
+    && getComputedStyle(fallback).display !== "none";
+  (fallbackVisible ? fallback : elements.selectionModeButton).focus({ preventScroll: true });
+  state.selectionFavoriteToolbarFocusedAction = null;
 }
 
 function closePersonalModelPopover({ restoreFocus = true } = {}) {
@@ -10081,6 +11855,9 @@ function closePersonalModelPopover({ restoreFocus = true } = {}) {
 
 function togglePersonalModelPopover() {
   const willOpen = elements.personalModelPopover.classList.contains("hidden");
+  closeCompactToolbarMenu({ restoreFocus: false });
+  closeSortPopover({ restoreFocus: false });
+  closeGridDensityPopovers({ restoreFocus: false });
   elements.filterPopover.classList.add("hidden");
   elements.filterButton.setAttribute("aria-expanded", "false");
   closeJobsPopover({ restoreFocus: false });
@@ -10096,7 +11873,12 @@ function togglePersonalModelPopover() {
   });
 }
 
-async function openLibraryPersonalTraining(method) {
+async function openLibraryPersonalTraining(method, returnFocus = elements.personalModelButton) {
+  const operation = personalModelOperationState();
+  if (operation.busy) {
+    toast(`${operation.summary}；完成或取消后再开始新任务`);
+    return;
+  }
   const tagIDs = libraryPersonalTrainingTagIDs();
   const selectedCount = state.selectedAssetIDs.size;
   const noun = state.mediaKind === "video" ? "视频" : "照片";
@@ -10107,7 +11889,7 @@ async function openLibraryPersonalTraining(method) {
     tagIDs,
     requireExplicitTag: !tagIDs.length,
     scope: selectedCount ? "currentSelection" : "allSources",
-    returnFocus: elements.personalModelButton,
+    returnFocus,
     note: tagIDs.length
       ? `已从图库筛选带入 ${tagIDs.length} 个已确认标签；${selectedCount ? `只使用当前选中的 ${selectedCount} 项${noun}` : `使用全库已确认${noun}`}。`
       : "请选择要训练的标签；只会使用已确认样本。",
@@ -10115,6 +11897,11 @@ async function openLibraryPersonalTraining(method) {
 }
 
 async function generateGalleryPersonalSuggestions() {
+  const operation = personalModelOperationState();
+  if (operation.busy) {
+    toast(`${operation.summary}；完成或取消后再开始新任务`);
+    return;
+  }
   const fullLibrary = state.librarySuggestions.snapshot?.personalMode === "fullLibrary";
   closePersonalModelPopover({ restoreFocus: false });
   if (fullLibrary) {
@@ -10848,11 +12635,17 @@ function renderFavoriteControls() {
     if (entry) syncSlimmingRecycleFavoriteButton(card, entry);
   }
   const selectedCount = state.selectedAssetIDs.size;
+  elements.selectionFavoriteToolbarActions.classList.toggle(
+    "hidden",
+    !supported || selectedCount === 0
+  );
   const batchDisabled = !supported
     || !state.online
     || state.favoriteMutating
     || selectedCount === 0;
   for (const button of [
+    elements.toolbarFavoriteSelectedButton,
+    elements.toolbarUnfavoriteSelectedButton,
     elements.favoriteSelectedButton,
     elements.unfavoriteSelectedButton,
     elements.selectionInspectorFavoriteButton,
@@ -10861,25 +12654,39 @@ function renderFavoriteControls() {
     button.classList.toggle("hidden", !supported);
     button.disabled = batchDisabled;
   }
+  requestAnimationFrame(syncSelectionFavoriteToolbarPresentation);
 
   const detail = state.selectedDetail;
   const favorite = detail?.favorite || null;
   const isFavorite = favorite?.isFavorite === true;
-  elements.inspectorFavoriteButton.classList.toggle("hidden", !supported);
-  elements.inspectorFavoriteButton.disabled = !supported
-    || !state.online
-    || state.favoriteMutating
-    || !detail;
-  elements.inspectorFavoriteButton.dataset.favorite = String(isFavorite);
-  elements.inspectorFavoriteButtonIcon.textContent = isFavorite ? "♥" : "♡";
-  elements.inspectorFavoriteButtonLabel.textContent = isFavorite ? "取消红心" : "加入红心";
+  for (const button of [
+    elements.inspectorFavoriteButton,
+    elements.inspectorUnfavoriteButton,
+  ]) {
+    button.classList.toggle("hidden", !supported);
+    button.disabled = !supported
+      || !state.online
+      || state.favoriteMutating
+      || !detail;
+  }
+  elements.inspectorFavoriteButton.dataset.current = String(isFavorite);
+  elements.inspectorUnfavoriteButton.dataset.current = String(!isFavorite);
+  elements.inspectorFavoriteButtonIcon.textContent = "♥";
+  elements.inspectorFavoriteButtonLabel.textContent = "加入红心";
   const syncText = favoriteSyncText(favorite);
   elements.inspectorFavoriteButton.title = syncText
-    ? `${elements.inspectorFavoriteButtonLabel.textContent}；${syncText}`
-    : elements.inspectorFavoriteButtonLabel.textContent;
+    ? `加入红心；${syncText}`
+    : "加入红心";
   elements.inspectorFavoriteButton.setAttribute(
     "aria-label",
     elements.inspectorFavoriteButton.title
+  );
+  elements.inspectorUnfavoriteButton.title = syncText
+    ? `取消红心；${syncText}`
+    : "取消红心";
+  elements.inspectorUnfavoriteButton.setAttribute(
+    "aria-label",
+    elements.inspectorUnfavoriteButton.title
   );
 
   const syncCounts = visibleFavoriteSyncCounts();
@@ -10895,6 +12702,7 @@ function renderFavoriteControls() {
     || retryCount === 0;
   elements.retryFavoriteSyncCount.textContent = String(retryCount);
   elements.retryFavoriteSyncButton.title = `重试红心同步：待同步 ${syncCounts.pending} 项，失败 ${syncCounts.failed} 项。不会弹出照片权限框。`;
+  renderReviewInspectorActions();
   renderLightboxFavorite();
 }
 
@@ -11047,6 +12855,34 @@ async function applyFavoriteMutation(assetIDs, isFavorite) {
   }
 }
 
+function favoriteMutationFocusCandidates(preferred, isFavorite) {
+  const equivalents = isFavorite
+    ? [
+      elements.toolbarFavoriteSelectedButton,
+      elements.favoriteSelectedButton,
+      elements.selectionInspectorFavoriteButton,
+    ]
+    : [
+      elements.toolbarUnfavoriteSelectedButton,
+      elements.unfavoriteSelectedButton,
+      elements.selectionInspectorUnfavoriteButton,
+    ];
+  return [preferred, ...equivalents].filter(
+    (button, index, buttons) => button && buttons.indexOf(button) === index
+  );
+}
+
+async function applyFavoriteMutationFromControl(button, assetIDs, isFavorite) {
+  await applyFavoriteMutation(assetIDs, isFavorite);
+  syncSelectionFavoriteToolbarPresentation();
+  const focusTarget = favoriteMutationFocusCandidates(button, isFavorite).find(
+    (candidate) => candidate.isConnected
+      && !candidate.disabled
+      && candidate.getClientRects().length > 0
+  );
+  focusTarget?.focus({ preventScroll: true });
+}
+
 async function toggleAssetCardFavorite(button) {
   const assetID = button?.dataset.mediaFavoriteAssetId
     || button?.closest(".asset-card")?.dataset.assetId;
@@ -11160,12 +12996,21 @@ function selectAllLoadedAssets() {
 }
 
 function currentTagTargetAssetIDs() {
+  if (reviewWorkspaceIsOpen() && state.review.mode === "queue") {
+    return selectedReviewItems().map((item) => item.assetID);
+  }
   if (state.selectionMode) return [...state.selectedAssetIDs];
   return state.selectedAssetID ? [state.selectedAssetID] : [];
 }
 
-function galleryRemovalTargetAssetIDs(requestedAssetIDs = null) {
-  const visibleByID = new Map(state.assets.map((asset) => [asset.id, asset]));
+function galleryRemovalTargetAssetIDs(
+  requestedAssetIDs = null,
+  { surface = "gallery" } = {}
+) {
+  const candidates = surface === "review"
+    ? state.review.items.map((item) => ({ ...item, id: item.assetID }))
+    : state.assets;
+  const visibleByID = new Map(candidates.map((asset) => [asset.id, asset]));
   return [...new Set(requestedAssetIDs || currentTagTargetAssetIDs())].filter((assetID) => {
     const asset = visibleByID.get(assetID);
     if (!asset || asset.availability !== "available") return false;
@@ -11246,6 +13091,7 @@ function renderGalleryRemovalControls() {
       || Boolean(active)
       || contextAsset?.availability !== "available";
   }
+  renderReviewInspectorActions();
 }
 
 function galleryRemovalConfirmationMessage(assetIDs) {
@@ -11273,8 +13119,15 @@ async function submitGalleryRemoval({
   previewAssetID = null,
   returnFocus = null,
   confirmed = false,
+  surface = "gallery",
 } = {}) {
-  const assetIDs = galleryRemovalTargetAssetIDs(requestedAssetIDs);
+  const assetIDs = galleryRemovalTargetAssetIDs(requestedAssetIDs, { surface });
+  const activeReviewPreviewID = surface === "review"
+    && state.lightboxContext === "review"
+    && !elements.lightbox.classList.contains("hidden")
+    ? state.lightboxAssetID
+    : null;
+  const effectivePreviewAssetID = previewAssetID || activeReviewPreviewID;
   const active = activeGalleryRemovalRequest();
   if (!supportsLibrarySlimming()) {
     toast("请先更新并重启 Mac Host 后再使用图库快速删除");
@@ -11302,13 +13155,16 @@ async function submitGalleryRemoval({
         previewAssetID,
         returnFocus,
         confirmed: true,
+        surface,
       }),
     });
     return;
   }
 
   const workspaceGeneration = state.workspaceGeneration;
-  const scrollTop = elements.libraryScroll.scrollTop;
+  const scrollTop = surface === "review"
+    ? elements.reviewQueuePane.scrollTop
+    : elements.libraryScroll.scrollTop;
   state.galleryRemoval.submitting = true;
   renderGalleryRemovalControls();
   if (previewAssetID && state.lightboxContext === "library") renderLightbox();
@@ -11336,6 +13192,7 @@ async function submitGalleryRemoval({
       ...state.slimming.removal.requests.filter((item) => item.id !== request.id),
     ];
     state.galleryRemoval.contexts.set(request.id, {
+      surface,
       mediaKind: state.mediaKind,
       assetIDs: state.assets.map((asset) => asset.id),
       selectedAssetID: state.selectedAssetID,
@@ -11343,7 +13200,14 @@ async function submitGalleryRemoval({
       selectionAnchorID: state.selectionAnchorID,
       selectionMode: state.selectionMode,
       scrollTop,
-      previewAssetID,
+      previewAssetID: effectivePreviewAssetID,
+      reviewItemIDs: surface === "review"
+        ? state.review.items.map((item) => item.assetID)
+        : [],
+      reviewSelectedIndex: surface === "review" ? state.review.selectedIndex : -1,
+      reviewSelectedAssetIDs: surface === "review"
+        ? [...state.review.selectedAssetIDs]
+        : [],
     });
     toast("已冻结当前选区，请回到 Mac 核对并确认");
   } catch (error) {
@@ -11359,6 +13223,40 @@ async function submitGalleryRemoval({
       scheduleGalleryRemovalPoll();
     }
   }
+}
+
+function reconcileReviewPreviewAfterGalleryRemoval(context, hiddenAssetIDs) {
+  const previewAssetID = context?.surface === "review" ? context.previewAssetID : null;
+  if (!previewAssetID || !hiddenAssetIDs.has(previewAssetID)) return;
+  if (state.lightboxContext !== "review"
+    || state.lightboxAssetID !== previewAssetID
+    || elements.lightbox.classList.contains("hidden")) return;
+
+  const remainingIDs = state.review.items.map((item) => item.assetID);
+  const replacementID = replacementPreviewAssetID(
+    context.reviewItemIDs || [],
+    remainingIDs,
+    previewAssetID
+  );
+  if (!replacementID) {
+    closeLightbox();
+    return;
+  }
+
+  const replacementIndex = state.review.items.findIndex(
+    (item) => item.assetID === replacementID
+  );
+  state.review.selectedIndex = replacementIndex;
+  state.review.selectedAssetIDs = new Set([replacementID]);
+  state.review.selectionAnchorIndex = replacementIndex;
+  state.lightboxAssetID = replacementID;
+  const replacementCard = elements.reviewGrid.querySelector(
+    `[data-review-index="${replacementIndex}"]`
+  );
+  state.lightboxReturnFocus = reviewCardMainButton(replacementCard)
+    || state.lightboxReturnFocus;
+  renderReviewSelectionState();
+  renderLightbox();
 }
 
 function scheduleGalleryRemovalPoll() {
@@ -11414,7 +13312,36 @@ async function applyGalleryRemovalTerminal(request) {
       if (hidden.has(session.selectionAnchorID)) session.selectionAnchorID = null;
     }
   }
-  if (context?.scrollTop != null && request.mediaKind === state.mediaKind) {
+  if (context?.surface === "review"
+    && state.review.mode === "queue"
+    && request.mediaKind === state.mediaKind) {
+    state.review.selectedAssetIDs = new Set(
+      [...state.review.selectedAssetIDs].filter((assetID) => !hidden.has(assetID))
+    );
+    const anchorAssetID = state.review.items[state.review.selectionAnchorIndex]?.assetID;
+    if (anchorAssetID && hidden.has(anchorAssetID)) state.review.selectionAnchorIndex = -1;
+    state.review.detail = null;
+    state.review.tagAggregates = [];
+    state.review.detailSelectionKey = null;
+    state.review.detailRequestGeneration += 1;
+    await Promise.all([
+      loadReviewOverview({ throwOnError: false }),
+      loadReviewQueue({
+        preserveLoadedWindow: true,
+        preserveUnchangedGrid: true,
+        schedulePagination: false,
+      }),
+    ]);
+    reconcileReviewPreviewAfterGalleryRemoval(context, hidden);
+    if (context.scrollTop != null) {
+      const delta = Math.abs(elements.reviewQueuePane.scrollTop - context.scrollTop);
+      if (delta < 2) elements.reviewQueuePane.scrollTop = context.scrollTop;
+    }
+    scheduleReviewAutoPagination();
+  }
+  if (context?.surface !== "review"
+    && context?.scrollTop != null
+    && request.mediaKind === state.mediaKind) {
     // Only restore the submission position when the user has not intentionally
     // moved elsewhere while the Mac confirmation was pending.
     const delta = Math.abs(elements.libraryScroll.scrollTop - context.scrollTop);
@@ -11489,6 +13416,14 @@ function openNewTagDialog() {
 }
 
 function inlineTagSurfaceElements(surface) {
+  if (surface === "review") {
+    return {
+      form: elements.reviewInlineTagForm,
+      input: elements.reviewInlineTagName,
+      button: elements.reviewNewTagButton,
+      error: elements.reviewInlineTagError,
+    };
+  }
   return surface === "selection"
     ? {
       form: elements.selectionInspectorInlineTagForm,
@@ -11505,6 +13440,11 @@ function inlineTagSurfaceElements(surface) {
 }
 
 function inlineTagSurfaceAvailable(surface) {
+  if (surface === "review") {
+    return reviewWorkspaceIsOpen()
+      && state.review.mode === "queue"
+      && state.review.selectedAssetIDs.size > 0;
+  }
   return surface === "selection"
     ? state.selectionMode && state.selectedAssetIDs.size > 0
     : !state.selectionMode && Boolean(state.selectedAssetID);
@@ -11517,7 +13457,7 @@ function setInlineTagError(surface, message = "") {
 }
 
 function syncInlineTagCreationControls() {
-  for (const surface of ["single", "selection"]) {
+  for (const surface of ["single", "selection", "review"]) {
     const { input, button } = inlineTagSurfaceElements(surface);
     const unavailable = !state.online
       || state.tagMutating
@@ -11572,7 +13512,20 @@ async function performCreateTagAndApply({ name, assetIDs, operationID }) {
         preserveLoadedWindow: true,
       });
       if (generation !== state.workspaceGeneration) return null;
-      if (state.selectionMode) {
+      if (reviewWorkspaceIsOpen() && state.review.mode === "queue") {
+        state.review.detail = null;
+        state.review.tagAggregates = [];
+        state.review.detailSelectionKey = null;
+        state.review.detailRequestGeneration += 1;
+        await Promise.all([
+          loadReviewOverview({ throwOnError: true }),
+          loadReviewQueue({
+            preserveLoadedWindow: true,
+            throwOnError: true,
+          }),
+        ]);
+        await loadReviewInspectorDetail({ force: true, quiet: true });
+      } else if (state.selectionMode) {
         elements.batchTagSelect.value = result.tagID;
         await loadSelectionAggregate();
       } else if (state.selectedAssetID) {
@@ -11682,6 +13635,7 @@ function renderSelectionBar({ updateInspector = true } = {}) {
   renderPersonalModelControls();
   renderEmbeddingPreparation();
   renderSampleSuggestions();
+  syncInlineTagCreationControls();
   if (updateInspector) renderInspectorSurface();
 }
 
@@ -11703,26 +13657,103 @@ function embeddingPreparationTerminalText(activity) {
   return `照片特征准备完成 · ${parts.join(" · ")}`;
 }
 
+function embeddingPreparationFocusCandidates(preferred) {
+  return [
+    preferred,
+    elements.toolbarPrepareSelectedFeaturesButton,
+    elements.prepareSelectedFeaturesButton,
+    elements.selectionInspectorPrepareFeaturesButton,
+    elements.preparePersonalSelectionButton,
+  ].filter((button, index, buttons) => button && buttons.indexOf(button) === index);
+}
+
+function restoreEmbeddingPreparationFocus() {
+  const preparation = state.embeddingPreparation;
+  const active = document.activeElement;
+  const shouldRestore = !preparation.cancelFocus
+    || active === preparation.cancelFocus
+    || active === document.body;
+  const target = shouldRestore
+    ? embeddingPreparationFocusCandidates(preparation.returnFocus).find(
+      (button) => button.isConnected
+        && !button.disabled
+        && button.getClientRects().length > 0
+    )
+    : null;
+  preparation.returnFocus = null;
+  preparation.cancelFocus = null;
+  target?.focus({ preventScroll: true });
+}
+
+function focusEmbeddingPreparationCancel(preferred) {
+  const preparation = state.embeddingPreparation;
+  if (!activeEmbeddingPreparation() || preparation.returnFocus !== preferred) return;
+  const inspectorPreferred = preferred === elements.selectionInspectorPrepareFeaturesButton;
+  const candidates = inspectorPreferred
+    ? [elements.selectionInspectorCancelPreparationButton, elements.cancelEmbeddingPreparationButton]
+    : [elements.cancelEmbeddingPreparationButton, elements.selectionInspectorCancelPreparationButton];
+  const target = candidates.find(
+    (button) => !button.disabled && button.getClientRects().length > 0
+  );
+  preparation.cancelFocus = target || null;
+  target?.focus({ preventScroll: true });
+}
+
 function renderEmbeddingPreparation() {
   const preparation = state.embeddingPreparation;
   const activity = activeEmbeddingPreparation();
   const count = state.selectedAssetIDs.size;
-  elements.prepareSelectedFeaturesButton.disabled = !state.online
+  const prepareDisabled = !state.online
     || !preparation.isAvailable
     || preparation.loading
     || preparation.submitting
     || Boolean(activity)
     || count === 0;
-  elements.findSimilarSelectionButton.disabled = !state.online || count === 0;
+  for (const button of [
+    elements.prepareSelectedFeaturesButton,
+    elements.selectionInspectorPrepareFeaturesButton,
+    elements.toolbarPrepareSelectedFeaturesButton,
+    elements.preparePersonalSelectionButton,
+  ]) {
+    button.disabled = prepareDisabled;
+  }
+  const findDisabled = !state.online
+    || !supportsLibrarySlimming()
+    || state.findingSimilarFromSelection
+    || count === 0;
+  for (const button of [
+    elements.findSimilarSelectionButton,
+    elements.selectionInspectorFindSimilarButton,
+    elements.toolbarFindSimilarSelectionButton,
+    elements.findSimilarPersonalSelectionButton,
+  ]) {
+    button.disabled = findDisabled;
+  }
   elements.prepareSelectedFeaturesButton.textContent = preparation.submitting
     ? "正在交给 Mac…"
     : "准备特征";
-  elements.selectionInspectorPrepareFeaturesButton.disabled =
-    elements.prepareSelectedFeaturesButton.disabled;
-  elements.selectionInspectorFindSimilarButton.disabled =
-    elements.findSimilarSelectionButton.disabled;
   elements.selectionInspectorPrepareFeaturesButton.textContent =
     elements.prepareSelectedFeaturesButton.textContent;
+  const prepareRunning = preparation.submitting || Boolean(activity);
+  syncPersonalModelActionPresentation(elements.toolbarPrepareSelectedFeaturesButton, {
+    running: prepareRunning,
+    idleTitle: "准备选中照片特征",
+    runningTitle: preparation.submitting ? "正在交给 Mac…" : "正在准备…",
+    idleIcon: "✦",
+    busy: prepareRunning,
+    busySummary: "正在准备所选项目特征",
+  });
+  syncPersonalModelActionPresentation(elements.preparePersonalSelectionButton, {
+    running: prepareRunning,
+    idleTitle: "准备选中照片特征",
+    runningTitle: preparation.submitting ? "正在交给 Mac…" : "正在准备…",
+    idleIcon: "✦",
+    busy: prepareRunning,
+    busySummary: "正在准备所选项目特征",
+  });
+  elements.preparePersonalSelectionTitle.textContent = prepareRunning
+    ? (preparation.submitting ? "正在交给 Mac…" : "正在准备选中照片特征…")
+    : "准备选中照片特征";
   elements.embeddingPreparationStatus.classList.toggle("hidden", !activity);
   elements.cancelEmbeddingPreparationButton.classList.toggle("hidden", !activity);
   elements.selectionInspectorToolStatus.classList.toggle("hidden", !activity);
@@ -11741,6 +13772,7 @@ function renderEmbeddingPreparation() {
     elements.embeddingPreparationStatus.textContent = status;
     elements.selectionInspectorToolStatus.textContent = status;
   }
+  requestAnimationFrame(syncPersonalModelToolbarPresentation);
 }
 
 function scheduleEmbeddingPreparationPoll() {
@@ -11756,6 +13788,7 @@ function scheduleEmbeddingPreparationPoll() {
 async function loadEmbeddingPreparation({ quiet = false } = {}) {
   const preparation = state.embeddingPreparation;
   const generation = ++preparation.requestGeneration;
+  let completedReturnFocus = false;
   const activeIDs = new Set(
     preparation.activities.filter((activity) => activity.phase === "running")
       .map((activity) => activity.operationID)
@@ -11773,6 +13806,7 @@ async function loadEmbeddingPreparation({ quiet = false } = {}) {
     if (terminal && !preparation.seenTerminalOperationIDs.has(terminal.operationID)) {
       preparation.seenTerminalOperationIDs.add(terminal.operationID);
       toast(embeddingPreparationTerminalText(terminal));
+      completedReturnFocus = true;
     }
   } catch (error) {
     if (generation === preparation.requestGeneration && !quiet) {
@@ -11783,14 +13817,20 @@ async function loadEmbeddingPreparation({ quiet = false } = {}) {
       preparation.loading = false;
       renderEmbeddingPreparation();
       scheduleEmbeddingPreparationPoll();
+      if (completedReturnFocus) {
+        requestAnimationFrame(restoreEmbeddingPreparationFocus);
+      }
     }
   }
 }
 
-async function prepareSelectedFeatures() {
+async function prepareSelectedFeatures(returnFocus = document.activeElement) {
   const preparation = state.embeddingPreparation;
   const assetIDs = [...state.selectedAssetIDs];
   if (!assetIDs.length || preparation.submitting || activeEmbeddingPreparation()) return;
+  preparation.returnFocus = returnFocus instanceof HTMLElement ? returnFocus : null;
+  preparation.cancelFocus = null;
+  let started = false;
   preparation.submitting = true;
   renderEmbeddingPreparation();
   try {
@@ -11808,6 +13848,7 @@ async function prepareSelectedFeatures() {
         (activity) => activity.operationID !== response.activity.operationID
       ),
     ];
+    started = true;
     toast(`已交给 Mac 准备 ${assetIDs.length} 项特征`);
   } catch (error) {
     toast(error.message || "无法准备所选项目特征");
@@ -11815,6 +13856,11 @@ async function prepareSelectedFeatures() {
     preparation.submitting = false;
     renderEmbeddingPreparation();
     scheduleEmbeddingPreparationPoll();
+    if (started) {
+      requestAnimationFrame(() => focusEmbeddingPreparationCancel(returnFocus));
+    } else {
+      requestAnimationFrame(restoreEmbeddingPreparationFocus);
+    }
   }
 }
 
@@ -11840,6 +13886,9 @@ async function cancelEmbeddingPreparation() {
     preparation.cancelling = false;
     renderEmbeddingPreparation();
     scheduleEmbeddingPreparationPoll();
+    if (!activeEmbeddingPreparation()) {
+      requestAnimationFrame(restoreEmbeddingPreparationFocus);
+    }
   }
 }
 
@@ -12602,6 +14651,7 @@ function toggleReviewSourceFilter() {
     closeReviewSourceFilter();
     return;
   }
+  closeGridDensityPopovers({ restoreFocus: false });
   renderReviewSourceFilter();
   elements.reviewSourceFilterPopover.classList.remove("hidden");
   elements.reviewSourceFilterButton.setAttribute("aria-expanded", "true");
@@ -12922,11 +14972,13 @@ async function cancelTagLibrarySuggestions(operationID) {
   }
 }
 
-async function findSimilarFromSelection() {
+async function findSimilarFromSelection(returnFocus = document.activeElement) {
   const seedAssetIDs = [...state.selectedAssetIDs];
-  if (!seedAssetIDs.length || !state.online) return;
+  if (!seedAssetIDs.length || !state.online || state.findingSimilarFromSelection) return;
   state.slimming.mediaKind = state.mediaKind;
-  elements.findSimilarSelectionButton.disabled = true;
+  let openedWorkspace = false;
+  state.findingSimilarFromSelection = true;
+  renderEmbeddingPreparation();
   try {
     const result = await api("/v1/library-slimming/launch", {
       method: "POST",
@@ -12941,12 +14993,32 @@ async function findSimilarFromSelection() {
     });
     state.slimming.selectedJobID = result.jobID;
     toast(`正在从所选 ${seedAssetIDs.length} 项查找相似内容`);
+    state.findingSimilarFromSelection = false;
+    renderEmbeddingPreparation();
+    if (returnFocus instanceof HTMLElement
+      && returnFocus.isConnected
+      && !returnFocus.disabled
+      && returnFocus.getClientRects().length > 0) {
+      returnFocus.focus({ preventScroll: true });
+    }
     await openSlimmingWorkspace();
+    openedWorkspace = true;
+    if (returnFocus instanceof HTMLElement && returnFocus.isConnected) {
+      state.slimmingReturnFocus = returnFocus;
+    }
     await loadSlimmingWorkspace({ jobID: result.jobID, quiet: true });
   } catch (error) {
     toast(error.message || "无法从所选项目查找相似内容");
   } finally {
+    state.findingSimilarFromSelection = false;
     renderEmbeddingPreparation();
+    if (!openedWorkspace
+      && returnFocus instanceof HTMLElement
+      && returnFocus.isConnected
+      && !returnFocus.disabled
+      && returnFocus.getClientRects().length > 0) {
+      requestAnimationFrame(() => returnFocus.focus({ preventScroll: true }));
+    }
   }
 }
 
@@ -13381,6 +15453,8 @@ function openJobsPopover({ jobID = null, refreshProjection = true } = {}) {
     };
   }
   closeCompactToolbarMenu({ restoreFocus: false });
+  closeSortPopover({ restoreFocus: false });
+  closeGridDensityPopovers({ restoreFocus: false });
   elements.filterPopover.classList.add("hidden");
   elements.filterButton.setAttribute("aria-expanded", "false");
   closePersonalModelPopover({ restoreFocus: false });
@@ -13618,13 +15692,13 @@ function configureReviewWorkspacePersistentHelp() {
     kind: "review",
   });
   configurePersistentHelp(elements.reviewThumbnailAspectButton, {
-    title: "待审核缩略图宽高比",
-    detail: "在完整适应与裁切填充之间切换；只改变缩略图显示，不重载队列、不改变选择或滚动位置。",
+    title: `缩略图比例：${thumbnailAspectPresentation().title}`,
+    detail: thumbnailAspectPresentation().help,
     kind: "review",
   });
-  configurePersistentHelp(elements.reviewGridDensitySlider, {
-    title: "待审核缩略图大小",
-    detail: "调整审核网格密度；只改变显示尺寸，不重载队列、不改变主项目、多选或滚动位置。",
+  configurePersistentHelp(elements.reviewGridDensityButton, {
+    title: `待审核缩略图大小：${gridDensityOption().title}`,
+    detail: "使用与 Mac 相同的九档命名菜单；只改变显示尺寸，不重载队列、不改变主项目、多选或滚动位置。",
     kind: "review",
   });
   configurePersistentHelp(elements.reviewSelectionModeButton, {
@@ -13723,6 +15797,8 @@ function syncReviewControls() {
   document.querySelectorAll(".review-action").forEach((button) => {
     button.disabled = !state.online || controlsLocked || !hasSelection;
   });
+  renderReviewInspectorActions();
+  syncInlineTagCreationControls();
 }
 
 function reviewTaskStatusText(status, overview) {
@@ -14273,6 +16349,17 @@ async function toggleReviewCardFavorite(button) {
   reviewCardMainButton(fallbackCard)?.focus({ preventScroll: true });
 }
 
+async function applyReviewInspectorFavorite(button, isFavorite) {
+  const assetIDs = selectedReviewItems().map((item) => item.assetID);
+  if (!assetIDs.length) return;
+  const scrollTop = elements.reviewQueuePane.scrollTop;
+  await applyFavoriteMutation(assetIDs, isFavorite);
+  if (state.review.mode !== "queue") return;
+  elements.reviewQueuePane.scrollTop = scrollTop;
+  renderReviewDetail();
+  if (button.isConnected && !button.disabled) button.focus({ preventScroll: true });
+}
+
 function syncReviewCardSelection(card, item, index) {
   const selected = state.review.selectedAssetIDs.has(item.assetID);
   const primary = selected && index === state.review.selectedIndex;
@@ -14285,9 +16372,9 @@ function syncReviewCardSelection(card, item, index) {
     title: item.fileName || "未命名媒体",
     detail: `${selected ? (primary ? "当前主项目并已选择" : "已选择") : "未选择"} · ${reviewOriginText(item.suggestionOrigin)}`
       + `${item.score == null ? "" : ` · 可信度 ${Math.round(item.score * 100)}%`}。`
-      + "方向键移动，Shift 扩展选择，Space 打开单图；P 属于、X 不属于、U 稍后，Command/Ctrl-A 全选已载入项目。",
+      + "方向键移动，Shift 扩展选择，Space 打开单图；P 属于、X 不属于、U 稍后，Delete 安全删除，Command/Ctrl-A 全选已载入项目。",
     kind: "review",
-    keyShortcuts: "ArrowLeft ArrowRight ArrowUp ArrowDown Home End PageUp PageDown Space P X U Meta+A Control+A",
+    keyShortcuts: "ArrowLeft ArrowRight ArrowUp ArrowDown Home End PageUp PageDown Space P X U Delete Meta+A Control+A",
   });
   if (primary) {
     mainButton.setAttribute("aria-current", "true");
@@ -14495,22 +16582,302 @@ function appendReviewCards(items, startIndex) {
   renderReviewDetail();
 }
 
+function reviewInspectorSelectionKey() {
+  return [...state.review.selectedAssetIDs].sort().join("|");
+}
+
+function reviewInspectorDetailMatches(item) {
+  return Boolean(item)
+    && state.review.detail?.assetID === item.assetID
+    && state.review.detailSelectionKey === reviewInspectorSelectionKey();
+}
+
+function syncReviewOpenOriginalControl(detail, item) {
+  const isVideo = state.mediaKind === "video";
+  const assetID = item?.assetID || detail?.assetID || "";
+  elements.reviewOpenOriginalButton.dataset.assetId = assetID;
+  elements.reviewOpenOriginalButtonLabel.textContent = state.openingOriginal
+    ? "正在 Mac 上打开…"
+    : (isVideo ? "在 Mac 上用系统播放器打开" : "在 Mac 上用“预览”打开原图");
+  elements.reviewOpenOriginalButtonIcon.textContent = isVideo ? "▶" : "↗";
+  elements.reviewOpenOriginalHint.textContent = isVideo
+    ? "以只读方式在运行 ImageAll 的这台 Mac 上播放原始视频"
+    : "以只读方式在运行 ImageAll 的这台 Mac 上打开原始照片";
+  elements.reviewOpenOriginalButton.classList.toggle("busy", state.openingOriginal);
+  elements.reviewOpenOriginalButton.disabled = !state.online
+    || !detail
+    || detail.availability !== "available"
+    || state.review.selectedAssetIDs.size !== 1
+    || state.openingOriginal;
+}
+
+function renderReviewInspectorMetadata(item, detail) {
+  clearElement(elements.reviewAssetMetadata);
+  const loading = state.review.detailLoadingAssetID === item?.assetID
+    && state.review.detailLoadingSelectionKey === reviewInspectorSelectionKey();
+  elements.reviewMetadataState.textContent = loading
+    ? "正在读取…"
+    : (detail ? "Mac 资产详情" : "详情暂不可用");
+  if (detail) {
+    const isVideo = state.mediaKind === "video";
+    const rows = [
+      metadataRow("文件名", detail.fileName || item?.fileName || "—"),
+      metadataRow("来源", detail.sourceName),
+      metadataRow("相对位置", detail.relativePath),
+      metadataRow("媒体", isVideo ? "视频" : "照片"),
+      metadataRow(
+        "尺寸",
+        detail.width && detail.height ? `${detail.width} × ${detail.height}` : "—"
+      ),
+      ...(isVideo ? [metadataRow("时长", formatDuration(detail.durationMs))] : []),
+      metadataRow("文件大小", formatFileSize(detail.fingerprintSizeBytes)),
+      metadataRow("拍摄时间", formatDate(detail.mediaCreatedAtMs)),
+      metadataRow("修改时间", formatDate(detail.mediaModifiedAtMs)),
+      metadataRow("格式", detail.mediaType),
+      metadataRow("状态", availabilityText(detail.availability)),
+    ];
+    for (const pair of rows) elements.reviewAssetMetadata.append(...pair);
+  }
+  syncReviewOpenOriginalControl(detail, item);
+}
+
+function reviewTagDecisionProjection(tagID, detail, selectedCount) {
+  if (selectedCount > 1) {
+    const aggregate = state.review.tagAggregates.find((item) => item.tagID === tagID);
+    if (!aggregate) {
+      return {
+        decision: "unknown",
+        summary: "正在统计…",
+        states: { accepted: false, rejected: false, unknown: false, disabled: true },
+      };
+    }
+    const decision = aggregate.acceptedCount === selectedCount
+      ? "accepted"
+      : aggregate.rejectedCount === selectedCount
+        ? "rejected"
+        : aggregate.unknownCount === selectedCount
+          ? "unknown"
+          : "mixed";
+    return {
+      decision,
+      summary: selectionAggregateText(aggregate, selectedCount),
+      states: {
+        accepted: decision === "accepted",
+        rejected: decision === "rejected",
+        unknown: decision === "unknown",
+      },
+    };
+  }
+  const tag = detail?.tags?.find((candidate) => candidate.tagID === tagID);
+  const decision = tag?.decision || "unknown";
+  return {
+    decision,
+    summary: null,
+    states: {
+      accepted: decision === "accepted",
+      rejected: decision === "rejected",
+      unknown: decision === "unknown",
+      disabled: !detail,
+    },
+  };
+}
+
+function renderReviewInspectorTags(item, detail, selectedItems) {
+  const selectedCount = selectedItems.length;
+  elements.reviewTagSummary.textContent = selectedCount > 1
+    ? `已选择 ${mediaItemCountText(selectedCount)}`
+    : (detail
+      ? `已确认 ${detail.acceptedTagCount} · 已拒绝 ${detail.rejectedTagCount}`
+      : "正在读取…");
+  if (elements.reviewTags.dataset.activeTagDrag) return;
+  clearElement(elements.reviewTags);
+  const query = state.review.tagSearchText.toLocaleLowerCase("zh-CN");
+  const tags = orderedActiveTags().filter((tag) => (
+    !query || tag.displayName.toLocaleLowerCase("zh-CN").includes(query)
+  ));
+  elements.reviewTagEmpty.classList.toggle("hidden", tags.length > 0);
+  appendInspectorTagGroups(elements.reviewTags, tags, (parent, tag) => {
+    const projection = reviewTagDecisionProjection(tag.id, detail, selectedCount);
+    const row = document.createElement("div");
+    row.className = "tag-row";
+    const chip = createInspectorTagChip({
+      tagID: tag.id,
+      displayName: tag.displayName,
+      decision: projection.decision,
+      summary: projection.summary,
+      disabled: !selectedCount || Boolean(projection.states.disabled),
+    });
+    configureInspectorTagReordering(chip, "review", Boolean(query));
+    const actions = document.createElement("div");
+    actions.className = "tag-actions";
+    actions.setAttribute("role", "group");
+    actions.setAttribute("aria-label", `${tag.displayName} 标签决定`);
+    appendTagDecisionButtons(actions, tag.id, projection.states, {
+      displayName: tag.displayName,
+      batch: selectedCount > 1,
+    });
+    row.append(chip, actions);
+    parent.append(row);
+  });
+  restoreInspectorTagFocus("review");
+}
+
+function renderReviewInspectorActions(selectedItems = selectedReviewItems()) {
+  const selectedCount = selectedItems.length;
+  const assetIDs = selectedItems.map((item) => item.assetID);
+  const favoriteUnavailable = !supportsFavorites()
+    || !state.online
+    || state.favoriteMutating
+    || state.favoriteRetrying
+    || state.review.loading
+    || state.review.mutating
+    || selectedCount === 0;
+  const activeRemoval = activeGalleryRemovalRequest();
+  const deletionIDs = galleryRemovalTargetAssetIDs(assetIDs, { surface: "review" });
+  const deletionUnavailable = !supportsLibrarySlimming()
+    || !state.online
+    || state.review.loading
+    || state.review.mutating
+    || state.galleryRemoval.submitting
+    || Boolean(activeRemoval)
+    || deletionIDs.length !== selectedCount
+    || selectedCount === 0;
+
+  elements.reviewInspectorSelectionTitle.textContent = selectedCount
+    ? `已选择 ${mediaItemCountText(selectedCount)}`
+    : "未选择照片";
+  for (const button of [
+    elements.reviewInspectorFavoriteButton,
+    elements.reviewInspectorUnfavoriteButton,
+  ]) {
+    button.classList.toggle("hidden", !supportsFavorites());
+    button.disabled = favoriteUnavailable;
+  }
+  elements.reviewInspectorDeleteButton.classList.toggle(
+    "hidden",
+    !supportsLibrarySlimming()
+  );
+  elements.reviewInspectorDeleteButton.disabled = deletionUnavailable;
+
+  const activeText = galleryRemovalStatusText(activeRemoval);
+  elements.reviewInspectorDeleteButtonLabel.textContent = state.galleryRemoval.submitting
+    ? "正在交给 Mac…"
+    : (activeText || "删除");
+  elements.reviewInspectorActionStatus.dataset.active = String(Boolean(activeText));
+  if (activeText) {
+    elements.reviewInspectorActionStatus.textContent = activeText;
+  } else if (selectedCount && deletionIDs.length !== selectedCount) {
+    elements.reviewInspectorActionStatus.textContent =
+      "所选项目包含当前不可用的媒体，暂不能安全删除。";
+  } else {
+    elements.reviewInspectorActionStatus.textContent =
+      "文件夹原始媒体将永久删除；Apple Photos 项进入系统“最近删除”。";
+  }
+  elements.reviewInspectorDeleteButton.title = !supportsLibrarySlimming()
+    ? "当前 Mac Host 不支持图库快速删除"
+    : (activeText || (deletionUnavailable
+      ? "当前审核选区暂不能删除"
+      : `删除 ${mediaItemCountText(selectedCount)}；仍需在 Mac 原生窗口确认`));
+  elements.reviewInspectorDeleteButton.setAttribute(
+    "aria-label",
+    elements.reviewInspectorDeleteButton.title
+  );
+}
+
+async function loadReviewInspectorDetail({ force = false, quiet = false } = {}) {
+  const item = state.review.items[state.review.selectedIndex];
+  const selectedItems = selectedReviewItems();
+  const selectionKey = reviewInspectorSelectionKey();
+  if (state.review.mode !== "queue" || !item || !selectedItems.length) return false;
+  if (!force && reviewInspectorDetailMatches(item)) {
+    renderReviewDetail();
+    return true;
+  }
+  if (!force
+    && state.review.detailLoadingAssetID === item.assetID
+    && state.review.detailLoadingSelectionKey === selectionKey) return false;
+
+  const generation = ++state.review.detailRequestGeneration;
+  const workspaceGeneration = state.workspaceGeneration;
+  const tagIDs = activeTags().map((tag) => tag.id);
+  state.review.detail = null;
+  state.review.tagAggregates = [];
+  state.review.detailSelectionKey = null;
+  state.review.detailLoadingAssetID = item.assetID;
+  state.review.detailLoadingSelectionKey = selectionKey;
+  renderReviewDetail();
+  try {
+    const [detail, aggregates] = await Promise.all([
+      api(`/v1/assets/${item.assetID}`),
+      selectedItems.length > 1 && tagIDs.length
+        ? api("/v1/tags/selection", {
+          method: "POST",
+          body: JSON.stringify({
+            tagIDs,
+            assetIDs: selectedItems.map((candidate) => candidate.assetID),
+          }),
+        })
+        : Promise.resolve([]),
+    ]);
+    if (generation !== state.review.detailRequestGeneration
+      || workspaceGeneration !== state.workspaceGeneration
+      || state.review.mode !== "queue"
+      || state.review.items[state.review.selectedIndex]?.assetID !== item.assetID
+      || reviewInspectorSelectionKey() !== selectionKey) return false;
+    state.review.detail = detail;
+    state.review.tagAggregates = aggregates;
+    state.review.detailSelectionKey = selectionKey;
+    return true;
+  } catch (error) {
+    if (generation === state.review.detailRequestGeneration
+      && workspaceGeneration === state.workspaceGeneration
+      && !quiet) {
+      toast(error.message || "审核检查器详情载入失败");
+    }
+    return false;
+  } finally {
+    if (generation === state.review.detailRequestGeneration) {
+      state.review.detailLoadingAssetID = null;
+      state.review.detailLoadingSelectionKey = null;
+      renderReviewDetail();
+    }
+  }
+}
+
 function renderReviewDetail() {
   const item = state.review.items[state.review.selectedIndex];
   const selectedItems = selectedReviewItems();
   const hasDetail = Boolean(item) && state.review.selectedAssetIDs.has(item.assetID);
+  renderReviewInspectorActions(selectedItems);
   elements.reviewPlaceholder.classList.toggle("hidden", hasDetail);
   elements.reviewDetail.classList.toggle("hidden", !hasDetail);
   if (!hasDetail) {
+    if (state.review.cloudPreview.assetID) resetReviewCloudPreviewRecovery();
+    state.review.detail = null;
+    state.review.tagAggregates = [];
+    state.review.detailSelectionKey = null;
+    state.review.detailRequestGeneration += 1;
+    state.review.detailLoadingAssetID = null;
+    state.review.detailLoadingSelectionKey = null;
     syncReviewControls();
     return;
   }
 
   elements.reviewPreviewImage.alt = item.fileName || "审核照片预览";
-  setProtectedImageSource(
-    elements.reviewPreviewImage,
-    `/v1/assets/${item.assetID}/preview`
-  );
+  const previewRevision = reviewInspectorDetailMatches(item)
+    ? state.review.detail?.contentRevision
+    : item.contentRevision;
+  const previewQuery = previewRevision == null ? "" : `?r=${previewRevision}`;
+  const recoveringCloudPreview = state.review.cloudPreview.assetID === item.assetID
+    && state.review.cloudPreview.status !== "hidden";
+  if (!recoveringCloudPreview) {
+    setProtectedImageSource(
+      elements.reviewPreviewImage,
+      `/v1/assets/${item.assetID}/preview${previewQuery}`,
+      { priority: "high", forceFetch: true }
+    );
+  }
+  renderReviewCloudPreviewRecovery();
   elements.reviewFileName.textContent = item.fileName || "未命名照片";
   elements.reviewOrigin.textContent = [
     reviewOriginText(item.suggestionOrigin),
@@ -14533,13 +16900,22 @@ function renderReviewDetail() {
       defer: actionCount > 1 ? `稍后处理 ${actionCount} 项` : "稍后",
     }[button.dataset.action] || label.textContent;
   }
+  const detail = reviewInspectorDetailMatches(item) ? state.review.detail : null;
+  renderReviewInspectorMetadata(item, detail);
+  renderReviewInspectorTags(item, detail, selectedItems);
   syncReviewControls();
+  if (!detail
+    && !(state.review.detailLoadingAssetID === item.assetID
+      && state.review.detailLoadingSelectionKey === reviewInspectorSelectionKey())) {
+    queueMicrotask(() => void loadReviewInspectorDetail());
+  }
 }
 
 function selectReviewIndex(
   index,
   { additive = false, extendRange = false, focusGrid = false } = {}
 ) {
+  const previousPrimaryAssetID = state.review.items[state.review.selectedIndex]?.assetID || null;
   if (!state.review.items.length) {
     state.review.selectedIndex = -1;
     state.review.selectedAssetIDs.clear();
@@ -14576,6 +16952,12 @@ function selectReviewIndex(
       state.review.selectedIndex = bounded;
       state.review.selectionAnchorIndex = bounded;
     }
+  }
+  const nextPrimaryAssetID = state.review.items[state.review.selectedIndex]?.assetID || null;
+  if (previousPrimaryAssetID !== nextPrimaryAssetID
+    && state.review.cloudPreview.assetID
+    && state.review.cloudPreview.assetID !== nextPrimaryAssetID) {
+    resetReviewCloudPreviewRecovery();
   }
   renderReviewSelectionState();
   const selectedCard = elements.reviewGrid.querySelector(
@@ -14923,9 +17305,13 @@ async function openReviewWorkspace({
   initialTagID = null,
   historyMode = "push",
 } = {}) {
+  leaveIntegratedGalleryOverviewForLibrary({ historyMode: "none" });
+  leaveIntegratedWorldMapForLibrary({ historyMode: "none" });
+  resetCloudPreviewRecovery();
   if (elements.trainingSetupDialog.open) closeTrainingSetupDialog();
   closeReviewSourceFilter({ restoreFocus: false });
   elements.trainingWorkspace.classList.add("hidden");
+  syncTrainingPresentation({ renderSurfaces: false });
   if (returnToTrainingRunID) {
     state.review.returnTarget = {
       workspace: "training",
@@ -14937,6 +17323,7 @@ async function openReviewWorkspace({
     state.trainingReturnFocus = null;
   }
   elements.slimmingWorkspace.classList.add("hidden");
+  syncSlimmingPresentation({ renderSurfaces: false });
   state.slimmingReturnFocus = null;
   closeJobsPopover({ restoreFocus: false });
   elements.filterPopover.classList.add("hidden");
@@ -14944,8 +17331,11 @@ async function openReviewWorkspace({
   if (!returnToTrainingRunID && elements.reviewWorkspace.classList.contains("hidden")) {
     state.reviewReturnFocus = document.activeElement;
   }
-  elements.appView.inert = true;
   elements.reviewWorkspace.classList.remove("hidden");
+  state.review.mode = initialMode === "queue" ? "queue" : "overview";
+  state.review.selectionMode = false;
+  if (initialTagID) elements.reviewTagSelect.value = initialTagID;
+  syncReviewPresentation({ focus: true });
   recordWorkspaceHistory(
     "review",
     returnToTrainingRunID ? { returnToTrainingRunID } : null,
@@ -14953,12 +17343,6 @@ async function openReviewWorkspace({
   );
   syncReviewClosePresentation();
   renderSampleSuggestions();
-  requestAnimationFrame(() => {
-    elements.closeReviewButton.focus({ preventScroll: true });
-  });
-  state.review.mode = initialMode === "queue" ? "queue" : "overview";
-  state.review.selectionMode = false;
-  if (initialTagID) elements.reviewTagSelect.value = initialTagID;
   renderReviewMode();
   await Promise.all([
     loadReviewOverview(),
@@ -15425,7 +17809,10 @@ async function submitTrainingSetup() {
     const copy = trainingSetupMethodCopy(result.method);
     closeTrainingSetupDialog();
     toast(`${copy.title}已交给 Mac · ${result.scheduledTagCount} 个标签`);
-    await loadTrainingWorkspace({ quiet: true });
+    await Promise.all([
+      loadTrainingWorkspace({ quiet: true }),
+      loadTrainingActivities({ quiet: true }),
+    ]);
   } catch (error) {
     setup.error = error.message || "训练任务创建失败";
     setup.launching = false;
@@ -15489,6 +17876,215 @@ function trainingMetricsSummary(value) {
     // Host already sanitized the projection; malformed historical JSON is shown as absent.
   }
   return "当前记录没有可概括的评估口径。";
+}
+
+function trainingMetricCurve(value) {
+  if (!value) return [];
+  try {
+    const metrics = JSON.parse(value);
+    if (!Array.isArray(metrics.epochs)) return [];
+    const lossByEpoch = new Map();
+    for (const item of metrics.epochs) {
+      const epoch = item?.epoch;
+      const loss = item?.evaluationLoss ?? item?.validationLoss;
+      if (!Number.isInteger(epoch) || epoch <= 0 || !Number.isFinite(loss) || loss < 0) {
+        continue;
+      }
+      lossByEpoch.set(epoch, loss);
+    }
+    return [...lossByEpoch]
+      .map(([epoch, loss]) => ({ epoch, loss }))
+      .sort((left, right) => left.epoch - right.epoch);
+  } catch {
+    return [];
+  }
+}
+
+function formatTrainingLoss(value) {
+  if (!Number.isFinite(value)) return "—";
+  return new Intl.NumberFormat("zh-CN", {
+    minimumSignificantDigits: 3,
+    maximumSignificantDigits: 5,
+  }).format(value);
+}
+
+function createTrainingChartElement(name, attributes = {}) {
+  const element = document.createElementNS("http://www.w3.org/2000/svg", name);
+  for (const [key, value] of Object.entries(attributes)) {
+    element.setAttribute(key, String(value));
+  }
+  return element;
+}
+
+function renderTrainingLossChart(points, bestMetric, latestMetric) {
+  clearElement(elements.trainingLossChart);
+  const width = 720;
+  const height = 230;
+  const margin = { top: 18, right: 22, bottom: 42, left: 58 };
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
+  const firstEpoch = points[0].epoch;
+  const lastEpoch = points.at(-1).epoch;
+  const losses = points.map((point) => point.loss);
+  const minimumLoss = Math.min(...losses);
+  const maximumLoss = Math.max(...losses);
+  const rawRange = maximumLoss - minimumLoss;
+  const padding = rawRange > 0 ? rawRange * 0.12 : Math.max(maximumLoss * 0.08, 0.01);
+  const domainMinimum = Math.max(0, minimumLoss - padding);
+  const domainMaximum = maximumLoss + padding;
+  const domainRange = Math.max(domainMaximum - domainMinimum, Number.EPSILON);
+  const x = (epoch) => margin.left + (lastEpoch === firstEpoch
+    ? plotWidth / 2
+    : ((epoch - firstEpoch) / (lastEpoch - firstEpoch)) * plotWidth);
+  const y = (loss) => margin.top
+    + ((domainMaximum - loss) / domainRange) * plotHeight;
+
+  const svg = createTrainingChartElement("svg", {
+    viewBox: `0 0 ${width} ${height}`,
+    preserveAspectRatio: "xMidYMid meet",
+    "aria-hidden": "true",
+  });
+  const yTicks = 5;
+  for (let index = 0; index < yTicks; index += 1) {
+    const ratio = index / (yTicks - 1);
+    const loss = domainMaximum - ratio * domainRange;
+    const position = margin.top + ratio * plotHeight;
+    svg.append(createTrainingChartElement("line", {
+      class: "training-chart-grid-line",
+      x1: margin.left,
+      x2: width - margin.right,
+      y1: position,
+      y2: position,
+    }));
+    const label = createTrainingChartElement("text", {
+      class: "training-chart-axis-value",
+      x: margin.left - 9,
+      y: position + 3,
+      "text-anchor": "end",
+    });
+    label.textContent = formatTrainingLoss(loss);
+    svg.append(label);
+  }
+
+  const desiredXTicks = Math.min(6, points.length);
+  const tickEpochs = new Set();
+  for (let index = 0; index < desiredXTicks; index += 1) {
+    const ratio = desiredXTicks === 1 ? 0 : index / (desiredXTicks - 1);
+    tickEpochs.add(Math.round(firstEpoch + ratio * (lastEpoch - firstEpoch)));
+  }
+  for (const epoch of [...tickEpochs].sort((left, right) => left - right)) {
+    const position = x(epoch);
+    svg.append(createTrainingChartElement("line", {
+      class: "training-chart-axis-tick",
+      x1: position,
+      x2: position,
+      y1: height - margin.bottom,
+      y2: height - margin.bottom + 5,
+    }));
+    const label = createTrainingChartElement("text", {
+      class: "training-chart-axis-value",
+      x: position,
+      y: height - margin.bottom + 18,
+      "text-anchor": "middle",
+    });
+    label.textContent = String(epoch);
+    svg.append(label);
+  }
+
+  svg.append(createTrainingChartElement("line", {
+    class: "training-chart-best-rule",
+    x1: margin.left,
+    x2: width - margin.right,
+    y1: y(bestMetric.loss),
+    y2: y(bestMetric.loss),
+  }));
+  svg.append(createTrainingChartElement("polyline", {
+    class: "training-chart-loss-line",
+    points: points.map((point) => `${x(point.epoch)},${y(point.loss)}`).join(" "),
+  }));
+  for (const point of points) {
+    const best = point.epoch === bestMetric.epoch && point.loss === bestMetric.loss;
+    const mark = createTrainingChartElement("circle", {
+      class: best ? "training-chart-point best" : "training-chart-point",
+      cx: x(point.epoch),
+      cy: y(point.loss),
+      r: best ? 5 : 3.5,
+      "data-metric-epoch": point.epoch,
+      "data-best": String(best),
+    });
+    const title = createTrainingChartElement("title");
+    title.textContent = `第 ${point.epoch} 轮 · ${formatTrainingLoss(point.loss)}${best ? " · 最佳" : ""}`;
+    mark.append(title);
+    svg.append(mark);
+  }
+
+  const xAxisTitle = createTrainingChartElement("text", {
+    class: "training-chart-axis-title",
+    x: margin.left + plotWidth / 2,
+    y: height - 4,
+    "text-anchor": "middle",
+  });
+  xAxisTitle.textContent = "训练轮次";
+  svg.append(xAxisTitle);
+  const yAxisTitle = createTrainingChartElement("text", {
+    class: "training-chart-axis-title",
+    x: 13,
+    y: margin.top + plotHeight / 2,
+    transform: `rotate(-90 13 ${margin.top + plotHeight / 2})`,
+    "text-anchor": "middle",
+  });
+  yAxisTitle.textContent = "评估损失";
+  svg.append(yAxisTitle);
+  elements.trainingLossChart.append(svg);
+  elements.trainingLossChart.setAttribute(
+    "aria-label",
+    `训练损失曲线：${points.length} 轮，最佳损失 ${formatTrainingLoss(bestMetric.loss)}`
+      + `（第 ${bestMetric.epoch} 轮），最终损失 ${formatTrainingLoss(latestMetric.loss)}`
+  );
+}
+
+function renderTrainingMetrics(value) {
+  elements.trainingMetricsSummary.textContent = trainingMetricsSummary(value);
+  elements.trainingMetricsJSON.textContent = prettyTrainingJSON(value, "没有过程指标");
+  const points = trainingMetricCurve(value);
+  const hasCurve = points.length > 0;
+  elements.trainingMetricHighlights.classList.toggle("hidden", !hasCurve);
+  elements.trainingLossChart.classList.toggle("hidden", !hasCurve);
+  elements.trainingMetricEmpty.classList.toggle("hidden", hasCurve);
+  clearElement(elements.trainingMetricHighlights);
+  clearElement(elements.trainingLossChart);
+  if (!hasCurve) {
+    elements.trainingLossChart.setAttribute("aria-label", "训练损失曲线：没有可绘制的数据");
+    return;
+  }
+  const bestMetric = points.reduce((best, point) => (
+    point.loss < best.loss || (point.loss === best.loss && point.epoch < best.epoch)
+      ? point
+      : best
+  ));
+  const latestMetric = points.at(-1);
+  const highlights = [
+    { icon: "↻", title: "训练轮次", value: String(points.length) },
+    { icon: "↓", title: "最佳损失", value: formatTrainingLoss(bestMetric.loss) },
+    { icon: "⚑", title: "最终损失", value: formatTrainingLoss(latestMetric.loss) },
+  ];
+  for (const metric of highlights) {
+    const card = document.createElement("div");
+    card.className = "training-metric-highlight";
+    const icon = document.createElement("span");
+    icon.className = "training-metric-highlight-icon";
+    icon.setAttribute("aria-hidden", "true");
+    icon.textContent = metric.icon;
+    const copy = document.createElement("span");
+    const title = document.createElement("small");
+    title.textContent = metric.title;
+    const valueText = document.createElement("strong");
+    valueText.textContent = metric.value;
+    copy.append(title, valueText);
+    card.append(icon, copy);
+    elements.trainingMetricHighlights.append(card);
+  }
+  renderTrainingLossChart(points, bestMetric, latestMetric);
 }
 
 function appendTrainingFact(container, label, value, className = "training-fact") {
@@ -15934,7 +18530,10 @@ async function applyTrainingActivityAction(operationID, action, { confirmed = fa
     if (index >= 0) state.training.activities[index] = response.activity;
     renderTrainingActivities();
     toast("训练取消请求已交给 Mac");
-    await loadTrainingWorkspace({ quiet: true });
+    await Promise.all([
+      loadTrainingWorkspace({ quiet: true }),
+      loadTrainingActivities({ quiet: true }),
+    ]);
   } catch (error) {
     toast(error.message || "训练任务操作失败");
   } finally {
@@ -16403,8 +19002,7 @@ function renderTrainingDetail() {
   elements.trainingErrorMessage.textContent = guidance?.message || "这台 Mac 已保留失败记录。";
   elements.trainingErrorAction.textContent = guidance?.suggestedAction || "检查关联任务后可重新配置。";
   elements.trainingErrorCode.textContent = run.errorCode || "";
-  elements.trainingMetricsSummary.textContent = trainingMetricsSummary(run.metricsJSON);
-  elements.trainingMetricsJSON.textContent = prettyTrainingJSON(run.metricsJSON, "没有过程指标");
+  renderTrainingMetrics(run.metricsJSON);
 
   clearElement(elements.trainingArtifactLedger);
   appendTrainingFact(
@@ -16435,6 +19033,46 @@ function renderTrainingDetail() {
   appendTrainingTechnicalBlock("结果", run.resultSummaryJSON, "没有结果摘要");
   elements.trainingDetailPane.scrollTop = renderedRunID === run.id ? detailScrollTop : 0;
   state.training.renderedDetailRunID = run.id;
+}
+
+function renderTrainingWorkspaceInspector() {
+  const activity = currentActiveTrainingActivity();
+  const run = state.training.runs.find((item) => item.id === state.training.selectedRunID) || null;
+  const mediaNoun = state.training.mediaKind === "video" ? "视频" : "照片";
+  elements.inspectorTrainingFeatureRequirement.textContent =
+    `相似${mediaNoun}：每个标签至少 2 个属于、2 个不属于。`;
+  elements.inspectorTrainingWorkspaceActivity.classList.toggle("hidden", !activity);
+  elements.inspectorTrainingWorkspaceRun.classList.toggle("hidden", Boolean(activity) || !run);
+  elements.inspectorTrainingWorkspaceEmpty.classList.toggle("hidden", Boolean(activity) || Boolean(run));
+
+  if (activity) {
+    const presentation = trainingMethodPresentation(activity.method, activity.mediaKind);
+    const phase = {
+      preparingSamples: "正在准备样本",
+      preparingEmbeddings: "正在准备 AI 特征",
+      trainingAndPublishing: "正在训练并发布模型",
+    }[activity.phase] || "训练处理中";
+    const completed = Math.max(0, Number(activity.completedUnitCount || 0));
+    const total = Math.max(completed, Number(activity.totalUnitCount || 0));
+    elements.inspectorTrainingWorkspaceActivityTitle.textContent =
+      `${presentation.title} · ${phase}`;
+    elements.inspectorTrainingWorkspaceActivityDetail.textContent = total
+      ? `已完成 ${completed} / ${total}`
+      : "正在等待这台 Mac 更新进度";
+    elements.inspectorTrainingWorkspaceActivityPhase.textContent =
+      activity.tagActivities?.length
+        ? `${activity.tagActivities.length} 个标签 · 训练与发布均在这台 Mac 完成`
+        : "训练与发布均在这台 Mac 完成";
+    return;
+  }
+  if (!run) return;
+
+  const presentation = trainingMethodPresentation(run.method, run.mediaKind);
+  elements.inspectorTrainingWorkspaceTask.textContent = presentation.title;
+  elements.inspectorTrainingWorkspaceMethod.textContent = presentation.technical;
+  elements.inspectorTrainingWorkspaceState.textContent = trainingStateText(run.state);
+  elements.inspectorTrainingWorkspaceCreated.textContent = trainingDate(run.createdAtMs);
+  elements.inspectorTrainingWorkspaceIdentifier.textContent = `训练编号 ${run.id}`;
 }
 
 function renderTrainingWorkspace() {
@@ -16526,6 +19164,9 @@ function renderTrainingWorkspace() {
   renderTrainingBatchHistory();
   renderTrainingRunList();
   renderTrainingDetail();
+  if (trainingWorkspaceIsOpen() && trainingWorkspaceUsesIntegratedLayout()) {
+    renderTrainingWorkspaceInspector();
+  }
 }
 
 async function loadTrainingWorkspace({ quiet = false } = {}) {
@@ -16599,7 +19240,10 @@ async function openTrainingWorkspace({
   returnToReview = null,
   historyMode = "push",
 } = {}) {
+  leaveIntegratedGalleryOverviewForLibrary({ historyMode: "none" });
+  leaveIntegratedWorldMapForLibrary({ historyMode: "none" });
   elements.reviewWorkspace.classList.add("hidden");
+  syncReviewPresentation({ renderSurfaces: false });
   if (returnToReview) {
     state.training.returnTarget = {
       workspace: "review",
@@ -16612,6 +19256,7 @@ async function openTrainingWorkspace({
     state.reviewReturnFocus = null;
   }
   elements.slimmingWorkspace.classList.add("hidden");
+  syncSlimmingPresentation({ renderSurfaces: false });
   state.slimmingReturnFocus = null;
   closeJobsPopover({ restoreFocus: false });
   elements.filterPopover.classList.add("hidden");
@@ -16619,7 +19264,6 @@ async function openTrainingWorkspace({
   if (elements.trainingWorkspace.classList.contains("hidden")) {
     state.trainingReturnFocus = document.activeElement;
   }
-  elements.appView.inert = true;
   elements.trainingWorkspace.classList.remove("hidden");
   recordWorkspaceHistory(
     "training",
@@ -16627,9 +19271,7 @@ async function openTrainingWorkspace({
     historyMode
   );
   syncTrainingClosePresentation();
-  requestAnimationFrame(() => {
-    elements.closeTrainingButton.focus({ preventScroll: true });
-  });
+  syncTrainingPresentation({ focus: true });
   await loadTrainingWorkspace();
 }
 
@@ -16689,10 +19331,14 @@ async function expandSlimmingJobWindow({ all = false } = {}) {
     ? totalSlimmingJobCount()
     : previousLimit + SLIMMING_JOB_PAGE_SIZE;
   state.slimming.jobLimit = Math.min(SLIMMING_JOB_LIMIT_MAX, target);
-  const loaded = await loadSlimmingWorkspace({ quiet: true });
+  const loaded = await loadSlimmingWorkspace({ quiet: true, appendKind: "jobs" });
   if (!loaded) {
     state.slimming.jobLimit = previousLimit;
-    renderSlimmingWorkspace();
+    renderSlimmingWorkspace({
+      preserveJobs: true,
+      preserveClusters: true,
+      preserveMembers: true,
+    });
     return false;
   }
   return state.slimming.jobLimit > previousLimit;
@@ -16824,14 +19470,106 @@ function renderSlimmingJobActions() {
   }
 }
 
-function renderSlimmingJobs() {
-  clearElement(elements.slimmingJobList);
+function renderSlimmingCurrentJobControls() {
+  const activeAction = document.activeElement?.closest?.(
+    "#slimmingCurrentJobActions [data-slimming-job-action-id][data-action]"
+  );
+  const focusedAction = activeAction
+    ? {
+      jobID: activeAction.dataset.slimmingJobActionId,
+      action: activeAction.dataset.action,
+    }
+    : null;
+  const restoreFocusedAction = () => {
+    if (!focusedAction) return;
+    const matching = elements.slimmingCurrentJobActions.querySelector(
+      `[data-slimming-job-action-id="${CSS.escape(focusedAction.jobID)}"]`
+      + `[data-action="${CSS.escape(focusedAction.action)}"]:not(:disabled)`
+    );
+    const fallback = elements.slimmingCurrentJobActions.querySelector(
+      "[data-slimming-job-action-id]:not(:disabled)"
+    );
+    (matching || fallback || elements.closeSlimmingAnalysisOptionsButton)
+      ?.focus({ preventScroll: true });
+  };
+  const job = selectedSlimmingJob();
+  clearElement(elements.slimmingCurrentJobProgress);
+  clearElement(elements.slimmingCurrentJobActions);
+  elements.slimmingCurrentJobProgress.classList.add("hidden");
+  elements.slimmingCurrentJobState.className = "slimming-current-job-state";
+  if (!job) {
+    elements.slimmingCurrentJobSummary.textContent = "尚未选择分析记录。";
+    elements.slimmingCurrentJobState.textContent = "—";
+    restoreFocusedAction();
+    return;
+  }
+
+  const sources = job.sourceNames?.length ? job.sourceNames.join("、") : "任务来源不可用";
+  elements.slimmingCurrentJobSummary.textContent = `${slimmingModeText(job.mode)} · ${sources}`;
+  elements.slimmingCurrentJobState.textContent = slimmingJobStateText(job);
+  elements.slimmingCurrentJobState.classList.add(job.state || "unknown");
+  if (job.scanProgress) {
+    elements.slimmingCurrentJobProgress.classList.remove("hidden");
+    appendSlimmingScanProgress(elements.slimmingCurrentJobProgress, job);
+  }
+
+  const mutating = state.slimming.jobMutatingIDs.has(job.id);
+  const locked = !state.online || mutating || Boolean(state.slimming.appending);
+  for (const action of job.availableActions || []) {
+    if (!["pause", "resume"].includes(action)) continue;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "button button-compact write-action";
+    button.dataset.slimmingJobActionId = job.id;
+    button.dataset.action = action;
+    button.disabled = locked;
+    button.textContent = mutating
+      ? (action === "pause" ? "正在暂停…" : "正在继续…")
+      : (action === "pause" ? "暂停当前" : "继续当前");
+    button.title = action === "pause"
+      ? "暂停当前分析并保留已经完成的进度"
+      : "从保存的进度继续当前分析";
+    elements.slimmingCurrentJobActions.append(button);
+  }
+  if (job.state !== "running") {
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "button button-compact button-danger write-action";
+    remove.dataset.slimmingJobActionId = job.id;
+    remove.dataset.action = "deleteRecord";
+    remove.disabled = locked;
+    remove.textContent = "删除当前记录";
+    remove.title = "只删除分析记录和结果，不会删除任何原始媒体";
+    elements.slimmingCurrentJobActions.append(remove);
+  }
+  restoreFocusedAction();
+}
+
+function focusSlimmingCurrentJobAction(jobID, preferredAction = null) {
+  requestAnimationFrame(() => {
+    if (elements.slimmingAnalysisOptionsPopover.classList.contains("hidden")) return;
+    const preferred = preferredAction
+      ? elements.slimmingCurrentJobActions.querySelector(
+        `[data-slimming-job-action-id="${CSS.escape(jobID)}"]`
+        + `[data-action="${CSS.escape(preferredAction)}"]`
+      )
+      : null;
+    const fallback = elements.slimmingCurrentJobActions.querySelector(
+      "[data-slimming-job-action-id]:not(:disabled)"
+    );
+    (preferred || fallback || elements.closeSlimmingAnalysisOptionsButton)
+      ?.focus({ preventScroll: true });
+  });
+}
+
+function renderSlimmingJobSummary() {
   const totalCount = totalSlimmingJobCount();
   const loadedCount = state.slimming.jobs.length;
   const hasMore = hasMoreSlimmingJobs();
+  const appending = state.slimming.appending === "jobs";
   elements.slimmingJobCount.textContent = `${totalCount} 条`;
   elements.slimmingJobCount.title = hasMore
-    ? `已载入 ${loadedCount} / ${totalCount} 条分析记录`
+    ? `已载入 ${loadedCount} / ${totalCount} 条分析记录${appending ? "，正在载入更多" : ""}`
     : `已载入全部 ${totalCount} 条分析记录`;
   const selectedIndex = selectedSlimmingJobIndex();
   elements.slimmingJobPosition.textContent = state.slimming.jobs.length
@@ -16841,55 +19579,73 @@ function renderSlimmingJobs() {
   elements.nextSlimmingJobButton.disabled = state.slimming.loading
     || selectedIndex < 0
     || (selectedIndex >= state.slimming.jobs.length - 1 && !hasMore);
-  elements.slimmingLoadMoreJobsButton.classList.toggle("hidden", !hasMore);
+  elements.slimmingLoadMoreJobsButton.classList.toggle("hidden", !hasMore && !appending);
   elements.slimmingLoadMoreJobsButton.disabled = state.slimming.loading;
-  elements.slimmingLoadMoreJobsButton.textContent = hasMore
-    ? `载入更多记录（剩余 ${Math.max(0, totalCount - loadedCount)}）`
-    : "已载入全部记录";
+  elements.slimmingLoadMoreJobsButton.textContent = appending
+    ? "正在载入更多记录…"
+    : hasMore
+      ? `载入更多记录（剩余 ${Math.max(0, totalCount - loadedCount)}）`
+      : "已载入全部记录";
+  elements.slimmingLoadMoreJobsButton.setAttribute("aria-busy", String(appending));
   elements.slimmingEmpty.classList.toggle(
     "hidden",
-    state.slimming.loading || state.slimming.jobs.length > 0
+    (state.slimming.loading && !appending) || state.slimming.jobs.length > 0
   );
   const activeCount = state.slimming.jobs.filter(
     (job) => ["pending", "running", "paused", "retryableFailed"].includes(job.state)
   ).length;
   elements.slimmingNavigationCount.textContent = activeCount ? String(activeCount) : "";
-  for (const job of state.slimming.jobs) {
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = "slimming-job-row";
-    row.dataset.slimmingJobId = job.id;
-    row.classList.toggle("selected", job.id === state.slimming.selectedJobID);
-    row.setAttribute("role", "option");
-    row.setAttribute("aria-selected", String(job.id === state.slimming.selectedJobID));
-    row.tabIndex = job.id === state.slimming.selectedJobID ? 0 : -1;
-    const heading = document.createElement("span");
-    heading.className = "slimming-row-heading";
-    const title = document.createElement("strong");
-    title.textContent = slimmingModeText(job.mode);
-    const status = document.createElement("span");
-    status.className = `slimming-state ${job.state}`;
-    status.textContent = slimmingJobStateText(job);
-    heading.append(title, status);
-    const counts = document.createElement("span");
-    counts.className = "slimming-row-detail";
-    const unit = job.mediaKind === "video" ? "个视频" : "张照片";
-    const countParts = [`${job.memberCount} ${unit}`];
-    if (job.seedCount > 0) countParts.push(`种子 ${job.seedCount}`);
-    if (job.hasResult) countParts.push(`${job.clusterCount} 个簇`);
-    countParts.push(`尝试 ${job.attempts}/${job.maxAttempts}`);
-    counts.textContent = countParts.join(" · ");
-    const source = document.createElement("span");
-    source.className = "slimming-row-detail";
-    source.textContent = job.sourceNames?.length ? job.sourceNames.join(" · ") : "全部可用来源";
-    const date = document.createElement("span");
-    date.className = "slimming-row-date";
-    date.textContent = formatDate(job.updatedAtMs);
-    row.append(heading, counts);
-    appendSlimmingScanProgress(row, job, true);
-    row.append(source, date);
-    elements.slimmingJobList.append(row);
+}
+
+function syncSlimmingJobRow(row, job) {
+  clearElement(row);
+  row.type = "button";
+  row.className = "slimming-job-row";
+  row.dataset.slimmingJobId = job.id;
+  row.classList.toggle("selected", job.id === state.slimming.selectedJobID);
+  row.setAttribute("role", "option");
+  row.setAttribute("aria-selected", String(job.id === state.slimming.selectedJobID));
+  row.tabIndex = job.id === state.slimming.selectedJobID ? 0 : -1;
+  const heading = document.createElement("span");
+  heading.className = "slimming-row-heading";
+  const title = document.createElement("strong");
+  title.textContent = slimmingModeText(job.mode);
+  const status = document.createElement("span");
+  status.className = `slimming-state ${job.state}`;
+  status.textContent = slimmingJobStateText(job);
+  heading.append(title, status);
+  const counts = document.createElement("span");
+  counts.className = "slimming-row-detail";
+  const unit = job.mediaKind === "video" ? "个视频" : "张照片";
+  const countParts = [`${job.memberCount} ${unit}`];
+  if (job.seedCount > 0) countParts.push(`种子 ${job.seedCount}`);
+  if (job.hasResult) countParts.push(`${job.clusterCount} 个簇`);
+  countParts.push(`尝试 ${job.attempts}/${job.maxAttempts}`);
+  counts.textContent = countParts.join(" · ");
+  const source = document.createElement("span");
+  source.className = "slimming-row-detail";
+  source.textContent = job.sourceNames?.length ? job.sourceNames.join(" · ") : "全部可用来源";
+  const date = document.createElement("span");
+  date.className = "slimming-row-date";
+  date.textContent = formatDate(job.updatedAtMs);
+  row.append(heading, counts);
+  appendSlimmingScanProgress(row, job, true);
+  row.append(source, date);
+  return row;
+}
+
+function appendSlimmingJobRows(jobs) {
+  const fragment = document.createDocumentFragment();
+  for (const job of jobs) {
+    fragment.append(syncSlimmingJobRow(document.createElement("button"), job));
   }
+  elements.slimmingJobList.append(fragment);
+}
+
+function renderSlimmingJobs({ appendItems = null } = {}) {
+  renderSlimmingJobSummary();
+  if (appendItems === null) clearElement(elements.slimmingJobList);
+  appendSlimmingJobRows(appendItems === null ? state.slimming.jobs : appendItems);
   renderSlimmingJobActions();
 }
 
@@ -16950,18 +19706,24 @@ function renderSlimmingJobStatus() {
 }
 
 function appendSlimmingInspectorField(label, value, className = "") {
-  const wrapper = document.createElement("div");
-  wrapper.className = `slimming-inspector-field${className ? ` ${className}` : ""}`;
-  const term = document.createElement("dt");
-  term.textContent = label;
-  const detail = document.createElement("dd");
-  detail.textContent = value || "—";
-  wrapper.append(term, detail);
-  elements.slimmingInspectorContent.append(wrapper);
+  for (const target of [
+    elements.slimmingInspectorContent,
+    elements.inspectorSlimmingWorkspaceContent,
+  ]) {
+    const wrapper = document.createElement("div");
+    wrapper.className = `slimming-inspector-field${className ? ` ${className}` : ""}`;
+    const term = document.createElement("dt");
+    term.textContent = label;
+    const detail = document.createElement("dd");
+    detail.textContent = value || "—";
+    wrapper.append(term, detail);
+    target.append(wrapper);
+  }
 }
 
 function renderSlimmingInspector() {
   clearElement(elements.slimmingInspectorContent);
+  clearElement(elements.inspectorSlimmingWorkspaceContent);
   const job = selectedSlimmingJob();
   const cluster = state.slimming.clusters.find(
     (item) => item.id === state.slimming.selectedClusterID
@@ -16972,6 +19734,10 @@ function renderSlimmingInspector() {
   )];
   elements.slimmingInspectorSummary.textContent = clusterCopy?.title
     || (job ? `${slimmingModeText(job.mode)} · ${slimmingJobStateText(job)}` : "分析概览");
+  const isVideo = state.slimming.mediaKind === "video";
+  elements.inspectorSlimmingWorkspaceDescription.textContent = isVideo
+    ? "按代表缩略图查找视觉重复或相似的视频；分析和清理均由这台 Mac 执行。"
+    : "查找相同与相似照片；分析和清理均由这台 Mac 执行。";
 
   appendSlimmingInspectorField("分析记录", `${totalSlimmingJobCount()} 条`);
   appendSlimmingInspectorField("当前任务", job ? slimmingModeText(job.mode) : "未选择");
@@ -16989,8 +19755,18 @@ function renderSlimmingInspector() {
     "分析范围",
     job ? `${job.memberCount} ${job.mediaKind === "video" ? "个" : "张"}` : "—"
   );
+  if (Number(job?.seedCount || 0) > 0) {
+    appendSlimmingInspectorField(
+      "种子",
+      `${job.seedCount} ${job.mediaKind === "video" ? "个" : "张"}`
+    );
+  }
   appendSlimmingInspectorField("已分析", `${state.slimming.analyzedAssetCount} 项`);
   appendSlimmingInspectorField("待分析", `${state.slimming.pendingAnalysisCount} 项`);
+  appendSlimmingInspectorField(
+    "回收站",
+    `${Number(state.slimming.recycle.totalCount || state.slimming.recycle.entries.length)} 项`
+  );
   appendSlimmingInspectorField("策略版本", state.slimming.policyVersion || "—");
 
   if (cluster) {
@@ -17008,6 +19784,11 @@ function renderSlimmingInspector() {
       "technical"
     );
   }
+  const pendingCount = Number(state.slimming.pendingAnalysisCount || 0);
+  elements.inspectorSlimmingWorkspacePending.classList.toggle("hidden", pendingCount === 0);
+  elements.inspectorSlimmingWorkspacePending.textContent = pendingCount
+    ? `有 ${pendingCount} ${isVideo ? "个视频" : "张照片"}缺少分析特征，已标为待分析。`
+    : "";
 }
 
 function renderSlimmingClusterScopes() {
@@ -17070,25 +19851,36 @@ function renderSlimmingSelectedClusterReview(cluster) {
   elements.slimmingReprocessClusterButton.textContent = pending ? "正在保存…" : "重新处理";
 }
 
-function renderSlimmingClusters() {
+function totalSlimmingClusterCount() {
+  return state.slimming.clusterScopeSupported === true
+    ? Number(state.slimming.clusterScopeCounts?.[state.slimming.clusterScope] || 0)
+    : state.slimming.clusters.length;
+}
+
+function renderSlimmingClusterSummary() {
   renderSlimmingClusterScopes();
-  clearElement(elements.slimmingClusterList);
   elements.slimmingClusterScopeTitle.textContent = slimmingClusterScopeText(
     state.slimming.clusterScope
   );
-  const totalClusterCount = state.slimming.clusterScopeSupported === true
-    ? Number(state.slimming.clusterScopeCounts?.[state.slimming.clusterScope] || 0)
-    : state.slimming.clusters.length;
+  const totalClusterCount = totalSlimmingClusterCount();
+  const appending = state.slimming.appending === "clusters";
   elements.slimmingClusterCount.textContent = totalClusterCount > state.slimming.clusters.length
-    ? `${state.slimming.clusters.length} / ${totalClusterCount} 组`
+    ? `${state.slimming.clusters.length} / ${totalClusterCount} 组${appending ? " · 正在载入更多…" : ""}`
     : `${state.slimming.clusters.length} 组`;
   elements.slimmingLoadMoreClustersButton.classList.toggle(
     "hidden",
-    state.slimming.loading || state.slimming.clusters.length >= totalClusterCount
+    !appending && state.slimming.clusters.length >= totalClusterCount
   );
+  elements.slimmingLoadMoreClustersButton.disabled = state.slimming.loading;
+  elements.slimmingLoadMoreClustersButton.textContent = appending
+    ? "正在载入更多分组…"
+    : `显示更多分组（剩余 ${Math.max(0, totalClusterCount - state.slimming.clusters.length)}）`;
+  elements.slimmingLoadMoreClustersButton.setAttribute("aria-busy", String(appending));
   elements.slimmingClusterEmpty.classList.toggle(
     "hidden",
-    state.slimming.loading || !state.slimming.selectedJobID || state.slimming.clusters.length > 0
+    (state.slimming.loading && !appending)
+      || !state.slimming.selectedJobID
+      || state.slimming.clusters.length > 0
   );
   const emptyTitle = elements.slimmingClusterEmpty.querySelector("strong");
   const emptyMessage = elements.slimmingClusterEmpty.querySelector("p");
@@ -17101,57 +19893,72 @@ function renderSlimmingClusters() {
     emptyTitle.textContent = "没有候选分组";
     emptyMessage.textContent = "此记录未发现重复或相似项目。";
   }
-  for (const cluster of state.slimming.clusters) {
-    const copy = slimmingClusterPresentation(cluster);
-    const row = document.createElement("div");
-    row.className = "slimming-cluster-row";
-    row.dataset.slimmingClusterRowId = cluster.id;
-    row.classList.toggle("selected", cluster.id === state.slimming.selectedClusterID);
-    row.setAttribute("role", "listitem");
-    const main = document.createElement("button");
-    main.type = "button";
-    main.className = "slimming-cluster-main";
-    main.dataset.slimmingClusterId = cluster.id;
-    main.setAttribute("aria-pressed", String(cluster.id === state.slimming.selectedClusterID));
-    main.setAttribute("aria-label", `${copy.title}，${cluster.memberCount} 项，${copy.detail}`);
-    const image = cluster.isHistoricalProcessedRecord && Number(cluster.memberCount || 0) === 0
-      ? document.createElement("span")
-      : document.createElement("img");
-    if (image instanceof HTMLImageElement) {
-      image.loading = "lazy";
-      image.alt = "";
-      image.setAttribute("aria-hidden", "true");
-      setProtectedImageSource(
-        image,
-        `/v1/assets/${cluster.representativeAssetID}/thumbnail?w=180&rev=0`
-      );
-    } else {
-      image.className = "slimming-cluster-history-mark";
-      image.setAttribute("aria-hidden", "true");
-      image.textContent = "✓";
-    }
-    const text = document.createElement("span");
-    text.className = "slimming-cluster-copy";
-    const title = document.createElement("strong");
-    title.textContent = cluster.isHistoricalProcessedRecord
-      ? `${copy.title} · ${copy.historicalDetail}`
-      : `${copy.title} · ${cluster.memberCount} 项`;
-    const detail = document.createElement("span");
-    detail.textContent = cluster.isHistoricalProcessedRecord
-      ? `历史处理记录 · ${copy.detail}`
-      : copy.detail;
-    text.append(title, detail);
-    main.append(image, text);
-    row.append(main);
-    if (state.slimming.clusterScopeSupported === true) {
-      const actions = document.createElement("span");
-      actions.className = "slimming-cluster-review-actions";
-      appendSlimmingClusterReviewButton(actions, cluster, "confirmed", "已确认", "✓");
-      appendSlimmingClusterReviewButton(actions, cluster, "ignored", "忽略", "⊘");
-      row.append(actions);
-    }
-    elements.slimmingClusterList.append(row);
+}
+
+function syncSlimmingClusterRow(row, cluster) {
+  clearElement(row);
+  const copy = slimmingClusterPresentation(cluster);
+  row.className = "slimming-cluster-row";
+  row.dataset.slimmingClusterRowId = cluster.id;
+  row.classList.toggle("selected", cluster.id === state.slimming.selectedClusterID);
+  row.setAttribute("role", "listitem");
+  const main = document.createElement("button");
+  main.type = "button";
+  main.className = "slimming-cluster-main";
+  main.dataset.slimmingClusterId = cluster.id;
+  main.setAttribute("aria-pressed", String(cluster.id === state.slimming.selectedClusterID));
+  main.setAttribute("aria-label", `${copy.title}，${cluster.memberCount} 项，${copy.detail}`);
+  const image = cluster.isHistoricalProcessedRecord && Number(cluster.memberCount || 0) === 0
+    ? document.createElement("span")
+    : document.createElement("img");
+  if (image instanceof HTMLImageElement) {
+    image.loading = "lazy";
+    image.alt = "";
+    image.setAttribute("aria-hidden", "true");
+    setProtectedImageSource(
+      image,
+      `/v1/assets/${cluster.representativeAssetID}/thumbnail?w=180&rev=0`
+    );
+  } else {
+    image.className = "slimming-cluster-history-mark";
+    image.setAttribute("aria-hidden", "true");
+    image.textContent = "✓";
   }
+  const text = document.createElement("span");
+  text.className = "slimming-cluster-copy";
+  const title = document.createElement("strong");
+  title.textContent = cluster.isHistoricalProcessedRecord
+    ? `${copy.title} · ${copy.historicalDetail}`
+    : `${copy.title} · ${cluster.memberCount} 项`;
+  const detail = document.createElement("span");
+  detail.textContent = cluster.isHistoricalProcessedRecord
+    ? `历史处理记录 · ${copy.detail}`
+    : copy.detail;
+  text.append(title, detail);
+  main.append(image, text);
+  row.append(main);
+  if (state.slimming.clusterScopeSupported === true) {
+    const actions = document.createElement("span");
+    actions.className = "slimming-cluster-review-actions";
+    appendSlimmingClusterReviewButton(actions, cluster, "confirmed", "已确认", "✓");
+    appendSlimmingClusterReviewButton(actions, cluster, "ignored", "忽略", "⊘");
+    row.append(actions);
+  }
+  return row;
+}
+
+function appendSlimmingClusterRows(clusters) {
+  const fragment = document.createDocumentFragment();
+  for (const cluster of clusters) {
+    fragment.append(syncSlimmingClusterRow(document.createElement("div"), cluster));
+  }
+  elements.slimmingClusterList.append(fragment);
+}
+
+function renderSlimmingClusters({ appendItems = null } = {}) {
+  renderSlimmingClusterSummary();
+  if (appendItems === null) clearElement(elements.slimmingClusterList);
+  appendSlimmingClusterRows(appendItems === null ? state.slimming.clusters : appendItems);
 }
 
 function syncSlimmingSelectionModeControls() {
@@ -17162,7 +19969,8 @@ function syncSlimmingSelectionModeControls() {
   const selectedCount = state.slimming.selectedMemberIDs.size;
   elements.slimmingWorkspace.classList.toggle("touch-selection-mode", active);
   elements.slimmingSelectionModeButton.classList.toggle("hidden", !available);
-  elements.slimmingSelectionModeButton.disabled = state.slimming.loading;
+  const blocksSelection = state.slimming.loading && !state.slimming.appending;
+  elements.slimmingSelectionModeButton.disabled = blocksSelection;
   elements.slimmingSelectionModeButton.setAttribute("aria-pressed", String(active));
   elements.slimmingSelectionModeButton.textContent = active ? "完成" : "选择";
   elements.slimmingSelectionModeButton.title = active
@@ -17175,7 +19983,7 @@ function syncSlimmingSelectionModeControls() {
       : "选择多个瘦身候选项目"
   );
   elements.slimmingSelectAllButton.classList.toggle("hidden", !active);
-  elements.slimmingSelectAllButton.disabled = state.slimming.loading
+  elements.slimmingSelectAllButton.disabled = blocksSelection
     || selectedCount === state.slimming.members.length;
 }
 
@@ -17230,6 +20038,7 @@ function renderSlimmingMemberSelection({ renderInspector = true } = {}) {
   const active = currentSlimmingRemovalRequest()?.phase;
   const identicalActive = currentSlimmingIdenticalCleanupRequest()?.phase;
   const unavailable = state.slimming.removal.submitting
+    || Boolean(state.slimming.appending)
     || active === "awaitingMac"
     || active === "running"
     || identicalActive === "awaitingMac"
@@ -17363,7 +20172,8 @@ async function toggleSlimmingRecycleFavorite(button) {
   );
   const assetID = button?.dataset.mediaFavoriteAssetId || entry?.assetID;
   const favorite = favoriteStateForAssetID(assetID);
-  if (!entry || !assetID || !favorite || state.favoriteMutating) return;
+  if (!entry || !assetID || !favorite || state.favoriteMutating
+    || state.slimming.recycle.appending) return;
   const scrollTop = elements.slimmingRecycleBody.scrollTop;
   await applyFavoriteMutation([assetID], favorite.isFavorite !== true);
   elements.slimmingRecycleBody.scrollTop = scrollTop;
@@ -17623,8 +20433,7 @@ function closeSlimmingVerificationReport() {
   }
 }
 
-function renderSlimmingMembers() {
-  clearElement(elements.slimmingMemberGrid);
+function renderSlimmingMemberSummary() {
   const cluster = state.slimming.clusters.find(
     (item) => item.id === state.slimming.selectedClusterID
   );
@@ -17652,75 +20461,102 @@ function renderSlimmingMembers() {
   elements.slimmingMemberSummary.textContent = cluster
     ? `${copy.detail} · ${copy.historicalDetail || `${state.slimming.members.length}/${cluster.memberCount} 项`} · ${sourceNames.join(" · ") || (historicalEmpty ? "成员当前不可查看" : "来源信息不可用")}`
     : "分组中的照片会在这里显示";
+  const appending = state.slimming.appending === "members";
   elements.slimmingLoadMoreMembersButton.classList.toggle(
     "hidden",
-    !cluster || state.slimming.loading || state.slimming.members.length >= cluster.memberCount
+    !cluster || (!appending && state.slimming.members.length >= cluster.memberCount)
   );
-  for (const member of state.slimming.members) {
-    const card = document.createElement("div");
-    card.className = "slimming-member-card";
-    card.dataset.slimmingMemberId = member.id;
-    if (Number(member.width) > 0 && Number(member.height) > 0) {
-      card.style.setProperty(
-        "--slimming-member-aspect",
-        `${Number(member.width)} / ${Number(member.height)}`
-      );
-    }
-    const main = slimmingMemberMainButton(card, { create: true });
-    main.dataset.slimmingMemberMain = "true";
-    main.setAttribute(
-      "aria-label",
-      `${member.fileName || "未命名项目"}，${member.sourceName || "来源未知"}`
+  elements.slimmingLoadMoreMembersButton.disabled = state.slimming.loading;
+  elements.slimmingLoadMoreMembersButton.textContent = appending
+    ? "正在载入更多成员…"
+    : `显示更多成员（剩余 ${Math.max(
+      0,
+      Number(cluster?.memberCount || 0) - state.slimming.members.length
+    )}）`;
+  elements.slimmingLoadMoreMembersButton.setAttribute("aria-busy", String(appending));
+  return cluster;
+}
+
+function syncSlimmingMemberCard(card, member) {
+  clearElement(card);
+  card.className = "slimming-member-card";
+  card.dataset.slimmingMemberId = member.id;
+  if (Number(member.width) > 0 && Number(member.height) > 0) {
+    card.style.setProperty(
+      "--slimming-member-aspect",
+      `${Number(member.width)} / ${Number(member.height)}`
     );
-    main.setAttribute(
-      "aria-keyshortcuts",
-      "ArrowLeft ArrowRight ArrowUp ArrowDown Home End PageUp PageDown Space"
-    );
-    main.title = "方向键移动，Shift 扩展选择，Space 打开单图";
-    const image = document.createElement("img");
-    image.loading = "lazy";
-    image.alt = "";
-    image.setAttribute("aria-hidden", "true");
-    syncProtectedThumbnailSource(image, member.id, {
-      width: 360,
-      revision: member.contentRevision || 0,
-    });
-    const footer = document.createElement("span");
-    footer.className = "slimming-member-footer";
-    const name = document.createElement("strong");
-    name.textContent = member.fileName || "未命名项目";
-    const source = document.createElement("span");
-    source.textContent = member.sourceName || availabilityText(member.availability);
-    footer.append(name, source);
-    main.append(image, footer);
-    if (state.slimming.mediaKind === "video") {
-      const video = document.createElement("span");
-      video.className = "slimming-member-video-badge";
-      video.setAttribute("aria-hidden", "true");
-      video.textContent = `▶${member.durationMs == null ? "" : ` ${formatDuration(member.durationMs)}`}`;
-      main.append(video);
-    }
-    syncSlimmingMemberFavoriteButton(card, member);
-    const removalPhase = activeSlimmingRemovalPhase(member.id);
-    card.classList.toggle("pending-removal", Boolean(removalPhase));
-    if (removalPhase) {
-      main.disabled = true;
-      const overlay = document.createElement("span");
-      overlay.className = "slimming-member-pending-overlay";
-      overlay.setAttribute("role", "status");
-      overlay.setAttribute("aria-label", removalPhase === "awaitingMac"
-        ? "等待 Mac 确认安全回收"
-        : "正在安全处理回收");
-      const spinner = document.createElement("span");
-      spinner.className = "spinner";
-      spinner.setAttribute("aria-hidden", "true");
-      const copy = document.createElement("strong");
-      copy.textContent = removalPhase === "awaitingMac" ? "等待 Mac 确认" : "正在移动";
-      overlay.append(spinner, copy);
-      card.append(overlay);
-    }
-    elements.slimmingMemberGrid.append(card);
+  } else {
+    card.style.removeProperty("--slimming-member-aspect");
   }
+  const main = slimmingMemberMainButton(card, { create: true });
+  main.dataset.slimmingMemberMain = "true";
+  main.setAttribute(
+    "aria-label",
+    `${member.fileName || "未命名项目"}，${member.sourceName || "来源未知"}`
+  );
+  main.setAttribute(
+    "aria-keyshortcuts",
+    "ArrowLeft ArrowRight ArrowUp ArrowDown Home End PageUp PageDown Space"
+  );
+  main.title = "方向键移动，Shift 扩展选择，Space 打开单图";
+  const image = document.createElement("img");
+  image.loading = "lazy";
+  image.alt = "";
+  image.setAttribute("aria-hidden", "true");
+  syncProtectedThumbnailSource(image, member.id, {
+    width: 360,
+    revision: member.contentRevision || 0,
+  });
+  const footer = document.createElement("span");
+  footer.className = "slimming-member-footer";
+  const name = document.createElement("strong");
+  name.textContent = member.fileName || "未命名项目";
+  const source = document.createElement("span");
+  source.textContent = member.sourceName || availabilityText(member.availability);
+  footer.append(name, source);
+  main.append(image, footer);
+  if (state.slimming.mediaKind === "video") {
+    const video = document.createElement("span");
+    video.className = "slimming-member-video-badge";
+    video.setAttribute("aria-hidden", "true");
+    video.textContent = `▶${member.durationMs == null ? "" : ` ${formatDuration(member.durationMs)}`}`;
+    main.append(video);
+  }
+  syncSlimmingMemberFavoriteButton(card, member);
+  const removalPhase = activeSlimmingRemovalPhase(member.id);
+  card.classList.toggle("pending-removal", Boolean(removalPhase));
+  if (removalPhase) {
+    main.disabled = true;
+    const overlay = document.createElement("span");
+    overlay.className = "slimming-member-pending-overlay";
+    overlay.setAttribute("role", "status");
+    overlay.setAttribute("aria-label", removalPhase === "awaitingMac"
+      ? "等待 Mac 确认安全回收"
+      : "正在安全处理回收");
+    const spinner = document.createElement("span");
+    spinner.className = "spinner";
+    spinner.setAttribute("aria-hidden", "true");
+    const copy = document.createElement("strong");
+    copy.textContent = removalPhase === "awaitingMac" ? "等待 Mac 确认" : "正在移动";
+    overlay.append(spinner, copy);
+    card.append(overlay);
+  }
+  return card;
+}
+
+function appendSlimmingMemberCards(members) {
+  const fragment = document.createDocumentFragment();
+  for (const member of members) {
+    fragment.append(syncSlimmingMemberCard(document.createElement("div"), member));
+  }
+  elements.slimmingMemberGrid.append(fragment);
+}
+
+function renderSlimmingMembers({ appendItems = null } = {}) {
+  renderSlimmingMemberSummary();
+  if (appendItems === null) clearElement(elements.slimmingMemberGrid);
+  appendSlimmingMemberCards(appendItems === null ? state.slimming.members : appendItems);
   renderSlimmingMemberSelection();
 }
 
@@ -17962,22 +20798,30 @@ function renderSlimmingRecycleRequest() {
   }
 }
 
-function renderSlimmingRecycle() {
+function renderSlimmingRecycleSummary({ preserveSourceOptions = false } = {}) {
   const recycle = state.slimming.recycle;
   elements.slimmingRecycleSearchInput.value = recycle.searchText;
-  renderSlimmingRecycleSourceOptions();
+  if (!preserveSourceOptions) renderSlimmingRecycleSourceOptions();
   renderSlimmingRecycleScopes();
   renderSlimmingRecycleHeader();
+  const appending = recycle.appending === true;
   elements.slimmingRecycleCount.textContent = recycle.totalCount > recycle.entries.length
-    ? `${recycle.entries.length} / ${recycle.totalCount} 项`
+    ? `${recycle.entries.length} / ${recycle.totalCount} 项${appending ? " · 正在载入更多…" : ""}`
     : `${recycle.totalCount} 项`;
   elements.slimmingRecycleLoadMoreButton.classList.toggle(
     "hidden",
-    recycle.loading || recycle.entries.length >= recycle.totalCount
+    !appending && recycle.entries.length >= recycle.totalCount
   );
+  elements.slimmingRecycleLoadMoreButton.disabled = recycle.loading;
+  elements.slimmingRecycleLoadMoreButton.textContent = appending
+    ? "正在载入更多回收项目…"
+    : `再显示 ${Math.min(60, Math.max(0, recycle.totalCount - recycle.entries.length))} 项（剩余 ${
+      Math.max(0, recycle.totalCount - recycle.entries.length)
+    } 项）`;
+  elements.slimmingRecycleLoadMoreButton.setAttribute("aria-busy", String(appending));
   elements.slimmingRecycleEmpty.classList.toggle(
     "hidden",
-    recycle.loading || recycle.entries.length > 0
+    (recycle.loading && !appending) || recycle.entries.length > 0
   );
   const hasSearch = Boolean(recycle.searchText.trim());
   const hasSource = Boolean(recycle.sourceID);
@@ -18026,10 +20870,12 @@ function renderSlimmingRecycle() {
   elements.slimmingRecycleEmptyAction.dataset.action = emptyPresentation.action || "";
   elements.slimmingRecycleEmptyAction.textContent = emptyPresentation.actionLabel;
   elements.slimmingRecycleEmptyAction.classList.toggle("hidden", !emptyPresentation.action);
-  clearElement(elements.slimmingRecycleList);
   elements.slimmingRecycleList.classList.toggle("hidden", recycle.entries.length === 0);
-  for (const entry of recycle.entries) {
-    const row = document.createElement("article");
+}
+
+function syncSlimmingRecycleRow(row, entry) {
+    const recycle = state.slimming.recycle;
+    clearElement(row);
     row.className = "slimming-recycle-row";
     row.dataset.slimmingRecycleRowId = entry.id;
     const thumbnail = document.createElement("div");
@@ -18114,10 +20960,39 @@ function renderSlimmingRecycle() {
       actions.append(explanation);
     }
     row.append(thumbnail, copy, policy, actions);
-    elements.slimmingRecycleList.append(row);
+  return row;
+}
+
+function appendSlimmingRecycleRows(entries) {
+  const fragment = document.createDocumentFragment();
+  for (const entry of entries) {
+    fragment.append(syncSlimmingRecycleRow(document.createElement("article"), entry));
+  }
+  elements.slimmingRecycleList.append(fragment);
+}
+
+function syncSlimmingRecycleAppendLocks() {
+  if (!state.slimming.recycle.appending) return;
+  for (const button of elements.slimmingRecycleList.querySelectorAll("button.write-action")) {
+    button.disabled = true;
+  }
+}
+
+function renderSlimmingRecycle({
+  appendItems = null,
+  preserveList = false,
+  preserveSourceOptions = false,
+} = {}) {
+  renderSlimmingRecycleSummary({ preserveSourceOptions });
+  if (appendItems === null && !preserveList) {
+    clearElement(elements.slimmingRecycleList);
+    appendSlimmingRecycleRows(state.slimming.recycle.entries);
+  } else if (appendItems !== null) {
+    appendSlimmingRecycleRows(appendItems);
   }
   renderSlimmingRecycleRequest();
   syncWriteActionControls();
+  syncSlimmingRecycleAppendLocks();
 }
 
 function scheduleSlimmingRecyclePoll() {
@@ -18134,11 +21009,114 @@ function scheduleSlimmingRecyclePoll() {
   }, 1000);
 }
 
-async function loadSlimmingRecycle({ quiet = false } = {}) {
+function renderedSlimmingRecycleEntriesMatch(entries) {
+  return renderedSlimmingCollectionMatches(
+    elements.slimmingRecycleList,
+    ".slimming-recycle-row[data-slimming-recycle-row-id]",
+    entries,
+    "slimmingRecycleRowId"
+  );
+}
+
+function captureSlimmingRecycleContinuity() {
+  const active = document.activeElement;
+  const row = active?.closest?.("[data-slimming-recycle-row-id]") || null;
+  let actionSelector = null;
+  if (active?.classList?.contains("slimming-recycle-favorite")) {
+    actionSelector = ".slimming-recycle-favorite";
+  } else if (active?.dataset?.action) {
+    actionSelector = `[data-action="${CSS.escape(active.dataset.action)}"]`;
+  } else if (active?.dataset?.slimmingRecycleRecoveryAction) {
+    actionSelector = `[data-slimming-recycle-recovery-action="${CSS.escape(
+      active.dataset.slimmingRecycleRecoveryAction
+    )}"]`;
+  } else if (active?.dataset?.slimmingRecycleExplanationId) {
+    actionSelector = "[data-slimming-recycle-explanation-id]";
+  }
+  return {
+    scrollTop: elements.slimmingRecycleBody.scrollTop,
+    focusedEntryID: row?.dataset.slimmingRecycleRowId || null,
+    actionSelector,
+    focusedControlID: active?.id || null,
+    previousLastEntryID: state.slimming.recycle.entries.at(-1)?.id || null,
+  };
+}
+
+function restoreSlimmingRecycleContinuity(continuity) {
+  if (!continuity) return;
+  elements.slimmingRecycleBody.scrollTop = continuity.scrollTop;
+  let target = null;
+  if (continuity.focusedEntryID) {
+    const row = elements.slimmingRecycleList.querySelector(
+      `[data-slimming-recycle-row-id="${CSS.escape(continuity.focusedEntryID)}"]`
+    );
+    target = continuity.actionSelector
+      ? row?.querySelector(continuity.actionSelector)
+      : row?.querySelector("button");
+  }
+  if (!target && continuity.focusedControlID) {
+    const control = document.getElementById(continuity.focusedControlID);
+    if (control && !control.classList.contains("hidden") && !control.disabled) target = control;
+  }
+  if (!target && continuity.focusedControlID === "slimmingRecycleLoadMoreButton") {
+    target = elements.slimmingRecycleList.querySelector(
+      `[data-slimming-recycle-row-id="${CSS.escape(
+        continuity.previousLastEntryID || ""
+      )}"] button`
+    );
+  }
+  target?.focus({ preventScroll: true });
+}
+
+function slimmingRecycleAppendSnapshotIsStable(previous, snapshot) {
+  const nextEntries = snapshot.entries || [];
+  const nextTotalCount = Number(snapshot.totalCount || 0);
+  const nextScopeSupported = Boolean(snapshot.scopeCounts);
+  const nextScopeCounts = nextScopeSupported
+    ? {
+      all: Number(snapshot.scopeCounts.all || 0),
+      photos: Number(snapshot.scopeCounts.photos || 0),
+      files: Number(snapshot.scopeCounts.files || 0),
+      attention: Number(snapshot.scopeCounts.attention || 0),
+    }
+    : { all: nextTotalCount, photos: 0, files: 0, attention: 0 };
+  const queryStable = state.slimming.mediaKind === previous.mediaKind
+    && state.slimming.recycle.scope === previous.scope
+    && state.slimming.recycle.sourceID === previous.sourceID
+    && state.slimming.recycle.searchText === previous.searchText;
+  return queryStable
+    && (!snapshot.mediaKind || snapshot.mediaKind === previous.mediaKind)
+    && nextTotalCount === previous.totalCount
+    && nextScopeSupported === previous.scopeSupported
+    && JSON.stringify(nextScopeCounts) === JSON.stringify(previous.scopeCounts)
+    && slimmingItemsEqual(previous.requests, snapshot.requests || [])
+    && slimmingItemsFormStablePrefix(previous.entries, nextEntries)
+    && previous.renderedEntriesMatch;
+}
+
+async function loadSlimmingRecycle({ quiet = false, append = false } = {}) {
   const recycle = state.slimming.recycle;
   const generation = ++recycle.requestGeneration;
+  const appending = append === true;
+  const previous = {
+    mediaKind: state.slimming.mediaKind,
+    scope: recycle.scope,
+    sourceID: recycle.sourceID,
+    searchText: recycle.searchText,
+    entries: recycle.entries,
+    totalCount: Number(recycle.totalCount || 0),
+    scopeSupported: recycle.scopeSupported === true,
+    scopeCounts: recycle.scopeSupported === true
+      ? { ...recycle.scopeCounts }
+      : { all: Number(recycle.totalCount || 0), photos: 0, files: 0, attention: 0 },
+    requests: recycle.requests,
+    renderedEntriesMatch: renderedSlimmingRecycleEntriesMatch(recycle.entries),
+    continuity: appending ? captureSlimmingRecycleContinuity() : null,
+  };
+  let renderOptions = appending ? { preserveRecycle: true } : {};
   recycle.loading = true;
-  renderSlimmingWorkspace();
+  recycle.appending = appending;
+  renderSlimmingWorkspace(renderOptions);
   const query = new URLSearchParams({
     mediaKind: state.slimming.mediaKind,
     scope: recycle.scope,
@@ -18148,8 +21126,12 @@ async function loadSlimmingRecycle({ quiet = false } = {}) {
   if (recycle.searchText.trim()) query.set("search", recycle.searchText.trim());
   try {
     const snapshot = await api(`/v1/library-slimming/recycle?${query}`);
-    if (generation !== recycle.requestGeneration) return;
-    recycle.entries = snapshot.entries || [];
+    if (generation !== recycle.requestGeneration) return false;
+    const nextEntries = snapshot.entries || [];
+    const appendIsStable = appending
+      ? slimmingRecycleAppendSnapshotIsStable(previous, snapshot)
+      : false;
+    recycle.entries = nextEntries;
     recycle.totalCount = snapshot.totalCount || 0;
     recycle.requests = snapshot.requests || [];
     if (snapshot.scopeCounts) {
@@ -18170,14 +21152,21 @@ async function loadSlimmingRecycle({ quiet = false } = {}) {
         attention: 0,
       };
     }
+    renderOptions = appendIsStable
+      ? { appendRecycle: nextEntries.slice(previous.entries.length) }
+      : {};
+    return true;
   } catch (error) {
     if (generation === recycle.requestGeneration && !quiet) {
       toast(error.message || "回收站载入失败");
     }
+    return false;
   } finally {
     if (generation === recycle.requestGeneration) {
       recycle.loading = false;
-      renderSlimmingWorkspace();
+      recycle.appending = false;
+      renderSlimmingWorkspace(renderOptions);
+      if (appending) restoreSlimmingRecycleContinuity(previous.continuity);
       scheduleSlimmingRecyclePoll();
     }
   }
@@ -18185,7 +21174,9 @@ async function loadSlimmingRecycle({ quiet = false } = {}) {
 
 async function submitSlimmingRecycleAction(entryID, action, { confirmed = false } = {}) {
   const entry = state.slimming.recycle.entries.find((item) => item.id === entryID);
-  if (!entry || state.slimming.recycle.mutatingEntryIDs.has(entryID)) return;
+  if (!entry
+    || state.slimming.recycle.appending
+    || state.slimming.recycle.mutatingEntryIDs.has(entryID)) return;
   if (!confirmed && ["purge", "discardPreflightFailure"].includes(action)) {
     const purge = action === "purge";
     requestConfirmation({
@@ -18228,6 +21219,7 @@ async function submitSlimmingRecycleRecoveryAction(entryID, action) {
   const recycle = state.slimming.recycle;
   const entry = recycle.entries.find((item) => item.id === entryID);
   if (!entry
+    || recycle.appending
     || recycle.mutatingEntryIDs.has(entryID)
     || state.sourceManagement.submitting
     || sourceManagementHasActiveRequest()) return;
@@ -18285,9 +21277,53 @@ function toggleSlimmingNavigator() {
   elements.slimmingNavigatorButton.focus({ preventScroll: true });
 }
 
-function renderSlimmingWorkspace() {
+function syncSlimmingAppendInteractionLocks() {
+  const locked = Boolean(state.slimming.appending);
+  for (const button of elements.slimmingJobActions.querySelectorAll(
+    "[data-slimming-job-action-id]"
+  )) {
+    button.disabled = locked
+      || state.slimming.jobMutatingIDs.has(button.dataset.slimmingJobActionId);
+  }
+  for (const button of elements.slimmingClusterList.querySelectorAll(
+    "[data-slimming-cluster-id]"
+  )) {
+    button.disabled = locked;
+  }
+  for (const button of elements.slimmingClusterList.querySelectorAll(
+    "[data-slimming-cluster-review-id][data-slimming-cluster-review]"
+  )) {
+    const cluster = state.slimming.clusters.find(
+      (item) => item.id === button.dataset.slimmingClusterReviewId
+    );
+    button.disabled = locked
+      || !state.online
+      || state.slimming.clusterReviewPendingIDs.has(button.dataset.slimmingClusterReviewId)
+      || cluster?.reviewDisposition === button.dataset.slimmingClusterReview;
+  }
+  const selectedCluster = state.slimming.clusters.find(
+    (item) => item.id === state.slimming.selectedClusterID
+  );
+  elements.slimmingReprocessClusterButton.disabled = locked
+    || !state.online
+    || !selectedCluster
+    || state.slimming.clusterReviewPendingIDs.has(selectedCluster.id);
+}
+
+function renderSlimmingWorkspace({
+  preserveJobs = false,
+  preserveClusters = false,
+  preserveMembers = false,
+  appendJobs = null,
+  appendClusters = null,
+  appendMembers = null,
+  preserveRecycle = false,
+  appendRecycle = null,
+} = {}) {
   const recycleView = state.slimming.view === "recycle";
   renderSlimmingNavigator();
+  renderSlimmingCurrentJobControls();
+  renderSlimmingCatalogCommands();
   elements.slimmingThumbnailLayoutControls.classList.toggle("recycle-view", recycleView);
   for (const button of elements.slimmingWorkspaceTabs.querySelectorAll("[data-slimming-view]")) {
     button.setAttribute("aria-pressed", String(button.dataset.slimmingView === state.slimming.view));
@@ -18302,7 +21338,10 @@ function renderSlimmingWorkspace() {
   }
   elements.slimmingAnalysisBody.classList.toggle("hidden", recycleView);
   elements.slimmingRecycleBody.classList.toggle("hidden", !recycleView);
-  elements.newSlimmingAnalysisButton.classList.toggle("hidden", recycleView);
+  if (recycleView) {
+    closeSlimmingCatalogSourcePicker({ restoreFocus: false });
+    closeSlimmingAnalysisOptions({ restoreFocus: false });
+  }
   const identicalGroupCount = state.slimming.clusters.filter(
     (cluster) => cluster.kind === "byteIdentical"
   ).length;
@@ -18340,21 +21379,46 @@ function renderSlimmingWorkspace() {
     : "分析与任务控制由这台 Mac 执行；网页只接收结果。";
   elements.slimmingSummary.textContent = recycleView
     ? (state.slimming.recycle.loading
-      ? `正在读取${noun}回收站…`
+      ? (state.slimming.recycle.appending
+        ? `${state.slimming.recycle.entries.length} / ${state.slimming.recycle.totalCount} 项 · 正在载入更多回收项目…`
+        : `正在读取${noun}回收站…`)
       : `${state.slimming.recycle.totalCount} 个${noun}回收项目`)
     : (state.slimming.loading
-      ? `正在读取${noun}分析记录…`
+      ? (state.slimming.appending
+        ? `${state.slimming.jobs.length} 条记录 · 正在载入更多${
+          { jobs: "记录", clusters: "分组", members: "成员" }[state.slimming.appending]
+        }…`
+        : `正在读取${noun}分析记录…`)
       : `${state.slimming.jobs.length} 条记录 · ${state.slimming.jobs.find((job) => job.id === state.slimming.selectedJobID)?.clusterCount || 0} 个候选分组`);
   if (recycleView) {
-    renderSlimmingRecycle();
+    renderSlimmingRecycle({
+      appendItems: appendRecycle,
+      preserveList: preserveRecycle,
+      preserveSourceOptions: preserveRecycle || appendRecycle !== null,
+    });
+    renderSlimmingInspector();
     return;
   }
-  renderSlimmingJobs();
-  renderSlimmingClusters();
-  renderSlimmingMembers();
+  if (appendJobs !== null) renderSlimmingJobs({ appendItems: appendJobs });
+  else if (preserveJobs) {
+    renderSlimmingJobSummary();
+    renderSlimmingJobActions();
+  }
+  else renderSlimmingJobs();
+  if (appendClusters !== null) renderSlimmingClusters({ appendItems: appendClusters });
+  else if (preserveClusters) renderSlimmingClusterSummary();
+  else renderSlimmingClusters();
+  if (appendMembers !== null) renderSlimmingMembers({ appendItems: appendMembers });
+  else if (preserveMembers) {
+    renderSlimmingMemberSummary();
+    renderSlimmingMemberSelection({ renderInspector: false });
+  } else {
+    renderSlimmingMembers();
+  }
   renderSlimmingInspector();
   renderSlimmingJobStatus();
   renderSlimmingRemovalStatus();
+  syncSlimmingAppendInteractionLocks();
 }
 
 function scheduleSlimmingRemovalPoll() {
@@ -18415,7 +21479,7 @@ async function loadSlimmingRemovals({ quiet = false } = {}) {
   }
 }
 
-function replacementSlimmingPreviewAssetID(previousIDs, remainingIDs, previewAssetID) {
+function replacementPreviewAssetID(previousIDs, remainingIDs, previewAssetID) {
   if (remainingIDs.includes(previewAssetID)) return previewAssetID;
   const previousIndex = previousIDs.indexOf(previewAssetID);
   if (previousIndex < 0) return null;
@@ -18429,6 +21493,10 @@ function replacementSlimmingPreviewAssetID(previousIDs, remainingIDs, previewAss
   return null;
 }
 
+function replacementSlimmingPreviewAssetID(previousIDs, remainingIDs, previewAssetID) {
+  return replacementPreviewAssetID(previousIDs, remainingIDs, previewAssetID);
+}
+
 function reconcileSlimmingPreviewAfterRemoval(request, hiddenAssetIDs) {
   const context = state.slimming.removal.previewContexts.get(request.id);
   if (!context) return;
@@ -18437,7 +21505,7 @@ function reconcileSlimmingPreviewAfterRemoval(request, hiddenAssetIDs) {
   const remainingIDs = state.slimming.selectedClusterID === context.clusterID
     ? state.slimming.members.map((member) => member.id)
     : [];
-  const replacementID = replacementSlimmingPreviewAssetID(
+  const replacementID = replacementPreviewAssetID(
     context.memberIDs,
     remainingIDs,
     context.assetID
@@ -18911,13 +21979,181 @@ async function loadSlimmingIdenticalCleanupRequests({ quiet = false } = {}) {
   }
 }
 
-async function loadSlimmingWorkspace({ jobID = null, clusterID = null, quiet = false } = {}) {
+function slimmingItemsEqual(left, right) {
+  return left.length === right.length
+    && left.every((item, index) => JSON.stringify(item) === JSON.stringify(right[index]));
+}
+
+function slimmingItemsFormStablePrefix(previous, next) {
+  if (next.length <= previous.length) return false;
+  const ids = next.map((item) => item?.id);
+  if (ids.some((id) => !id) || new Set(ids).size !== ids.length) return false;
+  return previous.every(
+    (item, index) => JSON.stringify(item) === JSON.stringify(next[index])
+  );
+}
+
+function renderedSlimmingCollectionMatches(container, selector, items, datasetKey) {
+  const rendered = [...container.querySelectorAll(`:scope > ${selector}`)];
+  return rendered.length === items.length
+    && rendered.every((element, index) => element.dataset[datasetKey] === items[index]?.id);
+}
+
+function renderedSlimmingJobsMatch(items) {
+  return renderedSlimmingCollectionMatches(
+    elements.slimmingJobList,
+    "[data-slimming-job-id]",
+    items,
+    "slimmingJobId"
+  );
+}
+
+function renderedSlimmingClustersMatch(items) {
+  return renderedSlimmingCollectionMatches(
+    elements.slimmingClusterList,
+    ".slimming-cluster-row[data-slimming-cluster-row-id]",
+    items,
+    "slimmingClusterRowId"
+  );
+}
+
+function renderedSlimmingMembersMatch(items) {
+  return renderedSlimmingCollectionMatches(
+    elements.slimmingMemberGrid,
+    ".slimming-member-card[data-slimming-member-id]",
+    items,
+    "slimmingMemberId"
+  );
+}
+
+function captureSlimmingRenderContinuity() {
+  const active = document.activeElement;
+  return {
+    navigatorScrollTop: elements.slimmingNavigatorPane.scrollTop,
+    memberScrollTop: slimmingMemberScrollContainer().scrollTop,
+    focusedJobID: active?.closest?.("[data-slimming-job-id]")?.dataset.slimmingJobId || null,
+    focusedClusterID: active?.closest?.("[data-slimming-cluster-id]")
+      ?.dataset.slimmingClusterId || null,
+    focusedMemberID: active?.closest?.("[data-slimming-member-id]")
+      ?.dataset.slimmingMemberId || null,
+    focusedControlID: active?.id || null,
+    previousLastClusterID: state.slimming.clusters.at(-1)?.id || null,
+    previousLastMemberID: state.slimming.members.at(-1)?.id || null,
+  };
+}
+
+function restoreSlimmingRenderContinuity(continuity) {
+  if (!continuity) return;
+  elements.slimmingNavigatorPane.scrollTop = continuity.navigatorScrollTop;
+  slimmingMemberScrollContainer().scrollTop = continuity.memberScrollTop;
+  let target = continuity.focusedMemberID
+    ? elements.slimmingMemberGrid.querySelector(
+      `[data-slimming-member-id="${CSS.escape(continuity.focusedMemberID)}"] .slimming-member-main`
+    )
+    : null;
+  if (!target && continuity.focusedClusterID) {
+    target = elements.slimmingClusterList.querySelector(
+      `[data-slimming-cluster-id="${CSS.escape(continuity.focusedClusterID)}"]`
+    );
+  }
+  if (!target && continuity.focusedJobID) {
+    target = elements.slimmingJobList.querySelector(
+      `[data-slimming-job-id="${CSS.escape(continuity.focusedJobID)}"]`
+    );
+  }
+  if (!target && continuity.focusedControlID) {
+    const control = document.getElementById(continuity.focusedControlID);
+    if (control && !control.classList.contains("hidden") && !control.disabled) target = control;
+  }
+  if (!target && continuity.focusedControlID === "slimmingLoadMoreClustersButton") {
+    target = elements.slimmingClusterList.querySelector(
+      `[data-slimming-cluster-id="${CSS.escape(continuity.previousLastClusterID || "")}"]`
+    );
+  }
+  if (!target && continuity.focusedControlID === "slimmingLoadMoreMembersButton") {
+    target = elements.slimmingMemberGrid.querySelector(
+      `[data-slimming-member-id="${CSS.escape(continuity.previousLastMemberID || "")}"] .slimming-member-main`
+    );
+  }
+  target?.focus({ preventScroll: true });
+}
+
+function slimmingAppendSnapshotIsStable(previous, snapshot, appendKind) {
+  const nextJobs = snapshot.jobs || [];
+  const nextClusters = snapshot.clusters || [];
+  const nextMembers = snapshot.members || [];
+  const nextScopeCounts = snapshot.clusterScopeCounts || null;
+  const previousScopeCounts = previous.clusterScopeSupported
+    ? previous.clusterScopeCounts
+    : null;
+  const jobsStable = appendKind === "jobs"
+    ? slimmingItemsFormStablePrefix(previous.jobs, nextJobs)
+    : slimmingItemsEqual(previous.jobs, nextJobs);
+  const commonStable = snapshot.selectedJobID === previous.selectedJobID
+    && snapshot.selectedClusterID === previous.selectedClusterID
+    && Number(snapshot.totalJobCount ?? nextJobs.length) === previous.totalJobCount
+    && Number(snapshot.pendingAnalysisCount || 0) === previous.pendingAnalysisCount
+    && Number(snapshot.analyzedAssetCount || 0) === previous.analyzedAssetCount
+    && (snapshot.policyVersion || null) === previous.policyVersion
+    && JSON.stringify(nextScopeCounts) === JSON.stringify(previousScopeCounts)
+    && jobsStable
+    && previous.renderedJobsMatch
+    && previous.renderedClustersMatch
+    && previous.renderedMembersMatch;
+  if (!commonStable) return false;
+  if (appendKind === "jobs") {
+    return slimmingItemsEqual(previous.clusters, nextClusters)
+      && slimmingItemsEqual(previous.members, nextMembers);
+  }
+  if (appendKind === "clusters") {
+    return slimmingItemsFormStablePrefix(previous.clusters, nextClusters)
+      && slimmingItemsEqual(previous.members, nextMembers);
+  }
+  if (appendKind === "members") {
+    return slimmingItemsEqual(previous.clusters, nextClusters)
+      && slimmingItemsFormStablePrefix(previous.members, nextMembers);
+  }
+  return false;
+}
+
+async function loadSlimmingWorkspace({
+  jobID = null,
+  clusterID = null,
+  quiet = false,
+  appendKind = null,
+} = {}) {
+  const appending = ["jobs", "clusters", "members"].includes(appendKind)
+    ? appendKind
+    : null;
   if (jobID || clusterID) state.slimming.selectionMode = false;
   const generation = ++state.slimming.requestGeneration;
   const previousSelectedMemberIDs = new Set(state.slimming.selectedMemberIDs);
   const previousSelectionAnchorID = state.slimming.selectionAnchorID;
+  const previous = {
+    jobs: state.slimming.jobs,
+    totalJobCount: state.slimming.totalJobCount,
+    selectedJobID: state.slimming.selectedJobID,
+    clusters: state.slimming.clusters,
+    selectedClusterID: state.slimming.selectedClusterID,
+    clusterScopeSupported: state.slimming.clusterScopeSupported === true,
+    clusterScopeCounts: state.slimming.clusterScopeSupported === true
+      ? { ...state.slimming.clusterScopeCounts }
+      : null,
+    members: state.slimming.members,
+    pendingAnalysisCount: Number(state.slimming.pendingAnalysisCount || 0),
+    analyzedAssetCount: Number(state.slimming.analyzedAssetCount || 0),
+    policyVersion: state.slimming.policyVersion || null,
+    renderedJobsMatch: renderedSlimmingJobsMatch(state.slimming.jobs),
+    renderedClustersMatch: renderedSlimmingClustersMatch(state.slimming.clusters),
+    renderedMembersMatch: renderedSlimmingMembersMatch(state.slimming.members),
+    continuity: appending ? captureSlimmingRenderContinuity() : null,
+  };
+  let renderOptions = appending
+    ? { preserveJobs: true, preserveClusters: true, preserveMembers: true }
+    : {};
   state.slimming.loading = true;
-  renderSlimmingWorkspace();
+  state.slimming.appending = appending;
+  renderSlimmingWorkspace(renderOptions);
   const query = new URLSearchParams({ mediaKind: state.slimming.mediaKind });
   query.set("clusterScope", state.slimming.clusterScope);
   query.set("jobLimit", String(state.slimming.jobLimit));
@@ -18930,15 +22166,21 @@ async function loadSlimmingWorkspace({ jobID = null, clusterID = null, quiet = f
   try {
     const snapshot = await api(`/v1/library-slimming/workspace?${query}`);
     if (generation !== state.slimming.requestGeneration) return false;
-    state.slimming.jobs = snapshot.jobs || [];
+    const nextJobs = snapshot.jobs || [];
+    const nextClusters = snapshot.clusters || [];
+    const nextMembers = snapshot.members || [];
+    const appendIsStable = appending
+      ? slimmingAppendSnapshotIsStable(previous, snapshot, appending)
+      : false;
+    state.slimming.jobs = nextJobs;
     state.slimming.totalJobCount = Number(snapshot.totalJobCount ?? state.slimming.jobs.length);
     // Deep links may cause the Host to grow the prefix through the requested job.
     // Preserve that authoritative window on later refreshes.
     state.slimming.jobLimit = Math.max(state.slimming.jobLimit, state.slimming.jobs.length);
     state.slimming.selectedJobID = snapshot.selectedJobID || null;
-    state.slimming.clusters = snapshot.clusters || [];
+    state.slimming.clusters = nextClusters;
     state.slimming.selectedClusterID = snapshot.selectedClusterID || null;
-    state.slimming.members = snapshot.members || [];
+    state.slimming.members = nextMembers;
     if (snapshot.clusterScopeCounts) {
       state.slimming.clusterScopeSupported = true;
       state.slimming.clusterScopeCounts = {
@@ -18962,12 +22204,39 @@ async function loadSlimmingWorkspace({ jobID = null, clusterID = null, quiet = f
     state.slimming.analyzedAssetCount = snapshot.analyzedAssetCount || 0;
     state.slimming.policyVersion = snapshot.policyVersion || null;
     const memberIDs = new Set(state.slimming.members.map((member) => member.id));
+    const liveSelectedMemberIDs = appending
+      ? new Set(state.slimming.selectedMemberIDs)
+      : previousSelectedMemberIDs;
+    const liveSelectionAnchorID = appending
+      ? state.slimming.selectionAnchorID
+      : previousSelectionAnchorID;
     state.slimming.selectedMemberIDs = (jobID || clusterID)
       ? new Set()
-      : new Set([...previousSelectedMemberIDs].filter((id) => memberIDs.has(id)));
+      : new Set([...liveSelectedMemberIDs].filter((id) => memberIDs.has(id)));
     state.slimming.selectionAnchorID = state.slimming.selectedMemberIDs.has(
-      previousSelectionAnchorID
-    ) ? previousSelectionAnchorID : null;
+      liveSelectionAnchorID
+    ) ? liveSelectionAnchorID : null;
+    if (appendIsStable && appending === "jobs") {
+      renderOptions = {
+        appendJobs: nextJobs.slice(previous.jobs.length),
+        preserveClusters: true,
+        preserveMembers: true,
+      };
+    } else if (appendIsStable && appending === "clusters") {
+      renderOptions = {
+        preserveJobs: true,
+        appendClusters: nextClusters.slice(previous.clusters.length),
+        preserveMembers: true,
+      };
+    } else if (appendIsStable && appending === "members") {
+      renderOptions = {
+        preserveJobs: true,
+        preserveClusters: true,
+        appendMembers: nextMembers.slice(previous.members.length),
+      };
+    } else {
+      renderOptions = {};
+    }
     return true;
   } catch (error) {
     if (generation === state.slimming.requestGeneration && !quiet) {
@@ -18977,7 +22246,9 @@ async function loadSlimmingWorkspace({ jobID = null, clusterID = null, quiet = f
   } finally {
     if (generation === state.slimming.requestGeneration) {
       state.slimming.loading = false;
-      renderSlimmingWorkspace();
+      state.slimming.appending = null;
+      renderSlimmingWorkspace(renderOptions);
+      if (appending) restoreSlimmingRenderContinuity(previous.continuity);
     }
   }
 }
@@ -19053,9 +22324,13 @@ async function setSlimmingClusterReviewDisposition(clusterID, disposition) {
 }
 
 async function openSlimmingWorkspace({ historyMode = "push" } = {}) {
+  leaveIntegratedGalleryOverviewForLibrary({ historyMode: "none" });
+  leaveIntegratedWorldMapForLibrary({ historyMode: "none" });
   elements.reviewWorkspace.classList.add("hidden");
+  syncReviewPresentation({ renderSurfaces: false });
   state.reviewReturnFocus = null;
   elements.trainingWorkspace.classList.add("hidden");
+  syncTrainingPresentation({ renderSurfaces: false });
   state.trainingReturnFocus = null;
   closeJobsPopover({ restoreFocus: false });
   elements.filterPopover.classList.add("hidden");
@@ -19068,12 +22343,12 @@ async function openSlimmingWorkspace({ historyMode = "push" } = {}) {
     elements.slimmingInspector.open = false;
     state.slimming.inspectorCompactInitialized = true;
   }
-  elements.appView.inert = true;
   elements.slimmingWorkspace.classList.remove("hidden");
   recordWorkspaceHistory("slimming", null, historyMode);
-  requestAnimationFrame(() => elements.closeSlimmingButton.focus({ preventScroll: true }));
+  syncSlimmingPresentation({ focus: true });
   if (state.slimming.view === "recycle") await loadSlimmingRecycle();
   else {
+    void loadSlimmingCatalogSources();
     await loadSlimmingWorkspace();
     await loadSlimmingRemovals({ quiet: true });
     await loadSlimmingIdenticalCleanupRequests({ quiet: true });
@@ -19095,11 +22370,16 @@ async function switchSlimmingMediaKind(mediaKind) {
   state.slimming.clusterLimit = 48;
   state.slimming.memberLimit = 96;
   state.slimming.recycle.limit = 60;
+  state.slimming.catalogSources.requestGeneration += 1;
+  state.slimming.catalogSources.snapshot = null;
+  state.slimming.catalogSources.loading = false;
+  state.slimming.catalogSources.error = "";
   state.slimming.removal.requests = [];
   state.slimming.removal.lastTerminalRequestID = null;
   clearTimeout(state.slimming.removal.pollTimer);
   if (state.slimming.view === "recycle") await loadSlimmingRecycle();
   else {
+    void loadSlimmingCatalogSources();
     await Promise.all([
       loadSlimmingWorkspace(),
       loadSlimmingRemovals({ quiet: true }),
@@ -19306,6 +22586,306 @@ function setSlimmingCatalogSourceIDs(selectedSourceIDs, snapshot) {
   state.slimming.sourceMaintenance.selectedSourceIDs = new Set(selected);
 }
 
+function currentSlimmingCatalogSnapshot() {
+  const mediaKind = state.slimming.mediaKind;
+  for (const snapshot of [
+    state.slimming.catalogSources.snapshot,
+    state.slimming.sourceMaintenance.snapshot,
+    state.slimming.setup.snapshot,
+  ]) {
+    if (snapshot?.mediaKind === mediaKind) return snapshot;
+  }
+  return null;
+}
+
+function selectedSlimmingCatalogSources(snapshot = currentSlimmingCatalogSnapshot()) {
+  const selected = resolvedSlimmingCatalogSourceIDs(snapshot);
+  return (snapshot?.sources || []).filter((source) => selected.has(source.id));
+}
+
+function slimmingCatalogSourceSelectionTitle(snapshot = currentSlimmingCatalogSnapshot()) {
+  const sources = snapshot?.sources || [];
+  const selected = selectedSlimmingCatalogSources(snapshot);
+  if (!snapshot) return state.slimming.catalogSources.loading ? "读取来源…" : "选择来源";
+  if (!selected.length) return "未选择来源";
+  if (selected.length === sources.length) return `全部来源（${sources.length}）`;
+  if (selected.length === 1) return selected[0].displayName;
+  return `已选 ${selected.length} 个来源`;
+}
+
+function renderSlimmingCatalogCommands() {
+  const analysisView = state.slimming.view === "analysis";
+  const snapshot = currentSlimmingCatalogSnapshot();
+  const sources = snapshot?.sources || [];
+  const selected = selectedSlimmingCatalogSources(snapshot);
+  const allSelected = sources.length > 0 && selected.length === sources.length;
+  const launching = Boolean(state.slimming.quickLaunchMode);
+  const catalogLaunching = state.slimming.quickLaunchMode === "catalog";
+  const currentFilterAvailable = state.mediaKind === state.slimming.mediaKind;
+  const seedCount = currentSlimmingSeedIDs().length;
+
+  for (const control of [
+    elements.slimmingCatalogAnalyzeButton,
+    elements.slimmingCatalogSourceButton,
+    elements.slimmingAnalysisOptionsButton,
+  ]) control.classList.toggle("hidden", !analysisView);
+
+  elements.slimmingCatalogAnalyzeButton.textContent = catalogLaunching
+    ? (allSelected ? "正在分析全部来源…" : "正在分析所选来源…")
+    : (allSelected ? "分析全部来源" : "分析所选来源");
+  elements.slimmingCatalogAnalyzeButton.title = selected.length
+    ? `分析范围：${allSelected ? `全部 ${sources.length} 个来源` : selected.map((source) => source.displayName).join("、")}；不会取消已有分析记录`
+    : "请先选择至少一个可用来源";
+  configurePersistentHelp(elements.slimmingCatalogAnalyzeButton, {
+    title: allSelected ? "分析全部来源" : "分析所选来源",
+    detail: elements.slimmingCatalogAnalyzeButton.title,
+    kind: "slimming",
+  });
+  elements.slimmingCatalogAnalyzeButton.setAttribute("aria-busy", String(catalogLaunching));
+  elements.slimmingCatalogAnalyzeButton.disabled = !state.online
+    || launching
+    || state.slimming.catalogSources.loading
+    || selected.length === 0;
+
+  elements.slimmingCatalogSourceButton.lastElementChild.textContent =
+    slimmingCatalogSourceSelectionTitle(snapshot);
+  elements.slimmingCatalogSourceButton.disabled = launching
+    || (state.slimming.catalogSources.loading && !snapshot);
+  elements.slimmingCatalogSourceButton.setAttribute(
+    "aria-busy",
+    String(state.slimming.catalogSources.loading)
+  );
+  configurePersistentHelp(elements.slimmingCatalogSourceButton, {
+    title: "分析来源",
+    detail: "选择一个或多个要分析的来源；只列出这台 Mac 当前提供的可用来源。",
+    kind: "slimming",
+  });
+
+  elements.slimmingCurrentFilterAnalysisButton.textContent =
+    state.slimming.quickLaunchMode === "currentFilter"
+      ? "正在分析当前筛选…"
+      : "分析当前筛选";
+  elements.slimmingCurrentFilterAnalysisButton.disabled = !state.online
+    || launching
+    || !currentFilterAvailable;
+  configurePersistentHelp(elements.slimmingCurrentFilterAnalysisButton, {
+    title: "分析当前筛选",
+    detail: "冻结网页图库当前的来源、搜索、标签、格式与可用状态范围后交给 Mac；不会改变图库筛选。",
+    kind: "slimming",
+  });
+  elements.slimmingSeedAnalysisButton.classList.toggle("hidden", seedCount === 0);
+  elements.slimmingSeedAnalysisButton.textContent =
+    state.slimming.quickLaunchMode === "seeds"
+      ? `正在按种子查找（${seedCount}）…`
+      : `按种子查找（${seedCount}）`;
+  elements.slimmingSeedAnalysisButton.disabled = !state.online
+    || launching
+    || seedCount === 0
+    || !currentFilterAvailable;
+  configurePersistentHelp(elements.slimmingSeedAnalysisButton, {
+    title: `按种子查找（${seedCount}）`,
+    detail: "使用图库中当前选择的项目查找相似内容；不会修改种子媒体或取消已有分析。",
+    kind: "slimming",
+  });
+  elements.openSlimmingSetupButton.disabled = launching;
+  configurePersistentHelp(elements.openSlimmingSetupButton, {
+    title: "更多分析设置",
+    detail: "在同一个设置页选择分析范围、来源和共享相似阈值；提交前不会创建任务。",
+    kind: "slimming",
+  });
+}
+
+function renderSlimmingCatalogSourcePicker() {
+  const picker = state.slimming.catalogSources;
+  const snapshot = currentSlimmingCatalogSnapshot();
+  const sources = snapshot?.sources || [];
+  const selectedIDs = resolvedSlimmingCatalogSourceIDs(snapshot);
+  const allSelected = sources.length > 0
+    && sources.every((source) => selectedIDs.has(source.id));
+  const focusedSourceID = document.activeElement?.dataset.slimmingCatalogSourceId || null;
+
+  elements.slimmingCatalogSourceSummary.textContent = picker.loading && !snapshot
+    ? "正在读取当前可用来源…"
+    : allSelected
+      ? `已选择全部 ${sources.length} 个可用来源。`
+      : `已选择 ${selectedIDs.size} / ${sources.length} 个来源。`;
+  elements.slimmingCatalogSourceError.textContent = picker.error;
+  elements.selectAllSlimmingCatalogSourcesButton.disabled = picker.loading
+    || Boolean(state.slimming.quickLaunchMode)
+    || sources.length === 0
+    || allSelected;
+  elements.clearSlimmingCatalogSourcesButton.disabled = picker.loading
+    || Boolean(state.slimming.quickLaunchMode)
+    || selectedIDs.size === 0;
+
+  clearElement(elements.slimmingCatalogSourceOptions);
+  for (const source of sources) {
+    const row = document.createElement("label");
+    row.className = "slimming-catalog-source-option";
+    row.setAttribute("role", "menuitemcheckbox");
+    row.setAttribute("aria-checked", String(selectedIDs.has(source.id)));
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = selectedIDs.has(source.id);
+    input.disabled = picker.loading || Boolean(state.slimming.quickLaunchMode);
+    input.dataset.slimmingCatalogSourceId = source.id;
+    const icon = document.createElement("span");
+    icon.className = "slimming-catalog-source-icon";
+    icon.textContent = source.kind === "photos" ? "▣" : "▱";
+    const copy = document.createElement("span");
+    const name = document.createElement("strong");
+    name.textContent = source.displayName;
+    const kind = document.createElement("small");
+    kind.textContent = source.kind === "photos" ? "照片图库" : "文件夹";
+    copy.append(name, kind);
+    row.append(input, icon, copy);
+    elements.slimmingCatalogSourceOptions.append(row);
+  }
+  renderSlimmingCatalogCommands();
+  if (focusedSourceID) requestAnimationFrame(() => {
+    elements.slimmingCatalogSourceOptions.querySelector(
+      `[data-slimming-catalog-source-id="${CSS.escape(focusedSourceID)}"]`
+    )?.focus({ preventScroll: true });
+  });
+}
+
+async function loadSlimmingCatalogSources({ force = false } = {}) {
+  const picker = state.slimming.catalogSources;
+  const mediaKind = state.slimming.mediaKind;
+  if (!force && picker.snapshot?.mediaKind === mediaKind) {
+    renderSlimmingCatalogSourcePicker();
+    return picker.snapshot;
+  }
+  const generation = ++picker.requestGeneration;
+  picker.loading = true;
+  picker.error = "";
+  renderSlimmingCatalogSourcePicker();
+  try {
+    const query = new URLSearchParams({ mediaKind });
+    const snapshot = await api(`/v1/library-slimming/setup?${query}`);
+    if (generation !== picker.requestGeneration || state.slimming.mediaKind !== mediaKind) {
+      return null;
+    }
+    picker.snapshot = snapshot;
+    setSlimmingCatalogSourceIDs(resolvedSlimmingCatalogSourceIDs(snapshot), snapshot);
+    return snapshot;
+  } catch (error) {
+    if (generation === picker.requestGeneration) {
+      picker.error = error.message || "分析来源载入失败";
+    }
+    return null;
+  } finally {
+    if (generation === picker.requestGeneration) {
+      picker.loading = false;
+      renderSlimmingCatalogSourcePicker();
+    }
+  }
+}
+
+function closeSlimmingCatalogSourcePicker({ restoreFocus = true } = {}) {
+  const wasOpen = !elements.slimmingCatalogSourcePopover.classList.contains("hidden");
+  elements.slimmingCatalogSourcePopover.classList.add("hidden");
+  elements.slimmingCatalogSourceButton.setAttribute("aria-expanded", "false");
+  if (wasOpen && restoreFocus) restoreOverlayFocus(elements.slimmingCatalogSourceButton);
+}
+
+function positionSlimmingCatalogSourcePicker() {
+  const anchor = elements.slimmingCatalogSourceButton.getBoundingClientRect();
+  const popover = elements.slimmingCatalogSourcePopover;
+  const width = popover.offsetWidth || Math.min(310, innerWidth - 24);
+  const left = Math.max(8, Math.min(anchor.left, innerWidth - width - 8));
+  popover.style.top = `${Math.min(anchor.bottom + 6, innerHeight - 80)}px`;
+  popover.style.left = `${left}px`;
+  popover.style.right = "auto";
+}
+
+function openSlimmingCatalogSourcePicker() {
+  closeGridDensityPopovers({ restoreFocus: false });
+  closeSlimmingAnalysisOptions({ restoreFocus: false });
+  closeJobsPopover({ restoreFocus: false });
+  closePersonalModelPopover({ restoreFocus: false });
+  elements.filterPopover.classList.add("hidden");
+  elements.slimmingCatalogSourcePopover.classList.remove("hidden");
+  elements.slimmingCatalogSourceButton.setAttribute("aria-expanded", "true");
+  positionSlimmingCatalogSourcePicker();
+  renderSlimmingCatalogSourcePicker();
+  void loadSlimmingCatalogSources();
+  requestAnimationFrame(() => {
+    const firstSource = elements.slimmingCatalogSourceOptions.querySelector(
+      "[data-slimming-catalog-source-id]:not(:disabled)"
+    );
+    (firstSource || elements.closeSlimmingCatalogSourceButton).focus({ preventScroll: true });
+  });
+}
+
+function toggleSlimmingCatalogSourcePicker() {
+  if (elements.slimmingCatalogSourcePopover.classList.contains("hidden")) {
+    openSlimmingCatalogSourcePicker();
+  } else {
+    closeSlimmingCatalogSourcePicker();
+  }
+}
+
+async function launchSlimmingAnalysis(mode, returnFocus = null) {
+  if (!state.online || state.slimming.quickLaunchMode) return;
+  if (!["catalog", "currentFilter", "seeds"].includes(mode)) return;
+  if (mode !== "catalog" && state.mediaKind !== state.slimming.mediaKind) {
+    toast("请先让图库与瘦身工作台使用相同媒体类型");
+    return;
+  }
+
+  state.slimming.quickLaunchMode = mode;
+  renderSlimmingCatalogSourcePicker();
+  let snapshot = currentSlimmingCatalogSnapshot();
+  if (mode === "catalog" && !snapshot) snapshot = await loadSlimmingCatalogSources();
+  const sources = snapshot?.sources || [];
+  const selectedSources = selectedSlimmingCatalogSources(snapshot);
+  const seedAssetIDs = mode === "seeds" ? currentSlimmingSeedIDs() : [];
+  if ((mode === "catalog" && selectedSources.length === 0)
+    || (mode === "seeds" && seedAssetIDs.length === 0)) {
+    state.slimming.quickLaunchMode = null;
+    renderSlimmingCatalogSourcePicker();
+    toast(mode === "catalog" ? "请至少选择一个分析来源" : "请先在图库选择种子项目");
+    return;
+  }
+
+  closeSlimmingCatalogSourcePicker({ restoreFocus: false });
+  closeSlimmingAnalysisOptions({ restoreFocus: false });
+  const allSourcesSelected = mode === "catalog"
+    && selectedSources.length === sources.length;
+  try {
+    const result = await api("/v1/library-slimming/launch", {
+      method: "POST",
+      body: JSON.stringify({
+        operationID: crypto.randomUUID(),
+        mediaKind: state.slimming.mediaKind,
+        mode,
+        sourceIDs: mode === "catalog"
+          ? (allSourcesSelected ? null : selectedSources.map((source) => source.id))
+          : null,
+        seedAssetIDs,
+        filter: mode === "catalog" ? null : currentSlimmingFilterRequest(),
+      }),
+    });
+    state.slimming.selectedJobID = result.jobID;
+    toast(mode === "catalog"
+      ? `已交给 Mac 分析 ${selectedSources.length} 个来源 · ${result.memberCount} 项`
+      : mode === "currentFilter"
+        ? `已交给 Mac 分析当前筛选 · ${result.memberCount} 项`
+        : `正在从所选 ${seedAssetIDs.length} 项查找相似内容`);
+    await loadSlimmingWorkspace({ jobID: result.jobID, quiet: true });
+  } catch (error) {
+    toast(error.message || "图库瘦身分析创建失败");
+  } finally {
+    state.slimming.quickLaunchMode = null;
+    renderSlimmingCatalogSourcePicker();
+    const focusTarget = returnFocus?.isConnected ? returnFocus : null;
+    if (focusTarget && !elements.slimmingWorkspace.classList.contains("hidden")) {
+      restoreOverlayFocus(focusTarget);
+    }
+  }
+}
+
 function slimmingSourceIndexShortStatus(source) {
   switch (source?.similarityIndex?.state) {
     case "building": return "索引构建中";
@@ -19347,6 +22927,7 @@ function renderSlimmingSourceMaintenance() {
   );
   elements.slimmingAnalysisOptionsError.textContent = maintenance.error;
   clearElement(elements.slimmingMaintenanceSourceOptions);
+  renderSlimmingCatalogCommands();
   if (!snapshot) return;
 
   const selected = maintenance.selectedSourceIDs;
@@ -19422,6 +23003,9 @@ function renderSlimmingSourceMaintenance() {
     || submitting
     || !indexSource
     || status?.state === "building";
+  if (!elements.slimmingCatalogSourcePopover.classList.contains("hidden")) {
+    renderSlimmingCatalogSourcePicker();
+  }
   syncWriteActionControls();
 }
 
@@ -19455,6 +23039,7 @@ async function loadSlimmingSourceMaintenance({ quiet = false } = {}) {
     if (generation !== maintenance.requestGeneration
       || elements.slimmingAnalysisOptionsPopover.classList.contains("hidden")) return;
     maintenance.snapshot = snapshot;
+    state.slimming.catalogSources.snapshot = snapshot;
     setSlimmingCatalogSourceIDs(
       resolvedSlimmingCatalogSourceIDs(snapshot),
       snapshot
@@ -19484,7 +23069,9 @@ function closeSlimmingAnalysisOptions({ restoreFocus = true } = {}) {
 }
 
 function openSlimmingAnalysisOptions() {
+  closeGridDensityPopovers({ restoreFocus: false });
   elements.filterPopover.classList.add("hidden");
+  closeSlimmingCatalogSourcePicker({ restoreFocus: false });
   closeJobsPopover({ restoreFocus: false });
   closePersonalModelPopover({ restoreFocus: false });
   elements.slimmingAnalysisOptionsPopover.classList.remove("hidden");
@@ -19531,6 +23118,7 @@ async function submitSlimmingSourceMaintenance(action) {
       }),
     });
     maintenance.snapshot = result.setup;
+    state.slimming.catalogSources.snapshot = result.setup;
     maintenance.operationID = null;
     setSlimmingCatalogSourceIDs(
       action === "refreshCatalog"
@@ -19862,12 +23450,16 @@ function renderSlimmingSetup() {
     syncSlimmingThresholdControls();
     renderSlimmingSetupSummary();
   }
+  renderSlimmingCatalogCommands();
   syncWriteActionControls();
 }
 
-async function openSlimmingSetupDialog() {
+async function openSlimmingSetupDialog(
+  returnFocus = elements.slimmingAnalysisOptionsButton
+) {
   closeSlimmingAnalysisOptions({ restoreFocus: false });
   const setup = state.slimming.setup;
+  setup.returnFocus = returnFocus;
   setup.loading = true;
   setup.saving = false;
   setup.launching = false;
@@ -19883,6 +23475,7 @@ async function openSlimmingSetupDialog() {
     const snapshot = await api(`/v1/library-slimming/setup?${query}`);
     if (generation !== setup.requestGeneration || !elements.slimmingSetupDialog.open) return;
     setup.snapshot = snapshot;
+    state.slimming.catalogSources.snapshot = snapshot;
     setup.mode = slimmingModeAvailable("currentFilter") ? "currentFilter" : "catalog";
     setSlimmingCatalogSourceIDs(resolvedSlimmingCatalogSourceIDs(snapshot), snapshot);
     setup.thresholds = normalizeSlimmingThresholdDraft(snapshot.thresholds);
@@ -19899,11 +23492,17 @@ async function openSlimmingSetupDialog() {
 }
 
 function closeSlimmingSetupDialog() {
-  state.slimming.setup.requestGeneration += 1;
-  state.slimming.setup.saving = false;
-  state.slimming.setup.launching = false;
+  const setup = state.slimming.setup;
+  setup.requestGeneration += 1;
+  setup.saving = false;
+  setup.launching = false;
   if (elements.slimmingSetupDialog.open) elements.slimmingSetupDialog.close();
-  restoreOverlayFocus(elements.newSlimmingAnalysisButton);
+  const returnFocus = setup.returnFocus;
+  setup.returnFocus = null;
+  restoreOverlayFocus(stableReturnFocusTarget(
+    returnFocus,
+    elements.slimmingAnalysisOptionsButton
+  ));
 }
 
 function readSlimmingThresholdControls() {
@@ -20006,7 +23605,13 @@ async function applySlimmingJobAction(
       message: "只会永久删除分析任务记录和结果；不会读取、移动或删除任何原始媒体。",
       actionLabel: "删除记录",
       tone: "danger",
-      returnFocus: { slimmingJobID: jobID },
+      returnFocus: returnFocus === "options"
+        ? {
+          slimmingJobID: jobID,
+          slimmingJobActionSurface: "options",
+          slimmingJobAction: action,
+        }
+        : { slimmingJobID: jobID },
       action: () => applySlimmingJobAction(jobID, action, {
         returnFocus,
         confirmed: true,
@@ -20015,8 +23620,10 @@ async function applySlimmingJobAction(
     return;
   }
   const selectedBefore = state.slimming.selectedJobID;
+  let succeeded = false;
   state.slimming.jobMutatingIDs.add(jobID);
   renderSlimmingJobs();
+  renderSlimmingCurrentJobControls();
   try {
     await api(`/v1/library-slimming/jobs/${jobID}/actions`, {
       method: "POST",
@@ -20032,17 +23639,100 @@ async function applySlimmingJobAction(
       state.slimming.selectedJobID = selectedBefore;
     }
     await loadSlimmingWorkspace({ quiet: true });
-    if (returnFocus || action === "deleteRecord") focusSelectedSlimmingJob();
+    succeeded = true;
   } catch (error) {
     toast(error.message || "分析任务操作失败");
-    if (returnFocus) {
-      restoreOverlayFocus(elements.slimmingJobList.querySelector(
-        `[data-slimming-job-id="${CSS.escape(jobID)}"]`
-      ));
-    }
   } finally {
     state.slimming.jobMutatingIDs.delete(jobID);
     renderSlimmingJobs();
+    renderSlimmingCurrentJobControls();
+    if (returnFocus === "options") {
+      const nextAction = succeeded
+        ? ({ pause: "resume", resume: "pause" }[action] || null)
+        : action;
+      focusSlimmingCurrentJobAction(jobID, nextAction);
+    } else if (returnFocus || action === "deleteRecord") {
+      focusSelectedSlimmingJob();
+    }
+  }
+}
+
+async function applyReviewTagDecision(action, tagID) {
+  const selectedItems = selectedReviewItems();
+  const assetIDs = selectedItems.map((item) => item.assetID);
+  const generation = state.workspaceGeneration;
+  if (!state.online
+    || !tagID
+    || !assetIDs.length
+    || state.review.loading
+    || state.review.mutating
+    || state.tagMutating
+    || state.review.loadedScopeKey !== currentReviewScopeKey()) return;
+  const previousIndex = state.review.selectedIndex;
+  state.tagMutating = true;
+  state.review.mutating = true;
+  syncWriteActionControls();
+  syncReviewControls();
+  try {
+    const result = await api("/v1/tag-decisions/batch", {
+      method: "POST",
+      body: JSON.stringify({
+        operationID: crypto.randomUUID(),
+        tagID,
+        assetIDs,
+        action,
+      }),
+    });
+    if (generation !== state.workspaceGeneration) return;
+    state.review.detail = null;
+    state.review.tagAggregates = [];
+    state.review.detailSelectionKey = null;
+    state.review.detailRequestGeneration += 1;
+    try {
+      await Promise.all([
+        loadReviewOverview({ throwOnError: true }),
+        loadReviewQueue({
+          preserveLoadedWindow: true,
+          throwOnError: true,
+        }),
+        loadAssets({
+          preserveSelection: true,
+          preserveUnchangedGrid: true,
+          preserveLoadedWindow: true,
+        }),
+      ]);
+      if (generation !== state.workspaceGeneration) return;
+      if (!state.review.selectedAssetIDs.size && state.review.items.length) {
+        selectReviewIndex(Math.min(previousIndex, state.review.items.length - 1));
+      }
+      await loadReviewInspectorDetail({ force: true, quiet: true });
+      undoToast(
+        result.replayed
+          ? "标签操作已恢复"
+          : `已为 ${mediaItemCountText(result.appliedAssetCount)}更新人工标签`,
+        result.undoID
+      );
+    } catch {
+      if (generation === state.workspaceGeneration) {
+        void refreshWorkspace({
+          quiet: true,
+          kinds: ["tagsChanged", "reviewChanged", "assetsChanged"],
+        });
+        undoToast("人工标签已更新，界面同步暂时失败，正在重试", result.undoID);
+      }
+    }
+  } catch (error) {
+    if (generation === state.workspaceGeneration) {
+      toast(error.message || "审核标签更新失败");
+    }
+  } finally {
+    if (generation === state.workspaceGeneration) {
+      state.tagMutating = false;
+      state.review.mutating = false;
+      syncWriteActionControls();
+      syncReviewControls();
+      renderReviewDetail();
+    }
   }
 }
 
@@ -20344,13 +24034,28 @@ async function renderLightboxMedia(item) {
   const mediaKind = lightboxMediaKind();
   if (mediaKind !== "video") {
     stopLightboxVideo();
+    const recoveringReviewCloudPreview = state.lightboxContext === "review"
+      && state.review.cloudPreview.assetID === item.id
+      && state.review.cloudPreview.status !== "hidden";
+    if (recoveringReviewCloudPreview) {
+      clearProtectedImageSource(elements.lightboxImage);
+      elements.lightboxImage.classList.add("hidden");
+      renderReviewCloudPreviewRecovery();
+      return;
+    }
     elements.lightboxImage.classList.remove("hidden");
     if (item.width) elements.lightboxImage.dataset.width = String(item.width);
     else delete elements.lightboxImage.dataset.width;
     if (item.height) elements.lightboxImage.dataset.height = String(item.height);
     else delete elements.lightboxImage.dataset.height;
     const revision = item.contentRevision == null ? "" : `?r=${item.contentRevision}`;
-    setProtectedImageSource(elements.lightboxImage, `/v1/assets/${item.id}/preview${revision}`);
+    setProtectedImageSource(
+      elements.lightboxImage,
+      `/v1/assets/${item.id}/preview${revision}`,
+      state.lightboxContext === "review"
+        ? { priority: "high", forceFetch: true }
+        : undefined
+    );
     syncLightboxViewport();
     return;
   }
@@ -20397,10 +24102,16 @@ function openLightbox(context, assetID) {
     elements.reviewWorkspace.inert = true;
   } else if (context === "slimming") {
     elements.slimmingWorkspace.inert = true;
+    if (slimmingWorkspaceUsesIntegratedLayout()) elements.appView.inert = true;
   } else if (context === "worldMap") {
     elements.worldMapWorkspace.inert = true;
+    if (worldMapUsesIntegratedLayout()) elements.appView.inert = true;
   }
   elements.lightbox.classList.remove("hidden");
+  if (context === "review") {
+    syncLightboxWorkspaceFrame();
+    syncReviewPresentation({ renderSurfaces: false });
+  }
   if (context === "library") syncLightboxWorkspaceFrame();
   renderLightbox();
   requestAnimationFrame(() => {
@@ -20470,6 +24181,7 @@ function renderLightbox() {
   syncLightboxOpenOriginalControl(item);
   renderLightboxFavorite();
   if (!favoriteStateForAssetID(item.id)) void loadLightboxFavorite(item.id);
+  renderReviewCloudPreviewRecovery();
   syncReviewControls();
 }
 
@@ -20713,6 +24425,7 @@ async function loadWorkspace() {
     embeddingPreparation,
     sampleSuggestions,
     tagLibrarySuggestions,
+    trainingActivities,
     librarySuggestions,
     workspaceNotice,
   ] = await Promise.all([
@@ -20724,6 +24437,9 @@ async function loadWorkspace() {
     api(`/v1/embedding-preparation?${new URLSearchParams({ mediaKind: state.mediaKind })}`),
     api(`/v1/sample-suggestions?${new URLSearchParams({ mediaKind: state.mediaKind })}`),
     api(`/v1/tag-library-suggestions?${new URLSearchParams({ mediaKind: state.mediaKind })}`),
+    supportsTrainingActivities()
+      ? api(`/v1/training/activities?${new URLSearchParams({ mediaKind: state.mediaKind })}`)
+      : Promise.resolve([]),
     supportsLibrarySuggestions()
       ? api(`/v1/library-suggestions?${new URLSearchParams({ mediaKind: state.mediaKind })}`)
       : Promise.resolve(null),
@@ -20747,6 +24463,10 @@ async function loadWorkspace() {
   state.sampleSuggestions.maximumSampleCount = sampleSuggestions.maximumSampleCount || 500;
   state.sampleSuggestions.activities = sampleSuggestions.activities || [];
   state.tagLibrarySuggestions.snapshot = tagLibrarySuggestions;
+  state.personalModelActivities.mediaKind = state.mediaKind;
+  state.personalModelActivities.items = Array.isArray(trainingActivities)
+    ? trainingActivities
+    : [];
   state.librarySuggestions.snapshot = librarySuggestions;
   state.workspaceNotice.notice = workspaceNotice?.notice || null;
   state.workspaceNotice.dismissing = false;
@@ -20785,6 +24505,7 @@ async function loadWorkspace() {
   scheduleSampleSuggestionPoll();
   scheduleLibrarySuggestionPoll();
   scheduleTagLibrarySuggestionPoll();
+  scheduleTrainingActivityPoll();
   scheduleSourceManagementPoll();
 }
 
@@ -20902,6 +24623,7 @@ async function refreshWorkspace({ quiet = false, kinds = null } = {}) {
       if (jobsChanged) {
         state.jobs = jobs;
         renderJobs();
+        await loadTrainingActivities({ quiet: true });
         if (supportsLibrarySuggestions()) {
           await loadLibrarySuggestions({ quiet: true });
         }
@@ -21093,7 +24815,7 @@ async function connectEvents() {
   socket.addEventListener("open", () => {
     if (generation !== state.socketGeneration) return;
     state.reconnectAttempt = 0;
-    setConnection(true);
+    setConnection(true, "已连接");
   });
   socket.addEventListener("message", (event) => {
     if (generation !== state.socketGeneration) return;
@@ -21286,6 +25008,8 @@ function resetWorkspaceSessionState() {
   state.embeddingPreparation.cancelling = false;
   state.embeddingPreparation.requestGeneration += 1;
   state.embeddingPreparation.seenTerminalOperationIDs.clear();
+  state.embeddingPreparation.returnFocus = null;
+  state.embeddingPreparation.cancelFocus = null;
   clearTimeout(state.sampleSuggestions.pollTimer);
   state.sampleSuggestions.pollTimer = null;
   state.sampleSuggestions.isAvailable = false;
@@ -21315,6 +25039,12 @@ function resetWorkspaceSessionState() {
   state.tagLibrarySuggestions.dialog.method = "personalCentroid";
   state.tagLibrarySuggestions.dialog.selectedSourceIDs.clear();
   state.tagLibrarySuggestions.dialog.returnFocus = null;
+  clearTimeout(state.personalModelActivities.pollTimer);
+  state.personalModelActivities.pollTimer = null;
+  state.personalModelActivities.mediaKind = "image";
+  state.personalModelActivities.items = [];
+  state.personalModelActivities.loading = false;
+  state.personalModelActivities.requestGeneration += 1;
   if (elements.tagSuggestionDialog.open) elements.tagSuggestionDialog.close();
   state.inspectorDismissed = false;
   state.selectionAggregates = [];
@@ -21323,12 +25053,18 @@ function resetWorkspaceSessionState() {
   state.newTagOperationID = null;
   state.inlineTagOperations.single = null;
   state.inlineTagOperations.selection = null;
+  state.inlineTagOperations.review = null;
   elements.inspectorInlineTagName.value = "";
   elements.selectionInspectorInlineTagName.value = "";
+  elements.reviewInlineTagName.value = "";
   setInlineTagError("single");
   setInlineTagError("selection");
+  setInlineTagError("review");
   state.favoriteMutating = false;
   state.favoriteRetrying = false;
+  state.findingSimilarFromSelection = false;
+  state.personalModelToolbarWasVisible = false;
+  state.personalModelToolbarFocusedAction = null;
   state.tagManagementMutating = false;
   state.openingOriginal = false;
   state.undo.tag = { id: null, operationID: null, mutating: false, sequence: 0 };
@@ -21357,6 +25093,14 @@ function resetWorkspaceSessionState() {
   state.review.mutating = false;
   state.review.requestGeneration += 1;
   state.review.loadedScopeKey = null;
+  state.review.detail = null;
+  state.review.detailLoadingAssetID = null;
+  state.review.detailLoadingSelectionKey = null;
+  state.review.detailSelectionKey = null;
+  state.review.detailRequestGeneration += 1;
+  state.review.tagAggregates = [];
+  state.review.tagSearchText = "";
+  elements.reviewTagSearch.value = "";
   state.review.expandedControlTagIDs.clear();
   state.review.pendingThresholdFocus = null;
   state.review.returnTarget = null;
@@ -21421,7 +25165,7 @@ function resetWorkspaceSessionState() {
   state.refreshRetryTimer = null;
   elements.searchInput.value = "";
   elements.clearSearchButton.classList.add("hidden");
-  elements.sortSelect.value = state.sort;
+  renderSortControls();
   clearProtectedImageSource(elements.previewImage);
   stopInspectorVideo();
   hidePreviewPlaceholder();
@@ -21432,14 +25176,17 @@ function resetWorkspaceSessionState() {
   elements.appView.inert = false;
   elements.reviewWorkspace.inert = false;
   elements.reviewWorkspace.classList.add("hidden");
+  syncReviewPresentation({ renderSurfaces: false });
   elements.trainingWorkspace.inert = false;
   elements.trainingWorkspace.classList.add("hidden");
+  syncTrainingPresentation({ renderSurfaces: false });
   elements.slimmingWorkspace.inert = false;
   elements.slimmingWorkspace.classList.add("hidden");
-  elements.worldMapWorkspace.inert = false;
+  syncSlimmingPresentation({ renderSurfaces: false });
   elements.worldMapWorkspace.classList.add("hidden");
-  elements.galleryOverviewWorkspace.inert = false;
+  syncWorldMapPresentation({ renderSurfaces: false });
   elements.galleryOverviewWorkspace.classList.add("hidden");
+  syncGalleryOverviewPresentation({ renderSurfaces: false });
   elements.lightbox.classList.add("hidden");
   elements.lightbox.classList.remove("reviewing");
   renderLightboxFavorite();
@@ -21458,6 +25205,11 @@ async function logout() {
 }
 
 async function selectSource(sourceID) {
+  leaveIntegratedReviewForLibrary();
+  leaveIntegratedGalleryOverviewForLibrary();
+  leaveIntegratedWorldMapForLibrary();
+  leaveIntegratedTrainingForLibrary();
+  leaveIntegratedSlimmingForLibrary();
   if (state.selectionMode) setSelectionMode(false);
   state.libraryScope = "all";
   state.worldMapGalleryScope = null;
@@ -21474,9 +25226,230 @@ async function selectSource(sourceID) {
   await loadAssets();
 }
 
+const LIBRARY_SORT_OPTIONS = [
+  { value: "newest", title: "最新优先" },
+  { value: "oldest", title: "最早优先" },
+  { value: "fileNameAscending", title: "文件名升序" },
+];
+
+function librarySortTitle(sort) {
+  return LIBRARY_SORT_OPTIONS.find((option) => option.value === sort)?.title
+    || "文件名升序";
+}
+
+function renderSortControls() {
+  const title = librarySortTitle(state.sort);
+  elements.sortSelect.value = state.sort;
+  elements.sortButtonLabel.textContent = title;
+  elements.sortButton.setAttribute("aria-label", `排序：${title}`);
+  elements.sortButton.title = `排序：${title}`;
+  configurePersistentHelp(elements.sortButton, {
+    title: `排序：${title}`,
+    detail: "更改照片列表的排序方式：最新优先、最早优先或文件名升序。",
+  });
+  for (const button of elements.sortPopover.querySelectorAll("[data-sort]")) {
+    const option = LIBRARY_SORT_OPTIONS.find(
+      (candidate) => candidate.value === button.dataset.sort
+    );
+    const selected = button.dataset.sort === state.sort;
+    button.setAttribute("aria-checked", String(selected));
+    configurePersistentHelp(button, {
+      title: option?.title || "排序",
+      detail: `按“${option?.title || "当前方式"}”重新排列当前${currentMediaNoun()}列表。`,
+    });
+  }
+}
+
+function positionSortPopover() {
+  if (elements.sortPopover.classList.contains("hidden")) return;
+  const anchor = elements.sortButton.getBoundingClientRect();
+  const menu = elements.sortPopover.getBoundingClientRect();
+  const margin = 8;
+  const gap = 6;
+  const left = Math.max(
+    margin,
+    Math.min(anchor.left, globalThis.innerWidth - menu.width - margin)
+  );
+  const below = anchor.bottom + gap;
+  const top = below + menu.height <= globalThis.innerHeight - margin
+    ? below
+    : Math.max(margin, anchor.top - menu.height - gap);
+  elements.sortPopover.style.left = `${left}px`;
+  elements.sortPopover.style.top = `${top}px`;
+}
+
+function closeSortPopover({ restoreFocus = true } = {}) {
+  if (elements.sortPopover.classList.contains("hidden")) return;
+  elements.sortPopover.classList.add("hidden");
+  elements.sortButton.setAttribute("aria-expanded", "false");
+  if (restoreFocus) elements.sortButton.focus({ preventScroll: true });
+}
+
+function toggleSortPopover() {
+  if (!elements.sortPopover.classList.contains("hidden")) {
+    closeSortPopover();
+    return;
+  }
+  closeCompactToolbarMenu({ restoreFocus: false });
+  closeGridDensityPopovers({ restoreFocus: false });
+  elements.filterPopover.classList.add("hidden");
+  elements.filterButton.setAttribute("aria-expanded", "false");
+  state.filterDraft = null;
+  closeJobsPopover({ restoreFocus: false });
+  closePersonalModelPopover({ restoreFocus: false });
+  hideContextMenus();
+  renderSortControls();
+  elements.sortPopover.classList.remove("hidden");
+  elements.sortButton.setAttribute("aria-expanded", "true");
+  positionSortPopover();
+  restoreOverlayFocus(
+    elements.sortPopover.querySelector(`[data-sort="${CSS.escape(state.sort)}"]`)
+      || elements.sortPopover.querySelector("[data-sort]")
+  );
+}
+
+async function applyLibrarySort(sort) {
+  if (!LIBRARY_SORT_OPTIONS.some((option) => option.value === sort)) return;
+  const changed = state.sort !== sort;
+  state.sort = sort;
+  renderSortControls();
+  closeSortPopover();
+  if (changed) await loadAssets();
+}
+
+function moveSortMenuFocus(event) {
+  const buttons = [...elements.sortPopover.querySelectorAll("[data-sort]")];
+  if (!buttons.length) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeSortPopover();
+    return;
+  }
+  if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  const current = Math.max(0, buttons.indexOf(document.activeElement));
+  const next = event.key === "Home" ? 0
+    : event.key === "End" ? buttons.length - 1
+      : (current + (event.key === "ArrowUp" ? -1 : 1) + buttons.length) % buttons.length;
+  buttons[next].focus({ preventScroll: true });
+}
+
+function gridDensityControlForButton(button) {
+  return gridDensityControls().find((control) => control.button === button) || null;
+}
+
+function gridDensityControlForPopover(popover) {
+  return gridDensityControls().find((control) => control.popover === popover) || null;
+}
+
+function positionGridDensityPopover(control) {
+  if (!control || control.popover.classList.contains("hidden")) return;
+  const anchor = control.button.getBoundingClientRect();
+  const menu = control.popover.getBoundingClientRect();
+  const margin = 8;
+  const gap = 6;
+  const left = Math.max(
+    margin,
+    Math.min(anchor.left, globalThis.innerWidth - menu.width - margin)
+  );
+  const below = anchor.bottom + gap;
+  const top = below + menu.height <= globalThis.innerHeight - margin
+    ? below
+    : Math.max(margin, anchor.top - menu.height - gap);
+  control.popover.style.left = `${left}px`;
+  control.popover.style.top = `${top}px`;
+}
+
+function closeGridDensityPopovers({ restoreFocus = true } = {}) {
+  let returnFocus = null;
+  for (const control of gridDensityControls()) {
+    if (control.popover.classList.contains("hidden")) continue;
+    control.popover.classList.add("hidden");
+    control.button.setAttribute("aria-expanded", "false");
+    returnFocus ||= control.button;
+  }
+  if (restoreFocus && returnFocus) returnFocus.focus({ preventScroll: true });
+}
+
+function openGridDensityPopover(button) {
+  const control = gridDensityControlForButton(button);
+  if (!control || !control.popover.classList.contains("hidden")) return;
+  closeCompactToolbarMenu({ restoreFocus: false });
+  closeSortPopover({ restoreFocus: false });
+  closeGridDensityPopovers({ restoreFocus: false });
+  elements.filterPopover.classList.add("hidden");
+  elements.filterButton.setAttribute("aria-expanded", "false");
+  state.filterDraft = null;
+  closeJobsPopover({ restoreFocus: false });
+  closePersonalModelPopover({ restoreFocus: false });
+  closeReviewSourceFilter({ restoreFocus: false });
+  closeSlimmingCatalogSourcePicker({ restoreFocus: false });
+  closeSlimmingAnalysisOptions({ restoreFocus: false });
+  hideContextMenus();
+  renderGridDensityControls();
+  control.popover.classList.remove("hidden");
+  control.button.setAttribute("aria-expanded", "true");
+  positionGridDensityPopover(control);
+  restoreOverlayFocus(
+    control.popover.querySelector(
+      `[data-grid-density="${CSS.escape(String(state.layout.density))}"]`
+    ) || control.popover.querySelector("[data-grid-density]")
+  );
+}
+
+function toggleGridDensityPopover(button) {
+  const control = gridDensityControlForButton(button);
+  if (!control) return;
+  if (control.popover.classList.contains("hidden")) openGridDensityPopover(button);
+  else closeGridDensityPopovers();
+}
+
+function applyGridDensity(value) {
+  const next = Number(value);
+  if (!Number.isInteger(next) || !GRID_DENSITY_OPTIONS.some((option) => option.value === next)) {
+    return;
+  }
+  state.layout.density = next;
+  renderLayoutPreferences();
+  persistWorkspacePreferences();
+  closeGridDensityPopovers();
+}
+
+function moveGridDensityMenuFocus(event) {
+  const control = gridDensityControlForPopover(event.currentTarget);
+  if (!control) return;
+  const buttons = [...control.popover.querySelectorAll("[data-grid-density]")];
+  if (!buttons.length) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeGridDensityPopovers();
+    return;
+  }
+  if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
+  event.preventDefault();
+  const current = Math.max(0, buttons.indexOf(document.activeElement));
+  const next = event.key === "Home" ? 0
+    : event.key === "End" ? buttons.length - 1
+      : (current + (event.key === "ArrowUp" ? -1 : 1) + buttons.length) % buttons.length;
+  buttons[next].focus({ preventScroll: true });
+}
+
+function bindGridDensityControls() {
+  for (const control of gridDensityControls()) {
+    control.button.addEventListener("click", () => toggleGridDensityPopover(control.button));
+    control.popover.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-grid-density]");
+      if (button && !button.disabled) applyGridDensity(button.dataset.gridDensity);
+    });
+    control.popover.addEventListener("keydown", moveGridDensityMenuFocus);
+  }
+}
+
 function togglePopover(popover) {
   const willOpen = popover.classList.contains("hidden");
   closeCompactToolbarMenu({ restoreFocus: false });
+  closeSortPopover({ restoreFocus: false });
+  closeGridDensityPopovers({ restoreFocus: false });
   elements.filterPopover.classList.add("hidden");
   closeJobsPopover({ restoreFocus: false });
   closePersonalModelPopover({ restoreFocus: false });
@@ -21562,6 +25535,16 @@ function compactToolbarSections() {
     }),
   ].filter(Boolean);
   const maintenanceActions = [
+    compactToolbarAction(elements.toolbarConnectFolderButton, {
+      icon: "▤＋",
+      label: "连接文件夹",
+      detail: "在 Mac 上选择新的照片来源",
+    }),
+    compactToolbarAction(elements.toolbarExportPortableDataButton, {
+      icon: "⇧",
+      label: "导出用户数据",
+      detail: storageMaintenanceActiveRequest()?.message || "在 Mac 上选择导出位置",
+    }),
     compactToolbarAction(elements.storageButton, {
       icon: "▣",
       label: elements.storageStatusLabel.textContent.trim() || "应用存储与预览缓存",
@@ -21673,6 +25656,8 @@ function openCompactToolbarMenu() {
   state.compactToolbarReturnFocus = document.activeElement instanceof HTMLElement
     ? document.activeElement
     : elements.compactToolbarMenuButton;
+  closeSortPopover({ restoreFocus: false });
+  closeGridDensityPopovers({ restoreFocus: false });
   elements.filterPopover.classList.add("hidden");
   elements.filterButton.setAttribute("aria-expanded", "false");
   closeJobsPopover({ restoreFocus: false });
@@ -22060,6 +26045,7 @@ function availableCommands() {
   const lightboxOpen = commandContextHasLightbox();
   const selectionContext = commandSelectionContext(route);
   const preferredUndoKind = latestUndoKind();
+  const personalOperations = personalModelOperationState();
   const mediaKind = route === "training"
     ? state.training.mediaKind
     : route === "slimming"
@@ -22114,27 +26100,27 @@ function availableCommands() {
       title: state.librarySuggestions.snapshot?.personalMode === "fullLibrary"
         ? "使用个人模型扫描全库"
         : `抽 ${state.sampleSuggestions.maximumSampleCount} 张生成个人建议`,
-      hint: "进入审核",
+      hint: personalOperations.busy ? personalOperations.summary : "进入审核",
       disabled: !state.online || state.mediaKind !== "image" || (
         state.librarySuggestions.snapshot?.personalMode === "fullLibrary"
           ? activeLibrarySuggestionJobs().length > 0
           : (!state.sampleSuggestions.isAvailable || Boolean(activeSampleSuggestion()))
-      ),
+      ) || personalOperations.busy,
     },
     { id: "openTraining", icon: "⌁", title: "打开训练工程", hint: "" },
     {
       id: "rebuildPersonalModel",
       icon: "◎",
       title: "重建个人模型",
-      hint: "Personal Centroid",
-      disabled: !state.online,
+      hint: personalOperations.busy ? personalOperations.summary : "Personal Centroid",
+      disabled: !state.online || personalOperations.busy,
     },
     {
       id: "rebuildPersonalAdamW",
       icon: "✦",
       title: "训练超级个人模型",
-      hint: "Personal AdamW",
-      disabled: !state.online,
+      hint: personalOperations.busy ? personalOperations.summary : "Personal AdamW",
+      disabled: !state.online || personalOperations.busy,
     },
     { id: "openStorage", icon: "▣", title: "打开应用存储与预览缓存", hint: "" },
     {
@@ -22272,6 +26258,8 @@ function availableCommands() {
         hint: "个人模型",
         disabled: !state.online
           || !state.embeddingPreparation.isAvailable
+          || state.embeddingPreparation.loading
+          || state.embeddingPreparation.submitting
           || Boolean(activeEmbeddingPreparation()),
       },
       {
@@ -22289,7 +26277,9 @@ function availableCommands() {
         icon: "◫",
         title: `从所选${currentMediaNoun()}查找相似项`,
         hint: "图库瘦身",
-        disabled: !state.online,
+        disabled: !supportsLibrarySlimming()
+          || !state.online
+          || state.findingSimilarFromSelection,
       },
       {
         id: "deleteGallerySelection",
@@ -22349,6 +26339,21 @@ function availableCommands() {
         title: "稍后处理所选审核项",
         hint: "U",
         disabled: !state.online || state.review.loading || state.review.mutating,
+      },
+      {
+        id: "deleteReviewSelection",
+        icon: "⌫",
+        title: "删除所选审核项并释放空间",
+        hint: "Delete · Mac 确认",
+        disabled: !supportsLibrarySlimming()
+          || !state.online
+          || state.review.loading
+          || state.review.mutating
+          || state.galleryRemoval.submitting
+          || Boolean(activeGalleryRemovalRequest())
+          || galleryRemovalTargetAssetIDs(selectionContext.selectedIDs, {
+            surface: "review",
+          }).length !== selectionContext.selectedIDs.length,
       });
   }
   if (selectionContext?.route === "slimming" && selectionContext.selectedIDs.length) {
@@ -22603,6 +26608,13 @@ async function executeCommand(commandID) {
   case "reviewDeferSelection":
     await deferReviewSelection();
     break;
+  case "deleteReviewSelection":
+    await submitGalleryRemoval({
+      assetIDs: commandSelectionContext("review")?.selectedIDs || [],
+      surface: "review",
+      returnFocus: { element: elements.reviewInspectorDeleteButton },
+    });
+    break;
   case "recycleSlimmingSelection":
     await submitSlimmingRemoval("recoverableRecycle");
     break;
@@ -22732,6 +26744,8 @@ function openCommandPalette() {
     : null;
   state.commandContext = commandContextSnapshot();
   closeCompactToolbarMenu({ restoreFocus: false });
+  closeSortPopover({ restoreFocus: false });
+  closeGridDensityPopovers({ restoreFocus: false });
   elements.filterPopover.classList.add("hidden");
   elements.filterButton.setAttribute("aria-expanded", "false");
   closePersonalModelPopover({ restoreFocus: false });
@@ -23585,6 +27599,26 @@ function setupSidebarReordering() {
 function bindEvents() {
   bindPersistentHelp();
   setupSidebarReordering();
+  bindGridDensityControls();
+  elements.personalModelToolbarActions.addEventListener("focusin", (event) => {
+    state.personalModelToolbarFocusedAction = personalModelToolbarActionKind(event.target);
+  });
+  elements.personalModelToolbarActions.addEventListener("focusout", (event) => {
+    if (event.relatedTarget
+      && !elements.personalModelToolbarActions.contains(event.relatedTarget)) {
+      state.personalModelToolbarFocusedAction = null;
+    }
+  });
+  elements.selectionFavoriteToolbarActions.addEventListener("focusin", (event) => {
+    state.selectionFavoriteToolbarFocusedAction = event.target
+      === elements.toolbarUnfavoriteSelectedButton ? "unfavorite" : "favorite";
+  });
+  elements.selectionFavoriteToolbarActions.addEventListener("focusout", (event) => {
+    if (event.relatedTarget
+      && !elements.selectionFavoriteToolbarActions.contains(event.relatedTarget)) {
+      state.selectionFavoriteToolbarFocusedAction = null;
+    }
+  });
   globalThis.addEventListener("popstate", handleWorkspaceHistoryPopState);
   elements.sourceSidebar.addEventListener("keydown", moveSidebarPrimaryNavigation);
   elements.accountLoginTab.addEventListener("click", () => selectAuthMethod("account"));
@@ -23598,6 +27632,9 @@ function bindEvents() {
   });
   elements.sourceManagerButton.addEventListener("click", openSourceManager);
   elements.sidebarConnectFolderButton.addEventListener("click", () => {
+    openSourceManagerForAction("connectFolder");
+  });
+  elements.toolbarConnectFolderButton.addEventListener("click", () => {
     openSourceManagerForAction("connectFolder");
   });
   elements.sidebarConnectPhotosButton.addEventListener("click", () => {
@@ -23787,6 +27824,10 @@ function bindEvents() {
     moveDialogButtonFocus(event, elements.generalSettingsDialog);
   });
   elements.storageButton.addEventListener("click", openStorageMaintenance);
+  elements.toolbarExportPortableDataButton.addEventListener("click", async () => {
+    await openStorageMaintenance();
+    await submitStorageMaintenanceAction("exportPortableData");
+  });
   elements.storageCloseButton.addEventListener("click", () => closeStorageMaintenance());
   elements.storageRefreshButton.addEventListener("click", () => loadStorageMaintenance());
   elements.exportPortableDataButton.addEventListener("click", () => {
@@ -23988,8 +28029,19 @@ function bindEvents() {
     finishReviewMarqueeSelection();
     finishSlimmingMarqueeSelection();
   });
+  setupInspectorTagInteractions(
+    elements.inspectorPlaceholderTags,
+    "placeholder",
+    false,
+    { labelingEnabled: false }
+  );
   setupInspectorTagInteractions(elements.inspectorTags, "single", false);
   setupInspectorTagInteractions(elements.selectionInspectorTags, "selection", true);
+  setupInspectorTagInteractions(elements.reviewTags, "review", true, {
+    applyDecisionOverride: (action, tagID) => {
+      void applyReviewTagDecision(action, tagID);
+    },
+  });
   elements.inspectorSuggestions.addEventListener("click", (event) => {
     const button = event.target.closest(
       "[data-inspector-suggestion-key][data-action][data-tag-id]"
@@ -24034,6 +28086,10 @@ function bindEvents() {
     state.selectionTagSearchText = elements.selectionTagSearch.value.trim();
     renderSelectionInspector();
   });
+  elements.reviewTagSearch.addEventListener("input", () => {
+    state.review.tagSearchText = elements.reviewTagSearch.value.trim();
+    renderReviewDetail();
+  });
   elements.previewImage.addEventListener("imageall-protected-load", (event) => {
     if (String(event.detail?.requestID) !== elements.previewImage.dataset.protectedRequestId) {
       return;
@@ -24065,6 +28121,37 @@ function bindEvents() {
   });
   elements.cloudPreviewButton.addEventListener("click", () => {
     downloadSelectedCloudPreview();
+  });
+  elements.reviewPreviewImage.addEventListener("imageall-protected-load", (event) => {
+    if (String(event.detail?.requestID)
+      !== elements.reviewPreviewImage.dataset.protectedRequestId) return;
+    elements.reviewPreviewImage.classList.remove("hidden");
+    const assetID = state.review.items[state.review.selectedIndex]?.assetID;
+    if (assetID && state.review.cloudPreview.assetID === assetID) {
+      resetReviewCloudPreviewRecovery({ cancelActive: false });
+    } else {
+      renderReviewCloudPreviewRecovery();
+    }
+  });
+  elements.reviewPreviewImage.addEventListener("imageall-protected-error", (event) => {
+    if (String(event.detail?.requestID)
+      !== elements.reviewPreviewImage.dataset.protectedRequestId) return;
+    delete elements.reviewPreviewImage.dataset.protectedPath;
+    const assetID = state.review.items[state.review.selectedIndex]?.assetID;
+    const needsCloudPreview = event.detail?.status === 409
+      && event.detail?.code === "conflict"
+      && event.detail?.message === "cloud preview required";
+    if (needsCloudPreview && assetID) {
+      showReviewCloudPreviewRecovery(assetID);
+      return;
+    }
+    toast("审核预览暂不可用");
+  });
+  elements.reviewCloudPreviewButton.addEventListener("click", () => {
+    downloadReviewCloudPreview();
+  });
+  elements.lightboxCloudPreviewButton.addEventListener("click", () => {
+    downloadReviewCloudPreview();
   });
   elements.previewVideo.addEventListener("loadeddata", () => {
     if (elements.previewVideo.dataset.assetId !== state.selectedDetail?.assetID) return;
@@ -24102,25 +28189,15 @@ function bindEvents() {
   elements.clearSearchButton.addEventListener("click", async () => {
     await clearLibrarySearch();
   });
-  elements.sortSelect.addEventListener("change", async () => {
-    state.sort = elements.sortSelect.value;
-    await loadAssets();
+  elements.sortSelect.addEventListener("change", () => {
+    void applyLibrarySort(elements.sortSelect.value);
   });
-  elements.gridDensitySlider.addEventListener("input", () => {
-    state.layout.density = Number(elements.gridDensitySlider.value);
-    renderLayoutPreferences();
-    persistWorkspacePreferences();
+  elements.sortButton.addEventListener("click", toggleSortPopover);
+  elements.sortPopover.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-sort]");
+    if (button && !button.disabled) void applyLibrarySort(button.dataset.sort);
   });
-  elements.slimmingGridDensitySlider.addEventListener("input", () => {
-    state.layout.density = Number(elements.slimmingGridDensitySlider.value);
-    renderLayoutPreferences();
-    persistWorkspacePreferences();
-  });
-  elements.reviewGridDensitySlider.addEventListener("input", () => {
-    state.layout.density = Number(elements.reviewGridDensitySlider.value);
-    renderLayoutPreferences();
-    persistWorkspacePreferences();
-  });
+  elements.sortPopover.addEventListener("keydown", moveSortMenuFocus);
   elements.thumbnailAspectButton.addEventListener("click", toggleThumbnailAspectMode);
   elements.slimmingThumbnailAspectButton.addEventListener("click", toggleThumbnailAspectMode);
   elements.reviewThumbnailAspectButton.addEventListener("click", toggleThumbnailAspectMode);
@@ -24210,25 +28287,37 @@ function bindEvents() {
   elements.inspectorFavoriteButton.addEventListener("click", () => {
     const assetID = state.selectedDetail?.assetID;
     if (!assetID) return;
-    applyFavoriteMutation(
-      [assetID],
-      favoriteStateForAssetID(assetID)?.isFavorite !== true
-    );
+    applyFavoriteMutation([assetID], true);
+  });
+  elements.inspectorUnfavoriteButton.addEventListener("click", () => {
+    const assetID = state.selectedDetail?.assetID;
+    if (!assetID) return;
+    applyFavoriteMutation([assetID], false);
   });
   for (const button of [
+    elements.toolbarFavoriteSelectedButton,
     elements.favoriteSelectedButton,
     elements.selectionInspectorFavoriteButton,
   ]) {
     button.addEventListener("click", () => {
-      applyFavoriteMutation([...state.selectedAssetIDs], true);
+      void applyFavoriteMutationFromControl(
+        button,
+        [...state.selectedAssetIDs],
+        true
+      );
     });
   }
   for (const button of [
+    elements.toolbarUnfavoriteSelectedButton,
     elements.unfavoriteSelectedButton,
     elements.selectionInspectorUnfavoriteButton,
   ]) {
     button.addEventListener("click", () => {
-      applyFavoriteMutation([...state.selectedAssetIDs], false);
+      void applyFavoriteMutationFromControl(
+        button,
+        [...state.selectedAssetIDs],
+        false
+      );
     });
   }
 
@@ -24317,6 +28406,15 @@ function bindEvents() {
     setSelectionMode(!state.selectionMode);
   });
   elements.personalModelButton.addEventListener("click", togglePersonalModelPopover);
+  elements.toolbarRebuildPersonalModelButton.addEventListener("click", () => {
+    openLibraryPersonalTraining("personalCentroid", elements.toolbarRebuildPersonalModelButton);
+  });
+  elements.toolbarRebuildPersonalAdamWButton.addEventListener("click", () => {
+    openLibraryPersonalTraining("personalAdamW", elements.toolbarRebuildPersonalAdamWButton);
+  });
+  elements.toolbarGeneratePersonalSuggestionsButton.addEventListener("click", () => {
+    generateGalleryPersonalSuggestions();
+  });
   elements.rebuildPersonalModelButton.addEventListener("click", () => {
     openLibraryPersonalTraining("personalCentroid");
   });
@@ -24356,26 +28454,36 @@ function bindEvents() {
   });
   elements.batchTagSelect.addEventListener("change", scheduleSelectionAggregate);
   elements.batchNewTagButton.addEventListener("click", openNewTagDialog);
-  elements.prepareSelectedFeaturesButton.addEventListener("click", prepareSelectedFeatures);
+  for (const button of [
+    elements.toolbarPrepareSelectedFeaturesButton,
+    elements.prepareSelectedFeaturesButton,
+    elements.selectionInspectorPrepareFeaturesButton,
+    elements.preparePersonalSelectionButton,
+  ]) {
+    button.addEventListener("click", () => {
+      void prepareSelectedFeatures(button);
+    });
+  }
   elements.generateSelectedSuggestionsButton.addEventListener("click", () => {
     generateSampleSuggestions({ useSelection: true });
   });
-  elements.findSimilarSelectionButton.addEventListener("click", findSimilarFromSelection);
+  for (const button of [
+    elements.toolbarFindSimilarSelectionButton,
+    elements.findSimilarSelectionButton,
+    elements.selectionInspectorFindSimilarButton,
+    elements.findSimilarPersonalSelectionButton,
+  ]) {
+    button.addEventListener("click", () => {
+      void findSimilarFromSelection(button);
+    });
+  }
   elements.cancelEmbeddingPreparationButton.addEventListener(
     "click",
     cancelEmbeddingPreparation
   );
-  elements.selectionInspectorPrepareFeaturesButton.addEventListener(
-    "click",
-    prepareSelectedFeatures
-  );
   elements.selectionInspectorGenerateSuggestionsButton.addEventListener("click", () => {
     generateSampleSuggestions({ useSelection: true });
   });
-  elements.selectionInspectorFindSimilarButton.addEventListener(
-    "click",
-    findSimilarFromSelection
-  );
   elements.selectionInspectorPrimaryPreview.addEventListener("click", () => {
     const assetID = selectionPrimaryAssetID();
     if (assetID) openLightbox("library", assetID);
@@ -24390,17 +28498,26 @@ function bindEvents() {
   elements.selectionInspectorInlineTagForm.addEventListener("submit", (event) => {
     void createInlineTagAndApply(event, "selection");
   });
+  elements.reviewInlineTagForm.addEventListener("submit", (event) => {
+    void createInlineTagAndApply(event, "review");
+  });
   elements.inspectorInlineTagName.addEventListener("input", () => {
     updateInlineTagDraft("single");
   });
   elements.selectionInspectorInlineTagName.addEventListener("input", () => {
     updateInlineTagDraft("selection");
   });
+  elements.reviewInlineTagName.addEventListener("input", () => {
+    updateInlineTagDraft("review");
+  });
   elements.inspectorInlineTagName.addEventListener("keydown", (event) => {
     handleInlineTagEscape(event, "single");
   });
   elements.selectionInspectorInlineTagName.addEventListener("keydown", (event) => {
     handleInlineTagEscape(event, "selection");
+  });
+  elements.reviewInlineTagName.addEventListener("keydown", (event) => {
+    handleInlineTagEscape(event, "review");
   });
   elements.newTagForm.addEventListener("submit", createTagAndApply);
   elements.cancelNewTagButton.addEventListener("click", closeNewTagDialog);
@@ -24596,13 +28713,64 @@ function bindEvents() {
   elements.closeSlimmingButton.addEventListener("click", () => {
     void returnFromWorkspace("slimming");
   });
-  elements.newSlimmingAnalysisButton.addEventListener("click", openSlimmingSetupDialog);
+  elements.slimmingCatalogAnalyzeButton.addEventListener("click", () => {
+    void launchSlimmingAnalysis("catalog", elements.slimmingCatalogAnalyzeButton);
+  });
+  elements.slimmingCatalogSourceButton.addEventListener(
+    "click",
+    toggleSlimmingCatalogSourcePicker
+  );
+  elements.closeSlimmingCatalogSourceButton.addEventListener("click", () => {
+    closeSlimmingCatalogSourcePicker();
+  });
+  elements.slimmingCatalogSourceOptions.addEventListener("change", (event) => {
+    const input = event.target.closest("[data-slimming-catalog-source-id]");
+    if (!input) return;
+    const snapshot = currentSlimmingCatalogSnapshot();
+    const selected = resolvedSlimmingCatalogSourceIDs(snapshot);
+    if (input.checked) selected.add(input.dataset.slimmingCatalogSourceId);
+    else selected.delete(input.dataset.slimmingCatalogSourceId);
+    setSlimmingCatalogSourceIDs(selected, snapshot);
+    renderSlimmingCatalogSourcePicker();
+  });
+  elements.selectAllSlimmingCatalogSourcesButton.addEventListener("click", () => {
+    const snapshot = currentSlimmingCatalogSnapshot();
+    setSlimmingCatalogSourceIDs(
+      new Set((snapshot?.sources || []).map((source) => source.id)),
+      snapshot
+    );
+    renderSlimmingCatalogSourcePicker();
+  });
+  elements.clearSlimmingCatalogSourcesButton.addEventListener("click", () => {
+    setSlimmingCatalogSourceIDs(new Set(), currentSlimmingCatalogSnapshot());
+    renderSlimmingCatalogSourcePicker();
+  });
   elements.slimmingAnalysisOptionsButton.addEventListener(
     "click",
     toggleSlimmingAnalysisOptions
   );
   elements.closeSlimmingAnalysisOptionsButton.addEventListener("click", () => {
     closeSlimmingAnalysisOptions();
+  });
+  elements.slimmingCurrentJobActions.addEventListener("click", (event) => {
+    const button = event.target.closest(
+      "[data-slimming-job-action-id][data-action]"
+    );
+    if (!button || button.disabled) return;
+    void applySlimmingJobAction(
+      button.dataset.slimmingJobActionId,
+      button.dataset.action,
+      { returnFocus: "options" }
+    );
+  });
+  elements.slimmingCurrentFilterAnalysisButton.addEventListener("click", () => {
+    void launchSlimmingAnalysis("currentFilter", elements.slimmingAnalysisOptionsButton);
+  });
+  elements.slimmingSeedAnalysisButton.addEventListener("click", () => {
+    void launchSlimmingAnalysis("seeds", elements.slimmingAnalysisOptionsButton);
+  });
+  elements.openSlimmingSetupButton.addEventListener("click", () => {
+    void openSlimmingSetupDialog(elements.slimmingAnalysisOptionsButton);
   });
   elements.openSlimmingThresholdEditorButton.addEventListener("click", () => {
     void openSlimmingThresholdEditor();
@@ -24798,12 +28966,13 @@ function bindEvents() {
     elements.slimmingInspector.querySelector("summary")?.focus({ preventScroll: true });
   });
   elements.slimmingNavigatorButton.addEventListener("click", toggleSlimmingNavigator);
-  elements.slimmingLoadMoreClustersButton.addEventListener("click", () => {
+  elements.slimmingLoadMoreClustersButton.addEventListener("click", async () => {
+    if (state.slimming.loading) return;
     state.slimming.clusterLimit = Math.min(
       SLIMMING_CLUSTER_LIMIT_MAX,
       state.slimming.clusterLimit + 48
     );
-    loadSlimmingWorkspace({ quiet: true });
+    await loadSlimmingWorkspace({ quiet: true, appendKind: "clusters" });
   });
   elements.slimmingLoadMoreJobsButton.addEventListener("click", async () => {
     const scrollTop = elements.slimmingNavigatorPane.scrollTop;
@@ -24818,16 +28987,23 @@ function bindEvents() {
       )?.focus({ preventScroll: true });
     }
   });
-  elements.slimmingLoadMoreMembersButton.addEventListener("click", () => {
+  elements.slimmingLoadMoreMembersButton.addEventListener("click", async () => {
+    if (state.slimming.loading) return;
     state.slimming.memberLimit = Math.min(
       SLIMMING_MEMBER_LIMIT_MAX,
       state.slimming.memberLimit + 96
     );
-    loadSlimmingWorkspace({ quiet: true });
+    await loadSlimmingWorkspace({ quiet: true, appendKind: "members" });
   });
-  elements.slimmingRecycleLoadMoreButton.addEventListener("click", () => {
-    state.slimming.recycle.limit = Math.min(5000, state.slimming.recycle.limit + 60);
-    loadSlimmingRecycle({ quiet: true });
+  elements.slimmingRecycleLoadMoreButton.addEventListener("click", async () => {
+    if (state.slimming.recycle.loading) return;
+    const previousLimit = state.slimming.recycle.limit;
+    state.slimming.recycle.limit = Math.min(5000, previousLimit + 60);
+    const loaded = await loadSlimmingRecycle({ quiet: true, append: true });
+    if (!loaded) {
+      state.slimming.recycle.limit = previousLimit;
+      renderSlimmingWorkspace({ preserveRecycle: true });
+    }
   });
   elements.slimmingRecycleScopes.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-slimming-recycle-scope]");
@@ -25493,6 +29669,19 @@ function bindEvents() {
   elements.nextReviewButton.addEventListener("click", () => {
     selectReviewIndex(state.review.selectedIndex + 1);
   });
+  elements.reviewInspectorFavoriteButton.addEventListener("click", () => {
+    void applyReviewInspectorFavorite(elements.reviewInspectorFavoriteButton, true);
+  });
+  elements.reviewInspectorUnfavoriteButton.addEventListener("click", () => {
+    void applyReviewInspectorFavorite(elements.reviewInspectorUnfavoriteButton, false);
+  });
+  elements.reviewInspectorDeleteButton.addEventListener("click", () => {
+    void submitGalleryRemoval({
+      assetIDs: selectedReviewItems().map((item) => item.assetID),
+      surface: "review",
+      returnFocus: { element: elements.reviewInspectorDeleteButton },
+    });
+  });
   elements.reviewDetail.addEventListener("click", (event) => {
     const button = event.target.closest(".review-action");
     if (!button) return;
@@ -25501,6 +29690,12 @@ function bindEvents() {
     } else {
       applyReviewDecision(button.dataset.action);
     }
+  });
+  elements.reviewOpenOriginalButton.addEventListener("click", () => {
+    const item = state.review.items[state.review.selectedIndex];
+    const detail = reviewInspectorDetailMatches(item) ? state.review.detail : null;
+    if (!item || !detail || state.review.selectedAssetIDs.size !== 1) return;
+    void openOriginalAssetOnMac(item.assetID, state.mediaKind, detail.availability);
   });
   elements.reviewOpenLightboxButton.addEventListener("click", () => {
     const item = state.review.items[state.review.selectedIndex];
@@ -25551,11 +29746,47 @@ function bindEvents() {
   elements.lightboxStage.addEventListener("pointerup", endLightboxPan);
   elements.lightboxStage.addEventListener("pointercancel", endLightboxPan);
   elements.lightboxImage.addEventListener("load", syncLightboxViewport);
+  elements.lightboxImage.addEventListener("imageall-protected-load", (event) => {
+    if (String(event.detail?.requestID)
+      !== elements.lightboxImage.dataset.protectedRequestId) return;
+    elements.lightboxImage.classList.remove("hidden");
+    if (state.lightboxContext === "review"
+      && state.review.cloudPreview.assetID === state.lightboxAssetID) {
+      resetReviewCloudPreviewRecovery({ cancelActive: false });
+    } else {
+      renderReviewCloudPreviewRecovery();
+    }
+    syncLightboxViewport();
+  });
+  elements.lightboxImage.addEventListener("imageall-protected-error", (event) => {
+    if (String(event.detail?.requestID)
+      !== elements.lightboxImage.dataset.protectedRequestId) return;
+    delete elements.lightboxImage.dataset.protectedPath;
+    const assetID = state.lightboxAssetID;
+    const needsCloudPreview = event.detail?.status === 409
+      && event.detail?.code === "conflict"
+      && event.detail?.message === "cloud preview required";
+    if (state.lightboxContext === "review" && needsCloudPreview && assetID) {
+      elements.lightboxImage.classList.add("hidden");
+      showReviewCloudPreviewRecovery(assetID);
+      return;
+    }
+    renderReviewCloudPreviewRecovery();
+  });
   window.addEventListener("resize", () => {
     if (!elements.lightbox.classList.contains("hidden")) {
       syncLightboxWorkspaceFrame();
       syncLightboxViewport();
     }
+    if (!elements.slimmingCatalogSourcePopover.classList.contains("hidden")) {
+      positionSlimmingCatalogSourcePicker();
+    }
+    if (!elements.sortPopover.classList.contains("hidden")) positionSortPopover();
+    for (const control of gridDensityControls()) positionGridDensityPopover(control);
+    requestAnimationFrame(() => {
+      syncPersonalModelToolbarPresentation();
+      syncSelectionFavoriteToolbarPresentation();
+    });
   });
   elements.closeLightboxButton.addEventListener("click", closeLightbox);
   elements.lightboxPreviousButton.addEventListener("click", () => void navigateLightbox(-1));
@@ -25667,6 +29898,8 @@ function bindEvents() {
       ),
     ];
     if (!buttons.length) return;
+    if (!["Escape", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+    event.stopPropagation();
     if (event.key === "Escape") {
       event.preventDefault();
       const assetID = state.contextAssetID;
@@ -25674,7 +29907,6 @@ function bindEvents() {
       restoreOverlayFocus(assetCardFocusTarget(assetID));
       return;
     }
-    if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
     const current = Math.max(0, buttons.indexOf(document.activeElement));
     const next = event.key === "Home" ? 0
@@ -25712,6 +29944,8 @@ function bindEvents() {
       ...elements.slimmingMemberContextMenu.querySelectorAll("button:not(:disabled)"),
     ];
     if (!buttons.length) return;
+    if (!["Escape", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+    event.stopPropagation();
     if (event.key === "Escape") {
       event.preventDefault();
       const memberID = state.slimming.contextMemberID;
@@ -25723,7 +29957,6 @@ function bindEvents() {
       ));
       return;
     }
-    if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
     event.preventDefault();
     const current = Math.max(0, buttons.indexOf(document.activeElement));
     const next = event.key === "Home" ? 0
@@ -25744,6 +29977,8 @@ function bindEvents() {
       ...elements.slimmingJobContextMenu.querySelectorAll("button:not(:disabled)"),
     ];
     if (!buttons.length) return;
+    if (!["Escape", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+    event.stopPropagation();
     if (event.key === "Escape") {
       event.preventDefault();
       const jobID = state.slimming.contextJobID;
@@ -25753,7 +29988,6 @@ function bindEvents() {
       ));
       return;
     }
-    if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
     const current = Math.max(0, buttons.indexOf(document.activeElement));
     const next = event.key === "Home" ? 0
@@ -25784,6 +30018,8 @@ function bindEvents() {
   elements.sourceContextMenu.addEventListener("keydown", (event) => {
     const buttons = [...elements.sourceContextMenu.querySelectorAll("button:not(:disabled)")];
     if (!buttons.length) return;
+    if (!["Escape", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+    event.stopPropagation();
     if (event.key === "Escape") {
       event.preventDefault();
       const sourceID = state.contextSourceID;
@@ -25793,7 +30029,6 @@ function bindEvents() {
       ));
       return;
     }
-    if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
     const current = Math.max(0, buttons.indexOf(document.activeElement));
     const next = event.key === "Home" ? 0
@@ -25834,6 +30069,8 @@ function bindEvents() {
   elements.tagContextMenu.addEventListener("keydown", (event) => {
     const buttons = [...elements.tagContextMenu.querySelectorAll("button:not(:disabled)")];
     if (!buttons.length) return;
+    if (!["Escape", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+    event.stopPropagation();
     if (event.key === "Escape") {
       event.preventDefault();
       const tagID = state.contextTagID;
@@ -25851,7 +30088,6 @@ function bindEvents() {
       }
       return;
     }
-    if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
     const current = Math.max(0, buttons.indexOf(document.activeElement));
     const next = event.key === "Home" ? 0
@@ -25879,6 +30115,19 @@ function bindEvents() {
       elements.filterButton.setAttribute("aria-expanded", "false");
       state.filterDraft = null;
     }
+    if (!elements.sortPopover.classList.contains("hidden")
+      && !eventPath.includes(elements.sortPopover)
+      && !eventPath.includes(elements.sortButton)) {
+      closeSortPopover({ restoreFocus: false });
+    }
+    for (const control of gridDensityControls()) {
+      if (!control.popover.classList.contains("hidden")
+        && !eventPath.includes(control.popover)
+        && !eventPath.includes(control.button)) {
+        closeGridDensityPopovers({ restoreFocus: false });
+        break;
+      }
+    }
     if (!elements.jobsPopover.classList.contains("hidden")
       && !elements.jobsPopover.contains(event.target)
       && !elements.jobsButton.contains(event.target)
@@ -25895,9 +30144,15 @@ function bindEvents() {
       && !eventPath.includes(elements.reviewSourceFilterButton)) {
       closeReviewSourceFilter({ restoreFocus: false });
     }
+    if (!elements.slimmingCatalogSourcePopover.classList.contains("hidden")
+      && !eventPath.includes(elements.slimmingCatalogSourcePopover)
+      && !eventPath.includes(elements.slimmingCatalogSourceButton)) {
+      closeSlimmingCatalogSourcePicker({ restoreFocus: false });
+    }
     if (!elements.slimmingAnalysisOptionsPopover.classList.contains("hidden")
       && !eventPath.includes(elements.slimmingAnalysisOptionsPopover)
-      && !eventPath.includes(elements.slimmingAnalysisOptionsButton)) {
+      && !eventPath.includes(elements.slimmingAnalysisOptionsButton)
+      && !eventPath.includes(elements.confirmDialog)) {
       closeSlimmingAnalysisOptions({ restoreFocus: false });
     }
   });
@@ -25929,15 +30184,26 @@ function bindEvents() {
       || elements.worldMapLocationBackfillDialog.open;
     const lightboxOpen = !elements.lightbox.classList.contains("hidden");
     const reviewOpen = !elements.reviewWorkspace.classList.contains("hidden");
+    const reviewModalOpen = reviewOpen && !reviewWorkspaceUsesIntegratedLayout();
     const trainingOpen = !elements.trainingWorkspace.classList.contains("hidden");
+    const trainingModalOpen = trainingOpen && !trainingWorkspaceUsesIntegratedLayout();
     const slimmingOpen = !elements.slimmingWorkspace.classList.contains("hidden");
+    const slimmingModalOpen = slimmingOpen && !slimmingWorkspaceUsesIntegratedLayout();
     const worldMapOpen = !elements.worldMapWorkspace.classList.contains("hidden");
+    const worldMapModalOpen = worldMapOpen && !worldMapUsesIntegratedLayout();
     const galleryOverviewOpen = !elements.galleryOverviewWorkspace.classList.contains("hidden");
+    const galleryOverviewModalOpen = galleryOverviewOpen
+      && !galleryOverviewUsesIntegratedLayout();
+    const integratedWorkspaceOpen = (worldMapOpen && !worldMapModalOpen)
+      || (galleryOverviewOpen && !galleryOverviewModalOpen)
+      || (reviewOpen && !reviewModalOpen)
+      || (trainingOpen && !trainingModalOpen)
+      || (slimmingOpen && !slimmingModalOpen);
     const jobsOpen = !elements.jobsPopover.classList.contains("hidden");
     const inspectorOverlayOpen = globalThis.matchMedia("(max-width: 980px)").matches
       && elements.inspector.classList.contains("open");
-    const customOverlayOpen = lightboxOpen || reviewOpen || trainingOpen || slimmingOpen || worldMapOpen
-      || galleryOverviewOpen
+    const customOverlayOpen = lightboxOpen || reviewModalOpen || trainingModalOpen || slimmingModalOpen || worldMapModalOpen
+      || galleryOverviewModalOpen
       || jobsOpen
       || inspectorOverlayOpen;
     if ((event.metaKey || event.ctrlKey) && event.key === ",") {
@@ -25961,7 +30227,8 @@ function bindEvents() {
       return;
     }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
-      if (blockingDialogOpen || elements.commandPalette.open || customOverlayOpen) {
+      if (blockingDialogOpen || elements.commandPalette.open || customOverlayOpen
+        || integratedWorkspaceOpen) {
         event.preventDefault();
         return;
       }
@@ -26002,8 +30269,22 @@ function bindEvents() {
         closePersonalModelPopover();
         return;
       }
+      if (gridDensityControls().some(
+        (control) => !control.popover.classList.contains("hidden")
+      )) {
+        closeGridDensityPopovers();
+        return;
+      }
+      if (!elements.sortPopover.classList.contains("hidden")) {
+        closeSortPopover();
+        return;
+      }
       if (!elements.reviewSourceFilterPopover.classList.contains("hidden")) {
         closeReviewSourceFilter();
+        return;
+      }
+      if (!elements.slimmingCatalogSourcePopover.classList.contains("hidden")) {
+        closeSlimmingCatalogSourcePicker();
         return;
       }
       if (!elements.slimmingAnalysisOptionsPopover.classList.contains("hidden")) {
@@ -26138,15 +30419,15 @@ function bindEvents() {
     }
     if (lightboxOpen) {
       if (trapLibraryLightboxFocus(event)) return;
-    } else if (reviewOpen) {
+    } else if (reviewModalOpen) {
       if (trapOverlayFocus(event, elements.reviewWorkspace)) return;
-    } else if (trainingOpen) {
+    } else if (trainingModalOpen) {
       if (trapOverlayFocus(event, elements.trainingWorkspace)) return;
-    } else if (slimmingOpen) {
+    } else if (slimmingModalOpen) {
       if (trapOverlayFocus(event, elements.slimmingWorkspace)) return;
-    } else if (worldMapOpen) {
+    } else if (worldMapModalOpen) {
       if (trapOverlayFocus(event, elements.worldMapWorkspace)) return;
-    } else if (galleryOverviewOpen) {
+    } else if (galleryOverviewModalOpen) {
       if (trapOverlayFocus(event, elements.galleryOverviewWorkspace)) return;
     } else if (inspectorOverlayOpen && trapOverlayFocus(event, elements.inspector)) {
       return;
@@ -26249,6 +30530,20 @@ function bindEvents() {
         && event.key.toLowerCase() === "a") {
         event.preventDefault();
         selectAllReviewItems();
+        return;
+      }
+      if (!event.repeat
+        && !event.metaKey
+        && !event.ctrlKey
+        && !event.altKey
+        && ["Backspace", "Delete"].includes(event.key)
+        && state.review.selectedAssetIDs.size > 0) {
+        event.preventDefault();
+        void submitGalleryRemoval({
+          assetIDs: selectedReviewItems().map((item) => item.assetID),
+          surface: "review",
+          returnFocus: { element: elements.reviewInspectorDeleteButton },
+        });
         return;
       }
       if (isInteractiveControlTarget(event.target)) return;
@@ -26427,7 +30722,49 @@ function bindEvents() {
   });
   const toolbarResizeObserver = new ResizeObserver(scheduleAdaptiveToolbarSync);
   toolbarResizeObserver.observe(elements.titlebar);
+  const integratedWorkspaceResizeObserver = new ResizeObserver(() => {
+    if (reviewWorkspaceIsOpen() && reviewWorkspaceUsesIntegratedLayout()) {
+      syncIntegratedReviewFrame();
+      if (state.lightboxContext === "review"
+        && !elements.lightbox.classList.contains("hidden")) {
+        syncLightboxWorkspaceFrame();
+      }
+    }
+    if (worldMapIsOpen() && worldMapUsesIntegratedLayout()) {
+      syncIntegratedWorldMapFrame();
+    }
+    if (trainingWorkspaceIsOpen() && trainingWorkspaceUsesIntegratedLayout()) {
+      syncIntegratedTrainingFrame();
+    }
+    if (slimmingWorkspaceIsOpen() && slimmingWorkspaceUsesIntegratedLayout()) {
+      syncIntegratedSlimmingFrame();
+    }
+  });
+  integratedWorkspaceResizeObserver.observe(elements.libraryPane);
+  integratedWorkspaceResizeObserver.observe(elements.reviewQueuePane);
   globalThis.addEventListener("resize", scheduleAdaptiveToolbarSync, { passive: true });
+  galleryOverviewLayoutQuery.addEventListener("change", () => {
+    if (reviewWorkspaceIsOpen()) {
+      syncReviewPresentation({ focus: true });
+      if (state.lightboxContext === "review"
+        && !elements.lightbox.classList.contains("hidden")) {
+        syncLightboxWorkspaceFrame();
+        syncReviewPresentation({ renderSurfaces: false });
+      }
+    }
+    if (galleryOverviewIsOpen()) {
+      syncGalleryOverviewPresentation({ focus: true });
+    }
+    if (worldMapIsOpen()) {
+      syncWorldMapPresentation({ focus: true });
+    }
+    if (trainingWorkspaceIsOpen()) {
+      syncTrainingPresentation({ focus: true });
+    }
+    if (slimmingWorkspaceIsOpen()) {
+      syncSlimmingPresentation({ focus: true });
+    }
+  });
   globalThis.matchMedia("(max-width: 720px)").addEventListener(
     "change",
     scheduleAdaptiveToolbarSync

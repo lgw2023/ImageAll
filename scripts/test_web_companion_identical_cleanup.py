@@ -94,6 +94,16 @@ async def main():
                     "activities": [],
                 })
                 return
+            if (path == "/v1/library-slimming/removals"
+                    and route.request.method == "GET"):
+                media_kind = parse_qs(urlparse(route.request.url).query).get(
+                    "mediaKind", ["image"]
+                )[0]
+                await fulfill_json(route, {
+                    "mediaKind": media_kind,
+                    "requests": [],
+                })
+                return
             if path == "/v1/library-slimming/identical-cleanup/plans":
                 payload = route.request.post_data_json
                 plan_requests.append(payload)

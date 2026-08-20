@@ -30,6 +30,29 @@ public struct RemoteStorageUsageSummary: Codable, Sendable, Equatable {
     }
 }
 
+public enum RemoteStorageMaintenanceActionUnavailabilityReason:
+    String,
+    Codable,
+    Sendable,
+    Equatable
+{
+    case empty
+    case librarySlimmingAnalysisInProgress
+}
+
+public struct RemoteStorageMaintenanceActionAvailability: Codable, Sendable, Equatable {
+    public let isAvailable: Bool
+    public let reason: RemoteStorageMaintenanceActionUnavailabilityReason?
+
+    public init(
+        isAvailable: Bool,
+        reason: RemoteStorageMaintenanceActionUnavailabilityReason? = nil
+    ) {
+        self.isAvailable = isAvailable
+        self.reason = reason
+    }
+}
+
 /// A deliberately redacted projection of the Mac's storage location.
 /// Absolute paths never cross the remote boundary.
 public struct RemoteAppStorageSummary: Codable, Sendable, Equatable {
@@ -104,17 +127,25 @@ public struct RemoteStorageMaintenanceRequestSnapshot: Codable, Sendable, Equata
 public struct RemoteStorageMaintenanceSnapshot: Codable, Sendable, Equatable {
     public let previewCache: RemoteStorageUsageSummary
     public let photosOriginals: RemoteStorageUsageSummary
+    /// Optional for compatibility with Hosts predating action-availability projection.
+    public let clearPreviewCacheAvailability: RemoteStorageMaintenanceActionAvailability?
+    /// Optional for compatibility with Hosts predating action-availability projection.
+    public let clearPhotosOriginalsAvailability: RemoteStorageMaintenanceActionAvailability?
     public let appStorage: RemoteAppStorageSummary
     public let requests: [RemoteStorageMaintenanceRequestSnapshot]
 
     public init(
         previewCache: RemoteStorageUsageSummary,
         photosOriginals: RemoteStorageUsageSummary,
+        clearPreviewCacheAvailability: RemoteStorageMaintenanceActionAvailability? = nil,
+        clearPhotosOriginalsAvailability: RemoteStorageMaintenanceActionAvailability? = nil,
         appStorage: RemoteAppStorageSummary,
         requests: [RemoteStorageMaintenanceRequestSnapshot]
     ) {
         self.previewCache = previewCache
         self.photosOriginals = photosOriginals
+        self.clearPreviewCacheAvailability = clearPreviewCacheAvailability
+        self.clearPhotosOriginalsAvailability = clearPhotosOriginalsAvailability
         self.appStorage = appStorage
         self.requests = requests
     }

@@ -533,6 +533,13 @@ final class RemoteCatalogFacadeTests: XCTestCase {
                     entryCount: 3,
                     registeredBytes: 9_000_000
                 ),
+                clearPreviewCacheAvailability: StorageMaintenanceActionAvailability(
+                    isAvailable: true
+                ),
+                clearPhotosOriginalsAvailability: StorageMaintenanceActionAvailability(
+                    isAvailable: false,
+                    reason: .librarySlimmingAnalysisInProgress
+                ),
                 appStorage: StorageMaintenanceAppStorageSummary(
                     kind: .internalStorage,
                     requiresRestart: true,
@@ -550,6 +557,12 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         let snapshot = try await facade.fetchStorageMaintenance()
         XCTAssertEqual(snapshot.previewCache.registeredBytes, 1_500_000)
         XCTAssertEqual(snapshot.photosOriginals.entryCount, 3)
+        XCTAssertEqual(snapshot.clearPreviewCacheAvailability?.isAvailable, true)
+        XCTAssertEqual(snapshot.clearPhotosOriginalsAvailability?.isAvailable, false)
+        XCTAssertEqual(
+            snapshot.clearPhotosOriginalsAvailability?.reason,
+            .librarySlimmingAnalysisInProgress
+        )
         XCTAssertEqual(snapshot.appStorage.kind, .internalStorage)
         XCTAssertEqual(snapshot.appStorage.pendingExternalRootName, "ImageAll-External")
         XCTAssertEqual(snapshot.requests.first?.phase, .awaitingMac)

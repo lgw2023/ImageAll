@@ -199,7 +199,7 @@ def main():
             "() => document.querySelector('#toastMessage').textContent.includes('已导出 42 条记录')",
             timeout=5_000,
         )
-        assert page.locator("#storageStatusLabel").inner_text() == "存储"
+        assert page.locator("#storageStatusLabel").inner_text() == "预览缓存"
         assert page.locator("#storageButton").get_attribute("aria-busy") == "false"
         page.locator("#storageButton").click()
         assert page.locator("#storageContent").is_visible()

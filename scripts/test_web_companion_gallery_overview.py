@@ -162,6 +162,10 @@ def main():
             "**/v1/tag-library-suggestions?**",
             lambda route: fulfill_json(route, {"mediaKind": "image", "maximumPendingCount": 500, "personalCentroidAvailable": False, "personalAdamWAvailable": False, "tags": [], "activities": []}),
         )
+        page.route(
+            "**/v1/training/activities?**",
+            lambda route: fulfill_json(route, []),
+        )
 
         def route_assets(route):
             asset_queries.append(parse_qs(urlparse(route.request.url).query))
@@ -179,11 +183,54 @@ def main():
         page.locator("#galleryOverviewNavigationButton").click()
         page.locator("#galleryOverviewWorkspace:not(.hidden)").wait_for()
         page.locator("#galleryOverviewBody:not(.hidden)").wait_for()
-        assert page.locator("#closeGalleryOverviewButton").get_attribute("aria-label") == "返回图库"
+        assert page.locator("#appView").get_attribute("inert") is None
+        assert page.locator("#sourceSidebar").is_visible()
+        assert page.locator("#inspector").is_visible()
+        assert page.locator("#inspectorWorkspacePlaceholder").is_visible()
+        assert page.locator("#inspectorWorkspacePlaceholderTitle").inner_text() == "图库总览"
+        assert page.locator("#inspectorWorkspacePlaceholderText").inner_text() == \
+            "总览页已在主窗口展示聚合统计。"
+        assert page.locator("#inspectorPlaceholderTagEditor").is_hidden()
+        assert page.locator("#galleryOverviewWorkspace").get_attribute("role") == "region"
+        assert page.locator("#galleryOverviewWorkspace").get_attribute("aria-modal") is None
+        assert page.locator("#closeGalleryOverviewButton").is_hidden()
+        assert page.locator("#libraryTitle").inner_text() == "图库总览"
+        overview_bounds = page.locator("#galleryOverviewWorkspace").bounding_box()
+        library_bounds = page.locator("#libraryPane").bounding_box()
+        assert overview_bounds is not None and library_bounds is not None
+        assert overview_bounds["x"] >= library_bounds["x"]
+        assert overview_bounds["y"] >= library_bounds["y"]
+        assert overview_bounds["x"] + overview_bounds["width"] <= \
+            library_bounds["x"] + library_bounds["width"] + 1
+        assert overview_bounds["y"] + overview_bounds["height"] <= \
+            library_bounds["y"] + library_bounds["height"] + 1
+        assert page.locator("#searchForm").evaluate(
+            "element => Boolean(element.closest('[inert]'))"
+        )
+        page.screenshot(
+            path="/tmp/imageall-gallery-overview-integrated.png",
+            full_page=True,
+        )
         assert page.evaluate(
             "() => history.state?.imageAllWorkspace?.route"
         ) == "galleryOverview"
+        all_media_button = page.locator('#libraryNavigation [data-source-id=""]')
+        all_media_button.click()
+        page.locator("#galleryOverviewWorkspace").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => history.state?.imageAllWorkspace?.route === 'gallery'"
+        )
+        assert all_media_button.get_attribute("aria-current") == "page"
+        assert not page.locator("#searchForm").evaluate(
+            "element => Boolean(element.closest('[inert]'))"
+        )
+        page.locator("#galleryOverviewNavigationButton").click()
+        page.locator("#galleryOverviewWorkspace:not(.hidden)").wait_for()
+        page.locator("#galleryOverviewBody:not(.hidden)").wait_for()
         page.locator("#refreshGalleryOverviewButton").focus()
+        page.keyboard.press("Meta+F")
+        assert page.evaluate("() => document.activeElement?.id") == \
+            "refreshGalleryOverviewButton"
         page.keyboard.press("Meta+K")
         page.locator("#commandPalette[open]").wait_for()
         assert page.locator("#commandContextLabel").inner_text() == "当前：图库总览"
@@ -225,7 +272,7 @@ def main():
         assert page.evaluate(
             "() => history.state?.imageAllWorkspace?.route"
         ) == "galleryOverview"
-        page.locator("#closeGalleryOverviewButton").click()
+        page.keyboard.press("Escape")
         page.locator("#galleryOverviewWorkspace").wait_for(state="hidden")
         page.wait_for_function(
             "() => history.state?.imageAllWorkspace?.route === 'gallery'"
@@ -272,6 +319,11 @@ def main():
 
         page.set_viewport_size({"width": 390, "height": 844})
         page.wait_for_timeout(100)
+        assert page.locator("#appView").get_attribute("inert") is not None
+        assert page.locator("#galleryOverviewWorkspace").get_attribute("role") == "dialog"
+        assert page.locator("#galleryOverviewWorkspace").get_attribute("aria-modal") == "true"
+        assert page.locator("#closeGalleryOverviewButton").is_visible()
+        assert page.locator("#closeGalleryOverviewButton").get_attribute("aria-label") == "返回图库"
         dimensions = page.evaluate(
             "() => ({ viewport: innerWidth, scroll: document.documentElement.scrollWidth })"
         )
@@ -287,6 +339,34 @@ def main():
         page.screenshot(path="/tmp/imageall-command-palette-overview-390.png", full_page=True)
         page.keyboard.press("Escape")
         page.screenshot(path="/tmp/imageall-gallery-overview-synthetic.png", full_page=True)
+
+        overview = {
+            "media": [],
+            "sources": [],
+            "positiveTags": [],
+            "years": [],
+            "availability": [],
+            "undatedCount": 0,
+            "positiveLabeledAssetCount": 0,
+            "acceptedDecisionCount": 0,
+            "favorites": [],
+        }
+        page.locator("#refreshGalleryOverviewButton").click()
+        page.locator("#galleryOverviewEmpty:not(.hidden)").wait_for()
+        assert page.locator("#galleryOverviewStatus").is_hidden()
+        assert page.locator("#galleryOverviewBody").is_hidden()
+        assert page.locator("#galleryOverviewEmpty").get_by_text(
+            "图库还没有内容", exact=True
+        ).is_visible()
+        assert "连接来源并完成索引后" in page.locator(
+            "#galleryOverviewEmpty"
+        ).inner_text()
+        assert not page.locator("#galleryOverviewTotalMetric").is_visible()
+        assert page.evaluate(
+            "() => document.documentElement.scrollWidth <= window.innerWidth"
+        )
+        page.screenshot(path="/tmp/imageall-gallery-overview-empty-390.png", full_page=True)
+        assert overview_requests == 3
 
         page.keyboard.press("Escape")
         page.locator("#galleryOverviewWorkspace").wait_for(state="hidden")

@@ -67,6 +67,7 @@ actor RemoteStorageMaintenanceCommandService: RemoteStorageMaintenanceCommandPor
     func snapshot() throws -> StorageMaintenanceCommandSnapshot {
         let preview = try workspace.fetchPreviewCacheUsage()
         let originals = try workspace.fetchPhotosOriginalStorageUsage()
+        let analysisInProgress = try workspace.isLibrarySlimmingAnalysisInProgress()
         let location = workspace.fetchAppStorageLocation()
         return StorageMaintenanceCommandSnapshot(
             previewCache: StorageMaintenanceUsageSummary(
@@ -76,6 +77,13 @@ actor RemoteStorageMaintenanceCommandService: RemoteStorageMaintenanceCommandPor
             photosOriginals: StorageMaintenanceUsageSummary(
                 entryCount: originals.entryCount,
                 registeredBytes: originals.registeredBytes
+            ),
+            clearPreviewCacheAvailability: Self.clearAvailability(
+                entryCount: preview.entryCount
+            ),
+            clearPhotosOriginalsAvailability: Self.photosOriginalClearAvailability(
+                entryCount: originals.entryCount,
+                analysisInProgress: analysisInProgress
             ),
             appStorage: StorageMaintenanceAppStorageSummary(
                 kind: location.usesExternalStorage ? .externalStorage : .internalStorage,
@@ -109,6 +117,7 @@ actor RemoteStorageMaintenanceCommandService: RemoteStorageMaintenanceCommandPor
         }) else {
             throw StorageMaintenanceCommandError.invalidAction
         }
+        try validateAvailability(for: command.action)
 
         let requestID = UUID()
         let initial = StorageMaintenanceCommandRequestSnapshot(
@@ -129,6 +138,26 @@ actor RemoteStorageMaintenanceCommandService: RemoteStorageMaintenanceCommandPor
             await self?.execute(command, requestID: requestID)
         }
         return initial
+    }
+
+    private func validateAvailability(for action: StorageMaintenanceCommandAction) throws {
+        switch action {
+        case .clearPreviewCache:
+            guard try workspace.fetchPreviewCacheUsage().entryCount > 0 else {
+                throw StorageMaintenanceCommandError.invalidAction
+            }
+        case .clearPhotosOriginals:
+            let originals = try workspace.fetchPhotosOriginalStorageUsage()
+            let analysisInProgress = try workspace.isLibrarySlimmingAnalysisInProgress()
+            guard Self.photosOriginalClearAvailability(
+                entryCount: originals.entryCount,
+                analysisInProgress: analysisInProgress
+            ).isAvailable else {
+                throw StorageMaintenanceCommandError.invalidAction
+            }
+        case .exportPortableData, .chooseExternalStorage:
+            break
+        }
     }
 
     private func execute(
@@ -258,6 +287,31 @@ actor RemoteStorageMaintenanceCommandService: RemoteStorageMaintenanceCommandPor
 
     private static func signedBytes(_ bytes: UInt64) -> Int64 {
         Int64(clamping: bytes)
+    }
+
+    private static func clearAvailability(
+        entryCount: Int
+    ) -> StorageMaintenanceActionAvailability {
+        guard entryCount > 0 else {
+            return StorageMaintenanceActionAvailability(isAvailable: false, reason: .empty)
+        }
+        return StorageMaintenanceActionAvailability(isAvailable: true)
+    }
+
+    private static func photosOriginalClearAvailability(
+        entryCount: Int,
+        analysisInProgress: Bool
+    ) -> StorageMaintenanceActionAvailability {
+        guard entryCount > 0 else {
+            return StorageMaintenanceActionAvailability(isAvailable: false, reason: .empty)
+        }
+        guard !analysisInProgress else {
+            return StorageMaintenanceActionAvailability(
+                isAvailable: false,
+                reason: .librarySlimmingAnalysisInProgress
+            )
+        }
+        return StorageMaintenanceActionAvailability(isAvailable: true)
     }
 
     private static func byteText(_ bytes: UInt64) -> String {

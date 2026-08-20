@@ -93,6 +93,7 @@ def main():
     review_pagination_enabled = {"value": False}
     page_errors = []
     console_errors = []
+    http_errors = []
 
     first_page = [asset_summary(index) for index in range(1, 73)]
     second_page = [asset_summary(index) for index in range(73, 75)]
@@ -125,6 +126,14 @@ def main():
             if message.type == "error" else None,
         )
         page.on("pageerror", lambda error: page_errors.append(str(error)))
+        page.on(
+            "response",
+            lambda response: http_errors.append({
+                "status": response.status,
+                "method": response.request.method,
+                "url": response.url,
+            }) if response.status >= 400 else None,
+        )
         page.route("**/favicon.ico", lambda route: route.fulfill(status=204, body=""))
         page.route(
             "**/world-map/index.html",
@@ -227,6 +236,10 @@ def main():
                     "activities": [],
                 },
             ),
+        )
+        page.route(
+            "**/v1/training/activities?**",
+            lambda route: fulfill_json(route, []),
         )
 
         def route_assets(route):
@@ -335,6 +348,21 @@ def main():
 
         page.route("**/v1/tag-decisions/undo", route_tag_undo)
 
+        def route_tag_selection(route):
+            payload = route.request.post_data_json
+            asset_count = len(payload.get("assetIDs", []))
+            fulfill_json(
+                route,
+                [{
+                    "tagID": tag_id,
+                    "acceptedCount": 0,
+                    "rejectedCount": 0,
+                    "unknownCount": asset_count,
+                } for tag_id in payload.get("tagIDs", [])],
+            )
+
+        page.route("**/v1/tags/selection", route_tag_selection)
+
         def route_asset_detail(route):
             current_id = urlparse(route.request.url).path.rsplit("/", 1)[-1]
             fulfill_json(route, asset_detail(index_by_id[current_id]))
@@ -350,9 +378,24 @@ def main():
         )
 
         page.goto(BASE_URL, wait_until="networkidle")
-        page.wait_for_function(
-            "() => document.querySelectorAll('#assetGrid > .asset-card').length === 72"
+        page.wait_for_timeout(1_000)
+        initial_gallery = page.evaluate(
+            """() => ({
+              cards: document.querySelectorAll('#assetGrid > .asset-card').length,
+              assets: state.assets.length,
+              nextCursor: state.nextCursor,
+              loading: state.loadingAssets,
+              refreshing: state.refreshingWorkspace,
+              appHidden: document.querySelector('#appView').classList.contains('hidden'),
+              pairingHidden: document.querySelector('#pairingView').classList.contains('hidden'),
+            })"""
         )
+        assert initial_gallery["cards"] == 72, {
+            "gallery": initial_gallery,
+            "assetQueries": asset_queries,
+            "pageErrors": page_errors,
+            "consoleErrors": console_errors,
+        }
         assert not any(query.get("cursor") == ["page-2"] for query in asset_queries)
 
         # Command-Z follows the most recent Host undo channel while leaving
@@ -418,8 +461,13 @@ def main():
             "frameMatches": True,
             "inspectorClear": True,
         }, docked
+        # Let the lightbox's one-shot opening focus settle before exercising the
+        # still-live inspector; otherwise Playwright can race that animation frame.
+        page.wait_for_timeout(50)
         page.locator("#inspectorTagSearch").focus()
-        assert page.locator("#inspectorTagSearch").evaluate("element => document.activeElement === element")
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'inspectorTagSearch'"
+        )
         page.locator("#inspectorTagSearch").fill("猫")
         page.locator(
             f'#inspectorTags [data-tag-chip-action][data-tag-id="{REVIEW_TAG_ID}"]'
@@ -619,7 +667,23 @@ def main():
         # Shift-click, Command-A and P/X/U all target the full frozen selection.
         review_grid_box = page.locator("#reviewGrid").bounding_box()
         assert review_grid_box
-        page.mouse.move(review_grid_box["x"] + 3, review_grid_box["y"] + 3)
+        marquee_start = page.evaluate(
+            """() => {
+              const grid = document.querySelector('#reviewGrid');
+              const rect = grid.getBoundingClientRect();
+              for (let y = rect.top + 1; y <= Math.min(rect.bottom - 1, rect.top + 120); y += 1) {
+                for (let x = rect.left + 1; x <= Math.min(rect.right - 1, rect.left + 420); x += 1) {
+                  const target = document.elementFromPoint(x, y);
+                  if (target && grid.contains(target) && !target.closest('.review-card')) {
+                    return { x, y };
+                  }
+                }
+              }
+              return null;
+            }"""
+        )
+        assert marquee_start is not None, review_grid_box
+        page.mouse.move(marquee_start["x"], marquee_start["y"])
         page.mouse.down()
         page.mouse.move(
             review_grid_box["x"] + 270,
@@ -627,9 +691,14 @@ def main():
             steps=6,
         )
         page.mouse.up()
-        assert page.locator(
+        marquee_selected_count = page.locator(
             '#reviewGrid > .review-card > .review-card-main[aria-pressed="true"]'
-        ).count() >= 2
+        ).count()
+        assert marquee_selected_count >= 2, {
+            "start": marquee_start,
+            "grid": review_grid_box,
+            "selected": marquee_selected_count,
+        }
         assert page.locator("#reviewSelectionSummary").inner_text().startswith("已选择")
 
         page.locator('[data-review-index="0"]').click()
@@ -749,7 +818,10 @@ def main():
         page.locator("#reviewWorkspace").wait_for(state="hidden")
 
         assert not page_errors, page_errors
-        assert not console_errors, console_errors
+        assert not console_errors, {
+            "console": console_errors,
+            "http": http_errors,
+        }
         browser.close()
 
     print(

@@ -20,6 +20,7 @@ public enum RemoteCapability: String, Codable, Sendable, Hashable, CaseIterable 
     case reviewQueue
     case reviewDecisions
     case librarySuggestions
+    case trainingActivities
     case librarySlimming
     case sourceManagement
     case generalSettings

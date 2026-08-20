@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import base64
 import json
+from urllib.parse import urlparse
 
 from playwright.sync_api import sync_playwright
 
@@ -8,6 +9,8 @@ from playwright.sync_api import sync_playwright
 BASE_URL = "http://127.0.0.1:8804"
 SOURCE_ID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 ASSET_ID = "11111111-1111-1111-1111-111111111111"
+SECOND_ASSET_ID = "22222222-2222-2222-2222-222222222222"
+REVIEW_TAG_ID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 PIXEL = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 )
@@ -21,10 +24,10 @@ def fulfill_json(route, payload, status=200):
     )
 
 
-def snapshot(operation_id, phase, progress, message=None):
+def snapshot(operation_id, asset_id, phase, progress, message=None):
     return {
         "operationID": operation_id,
-        "assetID": ASSET_ID,
+        "assetID": asset_id,
         "phase": phase,
         "progress": progress,
         "message": message,
@@ -35,6 +38,7 @@ def snapshot(operation_id, phase, progress, message=None):
 def main():
     lifecycle = {
         "operation_id": None,
+        "asset_id": None,
         "phase": None,
         "progress": 0.0,
         "poll_count": 0,
@@ -126,9 +130,21 @@ def main():
                 }],
             ),
         )
-        page.route("**/v1/tags", lambda route: fulfill_json(route, []))
+        page.route(
+            "**/v1/tags",
+            lambda route: fulfill_json(route, [{
+                "id": REVIEW_TAG_ID,
+                "displayName": "猫",
+                "state": "active",
+                "groupID": None,
+            }]),
+        )
         page.route("**/v1/tag-groups", lambda route: fulfill_json(route, []))
         page.route("**/v1/jobs", lambda route: fulfill_json(route, []))
+        page.route(
+            "**/v1/training/activities?**",
+            lambda route: fulfill_json(route, []),
+        )
         page.route(
             "**/v1/embedding-preparation?**",
             lambda route: fulfill_json(
@@ -182,14 +198,23 @@ def main():
             ),
         )
 
+        def request_asset_id(route):
+            return urlparse(route.request.url).path.split("/")[3]
+
         def handle_asset_detail(route):
+            current_asset_id = request_asset_id(route)
+            file_name = (
+                "ICLOUD_0001.HEIC"
+                if current_asset_id == ASSET_ID
+                else "LOCAL_0002.HEIC"
+            )
             fulfill_json(route, {
-                "assetID": ASSET_ID,
+                "assetID": current_asset_id,
                 "sourceID": SOURCE_ID,
                 "sourceName": "Apple Photos",
                 "sourceState": "active",
-                "fileName": "ICLOUD_0001.HEIC",
-                "relativePath": "Apple Photos/ICLOUD_0001.HEIC",
+                "fileName": file_name,
+                "relativePath": f"Apple Photos/{file_name}",
                 "mediaType": "public.heic",
                 "availability": "available",
                 "contentRevision": 7,
@@ -199,7 +224,11 @@ def main():
                 "height": 3024,
                 "durationMs": None,
                 "fingerprintSizeBytes": 3_200_000,
-                "tags": [],
+                "tags": [{
+                    "tagID": REVIEW_TAG_ID,
+                    "displayName": "猫",
+                    "decision": "unknown",
+                }],
             })
 
         page.route("**/v1/assets/*", handle_asset_detail)
@@ -209,7 +238,8 @@ def main():
         )
 
         def handle_preview(route):
-            if lifecycle["cache_ready"]:
+            current_asset_id = request_asset_id(route)
+            if current_asset_id == SECOND_ASSET_ID or lifecycle["cache_ready"]:
                 route.fulfill(status=200, content_type="image/png", body=PIXEL)
             else:
                 fulfill_json(
@@ -221,16 +251,23 @@ def main():
         page.route("**/v1/assets/*/preview?**", handle_preview)
 
         def handle_lifecycle(route):
+            current_asset_id = request_asset_id(route)
             if route.request.method == "POST":
                 operation_id = route.request.post_data_json["operationID"]
                 lifecycle["operation_id"] = operation_id
+                lifecycle["asset_id"] = current_asset_id
                 lifecycle["phase"] = "downloading"
                 lifecycle["progress"] = 0.0
                 lifecycle["poll_count"] = 0
                 lifecycle["starts"].append(operation_id)
-                fulfill_json(route, snapshot(operation_id, "downloading", 0.0), status=202)
+                fulfill_json(
+                    route,
+                    snapshot(operation_id, current_asset_id, "downloading", 0.0),
+                    status=202,
+                )
                 return
-            if lifecycle["operation_id"] is None:
+            if (lifecycle["operation_id"] is None
+                    or lifecycle["asset_id"] != current_asset_id):
                 fulfill_json(
                     route,
                     {"code": "not_found", "message": "cloud preview download not found"},
@@ -248,6 +285,7 @@ def main():
                 route,
                 snapshot(
                     lifecycle["operation_id"],
+                    current_asset_id,
                     lifecycle["phase"],
                     lifecycle["progress"],
                 ),
@@ -256,16 +294,73 @@ def main():
         page.route("**/v1/assets/*/cloud-preview-requests", handle_lifecycle)
 
         def handle_cancel(route):
+            current_asset_id = request_asset_id(route)
             operation_id = route.request.post_data_json["operationID"]
             assert operation_id == lifecycle["operation_id"]
+            assert current_asset_id == lifecycle["asset_id"]
             lifecycle["cancels"].append(operation_id)
             lifecycle["phase"] = "cancelled"
             fulfill_json(
                 route,
-                snapshot(operation_id, "cancelled", lifecycle["progress"]),
+                snapshot(
+                    operation_id,
+                    current_asset_id,
+                    "cancelled",
+                    lifecycle["progress"],
+                ),
             )
 
         page.route("**/v1/assets/*/cloud-preview-requests/cancel", handle_cancel)
+
+        page.route(
+            "**/v1/review/overview?**",
+            lambda route: fulfill_json(route, {
+                "totalPendingSuggestionCount": 2,
+                "tags": [{
+                    "id": REVIEW_TAG_ID,
+                    "displayName": "猫",
+                    "acceptedSampleCount": 8,
+                    "rejectedSampleCount": 4,
+                    "pendingSuggestionCount": 2,
+                    "pendingSuggestionCounts": {
+                        "featurePrint": 2,
+                        "standardModel": 0,
+                        "personalModel": 0,
+                        "personalAdamW": 0,
+                    },
+                    "taskStatus": "completed",
+                    "checkedCount": 2,
+                    "totalCount": 2,
+                    "skippedCount": 0,
+                    "missingPositiveCount": 0,
+                    "missingNegativeCount": 0,
+                    "canReview": True,
+                }],
+            }),
+        )
+        page.route(
+            "**/v1/review/queue?**",
+            lambda route: fulfill_json(route, {
+                "items": [{
+                    "assetID": ASSET_ID,
+                    "fileName": "ICLOUD_0001.HEIC",
+                    "availability": "available",
+                    "acceptedTagCount": 0,
+                    "rejectedTagCount": 0,
+                    "suggestionOrigin": "featurePrint",
+                    "score": 0.92,
+                }, {
+                    "assetID": SECOND_ASSET_ID,
+                    "fileName": "LOCAL_0002.HEIC",
+                    "availability": "available",
+                    "acceptedTagCount": 0,
+                    "rejectedTagCount": 0,
+                    "suggestionOrigin": "featurePrint",
+                    "score": 0.88,
+                }],
+                "nextCursor": None,
+            }),
+        )
 
         page.goto(BASE_URL, wait_until="networkidle")
         page.wait_for_timeout(250)
@@ -318,6 +413,105 @@ def main():
         assert lifecycle["starts"][0] != lifecycle["starts"][1]
         assert lifecycle["cancels"] == [lifecycle["starts"][0]]
         assert lifecycle["cache_ready"] is True
+
+        # The Mac inspector exposes the same recovery path while reviewing.
+        # Exercise it independently after invalidating the synthetic cache.
+        main_start_count = len(lifecycle["starts"])
+        main_cancel_count = len(lifecycle["cancels"])
+        lifecycle.update({
+            "operation_id": None,
+            "asset_id": None,
+            "phase": None,
+            "progress": 0.0,
+            "poll_count": 0,
+            "allow_complete": False,
+            "cache_ready": False,
+        })
+        page.set_viewport_size({"width": 1440, "height": 960})
+        page.locator("#reviewNavigationButton").click()
+        page.locator("#reviewOverview:not(.hidden)").wait_for()
+        page.locator(f'[data-review-overview-tag-id="{REVIEW_TAG_ID}"]').click()
+        page.locator("#reviewQueueLayout:not(.hidden)").wait_for()
+        page.wait_for_function(
+            f"() => state.review.detail?.assetID === '{ASSET_ID}'"
+        )
+        try:
+            page.locator("#reviewCloudPreviewRecovery:not(.hidden)").wait_for(timeout=5_000)
+        except Exception as error:
+            page.screenshot(
+                path="/tmp/imageall-review-cloud-preview-recovery-failure.png",
+                full_page=True,
+            )
+            raise AssertionError({
+                "state": page.evaluate("""() => ({
+                    selectedIndex: state.review.selectedIndex,
+                    selectedAssetID: state.review.items[state.review.selectedIndex]?.assetID,
+                    detailAssetID: state.review.detail?.assetID,
+                    recovery: { ...state.review.cloudPreview, pollTimer: Boolean(state.review.cloudPreview.pollTimer) },
+                    preview: {
+                      className: document.querySelector('#reviewPreviewImage').className,
+                      src: document.querySelector('#reviewPreviewImage').getAttribute('src'),
+                      protectedPath: document.querySelector('#reviewPreviewImage').dataset.protectedPath,
+                      requestID: document.querySelector('#reviewPreviewImage').dataset.protectedRequestId,
+                    },
+                  })"""),
+                "console": console_errors,
+                "page_errors": page_errors,
+                "responses": unexpected_failures,
+            }) from error
+        assert "仅存储在 iCloud" in page.locator(
+            "#reviewCloudPreviewTitle"
+        ).inner_text()
+
+        page.locator("#reviewCloudPreviewButton").click()
+        page.wait_for_function(
+            "() => document.querySelector('#reviewCloudPreviewProgress').value >= 0.42"
+        )
+        assert page.locator("#reviewCloudPreviewButton").inner_text() == "取消"
+
+        # Moving to another review item cancels the old operation and rejects
+        # stale progress rather than letting it overwrite the new inspector.
+        with page.expect_request("**/v1/assets/*/cloud-preview-requests/cancel"):
+            page.locator("#nextReviewButton").click()
+        page.wait_for_function(
+            f"() => state.review.detail?.assetID === '{SECOND_ASSET_ID}'"
+        )
+        assert len(lifecycle["cancels"]) == main_cancel_count + 1
+        assert page.locator("#reviewCloudPreviewRecovery").is_hidden()
+
+        page.locator("#previousReviewButton").click()
+        page.wait_for_function(
+            f"() => state.review.detail?.assetID === '{ASSET_ID}'"
+        )
+        page.locator("#reviewCloudPreviewRecovery:not(.hidden)").wait_for()
+        page.locator("#reviewCloudPreviewButton").click()
+        page.wait_for_function(
+            "() => document.querySelector('#reviewCloudPreviewProgress').value >= 0.42"
+        )
+        page.locator("#reviewOpenLightboxButton").click()
+        page.locator("#lightbox:not(.hidden)").wait_for()
+        page.locator("#lightboxCloudPreviewRecovery:not(.hidden)").wait_for()
+
+        page.set_viewport_size({"width": 390, "height": 844})
+        page.wait_for_function(
+            "() => document.querySelector('#lightbox').getAttribute('aria-modal') === 'true'"
+        )
+        assert page.evaluate(
+            "() => document.documentElement.scrollWidth <= innerWidth"
+        ) is True
+        assert "42%" in page.locator("#lightboxCloudPreviewMessage").inner_text()
+        lifecycle["allow_complete"] = True
+        page.locator("#lightboxCloudPreviewRecovery").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.querySelector('#reviewPreviewImage').naturalWidth > 0 "
+            "&& document.querySelector('#lightboxImage').naturalWidth > 0"
+        )
+        assert len(lifecycle["starts"]) == main_start_count + 2
+        assert len(lifecycle["cancels"]) == main_cancel_count + 1
+        page.screenshot(
+            path="/tmp/imageall-review-cloud-preview-mobile.png",
+            full_page=True,
+        )
 
         assert not page_errors, page_errors
         unexpected_console = [

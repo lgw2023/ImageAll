@@ -1056,6 +1056,10 @@ actor RemoteHTTPServer {
                     method: method
                 )
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("GET", RemoteHTTPPaths.trainingActivities):
+                let mediaKind = RemoteAssetMediaKind(rawValue: query["mediaKind"] ?? "") ?? .image
+                let payload = try await facade.fetchTrainingActivities(mediaKind: mediaKind)
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             case ("GET", RemoteHTTPPaths.trainingSetup):
                 let mediaKind = RemoteAssetMediaKind(rawValue: query["mediaKind"] ?? "") ?? .image
                 let payload = try await facade.fetchTrainingSetup(mediaKind: mediaKind)

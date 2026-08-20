@@ -142,6 +142,7 @@ let browser;
     personalCentroidAvailable: false, personalAdamWAvailable: false,
     tags: [], activities: [],
   }));
+  await page.route(`${baseURL}/v1/training/activities**`, (route) => json(route, []));
   await page.route(
     new RegExp(`/v1/assets/${assetID}/(thumbnail|preview)(\\?.*)?$`),
     (route) => route.fulfill({ status: 200, contentType: "image/png", body: onePixelPNG })
@@ -353,15 +354,60 @@ let browser;
   });
 
   await page.goto(baseURL, { waitUntil: "networkidle" });
-  await page.locator("#worldMapButton").click();
+  if (!await page.locator("#worldMapNavigationButton").isVisible()) {
+    await page.locator("#sidebarVisibilityButton").click();
+    await page.locator("#worldMapNavigationButton").waitFor({ state: "visible" });
+  }
+  await page.locator("#worldMapNavigationButton").click();
   await page.locator("#worldMapWorkspace:not(.hidden)").waitFor();
   await page.locator("#worldMapClusterMetric").getByText("1", { exact: true }).waitFor();
   assert.equal(await page.locator("#worldMapLocatedMetric").textContent(), "70");
   assert.equal(await page.locator("#worldMapUnlocatedMetric").textContent(), "30");
   await page.locator("#worldMapRendererMetric").getByText("已就绪", { exact: true }).waitFor();
-  assert.equal(await page.locator("#closeWorldMapButton").getAttribute("aria-label"), "返回图库");
+  assert.equal(await page.locator("#appView").getAttribute("inert"), null);
+  assert.equal(await page.locator("#sourceSidebar").isVisible(), true);
+  assert.equal(await page.locator("#inspector").isVisible(), true);
+  assert.equal(await page.locator("#inspectorWorkspacePlaceholder").isVisible(), true);
+  assert.equal(await page.locator("#inspectorWorkspacePlaceholderTitle").textContent(), "照片世界");
+  assert.equal(
+    await page.locator("#inspectorWorkspacePlaceholderText").textContent(),
+    "在主窗口拖拽、缩放和选择照片建筑。"
+  );
+  assert.equal(await page.locator("#worldMapWorkspace").getAttribute("role"), "region");
+  assert.equal(await page.locator("#worldMapWorkspace").getAttribute("aria-modal"), null);
+  assert.equal(await page.locator("#closeWorldMapButton").isHidden(), true);
+  assert.equal(await page.locator("#libraryTitle").textContent(), "照片世界");
+  const mapBounds = await page.locator("#worldMapWorkspace").boundingBox();
+  const libraryBounds = await page.locator("#libraryPane").boundingBox();
+  assert.ok(mapBounds && libraryBounds);
+  assert.ok(mapBounds.x >= libraryBounds.x);
+  assert.ok(mapBounds.y >= libraryBounds.y);
+  assert.ok(mapBounds.x + mapBounds.width <= libraryBounds.x + libraryBounds.width + 1);
+  assert.ok(mapBounds.y + mapBounds.height <= libraryBounds.y + libraryBounds.height + 1);
+  assert.equal(
+    await page.locator("#searchForm").evaluate((element) => Boolean(element.closest("[inert]"))),
+    true
+  );
+  await page.evaluate(() => {
+    globalThis.__imageAllWorldMapWindow = document.querySelector("#worldMapFrame").contentWindow;
+  });
+  await page.screenshot({ path: "/tmp/imageall-world-map-integrated.png", fullPage: true });
   assert.equal(await page.evaluate(() => history.state?.imageAllWorkspace?.route), "worldMap");
+  const allMediaButton = page.locator('#libraryNavigation [data-source-id=""]');
+  await allMediaButton.click();
+  await page.locator("#worldMapWorkspace").waitFor({ state: "hidden" });
+  await page.waitForFunction(() => history.state?.imageAllWorkspace?.route === "gallery");
+  assert.equal(await allMediaButton.getAttribute("aria-current"), "page");
+  assert.equal(
+    await page.locator("#searchForm").evaluate((element) => Boolean(element.closest("[inert]"))),
+    false
+  );
+  await page.locator("#worldMapNavigationButton").click();
+  await page.locator("#worldMapWorkspace:not(.hidden)").waitFor();
+  await page.locator("#worldMapClusterMetric").getByText("1", { exact: true }).waitFor();
   await page.locator("#refreshWorldMapButton").focus();
+  await page.keyboard.press("Meta+F");
+  assert.equal(await page.evaluate(() => document.activeElement?.id), "refreshWorldMapButton");
   await page.keyboard.press("Meta+K");
   await page.locator("#commandPalette[open]").waitFor();
   assert.equal(await page.locator("#commandContextLabel").textContent(), "当前：照片世界");
@@ -373,7 +419,7 @@ let browser;
   await page.locator('[data-command-id="returnWorkspace"]').click();
   await page.locator("#worldMapWorkspace").waitFor({ state: "hidden" });
   await page.waitForFunction(() => history.state?.imageAllWorkspace?.route === "gallery");
-  await page.waitForFunction(() => document.activeElement?.id === "worldMapButton");
+  await page.waitForFunction(() => document.activeElement?.id === "worldMapNavigationButton");
   await page.evaluate(() => history.forward());
   await page.locator("#worldMapWorkspace:not(.hidden)").waitFor();
   await page.locator("#worldMapClusterMetric").getByText("1", { exact: true }).waitFor();
@@ -410,8 +456,20 @@ let browser;
   assert.equal(await page.locator("#worldMapPhotoStrip").evaluate((element) => element.scrollLeft), stripScrollLeft);
 
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(100);
+  assert.equal(
+    await page.evaluate(() => (
+      globalThis.__imageAllWorldMapWindow === document.querySelector("#worldMapFrame").contentWindow
+    )),
+    true,
+    "responsive presentation must not reload the map iframe"
+  );
+  assert.notEqual(await page.locator("#appView").getAttribute("inert"), null);
+  assert.equal(await page.locator("#worldMapWorkspace").getAttribute("role"), "dialog");
+  assert.equal(await page.locator("#worldMapWorkspace").getAttribute("aria-modal"), "true");
   assert.equal(await worldMapFavorite.isVisible(), true);
   assert.equal(await page.locator("#closeWorldMapButton").isVisible(), true);
+  assert.equal(await page.locator("#closeWorldMapButton").getAttribute("aria-label"), "返回图库");
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await page.screenshot({ path: "/tmp/imageall-world-map-photo-favorite-mobile.png" });
   await page.setViewportSize({ width: 1440, height: 960 });
@@ -463,7 +521,7 @@ let browser;
   await page.locator("#worldMapGalleryBanner").waitFor({ state: "hidden" });
   assert.equal(await page.locator("#libraryTitle").textContent(), "全部照片");
   assert.equal(await page.locator("#mediaKindTabs").isVisible(), true);
-  await page.locator("#worldMapButton").click();
+  await page.locator("#worldMapNavigationButton").click();
   await page.locator("#worldMapWorkspace:not(.hidden)").waitFor();
   assert.equal(await page.locator("#worldMapDetail").isVisible(), true);
 

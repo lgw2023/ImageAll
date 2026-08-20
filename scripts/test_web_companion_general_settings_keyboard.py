@@ -19,6 +19,17 @@ def fulfill_json(route, payload, status=200):
     )
 
 
+def click_toolbar_action(page, target_id):
+    original = page.locator(f"#{target_id}")
+    if original.is_visible():
+        original.click()
+        return
+    menu = page.locator("#compactToolbarMenu")
+    if not menu.is_visible():
+        page.locator("#compactToolbarMenuButton").click()
+    page.locator(f'[data-compact-toolbar-target="{target_id}"]').click()
+
+
 def main():
     updates = []
     sample_requests = []
@@ -428,7 +439,7 @@ def main():
             lambda response: response.url.endswith("/v1/source-management/requests")
             and response.request.method == "POST"
         ) as refresh_all_sources:
-            page.locator("#currentSourceRefreshButton").click()
+            click_toolbar_action(page, "currentSourceRefreshButton")
         assert refresh_all_sources.value.status == 200
         assert source_actions[-1]["action"] == "refreshAll"
         assert source_actions[-1]["sourceID"] is None
@@ -537,7 +548,9 @@ def main():
             '[data-compact-toolbar-target="currentSourceRefreshButton"]'
         ).is_visible()
         page.keyboard.press("Escape")
-        assert page.evaluate("() => document.activeElement?.id") == "compactToolbarMenuButton"
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'compactToolbarMenuButton'"
+        )
         page.screenshot(path="/tmp/imageall-source-refresh-390.png", full_page=True)
         page.set_viewport_size({"width": 1440, "height": 960})
         page.wait_for_function(
@@ -654,9 +667,17 @@ def main():
         page.wait_for_function("() => document.activeElement?.id === 'suggestionOverridesButton'")
         page.keyboard.press("Escape")
         assert page.locator("#generalSettingsDialog").is_hidden()
-        assert page.evaluate("() => document.activeElement?.id") == "settingsButton"
+        page.wait_for_function(
+            """() => {
+              const compact = document.querySelector('#appView')
+                .classList.contains('compact-toolbar-active');
+              return document.activeElement?.id === (
+                compact ? 'compactToolbarMenuButton' : 'settingsButton'
+              );
+            }"""
+        )
 
-        page.locator("#reviewButton").click()
+        click_toolbar_action(page, "reviewButton")
         page.locator("#reviewWorkspace:not(.hidden)").wait_for()
         page.locator("#reviewLocalModelPanel").wait_for()
         assert page.locator("#reviewLocalModelStateBadge").inner_text() == "模型已就绪"
@@ -841,7 +862,7 @@ def main():
             lambda response: response.url.endswith("/v1/source-management/requests")
             and response.request.method == "POST"
         ) as current_photos_sync:
-            page.locator("#currentSourceRefreshButton").click()
+            click_toolbar_action(page, "currentSourceRefreshButton")
         assert current_photos_sync.value.status == 200
         assert source_actions[-1]["action"] == "syncPhotos"
         assert source_actions[-1]["sourceID"] == SOURCE_ID
@@ -863,7 +884,7 @@ def main():
         with page.expect_response(
             lambda response: response.url.endswith("/v1/sources")
         ) as authorization_refresh:
-            page.locator("#refreshButton").click()
+            click_toolbar_action(page, "refreshButton")
         assert authorization_refresh.value.status == 200
         page.wait_for_function(
             "() => document.querySelector('#emptyStateTitle')?.textContent === '需要照片访问权限'"
@@ -904,7 +925,7 @@ def main():
         with page.expect_response(
             lambda response: response.url.endswith("/v1/sources")
         ) as disabled_refresh:
-            page.locator("#refreshButton").click()
+            click_toolbar_action(page, "refreshButton")
         assert disabled_refresh.value.status == 200
         assert page.locator("#emptySourceRecoveryButton").inner_text() == "重新检查并同步"
         source_button.click(button="right")
@@ -920,7 +941,7 @@ def main():
         with page.expect_response(
             lambda response: response.url.endswith("/v1/sources")
         ) as unavailable_refresh:
-            page.locator("#refreshButton").click()
+            click_toolbar_action(page, "refreshButton")
         assert unavailable_refresh.value.status == 200
         page.wait_for_function(
             "() => document.querySelector('#emptyStateTitle')?.textContent === '系统照片图库已更换'"
@@ -964,7 +985,7 @@ def main():
         with page.expect_response(
             lambda response: response.url.endswith("/v1/sources")
         ) as active_refresh:
-            page.locator("#refreshButton").click()
+            click_toolbar_action(page, "refreshButton")
         assert active_refresh.value.status == 200
         page.wait_for_function(
             "() => document.querySelector('#emptySourceRecoveryButton')?.textContent === '立即同步'"
@@ -1067,7 +1088,7 @@ def main():
             lambda response: response.url.endswith("/v1/source-management/requests")
             and response.request.method == "POST"
         ) as current_folder_rescan:
-            page.locator("#currentSourceRefreshButton").click()
+            click_toolbar_action(page, "currentSourceRefreshButton")
         assert current_folder_rescan.value.status == 200
         assert source_actions[-1]["action"] == "rescan"
         assert source_actions[-1]["sourceID"] == FOLDER_SOURCE_ID
@@ -1076,7 +1097,7 @@ def main():
         with page.expect_response(
             lambda response: response.url.endswith("/v1/sources")
         ) as folder_authorization_refresh:
-            page.locator("#refreshButton").click()
+            click_toolbar_action(page, "refreshButton")
         assert folder_authorization_refresh.value.status == 200
         page.wait_for_function(
             "() => document.querySelector('#emptyStateTitle')?.textContent === '需要重新授权文件夹'"
@@ -1089,7 +1110,7 @@ def main():
         with page.expect_response(
             lambda response: response.url.endswith("/v1/sources")
         ) as folder_active_refresh:
-            page.locator("#refreshButton").click()
+            click_toolbar_action(page, "refreshButton")
         assert folder_active_refresh.value.status == 200
         page.wait_for_function(
             "() => document.querySelector('#emptySourceRecoveryButton')?.textContent === '立即重扫'"
@@ -1210,7 +1231,7 @@ def main():
         page.keyboard.press("Escape")
         assert page.evaluate("() => document.activeElement?.id") == "sourceManagerButton"
 
-        page.locator("#storageButton").click()
+        click_toolbar_action(page, "storageButton")
         page.locator("#storageContent:not(.hidden)").wait_for()
         page.wait_for_function(
             "() => document.activeElement?.id === 'storageRefreshButton'"
@@ -1218,7 +1239,15 @@ def main():
         page.keyboard.press("ArrowDown")
         assert page.evaluate("() => document.activeElement?.id") != "storageRefreshButton"
         page.keyboard.press("Escape")
-        assert page.evaluate("() => document.activeElement?.id") == "storageButton"
+        page.wait_for_function(
+            """() => {
+              const compact = document.querySelector('#appView')
+                .classList.contains('compact-toolbar-active');
+              return document.activeElement?.id === (
+                compact ? 'compactToolbarMenuButton' : 'storageButton'
+              );
+            }"""
+        )
 
         page.set_viewport_size({"width": 390, "height": 844})
         page.keyboard.press("Meta+,")

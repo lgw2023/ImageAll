@@ -2195,8 +2195,8 @@ struct ProductionLibraryWorkspaceService:
         try photosOriginalCache.storageUsage()
     }
 
-    func clearPhotosOriginalStorage() throws -> PhotosOriginalStorageClearResult {
-        let hasActiveAnalysis = try queue.database.pool.read { db in
+    func isLibrarySlimmingAnalysisInProgress() throws -> Bool {
+        try queue.database.pool.read { db in
             try Bool.fetchOne(
                 db,
                 sql: """
@@ -2210,7 +2210,10 @@ struct ProductionLibraryWorkspaceService:
                 arguments: [LibrarySlimmingAnalysisJobFactory.kind]
             ) ?? false
         }
-        guard !hasActiveAnalysis else {
+    }
+
+    func clearPhotosOriginalStorage() throws -> PhotosOriginalStorageClearResult {
+        guard try !isLibrarySlimmingAnalysisInProgress() else {
             throw ProductionLibraryWorkspaceError.librarySlimmingAnalysisInProgress
         }
         return try photosOriginalCache.clearAll()

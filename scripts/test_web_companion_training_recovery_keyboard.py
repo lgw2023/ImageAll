@@ -34,6 +34,8 @@ def main():
     workspace_requests = []
     jobs_requests = []
     training_activity_actions = []
+    training_activity_requests = []
+    training_setup_requests = []
     jobs_fail_next = [False]
     page_errors = []
     console_errors = []
@@ -41,6 +43,7 @@ def main():
     unexpected_dialogs = []
     activity_updated_at_ms = [int(time.time() * 1000)]
     activity_phase = ["completed"]
+    toolbar_activity_phase = ["completed"]
 
     runs = [
         {
@@ -98,7 +101,18 @@ def main():
             "negativeSampleCount": 0,
             "sampleSummaryJSON": json.dumps({"batchID": BATCH_ID}),
             "configJSON": "{}",
-            "metricsJSON": "{}",
+            "metricsJSON": json.dumps({
+                "schemaVersion": 1,
+                "evaluationSplit": "validation",
+                "trainSampleCount": 6,
+                "validationSampleCount": 2,
+                "epochs": [
+                    {"epoch": 1, "evaluationLoss": 0.48},
+                    {"epoch": 2, "evaluationLoss": 0.31},
+                    {"epoch": 3, "evaluationLoss": 0.24},
+                    {"epoch": 4, "evaluationLoss": 0.27},
+                ],
+            }),
             "resultSummaryJSON": "{}",
             "errorCode": None,
         },
@@ -214,6 +228,7 @@ def main():
                     "hostID": "77777777-aaaa-bbbb-cccc-777777777777",
                     "hostDisplayName": "Synthetic Mac",
                     "hostAppVersion": "test",
+                    "capabilities": ["trainingActivities"],
                 },
             ),
         )
@@ -341,9 +356,9 @@ def main():
                 })
 
         page.route("**/v1/training/workspace?**", route_training_workspace)
-        page.route(
-            "**/v1/training/setup?**",
-            lambda route: fulfill_json(
+        def route_training_setup(route):
+            training_setup_requests.append(route.request.url)
+            fulfill_json(
                 route,
                 {
                     "mediaKind": "image",
@@ -380,8 +395,9 @@ def main():
                         {"method": "personalAdamW", "isAvailable": False},
                     ],
                 },
-            ),
-        )
+            )
+
+        page.route("**/v1/training/setup?**", route_training_setup)
 
         def route_training_launch(route):
             launches.append(route.request.post_data_json)
@@ -399,6 +415,28 @@ def main():
             )
 
         page.route("**/v1/training/launch", route_training_launch)
+
+        def route_training_activities(route):
+            training_activity_requests.append(route.request.url)
+            phase = toolbar_activity_phase[0]
+            fulfill_json(route, [{
+                "operationID": "77777777-aaaa-bbbb-cccc-111111111111",
+                "mediaKind": "image",
+                "method": "personalCentroid",
+                "phase": phase,
+                "completedUnitCount": 1,
+                "totalUnitCount": 3,
+                "sampleCount": 12,
+                "errorCode": None,
+                "availableActions": ["cancel"] if phase not in {
+                    "completed", "failed", "cancelled"
+                } else [],
+                "acceptedAtMs": 1_700_000_000_000,
+                "updatedAtMs": int(time.time() * 1000),
+                "tagActivities": [],
+            }])
+
+        page.route("**/v1/training/activities?**", route_training_activities)
 
         def route_training_activity_action(route):
             payload = route.request.post_data_json
@@ -456,10 +494,126 @@ def main():
         )
 
         page.goto(BASE_URL, wait_until="networkidle")
+        assert training_activity_requests
         page.locator(f'[data-quick-tag-id="{TAG_ID}"]').click()
         page.wait_for_function(
             "tagID => document.querySelector(`[data-quick-tag-id='${tagID}']`)?.getAttribute('aria-pressed') === 'true'",
             arg=TAG_ID,
+        )
+
+        page.set_viewport_size({"width": 2200, "height": 1000})
+        page.evaluate("applyToolbarDisplayMode('iconAndTitle')")
+        page.wait_for_function(
+            "() => getComputedStyle(document.querySelector('#personalModelToolbarActions')).display !== 'none'"
+        )
+        assert page.locator("#personalModelButton").is_hidden()
+        direct_personal_actions = [
+            ("#toolbarRebuildPersonalModelButton", "重建个人模型"),
+            ("#toolbarRebuildPersonalAdamWButton", "训练超级个人模型"),
+            ("#toolbarGeneratePersonalSuggestionsButton", "抽 500 张生成建议"),
+        ]
+        for selector, label in direct_personal_actions:
+            button = page.locator(selector)
+            assert button.is_visible(), selector
+            assert button.locator(".library-toolbar-label").inner_text() == label
+            assert button.get_attribute("data-help-detail"), selector
+
+        toolbar_activity_phase[0] = "preparingEmbeddings"
+        setup_request_count = len(training_setup_requests)
+        page.evaluate("loadTrainingActivities({ quiet: true })")
+        page.wait_for_function(
+            "() => document.querySelector('#toolbarRebuildPersonalModelButton').classList.contains('is-running')"
+        )
+        assert page.locator("#toolbarRebuildPersonalModelButton").is_disabled()
+        assert page.locator("#toolbarRebuildPersonalAdamWButton").is_disabled()
+        assert page.locator("#toolbarGeneratePersonalSuggestionsButton").is_disabled()
+        assert page.locator(
+            "#toolbarRebuildPersonalModelButton .library-toolbar-label"
+        ).inner_text() == "正在重建…"
+        assert page.locator("#toolbarRebuildPersonalModelButton").get_attribute(
+            "aria-busy"
+        ) == "true"
+        assert page.locator("#personalModelButton").is_enabled()
+        assert "正在重建" in page.locator("#personalModelButton").get_attribute("aria-label")
+        command_states = page.evaluate(
+            """() => Object.fromEntries(availableCommands()
+              .filter(item => ['rebuildPersonalModel', 'rebuildPersonalAdamW', 'generateLibrarySuggestions'].includes(item.id))
+              .map(item => [item.id, { disabled: item.disabled, hint: item.hint }]))"""
+        )
+        assert all(item["disabled"] for item in command_states.values()), command_states
+        assert "正在重建" in command_states["rebuildPersonalModel"]["hint"]
+        page.screenshot(
+            path="/tmp/imageall-personal-model-running-wide.png",
+            full_page=False,
+        )
+        page.evaluate(
+            "openLibraryPersonalTraining('personalCentroid', document.querySelector('#toolbarRebuildPersonalModelButton'))"
+        )
+        assert not page.locator("#trainingSetupDialog").evaluate("element => element.open")
+        assert len(training_setup_requests) == setup_request_count
+
+        page.set_viewport_size({"width": 1280, "height": 900})
+        page.locator("#personalModelButton").click()
+        page.locator("#personalModelPopover:not(.hidden)").wait_for(state="visible")
+        assert page.locator("#rebuildPersonalModelButton").is_disabled()
+        assert page.locator("#rebuildPersonalAdamWButton").is_disabled()
+        assert page.locator("#generatePersonalSuggestionsButton").is_disabled()
+        assert page.locator("#rebuildPersonalModelTitle").inner_text() == "正在重建个人模型…"
+        page.keyboard.press("Escape")
+
+        toolbar_activity_phase[0] = "completed"
+        page.evaluate("loadTrainingActivities({ quiet: true })")
+        page.wait_for_function(
+            "() => !document.querySelector('#toolbarRebuildPersonalModelButton').classList.contains('is-running')"
+        )
+        page.set_viewport_size({"width": 2200, "height": 1000})
+        assert page.locator("#toolbarRebuildPersonalModelButton").is_enabled()
+        assert page.locator(
+            "#toolbarRebuildPersonalModelButton .library-toolbar-label"
+        ).inner_text() == "重建个人模型"
+        page.screenshot(
+            path="/tmp/imageall-personal-model-toolbar-wide.png",
+            full_page=False,
+        )
+        page.locator("#toolbarRebuildPersonalModelButton").click()
+        page.locator("#trainingSetupDialog").wait_for(state="visible")
+        page.wait_for_function("() => !state.training.setup.loading")
+        assert page.locator(
+            '[data-training-setup-method="personalCentroid"]'
+        ).get_attribute("aria-checked") == "true"
+        page.keyboard.press("Escape")
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'toolbarRebuildPersonalModelButton'"
+        )
+
+        page.set_viewport_size({"width": 1280, "height": 900})
+        page.wait_for_function(
+            "() => getComputedStyle(document.querySelector('#personalModelToolbarActions')).display === 'none'"
+        )
+        assert page.locator("#personalModelButton").is_visible()
+        page.set_viewport_size({"width": 390, "height": 844})
+        if "open" in (page.locator("#sourceSidebar").get_attribute("class") or "").split():
+            page.locator("#sidebarToggle").click()
+            page.wait_for_function(
+                "() => !document.querySelector('#sourceSidebar').classList.contains('open')"
+            )
+        page.wait_for_timeout(250)
+        assert page.locator("#personalModelButton").is_visible()
+        assert page.locator("#personalModelToolbarActions").is_hidden()
+        assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+        page.screenshot(
+            path="/tmp/imageall-personal-model-toolbar-390.png",
+            full_page=False,
+        )
+        page.set_viewport_size({"width": 1280, "height": 900})
+        page.locator("#personalModelButton").click()
+        page.locator("#personalModelPopover:not(.hidden)").wait_for(state="visible")
+        page.set_viewport_size({"width": 2200, "height": 1000})
+        page.locator("#personalModelPopover").wait_for(state="hidden")
+        assert page.locator("#personalModelToolbarActions").is_visible()
+        page.set_viewport_size({"width": 1280, "height": 900})
+        page.wait_for_function(
+            "() => getComputedStyle(document.querySelector('#personalModelToolbarActions')).display === 'none'"
         )
         page.locator("#personalModelButton").click()
         page.locator("#personalModelPopover:not(.hidden)").wait_for(state="visible")
@@ -545,9 +699,70 @@ def main():
         assert page.locator('[data-command-id="rebuildPersonalAdamW"]').count() == 1
         page.keyboard.press("Escape")
 
-        page.locator("#trainingButton").click()
+        if page.locator("#trainingButton").is_visible():
+            page.locator("#trainingButton").click()
+        else:
+            page.locator("#compactToolbarMenuButton").click()
+            page.locator(
+                '[data-compact-toolbar-target="trainingButton"]'
+            ).click()
         page.locator("#trainingWorkspace:not(.hidden)").wait_for(state="visible")
         assert page.locator("#closeTrainingButton").get_attribute("aria-label") == "返回图库"
+        assert not page.locator("#appView").evaluate("element => element.inert")
+        assert page.locator("#sourceSidebar").is_visible()
+        assert page.locator("#inspector").is_visible()
+        assert page.locator("#trainingWorkspace").get_attribute("role") == "region"
+        assert page.locator("#trainingWorkspace").get_attribute("aria-modal") is None
+        assert page.locator("#trainingNavigationButton").get_attribute("aria-current") == "page"
+        assert page.locator("#libraryTitle").inner_text() == "训练工程"
+        assert page.locator("#inspectorTrainingWorkspace").is_visible()
+        assert page.locator("#inspectorTrainingWorkspaceTitle").inner_text() == "训练工程"
+        assert page.locator("#inspectorTrainingWorkspaceTask").inner_text() == "相似照片"
+        assert page.locator("#inspectorTrainingWorkspaceMethod").inner_text() == "Feature Print k-NN"
+        assert page.locator("#inspectorTrainingWorkspaceState").inner_text() == "失败"
+        training_bounds = page.locator("#trainingWorkspace").bounding_box()
+        library_bounds = page.locator("#libraryPane").bounding_box()
+        assert training_bounds is not None and library_bounds is not None
+        assert training_bounds["x"] >= library_bounds["x"] - 1
+        assert training_bounds["y"] >= library_bounds["y"] - 1
+        assert training_bounds["x"] + training_bounds["width"] <= (
+            library_bounds["x"] + library_bounds["width"] + 1
+        )
+        assert training_bounds["y"] + training_bounds["height"] <= (
+            library_bounds["y"] + library_bounds["height"] + 1
+        )
+        assert page.locator("#searchForm").evaluate(
+            "element => Boolean(element.closest('[inert]'))"
+        )
+        page.screenshot(
+            path="/tmp/imageall-training-integrated.png",
+            full_page=True,
+        )
+        page.locator("#closeTrainingButton").focus()
+        page.keyboard.press("Meta+f")
+        assert page.evaluate("() => document.activeElement?.id") != "searchInput"
+        page.locator(f'[data-training-run-id="{PERSONAL_RUN_ID}"]').click()
+        page.wait_for_function(
+            "() => document.querySelector('#inspectorTrainingWorkspaceTask')?.textContent === '快速个人模型'"
+        )
+        assert page.locator("#inspectorTrainingWorkspaceTask").inner_text() == "快速个人模型"
+        assert page.locator("#inspectorTrainingWorkspaceState").inner_text() == "已完成"
+        page.locator(f'[data-training-run-id="{FAILED_RUN_ID}"]').click()
+        page.wait_for_function(
+            "() => document.querySelector('#inspectorTrainingWorkspaceTask')?.textContent === '相似照片'"
+        )
+        page.locator('#libraryNavigation [data-source-id=""]').click()
+        page.locator("#trainingWorkspace").wait_for(state="hidden")
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.route"
+        ) == "gallery"
+        assert page.locator("#inspectorTrainingWorkspace").is_hidden()
+        page.locator("#trainingNavigationButton").click()
+        page.locator("#trainingWorkspace:not(.hidden)").wait_for(state="visible")
+        page.wait_for_function(
+            "runID => document.querySelector(`[data-training-run-id='${runID}']`)?.getAttribute('aria-selected') === 'true'",
+            arg=FAILED_RUN_ID,
+        )
         assert page.evaluate(
             "() => history.state?.imageAllWorkspace?.route"
         ) == "training"
@@ -653,6 +868,15 @@ def main():
         assert "单项记录" in page.locator("#trainingDetailContext").inner_text()
         assert "12 个样本" in page.locator("#trainingDetailContext").inner_text()
         assert "2 个选定来源" in page.locator("#trainingFactLedger").inner_text()
+        assert page.locator("#trainingMetricHighlights").is_hidden()
+        assert page.locator("#trainingLossChart").is_hidden()
+        assert page.locator("#trainingMetricEmpty").is_visible()
+        assert "没有可绘制的训练曲线" in page.locator(
+            "#trainingMetricEmpty"
+        ).inner_text()
+        assert page.locator("#trainingLossChart").get_attribute("aria-label") == (
+            "训练损失曲线：没有可绘制的数据"
+        )
         assert "猫" in page.locator(
             f'[data-training-run-id="{FAILED_RUN_ID}"] .training-run-row-context'
         ).inner_text()
@@ -764,6 +988,38 @@ def main():
         ).get_attribute("aria-selected") == "true"
         assert "批次 1 / 3" in page.locator("#trainingDetailContext").inner_text()
         assert "8 个样本" in page.locator("#trainingDetailContext").inner_text()
+        assert page.locator("#trainingMetricHighlights").is_visible()
+        metric_highlights = page.locator("#trainingMetricHighlights").inner_text()
+        assert "训练轮次\n4" in metric_highlights
+        assert "最佳损失\n0.240" in metric_highlights
+        assert "最终损失\n0.270" in metric_highlights
+        assert page.locator("#trainingMetricEmpty").is_hidden()
+        assert page.locator("#trainingLossChart").is_visible()
+        assert page.locator("#trainingLossChart").get_attribute("role") == "img"
+        assert page.locator("#trainingLossChart").get_attribute("aria-label") == (
+            "训练损失曲线：4 轮，最佳损失 0.240（第 3 轮），最终损失 0.270"
+        )
+        assert page.locator("#trainingLossChart svg").count() == 1
+        assert page.locator("#trainingLossChart [data-metric-epoch]").count() == 4
+        assert page.locator(
+            '#trainingLossChart [data-metric-epoch="3"][data-best="true"]'
+        ).count() == 1
+        page.screenshot(path="/tmp/imageall-training-loss-chart.png", full_page=True)
+        page.set_viewport_size({"width": 390, "height": 844})
+        page.wait_for_timeout(100)
+        assert page.locator("#trainingLossChart").is_visible()
+        chart_bounds = page.locator("#trainingLossChart").bounding_box()
+        assert chart_bounds is not None
+        page.screenshot(
+            path="/tmp/imageall-training-loss-chart-390.png",
+            full_page=True,
+        )
+        assert chart_bounds["x"] >= 0, chart_bounds
+        assert chart_bounds["x"] + chart_bounds["width"] <= 390, chart_bounds
+        assert page.evaluate(
+            "() => document.documentElement.scrollWidth <= window.innerWidth"
+        )
+        page.set_viewport_size({"width": 1280, "height": 900})
         page.locator(".training-technical-details > summary").click()
         assert BATCH_ID in page.locator("#trainingTechnicalBlocks").inner_text()
 
@@ -885,7 +1141,13 @@ def main():
         ) - run_scroll_before_selection) <= 1
         page.locator("#closeTrainingButton").click()
         page.locator("#trainingWorkspace").wait_for(state="hidden")
-        page.locator("#trainingButton").click()
+        if page.locator("#trainingButton").is_visible():
+            page.locator("#trainingButton").click()
+        else:
+            page.locator("#compactToolbarMenuButton").click()
+            page.locator(
+                '[data-compact-toolbar-target="trainingButton"]'
+            ).click()
         page.locator("#trainingWorkspace:not(.hidden)").wait_for(state="visible")
 
         runs[:] = original_runs
@@ -1100,6 +1362,11 @@ def main():
         assert launches[1]["sourceIDs"] == [ACTIVE_SOURCE_ID]
 
         page.set_viewport_size({"width": 390, "height": 844})
+        page.wait_for_function("() => document.querySelector('#appView').inert")
+        assert page.locator("#appView").evaluate("element => element.inert")
+        assert page.locator("#trainingWorkspace").get_attribute("role") == "dialog"
+        assert page.locator("#trainingWorkspace").get_attribute("aria-modal") == "true"
+        assert page.locator("#closeTrainingButton").is_visible()
         assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
         page.locator(f'[data-training-run-id="{FAILED_RUN_ID}"]').focus()
         page.keyboard.press("ArrowDown")

@@ -193,6 +193,10 @@ def main():
             }),
         )
         page.route(
+            "**/v1/training/activities?**",
+            lambda route: fulfill_json(route, []),
+        )
+        page.route(
             "**/v1/library-slimming/identical-cleanup/requests?**",
             lambda route: fulfill_json(route, {"mediaKind": "image", "requests": []}),
         )
@@ -318,7 +322,13 @@ def main():
 
         page.goto(BASE_URL, wait_until="networkidle")
         cards = page.locator("#assetGrid .asset-card-main")
-        assert cards.count() == 72
+        assert cards.count() == 72, {
+            "cardCount": cards.count(),
+            "pageErrors": page_errors,
+            "failedResources": failed_resources,
+            "assetCount": page.evaluate("() => state.assets.length"),
+            "nextCursor": page.evaluate("() => state.nextCursor"),
+        }
         cards.nth(10).click(modifiers=["Meta"])
         page.wait_for_function(
             "id => state.selectionMode && state.selectedAssetIDs.has(id)",

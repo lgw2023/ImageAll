@@ -10,8 +10,8 @@
   <meta name="apple-mobile-web-app-title" content="ImageAll">
   <title>ImageAll 网页版</title>
   <link rel="manifest" href="/manifest.webmanifest">
-    <link rel="stylesheet" href="/app.css?v=20260811-79">
-    <script src="/app.js?v=20260811-79" defer></script>
+    <link rel="stylesheet" href="/app.css?v=20260818-108">
+    <script src="/app.js?v=20260818-108" defer></script>
 </head>
 <body>
   <div id="bootView" class="centered-state">
@@ -115,34 +115,44 @@
         </button>
         <button
           id="sidebarVisibilityButton"
-          class="icon-button desktop-layout-button"
+          class="icon-button desktop-layout-button library-toolbar-mode-button"
           type="button"
           aria-label="隐藏侧栏"
           aria-pressed="true"
           title="隐藏侧栏"
           data-help-detail="显示或隐藏左侧边栏；当前来源、标签筛选和已载入网格不会改变。"
-        >◫</button>
+        >
+          <span class="library-toolbar-icon" aria-hidden="true">◫</span>
+          <span id="sidebarVisibilityLabel" class="library-toolbar-label">隐藏侧栏</span>
+        </button>
         <div class="mini-mark" aria-hidden="true"></div>
         <strong>ImageAll</strong>
         <span class="titlebar-separator" aria-hidden="true"></span>
         <span id="libraryTitle" class="secondary">全部照片</span>
       </div>
       <div class="titlebar-actions">
-        <button id="commandButton" class="icon-button" type="button" aria-label="打开命令面板" title="命令（⌘K）"
+        <button id="commandButton" class="icon-button library-toolbar-mode-button" type="button" aria-label="打开命令面板" title="命令（⌘K）"
           data-help-detail="搜索并执行当前工作区可用的导航与操作；也可按 ⌘K。">
-          ⌘
+          <span class="library-toolbar-icon" aria-hidden="true">⌘</span>
+          <span id="commandButtonLabel" class="library-toolbar-label">命令</span>
         </button>
         <button id="shortcutButton" class="icon-button" type="button" aria-label="查看快捷键" title="快捷键"
           data-help-detail="查看图库、审核、训练和预览中的键盘操作。">
           ?
         </button>
         <div class="titlebar-undo-group" role="group" aria-label="撤销最近操作">
-          <button id="undoTagButton" class="icon-button" type="button"
+          <button id="undoTagButton" class="icon-button library-toolbar-mode-button" type="button"
             aria-label="撤销标签操作" aria-keyshortcuts="Meta+Z Control+Z" title="撤销最近一次标签操作"
-            data-help-detail="撤销最近一次标签创建、确认、拒绝或清除；按 ⌘Z 会优先撤销标签和审核中最后发生的一项。" disabled>↶</button>
-          <button id="undoReviewButton" class="icon-button hidden" type="button"
+            data-help-detail="撤销最近一次标签创建、确认、拒绝或清除；按 ⌘Z 会优先撤销标签和审核中最后发生的一项。" disabled>
+            <span class="library-toolbar-icon" aria-hidden="true">↶</span>
+            <span id="undoTagButtonLabel" class="library-toolbar-label">撤销标签操作</span>
+          </button>
+          <button id="undoReviewButton" class="icon-button library-toolbar-mode-button hidden" type="button"
             aria-label="撤销审核操作" aria-keyshortcuts="Meta+Z Control+Z" title="撤销最近一次审核操作"
-            data-help-detail="撤销最近一次审核接受或拒绝；按 ⌘Z 会优先撤销标签和审核中最后发生的一项。">↶✓</button>
+            data-help-detail="撤销最近一次审核接受或拒绝；按 ⌘Z 会优先撤销标签和审核中最后发生的一项。">
+            <span class="library-toolbar-icon" aria-hidden="true">↶✓</span>
+            <span id="undoReviewButtonLabel" class="library-toolbar-label">撤销审核操作</span>
+          </button>
         </div>
         <button id="worldMapButton" class="button button-compact" type="button" title="打开世界地图"
           data-help-detail="按地点浏览照片塔，并可下钻回当前图库的精确照片范围。">
@@ -164,10 +174,22 @@
           <span aria-hidden="true">✓⃝</span>
           <span>审核</span>
         </button>
-        <button id="storageButton" class="button button-compact" type="button" title="应用存储与预览缓存"
+        <button id="toolbarConnectFolderButton"
+          class="button button-compact library-toolbar-mode-button" type="button"
+          title="连接文件夹" data-help-detail="选择本地文件夹作为新的照片来源；ImageAll 会索引其中的照片，不会修改原文件。">
+          <span class="library-toolbar-icon" aria-hidden="true">▤＋</span>
+          <span id="toolbarConnectFolderLabel" class="library-toolbar-label">连接文件夹</span>
+        </button>
+        <button id="toolbarExportPortableDataButton"
+          class="button button-compact library-toolbar-mode-button" type="button"
+          title="导出用户数据" data-help-detail="导出标签、审核记录与个人模型等用户数据，便于备份或迁移；目标位置仍在 Mac 上选择。">
+          <span class="library-toolbar-icon" aria-hidden="true">⇧</span>
+          <span id="toolbarExportPortableDataLabel" class="library-toolbar-label">导出用户数据</span>
+        </button>
+        <button id="storageButton" class="button button-compact library-toolbar-mode-button" type="button" title="应用存储与预览缓存"
           data-help-detail="查看脱敏存储用量；目录选择、迁移和清理继续在 Mac 上确认。">
-          <span aria-hidden="true">▣</span>
-          <span id="storageStatusLabel">存储</span>
+          <span class="library-toolbar-icon" aria-hidden="true">▣</span>
+          <span id="storageStatusLabel" class="library-toolbar-label">预览缓存</span>
         </button>
         <button id="sourcePrewarmStatusButton" class="button button-compact source-prewarm-status hidden"
           type="button" title="查看来源缩略图预热">
@@ -186,10 +208,10 @@
             <span id="catalogProgressStatusFill"></span>
           </span>
         </button>
-        <button id="jobsButton" class="button button-compact badge-button" type="button" title="查看活动"
+        <button id="jobsButton" class="button button-compact badge-button library-toolbar-mode-button" type="button" title="查看活动"
           data-help-detail="查看扫描、缓存、建议、训练和瘦身任务的真实进度与可用操作。">
-          <span aria-hidden="true">◷</span>
-          <span>活动</span>
+          <span class="library-toolbar-icon" aria-hidden="true">◷</span>
+          <span id="jobsButtonLabel" class="library-toolbar-label">活动</span>
           <span id="jobsBadge" class="count-badge hidden"></span>
         </button>
         <button id="compactToolbarMenuButton" class="icon-button compact-toolbar-menu-button"
@@ -206,24 +228,27 @@
           <span class="status-dot" aria-hidden="true"></span>
           <span class="connection-label">正在连接</span>
         </span>
-        <button id="currentSourceRefreshButton" class="button button-compact source-refresh-button"
+        <button id="currentSourceRefreshButton" class="button button-compact source-refresh-button library-toolbar-mode-button"
           type="button" title="立即更新当前来源"
           data-help-detail="文件夹执行重扫，Apple Photos 执行同步；只刷新当前来源的权威索引。">
-          <span id="currentSourceRefreshIcon" class="source-refresh-icon" aria-hidden="true">↻</span>
-          <span id="currentSourceRefreshLabel">立即重扫</span>
+          <span id="currentSourceRefreshIcon" class="source-refresh-icon library-toolbar-icon" aria-hidden="true">↻</span>
+          <span id="currentSourceRefreshLabel" class="library-toolbar-label">立即重扫</span>
         </button>
         <button id="refreshButton" class="icon-button" type="button"
           aria-label="重新读取网页数据" title="重新读取网页数据"
           data-help-detail="重新读取 Host 投影；保留当前已载入分页、选择和滚动位置。">⟳</button>
         <button
           id="inspectorVisibilityButton"
-          class="icon-button desktop-layout-button"
+          class="icon-button desktop-layout-button library-toolbar-mode-button"
           type="button"
           aria-label="隐藏检查器"
           aria-pressed="true"
           title="隐藏检查器"
           data-help-detail="显示或隐藏右侧检查器；单选查看信息和建议，多选直接批量整理标签。"
-        >◧</button>
+        >
+          <span class="library-toolbar-icon" aria-hidden="true">◧</span>
+          <span id="inspectorVisibilityLabel" class="library-toolbar-label">隐藏检查器</span>
+        </button>
         <button id="logoutButton" class="button button-plain" type="button"
           aria-label="退出网页账号" title="退出网页账号">退出</button>
       </div>
@@ -373,43 +398,122 @@
               aria-label="搜索文件名、路径、标签或来源" autocomplete="off">
             <button id="clearSearchButton" class="search-clear hidden" type="button" aria-label="清除搜索">×</button>
           </form>
-          <label class="sort-control">
-            <span class="visually-hidden">排序方式</span>
-            <select id="sortSelect">
+          <div class="sort-control">
+            <select id="sortSelect" class="sort-native-proxy" tabindex="-1" aria-hidden="true">
               <option value="newest">最新优先</option>
               <option value="oldest">最早优先</option>
-              <option value="fileNameAscending" selected>按文件名</option>
+              <option value="fileNameAscending" selected>文件名升序</option>
             </select>
-          </label>
-          <button id="filterButton" class="button toolbar-button" type="button" aria-expanded="false"
+            <button id="sortButton" class="button toolbar-button sort-button" type="button"
+              aria-haspopup="menu" aria-expanded="false" aria-controls="sortPopover"
+              aria-label="排序：文件名升序" title="排序"
+              data-help-detail="更改照片列表的排序方式：最新优先、最早优先或文件名升序。">
+              <span class="sort-button-icon" aria-hidden="true">↕</span>
+              <span id="sortButtonLabel" class="sort-button-label">文件名升序</span>
+            </button>
+          </div>
+          <button id="filterButton" class="button toolbar-button library-toolbar-mode-button"
+            type="button" aria-expanded="false"
             title="筛选" data-help-detail="按标签决定、任意或全部关系、可用状态与文件格式即时筛选。">
-            <span aria-hidden="true">≡</span>
-            <span>筛选</span>
+            <span class="library-toolbar-icon" aria-hidden="true">≡</span>
+            <span class="library-toolbar-label">筛选</span>
             <span id="filterBadge" class="count-badge hidden"></span>
           </button>
-          <button id="selectionModeButton" class="button toolbar-button" type="button" aria-pressed="false"
+          <button id="selectionModeButton"
+            class="button toolbar-button library-toolbar-mode-button" type="button" aria-pressed="false"
             title="选择" data-help-detail="进入触控友好的多选模式；桌面也可使用 Command、Shift、Command-A 或框选。">
-            选择
+            <span class="library-toolbar-icon" aria-hidden="true">✓</span>
+            <span class="library-toolbar-label">选择</span>
           </button>
-          <button id="personalModelButton" class="button toolbar-button" type="button"
+          <div id="personalModelToolbarActions" class="personal-model-toolbar-actions"
+            role="group" aria-label="个人模型快捷操作">
+            <button id="toolbarRebuildPersonalModelButton"
+              class="button toolbar-button library-toolbar-mode-button" type="button"
+              aria-label="重建个人模型" title="重建个人模型"
+              data-help-detail="先在左侧选择要训练的标签；有多选时只使用选中照片上这些标签的确认样本，无多选时使用全库这些标签的全部确认样本。会自动为本批样本补齐本地 embedding（仅用本机预览）。">
+              <span class="library-toolbar-icon personal-model-centroid-icon" aria-hidden="true">◎</span>
+              <span class="library-toolbar-label">重建个人模型</span>
+            </button>
+            <button id="toolbarRebuildPersonalAdamWButton"
+              class="button toolbar-button library-toolbar-mode-button" type="button"
+              aria-label="训练超级个人模型" title="训练超级个人模型"
+              data-help-detail="先在左侧选择要训练的标签；冻结 DINO + AdamW 线性头，多 epoch / 早停；仍只要正样本。与人脑质心模型并存、互不覆盖。多选只限样本照片。">
+              <span class="library-toolbar-icon personal-model-adamw-icon" aria-hidden="true">✦</span>
+              <span class="library-toolbar-label">训练超级个人模型</span>
+            </button>
+            <button id="toolbarGeneratePersonalSuggestionsButton"
+              class="button toolbar-button library-toolbar-mode-button" type="button"
+              aria-label="抽 500 张生成建议" title="抽 500 张生成建议"
+              data-help-detail="有多选时对选中照片生成建议；无多选时从库中抽样。结果写入待审核队列，可用 P 接受、X 拒绝。">
+              <span class="library-toolbar-icon personal-model-suggestion-icon" aria-hidden="true">✦</span>
+              <span id="toolbarGeneratePersonalSuggestionsLabel"
+                class="library-toolbar-label">抽 500 张生成建议</span>
+            </button>
+            <button id="toolbarPrepareSelectedFeaturesButton"
+              class="button toolbar-button library-toolbar-mode-button hidden" type="button"
+              aria-label="准备选中照片特征" title="准备选中照片特征"
+              data-help-detail="为当前选中的照片生成或命中跳过本地模型缓存；重建个人模型会按选中/历史样本范围自行准备所需特征。">
+              <span class="library-toolbar-icon personal-model-prepare-icon" aria-hidden="true">✦</span>
+              <span class="library-toolbar-label">准备选中照片特征</span>
+            </button>
+            <button id="toolbarFindSimilarSelectionButton"
+              class="button toolbar-button library-toolbar-mode-button hidden" type="button"
+              aria-label="在图库瘦身中查找" title="在图库瘦身中查找"
+              data-help-detail="以当前多选为种子，在图库（或当前筛选）中查找相同与相似照片。">
+              <span class="library-toolbar-icon personal-model-find-icon" aria-hidden="true">▧</span>
+              <span class="library-toolbar-label">在图库瘦身中查找</span>
+            </button>
+          </div>
+          <button id="personalModelButton"
+            class="button toolbar-button library-toolbar-mode-button" type="button"
             aria-expanded="false" aria-controls="personalModelPopover" title="重建或训练个人模型"
             data-help-detail="按当前标签和选择范围重建个人模型、准备特征或生成待审核建议。">
-            <span aria-hidden="true">◎</span>
-            <span>个人模型</span>
+            <span class="library-toolbar-icon" aria-hidden="true">◎</span>
+            <span class="library-toolbar-label">个人模型</span>
           </button>
-          <button id="thumbnailAspectButton" class="button toolbar-button" type="button"
-            aria-pressed="false" title="完整显示照片宽高比"
-            data-help-detail="在紧凑方形裁切与原始宽高比完整显示之间切换。">适应</button>
-          <label class="grid-density-control" title="调整缩略图大小"
-            data-help-detail="使用与 Mac 相同的九档密度调节当前图库网格。">
-            <span aria-hidden="true">▦</span>
-            <input id="gridDensitySlider" type="range" min="0" max="8" step="1" value="4"
-              aria-label="缩略图大小">
-            <span aria-hidden="true">▦</span>
-          </label>
-          <button id="retryFavoriteSyncButton" class="button toolbar-button favorite-action hidden write-action"
+          <button id="thumbnailAspectButton"
+            class="button toolbar-button thumbnail-aspect-button" type="button"
+            data-aspect-mode="square" aria-label="缩略图比例：正方形"
+            title="缩略图比例：正方形"
+            data-help-detail="当前缩略图为正方形。点击后，仅手动生成过原比例缓存的照片和视频会完整显示；其余项目保持正方形。">
+            <span class="thumbnail-aspect-icon" aria-hidden="true"></span>
+            <span class="thumbnail-aspect-label">正方形</span>
+          </button>
+          <div class="grid-density-control">
+            <button id="gridDensityButton" class="button toolbar-button grid-density-button"
+              type="button" aria-haspopup="menu" aria-expanded="false"
+              aria-controls="gridDensityPopover" aria-label="缩略图大小：标准"
+              title="缩略图大小：标准"
+              data-help-detail="使用与 Mac 相同的九档命名菜单调节当前图库网格。">
+              <span class="grid-density-icon" aria-hidden="true">▦</span>
+              <span id="gridDensityButtonLabel" class="grid-density-button-label">标准</span>
+              <span class="grid-density-chevron" aria-hidden="true">⌄</span>
+            </button>
+          </div>
+          <div id="selectionFavoriteToolbarActions"
+            class="selection-favorite-toolbar-actions hidden"
+            role="group" aria-label="所选项目红心操作" aria-hidden="true">
+            <button id="toolbarFavoriteSelectedButton"
+              class="button toolbar-button library-toolbar-mode-button favorite-action write-action"
+              type="button" aria-label="加入红心" title="加入红心"
+              data-help-detail="把当前所选照片或视频加入全 App 共享的红心收藏。">
+              <span class="library-toolbar-icon" aria-hidden="true">♥</span>
+              <span class="library-toolbar-label">加入红心</span>
+            </button>
+            <button id="toolbarUnfavoriteSelectedButton"
+              class="button toolbar-button library-toolbar-mode-button write-action"
+              type="button" aria-label="取消红心" title="取消红心"
+              data-help-detail="从全 App 共享的红心收藏中移除当前所选项目。">
+              <span class="library-toolbar-icon" aria-hidden="true">♡</span>
+              <span class="library-toolbar-label">取消红心</span>
+            </button>
+          </div>
+          <button id="retryFavoriteSyncButton"
+            class="button toolbar-button library-toolbar-mode-button favorite-action hidden write-action"
             type="button" title="重试等待中或失败的 Apple Photos 红心同步">
-            <span aria-hidden="true">↻♥</span><span>重试同步</span><span id="retryFavoriteSyncCount" class="count-badge"></span>
+            <span class="library-toolbar-icon" aria-hidden="true">↻♥</span>
+            <span class="library-toolbar-label">重试同步</span>
+            <span id="retryFavoriteSyncCount" class="count-badge"></span>
           </button>
           <span id="assetSummary" class="toolbar-summary secondary"></span>
         </div>
@@ -441,7 +545,7 @@
             role="menuitem">
             <span class="personal-model-action-icon" aria-hidden="true">◎</span>
             <span>
-              <strong>重建个人模型</strong>
+              <strong id="rebuildPersonalModelTitle">重建个人模型</strong>
               <small>轻量质心模型，适合频繁更新</small>
             </span>
           </button>
@@ -449,7 +553,7 @@
             role="menuitem">
             <span class="personal-model-action-icon" aria-hidden="true">✦</span>
             <span>
-              <strong>训练超级个人模型</strong>
+              <strong id="rebuildPersonalAdamWTitle">训练超级个人模型</strong>
               <small>AdamW 多轮优化，适合样本更完整的标签</small>
             </span>
           </button>
@@ -461,8 +565,44 @@
               <small id="generatePersonalSuggestionsDetail">从当前审核来源抽样，结果进入待审核建议</small>
             </span>
           </button>
+          <button id="preparePersonalSelectionButton"
+            class="personal-model-action hidden" type="button" role="menuitem">
+            <span class="personal-model-action-icon" aria-hidden="true">✦</span>
+            <span>
+              <strong id="preparePersonalSelectionTitle">准备选中照片特征</strong>
+              <small>在这台 Mac 上生成或命中跳过所选项目的本地模型特征</small>
+            </span>
+          </button>
+          <button id="findSimilarPersonalSelectionButton"
+            class="personal-model-action hidden" type="button" role="menuitem">
+            <span class="personal-model-action-icon" aria-hidden="true">▧</span>
+            <span>
+              <strong>在图库瘦身中查找</strong>
+              <small>以当前选区为种子查找相同与相似照片</small>
+            </span>
+          </button>
           <p>仅使用“已确认”标签样本；启动前仍可在设置页确认标签与照片范围。</p>
         </section>
+
+        <section id="sortPopover" class="popover sort-popover hidden" role="menu"
+          aria-label="排序方式">
+          <button type="button" role="menuitemradio" data-sort="newest" aria-checked="false">
+            <span class="sort-option-check" aria-hidden="true">✓</span>
+            <span>最新优先</span>
+          </button>
+          <button type="button" role="menuitemradio" data-sort="oldest" aria-checked="false">
+            <span class="sort-option-check" aria-hidden="true">✓</span>
+            <span>最早优先</span>
+          </button>
+          <button type="button" role="menuitemradio" data-sort="fileNameAscending"
+            aria-checked="true">
+            <span class="sort-option-check" aria-hidden="true">✓</span>
+            <span>文件名升序</span>
+          </button>
+        </section>
+
+        <section id="gridDensityPopover" class="popover grid-density-popover hidden"
+          role="menu" aria-label="缩略图大小"></section>
 
         <section id="filterPopover" class="popover filter-popover hidden" aria-label="高级筛选">
           <div class="popover-heading">
@@ -610,16 +750,22 @@
           <strong id="selectionSummary">已选择 0 项</strong>
           <button id="selectAllLoadedButton" class="button button-plain" type="button">全选已载入</button>
           <div class="selection-tool-actions" role="group" aria-label="所选项目工具">
-            <button id="favoriteSelectedButton" class="button favorite-action write-action" type="button"
-              title="把所选照片或视频加入红心收藏">♥ 加入红心</button>
-            <button id="unfavoriteSelectedButton" class="button write-action" type="button"
-              title="从红心收藏中移除所选照片或视频">♡ 取消红心</button>
-            <button id="prepareSelectedFeaturesButton" class="button" type="button"
-              title="在 Mac 上准备所选项目的个人模型特征">准备特征</button>
-            <button id="generateSelectedSuggestionsButton" class="button" type="button"
-              title="对所选项目生成个人模型建议并加入审核队列">生成建议</button>
-            <button id="findSimilarSelectionButton" class="button" type="button"
-              title="以所选项目为种子在图库瘦身中查找相似项">查找相似</button>
+            <div id="batchFavoriteActions" class="batch-favorite-actions"
+              role="group" aria-label="所选项目红心操作">
+              <button id="favoriteSelectedButton" class="button favorite-action write-action" type="button"
+                title="把所选照片或视频加入红心收藏">♥ 加入红心</button>
+              <button id="unfavoriteSelectedButton" class="button write-action" type="button"
+                title="从红心收藏中移除所选照片或视频">♡ 取消红心</button>
+            </div>
+            <div id="batchPersonalModelActions" class="batch-personal-model-actions"
+              role="group" aria-label="所选项目个人模型操作">
+              <button id="prepareSelectedFeaturesButton" class="button" type="button"
+                title="在 Mac 上准备所选项目的个人模型特征">准备特征</button>
+              <button id="generateSelectedSuggestionsButton" class="button" type="button"
+                title="对所选项目生成个人模型建议并加入审核队列">生成建议</button>
+              <button id="findSimilarSelectionButton" class="button" type="button"
+                title="以所选项目为种子在图库瘦身中查找相似项">查找相似</button>
+            </div>
             <button id="deleteSelectedButton" class="button button-danger write-action" type="button"
               title="立即删除所选项目并释放来源空间；仍需在 Mac 原生窗口确认">删除</button>
           </div>
@@ -689,9 +835,85 @@
         <div class="inspector-header mobile-only">
           <button id="closeInspectorButton" class="button button-plain" type="button">完成</button>
         </div>
+        <div id="inspectorWorkspacePlaceholder" class="inspector-workspace-placeholder hidden"
+          role="status" aria-labelledby="inspectorWorkspacePlaceholderTitle">
+          <div id="inspectorWorkspacePlaceholderSymbol" class="placeholder-symbol"
+            aria-hidden="true">▥</div>
+          <h2 id="inspectorWorkspacePlaceholderTitle">图库总览</h2>
+          <p id="inspectorWorkspacePlaceholderText">总览页已在主窗口展示聚合统计。</p>
+        </div>
+        <section id="inspectorTrainingWorkspace" class="inspector-training-workspace hidden"
+          aria-labelledby="inspectorTrainingWorkspaceTitle">
+          <header>
+            <span class="inspector-training-symbol" aria-hidden="true">⌁</span>
+            <h2 id="inspectorTrainingWorkspaceTitle">训练工程</h2>
+          </header>
+          <div id="inspectorTrainingWorkspaceActivity" class="inspector-training-activity hidden"
+            role="status" aria-live="polite">
+            <div class="inspector-training-activity-heading">
+              <span class="spinner" aria-hidden="true"></span>
+              <strong id="inspectorTrainingWorkspaceActivityTitle">训练处理中</strong>
+            </div>
+            <p id="inspectorTrainingWorkspaceActivityDetail"></p>
+            <small id="inspectorTrainingWorkspaceActivityPhase"></small>
+          </div>
+          <div id="inspectorTrainingWorkspaceRun" class="inspector-training-run">
+            <dl class="inspector-training-facts">
+              <div><dt>任务</dt><dd id="inspectorTrainingWorkspaceTask">—</dd></div>
+              <div><dt>技术方法</dt><dd id="inspectorTrainingWorkspaceMethod">—</dd></div>
+              <div><dt>状态</dt><dd id="inspectorTrainingWorkspaceState">—</dd></div>
+              <div><dt>创建</dt><dd id="inspectorTrainingWorkspaceCreated">—</dd></div>
+            </dl>
+            <p id="inspectorTrainingWorkspaceIdentifier" class="inspector-training-identifier"></p>
+          </div>
+          <p id="inspectorTrainingWorkspaceEmpty" class="inspector-training-empty hidden">
+            从工作台选择一条训练记录，或新建训练任务。
+          </p>
+          <section class="inspector-training-requirements" aria-labelledby="inspectorTrainingRequirementsTitle">
+            <h3 id="inspectorTrainingRequirementsTitle">样本门槛</h3>
+            <p id="inspectorTrainingFeatureRequirement">相似照片：每个标签至少 2 个属于、2 个不属于。</p>
+            <p>快速与增强个人模型：每个标签至少 2 个已确认样本。</p>
+            <p class="secondary">训练结果不会覆盖人工标签；三种建议可以在待审核区同时出现。</p>
+          </section>
+        </section>
+        <section id="inspectorSlimmingWorkspace" class="inspector-slimming-workspace hidden"
+          aria-labelledby="inspectorSlimmingWorkspaceTitle">
+          <header>
+            <span class="inspector-slimming-symbol" aria-hidden="true">◫</span>
+            <div>
+              <h2 id="inspectorSlimmingWorkspaceTitle">图库瘦身</h2>
+              <p id="inspectorSlimmingWorkspaceDescription">
+                查找相同与相似照片；分析和清理均由这台 Mac 执行。
+              </p>
+            </div>
+          </header>
+          <dl id="inspectorSlimmingWorkspaceContent"
+            class="inspector-slimming-facts" aria-live="polite"></dl>
+          <p id="inspectorSlimmingWorkspacePending" class="inspector-slimming-pending hidden"></p>
+        </section>
         <div id="inspectorPlaceholder" class="inspector-placeholder">
-          <div class="placeholder-symbol" aria-hidden="true">ⓘ</div>
-          <p id="inspectorPlaceholderText">选择一张照片以查看详细信息和标签</p>
+          <div class="inspector-placeholder-intro">
+            <div class="placeholder-symbol" aria-hidden="true">ⓘ</div>
+            <h2 id="inspectorPlaceholderTitle">未选择照片</h2>
+            <p id="inspectorPlaceholderText">选择一张或多张照片后，可左键打上标签、右键取消标签。</p>
+          </div>
+          <section id="inspectorPlaceholderTagEditor" class="inspector-placeholder-tag-editor"
+            aria-labelledby="inspectorPlaceholderTagTitle">
+            <div class="section-heading">
+              <h3 id="inspectorPlaceholderTagTitle">人工标签</h3>
+              <span class="secondary">整理模式</span>
+            </div>
+            <div class="inspector-placeholder-tag-form" aria-label="选择照片后可新建并应用标签">
+              <input type="text" placeholder="新标签名称" disabled
+                aria-label="新标签名称，选择照片后可用">
+              <button class="button" type="button" disabled aria-label="选择照片后创建标签">＋</button>
+            </div>
+            <p class="inspector-tag-help">
+              选择照片后可打上或清除标签；当前仍可折叠分组、拖动或用 Option + 方向键整理顺序。
+            </p>
+            <div id="inspectorPlaceholderTags" class="tag-list"
+              aria-label="人工标签整理"></div>
+          </section>
         </div>
         <div id="selectionInspector" class="selection-inspector hidden">
           <header class="selection-inspector-heading">
@@ -757,6 +979,30 @@
           <div id="selectionInspectorTags" class="selection-tag-list"></div>
         </div>
         <div id="inspectorContent" class="inspector-content hidden">
+          <header id="inspectorSelectionHeading" class="inspector-single-heading">
+            <h2 id="inspectorSelectionTitle">已选择 1 张照片</h2>
+            <div class="inspector-single-actions" role="group" aria-label="所选项目工具">
+              <button id="inspectorFavoriteButton" class="button favorite-action write-action" type="button"
+                data-help-title="加入红心"
+                data-help-detail="把当前照片加入全 App 共享的红心收藏。">
+                <span id="inspectorFavoriteButtonIcon" aria-hidden="true">♥</span>
+                <span id="inspectorFavoriteButtonLabel">加入红心</span>
+              </button>
+              <button id="inspectorUnfavoriteButton" class="button write-action" type="button"
+                data-help-title="取消红心"
+                data-help-detail="从全 App 共享的红心收藏中移除当前照片。">
+                <span aria-hidden="true">♡</span> <span>取消红心</span>
+              </button>
+              <button id="inspectorDeleteButton" class="button button-danger write-action" type="button"
+                data-help-title="删除"
+                data-help-detail="打开 Mac 原生删除确认；文件夹原始媒体会永久删除，Apple Photos 项进入系统最近删除。">
+                <span aria-hidden="true">⌫</span><span id="inspectorDeleteButtonLabel">删除</span>
+              </button>
+            </div>
+            <p id="inspectorDeleteHint" class="secondary inspector-delete-hint">
+              文件夹原始媒体将永久删除；Apple Photos 项进入系统“最近删除”。
+            </p>
+          </header>
           <div class="preview-wrap">
             <img id="previewPlaceholderImage" class="hidden" alt="" aria-hidden="true">
             <img id="previewImage" alt="">
@@ -819,27 +1065,16 @@
               <h2 id="assetFileName">未命名照片</h2>
               <dl id="assetMetadata" class="metadata-list"></dl>
               <div class="inspector-source-actions">
-                <button id="inspectorFavoriteButton" class="button favorite-action write-action" type="button">
-                  <span id="inspectorFavoriteButtonIcon" aria-hidden="true">♡</span>
-                  <span id="inspectorFavoriteButtonLabel">加入红心</span>
-                </button>
                 <button id="openOriginalButton" class="button button-primary source-action" type="button">
                   <span id="openOriginalButtonIcon" aria-hidden="true">↗</span>
                   <span id="openOriginalButtonLabel">在 Mac 上打开原图</span>
                 </button>
-                <button id="inspectorDeleteButton"
-                  class="button button-danger write-action" type="button">
-                  <span aria-hidden="true">⌫</span><span id="inspectorDeleteButtonLabel">删除</span>
-                </button>
                 <p id="openOriginalHint" class="secondary">以只读方式在运行 ImageAll 的这台 Mac 上打开</p>
-                <p id="inspectorDeleteHint" class="secondary inspector-delete-hint">
-                  文件夹原始媒体将永久删除；Apple Photos 项进入系统“最近删除”。
-                </p>
               </div>
             </section>
             <section class="inspector-section tag-section">
               <div class="section-heading">
-                <h3>标签</h3>
+                <h3>人工标签</h3>
                 <div class="section-heading-actions">
                   <span id="tagSummary" class="secondary"></span>
                 </div>
@@ -956,6 +1191,12 @@
           <strong>正在汇总图库…</strong>
           <span>只读取 ImageAll 目录库，不访问原照片。</span>
           <button id="retryGalleryOverviewButton" class="button hidden" type="button">重试</button>
+        </section>
+
+        <section id="galleryOverviewEmpty" class="gallery-overview-empty-state hidden" role="status">
+          <span class="gallery-overview-empty-state-icon" aria-hidden="true">◫</span>
+          <strong>图库还没有内容</strong>
+          <p>连接来源并完成索引后，这里会显示照片、视频、来源与标签统计。</p>
         </section>
 
         <div id="galleryOverviewBody" class="gallery-overview-body hidden">
@@ -1204,14 +1445,28 @@
         </div>
         <div id="reviewThumbnailLayoutControls" class="review-thumbnail-layout-controls hidden"
           role="group" aria-label="待审核缩略图显示">
-          <button id="reviewThumbnailAspectButton" class="button button-plain review-thumbnail-aspect-button"
-            type="button" aria-pressed="false" title="完整显示媒体宽高比">适应</button>
-          <label class="review-grid-density-control" title="调整待审核建议网格缩略图大小">
-            <span aria-hidden="true">▦</span>
-            <input id="reviewGridDensitySlider" type="range" min="0" max="8" step="1" value="4"
-              aria-label="待审核缩略图大小">
-            <span aria-hidden="true">▦</span>
-          </label>
+          <button id="reviewThumbnailAspectButton"
+            class="button button-plain thumbnail-aspect-button review-thumbnail-aspect-button"
+            type="button" data-aspect-mode="square" aria-label="缩略图比例：正方形"
+            title="缩略图比例：正方形"
+            data-help-detail="当前缩略图为正方形。点击后，仅手动生成过原比例缓存的照片和视频会完整显示；其余项目保持正方形。">
+            <span class="thumbnail-aspect-icon" aria-hidden="true"></span>
+            <span class="thumbnail-aspect-label">正方形</span>
+          </button>
+          <div class="review-grid-density-control">
+            <button id="reviewGridDensityButton"
+              class="button button-plain review-grid-density-button" type="button"
+              aria-haspopup="menu" aria-expanded="false"
+              aria-controls="reviewGridDensityPopover" aria-label="缩略图大小：标准"
+              title="缩略图大小：标准">
+              <span aria-hidden="true">▦</span>
+              <span id="reviewGridDensityButtonLabel">标准</span>
+              <span aria-hidden="true">⌄</span>
+            </button>
+          </div>
+          <section id="reviewGridDensityPopover"
+            class="popover grid-density-popover hidden" role="menu"
+            aria-label="待审核缩略图大小"></section>
         </div>
         <button id="reviewSelectAllButton"
           class="button button-plain workspace-select-all-button hidden" type="button">
@@ -1334,8 +1589,46 @@
           <p>从左侧选择一项建议</p>
         </div>
         <div id="reviewDetail" class="review-detail hidden">
+          <header class="inspector-single-heading review-inspector-selection-heading">
+            <h2 id="reviewInspectorSelectionTitle">已选择 1 张照片</h2>
+            <div class="inspector-single-actions" role="group" aria-label="审核所选项目工具">
+              <button id="reviewInspectorFavoriteButton"
+                class="button favorite-action write-action" type="button"
+                data-help-title="加入红心"
+                data-help-detail="把审核队列中的全部所选照片加入全 App 共享的红心收藏。">
+                <span aria-hidden="true">♥</span><span>加入红心</span>
+              </button>
+              <button id="reviewInspectorUnfavoriteButton"
+                class="button write-action" type="button"
+                data-help-title="取消红心"
+                data-help-detail="从全 App 共享的红心收藏中移除审核队列中的全部所选照片。">
+                <span aria-hidden="true">♡</span><span>取消红心</span>
+              </button>
+              <button id="reviewInspectorDeleteButton"
+                class="button button-danger write-action" type="button"
+                data-help-title="删除"
+                data-help-detail="打开 Mac 原生删除确认；文件夹原始媒体会永久删除，Apple Photos 项进入系统最近删除。">
+                <span aria-hidden="true">⌫</span><span id="reviewInspectorDeleteButtonLabel">删除</span>
+              </button>
+            </div>
+            <p id="reviewInspectorActionStatus"
+              class="secondary inspector-delete-hint" role="status">
+              文件夹原始媒体将永久删除；Apple Photos 项进入系统“最近删除”。
+            </p>
+          </header>
           <div class="review-preview-wrap">
             <img id="reviewPreviewImage" alt="">
+            <div id="reviewCloudPreviewRecovery"
+              class="cloud-preview-recovery review-cloud-preview-recovery hidden" role="status">
+              <span id="reviewCloudPreviewIcon" class="cloud-preview-icon" aria-hidden="true">☁︎</span>
+              <strong id="reviewCloudPreviewTitle">此照片仅存储在 iCloud</strong>
+              <p id="reviewCloudPreviewMessage">仅在你明确操作后，才会从 iCloud 获取这张照片的标准预览。</p>
+              <progress id="reviewCloudPreviewProgress" class="hidden" max="1" value="0"
+                aria-label="审核照片 iCloud 预览下载进度"></progress>
+              <button id="reviewCloudPreviewButton" class="button button-primary" type="button">
+                从 iCloud 获取预览
+              </button>
+            </div>
             <button id="reviewOpenLightboxButton" class="preview-overlay-button" type="button" title="全屏查看" aria-label="全屏查看">⛶</button>
           </div>
           <div class="review-info">
@@ -1361,6 +1654,50 @@
               <kbd>U</kbd><span>稍后</span>
             </button>
           </div>
+          <section class="review-inspector-section" aria-labelledby="reviewMetadataTitle">
+            <div class="section-heading">
+              <h3 id="reviewMetadataTitle">信息</h3>
+              <span id="reviewMetadataState" class="secondary">正在读取…</span>
+            </div>
+            <dl id="reviewAssetMetadata" class="metadata-list"></dl>
+            <div class="inspector-source-actions">
+              <button id="reviewOpenOriginalButton"
+                class="button button-primary source-action" type="button">
+                <span id="reviewOpenOriginalButtonIcon" aria-hidden="true">↗</span>
+                <span id="reviewOpenOriginalButtonLabel">在 Mac 上打开原图</span>
+              </button>
+              <p id="reviewOpenOriginalHint" class="secondary">
+                以只读方式在运行 ImageAll 的这台 Mac 上打开
+              </p>
+            </div>
+          </section>
+          <section class="review-inspector-section tag-section"
+            aria-labelledby="reviewTagsTitle">
+            <div class="section-heading">
+              <h3 id="reviewTagsTitle">人工标签</h3>
+              <span id="reviewTagSummary" class="secondary"></span>
+            </div>
+            <form id="reviewInlineTagForm" class="inspector-inline-tag-form"
+              aria-label="新建标签并应用到审核选择">
+              <input id="reviewInlineTagName" type="text" autocomplete="off"
+                maxlength="80" placeholder="新标签名称"
+                aria-describedby="reviewInlineTagError">
+              <button id="reviewNewTagButton" class="button write-action" type="submit"
+                aria-label="创建标签并确认到审核选择" title="创建并确认（Return）">＋</button>
+            </form>
+            <p id="reviewInlineTagError" class="inspector-inline-tag-error hidden"
+              role="alert"></p>
+            <label class="inspector-tag-search">
+              <span aria-hidden="true">⌕</span>
+              <input id="reviewTagSearch" type="search" placeholder="搜索标签"
+                autocomplete="off">
+            </label>
+            <p class="inspector-tag-help">
+              点击标签确认，右键清除；按 X 拒绝，Delete 清除。多选时应用到全部所选项目。
+            </p>
+            <div id="reviewTags" class="tag-list" aria-live="polite"></div>
+            <p id="reviewTagEmpty" class="secondary hidden">尚无活动标签</p>
+          </section>
         </div>
       </main>
     </div>
@@ -1509,6 +1846,17 @@
           <section class="training-detail-card">
             <h3>训练过程</h3>
             <p id="trainingMetricsSummary" class="training-card-summary"></p>
+            <div id="trainingMetricHighlights" class="training-metric-highlights hidden"
+              aria-label="训练指标摘要"></div>
+            <div id="trainingLossChart" class="training-loss-chart hidden" role="img"
+              aria-label="训练损失曲线"></div>
+            <div id="trainingMetricEmpty" class="training-metric-empty">
+              <span class="training-metric-empty-icon" aria-hidden="true">⌁</span>
+              <div>
+                <strong>没有可绘制的训练曲线</strong>
+                <span>训练完成并记录逐轮损失后，曲线会显示在这里。</span>
+              </div>
+            </div>
             <details>
               <summary>查看原始训练指标</summary>
               <pre id="trainingMetricsJSON"></pre>
@@ -1541,46 +1889,86 @@
         </div>
       </div>
       <div class="slimming-controls">
-        <div id="slimmingWorkspaceTabs" class="toolbar-segmented" role="group" aria-label="图库瘦身页面">
-          <button type="button" data-slimming-view="analysis" aria-pressed="true">分析</button>
-          <button type="button" data-slimming-view="recycle">回收站</button>
-        </div>
         <div id="slimmingMediaKindTabs" class="toolbar-segmented" role="group" aria-label="瘦身媒体类型">
           <button type="button" data-slimming-media-kind="image" aria-pressed="true">照片</button>
           <button type="button" data-slimming-media-kind="video" aria-pressed="false">视频</button>
         </div>
-        <div id="slimmingThumbnailLayoutControls" class="slimming-thumbnail-layout-controls"
-          role="group" aria-label="瘦身缩略图显示">
-          <button id="slimmingThumbnailAspectButton" class="button button-compact" type="button"
-            aria-pressed="false" title="完整显示媒体宽高比">适应</button>
-          <label class="slimming-grid-density-control" title="调整瘦身缩略图大小">
-            <span aria-hidden="true">▦</span>
-            <input id="slimmingGridDensitySlider" type="range" min="0" max="8" step="1" value="4"
-              aria-label="瘦身缩略图大小">
-            <span aria-hidden="true">▦</span>
-          </label>
+        <div id="slimmingWorkspaceTabs" class="toolbar-segmented" role="group" aria-label="图库瘦身页面">
+          <button type="button" data-slimming-view="analysis" aria-pressed="true">分析</button>
+          <button type="button" data-slimming-view="recycle">回收站</button>
         </div>
-        <button id="slimmingNavigatorButton" class="icon-button slimming-navigator-button"
-          type="button" aria-pressed="true" aria-label="隐藏分析记录"
-          title="隐藏分析记录与候选分组，让媒体网格使用全部宽度">
-          <span aria-hidden="true">▤</span>
+        <button id="slimmingCatalogAnalyzeButton"
+          class="button button-primary write-action" type="button">
+          分析全部来源
+        </button>
+        <button id="slimmingCatalogSourceButton"
+          class="button button-compact slimming-catalog-source-button" type="button"
+          aria-haspopup="menu" aria-expanded="false" aria-controls="slimmingCatalogSourcePopover">
+          <span aria-hidden="true">▱</span><span>读取来源…</span>
         </button>
         <button id="slimmingAnalysisOptionsButton"
           class="button button-compact slimming-analysis-options-button" type="button"
           aria-haspopup="dialog" aria-expanded="false" aria-controls="slimmingAnalysisOptionsPopover">
           <span aria-hidden="true">•••</span><span>分析选项</span>
         </button>
-        <button id="newSlimmingAnalysisButton" class="button button-primary write-action" type="button">
-          新分析…
-        </button>
         <button id="slimmingIdenticalCleanupButton"
           class="button button-danger write-action hidden" type="button">
           一键清理完全相同…
         </button>
+        <button id="slimmingNavigatorButton" class="icon-button slimming-navigator-button"
+          type="button" aria-pressed="true" aria-label="隐藏分析记录"
+          title="隐藏分析记录与候选分组，让媒体网格使用全部宽度">
+          <span aria-hidden="true">▤</span>
+        </button>
+        <div id="slimmingThumbnailLayoutControls" class="slimming-thumbnail-layout-controls"
+          role="group" aria-label="瘦身缩略图显示">
+          <button id="slimmingThumbnailAspectButton"
+            class="button button-compact thumbnail-aspect-button" type="button"
+            data-aspect-mode="square" aria-label="缩略图比例：正方形"
+            title="缩略图比例：正方形"
+            data-help-detail="当前缩略图为正方形。点击后，仅手动生成过原比例缓存的照片和视频会完整显示；其余项目保持正方形。">
+            <span class="thumbnail-aspect-icon" aria-hidden="true"></span>
+            <span class="thumbnail-aspect-label">正方形</span>
+          </button>
+          <div class="slimming-grid-density-control">
+            <button id="slimmingGridDensityButton"
+              class="button button-compact slimming-grid-density-button" type="button"
+              aria-haspopup="menu" aria-expanded="false"
+              aria-controls="slimmingGridDensityPopover" aria-label="缩略图大小：标准"
+              title="缩略图大小：标准">
+              <span aria-hidden="true">▦</span>
+              <span id="slimmingGridDensityButtonLabel">标准</span>
+              <span aria-hidden="true">⌄</span>
+            </button>
+          </div>
+          <section id="slimmingGridDensityPopover"
+            class="popover grid-density-popover hidden" role="menu"
+            aria-label="瘦身缩略图大小"></section>
+        </div>
         <button id="refreshSlimmingButton" class="icon-button" type="button" title="刷新分析结果"
           aria-label="刷新分析结果">↻</button>
       </div>
     </header>
+    <section id="slimmingCatalogSourcePopover"
+      class="popover slimming-catalog-source-popover hidden" role="menu"
+      aria-labelledby="slimmingCatalogSourceTitle">
+      <header class="slimming-analysis-options-heading">
+        <div>
+          <strong id="slimmingCatalogSourceTitle">分析来源</strong>
+          <span id="slimmingCatalogSourceSummary">正在读取当前可用来源…</span>
+        </div>
+        <button id="closeSlimmingCatalogSourceButton" class="icon-button" type="button"
+          aria-label="关闭分析来源">×</button>
+      </header>
+      <div class="slimming-catalog-source-actions" role="group" aria-label="批量选择分析来源">
+        <button id="selectAllSlimmingCatalogSourcesButton" class="button button-compact"
+          type="button">全选</button>
+        <button id="clearSlimmingCatalogSourcesButton" class="button button-compact"
+          type="button">清空选择</button>
+      </div>
+      <div id="slimmingCatalogSourceOptions" class="slimming-catalog-source-options"></div>
+      <p id="slimmingCatalogSourceError" class="form-error" role="alert"></p>
+    </section>
     <section id="slimmingAnalysisOptionsPopover"
       class="popover slimming-analysis-options-popover hidden" role="dialog"
       aria-labelledby="slimmingAnalysisOptionsTitle">
@@ -1592,6 +1980,38 @@
         <button id="closeSlimmingAnalysisOptionsButton" class="icon-button" type="button"
           aria-label="关闭分析选项">×</button>
       </header>
+      <section id="slimmingAnalysisScopeSection" class="slimming-analysis-scope-section"
+        aria-labelledby="slimmingAnalysisScopeTitle">
+        <div class="slimming-analysis-options-section-heading">
+          <div>
+            <strong id="slimmingAnalysisScopeTitle">其他分析范围</strong>
+            <span>与 Mac 端相同，冻结当前网页图库范围后交给这台 Mac。</span>
+          </div>
+        </div>
+        <div class="slimming-analysis-scope-actions">
+          <button id="slimmingCurrentFilterAnalysisButton" class="button write-action"
+            type="button">按当前筛选分析</button>
+          <button id="slimmingSeedAnalysisButton" class="button write-action hidden"
+            type="button">按种子查找</button>
+          <button id="openSlimmingSetupButton" class="button" type="button">
+            更多分析设置…
+          </button>
+        </div>
+      </section>
+      <section id="slimmingCurrentJobSection" class="slimming-current-job-section"
+        aria-labelledby="slimmingCurrentJobTitle">
+        <div class="slimming-analysis-options-section-heading">
+          <div>
+            <strong id="slimmingCurrentJobTitle">当前分析</strong>
+            <span id="slimmingCurrentJobSummary">尚未选择分析记录。</span>
+          </div>
+          <span id="slimmingCurrentJobState" class="slimming-current-job-state">—</span>
+        </div>
+        <div id="slimmingCurrentJobProgress" class="slimming-current-job-progress hidden"
+          aria-live="polite"></div>
+        <div id="slimmingCurrentJobActions" class="slimming-current-job-actions"
+          aria-label="当前分析任务操作"></div>
+      </section>
       <div id="slimmingAnalysisOptionsLoading" class="slimming-analysis-options-loading">
         <span class="spinner" aria-hidden="true"></span><span>正在读取来源状态…</span>
       </div>
@@ -2154,8 +2574,11 @@
               <h3>长期保留的 Photos 原图</h3>
               <strong id="photosOriginalsSize">—</strong>
               <p id="photosOriginalsEntries">— 条 ImageAll 副本</p>
+              <p id="photosOriginalsPolicy" class="storage-retention-policy">保留策略：默认长期保留，不自动过期或按容量淘汰；仅由你在这里手动清理。</p>
+              <p id="photosOriginalsBlocked" class="storage-action-note hidden" role="status">相同检测运行期间不能清理；暂停或完成后可操作。</p>
             </div>
-            <button id="clearPhotosOriginalsButton" class="button button-danger write-action" type="button">清理…</button>
+            <button id="clearPhotosOriginalsButton" class="button button-danger write-action"
+              type="button" aria-describedby="photosOriginalsPolicy photosOriginalsBlocked">清理…</button>
           </article>
         </section>
         <section class="storage-location-card">
@@ -2392,6 +2815,17 @@
     <div id="lightboxStage" class="lightbox-stage">
       <img id="lightboxImage" alt="" draggable="false">
       <video id="lightboxVideo" class="hidden" controls playsinline preload="metadata"></video>
+      <div id="lightboxCloudPreviewRecovery"
+        class="cloud-preview-recovery lightbox-cloud-preview-recovery hidden" role="status">
+        <span id="lightboxCloudPreviewIcon" class="cloud-preview-icon" aria-hidden="true">☁︎</span>
+        <strong id="lightboxCloudPreviewTitle">此照片仅存储在 iCloud</strong>
+        <p id="lightboxCloudPreviewMessage">仅在你明确操作后，才会从 iCloud 获取这张照片的标准预览。</p>
+        <progress id="lightboxCloudPreviewProgress" class="hidden" max="1" value="0"
+          aria-label="全屏照片 iCloud 预览下载进度"></progress>
+        <button id="lightboxCloudPreviewButton" class="button button-primary" type="button">
+          从 iCloud 获取预览
+        </button>
+      </div>
     </div>
     <button id="lightboxNextButton" class="lightbox-nav next" type="button" aria-label="下一张">›</button>
     <div id="lightboxReviewActions" class="lightbox-review-actions hidden" role="group"
