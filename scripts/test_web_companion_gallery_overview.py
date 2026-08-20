@@ -362,6 +362,88 @@ def main():
             "() => history.state?.imageAllWorkspace?.navigationLevel"
         ) == "workspace"
         assert overview_requests == command_overview_requests
+
+        page.locator("#refreshGalleryOverviewButton").focus()
+        shortcuts_history_length = page.evaluate("() => history.length")
+        shortcuts_overview_requests = overview_requests
+        page.keyboard.press("?")
+        page.locator("#shortcutDialog[open]").wait_for()
+        assert page.evaluate("() => history.length") in {
+            shortcuts_history_length,
+            shortcuts_history_length + 1,
+        }
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "keyboardShortcuts"
+        shortcut_bounds = page.locator("#shortcutDialog").bounding_box()
+        assert shortcut_bounds is not None
+        assert shortcut_bounds["x"] >= 0
+        assert shortcut_bounds["x"] + shortcut_bounds["width"] <= 390
+        assert shortcut_bounds["y"] >= 0
+        assert shortcut_bounds["y"] + shortcut_bounds["height"] <= 844
+        assert page.locator("#shortcutDialog dl").evaluate(
+            "node => node.scrollHeight > node.clientHeight"
+        )
+        page.screenshot(
+            path="/tmp/imageall-keyboard-shortcuts-overview-390.png",
+            full_page=True,
+        )
+        page.evaluate("() => history.back()")
+        page.locator("#shortcutDialog").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'refreshGalleryOverviewButton'"
+        )
+        page.evaluate("() => history.forward()")
+        page.locator("#shortcutDialog[open]").wait_for()
+        page.locator("#closeShortcutButton").click()
+        page.locator("#shortcutDialog").wait_for(state="hidden")
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "workspace"
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'refreshGalleryOverviewButton'"
+        )
+
+        page.keyboard.press("Meta+K")
+        page.locator("#commandPalette[open]").wait_for()
+        page.locator("#commandSearchInput").fill("快捷键")
+        page.locator('[data-command-id="shortcuts"]').click()
+        page.locator("#shortcutDialog[open]").wait_for()
+        assert page.locator("#commandPalette").is_hidden()
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "keyboardShortcuts"
+        page.keyboard.press("Escape")
+        page.locator("#shortcutDialog").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'refreshGalleryOverviewButton'"
+        )
+        assert overview_requests == shortcuts_overview_requests
+
+        page.locator("#closeGalleryOverviewButton").click()
+        page.locator("#galleryOverviewWorkspace").wait_for(state="hidden")
+        compact_shortcut_overview_requests = overview_requests
+        page.locator("#compactToolbarMenuButton").click()
+        page.locator("#compactToolbarMenu:not(.hidden)").wait_for()
+        page.locator(
+            '[data-compact-toolbar-target="shortcutButton"]'
+        ).click()
+        page.locator("#shortcutDialog[open]").wait_for()
+        assert page.locator("#compactToolbarMenu").is_hidden()
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "keyboardShortcuts"
+        page.evaluate("() => history.back()")
+        page.locator("#shortcutDialog").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'compactToolbarMenuButton'"
+        )
+        assert overview_requests == compact_shortcut_overview_requests
+        page.locator("#sidebarToggle").click()
+        page.locator("#sourceSidebar.open").wait_for()
+        page.locator("#galleryOverviewNavigationButton").click()
+        page.locator("#galleryOverviewWorkspace:not(.hidden)").wait_for()
+        page.locator("#galleryOverviewBody:not(.hidden)").wait_for()
         page.screenshot(path="/tmp/imageall-gallery-overview-synthetic.png", full_page=True)
 
         overview = {

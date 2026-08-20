@@ -1474,6 +1474,10 @@ const state = {
   commandPaletteBaseLevel: "workspace",
   commandPaletteHistoryRestoreFocus: true,
   commandPaletteOpening: false,
+  keyboardShortcutsReturnFocus: null,
+  keyboardShortcutsBaseLevel: "workspace",
+  keyboardShortcutsHistoryRestoreFocus: true,
+  keyboardShortcutsOpening: false,
   contextAssetID: null,
   contextSourceID: null,
   contextTagID: null,
@@ -1854,7 +1858,9 @@ function closeOverlays() {
   if (elements.commandPalette.open) {
     closeCommandPalette({ restoreFocus: false, checkpoint: false });
   }
-  if (elements.shortcutDialog.open) elements.shortcutDialog.close();
+  if (elements.shortcutDialog.open) {
+    closeKeyboardShortcuts({ restoreFocus: false, checkpoint: false });
+  }
   if (elements.newTagDialog.open) closeNewTagDialog();
   if (elements.tagManagerDialog.open) elements.tagManagerDialog.close();
   if (elements.confirmDialog.open) closeConfirmation({ restoreFocus: false });
@@ -1931,6 +1937,10 @@ function closeOverlays() {
   state.commandPaletteBaseLevel = "workspace";
   state.commandPaletteHistoryRestoreFocus = true;
   state.commandPaletteOpening = false;
+  state.keyboardShortcutsReturnFocus = null;
+  state.keyboardShortcutsBaseLevel = "workspace";
+  state.keyboardShortcutsHistoryRestoreFocus = true;
+  state.keyboardShortcutsOpening = false;
 }
 
 function persistentHelpControl(target) {
@@ -2354,6 +2364,7 @@ function workspaceHistoryEntry(route, context = null, navigationLevel = "workspa
   const safeNavigationLevel = [
     "suggestionThreshold",
     "generalSettings",
+    "keyboardShortcuts",
     "commandPalette",
     "toolbarMenu",
     "sidebar",
@@ -2371,6 +2382,13 @@ function workspaceHistoryEntry(route, context = null, navigationLevel = "workspa
 }
 
 function workspaceNavigationBaseLevel(navigationLevel, context = {}) {
+  if (navigationLevel === "keyboardShortcuts") {
+    return ["sidebar", "inspector", "lightbox"].includes(
+      context.keyboardShortcutsBaseLevel
+    )
+      ? context.keyboardShortcutsBaseLevel
+      : "workspace";
+  }
   if (["generalSettings", "suggestionThreshold"].includes(navigationLevel)) {
     return ["sidebar", "inspector", "lightbox"].includes(context.generalSettingsBaseLevel)
       ? context.generalSettingsBaseLevel
@@ -2429,6 +2447,7 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
   const current = activeWorkspaceHistoryEntry();
   const hasSuggestionThreshold = elements.suggestionThresholdDialog.open;
   const hasGeneralSettings = elements.generalSettingsDialog.open;
+  const hasKeyboardShortcuts = elements.shortcutDialog.open;
   const hasCommandPalette = elements.commandPalette.open;
   const hasToolbarMenu = compactToolbarMenuIsOpen();
   const hasSidebar = route === "gallery" && mobileSidebarOverlayIsOpen();
@@ -2436,6 +2455,11 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
     ? {
         ...(context || {}),
         generalSettingsBaseLevel: state.generalSettings.baseLevel,
+      }
+    : hasKeyboardShortcuts
+    ? {
+        ...(context || {}),
+        keyboardShortcutsBaseLevel: state.keyboardShortcutsBaseLevel,
       }
     : hasCommandPalette
     ? {
@@ -2457,6 +2481,10 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
     : hasGeneralSettings
     && (mode === "pushGeneralSettings" || current?.navigationLevel === "generalSettings")
     ? "generalSettings"
+    : hasKeyboardShortcuts
+    && (mode === "pushKeyboardShortcuts"
+      || current?.navigationLevel === "keyboardShortcuts")
+    ? "keyboardShortcuts"
     : hasCommandPalette
     && (mode === "pushCommandPalette" || current?.navigationLevel === "commandPalette")
     ? "commandPalette"
@@ -2480,6 +2508,7 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
   if ([
     "pushSuggestionThreshold",
     "pushGeneralSettings",
+    "pushKeyboardShortcuts",
     "pushCommandPalette",
     "pushToolbarMenu",
     "pushSidebar",
@@ -2765,6 +2794,7 @@ function closeVisibleWorkspaceOneLevel({ restoreFocus = true } = {}) {
 
 function closeAllWorkspacesToGallery({ restoreFocus = true } = {}) {
   closeGeneralSettings({ restoreFocus: false, checkpoint: false });
+  closeKeyboardShortcuts({ restoreFocus: false, checkpoint: false });
   closeCommandPalette({ restoreFocus: false, checkpoint: false });
   closeCompactToolbarMenu({ restoreFocus: false, checkpoint: false });
   closeMobileSidebar({ restoreFocus: false, checkpoint: false });
@@ -2803,6 +2833,11 @@ async function applyWorkspaceHistoryEntry(entry) {
         navigationLevel,
         context
       );
+      reconcileKeyboardShortcutsFromWorkspaceHistory(
+        target,
+        navigationLevel,
+        context
+      );
       await reconcileGeneralSettingsFromWorkspaceHistory(
         target,
         navigationLevel,
@@ -2828,6 +2863,11 @@ async function applyWorkspaceHistoryEntry(entry) {
         context
       );
       await reconcileCommandPaletteFromWorkspaceHistory(
+        "gallery",
+        navigationLevel,
+        context
+      );
+      reconcileKeyboardShortcutsFromWorkspaceHistory(
         "gallery",
         navigationLevel,
         context
@@ -2962,6 +3002,11 @@ async function applyWorkspaceHistoryEntry(entry) {
       context
     );
     await reconcileCommandPaletteFromWorkspaceHistory(
+      target,
+      activeEntry?.navigationLevel || "workspace",
+      context
+    );
+    reconcileKeyboardShortcutsFromWorkspaceHistory(
       target,
       activeEntry?.navigationLevel || "workspace",
       context
@@ -25931,6 +25976,11 @@ async function loadWorkspace({ restoreHistory = false } = {}) {
       restoreGalleryNavigationLevel,
       restoreEntry?.context || {}
     );
+    reconcileKeyboardShortcutsFromWorkspaceHistory(
+      "gallery",
+      restoreGalleryNavigationLevel,
+      restoreEntry?.context || {}
+    );
     await reconcileGeneralSettingsFromWorkspaceHistory(
       "gallery",
       restoreGalleryNavigationLevel,
@@ -26434,6 +26484,11 @@ function resetWorkspaceSessionState() {
   state.commandPaletteBaseLevel = "workspace";
   state.commandPaletteHistoryRestoreFocus = true;
   state.commandPaletteOpening = false;
+  closeKeyboardShortcuts({ restoreFocus: false, checkpoint: false });
+  state.keyboardShortcutsReturnFocus = null;
+  state.keyboardShortcutsBaseLevel = "workspace";
+  state.keyboardShortcutsHistoryRestoreFocus = true;
+  state.keyboardShortcutsOpening = false;
   state.sourceManagerReturnFocus = null;
   state.storageReturnFocus = null;
   clearTimeout(state.storageMaintenance.pollTimer);
@@ -27544,6 +27599,116 @@ async function reconcileCommandPaletteFromWorkspaceHistory(
   }
 }
 
+function keyboardShortcutsBaseLevelFromHistory(context = {}) {
+  return ["sidebar", "inspector", "lightbox"].includes(
+    context.keyboardShortcutsBaseLevel
+  )
+    ? context.keyboardShortcutsBaseLevel
+    : "workspace";
+}
+
+function replaceKeyboardShortcutsHistoryWithBase(baseLevel) {
+  if (!state.workspaceNavigation.initialized
+    || elements.appView.classList.contains("hidden")) return;
+  const current = activeWorkspaceHistoryEntry();
+  const route = visibleWorkspaceRoute();
+  if (current?.route !== route || current.navigationLevel !== "keyboardShortcuts") return;
+  const context = currentWorkspaceHistoryContext(route);
+  if (context && typeof context === "object") delete context.keyboardShortcutsBaseLevel;
+  const navigationLevel = visibleWorkspaceNavigationBaseLevel(route, baseLevel);
+  history.replaceState({
+    ...(history.state || {}),
+    [WORKSPACE_HISTORY_KEY]: workspaceHistoryEntry(route, context, navigationLevel),
+  }, "", location.href);
+}
+
+function openKeyboardShortcuts({
+  focus = true,
+  historyMode = "pushKeyboardShortcuts",
+  baseLevel = null,
+  returnFocus = null,
+} = {}) {
+  if (elements.shortcutDialog.open || state.keyboardShortcutsOpening
+    || elements.appView.classList.contains("hidden")) return;
+  state.keyboardShortcutsOpening = true;
+  try {
+    state.keyboardShortcutsReturnFocus = returnFocus
+      || (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    const current = activeWorkspaceHistoryEntry();
+    state.keyboardShortcutsBaseLevel = baseLevel
+      || workspaceNavigationBaseLevel(
+        current?.navigationLevel || "workspace",
+        current?.context || {}
+      );
+    elements.shortcutDialog.showModal();
+    if (historyMode !== "none") {
+      const route = visibleWorkspaceRoute();
+      recordWorkspaceHistory(route, currentWorkspaceHistoryContext(route), historyMode);
+    }
+    if (focus) restoreOverlayFocus(elements.closeShortcutButton);
+  } finally {
+    state.keyboardShortcutsOpening = false;
+  }
+}
+
+function closeKeyboardShortcuts({ restoreFocus = true, checkpoint = true } = {}) {
+  if (!elements.shortcutDialog.open) return;
+  const baseLevel = state.keyboardShortcutsBaseLevel;
+  const returnFocus = state.keyboardShortcutsReturnFocus;
+  state.keyboardShortcutsReturnFocus = null;
+  state.keyboardShortcutsBaseLevel = "workspace";
+  elements.shortcutDialog.close();
+  if (restoreFocus) {
+    const toolbarFallback = stableReturnFocusTarget(
+      elements.shortcutButton,
+      elements.commandButton
+    );
+    restoreOverlayFocus(stableReturnFocusTarget(returnFocus, toolbarFallback));
+  }
+  if (checkpoint) replaceKeyboardShortcutsHistoryWithBase(baseLevel);
+}
+
+function returnFromKeyboardShortcuts({ restoreFocus = true } = {}) {
+  if (!elements.shortcutDialog.open) return Promise.resolve();
+  state.keyboardShortcutsHistoryRestoreFocus = restoreFocus;
+  if (state.workspaceNavigation.pendingReturnPromise) {
+    return state.workspaceNavigation.pendingReturnPromise;
+  }
+  const current = activeWorkspaceHistoryEntry();
+  if (state.workspaceNavigation.initialized
+    && current?.route === visibleWorkspaceRoute()
+    && current.navigationLevel === "keyboardShortcuts") {
+    const pending = new Promise((resolve) => {
+      state.workspaceNavigation.pendingReturnResolve = resolve;
+    });
+    state.workspaceNavigation.pendingReturnPromise = pending;
+    history.back();
+    return pending;
+  }
+  closeKeyboardShortcuts({ restoreFocus });
+  state.keyboardShortcutsHistoryRestoreFocus = true;
+  return Promise.resolve();
+}
+
+function reconcileKeyboardShortcutsFromWorkspaceHistory(
+  route,
+  navigationLevel,
+  context = {}
+) {
+  const shouldOpen = navigationLevel === "keyboardShortcuts"
+    && route === visibleWorkspaceRoute();
+  if (shouldOpen) {
+    openKeyboardShortcuts({
+      historyMode: "none",
+      baseLevel: keyboardShortcutsBaseLevelFromHistory(context),
+    });
+  } else if (elements.shortcutDialog.open) {
+    const restoreFocus = state.keyboardShortcutsHistoryRestoreFocus;
+    closeKeyboardShortcuts({ restoreFocus, checkpoint: false });
+    state.keyboardShortcutsHistoryRestoreFocus = true;
+  }
+}
+
 async function navigateCommandToGallery({ focus = false } = {}) {
   const route = visibleWorkspaceRoute();
   const lightboxOpen = !elements.lightbox.classList.contains("hidden");
@@ -28170,6 +28335,7 @@ async function executeCommand(commandID) {
   const command = availableCommands().find((item) => item.id === commandID);
   if (!command || command.disabled) return;
   const contextRoute = commandContextRoute();
+  const commandReturnFocus = state.commandReturnFocus;
   await returnFromCommandPalette({ restoreFocus: false });
   if (commandID.startsWith("media:")) {
     await switchCommandMediaKind(commandID.slice(6));
@@ -28389,7 +28555,7 @@ async function executeCommand(commandID) {
     await submitSourceManagementAction("refreshAllFolderMutationAuthorizations");
     break;
   case "shortcuts":
-    elements.shortcutDialog.showModal();
+    openKeyboardShortcuts({ returnFocus: commandReturnFocus || elements.commandButton });
     break;
   default:
     break;
@@ -31514,7 +31680,7 @@ function bindEvents() {
   elements.commandButton.addEventListener("click", () => {
     void openCommandPalette();
   });
-  elements.shortcutButton.addEventListener("click", () => elements.shortcutDialog.showModal());
+  elements.shortcutButton.addEventListener("click", () => openKeyboardShortcuts());
   elements.compactToolbarMenuButton.addEventListener("click", toggleCompactToolbarMenu);
   elements.compactToolbarMenu.addEventListener("click", async (event) => {
     const item = event.target.closest("[data-compact-toolbar-target]");
@@ -31553,7 +31719,13 @@ function bindEvents() {
     items[next].focus({ preventScroll: true });
     items[next].scrollIntoView({ block: "nearest" });
   });
-  elements.closeShortcutButton.addEventListener("click", () => elements.shortcutDialog.close());
+  elements.closeShortcutButton.addEventListener("click", () => {
+    void returnFromKeyboardShortcuts();
+  });
+  elements.shortcutDialog.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    void returnFromKeyboardShortcuts();
+  });
   elements.commandSearchInput.addEventListener("input", () => {
     state.commandIndex = 0;
     renderCommandItems();
@@ -31933,6 +32105,14 @@ function bindEvents() {
       || compactToolbarOpen
       || mobileSidebarOpen
       || inspectorOverlayOpen;
+    if (!event.repeat && !event.metaKey && !event.ctrlKey && !event.altKey
+      && event.key === "?" && !isTextInputTarget(event.target)) {
+      event.preventDefault();
+      if (elements.shortcutDialog.open) return;
+      if (blockingDialogOpen || elements.commandPalette.open) return;
+      openKeyboardShortcuts();
+      return;
+    }
     if ((event.metaKey || event.ctrlKey) && event.key === ",") {
       event.preventDefault();
       if (elements.generalSettingsDialog.open) return;
@@ -32063,7 +32243,7 @@ function bindEvents() {
         return;
       }
       if (elements.shortcutDialog.open) {
-        elements.shortcutDialog.close();
+        void returnFromKeyboardShortcuts();
         return;
       }
       if (elements.newTagDialog.open) {
@@ -32450,9 +32630,6 @@ function bindEvents() {
       event.preventDefault();
       moveLibrarySelection(event.key, { extendRange: event.shiftKey });
       return;
-    }
-    if (event.key === "?") {
-      elements.shortcutDialog.showModal();
     }
   });
   document.addEventListener("visibilitychange", () => {

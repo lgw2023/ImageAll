@@ -8956,9 +8956,16 @@ html.split-resizing * {
 
 .shortcut-dialog {
   width: min(430px, calc(100vw - 28px));
+  height: min(640px, calc(100vh - 36px));
+  max-height: calc(100vh - 36px);
+  overflow: hidden;
 }
 
 .shortcut-dialog section {
+  box-sizing: border-box;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100%;
   padding: 18px;
 }
 
@@ -8975,8 +8982,12 @@ html.split-resizing * {
 
 .shortcut-dialog dl {
   display: grid;
+  align-content: start;
+  min-height: 0;
   gap: 0;
   margin: 13px 0 0;
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .shortcut-dialog dl > div {
@@ -8993,6 +9004,18 @@ html.split-resizing * {
 
 .shortcut-dialog dd {
   margin: 0;
+}
+
+@media (max-width: 520px) {
+  .shortcut-dialog {
+    width: calc(100vw - 16px);
+    height: min(640px, calc(100vh - 16px));
+    max-height: calc(100vh - 16px);
+  }
+
+  .shortcut-dialog section {
+    padding: 16px 14px;
+  }
 }
 
 .persistent-help {
