@@ -22,6 +22,7 @@ def main():
     submitted_actions = []
     active_request = None
     storage_reads_after_submit = 0
+    storage_reads = 0
     page_errors = []
     console_errors = []
     failed_resources = []
@@ -122,7 +123,8 @@ def main():
         )
 
         def route_storage_snapshot(route):
-            nonlocal storage_reads_after_submit, active_request
+            nonlocal storage_reads_after_submit, storage_reads, active_request
+            storage_reads += 1
             if active_request is not None:
                 storage_reads_after_submit += 1
                 completion_threshold = (
@@ -173,8 +175,23 @@ def main():
         page.route("**/v1/storage-maintenance/requests", route_storage_submit)
 
         page.goto(BASE_URL, wait_until="networkidle")
+        storage_history_length = page.evaluate("() => history.length")
         page.locator("#storageButton").click()
         page.locator("#storageContent:not(.hidden)").wait_for()
+        assert page.evaluate("() => history.length") in {
+            storage_history_length,
+            storage_history_length + 1,
+        }
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "storageMaintenance"
+        storage_reads_after_open = storage_reads
+        page.evaluate("() => history.back()")
+        page.locator("#storageDialog").wait_for(state="hidden")
+        page.wait_for_function("() => document.activeElement?.id === 'storageButton'")
+        page.evaluate("() => history.forward()")
+        page.locator("#storageDialog[open]").wait_for()
+        assert storage_reads == storage_reads_after_open
         assert page.locator("#previewCacheSize").inner_text() == "1.5 MB"
         assert "24 条" in page.locator("#previewCacheEntries").inner_text()
         assert page.locator("#photosOriginalsSize").inner_text() == "9 MB"
@@ -213,6 +230,17 @@ def main():
         preview_request_count = len(submitted_actions)
         page.locator("#clearPreviewCacheButton").click()
         page.locator("#confirmDialog[open]").wait_for()
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "confirmation"
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.context?.confirmationBaseLevel"
+        ) == "storageMaintenance"
+        storage_history_payload = page.evaluate(
+            "() => JSON.stringify(history.state?.imageAllWorkspace || null)"
+        )
+        assert "ImageAll-External" not in storage_history_payload
+        assert "清理预览缓存" not in storage_history_payload
         assert page.locator("#confirmDialogTitle").inner_text() == "清理预览缓存？"
         assert "不会删除原照片、人工标签" in page.locator(
             "#confirmDialogMessage"
@@ -221,10 +249,18 @@ def main():
         page.keyboard.press("Escape")
         page.locator("#confirmDialog").wait_for(state="hidden")
         assert page.locator("#storageDialog").is_visible()
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "storageMaintenance"
         assert len(submitted_actions) == preview_request_count
         page.wait_for_function(
             "() => document.activeElement?.id === 'clearPreviewCacheButton'"
         )
+        page.evaluate("() => history.forward()")
+        page.locator("#confirmDialog[open]").wait_for()
+        page.locator("#cancelConfirmButton").click()
+        page.locator("#confirmDialog").wait_for(state="hidden")
+        assert page.locator("#storageDialog").is_visible()
         page.locator("#clearPreviewCacheButton").click()
         page.locator("#confirmDialog[open]").wait_for()
         with page.expect_response(

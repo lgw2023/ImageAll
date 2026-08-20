@@ -35,6 +35,7 @@ def main():
     sample_requests = []
     source_actions = []
     source_requests = []
+    source_management_reads = [0]
     catalog_jobs = []
     catalog_job_fetches = [0]
     asset_requests = []
@@ -331,13 +332,14 @@ def main():
             fulfill_json(route, request)
 
         page.route("**/v1/source-management/requests", route_source_request)
-        page.route(
-            "**/v1/source-management",
-            lambda route: fulfill_json(
+        def route_source_management(route):
+            source_management_reads[0] += 1
+            fulfill_json(
                 route,
                 {"sources": sources, "canConnectPhotos": False, "requests": source_requests},
-            ),
-        )
+            )
+
+        page.route("**/v1/source-management", route_source_management)
         page.route(
             "**/v1/storage-maintenance",
             lambda route: fulfill_json(
@@ -1336,10 +1338,54 @@ def main():
             ".getAttribute('aria-current') === 'page'"
         )
 
+        source_manager_history_length = page.evaluate("() => history.length")
+        source_manager_asset_request_count = len(asset_requests)
         page.locator("#sourceManagerButton").click()
         page.locator("#sourceManagerList .source-manager-row").first.wait_for()
-        page.keyboard.press("Escape")
+        assert page.evaluate("() => history.length") in {
+            source_manager_history_length,
+            source_manager_history_length + 1,
+        }
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "sourceManager"
+        source_reads_after_open = source_management_reads[0]
+        page.evaluate("() => history.back()")
+        page.locator("#sourceManagerDialog").wait_for(state="hidden")
         assert page.evaluate("() => document.activeElement?.id") == "sourceManagerButton"
+        page.evaluate("() => history.forward()")
+        page.locator("#sourceManagerDialog[open]").wait_for()
+        assert source_management_reads[0] == source_reads_after_open
+        delete_button = page.locator(
+            '#sourceManagerList [data-source-action="delete"][data-source-id]'
+        ).first
+        delete_button.click()
+        page.locator("#confirmDialog[open]").wait_for()
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "confirmation"
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.context?.confirmationBaseLevel"
+        ) == "sourceManager"
+        source_history_payload = page.evaluate(
+            "() => JSON.stringify(history.state?.imageAllWorkspace || null)"
+        )
+        assert "Apple Photos" not in source_history_payload
+        assert "删除来源" not in source_history_payload
+        page.evaluate("() => history.back()")
+        page.locator("#confirmDialog").wait_for(state="hidden")
+        assert page.locator("#sourceManagerDialog").is_visible()
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "sourceManager"
+        page.evaluate("() => history.forward()")
+        page.locator("#confirmDialog[open]").wait_for()
+        page.locator("#cancelConfirmButton").click()
+        page.locator("#confirmDialog").wait_for(state="hidden")
+        page.keyboard.press("Escape")
+        page.locator("#sourceManagerDialog").wait_for(state="hidden")
+        assert page.evaluate("() => document.activeElement?.id") == "sourceManagerButton"
+        assert len(asset_requests) == source_manager_asset_request_count
 
         click_toolbar_action(page, "storageButton")
         page.locator("#storageContent:not(.hidden)").wait_for()
