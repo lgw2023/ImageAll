@@ -16053,6 +16053,7 @@ async function toggleLightboxFavorite() {
   const assetID = state.lightboxAssetID;
   const favorite = favoriteStateForAssetID(assetID);
   if (!assetID || !favorite || state.favoriteMutating) return;
+  const restoreFavoriteFocus = document.activeElement === elements.lightboxFavoriteButton;
   await applyFavoriteMutation([assetID], favorite.isFavorite !== true);
   if (elements.lightbox.classList.contains("hidden")) return;
 
@@ -16068,6 +16069,9 @@ async function toggleLightboxFavorite() {
     state.lightboxAssetID = fallbackID;
   }
   renderLightbox();
+  if (restoreFavoriteFocus && !elements.lightboxFavoriteButton.disabled) {
+    restoreOverlayFocus(elements.lightboxFavoriteButton);
+  }
 }
 
 function visibleFavoriteSyncCounts() {
@@ -31613,6 +31617,16 @@ function isInteractiveControlTarget(target) {
   return Boolean(control && !control.matches(".asset-card-main, .review-card-main"));
 }
 
+function lightboxControlOwnsKeyboardEvent(event) {
+  const target = event.target;
+  if (!(target instanceof Element)) return false;
+  const video = target.closest("video");
+  if (event.code === "Space") {
+    return Boolean(video) || isInteractiveControlTarget(target);
+  }
+  return Boolean(video) && ["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key);
+}
+
 function commandWorkspaceName(route = visibleWorkspaceRoute()) {
   return {
     gallery: state.mediaKind === "video" ? "视频图库" : "照片图库",
@@ -37321,6 +37335,7 @@ function bindEvents() {
       return;
     }
     if (lightboxOpen) {
+      if (lightboxControlOwnsKeyboardEvent(event)) return;
       if (lightboxMediaKind() !== "video"
         && !event.metaKey && !event.ctrlKey && !event.altKey) {
         if (["+", "="].includes(event.key)) {

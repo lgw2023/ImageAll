@@ -1475,17 +1475,24 @@ def main(*, inspector_actions_only=False):
         assert page.locator("#lightboxFavoriteButton").is_visible()
         assert page.locator("#lightboxFavoriteButton").is_enabled()
         assert page.locator("#lightboxFavoriteButton").get_attribute("data-favorite") == "false"
-        page.locator("#lightboxFavoriteButton").click()
+        page.locator("#lightboxFavoriteButton").focus()
+        page.keyboard.press("Space")
         page.wait_for_function(
             "() => document.querySelector('#lightboxFavoriteButton')?.dataset.favorite === 'true'"
         )
         assert not page.locator("#lightbox").evaluate("element => element.classList.contains('hidden')")
+        assert page.evaluate("() => document.activeElement?.id") == "lightboxFavoriteButton"
         assert submitted_favorites[-1]["assetIDs"] == [ASSET_IDS[0]]
         assert submitted_favorites[-1]["isFavorite"] is True
-        page.locator("#lightboxFavoriteButton").click()
+        page.screenshot(
+            path="/tmp/imageall-lightbox-space-button-focus.png",
+            full_page=True,
+        )
+        page.keyboard.press("Space")
         page.wait_for_function(
             "() => document.querySelector('#lightboxFavoriteButton')?.dataset.favorite === 'false'"
         )
+        assert not page.locator("#lightbox").evaluate("element => element.classList.contains('hidden')")
         assert submitted_favorites[-1]["isFavorite"] is False
         page.locator("#lightboxBackButton").click()
         page.locator("#lightbox").wait_for(state="hidden")

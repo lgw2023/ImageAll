@@ -3267,6 +3267,23 @@ def main():
         assert f"/v1/assets/{VIDEO_ID}/media?r=1" in page.locator("#lightboxVideo").get_attribute("src")
         assert page.locator("#lightboxImage").is_hidden()
         assert page.locator("#lightboxZoomControls").is_hidden()
+        page.locator("#lightboxVideo").focus()
+        assert page.evaluate(
+            """() => document.querySelector('#lightboxVideo').dispatchEvent(
+              new KeyboardEvent('keydown', {
+                key: ' ', code: 'Space', bubbles: true, cancelable: true,
+              })
+            )"""
+        )
+        assert page.evaluate(
+            """() => document.querySelector('#lightboxVideo').dispatchEvent(
+              new KeyboardEvent('keydown', {
+                key: 'ArrowRight', code: 'ArrowRight', bubbles: true, cancelable: true,
+              })
+            )"""
+        )
+        assert page.locator("#lightbox:not(.hidden)").is_visible()
+        assert page.evaluate("() => document.activeElement?.id") == "lightboxVideo"
         lightbox_mac_player = page.locator("#lightboxOpenOriginalButton")
         assert lightbox_mac_player.is_visible()
         assert lightbox_mac_player.is_enabled()
