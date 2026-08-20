@@ -1628,6 +1628,7 @@ const state = {
   jobsRestorable: false,
   jobsOpening: false,
   slimmingReturnFocus: null,
+  slimmingReturnTarget: null,
   worldMapReturnFocus: null,
   galleryOverviewReturnFocus: null,
   lightboxReturnFocus: null,
@@ -2085,6 +2086,7 @@ function closeOverlays() {
   state.reviewReturnFocus = null;
   state.trainingReturnFocus = null;
   state.slimmingReturnFocus = null;
+  state.slimmingReturnTarget = null;
   state.training.setup.returnFocus = null;
   state.training.setup.baseLevel = "workspace";
   state.training.setup.historyRestoreFocus = true;
@@ -4446,6 +4448,23 @@ function leaveIntegratedSlimmingForLibrary({ historyMode = "push" } = {}) {
   return true;
 }
 
+function slimmingSemanticReturnFocusTarget(target) {
+  if (!target || target.kind !== "workspaceNoticeAction") return null;
+  const noticeAction = elements.workspaceNoticeActions.querySelector(
+    `[data-workspace-notice-action-id="${CSS.escape(target.actionID || "")}"]`
+  );
+  if (noticeAction instanceof HTMLElement && noticeAction.getClientRects().length > 0) {
+    return noticeAction;
+  }
+  if (!target.sourceID) return null;
+  const source = elements.sourceList.querySelector(
+    `[data-source-id="${CSS.escape(target.sourceID)}"]`
+  );
+  return source instanceof HTMLElement && source.getClientRects().length > 0
+    ? source
+    : null;
+}
+
 function closeSlimmingWorkspace({ restoreFocus = true } = {}) {
   finishSlimmingMarqueeSelection();
   state.slimming.selectionMode = false;
@@ -4479,9 +4498,13 @@ function closeSlimmingWorkspace({ restoreFocus = true } = {}) {
   elements.slimmingWorkspace.classList.add("hidden");
   syncSlimmingPresentation();
   const returnFocus = state.slimmingReturnFocus;
+  const semanticReturnFocus = slimmingSemanticReturnFocusTarget(
+    state.slimmingReturnTarget
+  );
   state.slimmingReturnFocus = null;
+  state.slimmingReturnTarget = null;
   if (restoreFocus) restoreOverlayFocus(stableReturnFocusTarget(
-    returnFocus,
+    semanticReturnFocus || returnFocus,
     elements.slimmingNavigationButton
   ));
 }
@@ -4866,6 +4889,7 @@ async function openGalleryOverviewWorkspace({ historyMode = "push" } = {}) {
   elements.slimmingWorkspace.classList.add("hidden");
   syncSlimmingPresentation({ renderSurfaces: false });
   state.slimmingReturnFocus = null;
+  state.slimmingReturnTarget = null;
   elements.worldMapWorkspace.classList.add("hidden");
   state.worldMapReturnFocus = null;
   closeJobsPopover({ restoreFocus: false });
@@ -5358,6 +5382,7 @@ async function openWorldMapWorkspace({ historyMode = "push" } = {}) {
   elements.slimmingWorkspace.classList.add("hidden");
   syncSlimmingPresentation({ renderSurfaces: false });
   state.slimmingReturnFocus = null;
+  state.slimmingReturnTarget = null;
   closeJobsPopover({ restoreFocus: false });
   closeFilterPopover({ restoreFocus: false });
   if (elements.worldMapWorkspace.classList.contains("hidden")) {
@@ -9976,7 +10001,13 @@ async function performWorkspaceNoticeAction(actionID) {
       state.slimming.view = "recycle";
       state.slimming.recycle.sourceID = action.sourceID || "";
       state.slimming.recycle.searchText = "";
-      await openSlimmingWorkspace();
+      await openSlimmingWorkspace({
+        returnTarget: {
+          kind: "workspaceNoticeAction",
+          actionID,
+          sourceID: action.sourceID || null,
+        },
+      });
     }
   } catch (error) {
     if (generation === state.workspaceNotice.requestGeneration) {
@@ -21170,6 +21201,7 @@ async function openReviewWorkspace({
   elements.slimmingWorkspace.classList.add("hidden");
   syncSlimmingPresentation({ renderSurfaces: false });
   state.slimmingReturnFocus = null;
+  state.slimmingReturnTarget = null;
   closeJobsPopover({ restoreFocus: false });
   closeFilterPopover({ restoreFocus: false });
   if (!returnToTrainingRunID && elements.reviewWorkspace.classList.contains("hidden")) {
@@ -23238,6 +23270,7 @@ async function openTrainingWorkspace({
   elements.slimmingWorkspace.classList.add("hidden");
   syncSlimmingPresentation({ renderSurfaces: false });
   state.slimmingReturnFocus = null;
+  state.slimmingReturnTarget = null;
   closeJobsPopover({ restoreFocus: false });
   closeFilterPopover({ restoreFocus: false });
   if (elements.trainingWorkspace.classList.contains("hidden")) {
@@ -26809,7 +26842,7 @@ async function setSlimmingClusterReviewDisposition(clusterID, disposition) {
   }
 }
 
-async function openSlimmingWorkspace({ historyMode = "push" } = {}) {
+async function openSlimmingWorkspace({ historyMode = "push", returnTarget = null } = {}) {
   leaveIntegratedGalleryOverviewForLibrary({ historyMode: "none" });
   leaveIntegratedWorldMapForLibrary({ historyMode: "none" });
   elements.reviewWorkspace.classList.add("hidden");
@@ -26822,6 +26855,7 @@ async function openSlimmingWorkspace({ historyMode = "push" } = {}) {
   closeFilterPopover({ restoreFocus: false });
   if (elements.slimmingWorkspace.classList.contains("hidden")) {
     state.slimmingReturnFocus = document.activeElement;
+    state.slimmingReturnTarget = returnTarget;
   }
   if (matchMedia("(max-width: 720px)").matches
     && !state.slimming.inspectorCompactInitialized) {
@@ -30513,6 +30547,7 @@ function resetWorkspaceSessionState() {
   state.reviewReturnFocus = null;
   state.trainingReturnFocus = null;
   state.slimmingReturnFocus = null;
+  state.slimmingReturnTarget = null;
   state.worldMapReturnFocus = null;
   state.galleryOverview.snapshot = null;
   state.galleryOverview.loading = false;

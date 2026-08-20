@@ -1002,6 +1002,17 @@ def main():
         assert page.locator("#slimmingRecycleSourceSelect").input_value() == SOURCE_ID
         page.locator("#closeSlimmingButton").click()
         page.locator("#slimmingWorkspace.hidden").wait_for(state="attached")
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.workspaceNoticeActionId === 'openRecycleBin'"
+        )
+        page.evaluate("() => history.forward()")
+        page.locator("#slimmingWorkspace:not(.hidden)").wait_for()
+        assert recycle_queries[-1].get("sourceID") == [SOURCE_ID]
+        page.locator("#closeSlimmingButton").click()
+        page.locator("#slimmingWorkspace.hidden").wait_for(state="attached")
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.workspaceNoticeActionId === 'openRecycleBin'"
+        )
 
         # A delete initiated from Web can fail after Mac approval when unresolved
         # recycle entries still exist. The terminal source request must immediately
