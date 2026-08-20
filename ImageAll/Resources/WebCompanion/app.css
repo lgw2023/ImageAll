@@ -15364,3 +15364,123 @@ button.world-map-place-candidate:focus-visible {
     justify-content: center;
   }
 }
+
+/* Match macOS Increase Contrast without changing the established layout. */
+@media (prefers-contrast: more) {
+  :root {
+    --control: rgba(255, 255, 255, 0.98);
+    --control-hover: #fff;
+    --secondary: #3a3a3c;
+    --tertiary: #5a5a5f;
+    --separator: rgba(60, 60, 67, 0.52);
+    --selection: rgba(0, 122, 255, 0.3);
+    --shadow: 0 14px 42px rgba(0, 0, 0, 0.24);
+  }
+
+  .world-map-workspace {
+    --map-border: rgba(71, 91, 79, 0.72);
+    --map-secondary: #41564a;
+  }
+
+  .world-map-location-dialog {
+    --location-border: rgba(71, 91, 79, 0.72);
+    --location-secondary: #41564a;
+  }
+
+  .world-map-place-dialog {
+    --place-border: rgba(71, 91, 79, 0.72);
+    --place-secondary: #41564a;
+  }
+
+  button:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible,
+  [role="menuitem"]:focus-visible,
+  [role="option"]:focus-visible {
+    outline: 3px solid var(--accent);
+    outline-offset: 3px;
+  }
+}
+
+@media (prefers-color-scheme: dark) and (prefers-contrast: more) {
+  :root {
+    --control: rgba(72, 72, 74, 0.96);
+    --control-hover: #545456;
+    --secondary: #d1d1d6;
+    --tertiary: #aeaeb2;
+    --separator: rgba(235, 235, 245, 0.48);
+    --selection: rgba(10, 132, 255, 0.38);
+  }
+
+  .world-map-workspace,
+  .world-map-location-dialog,
+  .world-map-place-dialog {
+    --map-border: rgba(197, 216, 204, 0.72);
+    --map-secondary: #d4ded8;
+    --location-border: rgba(197, 216, 204, 0.72);
+    --location-secondary: #d4ded8;
+    --place-border: rgba(197, 216, 204, 0.72);
+    --place-secondary: #d4ded8;
+  }
+}
+
+/* Let Windows High Contrast and browser forced-color modes replace decorative
+   materials with semantic system colors while retaining selection and focus. */
+@media (forced-colors: active) {
+  :root {
+    --accent: Highlight;
+    --accent-soft: Highlight;
+    --green: CanvasText;
+    --red: CanvasText;
+    --orange: CanvasText;
+    --window: Canvas;
+    --content: Canvas;
+    --sidebar: Canvas;
+    --inspector: Canvas;
+    --control: ButtonFace;
+    --control-hover: ButtonFace;
+    --text: CanvasText;
+    --secondary: CanvasText;
+    --tertiary: GrayText;
+    --separator: ButtonBorder;
+    --selection: Highlight;
+    --shadow: none;
+  }
+
+  *,
+  *::before,
+  *::after {
+    box-shadow: none !important;
+    text-shadow: none !important;
+  }
+
+  button,
+  input,
+  select,
+  textarea,
+  [role="button"],
+  [role="menuitem"],
+  [role="option"] {
+    forced-color-adjust: auto;
+  }
+
+  button:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible,
+  [role="menuitem"]:focus-visible,
+  [role="option"]:focus-visible {
+    outline: 3px solid Highlight !important;
+    outline-offset: 3px;
+  }
+
+  .lightbox,
+  .lightbox-stage,
+  .toast,
+  .persistent-help,
+  .context-menu {
+    background: Canvas;
+    color: CanvasText;
+  }
+}

@@ -358,6 +358,98 @@ def main():
         assert page.locator("#currentSourceRefreshLabel").inner_text() == "立即重扫"
         assert page.locator("#refreshButton").get_attribute("aria-label") == "重新读取网页数据"
 
+        page.emulate_media(contrast="more")
+        page.wait_for_timeout(200)
+        assert page.evaluate("() => matchMedia('(prefers-contrast: more)').matches") is True
+        contrast_presentation = page.evaluate(
+            """() => {
+              const root = getComputedStyle(document.documentElement);
+              const command = document.querySelector('#commandButton');
+              command.focus();
+              const focused = getComputedStyle(command);
+              return {
+                separator: root.getPropertyValue('--separator').trim(),
+                selection: root.getPropertyValue('--selection').trim(),
+                outlineWidth: focused.outlineWidth,
+                outlineStyle: focused.outlineStyle,
+              };
+            }"""
+        )
+        assert contrast_presentation == {
+            "separator": "rgba(60, 60, 67, 0.52)",
+            "selection": "rgba(0, 122, 255, 0.3)",
+            "outlineWidth": "3px",
+            "outlineStyle": "solid",
+        }, contrast_presentation
+        page.screenshot(path="/tmp/imageall-increased-contrast.png", full_page=True)
+
+        page.emulate_media(color_scheme="dark", contrast="more")
+        page.wait_for_timeout(200)
+        dark_contrast_presentation = page.evaluate(
+            """() => {
+              const root = getComputedStyle(document.documentElement);
+              const action = getComputedStyle(document.querySelector('#worldMapButton'));
+              const icon = getComputedStyle(document.querySelector('#jobsButton .library-toolbar-icon'));
+              return {
+                separator: root.getPropertyValue('--separator').trim(),
+                selection: root.getPropertyValue('--selection').trim(),
+                secondary: root.getPropertyValue('--secondary').trim(),
+                control: root.getPropertyValue('--control').trim(),
+                actionBackground: action.backgroundColor,
+                actionColor: action.color,
+                iconColor: icon.color,
+              };
+            }"""
+        )
+        assert dark_contrast_presentation == {
+            "separator": "rgba(235, 235, 245, 0.48)",
+            "selection": "rgba(10, 132, 255, 0.38)",
+            "secondary": "#d1d1d6",
+            "control": "rgba(72, 72, 74, 0.96)",
+            "actionBackground": "rgba(72, 72, 74, 0.96)",
+            "actionColor": "rgb(245, 245, 247)",
+            "iconColor": "rgb(209, 209, 214)",
+        }, dark_contrast_presentation
+        page.screenshot(path="/tmp/imageall-increased-contrast-dark.png", full_page=True)
+
+        page.emulate_media(
+            color_scheme="light",
+            contrast="no-preference",
+            forced_colors="active",
+        )
+        page.wait_for_timeout(200)
+        assert page.evaluate("() => matchMedia('(forced-colors: active)').matches") is True
+        forced_color_presentation = page.evaluate(
+            """() => {
+              const root = getComputedStyle(document.documentElement);
+              const command = document.querySelector('#commandButton');
+              command.focus();
+              const focused = getComputedStyle(command);
+              return {
+                window: root.getPropertyValue('--window').trim(),
+                text: root.getPropertyValue('--text').trim(),
+                separator: root.getPropertyValue('--separator').trim(),
+                outlineWidth: focused.outlineWidth,
+                outlineStyle: focused.outlineStyle,
+                boxShadow: focused.boxShadow,
+              };
+            }"""
+        )
+        assert forced_color_presentation == {
+            "window": "Canvas",
+            "text": "CanvasText",
+            "separator": "ButtonBorder",
+            "outlineWidth": "3px",
+            "outlineStyle": "solid",
+            "boxShadow": "none",
+        }, forced_color_presentation
+        page.screenshot(path="/tmp/imageall-forced-colors.png", full_page=True)
+        page.emulate_media(
+            color_scheme="light",
+            contrast="no-preference",
+            forced_colors="none",
+        )
+
         page.locator("#commandButton").hover()
         page.locator("#persistentHelp:not(.hidden)").wait_for(timeout=2_000)
         assert page.locator("#persistentHelpTitle").inner_text() == "命令（⌘K）"
