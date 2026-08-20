@@ -2515,14 +2515,18 @@ function stabilizeDismissedOverlayFocus(resolveTarget, dismissedContainer, isSti
   restore();
 }
 
-function galleryInspectorOverlayIsOpen() {
-  if (galleryOverviewLayoutQuery.matches
-    || visibleWorkspaceRoute() !== "gallery"
-    || !elements.inspector.classList.contains("open")) return false;
+function galleryInspectorHasContent() {
   return Boolean(
     (!state.selectionMode && state.selectedDetail)
       || (state.selectionMode && state.selectedAssetIDs.size)
   );
+}
+
+function galleryInspectorOverlayIsOpen() {
+  if (galleryOverviewLayoutQuery.matches
+    || visibleWorkspaceRoute() !== "gallery"
+    || !elements.inspector.classList.contains("open")) return false;
+  return true;
 }
 
 function checkpointGalleryInspectorHistory() {
@@ -2539,12 +2543,31 @@ function checkpointGalleryInspectorHistory() {
   }
 }
 
+function openGalleryInspectorOverlay({ returnFocus = null, focus = true } = {}) {
+  if (galleryOverviewLayoutQuery.matches || visibleWorkspaceRoute() !== "gallery") {
+    return false;
+  }
+  if (returnFocus instanceof HTMLElement) {
+    state.inspectorOverlayReturnFocus = returnFocus;
+  }
+  state.inspectorDismissed = false;
+  state.inspectorDismissedByUser = false;
+  elements.inspector.classList.add("open");
+  renderInspectorSurface();
+  renderInspectorVisibilityControl();
+  if (focus) requestAnimationFrame(() => {
+    elements.closeInspectorButton.focus({ preventScroll: true });
+  });
+  return true;
+}
+
 function closeInspectorOverlay({ restoreFocus = true, markDismissed = true } = {}) {
   state.inspectorDismissed = true;
   if (markDismissed) state.inspectorDismissedByUser = true;
   elements.inspector.classList.remove("open");
   const explicitReturnFocus = state.inspectorOverlayReturnFocus;
   state.inspectorOverlayReturnFocus = null;
+  renderInspectorVisibilityControl();
   const assetID = state.selectionMode && state.selectedAssetIDs.size === 1
     ? [...state.selectedAssetIDs][0]
     : state.selectedAssetID;
@@ -7110,20 +7133,7 @@ function renderLayoutPreferences() {
     ? "隐藏侧栏"
     : "显示侧栏";
   elements.sidebarVisibilityButton.title = state.layout.sidebarVisible ? "隐藏侧栏" : "显示侧栏";
-  elements.inspectorVisibilityButton.setAttribute(
-    "aria-pressed",
-    String(state.layout.inspectorVisible)
-  );
-  elements.inspectorVisibilityButton.setAttribute(
-    "aria-label",
-    state.layout.inspectorVisible ? "隐藏检查器" : "显示检查器"
-  );
-  elements.inspectorVisibilityLabel.textContent = state.layout.inspectorVisible
-    ? "隐藏检查器"
-    : "显示检查器";
-  elements.inspectorVisibilityButton.title = state.layout.inspectorVisible
-    ? "隐藏检查器"
-    : "显示检查器";
+  renderInspectorVisibilityControl();
   renderGridDensityControls();
   const originalAspect = state.layout.aspectMode === "original";
   elements.assetGrid.classList.toggle("original-aspect", originalAspect);
@@ -7179,6 +7189,35 @@ function setInspectorVisible(visible) {
   state.layout.inspectorVisible = visible;
   renderLayoutPreferences();
   persistWorkspacePreferences();
+}
+
+function inspectorVisibilityIsPresented() {
+  if (!galleryOverviewLayoutQuery.matches && visibleWorkspaceRoute() === "gallery") {
+    return galleryInspectorOverlayIsOpen();
+  }
+  return state.layout.inspectorVisible;
+}
+
+function renderInspectorVisibilityControl() {
+  const presented = inspectorVisibilityIsPresented();
+  const title = presented ? "隐藏检查器" : "显示检查器";
+  elements.inspectorVisibilityButton.setAttribute("aria-pressed", String(presented));
+  elements.inspectorVisibilityButton.setAttribute("aria-label", title);
+  elements.inspectorVisibilityLabel.textContent = title;
+  elements.inspectorVisibilityButton.title = title;
+}
+
+async function toggleInspectorVisibility(returnFocus = document.activeElement) {
+  if (!galleryOverviewLayoutQuery.matches && visibleWorkspaceRoute() === "gallery") {
+    if (galleryInspectorOverlayIsOpen()) {
+      await returnFromInspector();
+    } else {
+      openGalleryInspectorOverlay({ returnFocus });
+    }
+    renderInspectorVisibilityControl();
+    return;
+  }
+  setInspectorVisible(!state.layout.inspectorVisible);
 }
 
 function splitResizeDescriptor(kind) {
@@ -16212,12 +16251,8 @@ function setSelectionMode(enabled, { seedCurrent = false } = {}) {
 
 function openSelectionInspectorOverlay() {
   if (!state.selectionMode || !state.selectedAssetIDs.size) return;
-  state.inspectorOverlayReturnFocus = elements.selectionInspectorOverlayButton;
-  state.inspectorDismissed = false;
-  state.inspectorDismissedByUser = false;
-  renderInspectorSurface();
-  requestAnimationFrame(() => {
-    elements.closeInspectorButton.focus({ preventScroll: true });
+  openGalleryInspectorOverlay({
+    returnFocus: elements.selectionInspectorOverlayButton,
   });
 }
 
@@ -29007,15 +29042,15 @@ function reconcileGalleryInspectorFromWorkspaceHistory(
   { focus = true, restoreFocusOnClose = true } = {}
 ) {
   if (route !== "gallery") return;
-  const hasContent = Boolean(
-    (!state.selectionMode && state.selectedDetail)
-      || (state.selectionMode && state.selectedAssetIDs.size)
+  const shouldOpen = !galleryOverviewLayoutQuery.matches && (
+    navigationLevel === "inspector"
+      || (galleryInspectorHasContent() && navigationLevel === "lightbox")
   );
-  const shouldOpen = hasContent && ["inspector", "lightbox"].includes(navigationLevel);
   if (shouldOpen) {
     state.inspectorDismissed = false;
     state.inspectorDismissedByUser = false;
     elements.inspector.classList.add("open");
+    renderInspectorVisibilityControl();
     if (focus && navigationLevel === "inspector") {
       requestAnimationFrame(() => {
         elements.closeInspectorButton.focus({ preventScroll: true });
@@ -31026,6 +31061,15 @@ function compactToolbarSections() {
       icon: "✓⃝", label: "待审核建议", detail: "审核模型与个人建议",
     }),
   ].filter(Boolean);
+  const layoutActions = [
+    compactToolbarAction(elements.inspectorVisibilityButton, {
+      icon: "◧",
+      label: elements.inspectorVisibilityLabel.textContent.trim() || "显示检查器",
+      detail: galleryOverviewLayoutQuery.matches
+        ? "显示或隐藏右侧检查器"
+        : "打开或关闭当前图库检查器抽屉",
+    }),
+  ].filter(Boolean);
   const maintenanceActions = [
     compactToolbarAction(elements.toolbarConnectFolderButton, {
       icon: "▤＋",
@@ -31065,6 +31109,7 @@ function compactToolbarSections() {
   return [
     { label: "状态与撤销", actions: [...progressActions, ...undoActions] },
     { label: "工作区", actions: workspaceActions },
+    { label: "布局", actions: layoutActions },
     { label: "Mac 与数据", actions: maintenanceActions },
     { label: "设置", actions: utilityActions },
   ].filter((section) => section.actions.length);
@@ -31929,7 +31974,7 @@ function availableCommands() {
     {
       id: "toggleInspector",
       icon: "◧",
-      title: state.layout.inspectorVisible ? "隐藏检查器" : "显示检查器",
+      title: inspectorVisibilityIsPresented() ? "隐藏检查器" : "显示检查器",
       hint: "",
     },
     {
@@ -32505,7 +32550,7 @@ async function executeCommand(commandID) {
     setSidebarVisible(!state.layout.sidebarVisible);
     break;
   case "toggleInspector":
-    setInspectorVisible(!state.layout.inspectorVisible);
+    await toggleInspectorVisibility(commandReturnFocus || elements.commandButton);
     break;
   case "refreshAllSources":
     await executeSourceCommandAction("refreshAll", null, commandReturnFocus);
@@ -34699,7 +34744,7 @@ function bindEvents() {
     setSidebarVisible(!state.layout.sidebarVisible);
   });
   elements.inspectorVisibilityButton.addEventListener("click", () => {
-    setInspectorVisible(!state.layout.inspectorVisible);
+    void toggleInspectorVisibility(document.activeElement);
   });
   elements.sidebarResizeHandle.addEventListener("pointerdown", (event) => {
     beginSplitResize(event, "sidebar");

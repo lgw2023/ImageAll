@@ -4785,6 +4785,13 @@ def main(*, inspector_actions_only=False):
         assert page.locator("#selectionInspectorUnfavoriteButton").is_visible()
         assert page.locator("#selectionInspectorPrimary").is_visible()
         assert page.locator("#assetGrid .asset-card-favorite").first.is_visible()
+        if not page.locator("#inspector").evaluate(
+            "element => element.classList.contains('open')"
+        ):
+            page.locator("#selectionInspectorOverlayButton").click()
+            page.wait_for_function(
+                "() => document.querySelector('#inspector').classList.contains('open')"
+            )
         page.screenshot(path="/tmp/imageall-selection-tools-synthetic.png", full_page=True)
 
         page.locator("#closeInspectorButton").click()

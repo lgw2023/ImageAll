@@ -3227,8 +3227,15 @@ def main():
         page.locator("#closeLightboxButton").click()
 
         page.locator("#searchInput").fill("CLIP")
-        page.locator("#searchInput").press("Enter")
-        page.wait_for_function("() => state.searchText === 'CLIP' && !state.loadingAssets")
+        with page.expect_response("**/v1/assets?**"):
+            page.locator("#searchInput").press("Enter")
+        page.wait_for_function(
+            "() => state.searchText === 'CLIP' "
+            "&& !state.loadingAssets "
+            "&& !state.assetLoadPromise "
+            "&& !state.queuedAssetLoadOptions "
+            "&& state.assetRenderedQuerySignature === assetQuerySignature()"
+        )
         sort_button = page.locator("#sortButton")
         assert page.locator("#sortButtonLabel").text_content() == "文件名升序"
         assert sort_button.get_attribute("aria-label") == "排序：文件名升序"
@@ -3477,7 +3484,9 @@ def main():
             "() => !state.workspaceNavigation.applyingHistory "
             "&& !state.workspaceNavigation.pendingReturnPromise"
         )
-        assert len(asset_queries) == sort_history_queries
+        assert len(asset_queries) == sort_history_queries, (
+            asset_queries[sort_history_queries:]
+        )
         page.evaluate("() => history.forward()")
         page.locator("#sortPopover:not(.hidden)").wait_for()
         page.wait_for_function(
@@ -3487,7 +3496,9 @@ def main():
             "() => !state.workspaceNavigation.applyingHistory "
             "&& !state.workspaceNavigation.pendingReturnPromise"
         )
-        assert len(asset_queries) == sort_history_queries
+        assert len(asset_queries) == sort_history_queries, (
+            asset_queries[sort_history_queries:]
+        )
         sort_popover_bounds = page.locator("#sortPopover").bounding_box()
         assert sort_popover_bounds is not None
         assert sort_popover_bounds["x"] >= 8

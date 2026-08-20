@@ -469,12 +469,65 @@ def main():
             "node => node.classList.contains('open')"
         )
         assert page.evaluate("() => [...state.selectedAssetIDs].sort()") == inspector_selection
+        page.locator("#selectionInspectorOverlayButton").focus()
+        page.keyboard.press("Meta+k")
+        page.locator("#commandPalette[open]").wait_for()
+        inspector_command = page.locator('[data-command-id="toggleInspector"]')
+        assert "显示检查器" in inspector_command.inner_text()
+        inspector_command.click()
+        page.locator("#inspector.open").wait_for()
+        page.wait_for_function(
+            "() => history.state?.imageAllWorkspace?.navigationLevel === 'inspector'"
+        )
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'closeInspectorButton'"
+        )
+        assert page.evaluate("() => [...state.selectedAssetIDs].sort()") == inspector_selection
+
+        page.keyboard.press("Meta+k")
+        page.locator("#commandPalette[open]").wait_for()
+        inspector_command = page.locator('[data-command-id="toggleInspector"]')
+        assert "隐藏检查器" in inspector_command.inner_text()
+        inspector_command.click()
+        page.wait_for_function(
+            "() => !document.querySelector('#inspector').classList.contains('open')"
+        )
+        page.wait_for_function(
+            "() => history.state?.imageAllWorkspace?.navigationLevel === 'workspace'"
+        )
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'selectionInspectorOverlayButton'"
+        )
+        assert page.evaluate("() => [...state.selectedAssetIDs].sort()") == inspector_selection
         page.screenshot(
             path="/tmp/imageall-selection-primary-inspector.png",
             full_page=True,
         )
 
         page.locator("#cancelSelectionButton").click()
+        page.locator("#compactToolbarMenuButton").click()
+        page.locator("#compactToolbarMenu:not(.hidden)").wait_for()
+        compact_inspector = page.locator(
+            '[data-compact-toolbar-target="inspectorVisibilityButton"]'
+        )
+        assert "显示检查器" in compact_inspector.inner_text()
+        page.screenshot(
+            path="/tmp/imageall-compact-inspector-entry-900.png",
+            full_page=True,
+        )
+        compact_inspector.click()
+        page.locator("#inspector.open").wait_for()
+        assert page.locator("#inspectorPlaceholder").is_visible()
+        page.wait_for_function(
+            "() => history.state?.imageAllWorkspace?.navigationLevel === 'inspector'"
+        )
+        page.locator("#closeInspectorButton").click()
+        page.wait_for_function(
+            "() => !document.querySelector('#inspector').classList.contains('open')"
+        )
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'compactToolbarMenuButton'"
+        )
         page.locator("#selectionModeButton").click()
         cards = page.locator("#assetGrid .asset-card-main")
         cards.nth(0).click()
