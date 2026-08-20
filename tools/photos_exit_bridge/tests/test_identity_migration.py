@@ -63,6 +63,12 @@ class IdentityMigrationCLITests(unittest.TestCase):
                 tag_id=tag_id,
                 local_identifier=local_identifier,
             )
+            connection = sqlite3.connect(database)
+            connection.execute(
+                "UPDATE source SET state = 'disabled' WHERE id = ?", (folder_source_id,)
+            )
+            connection.commit()
+            connection.close()
 
             manifest = root / "manifest.jsonl"
             manifest.write_text(
@@ -115,6 +121,10 @@ class IdentityMigrationCLITests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("matched=1", result.stdout)
+            plan_report = json.loads(plan.read_text(encoding="utf-8"))
+            self.assertEqual(plan_report["schema_version"], 2)
+            self.assertGreater(plan_report["matches"][0]["modified_at_ns"], 0)
+            self.assertGreater(len(plan_report["matches"][0]["resource_id_hex"]), 0)
 
             migrated = root / "migrated.sqlite"
             result = self._run(
@@ -138,6 +148,18 @@ class IdentityMigrationCLITests(unittest.TestCase):
             self.assertEqual(asset["relative_path"], "assets/fixture/001-photo.jpg")
             self.assertIsNone(asset["photos_local_identifier"])
             self.assertEqual(asset["availability"], "available")
+            self.assertEqual(
+                connection.execute(
+                    "SELECT state FROM source WHERE id = ?", (folder_source_id,)
+                ).fetchone()[0],
+                "active",
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT state FROM source WHERE id = ?", (photos_source_id,)
+                ).fetchone()[0],
+                "disabled",
+            )
             self.assertEqual(
                 connection.execute(
                     "SELECT COUNT(*) FROM asset_tag_decision WHERE asset_id = ?",
@@ -166,12 +188,19 @@ class IdentityMigrationCLITests(unittest.TestCase):
                 1,
             )
             fingerprint = connection.execute(
-                "SELECT size_bytes, hex(sha256) FROM file_fingerprint WHERE asset_id = ?",
+                "SELECT size_bytes, modified_at_ns, hex(resource_id), hex(sha256) "
+                "FROM file_fingerprint WHERE asset_id = ?",
                 (asset_id,),
             ).fetchone()
             self.assertEqual(fingerprint[0], primary.stat().st_size)
             self.assertEqual(
-                fingerprint[1].lower(), hashlib.sha256(primary.read_bytes()).hexdigest()
+                fingerprint[1], plan_report["matches"][0]["modified_at_ns"]
+            )
+            self.assertEqual(
+                fingerprint[2].lower(), plan_report["matches"][0]["resource_id_hex"]
+            )
+            self.assertEqual(
+                fingerprint[3].lower(), hashlib.sha256(primary.read_bytes()).hexdigest()
             )
             connection.close()
 
@@ -187,6 +216,10 @@ class IdentityMigrationCLITests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("verified=1", result.stdout)
+            verification_report = json.loads(verification.read_text(encoding="utf-8"))
+            self.assertEqual(
+                verification_report["resource_identifier_verified_count"], 1
+            )
 
     def test_hash_mismatch_blocks_migration_without_modifying_input(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -445,6 +478,66 @@ class IdentityMigrationCLITests(unittest.TestCase):
             self.assertEqual(len(report["matches"]), 1)
             self.assertEqual(report["unresolved"], [])
             self.assertEqual(report["exported_without_catalog_identity_count"], 1)
+
+    def test_zero_resource_placeholder_without_imageall_identity_is_audited_not_blocked(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            database = root / "catalog.sqlite"
+            export_root, primary, manifest = self._make_complete_export(root, "known")
+            photos_source_id = str(uuid.uuid4())
+            folder_source_id = str(uuid.uuid4())
+            local_identifier = "known/L0/001"
+            self._create_catalog(
+                database,
+                photos_source_id=photos_source_id,
+                folder_source_id=folder_source_id,
+                asset_id=str(uuid.uuid4()),
+                tag_id=str(uuid.uuid4()),
+                local_identifier=local_identifier,
+            )
+            self._write_complete_manifest(
+                manifest,
+                local_identifier=local_identifier,
+                primary=primary,
+                export_root=export_root,
+            )
+            with manifest.open("a", encoding="utf-8") as stream:
+                stream.write(
+                    json.dumps(
+                        {
+                            "record_type": "asset",
+                            "schema_version": 1,
+                            "local_identifier": "not-in-imageall/L0/placeholder",
+                            "status": "ambiguous",
+                            "primary_resource_index": None,
+                            "resources": [],
+                        }
+                    )
+                    + "\n"
+                )
+
+            plan = root / "plan.json"
+            result = self._run(
+                "plan",
+                "--database",
+                str(database),
+                "--manifest",
+                str(manifest),
+                "--export-root",
+                str(export_root),
+                "--destination-source-id",
+                folder_source_id,
+                "--output",
+                str(plan),
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads(plan.read_text(encoding="utf-8"))
+            self.assertEqual(report["status"], "ready")
+            self.assertEqual(len(report["matches"]), 1)
+            self.assertEqual(report["unresolved"], [])
+            self.assertEqual(report["unexportable_without_catalog_identity_count"], 1)
 
     def test_missing_photos_tombstone_is_retained_without_blocking_available_asset(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -747,6 +840,82 @@ class IdentityMigrationCLITests(unittest.TestCase):
                 manifest["database_sha256"],
                 hashlib.sha256(snapshot_database.read_bytes()).hexdigest(),
             )
+
+    def test_verified_database_install_is_atomic_and_publishes_native_rollback(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "ImageAll"
+            catalog = root / "Catalog"
+            backups = root / "Backups"
+            catalog.mkdir(parents=True)
+            backups.mkdir()
+            live = catalog / "ImageAll.sqlite"
+            self._create_catalog(
+                live,
+                photos_source_id=str(uuid.uuid4()),
+                folder_source_id=str(uuid.uuid4()),
+                asset_id=str(uuid.uuid4()),
+                tag_id=str(uuid.uuid4()),
+                local_identifier="install/L0/001",
+            )
+            connection = sqlite3.connect(live)
+            connection.execute("CREATE TABLE grdb_migrations(identifier TEXT PRIMARY KEY)")
+            connection.executemany(
+                "INSERT INTO grdb_migrations VALUES (?)",
+                [("v001_create_catalog_core",), ("v002_add_stage_1_catalog_query_support",)],
+            )
+            connection.commit()
+            connection.close()
+            candidate = Path(temporary_directory) / "candidate.sqlite"
+            candidate.write_bytes(live.read_bytes())
+            connection = sqlite3.connect(candidate)
+            connection.execute("UPDATE source SET dirty_epoch = 7")
+            connection.commit()
+            connection.close()
+            verification = Path(temporary_directory) / "verification.json"
+            verification.write_text(
+                json.dumps(
+                    {
+                        "status": "passed",
+                        "database_sha256": hashlib.sha256(candidate.read_bytes()).hexdigest(),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            report_path = Path(temporary_directory) / "install-report.json"
+            result = self._run(
+                "install",
+                "--database",
+                str(candidate),
+                "--verification",
+                str(verification),
+                "--live-database",
+                str(live),
+                "--backups-directory",
+                str(backups),
+                "--app-version",
+                "photos-exit-test",
+                "--output",
+                str(report_path),
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            connection = sqlite3.connect(live)
+            self.assertEqual(
+                set(row[0] for row in connection.execute("SELECT dirty_epoch FROM source")),
+                {7},
+            )
+            connection.close()
+            previous = Path(report["previous_database"])
+            self.assertTrue(previous.is_file())
+            connection = sqlite3.connect(previous)
+            self.assertEqual(
+                set(row[0] for row in connection.execute("SELECT dirty_epoch FROM source")),
+                {0},
+            )
+            connection.close()
+            rollback = Path(report["rollback_snapshot_directory"])
+            self.assertTrue((rollback / "manifest.json").is_file())
+            self.assertTrue((rollback / "ImageAll.sqlite").is_file())
 
     def test_snapshot_converges_live_wal_database_to_standalone_copy(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

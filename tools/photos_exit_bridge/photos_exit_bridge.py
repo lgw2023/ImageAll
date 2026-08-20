@@ -8,11 +8,13 @@ Detailed identifiers are written only to explicitly requested JSON reports.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
 import shutil
 import sqlite3
+import subprocess
 import sys
 import time
 import uuid
@@ -20,8 +22,11 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
 
-PLAN_SCHEMA_VERSION = 1
+PLAN_SCHEMA_VERSION = 2
 MANIFEST_SCHEMA_VERSION = 1
+FOUNDATION_FINGERPRINT_HELPER = Path(__file__).with_name(
+    "foundation_file_fingerprints.swift"
+)
 ACTIVE_RECYCLE_STATES = ("pending", "recycled", "restoring", "purging")
 KNOWN_IMAGEALL_MIGRATIONS = tuple(
     [
@@ -246,6 +251,79 @@ def resolve_exported_file(export_root: Path, relative_path: str) -> Path:
     return resolved
 
 
+def foundation_file_fingerprints(paths: list[Path]) -> list[dict[str, Any]]:
+    """Read the exact file facts used by FoundationFolderFileResourceReader."""
+    if not paths:
+        return []
+    if not FOUNDATION_FINGERPRINT_HELPER.is_file():
+        raise BridgeError(
+            "foundation_helper_missing", "Foundation fingerprint helper is missing"
+        )
+    request = json.dumps({"paths": [str(path) for path in paths]})
+    try:
+        result = subprocess.run(
+            ["xcrun", "swift", str(FOUNDATION_FINGERPRINT_HELPER)],
+            input=request,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except OSError as error:
+        raise BridgeError(
+            "foundation_helper_unavailable", "Foundation fingerprint helper cannot run"
+        ) from error
+    if result.returncode != 0:
+        raise BridgeError(
+            "foundation_helper_failed", "Foundation fingerprint helper failed"
+        )
+    try:
+        response = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise BridgeError(
+            "foundation_helper_failed", "Foundation fingerprint helper returned invalid data"
+        ) from error
+    facts = response.get("facts") if isinstance(response, dict) else None
+    if not isinstance(facts, list) or len(facts) != len(paths):
+        raise BridgeError(
+            "foundation_helper_failed", "Foundation fingerprint result count is invalid"
+        )
+    validated: list[dict[str, Any]] = []
+    for fact in facts:
+        if not isinstance(fact, dict):
+            raise BridgeError(
+                "foundation_helper_failed", "Foundation fingerprint fact is invalid"
+            )
+        size_bytes = fact.get("size_bytes")
+        modified_at_ns = fact.get("modified_at_ns")
+        resource_id_hex = fact.get("resource_id_hex")
+        if (
+            not isinstance(size_bytes, int)
+            or size_bytes < 0
+            or not isinstance(modified_at_ns, int)
+            or not isinstance(resource_id_hex, str)
+            or not resource_id_hex
+            or len(resource_id_hex) % 2 != 0
+        ):
+            raise BridgeError(
+                "foundation_fingerprint_unavailable",
+                "Foundation did not provide a complete stable file fingerprint",
+            )
+        try:
+            bytes.fromhex(resource_id_hex)
+        except ValueError as error:
+            raise BridgeError(
+                "foundation_helper_failed", "Foundation resource identifier is invalid"
+            ) from error
+        validated.append(
+            {
+                "size_bytes": size_bytes,
+                "modified_at_ns": modified_at_ns,
+                "resource_id_hex": resource_id_hex.lower(),
+            }
+        )
+    return validated
+
+
 def primary_resource(asset: dict[str, Any]) -> dict[str, Any]:
     primary_index = asset.get("primary_resource_index")
     resources = asset.get("resources")
@@ -305,8 +383,11 @@ def create_plan(arguments: argparse.Namespace) -> int:
         ).fetchone()
         if destination is None or destination["kind"] != "folder":
             raise BridgeError("invalid_destination_source", "destination is not a folder source")
-        if destination["state"] != "active":
-            raise BridgeError("invalid_destination_source", "destination folder is not active")
+        if destination["state"] not in ("active", "disabled"):
+            raise BridgeError(
+                "invalid_destination_source",
+                "destination folder is neither active nor explicitly disabled",
+            )
         if destination["bookmark"] is None or len(destination["bookmark"]) == 0:
             raise BridgeError("invalid_destination_source", "destination bookmark is missing")
 
@@ -314,6 +395,7 @@ def create_plan(arguments: argparse.Namespace) -> int:
         unresolved: list[dict[str, str]] = []
         manifest_identifiers: set[str] = set()
         exported_without_catalog_identity_count = 0
+        unexportable_without_catalog_identity_count = 0
         for exported_asset in manifest_assets:
             identifier = exported_asset["local_identifier"]
             manifest_identifiers.add(identifier)
@@ -328,6 +410,12 @@ def create_plan(arguments: argparse.Namespace) -> int:
                     raise BridgeError(
                         "catalog_match_not_unique", "catalog Photos match is not unique"
                     )
+                if not rows and exported_asset.get("status") != "complete":
+                    # PhotoKit can return zero-resource placeholder assets. They have no
+                    # file identity to migrate and are irrelevant when ImageAll never
+                    # cataloged them, but keep an explicit audit count.
+                    unexportable_without_catalog_identity_count += 1
+                    continue
                 resource = primary_resource(exported_asset)
                 relative_path = resource["relative_path"]
                 exported_file = resolve_exported_file(export_root, relative_path)
@@ -400,6 +488,20 @@ def create_plan(arguments: argparse.Namespace) -> int:
             if row["photos_local_identifier"] not in manifest_identifiers
         )
 
+        exported_files = [
+            resolve_exported_file(export_root, match["relative_path"])
+            for match in matches
+        ]
+        foundation_facts = foundation_file_fingerprints(exported_files)
+        for match, fact in zip(matches, foundation_facts, strict=True):
+            if fact["size_bytes"] != match["byte_size"]:
+                raise BridgeError(
+                    "export_size_mismatch",
+                    "Foundation and manifest disagree about exported file size",
+                )
+            match["modified_at_ns"] = fact["modified_at_ns"]
+            match["resource_id_hex"] = fact["resource_id_hex"]
+
         matched_asset_ids = [match["asset_id"] for match in matches]
         plan = {
             "schema_version": PLAN_SCHEMA_VERSION,
@@ -408,11 +510,15 @@ def create_plan(arguments: argparse.Namespace) -> int:
             "manifest_sha256": sha256_file(manifest),
             "export_root": str(export_root),
             "destination_source_id": arguments.destination_source_id,
+            "destination_source_state": destination["state"],
             "destination_scan_generation": destination["scan_generation"],
             "status": "ready" if matches and not unresolved else "blocked",
             "matches": matches,
             "unresolved": unresolved,
             "exported_without_catalog_identity_count": exported_without_catalog_identity_count,
+            "unexportable_without_catalog_identity_count": (
+                unexportable_without_catalog_identity_count
+            ),
             "retained_unavailable_tombstone_count": retained_unavailable_tombstone_count,
             "preserved_fact_counts": fact_counts(connection, matched_asset_ids),
         }
@@ -547,6 +653,48 @@ def mark_source_similarity_stale(
     )
 
 
+def disable_photos_sources(
+    connection: sqlite3.Connection,
+    *,
+    source_ids: set[str],
+    now_ms: int,
+) -> None:
+    if not source_ids:
+        return
+    placeholders = ",".join("?" for _ in source_ids)
+    ordered_source_ids = sorted(source_ids)
+    connection.execute(
+        "UPDATE source SET state = 'disabled', updated_at_ms = ? "
+        f"WHERE kind = 'photos' AND id IN ({placeholders})",
+        (now_ms, *ordered_source_ids),
+    )
+    job_columns = table_columns(connection, "job")
+    required_job_columns = {
+        "source_id",
+        "kind",
+        "state",
+        "control_request",
+        "lease_owner",
+        "lease_expires_at_ms",
+        "updated_at_ms",
+    }
+    if not required_job_columns.issubset(job_columns):
+        return
+    connection.execute(
+        "UPDATE job SET state = 'cancelled', control_request = 'none', "
+        "lease_owner = NULL, lease_expires_at_ms = NULL, updated_at_ms = ? "
+        f"WHERE source_id IN ({placeholders}) AND kind = 'photos.reconcile.v1' "
+        "AND state IN ('pending', 'paused', 'retryableFailed')",
+        (now_ms, *ordered_source_ids),
+    )
+    connection.execute(
+        "UPDATE job SET control_request = 'cancel', updated_at_ms = ? "
+        f"WHERE source_id IN ({placeholders}) AND kind = 'photos.reconcile.v1' "
+        "AND state = 'running'",
+        (now_ms, *ordered_source_ids),
+    )
+
+
 def migrate_database(arguments: argparse.Namespace) -> int:
     database = Path(arguments.database).resolve()
     output = Path(arguments.output).resolve()
@@ -555,12 +703,25 @@ def migrate_database(arguments: argparse.Namespace) -> int:
     if sha256_file(database) != plan["database_sha256"]:
         raise BridgeError("database_changed", "database does not match migration plan")
     export_root = Path(plan["export_root"])
+    exported_files: list[Path] = []
     for match in plan["matches"]:
         exported_file = resolve_exported_file(export_root, match["relative_path"])
+        exported_files.append(exported_file)
         if exported_file.stat().st_size != match["byte_size"]:
             raise BridgeError("export_size_mismatch", "exported file size changed after planning")
         if sha256_file(exported_file) != match["sha256"]:
             raise BridgeError("export_hash_mismatch", "exported file changed after planning")
+    foundation_facts = foundation_file_fingerprints(exported_files)
+    for match, fact in zip(plan["matches"], foundation_facts, strict=True):
+        if (
+            fact["size_bytes"] != match["byte_size"]
+            or fact["modified_at_ns"] != match.get("modified_at_ns")
+            or fact["resource_id_hex"] != match.get("resource_id_hex")
+        ):
+            raise BridgeError(
+                "export_fingerprint_changed",
+                "Foundation file fingerprint changed after planning",
+            )
 
     backup_database(database, output)
     connection = sqlite3.connect(output)
@@ -570,9 +731,13 @@ def migrate_database(arguments: argparse.Namespace) -> int:
         require_catalog_schema(connection)
         now_ms = int(time.time() * 1000)
         affected_source_ids = {plan["destination_source_id"]}
+        photos_source_ids: set[str] = set()
         with connection:
-            for match in plan["matches"]:
+            for match, foundation_fact in zip(
+                plan["matches"], foundation_facts, strict=True
+            ):
                 affected_source_ids.add(match["photos_source_id"])
+                photos_source_ids.add(match["photos_source_id"])
                 current = connection.execute(
                     "SELECT source_id, locator_kind, photos_local_identifier, locator_state, "
                     "availability, content_revision FROM asset WHERE id = ?",
@@ -613,15 +778,17 @@ def migrate_database(arguments: argparse.Namespace) -> int:
                 connection.execute(
                     "INSERT INTO file_fingerprint "
                     "(asset_id, size_bytes, modified_at_ns, resource_id, sha256) "
-                    "VALUES (?, ?, ?, NULL, ?) "
+                    "VALUES (?, ?, ?, ?, ?) "
                     "ON CONFLICT(asset_id) DO UPDATE SET "
                     "size_bytes = excluded.size_bytes, "
-                    "modified_at_ns = excluded.modified_at_ns, resource_id = NULL, "
+                    "modified_at_ns = excluded.modified_at_ns, "
+                    "resource_id = excluded.resource_id, "
                     "sha256 = excluded.sha256",
                     (
                         match["asset_id"],
                         match["byte_size"],
                         match["modified_at_ns"],
+                        bytes.fromhex(foundation_fact["resource_id_hex"]),
                         bytes.fromhex(match["sha256"]),
                     ),
                 )
@@ -637,6 +804,11 @@ def migrate_database(arguments: argparse.Namespace) -> int:
             connection.execute(
                 f"UPDATE source SET {', '.join(assignments)} WHERE id = ? AND kind = 'folder'",
                 (now_ms, plan["destination_source_id"]),
+            )
+            disable_photos_sources(
+                connection,
+                source_ids=photos_source_ids,
+                now_ms=now_ms,
             )
             mark_source_similarity_stale(
                 connection,
@@ -667,12 +839,33 @@ def verify_database(arguments: argparse.Namespace) -> int:
     if output.exists():
         raise BridgeError("output_exists", "verification output already exists")
     plan = load_plan(Path(arguments.plan))
+    export_root = Path(plan["export_root"])
+    exported_files = [
+        resolve_exported_file(export_root, match["relative_path"])
+        for match in plan["matches"]
+    ]
+    foundation_facts = foundation_file_fingerprints(exported_files)
     connection = open_read_only_database(database)
     try:
         integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
         foreign_keys = [dict(row) for row in connection.execute("PRAGMA foreign_key_check")]
         failures: list[dict[str, str]] = []
-        for match in plan["matches"]:
+        resource_identifier_verified_count = 0
+        for match, foundation_fact in zip(
+            plan["matches"], foundation_facts, strict=True
+        ):
+            if (
+                foundation_fact["size_bytes"] != match["byte_size"]
+                or foundation_fact["modified_at_ns"] != match.get("modified_at_ns")
+                or foundation_fact["resource_id_hex"] != match.get("resource_id_hex")
+            ):
+                failures.append(
+                    {
+                        "asset_id": match["asset_id"],
+                        "reason": "export_fingerprint_changed",
+                    }
+                )
+                continue
             asset = connection.execute(
                 "SELECT source_id, locator_kind, relative_path, photos_local_identifier, "
                 "availability, content_revision FROM asset WHERE id = ?",
@@ -690,18 +883,23 @@ def verify_database(arguments: argparse.Namespace) -> int:
                 failures.append({"asset_id": match["asset_id"], "reason": "locator_mismatch"})
                 continue
             fingerprint = connection.execute(
-                "SELECT size_bytes, hex(sha256) AS sha256 FROM file_fingerprint "
+                "SELECT size_bytes, modified_at_ns, hex(resource_id) AS resource_id, "
+                "hex(sha256) AS sha256 FROM file_fingerprint "
                 "WHERE asset_id = ?",
                 (match["asset_id"],),
             ).fetchone()
             if (
                 fingerprint is None
                 or fingerprint["size_bytes"] != match["byte_size"]
+                or fingerprint["modified_at_ns"] != match["modified_at_ns"]
+                or fingerprint["resource_id"].lower() != match["resource_id_hex"]
                 or fingerprint["sha256"].lower() != match["sha256"]
             ):
                 failures.append(
                     {"asset_id": match["asset_id"], "reason": "fingerprint_mismatch"}
                 )
+            else:
+                resource_identifier_verified_count += 1
         after_counts = fact_counts(
             connection, [match["asset_id"] for match in plan["matches"]]
         )
@@ -712,6 +910,7 @@ def verify_database(arguments: argparse.Namespace) -> int:
             "integrity_check": integrity,
             "foreign_key_violations": foreign_keys,
             "verified_asset_count": len(plan["matches"]) - len(failures),
+            "resource_identifier_verified_count": resource_identifier_verified_count,
             "failures": failures,
             "preserved_fact_counts_before": plan["preserved_fact_counts"],
             "preserved_fact_counts_after": after_counts,
@@ -880,6 +1079,178 @@ def package_snapshot(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def converge_live_database(path: Path) -> None:
+    connection = sqlite3.connect(path)
+    try:
+        checkpoint = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        if checkpoint is None or checkpoint[0] != 0:
+            raise BridgeError("checkpoint_failed", "live database WAL did not checkpoint")
+        journal_mode = connection.execute("PRAGMA journal_mode = DELETE").fetchone()[0]
+        if str(journal_mode).lower() != "delete":
+            raise BridgeError(
+                "sidecar_convergence_failed",
+                "live database did not converge to DELETE journal mode",
+            )
+        connection.commit()
+    finally:
+        connection.close()
+    for sidecar in (Path(f"{path}-wal"), Path(f"{path}-shm"), Path(f"{path}-journal")):
+        if sidecar.exists():
+            sidecar.unlink()
+
+
+def acquire_catalog_lock(lock_file: Path) -> int:
+    lock_file.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(lock_file, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as error:
+        os.close(descriptor)
+        raise BridgeError("imageall_running", "ImageAll still owns the catalog lock") from error
+    return descriptor
+
+
+def install_verified_database(arguments: argparse.Namespace) -> int:
+    database = Path(arguments.database).resolve()
+    verification_path = Path(arguments.verification)
+    live_database = Path(arguments.live_database).resolve()
+    backups_directory = Path(arguments.backups_directory).resolve()
+    report_output = Path(arguments.output)
+    if report_output.exists():
+        raise BridgeError("output_exists", "installation report already exists")
+    if not arguments.app_version.strip():
+        raise BridgeError("invalid_app_version", "snapshot app version cannot be empty")
+    catalog_directory = live_database.parent
+    application_support_directory = catalog_directory.parent
+    if (
+        live_database.name != "ImageAll.sqlite"
+        or catalog_directory.name != "Catalog"
+        or backups_directory.name != "Backups"
+        or backups_directory.parent != application_support_directory
+        or not live_database.is_file()
+        or live_database.is_symlink()
+        or not database.is_file()
+        or database.is_symlink()
+        or not backups_directory.is_dir()
+        or backups_directory.is_symlink()
+    ):
+        raise BridgeError("unsafe_install_target", "installation paths are not ImageAll paths")
+    require_standalone_snapshot(database)
+    try:
+        verification = json.loads(verification_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise BridgeError("invalid_verification", "verification report cannot be read") from error
+    candidate_sha256 = sha256_file(database)
+    if (
+        not isinstance(verification, dict)
+        or verification.get("status") != "passed"
+        or verification.get("database_sha256") != candidate_sha256
+    ):
+        raise BridgeError("invalid_verification", "verification does not bind this database")
+
+    lock_file = application_support_directory / "Runtime" / "catalog.lock"
+    lock_descriptor = acquire_catalog_lock(lock_file)
+    operation_id = str(uuid.uuid4())
+    staging_directory = catalog_directory / f".photos-exit-install-{operation_id}.tmp"
+    previous_database = catalog_directory / f".photos-exit-previous-{operation_id}.sqlite"
+    try:
+        converge_live_database(live_database)
+        require_standalone_snapshot(live_database)
+        rollback_descriptor_path = report_output.with_name(
+            f".{report_output.name}.{operation_id}.rollback.json"
+        )
+        rollback_arguments = argparse.Namespace(
+            database=str(live_database),
+            verification=str(verification_path),
+            backups_directory=str(backups_directory),
+            app_version=f"{arguments.app_version}-pre-install-rollback",
+            output=str(rollback_descriptor_path),
+        )
+        # The live database is not the migrated candidate, so publish its rollback
+        # snapshot with a locally bound temporary verification record.
+        live_verification_path = report_output.with_name(
+            f".{report_output.name}.{operation_id}.live-verification.json"
+        )
+        live_sha256 = sha256_file(live_database)
+        atomic_write_json(
+            live_verification_path,
+            {"status": "passed", "database_sha256": live_sha256},
+        )
+        rollback_arguments.verification = str(live_verification_path)
+        try:
+            package_snapshot(rollback_arguments)
+            rollback_descriptor = json.loads(
+                rollback_descriptor_path.read_text(encoding="utf-8")
+            )
+        finally:
+            live_verification_path.unlink(missing_ok=True)
+            rollback_descriptor_path.unlink(missing_ok=True)
+
+        staging_directory.mkdir()
+        staged_database = staging_directory / "ImageAll.sqlite"
+        shutil.copyfile(database, staged_database)
+        with staged_database.open("rb") as stream:
+            os.fsync(stream.fileno())
+        if sha256_file(staged_database) != candidate_sha256:
+            raise BridgeError("candidate_copy_mismatch", "staged database hash changed")
+        staged_connection = open_read_only_database(staged_database)
+        try:
+            if staged_connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise BridgeError("integrity_check_failed", "staged database is not integral")
+            if staged_connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+                raise BridgeError("foreign_key_check_failed", "staged database has FK errors")
+        finally:
+            staged_connection.close()
+
+        os.rename(live_database, previous_database)
+        try:
+            os.rename(staged_database, live_database)
+            directory_descriptor = os.open(catalog_directory, os.O_RDONLY)
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
+            if sha256_file(live_database) != candidate_sha256:
+                raise BridgeError("post_install_hash_mismatch", "installed database hash changed")
+            installed_connection = open_read_only_database(live_database)
+            try:
+                if installed_connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                    raise BridgeError(
+                        "post_install_integrity_failed",
+                        "installed database is not integral",
+                    )
+                if installed_connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+                    raise BridgeError(
+                        "post_install_foreign_key_failed",
+                        "installed database has FK errors",
+                    )
+            finally:
+                installed_connection.close()
+        except Exception:
+            failed_database = staging_directory / "failed-ImageAll.sqlite"
+            if live_database.exists():
+                os.rename(live_database, failed_database)
+            os.rename(previous_database, live_database)
+            raise
+        staging_directory.rmdir()
+        report = {
+            "schema_version": 1,
+            "status": "installed",
+            "installed_database": str(live_database),
+            "installed_database_sha256": candidate_sha256,
+            "previous_database": str(previous_database),
+            "previous_database_sha256": live_sha256,
+            "rollback_snapshot_id": rollback_descriptor["snapshot_id"],
+            "rollback_snapshot_directory": rollback_descriptor["snapshot_directory"],
+        }
+        atomic_write_json(report_output, report)
+    finally:
+        fcntl.flock(lock_descriptor, fcntl.LOCK_UN)
+        os.close(lock_descriptor)
+    print("installed=1 rollback_snapshot=1")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Preserve ImageAll asset identity after a PhotoKit export."
@@ -907,6 +1278,17 @@ def build_parser() -> argparse.ArgumentParser:
     package.add_argument("--app-version", required=True)
     package.add_argument("--output", required=True)
     package.set_defaults(operation=package_snapshot)
+
+    install = subparsers.add_parser(
+        "install", help="atomically install a verified database with native rollback"
+    )
+    install.add_argument("--database", required=True)
+    install.add_argument("--verification", required=True)
+    install.add_argument("--live-database", required=True)
+    install.add_argument("--backups-directory", required=True)
+    install.add_argument("--app-version", required=True)
+    install.add_argument("--output", required=True)
+    install.set_defaults(operation=install_verified_database)
 
     plan = subparsers.add_parser("plan", help="create a read-only identity migration plan")
     plan.add_argument("--database", required=True)

@@ -83,6 +83,38 @@ final class FolderAssetIdentityTests: XCTestCase {
         let coordinator = FolderReconcileTestSupport.makeCoordinator(queue: queue, handler: handler)
         _ = try XCTUnwrap(try coordinator.claimAndExecuteOnce(ClaimNextInput(owner: "w", leaseDurationMs: 1000)))
 
+        let assetID = try XCTUnwrap(try database.pool.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT id FROM asset WHERE source_id = ?",
+                arguments: [sourceID.uuidString.lowercased()]
+            )
+        })
+        let placeID = "manual-place"
+        try database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO place (
+                    id, canonical_name, subtitle, latitude, longitude, kind,
+                    created_at_ms, updated_at_ms
+                ) VALUES (?, 'Manual place', NULL, 31.2304, 121.4737, 'city', 7, 7)
+                """,
+                arguments: [placeID]
+            )
+            try db.execute(
+                sql: """
+                UPDATE asset_location SET
+                    latitude = 31.2304,
+                    longitude = 121.4737,
+                    source_kind = 'placeTag',
+                    updated_at_ms = 7,
+                    place_id = ?
+                WHERE asset_id = ?
+                """,
+                arguments: [placeID, assetID]
+            )
+        }
+
         _ = try FolderReconcileTestSupport.enqueueReconcileJob(queue: queue, sourceID: sourceID, jobID: UUID())
         _ = try XCTUnwrap(try coordinator.claimAndExecuteOnce(ClaimNextInput(owner: "w2", leaseDurationMs: 1000)))
 
@@ -94,6 +126,21 @@ final class FolderAssetIdentityTests: XCTestCase {
             try Int.fetchOne(db, sql: "SELECT content_revision FROM asset WHERE source_id = ?", arguments: [sourceID.uuidString.lowercased()])
         }
         XCTAssertEqual(revision, 1)
+        let location = try database.pool.read { db in
+            try Row.fetchOne(
+                db,
+                sql: """
+                SELECT latitude, longitude, source_kind, updated_at_ms, place_id
+                FROM asset_location WHERE asset_id = ?
+                """,
+                arguments: [assetID]
+            )
+        }
+        XCTAssertEqual(location?["latitude"] as Double?, 31.2304)
+        XCTAssertEqual(location?["longitude"] as Double?, 121.4737)
+        XCTAssertEqual(location?["source_kind"] as String?, "placeTag")
+        XCTAssertEqual(location?["updated_at_ms"] as Int64?, 7)
+        XCTAssertEqual(location?["place_id"] as String?, placeID)
     }
 
     func testMoveReconnectPreservesAssetIdentity() throws {

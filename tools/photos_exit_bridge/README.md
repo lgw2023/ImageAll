@@ -5,7 +5,7 @@
 1. 通过公开 PhotoKit API 把“系统照片图库”导出为普通文件；
 2. 把导出文件唯一映射回 ImageAll 现有 Photos Asset；
 3. 在数据库副本中保留旧 `asset_id`，从而保留标签、收藏目标、模型样本、训练样本和回收历史；
-4. 把验证通过的迁移库封装为 ImageAll 原生快照，由现有恢复流程完成可回滚切换。
+4. 在持有 ImageAll 目录锁、先发布原生回滚快照后，原子安装验证通过的迁移库。
 
 工具不会遍历 `.photoslibrary` 包，不接受 Photos Library 包路径，也不会原地修改输入数据库。
 
@@ -46,7 +46,8 @@ tools/photos_exit_bridge/authorize_photokit_exporter.sh \
 "/工具目录/Photos Exit Exporter.app/Contents/MacOS/photos-exit-exporter" --help
 ```
 
-Python 身份迁移器不需要第三方依赖：
+Python 身份迁移器不需要第三方 Python 依赖；`plan`、`migrate` 和 `verify` 会通过 `xcrun swift`
+读取与 ImageAll 完全相同的 Foundation 文件修改时间和 `fileResourceIdentifier`：
 
 ```zsh
 python3 tools/photos_exit_bridge/photos_exit_bridge.py --help
@@ -110,6 +111,8 @@ open -n "/固定路径/Photos Exit Exporter.app" \
 `assets/`；Live Photo 配对视频、RAW/JPEG 备选和调整资源位于 `.photos-exit-resources/`。ImageAll
 文件夹扫描会跳过该隐藏资源目录，但完整归档仍保留这些附属字节和哈希。
 
+导出文件名缺少扩展名时，导出器会根据 PhotoKit UTI 补上首选扩展名，避免文件夹扫描把有效媒体忽略。
+
 中断后使用相同网络策略恢复：
 
 ```zsh
@@ -162,6 +165,9 @@ python3 tools/photos_exit_bridge/photos_exit_bridge.py plan \
 导出中没有旧 ImageAll identity 的新资产不会阻塞；它们以后由普通文件夹扫描创建新 Asset。旧数据库中
 已经 missing/recycled 的 tombstone 不会复活，也不阻塞可用资产迁移。
 
+计划 schema v2 还会为每个匹配项记录 ImageAll 口径的 `modified_at_ns` 和非空
+`resource_id_hex`。迁移前两者必须仍与导出文件一致；不能取得稳定 Foundation 指纹时失败关闭。
+
 ### 6. 迁移数据库副本并验证
 
 ```zsh
@@ -178,30 +184,38 @@ python3 tools/photos_exit_bridge/photos_exit_bridge.py verify \
 
 验证包括 `integrity_check`、`foreign_key_check`、locator/指纹、content revision 和用户事实计数守恒。
 迁移把 Photos 收藏同步状态收敛为文件资产 `localOnly`，并使来源级相似度索引变为 `stale`；不会删除
-Feature Print 或模型样本，因为两者存在级联外键关系。
+Feature Print 或模型样本，因为两者存在级联外键关系。目标文件夹来源会激活，旧 Photos 来源会停用，
+相关 Photos reconcile job 会取消；不可用 Photos tombstone 仍保留。
 
-### 7. 封装为原生快照，再由 ImageAll 恢复
+### 7. 原子安装并保留原生回滚快照
 
-只有 `verification.json` 的 `status = passed` 且哈希绑定当前迁移库时才能封装：
+只有 `verification.json` 的 `status = passed` 且哈希绑定当前迁移库时才能安装。ImageAll 必须完全退出：
 
 ```zsh
-python3 tools/photos_exit_bridge/photos_exit_bridge.py package-snapshot \
+python3 tools/photos_exit_bridge/photos_exit_bridge.py install \
   --database /私人工作目录/migrated.sqlite \
   --verification /私人工作目录/verification.json \
+  --live-database /实际路径/Catalog/ImageAll.sqlite \
   --backups-directory /实际路径/Backups \
-  --app-version photos-exit-bridge-0.1.0 \
-  --output /私人工作目录/snapshot-descriptor.json
+  --app-version <当前-App-版本> \
+  --output /私人工作目录/install-report.json
 ```
 
-这会发布 `Backups/<snapshot-uuid>/ImageAll.sqlite` 和原生 `manifest.json`。随后启动 ImageAll，使用现有
-恢复界面选择该快照。恢复流程会保留替换前数据库作为 rollback item；独立工具不直接安装生产库。
+`install` 会取得 `Runtime/catalog.lock`，收敛生产库 WAL/SHM，先把替换前数据库发布到
+`Backups/<snapshot-uuid>/`，再同卷暂存并原子替换 `Catalog/ImageAll.sqlite`。安装报告同时记录前后哈希、
+原生回滚快照和保留的 previous database；任一步失败会自动回滚，不依赖 UI 选择任意文件。
+
+需要单独发布一个已经验证的数据库副本时，仍可使用 `package-snapshot`；它不安装生产库。
 
 ### 8. 验收和保留期
 
-恢复后先做以下人工验收：
+安装后先做一次目标文件夹真实重扫，再完成以下验收：
 
 - 照片/视频可从普通文件夹显示；
 - 标签、拒绝/接受决定、红心、训练样本和个人模型仍在；
+- 旧 identity 的 content revision、Foundation 指纹和已有位置/人工地点事实不变；
+- 导出但此前没有 ImageAll identity 的文件全部由普通扫描新增；
+- 目标来源没有 `unreadable`、`missing` 或重复 current path；
 - 回收历史没有复活为可用媒体；
 - 随机抽查 Live Photo、RAW/JPEG、编辑照片和视频；
 - 完成一次目标文件夹对账并等待来源相似度索引重建。

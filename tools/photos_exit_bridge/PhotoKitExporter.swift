@@ -2,6 +2,7 @@ import AppKit
 import CryptoKit
 import Foundation
 import Photos
+import UniformTypeIdentifiers
 
 private let toolVersion = "0.1.0"
 private let manifestSchemaVersion = 1
@@ -546,7 +547,7 @@ private struct PhotosExitExporter {
                 )
                 for (resourceIndex, resource) in sourceResources.enumerated() {
                     let filename = String(format: "%03d-", resourceIndex)
-                        + sanitizedFilename(resource.originalFilename)
+                        + exportFilename(resource)
                     let isPrimary = resourceIndex == primary
                     let stagingResourceDirectory = isPrimary
                         ? primaryStagingDirectory
@@ -800,6 +801,20 @@ private struct PhotosExitExporter {
         }
         let result = String(scalars)
         return result.isEmpty || result == "." || result == ".." ? "resource" : result
+    }
+
+    private static func exportFilename(_ resource: PHAssetResource) -> String {
+        let sanitized = sanitizedFilename(resource.originalFilename)
+        if !URL(fileURLWithPath: sanitized).pathExtension.isEmpty {
+            return sanitized
+        }
+        guard let type = UTType(resource.uniformTypeIdentifier),
+              let filenameExtension = type.preferredFilenameExtension,
+              !filenameExtension.isEmpty
+        else {
+            return sanitized
+        }
+        return sanitized + "." + filenameExtension
     }
 
     private static func mediaTypeName(_ type: PHAssetMediaType) -> String {

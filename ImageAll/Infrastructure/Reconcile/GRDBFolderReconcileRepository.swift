@@ -696,6 +696,7 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
                 observation: observation,
                 generation: generation,
                 contentRevision: revision,
+                refreshLocation: revision != existing.contentRevision,
                 nowMs: nowMs
             )
             return 0
@@ -873,6 +874,7 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
         observation: FolderReconcileAssetObservation,
         generation: Int,
         contentRevision: Int,
+        refreshLocation: Bool,
         nowMs: Int64
     ) throws {
         try db.execute(
@@ -907,12 +909,17 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
             ]
         )
         try upsertFingerprint(db: db, assetID: assetID, observation: observation)
-        try upsertLocation(
-            db: db,
-            assetID: assetID,
-            observation: observation,
-            nowMs: nowMs
-        )
+        // A stable fingerprint means this is the same content. Preserve any
+        // richer Photos or manually resolved location row, including place_id,
+        // instead of replacing it with the folder decoder's best-effort facts.
+        if refreshLocation {
+            try upsertLocation(
+                db: db,
+                assetID: assetID,
+                observation: observation,
+                nowMs: nowMs
+            )
+        }
     }
 
     private func updateConflictAsset(
