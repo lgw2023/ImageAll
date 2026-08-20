@@ -16,6 +16,14 @@ const WORKSPACE_HISTORY_ROUTES = new Set([
   "worldMap",
   "galleryOverview",
 ]);
+const GALLERY_HISTORY_LOADED_LIMIT = 5_000;
+const GALLERY_HISTORY_SORTS = new Set(["newest", "oldest", "fileNameAscending"]);
+const GALLERY_HISTORY_AVAILABILITIES = new Set([
+  "available",
+  "missing",
+  "unreadable",
+  "unsupported",
+]);
 const SIDEBAR_WIDTH = { min: 180, default: 220, max: 300 };
 const INSPECTOR_WIDTH = { min: 240, default: 300, max: 380 };
 const REVIEW_MODEL_WIDTH = { min: 248, default: 288, max: 320 };
@@ -2150,7 +2158,6 @@ function initializeWorkspaceHistoryRoot({ restoreExisting = false } = {}) {
 
 function recordWorkspaceHistory(route, context = null, mode = "push") {
   if (!state.workspaceNavigation.initialized
-    || state.workspaceNavigation.applyingHistory
     || mode === "none") return;
   const current = activeWorkspaceHistoryEntry();
   const nextState = {
@@ -2166,6 +2173,20 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
 
 function currentWorkspaceHistoryContext(route = visibleWorkspaceRoute()) {
   switch (route) {
+  case "gallery":
+    return {
+      galleryMediaKind: state.mediaKind,
+      gallerySourceID: state.libraryScope === "all" ? (state.selectedSourceID || null) : null,
+      galleryScope: state.libraryScope === "favorites" ? "favorites" : "all",
+      gallerySort: state.sort,
+      galleryFilters: cloneFilters(state.filters),
+      gallerySelectedAssetID: state.selectedAssetID || null,
+      gallerySelectionMode: state.selectionMode,
+      gallerySelectedAssetIDs: [...state.selectedAssetIDs],
+      gallerySelectionAnchorID: state.selectionAnchorID || null,
+      galleryLoadedCount: Math.min(GALLERY_HISTORY_LOADED_LIMIT, state.assets.length),
+      galleryScrollTop: elements.libraryScroll.scrollTop,
+    };
   case "review":
     return {
       ...(state.review.returnTarget?.workspace === "training"
@@ -2209,6 +2230,125 @@ function currentWorkspaceHistoryContext(route = visibleWorkspaceRoute()) {
   }
 }
 
+function galleryHistoryIdentifier(value) {
+  return typeof value === "string" && value.length > 0 && value.length <= 256
+    ? value
+    : null;
+}
+
+function normalizedGalleryHistoryContext(raw, { validateCatalog = false } = {}) {
+  const context = raw && typeof raw === "object" ? raw : {};
+  const mediaKind = ["image", "video"].includes(context.galleryMediaKind)
+    ? context.galleryMediaKind
+    : "image";
+  const acceptedMediaTypes = new Set(
+    MEDIA_FORMAT_GROUPS
+      .filter((group) => group.mediaKinds.includes(mediaKind))
+      .flatMap((group) => group.mediaTypes)
+  );
+  const sourceID = galleryHistoryIdentifier(context.gallerySourceID);
+  const validSourceID = validateCatalog
+    ? (state.sources.some((source) => source.id === sourceID) ? sourceID : null)
+    : sourceID;
+  const requestedScope = context.galleryScope === "favorites" ? "favorites" : "all";
+  const scope = requestedScope === "favorites" && (!validateCatalog || supportsFavorites())
+    ? "favorites"
+    : "all";
+  const activeTagIDs = validateCatalog ? new Set(activeTags().map((tag) => tag.id)) : null;
+  const seenTagIDs = new Set();
+  const tagConditions = [];
+  for (const condition of Array.isArray(context.galleryFilters?.tagConditions)
+    ? context.galleryFilters.tagConditions
+    : []) {
+    const tagID = galleryHistoryIdentifier(condition?.tagID);
+    if (!tagID
+      || seenTagIDs.has(tagID)
+      || (activeTagIDs && !activeTagIDs.has(tagID))
+      || !["accepted", "rejected", "excluded"].includes(condition?.decision)) continue;
+    seenTagIDs.add(tagID);
+    tagConditions.push({ tagID, decision: condition.decision });
+    if (tagConditions.length >= 100) break;
+  }
+  const tagPresence = ["any", "tagged", "untagged"].includes(
+    context.galleryFilters?.tagPresence
+  ) ? context.galleryFilters.tagPresence : "any";
+  const selectedAssetIDs = [...new Set(
+    (Array.isArray(context.gallerySelectedAssetIDs)
+      ? context.gallerySelectedAssetIDs
+      : [])
+      .map(galleryHistoryIdentifier)
+      .filter(Boolean)
+  )].slice(0, GALLERY_HISTORY_LOADED_LIMIT);
+  const requestedSelectedAssetID = galleryHistoryIdentifier(context.gallerySelectedAssetID);
+  const requestedSelectionAnchorID = galleryHistoryIdentifier(context.gallerySelectionAnchorID);
+  const selectionMode = Boolean(context.gallerySelectionMode && selectedAssetIDs.length);
+  const selectedAssetID = selectionMode
+    ? (selectedAssetIDs.includes(requestedSelectedAssetID)
+      ? requestedSelectedAssetID
+      : selectedAssetIDs[0])
+    : requestedSelectedAssetID;
+  const selectionAnchorID = selectionMode
+    ? (selectedAssetIDs.includes(requestedSelectionAnchorID)
+      ? requestedSelectionAnchorID
+      : selectedAssetID)
+    : null;
+  const loadedCount = Math.min(
+    GALLERY_HISTORY_LOADED_LIMIT,
+    Math.max(0, Math.floor(Number(context.galleryLoadedCount) || 0))
+  );
+  return {
+    mediaKind,
+    sourceID: scope === "all" ? validSourceID : null,
+    scope,
+    sort: GALLERY_HISTORY_SORTS.has(context.gallerySort)
+      ? context.gallerySort
+      : "fileNameAscending",
+    filters: {
+      mediaKind,
+      availabilities: [...new Set(
+        (Array.isArray(context.galleryFilters?.availabilities)
+          ? context.galleryFilters.availabilities
+          : [])
+          .filter((value) => GALLERY_HISTORY_AVAILABILITIES.has(value))
+      )],
+      mediaTypes: [...new Set(
+        (Array.isArray(context.galleryFilters?.mediaTypes)
+          ? context.galleryFilters.mediaTypes
+          : [])
+          .filter((value) => acceptedMediaTypes.has(value))
+      )],
+      tagPresence,
+      tagMatchMode: context.galleryFilters?.tagMatchMode === "any" ? "any" : "all",
+      tagConditions: tagPresence === "any" ? tagConditions : [],
+    },
+    selectedAssetID,
+    selectionMode,
+    selectedAssetIDs: selectionMode ? selectedAssetIDs : [],
+    selectionAnchorID,
+    loadedCount,
+    scrollTop: workspaceHistoryScrollTop(context.galleryScrollTop),
+  };
+}
+
+function applyGalleryHistoryContext(raw, options = {}) {
+  const context = normalizedGalleryHistoryContext(raw, options);
+  state.mediaKind = context.mediaKind;
+  state.selectedSourceID = context.sourceID || "";
+  state.libraryScope = context.scope;
+  state.worldMapGalleryScope = null;
+  state.searchText = "";
+  state.sort = context.sort;
+  state.filters = cloneFilters(context.filters);
+  state.filterDraft = null;
+  state.selectedAssetID = context.selectedAssetID;
+  state.selectedDetail = null;
+  state.selectionMode = context.selectionMode;
+  state.selectedAssetIDs = new Set(context.selectedAssetIDs);
+  state.selectionAnchorID = context.selectionAnchorID;
+  state.inspectorDismissed = false;
+  return context;
+}
+
 function workspaceHistoryScrollTop(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
@@ -2223,6 +2363,7 @@ function waitForWorkspaceLayout() {
 function checkpointActiveWorkspaceHistory() {
   if (!state.workspaceNavigation.initialized
     || state.workspaceNavigation.applyingHistory
+    || state.workspaceNavigation.pendingRestoreEntry
     || elements.appView.classList.contains("hidden")) return;
   const route = visibleWorkspaceRoute();
   recordWorkspaceHistory(route, currentWorkspaceHistoryContext(route), "replace");
@@ -5293,6 +5434,7 @@ function captureMediaSession() {
     inspectorDismissed: state.inspectorDismissed,
     scrollTop: elements.libraryScroll.scrollTop,
   };
+  scheduleWorkspaceHistoryCheckpoint();
 }
 
 function currentMediaNoun() {
@@ -11488,6 +11630,7 @@ function renderSelectionMutation() {
   } else {
     renderInspectorSurface();
   }
+  scheduleWorkspaceHistoryCheckpoint();
 }
 
 function updateLibraryTitle() {
@@ -12354,12 +12497,14 @@ async function loadAssets(options = {}) {
     preserveSelection = false,
     preserveUnchangedGrid = false,
     preserveLoadedWindow = false,
+    targetLoadedCount = null,
   } = options;
   const normalizedOptions = {
     append,
     preserveSelection,
     preserveUnchangedGrid,
     preserveLoadedWindow,
+    targetLoadedCount,
   };
   if (state.loadingAssets) {
     state.queuedAssetLoadOptions = mergeQueuedAssetLoadOptions(
@@ -12384,9 +12529,10 @@ async function loadAssets(options = {}) {
   state.assetLoadPromise = new Promise((resolve) => {
     finishAssetLoad = resolve;
   });
-  const loadedTargetCount = preserveLoadedWindow
-    ? Math.max(72, state.assets.length)
-    : 72;
+  const requestedTargetCount = Number(targetLoadedCount);
+  const loadedTargetCount = Number.isFinite(requestedTargetCount) && requestedTargetCount > 0
+    ? Math.min(GALLERY_HISTORY_LOADED_LIMIT, Math.floor(requestedTargetCount))
+    : (preserveLoadedWindow ? Math.max(72, state.assets.length) : 72);
   state.loadingAssets = true;
   elements.loadMoreButton.disabled = true;
   let shouldRender = !preserveUnchangedGrid;
@@ -12508,6 +12654,7 @@ async function loadInspector(assetID, {
     && Boolean(state.selectedDetail);
   if (reveal) state.inspectorDismissed = false;
   state.selectedAssetID = assetID;
+  scheduleWorkspaceHistoryCheckpoint();
   if (!keepExisting) {
     state.selectedDetail = null;
     renderAssetSelectionState();
@@ -24534,6 +24681,10 @@ async function loadWorkspace({ restoreHistory = false } = {}) {
   resetWorkspaceSessionState();
   const generation = state.workspaceGeneration;
   showApp({ restoreHistory });
+  const restoreEntry = state.workspaceNavigation.pendingRestoreEntry;
+  let galleryRestore = restoreEntry?.route === "gallery"
+    ? applyGalleryHistoryContext(restoreEntry.context)
+    : null;
   setConnection(true, "正在同步");
   const capabilities = await api("/v1/capabilities");
   if (generation !== state.workspaceGeneration) return;
@@ -24593,6 +24744,9 @@ async function loadWorkspace({ restoreHistory = false } = {}) {
   state.workspaceNotice.notice = workspaceNotice?.notice || null;
   state.workspaceNotice.dismissing = false;
   state.workspaceNotice.activeActionID = null;
+  if (galleryRestore) {
+    galleryRestore = applyGalleryHistoryContext(restoreEntry.context, { validateCatalog: true });
+  }
   renderWorkspaceNotice();
   elements.hostVersion.textContent = `Mac Host ${capabilities.hostAppVersion}`;
   elements.settingsButton.disabled = !supportsGeneralSettings();
@@ -24611,8 +24765,23 @@ async function loadWorkspace({ restoreHistory = false } = {}) {
   renderLayoutPreferences();
   syncFilterControlsFromState();
   updateLibraryTitle();
-  await loadAssets();
+  await loadAssets({
+    preserveSelection: Boolean(galleryRestore),
+    targetLoadedCount: galleryRestore?.loadedCount || null,
+  });
   if (generation !== state.workspaceGeneration) return;
+  if (galleryRestore) {
+    if (!state.selectionMode && state.selectedAssetID) {
+      await loadInspector(state.selectedAssetID, { reveal: true, quiet: true });
+    } else if (state.selectionMode && state.selectedAssetIDs.size) {
+      scheduleSelectionAggregate();
+    }
+    await waitForWorkspaceLayout();
+    elements.libraryScroll.scrollTop = Math.min(
+      galleryRestore.scrollTop,
+      Math.max(0, elements.libraryScroll.scrollHeight - elements.libraryScroll.clientHeight)
+    );
+  }
   if (supportsLibrarySlimming()) {
     await Promise.all([
       loadSlimmingIdenticalCleanupRequests({ quiet: true }),
@@ -24621,7 +24790,6 @@ async function loadWorkspace({ restoreHistory = false } = {}) {
   }
   if (generation !== state.workspaceGeneration) return;
   captureMediaSession();
-  const restoreEntry = state.workspaceNavigation.pendingRestoreEntry;
   state.workspaceNavigation.pendingRestoreEntry = null;
   if (restoreEntry?.route && restoreEntry.route !== "gallery") {
     try {
@@ -24631,6 +24799,8 @@ async function loadWorkspace({ restoreHistory = false } = {}) {
       recordWorkspaceHistory("gallery", null, "replace");
       toast(error.message || "未能恢复刷新前的工作区");
     }
+  } else if (restoreEntry?.route === "gallery") {
+    checkpointActiveWorkspaceHistory();
   }
   if (generation !== state.workspaceGeneration) return;
   setupAutoPagination();
@@ -30860,6 +31030,7 @@ function bindEvents() {
     }
   });
   for (const scrollSurface of [
+    elements.libraryScroll,
     elements.reviewQueuePane,
     elements.trainingRunPane,
     elements.trainingDetailPane,

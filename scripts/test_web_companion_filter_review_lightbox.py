@@ -3038,6 +3038,102 @@ def main():
             "() => document.activeElement?.id === 'storageButton'"
         )
 
+        # Main-gallery refresh continuity is deliberately separate from restoring
+        # top-level workspaces. Rebuild a realistic browsing context through the
+        # same controls a user touches, then prove a normal refresh keeps the safe
+        # context while discarding a potentially sensitive search string.
+        page.set_viewport_size({"width": 900, "height": 600})
+        page.evaluate("() => clearAllLibraryConditions()")
+        page.wait_for_function("() => !state.loadingAssets && state.filters.tagConditions.length === 0")
+        page.locator(f'button.sidebar-row[data-source-id="{SOURCE_ID}"]').click()
+        page.wait_for_function(
+            f"() => state.selectedSourceID === '{SOURCE_ID}' && !state.loadingAssets"
+        )
+        page.locator("#filterButton").click()
+        page.locator('#availabilityFilter input[value="available"]').check()
+        page.wait_for_function(
+            "() => document.querySelector('#filterLiveStatus').dataset.state === 'ready'"
+        )
+        page.locator("#applyFiltersButton").click()
+        page.locator("#sortButton").evaluate("button => button.click()")
+        page.locator('#sortPopover [data-sort="oldest"]').click()
+        page.wait_for_function(
+            f"() => state.sort === 'oldest' && !state.loadingAssets "
+            f"&& state.assets.length === {len(IMAGE_IDS + IMAGE_PAGE_2_IDS)}"
+        )
+        page.locator("#selectionModeButton").click()
+        page.locator(f'[data-asset-id="{IMAGE_IDS[0]}"] > .asset-card-main').click()
+        page.locator(f'[data-asset-id="{IMAGE_IDS[1]}"] > .asset-card-main').click(
+            modifiers=["Meta"]
+        )
+        page.locator("#libraryScroll").evaluate(
+            "element => { element.scrollTop = Math.min(320, element.scrollHeight); }"
+        )
+        page.wait_for_function(
+            "() => document.querySelector('#libraryScroll').scrollTop > 0"
+        )
+        page.wait_for_function(
+            f"() => history.state?.imageAllWorkspace?.context?.gallerySourceID === '{SOURCE_ID}' "
+            "&& history.state.imageAllWorkspace.context.gallerySort === 'oldest' "
+            "&& history.state.imageAllWorkspace.context.galleryFilters.availabilities.includes('available') "
+            "&& history.state.imageAllWorkspace.context.gallerySelectedAssetIDs.length === 2 "
+            "&& history.state.imageAllWorkspace.context.galleryScrollTop > 0"
+        )
+        private_search = "PRIVATE /Users/example/secret/IMG_0042.JPG"
+        page.evaluate(
+            "value => { state.searchText = value; document.querySelector('#searchInput').value = value; "
+            "checkpointActiveWorkspaceHistory(); }",
+            private_search,
+        )
+        history_before_refresh = page.evaluate("() => JSON.stringify(history.state)")
+        assert private_search not in history_before_refresh
+        assert "CAT_0001.JPG" not in history_before_refresh
+
+        page.reload(wait_until="networkidle")
+        page.wait_for_function(
+            f"() => !document.querySelector('#appView').classList.contains('hidden') "
+            f"&& !state.loadingAssets && state.selectedSourceID === '{SOURCE_ID}' "
+            f"&& state.assets.length === {len(IMAGE_IDS + IMAGE_PAGE_2_IDS)}"
+        )
+        page.wait_for_function(
+            "() => document.querySelector('#libraryScroll').scrollTop > 0"
+        )
+        gallery_after_refresh = page.evaluate(
+            """() => ({
+              route: visibleWorkspaceRoute(),
+              mediaKind: state.mediaKind,
+              sourceID: state.selectedSourceID,
+              scope: state.libraryScope,
+              sort: state.sort,
+              filters: structuredClone(state.filters),
+              selectionMode: state.selectionMode,
+              selectedAssetID: state.selectedAssetID,
+              selectedAssetIDs: [...state.selectedAssetIDs].sort(),
+              anchorID: state.selectionAnchorID,
+              loadedCount: state.assets.length,
+              scrollTop: document.querySelector('#libraryScroll').scrollTop,
+              searchText: state.searchText,
+              searchInput: document.querySelector('#searchInput').value,
+              history: JSON.stringify(history.state),
+            })"""
+        )
+        assert gallery_after_refresh["route"] == "gallery"
+        assert gallery_after_refresh["mediaKind"] == "image"
+        assert gallery_after_refresh["sourceID"] == SOURCE_ID
+        assert gallery_after_refresh["scope"] == "all"
+        assert gallery_after_refresh["sort"] == "oldest"
+        assert gallery_after_refresh["filters"]["availabilities"] == ["available"]
+        assert gallery_after_refresh["selectionMode"] is True
+        assert gallery_after_refresh["selectedAssetID"] == IMAGE_IDS[1]
+        assert gallery_after_refresh["selectedAssetIDs"] == sorted(IMAGE_IDS)
+        assert gallery_after_refresh["anchorID"] == IMAGE_IDS[1]
+        assert gallery_after_refresh["loadedCount"] == len(IMAGE_IDS + IMAGE_PAGE_2_IDS)
+        assert gallery_after_refresh["scrollTop"] > 0
+        assert gallery_after_refresh["searchText"] == ""
+        assert gallery_after_refresh["searchInput"] == ""
+        assert private_search not in gallery_after_refresh["history"]
+        assert "CAT_0001.JPG" not in gallery_after_refresh["history"]
+
         assert not page_errors, page_errors
         unexpected_console_errors = [
             message for message in console_errors
