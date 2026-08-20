@@ -1081,6 +1081,11 @@ const state = {
   filterHistoryRestoreFocus: true,
   filterFocusedControl: null,
   filterScrollTop: 0,
+  layoutMenuReturnFocus: null,
+  layoutMenuBaseLevel: "workspace",
+  layoutMenuHistoryRestoreFocus: true,
+  layoutMenuKind: null,
+  layoutMenuFocusedValue: null,
   selectionMode: false,
   selectedAssetIDs: new Set(),
   selectionAnchorID: null,
@@ -1930,8 +1935,8 @@ function closeOverlays() {
   hidePersistentHelp();
   closeIdenticalCleanupBlockingOverlay({ restoreFocus: false });
   closeCompactToolbarMenu({ restoreFocus: false, checkpoint: false });
-  closeGridDensityPopovers({ restoreFocus: false });
   closeFilterPopover({ restoreFocus: false, checkpoint: false, preserveState: false });
+  closeLayoutMenu({ restoreFocus: false, checkpoint: false, preserveState: false });
   closePersonalModelPopover({ restoreFocus: false });
   closeJobsPopover({ restoreFocus: false, checkpoint: false, preserveState: false });
   closeReviewSourceFilter({ restoreFocus: false });
@@ -2589,7 +2594,7 @@ function openMobileSidebar({
   }
   hidePersistentHelp();
   closeCompactToolbarMenu({ restoreFocus: false });
-  closeGridDensityPopovers({ restoreFocus: false });
+  closeLayoutMenu({ restoreFocus: false });
   closeFilterPopover({ restoreFocus: false });
   closePersonalModelPopover({ restoreFocus: false });
   closeJobsPopover({ restoreFocus: false });
@@ -2721,6 +2726,7 @@ function workspaceHistoryEntry(route, context = null, navigationLevel = "workspa
     "commandPalette",
     "jobs",
     "filter",
+    "layoutMenu",
     "toolbarMenu",
     "sidebar",
     "inspector",
@@ -2851,6 +2857,11 @@ function workspaceNavigationBaseLevel(navigationLevel, context = {}) {
       ? context.filterBaseLevel
       : "workspace";
   }
+  if (navigationLevel === "layoutMenu") {
+    return ["sidebar", "inspector", "lightbox"].includes(context.layoutMenuBaseLevel)
+      ? context.layoutMenuBaseLevel
+      : "workspace";
+  }
   if (navigationLevel !== "toolbarMenu") return navigationLevel;
   return ["sidebar", "inspector", "lightbox"].includes(context.toolbarMenuBaseLevel)
     ? context.toolbarMenuBaseLevel
@@ -2917,6 +2928,7 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
   const hasCommandPalette = elements.commandPalette.open;
   const hasJobs = !elements.jobsPopover.classList.contains("hidden");
   const hasFilter = !elements.filterPopover.classList.contains("hidden");
+  const hasLayoutMenu = Boolean(activeLayoutMenuDescriptor());
   const hasToolbarMenu = compactToolbarMenuIsOpen();
   const hasSidebar = route === "gallery" && mobileSidebarOverlayIsOpen();
   const historyContext = hasConfirmation
@@ -3024,6 +3036,12 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
         ...(context || {}),
         filterBaseLevel: state.filterBaseLevel,
       }
+    : hasLayoutMenu
+    ? {
+        ...(context || {}),
+        layoutMenuBaseLevel: state.layoutMenuBaseLevel,
+        layoutMenuKind: state.layoutMenuKind,
+      }
     : hasToolbarMenu
     ? {
         ...(context || {}),
@@ -3100,6 +3118,9 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
     : hasFilter
     && (mode === "pushFilter" || current?.navigationLevel === "filter")
     ? "filter"
+    : hasLayoutMenu
+    && (mode === "pushLayoutMenu" || current?.navigationLevel === "layoutMenu")
+    ? "layoutMenu"
     : hasToolbarMenu
     && (mode === "pushToolbarMenu" || current?.navigationLevel === "toolbarMenu")
     ? "toolbarMenu"
@@ -3138,6 +3159,7 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
     "pushCommandPalette",
     "pushJobs",
     "pushFilter",
+    "pushLayoutMenu",
     "pushToolbarMenu",
     "pushSidebar",
     "pushLightbox",
@@ -3464,6 +3486,7 @@ function closeAllWorkspacesToGallery({ restoreFocus = true } = {}) {
   closeKeyboardShortcuts({ restoreFocus: false, checkpoint: false });
   closeCommandPalette({ restoreFocus: false, checkpoint: false });
   closeFilterPopover({ restoreFocus: false, checkpoint: false, preserveState: false });
+  closeLayoutMenu({ restoreFocus: false, checkpoint: false, preserveState: false });
   closeCompactToolbarMenu({ restoreFocus: false, checkpoint: false });
   closeMobileSidebar({ restoreFocus: false, checkpoint: false });
   if (!elements.lightbox.classList.contains("hidden")) closeLightbox({ restoreFocus });
@@ -3498,6 +3521,7 @@ async function applyWorkspaceHistoryEntry(entry) {
       );
       reconcileJobsPopoverFromWorkspaceHistory(target, navigationLevel, context);
       reconcileFilterPopoverFromWorkspaceHistory(target, navigationLevel, context);
+      reconcileLayoutMenuFromWorkspaceHistory(target, navigationLevel, context);
       await reconcileCommandPaletteFromWorkspaceHistory(
         target,
         navigationLevel,
@@ -3560,6 +3584,7 @@ async function applyWorkspaceHistoryEntry(entry) {
       );
       reconcileJobsPopoverFromWorkspaceHistory("gallery", navigationLevel, context);
       reconcileFilterPopoverFromWorkspaceHistory("gallery", navigationLevel, context);
+      reconcileLayoutMenuFromWorkspaceHistory("gallery", navigationLevel, context);
       await reconcileCommandPaletteFromWorkspaceHistory(
         "gallery",
         navigationLevel,
@@ -3731,6 +3756,11 @@ async function applyWorkspaceHistoryEntry(entry) {
       context
     );
     reconcileFilterPopoverFromWorkspaceHistory(
+      target,
+      activeEntry?.navigationLevel || "workspace",
+      context
+    );
+    reconcileLayoutMenuFromWorkspaceHistory(
       target,
       activeEntry?.navigationLevel || "workspace",
       context
@@ -6822,18 +6852,24 @@ function gridDensityControls() {
       label: elements.gridDensityButtonLabel,
       popover: elements.gridDensityPopover,
       surface: "图库",
+      kind: "galleryGridDensity",
+      route: "gallery",
     },
     {
       button: elements.reviewGridDensityButton,
       label: elements.reviewGridDensityButtonLabel,
       popover: elements.reviewGridDensityPopover,
       surface: "待审核",
+      kind: "reviewGridDensity",
+      route: "review",
     },
     {
       button: elements.slimmingGridDensityButton,
       label: elements.slimmingGridDensityButtonLabel,
       popover: elements.slimmingGridDensityPopover,
       surface: "图库瘦身",
+      kind: "slimmingGridDensity",
+      route: "slimming",
     },
   ];
 }
@@ -7335,7 +7371,7 @@ function syncSelectionModeControls() {
 async function switchMediaKind(mediaKind) {
   if (!["image", "video"].includes(mediaKind) || mediaKind === state.mediaKind) return;
   stopAssetHoverVideo();
-  closeSortPopover({ restoreFocus: false });
+  closeLayoutMenu({ restoreFocus: false });
   clearTimeout(state.searchTimer);
   state.searchTimer = null;
   cancelPendingFilterApply();
@@ -14507,8 +14543,7 @@ function closePersonalModelPopover({ restoreFocus = true } = {}) {
 function togglePersonalModelPopover() {
   const willOpen = elements.personalModelPopover.classList.contains("hidden");
   closeCompactToolbarMenu({ restoreFocus: false });
-  closeSortPopover({ restoreFocus: false });
-  closeGridDensityPopovers({ restoreFocus: false });
+  closeLayoutMenu({ restoreFocus: false });
   closeFilterPopover({ restoreFocus: false });
   closeJobsPopover({ restoreFocus: false });
   if (!willOpen) {
@@ -18454,8 +18489,7 @@ function openJobsPopover({
         current?.context || {}
       );
     closeCompactToolbarMenu({ restoreFocus: false });
-    closeSortPopover({ restoreFocus: false });
-    closeGridDensityPopovers({ restoreFocus: false });
+    closeLayoutMenu({ restoreFocus: false });
     closeFilterPopover({ restoreFocus: false });
     closePersonalModelPopover({ restoreFocus: false });
     elements.jobsPopover.classList.remove("hidden");
@@ -28892,6 +28926,11 @@ async function loadWorkspace({ restoreHistory = false } = {}) {
       restoreGalleryNavigationLevel,
       restoreEntry?.context || {}
     );
+    reconcileLayoutMenuFromWorkspaceHistory(
+      "gallery",
+      restoreGalleryNavigationLevel,
+      restoreEntry?.context || {}
+    );
     await reconcileCommandPaletteFromWorkspaceHistory(
       "gallery",
       restoreGalleryNavigationLevel,
@@ -29529,6 +29568,11 @@ function resetWorkspaceSessionState() {
   state.filterHistoryRestoreFocus = true;
   state.filterFocusedControl = null;
   state.filterScrollTop = 0;
+  state.layoutMenuReturnFocus = null;
+  state.layoutMenuBaseLevel = "workspace";
+  state.layoutMenuHistoryRestoreFocus = true;
+  state.layoutMenuKind = null;
+  state.layoutMenuFocusedValue = null;
   state.selectionMode = false;
   state.selectedAssetIDs.clear();
   state.selectionAnchorID = null;
@@ -29857,32 +29901,209 @@ function positionSortPopover() {
   elements.sortPopover.style.top = `${top}px`;
 }
 
-function closeSortPopover({ restoreFocus = true } = {}) {
-  if (elements.sortPopover.classList.contains("hidden")) return;
-  elements.sortPopover.classList.add("hidden");
-  elements.sortButton.setAttribute("aria-expanded", "false");
-  if (restoreFocus) elements.sortButton.focus({ preventScroll: true });
+function layoutMenuDescriptor(kind) {
+  if (kind === "sort") {
+    return {
+      kind,
+      route: "gallery",
+      button: elements.sortButton,
+      popover: elements.sortPopover,
+      optionAttribute: "sort",
+    };
+  }
+  const control = gridDensityControls().find((candidate) => candidate.kind === kind);
+  return control
+    ? { ...control, optionAttribute: "gridDensity" }
+    : null;
 }
 
-function toggleSortPopover() {
+function activeLayoutMenuDescriptor() {
   if (!elements.sortPopover.classList.contains("hidden")) {
-    closeSortPopover();
+    return layoutMenuDescriptor("sort");
+  }
+  const control = gridDensityControls().find(
+    (candidate) => !candidate.popover.classList.contains("hidden")
+  );
+  return control ? layoutMenuDescriptor(control.kind) : null;
+}
+
+function layoutMenuBaseLevelFromHistory(context = {}) {
+  return ["sidebar", "inspector", "lightbox"].includes(context.layoutMenuBaseLevel)
+    ? context.layoutMenuBaseLevel
+    : "workspace";
+}
+
+function layoutMenuFocusValue(descriptor, target = document.activeElement) {
+  if (!descriptor?.popover.contains(target)) return null;
+  return target?.dataset?.[descriptor.optionAttribute] || null;
+}
+
+function layoutMenuRestorableFocusTarget(descriptor) {
+  if (!descriptor) return null;
+  const stored = state.layoutMenuKind === descriptor.kind
+    ? state.layoutMenuFocusedValue
+    : null;
+  const selected = descriptor.kind === "sort" ? state.sort : String(state.layout.density);
+  const value = stored || selected;
+  return descriptor.popover.querySelector(
+    `[data-${descriptor.optionAttribute.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}="${CSS.escape(value)}"]`
+  ) || descriptor.popover.querySelector("button:not(:disabled)");
+}
+
+function layoutMenuIsAvailable(descriptor, route = visibleWorkspaceRoute()) {
+  return Boolean(
+    descriptor
+      && descriptor.route === route
+      && descriptor.button.getClientRects().length > 0
+  );
+}
+
+function replaceLayoutMenuHistoryWithBase(baseLevel) {
+  if (!state.workspaceNavigation.initialized
+    || elements.appView.classList.contains("hidden")) return;
+  const current = activeWorkspaceHistoryEntry();
+  const route = visibleWorkspaceRoute();
+  if (current?.route !== route || current.navigationLevel !== "layoutMenu") return;
+  const context = currentWorkspaceHistoryContext(route);
+  if (context && typeof context === "object") {
+    delete context.layoutMenuBaseLevel;
+    delete context.layoutMenuKind;
+  }
+  const navigationLevel = visibleWorkspaceNavigationBaseLevel(route, baseLevel);
+  history.replaceState({
+    ...(history.state || {}),
+    [WORKSPACE_HISTORY_KEY]: workspaceHistoryEntry(route, context, navigationLevel),
+  }, "", location.href);
+}
+
+function closeLayoutMenu({
+  restoreFocus = true,
+  checkpoint = true,
+  preserveState = true,
+} = {}) {
+  const descriptor = activeLayoutMenuDescriptor();
+  if (!descriptor) return;
+  const focusedValue = layoutMenuFocusValue(descriptor);
+  if (focusedValue) state.layoutMenuFocusedValue = focusedValue;
+  state.layoutMenuKind = descriptor.kind;
+  const baseLevel = state.layoutMenuBaseLevel;
+  const returnFocus = state.layoutMenuReturnFocus;
+  descriptor.popover.classList.add("hidden");
+  descriptor.button.setAttribute("aria-expanded", "false");
+  state.layoutMenuReturnFocus = null;
+  state.layoutMenuBaseLevel = "workspace";
+  if (!preserveState) {
+    state.layoutMenuKind = null;
+    state.layoutMenuFocusedValue = null;
+  }
+  if (restoreFocus) restoreOverlayFocus(stableReturnFocusTarget(
+    returnFocus || descriptor.button,
+    elements.commandButton
+  ));
+  if (checkpoint) replaceLayoutMenuHistoryWithBase(baseLevel);
+}
+
+function returnFromLayoutMenu({ restoreFocus = true } = {}) {
+  if (!activeLayoutMenuDescriptor()) return Promise.resolve();
+  state.layoutMenuHistoryRestoreFocus = restoreFocus;
+  if (state.workspaceNavigation.pendingReturnPromise) {
+    return state.workspaceNavigation.pendingReturnPromise;
+  }
+  const current = activeWorkspaceHistoryEntry();
+  if (state.workspaceNavigation.initialized
+    && current?.route === visibleWorkspaceRoute()
+    && current.navigationLevel === "layoutMenu") {
+    const pending = new Promise((resolve) => {
+      state.workspaceNavigation.pendingReturnResolve = resolve;
+    });
+    state.workspaceNavigation.pendingReturnPromise = pending;
+    history.back();
+    return pending;
+  }
+  closeLayoutMenu({ restoreFocus });
+  state.layoutMenuHistoryRestoreFocus = true;
+  return Promise.resolve();
+}
+
+function openLayoutMenu(kind, {
+  focus = true,
+  historyMode = "pushLayoutMenu",
+  baseLevel = null,
+  restoring = false,
+} = {}) {
+  const descriptor = layoutMenuDescriptor(kind);
+  const route = visibleWorkspaceRoute();
+  if (!layoutMenuIsAvailable(descriptor, route)) return;
+  const active = activeLayoutMenuDescriptor();
+  if (active?.kind === kind) {
+    if (focus) restoreOverlayFocus(layoutMenuRestorableFocusTarget(descriptor));
     return;
   }
+  if (active) closeLayoutMenu({ restoreFocus: false });
+  state.layoutMenuReturnFocus = document.activeElement instanceof HTMLElement
+    ? document.activeElement
+    : descriptor.button;
+  const current = activeWorkspaceHistoryEntry();
+  state.layoutMenuBaseLevel = baseLevel
+    || workspaceNavigationBaseLevel(
+      current?.navigationLevel || "workspace",
+      current?.context || {}
+    );
+  state.layoutMenuKind = kind;
+  if (!restoring) state.layoutMenuFocusedValue = null;
   closeCompactToolbarMenu({ restoreFocus: false });
-  closeGridDensityPopovers({ restoreFocus: false });
   closeFilterPopover({ restoreFocus: false });
   closeJobsPopover({ restoreFocus: false });
   closePersonalModelPopover({ restoreFocus: false });
+  closeReviewSourceFilter({ restoreFocus: false });
+  closeSlimmingCatalogSourcePicker({ restoreFocus: false });
+  closeSlimmingAnalysisOptions({ restoreFocus: false });
   hideContextMenus();
-  renderSortControls();
-  elements.sortPopover.classList.remove("hidden");
-  elements.sortButton.setAttribute("aria-expanded", "true");
-  positionSortPopover();
-  restoreOverlayFocus(
-    elements.sortPopover.querySelector(`[data-sort="${CSS.escape(state.sort)}"]`)
-      || elements.sortPopover.querySelector("[data-sort]")
-  );
+  if (kind === "sort") renderSortControls();
+  else renderGridDensityControls();
+  descriptor.popover.classList.remove("hidden");
+  descriptor.button.setAttribute("aria-expanded", "true");
+  if (kind === "sort") positionSortPopover();
+  else positionGridDensityPopover(gridDensityControlForButton(descriptor.button));
+  if (historyMode !== "none") {
+    recordWorkspaceHistory(route, currentWorkspaceHistoryContext(route), historyMode);
+  }
+  if (focus) requestAnimationFrame(() => {
+    layoutMenuRestorableFocusTarget(descriptor)?.focus({ preventScroll: true });
+  });
+}
+
+function reconcileLayoutMenuFromWorkspaceHistory(route, navigationLevel, context = {}) {
+  const kind = typeof context.layoutMenuKind === "string"
+    ? context.layoutMenuKind
+    : null;
+  const descriptor = layoutMenuDescriptor(kind);
+  const shouldOpen = navigationLevel === "layoutMenu"
+    && route === visibleWorkspaceRoute()
+    && layoutMenuIsAvailable(descriptor, route);
+  const active = activeLayoutMenuDescriptor();
+  if (shouldOpen && active?.kind !== kind) {
+    if (active) closeLayoutMenu({ restoreFocus: false, checkpoint: false });
+    openLayoutMenu(kind, {
+      historyMode: "none",
+      baseLevel: layoutMenuBaseLevelFromHistory(context),
+      restoring: true,
+    });
+  } else if (!shouldOpen && active) {
+    const restoreFocus = state.layoutMenuHistoryRestoreFocus;
+    closeLayoutMenu({ restoreFocus, checkpoint: false, preserveState: true });
+    state.layoutMenuHistoryRestoreFocus = true;
+  } else if (navigationLevel === "layoutMenu" && !shouldOpen) {
+    replaceLayoutMenuHistoryWithBase(layoutMenuBaseLevelFromHistory(context));
+  }
+}
+
+function toggleSortPopover() {
+  if (activeLayoutMenuDescriptor()?.kind === "sort") {
+    void returnFromLayoutMenu();
+  } else {
+    openLayoutMenu("sort");
+  }
 }
 
 async function applyLibrarySort(sort) {
@@ -29890,7 +30111,7 @@ async function applyLibrarySort(sort) {
   const changed = state.sort !== sort;
   state.sort = sort;
   renderSortControls();
-  closeSortPopover();
+  await returnFromLayoutMenu();
   if (changed) await loadAssets();
 }
 
@@ -29899,7 +30120,7 @@ function moveSortMenuFocus(event) {
   if (!buttons.length) return;
   if (event.key === "Escape") {
     event.preventDefault();
-    closeSortPopover();
+    void returnFromLayoutMenu();
     return;
   }
   if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
@@ -29937,46 +30158,23 @@ function positionGridDensityPopover(control) {
   control.popover.style.top = `${top}px`;
 }
 
-function closeGridDensityPopovers({ restoreFocus = true } = {}) {
-  let returnFocus = null;
-  for (const control of gridDensityControls()) {
-    if (control.popover.classList.contains("hidden")) continue;
-    control.popover.classList.add("hidden");
-    control.button.setAttribute("aria-expanded", "false");
-    returnFocus ||= control.button;
-  }
-  if (restoreFocus && returnFocus) returnFocus.focus({ preventScroll: true });
+function closeGridDensityPopovers(options = {}) {
+  const active = activeLayoutMenuDescriptor();
+  if (!active || active.kind === "sort") return;
+  closeLayoutMenu(options);
 }
 
 function openGridDensityPopover(button) {
   const control = gridDensityControlForButton(button);
   if (!control || !control.popover.classList.contains("hidden")) return;
-  closeCompactToolbarMenu({ restoreFocus: false });
-  closeSortPopover({ restoreFocus: false });
-  closeGridDensityPopovers({ restoreFocus: false });
-  closeFilterPopover({ restoreFocus: false });
-  closeJobsPopover({ restoreFocus: false });
-  closePersonalModelPopover({ restoreFocus: false });
-  closeReviewSourceFilter({ restoreFocus: false });
-  closeSlimmingCatalogSourcePicker({ restoreFocus: false });
-  closeSlimmingAnalysisOptions({ restoreFocus: false });
-  hideContextMenus();
-  renderGridDensityControls();
-  control.popover.classList.remove("hidden");
-  control.button.setAttribute("aria-expanded", "true");
-  positionGridDensityPopover(control);
-  restoreOverlayFocus(
-    control.popover.querySelector(
-      `[data-grid-density="${CSS.escape(String(state.layout.density))}"]`
-    ) || control.popover.querySelector("[data-grid-density]")
-  );
+  openLayoutMenu(control.kind);
 }
 
 function toggleGridDensityPopover(button) {
   const control = gridDensityControlForButton(button);
   if (!control) return;
   if (control.popover.classList.contains("hidden")) openGridDensityPopover(button);
-  else closeGridDensityPopovers();
+  else void returnFromLayoutMenu();
 }
 
 function applyGridDensity(value) {
@@ -29987,7 +30185,7 @@ function applyGridDensity(value) {
   state.layout.density = next;
   renderLayoutPreferences();
   persistWorkspacePreferences();
-  closeGridDensityPopovers();
+  void returnFromLayoutMenu();
 }
 
 function moveGridDensityMenuFocus(event) {
@@ -29997,7 +30195,7 @@ function moveGridDensityMenuFocus(event) {
   if (!buttons.length) return;
   if (event.key === "Escape") {
     event.preventDefault();
-    closeGridDensityPopovers();
+    void returnFromLayoutMenu();
     return;
   }
   if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
@@ -30128,8 +30326,7 @@ function openFilterPopover({
     state.filterScrollTop = 0;
   }
   closeCompactToolbarMenu({ restoreFocus: false });
-  closeSortPopover({ restoreFocus: false });
-  closeGridDensityPopovers({ restoreFocus: false });
+  closeLayoutMenu({ restoreFocus: false });
   closeJobsPopover({ restoreFocus: false });
   closePersonalModelPopover({ restoreFocus: false });
   state.filterDraft = cloneFilters(state.filters);
@@ -30444,8 +30641,7 @@ function openCompactToolbarMenu({
       current?.navigationLevel || "workspace",
       current?.context || {}
     );
-  closeSortPopover({ restoreFocus: false });
-  closeGridDensityPopovers({ restoreFocus: false });
+  closeLayoutMenu({ restoreFocus: false });
   closeFilterPopover({ restoreFocus: false });
   closeJobsPopover({ restoreFocus: false });
   closePersonalModelPopover({ restoreFocus: false });
@@ -31752,8 +31948,7 @@ async function openCommandPalette({
         current?.context || {}
       );
     state.commandContext = commandContextSnapshot();
-    closeSortPopover({ restoreFocus: false });
-    closeGridDensityPopovers({ restoreFocus: false });
+    closeLayoutMenu({ restoreFocus: false });
     closeFilterPopover({ restoreFocus: false });
     closePersonalModelPopover({ restoreFocus: false });
     closeJobsPopover({ restoreFocus: false });
@@ -35198,13 +35393,13 @@ function bindEvents() {
     if (!elements.sortPopover.classList.contains("hidden")
       && !eventPath.includes(elements.sortPopover)
       && !eventPath.includes(elements.sortButton)) {
-      closeSortPopover({ restoreFocus: false });
+      void returnFromLayoutMenu({ restoreFocus: false });
     }
     for (const control of gridDensityControls()) {
       if (!control.popover.classList.contains("hidden")
         && !eventPath.includes(control.popover)
         && !eventPath.includes(control.button)) {
-        closeGridDensityPopovers({ restoreFocus: false });
+        void returnFromLayoutMenu({ restoreFocus: false });
         break;
       }
     }
@@ -35283,6 +35478,7 @@ function bindEvents() {
       || (slimmingOpen && !slimmingModalOpen);
     const jobsOpen = !elements.jobsPopover.classList.contains("hidden");
     const filterOpen = !elements.filterPopover.classList.contains("hidden");
+    const layoutMenuOpen = Boolean(activeLayoutMenuDescriptor());
     const compactToolbarOpen = compactToolbarMenuIsOpen();
     const mobileSidebarOpen = mobileSidebarOverlayIsOpen();
     const inspectorOverlayOpen = globalThis.matchMedia("(max-width: 980px)").matches
@@ -35291,6 +35487,7 @@ function bindEvents() {
       || galleryOverviewModalOpen
       || jobsOpen
       || filterOpen
+      || layoutMenuOpen
       || compactToolbarOpen
       || mobileSidebarOpen
       || inspectorOverlayOpen;
@@ -35373,18 +35570,12 @@ function bindEvents() {
         void returnFromFilterPopover();
         return;
       }
+      if (layoutMenuOpen) {
+        void returnFromLayoutMenu();
+        return;
+      }
       if (!elements.personalModelPopover.classList.contains("hidden")) {
         closePersonalModelPopover();
-        return;
-      }
-      if (gridDensityControls().some(
-        (control) => !control.popover.classList.contains("hidden")
-      )) {
-        closeGridDensityPopovers();
-        return;
-      }
-      if (!elements.sortPopover.classList.contains("hidden")) {
-        closeSortPopover();
         return;
       }
       if (!elements.reviewSourceFilterPopover.classList.contains("hidden")) {
@@ -35539,6 +35730,10 @@ function bindEvents() {
       || elements.worldMapLocationBackfillDialog.open) return;
     if (filterOpen) {
       if (trapOverlayFocus(event, elements.filterPopover)) return;
+      return;
+    } else if (layoutMenuOpen) {
+      const descriptor = activeLayoutMenuDescriptor();
+      if (descriptor && trapOverlayFocus(event, descriptor.popover)) return;
       return;
     } else if (compactToolbarOpen) {
       if (trapOverlayFocus(event, elements.compactToolbarMenu)) return;

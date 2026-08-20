@@ -2234,6 +2234,45 @@ def main():
         page.wait_for_function(
             "() => document.activeElement?.dataset.gridDensity === '3'"
         )
+        review_density_history_queries = len(asset_queries)
+        review_density_history = page.evaluate(
+            """() => {
+              const entry = history.state?.imageAllWorkspace;
+              return {
+                route: entry?.route,
+                navigationLevel: entry?.navigationLevel,
+                baseLevel: entry?.context?.layoutMenuBaseLevel,
+                kind: entry?.context?.layoutMenuKind,
+                serialized: JSON.stringify(entry),
+              };
+            }"""
+        )
+        assert review_density_history["route"] == "review"
+        assert review_density_history["navigationLevel"] == "layoutMenu"
+        assert review_density_history["baseLevel"] == "workspace"
+        assert review_density_history["kind"] == "reviewGridDensity"
+        assert "layoutMenuFocusedValue" not in review_density_history["serialized"]
+        assert "layoutMenuReturnFocus" not in review_density_history["serialized"]
+        page.evaluate("() => history.back()")
+        review_density_menu.wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'reviewGridDensityButton'"
+        )
+        page.wait_for_function(
+            "() => !state.workspaceNavigation.applyingHistory "
+            "&& !state.workspaceNavigation.pendingReturnPromise"
+        )
+        assert len(asset_queries) == review_density_history_queries
+        page.evaluate("() => history.forward()")
+        review_density_menu.wait_for()
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.gridDensity === '3'"
+        )
+        page.wait_for_function(
+            "() => !state.workspaceNavigation.applyingHistory "
+            "&& !state.workspaceNavigation.pendingReturnPromise"
+        )
+        assert len(asset_queries) == review_density_history_queries
         page.keyboard.press("Home")
         assert page.evaluate(
             "() => document.activeElement?.dataset.gridDensity === '0'"
@@ -3079,6 +3118,44 @@ def main():
         assert page.locator("#jobsButton").is_visible()
         page.evaluate("() => closeCompactToolbarMenu({ restoreFocus: false })")
         sort_button.click()
+        page.locator("#sortPopover:not(.hidden)").wait_for()
+        sort_history_queries = len(asset_queries)
+        sort_history_state = page.evaluate(
+            """() => {
+              const entry = history.state?.imageAllWorkspace;
+              return {
+                route: entry?.route,
+                navigationLevel: entry?.navigationLevel,
+                baseLevel: entry?.context?.layoutMenuBaseLevel,
+                kind: entry?.context?.layoutMenuKind,
+                serialized: JSON.stringify(entry),
+              };
+            }"""
+        )
+        assert sort_history_state["route"] == "gallery"
+        assert sort_history_state["navigationLevel"] == "layoutMenu"
+        assert sort_history_state["baseLevel"] == "workspace"
+        assert sort_history_state["kind"] == "sort"
+        assert "layoutMenuFocusedValue" not in sort_history_state["serialized"]
+        assert "layoutMenuReturnFocus" not in sort_history_state["serialized"]
+        page.evaluate("() => history.back()")
+        page.locator("#sortPopover").wait_for(state="hidden")
+        page.wait_for_function("() => document.activeElement?.id === 'sortButton'")
+        page.wait_for_function(
+            "() => !state.workspaceNavigation.applyingHistory "
+            "&& !state.workspaceNavigation.pendingReturnPromise"
+        )
+        assert len(asset_queries) == sort_history_queries
+        page.evaluate("() => history.forward()")
+        page.locator("#sortPopover:not(.hidden)").wait_for()
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.sort === 'oldest'"
+        )
+        page.wait_for_function(
+            "() => !state.workspaceNavigation.applyingHistory "
+            "&& !state.workspaceNavigation.pendingReturnPromise"
+        )
+        assert len(asset_queries) == sort_history_queries
         sort_popover_bounds = page.locator("#sortPopover").bounding_box()
         assert sort_popover_bounds is not None
         assert sort_popover_bounds["x"] >= 8
@@ -3086,6 +3163,61 @@ def main():
         assert page.evaluate("() => document.documentElement.scrollWidth <= 390")
         page.screenshot(path="/tmp/imageall-sort-menu-390.png", full_page=True)
         page.locator('#sortPopover [data-sort="oldest"]').press("Escape")
+        page.locator("#sortPopover").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => !state.workspaceNavigation.applyingHistory "
+            "&& !state.workspaceNavigation.pendingReturnPromise"
+        )
+        page.wait_for_function(
+            "() => !state.loadingAssets && !state.assetLoadPromise "
+            "&& !state.queuedAssetLoadOptions "
+            "&& state.assetRenderedQuerySignature === assetQuerySignature()"
+        )
+        gallery_density_history_queries = len(asset_queries)
+        page.locator("#gridDensityButton").click()
+        page.locator("#gridDensityPopover:not(.hidden)").wait_for()
+        gallery_density_history = page.evaluate(
+            """() => {
+              const entry = history.state?.imageAllWorkspace;
+              return {
+                route: entry?.route,
+                navigationLevel: entry?.navigationLevel,
+                kind: entry?.context?.layoutMenuKind,
+              };
+            }"""
+        )
+        assert gallery_density_history == {
+            "route": "gallery",
+            "navigationLevel": "layoutMenu",
+            "kind": "galleryGridDensity",
+        }
+        page.evaluate("() => history.back()")
+        page.locator("#gridDensityPopover").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'gridDensityButton'"
+        )
+        page.wait_for_function(
+            "() => !state.workspaceNavigation.applyingHistory "
+            "&& !state.workspaceNavigation.pendingReturnPromise"
+        )
+        assert len(asset_queries) == gallery_density_history_queries, (
+            asset_queries[gallery_density_history_queries:]
+        )
+        page.evaluate("() => history.forward()")
+        page.locator("#gridDensityPopover:not(.hidden)").wait_for()
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.gridDensity === '5'"
+        )
+        page.wait_for_function(
+            "() => !state.workspaceNavigation.applyingHistory "
+            "&& !state.workspaceNavigation.pendingReturnPromise"
+        )
+        assert len(asset_queries) == gallery_density_history_queries, (
+            asset_queries[gallery_density_history_queries:]
+        )
+        page.keyboard.press("Escape")
+        page.locator("#gridDensityPopover").wait_for(state="hidden")
+        assert page.evaluate("() => state.searchText === 'CLIP' && state.sort === 'oldest'")
         page.set_viewport_size({"width": 1440, "height": 960})
         page.locator("#appView").evaluate(
             "(element, mode) => { element.dataset.toolbarDisplayMode = mode; }",

@@ -3156,9 +3156,55 @@ def main(*, inspector_actions_only=False):
         assert slimming_density_metrics["width"] > 0, slimming_density_metrics
         assert slimming_density_metrics["height"] > 0, slimming_density_metrics
         page.locator("#slimmingGridDensityButton").click()
+        page.locator("#slimmingGridDensityPopover:not(.hidden)").wait_for()
+        slimming_density_history = page.evaluate(
+            """() => {
+              const entry = history.state?.imageAllWorkspace;
+              return {
+                route: entry?.route,
+                navigationLevel: entry?.navigationLevel,
+                baseLevel: entry?.context?.layoutMenuBaseLevel,
+                kind: entry?.context?.layoutMenuKind,
+                serialized: JSON.stringify(entry),
+              };
+            }"""
+        )
+        assert slimming_density_history["route"] == "slimming"
+        assert slimming_density_history["navigationLevel"] == "layoutMenu"
+        assert slimming_density_history["baseLevel"] == "workspace"
+        assert slimming_density_history["kind"] == "slimmingGridDensity"
+        assert "layoutMenuFocusedValue" not in slimming_density_history["serialized"]
+        assert "layoutMenuReturnFocus" not in slimming_density_history["serialized"]
+        page.evaluate("() => history.back()")
+        page.locator("#slimmingGridDensityPopover").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'slimmingGridDensityButton'"
+        )
+        page.wait_for_function(
+            "() => !state.workspaceNavigation.applyingHistory "
+            "&& !state.workspaceNavigation.pendingReturnPromise"
+        )
+        assert page.locator(
+            "#slimmingMemberGrid > .slimming-member-card.selected"
+        ).evaluate_all(
+            "cards => cards.map(card => card.dataset.slimmingMemberId)"
+        ) == selection_before_layout
+        assert page.locator("#slimmingMemberGrid").evaluate(
+            "element => element.scrollTop"
+        ) == slimming_scroll_before_layout
+        page.evaluate("() => history.forward()")
+        page.locator("#slimmingGridDensityPopover:not(.hidden)").wait_for()
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.gridDensity === '3'"
+        )
+        page.wait_for_function(
+            "() => !state.workspaceNavigation.applyingHistory "
+            "&& !state.workspaceNavigation.pendingReturnPromise"
+        )
         page.locator(
             '#slimmingGridDensityPopover:not(.hidden) [data-grid-density="8"]'
         ).click()
+        page.locator("#slimmingGridDensityPopover").wait_for(state="hidden")
         assert page.locator("#gridDensityButton").get_attribute("aria-label") \
             == "缩略图大小：巨大"
         assert page.evaluate(

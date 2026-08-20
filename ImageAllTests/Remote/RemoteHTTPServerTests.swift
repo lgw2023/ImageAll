@@ -3299,6 +3299,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("\"pushCommandPalette\""))
         XCTAssertTrue(script.contains("\"pushJobs\""))
         XCTAssertTrue(script.contains("\"pushFilter\""))
+        XCTAssertTrue(script.contains("\"pushLayoutMenu\""))
         XCTAssertTrue(script.contains("\"pushGeneralSettings\""))
         XCTAssertTrue(script.contains("\"pushSuggestionThreshold\""))
         XCTAssertTrue(script.contains("\"pushKeyboardShortcuts\""))
@@ -3323,6 +3324,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function reconcileCommandPaletteFromWorkspaceHistory"))
         XCTAssertTrue(script.contains("function reconcileJobsPopoverFromWorkspaceHistory"))
         XCTAssertTrue(script.contains("function reconcileFilterPopoverFromWorkspaceHistory"))
+        XCTAssertTrue(script.contains("function reconcileLayoutMenuFromWorkspaceHistory"))
         XCTAssertTrue(script.contains("function reconcileGeneralSettingsFromWorkspaceHistory"))
         XCTAssertTrue(script.contains("function reconcileKeyboardShortcutsFromWorkspaceHistory"))
         XCTAssertTrue(script.contains("function reconcileSourceManagerFromWorkspaceHistory"))
@@ -3346,6 +3348,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function returnFromCommandPalette"))
         XCTAssertTrue(script.contains("function returnFromJobsPopover"))
         XCTAssertTrue(script.contains("function returnFromFilterPopover"))
+        XCTAssertTrue(script.contains("function returnFromLayoutMenu"))
         XCTAssertTrue(script.contains("function returnFromGeneralSettings"))
         XCTAssertTrue(script.contains("function returnFromSuggestionThreshold"))
         XCTAssertTrue(script.contains("function returnFromKeyboardShortcuts"))
@@ -3471,7 +3474,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function openJobsPopover"))
         XCTAssertTrue(script.contains("function togglePersonalModelPopover"))
         XCTAssertTrue(script.contains("function openCompactToolbarMenu"))
-        XCTAssertTrue(script.contains("closeSortPopover({ restoreFocus: false });"))
+        XCTAssertTrue(script.contains("closeLayoutMenu({ restoreFocus: false });"))
     }
 
     func testWebRootLoadsWithoutAuthenticationAndUsesBrowserSecurityHeaders() async throws {
