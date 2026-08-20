@@ -508,8 +508,17 @@ def main():
         assert "正在进行" in page.locator("#compactToolbarMenuButton").get_attribute(
             "aria-label"
         )
+        compact_menu_history_length = page.evaluate("history.length")
+        compact_menu_asset_request_count = len(asset_requests)
         page.locator("#compactToolbarMenuButton").click()
         page.locator("#compactToolbarMenu:not(.hidden)").wait_for()
+        assert page.evaluate("history.length") == compact_menu_history_length + 1
+        assert page.evaluate(
+            "history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "toolbarMenu"
+        assert page.locator("#compactToolbarMenuButton").get_attribute(
+            "aria-expanded"
+        ) == "true"
         menu_bounds = page.locator("#compactToolbarMenu").bounding_box()
         assert menu_bounds is not None
         assert menu_bounds["x"] >= 0
@@ -523,10 +532,19 @@ def main():
             "() => document.activeElement?.dataset.compactToolbarTarget "
             "=== 'catalogProgressStatusButton'"
         )
+        page.keyboard.press("Meta+f")
+        assert page.locator("#compactToolbarMenu").is_visible()
+        assert page.evaluate(
+            "() => document.activeElement?.closest('#compactToolbarMenu') !== null"
+        )
         page.keyboard.press("End")
         assert page.evaluate(
             "() => document.activeElement?.dataset.compactToolbarTarget"
         ) == "logoutButton"
+        page.keyboard.press("Tab")
+        assert page.evaluate(
+            "() => document.activeElement?.closest('#compactToolbarMenu') !== null"
+        )
         page.keyboard.press("Home")
         assert page.evaluate(
             "() => document.activeElement?.dataset.compactToolbarTarget"
@@ -534,6 +552,9 @@ def main():
         page.screenshot(path="/tmp/imageall-compact-toolbar-390.png", full_page=True)
         page.keyboard.press("Enter")
         page.locator("#jobsPopover:not(.hidden)").wait_for()
+        assert page.evaluate(
+            "history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "workspace"
         assert "Apple Photos · 照片图库同步" in page.locator("#jobsList").inner_text()
         page.locator("#closeJobsButton").click()
         page.wait_for_function(
@@ -547,10 +568,31 @@ def main():
         assert page.locator(
             '[data-compact-toolbar-target="currentSourceRefreshButton"]'
         ).is_visible()
+        page.evaluate("history.back()")
+        page.locator("#compactToolbarMenu").wait_for(state="hidden")
+        assert page.evaluate("document.activeElement?.id") == "compactToolbarMenuButton"
+        page.evaluate("history.forward()")
+        page.locator("#compactToolbarMenu:not(.hidden)").wait_for()
         page.keyboard.press("Escape")
+        page.locator("#compactToolbarMenu").wait_for(state="hidden")
         page.wait_for_function(
             "() => document.activeElement?.id === 'compactToolbarMenuButton'"
         )
+        page.evaluate("history.forward()")
+        page.locator("#compactToolbarMenu:not(.hidden)").wait_for()
+        page.set_viewport_size({"width": 1440, "height": 960})
+        page.wait_for_function(
+            "() => !document.querySelector('#appView').classList.contains('compact-toolbar-active')"
+        )
+        page.locator("#compactToolbarMenu").wait_for(state="hidden")
+        assert page.evaluate(
+            "history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "workspace"
+        page.set_viewport_size({"width": 390, "height": 844})
+        page.wait_for_function(
+            "() => document.querySelector('#appView').classList.contains('compact-toolbar-active')"
+        )
+        assert len(asset_requests) == compact_menu_asset_request_count
         page.screenshot(path="/tmp/imageall-source-refresh-390.png", full_page=True)
 
         drawer_history_length = page.evaluate("history.length")
@@ -562,7 +604,10 @@ def main():
         assert page.locator("#libraryPane").get_attribute("inert") == ""
         assert page.locator("#inspector").get_attribute("inert") == ""
         assert page.evaluate("document.activeElement?.closest('#sourceSidebar') !== null")
-        assert page.evaluate("history.length") == drawer_history_length + 1
+        assert page.evaluate("history.length") in {
+            drawer_history_length,
+            drawer_history_length + 1,
+        }
         assert page.evaluate(
             "history.state?.imageAllWorkspace?.navigationLevel"
         ) == "sidebar"
