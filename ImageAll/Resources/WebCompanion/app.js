@@ -1467,6 +1467,9 @@ const state = {
   commandIndex: 0,
   commandReturnFocus: null,
   commandContext: null,
+  commandPaletteBaseLevel: "workspace",
+  commandPaletteHistoryRestoreFocus: true,
+  commandPaletteOpening: false,
   contextAssetID: null,
   contextSourceID: null,
   contextTagID: null,
@@ -1844,7 +1847,9 @@ function closeOverlays() {
   closeReviewSourceFilter({ restoreFocus: false });
   closeMobileSidebar({ restoreFocus: false, checkpoint: false });
   hideContextMenus();
-  if (elements.commandPalette.open) closeCommandPalette({ restoreFocus: false });
+  if (elements.commandPalette.open) {
+    closeCommandPalette({ restoreFocus: false, checkpoint: false });
+  }
   if (elements.shortcutDialog.open) elements.shortcutDialog.close();
   if (elements.newTagDialog.open) closeNewTagDialog();
   if (elements.tagManagerDialog.open) elements.tagManagerDialog.close();
@@ -1917,6 +1922,9 @@ function closeOverlays() {
   state.lightboxReturnFocus = null;
   state.commandReturnFocus = null;
   state.commandContext = null;
+  state.commandPaletteBaseLevel = "workspace";
+  state.commandPaletteHistoryRestoreFocus = true;
+  state.commandPaletteOpening = false;
 }
 
 function persistentHelpControl(target) {
@@ -2337,9 +2345,13 @@ function workspaceLightboxContext(route) {
 }
 
 function workspaceHistoryEntry(route, context = null, navigationLevel = "workspace") {
-  const safeNavigationLevel = ["toolbarMenu", "sidebar", "inspector", "lightbox"].includes(
-    navigationLevel
-  )
+  const safeNavigationLevel = [
+    "commandPalette",
+    "toolbarMenu",
+    "sidebar",
+    "inspector",
+    "lightbox",
+  ].includes(navigationLevel)
     ? navigationLevel
     : "workspace";
   return {
@@ -2351,6 +2363,11 @@ function workspaceHistoryEntry(route, context = null, navigationLevel = "workspa
 }
 
 function workspaceNavigationBaseLevel(navigationLevel, context = {}) {
+  if (navigationLevel === "commandPalette") {
+    return ["sidebar", "inspector", "lightbox"].includes(context.commandPaletteBaseLevel)
+      ? context.commandPaletteBaseLevel
+      : "workspace";
+  }
   if (navigationLevel !== "toolbarMenu") return navigationLevel;
   return ["sidebar", "inspector", "lightbox"].includes(context.toolbarMenuBaseLevel)
     ? context.toolbarMenuBaseLevel
@@ -2397,9 +2414,15 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
   if (!state.workspaceNavigation.initialized
     || mode === "none") return;
   const current = activeWorkspaceHistoryEntry();
+  const hasCommandPalette = elements.commandPalette.open;
   const hasToolbarMenu = compactToolbarMenuIsOpen();
   const hasSidebar = route === "gallery" && mobileSidebarOverlayIsOpen();
-  const historyContext = hasToolbarMenu
+  const historyContext = hasCommandPalette
+    ? {
+        ...(context || {}),
+        commandPaletteBaseLevel: state.commandPaletteBaseLevel,
+      }
+    : hasToolbarMenu
     ? {
         ...(context || {}),
         toolbarMenuBaseLevel: state.compactToolbarBaseLevel,
@@ -2407,7 +2430,10 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
     : context;
   const hasLightbox = Boolean(workspaceLightboxHistoryContext(route, historyContext));
   const hasInspector = route === "gallery" && galleryInspectorOverlayIsOpen();
-  const navigationLevel = hasToolbarMenu
+  const navigationLevel = hasCommandPalette
+    && (mode === "pushCommandPalette" || current?.navigationLevel === "commandPalette")
+    ? "commandPalette"
+    : hasToolbarMenu
     && (mode === "pushToolbarMenu" || current?.navigationLevel === "toolbarMenu")
     ? "toolbarMenu"
     : hasSidebar
@@ -2424,7 +2450,13 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
     ...(history.state || {}),
     [WORKSPACE_HISTORY_KEY]: workspaceHistoryEntry(route, historyContext, navigationLevel),
   };
-  if (["pushToolbarMenu", "pushSidebar", "pushLightbox", "pushInspector"].includes(mode)) {
+  if ([
+    "pushCommandPalette",
+    "pushToolbarMenu",
+    "pushSidebar",
+    "pushLightbox",
+    "pushInspector",
+  ].includes(mode)) {
     history.pushState(nextState, "", location.href);
   } else if (mode === "replace" || current?.route === route) {
     history.replaceState(nextState, "", location.href);
@@ -2703,6 +2735,7 @@ function closeVisibleWorkspaceOneLevel({ restoreFocus = true } = {}) {
 }
 
 function closeAllWorkspacesToGallery({ restoreFocus = true } = {}) {
+  closeCommandPalette({ restoreFocus: false, checkpoint: false });
   closeCompactToolbarMenu({ restoreFocus: false, checkpoint: false });
   closeMobileSidebar({ restoreFocus: false, checkpoint: false });
   if (!elements.lightbox.classList.contains("hidden")) closeLightbox({ restoreFocus });
@@ -2735,6 +2768,11 @@ async function applyWorkspaceHistoryEntry(entry) {
         navigationLevel,
         context
       );
+      await reconcileCommandPaletteFromWorkspaceHistory(
+        target,
+        navigationLevel,
+        context
+      );
       return;
     }
     if (target === "gallery") {
@@ -2750,6 +2788,11 @@ async function applyWorkspaceHistoryEntry(entry) {
       reconcileMobileSidebarFromWorkspaceHistory("gallery", baseLevel, context);
       reconcileLightboxFromWorkspaceHistory("gallery", context);
       reconcileCompactToolbarMenuFromWorkspaceHistory(
+        "gallery",
+        navigationLevel,
+        context
+      );
+      await reconcileCommandPaletteFromWorkspaceHistory(
         "gallery",
         navigationLevel,
         context
@@ -2874,6 +2917,11 @@ async function applyWorkspaceHistoryEntry(entry) {
       await openGalleryOverviewWorkspace({ historyMode: "none" });
     }
     reconcileCompactToolbarMenuFromWorkspaceHistory(
+      target,
+      activeEntry?.navigationLevel || "workspace",
+      context
+    );
+    await reconcileCommandPaletteFromWorkspaceHistory(
       target,
       activeEntry?.navigationLevel || "workspace",
       context
@@ -25667,6 +25715,11 @@ async function loadWorkspace({ restoreHistory = false } = {}) {
       restoreGalleryNavigationLevel,
       restoreEntry?.context || {}
     );
+    await reconcileCommandPaletteFromWorkspaceHistory(
+      "gallery",
+      restoreGalleryNavigationLevel,
+      restoreEntry?.context || {}
+    );
   }
   if (supportsLibrarySlimming()) {
     await Promise.all([
@@ -26155,6 +26208,12 @@ function resetWorkspaceSessionState() {
   state.compactToolbarReturnFocus = null;
   state.compactToolbarBaseLevel = "workspace";
   state.compactToolbarHistoryRestoreFocus = true;
+  closeCommandPalette({ restoreFocus: false, checkpoint: false });
+  state.commandReturnFocus = null;
+  state.commandContext = null;
+  state.commandPaletteBaseLevel = "workspace";
+  state.commandPaletteHistoryRestoreFocus = true;
+  state.commandPaletteOpening = false;
   state.sourceManagerReturnFocus = null;
   state.storageReturnFocus = null;
   clearTimeout(state.storageMaintenance.pollTimer);
@@ -26851,7 +26910,7 @@ function compactToolbarBaseLevelFromHistory(context = {}) {
     : "workspace";
 }
 
-function visibleCompactToolbarBaseLevel(route, requestedLevel) {
+function visibleWorkspaceNavigationBaseLevel(route, requestedLevel) {
   if (requestedLevel === "sidebar" && route === "gallery" && mobileSidebarOverlayIsOpen()) {
     return "sidebar";
   }
@@ -26876,7 +26935,7 @@ function replaceCompactToolbarHistoryWithBase(baseLevel) {
   if (current?.route !== route || current.navigationLevel !== "toolbarMenu") return;
   const context = currentWorkspaceHistoryContext(route);
   if (context && typeof context === "object") delete context.toolbarMenuBaseLevel;
-  const navigationLevel = visibleCompactToolbarBaseLevel(route, baseLevel);
+  const navigationLevel = visibleWorkspaceNavigationBaseLevel(route, baseLevel);
   history.replaceState({
     ...(history.state || {}),
     [WORKSPACE_HISTORY_KEY]: workspaceHistoryEntry(route, context, navigationLevel),
@@ -27189,12 +27248,80 @@ function focusWorkspacePrimaryControl(route = visibleWorkspaceRoute()) {
   restoreOverlayFocus(target || elements.commandButton);
 }
 
-function closeCommandPalette({ restoreFocus = true } = {}) {
+function commandPaletteBaseLevelFromHistory(context = {}) {
+  return ["sidebar", "inspector", "lightbox"].includes(context.commandPaletteBaseLevel)
+    ? context.commandPaletteBaseLevel
+    : "workspace";
+}
+
+function replaceCommandPaletteHistoryWithBase(baseLevel) {
+  if (!state.workspaceNavigation.initialized
+    || elements.appView.classList.contains("hidden")) return;
+  const current = activeWorkspaceHistoryEntry();
+  const route = visibleWorkspaceRoute();
+  if (current?.route !== route || current.navigationLevel !== "commandPalette") return;
+  const context = currentWorkspaceHistoryContext(route);
+  if (context && typeof context === "object") delete context.commandPaletteBaseLevel;
+  const navigationLevel = visibleWorkspaceNavigationBaseLevel(route, baseLevel);
+  history.replaceState({
+    ...(history.state || {}),
+    [WORKSPACE_HISTORY_KEY]: workspaceHistoryEntry(route, context, navigationLevel),
+  }, "", location.href);
+}
+
+function closeCommandPalette({ restoreFocus = true, checkpoint = true } = {}) {
+  if (!elements.commandPalette.open) return;
+  const baseLevel = state.commandPaletteBaseLevel;
   const returnFocus = state.commandReturnFocus;
   state.commandReturnFocus = null;
   state.commandContext = null;
-  if (elements.commandPalette.open) elements.commandPalette.close();
-  if (restoreFocus) restoreOverlayFocus(returnFocus);
+  state.commandPaletteBaseLevel = "workspace";
+  elements.commandPalette.close();
+  if (restoreFocus) {
+    restoreOverlayFocus(stableReturnFocusTarget(returnFocus, elements.commandButton));
+  }
+  if (checkpoint) replaceCommandPaletteHistoryWithBase(baseLevel);
+}
+
+function returnFromCommandPalette({ restoreFocus = true } = {}) {
+  if (!elements.commandPalette.open) return Promise.resolve();
+  state.commandPaletteHistoryRestoreFocus = restoreFocus;
+  if (state.workspaceNavigation.pendingReturnPromise) {
+    return state.workspaceNavigation.pendingReturnPromise;
+  }
+  const current = activeWorkspaceHistoryEntry();
+  if (state.workspaceNavigation.initialized
+    && current?.route === visibleWorkspaceRoute()
+    && current.navigationLevel === "commandPalette") {
+    const pending = new Promise((resolve) => {
+      state.workspaceNavigation.pendingReturnResolve = resolve;
+    });
+    state.workspaceNavigation.pendingReturnPromise = pending;
+    history.back();
+    return pending;
+  }
+  closeCommandPalette({ restoreFocus });
+  state.commandPaletteHistoryRestoreFocus = true;
+  return Promise.resolve();
+}
+
+async function reconcileCommandPaletteFromWorkspaceHistory(
+  route,
+  navigationLevel,
+  context = {}
+) {
+  const shouldOpen = navigationLevel === "commandPalette"
+    && route === visibleWorkspaceRoute();
+  if (shouldOpen) {
+    await openCommandPalette({
+      historyMode: "none",
+      baseLevel: commandPaletteBaseLevelFromHistory(context),
+    });
+  } else if (elements.commandPalette.open) {
+    const restoreFocus = state.commandPaletteHistoryRestoreFocus;
+    closeCommandPalette({ restoreFocus, checkpoint: false });
+    state.commandPaletteHistoryRestoreFocus = true;
+  }
 }
 
 async function navigateCommandToGallery({ focus = false } = {}) {
@@ -27823,7 +27950,7 @@ async function executeCommand(commandID) {
   const command = availableCommands().find((item) => item.id === commandID);
   if (!command || command.disabled) return;
   const contextRoute = commandContextRoute();
-  closeCommandPalette({ restoreFocus: false });
+  await returnFromCommandPalette({ restoreFocus: false });
   if (commandID.startsWith("media:")) {
     await switchCommandMediaKind(commandID.slice(6));
     return;
@@ -28049,28 +28176,51 @@ async function executeCommand(commandID) {
   }
 }
 
-function openCommandPalette() {
-  if (elements.commandPalette.open) return;
-  state.commandReturnFocus = document.activeElement instanceof HTMLElement
+async function openCommandPalette({
+  focus = true,
+  historyMode = "pushCommandPalette",
+  baseLevel = null,
+} = {}) {
+  if (elements.commandPalette.open || state.commandPaletteOpening) return;
+  state.commandPaletteOpening = true;
+  const returnFocus = document.activeElement instanceof HTMLElement
     ? document.activeElement
     : null;
-  state.commandContext = commandContextSnapshot();
-  closeCompactToolbarMenu({ restoreFocus: false });
-  closeSortPopover({ restoreFocus: false });
-  closeGridDensityPopovers({ restoreFocus: false });
-  elements.filterPopover.classList.add("hidden");
-  elements.filterButton.setAttribute("aria-expanded", "false");
-  closePersonalModelPopover({ restoreFocus: false });
-  closeJobsPopover({ restoreFocus: false });
-  closeReviewSourceFilter({ restoreFocus: false });
-  closeSlimmingAnalysisOptions({ restoreFocus: false });
-  hideContextMenus();
-  elements.commandSearchInput.value = "";
-  state.commandIndex = 0;
-  elements.commandContextLabel.textContent = `当前：${state.commandContext.label}`;
-  renderCommandItems();
-  elements.commandPalette.showModal();
-  elements.commandSearchInput.focus({ preventScroll: true });
+  try {
+    if (compactToolbarMenuIsOpen()) {
+      await returnFromCompactToolbarMenu({ restoreFocus: false });
+    }
+    if (elements.commandPalette.open || elements.appView.classList.contains("hidden")) return;
+    state.commandReturnFocus = returnFocus;
+    const current = activeWorkspaceHistoryEntry();
+    state.commandPaletteBaseLevel = baseLevel
+      || workspaceNavigationBaseLevel(
+        current?.navigationLevel || "workspace",
+        current?.context || {}
+      );
+    state.commandContext = commandContextSnapshot();
+    closeSortPopover({ restoreFocus: false });
+    closeGridDensityPopovers({ restoreFocus: false });
+    elements.filterPopover.classList.add("hidden");
+    elements.filterButton.setAttribute("aria-expanded", "false");
+    closePersonalModelPopover({ restoreFocus: false });
+    closeJobsPopover({ restoreFocus: false });
+    closeReviewSourceFilter({ restoreFocus: false });
+    closeSlimmingAnalysisOptions({ restoreFocus: false });
+    hideContextMenus();
+    elements.commandSearchInput.value = "";
+    state.commandIndex = 0;
+    elements.commandContextLabel.textContent = `当前：${state.commandContext.label}`;
+    renderCommandItems();
+    elements.commandPalette.showModal();
+    if (historyMode !== "none") {
+      const route = visibleWorkspaceRoute();
+      recordWorkspaceHistory(route, currentWorkspaceHistoryContext(route), historyMode);
+    }
+    if (focus) elements.commandSearchInput.focus({ preventScroll: true });
+  } finally {
+    state.commandPaletteOpening = false;
+  }
 }
 
 function hideContextMenu() {
@@ -31135,7 +31285,9 @@ function bindEvents() {
     const button = event.target.closest("[data-action]");
     if (button && !button.disabled) void applyLightboxReviewDecision(button.dataset.action);
   });
-  elements.commandButton.addEventListener("click", openCommandPalette);
+  elements.commandButton.addEventListener("click", () => {
+    void openCommandPalette();
+  });
   elements.shortcutButton.addEventListener("click", () => elements.shortcutDialog.showModal());
   elements.compactToolbarMenuButton.addEventListener("click", toggleCompactToolbarMenu);
   elements.compactToolbarMenu.addEventListener("click", async (event) => {
@@ -31201,7 +31353,7 @@ function bindEvents() {
   });
   elements.commandPalette.addEventListener("cancel", (event) => {
     event.preventDefault();
-    closeCommandPalette();
+    void returnFromCommandPalette();
   });
   elements.assetContextMenu.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-context-action]");
@@ -31569,9 +31721,9 @@ function bindEvents() {
       }
       event.preventDefault();
       if (elements.commandPalette.open) {
-        closeCommandPalette();
+        void returnFromCommandPalette();
       } else {
-        openCommandPalette();
+        void openCommandPalette();
       }
       return;
     }
@@ -31681,7 +31833,7 @@ function bindEvents() {
         return;
       }
       if (elements.commandPalette.open) {
-        closeCommandPalette();
+        void returnFromCommandPalette();
         return;
       }
       if (elements.shortcutDialog.open) {

@@ -330,14 +330,38 @@ def main():
         assert dimensions["scroll"] <= dimensions["viewport"], dimensions
         assert page.locator("#galleryOverviewTimeline").is_visible()
         page.locator("#refreshGalleryOverviewButton").focus()
+        command_history_length = page.evaluate("() => history.length")
+        command_overview_requests = overview_requests
         page.keyboard.press("Meta+K")
+        page.locator("#commandPalette[open]").wait_for()
+        assert page.evaluate("() => history.length") == command_history_length + 1
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "commandPalette"
         command_bounds = page.locator("#commandPalette").bounding_box()
         assert command_bounds is not None
         assert command_bounds["x"] >= 0
         assert command_bounds["x"] + command_bounds["width"] <= 390
         assert page.locator("#commandContextLabel").inner_text() == "当前：图库总览"
         page.screenshot(path="/tmp/imageall-command-palette-overview-390.png", full_page=True)
+        private_command_search = "私密命令 /Users/example/Photos"
+        page.locator("#commandSearchInput").fill(private_command_search)
+        assert private_command_search not in page.evaluate("() => JSON.stringify(history.state)")
+        page.evaluate("() => history.back()")
+        page.locator("#commandPalette").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'refreshGalleryOverviewButton'"
+        )
+        page.evaluate("() => history.forward()")
+        page.locator("#commandPalette[open]").wait_for()
+        assert page.locator("#commandContextLabel").inner_text() == "当前：图库总览"
+        assert page.locator("#commandSearchInput").input_value() == ""
         page.keyboard.press("Escape")
+        page.locator("#commandPalette").wait_for(state="hidden")
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "workspace"
+        assert overview_requests == command_overview_requests
         page.screenshot(path="/tmp/imageall-gallery-overview-synthetic.png", full_page=True)
 
         overview = {

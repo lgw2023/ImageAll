@@ -368,6 +368,29 @@ def main():
         assert page.locator("#inspector").evaluate(
             "node => node.classList.contains('open')"
         )
+        page.keyboard.press("Meta+k")
+        page.locator("#commandPalette[open]").wait_for()
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "commandPalette"
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.context?.commandPaletteBaseLevel"
+        ) == "sidebar"
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.context?.gallerySidebarBaseLevel"
+        ) == "inspector"
+        page.evaluate("() => history.back()")
+        page.locator("#commandPalette").wait_for(state="hidden")
+        assert page.locator("#sourceSidebar").evaluate(
+            "node => node.classList.contains('open')"
+        )
+        page.evaluate("() => history.forward()")
+        page.locator("#commandPalette[open]").wait_for()
+        page.keyboard.press("Escape")
+        page.locator("#commandPalette").wait_for(state="hidden")
+        assert page.locator("#sourceSidebar").evaluate(
+            "node => node.classList.contains('open')"
+        )
         page.locator("#compactToolbarMenuButton").click()
         page.locator("#compactToolbarMenu:not(.hidden)").wait_for()
         assert page.evaluate(
