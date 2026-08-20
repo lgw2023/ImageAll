@@ -294,22 +294,36 @@ function selectCluster(object) {
   post({ type: "clusterClicked", clusterID: object.id });
 }
 
-function postViewport() {
+function currentViewport() {
   const bounds = map.getBounds();
   const center = map.getCenter();
-  post({
-    type: "cameraChanged",
-    viewport: {
-      west: bounds.getWest(),
-      south: bounds.getSouth(),
-      east: bounds.getEast(),
-      north: bounds.getNorth(),
-      centerLongitude: center.lng,
-      centerLatitude: center.lat,
-      zoom: map.getZoom(),
-      bearing: map.getBearing(),
-      pitch: map.getPitch()
-    }
+  return {
+    west: bounds.getWest(),
+    south: bounds.getSouth(),
+    east: bounds.getEast(),
+    north: bounds.getNorth(),
+    centerLongitude: center.lng,
+    centerLatitude: center.lat,
+    zoom: map.getZoom(),
+    bearing: map.getBearing(),
+    pitch: map.getPitch()
+  };
+}
+
+function postViewport() {
+  post({ type: "cameraChanged", viewport: currentViewport() });
+}
+
+function restoreViewport(viewport) {
+  if (!viewport || typeof viewport !== "object") return;
+  map.jumpTo({
+    center: [
+      Math.max(-180, Math.min(180, finiteNumber(viewport.centerLongitude, map.getCenter().lng))),
+      Math.max(-85, Math.min(85, finiteNumber(viewport.centerLatitude, map.getCenter().lat)))
+    ],
+    zoom: Math.max(0.7, Math.min(12, finiteNumber(viewport.zoom, map.getZoom()))),
+    bearing: finiteNumber(viewport.bearing, map.getBearing()),
+    pitch: Math.max(0, Math.min(78, finiteNumber(viewport.pitch, map.getPitch())))
   });
 }
 
@@ -363,8 +377,9 @@ globalThis.ImageAllWorldMap = Object.freeze({
       : null;
     renderLayers();
   },
+  restoreViewport,
   snapshotState() {
-    return { selectedClusterID };
+    return { selectedClusterID, viewport: currentViewport() };
   },
   rendererStatus() {
     return { ready: rendererReady, webgl2Available: webGL2Available() };

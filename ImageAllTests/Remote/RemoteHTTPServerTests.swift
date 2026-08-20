@@ -2296,6 +2296,10 @@ final class RemoteHTTPServerTests: XCTestCase {
             decoding: try XCTUnwrap(store.asset(for: "/service-worker.js")?.body),
             as: UTF8.self
         )
+        let worldMapScript = String(
+            decoding: try XCTUnwrap(store.asset(for: "/world-map/world-map.js")?.body),
+            as: UTF8.self
+        )
 
         for controlID in [
             "filterPopover",
@@ -2695,6 +2699,8 @@ final class RemoteHTTPServerTests: XCTestCase {
             "worldMapWorkspace",
             "worldMapFrame",
             "worldMapClusterMetric",
+            "worldMapViewportReadout",
+            "worldMapFooterPrompt",
             "worldMapDetail",
             "worldMapPhotoStrip",
             "openWorldMapLocationBackfillButton",
@@ -3484,6 +3490,14 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(stylesheet.contains(".app-shell.mobile-sidebar-open #sidebarToggle"))
         XCTAssertTrue(script.contains("galleryContext: currentGalleryHistoryContext()"))
         XCTAssertTrue(script.contains("loadWorldMapSnapshot({ bounds: state.worldMap.viewport })"))
+        XCTAssertTrue(script.contains("function renderWorldMapFooter()"))
+        XCTAssertTrue(script.contains("function restorePendingWorldMapViewport()"))
+        XCTAssertTrue(script.contains("state.worldMap.viewportRefreshSuppression = target"))
+        XCTAssertTrue(stylesheet.contains(".world-map-footer"))
+        XCTAssertTrue(stylesheet.contains(".world-map-viewport-readout"))
+        XCTAssertTrue(worldMapScript.contains("function currentViewport()"))
+        XCTAssertTrue(worldMapScript.contains("function restoreViewport(viewport)"))
+        XCTAssertTrue(worldMapScript.contains("restoreViewport,"))
         XCTAssertTrue(script.contains("elements.lightboxVideo.currentTime"))
         XCTAssertTrue(script.contains("elements.lightboxVideo.pause()"))
         XCTAssertTrue(script.contains("\"loadedmetadata\""))

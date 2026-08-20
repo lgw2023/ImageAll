@@ -90,12 +90,32 @@ let browser;
       <button id="syntheticCluster" hidden>上海照片塔</button>
       <script>
         const button = document.getElementById("syntheticCluster");
+        let viewport = {
+          west: 118, south: 30, east: 123, north: 33,
+          centerLongitude: 121, centerLatitude: 31, zoom: 6, bearing: 0, pitch: 42
+        };
+        function postViewport() {
+          document.body.dataset.viewport = JSON.stringify(viewport);
+          parent.postMessage({
+            type: "imageall-world-map-event",
+            payload: { type: "cameraChanged", viewport }
+          }, location.origin);
+        }
         globalThis.ImageAllWorldMap = {
           updateClusters(payload) {
             button.hidden = !(payload.clusters || []).some((item) => item.id === "shanghai");
           },
           restoreSelection(clusterID) { button.dataset.selected = clusterID || ""; },
+          restoreViewport(nextViewport) {
+            viewport = { ...nextViewport };
+            postViewport();
+          },
+          snapshotState() { return { viewport: { ...viewport } }; },
           rendererStatus() { return { ready: true, webgl2Available: true }; }
+        };
+        globalThis.setSyntheticViewport = (nextViewport) => {
+          viewport = { ...nextViewport };
+          postViewport();
         };
         button.addEventListener("click", () => parent.postMessage({
           type: "imageall-world-map-event",
@@ -105,13 +125,7 @@ let browser;
           type: "imageall-world-map-event",
           payload: { type: "ready", webgl2Available: true }
         }, location.origin);
-        parent.postMessage({
-          type: "imageall-world-map-event",
-          payload: { type: "cameraChanged", viewport: {
-            west: 118, south: 30, east: 123, north: 33,
-            centerLongitude: 121, centerLatitude: 31, zoom: 6, bearing: 0, pitch: 42
-          } }
-        }, location.origin);
+        postViewport();
       <\/script></body></html>`,
   }));
 
@@ -377,6 +391,14 @@ let browser;
   assert.equal(await page.locator("#worldMapWorkspace").getAttribute("aria-modal"), null);
   assert.equal(await page.locator("#closeWorldMapButton").isHidden(), true);
   assert.equal(await page.locator("#libraryTitle").textContent(), "照片世界");
+  assert.equal(
+    await page.locator("#worldMapViewportReadout").textContent(),
+    "ZOOM 6.0 · PITCH 42° · BEARING 0°"
+  );
+  assert.equal(
+    await page.locator("#worldMapFooterPrompt").textContent(),
+    "选择一座照片建筑查看构成"
+  );
   const mapBounds = await page.locator("#worldMapWorkspace").boundingBox();
   const libraryBounds = await page.locator("#libraryPane").boundingBox();
   assert.ok(mapBounds && libraryBounds);
@@ -405,9 +427,21 @@ let browser;
   await page.locator("#worldMapNavigationButton").click();
   await page.locator("#worldMapWorkspace:not(.hidden)").waitFor();
   await page.locator("#worldMapClusterMetric").getByText("1", { exact: true }).waitFor();
+  const snapshotRequestsBeforeSearch = snapshotRequestCount;
   await page.locator("#refreshWorldMapButton").focus();
   await page.keyboard.press("Meta+F");
-  assert.equal(await page.evaluate(() => document.activeElement?.id), "refreshWorldMapButton");
+  await page.locator("#worldMapWorkspace").waitFor({ state: "hidden" });
+  await page.waitForFunction(() => document.activeElement?.id === "searchInput");
+  assert.equal(await page.evaluate(() => history.state?.imageAllWorkspace?.route), "gallery");
+  assert.equal(snapshotRequestCount, snapshotRequestsBeforeSearch);
+  await page.evaluate(() => history.back());
+  await page.locator("#worldMapWorkspace:not(.hidden)").waitFor();
+  await page.waitForFunction(() => document.activeElement?.id === "refreshWorldMapButton");
+  assert.equal(
+    await page.locator("#worldMapViewportReadout").textContent(),
+    "ZOOM 6.0 · PITCH 42° · BEARING 0°"
+  );
+  assert.equal(snapshotRequestCount, snapshotRequestsBeforeSearch);
   await page.keyboard.press("Meta+K");
   await page.locator("#commandPalette[open]").waitFor();
   assert.equal(await page.locator("#commandContextLabel").textContent(), "当前：照片世界");
@@ -419,7 +453,7 @@ let browser;
   await page.locator('[data-command-id="returnWorkspace"]').click();
   await page.locator("#worldMapWorkspace").waitFor({ state: "hidden" });
   await page.waitForFunction(() => history.state?.imageAllWorkspace?.route === "gallery");
-  await page.waitForFunction(() => document.activeElement?.id === "worldMapNavigationButton");
+  await page.waitForFunction(() => document.activeElement?.id === "searchInput");
   await page.evaluate(() => history.forward());
   await page.locator("#worldMapWorkspace:not(.hidden)").waitFor();
   await page.locator("#worldMapClusterMetric").getByText("1", { exact: true }).waitFor();
@@ -569,8 +603,10 @@ let browser;
   await page.locator("#worldMapLocationBackfillDialog[open]").waitFor();
   assert.equal(locationBackfillRequestCount, locationBackfillReadsAfterOpen,
     "Forward should restore the location panel before its next scheduled poll");
-  assert.equal(await locationStartButton.evaluate((element) => document.activeElement === element), true,
-    "Forward should restore the focused source action");
+  await page.waitForFunction(
+    (selector) => document.activeElement?.matches(selector),
+    `[data-source-id="${folderSourceID}"] [data-location-backfill-action="start"]`
+  );
   const locationHistoryPayload = await page.evaluate(
     () => JSON.stringify(history.state?.imageAllWorkspace || null)
   );
@@ -646,8 +682,10 @@ let browser;
   assert.equal(placeTagSnapshotRequestCount, placeTagReadsAfterOpen,
     "Forward should restore place-tag drafts without rereading the snapshot");
   assert.equal(await placeInput.inputValue(), "Paris France draft");
-  assert.equal(await placeInput.evaluate((element) => document.activeElement === element), true,
-    "Forward should restore the edited query field");
+  await page.waitForFunction(
+    (tagID) => document.activeElement?.dataset.placeTagQuery === tagID,
+    placeTagID
+  );
   assert.ok(await placeBody.evaluate((element) => element.scrollTop) > 0,
     "Forward should preserve the place-tag list scroll position");
   await placeInput.fill("x".repeat(161));
@@ -748,6 +786,18 @@ let browser;
 
   await page.locator("#openWorldMapPlaceTagsButton").click();
   await page.locator("#worldMapPlaceTagDialog[open]").waitFor();
+  const restoredViewport = {
+    west: 119.5, south: 30.4, east: 122.2, north: 32.1,
+    centerLongitude: 120.85, centerLatitude: 31.25,
+    zoom: 8.4, bearing: 17, pitch: 36,
+  };
+  await page.locator("#worldMapFrame").evaluate(
+    (frame, nextViewport) => frame.contentWindow.setSyntheticViewport(nextViewport),
+    restoredViewport
+  );
+  await page.waitForFunction(
+    () => history.state?.imageAllWorkspace?.context?.worldMapViewport?.zoom === 8.4
+  );
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.locator("#worldMapWorkspace:not(.hidden)").waitFor();
   await page.waitForFunction(
@@ -755,6 +805,14 @@ let browser;
   );
   assert.equal(await page.locator("#worldMapPlaceTagDialog").getAttribute("open"), null,
     "a stale Sheet history entry must degrade to the restored map workspace after reload");
+  await page.waitForFunction(
+    () => document.querySelector("#worldMapViewportReadout")?.textContent
+      === "ZOOM 8.4 · PITCH 36° · BEARING 17°"
+  );
+  assert.deepEqual(
+    JSON.parse(await page.frameLocator("#worldMapFrame").locator("body").getAttribute("data-viewport")),
+    restoredViewport
+  );
 
   await page.waitForTimeout(700);
   assert.ok(snapshotRequestCount >= 6 && snapshotRequestCount <= 8,

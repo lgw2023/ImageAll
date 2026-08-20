@@ -1385,10 +1385,20 @@
           <span id="worldMapSelectionSummary" class="secondary"></span>
         </footer>
       </section>
-      <div class="world-map-legend" aria-label="地图图例">
-        <span><i class="legend-gps"></i>GPS</span>
-        <span><i class="legend-tag"></i>地点标签</span>
-        <span>塔高代表照片数量</span>
+      <div class="world-map-footer">
+        <div class="world-map-legend" aria-label="照片建筑高度图例与当前地图视角">
+          <strong>照片越多，建筑越高</strong>
+          <div class="world-map-legend-scale" aria-label="照片数量从少到密集">
+            <span><i class="legend-low"></i>少</span>
+            <span><i class="legend-medium"></i>中</span>
+            <span><i class="legend-high"></i>多</span>
+            <span><i class="legend-dense"></i>密集</span>
+          </div>
+          <span id="worldMapViewportReadout" class="world-map-viewport-readout">等待地图视角</span>
+        </div>
+        <p id="worldMapFooterPrompt" class="world-map-footer-prompt" role="status">
+          正在聚合目录库位置…
+        </p>
       </div>
     </div>
   </section>

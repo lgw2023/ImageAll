@@ -845,6 +845,8 @@ const elements = {
   worldMapLocatedMetric: $("#worldMapLocatedMetric"),
   worldMapUnlocatedMetric: $("#worldMapUnlocatedMetric"),
   worldMapRendererMetric: $("#worldMapRendererMetric"),
+  worldMapViewportReadout: $("#worldMapViewportReadout"),
+  worldMapFooterPrompt: $("#worldMapFooterPrompt"),
   worldMapStatus: $("#worldMapStatus"),
   worldMapDetail: $("#worldMapDetail"),
   worldMapDetailName: $("#worldMapDetailName"),
@@ -1460,6 +1462,8 @@ const state = {
     requestGeneration: 0,
     selectionGeneration: 0,
     cameraTimer: null,
+    viewportRestorePending: false,
+    viewportRefreshSuppression: null,
     locationBackfill: {
       snapshots: [],
       loading: false,
@@ -2058,6 +2062,8 @@ function closeOverlays() {
   syncSlimmingPresentation({ renderSurfaces: false });
   clearTimeout(state.worldMap.cameraTimer);
   state.worldMap.cameraTimer = null;
+  state.worldMap.viewportRestorePending = false;
+  state.worldMap.viewportRefreshSuppression = null;
   elements.worldMapWorkspace.classList.add("hidden");
   syncWorldMapPresentation({ renderSurfaces: false });
   elements.galleryOverviewWorkspace.classList.add("hidden");
@@ -3360,7 +3366,7 @@ function currentWorkspaceHistoryContext(route = visibleWorkspaceRoute()) {
     return {
       galleryContext: currentGalleryHistoryContext(),
       worldMapClusterID: state.worldMap.selectedClusterID,
-      worldMapViewport: normalizedWorldMapBounds(state.worldMap.viewport),
+      worldMapViewport: normalizedWorldMapViewport(state.worldMap.viewport),
       worldMapLightbox: currentLightboxHistoryContext("worldMap"),
     };
   default:
@@ -3879,9 +3885,13 @@ async function applyWorkspaceHistoryEntry(entry) {
         state.worldMap.selectedClusterID = context.worldMapClusterID || null;
       }
       if (Object.prototype.hasOwnProperty.call(context, "worldMapViewport")) {
-        state.worldMap.viewport = context.worldMapViewport || null;
+        state.worldMap.viewport = normalizedWorldMapViewport(context.worldMapViewport);
+        state.worldMap.viewportRestorePending = Boolean(
+          worldMapViewportCamera(state.worldMap.viewport)
+        );
       }
       await openWorldMapWorkspace({ historyMode: "none" });
+      restorePendingWorldMapViewport();
       if (state.worldMap.selectedClusterID) {
         await loadWorldMapSelection(state.worldMap.selectedClusterID);
       }
@@ -5088,6 +5098,7 @@ function renderWorldMap() {
     elements.worldMapStatus.querySelector("strong").textContent = "当前范围没有已定位照片";
     elements.worldMapStatus.querySelector("span:last-child").textContent = "缩小地图或回到全球视图后再试";
   }
+  renderWorldMapFooter();
   renderWorldMapDetail();
   pushWorldMapClusters();
 }
@@ -5105,6 +5116,79 @@ function normalizedWorldMapBounds(viewport) {
     east: viewport.east,
     north,
   };
+}
+
+function worldMapViewportCamera(viewport) {
+  if (!viewport) return null;
+  const values = [
+    viewport.centerLongitude,
+    viewport.centerLatitude,
+    viewport.zoom,
+    viewport.bearing,
+    viewport.pitch,
+  ].map(Number);
+  if (!values.every(Number.isFinite)) return null;
+  return {
+    centerLongitude: Math.max(-180, Math.min(180, values[0])),
+    centerLatitude: Math.max(-85, Math.min(85, values[1])),
+    zoom: Math.max(0.7, Math.min(12, values[2])),
+    bearing: Math.max(-360, Math.min(360, values[3])),
+    pitch: Math.max(0, Math.min(78, values[4])),
+  };
+}
+
+function normalizedWorldMapViewport(viewport) {
+  const bounds = normalizedWorldMapBounds(viewport);
+  if (!bounds) return null;
+  const camera = worldMapViewportCamera(viewport);
+  return camera ? { ...bounds, ...camera } : bounds;
+}
+
+function worldMapViewportsMatch(left, right) {
+  const leftCamera = worldMapViewportCamera(left);
+  const rightCamera = worldMapViewportCamera(right);
+  if (!leftCamera || !rightCamera) return false;
+  return Object.keys(leftCamera).every(
+    (key) => Math.abs(leftCamera[key] - rightCamera[key]) <= 0.0001
+  );
+}
+
+function restorePendingWorldMapViewport() {
+  if (!state.worldMap.viewportRestorePending || !state.worldMap.rendererReady) return;
+  const renderer = worldMapRenderer();
+  if (typeof renderer?.restoreViewport !== "function") {
+    state.worldMap.viewportRestorePending = false;
+    return;
+  }
+  const target = normalizedWorldMapViewport(state.worldMap.viewport);
+  if (!worldMapViewportCamera(target)) {
+    state.worldMap.viewportRestorePending = false;
+    return;
+  }
+  const current = normalizedWorldMapViewport(renderer.snapshotState?.().viewport);
+  state.worldMap.viewportRestorePending = false;
+  if (!worldMapViewportsMatch(current, target)) {
+    state.worldMap.viewportRefreshSuppression = target;
+    renderer.restoreViewport(target);
+  }
+}
+
+function renderWorldMapFooter() {
+  const camera = worldMapViewportCamera(state.worldMap.viewport);
+  elements.worldMapViewportReadout.textContent = camera
+    ? `ZOOM ${camera.zoom.toFixed(1)} · PITCH ${Math.round(camera.pitch)}° · BEARING ${Math.round(camera.bearing)}°`
+    : "等待地图视角";
+  if (state.worldMap.rendererError) {
+    elements.worldMapFooterPrompt.textContent = "地图引擎暂时不可用；可刷新重试";
+  } else if (state.worldMap.loading) {
+    elements.worldMapFooterPrompt.textContent = "正在聚合目录库位置…";
+  } else if (state.worldMap.loadError) {
+    elements.worldMapFooterPrompt.textContent = `位置数据载入失败：${state.worldMap.loadError}`;
+  } else if (state.worldMap.snapshot && !(state.worldMap.snapshot.clusters || []).length) {
+    elements.worldMapFooterPrompt.textContent = "当前视口暂无已定位照片；缩小地图或更新照片位置";
+  } else {
+    elements.worldMapFooterPrompt.textContent = "选择一座照片建筑查看构成";
+  }
 }
 
 async function loadWorldMapSnapshot({ bounds = null, quiet = false } = {}) {
@@ -5291,6 +5375,7 @@ async function openWorldMapWorkspace({ historyMode = "push" } = {}) {
     await loadWorldMapSnapshot({ bounds: state.worldMap.viewport });
   }
   else pushWorldMapClusters();
+  restorePendingWorldMapViewport();
 }
 
 function closeWorldMapWorkspace({ restoreFocus = true } = {}) {
@@ -6435,6 +6520,7 @@ function handleWorldMapMessage(event) {
     state.worldMap.rendererReady = true;
     state.worldMap.rendererError = false;
     renderWorldMap();
+    restorePendingWorldMapViewport();
     break;
   case "renderError":
     state.worldMap.rendererError = true;
@@ -6446,9 +6532,19 @@ function handleWorldMapMessage(event) {
     }
     break;
   case "cameraChanged":
-    state.worldMap.viewport = message.viewport || null;
+    state.worldMap.viewport = normalizedWorldMapViewport(message.viewport);
+    renderWorldMapFooter();
     checkpointActiveWorkspaceHistory();
     clearTimeout(state.worldMap.cameraTimer);
+    if (worldMapViewportsMatch(
+      state.worldMap.viewport,
+      state.worldMap.viewportRefreshSuppression
+    )) {
+      state.worldMap.viewportRefreshSuppression = null;
+      state.worldMap.cameraTimer = null;
+      break;
+    }
+    state.worldMap.viewportRefreshSuppression = null;
     state.worldMap.cameraTimer = setTimeout(() => {
       void loadWorldMapSnapshot({ bounds: state.worldMap.viewport, quiet: true });
     }, 240);
@@ -35276,6 +35372,10 @@ function bindEvents() {
   if (rendererStatus?.ready) {
     state.worldMap.rendererReady = true;
     state.worldMap.rendererError = false;
+    const rendererViewport = normalizedWorldMapViewport(
+      worldMapRenderer()?.snapshotState?.()?.viewport
+    );
+    if (rendererViewport) state.worldMap.viewport = rendererViewport;
     renderWorldMap();
   }
   elements.trainingButton.addEventListener("click", () => openTrainingWorkspace());
