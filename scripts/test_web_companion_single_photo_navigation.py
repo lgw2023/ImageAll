@@ -572,13 +572,26 @@ def main():
             lambda response: "/v1/assets?" in response.url
             and parse_qs(urlparse(response.url).query).get("cursor") == ["page-2"]
         ) as page_two_response:
-            page.locator("#lightboxNextButton").click()
+            page.locator("#lightboxNextButton").focus()
+            page.keyboard.press("Space")
         assert page_two_response.value.status == 200
         page.wait_for_function(
             "() => document.querySelector('#lightboxTitle')?.textContent === 'ITEM_073.JPG'"
             " && document.querySelector('#assetFileName')?.textContent === 'ITEM_073.JPG'"
         )
+        page.wait_for_function("() => document.activeElement?.id === 'lightboxNextButton'")
         assert page.locator("#lightboxPosition").inner_text() == "73 / 74"
+        page.keyboard.press("Space")
+        page.wait_for_function(
+            "() => document.querySelector('#lightboxTitle')?.textContent === 'ITEM_074.JPG'"
+        )
+        page.wait_for_function("() => document.activeElement?.id === 'lightboxPreviousButton'")
+        assert page.locator("#lightbox:not(.hidden)").is_visible()
+        page.keyboard.press("Space")
+        page.wait_for_function(
+            "() => document.querySelector('#lightboxTitle')?.textContent === 'ITEM_073.JPG'"
+        )
+        page.wait_for_function("() => document.activeElement?.id === 'lightboxPreviousButton'")
         assert page.locator(
             f'#assetGrid > .asset-card[data-asset-id="{asset_id(73)}"] > .asset-card-main'
         ).get_attribute("aria-pressed") == "true"
@@ -1001,19 +1014,21 @@ def main():
             expected_review_position += " · 还有更多"
         assert page.locator("#lightboxPosition").inner_text() == expected_review_position
         assert page.locator("#lightboxBackLabel").inner_text() == "返回审核"
+        page.locator("#lightboxNextButton").focus()
         if review_page_two_loaded:
-            page.locator("#lightboxNextButton").click()
+            page.keyboard.press("Space")
         else:
             with page.expect_response(
                 lambda response: "/v1/review/queue?" in response.url
                 and parse_qs(urlparse(response.url).query).get("cursor") == ["review-page-2"]
             ) as review_page_two_response:
-                page.locator("#lightboxNextButton").click()
+                page.keyboard.press("Space")
             assert review_page_two_response.value.status == 200
         page.wait_for_function(
             "() => document.querySelector('#lightboxTitle')?.textContent === 'REVIEW_049.JPG'"
             " && document.querySelector('#reviewFileName')?.textContent === 'REVIEW_049.JPG'"
         )
+        page.wait_for_function("() => document.activeElement?.id === 'lightboxNextButton'")
         assert page.locator("#lightboxPosition").inner_text() == "49 / 50"
         assert page.locator(
             '[data-review-index="48"] > .review-card-main'

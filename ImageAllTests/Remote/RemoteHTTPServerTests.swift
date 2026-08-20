@@ -2979,6 +2979,13 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(stylesheet.contains(".lightbox-delete-button"))
         XCTAssertTrue(script.contains("function loadMoreLightboxItems"))
         XCTAssertTrue(script.contains("function syncLibraryLightboxSelection"))
+        XCTAssertTrue(script.contains("function lightboxNavigationFocusTarget"))
+        XCTAssertTrue(script.contains("focusedNavigationButton"))
+        XCTAssertTrue(
+            script.contains(
+                "restoreOverlayFocus(lightboxNavigationFocusTarget(focusedNavigationButton))"
+            )
+        )
         XCTAssertTrue(script.contains("lightboxPendingDirection"))
         XCTAssertTrue(script.contains("function applyLightboxReviewDecision"))
         XCTAssertTrue(script.contains("function selectAllReviewItems"))

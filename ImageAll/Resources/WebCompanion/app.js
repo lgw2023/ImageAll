@@ -29377,12 +29377,31 @@ async function syncLibraryLightboxSelection(assetID) {
   await loadInspector(assetID, { preserveExisting: false, quiet: true });
 }
 
+function lightboxNavigationFocusTarget(preferredButton) {
+  const available = (button) => button instanceof HTMLButtonElement
+    && !button.disabled
+    && !button.classList.contains("hidden")
+    && button.getClientRects().length > 0;
+  if (available(preferredButton)) return preferredButton;
+  const alternate = preferredButton === elements.lightboxNextButton
+    ? elements.lightboxPreviousButton
+    : elements.lightboxNextButton;
+  if (available(alternate)) return alternate;
+  return elements.lightboxBackButton;
+}
+
 async function navigateLightbox(direction) {
   if (![-1, 1].includes(direction)) return;
   if (state.lightboxNavigating) {
     state.lightboxPendingDirection = direction;
     return;
   }
+  const focusedNavigationButton = [
+    elements.lightboxPreviousButton,
+    elements.lightboxNextButton,
+  ].includes(document.activeElement)
+    ? document.activeElement
+    : null;
   const currentAssetID = state.lightboxAssetID;
   let items = lightboxItems();
   let index = items.findIndex((item) => item.id === currentAssetID);
@@ -29421,7 +29440,11 @@ async function navigateLightbox(direction) {
     state.lightboxPendingDirection = 0;
     if (!elements.lightbox.classList.contains("hidden") && state.lightboxAssetID) {
       renderLightbox();
-      if (pendingDirection) void navigateLightbox(pendingDirection);
+      if (pendingDirection) {
+        void navigateLightbox(pendingDirection);
+      } else if (focusedNavigationButton) {
+        restoreOverlayFocus(lightboxNavigationFocusTarget(focusedNavigationButton));
+      }
     }
   }
 }
