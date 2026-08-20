@@ -2947,6 +2947,22 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertFalse(script.contains("confirmBatchTagDecision"))
         XCTAssertTrue(script.contains("tagAction:accept:${tag.id}"))
         XCTAssertTrue(script.contains("sourceAction:${action}:${selectedSource.id}"))
+        XCTAssertTrue(script.contains("async function executeSourceCommandAction"))
+        XCTAssertTrue(
+            script.contains(
+                "executeSourceCommandAction(action, sourceID, commandReturnFocus)"
+            )
+        )
+        XCTAssertTrue(
+            script.contains(
+                "executeSourceCommandAction(\"refreshAll\", null, commandReturnFocus)"
+            )
+        )
+        XCTAssertTrue(
+            script.contains(
+                "executeSourceCommandAction(\"prewarmAllThumbnails\", null, commandReturnFocus)"
+            )
+        )
         XCTAssertTrue(script.contains("openLightbox(\"worldMap\""))
         XCTAssertNotNil(store.asset(for: "/world-map/index.html"))
         XCTAssertTrue(script.contains("setProtectedImageSource"))

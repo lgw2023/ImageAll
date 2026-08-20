@@ -32207,6 +32207,17 @@ function moveCommandSelection(direction) {
   }
 }
 
+async function executeSourceCommandAction(action, sourceID, returnFocus) {
+  await submitSourceManagementAction(action, sourceID || null);
+  const source = sourceID
+    ? elements.sourceList.querySelector(`[data-source-id="${CSS.escape(sourceID)}"]`)
+    : null;
+  restoreOverlayFocus(stableReturnFocusTarget(
+    returnFocus,
+    source || elements.commandButton
+  ));
+}
+
 async function executeCommand(commandID) {
   const command = availableCommands().find((item) => item.id === commandID);
   if (!command || command.disabled) return;
@@ -32235,8 +32246,7 @@ async function executeCommand(commandID) {
   }
   if (commandID.startsWith("sourceAction:")) {
     const [, action, sourceID] = commandID.split(":");
-    await openSourceManager();
-    await submitSourceManagementAction(action, sourceID);
+    await executeSourceCommandAction(action, sourceID, commandReturnFocus);
     return;
   }
   switch (commandID) {
@@ -32411,24 +32421,23 @@ async function executeCommand(commandID) {
     setInspectorVisible(!state.layout.inspectorVisible);
     break;
   case "refreshAllSources":
-    await openSourceManager();
-    await submitSourceManagementAction("refreshAll");
+    await executeSourceCommandAction("refreshAll", null, commandReturnFocus);
     break;
   case "prewarmAllSources":
-    await openSourceManager();
-    await submitSourceManagementAction("prewarmAllThumbnails");
+    await executeSourceCommandAction("prewarmAllThumbnails", null, commandReturnFocus);
     break;
   case "prewarmAllOriginalSources":
-    await openSourceManager();
-    await submitSourceManagementAction("prewarmAllOriginalAspect");
+    await executeSourceCommandAction("prewarmAllOriginalAspect", null, commandReturnFocus);
     break;
   case "reauthorizeAllSources":
-    await openSourceManager();
-    await submitSourceManagementAction("reauthorizeAll");
+    await executeSourceCommandAction("reauthorizeAll", null, commandReturnFocus);
     break;
   case "refreshAllFolderMutationAuthorizations":
-    await openSourceManager();
-    await submitSourceManagementAction("refreshAllFolderMutationAuthorizations");
+    await executeSourceCommandAction(
+      "refreshAllFolderMutationAuthorizations",
+      null,
+      commandReturnFocus
+    );
     break;
   case "shortcuts":
     openKeyboardShortcuts({ returnFocus: commandReturnFocus || elements.commandButton });

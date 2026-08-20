@@ -253,6 +253,7 @@ def main():
     review_queue_queries = []
     source_actions = []
     source_requests = []
+    complete_next_refresh_all_without_job = [False]
     media_requests = []
     opened_originals = []
     favorite_mutations = []
@@ -497,17 +498,38 @@ def main():
         def route_source_action(route):
             payload = route.request.post_data_json
             source_actions.append(payload)
-            if payload["action"] == "refreshAll":
-                catalog_jobs[:] = [{
-                    "id": "aaaaaaaa-9999-4000-8000-aaaaaaaaaaaa",
-                    "sourceID": SOURCE_ID,
+            if payload["action"] in {"syncPhotos", "rescan"}:
+                request = {
+                    "id": "77777777-9999-4999-8999-777777777777",
+                    "operationID": payload["operationID"],
+                    "action": payload["action"],
+                    "sourceID": payload.get("sourceID"),
                     "sourceDisplayName": "Apple Photos",
-                    "kind": "photosReconcile",
-                    "state": "running",
-                    "progress": {"completedUnitCount": 2, "totalUnitCount": 14},
-                    "availableActions": ["pause", "cancel"],
-                    "controlRequest": "none",
-                }]
+                    "phase": "completed",
+                    "message": "已交给 Mac 更新来源",
+                    "completedCount": None,
+                    "totalCount": None,
+                    "warmedCount": None,
+                    "failedCount": None,
+                    "updatedAtMs": 1_700_000_000_550,
+                }
+                source_requests.insert(0, request)
+                fulfill_json(route, request)
+                return
+            if payload["action"] == "refreshAll":
+                if complete_next_refresh_all_without_job[0]:
+                    complete_next_refresh_all_without_job[0] = False
+                else:
+                    catalog_jobs[:] = [{
+                        "id": "aaaaaaaa-9999-4000-8000-aaaaaaaaaaaa",
+                        "sourceID": SOURCE_ID,
+                        "sourceDisplayName": "Apple Photos",
+                        "kind": "photosReconcile",
+                        "state": "running",
+                        "progress": {"completedUnitCount": 2, "totalUnitCount": 14},
+                        "availableActions": ["pause", "cancel"],
+                        "controlRequest": "none",
+                    }]
                 request = {
                     "id": "88888888-9999-9999-9999-999999999999",
                     "operationID": payload["operationID"],
@@ -1494,6 +1516,77 @@ def main():
         page.wait_for_function("() => document.querySelector('#commandPalette').open === false")
         assert tag_decisions[-1]["action"] == "accept"
         assert tag_decisions[-1]["assetIDs"] == [IMAGE_IDS[0]]
+
+        page.locator(f'#sourceList [data-source-id="{SOURCE_ID}"]').click()
+        page.wait_for_function(
+            f"() => state.selectedSourceID === '{SOURCE_ID}' && !state.loadingAssets"
+        )
+        page.locator(f'[data-asset-id="{IMAGE_IDS[0]}"]').click()
+        page.wait_for_function(
+            f"() => state.selectedAssetID === '{IMAGE_IDS[0]}'"
+        )
+        source_command_snapshot = page.evaluate(
+            """() => ({
+              route: visibleWorkspaceRoute(),
+              navigationLevel: history.state?.imageAllWorkspace?.navigationLevel,
+              selectedSourceID: state.selectedSourceID,
+              selectedAssetID: state.selectedAssetID,
+              selectedAssetIDs: [...state.selectedAssetIDs].sort(),
+              scrollTop: document.querySelector('#libraryScroll').scrollTop,
+            })"""
+        )
+        assert source_command_snapshot["selectedSourceID"] == SOURCE_ID
+        source_command_asset_queries = len(asset_queries)
+        source_command_action_count = len(source_actions)
+        page.locator("#commandButton").click()
+        current_source_command = page.locator(
+            f'[data-command-id="sourceAction:syncPhotos:{SOURCE_ID}"]'
+        )
+        assert current_source_command.is_visible()
+        with page.expect_response("**/v1/source-management/requests"):
+            current_source_command.click()
+        page.wait_for_function("() => document.querySelector('#commandPalette').open === false")
+        assert source_actions[-1]["action"] == "syncPhotos"
+        assert source_actions[-1]["sourceID"] == SOURCE_ID
+        assert not page.locator("#sourceManagerDialog").is_visible()
+        page.wait_for_function("() => document.activeElement?.id === 'commandButton'")
+        assert page.evaluate(
+            """() => ({
+              route: visibleWorkspaceRoute(),
+              navigationLevel: history.state?.imageAllWorkspace?.navigationLevel,
+              selectedSourceID: state.selectedSourceID,
+              selectedAssetID: state.selectedAssetID,
+              selectedAssetIDs: [...state.selectedAssetIDs].sort(),
+              scrollTop: document.querySelector('#libraryScroll').scrollTop,
+            })"""
+        ) == source_command_snapshot
+        assert len(asset_queries) == source_command_asset_queries
+
+        page.locator("#commandButton").click()
+        refresh_all_command = page.locator('[data-command-id="refreshAllSources"]')
+        assert refresh_all_command.is_visible()
+        complete_next_refresh_all_without_job[0] = True
+        with page.expect_response("**/v1/source-management/requests"):
+            refresh_all_command.click()
+        page.wait_for_function("() => document.querySelector('#commandPalette').open === false")
+        assert source_actions[-1]["action"] == "refreshAll"
+        assert source_actions[-1]["sourceID"] is None
+        assert len(source_actions) == source_command_action_count + 2
+        assert not page.locator("#sourceManagerDialog").is_visible()
+        page.wait_for_function("() => document.activeElement?.id === 'commandButton'")
+        assert page.evaluate(
+            """() => ({
+              route: visibleWorkspaceRoute(),
+              navigationLevel: history.state?.imageAllWorkspace?.navigationLevel,
+              selectedSourceID: state.selectedSourceID,
+              selectedAssetID: state.selectedAssetID,
+              selectedAssetIDs: [...state.selectedAssetIDs].sort(),
+              scrollTop: document.querySelector('#libraryScroll').scrollTop,
+            })"""
+        ) == source_command_snapshot
+        assert len(asset_queries) == source_command_asset_queries
+        page.wait_for_function("() => !state.jobsRefreshing")
+        catalog_job_fetches[0] = 0
 
         page.locator(f'[data-asset-id="{IMAGE_IDS[1]}"]').click()
         page.locator("#cloudPreviewRecovery:not(.hidden)").wait_for()
