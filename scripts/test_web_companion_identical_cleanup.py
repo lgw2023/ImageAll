@@ -14,6 +14,7 @@ REQUEST_ID = "88888888-4444-4444-4444-444444444444"
 
 async def main():
     plan_requests = []
+    submitted_cleanup_requests = []
     old_host_mode = False
     cleanup_request = None
     page_errors = []
@@ -56,7 +57,7 @@ async def main():
             )
 
         async def route_api(route):
-            nonlocal old_host_mode
+            nonlocal old_host_mode, cleanup_request
             path = urlparse(route.request.url).path
             if path == "/v1/capabilities":
                 await fulfill_json(route, {
@@ -142,6 +143,27 @@ async def main():
                     "requests": requests,
                 })
                 return
+            if (path == "/v1/library-slimming/identical-cleanup/requests"
+                    and route.request.method == "POST"):
+                payload = route.request.post_data_json
+                submitted_cleanup_requests.append(payload)
+                cleanup_request = {
+                    "id": REQUEST_ID,
+                    "operationID": payload["operationID"],
+                    "planID": payload["planID"],
+                    "jobID": JOB_ID,
+                    "mediaKind": "image",
+                    "mode": payload["mode"],
+                    "phase": "awaitingMac",
+                    "executionStage": None,
+                    "progress": None,
+                    "audit": None,
+                    "verification": None,
+                    "message": "请回到 Mac 核对并确认一键清理方案",
+                    "updatedAtMs": 1_700_000_050_000,
+                }
+                await fulfill_json(route, cleanup_request, status=202)
+                return
             await fulfill_json(route, {"code": "notFound", "message": path}, status=404)
 
         await page.route("**/favicon.ico", lambda route: route.fulfill(status=204, body=""))
@@ -171,9 +193,16 @@ async def main():
             }""",
             JOB_ID,
         )
+        await page.locator("#searchInput").focus()
         await page.evaluate("() => openSlimmingIdenticalCleanupDialog()")
         await page.locator("#slimmingIdenticalCleanupContent:not(.hidden)").wait_for()
         assert plan_requests[-1] == {"jobID": JOB_ID, "mediaKind": "image"}
+        assert await page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "slimmingIdenticalCleanup"
+        cleanup_history = await page.evaluate("() => JSON.stringify(history.state)")
+        assert PLAN_ID not in cleanup_history
+        assert "Apple Photos" not in cleanup_history
 
         metrics = page.locator(
             "#slimmingIdenticalCleanupMetrics > .identical-cleanup-metric"
@@ -207,7 +236,30 @@ async def main():
             path="/tmp/imageall-identical-cleanup-mac-parity.png",
             full_page=True,
         )
-        await page.locator("#cancelSlimmingIdenticalCleanupButton").click()
+        await page.locator("#fastSlimmingIdenticalCleanupButton").focus()
+        await page.go_back()
+        await page.wait_for_function(
+            "() => !document.querySelector('#slimmingIdenticalCleanupDialog').open"
+        )
+        assert await page.evaluate("() => document.activeElement?.id") == "searchInput"
+        await page.go_forward()
+        await page.locator("#slimmingIdenticalCleanupDialog[open]").wait_for()
+        assert len(plan_requests) == 1
+        assert await page.evaluate(
+            "() => document.activeElement?.id"
+        ) == "fastSlimmingIdenticalCleanupButton"
+        await page.locator("#recoverableSlimmingIdenticalCleanupButton").click()
+        await page.wait_for_function(
+            "() => !document.querySelector('#slimmingIdenticalCleanupDialog').open"
+        )
+        assert len(submitted_cleanup_requests) == 1
+        assert submitted_cleanup_requests[0]["planID"] == PLAN_ID
+        assert submitted_cleanup_requests[0]["mode"] == "recoverableRecycle"
+        assert submitted_cleanup_requests[0]["operationID"]
+        assert await page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) != "slimmingIdenticalCleanup"
+        assert await page.evaluate("() => document.activeElement?.id") == "searchInput"
 
         old_host_mode = True
         await page.set_viewport_size({"width": 390, "height": 844})
@@ -237,6 +289,9 @@ async def main():
             full_page=True,
         )
         await page.locator("#cancelSlimmingIdenticalCleanupButton").click()
+        await page.wait_for_function(
+            "() => !document.querySelector('#slimmingIdenticalCleanupDialog').open"
+        )
 
         await page.set_viewport_size({"width": 1440, "height": 960})
         await page.locator("#searchInput").focus()
@@ -331,6 +386,18 @@ async def main():
         cleanup_request.update({
             "phase": "cancelled",
             "message": "已在 Mac 上取消一键清理",
+            "verification": {
+                "isComplete": False,
+                "verifiedGroupCount": 3,
+                "targetGroupCount": 4,
+                "targetRetainedAssetCount": 4,
+                "currentAvailableAssetCount": 5,
+                "unresolvedGroupCount": 1,
+                "observedAssetCount": 12,
+                "recycledRedundantAssetCount": 7,
+                "remainingRedundantAssetCount": 1,
+                "unresolvedAssetCount": 0,
+            },
             "updatedAtMs": 1_700_000_051_000,
         })
         await page.evaluate(
@@ -338,6 +405,26 @@ async def main():
         )
         assert not await page.locator("#identicalCleanupBlockingDialog").evaluate(
             "dialog => dialog.open"
+        )
+        await page.locator("#slimmingVerificationDialog[open]").wait_for()
+        assert await page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "slimmingVerification"
+        verification_history = await page.evaluate("() => JSON.stringify(history.state)")
+        assert REQUEST_ID not in verification_history
+        assert "RECYCLE_0002" not in verification_history
+        assert "3 / 4" in await page.locator("#slimmingVerificationScore").inner_text()
+        await page.go_back()
+        await page.wait_for_function(
+            "() => !document.querySelector('#slimmingVerificationDialog').open"
+        )
+        assert await page.evaluate("() => document.activeElement?.id") == "searchInput"
+        await page.go_forward()
+        await page.locator("#slimmingVerificationDialog[open]").wait_for()
+        assert "3 / 4" in await page.locator("#slimmingVerificationScore").inner_text()
+        await page.keyboard.press("Escape")
+        await page.wait_for_function(
+            "() => !document.querySelector('#slimmingVerificationDialog').open"
         )
         assert await page.evaluate("() => document.activeElement?.id") == "searchInput"
 

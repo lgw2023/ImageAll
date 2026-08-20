@@ -1321,11 +1321,24 @@ const state = {
       requests: [],
       preparing: false,
       submitting: false,
+      planRequestGeneration: 0,
       requestGeneration: 0,
       pollTimer: null,
       lastTerminalRequestID: null,
       lastPresentedVerificationID: null,
       blockingReturnFocus: null,
+      returnFocus: null,
+      baseLevel: "workspace",
+      historyRestoreFocus: true,
+      focusID: "cancelSlimmingIdenticalCleanupButton",
+      restorable: false,
+      opening: false,
+      verificationRequest: null,
+      verificationReturnFocus: null,
+      verificationBaseLevel: "workspace",
+      verificationHistoryRestoreFocus: true,
+      verificationRestorable: false,
+      verificationOpening: false,
     },
     recycle: {
       entries: [],
@@ -1346,6 +1359,10 @@ const state = {
       lastTerminalRequestID: null,
       explanationEntryID: null,
       explanationReturnFocus: null,
+      explanationBaseLevel: "workspace",
+      explanationHistoryRestoreFocus: true,
+      explanationRestorable: false,
+      explanationOpening: false,
     },
     setup: {
       loading: false,
@@ -1929,8 +1946,26 @@ function closeOverlays() {
   if (elements.tagManagerDialog.open) {
     closeTagManager({ restoreFocus: false, checkpoint: false, preserveState: false });
   }
+  if (elements.slimmingIdenticalCleanupDialog.open) {
+    closeSlimmingIdenticalCleanupDialog({
+      restoreFocus: false,
+      checkpoint: false,
+      preserveState: false,
+    });
+  }
+  if (elements.slimmingVerificationDialog.open) {
+    closeSlimmingVerificationReport({
+      restoreFocus: false,
+      checkpoint: false,
+      preserveState: false,
+    });
+  }
   if (elements.slimmingRecycleExplanationDialog.open) {
-    closeSlimmingRecycleExplanation();
+    closeSlimmingRecycleExplanation({
+      restoreFocus: false,
+      checkpoint: false,
+      preserveState: false,
+    });
   }
   if (elements.generalSettingsDialog.open) {
     closeGeneralSettings({ restoreFocus: false, checkpoint: false });
@@ -2007,6 +2042,24 @@ function closeOverlays() {
   state.slimming.thresholdEditor.focusID = "closeSlimmingThresholdDialogButton";
   state.slimming.thresholdEditor.restorable = false;
   state.slimming.thresholdEditor.opening = false;
+  state.slimming.identicalCleanup.returnFocus = null;
+  state.slimming.identicalCleanup.baseLevel = "workspace";
+  state.slimming.identicalCleanup.historyRestoreFocus = true;
+  state.slimming.identicalCleanup.focusID = "cancelSlimmingIdenticalCleanupButton";
+  state.slimming.identicalCleanup.restorable = false;
+  state.slimming.identicalCleanup.opening = false;
+  state.slimming.identicalCleanup.verificationRequest = null;
+  state.slimming.identicalCleanup.verificationReturnFocus = null;
+  state.slimming.identicalCleanup.verificationBaseLevel = "workspace";
+  state.slimming.identicalCleanup.verificationHistoryRestoreFocus = true;
+  state.slimming.identicalCleanup.verificationRestorable = false;
+  state.slimming.identicalCleanup.verificationOpening = false;
+  state.slimming.recycle.explanationEntryID = null;
+  state.slimming.recycle.explanationReturnFocus = null;
+  state.slimming.recycle.explanationBaseLevel = "workspace";
+  state.slimming.recycle.explanationHistoryRestoreFocus = true;
+  state.slimming.recycle.explanationRestorable = false;
+  state.slimming.recycle.explanationOpening = false;
   state.worldMap.locationBackfill.returnFocus = null;
   state.worldMap.locationBackfill.baseLevel = "workspace";
   state.worldMap.locationBackfill.historyRestoreFocus = true;
@@ -2492,6 +2545,9 @@ function workspaceHistoryEntry(route, context = null, navigationLevel = "workspa
     "confirmation",
     "worldMapLocationBackfill",
     "worldMapPlaceTags",
+    "slimmingIdenticalCleanup",
+    "slimmingVerification",
+    "slimmingRecycleExplanation",
     "slimmingSetup",
     "slimmingThreshold",
     "trainingSetup",
@@ -2549,6 +2605,27 @@ function workspaceNavigationBaseLevel(navigationLevel, context = {}) {
   if (navigationLevel === "worldMapPlaceTags") {
     return ["sidebar", "inspector", "lightbox"].includes(context.worldMapPlaceTagsBaseLevel)
       ? context.worldMapPlaceTagsBaseLevel
+      : "workspace";
+  }
+  if (navigationLevel === "slimmingIdenticalCleanup") {
+    return ["sidebar", "inspector", "lightbox"].includes(
+      context.slimmingIdenticalCleanupBaseLevel
+    )
+      ? context.slimmingIdenticalCleanupBaseLevel
+      : "workspace";
+  }
+  if (navigationLevel === "slimmingVerification") {
+    return ["sidebar", "inspector", "lightbox"].includes(
+      context.slimmingVerificationBaseLevel
+    )
+      ? context.slimmingVerificationBaseLevel
+      : "workspace";
+  }
+  if (navigationLevel === "slimmingRecycleExplanation") {
+    return ["sidebar", "inspector", "lightbox"].includes(
+      context.slimmingRecycleExplanationBaseLevel
+    )
+      ? context.slimmingRecycleExplanationBaseLevel
       : "workspace";
   }
   if (navigationLevel === "slimmingSetup") {
@@ -2652,6 +2729,9 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
   const hasConfirmation = elements.confirmDialog.open;
   const hasWorldMapLocationBackfill = elements.worldMapLocationBackfillDialog.open;
   const hasWorldMapPlaceTags = elements.worldMapPlaceTagDialog.open;
+  const hasSlimmingIdenticalCleanup = elements.slimmingIdenticalCleanupDialog.open;
+  const hasSlimmingVerification = elements.slimmingVerificationDialog.open;
+  const hasSlimmingRecycleExplanation = elements.slimmingRecycleExplanationDialog.open;
   const hasSlimmingSetup = elements.slimmingSetupDialog.open;
   const hasSlimmingThreshold = elements.slimmingThresholdDialog.open;
   const hasTrainingSetup = elements.trainingSetupDialog.open;
@@ -2689,6 +2769,22 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
     ? {
         ...(context || {}),
         worldMapPlaceTagsBaseLevel: state.worldMap.placeTags.baseLevel,
+      }
+    : hasSlimmingIdenticalCleanup
+    ? {
+        ...(context || {}),
+        slimmingIdenticalCleanupBaseLevel: state.slimming.identicalCleanup.baseLevel,
+      }
+    : hasSlimmingVerification
+    ? {
+        ...(context || {}),
+        slimmingVerificationBaseLevel:
+          state.slimming.identicalCleanup.verificationBaseLevel,
+      }
+    : hasSlimmingRecycleExplanation
+    ? {
+        ...(context || {}),
+        slimmingRecycleExplanationBaseLevel: state.slimming.recycle.explanationBaseLevel,
       }
     : hasSlimmingSetup
     ? {
@@ -2764,6 +2860,18 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
     && (mode === "pushWorldMapPlaceTags"
       || current?.navigationLevel === "worldMapPlaceTags")
     ? "worldMapPlaceTags"
+    : hasSlimmingIdenticalCleanup
+    && (mode === "pushSlimmingIdenticalCleanup"
+      || current?.navigationLevel === "slimmingIdenticalCleanup")
+    ? "slimmingIdenticalCleanup"
+    : hasSlimmingVerification
+    && (mode === "pushSlimmingVerification"
+      || current?.navigationLevel === "slimmingVerification")
+    ? "slimmingVerification"
+    : hasSlimmingRecycleExplanation
+    && (mode === "pushSlimmingRecycleExplanation"
+      || current?.navigationLevel === "slimmingRecycleExplanation")
+    ? "slimmingRecycleExplanation"
     : hasSlimmingSetup
     && (mode === "pushSlimmingSetup" || current?.navigationLevel === "slimmingSetup")
     ? "slimmingSetup"
@@ -2824,6 +2932,9 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
     "pushConfirmation",
     "pushWorldMapLocationBackfill",
     "pushWorldMapPlaceTags",
+    "pushSlimmingIdenticalCleanup",
+    "pushSlimmingVerification",
+    "pushSlimmingRecycleExplanation",
     "pushSlimmingSetup",
     "pushSlimmingThreshold",
     "pushTrainingSetup",
@@ -3135,6 +3246,21 @@ function closeAllWorkspacesToGallery({ restoreFocus = true } = {}) {
     checkpoint: false,
     preserveState: false,
   });
+  closeSlimmingIdenticalCleanupDialog({
+    restoreFocus: false,
+    checkpoint: false,
+    preserveState: false,
+  });
+  closeSlimmingVerificationReport({
+    restoreFocus: false,
+    checkpoint: false,
+    preserveState: false,
+  });
+  closeSlimmingRecycleExplanation({
+    restoreFocus: false,
+    checkpoint: false,
+    preserveState: false,
+  });
   closeSlimmingSetupDialog({ restoreFocus: false, checkpoint: false, preserveState: false });
   closeSlimmingThresholdEditor({ restoreFocus: false, checkpoint: false, preserveState: false });
   closeTrainingSetupDialog({ restoreFocus: false, checkpoint: false, preserveState: false });
@@ -3199,6 +3325,17 @@ async function applyWorkspaceHistoryEntry(entry) {
         context
       );
       reconcileWorldMapPlaceTagsFromWorkspaceHistory(target, navigationLevel, context);
+      reconcileSlimmingIdenticalCleanupFromWorkspaceHistory(
+        target,
+        navigationLevel,
+        context
+      );
+      reconcileSlimmingVerificationFromWorkspaceHistory(target, navigationLevel, context);
+      reconcileSlimmingRecycleExplanationFromWorkspaceHistory(
+        target,
+        navigationLevel,
+        context
+      );
       reconcileSlimmingSetupFromWorkspaceHistory(target, navigationLevel, context);
       reconcileSlimmingThresholdFromWorkspaceHistory(target, navigationLevel, context);
       reconcileTrainingSetupFromWorkspaceHistory(target, navigationLevel, context);
@@ -3248,6 +3385,17 @@ async function applyWorkspaceHistoryEntry(entry) {
         context
       );
       reconcileWorldMapPlaceTagsFromWorkspaceHistory("gallery", navigationLevel, context);
+      reconcileSlimmingIdenticalCleanupFromWorkspaceHistory(
+        "gallery",
+        navigationLevel,
+        context
+      );
+      reconcileSlimmingVerificationFromWorkspaceHistory("gallery", navigationLevel, context);
+      reconcileSlimmingRecycleExplanationFromWorkspaceHistory(
+        "gallery",
+        navigationLevel,
+        context
+      );
       reconcileSlimmingSetupFromWorkspaceHistory("gallery", navigationLevel, context);
       reconcileSlimmingThresholdFromWorkspaceHistory("gallery", navigationLevel, context);
       reconcileTrainingSetupFromWorkspaceHistory("gallery", navigationLevel, context);
@@ -3402,6 +3550,21 @@ async function applyWorkspaceHistoryEntry(entry) {
       context
     );
     reconcileWorldMapPlaceTagsFromWorkspaceHistory(
+      target,
+      activeEntry?.navigationLevel || "workspace",
+      context
+    );
+    reconcileSlimmingIdenticalCleanupFromWorkspaceHistory(
+      target,
+      activeEntry?.navigationLevel || "workspace",
+      context
+    );
+    reconcileSlimmingVerificationFromWorkspaceHistory(
+      target,
+      activeEntry?.navigationLevel || "workspace",
+      context
+    );
+    reconcileSlimmingRecycleExplanationFromWorkspaceHistory(
       target,
       activeEntry?.navigationLevel || "workspace",
       context
@@ -3888,9 +4051,22 @@ function closeSlimmingWorkspace({ restoreFocus = true } = {}) {
   closeSlimmingCatalogSourcePicker({ restoreFocus: false });
   closeSlimmingAnalysisOptions({ restoreFocus: false });
   if (elements.slimmingIdenticalCleanupDialog.open) {
-    closeSlimmingIdenticalCleanupDialog();
+    closeSlimmingIdenticalCleanupDialog({
+      restoreFocus: false,
+      checkpoint: false,
+      preserveState: false,
+    });
   }
-  closeSlimmingVerificationReport();
+  closeSlimmingVerificationReport({
+    restoreFocus: false,
+    checkpoint: false,
+    preserveState: false,
+  });
+  closeSlimmingRecycleExplanation({
+    restoreFocus: false,
+    checkpoint: false,
+    preserveState: false,
+  });
   clearTimeout(state.slimming.recycle.pollTimer);
   clearTimeout(state.slimming.recycle.searchTimer);
   clearTimeout(state.slimming.removal.pollTimer);
@@ -23090,9 +23266,9 @@ function appendSlimmingVerificationMetric(label, value, tone) {
   elements.slimmingVerificationMetrics.append(card);
 }
 
-function openSlimmingVerificationReport(request) {
+function renderSlimmingVerificationReport(request) {
   const verification = request?.verification;
-  if (!verification) return;
+  if (!verification) return false;
   const complete = Boolean(verification.isComplete);
   elements.slimmingVerificationDialog.classList.toggle("incomplete", !complete);
   elements.slimmingVerificationIcon.textContent = complete ? "✓" : "!";
@@ -23118,15 +23294,170 @@ function openSlimmingVerificationReport(request) {
     ? `实际读取 ${verification.observedAssetCount} 项，确认已清理 ${verification.recycledRedundantAssetCount} 项；处理范围内没有仍处于可用状态的计划删除项。`
     : `实际读取 ${verification.observedAssetCount} 项；确认已清理 ${verification.recycledRedundantAssetCount} 项；当前实际可用 ${verification.currentAvailableAssetCount} 项；仍可用冗余 ${verification.remainingRedundantAssetCount} 项；状态无法确认 ${verification.unresolvedAssetCount} 项。`;
   elements.slimmingVerificationResult.append(heading, detail);
-  if (!elements.slimmingVerificationDialog.open) {
-    elements.slimmingVerificationDialog.showModal();
-  }
-  requestAnimationFrame(() => elements.closeSlimmingVerificationButton.focus());
+  return true;
 }
 
-function closeSlimmingVerificationReport() {
+function slimmingVerificationBaseLevelFromHistory(context = {}) {
+  return ["sidebar", "inspector", "lightbox"].includes(
+    context.slimmingVerificationBaseLevel
+  )
+    ? context.slimmingVerificationBaseLevel
+    : "workspace";
+}
+
+function replaceSlimmingVerificationHistoryWithBase(baseLevel) {
+  if (!state.workspaceNavigation.initialized
+    || elements.appView.classList.contains("hidden")) return;
+  const current = activeWorkspaceHistoryEntry();
+  const route = visibleWorkspaceRoute();
+  if (current?.route !== route || current.navigationLevel !== "slimmingVerification") return;
+  const context = currentWorkspaceHistoryContext(route);
+  if (context && typeof context === "object") delete context.slimmingVerificationBaseLevel;
+  const navigationLevel = visibleWorkspaceNavigationBaseLevel(route, baseLevel);
+  history.replaceState({
+    ...(history.state || {}),
+    [WORKSPACE_HISTORY_KEY]: workspaceHistoryEntry(route, context, navigationLevel),
+  }, "", location.href);
+}
+
+function clearSlimmingVerificationState() {
+  const cleanup = state.slimming.identicalCleanup;
+  cleanup.verificationRequest = null;
+  cleanup.verificationReturnFocus = null;
+  cleanup.verificationBaseLevel = "workspace";
+  cleanup.verificationHistoryRestoreFocus = true;
+  cleanup.verificationRestorable = false;
+  cleanup.verificationOpening = false;
+}
+
+function presentSlimmingVerificationReport({
+  historyMode = "pushSlimmingVerification",
+  baseLevel = null,
+  focus = true,
+} = {}) {
+  const cleanup = state.slimming.identicalCleanup;
+  if (!renderSlimmingVerificationReport(cleanup.verificationRequest)) return;
   if (elements.slimmingVerificationDialog.open) {
-    elements.slimmingVerificationDialog.close();
+    if (focus) restoreOverlayFocus(elements.closeSlimmingVerificationButton);
+    return;
+  }
+  const current = activeWorkspaceHistoryEntry();
+  cleanup.verificationBaseLevel = baseLevel
+    || workspaceNavigationBaseLevel(
+      current?.navigationLevel || "workspace",
+      current?.context || {}
+    );
+  elements.slimmingVerificationDialog.showModal();
+  if (historyMode !== "none") {
+    const route = visibleWorkspaceRoute();
+    recordWorkspaceHistory(route, currentWorkspaceHistoryContext(route), historyMode);
+  }
+  cleanup.verificationRestorable = true;
+  if (focus) {
+    requestAnimationFrame(() => restoreOverlayFocus(elements.closeSlimmingVerificationButton));
+  }
+}
+
+function openSlimmingVerificationReport(request) {
+  const cleanup = state.slimming.identicalCleanup;
+  if (!request?.verification || cleanup.verificationOpening) return;
+  if (!elements.slimmingVerificationDialog.open) {
+    cleanup.verificationReturnFocus = document.activeElement;
+  }
+  cleanup.verificationRequest = request;
+  cleanup.verificationOpening = true;
+  try {
+    presentSlimmingVerificationReport();
+  } finally {
+    cleanup.verificationOpening = false;
+  }
+}
+
+function closeSlimmingVerificationReport({
+  restoreFocus = true,
+  checkpoint = true,
+  preserveState = false,
+} = {}) {
+  if (!elements.slimmingVerificationDialog.open) return;
+  const cleanup = state.slimming.identicalCleanup;
+  const baseLevel = cleanup.verificationBaseLevel;
+  const returnFocus = cleanup.verificationReturnFocus;
+  elements.slimmingVerificationDialog.close();
+  if (restoreFocus) {
+    const requestID = cleanup.verificationRequest?.id;
+    const reportButton = requestID
+      ? elements.slimmingRemovalStatus.querySelector(
+        `[data-slimming-verification-request-id="${CSS.escape(requestID)}"]`
+      )
+      : null;
+    restoreOverlayFocus(stableReturnFocusTarget(
+      returnFocus,
+      reportButton || elements.slimmingButton
+    ));
+  }
+  if (checkpoint) replaceSlimmingVerificationHistoryWithBase(baseLevel);
+  if (!preserveState) clearSlimmingVerificationState();
+}
+
+function returnFromSlimmingVerification({ restoreFocus = true } = {}) {
+  if (!elements.slimmingVerificationDialog.open) return Promise.resolve();
+  const cleanup = state.slimming.identicalCleanup;
+  cleanup.verificationHistoryRestoreFocus = restoreFocus;
+  if (state.workspaceNavigation.pendingReturnPromise) {
+    return state.workspaceNavigation.pendingReturnPromise;
+  }
+  const current = activeWorkspaceHistoryEntry();
+  if (state.workspaceNavigation.initialized
+    && current?.route === visibleWorkspaceRoute()
+    && current.navigationLevel === "slimmingVerification") {
+    const pending = new Promise((resolve) => {
+      state.workspaceNavigation.pendingReturnResolve = resolve;
+    });
+    state.workspaceNavigation.pendingReturnPromise = pending;
+    history.back();
+    return pending;
+  }
+  closeSlimmingVerificationReport({ restoreFocus });
+  cleanup.verificationHistoryRestoreFocus = true;
+  return Promise.resolve();
+}
+
+function reconcileSlimmingVerificationFromWorkspaceHistory(
+  route,
+  navigationLevel,
+  context = {}
+) {
+  const cleanup = state.slimming.identicalCleanup;
+  const shouldOpen = navigationLevel === "slimmingVerification"
+    && route === visibleWorkspaceRoute();
+  if (shouldOpen && (!cleanup.verificationRestorable
+    || !cleanup.verificationRequest?.verification)) {
+    clearSlimmingVerificationState();
+    if (history.length > 1 && Object.prototype.hasOwnProperty.call(
+      context,
+      "slimmingVerificationBaseLevel"
+    )) {
+      history.back();
+    } else {
+      replaceSlimmingVerificationHistoryWithBase(
+        slimmingVerificationBaseLevelFromHistory(context)
+      );
+    }
+    return;
+  }
+  if (shouldOpen && !elements.slimmingVerificationDialog.open) {
+    presentSlimmingVerificationReport({
+      historyMode: "none",
+      baseLevel: slimmingVerificationBaseLevelFromHistory(context),
+    });
+  } else if (!shouldOpen && elements.slimmingVerificationDialog.open) {
+    const restoreFocus = cleanup.verificationHistoryRestoreFocus;
+    closeSlimmingVerificationReport({
+      restoreFocus,
+      checkpoint: false,
+      preserveState: true,
+    });
+    cleanup.verificationHistoryRestoreFocus = true;
   }
 }
 
@@ -23361,11 +23692,9 @@ function slimmingRecycleDirectActionHelp(entry, action) {
   return "";
 }
 
-function openSlimmingRecycleExplanation(entryID) {
+function renderSlimmingRecycleExplanation(entryID) {
   const entry = state.slimming.recycle.entries.find((item) => item.id === entryID);
-  if (!entry || elements.slimmingRecycleExplanationDialog.open) return;
-  state.slimming.recycle.explanationEntryID = entryID;
-  state.slimming.recycle.explanationReturnFocus = document.activeElement;
+  if (!entry) return false;
   elements.slimmingRecycleExplanationTitle.textContent = entry.sourceKind === "photos"
     && entry.state === "recycled"
     ? "在“照片”App 中恢复"
@@ -23379,27 +23708,171 @@ function openSlimmingRecycleExplanation(entryID) {
     || (entry.resolution === "photosManagedBySystem"
       ? "请在系统“照片”App 的“最近删除”中恢复；恢复后 ImageAll 会自动对账。永久删除也由系统管理。"
       : "本次操作没有形成可证明的完成状态。ImageAll 不会继续删除；请修正当前原因后再重试。");
-  elements.slimmingRecycleExplanationDialog.showModal();
-  restoreOverlayFocus(elements.closeSlimmingRecycleExplanationButton);
+  return true;
 }
 
-function closeSlimmingRecycleExplanation() {
+function slimmingRecycleExplanationBaseLevelFromHistory(context = {}) {
+  return ["sidebar", "inspector", "lightbox"].includes(
+    context.slimmingRecycleExplanationBaseLevel
+  )
+    ? context.slimmingRecycleExplanationBaseLevel
+    : "workspace";
+}
+
+function replaceSlimmingRecycleExplanationHistoryWithBase(baseLevel) {
+  if (!state.workspaceNavigation.initialized
+    || elements.appView.classList.contains("hidden")) return;
+  const current = activeWorkspaceHistoryEntry();
+  const route = visibleWorkspaceRoute();
+  if (current?.route !== route
+    || current.navigationLevel !== "slimmingRecycleExplanation") return;
+  const context = currentWorkspaceHistoryContext(route);
+  if (context && typeof context === "object") {
+    delete context.slimmingRecycleExplanationBaseLevel;
+  }
+  const navigationLevel = visibleWorkspaceNavigationBaseLevel(route, baseLevel);
+  history.replaceState({
+    ...(history.state || {}),
+    [WORKSPACE_HISTORY_KEY]: workspaceHistoryEntry(route, context, navigationLevel),
+  }, "", location.href);
+}
+
+function clearSlimmingRecycleExplanationState() {
+  const recycle = state.slimming.recycle;
+  recycle.explanationEntryID = null;
+  recycle.explanationReturnFocus = null;
+  recycle.explanationBaseLevel = "workspace";
+  recycle.explanationHistoryRestoreFocus = true;
+  recycle.explanationRestorable = false;
+  recycle.explanationOpening = false;
+}
+
+function presentSlimmingRecycleExplanation({
+  historyMode = "pushSlimmingRecycleExplanation",
+  baseLevel = null,
+  focus = true,
+} = {}) {
+  const recycle = state.slimming.recycle;
+  if (!renderSlimmingRecycleExplanation(recycle.explanationEntryID)) return;
   if (elements.slimmingRecycleExplanationDialog.open) {
-    elements.slimmingRecycleExplanationDialog.close();
+    if (focus) restoreOverlayFocus(elements.closeSlimmingRecycleExplanationButton);
+    return;
+  }
+  const current = activeWorkspaceHistoryEntry();
+  recycle.explanationBaseLevel = baseLevel
+    || workspaceNavigationBaseLevel(
+      current?.navigationLevel || "workspace",
+      current?.context || {}
+    );
+  elements.slimmingRecycleExplanationDialog.showModal();
+  if (historyMode !== "none") {
+    const route = visibleWorkspaceRoute();
+    recordWorkspaceHistory(route, currentWorkspaceHistoryContext(route), historyMode);
+  }
+  recycle.explanationRestorable = true;
+  if (focus) restoreOverlayFocus(elements.closeSlimmingRecycleExplanationButton);
+}
+
+function openSlimmingRecycleExplanation(entryID) {
+  const recycle = state.slimming.recycle;
+  if (!recycle.entries.some((item) => item.id === entryID)
+    || elements.slimmingRecycleExplanationDialog.open
+    || recycle.explanationOpening) return;
+  recycle.explanationEntryID = entryID;
+  recycle.explanationReturnFocus = document.activeElement;
+  recycle.explanationOpening = true;
+  try {
+    presentSlimmingRecycleExplanation();
+  } finally {
+    recycle.explanationOpening = false;
   }
 }
 
-function restoreSlimmingRecycleExplanationFocus() {
-  const entryID = state.slimming.recycle.explanationEntryID;
-  const fallback = state.slimming.recycle.explanationReturnFocus;
-  state.slimming.recycle.explanationEntryID = null;
-  state.slimming.recycle.explanationReturnFocus = null;
+function closeSlimmingRecycleExplanation({
+  restoreFocus = true,
+  checkpoint = true,
+  preserveState = false,
+} = {}) {
+  if (!elements.slimmingRecycleExplanationDialog.open) return;
+  const recycle = state.slimming.recycle;
+  const entryID = recycle.explanationEntryID;
+  const fallback = recycle.explanationReturnFocus;
+  const baseLevel = recycle.explanationBaseLevel;
+  elements.slimmingRecycleExplanationDialog.close();
   const target = entryID
     ? elements.slimmingRecycleList.querySelector(
       `[data-slimming-recycle-explanation-id="${CSS.escape(entryID)}"]`
     )
     : null;
-  restoreOverlayFocus(target || (fallback?.isConnected ? fallback : elements.slimmingButton));
+  if (restoreFocus) {
+    restoreOverlayFocus(target || stableReturnFocusTarget(fallback, elements.slimmingButton));
+  }
+  if (checkpoint) replaceSlimmingRecycleExplanationHistoryWithBase(baseLevel);
+  if (!preserveState) clearSlimmingRecycleExplanationState();
+}
+
+function returnFromSlimmingRecycleExplanation({ restoreFocus = true } = {}) {
+  if (!elements.slimmingRecycleExplanationDialog.open) return Promise.resolve();
+  const recycle = state.slimming.recycle;
+  recycle.explanationHistoryRestoreFocus = restoreFocus;
+  if (state.workspaceNavigation.pendingReturnPromise) {
+    return state.workspaceNavigation.pendingReturnPromise;
+  }
+  const current = activeWorkspaceHistoryEntry();
+  if (state.workspaceNavigation.initialized
+    && current?.route === visibleWorkspaceRoute()
+    && current.navigationLevel === "slimmingRecycleExplanation") {
+    const pending = new Promise((resolve) => {
+      state.workspaceNavigation.pendingReturnResolve = resolve;
+    });
+    state.workspaceNavigation.pendingReturnPromise = pending;
+    history.back();
+    return pending;
+  }
+  closeSlimmingRecycleExplanation({ restoreFocus });
+  recycle.explanationHistoryRestoreFocus = true;
+  return Promise.resolve();
+}
+
+function reconcileSlimmingRecycleExplanationFromWorkspaceHistory(
+  route,
+  navigationLevel,
+  context = {}
+) {
+  const recycle = state.slimming.recycle;
+  const shouldOpen = navigationLevel === "slimmingRecycleExplanation"
+    && route === visibleWorkspaceRoute();
+  const entryExists = recycle.entries.some(
+    (entry) => entry.id === recycle.explanationEntryID
+  );
+  if (shouldOpen && (!recycle.explanationRestorable || !entryExists)) {
+    clearSlimmingRecycleExplanationState();
+    if (history.length > 1 && Object.prototype.hasOwnProperty.call(
+      context,
+      "slimmingRecycleExplanationBaseLevel"
+    )) {
+      history.back();
+    } else {
+      replaceSlimmingRecycleExplanationHistoryWithBase(
+        slimmingRecycleExplanationBaseLevelFromHistory(context)
+      );
+    }
+    return;
+  }
+  if (shouldOpen && !elements.slimmingRecycleExplanationDialog.open) {
+    presentSlimmingRecycleExplanation({
+      historyMode: "none",
+      baseLevel: slimmingRecycleExplanationBaseLevelFromHistory(context),
+    });
+  } else if (!shouldOpen && elements.slimmingRecycleExplanationDialog.open) {
+    const restoreFocus = recycle.explanationHistoryRestoreFocus;
+    closeSlimmingRecycleExplanation({
+      restoreFocus,
+      checkpoint: false,
+      preserveState: true,
+    });
+    recycle.explanationHistoryRestoreFocus = true;
+  }
 }
 
 function renderSlimmingRecycleSourceOptions() {
@@ -24546,37 +25019,213 @@ function renderSlimmingIdenticalCleanupDialog() {
     : "快速清理";
 }
 
-async function openSlimmingIdenticalCleanupDialog() {
-  if (!state.slimming.selectedJobID || state.slimming.identicalCleanup.preparing) return;
+function slimmingIdenticalCleanupBaseLevelFromHistory(context = {}) {
+  return ["sidebar", "inspector", "lightbox"].includes(
+    context.slimmingIdenticalCleanupBaseLevel
+  )
+    ? context.slimmingIdenticalCleanupBaseLevel
+    : "workspace";
+}
+
+function replaceSlimmingIdenticalCleanupHistoryWithBase(baseLevel) {
+  if (!state.workspaceNavigation.initialized
+    || elements.appView.classList.contains("hidden")) return;
+  const current = activeWorkspaceHistoryEntry();
+  const route = visibleWorkspaceRoute();
+  if (current?.route !== route
+    || current.navigationLevel !== "slimmingIdenticalCleanup") return;
+  const context = currentWorkspaceHistoryContext(route);
+  if (context && typeof context === "object") {
+    delete context.slimmingIdenticalCleanupBaseLevel;
+  }
+  const navigationLevel = visibleWorkspaceNavigationBaseLevel(route, baseLevel);
+  history.replaceState({
+    ...(history.state || {}),
+    [WORKSPACE_HISTORY_KEY]: workspaceHistoryEntry(route, context, navigationLevel),
+  }, "", location.href);
+}
+
+function clearSlimmingIdenticalCleanupDialogState({ cancelRequest = true } = {}) {
   const cleanup = state.slimming.identicalCleanup;
+  if (cancelRequest) cleanup.planRequestGeneration += 1;
+  cleanup.plan = null;
+  cleanup.error = "";
+  cleanup.preparing = false;
+  cleanup.submitting = false;
+  cleanup.returnFocus = null;
+  cleanup.baseLevel = "workspace";
+  cleanup.historyRestoreFocus = true;
+  cleanup.focusID = "cancelSlimmingIdenticalCleanupButton";
+  cleanup.restorable = false;
+  cleanup.opening = false;
+}
+
+function presentSlimmingIdenticalCleanupDialog({
+  historyMode = "pushSlimmingIdenticalCleanup",
+  baseLevel = null,
+  focus = true,
+} = {}) {
+  const cleanup = state.slimming.identicalCleanup;
+  if (elements.slimmingIdenticalCleanupDialog.open) {
+    renderSlimmingIdenticalCleanupDialog();
+    if (focus) restoreOverlayFocus(
+      document.getElementById(cleanup.focusID)
+        || elements.cancelSlimmingIdenticalCleanupButton
+    );
+    return;
+  }
+  const current = activeWorkspaceHistoryEntry();
+  cleanup.baseLevel = baseLevel
+    || workspaceNavigationBaseLevel(
+      current?.navigationLevel || "workspace",
+      current?.context || {}
+    );
+  elements.slimmingIdenticalCleanupDialog.showModal();
+  if (historyMode !== "none") {
+    const route = visibleWorkspaceRoute();
+    recordWorkspaceHistory(route, currentWorkspaceHistoryContext(route), historyMode);
+  }
+  cleanup.restorable = true;
+  renderSlimmingIdenticalCleanupDialog();
+  if (focus) restoreOverlayFocus(
+    document.getElementById(cleanup.focusID)
+      || elements.cancelSlimmingIdenticalCleanupButton
+  );
+}
+
+async function openSlimmingIdenticalCleanupDialog() {
+  const cleanup = state.slimming.identicalCleanup;
+  if (!state.slimming.selectedJobID || elements.slimmingIdenticalCleanupDialog.open
+    || cleanup.preparing || cleanup.opening) return;
+  cleanup.returnFocus = document.activeElement;
   cleanup.plan = null;
   cleanup.error = "";
   cleanup.preparing = true;
-  elements.slimmingIdenticalCleanupDialog.showModal();
-  renderSlimmingIdenticalCleanupDialog();
+  cleanup.submitting = false;
+  cleanup.focusID = "cancelSlimmingIdenticalCleanupButton";
+  const generation = ++cleanup.planRequestGeneration;
+  cleanup.opening = true;
   try {
-    cleanup.plan = await api("/v1/library-slimming/identical-cleanup/plans", {
+    presentSlimmingIdenticalCleanupDialog();
+  } finally {
+    cleanup.opening = false;
+  }
+  try {
+    const plan = await api("/v1/library-slimming/identical-cleanup/plans", {
       method: "POST",
       body: JSON.stringify({
         jobID: state.slimming.selectedJobID,
         mediaKind: state.slimming.mediaKind,
       }),
     });
+    if (generation !== cleanup.planRequestGeneration) return;
+    cleanup.plan = plan;
   } catch (error) {
-    cleanup.error = error.message || "无法生成一键清理方案";
+    if (generation === cleanup.planRequestGeneration) {
+      cleanup.error = error.message || "无法生成一键清理方案";
+    }
   } finally {
-    cleanup.preparing = false;
-    renderSlimmingIdenticalCleanupDialog();
+    if (generation === cleanup.planRequestGeneration) {
+      cleanup.preparing = false;
+      if (elements.slimmingIdenticalCleanupDialog.open) {
+        renderSlimmingIdenticalCleanupDialog();
+      }
+    }
   }
 }
 
-function closeSlimmingIdenticalCleanupDialog() {
-  if (state.slimming.identicalCleanup.submitting) return;
-  if (elements.slimmingIdenticalCleanupDialog.open) {
-    elements.slimmingIdenticalCleanupDialog.close();
+function closeSlimmingIdenticalCleanupDialog({
+  restoreFocus = true,
+  checkpoint = true,
+  preserveState = false,
+} = {}) {
+  const cleanup = state.slimming.identicalCleanup;
+  if (!elements.slimmingIdenticalCleanupDialog.open || cleanup.submitting) return;
+  const active = document.activeElement;
+  if (active instanceof HTMLElement
+    && elements.slimmingIdenticalCleanupDialog.contains(active)
+    && active.id) {
+    cleanup.focusID = active.id;
   }
-  state.slimming.identicalCleanup.plan = null;
-  state.slimming.identicalCleanup.error = "";
+  const baseLevel = cleanup.baseLevel;
+  const returnFocus = cleanup.returnFocus;
+  elements.slimmingIdenticalCleanupDialog.close();
+  if (restoreFocus) {
+    restoreOverlayFocus(stableReturnFocusTarget(
+      returnFocus,
+      elements.slimmingIdenticalCleanupButton
+    ));
+  }
+  if (checkpoint) replaceSlimmingIdenticalCleanupHistoryWithBase(baseLevel);
+  if (!preserveState) clearSlimmingIdenticalCleanupDialogState();
+}
+
+function returnFromSlimmingIdenticalCleanup({ restoreFocus = true } = {}) {
+  const cleanup = state.slimming.identicalCleanup;
+  if (!elements.slimmingIdenticalCleanupDialog.open || cleanup.submitting) {
+    return Promise.resolve();
+  }
+  cleanup.historyRestoreFocus = restoreFocus;
+  if (state.workspaceNavigation.pendingReturnPromise) {
+    return state.workspaceNavigation.pendingReturnPromise;
+  }
+  const current = activeWorkspaceHistoryEntry();
+  if (state.workspaceNavigation.initialized
+    && current?.route === visibleWorkspaceRoute()
+    && current.navigationLevel === "slimmingIdenticalCleanup") {
+    const pending = new Promise((resolve) => {
+      state.workspaceNavigation.pendingReturnResolve = resolve;
+    });
+    state.workspaceNavigation.pendingReturnPromise = pending;
+    history.back();
+    return pending;
+  }
+  closeSlimmingIdenticalCleanupDialog({ restoreFocus });
+  cleanup.historyRestoreFocus = true;
+  return Promise.resolve();
+}
+
+function reconcileSlimmingIdenticalCleanupFromWorkspaceHistory(
+  route,
+  navigationLevel,
+  context = {}
+) {
+  const cleanup = state.slimming.identicalCleanup;
+  const shouldOpen = navigationLevel === "slimmingIdenticalCleanup"
+    && route === visibleWorkspaceRoute();
+  const hasRestorableState = cleanup.preparing || cleanup.plan || cleanup.error;
+  if (shouldOpen && (!cleanup.restorable || !hasRestorableState)) {
+    clearSlimmingIdenticalCleanupDialogState();
+    if (history.length > 1 && Object.prototype.hasOwnProperty.call(
+      context,
+      "slimmingIdenticalCleanupBaseLevel"
+    )) {
+      history.back();
+    } else {
+      replaceSlimmingIdenticalCleanupHistoryWithBase(
+        slimmingIdenticalCleanupBaseLevelFromHistory(context)
+      );
+    }
+    return;
+  }
+  if (shouldOpen && !elements.slimmingIdenticalCleanupDialog.open) {
+    presentSlimmingIdenticalCleanupDialog({
+      historyMode: "none",
+      baseLevel: slimmingIdenticalCleanupBaseLevelFromHistory(context),
+    });
+  } else if (!shouldOpen && elements.slimmingIdenticalCleanupDialog.open) {
+    if (cleanup.submitting) {
+      history.forward();
+      return;
+    }
+    const restoreFocus = cleanup.historyRestoreFocus;
+    closeSlimmingIdenticalCleanupDialog({
+      restoreFocus,
+      checkpoint: false,
+      preserveState: true,
+    });
+    cleanup.historyRestoreFocus = true;
+  }
 }
 
 async function submitSlimmingIdenticalCleanup(mode) {
@@ -24598,8 +25247,14 @@ async function submitSlimmingIdenticalCleanup(mode) {
       request,
       ...cleanup.requests.filter((item) => item.id !== request.id),
     ];
-    elements.slimmingIdenticalCleanupDialog.close();
-    cleanup.plan = null;
+    cleanup.submitting = false;
+    const returnFocus = cleanup.returnFocus;
+    await returnFromSlimmingIdenticalCleanup({ restoreFocus: false });
+    clearSlimmingIdenticalCleanupDialogState({ cancelRequest: false });
+    restoreOverlayFocus(stableReturnFocusTarget(
+      returnFocus,
+      elements.slimmingIdenticalCleanupButton
+    ));
     toast("方案已冻结，请回到 Mac 核对并确认");
     renderSlimmingWorkspace();
     scheduleSlimmingIdenticalCleanupPoll();
@@ -27918,6 +28573,21 @@ async function loadWorkspace({ restoreHistory = false } = {}) {
       restoreEntry?.context || {}
     );
     reconcileWorldMapPlaceTagsFromWorkspaceHistory(
+      "gallery",
+      restoreGalleryNavigationLevel,
+      restoreEntry?.context || {}
+    );
+    reconcileSlimmingIdenticalCleanupFromWorkspaceHistory(
+      "gallery",
+      restoreGalleryNavigationLevel,
+      restoreEntry?.context || {}
+    );
+    reconcileSlimmingVerificationFromWorkspaceHistory(
+      "gallery",
+      restoreGalleryNavigationLevel,
+      restoreEntry?.context || {}
+    );
+    reconcileSlimmingRecycleExplanationFromWorkspaceHistory(
       "gallery",
       restoreGalleryNavigationLevel,
       restoreEntry?.context || {}
@@ -32854,11 +33524,11 @@ function bindEvents() {
   );
   elements.cancelSlimmingIdenticalCleanupButton.addEventListener(
     "click",
-    closeSlimmingIdenticalCleanupDialog
+    () => { void returnFromSlimmingIdenticalCleanup(); }
   );
   elements.slimmingIdenticalCleanupDialog.addEventListener("cancel", (event) => {
     event.preventDefault();
-    closeSlimmingIdenticalCleanupDialog();
+    void returnFromSlimmingIdenticalCleanup();
   });
   elements.identicalCleanupBlockingDialog.addEventListener("cancel", (event) => {
     event.preventDefault();
@@ -33026,16 +33696,12 @@ function bindEvents() {
   });
   elements.closeSlimmingRecycleExplanationButton.addEventListener(
     "click",
-    closeSlimmingRecycleExplanation
+    () => { void returnFromSlimmingRecycleExplanation(); }
   );
   elements.slimmingRecycleExplanationDialog.addEventListener("cancel", (event) => {
     event.preventDefault();
-    closeSlimmingRecycleExplanation();
+    void returnFromSlimmingRecycleExplanation();
   });
-  elements.slimmingRecycleExplanationDialog.addEventListener(
-    "close",
-    restoreSlimmingRecycleExplanationFocus
-  );
   elements.slimmingMediaKindTabs.addEventListener("click", (event) => {
     const button = event.target.closest("[data-slimming-media-kind]");
     if (button) void switchSlimmingMediaKind(button.dataset.slimmingMediaKind);
@@ -33180,11 +33846,11 @@ function bindEvents() {
   });
   elements.closeSlimmingVerificationButton.addEventListener(
     "click",
-    closeSlimmingVerificationReport
+    () => { void returnFromSlimmingVerification(); }
   );
   elements.slimmingVerificationDialog.addEventListener("cancel", (event) => {
     event.preventDefault();
-    closeSlimmingVerificationReport();
+    void returnFromSlimmingVerification();
   });
   elements.closeTrainingButton.addEventListener("click", () => {
     void returnFromWorkspace("training");
@@ -34122,6 +34788,8 @@ function bindEvents() {
       || elements.newTagDialog.open
       || elements.tagManagerDialog.open
       || elements.confirmDialog.open
+      || elements.slimmingIdenticalCleanupDialog.open
+      || elements.slimmingVerificationDialog.open
       || elements.slimmingRecycleExplanationDialog.open
       || elements.generalSettingsDialog.open
       || elements.suggestionThresholdDialog.open
@@ -34206,8 +34874,16 @@ function bindEvents() {
         void returnFromConfirmation();
         return;
       }
+      if (elements.slimmingVerificationDialog.open) {
+        void returnFromSlimmingVerification();
+        return;
+      }
+      if (elements.slimmingIdenticalCleanupDialog.open) {
+        void returnFromSlimmingIdenticalCleanup();
+        return;
+      }
       if (elements.slimmingRecycleExplanationDialog.open) {
-        closeSlimmingRecycleExplanation();
+        void returnFromSlimmingRecycleExplanation();
         return;
       }
       if (!elements.slimmingJobContextMenu.classList.contains("hidden")) {

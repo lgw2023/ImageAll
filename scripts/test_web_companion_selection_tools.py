@@ -3597,12 +3597,33 @@ def main(*, inspector_actions_only=False):
         explanation_button = refresh_row.get_by_role("button", name="说明")
         explanation_button.click()
         page.locator("#slimmingRecycleExplanationDialog[open]").wait_for()
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "slimmingRecycleExplanation"
+        explanation_history = page.evaluate("() => JSON.stringify(history.state)")
+        assert SLIMMING_RECYCLE_IDS[1] not in explanation_history
+        assert "RECYCLE_0002" not in explanation_history
+        assert "旅行归档" not in explanation_history
         assert "RECYCLE_0002" in page.locator("#slimmingRecycleExplanationTitle").inner_text()
         assert "目录中的文件与分析时记录不一致" in page.locator(
             "#slimmingRecycleExplanationMessage"
         ).inner_text()
         assert "原文件未删除" in page.locator(
             "#slimmingRecycleExplanationPolicy"
+        ).inner_text()
+        page.go_back()
+        page.wait_for_function(
+            "() => !document.querySelector('#slimmingRecycleExplanationDialog').open"
+        )
+        page.wait_for_function(
+            "entryID => document.activeElement?.dataset.slimmingRecycleExplanationId === entryID",
+            arg=SLIMMING_RECYCLE_IDS[1],
+        )
+        page.go_forward()
+        page.locator("#slimmingRecycleExplanationDialog[open]").wait_for()
+        assert "RECYCLE_0002" in page.locator("#slimmingRecycleExplanationTitle").inner_text()
+        assert "目录中的文件与分析时记录不一致" in page.locator(
+            "#slimmingRecycleExplanationMessage"
         ).inner_text()
         page.screenshot(path="/tmp/imageall-slimming-recycle-recovery.png", full_page=True)
         page.set_viewport_size({"width": 390, "height": 844})
