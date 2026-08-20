@@ -14282,10 +14282,12 @@ function renderInspectorSurface() {
   if (!showsIntegratedWorkspace && !showsSelection && !showsDetail) {
     renderPlaceholderTagEditor();
   }
-  if (!showsIntegratedWorkspace && showsSelection && !state.inspectorDismissed) {
+  if (!showsIntegratedWorkspace
+    && (showsSelection || showsDetail)
+    && !state.inspectorDismissed) {
     elements.inspector.classList.add("open");
-    renderSelectionInspector();
-  } else if (!showsIntegratedWorkspace && showsSelection) {
+  }
+  if (!showsIntegratedWorkspace && showsSelection) {
     renderSelectionInspector();
   }
   syncInlineTagCreationControls();

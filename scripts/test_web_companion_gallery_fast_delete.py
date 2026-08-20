@@ -587,14 +587,40 @@ def main():
         page.keyboard.press("Escape")
 
         page.set_viewport_size({"width": 390, "height": 844})
+        page.locator("#inspector.open").wait_for()
+        page.wait_for_function(
+            "() => history.state?.imageAllWorkspace?.navigationLevel === 'inspector'"
+        )
+        close_inspector_bounds = page.locator("#closeInspectorButton").bounding_box()
+        assert close_inspector_bounds is not None
+        assert close_inspector_bounds["x"] >= 0
+        assert close_inspector_bounds["x"] + close_inspector_bounds["width"] <= 390
+        page.screenshot(path="/tmp/imageall-gallery-fast-delete-inspector-resize.png", full_page=True)
         page.locator("#closeInspectorButton").click()
+        page.wait_for_function(
+            "() => !document.querySelector('#inspector').classList.contains('open')"
+        )
+        page.wait_for_function(
+            "() => history.state?.imageAllWorkspace?.navigationLevel === 'workspace'"
+        )
+        page.wait_for_function(
+            "expected => document.activeElement?.closest('.asset-card')?.dataset.assetId === expected",
+            arg=ASSET_IDS[5],
+        )
         remaining_cards.nth(5).click(modifiers=["Meta"])
         remaining_cards.nth(6).click(modifiers=["Meta"])
         assert not page.locator("#inspector").evaluate(
             "node => node.classList.contains('open')"
         )
         page.locator("#selectionInspectorOverlayButton").click()
+        page.locator("#inspector.open").wait_for()
         page.locator("#selectionInspectorDeleteButton:not(.hidden)").wait_for()
+        page.wait_for_function(
+            "() => history.state?.imageAllWorkspace?.navigationLevel === 'inspector'"
+        )
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'closeInspectorButton'"
+        )
         page.wait_for_function(
             """
             () => {
@@ -609,6 +635,20 @@ def main():
         assert page.evaluate("() => document.documentElement.scrollWidth <= innerWidth")
         bounds = page.locator("#selectionInspectorDeleteButton").bounding_box()
         assert bounds and bounds["x"] >= 0 and bounds["x"] + bounds["width"] <= 390
+        page.evaluate("() => history.back()")
+        page.wait_for_function(
+            "() => !document.querySelector('#inspector').classList.contains('open')"
+        )
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'selectionInspectorOverlayButton'"
+        )
+        assert page.evaluate("() => state.selectedAssetIDs.size") == 3
+        page.evaluate("() => history.forward()")
+        page.locator("#inspector.open").wait_for()
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'closeInspectorButton'"
+        )
+        assert page.evaluate("() => state.selectedAssetIDs.size") == 3
 
         assert not failed_resources, failed_resources
         assert not page_errors, page_errors

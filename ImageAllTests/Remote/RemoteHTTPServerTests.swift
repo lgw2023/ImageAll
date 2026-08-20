@@ -3457,6 +3457,8 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function returnFromWorldMapPlaceTags"))
         XCTAssertTrue(html.contains("id=\"slimmingL2Distance\" type=\"number\" min=\"0\" max=\"200\" step=\"any\""))
         XCTAssertTrue(script.contains("function openSelectionInspectorOverlay()"))
+        XCTAssertTrue(script.contains("(showsSelection || showsDetail)"))
+        XCTAssertTrue(script.contains("&& !state.inspectorDismissed"))
         XCTAssertTrue(html.contains("id=\"selectionInspectorOverlayButton\""))
         XCTAssertTrue(html.contains("id=\"mobileSidebarScrim\""))
         XCTAssertTrue(stylesheet.contains(".mobile-sidebar-scrim"))

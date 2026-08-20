@@ -404,8 +404,8 @@ def main():
         )
         test_phase[0] = "source-reorder"
         assert source_names(page) == ["Apple Photos", "Downloads"]
-        page.locator(f'[data-source-id="{SOURCE_FOLDER}"]').drag_to(
-            page.locator(f'[data-source-id="{SOURCE_PHOTOS}"]')
+        page.locator(f'#sourceList .sidebar-row[data-source-id="{SOURCE_FOLDER}"]').drag_to(
+            page.locator(f'#sourceList .sidebar-row[data-source-id="{SOURCE_PHOTOS}"]')
         )
         page.wait_for_function(
             "id => document.querySelector('#sourceList [data-source-id]')?.dataset.sourceId === id",
@@ -424,7 +424,9 @@ def main():
 
         page.reload(wait_until="networkidle")
         assert source_names(page) == ["Downloads", "Apple Photos"]
-        folder = page.locator(f'[data-source-id="{SOURCE_FOLDER}"]')
+        folder = page.locator(
+            f'#sourceList .sidebar-row[data-source-id="{SOURCE_FOLDER}"]'
+        )
         folder.focus()
         folder.press("Alt+ArrowDown")
         assert source_names(page) == ["Apple Photos", "Downloads"]
@@ -615,25 +617,7 @@ def main():
             f'[data-tag-id="{TAG_CAT}"]'
         )
         assert not selection_cat.is_disabled()
-        dog_box = selection_dog.bounding_box()
-        cat_box = selection_cat.bounding_box()
-        assert dog_box and cat_box
-        page.mouse.move(
-            dog_box["x"] + dog_box["width"] / 2,
-            dog_box["y"] + dog_box["height"] / 2,
-        )
-        page.mouse.down()
-        page.mouse.move(
-            dog_box["x"] + dog_box["width"] / 2,
-            dog_box["y"] + dog_box["height"] / 2 - 8,
-            steps=4,
-        )
-        page.mouse.move(
-            cat_box["x"] + cat_box["width"] / 2,
-            cat_box["y"] + cat_box["height"] / 2,
-            steps=12,
-        )
-        page.mouse.up()
+        selection_dog.drag_to(selection_cat)
         page.wait_for_function(
             "id => document.activeElement?.dataset.tagId === id "
             "&& document.activeElement?.dataset.tagReorderSurface === 'selection'",
