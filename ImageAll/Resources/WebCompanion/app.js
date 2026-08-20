@@ -1086,6 +1086,12 @@ const state = {
   layoutMenuHistoryRestoreFocus: true,
   layoutMenuKind: null,
   layoutMenuFocusedValue: null,
+  actionMenuReturnFocus: null,
+  actionMenuBaseLevel: "workspace",
+  actionMenuHistoryRestoreFocus: true,
+  actionMenuKind: null,
+  actionMenuFocusedSelector: null,
+  actionMenuScrollTop: 0,
   selectionMode: false,
   selectedAssetIDs: new Set(),
   selectionAnchorID: null,
@@ -1937,9 +1943,8 @@ function closeOverlays() {
   closeCompactToolbarMenu({ restoreFocus: false, checkpoint: false });
   closeFilterPopover({ restoreFocus: false, checkpoint: false, preserveState: false });
   closeLayoutMenu({ restoreFocus: false, checkpoint: false, preserveState: false });
-  closePersonalModelPopover({ restoreFocus: false });
+  closeActionMenu({ restoreFocus: false, checkpoint: false, preserveState: false });
   closeJobsPopover({ restoreFocus: false, checkpoint: false, preserveState: false });
-  closeReviewSourceFilter({ restoreFocus: false });
   closeMobileSidebar({ restoreFocus: false, checkpoint: false });
   hideContextMenus();
   if (elements.commandPalette.open) {
@@ -2592,20 +2597,27 @@ function openMobileSidebar({
     if (focus) requestAnimationFrame(focusCurrentSidebarPrimaryNavigation);
     return;
   }
+  const current = activeWorkspaceHistoryEntry();
+  const replacesActionMenu = historyMode === "pushSidebar"
+    && current?.navigationLevel === "actionMenu";
   hidePersistentHelp();
   closeCompactToolbarMenu({ restoreFocus: false });
   closeLayoutMenu({ restoreFocus: false });
   closeFilterPopover({ restoreFocus: false });
-  closePersonalModelPopover({ restoreFocus: false });
+  closeActionMenu({ restoreFocus: false, checkpoint: !replacesActionMenu });
   closeJobsPopover({ restoreFocus: false });
   state.sidebarOverlayReturnFocus = elements.sidebarToggle;
-  const currentLevel = activeWorkspaceHistoryEntry()?.navigationLevel;
+  const currentLevel = current?.navigationLevel;
   state.sidebarOverlayBaseLevel = baseLevel
     || (currentLevel === "inspector" ? "inspector" : "workspace");
   elements.sourceSidebar.classList.add("open");
   syncMobileSidebarAccessibility();
   if (historyMode !== "none") {
-    recordWorkspaceHistory("gallery", currentGalleryHistoryContext(), historyMode);
+    recordWorkspaceHistory(
+      "gallery",
+      currentGalleryHistoryContext(),
+      replacesActionMenu ? "replaceOverlay" : historyMode
+    );
   }
   if (focus) requestAnimationFrame(focusCurrentSidebarPrimaryNavigation);
 }
@@ -2727,6 +2739,7 @@ function workspaceHistoryEntry(route, context = null, navigationLevel = "workspa
     "jobs",
     "filter",
     "layoutMenu",
+    "actionMenu",
     "toolbarMenu",
     "sidebar",
     "inspector",
@@ -2749,6 +2762,7 @@ function workspaceNavigationBaseLevel(navigationLevel, context = {}) {
       "sourceManager",
       "storageMaintenance",
       "generalSettings",
+      "actionMenu",
       "sidebar",
       "inspector",
       "lightbox",
@@ -2862,6 +2876,11 @@ function workspaceNavigationBaseLevel(navigationLevel, context = {}) {
       ? context.layoutMenuBaseLevel
       : "workspace";
   }
+  if (navigationLevel === "actionMenu") {
+    return ["sidebar", "inspector", "lightbox"].includes(context.actionMenuBaseLevel)
+      ? context.actionMenuBaseLevel
+      : "workspace";
+  }
   if (navigationLevel !== "toolbarMenu") return navigationLevel;
   return ["sidebar", "inspector", "lightbox"].includes(context.toolbarMenuBaseLevel)
     ? context.toolbarMenuBaseLevel
@@ -2929,6 +2948,7 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
   const hasJobs = !elements.jobsPopover.classList.contains("hidden");
   const hasFilter = !elements.filterPopover.classList.contains("hidden");
   const hasLayoutMenu = Boolean(activeLayoutMenuDescriptor());
+  const hasActionMenu = Boolean(activeActionMenuDescriptor());
   const hasToolbarMenu = compactToolbarMenuIsOpen();
   const hasSidebar = route === "gallery" && mobileSidebarOverlayIsOpen();
   const historyContext = hasConfirmation
@@ -2943,6 +2963,12 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
           : {}),
         ...(hasStorageMaintenance
           ? { storageBaseLevel: state.storageBaseLevel }
+          : {}),
+        ...(hasActionMenu
+          ? {
+              actionMenuBaseLevel: state.actionMenuBaseLevel,
+              actionMenuKind: state.actionMenuKind,
+            }
           : {}),
       }
     : hasWorldMapLocationBackfill
@@ -3042,6 +3068,12 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
         layoutMenuBaseLevel: state.layoutMenuBaseLevel,
         layoutMenuKind: state.layoutMenuKind,
       }
+    : hasActionMenu
+    ? {
+        ...(context || {}),
+        actionMenuBaseLevel: state.actionMenuBaseLevel,
+        actionMenuKind: state.actionMenuKind,
+      }
     : hasToolbarMenu
     ? {
         ...(context || {}),
@@ -3110,22 +3142,32 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
       || current?.navigationLevel === "keyboardShortcuts")
     ? "keyboardShortcuts"
     : hasCommandPalette
-    && (mode === "pushCommandPalette" || current?.navigationLevel === "commandPalette")
+    && (mode === "pushCommandPalette" || mode === "replaceOverlay"
+      || current?.navigationLevel === "commandPalette")
     ? "commandPalette"
     : hasJobs
-    && (mode === "pushJobs" || current?.navigationLevel === "jobs")
+    && (mode === "pushJobs" || mode === "replaceOverlay"
+      || current?.navigationLevel === "jobs")
     ? "jobs"
     : hasFilter
-    && (mode === "pushFilter" || current?.navigationLevel === "filter")
+    && (mode === "pushFilter" || mode === "replaceOverlay"
+      || current?.navigationLevel === "filter")
     ? "filter"
     : hasLayoutMenu
-    && (mode === "pushLayoutMenu" || current?.navigationLevel === "layoutMenu")
+    && (mode === "pushLayoutMenu" || mode === "replaceOverlay"
+      || current?.navigationLevel === "layoutMenu")
     ? "layoutMenu"
+    : hasActionMenu
+    && (mode === "pushActionMenu" || mode === "replaceOverlay"
+      || current?.navigationLevel === "actionMenu")
+    ? "actionMenu"
     : hasToolbarMenu
-    && (mode === "pushToolbarMenu" || current?.navigationLevel === "toolbarMenu")
+    && (mode === "pushToolbarMenu" || mode === "replaceOverlay"
+      || current?.navigationLevel === "toolbarMenu")
     ? "toolbarMenu"
     : hasSidebar
-    && (mode === "pushSidebar" || current?.navigationLevel === "sidebar")
+    && (mode === "pushSidebar" || mode === "replaceOverlay"
+      || current?.navigationLevel === "sidebar")
     ? "sidebar"
     : hasLightbox
     && (mode === "pushLightbox" || current?.navigationLevel === "lightbox")
@@ -3160,6 +3202,7 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
     "pushJobs",
     "pushFilter",
     "pushLayoutMenu",
+    "pushActionMenu",
     "pushToolbarMenu",
     "pushSidebar",
     "pushLightbox",
@@ -3487,6 +3530,7 @@ function closeAllWorkspacesToGallery({ restoreFocus = true } = {}) {
   closeCommandPalette({ restoreFocus: false, checkpoint: false });
   closeFilterPopover({ restoreFocus: false, checkpoint: false, preserveState: false });
   closeLayoutMenu({ restoreFocus: false, checkpoint: false, preserveState: false });
+  closeActionMenu({ restoreFocus: false, checkpoint: false, preserveState: false });
   closeCompactToolbarMenu({ restoreFocus: false, checkpoint: false });
   closeMobileSidebar({ restoreFocus: false, checkpoint: false });
   if (!elements.lightbox.classList.contains("hidden")) closeLightbox({ restoreFocus });
@@ -3522,6 +3566,7 @@ async function applyWorkspaceHistoryEntry(entry) {
       reconcileJobsPopoverFromWorkspaceHistory(target, navigationLevel, context);
       reconcileFilterPopoverFromWorkspaceHistory(target, navigationLevel, context);
       reconcileLayoutMenuFromWorkspaceHistory(target, navigationLevel, context);
+      reconcileActionMenuFromWorkspaceHistory(target, navigationLevel, context);
       await reconcileCommandPaletteFromWorkspaceHistory(
         target,
         navigationLevel,
@@ -3585,6 +3630,7 @@ async function applyWorkspaceHistoryEntry(entry) {
       reconcileJobsPopoverFromWorkspaceHistory("gallery", navigationLevel, context);
       reconcileFilterPopoverFromWorkspaceHistory("gallery", navigationLevel, context);
       reconcileLayoutMenuFromWorkspaceHistory("gallery", navigationLevel, context);
+      reconcileActionMenuFromWorkspaceHistory("gallery", navigationLevel, context);
       await reconcileCommandPaletteFromWorkspaceHistory(
         "gallery",
         navigationLevel,
@@ -3761,6 +3807,11 @@ async function applyWorkspaceHistoryEntry(entry) {
       context
     );
     reconcileLayoutMenuFromWorkspaceHistory(
+      target,
+      activeEntry?.navigationLevel || "workspace",
+      context
+    );
+    reconcileActionMenuFromWorkspaceHistory(
       target,
       activeEntry?.navigationLevel || "workspace",
       context
@@ -8615,6 +8666,7 @@ function confirmationBaseLevelFromHistory(context = {}) {
     "sourceManager",
     "storageMaintenance",
     "generalSettings",
+    "actionMenu",
     "sidebar",
     "inspector",
     "lightbox",
@@ -8647,6 +8699,10 @@ function replaceConfirmationHistoryWithBase(baseLevel, historyContext = {}) {
   } else if (baseLevel === "generalSettings" && elements.generalSettingsDialog.open) {
     navigationLevel = "generalSettings";
     context.generalSettingsBaseLevel = state.generalSettings.baseLevel;
+  } else if (baseLevel === "actionMenu" && activeActionMenuDescriptor()) {
+    navigationLevel = "actionMenu";
+    context.actionMenuBaseLevel = state.actionMenuBaseLevel;
+    context.actionMenuKind = state.actionMenuKind;
   }
   history.replaceState({
     ...(history.state || {}),
@@ -8678,6 +8734,7 @@ function requestConfirmation({
     "sourceManager",
     "storageMaintenance",
     "generalSettings",
+    "actionMenu",
     "sidebar",
     "inspector",
     "lightbox",
@@ -14533,29 +14590,325 @@ function syncSelectionFavoriteToolbarPresentation() {
   state.selectionFavoriteToolbarFocusedAction = null;
 }
 
-function closePersonalModelPopover({ restoreFocus = true } = {}) {
-  const wasOpen = !elements.personalModelPopover.classList.contains("hidden");
-  elements.personalModelPopover.classList.add("hidden");
-  elements.personalModelButton.setAttribute("aria-expanded", "false");
-  if (restoreFocus && wasOpen) restoreOverlayFocus(elements.personalModelButton);
+function actionMenuDescriptor(kind) {
+  return {
+    personalModel: {
+      kind,
+      route: "gallery",
+      button: elements.personalModelButton,
+      popover: elements.personalModelPopover,
+    },
+    reviewSources: {
+      kind,
+      route: "review",
+      button: elements.reviewSourceFilterButton,
+      popover: elements.reviewSourceFilterPopover,
+    },
+    slimmingSources: {
+      kind,
+      route: "slimming",
+      button: elements.slimmingCatalogSourceButton,
+      popover: elements.slimmingCatalogSourcePopover,
+    },
+    slimmingOptions: {
+      kind,
+      route: "slimming",
+      button: elements.slimmingAnalysisOptionsButton,
+      popover: elements.slimmingAnalysisOptionsPopover,
+    },
+  }[kind] || null;
+}
+
+function activeActionMenuDescriptor() {
+  for (const kind of [
+    "personalModel",
+    "reviewSources",
+    "slimmingSources",
+    "slimmingOptions",
+  ]) {
+    const descriptor = actionMenuDescriptor(kind);
+    if (!descriptor.popover.classList.contains("hidden")) return descriptor;
+  }
+  return null;
+}
+
+function actionMenuBaseLevelFromHistory(context = {}) {
+  return ["sidebar", "inspector", "lightbox"].includes(context.actionMenuBaseLevel)
+    ? context.actionMenuBaseLevel
+    : "workspace";
+}
+
+function actionMenuSelectorForTarget(descriptor, target = document.activeElement) {
+  if (!descriptor?.popover.contains(target)) return null;
+  const focusable = target.closest?.("button, input, select, textarea, [tabindex]");
+  if (!(focusable instanceof HTMLElement) || !descriptor.popover.contains(focusable)) return null;
+  if (focusable.id) return `#${CSS.escape(focusable.id)}`;
+  for (const key of [
+    "reviewSourceId",
+    "slimmingCatalogSourceId",
+    "slimmingMaintenanceSourceId",
+    "slimmingJobActionId",
+  ]) {
+    const value = focusable.dataset[key];
+    if (!value) continue;
+    const attribute = key.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
+    const action = key === "slimmingJobActionId" && focusable.dataset.action
+      ? `[data-action="${CSS.escape(focusable.dataset.action)}"]`
+      : "";
+    return `[data-${attribute}="${CSS.escape(value)}"]${action}`;
+  }
+  return null;
+}
+
+function actionMenuFallbackFocusTarget(descriptor) {
+  if (!descriptor) return null;
+  if (descriptor.kind === "reviewSources") {
+    return elements.reviewSourceFilterPopover.querySelector("button:not(:disabled)");
+  }
+  if (descriptor.kind === "slimmingSources") {
+    return elements.slimmingCatalogSourceOptions.querySelector(
+      "[data-slimming-catalog-source-id]:not(:disabled)"
+    ) || elements.closeSlimmingCatalogSourceButton;
+  }
+  if (descriptor.kind === "slimmingOptions") {
+    return elements.closeSlimmingAnalysisOptionsButton;
+  }
+  return elements.personalModelPopover.querySelector("button:not(:disabled)");
+}
+
+function actionMenuRestorableFocusTarget(descriptor) {
+  const selector = state.actionMenuKind === descriptor?.kind
+    ? state.actionMenuFocusedSelector
+    : null;
+  if (selector) {
+    const target = descriptor.popover.querySelector(selector);
+    if (target instanceof HTMLElement
+      && !target.matches(":disabled")
+      && target.getClientRects().length > 0) return target;
+  }
+  return actionMenuFallbackFocusTarget(descriptor);
+}
+
+function actionMenuIsAvailable(descriptor, route = visibleWorkspaceRoute()) {
+  return Boolean(
+    descriptor
+      && descriptor.route === route
+      && !descriptor.button.disabled
+      && descriptor.button.getClientRects().length > 0
+  );
+}
+
+function replaceActionMenuHistoryWithBase(baseLevel) {
+  if (!state.workspaceNavigation.initialized
+    || elements.appView.classList.contains("hidden")) return;
+  const current = activeWorkspaceHistoryEntry();
+  const route = visibleWorkspaceRoute();
+  if (current?.route !== route || current.navigationLevel !== "actionMenu") return;
+  const context = currentWorkspaceHistoryContext(route);
+  if (context && typeof context === "object") {
+    delete context.actionMenuBaseLevel;
+    delete context.actionMenuKind;
+  }
+  const navigationLevel = visibleWorkspaceNavigationBaseLevel(route, baseLevel);
+  history.replaceState({
+    ...(history.state || {}),
+    [WORKSPACE_HISTORY_KEY]: workspaceHistoryEntry(route, context, navigationLevel),
+  }, "", location.href);
+}
+
+function closeActionMenu({
+  restoreFocus = true,
+  checkpoint = true,
+  preserveState = true,
+} = {}) {
+  const descriptor = activeActionMenuDescriptor();
+  if (!descriptor) return;
+  if (elements.confirmDialog.open && state.confirmationBaseLevel === "actionMenu") {
+    closeConfirmation({ restoreFocus: false, checkpoint: false, preserveState: false });
+  }
+  const focusedSelector = actionMenuSelectorForTarget(descriptor);
+  if (focusedSelector) state.actionMenuFocusedSelector = focusedSelector;
+  state.actionMenuKind = descriptor.kind;
+  state.actionMenuScrollTop = descriptor.popover.scrollTop;
+  if (descriptor.kind === "reviewSources" && focusedSelector) {
+    state.review.sourceFilterFocusSelector = focusedSelector;
+  }
+  if (descriptor.kind === "slimmingOptions") {
+    const maintenance = state.slimming.sourceMaintenance;
+    maintenance.requestGeneration += 1;
+    maintenance.loading = false;
+    stopSlimmingSourceIndexPolling();
+  }
+  const baseLevel = state.actionMenuBaseLevel;
+  const returnFocus = state.actionMenuReturnFocus;
+  descriptor.popover.classList.add("hidden");
+  descriptor.button.setAttribute("aria-expanded", "false");
+  state.actionMenuReturnFocus = null;
+  state.actionMenuBaseLevel = "workspace";
+  if (!preserveState) {
+    state.actionMenuKind = null;
+    state.actionMenuFocusedSelector = null;
+    state.actionMenuScrollTop = 0;
+    if (descriptor.kind === "reviewSources") state.review.sourceFilterFocusSelector = null;
+  }
+  if (restoreFocus) restoreOverlayFocus(stableReturnFocusTarget(
+    returnFocus || descriptor.button,
+    descriptor.button
+  ));
+  if (checkpoint) replaceActionMenuHistoryWithBase(baseLevel);
+}
+
+function returnFromActionMenu({ restoreFocus = true } = {}) {
+  if (elements.confirmDialog.open && state.confirmationBaseLevel === "actionMenu") {
+    return returnFromConfirmation({ restoreFocus });
+  }
+  if (!activeActionMenuDescriptor()) return Promise.resolve();
+  state.actionMenuHistoryRestoreFocus = restoreFocus;
+  if (state.workspaceNavigation.pendingReturnPromise) {
+    return state.workspaceNavigation.pendingReturnPromise;
+  }
+  const current = activeWorkspaceHistoryEntry();
+  if (state.workspaceNavigation.initialized
+    && current?.route === visibleWorkspaceRoute()
+    && current.navigationLevel === "actionMenu") {
+    const pending = new Promise((resolve) => {
+      state.workspaceNavigation.pendingReturnResolve = resolve;
+    });
+    state.workspaceNavigation.pendingReturnPromise = pending;
+    history.back();
+    return pending;
+  }
+  closeActionMenu({ restoreFocus });
+  state.actionMenuHistoryRestoreFocus = true;
+  return Promise.resolve();
+}
+
+function openActionMenu(kind, {
+  focus = true,
+  historyMode = "pushActionMenu",
+  baseLevel = null,
+  restoring = false,
+} = {}) {
+  const descriptor = actionMenuDescriptor(kind);
+  const route = visibleWorkspaceRoute();
+  if (!actionMenuIsAvailable(descriptor, route)) return;
+  const active = activeActionMenuDescriptor();
+  if (active?.kind === kind) {
+    if (focus) restoreOverlayFocus(actionMenuRestorableFocusTarget(descriptor));
+    return;
+  }
+  const current = activeWorkspaceHistoryEntry();
+  const replacesOverlay = historyMode === "pushActionMenu"
+    && [
+      "jobs",
+      "filter",
+      "layoutMenu",
+      "actionMenu",
+      "toolbarMenu",
+      "sidebar",
+      "commandPalette",
+    ].includes(current?.navigationLevel);
+  if (active) closeActionMenu({ restoreFocus: false, checkpoint: !replacesOverlay });
+  state.actionMenuReturnFocus = descriptor.button;
+  state.actionMenuBaseLevel = baseLevel
+    || workspaceNavigationBaseLevel(
+      current?.navigationLevel || "workspace",
+      current?.context || {}
+    );
+  state.actionMenuKind = kind;
+  if (!restoring) {
+    state.actionMenuFocusedSelector = null;
+    state.actionMenuScrollTop = 0;
+    if (kind === "reviewSources") state.review.sourceFilterFocusSelector = null;
+  }
+  closeCompactToolbarMenu({ restoreFocus: false, checkpoint: !replacesOverlay });
+  closeLayoutMenu({ restoreFocus: false, checkpoint: !replacesOverlay });
+  closeFilterPopover({ restoreFocus: false, checkpoint: !replacesOverlay });
+  closeJobsPopover({ restoreFocus: false, checkpoint: !replacesOverlay });
+  hideContextMenus();
+  if (kind === "personalModel") {
+    renderPersonalModelControls();
+  } else if (kind === "reviewSources") {
+    renderReviewSourceFilter();
+  } else if (kind === "slimmingSources") {
+    renderSlimmingCatalogSourcePicker();
+  } else if (kind === "slimmingOptions") {
+    renderSlimmingSourceMaintenance();
+  }
+  descriptor.popover.classList.remove("hidden");
+  descriptor.button.setAttribute("aria-expanded", "true");
+  if (kind === "slimmingSources") {
+    positionSlimmingCatalogSourcePicker();
+    if (!restoring || !state.slimming.catalogSources.snapshot) {
+      void loadSlimmingCatalogSources();
+    }
+  } else if (kind === "slimmingOptions") {
+    if (!restoring || !state.slimming.sourceMaintenance.snapshot) {
+      void loadSlimmingSourceMaintenance();
+    } else {
+      scheduleSlimmingSourceIndexPolling();
+    }
+  }
+  if (historyMode !== "none") {
+    recordWorkspaceHistory(
+      route,
+      currentWorkspaceHistoryContext(route),
+      replacesOverlay ? "replaceOverlay" : historyMode
+    );
+  }
+  requestAnimationFrame(() => {
+    descriptor.popover.scrollTop = state.actionMenuScrollTop;
+    if (!focus) return;
+    const target = actionMenuRestorableFocusTarget(descriptor);
+    target?.focus({ preventScroll: true });
+    const selector = actionMenuSelectorForTarget(descriptor, target);
+    if (selector) state.actionMenuFocusedSelector = selector;
+  });
+}
+
+function reconcileActionMenuFromWorkspaceHistory(route, navigationLevel, context = {}) {
+  const kind = typeof context.actionMenuKind === "string"
+    ? context.actionMenuKind
+    : null;
+  const descriptor = actionMenuDescriptor(kind);
+  const isConfirmationChild = navigationLevel === "confirmation"
+    && context.confirmationBaseLevel === "actionMenu";
+  const shouldOpen = (navigationLevel === "actionMenu" || isConfirmationChild)
+    && route === visibleWorkspaceRoute()
+    && actionMenuIsAvailable(descriptor, route);
+  const active = activeActionMenuDescriptor();
+  if (shouldOpen && active?.kind !== kind) {
+    if (active) closeActionMenu({ restoreFocus: false, checkpoint: false });
+    openActionMenu(kind, {
+      focus: navigationLevel === "actionMenu",
+      historyMode: "none",
+      baseLevel: actionMenuBaseLevelFromHistory(context),
+      restoring: true,
+    });
+  } else if (!shouldOpen && active) {
+    const restoreFocus = state.actionMenuHistoryRestoreFocus;
+    closeActionMenu({ restoreFocus, checkpoint: false, preserveState: true });
+    state.actionMenuHistoryRestoreFocus = true;
+  } else if (navigationLevel === "actionMenu" && !shouldOpen) {
+    replaceActionMenuHistoryWithBase(actionMenuBaseLevelFromHistory(context));
+  }
+}
+
+function toggleActionMenu(kind) {
+  if (activeActionMenuDescriptor()?.kind === kind) {
+    void returnFromActionMenu();
+  } else {
+    openActionMenu(kind);
+  }
+}
+
+function closePersonalModelPopover(options = {}) {
+  if (activeActionMenuDescriptor()?.kind !== "personalModel") return;
+  closeActionMenu(options);
 }
 
 function togglePersonalModelPopover() {
-  const willOpen = elements.personalModelPopover.classList.contains("hidden");
-  closeCompactToolbarMenu({ restoreFocus: false });
-  closeLayoutMenu({ restoreFocus: false });
-  closeFilterPopover({ restoreFocus: false });
-  closeJobsPopover({ restoreFocus: false });
-  if (!willOpen) {
-    closePersonalModelPopover();
-    return;
-  }
-  renderPersonalModelControls();
-  elements.personalModelPopover.classList.remove("hidden");
-  elements.personalModelButton.setAttribute("aria-expanded", "true");
-  requestAnimationFrame(() => {
-    elements.personalModelPopover.querySelector("button:not(:disabled)")?.focus({ preventScroll: true });
-  });
+  toggleActionMenu("personalModel");
 }
 
 async function openLibraryPersonalTraining(method, returnFocus = elements.personalModelButton) {
@@ -14568,7 +14921,7 @@ async function openLibraryPersonalTraining(method, returnFocus = elements.person
   const selectedCount = state.selectedAssetIDs.size;
   const noun = state.mediaKind === "video" ? "视频" : "照片";
   state.training.mediaKind = state.mediaKind;
-  closePersonalModelPopover({ restoreFocus: false });
+  await returnFromActionMenu({ restoreFocus: false });
   await openTrainingSetupDialog({
     method,
     tagIDs,
@@ -14588,7 +14941,7 @@ async function generateGalleryPersonalSuggestions() {
     return;
   }
   const fullLibrary = state.librarySuggestions.snapshot?.personalMode === "fullLibrary";
-  closePersonalModelPopover({ restoreFocus: false });
+  await returnFromActionMenu({ restoreFocus: false });
   if (fullLibrary) {
     await openReviewWorkspace();
     await submitLibrarySuggestions("personal");
@@ -17476,33 +17829,13 @@ function renderReviewSourceFilter() {
   }
 }
 
-function closeReviewSourceFilter({ restoreFocus = true } = {}) {
-  const wasOpen = !elements.reviewSourceFilterPopover.classList.contains("hidden");
-  elements.reviewSourceFilterPopover.classList.add("hidden");
-  elements.reviewSourceFilterButton.setAttribute("aria-expanded", "false");
-  state.review.sourceFilterFocusSelector = null;
-  if (restoreFocus && wasOpen) {
-    restoreOverlayFocus(elements.reviewSourceFilterButton);
-  }
+function closeReviewSourceFilter(options = {}) {
+  if (activeActionMenuDescriptor()?.kind !== "reviewSources") return;
+  closeActionMenu(options);
 }
 
 function toggleReviewSourceFilter() {
-  const willOpen = elements.reviewSourceFilterPopover.classList.contains("hidden");
-  if (!willOpen) {
-    closeReviewSourceFilter();
-    return;
-  }
-  closeGridDensityPopovers({ restoreFocus: false });
-  renderReviewSourceFilter();
-  elements.reviewSourceFilterPopover.classList.remove("hidden");
-  elements.reviewSourceFilterButton.setAttribute("aria-expanded", "true");
-  requestAnimationFrame(() => {
-    const target = elements.reviewSourceFilterPopover.querySelector("button:not(:disabled)");
-    target?.focus({ preventScroll: true });
-    state.review.sourceFilterFocusSelector = target?.dataset.reviewSourceId
-      ? `[data-review-source-id="${CSS.escape(target.dataset.reviewSourceId)}"]`
-      : "#selectAllReviewSourcesButton";
-  });
+  toggleActionMenu("reviewSources");
 }
 
 async function reloadReviewSourceScope(focusSelector) {
@@ -18483,6 +18816,8 @@ function openJobsPopover({
       state.jobsScrollTop = 0;
     }
     const current = activeWorkspaceHistoryEntry();
+    const replacesActionMenu = historyMode === "pushJobs"
+      && current?.navigationLevel === "actionMenu";
     state.jobsBaseLevel = baseLevel
       || workspaceNavigationBaseLevel(
         current?.navigationLevel || "workspace",
@@ -18491,7 +18826,7 @@ function openJobsPopover({
     closeCompactToolbarMenu({ restoreFocus: false });
     closeLayoutMenu({ restoreFocus: false });
     closeFilterPopover({ restoreFocus: false });
-    closePersonalModelPopover({ restoreFocus: false });
+    closeActionMenu({ restoreFocus: false, checkpoint: !replacesActionMenu });
     elements.jobsPopover.classList.remove("hidden");
     const targetID = jobID && state.jobs.some((job) => job.id === jobID)
       ? jobID
@@ -18505,7 +18840,11 @@ function openJobsPopover({
     if (targetID) selectJobRow(targetID);
     if (historyMode !== "none") {
       const route = visibleWorkspaceRoute();
-      recordWorkspaceHistory(route, currentWorkspaceHistoryContext(route), historyMode);
+      recordWorkspaceHistory(
+        route,
+        currentWorkspaceHistoryContext(route),
+        replacesActionMenu ? "replaceOverlay" : historyMode
+      );
     }
     state.jobsRestorable = true;
     requestAnimationFrame(() => {
@@ -26503,11 +26842,9 @@ async function loadSlimmingCatalogSources({ force = false } = {}) {
   }
 }
 
-function closeSlimmingCatalogSourcePicker({ restoreFocus = true } = {}) {
-  const wasOpen = !elements.slimmingCatalogSourcePopover.classList.contains("hidden");
-  elements.slimmingCatalogSourcePopover.classList.add("hidden");
-  elements.slimmingCatalogSourceButton.setAttribute("aria-expanded", "false");
-  if (wasOpen && restoreFocus) restoreOverlayFocus(elements.slimmingCatalogSourceButton);
+function closeSlimmingCatalogSourcePicker(options = {}) {
+  if (activeActionMenuDescriptor()?.kind !== "slimmingSources") return;
+  closeActionMenu(options);
 }
 
 function positionSlimmingCatalogSourcePicker() {
@@ -26520,31 +26857,12 @@ function positionSlimmingCatalogSourcePicker() {
   popover.style.right = "auto";
 }
 
-function openSlimmingCatalogSourcePicker() {
-  closeGridDensityPopovers({ restoreFocus: false });
-  closeSlimmingAnalysisOptions({ restoreFocus: false });
-  closeJobsPopover({ restoreFocus: false });
-  closePersonalModelPopover({ restoreFocus: false });
-  closeFilterPopover({ restoreFocus: false });
-  elements.slimmingCatalogSourcePopover.classList.remove("hidden");
-  elements.slimmingCatalogSourceButton.setAttribute("aria-expanded", "true");
-  positionSlimmingCatalogSourcePicker();
-  renderSlimmingCatalogSourcePicker();
-  void loadSlimmingCatalogSources();
-  requestAnimationFrame(() => {
-    const firstSource = elements.slimmingCatalogSourceOptions.querySelector(
-      "[data-slimming-catalog-source-id]:not(:disabled)"
-    );
-    (firstSource || elements.closeSlimmingCatalogSourceButton).focus({ preventScroll: true });
-  });
+function openSlimmingCatalogSourcePicker(options = {}) {
+  openActionMenu("slimmingSources", options);
 }
 
 function toggleSlimmingCatalogSourcePicker() {
-  if (elements.slimmingCatalogSourcePopover.classList.contains("hidden")) {
-    openSlimmingCatalogSourcePicker();
-  } else {
-    closeSlimmingCatalogSourcePicker();
-  }
+  toggleActionMenu("slimmingSources");
 }
 
 async function launchSlimmingAnalysis(mode, returnFocus = null) {
@@ -26570,8 +26888,7 @@ async function launchSlimmingAnalysis(mode, returnFocus = null) {
     return;
   }
 
-  closeSlimmingCatalogSourcePicker({ restoreFocus: false });
-  closeSlimmingAnalysisOptions({ restoreFocus: false });
+  await returnFromActionMenu({ restoreFocus: false });
   const allSourcesSelected = mode === "catalog"
     && selectedSources.length === sources.length;
   try {
@@ -26778,37 +27095,17 @@ async function loadSlimmingSourceMaintenance({ quiet = false } = {}) {
   }
 }
 
-function closeSlimmingAnalysisOptions({ restoreFocus = true } = {}) {
-  const maintenance = state.slimming.sourceMaintenance;
-  const wasOpen = !elements.slimmingAnalysisOptionsPopover.classList.contains("hidden");
-  maintenance.requestGeneration += 1;
-  maintenance.loading = false;
-  stopSlimmingSourceIndexPolling();
-  elements.slimmingAnalysisOptionsPopover.classList.add("hidden");
-  elements.slimmingAnalysisOptionsButton.setAttribute("aria-expanded", "false");
-  if (wasOpen && restoreFocus) restoreOverlayFocus(elements.slimmingAnalysisOptionsButton);
+function closeSlimmingAnalysisOptions(options = {}) {
+  if (activeActionMenuDescriptor()?.kind !== "slimmingOptions") return;
+  closeActionMenu(options);
 }
 
-function openSlimmingAnalysisOptions() {
-  closeGridDensityPopovers({ restoreFocus: false });
-  closeFilterPopover({ restoreFocus: false });
-  closeSlimmingCatalogSourcePicker({ restoreFocus: false });
-  closeJobsPopover({ restoreFocus: false });
-  closePersonalModelPopover({ restoreFocus: false });
-  elements.slimmingAnalysisOptionsPopover.classList.remove("hidden");
-  elements.slimmingAnalysisOptionsButton.setAttribute("aria-expanded", "true");
-  void loadSlimmingSourceMaintenance();
-  requestAnimationFrame(() => {
-    elements.closeSlimmingAnalysisOptionsButton.focus({ preventScroll: true });
-  });
+function openSlimmingAnalysisOptions(options = {}) {
+  openActionMenu("slimmingOptions", options);
 }
 
 function toggleSlimmingAnalysisOptions() {
-  if (elements.slimmingAnalysisOptionsPopover.classList.contains("hidden")) {
-    openSlimmingAnalysisOptions();
-  } else {
-    closeSlimmingAnalysisOptions();
-  }
+  toggleActionMenu("slimmingOptions");
 }
 
 async function submitSlimmingSourceMaintenance(action) {
@@ -27008,7 +27305,7 @@ async function openSlimmingThresholdEditor(
 ) {
   const editor = state.slimming.thresholdEditor;
   if (elements.slimmingThresholdDialog.open || editor.opening) return;
-  closeSlimmingAnalysisOptions({ restoreFocus: false });
+  await returnFromActionMenu({ restoreFocus: false });
   editor.opening = true;
   editor.loading = true;
   editor.saving = false;
@@ -27379,7 +27676,7 @@ async function openSlimmingSetupDialog(
 ) {
   const setup = state.slimming.setup;
   if (elements.slimmingSetupDialog.open || setup.opening) return;
-  closeSlimmingAnalysisOptions({ restoreFocus: false });
+  await returnFromActionMenu({ restoreFocus: false });
   setup.opening = true;
   setup.returnFocus = returnFocus;
   setup.loading = true;
@@ -28931,6 +29228,11 @@ async function loadWorkspace({ restoreHistory = false } = {}) {
       restoreGalleryNavigationLevel,
       restoreEntry?.context || {}
     );
+    reconcileActionMenuFromWorkspaceHistory(
+      "gallery",
+      restoreGalleryNavigationLevel,
+      restoreEntry?.context || {}
+    );
     await reconcileCommandPaletteFromWorkspaceHistory(
       "gallery",
       restoreGalleryNavigationLevel,
@@ -29573,6 +29875,12 @@ function resetWorkspaceSessionState() {
   state.layoutMenuHistoryRestoreFocus = true;
   state.layoutMenuKind = null;
   state.layoutMenuFocusedValue = null;
+  state.actionMenuReturnFocus = null;
+  state.actionMenuBaseLevel = "workspace";
+  state.actionMenuHistoryRestoreFocus = true;
+  state.actionMenuKind = null;
+  state.actionMenuFocusedSelector = null;
+  state.actionMenuScrollTop = 0;
   state.selectionMode = false;
   state.selectedAssetIDs.clear();
   state.selectionAnchorID = null;
@@ -30044,6 +30352,8 @@ function openLayoutMenu(kind, {
     ? document.activeElement
     : descriptor.button;
   const current = activeWorkspaceHistoryEntry();
+  const replacesActionMenu = historyMode === "pushLayoutMenu"
+    && current?.navigationLevel === "actionMenu";
   state.layoutMenuBaseLevel = baseLevel
     || workspaceNavigationBaseLevel(
       current?.navigationLevel || "workspace",
@@ -30054,10 +30364,7 @@ function openLayoutMenu(kind, {
   closeCompactToolbarMenu({ restoreFocus: false });
   closeFilterPopover({ restoreFocus: false });
   closeJobsPopover({ restoreFocus: false });
-  closePersonalModelPopover({ restoreFocus: false });
-  closeReviewSourceFilter({ restoreFocus: false });
-  closeSlimmingCatalogSourcePicker({ restoreFocus: false });
-  closeSlimmingAnalysisOptions({ restoreFocus: false });
+  closeActionMenu({ restoreFocus: false, checkpoint: !replacesActionMenu });
   hideContextMenus();
   if (kind === "sort") renderSortControls();
   else renderGridDensityControls();
@@ -30066,7 +30373,11 @@ function openLayoutMenu(kind, {
   if (kind === "sort") positionSortPopover();
   else positionGridDensityPopover(gridDensityControlForButton(descriptor.button));
   if (historyMode !== "none") {
-    recordWorkspaceHistory(route, currentWorkspaceHistoryContext(route), historyMode);
+    recordWorkspaceHistory(
+      route,
+      currentWorkspaceHistoryContext(route),
+      replacesActionMenu ? "replaceOverlay" : historyMode
+    );
   }
   if (focus) requestAnimationFrame(() => {
     layoutMenuRestorableFocusTarget(descriptor)?.focus({ preventScroll: true });
@@ -30316,6 +30627,8 @@ function openFilterPopover({
     ? document.activeElement
     : elements.filterButton;
   const current = activeWorkspaceHistoryEntry();
+  const replacesActionMenu = historyMode === "pushFilter"
+    && current?.navigationLevel === "actionMenu";
   state.filterBaseLevel = baseLevel
     || workspaceNavigationBaseLevel(
       current?.navigationLevel || "workspace",
@@ -30328,13 +30641,17 @@ function openFilterPopover({
   closeCompactToolbarMenu({ restoreFocus: false });
   closeLayoutMenu({ restoreFocus: false });
   closeJobsPopover({ restoreFocus: false });
-  closePersonalModelPopover({ restoreFocus: false });
+  closeActionMenu({ restoreFocus: false, checkpoint: !replacesActionMenu });
   state.filterDraft = cloneFilters(state.filters);
   syncFilterControlsFromState();
   elements.filterPopover.classList.remove("hidden");
   elements.filterButton.setAttribute("aria-expanded", "true");
   if (historyMode !== "none") {
-    recordWorkspaceHistory("gallery", currentGalleryHistoryContext(), historyMode);
+    recordWorkspaceHistory(
+      "gallery",
+      currentGalleryHistoryContext(),
+      replacesActionMenu ? "replaceOverlay" : historyMode
+    );
   }
   requestAnimationFrame(() => {
     elements.filterPopover.scrollTop = state.filterScrollTop;
@@ -30636,6 +30953,8 @@ function openCompactToolbarMenu({
     ? document.activeElement
     : elements.compactToolbarMenuButton;
   const current = activeWorkspaceHistoryEntry();
+  const replacesActionMenu = historyMode === "pushToolbarMenu"
+    && current?.navigationLevel === "actionMenu";
   state.compactToolbarBaseLevel = baseLevel
     || workspaceNavigationBaseLevel(
       current?.navigationLevel || "workspace",
@@ -30644,14 +30963,18 @@ function openCompactToolbarMenu({
   closeLayoutMenu({ restoreFocus: false });
   closeFilterPopover({ restoreFocus: false });
   closeJobsPopover({ restoreFocus: false });
-  closePersonalModelPopover({ restoreFocus: false });
+  closeActionMenu({ restoreFocus: false, checkpoint: !replacesActionMenu });
   hideContextMenus();
   renderCompactToolbarMenu();
   elements.compactToolbarMenu.classList.remove("hidden");
   elements.compactToolbarMenuButton.setAttribute("aria-expanded", "true");
   if (historyMode !== "none") {
     const route = visibleWorkspaceRoute();
-    recordWorkspaceHistory(route, currentWorkspaceHistoryContext(route), historyMode);
+    recordWorkspaceHistory(
+      route,
+      currentWorkspaceHistoryContext(route),
+      replacesActionMenu ? "replaceOverlay" : historyMode
+    );
   }
   if (focus) requestAnimationFrame(() => {
     elements.compactToolbarMenu.querySelector(
@@ -31942,6 +32265,8 @@ async function openCommandPalette({
     if (elements.commandPalette.open || elements.appView.classList.contains("hidden")) return;
     state.commandReturnFocus = returnFocus;
     const current = activeWorkspaceHistoryEntry();
+    const replacesActionMenu = historyMode === "pushCommandPalette"
+      && current?.navigationLevel === "actionMenu";
     state.commandPaletteBaseLevel = baseLevel
       || workspaceNavigationBaseLevel(
         current?.navigationLevel || "workspace",
@@ -31950,10 +32275,8 @@ async function openCommandPalette({
     state.commandContext = commandContextSnapshot();
     closeLayoutMenu({ restoreFocus: false });
     closeFilterPopover({ restoreFocus: false });
-    closePersonalModelPopover({ restoreFocus: false });
+    closeActionMenu({ restoreFocus: false, checkpoint: !replacesActionMenu });
     closeJobsPopover({ restoreFocus: false });
-    closeReviewSourceFilter({ restoreFocus: false });
-    closeSlimmingAnalysisOptions({ restoreFocus: false });
     hideContextMenus();
     elements.commandSearchInput.value = "";
     state.commandIndex = 0;
@@ -31962,7 +32285,11 @@ async function openCommandPalette({
     elements.commandPalette.showModal();
     if (historyMode !== "none") {
       const route = visibleWorkspaceRoute();
-      recordWorkspaceHistory(route, currentWorkspaceHistoryContext(route), historyMode);
+      recordWorkspaceHistory(
+        route,
+        currentWorkspaceHistoryContext(route),
+        replacesActionMenu ? "replaceOverlay" : historyMode
+      );
     }
     if (focus) elements.commandSearchInput.focus({ preventScroll: true });
   } finally {
@@ -33667,7 +33994,7 @@ function bindEvents() {
     if (!buttons.length) return;
     if (event.key === "Escape") {
       event.preventDefault();
-      closePersonalModelPopover();
+      void returnFromActionMenu();
       return;
     }
     if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
@@ -33964,7 +34291,7 @@ function bindEvents() {
     toggleSlimmingCatalogSourcePicker
   );
   elements.closeSlimmingCatalogSourceButton.addEventListener("click", () => {
-    closeSlimmingCatalogSourcePicker();
+    void returnFromActionMenu();
   });
   elements.slimmingCatalogSourceOptions.addEventListener("change", (event) => {
     const input = event.target.closest("[data-slimming-catalog-source-id]");
@@ -33993,7 +34320,7 @@ function bindEvents() {
     toggleSlimmingAnalysisOptions
   );
   elements.closeSlimmingAnalysisOptionsButton.addEventListener("click", () => {
-    closeSlimmingAnalysisOptions();
+    void returnFromActionMenu();
   });
   elements.slimmingCurrentJobActions.addEventListener("click", (event) => {
     const button = event.target.closest(
@@ -34825,7 +35152,7 @@ function bindEvents() {
   elements.reviewSourceFilterPopover.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       event.preventDefault();
-      closeReviewSourceFilter();
+      void returnFromActionMenu();
       return;
     }
     if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
@@ -35409,26 +35736,12 @@ function bindEvents() {
       && !elements.catalogProgressStatusButton.contains(event.target)) {
       void returnFromJobsPopover({ restoreFocus: false });
     }
-    if (!elements.personalModelPopover.classList.contains("hidden")
-      && !elements.personalModelPopover.contains(event.target)
-      && !elements.personalModelButton.contains(event.target)) {
-      closePersonalModelPopover({ restoreFocus: false });
-    }
-    if (!elements.reviewSourceFilterPopover.classList.contains("hidden")
-      && !eventPath.includes(elements.reviewSourceFilterPopover)
-      && !eventPath.includes(elements.reviewSourceFilterButton)) {
-      closeReviewSourceFilter({ restoreFocus: false });
-    }
-    if (!elements.slimmingCatalogSourcePopover.classList.contains("hidden")
-      && !eventPath.includes(elements.slimmingCatalogSourcePopover)
-      && !eventPath.includes(elements.slimmingCatalogSourceButton)) {
-      closeSlimmingCatalogSourcePicker({ restoreFocus: false });
-    }
-    if (!elements.slimmingAnalysisOptionsPopover.classList.contains("hidden")
-      && !eventPath.includes(elements.slimmingAnalysisOptionsPopover)
-      && !eventPath.includes(elements.slimmingAnalysisOptionsButton)
+    const actionMenu = activeActionMenuDescriptor();
+    if (actionMenu
+      && !eventPath.includes(actionMenu.popover)
+      && !eventPath.includes(actionMenu.button)
       && !eventPath.includes(elements.confirmDialog)) {
-      closeSlimmingAnalysisOptions({ restoreFocus: false });
+      void returnFromActionMenu({ restoreFocus: false });
     }
   });
   document.addEventListener("keydown", (event) => {
@@ -35479,6 +35792,7 @@ function bindEvents() {
     const jobsOpen = !elements.jobsPopover.classList.contains("hidden");
     const filterOpen = !elements.filterPopover.classList.contains("hidden");
     const layoutMenuOpen = Boolean(activeLayoutMenuDescriptor());
+    const actionMenuOpen = Boolean(activeActionMenuDescriptor());
     const compactToolbarOpen = compactToolbarMenuIsOpen();
     const mobileSidebarOpen = mobileSidebarOverlayIsOpen();
     const inspectorOverlayOpen = globalThis.matchMedia("(max-width: 980px)").matches
@@ -35488,6 +35802,7 @@ function bindEvents() {
       || jobsOpen
       || filterOpen
       || layoutMenuOpen
+      || actionMenuOpen
       || compactToolbarOpen
       || mobileSidebarOpen
       || inspectorOverlayOpen;
@@ -35574,20 +35889,8 @@ function bindEvents() {
         void returnFromLayoutMenu();
         return;
       }
-      if (!elements.personalModelPopover.classList.contains("hidden")) {
-        closePersonalModelPopover();
-        return;
-      }
-      if (!elements.reviewSourceFilterPopover.classList.contains("hidden")) {
-        closeReviewSourceFilter();
-        return;
-      }
-      if (!elements.slimmingCatalogSourcePopover.classList.contains("hidden")) {
-        closeSlimmingCatalogSourcePicker();
-        return;
-      }
-      if (!elements.slimmingAnalysisOptionsPopover.classList.contains("hidden")) {
-        closeSlimmingAnalysisOptions();
+      if (actionMenuOpen) {
+        void returnFromActionMenu();
         return;
       }
       if (elements.suggestionThresholdDialog.open) {
@@ -35733,6 +36036,10 @@ function bindEvents() {
       return;
     } else if (layoutMenuOpen) {
       const descriptor = activeLayoutMenuDescriptor();
+      if (descriptor && trapOverlayFocus(event, descriptor.popover)) return;
+      return;
+    } else if (actionMenuOpen) {
+      const descriptor = activeActionMenuDescriptor();
       if (descriptor && trapOverlayFocus(event, descriptor.popover)) return;
       return;
     } else if (compactToolbarOpen) {

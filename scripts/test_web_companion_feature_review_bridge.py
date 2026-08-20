@@ -527,6 +527,45 @@ def main():
             "() => document.activeElement?.id === 'reviewSourceFilterButton'"
         )
 
+        source_button.click()
+        source_popover.wait_for(state="visible")
+        second_source.focus()
+        source_popover.evaluate(
+            "element => { element.style.maxHeight = '70px'; "
+            "element.style.overflowY = 'auto'; element.scrollTop = 24; }"
+        )
+        review_source_scroll = source_popover.evaluate("element => element.scrollTop")
+        review_source_reads = len(overview_source_queries)
+        review_source_history_payload = page.evaluate(
+            "() => JSON.stringify(history.state?.imageAllWorkspace || null)"
+        )
+        assert '"navigationLevel":"actionMenu"' in review_source_history_payload
+        assert '"actionMenuKind":"reviewSources"' in review_source_history_payload
+        assert SOURCE_IDS[1] not in review_source_history_payload
+        assert "actionMenuFocusedSelector" not in review_source_history_payload
+        assert "actionMenuScrollTop" not in review_source_history_payload
+        page.evaluate("() => history.back()")
+        source_popover.wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'reviewSourceFilterButton'"
+        )
+        page.evaluate("() => history.forward()")
+        source_popover.wait_for(state="visible")
+        page.wait_for_function(
+            "sourceID => document.activeElement?.dataset.reviewSourceId === sourceID",
+            arg=SOURCE_IDS[1],
+        )
+        assert source_popover.evaluate("element => element.scrollTop") == review_source_scroll
+        assert len(overview_source_queries) == review_source_reads
+        assert page.locator(
+            f'[data-review-source-id="{SOURCE_IDS[0]}"]'
+        ).get_attribute("aria-checked") == "true"
+        assert page.locator(
+            f'[data-review-source-id="{SOURCE_IDS[1]}"]'
+        ).get_attribute("aria-checked") == "false"
+        page.keyboard.press("Escape")
+        source_popover.wait_for(state="hidden")
+
         assert page.locator("#reviewLocalModelStateBadge").inner_text() == "服务已就绪"
         assert "coreml / scene-personal-v1" in page.locator("#reviewLocalModelStatus").inner_text()
         standard_card = page.locator("#standardLibrarySuggestionCard")

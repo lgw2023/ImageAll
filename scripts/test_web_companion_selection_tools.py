@@ -2181,6 +2181,37 @@ def main(*, inspector_actions_only=False):
             "&& document.querySelector('#slimmingCatalogAnalyzeButton')"
             ".textContent.includes('分析所选来源')"
         )
+        catalog_sources.nth(0).focus()
+        source_popover.evaluate(
+            "element => { element.style.maxHeight = '76px'; "
+            "element.style.overflowY = 'auto'; element.scrollTop = 28; }"
+        )
+        slimming_source_scroll = source_popover.evaluate("element => element.scrollTop")
+        slimming_source_reads = slimming_setup_reads[0]
+        slimming_source_history_payload = page.evaluate(
+            "() => JSON.stringify(history.state?.imageAllWorkspace || null)"
+        )
+        assert '"navigationLevel":"actionMenu"' in slimming_source_history_payload
+        assert '"actionMenuKind":"slimmingSources"' in slimming_source_history_payload
+        assert SOURCE_ID not in slimming_source_history_payload
+        assert SECOND_SOURCE_ID not in slimming_source_history_payload
+        assert "actionMenuFocusedSelector" not in slimming_source_history_payload
+        assert "actionMenuScrollTop" not in slimming_source_history_payload
+        page.evaluate("() => history.back()")
+        source_popover.wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'slimmingCatalogSourceButton'"
+        )
+        page.evaluate("() => history.forward()")
+        source_popover.wait_for()
+        page.wait_for_function(
+            "sourceID => document.activeElement?.dataset.slimmingCatalogSourceId === sourceID",
+            arg=SOURCE_ID,
+        )
+        assert source_popover.evaluate("element => element.scrollTop") == slimming_source_scroll
+        assert slimming_setup_reads[0] == slimming_source_reads
+        assert catalog_sources.nth(0).is_checked()
+        assert not catalog_sources.nth(1).is_checked()
         page.keyboard.press("Escape")
         source_popover.wait_for(state="hidden")
         page.wait_for_function(
@@ -2210,6 +2241,34 @@ def main(*, inspector_actions_only=False):
             "#slimmingSeedAnalysisButton"
         ).inner_text()
         assert page.locator("#openSlimmingSetupButton").is_visible()
+        page.locator("#openSlimmingSetupButton").focus()
+        options_popover = page.locator("#slimmingAnalysisOptionsPopover")
+        options_popover.evaluate(
+            "element => { element.style.maxHeight = '132px'; "
+            "element.style.overflowY = 'auto'; element.scrollTop = 52; }"
+        )
+        slimming_options_scroll = options_popover.evaluate("element => element.scrollTop")
+        slimming_options_reads = slimming_setup_reads[0]
+        slimming_options_history_payload = page.evaluate(
+            "() => JSON.stringify(history.state?.imageAllWorkspace || null)"
+        )
+        assert '"navigationLevel":"actionMenu"' in slimming_options_history_payload
+        assert '"actionMenuKind":"slimmingOptions"' in slimming_options_history_payload
+        assert "openSlimmingSetupButton" not in slimming_options_history_payload
+        assert "actionMenuFocusedSelector" not in slimming_options_history_payload
+        assert "actionMenuScrollTop" not in slimming_options_history_payload
+        page.evaluate("() => history.back()")
+        options_popover.wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'slimmingAnalysisOptionsButton'"
+        )
+        page.evaluate("() => history.forward()")
+        page.locator("#slimmingAnalysisOptionsContent:not(.hidden)").wait_for()
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'openSlimmingSetupButton'"
+        )
+        assert options_popover.evaluate("element => element.scrollTop") == slimming_options_scroll
+        assert slimming_setup_reads[0] == slimming_options_reads
         with page.expect_request(
             lambda request: request.url.endswith("/v1/library-slimming/launch")
             and request.method == "POST"
@@ -2401,12 +2460,31 @@ def main(*, inspector_actions_only=False):
         )
         current_delete.click()
         page.locator("#confirmDialog[open]").wait_for()
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "confirmation"
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.context?.confirmationBaseLevel"
+        ) == "actionMenu"
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.context?.actionMenuKind"
+        ) == "slimmingOptions"
         assert "不会读取、移动或删除任何原始媒体" in page.locator(
             "#confirmDialogMessage"
         ).inner_text()
         page.locator("#cancelConfirmButton").click()
         assert page.locator("#slimmingAnalysisOptionsPopover").is_visible()
         assert page.locator("#slimmingWorkspace").is_visible()
+        page.wait_for_function(
+            "jobID => document.activeElement?.dataset.slimmingJobActionId === jobID "
+            "&& document.activeElement?.dataset.action === 'deleteRecord'",
+            arg=SLIMMING_JOB_ID,
+        )
+        page.evaluate("() => history.forward()")
+        page.locator("#confirmDialog[open]").wait_for()
+        assert page.locator("#slimmingAnalysisOptionsPopover").is_visible()
+        page.keyboard.press("Escape")
+        page.locator("#confirmDialog").wait_for(state="hidden")
         page.wait_for_function(
             "jobID => document.activeElement?.dataset.slimmingJobActionId === jobID "
             "&& document.activeElement?.dataset.action === 'deleteRecord'",
@@ -4392,6 +4470,17 @@ def main(*, inspector_actions_only=False):
               scrollTop: document.querySelector('#libraryScroll').scrollTop,
             })"""
         )
+        assert page.evaluate(
+            """() => ({
+              navigationLevel: history.state?.imageAllWorkspace?.navigationLevel,
+              actionMenuKind: activeActionMenuDescriptor()?.kind || null,
+              confirmationOpen: document.querySelector('#confirmDialog').open,
+            })"""
+        ) == {
+            "navigationLevel": "workspace",
+            "actionMenuKind": None,
+            "confirmationOpen": False,
+        }
         page.evaluate("() => history.back()")
         page.locator("#slimmingWorkspace").wait_for(state="hidden")
         page.wait_for_function(

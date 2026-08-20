@@ -2981,6 +2981,7 @@ def main():
         # the Mac-style sort menu can remain layered underneath the new surface.
         sort_button.click()
         page.locator("#sortPopover:not(.hidden)").wait_for()
+        personal_replacement_history_length = page.evaluate("() => history.length")
         toolbar_asset_load_calls = page.evaluate(
             """() => {
               const original = loadAssets;
@@ -2994,6 +2995,7 @@ def main():
         page.locator("#jobsPopover:not(.hidden)").wait_for()
         assert page.locator("#sortPopover").is_hidden()
         assert sort_button.get_attribute("aria-expanded") == "false"
+        assert page.evaluate("() => history.length") == personal_replacement_history_length
         page.evaluate("() => closeJobsPopover({ restoreFocus: false })")
 
         sort_button.click()
@@ -3011,11 +3013,56 @@ def main():
         page.locator("#personalModelPopover:not(.hidden)").wait_for()
         assert page.locator("#sortPopover").is_hidden()
         assert sort_button.get_attribute("aria-expanded") == "false"
+        personal_history_queries = len(asset_queries)
+        page.locator("#rebuildPersonalAdamWButton").focus()
+        page.locator("#personalModelPopover").evaluate(
+            "element => { element.style.maxHeight = '84px'; "
+            "element.style.overflowY = 'auto'; element.scrollTop = 36; }"
+        )
+        personal_menu_scroll = page.locator("#personalModelPopover").evaluate(
+            "element => element.scrollTop"
+        )
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "actionMenu"
+        personal_history_payload = page.evaluate(
+            "() => JSON.stringify(history.state?.imageAllWorkspace || null)"
+        )
+        assert '"actionMenuKind":"personalModel"' in personal_history_payload
+        assert "rebuildPersonalAdamWButton" not in personal_history_payload
+        assert "actionMenuFocusedSelector" not in personal_history_payload
+        assert "actionMenuScrollTop" not in personal_history_payload
+        page.evaluate("() => history.back()")
+        page.locator("#personalModelPopover").wait_for(state="hidden")
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "workspace"
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'personalModelButton'"
+        )
+        assert len(asset_queries) == personal_history_queries
+        page.evaluate("() => history.forward()")
+        page.locator("#personalModelPopover:not(.hidden)").wait_for()
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'rebuildPersonalAdamWButton'"
+        )
+        assert page.locator("#personalModelPopover").evaluate(
+            "element => element.scrollTop"
+        ) == personal_menu_scroll
+        assert len(asset_queries) == personal_history_queries
         page.screenshot(
             path="/tmp/imageall-toolbar-popover-personal.png",
             full_page=True,
         )
-        page.evaluate("() => closePersonalModelPopover({ restoreFocus: false })")
+        page.keyboard.press("Escape")
+        page.locator("#personalModelPopover").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => !state.workspaceNavigation.applyingHistory "
+            "&& !state.workspaceNavigation.pendingReturnPromise "
+            "&& !state.loadingAssets && !state.assetLoadPromise "
+            "&& !state.queuedAssetLoadOptions "
+            "&& state.assetRenderedQuerySignature === assetQuerySignature()"
+        )
 
         original_toolbar_mode = page.locator("#appView").get_attribute(
             "data-toolbar-display-mode"
