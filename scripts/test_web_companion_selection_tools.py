@@ -1271,6 +1271,41 @@ def main(*, inspector_actions_only=False):
         page.wait_for_function(
             "() => document.querySelector('#sourceContextMenu').contains(document.activeElement)"
         )
+        source_context_history = page.evaluate(
+            """() => {
+              const entry = history.state?.imageAllWorkspace;
+              return {
+                navigationLevel: entry?.navigationLevel,
+                kind: entry?.context?.contextMenuKind,
+                contextKeys: Object.keys(entry?.context || {}),
+              };
+            }"""
+        )
+        assert source_context_history["navigationLevel"] == "contextMenu"
+        assert source_context_history["kind"] == "source"
+        assert all(
+            key in {"contextMenuKind", "contextMenuBaseLevel"}
+            for key in source_context_history["contextKeys"]
+            if key.startswith("contextMenu")
+        )
+        page.evaluate("() => history.back()")
+        page.locator("#sourceContextMenu").wait_for(state="hidden")
+        page.wait_for_function(
+            "sourceID => document.activeElement?.dataset.sourceId === sourceID",
+            arg=SOURCE_ID,
+        )
+        page.evaluate("() => history.forward()")
+        page.locator("#sourceContextMenu:not(.hidden)").wait_for()
+        page.wait_for_function(
+            "() => document.querySelector('#sourceContextMenu').contains(document.activeElement)"
+        )
+        assert page.evaluate(
+            "() => ({ selectedSourceID: state.selectedSourceID, "
+            "tagConditions: structuredClone(state.filters.tagConditions), "
+            "loadedIDs: state.assets.map((asset) => asset.id), "
+            "selectedIDs: [...state.selectedAssetIDs], "
+            "scrollTop: document.querySelector('#libraryScroll').scrollTop })"
+        ) == sidebar_help_snapshot
         page.keyboard.press("Escape")
         page.locator("#sourceContextMenu").wait_for(state="hidden")
         page.wait_for_function(
@@ -1310,8 +1345,28 @@ def main(*, inspector_actions_only=False):
             "tagID => !state.filters.tagConditions.some((item) => item.tagID === tagID)",
             arg=CAT_TAG_ID,
         )
+        page.wait_for_function(
+            "() => !state.loadingAssets && !state.assetLoadPromise && !state.queuedAssetLoadOptions"
+        )
         sidebar_cat_chip.focus()
         page.keyboard.press("Shift+F10")
+        page.locator("#tagContextMenu:not(.hidden)").wait_for()
+        page.wait_for_function(
+            "() => document.querySelector('#tagContextMenu').contains(document.activeElement)"
+        )
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "contextMenu"
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.context?.contextMenuKind"
+        ) == "tag"
+        page.evaluate("() => history.back()")
+        page.locator("#tagContextMenu").wait_for(state="hidden")
+        page.wait_for_function(
+            "tagID => document.activeElement?.dataset.quickTagId === tagID",
+            arg=CAT_TAG_ID,
+        )
+        page.evaluate("() => history.forward()")
         page.locator("#tagContextMenu:not(.hidden)").wait_for()
         page.wait_for_function(
             "() => document.querySelector('#tagContextMenu').contains(document.activeElement)"
@@ -1718,6 +1773,18 @@ def main(*, inspector_actions_only=False):
         page.wait_for_function(
             "() => document.querySelector('#tagContextMenu').contains(document.activeElement)"
         )
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.context?.contextMenuKind"
+        ) == "tag"
+        page.evaluate("() => history.back()")
+        page.locator("#tagContextMenu").wait_for(state="hidden")
+        page.wait_for_function(
+            "groupID => document.activeElement?.dataset.inspectorTagGroupToggle === groupID",
+            arg=SUBJECT_GROUP_ID,
+        )
+        page.evaluate("() => history.forward()")
+        page.locator("#tagContextMenu:not(.hidden)").wait_for()
+        assert page.locator('[data-tag-context-action="renameGroup"]').is_visible()
         page.keyboard.press("Escape")
         page.locator("#tagContextMenu").wait_for(state="hidden")
         page.wait_for_function(
@@ -2605,6 +2672,23 @@ def main(*, inspector_actions_only=False):
         assert page.locator(
             f'[data-slimming-job-id="{SLIMMING_JOB_ID}"]'
         ).get_attribute("aria-selected") == "true"
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "contextMenu"
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.context?.contextMenuKind"
+        ) == "slimmingJob"
+        page.evaluate("() => history.back()")
+        job_context_menu.wait_for(state="hidden")
+        page.wait_for_function(
+            "jobID => document.activeElement?.dataset.slimmingJobId === jobID",
+            arg=SLIMMING_SECOND_JOB_ID,
+        )
+        page.evaluate("() => history.forward()")
+        job_context_menu.wait_for()
+        page.wait_for_function(
+            "() => document.querySelector('#slimmingJobContextMenu').contains(document.activeElement)"
+        )
         page.keyboard.press("Escape")
         assert job_context_menu.is_hidden()
         page.wait_for_function(
@@ -3022,6 +3106,19 @@ def main(*, inspector_actions_only=False):
         )
 
         first_slimming_main.press("Shift+F10")
+        slimming_context_menu.wait_for()
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.slimmingMemberContextAction === 'favorite'"
+        )
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.context?.contextMenuKind"
+        ) == "slimmingMember"
+        page.evaluate("() => history.back()")
+        slimming_context_menu.wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.slimmingMemberMain === 'true'"
+        )
+        page.evaluate("() => history.forward()")
         slimming_context_menu.wait_for()
         page.wait_for_function(
             "() => document.activeElement?.dataset.slimmingMemberContextAction === 'favorite'"
@@ -3720,6 +3817,29 @@ def main(*, inspector_actions_only=False):
         page.wait_for_function(
             "() => document.activeElement?.id === 'slimmingRecycleFavoriteContextAction'"
         )
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.context?.contextMenuKind"
+        ) == "slimmingRecycle"
+        page.evaluate("() => history.back()")
+        recycle_context_menu.wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.activeElement?.classList.contains('slimming-recycle-thumbnail-card')"
+        )
+        page.evaluate("() => history.forward()")
+        recycle_context_menu.wait_for()
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'slimmingRecycleFavoriteContextAction'"
+        )
+        assert page.evaluate(
+            "() => ({ scope: state.slimming.recycle.scope, "
+            "sourceID: state.slimming.recycle.sourceID, "
+            "searchText: state.slimming.recycle.searchText, "
+            "entryIDs: state.slimming.recycle.entries.map(entry => entry.id), "
+            "scrollTop: document.querySelector('#slimmingRecycleBody').scrollTop })"
+        ) == recycle_context_snapshot
+        assert len(submitted_favorites) == recycle_context_favorite_count
+        assert len(submitted_slimming_recycle_actions) == recycle_context_action_count
+        assert len(submitted_slimming_removals) == recycle_context_removal_count
         page.keyboard.press("Escape")
         page.wait_for_function(
             "() => document.activeElement?.classList.contains('slimming-recycle-thumbnail-card')"

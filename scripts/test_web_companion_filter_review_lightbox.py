@@ -1376,6 +1376,7 @@ def main():
         context_scroll_top = page.locator("#libraryScroll").evaluate(
             "element => element.scrollTop"
         )
+        asset_context_query_count = len(asset_queries)
         page.keyboard.press("Shift+F10")
         asset_context_menu = page.locator("#assetContextMenu:not(.hidden)")
         asset_context_menu.wait_for()
@@ -1383,6 +1384,40 @@ def main():
             "() => document.activeElement?.dataset.contextAction === 'preview'"
         )
         assert asset_context_menu.get_attribute("aria-label") == "CAT_0001.JPG 项目操作"
+        asset_context_history = page.evaluate(
+            """() => {
+              const entry = history.state?.imageAllWorkspace;
+              return {
+                route: entry?.route,
+                navigationLevel: entry?.navigationLevel,
+                kind: entry?.context?.contextMenuKind,
+                baseLevel: entry?.context?.contextMenuBaseLevel,
+                contextKeys: Object.keys(entry?.context || {}),
+              };
+            }"""
+        )
+        assert asset_context_history["route"] == "gallery"
+        assert asset_context_history["navigationLevel"] == "contextMenu"
+        assert asset_context_history["kind"] == "asset"
+        assert asset_context_history["baseLevel"] in {"workspace", "inspector"}
+        assert all(
+            key in {"contextMenuKind", "contextMenuBaseLevel"}
+            for key in asset_context_history["contextKeys"]
+            if key.startswith("contextMenu")
+        )
+        page.evaluate("() => history.back()")
+        asset_context_menu.wait_for(state="hidden")
+        page.wait_for_function(
+            "(assetID) => document.activeElement?.closest('[data-asset-id]')?.dataset.assetId === assetID",
+            arg=IMAGE_IDS[0],
+        )
+        assert len(asset_queries) == asset_context_query_count
+        page.evaluate("() => history.forward()")
+        asset_context_menu.wait_for()
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.contextAction === 'preview'"
+        )
+        assert len(asset_queries) == asset_context_query_count
         page.keyboard.press("End")
         assert page.evaluate(
             "() => document.activeElement?.dataset.contextAction"
@@ -1401,6 +1436,18 @@ def main():
             "element => element.scrollTop"
         ) == context_scroll_top
         assert page.locator(".asset-card.batch-selected").count() == 0
+
+        first_asset_main.focus()
+        page.keyboard.press("Shift+F10")
+        asset_context_menu.wait_for()
+        page.locator("#searchInput").click()
+        asset_context_menu.wait_for(state="hidden")
+        page.wait_for_function(
+            "() => history.state?.imageAllWorkspace?.navigationLevel !== 'contextMenu'"
+        )
+        assert page.evaluate("() => document.activeElement?.id") != "searchInput"
+        assert len(asset_queries) == asset_context_query_count
+        first_asset_main.focus()
 
         page.keyboard.press("ContextMenu")
         asset_context_menu.wait_for()
@@ -2627,6 +2674,47 @@ def main():
         page.wait_for_function(
             "() => document.activeElement?.id === 'reviewFavoriteContextAction'"
         )
+        review_context_history = page.evaluate(
+            """() => {
+              const entry = history.state?.imageAllWorkspace;
+              return {
+                route: entry?.route,
+                navigationLevel: entry?.navigationLevel,
+                kind: entry?.context?.contextMenuKind,
+                contextKeys: Object.keys(entry?.context || {}),
+              };
+            }"""
+        )
+        assert review_context_history["route"] == "review"
+        assert review_context_history["navigationLevel"] == "contextMenu"
+        assert review_context_history["kind"] == "review"
+        assert all(
+            key in {"contextMenuKind", "contextMenuBaseLevel"}
+            for key in review_context_history["contextKeys"]
+            if key.startswith("contextMenu")
+        )
+        page.evaluate("() => history.back()")
+        review_context_menu.wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.activeElement?.classList.contains('review-card-main')"
+        )
+        assert len(asset_queries) == review_context_asset_query_count
+        assert len(review_decisions) == review_context_decision_count
+        page.evaluate("() => history.forward()")
+        review_context_menu.wait_for()
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'reviewFavoriteContextAction'"
+        )
+        assert page.evaluate(
+            "() => ({ selectedIndex: state.review.selectedIndex, "
+            "selectedAssetIDs: [...state.review.selectedAssetIDs], "
+            "selectionAnchorIndex: state.review.selectionAnchorIndex, "
+            "itemIDs: state.review.items.map(item => item.assetID), "
+            "nextCursor: state.review.nextCursor, "
+            "scrollTop: document.querySelector('#reviewQueuePane').scrollTop })"
+        ) == review_context_snapshot
+        assert len(asset_queries) == review_context_asset_query_count
+        assert len(review_decisions) == review_context_decision_count
         page.keyboard.press("Escape")
         page.wait_for_function(
             "() => document.activeElement?.classList.contains('review-card-main')"

@@ -1576,6 +1576,9 @@ const state = {
   keyboardShortcutsBaseLevel: "workspace",
   keyboardShortcutsHistoryRestoreFocus: true,
   keyboardShortcutsOpening: false,
+  contextMenuSession: null,
+  contextMenuBaseLevel: "workspace",
+  contextMenuHistoryRestoreFocus: true,
   contextAssetID: null,
   contextReviewAssetID: null,
   contextSourceID: null,
@@ -1970,6 +1973,7 @@ function closeOverlays() {
   closeJobsPopover({ restoreFocus: false, checkpoint: false, preserveState: false });
   closeMobileSidebar({ restoreFocus: false, checkpoint: false });
   hideContextMenus();
+  state.contextMenuSession = null;
   if (elements.commandPalette.open) {
     closeCommandPalette({ restoreFocus: false, checkpoint: false });
   }
@@ -2769,6 +2773,7 @@ function workspaceHistoryEntry(route, context = null, navigationLevel = "workspa
     "filter",
     "layoutMenu",
     "actionMenu",
+    "contextMenu",
     "toolbarMenu",
     "sidebar",
     "inspector",
@@ -2910,6 +2915,11 @@ function workspaceNavigationBaseLevel(navigationLevel, context = {}) {
       ? context.actionMenuBaseLevel
       : "workspace";
   }
+  if (navigationLevel === "contextMenu") {
+    return ["sidebar", "inspector", "lightbox"].includes(context.contextMenuBaseLevel)
+      ? context.contextMenuBaseLevel
+      : "workspace";
+  }
   if (navigationLevel !== "toolbarMenu") return navigationLevel;
   return ["sidebar", "inspector", "lightbox"].includes(context.toolbarMenuBaseLevel)
     ? context.toolbarMenuBaseLevel
@@ -2978,6 +2988,7 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
   const hasFilter = !elements.filterPopover.classList.contains("hidden");
   const hasLayoutMenu = Boolean(activeLayoutMenuDescriptor());
   const hasActionMenu = Boolean(activeActionMenuDescriptor());
+  const hasContextMenu = Boolean(activeContextMenuDescriptor());
   const hasToolbarMenu = compactToolbarMenuIsOpen();
   const hasSidebar = route === "gallery" && mobileSidebarOverlayIsOpen();
   const historyContext = hasConfirmation
@@ -3103,6 +3114,12 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
         actionMenuBaseLevel: state.actionMenuBaseLevel,
         actionMenuKind: state.actionMenuKind,
       }
+    : hasContextMenu
+    ? {
+        ...(context || {}),
+        contextMenuBaseLevel: state.contextMenuBaseLevel,
+        contextMenuKind: state.contextMenuSession?.kind || null,
+      }
     : hasToolbarMenu
     ? {
         ...(context || {}),
@@ -3190,6 +3207,10 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
     && (mode === "pushActionMenu" || mode === "replaceOverlay"
       || current?.navigationLevel === "actionMenu")
     ? "actionMenu"
+    : hasContextMenu
+    && (mode === "pushContextMenu" || mode === "replaceOverlay"
+      || current?.navigationLevel === "contextMenu")
+    ? "contextMenu"
     : hasToolbarMenu
     && (mode === "pushToolbarMenu" || mode === "replaceOverlay"
       || current?.navigationLevel === "toolbarMenu")
@@ -3232,6 +3253,7 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
     "pushFilter",
     "pushLayoutMenu",
     "pushActionMenu",
+    "pushContextMenu",
     "pushToolbarMenu",
     "pushSidebar",
     "pushLightbox",
@@ -3515,6 +3537,7 @@ function closeVisibleWorkspaceOneLevel({ restoreFocus = true } = {}) {
 }
 
 function closeAllWorkspacesToGallery({ restoreFocus = true } = {}) {
+  hideContextMenus();
   closeConfirmation({
     restoreFocus: false,
     checkpoint: false,
@@ -3613,6 +3636,7 @@ async function applyWorkspaceHistoryEntry(entry) {
       reconcileFilterPopoverFromWorkspaceHistory(target, navigationLevel, context);
       reconcileLayoutMenuFromWorkspaceHistory(target, navigationLevel, context);
       reconcileActionMenuFromWorkspaceHistory(target, navigationLevel, context);
+      reconcileContextMenuFromWorkspaceHistory(target, navigationLevel, context);
       await reconcileCommandPaletteFromWorkspaceHistory(
         target,
         navigationLevel,
@@ -3677,6 +3701,7 @@ async function applyWorkspaceHistoryEntry(entry) {
       reconcileFilterPopoverFromWorkspaceHistory("gallery", navigationLevel, context);
       reconcileLayoutMenuFromWorkspaceHistory("gallery", navigationLevel, context);
       reconcileActionMenuFromWorkspaceHistory("gallery", navigationLevel, context);
+      reconcileContextMenuFromWorkspaceHistory("gallery", navigationLevel, context);
       await reconcileCommandPaletteFromWorkspaceHistory(
         "gallery",
         navigationLevel,
@@ -3858,6 +3883,11 @@ async function applyWorkspaceHistoryEntry(entry) {
       context
     );
     reconcileActionMenuFromWorkspaceHistory(
+      target,
+      activeEntry?.navigationLevel || "workspace",
+      context
+    );
+    reconcileContextMenuFromWorkspaceHistory(
       target,
       activeEntry?.navigationLevel || "workspace",
       context
@@ -29461,6 +29491,11 @@ async function loadWorkspace({ restoreHistory = false } = {}) {
       restoreGalleryNavigationLevel,
       restoreEntry?.context || {}
     );
+    reconcileContextMenuFromWorkspaceHistory(
+      "gallery",
+      restoreGalleryNavigationLevel,
+      restoreEntry?.context || {}
+    );
     await reconcileCommandPaletteFromWorkspaceHistory(
       "gallery",
       restoreGalleryNavigationLevel,
@@ -30113,6 +30148,10 @@ function resetWorkspaceSessionState() {
   state.actionMenuKind = null;
   state.actionMenuFocusedSelector = null;
   state.actionMenuScrollTop = 0;
+  hideContextMenus();
+  state.contextMenuSession = null;
+  state.contextMenuBaseLevel = "workspace";
+  state.contextMenuHistoryRestoreFocus = true;
   state.selectionMode = false;
   state.selectedAssetIDs.clear();
   state.selectionAnchorID = null;
@@ -32565,6 +32604,213 @@ function hideContextMenus() {
   hideContextMenu();
 }
 
+function activeContextMenuDescriptor() {
+  const descriptors = [
+    { kind: "asset", menu: elements.assetContextMenu },
+    { kind: "review", menu: elements.reviewContextMenu },
+    { kind: "slimmingMember", menu: elements.slimmingMemberContextMenu },
+    { kind: "slimmingRecycle", menu: elements.slimmingRecycleContextMenu },
+    { kind: "slimmingJob", menu: elements.slimmingJobContextMenu },
+    { kind: "source", menu: elements.sourceContextMenu },
+    { kind: "tag", menu: elements.tagContextMenu },
+  ];
+  return descriptors.find(({ menu }) => !menu.classList.contains("hidden")) || null;
+}
+
+let contextMenuOutsideClickSuppression = null;
+
+function beginContextMenuOutsideDismissal(event) {
+  const descriptor = activeContextMenuDescriptor();
+  if (event.button !== 0
+    || !descriptor
+    || event.composedPath().includes(descriptor.menu)) return;
+  contextMenuOutsideClickSuppression = {
+    target: event.target,
+    until: performance.now() + 900,
+  };
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  void returnFromContextMenu({ restoreFocus: false });
+}
+
+function dismissContextMenuFromOutside(event) {
+  const suppression = contextMenuOutsideClickSuppression;
+  if (suppression && performance.now() < suppression.until
+    && event.composedPath().includes(suppression.target)) {
+    contextMenuOutsideClickSuppression = null;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    return;
+  }
+  contextMenuOutsideClickSuppression = null;
+  const descriptor = activeContextMenuDescriptor();
+  if (!descriptor || event.composedPath().includes(descriptor.menu)) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  void returnFromContextMenu({ restoreFocus: false });
+}
+
+function contextMenuReturnFocus(session = state.contextMenuSession) {
+  if (!session) return null;
+  if (session.returnFocus?.isConnected) return session.returnFocus;
+  if (session.kind === "asset") return assetCardFocusTarget(session.targetID);
+  if (session.kind === "review") return reviewCardFocusTarget(session.targetID);
+  if (session.kind === "slimmingMember") {
+    return slimmingMemberMainButton(elements.slimmingMemberGrid.querySelector(
+      `[data-slimming-member-id="${CSS.escape(session.targetID || "")}"]`
+    ));
+  }
+  if (session.kind === "slimmingRecycle") {
+    return slimmingRecycleFocusTarget(session.targetID);
+  }
+  if (session.kind === "slimmingJob") {
+    return elements.slimmingJobList.querySelector(
+      `[data-slimming-job-id="${CSS.escape(session.targetID || "")}"]`
+    );
+  }
+  if (session.kind === "source") {
+    return elements.sourceList.querySelector(
+      `[data-source-id="${CSS.escape(session.targetID || "")}"]`
+    );
+  }
+  if (session.kind === "tag") {
+    return session.targetType === "group"
+      ? elements.tagNavigation.querySelector(
+          `[data-sidebar-tag-group-toggle="${CSS.escape(session.targetID || "")}"]`
+        )
+      : elements.tagNavigation.querySelector(
+          `[data-quick-tag-id="${CSS.escape(session.targetID || "")}"]`
+        );
+  }
+  return null;
+}
+
+function registerContextMenuSession({
+  kind,
+  targetID,
+  clientX,
+  clientY,
+  returnFocus = null,
+  targetType = null,
+  historyMode = null,
+}) {
+  const current = activeWorkspaceHistoryEntry();
+  const replacingContextMenu = current?.navigationLevel === "contextMenu";
+  state.contextMenuBaseLevel = replacingContextMenu
+    ? workspaceNavigationBaseLevel("contextMenu", current.context || {})
+    : workspaceNavigationBaseLevel(
+        current?.navigationLevel || "workspace",
+        current?.context || {}
+      );
+  state.contextMenuSession = {
+    kind,
+    targetID,
+    clientX,
+    clientY,
+    route: visibleWorkspaceRoute(),
+    returnFocus: returnFocus instanceof HTMLElement ? returnFocus : null,
+    targetType,
+  };
+  const resolvedHistoryMode = historyMode
+    ?? (replacingContextMenu ? "replaceOverlay" : "pushContextMenu");
+  if (resolvedHistoryMode !== "none") {
+    const route = visibleWorkspaceRoute();
+    recordWorkspaceHistory(
+      route,
+      currentWorkspaceHistoryContext(route),
+      resolvedHistoryMode
+    );
+  }
+}
+
+function closeContextMenu({ restoreFocus = true, checkpoint = true } = {}) {
+  const session = state.contextMenuSession;
+  hideContextMenus();
+  if (restoreFocus) restoreOverlayFocus(contextMenuReturnFocus(session));
+  if (!checkpoint || !state.workspaceNavigation.initialized) return;
+  const current = activeWorkspaceHistoryEntry();
+  if (current?.navigationLevel !== "contextMenu") return;
+  recordWorkspaceHistory(
+    visibleWorkspaceRoute(),
+    currentWorkspaceHistoryContext(),
+    "replace"
+  );
+}
+
+function returnFromContextMenu({ restoreFocus = true } = {}) {
+  if (!activeContextMenuDescriptor()) return Promise.resolve();
+  state.contextMenuHistoryRestoreFocus = restoreFocus;
+  if (state.workspaceNavigation.pendingReturnPromise) {
+    return state.workspaceNavigation.pendingReturnPromise;
+  }
+  const current = activeWorkspaceHistoryEntry();
+  if (current?.route === visibleWorkspaceRoute()
+    && current.navigationLevel === "contextMenu") {
+    const pending = new Promise((resolve) => {
+      state.workspaceNavigation.pendingReturnResolve = resolve;
+    });
+    state.workspaceNavigation.pendingReturnPromise = pending;
+    history.back();
+    return pending;
+  }
+  closeContextMenu({ restoreFocus });
+  state.contextMenuHistoryRestoreFocus = true;
+  return Promise.resolve();
+}
+
+function restoreContextMenuSession(session) {
+  const options = { historyMode: "none", returnFocus: session.returnFocus };
+  if (session.kind === "asset") {
+    showAssetContextMenu(session.clientX, session.clientY, session.targetID, options);
+  } else if (session.kind === "review") {
+    showReviewContextMenu(session.clientX, session.clientY, session.targetID, options);
+  } else if (session.kind === "slimmingMember") {
+    showSlimmingMemberContextMenu(session.clientX, session.clientY, session.targetID, options);
+  } else if (session.kind === "slimmingRecycle") {
+    showSlimmingRecycleContextMenu(session.clientX, session.clientY, session.targetID, options);
+  } else if (session.kind === "slimmingJob") {
+    showSlimmingJobContextMenu(session.clientX, session.clientY, session.targetID, options);
+  } else if (session.kind === "source") {
+    showSourceContextMenu(session.clientX, session.clientY, session.targetID, options);
+  } else if (session.kind === "tag") {
+    if (session.targetType === "group") {
+      showTagGroupContextMenu(
+        session.clientX,
+        session.clientY,
+        session.targetID,
+        session.returnFocus,
+        options
+      );
+    } else {
+      showTagContextMenu(
+        session.clientX,
+        session.clientY,
+        session.targetID,
+        session.returnFocus,
+        options
+      );
+    }
+  }
+}
+
+function reconcileContextMenuFromWorkspaceHistory(route, navigationLevel, context = {}) {
+  const session = state.contextMenuSession;
+  const shouldOpen = navigationLevel === "contextMenu"
+    && route === visibleWorkspaceRoute()
+    && session?.route === route
+    && session.kind === context.contextMenuKind;
+  if (shouldOpen) {
+    restoreContextMenuSession(session);
+    if (!activeContextMenuDescriptor()) {
+      recordWorkspaceHistory(route, currentWorkspaceHistoryContext(route), "replace");
+    }
+  } else if (activeContextMenuDescriptor()) {
+    const restoreFocus = state.contextMenuHistoryRestoreFocus;
+    closeContextMenu({ restoreFocus, checkpoint: false });
+    state.contextMenuHistoryRestoreFocus = true;
+  }
+}
+
 function positionContextMenu(menu, clientX, clientY) {
   const rect = menu.getBoundingClientRect();
   const left = Math.max(6, Math.min(clientX, globalThis.innerWidth - rect.width - 6));
@@ -32766,10 +33012,14 @@ function assetCardFocusTarget(assetID) {
     || elements.selectionModeButton;
 }
 
-function showAssetContextMenu(clientX, clientY, assetID) {
+function showAssetContextMenu(clientX, clientY, assetID, {
+  historyMode = null,
+  returnFocus = null,
+} = {}) {
+  const asset = state.assets.find((item) => item.id === assetID);
+  if (!asset) return;
   hideContextMenus();
   state.contextAssetID = assetID;
-  const asset = state.assets.find((item) => item.id === assetID);
   elements.assetContextMenu.setAttribute(
     "aria-label",
     `${asset?.fileName || "当前项目"} 项目操作`
@@ -32787,6 +33037,14 @@ function showAssetContextMenu(clientX, clientY, assetID) {
   restoreOverlayFocus(
     elements.assetContextMenu.querySelector("button:not(.hidden):not(:disabled)")
   );
+  registerContextMenuSession({
+    kind: "asset",
+    targetID: assetID,
+    clientX,
+    clientY,
+    returnFocus: returnFocus || assetCardFocusTarget(assetID),
+    historyMode,
+  });
 }
 
 function reviewCardFocusTarget(assetID) {
@@ -32800,7 +33058,10 @@ function reviewCardFocusTarget(assetID) {
     || elements.reviewSelectionModeButton;
 }
 
-function showReviewContextMenu(clientX, clientY, assetID) {
+function showReviewContextMenu(clientX, clientY, assetID, {
+  historyMode = null,
+  returnFocus = null,
+} = {}) {
   const item = state.review.items.find((candidate) => candidate.assetID === assetID);
   if (!item) return;
   hideContextMenus();
@@ -32823,9 +33084,20 @@ function showReviewContextMenu(clientX, clientY, assetID) {
   elements.reviewContextMenu.classList.remove("hidden");
   positionContextMenu(elements.reviewContextMenu, clientX, clientY);
   restoreOverlayFocus(elements.reviewFavoriteContextAction);
+  registerContextMenuSession({
+    kind: "review",
+    targetID: assetID,
+    clientX,
+    clientY,
+    returnFocus: returnFocus || reviewCardFocusTarget(assetID),
+    historyMode,
+  });
 }
 
-function showSlimmingMemberContextMenu(clientX, clientY, memberID) {
+function showSlimmingMemberContextMenu(clientX, clientY, memberID, {
+  historyMode = null,
+  returnFocus = null,
+} = {}) {
   const member = state.slimming.members.find((candidate) => candidate.id === memberID);
   if (!member || activeSlimmingRemovalPhase(memberID)) return;
   hideContextMenus();
@@ -32874,6 +33146,18 @@ function showSlimmingMemberContextMenu(clientX, clientY, memberID) {
   restoreOverlayFocus(
     elements.slimmingMemberContextMenuActions.querySelector("button:not(:disabled)")
   );
+  registerContextMenuSession({
+    kind: "slimmingMember",
+    targetID: memberID,
+    clientX,
+    clientY,
+    returnFocus: returnFocus || slimmingMemberMainButton(
+      elements.slimmingMemberGrid.querySelector(
+        `[data-slimming-member-id="${CSS.escape(memberID)}"]`
+      )
+    ),
+    historyMode,
+  });
 }
 
 function slimmingRecycleFocusTarget(entryID) {
@@ -32889,7 +33173,10 @@ function slimmingRecycleFocusTarget(entryID) {
     || elements.slimmingRecycleSearchInput;
 }
 
-function showSlimmingRecycleContextMenu(clientX, clientY, entryID) {
+function showSlimmingRecycleContextMenu(clientX, clientY, entryID, {
+  historyMode = null,
+  returnFocus = null,
+} = {}) {
   const entry = state.slimming.recycle.entries.find(
     (candidate) => candidate.id === entryID
   );
@@ -32924,9 +33211,20 @@ function showSlimmingRecycleContextMenu(clientX, clientY, entryID) {
   restoreOverlayFocus(elements.slimmingRecycleFavoriteContextAction.disabled
     ? elements.slimmingRecycleContextMenu
     : elements.slimmingRecycleFavoriteContextAction);
+  registerContextMenuSession({
+    kind: "slimmingRecycle",
+    targetID: entryID,
+    clientX,
+    clientY,
+    returnFocus: returnFocus || slimmingRecycleFocusTarget(entryID),
+    historyMode,
+  });
 }
 
-function showSlimmingJobContextMenu(clientX, clientY, jobID) {
+function showSlimmingJobContextMenu(clientX, clientY, jobID, {
+  historyMode = null,
+  returnFocus = null,
+} = {}) {
   const job = state.slimming.jobs.find((candidate) => candidate.id === jobID);
   if (!job || job.state === "running") return;
   hideContextMenus();
@@ -32946,9 +33244,22 @@ function showSlimmingJobContextMenu(clientX, clientY, jobID) {
   elements.slimmingJobContextMenu.classList.remove("hidden");
   positionContextMenu(elements.slimmingJobContextMenu, clientX, clientY);
   restoreOverlayFocus(remove);
+  registerContextMenuSession({
+    kind: "slimmingJob",
+    targetID: jobID,
+    clientX,
+    clientY,
+    returnFocus: returnFocus || elements.slimmingJobList.querySelector(
+      `[data-slimming-job-id="${CSS.escape(jobID)}"]`
+    ),
+    historyMode,
+  });
 }
 
-function showSourceContextMenu(clientX, clientY, sourceID) {
+function showSourceContextMenu(clientX, clientY, sourceID, {
+  historyMode = null,
+  returnFocus = null,
+} = {}) {
   const source = state.sources.find((item) => item.id === sourceID);
   if (!source) return;
   hideContextMenus();
@@ -32985,6 +33296,16 @@ function showSourceContextMenu(clientX, clientY, sourceID) {
   elements.sourceContextMenu.classList.remove("hidden");
   positionContextMenu(elements.sourceContextMenu, clientX, clientY);
   restoreOverlayFocus(elements.sourceContextMenuActions.querySelector("button:not(:disabled)"));
+  registerContextMenuSession({
+    kind: "source",
+    targetID: sourceID,
+    clientX,
+    clientY,
+    returnFocus: returnFocus || elements.sourceList.querySelector(
+      `[data-source-id="${CSS.escape(sourceID)}"]`
+    ),
+    historyMode,
+  });
 }
 
 function appendTagContextAction({ action, label, destructive = false, disabled = false }) {
@@ -32998,7 +33319,13 @@ function appendTagContextAction({ action, label, destructive = false, disabled =
   elements.tagContextMenuActions.append(button);
 }
 
-function showTagContextMenu(clientX, clientY, tagID, returnFocus = null) {
+function showTagContextMenu(
+  clientX,
+  clientY,
+  tagID,
+  returnFocus = null,
+  { historyMode = null } = {}
+) {
   const tag = tagByID(tagID);
   if (!tag) return;
   hideContextMenus();
@@ -33030,9 +33357,24 @@ function showTagContextMenu(clientX, clientY, tagID, returnFocus = null) {
   elements.tagContextMenu.classList.remove("hidden");
   positionContextMenu(elements.tagContextMenu, clientX, clientY);
   restoreOverlayFocus(elements.tagContextMenuActions.querySelector("button:not(:disabled)"));
+  registerContextMenuSession({
+    kind: "tag",
+    targetType: "tag",
+    targetID: tagID,
+    clientX,
+    clientY,
+    returnFocus,
+    historyMode,
+  });
 }
 
-function showTagGroupContextMenu(clientX, clientY, groupID, returnFocus = null) {
+function showTagGroupContextMenu(
+  clientX,
+  clientY,
+  groupID,
+  returnFocus = null,
+  { historyMode = null } = {}
+) {
   const group = groupByID(groupID);
   if (!group || group.isSystem) return;
   hideContextMenus();
@@ -33051,6 +33393,15 @@ function showTagGroupContextMenu(clientX, clientY, groupID, returnFocus = null) 
   elements.tagContextMenu.classList.remove("hidden");
   positionContextMenu(elements.tagContextMenu, clientX, clientY);
   restoreOverlayFocus(elements.tagContextMenuActions.querySelector("button:not(:disabled)"));
+  registerContextMenuSession({
+    kind: "tag",
+    targetType: "group",
+    targetID: groupID,
+    clientX,
+    clientY,
+    returnFocus,
+    historyMode,
+  });
 }
 
 const MARQUEE_AUTOSCROLL_EDGE = 56;
@@ -36078,7 +36429,7 @@ function bindEvents() {
     const assetID = state.contextAssetID;
     if (!button || !assetID || button.disabled) return;
     const action = button.dataset.contextAction;
-    hideContextMenus();
+    await returnFromContextMenu({ restoreFocus: false });
     if (action === "preview") {
       state.selectedAssetID = assetID;
       openLightbox("library", assetID);
@@ -36117,9 +36468,7 @@ function bindEvents() {
     event.stopPropagation();
     if (event.key === "Escape") {
       event.preventDefault();
-      const assetID = state.contextAssetID;
-      hideContextMenus();
-      restoreOverlayFocus(assetCardFocusTarget(assetID));
+      void returnFromContextMenu();
       return;
     }
     event.preventDefault();
@@ -36134,8 +36483,9 @@ function bindEvents() {
     const assetID = state.contextReviewAssetID;
     if (!button || !assetID || button.disabled) return;
     const action = button.dataset.reviewContextAction;
-    hideContextMenus();
+    await returnFromContextMenu({ restoreFocus: false });
     if (action === "favorite") await toggleReviewItemFavorite(assetID);
+    restoreOverlayFocus(reviewCardFocusTarget(assetID));
   });
   elements.reviewContextMenu.addEventListener("keydown", (event) => {
     const buttons = [
@@ -36146,9 +36496,7 @@ function bindEvents() {
     event.stopPropagation();
     if (event.key === "Escape") {
       event.preventDefault();
-      const assetID = state.contextReviewAssetID;
-      hideContextMenus();
-      restoreOverlayFocus(reviewCardFocusTarget(assetID));
+      void returnFromContextMenu();
       return;
     }
     event.preventDefault();
@@ -36163,7 +36511,7 @@ function bindEvents() {
     const memberID = state.slimming.contextMemberID;
     if (!button || !memberID || button.disabled) return;
     const action = button.dataset.slimmingMemberContextAction;
-    hideContextMenus();
+    await returnFromContextMenu({ restoreFocus: false });
     if (action === "favorite") {
       const favoriteButton = elements.slimmingMemberGrid.querySelector(
         `[data-slimming-member-id="${CSS.escape(memberID)}"] [data-slimming-member-favorite]`
@@ -36192,13 +36540,7 @@ function bindEvents() {
     event.stopPropagation();
     if (event.key === "Escape") {
       event.preventDefault();
-      const memberID = state.slimming.contextMemberID;
-      hideContextMenus();
-      restoreOverlayFocus(slimmingMemberMainButton(
-        elements.slimmingMemberGrid.querySelector(
-          `[data-slimming-member-id="${CSS.escape(memberID || "")}"]`
-        )
-      ));
+      void returnFromContextMenu();
       return;
     }
     event.preventDefault();
@@ -36213,18 +36555,17 @@ function bindEvents() {
     const entryID = state.slimming.contextRecycleEntryID;
     if (!button || !entryID || button.disabled) return;
     const action = button.dataset.slimmingRecycleContextAction;
-    hideContextMenus();
+    await returnFromContextMenu({ restoreFocus: false });
     if (action === "favorite") {
       await toggleSlimmingRecycleFavoriteEntry(entryID);
     }
+    restoreOverlayFocus(slimmingRecycleFocusTarget(entryID));
   });
   elements.slimmingRecycleContextMenu.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       event.preventDefault();
       event.stopPropagation();
-      const entryID = state.slimming.contextRecycleEntryID;
-      hideContextMenus();
-      restoreOverlayFocus(slimmingRecycleFocusTarget(entryID));
+      void returnFromContextMenu();
       return;
     }
     const buttons = [
@@ -36246,7 +36587,7 @@ function bindEvents() {
     const jobID = state.slimming.contextJobID;
     if (!button || !jobID || button.disabled) return;
     const action = button.dataset.slimmingJobContextAction;
-    hideContextMenus();
+    await returnFromContextMenu({ restoreFocus: false });
     await applySlimmingJobAction(jobID, action, { returnFocus: true });
   });
   elements.slimmingJobContextMenu.addEventListener("keydown", (event) => {
@@ -36258,11 +36599,7 @@ function bindEvents() {
     event.stopPropagation();
     if (event.key === "Escape") {
       event.preventDefault();
-      const jobID = state.slimming.contextJobID;
-      hideContextMenus();
-      restoreOverlayFocus(elements.slimmingJobList.querySelector(
-        `[data-slimming-job-id="${CSS.escape(jobID || "")}"]`
-      ));
+      void returnFromContextMenu();
       return;
     }
     event.preventDefault();
@@ -36280,7 +36617,7 @@ function bindEvents() {
     const returnTarget = elements.sourceList.querySelector(
       `[data-source-id="${CSS.escape(sourceID)}"]`
     );
-    hideContextMenus();
+    await returnFromContextMenu({ restoreFocus: false });
     if (action === "view") {
       await selectSource(sourceID);
       restoreOverlayFocus(elements.sourceList.querySelector(
@@ -36305,11 +36642,7 @@ function bindEvents() {
     event.stopPropagation();
     if (event.key === "Escape") {
       event.preventDefault();
-      const sourceID = state.contextSourceID;
-      hideContextMenus();
-      restoreOverlayFocus(elements.sourceList.querySelector(
-        `[data-source-id="${CSS.escape(sourceID || "")}"]`
-      ));
+      void returnFromContextMenu();
       return;
     }
     event.preventDefault();
@@ -36328,7 +36661,7 @@ function bindEvents() {
     const returnFocus = state.contextTagReturnFocus;
     const tag = tagByID(tagID);
     const group = groupByID(groupID);
-    hideContextMenus();
+    await returnFromContextMenu({ restoreFocus: false });
     if (action === "filterOnly" && tagID) {
       await filterToSingleSidebarTag(tagID);
     } else if (action === "toggleExcluded" && tagID) {
@@ -36356,19 +36689,7 @@ function bindEvents() {
     event.stopPropagation();
     if (event.key === "Escape") {
       event.preventDefault();
-      const tagID = state.contextTagID;
-      const groupID = state.contextTagGroupID;
-      const returnFocus = state.contextTagReturnFocus;
-      hideContextMenus();
-      if (returnFocus?.isConnected) restoreOverlayFocus(returnFocus);
-      else if (tagID) focusSidebarTag(tagID);
-      else if (groupID) {
-        requestAnimationFrame(() => {
-          elements.tagNavigation.querySelector(
-            `[data-sidebar-tag-group-toggle="${CSS.escape(groupID)}"]`
-          )?.focus({ preventScroll: true });
-        });
-      }
+      void returnFromContextMenu();
       return;
     }
     event.preventDefault();
@@ -36379,6 +36700,7 @@ function bindEvents() {
     buttons[next].focus({ preventScroll: true });
   });
 
+  document.addEventListener("pointerdown", beginContextMenuOutsideDismissal, true);
   document.addEventListener("pointerdown", beginContextLongPress, true);
   document.addEventListener("pointermove", updateContextLongPress, {
     capture: true,
@@ -36388,6 +36710,7 @@ function bindEvents() {
   document.addEventListener("pointercancel", finishContextLongPress, true);
   document.addEventListener("click", suppressContextLongPressFollowUp, true);
   document.addEventListener("contextmenu", suppressContextLongPressFollowUp, true);
+  document.addEventListener("click", dismissContextMenuFromOutside, true);
   document.addEventListener("click", (event) => {
     const eventPath = event.composedPath();
     if (!elements.compactToolbarMenu.classList.contains("hidden")
@@ -36395,13 +36718,6 @@ function bindEvents() {
       && !eventPath.includes(elements.compactToolbarMenuButton)) {
       void returnFromCompactToolbarMenu({ restoreFocus: false });
     }
-    if (!elements.assetContextMenu.contains(event.target)
-      && !elements.reviewContextMenu.contains(event.target)
-      && !elements.sourceContextMenu.contains(event.target)
-      && !elements.tagContextMenu.contains(event.target)
-      && !elements.slimmingMemberContextMenu.contains(event.target)
-      && !elements.slimmingRecycleContextMenu.contains(event.target)
-      && !elements.slimmingJobContextMenu.contains(event.target)) hideContextMenus();
     if (!elements.filterPopover.classList.contains("hidden")
       && !elements.filterPopover.contains(event.target)
       && !elements.filterButton.contains(event.target)) {
@@ -36478,6 +36794,8 @@ function bindEvents() {
     const filterOpen = !elements.filterPopover.classList.contains("hidden");
     const layoutMenuOpen = Boolean(activeLayoutMenuDescriptor());
     const actionMenuOpen = Boolean(activeActionMenuDescriptor());
+    const contextMenu = activeContextMenuDescriptor();
+    const contextMenuOpen = Boolean(contextMenu);
     const compactToolbarOpen = compactToolbarMenuIsOpen();
     const mobileSidebarOpen = mobileSidebarOverlayIsOpen();
     const inspectorOverlayOpen = globalThis.matchMedia("(max-width: 980px)").matches
@@ -36488,6 +36806,7 @@ function bindEvents() {
       || filterOpen
       || layoutMenuOpen
       || actionMenuOpen
+      || contextMenuOpen
       || compactToolbarOpen
       || mobileSidebarOpen
       || inspectorOverlayOpen;
@@ -36546,24 +36865,6 @@ function bindEvents() {
         void returnFromSlimmingRecycleExplanation();
         return;
       }
-      if (!elements.slimmingJobContextMenu.classList.contains("hidden")) {
-        const jobID = state.slimming.contextJobID;
-        hideContextMenus();
-        restoreOverlayFocus(elements.slimmingJobList.querySelector(
-          `[data-slimming-job-id="${CSS.escape(jobID || "")}"]`
-        ));
-        return;
-      }
-      if (!elements.slimmingMemberContextMenu.classList.contains("hidden")) {
-        const memberID = state.slimming.contextMemberID;
-        hideContextMenus();
-        restoreOverlayFocus(slimmingMemberMainButton(
-          elements.slimmingMemberGrid.querySelector(
-            `[data-slimming-member-id="${CSS.escape(memberID || "")}"]`
-          )
-        ));
-        return;
-      }
       if (filterOpen) {
         void returnFromFilterPopover();
         return;
@@ -36574,6 +36875,10 @@ function bindEvents() {
       }
       if (actionMenuOpen) {
         void returnFromActionMenu();
+        return;
+      }
+      if (contextMenuOpen) {
+        void returnFromContextMenu();
         return;
       }
       if (elements.suggestionThresholdDialog.open) {
@@ -36724,6 +37029,9 @@ function bindEvents() {
     } else if (actionMenuOpen) {
       const descriptor = activeActionMenuDescriptor();
       if (descriptor && trapOverlayFocus(event, descriptor.popover)) return;
+      return;
+    } else if (contextMenuOpen) {
+      if (contextMenu && trapOverlayFocus(event, contextMenu.menu)) return;
       return;
     } else if (compactToolbarOpen) {
       if (trapOverlayFocus(event, elements.compactToolbarMenu)) return;
