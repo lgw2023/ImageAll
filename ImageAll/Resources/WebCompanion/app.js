@@ -2121,10 +2121,26 @@ function visibleWorkspaceRoute() {
   return "gallery";
 }
 
-function workspaceHistoryEntry(route, context = null) {
+function workspaceLightboxHistoryContext(route, context) {
+  if (!context || typeof context !== "object") return null;
+  if (route === "gallery") return context.galleryLightbox || null;
+  if (route === "review") return context.reviewLightbox || null;
+  if (route === "slimming") return context.slimmingLightbox || null;
+  if (route === "worldMap") return context.worldMapLightbox || null;
+  return null;
+}
+
+function workspaceLightboxContext(route) {
+  if (route === "gallery") return "library";
+  if (["review", "slimming", "worldMap"].includes(route)) return route;
+  return null;
+}
+
+function workspaceHistoryEntry(route, context = null, navigationLevel = "workspace") {
   return {
     route,
     context: context || null,
+    navigationLevel: navigationLevel === "lightbox" ? "lightbox" : "workspace",
     workspaceGeneration: state.workspaceGeneration,
   };
 }
@@ -2142,7 +2158,7 @@ function activeWorkspaceHistoryEntry(raw = history.state) {
 function initializeWorkspaceHistoryRoot({ restoreExisting = false } = {}) {
   const existing = restoreExisting ? managedWorkspaceHistoryEntry() : null;
   const restored = existing && WORKSPACE_HISTORY_ROUTES.has(existing.route)
-    ? workspaceHistoryEntry(existing.route, existing.context)
+    ? workspaceHistoryEntry(existing.route, existing.context, existing.navigationLevel)
     : workspaceHistoryEntry("gallery");
   const resolve = state.workspaceNavigation.pendingReturnResolve;
   state.workspaceNavigation.pendingReturnResolve = null;
@@ -2162,11 +2178,18 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
   if (!state.workspaceNavigation.initialized
     || mode === "none") return;
   const current = activeWorkspaceHistoryEntry();
+  const hasLightbox = Boolean(workspaceLightboxHistoryContext(route, context));
+  const navigationLevel = hasLightbox
+    && (mode === "pushLightbox" || current?.navigationLevel === "lightbox")
+    ? "lightbox"
+    : "workspace";
   const nextState = {
     ...(history.state || {}),
-    [WORKSPACE_HISTORY_KEY]: workspaceHistoryEntry(route, context),
+    [WORKSPACE_HISTORY_KEY]: workspaceHistoryEntry(route, context, navigationLevel),
   };
-  if (mode === "replace" || current?.route === route) {
+  if (mode === "pushLightbox") {
+    history.pushState(nextState, "", location.href);
+  } else if (mode === "replace" || current?.route === route) {
     history.replaceState(nextState, "", location.href);
   } else {
     history.pushState(nextState, "", location.href);
@@ -2454,7 +2477,10 @@ async function applyWorkspaceHistoryEntry(entry) {
   state.workspaceNavigation.applyingHistory = true;
   try {
     const current = visibleWorkspaceRoute();
-    if (target === current) return;
+    if (target === current) {
+      reconcileLightboxFromWorkspaceHistory(target, context);
+      return;
+    }
     if (target === "gallery") {
       closeAllWorkspacesToGallery();
       return;
@@ -4619,6 +4645,27 @@ function closeWorldMapPlaceTags({ restoreFocus = true } = {}) {
   if (restoreFocus) restoreOverlayFocus(returnFocus);
 }
 
+function returnFromLightbox() {
+  if (elements.lightbox.classList.contains("hidden")) return Promise.resolve();
+  if (state.workspaceNavigation.pendingReturnPromise) {
+    return state.workspaceNavigation.pendingReturnPromise;
+  }
+  const route = visibleWorkspaceRoute();
+  const current = activeWorkspaceHistoryEntry();
+  if (state.workspaceNavigation.initialized
+    && current?.route === route
+    && current.navigationLevel === "lightbox") {
+    const pending = new Promise((resolve) => {
+      state.workspaceNavigation.pendingReturnResolve = resolve;
+    });
+    state.workspaceNavigation.pendingReturnPromise = pending;
+    history.back();
+    return pending;
+  }
+  closeLightbox();
+  return Promise.resolve();
+}
+
 function handleWorldMapMessage(event) {
   if (event.origin !== globalThis.location.origin
     || event.source !== elements.worldMapFrame.contentWindow
@@ -4654,6 +4701,11 @@ function handleWorldMapMessage(event) {
 
 function closeLightbox({ restoreFocus = true } = {}) {
   const closingContext = state.lightboxContext;
+  const currentHistoryEntry = activeWorkspaceHistoryEntry();
+  const consumesLightboxHistory = restoreFocus
+    && !state.workspaceNavigation.applyingHistory
+    && currentHistoryEntry?.route === visibleWorkspaceRoute()
+    && currentHistoryEntry.navigationLevel === "lightbox";
   const preservesLibraryCloudPreview = closingContext === "library"
     && state.cloudPreview.context === "library"
     && state.cloudPreview.assetID === state.selectedDetail?.assetID;
@@ -4697,7 +4749,8 @@ function closeLightbox({ restoreFocus = true } = {}) {
   const returnFocus = state.lightboxReturnFocus;
   state.lightboxReturnFocus = null;
   if (restoreFocus) restoreOverlayFocus(returnFocus);
-  scheduleWorkspaceHistoryCheckpoint();
+  if (consumesLightboxHistory) history.back();
+  else scheduleWorkspaceHistoryCheckpoint();
 }
 
 function focusableOverlayElements(container) {
@@ -24492,7 +24545,8 @@ async function renderLightboxMedia(item) {
 function openLightbox(context, assetID) {
   if (!assetID) return;
   stopAssetHoverVideo();
-  if (elements.lightbox.classList.contains("hidden")) {
+  const wasHidden = elements.lightbox.classList.contains("hidden");
+  if (wasHidden) {
     state.lightboxReturnFocus = document.activeElement;
   }
   state.lightboxContext = context;
@@ -24513,7 +24567,19 @@ function openLightbox(context, assetID) {
   }
   if (context === "library") syncLightboxWorkspaceFrame();
   renderLightbox();
-  scheduleWorkspaceHistoryCheckpoint();
+  if (wasHidden
+    && state.workspaceNavigation.initialized
+    && !state.workspaceNavigation.applyingHistory
+    && !state.workspaceNavigation.pendingRestoreEntry) {
+    const route = visibleWorkspaceRoute();
+    recordWorkspaceHistory(
+      route,
+      currentWorkspaceHistoryContext(route),
+      "pushLightbox"
+    );
+  } else {
+    scheduleWorkspaceHistoryCheckpoint();
+  }
   requestAnimationFrame(() => {
     elements.lightboxBackButton.focus({ preventScroll: true });
   });
@@ -24570,6 +24636,11 @@ function restoreLightboxFromHistory(raw, expectedContext) {
     return true;
   }
 
+  state.lightboxViewportAssetID = context.assetID;
+  state.lightboxViewportScale = context.scale;
+  state.lightboxViewportOffsetX = context.offsetX;
+  state.lightboxViewportOffsetY = context.offsetY;
+  syncLightboxViewport();
   let restored = false;
   const removeImageViewportListeners = () => {
     elements.lightboxImage.removeEventListener("load", restoreImageViewport);
@@ -24600,6 +24671,27 @@ function restoreLightboxFromHistory(raw, expectedContext) {
   );
   requestAnimationFrame(restoreImageViewport);
   return true;
+}
+
+function reconcileLightboxFromWorkspaceHistory(route, context) {
+  const expectedContext = workspaceLightboxContext(route);
+  const raw = workspaceLightboxHistoryContext(route, context);
+  const desired = normalizedLightboxHistoryContext(raw);
+  const valid = expectedContext && desired && lightboxItemsForContext(expectedContext).some(
+    (item) => item.id === desired.assetID
+  );
+  if (!valid) {
+    if (!elements.lightbox.classList.contains("hidden")) closeLightbox();
+    return;
+  }
+
+  const alreadyOpen = !elements.lightbox.classList.contains("hidden")
+    && state.lightboxContext === expectedContext
+    && state.lightboxAssetID === desired.assetID;
+  if (!alreadyOpen && !elements.lightbox.classList.contains("hidden")) {
+    closeLightbox({ restoreFocus: false });
+  }
+  restoreLightboxFromHistory(raw, expectedContext);
 }
 
 function syncLightboxOpenOriginalControl(item) {
@@ -26462,7 +26554,7 @@ async function openWorkspaceFromCommand(target) {
 
 async function returnFromCommandContext() {
   if (!elements.lightbox.classList.contains("hidden")) {
-    closeLightbox();
+    await returnFromLightbox();
     return;
   }
   const route = visibleWorkspaceRoute();
@@ -30256,7 +30348,7 @@ function bindEvents() {
     openLightbox("review", item?.assetID);
   });
 
-  elements.lightboxBackButton.addEventListener("click", closeLightbox);
+  elements.lightboxBackButton.addEventListener("click", () => void returnFromLightbox());
   elements.lightboxOpenOriginalButton.addEventListener("click", () => {
     void openLightboxOriginalOnMac();
   });
@@ -30343,7 +30435,7 @@ function bindEvents() {
       syncSelectionFavoriteToolbarPresentation();
     });
   });
-  elements.closeLightboxButton.addEventListener("click", closeLightbox);
+  elements.closeLightboxButton.addEventListener("click", () => void returnFromLightbox());
   elements.lightboxPreviousButton.addEventListener("click", () => void navigateLightbox(-1));
   elements.lightboxNextButton.addEventListener("click", () => void navigateLightbox(1));
   elements.lightboxReviewActions.addEventListener("click", (event) => {
@@ -30907,7 +30999,7 @@ function bindEvents() {
         return;
       }
       if (lightboxOpen) {
-        closeLightbox();
+        void returnFromLightbox();
         return;
       }
       if (reviewOpen) {
@@ -31052,7 +31144,7 @@ function bindEvents() {
       }
       if (event.code === "Space") {
         event.preventDefault();
-        closeLightbox();
+        void returnFromLightbox();
       }
       if (state.lightboxContext === "review"
         && !event.repeat
