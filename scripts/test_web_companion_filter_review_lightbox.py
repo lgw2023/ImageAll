@@ -2056,13 +2056,17 @@ def main():
         )
         with page.expect_response("**/v1/tag-decisions/batch"):
             review_travel_accept.click()
-        page.wait_for_function("() => !state.tagMutating && !state.review.mutating")
+        page.wait_for_function(
+            f"() => !state.tagMutating && !state.review.mutating "
+            f"&& state.review.detail?.assetID === '{REVIEW_IDS[0]}' "
+            "&& !state.review.detailLoadingAssetID"
+        )
         assert tag_decisions[-1]["tagID"] == TRAVEL_TAG_ID
         assert tag_decisions[-1]["action"] == "accept"
         assert tag_decisions[-1]["assetIDs"] == [REVIEW_IDS[0]]
-        page.locator('[data-review-index="1"] > .review-card-main').click(
-            modifiers=["Meta"]
-        )
+        page.keyboard.down("Meta")
+        page.locator('[data-review-index="1"] > .review-card-main').click()
+        page.keyboard.up("Meta")
         page.wait_for_function(
             "() => state.review.selectedAssetIDs.size === 2 "
             "&& state.review.detailSelectionKey?.split('|').length === 2"
@@ -2111,7 +2115,9 @@ def main():
         queue_help_detail = page.locator("#persistentHelpDetail").inner_text()
         assert "当前主项目并已选择" in queue_help_detail
         assert "Command/Ctrl-A 全选已载入项目" in queue_help_detail
+        assert "触控长按" in queue_help_detail
         assert "P X U" in first_review_main.get_attribute("aria-keyshortcuts")
+        assert "Shift+F10" in first_review_main.get_attribute("aria-keyshortcuts")
         page.locator("#reviewSummary").hover()
         page.wait_for_function(
             "() => document.querySelector('#persistentHelp').classList.contains('hidden')"
@@ -2502,6 +2508,91 @@ def main():
         first_review_main.click()
         page.wait_for_function("() => state.review.selectedAssetIDs.size === 1")
         review_scroll_top = page.locator("#reviewQueuePane").evaluate("element => element.scrollTop")
+        page.wait_for_function(
+            "() => !state.loadingAssets "
+            "&& !state.assetLoadPromise "
+            "&& !state.queuedAssetLoadOptions "
+            "&& state.assetRenderedQuerySignature === assetQuerySignature()"
+        )
+        review_context_snapshot = page.evaluate(
+            "() => ({ selectedIndex: state.review.selectedIndex, "
+            "selectedAssetIDs: [...state.review.selectedAssetIDs], "
+            "selectionAnchorIndex: state.review.selectionAnchorIndex, "
+            "itemIDs: state.review.items.map(item => item.assetID), "
+            "nextCursor: state.review.nextCursor, "
+            "scrollTop: document.querySelector('#reviewQueuePane').scrollTop })"
+        )
+        review_context_asset_query_count = len(asset_queries)
+        review_context_decision_count = len(review_decisions)
+        first_review_main.click(button="right")
+        review_context_menu = page.locator("#reviewContextMenu:not(.hidden)")
+        review_context_menu.wait_for()
+        assert page.locator("#reviewContextMenuTitle").inner_text() == "REVIEW_1.JPG"
+        review_context_favorite = page.locator("#reviewFavoriteContextAction")
+        assert review_context_favorite.inner_text() == "加入红心"
+        assert review_context_favorite.get_attribute("data-favorite") == "false"
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'reviewFavoriteContextAction'"
+        )
+        page.keyboard.press("Escape")
+        page.wait_for_function(
+            "() => document.activeElement?.classList.contains('review-card-main')"
+        )
+        first_review_main.press("Shift+F10")
+        review_context_menu.wait_for()
+        with page.expect_response("**/v1/favorites"):
+            review_context_favorite.click()
+        page.wait_for_function(
+            f"() => state.review.items.find(item => item.assetID === '{REVIEW_IDS[0]}')"
+            "?.favorite?.isFavorite === true"
+        )
+        assert favorite_mutations[-1]["assetIDs"] == [REVIEW_IDS[0]]
+        assert favorite_mutations[-1]["isFavorite"] is True
+        page.wait_for_function(
+            "() => document.activeElement?.classList.contains('review-card-main')"
+        )
+        first_review_main.click(button="right")
+        assert review_context_favorite.inner_text() == "取消红心"
+        with page.expect_response("**/v1/favorites"):
+            review_context_favorite.click()
+        page.wait_for_function(
+            f"() => state.review.items.find(item => item.assetID === '{REVIEW_IDS[0]}')"
+            "?.favorite?.isFavorite === false"
+        )
+        review_main_bounds = first_review_main.bounding_box()
+        assert review_main_bounds is not None
+        review_long_press_point = {
+            "x": review_main_bounds["x"] + min(44, review_main_bounds["width"] / 2),
+            "y": review_main_bounds["y"] + min(44, review_main_bounds["height"] / 2),
+        }
+        page.evaluate(
+            """point => document.querySelector('[data-review-index="0"] > .review-card-main')
+              .dispatchEvent(new PointerEvent('pointerdown', {
+                bubbles: true,
+                pointerId: 93,
+                pointerType: 'touch',
+                button: 0,
+                clientX: point.x,
+                clientY: point.y,
+                isPrimary: true,
+              }))""",
+            review_long_press_point,
+        )
+        page.wait_for_timeout(580)
+        review_context_menu.wait_for()
+        assert review_context_favorite.inner_text() == "加入红心"
+        page.screenshot(path="/tmp/imageall-review-long-press-menu.png", full_page=True)
+        page.keyboard.press("Escape")
+        assert page.evaluate(
+            "() => ({ selectedIndex: state.review.selectedIndex, "
+            "selectedAssetIDs: [...state.review.selectedAssetIDs], "
+            "selectionAnchorIndex: state.review.selectionAnchorIndex, "
+            "itemIDs: state.review.items.map(item => item.assetID), "
+            "nextCursor: state.review.nextCursor, "
+            "scrollTop: document.querySelector('#reviewQueuePane').scrollTop })"
+        ) == review_context_snapshot
+        assert len(asset_queries) == review_context_asset_query_count
+        assert len(review_decisions) == review_context_decision_count
         first_review_card.hover()
         first_review_favorite.click()
         page.wait_for_function(
@@ -2551,7 +2642,9 @@ def main():
         assert review_select_all.is_disabled()
         page.locator('[data-review-index="1"] > .review-card-main').click()
         page.wait_for_function("() => state.review.selectedAssetIDs.size === 2")
-        assert review_select_all.is_enabled()
+        page.wait_for_function(
+            "() => !document.querySelector('#reviewSelectAllButton').disabled"
+        )
         review_select_all.click()
         page.wait_for_function("() => state.review.selectedAssetIDs.size === 3")
         page.screenshot(

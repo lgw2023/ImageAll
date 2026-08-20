@@ -936,6 +936,9 @@ const elements = {
   assetContextMenu: $("#assetContextMenu"),
   assetFavoriteContextAction: $("#assetFavoriteContextAction"),
   assetDeleteContextAction: $("#assetDeleteContextAction"),
+  reviewContextMenu: $("#reviewContextMenu"),
+  reviewContextMenuTitle: $("#reviewContextMenuTitle"),
+  reviewFavoriteContextAction: $("#reviewFavoriteContextAction"),
   sourceContextMenu: $("#sourceContextMenu"),
   sourceContextMenuTitle: $("#sourceContextMenuTitle"),
   sourceContextMenuActions: $("#sourceContextMenuActions"),
@@ -1528,6 +1531,8 @@ const state = {
   eventRefreshTimer: null,
   pendingRefreshKinds: new Set(),
   pendingInspectorRefresh: false,
+  galleryAssetsRefreshPending: false,
+  galleryAssetsRefreshFrame: null,
   refreshingWorkspace: false,
   accountPollTimer: null,
   aggregateTimer: null,
@@ -1565,6 +1570,7 @@ const state = {
   keyboardShortcutsHistoryRestoreFocus: true,
   keyboardShortcutsOpening: false,
   contextAssetID: null,
+  contextReviewAssetID: null,
   contextSourceID: null,
   contextTagID: null,
   contextTagGroupID: null,
@@ -3549,6 +3555,23 @@ function closeAllWorkspacesToGallery({ restoreFocus = true } = {}) {
     closeVisibleWorkspaceOneLevel({ restoreFocus });
     remaining -= 1;
   }
+  scheduleDeferredGalleryAssetsRefresh();
+}
+
+function scheduleDeferredGalleryAssetsRefresh() {
+  if (!state.galleryAssetsRefreshPending || state.galleryAssetsRefreshFrame != null) return;
+  state.galleryAssetsRefreshFrame = requestAnimationFrame(() => {
+    state.galleryAssetsRefreshFrame = null;
+    if (!state.galleryAssetsRefreshPending
+      || visibleWorkspaceRoute() !== "gallery"
+      || elements.appView.classList.contains("hidden")) return;
+    state.galleryAssetsRefreshPending = false;
+    void loadAssets({
+      preserveSelection: true,
+      preserveUnchangedGrid: true,
+      preserveLoadedWindow: true,
+    });
+  });
 }
 
 async function applyWorkspaceHistoryEntry(entry) {
@@ -19889,9 +19912,7 @@ function syncReviewCardFavoriteButton(card, item) {
   });
 }
 
-async function toggleReviewCardFavorite(button) {
-  const assetID = button?.dataset.mediaFavoriteAssetId
-    || button?.closest(".review-card")?.dataset.reviewAssetId;
+async function toggleReviewItemFavorite(assetID, { returnFocus = null } = {}) {
   const itemIndex = state.review.items.findIndex((item) => item.assetID === assetID);
   const favorite = favoriteStateForAssetID(assetID);
   if (!assetID || itemIndex < 0 || !favorite || state.favoriteMutating) return;
@@ -19911,14 +19932,17 @@ async function toggleReviewCardFavorite(button) {
   renderReviewSelectionState({ renderDetail: false });
   elements.reviewQueuePane.scrollTop = scrollTop;
 
-  if (button.isConnected) {
-    button.focus({ preventScroll: true });
+  if (returnFocus?.isConnected) {
+    returnFocus.focus({ preventScroll: true });
     return;
   }
-  const fallbackCard = elements.reviewGrid.querySelector(
-    `[data-review-index="${Math.min(itemIndex, Math.max(0, state.review.items.length - 1))}"]`
-  );
-  reviewCardMainButton(fallbackCard)?.focus({ preventScroll: true });
+  reviewCardFocusTarget(assetID)?.focus({ preventScroll: true });
+}
+
+async function toggleReviewCardFavorite(button) {
+  const assetID = button?.dataset.mediaFavoriteAssetId
+    || button?.closest(".review-card")?.dataset.reviewAssetId;
+  await toggleReviewItemFavorite(assetID, { returnFocus: button });
 }
 
 async function applyReviewInspectorFavorite(button, isFavorite) {
@@ -19944,9 +19968,9 @@ function syncReviewCardSelection(card, item, index) {
     title: item.fileName || "未命名媒体",
     detail: `${selected ? (primary ? "当前主项目并已选择" : "已选择") : "未选择"} · ${reviewOriginText(item.suggestionOrigin)}`
       + `${item.score == null ? "" : ` · 可信度 ${Math.round(item.score * 100)}%`}。`
-      + "方向键移动，Shift 扩展选择，Space 打开单图；P 属于、X 不属于、U 稍后，Delete 安全删除，Command/Ctrl-A 全选已载入项目。",
+      + "方向键移动，Shift 扩展选择，Space 打开单图；P 属于、X 不属于、U 稍后，Delete 安全删除，Command/Ctrl-A 全选已载入项目；右键、触控长按或 Shift-F10 可加入或取消红心。",
     kind: "review",
-    keyShortcuts: "ArrowLeft ArrowRight ArrowUp ArrowDown Home End PageUp PageDown Space P X U Delete Meta+A Control+A",
+    keyShortcuts: "ArrowLeft ArrowRight ArrowUp ArrowDown Home End PageUp PageDown Space P X U Delete Meta+A Control+A Shift+F10 ContextMenu",
   });
   if (primary) {
     mainButton.setAttribute("aria-current", "true");
@@ -29603,11 +29627,15 @@ async function refreshWorkspace({ quiet = false, kinds = null } = {}) {
 
       let assetsChanged = false;
       if (batch.has("assetsChanged")) {
-        assetsChanged = await loadAssets({
-          preserveSelection: true,
-          preserveUnchangedGrid: true,
-          preserveLoadedWindow: true,
-        });
+        if (visibleWorkspaceRoute() === "gallery") {
+          assetsChanged = await loadAssets({
+            preserveSelection: true,
+            preserveUnchangedGrid: true,
+            preserveLoadedWindow: true,
+          });
+        } else {
+          state.galleryAssetsRefreshPending = true;
+        }
       }
       const shouldRefreshInspector = Boolean(
         state.selectedAssetID
@@ -32431,6 +32459,8 @@ async function openCommandPalette({
 function hideContextMenu() {
   elements.assetContextMenu.classList.add("hidden");
   state.contextAssetID = null;
+  elements.reviewContextMenu.classList.add("hidden");
+  state.contextReviewAssetID = null;
   elements.sourceContextMenu.classList.add("hidden");
   state.contextSourceID = null;
   elements.tagContextMenu.classList.add("hidden");
@@ -32503,6 +32533,19 @@ function contextLongPressDescriptor(target) {
     return {
       target: assetMain,
       open: (x, y) => showAssetContextMenu(x, y, assetCard.dataset.assetId),
+    };
+  }
+
+  const reviewMain = target.closest("#reviewGrid .review-card-main");
+  const reviewCard = reviewMain?.closest("[data-review-asset-id]");
+  if (reviewMain && reviewCard) {
+    return {
+      target: reviewMain,
+      open: (x, y) => showReviewContextMenu(
+        x,
+        y,
+        reviewCard.dataset.reviewAssetId
+      ),
     };
   }
 
@@ -32634,6 +32677,42 @@ function showAssetContextMenu(clientX, clientY, assetID) {
   restoreOverlayFocus(
     elements.assetContextMenu.querySelector("button:not(.hidden):not(:disabled)")
   );
+}
+
+function reviewCardFocusTarget(assetID) {
+  const requested = assetID
+    ? elements.reviewGrid.querySelector(
+      `[data-review-asset-id="${CSS.escape(assetID)}"]`
+    )
+    : null;
+  return reviewCardMainButton(requested)
+    || reviewCardMainButton(elements.reviewGrid.querySelector(":scope > .review-card"))
+    || elements.reviewSelectionModeButton;
+}
+
+function showReviewContextMenu(clientX, clientY, assetID) {
+  const item = state.review.items.find((candidate) => candidate.assetID === assetID);
+  if (!item) return;
+  hideContextMenus();
+  state.contextReviewAssetID = assetID;
+  elements.reviewContextMenu.setAttribute(
+    "aria-label",
+    `${item.fileName || "当前审核项目"} 审核项目操作`
+  );
+  elements.reviewContextMenuTitle.textContent = item.fileName || "当前审核项目";
+  const favorite = favoriteStateForAssetID(assetID);
+  elements.reviewFavoriteContextAction.textContent = favorite?.isFavorite
+    ? "取消红心"
+    : "加入红心";
+  elements.reviewFavoriteContextAction.disabled = !state.online
+    || !supportsFavorites()
+    || state.favoriteMutating;
+  elements.reviewFavoriteContextAction.dataset.favorite = String(
+    favorite?.isFavorite === true
+  );
+  elements.reviewContextMenu.classList.remove("hidden");
+  positionContextMenu(elements.reviewContextMenu, clientX, clientY);
+  restoreOverlayFocus(elements.reviewFavoriteContextAction);
 }
 
 function showSlimmingMemberContextMenu(clientX, clientY, memberID) {
@@ -33199,7 +33278,8 @@ function finishSlimmingMarqueeSelection(event = null) {
 async function autoPaginateIfNeeded() {
   if (!state.nextCursor
     || state.loadingAssets
-    || elements.appView.classList.contains("hidden")) return;
+    || elements.appView.classList.contains("hidden")
+    || visibleWorkspaceRoute() !== "gallery") return;
   const rootBounds = elements.libraryScroll.getBoundingClientRect();
   const sentinelBounds = elements.loadMoreSentinel.getBoundingClientRect();
   if (sentinelBounds.top > rootBounds.bottom + 280) return;
@@ -33219,6 +33299,7 @@ function setupAutoPagination() {
       && state.nextCursor
       && !state.loadingAssets
       && !elements.appView.classList.contains("hidden")
+      && visibleWorkspaceRoute() === "gallery"
     ) {
       autoPaginateIfNeeded();
     }
@@ -35521,6 +35602,27 @@ function bindEvents() {
     setReviewSelectionMode(!state.review.selectionMode);
   });
   elements.reviewSelectAllButton.addEventListener("click", selectAllReviewItems);
+  elements.reviewGrid.addEventListener("contextmenu", (event) => {
+    const card = event.target.closest("[data-review-asset-id]");
+    if (!card) return;
+    event.preventDefault();
+    showReviewContextMenu(event.clientX, event.clientY, card.dataset.reviewAssetId);
+  });
+  elements.reviewGrid.addEventListener("keydown", (event) => {
+    const card = event.target.closest("[data-review-asset-id]");
+    if (!card || !(event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const main = reviewCardMainButton(card);
+    const rect = main?.getBoundingClientRect() || card.getBoundingClientRect();
+    showReviewContextMenu(
+      rect.left + Math.min(28, rect.width / 2),
+      rect.top + Math.min(28, rect.height / 2),
+      card.dataset.reviewAssetId
+    );
+  });
   elements.reviewGrid.addEventListener("click", (event) => {
     const favoriteButton = event.target.closest("[data-review-card-favorite]");
     if (favoriteButton) {
@@ -35825,6 +35927,35 @@ function bindEvents() {
         : (current + (event.key === "ArrowUp" ? -1 : 1) + buttons.length) % buttons.length;
     buttons[next].focus({ preventScroll: true });
   });
+  elements.reviewContextMenu.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-review-context-action]");
+    const assetID = state.contextReviewAssetID;
+    if (!button || !assetID || button.disabled) return;
+    const action = button.dataset.reviewContextAction;
+    hideContextMenus();
+    if (action === "favorite") await toggleReviewItemFavorite(assetID);
+  });
+  elements.reviewContextMenu.addEventListener("keydown", (event) => {
+    const buttons = [
+      ...elements.reviewContextMenu.querySelectorAll("button:not(:disabled)"),
+    ];
+    if (!buttons.length) return;
+    if (!["Escape", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+    event.stopPropagation();
+    if (event.key === "Escape") {
+      event.preventDefault();
+      const assetID = state.contextReviewAssetID;
+      hideContextMenus();
+      restoreOverlayFocus(reviewCardFocusTarget(assetID));
+      return;
+    }
+    event.preventDefault();
+    const current = Math.max(0, buttons.indexOf(document.activeElement));
+    const next = event.key === "Home" ? 0
+      : event.key === "End" ? buttons.length - 1
+        : (current + (event.key === "ArrowUp" ? -1 : 1) + buttons.length) % buttons.length;
+    buttons[next].focus({ preventScroll: true });
+  });
   elements.slimmingMemberContextMenu.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-slimming-member-context-action]");
     const memberID = state.slimming.contextMemberID;
@@ -36030,6 +36161,7 @@ function bindEvents() {
       void returnFromCompactToolbarMenu({ restoreFocus: false });
     }
     if (!elements.assetContextMenu.contains(event.target)
+      && !elements.reviewContextMenu.contains(event.target)
       && !elements.sourceContextMenu.contains(event.target)
       && !elements.tagContextMenu.contains(event.target)
       && !elements.slimmingMemberContextMenu.contains(event.target)

@@ -10,8 +10,8 @@
   <meta name="apple-mobile-web-app-title" content="ImageAll">
   <title>ImageAll 网页版</title>
   <link rel="manifest" href="/manifest.webmanifest">
-    <link rel="stylesheet" href="/app.css?v=20260821-126">
-    <script src="/app.js?v=20260821-126" defer></script>
+    <link rel="stylesheet" href="/app.css?v=20260821-127">
+    <script src="/app.js?v=20260821-127" defer></script>
 </head>
 <body>
   <div id="bootView" class="centered-state">
@@ -3050,6 +3050,14 @@
     <button type="button" role="menuitem" data-context-action="filterSource">只看此来源</button>
     <button id="assetDeleteContextAction" class="danger" type="button" role="menuitem"
       data-context-action="delete">删除… <kbd>Delete</kbd></button>
+  </div>
+
+  <div id="reviewContextMenu" class="context-menu hidden" role="menu" aria-label="审核项目操作">
+    <div id="reviewContextMenuTitle" class="context-menu-title"></div>
+    <div class="context-menu-actions">
+      <button id="reviewFavoriteContextAction" class="favorite-context-action" type="button"
+        role="menuitem" data-review-context-action="favorite">加入红心</button>
+    </div>
   </div>
 
   <div id="sourceContextMenu" class="context-menu hidden" role="menu" aria-label="来源操作">

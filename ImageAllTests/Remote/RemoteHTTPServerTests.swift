@@ -2419,6 +2419,9 @@ final class RemoteHTTPServerTests: XCTestCase {
             "reviewThumbnailAspectButton",
             "reviewSelectAllButton",
             "reviewSelectionModeButton",
+            "reviewContextMenu",
+            "reviewContextMenuTitle",
+            "reviewFavoriteContextAction",
             "activeFilterBar",
             "activeFilterSummary",
             "activeFilterRelation",
@@ -3223,6 +3226,14 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function contextLongPressDescriptor"))
         XCTAssertTrue(script.contains("function beginContextLongPress"))
         XCTAssertTrue(script.contains("showSourceContextMenu(x, y, source.dataset.sourceId)"))
+        XCTAssertTrue(script.contains("function showReviewContextMenu"))
+        XCTAssertTrue(script.contains("function toggleReviewItemFavorite"))
+        XCTAssertTrue(script.contains("showReviewContextMenu(event.clientX, event.clientY"))
+        XCTAssertTrue(script.contains("reviewCard.dataset.reviewAssetId"))
+        XCTAssertTrue(script.contains("visibleWorkspaceRoute() !== \"gallery\""))
+        XCTAssertTrue(script.contains("visibleWorkspaceRoute() === \"gallery\""))
+        XCTAssertTrue(script.contains("galleryAssetsRefreshPending"))
+        XCTAssertTrue(script.contains("function scheduleDeferredGalleryAssetsRefresh"))
         XCTAssertTrue(script.contains("requestSourceManagementAction(action, sourceID)"))
         XCTAssertTrue(script.contains("[\"actionMenu\", \"layoutMenu\"].includes(current?.navigationLevel)"))
         XCTAssertTrue(stylesheet.contains(".context-long-press-active"))
