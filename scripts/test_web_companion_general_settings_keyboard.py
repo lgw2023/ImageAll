@@ -1360,8 +1360,18 @@ def main():
         )
 
         page.set_viewport_size({"width": 390, "height": 844})
+        settings_history_length = page.evaluate("() => history.length")
+        settings_asset_request_count = len(asset_requests)
         page.keyboard.press("Meta+,")
         page.locator("#generalSettingsDialog").wait_for()
+        assert page.evaluate("() => history.length") in {
+            settings_history_length,
+            settings_history_length + 1,
+        }
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "generalSettings"
+        settings_layer_history_length = page.evaluate("() => history.length")
         dimensions = page.evaluate(
             "() => ({ viewport: innerWidth, scroll: document.documentElement.scrollWidth })"
         )
@@ -1373,14 +1383,41 @@ def main():
         page.locator("#suggestionOverridesButton:not(:disabled)").wait_for()
         page.locator("#suggestionOverridesButton").click()
         page.locator("#suggestionThresholdList .suggestion-threshold-card").first.wait_for()
+        assert page.evaluate("() => history.length") in {
+            settings_layer_history_length,
+            settings_layer_history_length + 1,
+        }
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "suggestionThreshold"
         threshold_dimensions = page.evaluate(
             "() => ({ viewport: innerWidth, scroll: document.documentElement.scrollWidth })"
         )
         assert threshold_dimensions["scroll"] <= threshold_dimensions["viewport"], threshold_dimensions
         assert page.locator("#suggestionThresholdSearch").is_visible()
         page.screenshot(path="/tmp/imageall-suggestion-thresholds-synthetic.png", full_page=True)
+        private_threshold_search = "私密标签 /Users/example/Photos"
+        page.locator("#suggestionThresholdSearch").fill(private_threshold_search)
+        assert private_threshold_search not in page.evaluate("() => JSON.stringify(history.state)")
+        page.evaluate("() => history.back()")
+        page.locator("#suggestionThresholdDialog").wait_for(state="hidden")
+        assert page.locator("#generalSettingsDialog").is_visible()
+        assert page.evaluate("() => document.activeElement?.id") == "suggestionOverridesButton"
+        page.evaluate("() => history.forward()")
+        page.locator("#suggestionThresholdDialog[open]").wait_for()
+        assert page.locator("#suggestionThresholdSearch").input_value() == ""
         page.keyboard.press("Escape")
+        page.locator("#suggestionThresholdDialog").wait_for(state="hidden")
+        assert page.locator("#generalSettingsDialog").is_visible()
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "generalSettings"
         page.keyboard.press("Escape")
+        page.locator("#generalSettingsDialog").wait_for(state="hidden")
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "workspace"
+        assert len(asset_requests) == settings_asset_request_count
 
         assert not page_errors, page_errors
         assert not console_errors, {"console": console_errors, "resources": failed_resources}
