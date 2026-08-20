@@ -2368,7 +2368,9 @@ struct ProductionLibraryWorkspaceService:
     }
 
     func connectPhotos() async throws -> ConnectPhotosOutcome {
-        try await photosConnection.connect()
+        let outcome = try await photosConnection.connect()
+        photosSourceMonitor.refreshRegistration()
+        return outcome
     }
 
     func syncPhotosLibrary(sourceID: UUID) async throws {
@@ -2389,6 +2391,7 @@ struct ProductionLibraryWorkspaceService:
 
     func reactivatePhotosLibrary(sourceID: UUID) async throws {
         try photosConnection.reactivate(sourceID: sourceID)
+        photosSourceMonitor.refreshRegistration()
     }
 
     func restoreDefaultSourceAuthorizations() async throws {
@@ -2400,6 +2403,7 @@ struct ProductionLibraryWorkspaceService:
         {
             try? photosConnection.reactivate(sourceID: source.id)
         }
+        photosSourceMonitor.refreshRegistration()
 
         let folderSources = try sourceRepository.fetchAllFolderSources()
         for source in folderSources where source.state == .authorizationRequired {
@@ -2411,7 +2415,9 @@ struct ProductionLibraryWorkspaceService:
     }
 
     func rebindPhotos(unavailableSourceID: UUID) async throws -> RebindPhotosOutcome {
-        try await photosConnection.rebind(unavailableSourceID: unavailableSourceID)
+        let outcome = try await photosConnection.rebind(unavailableSourceID: unavailableSourceID)
+        photosSourceMonitor.refreshRegistration()
+        return outcome
     }
 
     func reauthorizeFolder(sourceID: UUID) async throws -> ReauthorizeFolderOutcome {
@@ -2422,7 +2428,9 @@ struct ProductionLibraryWorkspaceService:
 
     func disableFolderSource(sourceID: UUID) async throws -> DisableFolderOutcome {
         if try photosConnection.fetchSources().first(where: { $0.id == sourceID })?.kind == .photos {
-            return try photosConnection.disable(sourceID: sourceID)
+            let outcome = try photosConnection.disable(sourceID: sourceID)
+            photosSourceMonitor.refreshRegistration()
+            return outcome
         }
         let outcome = try await authorization.disableFolderSource(sourceID: sourceID)
         try folderSourceMonitor.synchronize()
@@ -2452,6 +2460,7 @@ struct ProductionLibraryWorkspaceService:
             try folderSourceMonitor.synchronize(enqueueInitialReconciles: false)
         case .photos:
             _ = try photosConnection.disable(sourceID: sourceID)
+            photosSourceMonitor.refreshRegistration()
         }
         // Disabling prevents new recycle intents. Re-read blockers and asset IDs
         // before deleting any App-owned cache so an operation that raced with the

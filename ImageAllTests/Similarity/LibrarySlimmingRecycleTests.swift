@@ -2518,6 +2518,62 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         )
     }
 
+    func testDisabledPhotosSourceIsInertInRecycleBinAndRecovery() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let photosID = try env.seedPhotosAsset(localIdentifier: "abandoned-photos-library")
+        let fake = FakePhotosLibraryMutationPort()
+        fake.presenceByID["abandoned-photos-library"] = .available
+        let clock = FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs)
+        let queue = GRDBJobQueue(
+            database: env.database,
+            clock: clock,
+            retryPolicy: FixedDelayRetryPolicy(delayMs: 1_000)
+        )
+        let service = env.makeRecycleService(
+            clock: clock,
+            jobQueue: queue,
+            photosMutation: fake
+        )
+        _ = try service.moveAssetsToRecycle(assetIDs: [photosID])
+        let entry = try XCTUnwrap(try service.listRecycledEntries().first)
+
+        try env.database.pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE source SET state = 'disabled'
+                WHERE id = (SELECT source_id FROM asset WHERE id = ?)
+                """,
+                arguments: [photosID.uuidString.lowercased()]
+            )
+            try db.execute(
+                sql: "UPDATE recycle_entry SET purge_after_ms = ? WHERE id = ?",
+                arguments: [clock.nowMs, entry.id.uuidString.lowercased()]
+            )
+        }
+        let singlePresenceCount = fake.presenceRequests.count
+        let batchPresenceCount = fake.presenceRequestBatches.count
+
+        XCTAssertTrue(try service.listRecycleBinEntries().isEmpty)
+        XCTAssertEqual(try service.recoverInterruptedOperations(), 0)
+        XCTAssertEqual(try service.reconcilePhotosRecycleEntries(), 0)
+        XCTAssertEqual(try service.purgeExpired(nowMs: clock.nowMs), 0)
+        try service.enqueuePurgeExpired()
+        XCTAssertThrowsError(try service.restore(entryID: entry.id)) { error in
+            XCTAssertEqual(error as? LibrarySlimmingRecycleError, .notFound)
+        }
+        let purgeJobCount = try env.database.pool.read { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM job WHERE kind = ?",
+                arguments: [LibrarySlimmingPurgeJobFactory.kind]
+            ) ?? 0
+        }
+        XCTAssertEqual(purgeJobCount, 0)
+        XCTAssertEqual(fake.presenceRequests.count, singlePresenceCount)
+        XCTAssertEqual(fake.presenceRequestBatches.count, batchPresenceCount)
+    }
+
     func testSlimmingHiddenAssetIDsIncludesRecycledAssets() throws {
         let env = try RecycleTestEnv(label: #function)
         defer { env.cleanup() }
@@ -3112,6 +3168,7 @@ private final class FakePhotosLibraryMutationPort: PhotosLibraryMutationPort, @u
     var presenceByID: [String: PhotosAssetPresence] = [:]
     private(set) var movedToRecentlyDeleted: [String] = []
     private(set) var moveRequestBatches: [[String]] = []
+    private(set) var presenceRequests: [String] = []
     private(set) var presenceRequestBatches: [[String]] = []
     var reportedMovedIdentifiers: [String]?
     var moveError: PhotosLibraryMutationError?
@@ -3146,6 +3203,7 @@ private final class FakePhotosLibraryMutationPort: PhotosLibraryMutationPort, @u
         guard authorization == .authorized else {
             throw PhotosLibraryMutationError.authorizationDenied
         }
+        presenceRequests.append(localIdentifier)
         return presenceByID[localIdentifier] ?? .missing
     }
 

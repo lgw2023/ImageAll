@@ -1040,17 +1040,38 @@ final class PhotosIntegrationTests: XCTestCase {
 
     func testPhotoLibraryObserverDoesNotNotifyWithoutActivePhotosSource() throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let disabledSourceID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        try database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO source (
+                    id, kind, display_name, bookmark, state,
+                    created_at_ms, updated_at_ms
+                ) VALUES (?, 'photos', 'Apple Photos', NULL, 'disabled', ?, ?)
+                """,
+                arguments: [
+                    disabledSourceID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs,
+                    DatabaseTestSupport.timestampMs,
+                ]
+            )
+        }
         let observer = FakePhotosChangeObserver()
+        let availability = FakePhotosAvailabilityObserver()
         let notifications = PhotosObserverNotificationRecorder()
-        PhotosLibraryChangeObserverCoordinator(
+        let coordinator = PhotosLibraryChangeObserverCoordinator(
             observer: observer,
+            availabilityObserver: availability,
             database: database
-        ).start {
+        )
+        coordinator.start {
             notifications.record()
         }
 
         observer.emitChange()
 
+        XCTAssertEqual(observer.startCount, 0)
+        XCTAssertEqual(availability.startCount, 0)
         XCTAssertEqual(notifications.count, 0)
         let jobCount = try database.pool.read { db in
             try Int.fetchOne(
@@ -1060,6 +1081,17 @@ final class PhotosIntegrationTests: XCTestCase {
             )
         }
         XCTAssertEqual(jobCount, 0)
+
+        try database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE source SET state = 'active' WHERE id = ?",
+                arguments: [disabledSourceID.uuidString.lowercased()]
+            )
+        }
+        coordinator.refreshRegistration()
+
+        XCTAssertEqual(observer.startCount, 1)
+        XCTAssertEqual(availability.startCount, 1)
     }
 
     func testPhotoLibraryUnavailabilitySuspendsSourceWithoutChangingAssetFacts() async throws {
@@ -3209,9 +3241,13 @@ private final class CloudPreviewProgressProbe: @unchecked Sendable {
 private final class FakePhotosChangeObserver: PhotosChangeObserverPort, @unchecked Sendable {
     private let lock = NSLock()
     private var onChange: (@Sendable () -> Void)?
+    private var storedStartCount = 0
 
     func startObservingChanges(_ onChange: @escaping @Sendable () -> Void) {
-        lock.withLock { self.onChange = onChange }
+        lock.withLock {
+            storedStartCount += 1
+            self.onChange = onChange
+        }
     }
 
     func stopObservingChanges() {
@@ -3222,6 +3258,10 @@ private final class FakePhotosChangeObserver: PhotosChangeObserverPort, @uncheck
         let callback = lock.withLock { onChange }
         callback?()
     }
+
+    var startCount: Int {
+        lock.withLock { storedStartCount }
+    }
 }
 
 private final class FakePhotosAvailabilityObserver: PhotosLibraryAvailabilityObserverPort,
@@ -3229,11 +3269,15 @@ private final class FakePhotosAvailabilityObserver: PhotosLibraryAvailabilityObs
 {
     private let lock = NSLock()
     private var onUnavailable: (@Sendable (PhotosLibraryUnavailabilityReason) -> Void)?
+    private var storedStartCount = 0
 
     func startObservingAvailability(
         _ onUnavailable: @escaping @Sendable (PhotosLibraryUnavailabilityReason) -> Void
     ) {
-        lock.withLock { self.onUnavailable = onUnavailable }
+        lock.withLock {
+            storedStartCount += 1
+            self.onUnavailable = onUnavailable
+        }
     }
 
     func stopObservingAvailability() {
@@ -3243,6 +3287,10 @@ private final class FakePhotosAvailabilityObserver: PhotosLibraryAvailabilityObs
     func emit(_ reason: PhotosLibraryUnavailabilityReason) {
         let callback = lock.withLock { onUnavailable }
         callback?(reason)
+    }
+
+    var startCount: Int {
+        lock.withLock { storedStartCount }
     }
 }
 

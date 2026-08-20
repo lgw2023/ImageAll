@@ -65,12 +65,31 @@ struct PhotosReconcileJobEnqueuer: Sendable {
     }
 }
 
+private final class PhotosSourceMonitorChangeRelay: @unchecked Sendable {
+    private let lock = NSLock()
+    private var callback: (@Sendable () -> Void)?
+
+    func replace(with callback: @escaping @Sendable () -> Void) {
+        lock.withLock { self.callback = callback }
+    }
+
+    func notify() {
+        let currentCallback: (@Sendable () -> Void)? = lock.withLock { self.callback }
+        currentCallback?()
+    }
+
+    func clear() {
+        lock.withLock { callback = nil }
+    }
+}
+
 struct PhotosLibraryChangeObserverCoordinator: Sendable {
     let observer: any PhotosChangeObserverPort
     let availabilityObserver: (any PhotosLibraryAvailabilityObserverPort)?
     let database: CatalogDatabase
     let clock: any JobClock
     let idGenerator: @Sendable () -> UUID
+    private let changeRelay: PhotosSourceMonitorChangeRelay
 
     init(
         observer: any PhotosChangeObserverPort,
@@ -84,9 +103,34 @@ struct PhotosLibraryChangeObserverCoordinator: Sendable {
         self.database = database
         self.clock = clock
         self.idGenerator = idGenerator
+        changeRelay = PhotosSourceMonitorChangeRelay()
     }
 
     func start(onChange: @escaping @Sendable () -> Void = {}) {
+        changeRelay.replace(with: onChange)
+        refreshRegistration()
+    }
+
+    func refreshRegistration() {
+        let hasActivePhotosSource = (try? database.pool.read { db in
+            try Bool.fetchOne(
+                db,
+                sql: """
+                SELECT EXISTS(
+                    SELECT 1 FROM source
+                    WHERE kind = 'photos' AND state = 'active'
+                )
+                """
+            ) ?? false
+        }) == true
+        guard hasActivePhotosSource else {
+            // A disabled or historical Photos source must be inert. In particular,
+            // do not touch PHPhotoLibrary merely to retain catalog history after
+            // the user has moved to ordinary folder-backed files.
+            stopObserving()
+            return
+        }
+
         let enqueuer = PhotosReconcileJobEnqueuer(clock: clock, idGenerator: idGenerator)
         observer.startObservingChanges {
             let didRecordChange = (try? database.pool.write { db in
@@ -109,7 +153,7 @@ struct PhotosLibraryChangeObserverCoordinator: Sendable {
                 try enqueuer.enqueueIfNeeded(sourceID: sourceID, db: db)
                 return true
             }) == true
-            if didRecordChange { onChange() }
+            if didRecordChange { changeRelay.notify() }
         }
         let didQueueCatchUp = (try? database.pool.write { db in
             guard let sourceIDString = try String.fetchOne(
@@ -127,7 +171,7 @@ struct PhotosLibraryChangeObserverCoordinator: Sendable {
             try enqueuer.enqueueIfNeeded(sourceID: sourceID, db: db)
             return true
         }) == true
-        if didQueueCatchUp { onChange() }
+        if didQueueCatchUp { changeRelay.notify() }
         availabilityObserver?.startObservingAvailability { _ in
             let didSuspendSource = (try? database.pool.write { db in
                 guard let sourceID = try String.fetchOne(
@@ -164,11 +208,16 @@ struct PhotosLibraryChangeObserverCoordinator: Sendable {
                 )
                 return true
             }) == true
-            if didSuspendSource { onChange() }
+            if didSuspendSource { changeRelay.notify() }
         }
     }
 
     func stop() {
+        stopObserving()
+        changeRelay.clear()
+    }
+
+    private func stopObserving() {
         observer.stopObservingChanges()
         availabilityObserver?.stopObservingAvailability()
     }

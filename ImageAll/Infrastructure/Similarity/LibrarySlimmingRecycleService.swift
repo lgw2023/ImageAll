@@ -799,8 +799,14 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                     r.photos_local_identifier, r.error_code, a.file_name, a.media_kind
                 FROM latest_attempt AS r
                 JOIN asset a ON a.id = r.asset_id
+                JOIN source AS source ON source.id = a.source_id
                 WHERE r.lifecycle_rank = 1
                   AND r.state NOT IN ('restored', 'purged')
+                  AND NOT (
+                      r.source_kind = 'photos'
+                      AND source.kind = 'photos'
+                      AND source.state = 'disabled'
+                  )
                   AND (
                       r.source_kind <> 'file'
                       OR r.error_code IS NULL
@@ -931,6 +937,18 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                 sql: """
                 SELECT id FROM recycle_entry
                 WHERE state = 'recycled' AND purge_after_ms <= ?
+                  AND (
+                      recycle_entry.source_kind <> 'photos'
+                      OR EXISTS (
+                          SELECT 1
+                          FROM asset AS photos_asset
+                          JOIN source AS photos_source
+                            ON photos_source.id = photos_asset.source_id
+                          WHERE photos_asset.id = recycle_entry.asset_id
+                            AND photos_source.kind = 'photos'
+                            AND photos_source.state = 'active'
+                      )
+                  )
                   AND NOT EXISTS (
                       SELECT 1 FROM asset_favorite_state favorite
                       WHERE favorite.asset_id = recycle_entry.asset_id
@@ -966,8 +984,9 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                     CASE WHEN state = 'purging' THEN updated_at_ms ELSE purge_after_ms END
                 )
                 FROM recycle_entry
-                WHERE state = 'purging'
-                   OR (
+                WHERE (
+                    state = 'purging'
+                    OR (
                         state = 'recycled'
                         AND NOT EXISTS (
                             SELECT 1 FROM asset_favorite_state favorite
@@ -977,7 +996,20 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                                   OR favorite.photos_observed_value = 1
                               )
                         )
-                   )
+                    )
+                )
+                  AND (
+                      recycle_entry.source_kind <> 'photos'
+                      OR EXISTS (
+                          SELECT 1
+                          FROM asset AS photos_asset
+                          JOIN source AS photos_source
+                            ON photos_source.id = photos_asset.source_id
+                          WHERE photos_asset.id = recycle_entry.asset_id
+                            AND photos_source.kind = 'photos'
+                            AND photos_source.state = 'active'
+                      )
+                  )
                 """
             )
         }) else {
@@ -2365,12 +2397,18 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                 db,
                 sql: """
                 SELECT
-                    id, asset_id, source_kind, state, quarantine_relative_path,
-                    original_relative_path, photos_local_identifier, error_code,
-                    trashed_at_ms, purge_after_ms
-                FROM recycle_entry
-                WHERE state IN ('pending', 'restoring', 'purging')
-                ORDER BY updated_at_ms ASC, id ASC
+                    r.id, r.asset_id, r.source_kind, r.state, r.quarantine_relative_path,
+                    r.original_relative_path, r.photos_local_identifier, r.error_code,
+                    r.trashed_at_ms, r.purge_after_ms
+                FROM recycle_entry AS r
+                LEFT JOIN asset AS a ON a.id = r.asset_id
+                LEFT JOIN source AS s ON s.id = a.source_id
+                WHERE r.state IN ('pending', 'restoring', 'purging')
+                  AND (
+                      r.source_kind <> 'photos'
+                      OR (s.kind = 'photos' AND s.state = 'active')
+                  )
+                ORDER BY r.updated_at_ms ASC, r.id ASC
                 """
             )
             return rows.compactMap(Self.mapEntrySnapshot)
@@ -2383,12 +2421,17 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                 db,
                 sql: """
                 SELECT
-                    id, asset_id, source_kind, state, quarantine_relative_path,
-                    original_relative_path, photos_local_identifier, error_code,
-                    trashed_at_ms, purge_after_ms
-                FROM recycle_entry
-                WHERE state = 'recycled' AND source_kind = 'photos'
-                ORDER BY updated_at_ms ASC, id ASC
+                    r.id, r.asset_id, r.source_kind, r.state, r.quarantine_relative_path,
+                    r.original_relative_path, r.photos_local_identifier, r.error_code,
+                    r.trashed_at_ms, r.purge_after_ms
+                FROM recycle_entry AS r
+                JOIN asset AS a ON a.id = r.asset_id
+                JOIN source AS s ON s.id = a.source_id
+                WHERE r.state = 'recycled'
+                  AND r.source_kind = 'photos'
+                  AND s.kind = 'photos'
+                  AND s.state = 'active'
+                ORDER BY r.updated_at_ms ASC, r.id ASC
                 """
             )
             return rows.compactMap(Self.mapEntrySnapshot)
@@ -2531,10 +2574,17 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                 db,
                 sql: """
                 SELECT
-                    id, asset_id, source_kind, state, quarantine_relative_path,
-                    original_relative_path, photos_local_identifier, error_code,
-                    trashed_at_ms, purge_after_ms
-                FROM recycle_entry WHERE id = ?
+                    r.id, r.asset_id, r.source_kind, r.state, r.quarantine_relative_path,
+                    r.original_relative_path, r.photos_local_identifier, r.error_code,
+                    r.trashed_at_ms, r.purge_after_ms
+                FROM recycle_entry AS r
+                LEFT JOIN asset AS a ON a.id = r.asset_id
+                LEFT JOIN source AS s ON s.id = a.source_id
+                WHERE r.id = ?
+                  AND (
+                      r.source_kind <> 'photos'
+                      OR (s.kind = 'photos' AND s.state = 'active')
+                  )
                 """,
                 arguments: [entryID.uuidString.lowercased()]
             ),
