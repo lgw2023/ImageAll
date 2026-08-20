@@ -11,6 +11,7 @@ BASE_URL = "http://127.0.0.1:8810"
 SOURCE_ID = "aaaaaaaa-1111-4222-8333-aaaaaaaaaaaa"
 REVIEW_TAG_ID = "bbbbbbbb-1111-4222-8333-bbbbbbbbbbbb"
 TAG_GROUP_ID = "dddddddd-1111-4222-8333-dddddddddddd"
+WORLD_MAP_CLUSTER_ID = "cluster-shanghai"
 PNG_BYTES = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 )
@@ -94,6 +95,7 @@ def main():
     page_errors = []
     console_errors = []
     http_errors = []
+    world_map_snapshot_queries = []
 
     first_page = [asset_summary(index) for index in range(1, 73)]
     second_page = [asset_summary(index) for index in range(73, 75)]
@@ -251,6 +253,58 @@ def main():
                 fulfill_json(route, {"items": first_page, "nextCursor": "page-2"})
 
         page.route("**/v1/assets?**", route_assets)
+
+        def route_world_map_snapshot(route):
+            world_map_snapshot_queries.append(
+                parse_qs(urlparse(route.request.url).query)
+            )
+            fulfill_json(
+                route,
+                {
+                    "clusters": [{
+                        "id": WORLD_MAP_CLUSTER_ID,
+                        "longitude": 121.47,
+                        "latitude": 31.23,
+                        "photoCount": 2,
+                        "gpsCount": 1,
+                        "tagCount": 1,
+                        "displayName": "上海",
+                        "selectionQuery": {
+                            "cellDegrees": 0.25,
+                            "longitudeBucket": 485,
+                            "latitudeBucket": 124,
+                            "bounds": {
+                                "west": 121.2,
+                                "south": 31.0,
+                                "east": 121.8,
+                                "north": 31.5,
+                            },
+                            "maximumAssets": 36,
+                        },
+                    }],
+                    "eligiblePhotoCount": 74,
+                    "locatedPhotoCount": 2,
+                    "unlocatedPhotoCount": 72,
+                },
+            )
+
+        page.route("**/v1/world-map/snapshot?**", route_world_map_snapshot)
+        page.route(
+            "**/v1/world-map/selection",
+            lambda route: fulfill_json(
+                route,
+                {
+                    "assets": [{
+                        "id": asset_id(index),
+                        "fileName": f"MAP_{index:03d}.JPG",
+                        "availability": "available",
+                        "contentRevision": 1,
+                        "favorite": None,
+                    } for index in (1, 2)],
+                    "totalPhotoCount": 2,
+                },
+            ),
+        )
 
         page.route(
             "**/v1/review/overview?**",
@@ -916,6 +970,113 @@ def main():
         assert page.evaluate("() => visibleWorkspaceRoute()") == "gallery"
         assert page.locator("#lightbox").is_hidden()
         assert page.locator("#lightboxTitle").inner_text() != "missing-preview-asset"
+
+        page.locator(
+            f'#assetGrid > .asset-card[data-asset-id="{asset_id(2)}"] > .asset-card-main'
+        ).click()
+        page.locator("#worldMapNavigationButton").click()
+        page.locator("#worldMapWorkspace:not(.hidden)").wait_for()
+        page.evaluate(
+            "clusterID => loadWorldMapSelection(clusterID)",
+            WORLD_MAP_CLUSTER_ID,
+        )
+        page.locator("#worldMapPhotoStrip .world-map-photo-card").nth(1).wait_for()
+        page.locator(
+            f'[data-world-map-asset-id="{asset_id(2)}"]'
+        ).click()
+        page.locator("#lightbox:not(.hidden)").wait_for()
+        page.wait_for_function(
+            "() => document.querySelector('#lightboxTitle')?.textContent === 'MAP_002.JPG'"
+        )
+        world_map_preview_before_refresh = page.evaluate(
+            """() => {
+              state.worldMap.viewport = {
+                west: 120.9,
+                south: 30.8,
+                east: 122.0,
+                north: 31.8,
+              };
+              setLightboxScale(1.7);
+              state.lightboxViewportOffsetX = 26;
+              state.lightboxViewportOffsetY = -16;
+              syncLightboxViewport();
+              scheduleWorkspaceHistoryCheckpoint();
+              return {
+                scale: state.lightboxViewportScale,
+                offsetX: state.lightboxViewportOffsetX,
+                offsetY: state.lightboxViewportOffsetY,
+              };
+            }"""
+        )
+        page.wait_for_function(
+            "assetID => history.state?.imageAllWorkspace?.context?.worldMapLightbox?.assetID === assetID",
+            arg=asset_id(2),
+            timeout=2_500,
+        )
+        page.reload(wait_until="networkidle")
+        page.locator("#worldMapWorkspace:not(.hidden)").wait_for()
+        page.locator("#lightbox:not(.hidden)").wait_for()
+        page.wait_for_function(
+            "expected => document.querySelector('#lightboxTitle')?.textContent === 'MAP_002.JPG' "
+            "&& state.worldMap.selectedClusterID === 'cluster-shanghai' "
+            "&& state.lightboxViewportScale === expected.scale "
+            "&& state.lightboxViewportOffsetX === expected.offsetX "
+            "&& state.lightboxViewportOffsetY === expected.offsetY",
+            arg=world_map_preview_before_refresh,
+        )
+        assert page.evaluate("() => visibleWorkspaceRoute()") == "worldMap"
+        assert page.locator("#worldMapDetailName").inner_text() == "上海"
+        assert page.locator("#lightboxPosition").inner_text() == "2 / 2"
+        assert page.evaluate("() => state.selectedAssetID") == asset_id(2)
+        assert world_map_snapshot_queries[-1].get("west") == ["120.9"]
+        assert world_map_snapshot_queries[-1].get("south") == ["30.8"]
+        history_after_world_map_refresh = page.evaluate("() => JSON.stringify(history.state)")
+        assert "MAP_002.JPG" not in history_after_world_map_refresh
+        assert "/v1/assets/" not in history_after_world_map_refresh
+        page.screenshot(path="/tmp/imageall-world-map-preview-refresh-continuity.png", full_page=True)
+        page.locator("#lightboxBackButton").click()
+        page.locator("#lightbox").wait_for(state="hidden")
+        page.wait_for_function(
+            f"() => document.activeElement?.dataset.worldMapAssetId === '{asset_id(2)}'"
+        )
+
+        page.evaluate(
+            """() => {
+              const nextState = structuredClone(history.state);
+              nextState.imageAllWorkspace.context.worldMapLightbox = {
+                assetID: 'missing-map-preview',
+                scale: 3,
+                offsetX: 400,
+                offsetY: -400,
+                videoTime: 0,
+              };
+              history.replaceState(nextState, '', location.href);
+            }"""
+        )
+        page.reload(wait_until="networkidle")
+        page.locator("#worldMapWorkspace:not(.hidden)").wait_for()
+        assert page.locator("#lightbox").is_hidden()
+        assert page.locator("#worldMapDetailName").inner_text() == "上海"
+
+        page.evaluate(
+            """() => {
+              const nextState = structuredClone(history.state);
+              nextState.imageAllWorkspace.context.worldMapClusterID = 'missing-map-cluster';
+              nextState.imageAllWorkspace.context.worldMapLightbox = {
+                assetID: 'missing-map-preview',
+                scale: 3,
+                offsetX: 400,
+                offsetY: -400,
+                videoTime: 0,
+              };
+              history.replaceState(nextState, '', location.href);
+            }"""
+        )
+        page.reload(wait_until="networkidle")
+        page.locator("#worldMapWorkspace:not(.hidden)").wait_for()
+        assert page.locator("#lightbox").is_hidden()
+        assert page.locator("#worldMapDetail").is_hidden()
+        assert page.evaluate("() => state.worldMap.selectedClusterID") is None
 
         assert not page_errors, page_errors
         assert not console_errors, {

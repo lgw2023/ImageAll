@@ -2232,8 +2232,10 @@ function currentWorkspaceHistoryContext(route = visibleWorkspaceRoute()) {
     };
   case "worldMap":
     return {
+      galleryContext: currentGalleryHistoryContext(),
       worldMapClusterID: state.worldMap.selectedClusterID,
       worldMapViewport: normalizedWorldMapBounds(state.worldMap.viewport),
+      worldMapLightbox: currentLightboxHistoryContext("worldMap"),
     };
   default:
     return null;
@@ -2568,6 +2570,7 @@ async function applyWorkspaceHistoryEntry(entry) {
       if (state.worldMap.selectedClusterID) {
         await loadWorldMapSelection(state.worldMap.selectedClusterID);
       }
+      restoreLightboxFromHistory(context.worldMapLightbox, "worldMap");
     } else if (target === "galleryOverview") {
       await openGalleryOverviewWorkspace({ historyMode: "none" });
     }
@@ -3840,7 +3843,9 @@ async function openWorldMapWorkspace({ historyMode = "push" } = {}) {
     historyMode
   );
   renderWorldMap();
-  if (!state.worldMap.snapshot) await loadWorldMapSnapshot();
+  if (!state.worldMap.snapshot) {
+    await loadWorldMapSnapshot({ bounds: state.worldMap.viewport });
+  }
   else pushWorldMapClusters();
 }
 
@@ -24482,6 +24487,10 @@ function restoreLightboxFromHistory(raw, expectedContext) {
       elements.slimmingMemberGrid.querySelector(
         `[data-slimming-member-id="${CSS.escape(context.assetID)}"]`
       )
+    );
+  } else if (expectedContext === "worldMap") {
+    state.lightboxReturnFocus = elements.worldMapPhotoStrip.querySelector(
+      `[data-world-map-asset-id="${CSS.escape(context.assetID)}"]`
     );
   }
   const remainsCurrent = () => state.lightboxContext === expectedContext
