@@ -2091,17 +2091,64 @@ function stabilizeDismissedOverlayFocus(resolveTarget, dismissedContainer, isSti
   restore();
 }
 
-function closeInspectorOverlay() {
+function galleryInspectorOverlayIsOpen() {
+  if (galleryOverviewLayoutQuery.matches
+    || visibleWorkspaceRoute() !== "gallery"
+    || !elements.inspector.classList.contains("open")) return false;
+  return Boolean(
+    (!state.selectionMode && state.selectedDetail)
+      || (state.selectionMode && state.selectedAssetIDs.size)
+  );
+}
+
+function checkpointGalleryInspectorHistory() {
+  if (!galleryInspectorOverlayIsOpen()
+    || !state.workspaceNavigation.initialized
+    || state.workspaceNavigation.applyingHistory
+    || state.workspaceNavigation.pendingRestoreEntry
+    || elements.appView.classList.contains("hidden")) return;
+  const current = activeWorkspaceHistoryEntry();
+  if (current?.route === "gallery" && current.navigationLevel === "workspace") {
+    recordWorkspaceHistory("gallery", currentGalleryHistoryContext(), "pushInspector");
+  } else {
+    scheduleWorkspaceHistoryCheckpoint();
+  }
+}
+
+function closeInspectorOverlay({ restoreFocus = true } = {}) {
   state.inspectorDismissed = true;
   elements.inspector.classList.remove("open");
   const assetID = state.selectionMode && state.selectedAssetIDs.size === 1
     ? [...state.selectedAssetIDs][0]
     : state.selectedAssetID;
-  restoreOverlayFocus(
-    assetID
-      ? assetCardMainButton(elements.assetGrid.querySelector(`[data-asset-id="${assetID}"]`))
-      : elements.selectionModeButton
-  );
+  if (restoreFocus) {
+    restoreOverlayFocus(
+      assetID
+        ? assetCardMainButton(elements.assetGrid.querySelector(`[data-asset-id="${assetID}"]`))
+        : elements.selectionModeButton
+    );
+  }
+  scheduleWorkspaceHistoryCheckpoint();
+}
+
+function returnFromInspector() {
+  if (!galleryInspectorOverlayIsOpen()) return Promise.resolve();
+  if (state.workspaceNavigation.pendingReturnPromise) {
+    return state.workspaceNavigation.pendingReturnPromise;
+  }
+  const current = activeWorkspaceHistoryEntry();
+  if (state.workspaceNavigation.initialized
+    && current?.route === "gallery"
+    && current.navigationLevel === "inspector") {
+    const pending = new Promise((resolve) => {
+      state.workspaceNavigation.pendingReturnResolve = resolve;
+    });
+    state.workspaceNavigation.pendingReturnPromise = pending;
+    history.back();
+    return pending;
+  }
+  closeInspectorOverlay();
+  return Promise.resolve();
 }
 
 function setWorkspaceBackButton(button, label) {
@@ -2137,10 +2184,13 @@ function workspaceLightboxContext(route) {
 }
 
 function workspaceHistoryEntry(route, context = null, navigationLevel = "workspace") {
+  const safeNavigationLevel = ["inspector", "lightbox"].includes(navigationLevel)
+    ? navigationLevel
+    : "workspace";
   return {
     route,
     context: context || null,
-    navigationLevel: navigationLevel === "lightbox" ? "lightbox" : "workspace",
+    navigationLevel: safeNavigationLevel,
     workspaceGeneration: state.workspaceGeneration,
   };
 }
@@ -2179,15 +2229,19 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
     || mode === "none") return;
   const current = activeWorkspaceHistoryEntry();
   const hasLightbox = Boolean(workspaceLightboxHistoryContext(route, context));
+  const hasInspector = route === "gallery" && galleryInspectorOverlayIsOpen();
   const navigationLevel = hasLightbox
     && (mode === "pushLightbox" || current?.navigationLevel === "lightbox")
     ? "lightbox"
-    : "workspace";
+    : (hasInspector
+        && (mode === "pushInspector" || current?.navigationLevel === "inspector")
+      ? "inspector"
+      : "workspace");
   const nextState = {
     ...(history.state || {}),
     [WORKSPACE_HISTORY_KEY]: workspaceHistoryEntry(route, context, navigationLevel),
   };
-  if (mode === "pushLightbox") {
+  if (mode === "pushLightbox" || mode === "pushInspector") {
     history.pushState(nextState, "", location.href);
   } else if (mode === "replace" || current?.route === route) {
     history.replaceState(nextState, "", location.href);
@@ -2478,6 +2532,10 @@ async function applyWorkspaceHistoryEntry(entry) {
   try {
     const current = visibleWorkspaceRoute();
     if (target === current) {
+      reconcileGalleryInspectorFromWorkspaceHistory(
+        target,
+        activeEntry?.navigationLevel || "workspace"
+      );
       reconcileLightboxFromWorkspaceHistory(target, context);
       return;
     }
@@ -11787,6 +11845,7 @@ function renderInspectorSurface() {
     renderSelectionInspector();
   }
   syncInlineTagCreationControls();
+  checkpointGalleryInspectorHistory();
 }
 
 function renderSelectionMutation() {
@@ -24694,6 +24753,27 @@ function reconcileLightboxFromWorkspaceHistory(route, context) {
   restoreLightboxFromHistory(raw, expectedContext);
 }
 
+function reconcileGalleryInspectorFromWorkspaceHistory(route, navigationLevel) {
+  if (route !== "gallery") return;
+  const hasContent = Boolean(
+    (!state.selectionMode && state.selectedDetail)
+      || (state.selectionMode && state.selectedAssetIDs.size)
+  );
+  const shouldOpen = hasContent && ["inspector", "lightbox"].includes(navigationLevel);
+  if (shouldOpen) {
+    state.inspectorDismissed = false;
+    elements.inspector.classList.add("open");
+    if (navigationLevel === "inspector") {
+      requestAnimationFrame(() => {
+        elements.closeInspectorButton.focus({ preventScroll: true });
+      });
+    }
+  } else if (elements.lightbox.classList.contains("hidden")
+    && elements.inspector.classList.contains("open")) {
+    closeInspectorOverlay();
+  }
+}
+
 function syncLightboxOpenOriginalControl(item) {
   const isVideo = lightboxMediaKind() === "video";
   elements.lightboxOpenOriginalButton.classList.remove("hidden");
@@ -24998,6 +25078,8 @@ async function loadWorkspace({ restoreHistory = false } = {}) {
   const generation = state.workspaceGeneration;
   showApp({ restoreHistory });
   const restoreEntry = state.workspaceNavigation.pendingRestoreEntry;
+  const restoresGalleryInspector = restoreEntry?.route === "gallery"
+    && ["inspector", "lightbox"].includes(restoreEntry.navigationLevel);
   const galleryRestoreSource = restoreEntry?.route === "gallery"
     ? restoreEntry.context
     : restoreEntry?.context?.galleryContext;
@@ -25068,6 +25150,9 @@ async function loadWorkspace({ restoreHistory = false } = {}) {
       galleryRestoreSource,
       { validateCatalog: true }
     );
+    if (restoreEntry?.route === "gallery" && !galleryOverviewLayoutQuery.matches) {
+      state.inspectorDismissed = !restoresGalleryInspector;
+    }
   }
   renderWorkspaceNotice();
   elements.hostVersion.textContent = `Mac Host ${capabilities.hostAppVersion}`;
@@ -25094,7 +25179,10 @@ async function loadWorkspace({ restoreHistory = false } = {}) {
   if (generation !== state.workspaceGeneration) return;
   if (galleryRestore) {
     if (!state.selectionMode && state.selectedAssetID) {
-      await loadInspector(state.selectedAssetID, { reveal: true, quiet: true });
+      await loadInspector(state.selectedAssetID, {
+        reveal: galleryOverviewLayoutQuery.matches || restoresGalleryInspector,
+        quiet: true,
+      });
     } else if (state.selectionMode && state.selectedAssetIDs.size) {
       scheduleSelectionAggregate();
     }
@@ -28903,7 +28991,7 @@ function bindEvents() {
     "dblclick",
     () => resetSplitWidth("reviewInspector")
   );
-  elements.closeInspectorButton.addEventListener("click", closeInspectorOverlay);
+  elements.closeInspectorButton.addEventListener("click", () => void returnFromInspector());
   elements.inspectorPreviousButton.addEventListener("click", () => navigateLibrarySelection(-1));
   elements.inspectorNextButton.addEventListener("click", () => navigateLibrarySelection(1));
   elements.openOriginalButton.addEventListener("click", openSelectedOriginalOnMac);
@@ -31031,7 +31119,7 @@ function bindEvents() {
         return;
       }
       if (inspectorOverlayOpen) {
-        closeInspectorOverlay();
+        void returnFromInspector();
         return;
       }
       if (state.selectionMode) {
@@ -31422,6 +31510,7 @@ function bindEvents() {
     if (slimmingWorkspaceIsOpen()) {
       syncSlimmingPresentation({ focus: true });
     }
+    checkpointGalleryInspectorHistory();
   });
   globalThis.matchMedia("(max-width: 720px)").addEventListener(
     "change",

@@ -316,6 +316,73 @@ def main():
         assert page.locator("#selectionInspectorPrimary").is_visible()
         assert page.locator("#selectionInspectorPrimaryPreview").is_visible()
         assert page.locator("#selectionInspectorPrimaryMetadata").is_visible()
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "inspector"
+        inspector_history_length = page.evaluate("() => history.length")
+        inspector_selection = page.evaluate("() => [...state.selectedAssetIDs].sort()")
+        inspector_scroll = page.locator("#libraryScroll").evaluate("node => node.scrollTop")
+
+        page.evaluate("() => history.back()")
+        page.wait_for_function(
+            "() => !document.querySelector('#inspector').classList.contains('open')"
+        )
+        assert page.evaluate("() => [...state.selectedAssetIDs].sort()") == inspector_selection
+        assert page.locator("#libraryScroll").evaluate("node => node.scrollTop") == inspector_scroll
+        page.evaluate("() => history.forward()")
+        page.wait_for_function(
+            "() => document.querySelector('#inspector').classList.contains('open')"
+        )
+        assert page.evaluate("() => history.length") == inspector_history_length
+        assert page.evaluate("() => [...state.selectedAssetIDs].sort()") == inspector_selection
+        assert page.locator("#selectionInspectorPrimaryTitle").inner_text() == "IMG_0002.JPG"
+
+        page.reload(wait_until="networkidle")
+        page.wait_for_function(
+            "() => document.querySelector('#inspector').classList.contains('open') "
+            "&& !document.querySelector('#selectionInspectorPrimary').classList.contains('hidden')"
+        )
+        assert page.evaluate("() => [...state.selectedAssetIDs].sort()") == inspector_selection
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "inspector"
+
+        page.locator("#selectionInspectorPrimaryPreview").click()
+        page.locator("#lightbox:not(.hidden)").wait_for()
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "lightbox"
+        page.evaluate("() => history.back()")
+        page.locator("#lightbox").wait_for(state="hidden")
+        assert page.locator("#inspector").evaluate(
+            "node => node.classList.contains('open')"
+        )
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "inspector"
+        page.evaluate("() => history.forward()")
+        page.locator("#lightbox:not(.hidden)").wait_for()
+        page.keyboard.press("Escape")
+        page.locator("#lightbox").wait_for(state="hidden")
+        assert page.locator("#inspector").evaluate(
+            "node => node.classList.contains('open')"
+        )
+
+        page.locator("#closeInspectorButton").click()
+        page.set_viewport_size({"width": 1440, "height": 960})
+        page.set_viewport_size({"width": 900, "height": 700})
+        page.wait_for_function(
+            "() => !document.querySelector('#inspector').classList.contains('open')"
+        )
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "workspace"
+        page.reload(wait_until="networkidle")
+        page.wait_for_function("() => state.selectedAssetIDs.size === 2")
+        assert not page.locator("#inspector").evaluate(
+            "node => node.classList.contains('open')"
+        )
+        assert page.evaluate("() => [...state.selectedAssetIDs].sort()") == inspector_selection
         page.screenshot(
             path="/tmp/imageall-selection-primary-inspector.png",
             full_page=True,
