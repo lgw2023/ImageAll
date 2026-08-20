@@ -894,6 +894,7 @@ const elements = {
   lightboxZoomPercentage: $("#lightboxZoomPercentage"),
   lightboxZoomInButton: $("#lightboxZoomInButton"),
   lightboxOpenOriginalButton: $("#lightboxOpenOriginalButton"),
+  lightboxOpenOriginalButtonIcon: $("#lightboxOpenOriginalButtonIcon"),
   lightboxOpenOriginalButtonLabel: $("#lightboxOpenOriginalButtonLabel"),
   lightboxReviewActions: $("#lightboxReviewActions"),
   lightboxPreviousButton: $("#lightboxPreviousButton"),
@@ -11403,8 +11404,8 @@ async function openSelectedOriginalOnMac() {
 
 async function openLightboxOriginalOnMac() {
   const item = lightboxItems().find((candidate) => candidate.id === state.lightboxAssetID);
-  if (!item || lightboxMediaKind() !== "video") return;
-  await openOriginalAssetOnMac(item.id, "video", item.availability);
+  if (!item) return;
+  await openOriginalAssetOnMac(item.id, lightboxMediaKind(), item.availability);
 }
 
 function updateInspectorNavigation() {
@@ -24181,6 +24182,7 @@ function lightboxItemsForContext(context = state.lightboxContext) {
       id: item.assetID,
       fileName: item.fileName,
       contentRevision: item.contentRevision,
+      availability: item.availability,
     }));
   }
   if (context === "slimming") {
@@ -24549,13 +24551,15 @@ function restoreLightboxFromHistory(raw, expectedContext) {
 
 function syncLightboxOpenOriginalControl(item) {
   const isVideo = lightboxMediaKind() === "video";
-  elements.lightboxOpenOriginalButton.classList.toggle("hidden", !isVideo);
-  if (!isVideo) return;
-  const fileName = item?.fileName || "当前视频";
-  const label = state.openingOriginal ? "正在打开…" : "Mac 播放";
+  elements.lightboxOpenOriginalButton.classList.remove("hidden");
+  const fileName = item?.fileName || (isVideo ? "当前视频" : "当前照片");
+  const label = state.openingOriginal ? "正在打开…" : (isVideo ? "Mac 播放" : "Mac 预览");
   const description = state.openingOriginal
     ? `正在 Mac 上打开${fileName}`
-    : `在 Mac 上用系统播放器打开${fileName}`;
+    : (isVideo
+      ? `在 Mac 上用系统播放器打开${fileName}`
+      : `在 Mac 上用“预览”打开原图${fileName}`);
+  elements.lightboxOpenOriginalButtonIcon.textContent = isVideo ? "▶" : "↗";
   elements.lightboxOpenOriginalButtonLabel.textContent = label;
   elements.lightboxOpenOriginalButton.disabled = !state.online
     || item?.availability !== "available"

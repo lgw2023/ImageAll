@@ -2872,6 +2872,11 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(stylesheet.contains(".slimming-catalog-source-popover"))
         XCTAssertTrue(stylesheet.contains(".slimming-analysis-scope-actions"))
         XCTAssertTrue(stylesheet.contains(".lightbox-open-original-button"))
+        XCTAssertTrue(
+            script.contains(
+                "await openOriginalAssetOnMac(item.id, lightboxMediaKind(), item.availability)"
+            )
+        )
         XCTAssertTrue(script.contains("function activeFilterSummaryText"))
         XCTAssertTrue(script.contains("function renderWorkspaceNotice"))
         XCTAssertTrue(script.contains("async function dismissWorkspaceNotice"))
