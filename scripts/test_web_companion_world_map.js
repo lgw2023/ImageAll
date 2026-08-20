@@ -545,6 +545,37 @@ let browser;
   await page.locator("#openWorldMapLocationBackfillButton").click();
   await page.locator("#worldMapLocationBackfillDialog[open]").waitFor();
   await page.locator(`[data-source-id="${folderSourceID}"][data-phase="ready"]`).waitFor();
+  assert.equal(
+    await page.evaluate(() => history.state?.imageAllWorkspace?.navigationLevel),
+    "worldMapLocationBackfill"
+  );
+  const locationBackfillReadsAfterOpen = locationBackfillRequestCount;
+  const locationStartButton = page.locator(
+    `[data-source-id="${folderSourceID}"] [data-location-backfill-action="start"]`
+  );
+  await locationStartButton.focus();
+  const snapshotRequestsBeforeBackfillBack = snapshotRequestCount;
+  await page.evaluate(() => history.back());
+  await page.locator("#worldMapLocationBackfillDialog").waitFor({ state: "hidden" });
+  await page.waitForFunction(
+    () => document.activeElement?.id === "openWorldMapLocationBackfillButton"
+  );
+  while (snapshotRequestCount === snapshotRequestsBeforeBackfillBack) {
+    await page.waitForTimeout(10);
+  }
+  assert.equal(snapshotRequestCount, snapshotRequestsBeforeBackfillBack + 1,
+    "dismissing location backfill should refresh the authoritative map once");
+  await page.evaluate(() => history.forward());
+  await page.locator("#worldMapLocationBackfillDialog[open]").waitFor();
+  assert.equal(locationBackfillRequestCount, locationBackfillReadsAfterOpen,
+    "Forward should restore the location panel before its next scheduled poll");
+  assert.equal(await locationStartButton.evaluate((element) => document.activeElement === element), true,
+    "Forward should restore the focused source action");
+  const locationHistoryPayload = await page.evaluate(
+    () => JSON.stringify(history.state?.imageAllWorkspace || null)
+  );
+  assert.doesNotMatch(locationHistoryPayload, /Synthetic Folder|Apple Photos|cccccccc|dddddddd/,
+    "location history must not contain source names or IDs");
   assert.match(
     await page.locator(`.world-map-location-source-card[data-source-id="${folderSourceID}"]`).textContent(),
     /40 \/ 120.*已检查.*27.*已定位.*13.*无坐标/s
@@ -575,8 +606,17 @@ let browser;
   );
 
   await page.locator("#closeWorldMapLocationBackfillButton").click();
+  await page.locator("#worldMapLocationBackfillDialog").waitFor({ state: "hidden" });
+  assert.notEqual(
+    await page.evaluate(() => history.state?.imageAllWorkspace?.navigationLevel),
+    "worldMapLocationBackfill"
+  );
   await page.locator("#openWorldMapPlaceTagsButton").click();
   await page.locator("#worldMapPlaceTagDialog[open]").waitFor();
+  assert.equal(
+    await page.evaluate(() => history.state?.imageAllWorkspace?.navigationLevel),
+    "worldMapPlaceTags"
+  );
   const placeCard = page.locator(`[data-place-tag-card="${placeTagID}"]`);
   await placeCard.waitFor();
   await placeCard.scrollIntoViewIfNeeded();
@@ -589,6 +629,27 @@ let browser;
     const body = document.querySelector("#worldMapPlaceTagBody");
     return element.getBoundingClientRect().top - body.getBoundingClientRect().top;
   });
+  const placeTagReadsAfterOpen = placeTagSnapshotRequestCount;
+  await placeInput.fill("Paris France draft");
+  const placeHistoryPayload = await page.evaluate(
+    () => JSON.stringify(history.state?.imageAllWorkspace || null)
+  );
+  assert.doesNotMatch(placeHistoryPayload, /Paris France draft|巴黎|abababab/,
+    "place history must not contain tag names, queries, or IDs");
+  await page.evaluate(() => history.back());
+  await page.locator("#worldMapPlaceTagDialog").waitFor({ state: "hidden" });
+  await page.waitForFunction(
+    () => document.activeElement?.id === "openWorldMapPlaceTagsButton"
+  );
+  await page.evaluate(() => history.forward());
+  await page.locator("#worldMapPlaceTagDialog[open]").waitFor();
+  assert.equal(placeTagSnapshotRequestCount, placeTagReadsAfterOpen,
+    "Forward should restore place-tag drafts without rereading the snapshot");
+  assert.equal(await placeInput.inputValue(), "Paris France draft");
+  assert.equal(await placeInput.evaluate((element) => document.activeElement === element), true,
+    "Forward should restore the edited query field");
+  assert.ok(await placeBody.evaluate((element) => element.scrollTop) > 0,
+    "Forward should preserve the place-tag list scroll position");
   await placeInput.fill("x".repeat(161));
   await placeInput.press("Enter");
   assert.equal(placeTagCommands.length, 0, "overlong location queries must stay in the browser");
@@ -659,6 +720,10 @@ let browser;
   await page.screenshot({ path: "/tmp/imageall-world-map-place-tags-mobile.png" });
   await page.keyboard.press("Escape");
   assert.equal(await page.locator("#worldMapPlaceTagDialog").getAttribute("open"), null);
+  assert.notEqual(
+    await page.evaluate(() => history.state?.imageAllWorkspace?.navigationLevel),
+    "worldMapPlaceTags"
+  );
   assert.equal(await page.locator("#worldMapWorkspace").isVisible(), true);
 
   await page.locator("#openWorldMapLocationBackfillButton").click();
@@ -681,8 +746,18 @@ let browser;
   assert.equal(await page.locator("#worldMapLocationBackfillDialog").getAttribute("open"), null);
   assert.equal(await page.locator("#worldMapWorkspace").isVisible(), true);
 
+  await page.locator("#openWorldMapPlaceTagsButton").click();
+  await page.locator("#worldMapPlaceTagDialog[open]").waitFor();
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.locator("#worldMapWorkspace:not(.hidden)").waitFor();
+  await page.waitForFunction(
+    () => history.state?.imageAllWorkspace?.navigationLevel === "workspace"
+  );
+  assert.equal(await page.locator("#worldMapPlaceTagDialog").getAttribute("open"), null,
+    "a stale Sheet history entry must degrade to the restored map workspace after reload");
+
   await page.waitForTimeout(700);
-  assert.ok(snapshotRequestCount >= 1 && snapshotRequestCount <= 3,
+  assert.ok(snapshotRequestCount >= 6 && snapshotRequestCount <= 8,
     `unexpected repeated world-map refresh count: ${snapshotRequestCount}`);
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(consoleErrors, []);
