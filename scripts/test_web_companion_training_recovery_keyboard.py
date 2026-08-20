@@ -1394,6 +1394,86 @@ def main():
             assert bounds["x"] + bounds["width"] <= popover_bounds["x"] + popover_bounds["width"]
         page.screenshot(path="/tmp/imageall-jobs-activity-390.png", full_page=True)
         page.locator("#closeJobsButton").click()
+
+        # A browser refresh must preserve the active Mac-style workspace and
+        # its durable navigation context instead of silently returning to the
+        # gallery root.
+        page.set_viewport_size({"width": 1440, "height": 960})
+        if page.locator("#trainingWorkspace").is_hidden():
+            if page.locator("#trainingButton").is_visible():
+                page.locator("#trainingButton").click()
+            else:
+                page.locator("#compactToolbarMenuButton").click()
+                page.locator(
+                    '[data-compact-toolbar-target="trainingButton"]'
+                ).click()
+        page.locator("#trainingWorkspace:not(.hidden)").wait_for(state="visible")
+        page.wait_for_function(
+            "() => document.querySelector('#trainingWorkspace')?.getAttribute('role') === 'region'"
+        )
+        page.locator("#trainingRecordScopeFilter").select_option("all")
+        page.locator(f'[data-training-run-id="{FAILED_RUN_ID}"]').click()
+        page.locator("#trainingRunPane").evaluate(
+            "element => { element.scrollTop = Math.min(96, element.scrollHeight - element.clientHeight); }"
+        )
+        preserved_training_scroll = page.locator("#trainingRunPane").evaluate(
+            "element => element.scrollTop"
+        )
+        page.locator("#trainingDetailPane").evaluate(
+            "element => { element.scrollTop = Math.min(160, element.scrollHeight - element.clientHeight); }"
+        )
+        preserved_training_detail_scroll = page.locator(
+            "#trainingDetailPane"
+        ).evaluate("element => element.scrollTop")
+        assert preserved_training_detail_scroll > 0
+        page.wait_for_function(
+            "expected => history.state?.imageAllWorkspace?.context?.trainingDetailScrollTop === expected",
+            arg=preserved_training_detail_scroll,
+        )
+        page.reload(wait_until="domcontentloaded")
+        page.locator("#trainingWorkspace:not(.hidden)").wait_for(state="visible")
+        page.wait_for_function(
+            "runID => document.querySelector(`[data-training-run-id=\"${runID}\"]`)?.getAttribute('aria-selected') === 'true'",
+            arg=FAILED_RUN_ID,
+        )
+        assert page.locator("#trainingRecordScopeFilter").input_value() == "all"
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.route"
+        ) == "training"
+        assert abs(
+            page.locator("#trainingRunPane").evaluate("element => element.scrollTop")
+            - preserved_training_scroll
+        ) <= 1
+        restored_training_detail = page.locator("#trainingDetailPane").evaluate(
+            "element => ({ scrollTop: element.scrollTop, maximum: Math.max(0, element.scrollHeight - element.clientHeight) })"
+        )
+        assert abs(
+            restored_training_detail["scrollTop"]
+            - min(preserved_training_detail_scroll, restored_training_detail["maximum"])
+        ) <= 1, (
+            preserved_training_detail_scroll,
+            restored_training_detail,
+        )
+
+        # Nested workflow context survives too: review still knows it should
+        # return to the originating training run after a refresh.
+        page.locator(f'[data-training-run-id="{FAILED_RUN_ID}"]').focus()
+        page.keyboard.press("v")
+        page.locator("#reviewWorkspace:not(.hidden)").wait_for(state="visible")
+        assert page.locator("#closeReviewButton").get_attribute(
+            "aria-label"
+        ) == "返回训练记录"
+        page.reload(wait_until="domcontentloaded")
+        page.locator("#reviewWorkspace:not(.hidden)").wait_for(state="visible")
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.route"
+        ) == "review"
+        assert page.locator("#closeReviewButton").get_attribute(
+            "aria-label"
+        ) == "返回训练记录"
+        assert page.locator("#reviewOverviewGrid").get_by_text(
+            "猫", exact=True
+        ).is_visible()
         assert not page_errors, page_errors
         assert not failed_resources, failed_resources
         assert not console_errors, console_errors

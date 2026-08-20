@@ -8,6 +8,14 @@ const SLIMMING_MEMBER_LIMIT_MAX = 5_000;
 const LIGHTBOX_MIN_SCALE = 1;
 const LIGHTBOX_MAX_SCALE = 8;
 const WORKSPACE_HISTORY_KEY = "imageAllWorkspace";
+const WORKSPACE_HISTORY_ROUTES = new Set([
+  "gallery",
+  "review",
+  "training",
+  "slimming",
+  "worldMap",
+  "galleryOverview",
+]);
 const SIDEBAR_WIDTH = { min: 180, default: 220, max: 300 };
 const INSPECTOR_WIDTH = { min: 240, default: 300, max: 380 };
 const REVIEW_MODEL_WIDTH = { min: 248, default: 288, max: 320 };
@@ -1466,6 +1474,8 @@ const state = {
   workspaceNavigation: {
     initialized: false,
     applyingHistory: false,
+    pendingRestoreEntry: null,
+    checkpointFrame: null,
     pendingReturnResolve: null,
     pendingReturnPromise: null,
     transitionPromise: Promise.resolve(),
@@ -2119,7 +2129,11 @@ function activeWorkspaceHistoryEntry(raw = history.state) {
   return entry?.workspaceGeneration === state.workspaceGeneration ? entry : null;
 }
 
-function initializeWorkspaceHistoryRoot() {
+function initializeWorkspaceHistoryRoot({ restoreExisting = false } = {}) {
+  const existing = restoreExisting ? managedWorkspaceHistoryEntry() : null;
+  const restored = existing && WORKSPACE_HISTORY_ROUTES.has(existing.route)
+    ? workspaceHistoryEntry(existing.route, existing.context)
+    : workspaceHistoryEntry("gallery");
   const resolve = state.workspaceNavigation.pendingReturnResolve;
   state.workspaceNavigation.pendingReturnResolve = null;
   state.workspaceNavigation.pendingReturnPromise = null;
@@ -2127,9 +2141,10 @@ function initializeWorkspaceHistoryRoot() {
   resolve?.();
   const nextState = {
     ...(history.state || {}),
-    [WORKSPACE_HISTORY_KEY]: workspaceHistoryEntry("gallery"),
+    [WORKSPACE_HISTORY_KEY]: restored,
   };
   history.replaceState(nextState, "", location.href);
+  state.workspaceNavigation.pendingRestoreEntry = restoreExisting ? restored : null;
   state.workspaceNavigation.initialized = true;
 }
 
@@ -2158,16 +2173,67 @@ function currentWorkspaceHistoryContext(route = visibleWorkspaceRoute()) {
         : {}),
       reviewMode: state.review.mode,
       reviewTagID: elements.reviewTagSelect.value || null,
+      reviewMediaKind: state.mediaKind,
+      reviewAssetID: state.review.items[state.review.selectedIndex]?.assetID || null,
+      reviewQueueScrollTop: elements.reviewQueuePane.scrollTop,
     };
   case "training":
+    captureTrainingRunListScroll();
     return {
       ...(state.training.returnTarget?.workspace === "review"
         ? { returnToReview: { ...state.training.returnTarget } }
         : {}),
+      trainingMediaKind: state.training.mediaKind,
+      trainingMethod: state.training.method || null,
+      trainingRunScope: state.training.runScope,
+      trainingRunID: state.training.selectedRunID || state.training.focusedRunID || null,
+      trainingRunScrollTop: elements.trainingRunPane.scrollTop,
+      trainingDetailScrollTop: elements.trainingDetailPane.scrollTop,
+    };
+  case "slimming":
+    return {
+      slimmingMediaKind: state.slimming.mediaKind,
+      slimmingView: state.slimming.view,
+      slimmingJobID: state.slimming.selectedJobID,
+      slimmingClusterID: state.slimming.selectedClusterID,
+      slimmingClusterScope: state.slimming.clusterScope,
+      slimmingNavigatorScrollTop: elements.slimmingNavigatorPane.scrollTop,
+    };
+  case "worldMap":
+    return {
+      worldMapClusterID: state.worldMap.selectedClusterID,
+      worldMapViewport: normalizedWorldMapBounds(state.worldMap.viewport),
     };
   default:
     return null;
   }
+}
+
+function workspaceHistoryScrollTop(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+function waitForWorkspaceLayout() {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  });
+}
+
+function checkpointActiveWorkspaceHistory() {
+  if (!state.workspaceNavigation.initialized
+    || state.workspaceNavigation.applyingHistory
+    || elements.appView.classList.contains("hidden")) return;
+  const route = visibleWorkspaceRoute();
+  recordWorkspaceHistory(route, currentWorkspaceHistoryContext(route), "replace");
+}
+
+function scheduleWorkspaceHistoryCheckpoint() {
+  if (state.workspaceNavigation.checkpointFrame != null) return;
+  state.workspaceNavigation.checkpointFrame = requestAnimationFrame(() => {
+    state.workspaceNavigation.checkpointFrame = null;
+    checkpointActiveWorkspaceHistory();
+  });
 }
 
 function closeVisibleWorkspaceOneLevel({ restoreFocus = true } = {}) {
@@ -2214,12 +2280,26 @@ async function applyWorkspaceHistoryEntry(entry) {
     }
     closeAllWorkspacesToGallery();
     if (target === "review") {
+      if (["image", "video"].includes(context.reviewMediaKind)
+        && context.reviewMediaKind !== state.mediaKind) {
+        await switchMediaKind(context.reviewMediaKind);
+      }
       await openReviewWorkspace({
         returnToTrainingRunID: context.returnToTrainingRunID || null,
         initialMode: context.reviewMode || "overview",
         initialTagID: context.reviewTagID || null,
         historyMode: "none",
       });
+      if (state.review.mode === "queue" && context.reviewAssetID) {
+        const reviewIndex = state.review.items.findIndex(
+          (item) => item.assetID === context.reviewAssetID
+        );
+        if (reviewIndex >= 0) selectReviewIndex(reviewIndex);
+      }
+      await waitForWorkspaceLayout();
+      elements.reviewQueuePane.scrollTop = workspaceHistoryScrollTop(
+        context.reviewQueueScrollTop
+      );
     } else if (target === "training") {
       if (["image", "video"].includes(context.trainingMediaKind)) {
         state.training.mediaKind = context.trainingMediaKind;
@@ -2231,16 +2311,36 @@ async function applyWorkspaceHistoryEntry(entry) {
         state.training.runScope = context.trainingRunScope;
       }
       if (context.trainingRunID) state.training.focusedRunID = context.trainingRunID;
+      if (Object.prototype.hasOwnProperty.call(context, "trainingRunScrollTop")) {
+        state.training.runListScrollOffsets.set(
+          trainingRunListContextKey(),
+          workspaceHistoryScrollTop(context.trainingRunScrollTop)
+        );
+      }
       await openTrainingWorkspace({
         returnToReview: context.returnToReview || null,
         historyMode: "none",
       });
+      await waitForWorkspaceLayout();
+      if (Object.prototype.hasOwnProperty.call(context, "trainingRunScrollTop")) {
+        elements.trainingRunPane.scrollTop = workspaceHistoryScrollTop(
+          context.trainingRunScrollTop
+        );
+      }
+      if (Object.prototype.hasOwnProperty.call(context, "trainingDetailScrollTop")) {
+        elements.trainingDetailPane.scrollTop = workspaceHistoryScrollTop(
+          context.trainingDetailScrollTop
+        );
+      }
     } else if (target === "slimming") {
       if (["image", "video"].includes(context.slimmingMediaKind)) {
         state.slimming.mediaKind = context.slimmingMediaKind;
       }
       if (["analysis", "recycle"].includes(context.slimmingView)) {
         state.slimming.view = context.slimmingView;
+      }
+      if (["pending", "confirmed", "ignored"].includes(context.slimmingClusterScope)) {
+        state.slimming.clusterScope = context.slimmingClusterScope;
       }
       if (Object.prototype.hasOwnProperty.call(context, "slimmingJobID")) {
         state.slimming.selectedJobID = context.slimmingJobID || null;
@@ -2249,6 +2349,10 @@ async function applyWorkspaceHistoryEntry(entry) {
         state.slimming.selectedClusterID = context.slimmingClusterID || null;
       }
       await openSlimmingWorkspace({ historyMode: "none" });
+      await waitForWorkspaceLayout();
+      elements.slimmingNavigatorPane.scrollTop = workspaceHistoryScrollTop(
+        context.slimmingNavigatorScrollTop
+      );
     } else if (target === "worldMap") {
       if (Object.prototype.hasOwnProperty.call(context, "worldMapClusterID")) {
         state.worldMap.selectedClusterID = context.worldMapClusterID || null;
@@ -2257,6 +2361,9 @@ async function applyWorkspaceHistoryEntry(entry) {
         state.worldMap.viewport = context.worldMapViewport || null;
       }
       await openWorldMapWorkspace({ historyMode: "none" });
+      if (state.worldMap.selectedClusterID) {
+        await loadWorldMapSelection(state.worldMap.selectedClusterID);
+      }
     } else if (target === "galleryOverview") {
       await openGalleryOverviewWorkspace({ historyMode: "none" });
     }
@@ -3396,6 +3503,7 @@ async function loadWorldMapSelection(clusterID) {
   state.worldMap.selection = null;
   state.worldMap.selectionError = "";
   state.worldMap.selectionLoading = true;
+  checkpointActiveWorkspaceHistory();
   worldMapRenderer()?.restoreSelection(clusterID);
   renderWorldMapDetail();
   try {
@@ -3522,7 +3630,11 @@ async function openWorldMapWorkspace({ historyMode = "push" } = {}) {
   }
   elements.worldMapWorkspace.classList.remove("hidden");
   syncWorldMapPresentation({ focus: true });
-  recordWorkspaceHistory("worldMap", null, historyMode);
+  recordWorkspaceHistory(
+    "worldMap",
+    currentWorkspaceHistoryContext("worldMap"),
+    historyMode
+  );
   renderWorldMap();
   if (!state.worldMap.snapshot) await loadWorldMapSnapshot();
   else pushWorldMapClusters();
@@ -4318,6 +4430,7 @@ function handleWorldMapMessage(event) {
     break;
   case "cameraChanged":
     state.worldMap.viewport = message.viewport || null;
+    checkpointActiveWorkspaceHistory();
     clearTimeout(state.worldMap.cameraTimer);
     state.worldMap.cameraTimer = setTimeout(() => {
       void loadWorldMapSnapshot({ bounds: state.worldMap.viewport, quiet: true });
@@ -4522,9 +4635,9 @@ function showPairing(message = "") {
   selectAuthMethod(elements.pairingToken.value.trim() ? "pairing" : "account");
 }
 
-function showApp() {
+function showApp({ restoreHistory = false } = {}) {
   showOnly(elements.appView);
-  initializeWorkspaceHistoryRoot();
+  initializeWorkspaceHistoryRoot({ restoreExisting: restoreHistory });
   scheduleAdaptiveToolbarSync();
 }
 
@@ -16960,6 +17073,7 @@ function selectReviewIndex(
     resetReviewCloudPreviewRecovery();
   }
   renderReviewSelectionState();
+  checkpointActiveWorkspaceHistory();
   const selectedCard = elements.reviewGrid.querySelector(
     `[data-review-index="${state.review.selectedIndex}"]`
   );
@@ -17338,7 +17452,7 @@ async function openReviewWorkspace({
   syncReviewPresentation({ focus: true });
   recordWorkspaceHistory(
     "review",
-    returnToTrainingRunID ? { returnToTrainingRunID } : null,
+    currentWorkspaceHistoryContext("review"),
     historyMode
   );
   syncReviewClosePresentation();
@@ -18246,6 +18360,7 @@ function setTrainingRunScope(scope, { focus = false } = {}) {
   }
   if (state.training.selectedRunID !== previousRunID) resetTrainingDetailScroll();
   renderTrainingWorkspace();
+  checkpointActiveWorkspaceHistory();
   if (focus) focusTrainingRun(state.training.selectedRunID, { reveal: true });
 }
 
@@ -18771,6 +18886,7 @@ function selectTrainingRun(runID, { focus = false, reveal = false } = {}) {
   if (selectionChanged) resetTrainingDetailScroll();
   renderTrainingRunList();
   renderTrainingDetail();
+  checkpointActiveWorkspaceHistory();
   if (focus) focusTrainingRun(runID, { reveal });
 }
 
@@ -19267,7 +19383,7 @@ async function openTrainingWorkspace({
   elements.trainingWorkspace.classList.remove("hidden");
   recordWorkspaceHistory(
     "training",
-    returnToReview ? { returnToReview } : null,
+    currentWorkspaceHistoryContext("training"),
     historyMode
   );
   syncTrainingClosePresentation();
@@ -19281,6 +19397,7 @@ async function switchTrainingMediaKind(mediaKind) {
   state.training.mediaKind = mediaKind;
   state.training.selectedRunID = null;
   await loadTrainingWorkspace();
+  checkpointActiveWorkspaceHistory();
 }
 
 function slimmingModeText(mode) {
@@ -22272,6 +22389,7 @@ async function selectSlimmingClusterScope(scope, { focus = true } = {}) {
   state.slimming.clusterLimit = 48;
   state.slimming.memberLimit = 96;
   await loadSlimmingWorkspace({ quiet: true });
+  checkpointActiveWorkspaceHistory();
   if (focus) {
     elements.slimmingClusterScopes.querySelector(
       `[data-slimming-cluster-scope="${CSS.escape(state.slimming.clusterScope)}"]`
@@ -22344,7 +22462,11 @@ async function openSlimmingWorkspace({ historyMode = "push" } = {}) {
     state.slimming.inspectorCompactInitialized = true;
   }
   elements.slimmingWorkspace.classList.remove("hidden");
-  recordWorkspaceHistory("slimming", null, historyMode);
+  recordWorkspaceHistory(
+    "slimming",
+    currentWorkspaceHistoryContext("slimming"),
+    historyMode
+  );
   syncSlimmingPresentation({ focus: true });
   if (state.slimming.view === "recycle") await loadSlimmingRecycle();
   else {
@@ -24408,10 +24530,10 @@ function moveLibrarySelection(key, { extendRange = false } = {}) {
   selectLibraryAssetByIndex(nextIndex, { focusGrid: true, extendRange });
 }
 
-async function loadWorkspace() {
+async function loadWorkspace({ restoreHistory = false } = {}) {
   resetWorkspaceSessionState();
   const generation = state.workspaceGeneration;
-  showApp();
+  showApp({ restoreHistory });
   setConnection(true, "正在同步");
   const capabilities = await api("/v1/capabilities");
   if (generation !== state.workspaceGeneration) return;
@@ -24499,6 +24621,18 @@ async function loadWorkspace() {
   }
   if (generation !== state.workspaceGeneration) return;
   captureMediaSession();
+  const restoreEntry = state.workspaceNavigation.pendingRestoreEntry;
+  state.workspaceNavigation.pendingRestoreEntry = null;
+  if (restoreEntry?.route && restoreEntry.route !== "gallery") {
+    try {
+      await applyWorkspaceHistoryEntry(restoreEntry);
+    } catch (error) {
+      closeAllWorkspacesToGallery({ restoreFocus: false });
+      recordWorkspaceHistory("gallery", null, "replace");
+      toast(error.message || "未能恢复刷新前的工作区");
+    }
+  }
+  if (generation !== state.workspaceGeneration) return;
   setupAutoPagination();
   connectEvents();
   scheduleEmbeddingPreparationPoll();
@@ -24922,6 +25056,9 @@ function resetWorkspaceSessionState() {
   const resolveWorkspaceReturn = state.workspaceNavigation.pendingReturnResolve;
   state.workspaceNavigation.initialized = false;
   state.workspaceNavigation.applyingHistory = false;
+  state.workspaceNavigation.pendingRestoreEntry = null;
+  cancelAnimationFrame(state.workspaceNavigation.checkpointFrame);
+  state.workspaceNavigation.checkpointFrame = null;
   state.workspaceNavigation.pendingReturnResolve = null;
   state.workspaceNavigation.pendingReturnPromise = null;
   state.workspaceNavigation.transitionPromise = Promise.resolve();
@@ -29131,6 +29268,7 @@ function bindEvents() {
     state.slimming.clusterLimit = 48;
     state.slimming.memberLimit = 96;
     await loadSlimmingWorkspace({ jobID: row.dataset.slimmingJobId });
+    checkpointActiveWorkspaceHistory();
     focusSelectedSlimmingJob();
   });
   elements.slimmingJobList.addEventListener("contextmenu", (event) => {
@@ -29200,6 +29338,7 @@ function bindEvents() {
     if (!row || row.dataset.slimmingClusterId === state.slimming.selectedClusterID) return;
     state.slimming.selectedClusterID = row.dataset.slimmingClusterId;
     state.slimming.memberLimit = 96;
+    checkpointActiveWorkspaceHistory();
     loadSlimmingWorkspace({ clusterID: row.dataset.slimmingClusterId });
   });
   elements.slimmingReprocessClusterButton.addEventListener("click", () => {
@@ -30720,6 +30859,16 @@ function bindEvents() {
       if (!state.socket) connectEvents();
     }
   });
+  for (const scrollSurface of [
+    elements.reviewQueuePane,
+    elements.trainingRunPane,
+    elements.trainingDetailPane,
+    elements.slimmingNavigatorPane,
+  ]) {
+    scrollSurface.addEventListener("scroll", scheduleWorkspaceHistoryCheckpoint, {
+      passive: true,
+    });
+  }
   const toolbarResizeObserver = new ResizeObserver(scheduleAdaptiveToolbarSync);
   toolbarResizeObserver.observe(elements.titlebar);
   const integratedWorkspaceResizeObserver = new ResizeObserver(() => {
@@ -30793,7 +30942,7 @@ async function boot() {
     const session = await api("/web/session");
     state.authMode = session.authMode || "pairedDevice";
     if (state.authMode !== "account") await updateMediaWorkerAuthorization(null);
-    await loadWorkspace();
+    await loadWorkspace({ restoreHistory: true });
   } catch (error) {
     const message = error.status && error.status !== 401
       ? "暂时无法连接 Mac Host，请稍后重试。"
