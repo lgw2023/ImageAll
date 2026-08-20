@@ -1040,6 +1040,7 @@ const state = {
   selectedDetail: null,
   cloudPreview: {
     assetID: null,
+    context: null,
     status: "hidden",
     operationID: null,
     progress: 0,
@@ -4653,6 +4654,13 @@ function handleWorldMapMessage(event) {
 
 function closeLightbox({ restoreFocus = true } = {}) {
   const closingContext = state.lightboxContext;
+  const preservesLibraryCloudPreview = closingContext === "library"
+    && state.cloudPreview.context === "library"
+    && state.cloudPreview.assetID === state.selectedDetail?.assetID;
+  if (closingContext !== "review" && state.cloudPreview.status !== "hidden"
+    && !preservesLibraryCloudPreview) {
+    resetCloudPreviewRecovery();
+  }
   elements.lightbox.classList.add("hidden");
   elements.lightbox.classList.remove("reviewing");
   elements.lightbox.removeAttribute("aria-busy");
@@ -4670,6 +4678,7 @@ function closeLightbox({ restoreFocus = true } = {}) {
   state.lightboxAssetID = null;
   resetLightboxViewport(null);
   renderLightboxFavorite();
+  renderCloudPreviewRecovery();
   renderReviewCloudPreviewRecovery();
   elements.reviewWorkspace.inert = false;
   elements.slimmingWorkspace.inert = false;
@@ -10104,6 +10113,7 @@ function resetCloudPreviewRecovery({ cancelActive = true } = {}) {
   stopCloudPreviewPolling();
   state.cloudPreview.requestGeneration += 1;
   state.cloudPreview.assetID = null;
+  state.cloudPreview.context = null;
   state.cloudPreview.status = "hidden";
   state.cloudPreview.operationID = null;
   state.cloudPreview.progress = 0;
@@ -10118,53 +10128,74 @@ function resetCloudPreviewRecovery({ cancelActive = true } = {}) {
 
 function renderCloudPreviewRecovery() {
   const recovery = state.cloudPreview;
-  const visible = recovery.status !== "hidden"
+  const inspectorVisible = recovery.status !== "hidden"
     && recovery.assetID === state.selectedDetail?.assetID
-    && state.mediaKind === "image";
-  elements.cloudPreviewRecovery.classList.toggle("hidden", !visible);
-  if (!visible) return;
+    && state.mediaKind === "image"
+    && recovery.context === "library";
+  syncCloudPreviewControl({
+    container: elements.cloudPreviewRecovery,
+    icon: elements.cloudPreviewIcon,
+    title: elements.cloudPreviewTitle,
+    message: elements.cloudPreviewMessage,
+    progress: elements.cloudPreviewProgress,
+    button: elements.cloudPreviewButton,
+  }, recovery, inspectorVisible);
 
-  const downloading = recovery.status === "downloading";
-  const cancelling = recovery.status === "cancelling";
-  const failed = recovery.status === "failed";
-  const lifecycle = supportsCloudPreviewLifecycle();
-  const percent = Math.max(0, Math.min(100, Math.round(recovery.progress * 100)));
-  elements.cloudPreviewIcon.classList.toggle("spinner", downloading || cancelling);
-  elements.cloudPreviewIcon.textContent = downloading || cancelling ? "" : (failed ? "⚠︎" : "☁︎");
-  elements.cloudPreviewTitle.textContent = cancelling
-    ? "正在取消 iCloud 预览"
-    : (downloading
-      ? "正在从 iCloud 获取预览"
-      : (failed ? "无法获取 iCloud 预览" : "此照片仅存储在 iCloud"));
-  elements.cloudPreviewMessage.textContent = cancelling
-    ? "正在通知这台 Mac 停止当前照片的下载。"
-    : (downloading
-      ? (lifecycle
-        ? `只获取当前照片的标准预览 · ${percent}%`
-        : "只获取当前照片的标准预览；完成后会自动显示。")
-      : (failed
-        ? "请确认网络与“照片”访问权限后重试。"
-        : "仅在你明确操作后，才会从 iCloud 获取这张照片的标准预览。"));
-  elements.cloudPreviewProgress.classList.toggle("hidden", !downloading || !lifecycle);
-  elements.cloudPreviewProgress.value = recovery.progress;
-  elements.cloudPreviewProgress.setAttribute("aria-valuetext", `${percent}%`);
-  elements.cloudPreviewButton.classList.toggle("hidden", downloading && !lifecycle);
-  elements.cloudPreviewButton.textContent = cancelling
-    ? "正在取消…"
-    : (downloading ? "取消" : (failed ? "重试" : "从 iCloud 获取预览"));
-  elements.cloudPreviewButton.disabled = cancelling || !state.online;
+  if (state.lightboxContext !== "review") {
+    const lightboxVisible = recovery.status !== "hidden"
+      && recovery.assetID === state.lightboxAssetID
+      && state.lightboxContext != null
+      && lightboxMediaKind() === "image"
+      && !elements.lightbox.classList.contains("hidden");
+    syncCloudPreviewControl(lightboxCloudPreviewControl(), recovery, lightboxVisible);
+  }
 }
 
-function showCloudPreviewRecovery(assetID, status = "available") {
+function cloudPreviewCurrentAssetID() {
+  if (state.lightboxContext && state.lightboxContext !== "review"
+    && lightboxMediaKind() === "image"
+    && !elements.lightbox.classList.contains("hidden")) {
+    return state.lightboxAssetID;
+  }
+  if (state.cloudPreview.context === "library" && state.mediaKind === "image") {
+    return state.selectedDetail?.assetID || null;
+  }
+  return null;
+}
+
+function cloudPreviewIsCurrent(assetID, generation) {
+  return generation === state.cloudPreview.requestGeneration
+    && state.cloudPreview.assetID === assetID
+    && cloudPreviewCurrentAssetID() === assetID;
+}
+
+function showCloudPreviewRecovery(assetID, status = "available", context = null) {
+  const recoveryContext = context
+    || (state.lightboxContext && state.lightboxContext !== "review"
+      ? state.lightboxContext
+      : "library");
+  if (state.cloudPreview.assetID === assetID
+    && state.cloudPreview.status !== "hidden") {
+    if (recoveryContext !== "library") state.cloudPreview.context = recoveryContext;
+    renderCloudPreviewRecovery();
+    return;
+  }
+  if (state.cloudPreview.status !== "hidden") resetCloudPreviewRecovery();
   stopCloudPreviewPolling();
   const generation = ++state.cloudPreview.requestGeneration;
   state.cloudPreview.assetID = assetID;
+  state.cloudPreview.context = recoveryContext;
   state.cloudPreview.status = status;
   state.cloudPreview.operationID = null;
   state.cloudPreview.progress = 0;
   elements.previewLoading.classList.add("hidden");
   elements.previewImage.classList.add("hidden");
   elements.openLightboxButton.classList.add("hidden");
+  if (state.lightboxContext && state.lightboxContext !== "review"
+    && state.lightboxAssetID === assetID) {
+    clearProtectedImageSource(elements.lightboxImage);
+    elements.lightboxImage.classList.add("hidden");
+  }
   renderCloudPreviewRecovery();
   if (status === "available" && supportsCloudPreviewLifecycle()) {
     void resumeCloudPreviewLifecycle(assetID, generation);
@@ -10173,19 +10204,35 @@ function showCloudPreviewRecovery(assetID, status = "available") {
 
 function displayDownloadedCloudPreview(assetID, generation) {
   const detail = state.selectedDetail;
-  if (generation !== state.cloudPreview.requestGeneration
-    || detail?.assetID !== assetID) return;
+  if (!cloudPreviewIsCurrent(assetID, generation)) return;
   stopCloudPreviewPolling();
   state.cloudPreview.status = "hidden";
   state.cloudPreview.operationID = null;
   state.cloudPreview.progress = 1;
   renderCloudPreviewRecovery();
-  elements.previewLoading.classList.remove("hidden");
-  const previewPath = `/v1/assets/${assetID}/preview?r=${detail.contentRevision}&cloud=1`;
-  setProtectedImageSource(elements.previewImage, previewPath, {
-    priority: "high",
-    forceFetch: true,
-  });
+  const lightboxItem = lightboxItems().find((item) => item.id === assetID);
+  const contentRevision = detail?.assetID === assetID
+    ? detail.contentRevision
+    : lightboxItem?.contentRevision;
+  const query = new URLSearchParams({ cloud: "1" });
+  if (contentRevision != null) query.set("r", String(contentRevision));
+  const previewPath = `/v1/assets/${assetID}/preview?${query}`;
+  if (detail?.assetID === assetID) {
+    elements.previewLoading.classList.remove("hidden");
+    setProtectedImageSource(elements.previewImage, previewPath, {
+      priority: "high",
+      forceFetch: true,
+    });
+  }
+  if (state.lightboxContext && state.lightboxContext !== "review"
+    && state.lightboxAssetID === assetID
+    && !elements.lightbox.classList.contains("hidden")) {
+    elements.lightboxImage.classList.remove("hidden");
+    setProtectedImageSource(elements.lightboxImage, previewPath, {
+      priority: "high",
+      forceFetch: true,
+    });
+  }
   toast("iCloud 预览已获取");
 }
 
@@ -10197,8 +10244,7 @@ function scheduleCloudPreviewPoll(assetID, generation) {
 }
 
 function applyCloudPreviewSnapshot(snapshot, assetID, generation) {
-  if (generation !== state.cloudPreview.requestGeneration
-    || state.selectedDetail?.assetID !== assetID
+  if (!cloudPreviewIsCurrent(assetID, generation)
     || snapshot?.assetID !== assetID) return;
   state.cloudPreview.operationID = snapshot.operationID || null;
   state.cloudPreview.progress = Number(snapshot.progress) || 0;
@@ -10236,15 +10282,13 @@ async function resumeCloudPreviewLifecycle(assetID, generation) {
 }
 
 async function pollCloudPreviewLifecycle(assetID, generation) {
-  if (generation !== state.cloudPreview.requestGeneration
-    || state.selectedDetail?.assetID !== assetID
+  if (!cloudPreviewIsCurrent(assetID, generation)
     || state.cloudPreview.status !== "downloading") return;
   try {
     const snapshot = await api(`/v1/assets/${assetID}/cloud-preview-requests`);
     applyCloudPreviewSnapshot(snapshot, assetID, generation);
   } catch (error) {
-    if (generation !== state.cloudPreview.requestGeneration
-      || state.selectedDetail?.assetID !== assetID) return;
+    if (!cloudPreviewIsCurrent(assetID, generation)) return;
     stopCloudPreviewPolling();
     state.cloudPreview.operationID = null;
     state.cloudPreview.status = "failed";
@@ -10255,9 +10299,9 @@ async function pollCloudPreviewLifecycle(assetID, generation) {
 
 async function cancelSelectedCloudPreview() {
   const recovery = state.cloudPreview;
-  const detail = state.selectedDetail;
-  if (!detail || recovery.status !== "downloading" || !recovery.operationID) return;
-  const assetID = detail.assetID;
+  const assetID = cloudPreviewCurrentAssetID();
+  if (!assetID || recovery.assetID !== assetID
+    || recovery.status !== "downloading" || !recovery.operationID) return;
   const operationID = recovery.operationID;
   const generation = recovery.requestGeneration;
   stopCloudPreviewPolling();
@@ -10270,8 +10314,7 @@ async function cancelSelectedCloudPreview() {
     });
     applyCloudPreviewSnapshot(snapshot, assetID, generation);
   } catch (error) {
-    if (generation !== recovery.requestGeneration
-      || state.selectedDetail?.assetID !== assetID) return;
+    if (!cloudPreviewIsCurrent(assetID, generation)) return;
     recovery.status = "downloading";
     renderCloudPreviewRecovery();
     scheduleCloudPreviewPoll(assetID, generation);
@@ -10280,15 +10323,17 @@ async function cancelSelectedCloudPreview() {
 }
 
 async function downloadSelectedCloudPreview() {
-  const detail = state.selectedDetail;
-  if (!detail || state.mediaKind !== "image" || !state.online) return;
+  const assetID = cloudPreviewCurrentAssetID();
+  if (!assetID || !state.online) return;
   if (state.cloudPreview.status === "downloading" && supportsCloudPreviewLifecycle()) {
     await cancelSelectedCloudPreview();
     return;
   }
-  const assetID = detail.assetID;
   const generation = ++state.cloudPreview.requestGeneration;
   state.cloudPreview.assetID = assetID;
+  if (!state.cloudPreview.context) {
+    state.cloudPreview.context = state.lightboxContext || "library";
+  }
   state.cloudPreview.status = "downloading";
   state.cloudPreview.progress = 0;
   state.cloudPreview.operationID = supportsCloudPreviewLifecycle()
@@ -10305,8 +10350,7 @@ async function downloadSelectedCloudPreview() {
       });
       applyCloudPreviewSnapshot(snapshot, assetID, generation);
     } catch (error) {
-      if (generation !== state.cloudPreview.requestGeneration
-        || state.selectedDetail?.assetID !== assetID) return;
+      if (!cloudPreviewIsCurrent(assetID, generation)) return;
       state.cloudPreview.operationID = null;
       state.cloudPreview.status = "failed";
       renderCloudPreviewRecovery();
@@ -10333,8 +10377,7 @@ async function downloadSelectedCloudPreview() {
     }
     displayDownloadedCloudPreview(assetID, generation);
   } catch (error) {
-    if (generation !== state.cloudPreview.requestGeneration
-      || state.selectedDetail?.assetID !== assetID) return;
+    if (!cloudPreviewIsCurrent(assetID, generation)) return;
     state.cloudPreview.status = "failed";
     renderCloudPreviewRecovery();
     toast(error.message || "无法获取 iCloud 预览");
@@ -10348,27 +10391,18 @@ function reviewCloudPreviewCurrentAssetID() {
   return state.review.items[state.review.selectedIndex]?.assetID || null;
 }
 
-function reviewCloudPreviewControls() {
-  return [{
-    container: elements.reviewCloudPreviewRecovery,
-    icon: elements.reviewCloudPreviewIcon,
-    title: elements.reviewCloudPreviewTitle,
-    message: elements.reviewCloudPreviewMessage,
-    progress: elements.reviewCloudPreviewProgress,
-    button: elements.reviewCloudPreviewButton,
-    lightbox: false,
-  }, {
+function lightboxCloudPreviewControl() {
+  return {
     container: elements.lightboxCloudPreviewRecovery,
     icon: elements.lightboxCloudPreviewIcon,
     title: elements.lightboxCloudPreviewTitle,
     message: elements.lightboxCloudPreviewMessage,
     progress: elements.lightboxCloudPreviewProgress,
     button: elements.lightboxCloudPreviewButton,
-    lightbox: true,
-  }];
+  };
 }
 
-function syncReviewCloudPreviewControl(controls, recovery, visible) {
+function syncCloudPreviewControl(controls, recovery, visible) {
   controls.container.classList.toggle("hidden", !visible);
   if (!visible) return;
   const downloading = recovery.status === "downloading";
@@ -10414,12 +10448,16 @@ function renderReviewCloudPreviewRecovery() {
     && recovery.assetID === state.lightboxAssetID
     && state.lightboxContext === "review"
     && !elements.lightbox.classList.contains("hidden");
-  for (const controls of reviewCloudPreviewControls()) {
-    syncReviewCloudPreviewControl(
-      controls,
-      recovery,
-      controls.lightbox ? lightboxVisible : reviewVisible
-    );
+  syncCloudPreviewControl({
+    container: elements.reviewCloudPreviewRecovery,
+    icon: elements.reviewCloudPreviewIcon,
+    title: elements.reviewCloudPreviewTitle,
+    message: elements.reviewCloudPreviewMessage,
+    progress: elements.reviewCloudPreviewProgress,
+    button: elements.reviewCloudPreviewButton,
+  }, recovery, reviewVisible);
+  if (state.lightboxContext === "review" || state.lightboxContext == null) {
+    syncCloudPreviewControl(lightboxCloudPreviewControl(), recovery, lightboxVisible);
   }
 }
 
@@ -11289,7 +11327,14 @@ function renderInspector(detail) {
         === elements.previewImage.dataset.protectedRequestId
       && elements.previewImage.complete
       && elements.previewImage.naturalWidth > 0;
-    if (!previewReady) {
+    const recoveringCloudPreview = state.cloudPreview.assetID === detail.assetID
+      && state.cloudPreview.status !== "hidden";
+    if (recoveringCloudPreview) {
+      elements.previewLoading.classList.add("hidden");
+      elements.previewImage.classList.add("hidden");
+      elements.openLightboxButton.classList.add("hidden");
+      renderCloudPreviewRecovery();
+    } else if (!previewReady) {
       const showsPlaceholder = showPreviewPlaceholder(detail.assetID);
       elements.previewLoading.classList.toggle("hidden", showsPlaceholder);
       elements.previewImage.classList.add("hidden");
@@ -13308,7 +13353,13 @@ function handleAssetSelection(assetID, { additive = false, range = false } = {})
     scheduleSelectionAggregate();
     return;
   }
-  loadInspector(assetID, { reveal: true, focusInspector: true });
+  const preservesCloudPreview = state.cloudPreview.assetID === assetID
+    && state.cloudPreview.status !== "hidden";
+  loadInspector(assetID, {
+    reveal: true,
+    focusInspector: true,
+    preserveExisting: preservesCloudPreview,
+  });
 }
 
 function selectAllLoadedAssets() {
@@ -24383,9 +24434,13 @@ async function renderLightboxMedia(item) {
     const recoveringReviewCloudPreview = state.lightboxContext === "review"
       && state.review.cloudPreview.assetID === item.id
       && state.review.cloudPreview.status !== "hidden";
-    if (recoveringReviewCloudPreview) {
+    const recoveringSharedCloudPreview = state.lightboxContext !== "review"
+      && state.cloudPreview.assetID === item.id
+      && state.cloudPreview.status !== "hidden";
+    if (recoveringReviewCloudPreview || recoveringSharedCloudPreview) {
       clearProtectedImageSource(elements.lightboxImage);
       elements.lightboxImage.classList.add("hidden");
+      renderCloudPreviewRecovery();
       renderReviewCloudPreviewRecovery();
       return;
     }
@@ -24398,9 +24453,7 @@ async function renderLightboxMedia(item) {
     setProtectedImageSource(
       elements.lightboxImage,
       `/v1/assets/${item.id}/preview${revision}`,
-      state.lightboxContext === "review"
-        ? { priority: "high", forceFetch: true }
-        : undefined
+      { priority: "high", forceFetch: true }
     );
     syncLightboxViewport();
     return;
@@ -24613,6 +24666,7 @@ function renderLightbox() {
   syncLightboxOpenOriginalControl(item);
   renderLightboxFavorite();
   if (!favoriteStateForAssetID(item.id)) void loadLightboxFavorite(item.id);
+  renderCloudPreviewRecovery();
   renderReviewCloudPreviewRecovery();
   syncReviewControls();
 }
@@ -24699,6 +24753,11 @@ async function navigateLightbox(direction) {
     }
     if (next < 0 || next >= items.length) return;
     const nextAssetID = items[next].id;
+    if (state.lightboxContext !== "review"
+      && state.cloudPreview.status !== "hidden"
+      && state.cloudPreview.assetID === currentAssetID) {
+      resetCloudPreviewRecovery();
+    }
     state.lightboxAssetID = nextAssetID;
     renderLightbox();
     scheduleWorkspaceHistoryCheckpoint();
@@ -28633,7 +28692,8 @@ function bindEvents() {
     downloadReviewCloudPreview();
   });
   elements.lightboxCloudPreviewButton.addEventListener("click", () => {
-    downloadReviewCloudPreview();
+    if (state.lightboxContext === "review") downloadReviewCloudPreview();
+    else downloadSelectedCloudPreview();
   });
   elements.previewVideo.addEventListener("loadeddata", () => {
     if (elements.previewVideo.dataset.assetId !== state.selectedDetail?.assetID) return;
@@ -30237,7 +30297,11 @@ function bindEvents() {
     if (state.lightboxContext === "review"
       && state.review.cloudPreview.assetID === state.lightboxAssetID) {
       resetReviewCloudPreviewRecovery({ cancelActive: false });
+    } else if (state.lightboxContext !== "review"
+      && state.cloudPreview.assetID === state.lightboxAssetID) {
+      resetCloudPreviewRecovery({ cancelActive: false });
     } else {
+      renderCloudPreviewRecovery();
       renderReviewCloudPreviewRecovery();
     }
     syncLightboxViewport();
@@ -30255,6 +30319,11 @@ function bindEvents() {
       showReviewCloudPreviewRecovery(assetID);
       return;
     }
+    if (state.lightboxContext !== "review" && needsCloudPreview && assetID) {
+      showCloudPreviewRecovery(assetID, "available", state.lightboxContext);
+      return;
+    }
+    renderCloudPreviewRecovery();
     renderReviewCloudPreviewRecovery();
   });
   elements.lightboxVideo.addEventListener("timeupdate", scheduleWorkspaceHistoryCheckpoint);

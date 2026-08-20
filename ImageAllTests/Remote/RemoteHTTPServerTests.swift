@@ -2886,6 +2886,12 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function generateGalleryPersonalSuggestions"))
         XCTAssertTrue(script.contains("搜索文件名、路径、标签或来源"))
         XCTAssertTrue(script.contains("function renderLightboxMedia"))
+        XCTAssertTrue(script.contains("function cloudPreviewCurrentAssetID"))
+        XCTAssertTrue(
+            script.contains(
+                "showCloudPreviewRecovery(assetID, \"available\", state.lightboxContext)"
+            )
+        )
         XCTAssertTrue(script.contains("function downloadReviewCloudPreview"))
         XCTAssertTrue(script.contains("function resetReviewCloudPreviewRecovery"))
         XCTAssertTrue(stylesheet.contains(".lightbox-cloud-preview-recovery"))

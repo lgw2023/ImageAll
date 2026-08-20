@@ -414,6 +414,87 @@ def main():
         assert lifecycle["cancels"] == [lifecycle["starts"][0]]
         assert lifecycle["cache_ready"] is True
 
+        # The shared lightbox must not lose the recovery action outside Review.
+        # Invalidate the synthetic cache and enter from the library grid, where
+        # the inspector and lightbox should share one Host-authoritative
+        # lifecycle without an automatic download.
+        library_start_count = len(lifecycle["starts"])
+        library_cancel_count = len(lifecycle["cancels"])
+        lifecycle.update({
+            "operation_id": None,
+            "asset_id": None,
+            "phase": None,
+            "progress": 0.0,
+            "poll_count": 0,
+            "allow_complete": False,
+            "cache_ready": False,
+        })
+        page.set_viewport_size({"width": 1440, "height": 960})
+        page.locator("#assetGrid .asset-card-main").dblclick()
+        page.locator("#lightbox:not(.hidden)").wait_for()
+        page.locator("#lightboxCloudPreviewRecovery:not(.hidden)").wait_for(
+            timeout=5_000
+        )
+        assert len(lifecycle["starts"]) == library_start_count
+        lightbox_state = page.evaluate("""() => ({
+            context: state.lightboxContext,
+            assetID: state.lightboxAssetID,
+            selectedAssetID: state.selectedAssetID,
+          })""")
+        assert lightbox_state == {
+            "context": "library",
+            "assetID": ASSET_ID,
+            "selectedAssetID": ASSET_ID,
+        }
+
+        page.locator("#lightboxCloudPreviewButton").click()
+        page.wait_for_function(
+            "() => document.querySelector('#lightboxCloudPreviewProgress').value >= 0.42"
+        )
+        assert "42%" in page.locator("#lightboxCloudPreviewMessage").inner_text()
+        shared_operation_id = lifecycle["operation_id"]
+        page.locator("#lightboxBackButton").click()
+        page.locator("#lightbox").wait_for(state="hidden")
+        page.locator("#cloudPreviewRecovery:not(.hidden)").wait_for()
+        assert "42%" in page.locator("#cloudPreviewMessage").inner_text()
+        assert len(lifecycle["starts"]) == library_start_count + 1
+        assert len(lifecycle["cancels"]) == library_cancel_count
+
+        page.locator("#assetGrid .asset-card-main").dblclick()
+        page.locator("#lightboxCloudPreviewRecovery:not(.hidden)").wait_for()
+        page.wait_for_function(
+            "() => document.querySelector('#lightboxCloudPreviewMessage')"
+            ".textContent.includes('42%')"
+        )
+        assert lifecycle["operation_id"] == shared_operation_id
+        assert len(lifecycle["starts"]) == library_start_count + 1
+        page.set_viewport_size({"width": 390, "height": 844})
+        page.screenshot(
+            path="/tmp/imageall-library-lightbox-cloud-preview-mobile.png",
+            full_page=True,
+        )
+        page.locator("#lightboxCloudPreviewButton").click()
+        page.wait_for_function(
+            "() => document.querySelector('#lightboxCloudPreviewTitle')"
+            ".textContent.includes('仅存储在 iCloud')"
+        )
+        assert len(lifecycle["cancels"]) == library_cancel_count + 1
+
+        lifecycle["allow_complete"] = True
+        page.locator("#lightboxCloudPreviewButton").click()
+        page.locator("#lightboxCloudPreviewRecovery").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.querySelector('#lightboxImage').naturalWidth > 0"
+        )
+        assert len(lifecycle["starts"]) == library_start_count + 2
+        assert page.evaluate(
+            f"() => state.lightboxContext === 'library' "
+            f"&& state.lightboxAssetID === '{ASSET_ID}' "
+            f"&& state.selectedAssetID === '{ASSET_ID}'"
+        ) is True
+        page.locator("#lightboxBackButton").click()
+        page.locator("#lightbox").wait_for(state="hidden")
+
         # The Mac inspector exposes the same recovery path while reviewing.
         # Exercise it independently after invalidating the synthetic cache.
         main_start_count = len(lifecycle["starts"])
