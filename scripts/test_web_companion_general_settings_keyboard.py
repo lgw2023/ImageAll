@@ -437,6 +437,96 @@ def main():
         page.locator("#persistentHelp").wait_for(state="hidden")
         assert page.locator("#commandButton").get_attribute("title") == "命令（⌘K）"
 
+        source_actions_history_length = page.evaluate("history.length")
+        source_actions_read_count = source_management_reads[0]
+        page.locator("#sourceAllActionsButton").click()
+        page.locator("#sourceActionsPopover:not(.hidden)").wait_for()
+        assert page.evaluate("history.length") == source_actions_history_length + 1
+        assert page.evaluate(
+            "history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "actionMenu"
+        assert page.evaluate(
+            "history.state?.imageAllWorkspace?.context?.actionMenuKind"
+        ) == "sourceActions"
+        assert source_management_reads[0] == source_actions_read_count
+        assert "2 个已连接来源" in page.locator("#sourceActionsSummary").inner_text()
+        assert "（0）" in page.locator("#sourceActionsReauthorizeAllButton").inner_text()
+        assert "（1）" in page.locator("#sourceActionsRefreshMutationButton").inner_text()
+        assert page.locator("#sourceActionsPhotosWriteButton").is_visible()
+        page.screenshot(path="/tmp/imageall-source-actions-menu.png", full_page=True)
+        page.locator("#sourceActionsPopover").evaluate(
+            "menu => { menu.style.maxHeight = '170px'; menu.scrollTop = menu.scrollHeight; }"
+        )
+        page.locator("#sourceActionsOpenManagerButton").focus()
+        source_actions_scroll_top = page.locator("#sourceActionsPopover").evaluate(
+            "menu => menu.scrollTop"
+        )
+        assert source_actions_scroll_top > 0
+        source_actions_history_payload = page.evaluate(
+            "() => JSON.stringify(history.state?.imageAllWorkspace || null)"
+        )
+        assert "sourceActionsOpenManagerButton" not in source_actions_history_payload
+        assert "Apple Photos" not in source_actions_history_payload
+        page.evaluate("history.back()")
+        page.locator("#sourceActionsPopover").wait_for(state="hidden")
+        assert page.evaluate("document.activeElement?.id") == "sourceAllActionsButton"
+        page.evaluate("history.forward()")
+        page.locator("#sourceActionsPopover:not(.hidden)").wait_for()
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'sourceActionsOpenManagerButton'"
+        )
+        assert page.locator("#sourceActionsPopover").evaluate(
+            "menu => menu.scrollTop"
+        ) == source_actions_scroll_top
+        assert source_management_reads[0] == source_actions_read_count
+        page.keyboard.press("Home")
+        assert page.evaluate(
+            "document.activeElement?.id"
+        ) == "sourceActionsRefreshAllButton"
+        page.keyboard.press("End")
+        assert page.evaluate(
+            "document.activeElement?.id"
+        ) == "sourceActionsOpenManagerButton"
+        page.keyboard.press("Escape")
+        page.locator("#sourceActionsPopover").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'sourceAllActionsButton'"
+        )
+        page.locator("#sourceActionsPopover").evaluate(
+            "menu => { menu.style.maxHeight = ''; }"
+        )
+
+        page.locator("#sourceAllActionsButton").click()
+        page.locator("#sourceActionsOpenManagerButton").click()
+        page.locator("#sourceManagerDialog[open]").wait_for()
+        assert page.locator("#sourceActionsPopover").is_hidden()
+        assert page.evaluate(
+            "history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "sourceManager"
+        assert source_management_reads[0] == source_actions_read_count
+        page.evaluate("history.back()")
+        page.locator("#sourceManagerDialog").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'sourceAllActionsButton'"
+        )
+
+        page.locator("#sourceAllActionsButton").click()
+        with page.expect_response(
+            lambda response: response.url.endswith("/v1/source-management/requests")
+            and response.request.method == "POST"
+        ) as prewarm_all_originals:
+            page.locator("#sourceActionsPrewarmAllOriginalButton").click()
+        assert prewarm_all_originals.value.status == 200
+        assert source_actions[-1]["action"] == "prewarmAllOriginalAspect"
+        assert source_actions[-1]["sourceID"] is None
+        page.locator("#sourceActionsPopover").wait_for(state="hidden")
+        assert page.evaluate(
+            "history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "workspace"
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'sourceAllActionsButton'"
+        )
+
         with page.expect_response(
             lambda response: response.url.endswith("/v1/source-management/requests")
             and response.request.method == "POST"
@@ -619,6 +709,29 @@ def main():
         ) == "sidebar"
         page.wait_for_timeout(220)
         page.screenshot(path="/tmp/imageall-mobile-sidebar-open-390.png", full_page=True)
+        page.locator("#sourceAllActionsButton").click()
+        page.locator("#sourceActionsPopover:not(.hidden)").wait_for()
+        mobile_source_actions_bounds = page.locator(
+            "#sourceActionsPopover"
+        ).bounding_box()
+        assert mobile_source_actions_bounds is not None
+        assert mobile_source_actions_bounds["x"] >= 8
+        assert mobile_source_actions_bounds["x"] + mobile_source_actions_bounds["width"] <= 382
+        assert mobile_source_actions_bounds["y"] >= 8
+        assert mobile_source_actions_bounds["y"] + mobile_source_actions_bounds["height"] <= 836
+        page.screenshot(path="/tmp/imageall-source-actions-menu-390.png", full_page=True)
+        page.keyboard.press("Escape")
+        page.locator("#sourceActionsPopover").wait_for(state="hidden")
+        assert page.locator("#sourceSidebar").get_attribute("class").find("open") >= 0
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'sourceAllActionsButton'"
+        )
+        page.evaluate("history.forward()")
+        page.locator("#sourceActionsPopover:not(.hidden)").wait_for()
+        assert "open" in (page.locator("#sourceSidebar").get_attribute("class") or "")
+        page.keyboard.press("Escape")
+        page.locator("#sourceActionsPopover").wait_for(state="hidden")
+        assert "open" in (page.locator("#sourceSidebar").get_attribute("class") or "")
         page.locator("#sidebarToggle").click()
         page.wait_for_function(
             "() => !document.querySelector('#sourceSidebar').classList.contains('open')"

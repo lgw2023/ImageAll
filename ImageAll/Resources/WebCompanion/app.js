@@ -129,7 +129,17 @@ const elements = {
   libraryNavigation: $("#libraryNavigation"),
   sourceList: $("#sourceList"),
   sourceEmpty: $("#sourceEmpty"),
+  sourceAllActionsButton: $("#sourceAllActionsButton"),
   sourceManagerButton: $("#sourceManagerButton"),
+  sourceActionsPopover: $("#sourceActionsPopover"),
+  sourceActionsSummary: $("#sourceActionsSummary"),
+  sourceActionsRefreshAllButton: $("#sourceActionsRefreshAllButton"),
+  sourceActionsPrewarmAllButton: $("#sourceActionsPrewarmAllButton"),
+  sourceActionsPrewarmAllOriginalButton: $("#sourceActionsPrewarmAllOriginalButton"),
+  sourceActionsReauthorizeAllButton: $("#sourceActionsReauthorizeAllButton"),
+  sourceActionsRefreshMutationButton: $("#sourceActionsRefreshMutationButton"),
+  sourceActionsPhotosWriteButton: $("#sourceActionsPhotosWriteButton"),
+  sourceActionsOpenManagerButton: $("#sourceActionsOpenManagerButton"),
   sidebarSourceActions: $("#sidebarSourceActions"),
   sidebarConnectFolderButton: $("#sidebarConnectFolderButton"),
   sidebarConnectPhotosButton: $("#sidebarConnectPhotosButton"),
@@ -6765,6 +6775,7 @@ function syncWriteActionControls() {
     || state.storageMaintenance.loading
     || state.storageMaintenance.submitting
     || storageMaintenanceHasActiveRequest();
+  renderSourceActionsMenu();
   if (elements.sourceManagerDialog.open) renderSourceManagement();
   if (elements.storageDialog.open) renderStorageMaintenance();
   renderFavoriteControls();
@@ -9799,6 +9810,82 @@ function renderSidebarSourceActions() {
   elements.sidebarConnectPhotosButton.title = canConnectPhotos
     ? "在 Mac 上确认并请求 Apple Photos 权限"
     : "已有 Apple Photos 来源；请在对应来源上恢复或重新绑定";
+  renderSourceActionsMenu();
+}
+
+function sourceActionsFocusableButtons() {
+  return [...elements.sourceActionsPopover.querySelectorAll("button:not(:disabled)")]
+    .filter((button) => !button.classList.contains("hidden")
+      && button.getClientRects().length > 0);
+}
+
+function renderSourceActionsMenu() {
+  const manager = state.sourceManagement;
+  const sources = manager.snapshot?.sources || state.sources;
+  const activeRequest = sourceManagementActiveRequest();
+  const busy = manager.loading || manager.submitting || Boolean(activeRequest);
+  const activeSources = sources.filter((source) => source.state === "active");
+  const prewarmSources = sources.filter(
+    (source) => ["active", "unavailable"].includes(source.state)
+  );
+  const accessAuthorizationTargets = sources.filter((source) => (
+    source.kind === "folder"
+      ? ["unavailable", "authorizationRequired"].includes(source.state)
+      : ["authorizationRequired", "disabled"].includes(source.state)
+  ));
+  const mutationAuthorizationTargets = sources.filter(
+    (source) => source.kind === "folder" && source.state === "active"
+  );
+  const activePhotosSource = sources.find(
+    (source) => source.kind === "photos" && source.state === "active"
+  );
+  const unavailable = !state.online || !supportsSourceManagement();
+
+  elements.sourceAllActionsButton.disabled = unavailable;
+  elements.sourceAllActionsButton.title = !state.online
+    ? "Mac 已离线"
+    : supportsSourceManagement()
+      ? "更新、缓存或批量处理来源"
+      : "当前 Mac 版本不支持来源管理";
+  elements.sourceActionsSummary.textContent = activeRequest?.message
+    || (sources.length
+      ? `${sources.length} 个已连接来源 · 操作由 Mac 执行`
+      : manager.loading ? "正在读取 Mac 上的来源…" : "尚无已连接来源");
+
+  elements.sourceActionsRefreshAllButton.disabled = unavailable
+    || busy || activeSources.length === 0;
+  elements.sourceActionsRefreshAllButton.title = activeSources.length
+    ? `更新全部 ${activeSources.length} 个活跃来源`
+    : "当前没有可更新的活跃来源";
+  elements.sourceActionsPrewarmAllButton.disabled = unavailable
+    || busy || prewarmSources.length === 0;
+  elements.sourceActionsPrewarmAllButton.title = prewarmSources.length
+    ? `检查 ${prewarmSources.length} 个来源并生成缺失的网格缩略图`
+    : "当前没有可缓存的来源";
+  elements.sourceActionsPrewarmAllOriginalButton.disabled = unavailable
+    || busy || prewarmSources.length === 0;
+  elements.sourceActionsPrewarmAllOriginalButton.title = prewarmSources.length
+    ? `检查 ${prewarmSources.length} 个来源并生成缺失的原比例网格缓存`
+    : "当前没有可缓存的来源";
+
+  elements.sourceActionsReauthorizeAllButton.querySelector("span:last-child").textContent =
+    `依次重新授权来源（${accessAuthorizationTargets.length}）…`;
+  elements.sourceActionsRefreshMutationButton.querySelector("span:last-child").textContent =
+    `依次更新文件夹回收权限（${mutationAuthorizationTargets.length}）…`;
+  elements.sourceActionsReauthorizeAllButton.disabled = unavailable
+    || busy || accessAuthorizationTargets.length === 0;
+  elements.sourceActionsRefreshMutationButton.disabled = unavailable
+    || busy || mutationAuthorizationTargets.length === 0;
+  elements.sourceActionsReauthorizeAllButton.title =
+    "按来源依次显示系统授权窗口；取消任意一次会停止后续来源";
+  elements.sourceActionsRefreshMutationButton.title =
+    "按文件夹依次确认回收权限；不会立即修改任何照片";
+  elements.sourceActionsPhotosWriteButton.classList.toggle("hidden", !activePhotosSource);
+  elements.sourceActionsPhotosWriteButton.disabled = unavailable || busy || !activePhotosSource;
+  elements.sourceActionsPhotosWriteButton.dataset.sourceId = activePhotosSource?.id || "";
+  elements.sourceActionsPhotosWriteButton.title =
+    "Apple Photos 权限由系统图库统一管理，只需请求一次";
+  elements.sourceActionsOpenManagerButton.disabled = unavailable;
 }
 
 function generalSettingsModelStateText(model) {
@@ -14592,6 +14679,12 @@ function syncSelectionFavoriteToolbarPresentation() {
 
 function actionMenuDescriptor(kind) {
   return {
+    sourceActions: {
+      kind,
+      route: "gallery",
+      button: elements.sourceAllActionsButton,
+      popover: elements.sourceActionsPopover,
+    },
     personalModel: {
       kind,
       route: "gallery",
@@ -14621,6 +14714,7 @@ function actionMenuDescriptor(kind) {
 
 function activeActionMenuDescriptor() {
   for (const kind of [
+    "sourceActions",
     "personalModel",
     "reviewSources",
     "slimmingSources",
@@ -14662,6 +14756,9 @@ function actionMenuSelectorForTarget(descriptor, target = document.activeElement
 
 function actionMenuFallbackFocusTarget(descriptor) {
   if (!descriptor) return null;
+  if (descriptor.kind === "sourceActions") {
+    return sourceActionsFocusableButtons()[0] || elements.sourceActionsOpenManagerButton;
+  }
   if (descriptor.kind === "reviewSources") {
     return elements.reviewSourceFilterPopover.querySelector("button:not(:disabled)");
   }
@@ -14807,7 +14904,8 @@ function openActionMenu(kind, {
       "toolbarMenu",
       "sidebar",
       "commandPalette",
-    ].includes(current?.navigationLevel);
+    ].includes(current?.navigationLevel)
+    && !(kind === "sourceActions" && current?.navigationLevel === "sidebar");
   if (active) closeActionMenu({ restoreFocus: false, checkpoint: !replacesOverlay });
   state.actionMenuReturnFocus = descriptor.button;
   state.actionMenuBaseLevel = baseLevel
@@ -14828,6 +14926,8 @@ function openActionMenu(kind, {
   hideContextMenus();
   if (kind === "personalModel") {
     renderPersonalModelControls();
+  } else if (kind === "sourceActions") {
+    renderSourceActionsMenu();
   } else if (kind === "reviewSources") {
     renderReviewSourceFilter();
   } else if (kind === "slimmingSources") {
@@ -14837,7 +14937,9 @@ function openActionMenu(kind, {
   }
   descriptor.popover.classList.remove("hidden");
   descriptor.button.setAttribute("aria-expanded", "true");
-  if (kind === "slimmingSources") {
+  if (kind === "sourceActions") {
+    positionSourceActionsMenu();
+  } else if (kind === "slimmingSources") {
     positionSlimmingCatalogSourcePicker();
     if (!restoring || !state.slimming.catalogSources.snapshot) {
       void loadSlimmingCatalogSources();
@@ -14900,6 +15002,35 @@ function toggleActionMenu(kind) {
   } else {
     openActionMenu(kind);
   }
+}
+
+function positionSourceActionsMenu() {
+  if (elements.sourceActionsPopover.classList.contains("hidden")) return;
+  const anchor = elements.sourceAllActionsButton.getBoundingClientRect();
+  const menu = elements.sourceActionsPopover;
+  const gap = 5;
+  const margin = 8;
+  const maxLeft = Math.max(margin, window.innerWidth - menu.offsetWidth - margin);
+  const maxTop = Math.max(margin, window.innerHeight - menu.offsetHeight - margin);
+  menu.style.left = `${Math.min(Math.max(anchor.left, margin), maxLeft)}px`;
+  menu.style.top = `${Math.min(Math.max(anchor.bottom + gap, margin), maxTop)}px`;
+}
+
+function moveSourceActionsFocus(event) {
+  if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return false;
+  const buttons = sourceActionsFocusableButtons();
+  if (!buttons.length) return false;
+  event.preventDefault();
+  const index = buttons.indexOf(document.activeElement);
+  const targetIndex = event.key === "Home"
+    ? 0
+    : event.key === "End"
+      ? buttons.length - 1
+      : event.key === "ArrowDown"
+        ? (index + 1 + buttons.length) % buttons.length
+        : (index - 1 + buttons.length) % buttons.length;
+  buttons[targetIndex].focus({ preventScroll: true });
+  return true;
 }
 
 function closePersonalModelPopover(options = {}) {
@@ -33169,6 +33300,30 @@ function bindEvents() {
     const button = event.target.closest("[data-source-id]");
     if (button) selectSource(button.dataset.sourceId);
   });
+  elements.sourceAllActionsButton.addEventListener("click", () => {
+    toggleActionMenu("sourceActions");
+  });
+  elements.sourceActionsPopover.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-source-all-action]");
+    if (!button || button.disabled) return;
+    const action = button.dataset.sourceAllAction;
+    const sourceID = button.dataset.sourceId || null;
+    await returnFromActionMenu({ restoreFocus: false });
+    await submitSourceManagementAction(action, sourceID);
+    restoreOverlayFocus(elements.sourceAllActionsButton);
+  });
+  elements.sourceActionsPopover.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      void returnFromActionMenu();
+      return;
+    }
+    moveSourceActionsFocus(event);
+  });
+  elements.sourceActionsOpenManagerButton.addEventListener("click", async () => {
+    await returnFromActionMenu({ restoreFocus: false });
+    await openSourceManager({ refresh: false, returnFocus: elements.sourceAllActionsButton });
+  });
   elements.sourceManagerButton.addEventListener("click", openSourceManager);
   elements.sidebarConnectFolderButton.addEventListener("click", () => {
     openSourceManagerForAction("connectFolder");
@@ -35371,6 +35526,9 @@ function bindEvents() {
     }
     if (!elements.slimmingCatalogSourcePopover.classList.contains("hidden")) {
       positionSlimmingCatalogSourcePicker();
+    }
+    if (!elements.sourceActionsPopover.classList.contains("hidden")) {
+      positionSourceActionsMenu();
     }
     if (!elements.sortPopover.classList.contains("hidden")) positionSortPopover();
     for (const control of gridDensityControls()) positionGridDensityPopover(control);

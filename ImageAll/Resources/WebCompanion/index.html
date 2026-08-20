@@ -10,8 +10,8 @@
   <meta name="apple-mobile-web-app-title" content="ImageAll">
   <title>ImageAll 网页版</title>
   <link rel="manifest" href="/manifest.webmanifest">
-    <link rel="stylesheet" href="/app.css?v=20260821-124">
-    <script src="/app.js?v=20260821-124" defer></script>
+    <link rel="stylesheet" href="/app.css?v=20260821-125">
+    <script src="/app.js?v=20260821-125" defer></script>
 </head>
 <body>
   <div id="bootView" class="centered-state">
@@ -334,8 +334,13 @@
         <div class="sidebar-section source-section">
           <div class="sidebar-section-heading">
             <h2>来源</h2>
-            <button id="sourceManagerButton" class="sidebar-add-button write-action" type="button"
-              aria-label="管理来源" title="连接、授权或管理来源">•••</button>
+            <div class="sidebar-heading-actions">
+              <button id="sourceAllActionsButton" class="sidebar-add-button write-action"
+                type="button" aria-label="所有来源操作" aria-expanded="false"
+                aria-controls="sourceActionsPopover" title="更新、缓存或批量处理来源">•••</button>
+              <button id="sourceManagerButton" class="sidebar-add-button write-action" type="button"
+                aria-label="打开来源管理" title="连接、授权或管理来源">⚙</button>
+            </div>
           </div>
           <nav id="sourceList" class="sidebar-list"
             aria-label="来源导航" aria-keyshortcuts="ArrowUp ArrowDown Home End"></nav>
@@ -585,6 +590,52 @@
             </span>
           </button>
           <p>仅使用“已确认”标签样本；启动前仍可在设置页确认标签与照片范围。</p>
+        </section>
+
+        <section id="sourceActionsPopover" class="popover source-actions-popover hidden"
+          aria-label="所有来源操作" role="menu">
+          <header class="source-actions-popover-heading">
+            <span class="source-actions-popover-icon" aria-hidden="true">▦</span>
+            <span>
+              <strong>所有来源操作</strong>
+              <small id="sourceActionsSummary">由这台 Mac 处理</small>
+            </span>
+          </header>
+          <div class="source-actions-popover-group" role="group" aria-label="更新与缓存">
+            <span>更新与缓存</span>
+            <button id="sourceActionsRefreshAllButton" type="button" role="menuitem"
+              data-source-all-action="refreshAll">
+              <span aria-hidden="true">↻</span><span>更新全部来源</span>
+            </button>
+            <button id="sourceActionsPrewarmAllButton" type="button" role="menuitem"
+              data-source-all-action="prewarmAllThumbnails">
+              <span aria-hidden="true">▦</span><span>缓存所有来源的缩略图</span>
+            </button>
+            <button id="sourceActionsPrewarmAllOriginalButton" type="button" role="menuitem"
+              data-source-all-action="prewarmAllOriginalAspect">
+              <span aria-hidden="true">▤</span><span>缓存所有来源的原比例缩略图</span>
+            </button>
+          </div>
+          <div class="source-actions-popover-group" role="group" aria-label="批量处理权限">
+            <span>批量处理权限</span>
+            <button id="sourceActionsReauthorizeAllButton" type="button" role="menuitem"
+              data-source-all-action="reauthorizeAll">
+              <span aria-hidden="true">⌁</span><span>依次重新授权来源（0）…</span>
+            </button>
+            <button id="sourceActionsRefreshMutationButton" type="button" role="menuitem"
+              data-source-all-action="refreshAllFolderMutationAuthorizations">
+              <span aria-hidden="true">⌫</span><span>依次更新文件夹回收权限（0）…</span>
+            </button>
+            <button id="sourceActionsPhotosWriteButton" class="hidden" type="button"
+              role="menuitem" data-source-all-action="requestPhotosWriteAuthorization">
+              <span aria-hidden="true">▣</span><span>请求 Apple Photos 写入权限…</span>
+            </button>
+          </div>
+          <button id="sourceActionsOpenManagerButton" class="source-actions-open-manager"
+            type="button" role="menuitem">
+            <span aria-hidden="true">⚙</span><span>打开来源管理…</span><span aria-hidden="true">›</span>
+          </button>
+          <p>网页只发起请求；系统授权与文件夹选择仍在 Mac 上完成。</p>
         </section>
 
         <section id="sortPopover" class="popover sort-popover hidden" role="menu"

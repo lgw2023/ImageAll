@@ -2625,6 +2625,16 @@ final class RemoteHTTPServerTests: XCTestCase {
             "slimmingJobContextMenuTitle",
             "slimmingJobContextMenuActions",
             "sourceManagerButton",
+            "sourceAllActionsButton",
+            "sourceActionsPopover",
+            "sourceActionsSummary",
+            "sourceActionsRefreshAllButton",
+            "sourceActionsPrewarmAllButton",
+            "sourceActionsPrewarmAllOriginalButton",
+            "sourceActionsReauthorizeAllButton",
+            "sourceActionsRefreshMutationButton",
+            "sourceActionsPhotosWriteButton",
+            "sourceActionsOpenManagerButton",
             "sourceManagerDialog",
             "sourceConnectFolderButton",
             "sourceConnectPhotosButton",
@@ -2770,6 +2780,9 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertFalse(script.contains("/v1/review-queue"))
         XCTAssertFalse(script.contains("/v1/review-decisions/batch"))
         XCTAssertTrue(script.contains("function performCreateTagAndApply"))
+        XCTAssertTrue(script.contains("function renderSourceActionsMenu"))
+        XCTAssertTrue(script.contains("function positionSourceActionsMenu"))
+        XCTAssertTrue(stylesheet.contains(".source-actions-popover"))
         XCTAssertTrue(script.contains("function createInlineTagAndApply"))
         XCTAssertTrue(script.contains("state.inlineTagOperations"))
         XCTAssertTrue(stylesheet.contains(".inspector-inline-tag-form"))
