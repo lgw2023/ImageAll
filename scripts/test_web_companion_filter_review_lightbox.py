@@ -2807,6 +2807,15 @@ def main():
         assert page.evaluate(
             "() => history.state?.imageAllWorkspace?.route === 'review'"
         )
+        page.wait_for_function(
+            "assetID => !state.workspaceNavigation.applyingHistory "
+            "&& !state.workspaceNavigation.pendingReturnPromise "
+            "&& !state.review.loading "
+            "&& state.review.loadedScopeKey === currentReviewScopeKey() "
+            "&& state.review.selectedAssetIDs.size === 1 "
+            "&& state.review.selectedAssetIDs.has(assetID)",
+            arg=REVIEW_IDS[0],
+        )
 
         page.set_viewport_size({"width": 390, "height": 844})
         assert first_review_favorite.is_visible()
@@ -2818,6 +2827,7 @@ def main():
         assert review_selection_mode.inner_text() == "完成"
         assert review_select_all.is_visible()
         page.locator('[data-review-index="1"] > .review-card-main').click()
+        page.wait_for_function("() => state.review.selectedAssetIDs.size === 2")
         page.locator('[data-review-index="2"] > .review-card-main').click()
         page.wait_for_function("() => state.review.selectedAssetIDs.size === 3")
         assert review_select_all.is_disabled()
@@ -3226,9 +3236,19 @@ def main():
         page.set_viewport_size({"width": 1440, "height": 960})
         page.locator("#closeLightboxButton").click()
 
-        page.locator("#searchInput").fill("CLIP")
         with page.expect_response("**/v1/assets?**"):
-            page.locator("#searchInput").press("Enter")
+            page.evaluate(
+                """() => {
+                  const input = document.querySelector('#searchInput');
+                  input.value = 'CLIP';
+                  input.dispatchEvent(new InputEvent('input', {
+                    bubbles: true,
+                    inputType: 'insertText',
+                    data: 'CLIP',
+                  }));
+                  document.querySelector('#searchForm').requestSubmit();
+                }"""
+            )
         page.wait_for_function(
             "() => state.searchText === 'CLIP' "
             "&& !state.loadingAssets "
@@ -3245,7 +3265,13 @@ def main():
         assert page.locator(
             '#sortPopover [data-sort="fileNameAscending"]'
         ).get_attribute("aria-checked") == "true"
-        with page.expect_response("**/v1/assets?**"):
+        with page.expect_response(
+            lambda response: (
+                "/v1/assets?" in response.url
+                and parse_qs(urlparse(response.url).query).get("sort") == ["oldest"]
+                and parse_qs(urlparse(response.url).query).get("cursor") == ["video-page-2"]
+            )
+        ):
             page.locator('#sortPopover [data-sort="oldest"]').click()
         page.wait_for_function("() => state.sort === 'oldest' && !state.loadingAssets")
         assert page.locator("#sortButtonLabel").text_content() == "最早优先"

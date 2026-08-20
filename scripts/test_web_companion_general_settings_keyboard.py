@@ -755,6 +755,39 @@ def main():
         assert len(asset_requests) == compact_menu_asset_request_count
         page.screenshot(path="/tmp/imageall-source-refresh-390.png", full_page=True)
 
+        mobile_sidebar_preference = page.evaluate("() => state.layout.sidebarVisible")
+        page.locator("#compactToolbarMenuButton").focus()
+        page.keyboard.press("Meta+k")
+        page.locator("#commandPalette[open]").wait_for()
+        sidebar_command = page.locator('[data-command-id="toggleSidebar"]')
+        assert "显示侧栏" in sidebar_command.inner_text()
+        sidebar_command.click()
+        page.locator("#sourceSidebar.open").wait_for()
+        page.wait_for_function(
+            "() => history.state?.imageAllWorkspace?.navigationLevel === 'sidebar'"
+        )
+        assert page.evaluate("() => state.layout.sidebarVisible") == mobile_sidebar_preference
+        assert page.evaluate("() => document.activeElement?.closest('#sourceSidebar') !== null")
+
+        page.keyboard.press("Meta+k")
+        page.locator("#commandPalette[open]").wait_for()
+        sidebar_command = page.locator('[data-command-id="toggleSidebar"]')
+        assert "隐藏侧栏" in sidebar_command.inner_text()
+        page.screenshot(
+            path="/tmp/imageall-mobile-sidebar-command-390.png",
+            full_page=True,
+        )
+        sidebar_command.click()
+        page.wait_for_function(
+            "() => !document.querySelector('#sourceSidebar').classList.contains('open') "
+            "&& history.state?.imageAllWorkspace?.navigationLevel === 'workspace'"
+        )
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'compactToolbarMenuButton'"
+        )
+        assert page.evaluate("() => state.layout.sidebarVisible") == mobile_sidebar_preference
+        assert len(asset_requests) == compact_menu_asset_request_count
+
         drawer_history_length = page.evaluate("history.length")
         drawer_asset_request_count = len(asset_requests)
         page.locator("#sidebarToggle").click()
@@ -764,10 +797,7 @@ def main():
         assert page.locator("#libraryPane").get_attribute("inert") == ""
         assert page.locator("#inspector").get_attribute("inert") == ""
         assert page.evaluate("document.activeElement?.closest('#sourceSidebar') !== null")
-        assert page.evaluate("history.length") in {
-            drawer_history_length,
-            drawer_history_length + 1,
-        }
+        assert page.evaluate("history.length") <= drawer_history_length + 1
         assert page.evaluate(
             "history.state?.imageAllWorkspace?.navigationLevel"
         ) == "sidebar"

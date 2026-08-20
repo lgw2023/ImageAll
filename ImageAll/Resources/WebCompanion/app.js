@@ -2641,12 +2641,14 @@ function syncMobileSidebarAccessibility() {
     elements.inspector.inert = state.sidebarOverlayInertSnapshot.inspector;
     state.sidebarOverlayInertSnapshot = null;
   }
+  renderSidebarVisibilityControl();
 }
 
 function openMobileSidebar({
   focus = true,
   historyMode = "pushSidebar",
   baseLevel = null,
+  returnFocus = null,
 } = {}) {
   if (!mobileSidebarLayoutQuery.matches || visibleWorkspaceRoute() !== "gallery") return;
   if (mobileSidebarOverlayIsOpen()) {
@@ -2662,7 +2664,9 @@ function openMobileSidebar({
   closeFilterPopover({ restoreFocus: false });
   closeActionMenu({ restoreFocus: false, checkpoint: !replacesActionMenu });
   closeJobsPopover({ restoreFocus: false });
-  state.sidebarOverlayReturnFocus = elements.sidebarToggle;
+  state.sidebarOverlayReturnFocus = returnFocus instanceof HTMLElement
+    ? returnFocus
+    : elements.sidebarToggle;
   const currentLevel = current?.navigationLevel;
   state.sidebarOverlayBaseLevel = baseLevel
     || (currentLevel === "inspector" ? "inspector" : "workspace");
@@ -7121,18 +7125,7 @@ function renderLayoutPreferences() {
   if (reviewWorkspaceIsOpen() && reviewWorkspaceUsesIntegratedLayout()) {
     syncIntegratedReviewFrame();
   }
-  elements.sidebarVisibilityButton.setAttribute(
-    "aria-pressed",
-    String(state.layout.sidebarVisible)
-  );
-  elements.sidebarVisibilityButton.setAttribute(
-    "aria-label",
-    state.layout.sidebarVisible ? "隐藏侧栏" : "显示侧栏"
-  );
-  elements.sidebarVisibilityLabel.textContent = state.layout.sidebarVisible
-    ? "隐藏侧栏"
-    : "显示侧栏";
-  elements.sidebarVisibilityButton.title = state.layout.sidebarVisible ? "隐藏侧栏" : "显示侧栏";
+  renderSidebarVisibilityControl();
   renderInspectorVisibilityControl();
   renderGridDensityControls();
   const originalAspect = state.layout.aspectMode === "original";
@@ -7183,6 +7176,35 @@ function setSidebarVisible(visible) {
   state.layout.sidebarVisible = visible;
   renderLayoutPreferences();
   persistWorkspacePreferences();
+}
+
+function sidebarVisibilityIsPresented() {
+  if (mobileSidebarLayoutQuery.matches && visibleWorkspaceRoute() === "gallery") {
+    return mobileSidebarOverlayIsOpen();
+  }
+  return state.layout.sidebarVisible;
+}
+
+function renderSidebarVisibilityControl() {
+  const presented = sidebarVisibilityIsPresented();
+  const title = presented ? "隐藏侧栏" : "显示侧栏";
+  elements.sidebarVisibilityButton.setAttribute("aria-pressed", String(presented));
+  elements.sidebarVisibilityButton.setAttribute("aria-label", title);
+  elements.sidebarVisibilityLabel.textContent = title;
+  elements.sidebarVisibilityButton.title = title;
+}
+
+async function toggleSidebarVisibility(returnFocus = document.activeElement) {
+  if (mobileSidebarLayoutQuery.matches && visibleWorkspaceRoute() === "gallery") {
+    if (mobileSidebarOverlayIsOpen()) {
+      await returnFromMobileSidebar();
+    } else {
+      openMobileSidebar({ returnFocus });
+    }
+    renderSidebarVisibilityControl();
+    return;
+  }
+  setSidebarVisible(!state.layout.sidebarVisible);
 }
 
 function setInspectorVisible(visible) {
@@ -31968,7 +31990,7 @@ function availableCommands() {
     {
       id: "toggleSidebar",
       icon: "◫",
-      title: state.layout.sidebarVisible ? "隐藏侧栏" : "显示侧栏",
+      title: sidebarVisibilityIsPresented() ? "隐藏侧栏" : "显示侧栏",
       hint: "",
     },
     {
@@ -32547,7 +32569,7 @@ async function executeCommand(commandID) {
     toggleJobsPopover();
     break;
   case "toggleSidebar":
-    setSidebarVisible(!state.layout.sidebarVisible);
+    await toggleSidebarVisibility(commandReturnFocus || elements.commandButton);
     break;
   case "toggleInspector":
     await toggleInspectorVisibility(commandReturnFocus || elements.commandButton);
@@ -34741,7 +34763,7 @@ function bindEvents() {
     () => void returnFromMobileSidebar()
   );
   elements.sidebarVisibilityButton.addEventListener("click", () => {
-    setSidebarVisible(!state.layout.sidebarVisible);
+    void toggleSidebarVisibility(document.activeElement);
   });
   elements.inspectorVisibilityButton.addEventListener("click", () => {
     void toggleInspectorVisibility(document.activeElement);
