@@ -588,8 +588,12 @@ def main():
 
         page.set_viewport_size({"width": 390, "height": 844})
         page.locator("#closeInspectorButton").click()
-        remaining_cards.nth(5).click()
+        remaining_cards.nth(5).click(modifiers=["Meta"])
         remaining_cards.nth(6).click(modifiers=["Meta"])
+        assert not page.locator("#inspector").evaluate(
+            "node => node.classList.contains('open')"
+        )
+        page.locator("#selectionInspectorOverlayButton").click()
         page.locator("#selectionInspectorDeleteButton:not(.hidden)").wait_for()
         page.wait_for_function(
             """

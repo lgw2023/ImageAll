@@ -748,6 +748,10 @@
 
         <div id="batchBar" class="batch-bar hidden" role="region" aria-label="批量标签操作">
           <strong id="selectionSummary">已选择 0 项</strong>
+          <button id="selectionInspectorOverlayButton"
+            class="button button-plain selection-inspector-overlay-button" type="button">
+            检查器
+          </button>
           <button id="selectAllLoadedButton" class="button button-plain" type="button">全选已载入</button>
           <div class="selection-tool-actions" role="group" aria-label="所选项目工具">
             <div id="batchFavoriteActions" class="batch-favorite-actions"
@@ -2816,6 +2820,9 @@
     <div id="lightboxStage" class="lightbox-stage">
       <img id="lightboxImage" alt="" draggable="false">
       <video id="lightboxVideo" class="hidden" controls playsinline preload="metadata"></video>
+      <span id="lightboxGestureHint" class="lightbox-gesture-hint" aria-hidden="true">
+        左右滑动切换 · 双指缩放
+      </span>
       <div id="lightboxCloudPreviewRecovery"
         class="cloud-preview-recovery lightbox-cloud-preview-recovery hidden" role="status">
         <span id="lightboxCloudPreviewIcon" class="cloud-preview-icon" aria-hidden="true">☁︎</span>

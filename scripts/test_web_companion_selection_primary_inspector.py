@@ -388,6 +388,36 @@ def main():
             full_page=True,
         )
 
+        page.locator("#cancelSelectionButton").click()
+        page.locator("#selectionModeButton").click()
+        cards = page.locator("#assetGrid .asset-card-main")
+        cards.nth(0).click()
+        assert not page.locator("#inspector").evaluate(
+            "node => node.classList.contains('open')"
+        )
+        cards.nth(1).click(modifiers=["Meta"])
+        assert page.evaluate("() => state.selectedAssetIDs.size") == 2
+        assert page.locator("#selectionInspectorOverlayButton").is_visible()
+        page.screenshot(
+            path="/tmp/imageall-selection-grid-first-900.png",
+            full_page=True,
+        )
+        page.locator("#selectionInspectorOverlayButton").click()
+        page.wait_for_function(
+            "() => document.querySelector('#inspector').classList.contains('open')"
+        )
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "inspector"
+        page.locator("#closeInspectorButton").click()
+        page.wait_for_function(
+            "() => !document.querySelector('#inspector').classList.contains('open')"
+        )
+        assert page.locator("#selectionInspectorOverlayButton").evaluate(
+            "button => document.activeElement === button"
+        )
+        assert page.evaluate("() => state.selectedAssetIDs.size") == 2
+
         assert not page_errors, page_errors
         assert not console_errors, {
             "console": console_errors,

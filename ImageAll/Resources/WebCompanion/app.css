@@ -2283,6 +2283,10 @@ html.split-resizing * {
   white-space: nowrap;
 }
 
+.selection-inspector-overlay-button {
+  display: none;
+}
+
 .batch-spacer {
   flex: 1;
 }
@@ -8681,6 +8685,55 @@ html.split-resizing * {
   background: black;
 }
 
+.lightbox-gesture-hint {
+  position: absolute;
+  bottom: 10px;
+  left: 50%;
+  z-index: 2;
+  display: none;
+  max-width: calc(100% - 32px);
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  background: rgba(18, 18, 20, 0.68);
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.24);
+  color: rgba(255, 255, 255, 0.86);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  line-height: 1;
+  pointer-events: none;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  -webkit-backdrop-filter: blur(14px) saturate(1.2);
+  backdrop-filter: blur(14px) saturate(1.2);
+}
+
+@media (max-width: 720px), (pointer: coarse) {
+  .lightbox-gesture-hint:not(.hidden) {
+    display: block;
+    animation: lightbox-gesture-hint-in 220ms ease-out both;
+  }
+}
+
+@keyframes lightbox-gesture-hint-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 5px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lightbox-gesture-hint:not(.hidden) {
+    animation: none;
+  }
+}
+
 .lightbox-review-actions {
   position: absolute;
   right: 50%;
@@ -10205,6 +10258,54 @@ button.world-map-place-candidate:focus-visible {
 
   .selection-inspector-heading {
     padding-right: 62px;
+  }
+
+  .selection-inspector-overlay-button {
+    display: inline-flex;
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .batch-bar {
+    flex-wrap: wrap;
+    gap: 5px;
+    padding: 7px 8px;
+  }
+
+  .batch-spacer {
+    display: none;
+  }
+
+  .selection-tool-actions,
+  .batch-favorite-actions,
+  .batch-personal-model-actions {
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+  }
+
+  .selection-tool-actions .button,
+  .batch-favorite-actions .button,
+  .batch-personal-model-actions .button {
+    flex: 1 1 auto;
+  }
+
+  .selection-tool-status,
+  #batchAggregate {
+    width: 100%;
+    white-space: normal;
+  }
+
+  .batch-bar label {
+    flex: 1 1 150px;
+    min-width: 120px;
+  }
+
+  .batch-bar select {
+    width: 100%;
+  }
+
+  .segmented-actions {
+    flex: 1 1 auto;
   }
 }
 

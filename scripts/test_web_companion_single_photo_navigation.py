@@ -85,6 +85,30 @@ def review_item(index):
     }
 
 
+def dispatch_lightbox_touch(page, events):
+    page.evaluate(
+        """
+        events => {
+          const stage = document.querySelector('#lightboxStage');
+          for (const event of events) {
+            stage.dispatchEvent(new PointerEvent(event.type, {
+              bubbles: true,
+              cancelable: true,
+              pointerId: event.pointerId,
+              pointerType: 'touch',
+              isPrimary: event.pointerId === 1,
+              clientX: event.x,
+              clientY: event.y,
+              button: 0,
+              buttons: event.type === 'pointerup' || event.type === 'pointercancel' ? 0 : 1,
+            }));
+          }
+        }
+        """,
+        events,
+    )
+
+
 def main():
     asset_queries = []
     review_queries = []
@@ -661,10 +685,79 @@ def main():
         )
         assert page.locator("#lightbox").get_attribute("aria-modal") == "true"
         assert page.locator("#appView").evaluate("element => element.inert")
+        assert page.locator("#lightboxGestureHint").is_visible()
+        assert "左右滑动切换" in page.locator("#lightboxStage").get_attribute("aria-label")
+        page.screenshot(
+            path="/tmp/imageall-single-photo-gesture-hint-narrow.png",
+            full_page=True,
+        )
         dimensions = page.evaluate(
             "() => ({ viewport: innerWidth, scroll: document.documentElement.scrollWidth })"
         )
         assert dimensions["scroll"] <= dimensions["viewport"], dimensions
+
+        gesture_history_length = page.evaluate("() => history.length")
+        dispatch_lightbox_touch(page, [
+            {"type": "pointerdown", "pointerId": 1, "x": 300, "y": 430},
+            {"type": "pointermove", "pointerId": 1, "x": 72, "y": 438},
+            {"type": "pointerup", "pointerId": 1, "x": 72, "y": 438},
+        ])
+        page.wait_for_function(
+            "() => document.querySelector('#lightboxTitle')?.textContent === 'ITEM_074.JPG'"
+        )
+        assert page.locator("#lightboxGestureHint").is_hidden()
+        assert page.evaluate("() => history.length") == gesture_history_length
+
+        dispatch_lightbox_touch(page, [
+            {"type": "pointerdown", "pointerId": 1, "x": 180, "y": 430},
+            {"type": "pointermove", "pointerId": 1, "x": 150, "y": 434},
+            {"type": "pointerup", "pointerId": 1, "x": 150, "y": 434},
+        ])
+        page.wait_for_timeout(180)
+        assert page.locator("#lightboxTitle").inner_text() == "ITEM_074.JPG"
+
+        dispatch_lightbox_touch(page, [
+            {"type": "pointerdown", "pointerId": 1, "x": 190, "y": 300},
+            {"type": "pointermove", "pointerId": 1, "x": 198, "y": 570},
+            {"type": "pointerup", "pointerId": 1, "x": 198, "y": 570},
+        ])
+        page.wait_for_timeout(180)
+        assert page.locator("#lightboxTitle").inner_text() == "ITEM_074.JPG"
+
+        dispatch_lightbox_touch(page, [
+            {"type": "pointerdown", "pointerId": 1, "x": 70, "y": 430},
+            {"type": "pointermove", "pointerId": 1, "x": 304, "y": 424},
+            {"type": "pointerup", "pointerId": 1, "x": 304, "y": 424},
+        ])
+        page.wait_for_function(
+            "() => document.querySelector('#lightboxTitle')?.textContent === 'ITEM_073.JPG'"
+        )
+
+        dispatch_lightbox_touch(page, [
+            {"type": "pointerdown", "pointerId": 1, "x": 145, "y": 430},
+            {"type": "pointerdown", "pointerId": 2, "x": 245, "y": 430},
+            {"type": "pointermove", "pointerId": 1, "x": 95, "y": 430},
+            {"type": "pointermove", "pointerId": 2, "x": 295, "y": 430},
+            {"type": "pointerup", "pointerId": 2, "x": 295, "y": 430},
+            {"type": "pointermove", "pointerId": 1, "x": 125, "y": 452},
+            {"type": "pointerup", "pointerId": 1, "x": 125, "y": 452},
+        ])
+        pinch_state = page.evaluate(
+            """() => ({
+              title: document.querySelector('#lightboxTitle').textContent,
+              scale: state.lightboxViewportScale,
+              offsetX: state.lightboxViewportOffsetX,
+              offsetY: state.lightboxViewportOffsetY,
+              historyLength: history.length,
+            })"""
+        )
+        assert pinch_state["title"] == "ITEM_073.JPG"
+        assert pinch_state["scale"] > 1.5, pinch_state
+        assert abs(pinch_state["offsetX"]) + abs(pinch_state["offsetY"]) > 0, pinch_state
+        assert pinch_state["historyLength"] == gesture_history_length
+
+        page.locator("#lightboxZoomResetButton").click()
+        page.wait_for_function("() => state.lightboxViewportScale === 1")
         page.screenshot(path="/tmp/imageall-single-photo-pagination-narrow.png", full_page=True)
         page.locator("#closeLightboxButton").click()
 
@@ -925,6 +1018,26 @@ def main():
         assert page.locator(
             '[data-review-index="48"] > .review-card-main'
         ).get_attribute("aria-pressed") == "true"
+        set_lightbox_scale = page.evaluate("() => { setLightboxScale(1); return history.length; }")
+        dispatch_lightbox_touch(page, [
+            {"type": "pointerdown", "pointerId": 1, "x": 760, "y": 430},
+            {"type": "pointermove", "pointerId": 1, "x": 250, "y": 436},
+            {"type": "pointerup", "pointerId": 1, "x": 250, "y": 436},
+        ])
+        page.wait_for_function(
+            "() => document.querySelector('#lightboxTitle')?.textContent === 'REVIEW_050.JPG' "
+            "&& document.querySelector('#reviewFileName')?.textContent === 'REVIEW_050.JPG'"
+        )
+        dispatch_lightbox_touch(page, [
+            {"type": "pointerdown", "pointerId": 1, "x": 250, "y": 430},
+            {"type": "pointermove", "pointerId": 1, "x": 760, "y": 436},
+            {"type": "pointerup", "pointerId": 1, "x": 760, "y": 436},
+        ])
+        page.wait_for_function(
+            "() => document.querySelector('#lightboxTitle')?.textContent === 'REVIEW_049.JPG' "
+            "&& document.querySelector('#reviewFileName')?.textContent === 'REVIEW_049.JPG'"
+        )
+        assert page.evaluate("() => history.length") == set_lightbox_scale
         page.screenshot(path="/tmp/imageall-review-single-photo-pagination.png", full_page=True)
 
         review_preview_before_refresh = page.evaluate(
@@ -1008,6 +1121,22 @@ def main():
             f'[data-world-map-asset-id="{asset_id(2)}"]'
         ).click()
         page.locator("#lightbox:not(.hidden)").wait_for()
+        page.wait_for_function(
+            "() => document.querySelector('#lightboxTitle')?.textContent === 'MAP_002.JPG'"
+        )
+        dispatch_lightbox_touch(page, [
+            {"type": "pointerdown", "pointerId": 1, "x": 250, "y": 430},
+            {"type": "pointermove", "pointerId": 1, "x": 760, "y": 434},
+            {"type": "pointerup", "pointerId": 1, "x": 760, "y": 434},
+        ])
+        page.wait_for_function(
+            "() => document.querySelector('#lightboxTitle')?.textContent === 'MAP_001.JPG'"
+        )
+        dispatch_lightbox_touch(page, [
+            {"type": "pointerdown", "pointerId": 1, "x": 760, "y": 430},
+            {"type": "pointermove", "pointerId": 1, "x": 250, "y": 434},
+            {"type": "pointerup", "pointerId": 1, "x": 250, "y": 434},
+        ])
         page.wait_for_function(
             "() => document.querySelector('#lightboxTitle')?.textContent === 'MAP_002.JPG'"
         )
@@ -1100,6 +1229,32 @@ def main():
         assert page.locator("#lightbox").is_hidden()
         assert page.locator("#worldMapDetail").is_hidden()
         assert page.evaluate("() => state.worldMap.selectedClusterID") is None
+
+        page.evaluate(
+            """assetIDs => {
+              document.querySelector('#worldMapWorkspace').classList.add('hidden');
+              document.querySelector('#slimmingWorkspace').classList.remove('hidden');
+              state.slimming.mediaKind = 'image';
+              state.slimming.members = assetIDs.map((id, index) => ({
+                id,
+                fileName: `SLIM_GESTURE_${index + 1}.JPG`,
+                availability: 'available',
+                contentRevision: 1,
+              }));
+              openLightbox('slimming', assetIDs[0]);
+            }""",
+            [asset_id(1), asset_id(2)],
+        )
+        page.locator("#lightbox:not(.hidden)").wait_for()
+        dispatch_lightbox_touch(page, [
+            {"type": "pointerdown", "pointerId": 1, "x": 760, "y": 430},
+            {"type": "pointermove", "pointerId": 1, "x": 250, "y": 434},
+            {"type": "pointerup", "pointerId": 1, "x": 250, "y": 434},
+        ])
+        page.wait_for_function(
+            "() => document.querySelector('#lightboxTitle')?.textContent === 'SLIM_GESTURE_2.JPG'"
+        )
+        assert page.evaluate("() => state.lightboxContext") == "slimming"
 
         assert not page_errors, page_errors
         assert not console_errors, {

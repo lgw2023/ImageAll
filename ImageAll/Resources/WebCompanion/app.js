@@ -462,6 +462,7 @@ const elements = {
   findSimilarPersonalSelectionButton: $("#findSimilarPersonalSelectionButton"),
   batchBar: $("#batchBar"),
   selectionSummary: $("#selectionSummary"),
+  selectionInspectorOverlayButton: $("#selectionInspectorOverlayButton"),
   selectAllLoadedButton: $("#selectAllLoadedButton"),
   batchTagSelect: $("#batchTagSelect"),
   batchAggregate: $("#batchAggregate"),
@@ -882,6 +883,7 @@ const elements = {
   lightboxStage: $("#lightboxStage"),
   lightboxImage: $("#lightboxImage"),
   lightboxVideo: $("#lightboxVideo"),
+  lightboxGestureHint: $("#lightboxGestureHint"),
   lightboxCloudPreviewRecovery: $("#lightboxCloudPreviewRecovery"),
   lightboxCloudPreviewIcon: $("#lightboxCloudPreviewIcon"),
   lightboxCloudPreviewTitle: $("#lightboxCloudPreviewTitle"),
@@ -1126,6 +1128,7 @@ const state = {
     pollTimer: null,
   },
   inspectorDismissed: false,
+  inspectorOverlayReturnFocus: null,
   online: false,
   authMode: null,
   accountAuthorization: null,
@@ -1415,6 +1418,18 @@ const state = {
   lightboxViewportDragStartY: 0,
   lightboxViewportDragOriginX: 0,
   lightboxViewportDragOriginY: 0,
+  lightboxGesturePointers: new Map(),
+  lightboxGestureMode: null,
+  lightboxGestureSwipeOffsetX: 0,
+  lightboxGestureDeltaY: 0,
+  lightboxGestureStartedAt: 0,
+  lightboxGesturePinchDistance: 0,
+  lightboxGesturePinchScale: 1,
+  lightboxGesturePinchOffsetX: 0,
+  lightboxGesturePinchOffsetY: 0,
+  lightboxGesturePinchCenterX: 0,
+  lightboxGesturePinchCenterY: 0,
+  lightboxGestureHintDismissed: false,
   socket: null,
   socketGeneration: 0,
   reconnectAttempt: 0,
@@ -2118,15 +2133,18 @@ function checkpointGalleryInspectorHistory() {
 function closeInspectorOverlay({ restoreFocus = true } = {}) {
   state.inspectorDismissed = true;
   elements.inspector.classList.remove("open");
+  const explicitReturnFocus = state.inspectorOverlayReturnFocus;
+  state.inspectorOverlayReturnFocus = null;
   const assetID = state.selectionMode && state.selectedAssetIDs.size === 1
     ? [...state.selectedAssetIDs][0]
     : state.selectedAssetID;
   if (restoreFocus) {
-    restoreOverlayFocus(
-      assetID
+    const returnFocus = explicitReturnFocus?.isConnected
+      ? explicitReturnFocus
+      : (assetID
         ? assetCardMainButton(elements.assetGrid.querySelector(`[data-asset-id="${assetID}"]`))
-        : elements.selectionModeButton
-    );
+        : elements.selectionModeButton);
+    restoreOverlayFocus(returnFocus);
   }
   scheduleWorkspaceHistoryCheckpoint();
 }
@@ -13398,8 +13416,12 @@ function setSelectionMode(enabled, { seedCurrent = false } = {}) {
     state.selectionAnchorID = state.selectedAssetID;
   }
   state.selectionMode = enabled;
-  if (enabled) state.inspectorDismissed = false;
+  if (enabled) {
+    state.inspectorDismissed = !galleryOverviewLayoutQuery.matches;
+    if (state.inspectorDismissed) elements.inspector.classList.remove("open");
+  }
   if (!enabled) {
+    state.inspectorOverlayReturnFocus = null;
     state.selectedAssetIDs.clear();
     state.selectionAnchorID = null;
     state.selectionAggregates = [];
@@ -13411,6 +13433,16 @@ function setSelectionMode(enabled, { seedCurrent = false } = {}) {
   syncSelectionModeControls();
   renderAssetSelectionState();
   renderSelectionMutation();
+}
+
+function openSelectionInspectorOverlay() {
+  if (!state.selectionMode || !state.selectedAssetIDs.size) return;
+  state.inspectorOverlayReturnFocus = elements.selectionInspectorOverlayButton;
+  state.inspectorDismissed = false;
+  renderInspectorSurface();
+  requestAnimationFrame(() => {
+    elements.closeInspectorButton.focus({ preventScroll: true });
+  });
 }
 
 function toggleAssetSelection(assetID) {
@@ -14113,6 +14145,7 @@ async function createInlineTagAndApply(event, surface) {
 function renderSelectionBar({ updateInspector = true } = {}) {
   const count = state.selectedAssetIDs.size;
   elements.selectionSummary.textContent = `已选择 ${count} 项`;
+  elements.selectionInspectorOverlayButton.disabled = count === 0;
   elements.selectAllLoadedButton.textContent = count === state.assets.length && count > 0
     ? "取消全选"
     : "全选已载入";
@@ -24398,6 +24431,16 @@ function constrainedLightboxOffset(x, y, scale, metrics = lightboxViewportMetric
 function syncLightboxViewport() {
   const imageMode = Boolean(state.lightboxContext && lightboxMediaKind() !== "video");
   elements.lightboxZoomControls.classList.toggle("hidden", !imageMode);
+  elements.lightboxGestureHint.classList.toggle(
+    "hidden",
+    !imageMode || state.lightboxGestureHintDismissed
+  );
+  elements.lightboxStage.setAttribute(
+    "aria-label",
+    imageMode
+      ? "照片预览画布；左右滑动切换，双指缩放，放大后拖动"
+      : "视频预览画布；使用播放器控制播放"
+  );
   if (!imageMode) {
     elements.lightboxImage.style.removeProperty("transform");
     elements.lightboxImage.style.removeProperty("cursor");
@@ -24426,7 +24469,10 @@ function syncLightboxViewport() {
   state.lightboxViewportOffsetX = offset.x;
   state.lightboxViewportOffsetY = offset.y;
   const percentage = Math.round(scale * 100);
-  elements.lightboxImage.style.transform = `translate3d(${offset.x}px, ${offset.y}px, 0) scale(${scale})`;
+  const gestureOffsetX = scale <= LIGHTBOX_MIN_SCALE
+    ? state.lightboxGestureSwipeOffsetX
+    : 0;
+  elements.lightboxImage.style.transform = `translate3d(${offset.x + gestureOffsetX}px, ${offset.y}px, 0) scale(${scale})`;
   elements.lightboxImage.style.cursor = scale > 1
     ? (state.lightboxViewportPointerID == null ? "grab" : "grabbing")
     : "zoom-in";
@@ -24450,12 +24496,18 @@ function resetLightboxViewport(assetID = state.lightboxAssetID) {
   state.lightboxViewportOffsetX = 0;
   state.lightboxViewportOffsetY = 0;
   state.lightboxViewportPointerID = null;
+  state.lightboxGesturePointers.clear();
+  state.lightboxGestureMode = null;
+  state.lightboxGestureSwipeOffsetX = 0;
+  state.lightboxGestureDeltaY = 0;
   elements.lightboxStage.classList.remove("dragging");
   syncLightboxViewport();
 }
 
 function setLightboxScale(nextScale) {
   if (lightboxMediaKind() === "video") return;
+  state.lightboxGestureSwipeOffsetX = 0;
+  state.lightboxGestureDeltaY = 0;
   state.lightboxViewportScale = Math.min(
     LIGHTBOX_MAX_SCALE,
     Math.max(LIGHTBOX_MIN_SCALE, Number(nextScale) || LIGHTBOX_MIN_SCALE)
@@ -24480,42 +24532,226 @@ function handleLightboxWheel(event) {
   setLightboxScale(state.lightboxViewportScale * Math.exp(-limitedDelta * sensitivity));
 }
 
-function beginLightboxPan(event) {
-  if (lightboxMediaKind() === "video" || state.lightboxViewportScale <= 1
-    || event.button !== 0 || state.lightboxViewportPointerID != null) return;
-  event.preventDefault();
-  state.lightboxViewportPointerID = event.pointerId;
-  state.lightboxViewportDragStartX = event.clientX;
-  state.lightboxViewportDragStartY = event.clientY;
+function captureLightboxPointer(pointerID) {
+  try {
+    elements.lightboxStage.setPointerCapture?.(pointerID);
+  } catch {
+    // Synthetic PointerEvents do not always have a browser-owned active pointer.
+  }
+}
+
+function releaseLightboxPointer(pointerID) {
+  try {
+    if (elements.lightboxStage.hasPointerCapture?.(pointerID)) {
+      elements.lightboxStage.releasePointerCapture(pointerID);
+    }
+  } catch {
+    // The browser may already have released a cancelled pointer.
+  }
+}
+
+function lightboxGesturePair() {
+  return [...state.lightboxGesturePointers.values()].slice(0, 2);
+}
+
+function lightboxGestureDistance(first, second) {
+  return Math.hypot(second.x - first.x, second.y - first.y);
+}
+
+function beginLightboxPinch() {
+  const [first, second] = lightboxGesturePair();
+  if (!first || !second) return;
+  const stage = elements.lightboxStage.getBoundingClientRect();
+  state.lightboxGestureMode = "pinch";
+  state.lightboxViewportPointerID = null;
+  state.lightboxGesturePinchDistance = Math.max(1, lightboxGestureDistance(first, second));
+  state.lightboxGesturePinchScale = state.lightboxViewportScale;
+  state.lightboxGesturePinchOffsetX = state.lightboxViewportOffsetX;
+  state.lightboxGesturePinchOffsetY = state.lightboxViewportOffsetY;
+  state.lightboxGesturePinchCenterX = (first.x + second.x) / 2
+    - (stage.left + stage.width / 2);
+  state.lightboxGesturePinchCenterY = (first.y + second.y) / 2
+    - (stage.top + stage.height / 2);
+  state.lightboxGestureSwipeOffsetX = 0;
+  state.lightboxGestureDeltaY = 0;
+}
+
+function rebaseLightboxSinglePointer(pointerID, point) {
+  state.lightboxViewportPointerID = pointerID;
+  state.lightboxViewportDragStartX = point.x;
+  state.lightboxViewportDragStartY = point.y;
   state.lightboxViewportDragOriginX = state.lightboxViewportOffsetX;
   state.lightboxViewportDragOriginY = state.lightboxViewportOffsetY;
-  elements.lightboxStage.setPointerCapture?.(event.pointerId);
+  state.lightboxGestureSwipeOffsetX = 0;
+  state.lightboxGestureDeltaY = 0;
+  state.lightboxGestureStartedAt = performance.now();
+  state.lightboxGestureMode = state.lightboxViewportScale > LIGHTBOX_MIN_SCALE
+    ? "pan"
+    : "swipe";
+}
+
+function beginLightboxPan(event) {
+  if (lightboxMediaKind() === "video"
+    || event.target.closest("button, input, select, textarea, video, a[href]")
+    || event.button !== 0) return;
+  const touchLike = event.pointerType === "touch" || event.pointerType === "pen";
+  if (!touchLike) {
+    if (state.lightboxViewportScale <= LIGHTBOX_MIN_SCALE
+      || state.lightboxViewportPointerID != null) return;
+    event.preventDefault();
+    state.lightboxViewportPointerID = event.pointerId;
+    state.lightboxViewportDragStartX = event.clientX;
+    state.lightboxViewportDragStartY = event.clientY;
+    state.lightboxViewportDragOriginX = state.lightboxViewportOffsetX;
+    state.lightboxViewportDragOriginY = state.lightboxViewportOffsetY;
+    captureLightboxPointer(event.pointerId);
+    elements.lightboxStage.classList.add("dragging");
+    syncLightboxViewport();
+    return;
+  }
+  event.preventDefault();
+  state.lightboxGestureHintDismissed = true;
+  elements.lightboxGestureHint.classList.add("hidden");
+  state.lightboxGesturePointers.set(event.pointerId, {
+    x: event.clientX,
+    y: event.clientY,
+  });
+  captureLightboxPointer(event.pointerId);
   elements.lightboxStage.classList.add("dragging");
+  if (state.lightboxGesturePointers.size >= 2) {
+    beginLightboxPinch();
+  } else {
+    rebaseLightboxSinglePointer(event.pointerId, {
+      x: event.clientX,
+      y: event.clientY,
+    });
+  }
   syncLightboxViewport();
 }
 
 function moveLightboxPan(event) {
-  if (event.pointerId !== state.lightboxViewportPointerID) return;
+  const touchLike = event.pointerType === "touch" || event.pointerType === "pen";
+  if (!touchLike) {
+    if (event.pointerId !== state.lightboxViewportPointerID) return;
+    event.preventDefault();
+    const offset = constrainedLightboxOffset(
+      state.lightboxViewportDragOriginX + event.clientX - state.lightboxViewportDragStartX,
+      state.lightboxViewportDragOriginY + event.clientY - state.lightboxViewportDragStartY,
+      state.lightboxViewportScale
+    );
+    state.lightboxViewportOffsetX = offset.x;
+    state.lightboxViewportOffsetY = offset.y;
+    syncLightboxViewport();
+    return;
+  }
+  if (!state.lightboxGesturePointers.has(event.pointerId)) return;
   event.preventDefault();
-  const offset = constrainedLightboxOffset(
-    state.lightboxViewportDragOriginX + event.clientX - state.lightboxViewportDragStartX,
-    state.lightboxViewportDragOriginY + event.clientY - state.lightboxViewportDragStartY,
-    state.lightboxViewportScale
-  );
-  state.lightboxViewportOffsetX = offset.x;
-  state.lightboxViewportOffsetY = offset.y;
+  state.lightboxGesturePointers.set(event.pointerId, {
+    x: event.clientX,
+    y: event.clientY,
+  });
+  if (state.lightboxGestureMode === "pinch"
+    && state.lightboxGesturePointers.size >= 2) {
+    const [first, second] = lightboxGesturePair();
+    const stage = elements.lightboxStage.getBoundingClientRect();
+    const scale = Math.min(
+      LIGHTBOX_MAX_SCALE,
+      Math.max(
+        LIGHTBOX_MIN_SCALE,
+        state.lightboxGesturePinchScale
+          * lightboxGestureDistance(first, second)
+          / state.lightboxGesturePinchDistance
+      )
+    );
+    const ratio = scale / state.lightboxGesturePinchScale;
+    const centerX = (first.x + second.x) / 2 - (stage.left + stage.width / 2);
+    const centerY = (first.y + second.y) / 2 - (stage.top + stage.height / 2);
+    const offset = constrainedLightboxOffset(
+      centerX - (state.lightboxGesturePinchCenterX
+        - state.lightboxGesturePinchOffsetX) * ratio,
+      centerY - (state.lightboxGesturePinchCenterY
+        - state.lightboxGesturePinchOffsetY) * ratio,
+      scale
+    );
+    state.lightboxViewportScale = scale;
+    state.lightboxViewportOffsetX = offset.x;
+    state.lightboxViewportOffsetY = offset.y;
+  } else if (state.lightboxGestureMode === "pan") {
+    const offset = constrainedLightboxOffset(
+      state.lightboxViewportDragOriginX + event.clientX - state.lightboxViewportDragStartX,
+      state.lightboxViewportDragOriginY + event.clientY - state.lightboxViewportDragStartY,
+      state.lightboxViewportScale
+    );
+    state.lightboxViewportOffsetX = offset.x;
+    state.lightboxViewportOffsetY = offset.y;
+  } else if (state.lightboxGestureMode === "swipe") {
+    let offsetX = event.clientX - state.lightboxViewportDragStartX;
+    state.lightboxGestureDeltaY = event.clientY - state.lightboxViewportDragStartY;
+    const reachesUnavailableEdge = offsetX > 0
+      ? elements.lightboxPreviousButton.disabled
+      : elements.lightboxNextButton.disabled;
+    if (reachesUnavailableEdge) offsetX *= 0.24;
+    const stageWidth = Math.max(1, elements.lightboxStage.clientWidth);
+    state.lightboxGestureSwipeOffsetX = Math.max(
+      -stageWidth * 0.72,
+      Math.min(stageWidth * 0.72, offsetX)
+    );
+  }
   syncLightboxViewport();
 }
 
 function endLightboxPan(event) {
-  if (event.pointerId !== state.lightboxViewportPointerID) return;
-  state.lightboxViewportPointerID = null;
-  if (elements.lightboxStage.hasPointerCapture?.(event.pointerId)) {
-    elements.lightboxStage.releasePointerCapture(event.pointerId);
+  const touchLike = event.pointerType === "touch" || event.pointerType === "pen";
+  if (!touchLike) {
+    if (event.pointerId !== state.lightboxViewportPointerID) return;
+    state.lightboxViewportPointerID = null;
+    releaseLightboxPointer(event.pointerId);
+    elements.lightboxStage.classList.remove("dragging");
+    syncLightboxViewport();
+    scheduleWorkspaceHistoryCheckpoint();
+    return;
   }
+  if (!state.lightboxGesturePointers.has(event.pointerId)) return;
+  releaseLightboxPointer(event.pointerId);
+  state.lightboxGesturePointers.delete(event.pointerId);
+  if (state.lightboxGesturePointers.size === 1) {
+    const [pointerID, point] = state.lightboxGesturePointers.entries().next().value;
+    rebaseLightboxSinglePointer(pointerID, point);
+    syncLightboxViewport();
+    return;
+  }
+  if (state.lightboxGesturePointers.size > 1) {
+    beginLightboxPinch();
+    return;
+  }
+  const mode = state.lightboxGestureMode;
+  const swipeOffsetX = state.lightboxGestureSwipeOffsetX;
+  const deltaY = state.lightboxGestureDeltaY;
+  const elapsed = Math.max(1, performance.now() - state.lightboxGestureStartedAt);
+  const stageWidth = Math.max(1, elements.lightboxStage.clientWidth);
+  const swipeThreshold = elapsed < 350
+    ? Math.max(44, stageWidth * 0.12)
+    : Math.max(56, stageWidth * 0.18);
+  const direction = swipeOffsetX < 0 ? 1 : -1;
+  const targetUnavailable = direction > 0
+    ? elements.lightboxNextButton.disabled
+    : elements.lightboxPreviousButton.disabled;
+  const commitsSwipe = event.type !== "pointercancel"
+    && mode === "swipe"
+    && Math.abs(swipeOffsetX) >= swipeThreshold
+    && Math.abs(swipeOffsetX) > Math.abs(deltaY) * 1.25
+    && !targetUnavailable;
+  state.lightboxViewportPointerID = null;
+  state.lightboxGestureMode = null;
+  state.lightboxGestureSwipeOffsetX = 0;
+  state.lightboxGestureDeltaY = 0;
   elements.lightboxStage.classList.remove("dragging");
   syncLightboxViewport();
-  scheduleWorkspaceHistoryCheckpoint();
+  if (commitsSwipe) {
+    void navigateLightbox(direction);
+  } else if (mode === "pan" || mode === "pinch") {
+    scheduleWorkspaceHistoryCheckpoint();
+  }
 }
 
 function lightboxMediaKind() {
@@ -25765,6 +26001,7 @@ function resetWorkspaceSessionState() {
   state.personalModelActivities.requestGeneration += 1;
   if (elements.tagSuggestionDialog.open) elements.tagSuggestionDialog.close();
   state.inspectorDismissed = false;
+  state.inspectorOverlayReturnFocus = null;
   state.selectionAggregates = [];
   state.aggregateGeneration += 1;
   state.tagMutating = false;
@@ -29127,6 +29364,10 @@ function bindEvents() {
   elements.selectionModeButton.addEventListener("click", () => {
     setSelectionMode(!state.selectionMode);
   });
+  elements.selectionInspectorOverlayButton.addEventListener(
+    "click",
+    openSelectionInspectorOverlay
+  );
   elements.personalModelButton.addEventListener("click", togglePersonalModelPopover);
   elements.toolbarRebuildPersonalModelButton.addEventListener("click", () => {
     openLibraryPersonalTraining("personalCentroid", elements.toolbarRebuildPersonalModelButton);
