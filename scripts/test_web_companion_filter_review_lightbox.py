@@ -3167,6 +3167,11 @@ def main():
         accept_review_action = page.locator(
             '#lightboxReviewActions [data-action="accept"]'
         )
+        page.wait_for_function(
+            "() => !document.querySelector("
+            "'#lightboxReviewActions [data-action=\"accept\"]'"
+            ").disabled"
+        )
         assert accept_review_action.is_enabled()
         with page.expect_response("**/v1/review/decisions/batch"):
             accept_review_action.click()
@@ -3496,8 +3501,12 @@ def main():
             "buttons => buttons.every(button => Math.round(button.getBoundingClientRect().width) === 29)"
         )
         page.set_viewport_size({"width": 390, "height": 844})
+        page.wait_for_timeout(100)
         if page.locator("#inspector.open #closeInspectorButton").is_visible():
             page.locator("#closeInspectorButton").click()
+        page.wait_for_function(
+            "() => !document.querySelector('#inspector').classList.contains('open')"
+        )
         sort_button.click()
         page.locator("#sortPopover:not(.hidden)").wait_for()
         toolbar_asset_load_calls = page.evaluate(

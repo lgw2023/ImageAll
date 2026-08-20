@@ -1497,6 +1497,28 @@ def main():
             "() => document.activeElement?.id"
         ) == "compactToolbarMenuButton"
 
+        page.keyboard.press("Meta+f")
+        page.locator("#trainingWorkspace").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => history.state?.imageAllWorkspace?.route === 'gallery' "
+            "&& history.state?.imageAllWorkspace?.navigationLevel === 'workspace' "
+            "&& document.activeElement?.id === 'searchInput'"
+        )
+        assert not page.locator("#appView").evaluate("element => element.inert")
+        page.screenshot(
+            path="/tmp/imageall-mobile-workspace-command-search-390.png",
+            full_page=True,
+        )
+        page.go_back()
+        page.locator("#trainingWorkspace:not(.hidden)").wait_for(state="visible")
+        page.wait_for_function(
+            "runID => history.state?.imageAllWorkspace?.route === 'training' "
+            "&& document.querySelector('#appView').inert "
+            "&& document.querySelector(`[data-training-run-id='${runID}']`)"
+            "?.getAttribute('aria-selected') === 'true'",
+            arg=FAILED_RUN_ID,
+        )
+
         # A browser refresh must preserve the active Mac-style workspace and
         # its durable navigation context instead of silently returning to the
         # gallery root.

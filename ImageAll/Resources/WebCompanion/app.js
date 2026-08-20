@@ -36888,8 +36888,7 @@ function bindEvents() {
     const mobileSidebarOpen = mobileSidebarOverlayIsOpen();
     const inspectorOverlayOpen = globalThis.matchMedia("(max-width: 980px)").matches
       && elements.inspector.classList.contains("open");
-    const customOverlayOpen = lightboxOpen || reviewModalOpen || trainingModalOpen || slimmingModalOpen || worldMapModalOpen
-      || galleryOverviewModalOpen
+    const searchBlockingOverlayOpen = lightboxOpen
       || jobsOpen
       || filterOpen
       || layoutMenuOpen
@@ -36927,7 +36926,7 @@ function bindEvents() {
       return;
     }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
-      if (blockingDialogOpen || elements.commandPalette.open || customOverlayOpen) {
+      if (blockingDialogOpen || elements.commandPalette.open || searchBlockingOverlayOpen) {
         event.preventDefault();
         return;
       }
