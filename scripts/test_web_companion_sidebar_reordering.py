@@ -694,6 +694,42 @@ def main():
         assert query["excludedTagIDs"] == [TAG_DOG]
 
         test_phase[0] = "tag-context-menu"
+        if not page.evaluate("() => state.selectionMode"):
+            page.locator("#selectionModeButton").click()
+        page.locator("#assetGrid > .asset-card").first.click()
+        page.wait_for_function("() => state.selectedAssetIDs.size > 0")
+        new_tag_history_length = page.evaluate("() => history.length")
+        new_tag_asset_query_count = len(asset_queries)
+        page.locator("#sidebarNewTagButton").focus()
+        page.locator("#sidebarNewTagButton").click()
+        page.locator("#newTagDialog[open]").wait_for()
+        assert page.evaluate("() => history.length") in {
+            new_tag_history_length,
+            new_tag_history_length + 1,
+        }
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "newTag"
+        page.locator("#newTagName").fill("浏览器历史草稿")
+        new_tag_history_payload = page.evaluate(
+            "() => JSON.stringify(history.state?.imageAllWorkspace || null)"
+        )
+        assert "浏览器历史草稿" not in new_tag_history_payload
+        page.evaluate("() => history.back()")
+        page.locator("#newTagDialog").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'sidebarNewTagButton'"
+        )
+        page.evaluate("() => history.forward()")
+        page.locator("#newTagDialog[open]").wait_for()
+        assert page.locator("#newTagName").input_value() == "浏览器历史草稿"
+        page.locator("#cancelNewTagFooterButton").click()
+        page.locator("#newTagDialog").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'sidebarNewTagButton'"
+        )
+        assert len(asset_queries) == new_tag_asset_query_count
+
         dog_chip.click(button="right")
         tag_menu = page.locator("#tagContextMenu:not(.hidden)")
         tag_menu.wait_for()
@@ -733,8 +769,23 @@ def main():
         dog_chip.click(button="right")
         tag_menu.locator('[data-tag-context-action="renameTag"]').click()
         page.locator("#tagManagerDialog[open]").wait_for()
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "tagManager"
         assert page.locator("#tagManagerTagSelect").input_value() == TAG_DOG
         assert page.evaluate("() => document.activeElement?.id") == "tagManagerTagName"
+        manager_asset_query_count = len(asset_queries)
+        page.evaluate("() => history.back()")
+        page.locator("#tagManagerDialog").wait_for(state="hidden")
+        page.wait_for_function(
+            "id => document.activeElement?.dataset.quickTagId === id",
+            arg=TAG_DOG,
+        )
+        page.evaluate("() => history.forward()")
+        page.locator("#tagManagerDialog[open]").wait_for()
+        assert page.locator("#tagManagerTagSelect").input_value() == TAG_DOG
+        assert page.evaluate("() => document.activeElement?.id") == "tagManagerTagName"
+        assert len(asset_queries) == manager_asset_query_count
         page.locator("#tagManagerTagName").fill("狗狗")
         page.locator("#renameManagedTagButton").click()
         page.wait_for_function(
@@ -763,6 +814,28 @@ def main():
             "() => document.querySelector('#toastMessage').textContent.includes('主体分类')"
         )
         assert len(group_renames) == 1
+        page.locator("#deleteTagGroupButton").click()
+        page.locator("#confirmDialog[open]").wait_for()
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "confirmation"
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.context?.confirmationBaseLevel"
+        ) == "tagManager"
+        tag_confirmation_history_payload = page.evaluate(
+            "() => JSON.stringify(history.state?.imageAllWorkspace || null)"
+        )
+        assert "主体分类" not in tag_confirmation_history_payload
+        assert "删除标签分组" not in tag_confirmation_history_payload
+        page.evaluate("() => history.back()")
+        page.locator("#confirmDialog").wait_for(state="hidden")
+        assert page.locator("#tagManagerDialog").is_visible()
+        assert page.locator("#tagManagerGroupName").input_value() == "主体分类"
+        page.evaluate("() => history.forward()")
+        page.locator("#confirmDialog[open]").wait_for()
+        page.locator("#cancelConfirmButton").click()
+        page.locator("#confirmDialog").wait_for(state="hidden")
+        assert page.locator("#tagManagerDialog").is_visible()
         page.locator("#closeTagManagerButton").click()
         page.wait_for_function(
             "id => document.activeElement?.dataset.sidebarTagGroupToggle === id",
