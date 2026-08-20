@@ -1080,6 +1080,77 @@ def main():
         page.wait_for_function(
             f"() => document.activeElement?.dataset.sourceId === '{SOURCE_ID}'"
         )
+        source_bounds = source_button.bounding_box()
+        assert source_bounds is not None
+        long_press_point = {
+            "x": source_bounds["x"] + min(42, source_bounds["width"] / 2),
+            "y": source_bounds["y"] + source_bounds["height"] / 2,
+        }
+        page.evaluate(
+            """({ sourceID, point }) => {
+              const source = document.querySelector(`[data-source-id="${sourceID}"]`);
+              source.dispatchEvent(new PointerEvent('pointerdown', {
+                bubbles: true,
+                pointerId: 91,
+                pointerType: 'touch',
+                button: 0,
+                clientX: point.x,
+                clientY: point.y,
+                isPrimary: true,
+              }));
+            }""",
+            {"sourceID": SOURCE_ID, "point": long_press_point},
+        )
+        page.wait_for_timeout(580)
+        page.locator("#sourceContextMenu:not(.hidden)").wait_for()
+        assert not source_button.evaluate(
+            "button => button.classList.contains('context-long-press-active')"
+        )
+        page.evaluate(
+            """point => document.elementFromPoint(point.x, point.y)?.dispatchEvent(
+              new PointerEvent('pointerup', {
+                bubbles: true,
+                pointerId: 91,
+                pointerType: 'touch',
+                button: 0,
+                clientX: point.x,
+                clientY: point.y,
+                isPrimary: true,
+              })
+            )""",
+            long_press_point,
+        )
+        page.screenshot(path="/tmp/imageall-source-long-press-menu.png", full_page=True)
+        page.keyboard.press("Escape")
+        page.wait_for_function(
+            f"() => document.activeElement?.dataset.sourceId === '{SOURCE_ID}'"
+        )
+        page.evaluate(
+            """({ sourceID, point }) => {
+              const source = document.querySelector(`[data-source-id="${sourceID}"]`);
+              source.dispatchEvent(new PointerEvent('pointerdown', {
+                bubbles: true,
+                pointerId: 92,
+                pointerType: 'touch',
+                button: 0,
+                clientX: point.x,
+                clientY: point.y,
+                isPrimary: true,
+              }));
+              source.dispatchEvent(new PointerEvent('pointermove', {
+                bubbles: true,
+                pointerId: 92,
+                pointerType: 'touch',
+                button: 0,
+                clientX: point.x + 20,
+                clientY: point.y + 20,
+                isPrimary: true,
+              }));
+            }""",
+            {"sourceID": SOURCE_ID, "point": long_press_point},
+        )
+        page.wait_for_timeout(580)
+        assert page.locator("#sourceContextMenu").is_hidden()
         source_button.press("Shift+F10")
         page.locator("#sourceContextMenu:not(.hidden)").wait_for()
         page.locator('[data-source-context-action="view"]').click()
@@ -1236,15 +1307,13 @@ def main():
         )
         page.keyboard.press("Escape")
         page.locator("#confirmDialog").wait_for(state="hidden")
-        assert page.locator("#sourceManagerDialog").is_visible()
+        assert not page.locator("#sourceManagerDialog").is_visible()
         assert len(source_actions) == full_repair_request_count
         page.wait_for_function(
-            f"() => document.activeElement?.dataset.sourceAction === 'fullRepair'"
-            f" && document.activeElement?.dataset.sourceId === '{SOURCE_ID}'"
+            f"() => document.activeElement?.dataset.sourceId === '{SOURCE_ID}'"
         )
-        page.locator(
-            f'[data-source-action="fullRepair"][data-source-id="{SOURCE_ID}"]'
-        ).click()
+        source_button.click(button="right")
+        page.locator('[data-source-context-action="fullRepair"]').click()
         page.locator("#confirmDialog[open]").wait_for()
         with page.expect_response(
             lambda response: response.url.endswith("/v1/source-management/requests")
@@ -1255,10 +1324,9 @@ def main():
         assert source_actions[-1]["action"] == "fullRepair"
         assert source_actions[-1]["sourceID"] == SOURCE_ID
         page.wait_for_function(
-            f"() => document.activeElement?.dataset.sourceAction === 'fullRepair'"
-            f" && document.activeElement?.dataset.sourceId === '{SOURCE_ID}'"
+            f"() => document.activeElement?.dataset.sourceId === '{SOURCE_ID}'"
         )
-        page.locator("#sourceManagerCloseButton").click()
+        assert not page.locator("#sourceManagerDialog").is_visible()
 
         source_button.click(button="right")
         with page.expect_response(
@@ -1267,10 +1335,9 @@ def main():
         ) as photos_authorization:
             page.locator('[data-source-context-action="requestPhotosWriteAuthorization"]').click()
         assert photos_authorization.value.status == 200
-        page.wait_for_function("() => document.querySelector('#sourceManagerDialog')?.open")
         page.wait_for_function("() => document.querySelector('#toastMessage')?.textContent.includes('Synthetic Mac authorization completed')")
         assert source_actions[-1]["action"] == "requestPhotosWriteAuthorization"
-        page.locator("#sourceManagerCloseButton").click()
+        assert not page.locator("#sourceManagerDialog").is_visible()
 
         delete_request_count = len(source_actions)
         source_button.click(button="right")
@@ -1284,13 +1351,10 @@ def main():
         page.locator("#cancelConfirmButton").click()
         assert len(source_actions) == delete_request_count
         page.wait_for_function(
-            f"() => document.activeElement?.dataset.sourceAction === 'delete'"
-            f" && document.activeElement?.dataset.sourceId === '{SOURCE_ID}'"
+            f"() => document.activeElement?.dataset.sourceId === '{SOURCE_ID}'"
         )
-        page.locator(
-            f'#sourceManagerList [data-source-action="delete"]'
-            f'[data-source-id="{SOURCE_ID}"]'
-        ).click()
+        source_button.click(button="right")
+        page.locator('[data-source-context-action="delete"]').click()
         page.locator("#confirmDialog[open]").wait_for()
         with page.expect_response(
             lambda response: response.url.endswith("/v1/source-management/requests")
@@ -1301,10 +1365,9 @@ def main():
         assert source_actions[-1]["action"] == "delete"
         assert source_actions[-1]["sourceID"] == SOURCE_ID
         page.wait_for_function(
-            f"() => document.activeElement?.dataset.sourceAction === 'delete'"
-            f" && document.activeElement?.dataset.sourceId === '{SOURCE_ID}'"
+            f"() => document.activeElement?.dataset.sourceId === '{SOURCE_ID}'"
         )
-        page.locator("#sourceManagerCloseButton").click()
+        assert not page.locator("#sourceManagerDialog").is_visible()
 
         folder_button = page.locator(f'#sourceList [data-source-id="{FOLDER_SOURCE_ID}"]')
         folder_button.click()
@@ -1362,11 +1425,10 @@ def main():
         ) as folder_authorization:
             page.locator('[data-source-context-action="refreshFolderMutationAuthorization"]').click()
         assert folder_authorization.value.status == 200
-        page.wait_for_function("() => document.querySelector('#sourceManagerDialog')?.open")
         page.wait_for_function("() => document.querySelector('#toastMessage')?.textContent.includes('Synthetic Mac authorization completed')")
         assert source_actions[-1]["action"] == "refreshFolderMutationAuthorization"
         page.screenshot(path="/tmp/imageall-source-authorization-synthetic.png", full_page=True)
-        page.locator("#sourceManagerCloseButton").click()
+        assert not page.locator("#sourceManagerDialog").is_visible()
 
         page.locator("#sourceManagerButton").click()
         page.keyboard.press("Escape")

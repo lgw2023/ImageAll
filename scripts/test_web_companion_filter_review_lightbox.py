@@ -1520,9 +1520,14 @@ def main():
         page.locator(
             '#sourceContextMenu [data-source-context-action="prewarmThumbnails"]'
         ).click()
+        assert not page.locator("#sourceManagerDialog").is_visible()
+        page.wait_for_function(
+            "() => !document.querySelector('#sourcePrewarmStatusButton').classList.contains('hidden')"
+        )
+        page.locator("#sourcePrewarmStatusButton").click()
         page.locator("#sourceManagerDialog").wait_for(state="visible")
         page.wait_for_function(
-            "() => document.querySelector('#sourceManagerPending').textContent.includes('0 / 3')"
+            "() => document.querySelector('#sourceManagerPending').textContent.includes('/ 3')"
         )
         assert source_actions[-1]["action"] == "prewarmThumbnails"
         assert page.locator("#sourceManagerPending progress").get_attribute("max") == "3"
@@ -2233,6 +2238,12 @@ def main():
         )
         page.wait_for_function(
             "() => document.activeElement?.dataset.gridDensity === '3'"
+        )
+        page.wait_for_function(
+            "() => !state.loadingAssets "
+            "&& !state.assetLoadPromise "
+            "&& !state.queuedAssetLoadOptions "
+            "&& state.assetRenderedQuerySignature === assetQuerySignature()"
         )
         review_density_history_queries = len(asset_queries)
         review_density_history = page.evaluate(

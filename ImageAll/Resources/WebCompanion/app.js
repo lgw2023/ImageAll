@@ -9222,7 +9222,7 @@ function sourceSidebarHelpDetail(source) {
   return [
     availability,
     `点击只显示“${source.displayName}”中的当前媒体。${refresh}`,
-    "右键、Context Menu 或 Shift-F10 查看同步、缓存、授权、管理和移除动作。",
+    "右键、触控长按、Context Menu 或 Shift-F10 查看同步、缓存、授权、管理和移除动作。",
     "拖动可调整来源顺序；Option + 上/下可用键盘移动。",
   ].join("\n");
 }
@@ -9253,7 +9253,7 @@ function renderSources() {
       "Alt+ArrowUp Alt+ArrowDown Shift+F10 ContextMenu"
     );
     button.setAttribute("aria-haspopup", "menu");
-    button.title = "拖动可调整顺序；右键或 Shift-F10 查看来源操作";
+    button.title = "拖动可调整顺序；右键、触控长按或 Shift-F10 查看来源操作";
     button.dataset.helpTitle = source.displayName;
     button.dataset.helpKind = "source";
     button.dataset.helpDetail = sourceSidebarHelpDetail(source);
@@ -18947,17 +18947,17 @@ function openJobsPopover({
       state.jobsScrollTop = 0;
     }
     const current = activeWorkspaceHistoryEntry();
-    const replacesActionMenu = historyMode === "pushJobs"
-      && current?.navigationLevel === "actionMenu";
+    const replacesOverlay = historyMode === "pushJobs"
+      && ["actionMenu", "layoutMenu"].includes(current?.navigationLevel);
     state.jobsBaseLevel = baseLevel
       || workspaceNavigationBaseLevel(
         current?.navigationLevel || "workspace",
         current?.context || {}
       );
     closeCompactToolbarMenu({ restoreFocus: false });
-    closeLayoutMenu({ restoreFocus: false });
+    closeLayoutMenu({ restoreFocus: false, checkpoint: !replacesOverlay });
     closeFilterPopover({ restoreFocus: false });
-    closeActionMenu({ restoreFocus: false, checkpoint: !replacesActionMenu });
+    closeActionMenu({ restoreFocus: false, checkpoint: !replacesOverlay });
     elements.jobsPopover.classList.remove("hidden");
     const targetID = jobID && state.jobs.some((job) => job.id === jobID)
       ? jobID
@@ -18974,7 +18974,7 @@ function openJobsPopover({
       recordWorkspaceHistory(
         route,
         currentWorkspaceHistoryContext(route),
-        replacesActionMenu ? "replaceOverlay" : historyMode
+        replacesOverlay ? "replaceOverlay" : historyMode
       );
     }
     state.jobsRestorable = true;
@@ -32455,6 +32455,155 @@ function positionContextMenu(menu, clientX, clientY) {
   menu.style.top = `${top}px`;
 }
 
+const CONTEXT_LONG_PRESS_DELAY_MS = 520;
+const CONTEXT_LONG_PRESS_MOVE_TOLERANCE = 11;
+let contextLongPressGesture = null;
+let contextLongPressSuppression = null;
+
+function contextLongPressDescriptor(target) {
+  if (!(target instanceof Element)) return null;
+
+  const source = target.closest("#sourceList [data-source-id]");
+  if (source) {
+    return {
+      target: source,
+      open: (x, y) => showSourceContextMenu(x, y, source.dataset.sourceId),
+    };
+  }
+
+  const sidebarTag = target.closest("#tagNavigation [data-quick-tag-id]");
+  if (sidebarTag) {
+    return {
+      target: sidebarTag,
+      open: (x, y) => showTagContextMenu(
+        x,
+        y,
+        sidebarTag.dataset.quickTagId,
+        sidebarTag
+      ),
+    };
+  }
+
+  const groupToggle = target.closest(
+    "[data-sidebar-tag-group-toggle], [data-inspector-tag-group-toggle]"
+  );
+  const groupID = groupToggle?.dataset.sidebarTagGroupToggle
+    || groupToggle?.dataset.inspectorTagGroupToggle;
+  const group = groupByID(groupID);
+  if (groupToggle && group && !group.isSystem) {
+    return {
+      target: groupToggle,
+      open: (x, y) => showTagGroupContextMenu(x, y, groupID, groupToggle),
+    };
+  }
+
+  const assetMain = target.closest("#assetGrid .asset-card-main");
+  const assetCard = assetMain?.closest("[data-asset-id]");
+  if (assetMain && assetCard) {
+    return {
+      target: assetMain,
+      open: (x, y) => showAssetContextMenu(x, y, assetCard.dataset.assetId),
+    };
+  }
+
+  const slimmingMember = target.closest(
+    "#slimmingMemberGrid [data-slimming-member-main]"
+  );
+  const slimmingMemberCard = slimmingMember?.closest("[data-slimming-member-id]");
+  if (slimmingMember && slimmingMemberCard) {
+    return {
+      target: slimmingMember,
+      open: (x, y) => showSlimmingMemberContextMenu(
+        x,
+        y,
+        slimmingMemberCard.dataset.slimmingMemberId
+      ),
+    };
+  }
+
+  const slimmingJob = target.closest("#slimmingJobList [data-slimming-job-id]");
+  const job = state.slimming.jobs.find(
+    (candidate) => candidate.id === slimmingJob?.dataset.slimmingJobId
+  );
+  if (slimmingJob && job && job.state !== "running") {
+    return {
+      target: slimmingJob,
+      open: (x, y) => showSlimmingJobContextMenu(
+        x,
+        y,
+        slimmingJob.dataset.slimmingJobId
+      ),
+    };
+  }
+  return null;
+}
+
+function clearContextLongPressGesture() {
+  if (!contextLongPressGesture) return;
+  clearTimeout(contextLongPressGesture.timer);
+  contextLongPressGesture.target.classList.remove("context-long-press-active");
+  contextLongPressGesture = null;
+}
+
+function beginContextLongPress(event) {
+  if (event.pointerType !== "touch" || event.button !== 0) return;
+  const descriptor = contextLongPressDescriptor(event.target);
+  if (!descriptor) return;
+  clearContextLongPressGesture();
+  const gesture = {
+    ...descriptor,
+    pointerID: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    timer: null,
+  };
+  descriptor.target.classList.add("context-long-press-active");
+  gesture.timer = setTimeout(() => {
+    if (contextLongPressGesture !== gesture || !gesture.target.isConnected) return;
+    hidePersistentHelp();
+    contextLongPressSuppression = {
+      target: gesture.target,
+      until: performance.now() + 900,
+    };
+    gesture.open(gesture.startX + 8, gesture.startY + 8);
+    clearContextLongPressGesture();
+  }, CONTEXT_LONG_PRESS_DELAY_MS);
+  contextLongPressGesture = gesture;
+}
+
+function updateContextLongPress(event) {
+  const gesture = contextLongPressGesture;
+  if (!gesture || gesture.pointerID !== event.pointerId) return;
+  if (Math.hypot(event.clientX - gesture.startX, event.clientY - gesture.startY)
+    > CONTEXT_LONG_PRESS_MOVE_TOLERANCE) {
+    clearContextLongPressGesture();
+  }
+}
+
+function finishContextLongPress(event) {
+  if (contextLongPressGesture?.pointerID !== event.pointerId) return;
+  clearContextLongPressGesture();
+}
+
+function suppressContextLongPressFollowUp(event) {
+  if (event.type === "contextmenu"
+    && contextLongPressGesture
+    && event.composedPath().includes(contextLongPressGesture.target)) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    return true;
+  }
+  const suppression = contextLongPressSuppression;
+  if (!suppression || performance.now() >= suppression.until) {
+    contextLongPressSuppression = null;
+    return false;
+  }
+  if (!event.composedPath().includes(suppression.target)) return false;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  return true;
+}
+
 function assetCardFocusTarget(assetID) {
   const requested = assetID
     ? elements.assetGrid.querySelector(`[data-asset-id="${CSS.escape(assetID)}"]`)
@@ -35773,9 +35922,15 @@ function bindEvents() {
       ));
       return;
     }
+    if (action === "manage") {
+      await openSourceManager({
+        selectedSourceID: sourceID,
+        returnFocus: returnTarget,
+      });
+      return;
+    }
     returnTarget?.focus({ preventScroll: true });
-    await openSourceManager({ selectedSourceID: sourceID });
-    if (action !== "manage") requestSourceManagementAction(action, sourceID);
+    requestSourceManagementAction(action, sourceID);
   });
   elements.sourceContextMenu.addEventListener("keydown", (event) => {
     const buttons = [...elements.sourceContextMenu.querySelectorAll("button:not(:disabled)")];
@@ -35858,6 +36013,15 @@ function bindEvents() {
     buttons[next].focus({ preventScroll: true });
   });
 
+  document.addEventListener("pointerdown", beginContextLongPress, true);
+  document.addEventListener("pointermove", updateContextLongPress, {
+    capture: true,
+    passive: true,
+  });
+  document.addEventListener("pointerup", finishContextLongPress, true);
+  document.addEventListener("pointercancel", finishContextLongPress, true);
+  document.addEventListener("click", suppressContextLongPressFollowUp, true);
+  document.addEventListener("contextmenu", suppressContextLongPressFollowUp, true);
   document.addEventListener("click", (event) => {
     const eventPath = event.composedPath();
     if (!elements.compactToolbarMenu.classList.contains("hidden")

@@ -9264,6 +9264,18 @@ html.split-resizing * {
   opacity: 0.45;
 }
 
+.context-long-press-active {
+  filter: brightness(0.96);
+  transform: scale(0.985);
+  transition: filter 120ms ease, transform 120ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .context-long-press-active {
+    transition: none;
+  }
+}
+
 .toast {
   position: fixed;
   left: 50%;
