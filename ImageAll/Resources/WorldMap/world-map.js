@@ -61,6 +61,14 @@ globalThis.addEventListener("unhandledrejection", (event) => {
   });
 });
 
+if (!bridge && globalThis.parent && globalThis.parent !== globalThis) {
+  globalThis.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || event.defaultPrevented) return;
+    event.preventDefault();
+    post({ type: "escapePressed" });
+  });
+}
+
 function webGL2Available() {
   const canvas = document.createElement("canvas");
   return Boolean(canvas.getContext("webgl2"));

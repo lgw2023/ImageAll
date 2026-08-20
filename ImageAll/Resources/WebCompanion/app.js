@@ -5431,7 +5431,8 @@ function closeWorldMapWorkspace({ restoreFocus = true } = {}) {
   ));
 }
 
-function clearWorldMapSelection() {
+function clearWorldMapSelection({ restoreFocus = false } = {}) {
+  if (!state.worldMap.selectedClusterID) return;
   ++state.worldMap.selectionGeneration;
   state.worldMap.selectedClusterID = null;
   state.worldMap.selection = null;
@@ -5439,6 +5440,8 @@ function clearWorldMapSelection() {
   state.worldMap.selectionLoading = false;
   worldMapRenderer()?.restoreSelection(null);
   renderWorldMapDetail();
+  checkpointActiveWorkspaceHistory();
+  if (restoreFocus) restoreOverlayFocus(elements.refreshWorldMapButton);
 }
 
 function cloneWorldMapGalleryScope(scope) {
@@ -6554,6 +6557,14 @@ function handleWorldMapMessage(event) {
   case "clusterClicked":
     if (typeof message.clusterID === "string") {
       void loadWorldMapSelection(message.clusterID);
+    }
+    break;
+  case "escapePressed":
+    if (!worldMapIsOpen()) break;
+    if (!elements.worldMapDetail.classList.contains("hidden")) {
+      clearWorldMapSelection({ restoreFocus: true });
+    } else {
+      void returnFromWorkspace("worldMap");
     }
     break;
   case "cameraChanged":
@@ -35376,7 +35387,10 @@ function bindEvents() {
       button.dataset.locationBackfillAction
     );
   });
-  elements.closeWorldMapDetailButton.addEventListener("click", clearWorldMapSelection);
+  elements.closeWorldMapDetailButton.addEventListener(
+    "click",
+    () => clearWorldMapSelection({ restoreFocus: true })
+  );
   elements.worldMapBrowseClusterButton.addEventListener("click", () => {
     void openWorldMapClusterInGallery();
   });
@@ -37199,6 +37213,10 @@ function bindEvents() {
         return;
       }
       if (worldMapOpen) {
+        if (!elements.worldMapDetail.classList.contains("hidden")) {
+          clearWorldMapSelection({ restoreFocus: true });
+          return;
+        }
         void returnFromWorkspace("worldMap");
         return;
       }

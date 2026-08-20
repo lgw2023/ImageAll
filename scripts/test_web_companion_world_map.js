@@ -121,6 +121,14 @@ let browser;
           type: "imageall-world-map-event",
           payload: { type: "clusterClicked", clusterID: "shanghai" }
         }, location.origin));
+        addEventListener("keydown", (event) => {
+          if (event.key !== "Escape") return;
+          event.preventDefault();
+          parent.postMessage({
+            type: "imageall-world-map-event",
+            payload: { type: "escapePressed" }
+          }, location.origin);
+        });
         parent.postMessage({
           type: "imageall-world-map-event",
           payload: { type: "ready", webgl2Available: true }
@@ -464,6 +472,35 @@ let browser;
   await page.locator("#worldMapDetail:not(.hidden)").waitFor();
   assert.equal(await page.locator("#worldMapDetailName").textContent(), "上海");
   assert.match(await page.locator("#worldMapDetailCount").textContent(), /42/);
+  await page.locator(".world-map-footer").waitFor({ state: "hidden" });
+  assert.equal(await page.locator(".world-map-footer").isVisible(), false,
+    "the Mac-style cluster card must replace the footer instead of overlapping it");
+  const selectionRequestsBeforeDetailClose = selectionRequestCount;
+  const snapshotRequestsBeforeDetailClose = snapshotRequestCount;
+  await page.locator("#closeWorldMapDetailButton").click();
+  await page.locator("#worldMapDetail").waitFor({ state: "hidden" });
+  assert.equal(await page.locator(".world-map-footer").isVisible(), true);
+  await page.waitForFunction(() => document.activeElement?.id === "refreshWorldMapButton");
+  assert.equal(selectionRequestCount, selectionRequestsBeforeDetailClose);
+  assert.equal(snapshotRequestCount, snapshotRequestsBeforeDetailClose);
+  await mapFrame.locator("#syntheticCluster:not([hidden])").click();
+  await page.locator("#worldMapDetail:not(.hidden)").waitFor();
+  const selectionRequestsBeforeDetailEscape = selectionRequestCount;
+  const snapshotRequestsBeforeDetailEscape = snapshotRequestCount;
+  await page.keyboard.press("Escape");
+  await page.locator("#worldMapDetail").waitFor({ state: "hidden" });
+  assert.equal(await page.locator("#worldMapWorkspace").isVisible(), true,
+    "Escape must close the cluster card before leaving the map");
+  assert.equal(await page.locator(".world-map-footer").isVisible(), true);
+  assert.equal(await page.evaluate(() => history.state?.imageAllWorkspace?.route), "worldMap");
+  assert.equal(await page.evaluate(
+    () => history.state?.imageAllWorkspace?.context?.worldMapClusterID ?? null
+  ), null);
+  await page.waitForFunction(() => document.activeElement?.id === "refreshWorldMapButton");
+  assert.equal(selectionRequestCount, selectionRequestsBeforeDetailEscape);
+  assert.equal(snapshotRequestCount, snapshotRequestsBeforeDetailEscape);
+  await mapFrame.locator("#syntheticCluster:not([hidden])").click();
+  await page.locator("#worldMapDetail:not(.hidden)").waitFor();
 
   const worldMapCard = page.locator(`.world-map-photo-card[data-world-map-card-asset-id="${assetID}"]`);
   const worldMapFavorite = worldMapCard.locator(":scope > .world-map-photo-favorite");
@@ -829,6 +866,11 @@ let browser;
   await page.locator("#worldMapStatus[data-state=error]").waitFor();
   assert.match(await page.locator("#worldMapStatus strong").textContent(), /暂时无法读取/);
 
+  if (await page.locator("#worldMapDetail").isVisible()) {
+    await page.keyboard.press("Escape");
+    await page.locator("#worldMapDetail").waitFor({ state: "hidden" });
+    assert.equal(await page.locator("#worldMapWorkspace").isVisible(), true);
+  }
   await page.keyboard.press("Escape");
   await page.locator("#worldMapWorkspace").waitFor({ state: "hidden" });
   assert.equal(await page.evaluate(() => history.state?.imageAllWorkspace?.route), "gallery");
