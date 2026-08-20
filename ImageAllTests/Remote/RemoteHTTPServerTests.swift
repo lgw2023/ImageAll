@@ -2624,6 +2624,10 @@ final class RemoteHTTPServerTests: XCTestCase {
             "slimmingMemberContextMenu",
             "slimmingMemberContextMenuTitle",
             "slimmingMemberContextMenuActions",
+            "slimmingRecycleContextMenu",
+            "slimmingRecycleContextMenuTitle",
+            "slimmingRecycleFavoriteContextAction",
+            "slimmingRecycleContextMenuNote",
             "slimmingJobContextMenu",
             "slimmingJobContextMenuTitle",
             "slimmingJobContextMenuActions",
@@ -2973,6 +2977,9 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("async function toggleSlimmingMemberFavorite"))
         XCTAssertTrue(script.contains("function syncSlimmingRecycleFavoriteButton"))
         XCTAssertTrue(script.contains("async function toggleSlimmingRecycleFavorite"))
+        XCTAssertTrue(script.contains("async function toggleSlimmingRecycleFavoriteEntry"))
+        XCTAssertTrue(script.contains("function showSlimmingRecycleContextMenu"))
+        XCTAssertTrue(script.contains("data-slimming-recycle-thumbnail-entry-id"))
         XCTAssertTrue(script.contains("function slimmingRecycleRecoveryDescriptor"))
         XCTAssertTrue(script.contains("async function submitSlimmingRecycleRecoveryAction"))
         XCTAssertTrue(script.contains("function openSlimmingRecycleExplanation"))
@@ -2983,9 +2990,11 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("button.dataset.slimmingMemberFavorite = \"true\""))
         XCTAssertTrue(script.contains("button.dataset.slimmingRecycleFavorite = \"true\""))
         XCTAssertTrue(script.contains("红心只用于整理，不会阻止恢复、回收或永久删除"))
+        XCTAssertTrue(html.contains("Apple Photos 的“最近删除”由系统管理，红心不能暂停系统永久删除。"))
         XCTAssertTrue(stylesheet.contains(".slimming-member-main"))
         XCTAssertTrue(stylesheet.contains(".slimming-member-favorite"))
         XCTAssertTrue(stylesheet.contains(".slimming-recycle-favorite"))
+        XCTAssertTrue(stylesheet.contains(".context-menu-note"))
         XCTAssertTrue(stylesheet.contains(".slimming-member-pending-overlay"))
         XCTAssertTrue(stylesheet.contains("@media (hover: none), (pointer: coarse), (max-width: 640px)"))
         XCTAssertTrue(script.contains("button.dataset.imageKey === imageKey"))

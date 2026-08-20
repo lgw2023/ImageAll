@@ -10,8 +10,8 @@
   <meta name="apple-mobile-web-app-title" content="ImageAll">
   <title>ImageAll 网页版</title>
   <link rel="manifest" href="/manifest.webmanifest">
-    <link rel="stylesheet" href="/app.css?v=20260821-127">
-    <script src="/app.js?v=20260821-127" defer></script>
+    <link rel="stylesheet" href="/app.css?v=20260821-128">
+    <script src="/app.js?v=20260821-128" defer></script>
 </head>
 <body>
   <div id="bootView" class="centered-state">
@@ -3074,6 +3074,18 @@
     aria-label="图库瘦身成员操作">
     <div id="slimmingMemberContextMenuTitle" class="context-menu-title"></div>
     <div id="slimmingMemberContextMenuActions" class="context-menu-actions"></div>
+  </div>
+
+  <div id="slimmingRecycleContextMenu" class="context-menu hidden" role="menu" tabindex="-1"
+    aria-label="图库瘦身回收站项目操作">
+    <div id="slimmingRecycleContextMenuTitle" class="context-menu-title"></div>
+    <div class="context-menu-actions">
+      <button id="slimmingRecycleFavoriteContextAction" class="favorite-context-action"
+        type="button" role="menuitem" data-slimming-recycle-context-action="favorite">加入红心</button>
+      <p id="slimmingRecycleContextMenuNote" class="context-menu-note hidden" role="note">
+        Apple Photos 的“最近删除”由系统管理，红心不能暂停系统永久删除。
+      </p>
+    </div>
   </div>
 
   <div id="slimmingJobContextMenu" class="context-menu hidden" role="menu"

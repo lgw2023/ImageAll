@@ -948,6 +948,10 @@ const elements = {
   slimmingMemberContextMenu: $("#slimmingMemberContextMenu"),
   slimmingMemberContextMenuTitle: $("#slimmingMemberContextMenuTitle"),
   slimmingMemberContextMenuActions: $("#slimmingMemberContextMenuActions"),
+  slimmingRecycleContextMenu: $("#slimmingRecycleContextMenu"),
+  slimmingRecycleContextMenuTitle: $("#slimmingRecycleContextMenuTitle"),
+  slimmingRecycleFavoriteContextAction: $("#slimmingRecycleFavoriteContextAction"),
+  slimmingRecycleContextMenuNote: $("#slimmingRecycleContextMenuNote"),
   slimmingJobContextMenu: $("#slimmingJobContextMenu"),
   slimmingJobContextMenuTitle: $("#slimmingJobContextMenuTitle"),
   slimmingJobContextMenuActions: $("#slimmingJobContextMenuActions"),
@@ -1318,6 +1322,7 @@ const state = {
     selectionAnchorID: null,
     selectionMode: false,
     contextMemberID: null,
+    contextRecycleEntryID: null,
     contextJobID: null,
     marquee: null,
     loading: false,
@@ -23897,19 +23902,29 @@ async function toggleSlimmingMemberFavorite(button) {
   slimmingMemberMainButton(fallback)?.focus({ preventScroll: true });
 }
 
-async function toggleSlimmingRecycleFavorite(button) {
-  const card = button?.closest(".slimming-recycle-thumbnail-card");
+async function toggleSlimmingRecycleFavoriteEntry(entryID, { returnFocus = null } = {}) {
   const entry = state.slimming.recycle.entries.find(
-    (candidate) => candidate.id === card?.dataset.slimmingRecycleThumbnailEntryId
+    (candidate) => candidate.id === entryID
   );
-  const assetID = button?.dataset.mediaFavoriteAssetId || entry?.assetID;
+  const assetID = entry?.assetID;
   const favorite = favoriteStateForAssetID(assetID);
   if (!entry || !assetID || !favorite || state.favoriteMutating
-    || state.slimming.recycle.appending) return;
+    || state.slimming.recycle.appending
+    || state.slimming.recycle.mutatingEntryIDs.has(entryID)) return;
   const scrollTop = elements.slimmingRecycleBody.scrollTop;
   await applyFavoriteMutation([assetID], favorite.isFavorite !== true);
   elements.slimmingRecycleBody.scrollTop = scrollTop;
-  if (button.isConnected) button.focus({ preventScroll: true });
+  if (returnFocus?.isConnected) {
+    returnFocus.focus({ preventScroll: true });
+    return;
+  }
+  slimmingRecycleFocusTarget(entryID)?.focus({ preventScroll: true });
+}
+
+async function toggleSlimmingRecycleFavorite(button) {
+  const card = button?.closest(".slimming-recycle-thumbnail-card");
+  const entryID = card?.dataset.slimmingRecycleThumbnailEntryId;
+  await toggleSlimmingRecycleFavoriteEntry(entryID, { returnFocus: button });
 }
 
 function currentSlimmingRemovalRequest() {
@@ -24910,6 +24925,22 @@ function syncSlimmingRecycleRow(row, entry) {
     const thumbnail = document.createElement("div");
     thumbnail.className = "slimming-recycle-thumbnail-card";
     thumbnail.dataset.slimmingRecycleThumbnailEntryId = entry.id;
+    thumbnail.tabIndex = 0;
+    thumbnail.setAttribute("role", "group");
+    thumbnail.setAttribute("aria-haspopup", "menu");
+    thumbnail.setAttribute(
+      "aria-label",
+      `${entry.fileName || "未命名媒体"}，回收站缩略图`
+    );
+    configurePersistentHelp(thumbnail, {
+      title: entry.fileName || "未命名媒体",
+      detail: "右键、触控长按、Context Menu 或 Shift-F10 可加入或取消红心。"
+        + (entry.sourceKind === "photos"
+          ? " Apple Photos 的“最近删除”由系统管理，红心不能暂停系统永久删除。"
+          : " 红心只用于整理，不会阻止恢复、回收或永久删除。"),
+      kind: "slimming",
+      keyShortcuts: "Shift+F10 ContextMenu",
+    });
     const image = document.createElement("img");
     image.className = "slimming-recycle-thumbnail";
     image.alt = "";
@@ -32469,6 +32500,8 @@ function hideContextMenu() {
   state.contextTagReturnFocus = null;
   elements.slimmingMemberContextMenu.classList.add("hidden");
   state.slimming.contextMemberID = null;
+  elements.slimmingRecycleContextMenu.classList.add("hidden");
+  state.slimming.contextRecycleEntryID = null;
   elements.slimmingJobContextMenu.classList.add("hidden");
   state.slimming.contextJobID = null;
 }
@@ -32560,6 +32593,20 @@ function contextLongPressDescriptor(target) {
         x,
         y,
         slimmingMemberCard.dataset.slimmingMemberId
+      ),
+    };
+  }
+
+  const recycleThumbnail = target.closest(
+    "#slimmingRecycleList [data-slimming-recycle-thumbnail-entry-id]"
+  );
+  if (recycleThumbnail) {
+    return {
+      target: recycleThumbnail,
+      open: (x, y) => showSlimmingRecycleContextMenu(
+        x,
+        y,
+        recycleThumbnail.dataset.slimmingRecycleThumbnailEntryId
       ),
     };
   }
@@ -32764,6 +32811,56 @@ function showSlimmingMemberContextMenu(clientX, clientY, memberID) {
   restoreOverlayFocus(
     elements.slimmingMemberContextMenuActions.querySelector("button:not(:disabled)")
   );
+}
+
+function slimmingRecycleFocusTarget(entryID) {
+  const requested = entryID
+    ? elements.slimmingRecycleList.querySelector(
+      `[data-slimming-recycle-thumbnail-entry-id="${CSS.escape(entryID)}"]`
+    )
+    : null;
+  return requested
+    || elements.slimmingRecycleList.querySelector(
+      "[data-slimming-recycle-thumbnail-entry-id]"
+    )
+    || elements.slimmingRecycleSearchInput;
+}
+
+function showSlimmingRecycleContextMenu(clientX, clientY, entryID) {
+  const entry = state.slimming.recycle.entries.find(
+    (candidate) => candidate.id === entryID
+  );
+  if (!entry) return;
+  hideContextMenus();
+  state.slimming.contextRecycleEntryID = entryID;
+  elements.slimmingRecycleContextMenu.setAttribute(
+    "aria-label",
+    `${entry.fileName || "当前回收站项目"} 回收站项目操作`
+  );
+  elements.slimmingRecycleContextMenuTitle.textContent = entry.fileName
+    || "当前回收站项目";
+  const favorite = favoriteStateForAssetID(entry.assetID);
+  elements.slimmingRecycleFavoriteContextAction.textContent = favorite?.isFavorite
+    ? "取消红心"
+    : "加入红心";
+  elements.slimmingRecycleFavoriteContextAction.dataset.favorite = String(
+    favorite?.isFavorite === true
+  );
+  elements.slimmingRecycleFavoriteContextAction.disabled = !state.online
+    || !supportsFavorites()
+    || !favorite
+    || state.favoriteMutating
+    || state.slimming.recycle.appending
+    || state.slimming.recycle.mutatingEntryIDs.has(entryID);
+  elements.slimmingRecycleContextMenuNote.classList.toggle(
+    "hidden",
+    entry.sourceKind !== "photos"
+  );
+  elements.slimmingRecycleContextMenu.classList.remove("hidden");
+  positionContextMenu(elements.slimmingRecycleContextMenu, clientX, clientY);
+  restoreOverlayFocus(elements.slimmingRecycleFavoriteContextAction.disabled
+    ? elements.slimmingRecycleContextMenu
+    : elements.slimmingRecycleFavoriteContextAction);
 }
 
 function showSlimmingJobContextMenu(clientX, clientY, jobID) {
@@ -35035,6 +35132,35 @@ function bindEvents() {
       )?.focus({ preventScroll: true });
     }
   });
+  elements.slimmingRecycleList.addEventListener("contextmenu", (event) => {
+    const thumbnail = event.target.closest(
+      "[data-slimming-recycle-thumbnail-entry-id]"
+    );
+    if (!thumbnail) return;
+    event.preventDefault();
+    showSlimmingRecycleContextMenu(
+      event.clientX,
+      event.clientY,
+      thumbnail.dataset.slimmingRecycleThumbnailEntryId
+    );
+  });
+  elements.slimmingRecycleList.addEventListener("keydown", (event) => {
+    const thumbnail = event.target.closest(
+      "[data-slimming-recycle-thumbnail-entry-id]"
+    );
+    if (!thumbnail
+      || !(event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = thumbnail.getBoundingClientRect();
+    showSlimmingRecycleContextMenu(
+      rect.left + Math.min(28, rect.width / 2),
+      rect.top + Math.min(28, rect.height / 2),
+      thumbnail.dataset.slimmingRecycleThumbnailEntryId
+    );
+  });
   elements.slimmingRecycleList.addEventListener("click", (event) => {
     const favorite = event.target.closest("[data-slimming-recycle-favorite]");
     if (favorite) {
@@ -36006,6 +36132,39 @@ function bindEvents() {
         : (current + (event.key === "ArrowUp" ? -1 : 1) + buttons.length) % buttons.length;
     buttons[next].focus({ preventScroll: true });
   });
+  elements.slimmingRecycleContextMenu.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-slimming-recycle-context-action]");
+    const entryID = state.slimming.contextRecycleEntryID;
+    if (!button || !entryID || button.disabled) return;
+    const action = button.dataset.slimmingRecycleContextAction;
+    hideContextMenus();
+    if (action === "favorite") {
+      await toggleSlimmingRecycleFavoriteEntry(entryID);
+    }
+  });
+  elements.slimmingRecycleContextMenu.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      const entryID = state.slimming.contextRecycleEntryID;
+      hideContextMenus();
+      restoreOverlayFocus(slimmingRecycleFocusTarget(entryID));
+      return;
+    }
+    const buttons = [
+      ...elements.slimmingRecycleContextMenu.querySelectorAll("button:not(:disabled)"),
+    ];
+    if (!buttons.length || !["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const current = Math.max(0, buttons.indexOf(document.activeElement));
+    const next = event.key === "Home" ? 0
+      : event.key === "End" ? buttons.length - 1
+        : (current + (event.key === "ArrowUp" ? -1 : 1) + buttons.length) % buttons.length;
+    buttons[next].focus({ preventScroll: true });
+  });
   elements.slimmingJobContextMenu.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-slimming-job-context-action]");
     const jobID = state.slimming.contextJobID;
@@ -36165,6 +36324,7 @@ function bindEvents() {
       && !elements.sourceContextMenu.contains(event.target)
       && !elements.tagContextMenu.contains(event.target)
       && !elements.slimmingMemberContextMenu.contains(event.target)
+      && !elements.slimmingRecycleContextMenu.contains(event.target)
       && !elements.slimmingJobContextMenu.contains(event.target)) hideContextMenus();
     if (!elements.filterPopover.classList.contains("hidden")
       && !elements.filterPopover.contains(event.target)

@@ -3683,6 +3683,9 @@ def main(*, inspector_actions_only=False):
             "element => element.classList.contains('recycle-view')"
         )
         recycle_rows = page.locator("#slimmingRecycleList .slimming-recycle-row")
+        recycle_thumbnail = recycle_rows.nth(0).locator(
+            ".slimming-recycle-thumbnail-card"
+        )
         recycle_favorite = recycle_rows.nth(0).locator(".slimming-recycle-favorite")
         recycle_rows.nth(0).hover()
         assert recycle_favorite.is_visible()
@@ -3691,6 +3694,132 @@ def main(*, inspector_actions_only=False):
         recycle_scroll_before = page.locator("#slimmingRecycleBody").evaluate(
             "element => element.scrollTop"
         )
+        recycle_context_snapshot = page.evaluate(
+            """() => ({
+              scope: state.slimming.recycle.scope,
+              sourceID: state.slimming.recycle.sourceID,
+              searchText: state.slimming.recycle.searchText,
+              entryIDs: state.slimming.recycle.entries.map(entry => entry.id),
+              scrollTop: document.querySelector('#slimmingRecycleBody').scrollTop,
+            })"""
+        )
+        recycle_context_favorite_count = len(submitted_favorites)
+        recycle_context_action_count = len(submitted_slimming_recycle_actions)
+        recycle_context_removal_count = len(submitted_slimming_removals)
+        recycle_context_menu = page.locator("#slimmingRecycleContextMenu:not(.hidden)")
+        recycle_context_action = page.locator("#slimmingRecycleFavoriteContextAction")
+
+        recycle_thumbnail.click(button="right")
+        recycle_context_menu.wait_for()
+        assert page.locator("#slimmingRecycleContextMenuTitle").inner_text() == "RECYCLE_0001.MOV"
+        assert page.locator("#slimmingRecycleContextMenuNote").is_visible()
+        assert page.locator("#slimmingRecycleContextMenuNote").inner_text() == (
+            "Apple Photos 的“最近删除”由系统管理，红心不能暂停系统永久删除。"
+        )
+        assert recycle_context_action.get_attribute("data-favorite") == recycle_before
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'slimmingRecycleFavoriteContextAction'"
+        )
+        page.keyboard.press("Escape")
+        page.wait_for_function(
+            "() => document.activeElement?.classList.contains('slimming-recycle-thumbnail-card')"
+        )
+
+        recycle_rows.nth(1).locator(".slimming-recycle-thumbnail-card").click(button="right")
+        recycle_context_menu.wait_for()
+        assert page.locator("#slimmingRecycleContextMenuNote").is_hidden()
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'slimmingRecycleFavoriteContextAction'"
+        )
+        page.keyboard.press("Escape")
+        page.wait_for_function(
+            "() => document.activeElement?.classList.contains('slimming-recycle-thumbnail-card')"
+        )
+
+        recycle_thumbnail.press("Shift+F10")
+        recycle_context_menu.wait_for()
+        with page.expect_response("**/v1/favorites"):
+            recycle_context_action.click()
+        page.wait_for_function(
+            "before => document.querySelector('#slimmingRecycleList .slimming-recycle-favorite')"
+            "?.dataset.favorite !== before",
+            arg=recycle_before,
+        )
+        assert submitted_favorites[-1]["assetIDs"] == [SLIMMING_ASSET_IDS[0]]
+        assert submitted_favorites[-1]["isFavorite"] is (recycle_before != "true")
+        page.wait_for_function(
+            "() => document.activeElement?.classList.contains('slimming-recycle-thumbnail-card')"
+        )
+        recycle_thumbnail.click(button="right")
+        assert recycle_context_action.inner_text() == (
+            "取消红心" if recycle_before != "true" else "加入红心"
+        )
+        with page.expect_response("**/v1/favorites"):
+            recycle_context_action.click()
+        page.wait_for_function(
+            "before => document.querySelector('#slimmingRecycleList .slimming-recycle-favorite')"
+            "?.dataset.favorite === before",
+            arg=recycle_before,
+        )
+
+        recycle_bounds = recycle_thumbnail.bounding_box()
+        assert recycle_bounds is not None
+        recycle_long_press_point = {
+            "x": recycle_bounds["x"] + min(44, recycle_bounds["width"] / 2),
+            "y": recycle_bounds["y"] + min(44, recycle_bounds["height"] / 2),
+        }
+        page.evaluate(
+            """point => document.querySelector(
+              '#slimmingRecycleList .slimming-recycle-thumbnail-card'
+            ).dispatchEvent(new PointerEvent('pointerdown', {
+              bubbles: true,
+              pointerId: 94,
+              pointerType: 'touch',
+              button: 0,
+              clientX: point.x,
+              clientY: point.y,
+              isPrimary: true,
+            }))""",
+            recycle_long_press_point,
+        )
+        page.wait_for_timeout(580)
+        recycle_context_menu.wait_for()
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'slimmingRecycleFavoriteContextAction'"
+        )
+        page.evaluate(
+            """point => document.elementFromPoint(point.x, point.y)?.dispatchEvent(
+              new PointerEvent('pointerup', {
+                bubbles: true,
+                pointerId: 94,
+                pointerType: 'touch',
+                button: 0,
+                clientX: point.x,
+                clientY: point.y,
+                isPrimary: true,
+              })
+            )""",
+            recycle_long_press_point,
+        )
+        page.screenshot(
+            path="/tmp/imageall-slimming-recycle-long-press-menu.png",
+            full_page=True,
+        )
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(950)
+        assert page.evaluate(
+            """() => ({
+              scope: state.slimming.recycle.scope,
+              sourceID: state.slimming.recycle.sourceID,
+              searchText: state.slimming.recycle.searchText,
+              entryIDs: state.slimming.recycle.entries.map(entry => entry.id),
+              scrollTop: document.querySelector('#slimmingRecycleBody').scrollTop,
+            })"""
+        ) == recycle_context_snapshot
+        assert len(submitted_favorites) == recycle_context_favorite_count + 2
+        assert len(submitted_slimming_recycle_actions) == recycle_context_action_count
+        assert len(submitted_slimming_removals) == recycle_context_removal_count
+
         recycle_favorite.click()
         page.wait_for_function(
             "before => document.querySelector('#slimmingRecycleList .slimming-recycle-favorite')"
