@@ -506,6 +506,46 @@ def main():
         assert page.locator("#assetGrid > .asset-card").count() == 74
         page.screenshot(path="/tmp/imageall-single-photo-pagination-synthetic.png", full_page=True)
 
+        preview_before_refresh = page.evaluate(
+            """() => {
+              setLightboxScale(2);
+              state.lightboxViewportOffsetX = 42;
+              state.lightboxViewportOffsetY = -28;
+              syncLightboxViewport();
+              scheduleWorkspaceHistoryCheckpoint();
+              return {
+                scale: state.lightboxViewportScale,
+                offsetX: state.lightboxViewportOffsetX,
+                offsetY: state.lightboxViewportOffsetY,
+              };
+            }"""
+        )
+        assert preview_before_refresh["scale"] == 2
+        page.wait_for_function(
+            "assetID => history.state?.imageAllWorkspace?.context?.galleryLightbox?.assetID === assetID",
+            arg=asset_id(73),
+            timeout=2_500,
+        )
+        page.reload(wait_until="networkidle")
+        page.locator("#lightbox:not(.hidden)").wait_for()
+        page.wait_for_function(
+            "expected => document.querySelector('#lightboxTitle')?.textContent === 'ITEM_073.JPG' "
+            "&& state.assets.length === 74 "
+            "&& state.lightboxViewportScale === expected.scale "
+            "&& state.lightboxViewportOffsetX === expected.offsetX "
+            "&& state.lightboxViewportOffsetY === expected.offsetY",
+            arg=preview_before_refresh,
+        )
+        assert page.evaluate("() => visibleWorkspaceRoute()") == "gallery"
+        assert page.locator("#lightboxPosition").inner_text() == "73 / 74"
+        assert page.locator(
+            f'#assetGrid > .asset-card[data-asset-id="{asset_id(73)}"] > .asset-card-main'
+        ).get_attribute("aria-pressed") == "true"
+        history_after_preview_refresh = page.evaluate("() => JSON.stringify(history.state)")
+        assert "ITEM_073.JPG" not in history_after_preview_refresh
+        assert "/v1/assets/" not in history_after_preview_refresh
+        page.screenshot(path="/tmp/imageall-single-photo-refresh-continuity.png", full_page=True)
+
         page.locator("#lightboxBackButton").click()
         page.locator("#lightbox").wait_for(state="hidden")
         page.wait_for_function(
@@ -809,6 +849,47 @@ def main():
             '[data-review-index="48"] > .review-card-main'
         ).get_attribute("aria-pressed") == "true"
         page.screenshot(path="/tmp/imageall-review-single-photo-pagination.png", full_page=True)
+
+        review_preview_before_refresh = page.evaluate(
+            """() => {
+              setLightboxScale(1.6);
+              state.lightboxViewportOffsetX = 24;
+              state.lightboxViewportOffsetY = -18;
+              syncLightboxViewport();
+              scheduleWorkspaceHistoryCheckpoint();
+              return {
+                scale: state.lightboxViewportScale,
+                offsetX: state.lightboxViewportOffsetX,
+                offsetY: state.lightboxViewportOffsetY,
+              };
+            }"""
+        )
+        page.wait_for_function(
+            "assetID => history.state?.imageAllWorkspace?.context?.reviewLightbox?.assetID === assetID",
+            arg=asset_id(49),
+            timeout=2_500,
+        )
+        page.reload(wait_until="networkidle")
+        page.locator("#reviewWorkspace:not(.hidden)").wait_for()
+        page.locator("#lightbox:not(.hidden)").wait_for()
+        page.wait_for_function(
+            "expected => document.querySelector('#lightboxTitle')?.textContent === 'REVIEW_049.JPG' "
+            "&& state.review.items.length === 50 "
+            "&& state.lightboxViewportScale === expected.scale "
+            "&& state.lightboxViewportOffsetX === expected.offsetX "
+            "&& state.lightboxViewportOffsetY === expected.offsetY",
+            arg=review_preview_before_refresh,
+        )
+        assert page.evaluate("() => visibleWorkspaceRoute()") == "review"
+        assert page.locator("#lightboxPosition").inner_text() == "49 / 50"
+        assert page.locator(
+            '[data-review-index="48"] > .review-card-main'
+        ).get_attribute("aria-pressed") == "true"
+        history_after_review_preview_refresh = page.evaluate("() => JSON.stringify(history.state)")
+        assert "REVIEW_049.JPG" not in history_after_review_preview_refresh
+        assert "/v1/assets/" not in history_after_review_preview_refresh
+        page.screenshot(path="/tmp/imageall-review-preview-refresh-continuity.png", full_page=True)
+
         page.locator("#lightboxBackButton").click()
         page.locator("#lightbox").wait_for(state="hidden")
         assert page.locator(
@@ -816,6 +897,25 @@ def main():
         ).get_attribute("aria-pressed") == "true"
         page.locator("#closeReviewButton").click()
         page.locator("#reviewWorkspace").wait_for(state="hidden")
+
+        page.evaluate(
+            """() => {
+              const nextState = structuredClone(history.state);
+              nextState.imageAllWorkspace.context.galleryLightbox = {
+                assetID: 'missing-preview-asset',
+                scale: 4,
+                offsetX: 999,
+                offsetY: -999,
+                videoTime: 0,
+              };
+              history.replaceState(nextState, '', location.href);
+            }"""
+        )
+        page.reload(wait_until="networkidle")
+        page.locator("#appView:not(.hidden)").wait_for()
+        assert page.evaluate("() => visibleWorkspaceRoute()") == "gallery"
+        assert page.locator("#lightbox").is_hidden()
+        assert page.locator("#lightboxTitle").inner_text() != "missing-preview-asset"
 
         assert not page_errors, page_errors
         assert not console_errors, {

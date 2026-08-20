@@ -1855,7 +1855,8 @@ def main(*, inspector_actions_only=False):
         page.set_viewport_size({"width": 2200, "height": 960})
         page.wait_for_function(
             "() => getComputedStyle(document.querySelector("
-            "'#selectionFavoriteToolbarActions')).display !== 'none'"
+            "'#selectionFavoriteToolbarActions')).display !== 'none' "
+            "&& document.querySelector('#batchFavoriteActions')?.getClientRects().length === 0"
         )
         direct_favorite_group = page.locator("#selectionFavoriteToolbarActions")
         direct_favorite = page.locator("#toolbarFavoriteSelectedButton")
@@ -3143,6 +3144,57 @@ def main(*, inspector_actions_only=False):
         assert page.locator("#lightbox").is_hidden()
         page.set_viewport_size({"width": 1440, "height": 960})
 
+        slimming_cluster_before_refresh = page.evaluate(
+            "() => state.slimming.selectedClusterID"
+        )
+        page.evaluate(
+            "assetID => openLightbox('slimming', assetID)",
+            SLIMMING_ASSET_IDS[1],
+        )
+        page.locator("#lightbox:not(.hidden)").wait_for()
+        slimming_preview_before_refresh = page.evaluate(
+            """() => {
+              setLightboxScale(1.8);
+              state.lightboxViewportOffsetX = 30;
+              state.lightboxViewportOffsetY = -20;
+              syncLightboxViewport();
+              scheduleWorkspaceHistoryCheckpoint();
+              return {
+                scale: state.lightboxViewportScale,
+                offsetX: state.lightboxViewportOffsetX,
+                offsetY: state.lightboxViewportOffsetY,
+              };
+            }"""
+        )
+        page.wait_for_function(
+            "assetID => history.state?.imageAllWorkspace?.context?.slimmingLightbox?.assetID === assetID",
+            arg=SLIMMING_ASSET_IDS[1],
+            timeout=2_500,
+        )
+        page.reload(wait_until="networkidle")
+        page.locator("#slimmingWorkspace:not(.hidden)").wait_for()
+        page.locator("#lightbox:not(.hidden)").wait_for()
+        page.wait_for_function(
+            "expected => document.querySelector('#lightboxTitle')?.textContent.includes('SLIM_0002') "
+            "&& state.lightboxViewportScale === expected.scale "
+            "&& state.lightboxViewportOffsetX === expected.offsetX "
+            "&& state.lightboxViewportOffsetY === expected.offsetY",
+            arg=slimming_preview_before_refresh,
+        )
+        assert page.evaluate("() => visibleWorkspaceRoute()") == "slimming"
+        assert page.locator("#lightboxBackLabel").inner_text() == "返回分析"
+        assert page.evaluate(
+            "() => state.slimming.selectedClusterID"
+        ) == slimming_cluster_before_refresh
+        history_after_slimming_preview_refresh = page.evaluate(
+            "() => JSON.stringify(history.state)"
+        )
+        assert "SLIM_0002" not in history_after_slimming_preview_refresh
+        assert "/v1/assets/" not in history_after_slimming_preview_refresh
+        page.screenshot(path="/tmp/imageall-slimming-preview-refresh-continuity.png", full_page=True)
+        page.locator("#lightboxBackButton").click()
+        page.locator("#lightbox").wait_for(state="hidden")
+
         page.locator('[data-slimming-media-kind="video"]').click()
         page.locator("#slimmingMemberGrid .slimming-member-video-badge").first.wait_for()
         assert page.locator("#slimmingMemberGrid .slimming-member-video-badge").count() == 3
@@ -4180,7 +4232,21 @@ def main(*, inspector_actions_only=False):
             "() => ({ viewport: innerWidth, scroll: document.documentElement.scrollWidth })"
         )
         assert dimensions["scroll"] <= dimensions["viewport"], dimensions
-        assert page.locator("#selectionInspectorPrepareFeaturesButton").is_visible()
+        selection_inspector_state = page.evaluate(
+            """() => ({
+              selectionMode: state.selectionMode,
+              selectedCount: state.selectedAssetIDs.size,
+              selectedAssetID: state.selectedAssetID,
+              inspectorClass: document.querySelector('#inspector').className,
+              appClass: document.querySelector('#appView').className,
+              actionDisplay: getComputedStyle(
+                document.querySelector('#selectionInspectorPrepareFeaturesButton')
+              ).display,
+            })"""
+        )
+        assert page.locator("#selectionInspectorPrepareFeaturesButton").is_visible(), (
+            selection_inspector_state
+        )
         assert page.locator("#selectionInspectorGenerateSuggestionsButton").is_visible()
         assert page.locator("#selectionInspectorFindSimilarButton").is_visible()
         assert page.locator("#selectionInspectorFavoriteButton").is_visible()

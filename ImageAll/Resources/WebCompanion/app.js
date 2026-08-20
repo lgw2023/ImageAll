@@ -2171,24 +2171,30 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
   }
 }
 
+function currentGalleryHistoryContext() {
+  return {
+    galleryMediaKind: state.mediaKind,
+    gallerySourceID: state.libraryScope === "all" ? (state.selectedSourceID || null) : null,
+    galleryScope: state.libraryScope === "favorites" ? "favorites" : "all",
+    gallerySort: state.sort,
+    galleryFilters: cloneFilters(state.filters),
+    gallerySelectedAssetID: state.selectedAssetID || null,
+    gallerySelectionMode: state.selectionMode,
+    gallerySelectedAssetIDs: [...state.selectedAssetIDs],
+    gallerySelectionAnchorID: state.selectionAnchorID || null,
+    galleryLoadedCount: Math.min(GALLERY_HISTORY_LOADED_LIMIT, state.assets.length),
+    galleryScrollTop: elements.libraryScroll.scrollTop,
+    galleryLightbox: currentLightboxHistoryContext("library"),
+  };
+}
+
 function currentWorkspaceHistoryContext(route = visibleWorkspaceRoute()) {
   switch (route) {
   case "gallery":
-    return {
-      galleryMediaKind: state.mediaKind,
-      gallerySourceID: state.libraryScope === "all" ? (state.selectedSourceID || null) : null,
-      galleryScope: state.libraryScope === "favorites" ? "favorites" : "all",
-      gallerySort: state.sort,
-      galleryFilters: cloneFilters(state.filters),
-      gallerySelectedAssetID: state.selectedAssetID || null,
-      gallerySelectionMode: state.selectionMode,
-      gallerySelectedAssetIDs: [...state.selectedAssetIDs],
-      gallerySelectionAnchorID: state.selectionAnchorID || null,
-      galleryLoadedCount: Math.min(GALLERY_HISTORY_LOADED_LIMIT, state.assets.length),
-      galleryScrollTop: elements.libraryScroll.scrollTop,
-    };
+    return currentGalleryHistoryContext();
   case "review":
     return {
+      galleryContext: currentGalleryHistoryContext(),
       ...(state.review.returnTarget?.workspace === "training"
         ? { returnToTrainingRunID: state.review.returnTarget.runID }
         : {}),
@@ -2196,7 +2202,9 @@ function currentWorkspaceHistoryContext(route = visibleWorkspaceRoute()) {
       reviewTagID: elements.reviewTagSelect.value || null,
       reviewMediaKind: state.mediaKind,
       reviewAssetID: state.review.items[state.review.selectedIndex]?.assetID || null,
+      reviewLoadedCount: Math.min(GALLERY_HISTORY_LOADED_LIMIT, state.review.items.length),
       reviewQueueScrollTop: elements.reviewQueuePane.scrollTop,
+      reviewLightbox: currentLightboxHistoryContext("review"),
     };
   case "training":
     captureTrainingRunListScroll();
@@ -2213,12 +2221,14 @@ function currentWorkspaceHistoryContext(route = visibleWorkspaceRoute()) {
     };
   case "slimming":
     return {
+      galleryContext: currentGalleryHistoryContext(),
       slimmingMediaKind: state.slimming.mediaKind,
       slimmingView: state.slimming.view,
       slimmingJobID: state.slimming.selectedJobID,
       slimmingClusterID: state.slimming.selectedClusterID,
       slimmingClusterScope: state.slimming.clusterScope,
       slimmingNavigatorScrollTop: elements.slimmingNavigatorPane.scrollTop,
+      slimmingLightbox: currentLightboxHistoryContext("slimming"),
     };
   case "worldMap":
     return {
@@ -2234,6 +2244,41 @@ function galleryHistoryIdentifier(value) {
   return typeof value === "string" && value.length > 0 && value.length <= 256
     ? value
     : null;
+}
+
+function workspaceHistoryFiniteNumber(value, fallback = 0, limit = 100_000) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(limit, Math.max(-limit, parsed));
+}
+
+function normalizedLightboxHistoryContext(raw) {
+  const context = raw && typeof raw === "object" ? raw : null;
+  const assetID = galleryHistoryIdentifier(context?.assetID);
+  if (!assetID) return null;
+  return {
+    assetID,
+    scale: Math.min(
+      LIGHTBOX_MAX_SCALE,
+      Math.max(LIGHTBOX_MIN_SCALE, workspaceHistoryFiniteNumber(context.scale, 1, 8))
+    ),
+    offsetX: workspaceHistoryFiniteNumber(context.offsetX),
+    offsetY: workspaceHistoryFiniteNumber(context.offsetY),
+    videoTime: Math.max(0, workspaceHistoryFiniteNumber(context.videoTime, 0, 86_400)),
+  };
+}
+
+function currentLightboxHistoryContext(expectedContext) {
+  if (elements.lightbox.classList.contains("hidden")
+    || state.lightboxContext !== expectedContext
+    || !state.lightboxAssetID) return null;
+  return normalizedLightboxHistoryContext({
+    assetID: state.lightboxAssetID,
+    scale: state.lightboxViewportScale,
+    offsetX: state.lightboxViewportOffsetX,
+    offsetY: state.lightboxViewportOffsetY,
+    videoTime: lightboxMediaKind() === "video" ? elements.lightboxVideo.currentTime : 0,
+  });
 }
 
 function normalizedGalleryHistoryContext(raw, { validateCatalog = false } = {}) {
@@ -2327,6 +2372,7 @@ function normalizedGalleryHistoryContext(raw, { validateCatalog = false } = {}) 
     selectionAnchorID,
     loadedCount,
     scrollTop: workspaceHistoryScrollTop(context.galleryScrollTop),
+    lightbox: normalizedLightboxHistoryContext(context.galleryLightbox),
   };
 }
 
@@ -2431,6 +2477,21 @@ async function applyWorkspaceHistoryEntry(entry) {
         initialTagID: context.reviewTagID || null,
         historyMode: "none",
       });
+      const reviewLoadedTarget = Math.min(
+        GALLERY_HISTORY_LOADED_LIMIT,
+        Math.max(48, Math.floor(Number(context.reviewLoadedCount) || 48))
+      );
+      while (state.review.items.length < reviewLoadedTarget && state.review.nextCursor) {
+        const previousCursor = state.review.nextCursor;
+        const previousCount = state.review.items.length;
+        await loadReviewQueue({
+          append: true,
+          preserveUnchangedGrid: true,
+          schedulePagination: false,
+        });
+        if (state.review.items.length <= previousCount
+          || state.review.nextCursor === previousCursor) break;
+      }
       if (state.review.mode === "queue" && context.reviewAssetID) {
         const reviewIndex = state.review.items.findIndex(
           (item) => item.assetID === context.reviewAssetID
@@ -2441,6 +2502,7 @@ async function applyWorkspaceHistoryEntry(entry) {
       elements.reviewQueuePane.scrollTop = workspaceHistoryScrollTop(
         context.reviewQueueScrollTop
       );
+      restoreLightboxFromHistory(context.reviewLightbox, "review");
     } else if (target === "training") {
       if (["image", "video"].includes(context.trainingMediaKind)) {
         state.training.mediaKind = context.trainingMediaKind;
@@ -2494,6 +2556,7 @@ async function applyWorkspaceHistoryEntry(entry) {
       elements.slimmingNavigatorPane.scrollTop = workspaceHistoryScrollTop(
         context.slimmingNavigatorScrollTop
       );
+      restoreLightboxFromHistory(context.slimmingLightbox, "slimming");
     } else if (target === "worldMap") {
       if (Object.prototype.hasOwnProperty.call(context, "worldMapClusterID")) {
         state.worldMap.selectedClusterID = context.worldMapClusterID || null;
@@ -4619,6 +4682,7 @@ function closeLightbox({ restoreFocus = true } = {}) {
   const returnFocus = state.lightboxReturnFocus;
   state.lightboxReturnFocus = null;
   if (restoreFocus) restoreOverlayFocus(returnFocus);
+  scheduleWorkspaceHistoryCheckpoint();
 }
 
 function focusableOverlayElements(container) {
@@ -24106,21 +24170,25 @@ function deferReviewSelection() {
     : "已跳到下一项，没有修改标签决定");
 }
 
-function lightboxItems() {
-  if (state.lightboxContext === "review") {
+function lightboxItemsForContext(context = state.lightboxContext) {
+  if (context === "review") {
     return state.review.items.map((item) => ({
       id: item.assetID,
       fileName: item.fileName,
       contentRevision: item.contentRevision,
     }));
   }
-  if (state.lightboxContext === "slimming") {
+  if (context === "slimming") {
     return state.slimming.members;
   }
-  if (state.lightboxContext === "worldMap") {
+  if (context === "worldMap") {
     return state.worldMap.selection?.assets || [];
   }
   return state.assets;
+}
+
+function lightboxItems() {
+  return lightboxItemsForContext();
 }
 
 function lightboxViewportMetrics(overrides = null) {
@@ -24227,6 +24295,7 @@ function setLightboxScale(nextScale) {
     state.lightboxViewportOffsetY = 0;
   }
   syncLightboxViewport();
+  scheduleWorkspaceHistoryCheckpoint();
 }
 
 function zoomLightboxBy(factor) {
@@ -24276,6 +24345,7 @@ function endLightboxPan(event) {
   }
   elements.lightboxStage.classList.remove("dragging");
   syncLightboxViewport();
+  scheduleWorkspaceHistoryCheckpoint();
 }
 
 function lightboxMediaKind() {
@@ -24383,9 +24453,89 @@ function openLightbox(context, assetID) {
   }
   if (context === "library") syncLightboxWorkspaceFrame();
   renderLightbox();
+  scheduleWorkspaceHistoryCheckpoint();
   requestAnimationFrame(() => {
     elements.lightboxBackButton.focus({ preventScroll: true });
   });
+}
+
+function restoreLightboxFromHistory(raw, expectedContext) {
+  const context = normalizedLightboxHistoryContext(raw);
+  if (!context || !lightboxItemsForContext(expectedContext).some(
+    (item) => item.id === context.assetID
+  )) return false;
+
+  openLightbox(expectedContext, context.assetID);
+  if (expectedContext === "library") {
+    state.lightboxReturnFocus = assetCardMainButton(elements.assetGrid.querySelector(
+      `[data-asset-id="${CSS.escape(context.assetID)}"]`
+    ));
+  } else if (expectedContext === "review") {
+    const reviewIndex = state.review.items.findIndex(
+      (item) => item.assetID === context.assetID
+    );
+    state.lightboxReturnFocus = reviewCardMainButton(elements.reviewGrid.querySelector(
+      `[data-review-index="${reviewIndex}"]`
+    ));
+  } else if (expectedContext === "slimming") {
+    state.lightboxReturnFocus = slimmingMemberMainButton(
+      elements.slimmingMemberGrid.querySelector(
+        `[data-slimming-member-id="${CSS.escape(context.assetID)}"]`
+      )
+    );
+  }
+  const remainsCurrent = () => state.lightboxContext === expectedContext
+    && state.lightboxAssetID === context.assetID
+    && !elements.lightbox.classList.contains("hidden");
+  if (lightboxMediaKind() === "video") {
+    const restoreVideoTime = () => {
+      if (!remainsCurrent()) return;
+      const duration = Number(elements.lightboxVideo.duration);
+      const maximum = Number.isFinite(duration) && duration > 0 ? duration : context.videoTime;
+      try {
+        elements.lightboxVideo.currentTime = Math.min(context.videoTime, maximum);
+      } catch {
+        // Some browsers reject seeking until metadata is ready; loadedmetadata retries it.
+      }
+      elements.lightboxVideo.pause();
+    };
+    elements.lightboxVideo.addEventListener("loadedmetadata", restoreVideoTime, { once: true });
+    if (elements.lightboxVideo.readyState >= HTMLMediaElement.HAVE_METADATA) {
+      requestAnimationFrame(restoreVideoTime);
+    }
+    return true;
+  }
+
+  let restored = false;
+  const removeImageViewportListeners = () => {
+    elements.lightboxImage.removeEventListener("load", restoreImageViewport);
+    elements.lightboxImage.removeEventListener(
+      "imageall-protected-load",
+      restoreImageViewport
+    );
+  };
+  const restoreImageViewport = () => {
+    if (restored) return;
+    if (!remainsCurrent()) {
+      removeImageViewportListeners();
+      return;
+    }
+    if (elements.lightboxImage.naturalWidth <= 0) return;
+    restored = true;
+    removeImageViewportListeners();
+    state.lightboxViewportAssetID = context.assetID;
+    state.lightboxViewportScale = context.scale;
+    state.lightboxViewportOffsetX = context.offsetX;
+    state.lightboxViewportOffsetY = context.offsetY;
+    syncLightboxViewport();
+  };
+  elements.lightboxImage.addEventListener("load", restoreImageViewport);
+  elements.lightboxImage.addEventListener(
+    "imageall-protected-load",
+    restoreImageViewport
+  );
+  requestAnimationFrame(restoreImageViewport);
+  return true;
 }
 
 function syncLightboxOpenOriginalControl(item) {
@@ -24463,6 +24613,7 @@ function syncReviewLightboxSelection() {
   }
   state.lightboxAssetID = item.assetID;
   renderLightbox();
+  scheduleWorkspaceHistoryCheckpoint();
 }
 
 async function applyLightboxReviewDecision(action) {
@@ -24537,6 +24688,7 @@ async function navigateLightbox(direction) {
     const nextAssetID = items[next].id;
     state.lightboxAssetID = nextAssetID;
     renderLightbox();
+    scheduleWorkspaceHistoryCheckpoint();
     if (state.lightboxContext === "review") {
       selectReviewIndex(next);
     } else if (state.lightboxContext === "library") {
@@ -24682,8 +24834,11 @@ async function loadWorkspace({ restoreHistory = false } = {}) {
   const generation = state.workspaceGeneration;
   showApp({ restoreHistory });
   const restoreEntry = state.workspaceNavigation.pendingRestoreEntry;
-  let galleryRestore = restoreEntry?.route === "gallery"
-    ? applyGalleryHistoryContext(restoreEntry.context)
+  const galleryRestoreSource = restoreEntry?.route === "gallery"
+    ? restoreEntry.context
+    : restoreEntry?.context?.galleryContext;
+  let galleryRestore = galleryRestoreSource
+    ? applyGalleryHistoryContext(galleryRestoreSource)
     : null;
   setConnection(true, "正在同步");
   const capabilities = await api("/v1/capabilities");
@@ -24745,7 +24900,10 @@ async function loadWorkspace({ restoreHistory = false } = {}) {
   state.workspaceNotice.dismissing = false;
   state.workspaceNotice.activeActionID = null;
   if (galleryRestore) {
-    galleryRestore = applyGalleryHistoryContext(restoreEntry.context, { validateCatalog: true });
+    galleryRestore = applyGalleryHistoryContext(
+      galleryRestoreSource,
+      { validateCatalog: true }
+    );
   }
   renderWorkspaceNotice();
   elements.hostVersion.textContent = `Mac Host ${capabilities.hostAppVersion}`;
@@ -24781,6 +24939,7 @@ async function loadWorkspace({ restoreHistory = false } = {}) {
       galleryRestore.scrollTop,
       Math.max(0, elements.libraryScroll.scrollHeight - elements.libraryScroll.clientHeight)
     );
+    restoreLightboxFromHistory(galleryRestore.lightbox, "library");
   }
   if (supportsLibrarySlimming()) {
     await Promise.all([
@@ -27923,7 +28082,10 @@ function bindEvents() {
   elements.selectionFavoriteToolbarActions.addEventListener("focusout", (event) => {
     if (event.relatedTarget
       && !elements.selectionFavoriteToolbarActions.contains(event.relatedTarget)) {
-      state.selectionFavoriteToolbarFocusedAction = null;
+      const directActionsStillVisible = getComputedStyle(
+        elements.selectionFavoriteToolbarActions
+      ).display !== "none";
+      if (directActionsStillVisible) state.selectionFavoriteToolbarFocusedAction = null;
     }
   });
   globalThis.addEventListener("popstate", handleWorkspaceHistoryPopState);
@@ -30082,6 +30244,8 @@ function bindEvents() {
     }
     renderReviewCloudPreviewRecovery();
   });
+  elements.lightboxVideo.addEventListener("timeupdate", scheduleWorkspaceHistoryCheckpoint);
+  elements.lightboxVideo.addEventListener("pause", scheduleWorkspaceHistoryCheckpoint);
   window.addEventListener("resize", () => {
     if (!elements.lightbox.classList.contains("hidden")) {
       syncLightboxWorkspaceFrame();
