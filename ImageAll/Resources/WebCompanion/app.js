@@ -133,6 +133,7 @@ const elements = {
   sourceManagerButton: $("#sourceManagerButton"),
   sourceActionsPopover: $("#sourceActionsPopover"),
   sourceActionsSummary: $("#sourceActionsSummary"),
+  sourceActionsViewAllButton: $("#sourceActionsViewAllButton"),
   sourceActionsRefreshAllButton: $("#sourceActionsRefreshAllButton"),
   sourceActionsPrewarmAllButton: $("#sourceActionsPrewarmAllButton"),
   sourceActionsPrewarmAllOriginalButton: $("#sourceActionsPrewarmAllOriginalButton"),
@@ -2578,6 +2579,12 @@ function mobileSidebarOverlayIsOpen() {
   return mobileSidebarLayoutQuery.matches
     && visibleWorkspaceRoute() === "gallery"
     && elements.sourceSidebar.classList.contains("open");
+}
+
+function mountWorkspaceOverlayPortals() {
+  if (elements.sourceActionsPopover.parentElement !== elements.workspace) {
+    elements.workspace.append(elements.sourceActionsPopover);
+  }
 }
 
 function syncMobileSidebarAccessibility() {
@@ -9847,6 +9854,24 @@ function sourceActionsFocusableButtons() {
       && button.getClientRects().length > 0);
 }
 
+async function viewAllSourcesFromActionMenu() {
+  await returnFromActionMenu({ restoreFocus: false });
+  const alreadyShowingAll = visibleWorkspaceRoute() === "gallery"
+    && state.libraryScope === "all"
+    && state.selectedSourceID === "";
+  if (alreadyShowingAll) {
+    closeMobileSidebar({ restoreFocus: false });
+  } else {
+    await selectSource("");
+  }
+  const allMediaButton = document.querySelector('[data-source-id=""]');
+  const target = mobileSidebarLayoutQuery.matches
+    && !elements.sourceSidebar.classList.contains("open")
+    ? elements.sidebarToggle
+    : allMediaButton;
+  restoreOverlayFocus(stableReturnFocusTarget(target, elements.sidebarToggle));
+}
+
 function renderSourceActionsMenu() {
   const manager = state.sourceManagement;
   const sources = manager.snapshot?.sources || state.sources;
@@ -9869,16 +9894,22 @@ function renderSourceActionsMenu() {
   );
   const unavailable = !state.online || !supportsSourceManagement();
 
-  elements.sourceAllActionsButton.disabled = unavailable;
+  elements.sourceAllActionsButton.disabled = false;
   elements.sourceAllActionsButton.title = !state.online
-    ? "Mac 已离线"
+    ? "仍可返回全部照片；来源写操作需等待 Mac 重新连接"
     : supportsSourceManagement()
       ? "更新、缓存或批量处理来源"
-      : "当前 Mac 版本不支持来源管理";
+      : "仍可返回全部照片；当前 Mac 版本不支持来源管理";
   elements.sourceActionsSummary.textContent = activeRequest?.message
     || (sources.length
       ? `${sources.length} 个已连接来源 · 操作由 Mac 执行`
       : manager.loading ? "正在读取 Mac 上的来源…" : "尚无已连接来源");
+  elements.sourceActionsViewAllButton.disabled = false;
+  elements.sourceActionsViewAllButton.title = visibleWorkspaceRoute() === "gallery"
+    && state.libraryScope === "all"
+    && state.selectedSourceID === ""
+    ? "当前已在全部照片；关闭此菜单"
+    : "回到全部照片；不会修改任何来源";
 
   elements.sourceActionsRefreshAllButton.disabled = unavailable
     || busy || activeSources.length === 0;
@@ -14815,9 +14846,13 @@ function actionMenuRestorableFocusTarget(descriptor) {
 }
 
 function actionMenuIsAvailable(descriptor, route = visibleWorkspaceRoute()) {
+  const routeMatches = descriptor?.kind === "sourceActions"
+    ? ["gallery", "galleryOverview", "worldMap", "review", "training", "slimming"]
+      .includes(route)
+    : descriptor?.route === route;
   return Boolean(
     descriptor
-      && descriptor.route === route
+      && routeMatches
       && !descriptor.button.disabled
       && descriptor.button.getClientRects().length > 0
   );
@@ -33648,6 +33683,9 @@ function bindEvents() {
     await submitSourceManagementAction(action, sourceID);
     restoreOverlayFocus(elements.sourceAllActionsButton);
   });
+  elements.sourceActionsViewAllButton.addEventListener("click", () => {
+    void viewAllSourcesFromActionMenu();
+  });
   elements.sourceActionsPopover.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       event.preventDefault();
@@ -37057,6 +37095,7 @@ function bindEvents() {
 }
 
 async function boot() {
+  mountWorkspaceOverlayPortals();
   bindEvents();
   ensureMediaWorker();
   loadWorkspacePreferences();

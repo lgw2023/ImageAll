@@ -10,8 +10,8 @@
   <meta name="apple-mobile-web-app-title" content="ImageAll">
   <title>ImageAll 网页版</title>
   <link rel="manifest" href="/manifest.webmanifest">
-    <link rel="stylesheet" href="/app.css?v=20260821-129">
-    <script src="/app.js?v=20260821-129" defer></script>
+    <link rel="stylesheet" href="/app.css?v=20260821-130">
+    <script src="/app.js?v=20260821-130" defer></script>
 </head>
 <body>
   <div id="bootView" class="centered-state">
@@ -335,7 +335,7 @@
           <div class="sidebar-section-heading">
             <h2>来源</h2>
             <div class="sidebar-heading-actions">
-              <button id="sourceAllActionsButton" class="sidebar-add-button write-action"
+              <button id="sourceAllActionsButton" class="sidebar-add-button"
                 type="button" aria-label="所有来源操作" aria-expanded="false"
                 aria-controls="sourceActionsPopover" title="更新、缓存或批量处理来源">•••</button>
               <button id="sourceManagerButton" class="sidebar-add-button write-action" type="button"
@@ -601,6 +601,9 @@
               <small id="sourceActionsSummary">由这台 Mac 处理</small>
             </span>
           </header>
+          <button id="sourceActionsViewAllButton" type="button" role="menuitem">
+            <span aria-hidden="true">▦</span><span>在图库中查看全部</span>
+          </button>
           <div class="source-actions-popover-group" role="group" aria-label="更新与缓存">
             <span>更新与缓存</span>
             <button id="sourceActionsRefreshAllButton" type="button" role="menuitem"

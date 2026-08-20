@@ -2635,6 +2635,7 @@ final class RemoteHTTPServerTests: XCTestCase {
             "sourceAllActionsButton",
             "sourceActionsPopover",
             "sourceActionsSummary",
+            "sourceActionsViewAllButton",
             "sourceActionsRefreshAllButton",
             "sourceActionsPrewarmAllButton",
             "sourceActionsPrewarmAllOriginalButton",
@@ -2725,6 +2726,9 @@ final class RemoteHTTPServerTests: XCTestCase {
         ] {
             XCTAssertTrue(html.contains("id=\"\(controlID)\""))
         }
+        XCTAssertTrue(
+            html.contains("id=\"sourceAllActionsButton\" class=\"sidebar-add-button\"")
+        )
         for endpoint in [
             "/v1/tags/selection",
             "/v1/tag-decisions/batch",
@@ -2922,6 +2926,15 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function resetReviewCloudPreviewRecovery"))
         XCTAssertTrue(stylesheet.contains(".lightbox-cloud-preview-recovery"))
         XCTAssertTrue(script.contains("submitSourceManagementAction(\"refreshAll\")"))
+        XCTAssertTrue(script.contains("async function viewAllSourcesFromActionMenu"))
+        XCTAssertTrue(
+            script.contains(
+                "[\"gallery\", \"galleryOverview\", \"worldMap\", \"review\", \"training\", \"slimming\"]"
+            )
+        )
+        XCTAssertTrue(script.contains("await selectSource(\"\")"))
+        XCTAssertTrue(script.contains("closeMobileSidebar({ restoreFocus: false })"))
+        XCTAssertTrue(script.contains("elements.workspace.append(elements.sourceActionsPopover)"))
         XCTAssertTrue(script.contains("submitSourceManagementAction(\"prewarmAllThumbnails\")"))
         XCTAssertTrue(script.contains("submitSourceManagementAction(\"prewarmAllOriginalAspect\")"))
         XCTAssertTrue(script.contains("submitSourceManagementAction(\"reauthorizeAll\")"))

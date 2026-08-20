@@ -450,6 +450,7 @@ def main():
         ) == "sourceActions"
         assert source_management_reads[0] == source_actions_read_count
         assert "2 个已连接来源" in page.locator("#sourceActionsSummary").inner_text()
+        assert page.locator("#sourceActionsViewAllButton").is_enabled()
         assert "（0）" in page.locator("#sourceActionsReauthorizeAllButton").inner_text()
         assert "（1）" in page.locator("#sourceActionsRefreshMutationButton").inner_text()
         assert page.locator("#sourceActionsPhotosWriteButton").is_visible()
@@ -482,7 +483,7 @@ def main():
         page.keyboard.press("Home")
         assert page.evaluate(
             "document.activeElement?.id"
-        ) == "sourceActionsRefreshAllButton"
+        ) == "sourceActionsViewAllButton"
         page.keyboard.press("End")
         assert page.evaluate(
             "document.activeElement?.id"
@@ -494,6 +495,22 @@ def main():
         )
         page.locator("#sourceActionsPopover").evaluate(
             "menu => { menu.style.maxHeight = ''; }"
+        )
+
+        page.evaluate(
+            "() => { state.online = false; syncWriteActionControls(); renderSourceActionsMenu(); }"
+        )
+        assert page.locator("#sourceAllActionsButton").is_enabled()
+        assert "仍可返回全部照片" in page.locator("#sourceAllActionsButton").get_attribute(
+            "title"
+        )
+        page.locator("#sourceAllActionsButton").click()
+        assert page.locator("#sourceActionsViewAllButton").is_enabled()
+        assert page.locator("#sourceActionsRefreshAllButton").is_disabled()
+        page.keyboard.press("Escape")
+        page.locator("#sourceActionsPopover").wait_for(state="hidden")
+        page.evaluate(
+            "() => { state.online = true; syncWriteActionControls(); renderSourceActionsMenu(); }"
         )
 
         page.locator("#sourceAllActionsButton").click()
@@ -732,11 +749,20 @@ def main():
         page.keyboard.press("Escape")
         page.locator("#sourceActionsPopover").wait_for(state="hidden")
         assert "open" in (page.locator("#sourceSidebar").get_attribute("class") or "")
-        page.locator("#sidebarToggle").click()
+        mobile_view_all_asset_count = len(asset_requests)
+        mobile_view_all_action_count = len(source_actions)
+        page.locator("#sourceAllActionsButton").click()
+        page.locator("#sourceActionsViewAllButton").click()
+        page.locator("#sourceActionsPopover").wait_for(state="hidden")
         page.wait_for_function(
             "() => !document.querySelector('#sourceSidebar').classList.contains('open')"
         )
-        assert page.evaluate("document.activeElement?.id") == "sidebarToggle"
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'sidebarToggle'"
+            " && history.state?.imageAllWorkspace?.navigationLevel === 'workspace'"
+        )
+        assert len(asset_requests) == mobile_view_all_asset_count
+        assert len(source_actions) == mobile_view_all_action_count
         page.locator("#sidebarToggle").click()
         page.locator("#sourceSidebar.open").wait_for()
         page.evaluate(
@@ -1048,8 +1074,25 @@ def main():
         assert review_controls.locator(".review-threshold-editor").first.is_visible()
         page.screenshot(path="/tmp/imageall-review-thresholds-390.png", full_page=True)
         page.set_viewport_size({"width": 1440, "height": 960})
-        page.locator("#closeReviewButton").click()
-        page.locator("#reviewWorkspace").wait_for(state="hidden")
+        review_view_all_asset_count = len(asset_requests)
+        review_view_all_action_count = len(source_actions)
+        review_view_all_session = page.evaluate(
+            "() => ({ mediaKind: state.mediaKind, sort: state.sort, filters: state.filters })"
+        )
+        page.locator("#sourceAllActionsButton").click()
+        page.locator("#sourceActionsViewAllButton").click()
+        page.wait_for_function(
+            "() => visibleWorkspaceRoute() === 'gallery'"
+            " && state.selectedSourceID === '' && !state.loadingAssets"
+        )
+        assert page.evaluate(
+            "() => ({ mediaKind: state.mediaKind, sort: state.sort, filters: state.filters })"
+        ) == review_view_all_session
+        assert len(asset_requests) == review_view_all_asset_count + 1
+        assert len(source_actions) == review_view_all_action_count
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.sourceId === ''"
+        )
 
         page.keyboard.press("Meta+,")
         assert page.locator("#generalSettingsDialog").is_visible()
@@ -1158,6 +1201,32 @@ def main():
             f"() => document.querySelector('#sourceList [data-source-id=\"{SOURCE_ID}\"]')?.classList.contains('selected')"
         )
         assert page.locator("#currentSourceRefreshLabel").inner_text() == "立即同步"
+        source_view_all_asset_count = len(asset_requests)
+        source_view_all_action_count = len(source_actions)
+        source_view_all_session = page.evaluate(
+            "() => ({ mediaKind: state.mediaKind, sort: state.sort, filters: state.filters })"
+        )
+        page.locator("#sourceAllActionsButton").click()
+        page.locator("#sourceActionsViewAllButton").click()
+        page.wait_for_function(
+            "() => state.selectedSourceID === '' && !state.loadingAssets"
+        )
+        assert page.locator("#sourceActionsPopover").is_hidden()
+        assert page.evaluate(
+            "history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "workspace"
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.sourceId === ''"
+        )
+        assert page.evaluate(
+            "() => ({ mediaKind: state.mediaKind, sort: state.sort, filters: state.filters })"
+        ) == source_view_all_session
+        assert len(asset_requests) == source_view_all_asset_count + 1
+        assert len(source_actions) == source_view_all_action_count
+        source_button.click()
+        page.wait_for_function(
+            f"() => state.selectedSourceID === '{SOURCE_ID}' && !state.loadingAssets"
+        )
         with page.expect_response(
             lambda response: response.url.endswith("/v1/source-management/requests")
             and response.request.method == "POST"
