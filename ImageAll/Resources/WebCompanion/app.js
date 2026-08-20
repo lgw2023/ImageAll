@@ -32644,7 +32644,11 @@ async function openCommandPalette({
     closeLayoutMenu({ restoreFocus: false });
     closeFilterPopover({ restoreFocus: false });
     closeActionMenu({ restoreFocus: false, checkpoint: !replacesActionMenu });
-    closeJobsPopover({ restoreFocus: false });
+    closeJobsPopover({
+      restoreFocus: false,
+      checkpoint: false,
+      preserveState: true,
+    });
     hideContextMenus();
     elements.commandSearchInput.value = "";
     state.commandIndex = 0;

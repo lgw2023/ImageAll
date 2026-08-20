@@ -1342,6 +1342,28 @@ def main():
             - preserved_scroll_top
         ) <= 1
 
+        jobs_before_command_palette = len(jobs_requests)
+        page.keyboard.press("Meta+K")
+        page.locator("#commandPalette[open]").wait_for()
+        page.locator("#jobsPopover").wait_for(state="hidden")
+        assert page.locator("#commandContextLabel").inner_text() == "当前：训练工程"
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "commandPalette"
+        page.keyboard.press("Meta+K")
+        page.locator("#commandPalette").wait_for(state="hidden")
+        page.locator("#jobsPopover:not(.hidden)").wait_for(state="visible")
+        page.wait_for_function(
+            "jobID => history.state?.imageAllWorkspace?.navigationLevel === 'jobs' "
+            "&& document.activeElement?.dataset.jobRowId === jobID",
+            arg=SECOND_JOB_ID,
+        )
+        assert len(jobs_requests) == jobs_before_command_palette
+        assert abs(
+            page.locator("#jobsList").evaluate("element => element.scrollTop")
+            - preserved_scroll_top
+        ) <= 1
+
         page.locator("#jobsList").evaluate("element => { element.scrollTop = 160; }")
         preserved_scroll_top = page.locator("#jobsList").evaluate("element => element.scrollTop")
         before_jobs_refresh = len(jobs_requests)
