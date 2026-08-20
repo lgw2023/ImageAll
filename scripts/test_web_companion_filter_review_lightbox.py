@@ -1724,6 +1724,9 @@ def main():
         page.locator("#persistentHelp:not(.hidden)").wait_for()
         assert page.locator("#persistentHelp").get_attribute("data-kind") == "review"
         assert page.locator("#persistentHelpTitle").inner_text() == "审核“猫”"
+        assert review_cat_card.get_attribute("data-help-owner") == (
+            f"review-overview:{CAT_TAG_ID}"
+        )
         review_help_detail = page.locator("#persistentHelpDetail").inner_text()
         assert "P 属于、X 不属于、U 稍后" in review_help_detail
         review_connection_stability = page.evaluate(
@@ -1749,7 +1752,16 @@ def main():
                     `[data-review-overview-tag-id="${CSS.escape(tagID)}"]`
                   ) === card,
                   sameHelpTarget: persistentHelpTarget === card,
+                  helpTargetTagID: persistentHelpTarget?.dataset?.reviewOverviewTagId || null,
+                  helpTargetOwner: persistentHelpTarget?.dataset?.helpOwner || null,
+                  pointerHitOwner: persistentHelpControlAtPointer()?.dataset?.helpOwner || null,
+                  pointerX: persistentHelpPointerX,
+                  pointerY: persistentHelpPointerY,
                   helpVisible: !document.querySelector('#persistentHelp').classList.contains('hidden'),
+                  helpInputMode: persistentHelpInputMode,
+                  lastVisibleOwner: persistentHelpLastVisibleOwnerKey,
+                  lastVisibleAge: performance.now() - persistentHelpLastVisibleAt,
+                  timerPending: persistentHelpTimer != null,
                   connectionLabelBefore,
                   connectionLabelAfter: document.querySelector('.connection-label').textContent,
                 };
@@ -1767,6 +1779,85 @@ def main():
         assert review_connection_stability["connectionLabelAfter"] == (
             review_connection_stability["connectionLabelBefore"]
         ), review_connection_stability
+        review_repaint_stability = page.evaluate(
+            """async tagID => {
+              const previousCard = document.querySelector(
+                `[data-review-overview-tag-id="${CSS.escape(tagID)}"]`
+              );
+              const previousOwner = persistentHelpOwner;
+              renderReviewOverview();
+              await new Promise(resolve => requestAnimationFrame(
+                () => requestAnimationFrame(resolve)
+              ));
+              await new Promise(resolve => setTimeout(resolve, 20));
+              const card = document.querySelector(
+                `[data-review-overview-tag-id="${CSS.escape(tagID)}"]`
+              );
+              return {
+                replacedCard: card !== previousCard && previousCard?.isConnected === false,
+                sameSemanticOwner: card?.dataset.helpOwner
+                  === previousCard?.dataset.helpOwner,
+                reboundHelpTarget: persistentHelpTarget === card,
+                ownerAdvanced: persistentHelpOwner > previousOwner,
+                helpVisible: !document.querySelector('#persistentHelp')
+                  .classList.contains('hidden'),
+                helpKind: document.querySelector('#persistentHelp').dataset.kind,
+                helpTitle: document.querySelector('#persistentHelpTitle').textContent,
+              };
+            }""",
+            CAT_TAG_ID,
+        )
+        assert review_repaint_stability == {
+            "replacedCard": True,
+            "sameSemanticOwner": True,
+            "reboundHelpTarget": True,
+            "ownerAdvanced": True,
+            "helpVisible": True,
+            "helpKind": "review",
+            "helpTitle": "审核“猫”",
+        }, review_repaint_stability
+        stale_help_owner_fence = page.evaluate(
+            """async tagID => {
+              const card = document.querySelector(
+                `[data-review-overview-tag-id="${CSS.escape(tagID)}"]`
+              );
+              const stale = document.createElement('button');
+              configurePersistentHelp(stale, {
+                title: '旧帮助',
+                detail: '这个延迟回调不得覆盖当前审核帮助。',
+                kind: 'control',
+                owner: 'stale-help-fixture',
+              });
+              document.body.append(stale);
+              schedulePersistentHelp(stale, 1_000, 'pointer');
+              const staleOwner = persistentHelpOwner;
+              schedulePersistentHelp(card, 0, 'pointer');
+              const currentOwner = persistentHelpOwner;
+              showPersistentHelp(stale, staleOwner);
+              await new Promise(resolve => setTimeout(resolve, 20));
+              const result = {
+                ownerAdvanced: currentOwner > staleOwner,
+                rejectedStaleTarget: persistentHelpTarget !== stale,
+                retainedCurrentOwner: persistentHelpOwnerKey(persistentHelpTarget)
+                  === card.dataset.helpOwner,
+                helpVisible: !document.querySelector('#persistentHelp')
+                  .classList.contains('hidden'),
+                helpKind: document.querySelector('#persistentHelp').dataset.kind,
+                helpTitle: document.querySelector('#persistentHelpTitle').textContent,
+              };
+              stale.remove();
+              return result;
+            }""",
+            CAT_TAG_ID,
+        )
+        assert stale_help_owner_fence == {
+            "ownerAdvanced": True,
+            "rejectedStaleTarget": True,
+            "retainedCurrentOwner": True,
+            "helpVisible": True,
+            "helpKind": "review",
+            "helpTitle": "审核“猫”",
+        }, stale_help_owner_fence
         review_help_bounds = page.locator("#persistentHelp").bounding_box()
         assert review_help_bounds is not None
         assert review_help_bounds["x"] >= 8 and review_help_bounds["y"] >= 8

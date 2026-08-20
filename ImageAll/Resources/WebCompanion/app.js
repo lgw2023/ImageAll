@@ -1635,6 +1635,14 @@ let assetHoverVideoTimer = null;
 let activeAssetHoverCard = null;
 let persistentHelpTimer = null;
 let persistentHelpTarget = null;
+let persistentHelpOwner = 0;
+let persistentHelpInputMode = null;
+let persistentHelpPointerX = null;
+let persistentHelpPointerY = null;
+let persistentHelpReconcileFrame = null;
+let persistentHelpPointerMisses = 0;
+let persistentHelpLastVisibleOwnerKey = null;
+let persistentHelpLastVisibleAt = 0;
 const protectedImageIntersectionObserver = "IntersectionObserver" in globalThis
   ? new IntersectionObserver((entries) => {
     for (const entry of entries) {
@@ -2152,6 +2160,7 @@ function configurePersistentHelp(control, {
   detail,
   kind = "control",
   keyShortcuts = null,
+  owner = null,
 } = {}) {
   if (!(control instanceof HTMLElement)) return control;
   if (title) control.dataset.helpTitle = title;
@@ -2160,6 +2169,8 @@ function configurePersistentHelp(control, {
   else delete control.dataset.helpDetail;
   if (kind) control.dataset.helpKind = kind;
   else delete control.dataset.helpKind;
+  if (owner) control.dataset.helpOwner = owner;
+  else delete control.dataset.helpOwner;
   if (keyShortcuts) control.setAttribute("aria-keyshortcuts", keyShortcuts);
   return control;
 }
@@ -2187,11 +2198,26 @@ function removePersistentHelpDescription(control) {
   else control.removeAttribute("aria-describedby");
 }
 
-function hidePersistentHelp({ restoreTitle = true } = {}) {
+function hidePersistentHelp({
+  restoreTitle = true,
+  owner = null,
+  preserveOwnerContinuity = false,
+} = {}) {
+  if (owner != null && owner !== persistentHelpOwner) return false;
   clearTimeout(persistentHelpTimer);
   persistentHelpTimer = null;
+  persistentHelpOwner += 1;
   const target = persistentHelpTarget;
+  const wasVisible = !elements.persistentHelp.classList.contains("hidden");
+  if (preserveOwnerContinuity && wasVisible) {
+    persistentHelpLastVisibleOwnerKey = persistentHelpOwnerKey(target);
+    persistentHelpLastVisibleAt = performance.now();
+  } else if (!preserveOwnerContinuity) {
+    persistentHelpLastVisibleOwnerKey = null;
+    persistentHelpLastVisibleAt = 0;
+  }
   persistentHelpTarget = null;
+  persistentHelpInputMode = null;
   elements.persistentHelp.classList.add("hidden");
   elements.persistentHelp.setAttribute("aria-hidden", "true");
   elements.persistentHelp.removeAttribute("data-placement");
@@ -2200,6 +2226,7 @@ function hidePersistentHelp({ restoreTitle = true } = {}) {
   elements.persistentHelp.style.removeProperty("top");
   removePersistentHelpDescription(target);
   if (restoreTitle) restoreNativeHelp(target);
+  return true;
 }
 
 function positionPersistentHelp(control) {
@@ -2223,12 +2250,14 @@ function positionPersistentHelp(control) {
   elements.persistentHelp.dataset.placement = fitsBelow ? "below" : "above";
 }
 
-function showPersistentHelp(control) {
-  if (persistentHelpTarget !== control || !document.contains(control)) return;
+function showPersistentHelp(control, owner = persistentHelpOwner) {
+  if (owner !== persistentHelpOwner
+    || persistentHelpTarget !== control
+    || !document.contains(control)) return;
   const title = persistentHelpTitle(control);
   const detail = control.dataset.helpDetail || "";
   if (!title || !detail || control.closest("[inert]")) {
-    hidePersistentHelp();
+    hidePersistentHelp({ owner });
     return;
   }
   elements.persistentHelpTitle.textContent = title;
@@ -2244,45 +2273,160 @@ function showPersistentHelp(control) {
   positionPersistentHelp(control);
 }
 
-function schedulePersistentHelp(control, delay) {
+function schedulePersistentHelp(control, delay, inputMode = "pointer") {
   if (!(control instanceof HTMLElement)) return;
+  if (inputMode === "pointer") persistentHelpPointerMisses = 0;
   if (persistentHelpTarget === control && !elements.persistentHelp.classList.contains("hidden")) {
-    positionPersistentHelp(control);
+    persistentHelpInputMode = inputMode;
+    showPersistentHelp(control, persistentHelpOwner);
     return;
   }
+  const ownerKey = persistentHelpOwnerKey(control);
+  const preservesCurrentVisibleOwner = !elements.persistentHelp.classList.contains("hidden")
+    && ownerKey != null
+    && ownerKey === persistentHelpOwnerKey(persistentHelpTarget);
+  const resumesVisibleOwner = inputMode === "pointer"
+    && elements.persistentHelp.classList.contains("hidden")
+    && ownerKey != null
+    && ownerKey === persistentHelpLastVisibleOwnerKey
+    && performance.now() - persistentHelpLastVisibleAt <= 500;
   hidePersistentHelp();
   persistentHelpTarget = control;
+  persistentHelpInputMode = inputMode;
   suspendNativeHelp(control);
-  persistentHelpTimer = setTimeout(() => showPersistentHelp(control), delay);
+  const owner = persistentHelpOwner;
+  if (preservesCurrentVisibleOwner || resumesVisibleOwner || delay <= 0) {
+    showPersistentHelp(control, owner);
+  } else {
+    persistentHelpTimer = setTimeout(() => {
+      if (owner !== persistentHelpOwner) return;
+      persistentHelpTimer = null;
+      showPersistentHelp(control, owner);
+    }, delay);
+  }
+}
+
+function persistentHelpOwnerKey(control) {
+  if (!(control instanceof HTMLElement)) return null;
+  return control.dataset.helpOwner || (control.id ? `id:${control.id}` : null);
+}
+
+function persistentHelpControlAtPointer() {
+  if (!Number.isFinite(persistentHelpPointerX) || !Number.isFinite(persistentHelpPointerY)) {
+    return null;
+  }
+  return persistentHelpControl(document.elementFromPoint(
+    persistentHelpPointerX,
+    persistentHelpPointerY
+  ));
+}
+
+function reconcilePersistentHelpTarget() {
+  persistentHelpReconcileFrame = null;
+  if (persistentHelpInputMode === "focus") {
+    if (!(persistentHelpTarget instanceof HTMLElement)
+      || !persistentHelpTarget.isConnected
+      || !persistentHelpTarget.contains(document.activeElement)) {
+      hidePersistentHelp();
+      return;
+    }
+    if (!elements.persistentHelp.classList.contains("hidden")) {
+      showPersistentHelp(persistentHelpTarget, persistentHelpOwner);
+    }
+    return;
+  }
+
+  const control = persistentHelpControlAtPointer();
+  if (!(control instanceof HTMLElement)) {
+    if (persistentHelpInputMode === "pointer") {
+      if (persistentHelpPointerMisses === 0) {
+        persistentHelpPointerMisses = 1;
+        persistentHelpReconcileFrame = requestAnimationFrame(reconcilePersistentHelpTarget);
+      } else {
+        persistentHelpPointerMisses = 0;
+        hidePersistentHelp({ preserveOwnerContinuity: true });
+      }
+    }
+    return;
+  }
+  persistentHelpPointerMisses = 0;
+  if (control === persistentHelpTarget) {
+    if (!elements.persistentHelp.classList.contains("hidden")) {
+      showPersistentHelp(control, persistentHelpOwner);
+    }
+    return;
+  }
+
+  const previousOwnerKey = persistentHelpOwnerKey(persistentHelpTarget);
+  const nextOwnerKey = persistentHelpOwnerKey(control);
+  const preservesVisibleOwner = !elements.persistentHelp.classList.contains("hidden")
+    && previousOwnerKey != null
+    && previousOwnerKey === nextOwnerKey;
+  schedulePersistentHelp(control, preservesVisibleOwner ? 0 : 650, "pointer");
+}
+
+function schedulePersistentHelpReconciliation() {
+  if (persistentHelpReconcileFrame != null) return;
+  persistentHelpReconcileFrame = requestAnimationFrame(reconcilePersistentHelpTarget);
+}
+
+function resetPersistentHelpPointer() {
+  persistentHelpPointerX = null;
+  persistentHelpPointerY = null;
+  persistentHelpPointerMisses = 0;
 }
 
 function bindPersistentHelp() {
+  document.addEventListener("pointermove", (event) => {
+    persistentHelpPointerX = event.clientX;
+    persistentHelpPointerY = event.clientY;
+  }, { passive: true });
   document.addEventListener("pointerover", (event) => {
+    persistentHelpPointerX = event.clientX;
+    persistentHelpPointerY = event.clientY;
     const control = persistentHelpControl(event.target);
     if (!control || control.contains(event.relatedTarget)) return;
-    schedulePersistentHelp(control, 650);
+    schedulePersistentHelp(control, 650, "pointer");
   });
   document.addEventListener("pointerout", (event) => {
     const control = persistentHelpControl(event.target);
     if (!control || control.contains(event.relatedTarget)) return;
-    if (persistentHelpTarget === control) hidePersistentHelp();
+    if (persistentHelpInputMode === "pointer" && persistentHelpTarget === control) {
+      schedulePersistentHelpReconciliation();
+    }
   });
   document.addEventListener("focusin", (event) => {
     const control = persistentHelpControl(event.target);
     if (control
       && event.target instanceof HTMLElement
       && event.target.matches(":focus-visible")) {
-      schedulePersistentHelp(control, 160);
+      schedulePersistentHelp(control, 160, "focus");
     }
   });
   document.addEventListener("focusout", (event) => {
     const control = persistentHelpControl(event.target);
-    if (persistentHelpTarget === control) hidePersistentHelp();
+    if (persistentHelpInputMode === "focus" && persistentHelpTarget === control) {
+      hidePersistentHelp();
+    }
   });
-  document.addEventListener("pointerdown", () => hidePersistentHelp(), true);
-  document.addEventListener("keydown", () => hidePersistentHelp(), true);
-  globalThis.addEventListener("resize", () => hidePersistentHelp(), { passive: true });
-  document.addEventListener("scroll", () => hidePersistentHelp(), { passive: true, capture: true });
+  document.addEventListener("pointerdown", () => {
+    resetPersistentHelpPointer();
+    hidePersistentHelp();
+  }, true);
+  document.addEventListener("keydown", () => {
+    resetPersistentHelpPointer();
+    hidePersistentHelp();
+  }, true);
+  globalThis.addEventListener("resize", schedulePersistentHelpReconciliation, { passive: true });
+  document.addEventListener("scroll", schedulePersistentHelpReconciliation, {
+    passive: true,
+    capture: true,
+  });
+  new MutationObserver((mutations) => {
+    if (mutations.some((mutation) => !elements.persistentHelp.contains(mutation.target))) {
+      schedulePersistentHelpReconciliation();
+    }
+  }).observe(document.body, { childList: true, subtree: true });
 }
 
 function restoreOverlayFocus(target) {
@@ -18839,6 +18983,7 @@ function renderReviewOverview() {
         : `“${overview.displayName}”当前没有待审核${currentMediaNoun()}；可展开门槛与生成来创建新建议。`,
       kind: "review",
       keyShortcuts: "Enter Space",
+      owner: `review-overview:${overview.id}`,
     });
 
     const heading = document.createElement("div");
