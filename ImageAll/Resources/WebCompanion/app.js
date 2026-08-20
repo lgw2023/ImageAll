@@ -124,6 +124,7 @@ const elements = {
   dismissWorkspaceNoticeButton: $("#dismissWorkspaceNoticeButton"),
   workspace: $("#workspace"),
   sourceSidebar: $("#sourceSidebar"),
+  mobileSidebarScrim: $("#mobileSidebarScrim"),
   sidebarResizeHandle: $("#sidebarResizeHandle"),
   libraryNavigation: $("#libraryNavigation"),
   sourceList: $("#sourceList"),
@@ -972,6 +973,7 @@ const galleryOverviewPortal = {
   nextSibling: elements.galleryOverviewWorkspace.nextSibling,
 };
 const galleryOverviewLayoutQuery = globalThis.matchMedia("(min-width: 981px)");
+const mobileSidebarLayoutQuery = globalThis.matchMedia("(max-width: 700px)");
 
 const emptyFilters = () => ({
   mediaKind: "image",
@@ -1128,7 +1130,11 @@ const state = {
     pollTimer: null,
   },
   inspectorDismissed: false,
+  inspectorDismissedByUser: false,
   inspectorOverlayReturnFocus: null,
+  sidebarOverlayReturnFocus: null,
+  sidebarOverlayBaseLevel: "workspace",
+  sidebarOverlayInertSnapshot: null,
   online: false,
   authMode: null,
   accountAuthorization: null,
@@ -1834,7 +1840,7 @@ function closeOverlays() {
   closePersonalModelPopover({ restoreFocus: false });
   closeJobsPopover({ restoreFocus: false });
   closeReviewSourceFilter({ restoreFocus: false });
-  elements.sourceSidebar.classList.remove("open");
+  closeMobileSidebar({ restoreFocus: false, checkpoint: false });
   hideContextMenus();
   if (elements.commandPalette.open) closeCommandPalette({ restoreFocus: false });
   if (elements.shortcutDialog.open) elements.shortcutDialog.close();
@@ -2130,8 +2136,9 @@ function checkpointGalleryInspectorHistory() {
   }
 }
 
-function closeInspectorOverlay({ restoreFocus = true } = {}) {
+function closeInspectorOverlay({ restoreFocus = true, markDismissed = true } = {}) {
   state.inspectorDismissed = true;
+  if (markDismissed) state.inspectorDismissedByUser = true;
   elements.inspector.classList.remove("open");
   const explicitReturnFocus = state.inspectorOverlayReturnFocus;
   state.inspectorOverlayReturnFocus = null;
@@ -2151,6 +2158,7 @@ function closeInspectorOverlay({ restoreFocus = true } = {}) {
 
 function returnFromInspector() {
   if (!galleryInspectorOverlayIsOpen()) return Promise.resolve();
+  state.inspectorDismissedByUser = true;
   if (state.workspaceNavigation.pendingReturnPromise) {
     return state.workspaceNavigation.pendingReturnPromise;
   }
@@ -2167,6 +2175,131 @@ function returnFromInspector() {
   }
   closeInspectorOverlay();
   return Promise.resolve();
+}
+
+function mobileSidebarOverlayIsOpen() {
+  return mobileSidebarLayoutQuery.matches
+    && visibleWorkspaceRoute() === "gallery"
+    && elements.sourceSidebar.classList.contains("open");
+}
+
+function syncMobileSidebarAccessibility() {
+  const mobile = mobileSidebarLayoutQuery.matches;
+  const open = mobile && elements.sourceSidebar.classList.contains("open");
+  elements.appView.classList.toggle("mobile-sidebar-open", open);
+  elements.sidebarToggle.setAttribute("aria-expanded", String(open));
+  elements.sidebarToggle.setAttribute("aria-label", open ? "隐藏图库导航" : "显示图库导航");
+  elements.mobileSidebarScrim.classList.toggle("hidden", !open);
+  elements.mobileSidebarScrim.setAttribute("aria-hidden", String(!open));
+  elements.sourceSidebar.inert = mobile && !open;
+  if (mobile && !open) elements.sourceSidebar.setAttribute("aria-hidden", "true");
+  else elements.sourceSidebar.removeAttribute("aria-hidden");
+
+  if (open) {
+    if (!state.sidebarOverlayInertSnapshot) {
+      state.sidebarOverlayInertSnapshot = {
+        libraryPane: elements.libraryPane.inert,
+        inspector: elements.inspector.inert,
+      };
+    }
+    elements.libraryPane.inert = true;
+    elements.inspector.inert = true;
+  } else if (state.sidebarOverlayInertSnapshot) {
+    elements.libraryPane.inert = state.sidebarOverlayInertSnapshot.libraryPane;
+    elements.inspector.inert = state.sidebarOverlayInertSnapshot.inspector;
+    state.sidebarOverlayInertSnapshot = null;
+  }
+}
+
+function openMobileSidebar({
+  focus = true,
+  historyMode = "pushSidebar",
+  baseLevel = null,
+} = {}) {
+  if (!mobileSidebarLayoutQuery.matches || visibleWorkspaceRoute() !== "gallery") return;
+  if (mobileSidebarOverlayIsOpen()) {
+    if (focus) requestAnimationFrame(focusCurrentSidebarPrimaryNavigation);
+    return;
+  }
+  hidePersistentHelp();
+  closeCompactToolbarMenu({ restoreFocus: false });
+  closeGridDensityPopovers({ restoreFocus: false });
+  elements.filterPopover.classList.add("hidden");
+  elements.filterButton.setAttribute("aria-expanded", "false");
+  closePersonalModelPopover({ restoreFocus: false });
+  closeJobsPopover({ restoreFocus: false });
+  state.sidebarOverlayReturnFocus = elements.sidebarToggle;
+  const currentLevel = activeWorkspaceHistoryEntry()?.navigationLevel;
+  state.sidebarOverlayBaseLevel = baseLevel
+    || (currentLevel === "inspector" ? "inspector" : "workspace");
+  elements.sourceSidebar.classList.add("open");
+  syncMobileSidebarAccessibility();
+  if (historyMode !== "none") {
+    recordWorkspaceHistory("gallery", currentGalleryHistoryContext(), historyMode);
+  }
+  if (focus) requestAnimationFrame(focusCurrentSidebarPrimaryNavigation);
+}
+
+function closeMobileSidebar({ restoreFocus = true, checkpoint = true } = {}) {
+  const wasOpen = elements.sourceSidebar.classList.contains("open");
+  elements.sourceSidebar.classList.remove("open");
+  syncMobileSidebarAccessibility();
+  const returnFocus = state.sidebarOverlayReturnFocus;
+  state.sidebarOverlayReturnFocus = null;
+  state.sidebarOverlayBaseLevel = "workspace";
+  if (restoreFocus && wasOpen) {
+    restoreOverlayFocus(returnFocus || elements.sidebarToggle);
+  }
+  if (checkpoint && wasOpen) scheduleWorkspaceHistoryCheckpoint();
+}
+
+function returnFromMobileSidebar() {
+  if (!mobileSidebarOverlayIsOpen()) return Promise.resolve();
+  if (state.workspaceNavigation.pendingReturnPromise) {
+    return state.workspaceNavigation.pendingReturnPromise;
+  }
+  const current = activeWorkspaceHistoryEntry();
+  if (state.workspaceNavigation.initialized
+    && current?.route === "gallery"
+    && current.navigationLevel === "sidebar") {
+    const pending = new Promise((resolve) => {
+      state.workspaceNavigation.pendingReturnResolve = resolve;
+    });
+    state.workspaceNavigation.pendingReturnPromise = pending;
+    history.back();
+    return pending;
+  }
+  closeMobileSidebar();
+  return Promise.resolve();
+}
+
+function reconcileMobileSidebarFromWorkspaceHistory(route, navigationLevel, context = {}) {
+  const shouldOpen = route === "gallery"
+    && navigationLevel === "sidebar"
+    && mobileSidebarLayoutQuery.matches;
+  if (shouldOpen) {
+    const baseLevel = context.gallerySidebarBaseLevel === "inspector"
+      ? "inspector"
+      : "workspace";
+    openMobileSidebar({ historyMode: "none", baseLevel });
+  } else if (elements.sourceSidebar.classList.contains("open")) {
+    closeMobileSidebar({ checkpoint: false });
+  } else {
+    syncMobileSidebarAccessibility();
+  }
+}
+
+function handleMobileSidebarLayoutChange() {
+  if (!mobileSidebarLayoutQuery.matches
+    && elements.sourceSidebar.classList.contains("open")) {
+    const baseLevel = state.sidebarOverlayBaseLevel;
+    closeMobileSidebar({ restoreFocus: false, checkpoint: false });
+    reconcileGalleryInspectorFromWorkspaceHistory("gallery", baseLevel);
+    recordWorkspaceHistory("gallery", currentGalleryHistoryContext(), "replace");
+  } else {
+    syncMobileSidebarAccessibility();
+  }
+  scheduleAdaptiveToolbarSync();
 }
 
 function setWorkspaceBackButton(button, label) {
@@ -2202,7 +2335,7 @@ function workspaceLightboxContext(route) {
 }
 
 function workspaceHistoryEntry(route, context = null, navigationLevel = "workspace") {
-  const safeNavigationLevel = ["inspector", "lightbox"].includes(navigationLevel)
+  const safeNavigationLevel = ["sidebar", "inspector", "lightbox"].includes(navigationLevel)
     ? navigationLevel
     : "workspace";
   return {
@@ -2246,9 +2379,13 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
   if (!state.workspaceNavigation.initialized
     || mode === "none") return;
   const current = activeWorkspaceHistoryEntry();
+  const hasSidebar = route === "gallery" && mobileSidebarOverlayIsOpen();
   const hasLightbox = Boolean(workspaceLightboxHistoryContext(route, context));
   const hasInspector = route === "gallery" && galleryInspectorOverlayIsOpen();
-  const navigationLevel = hasLightbox
+  const navigationLevel = hasSidebar
+    && (mode === "pushSidebar" || current?.navigationLevel === "sidebar")
+    ? "sidebar"
+    : hasLightbox
     && (mode === "pushLightbox" || current?.navigationLevel === "lightbox")
     ? "lightbox"
     : (hasInspector
@@ -2259,7 +2396,7 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
     ...(history.state || {}),
     [WORKSPACE_HISTORY_KEY]: workspaceHistoryEntry(route, context, navigationLevel),
   };
-  if (mode === "pushLightbox" || mode === "pushInspector") {
+  if (mode === "pushSidebar" || mode === "pushLightbox" || mode === "pushInspector") {
     history.pushState(nextState, "", location.href);
   } else if (mode === "replace" || current?.route === route) {
     history.replaceState(nextState, "", location.href);
@@ -2282,6 +2419,9 @@ function currentGalleryHistoryContext() {
     galleryLoadedCount: Math.min(GALLERY_HISTORY_LOADED_LIMIT, state.assets.length),
     galleryScrollTop: elements.libraryScroll.scrollTop,
     galleryLightbox: currentLightboxHistoryContext("library"),
+    ...(mobileSidebarOverlayIsOpen()
+      ? { gallerySidebarBaseLevel: state.sidebarOverlayBaseLevel }
+      : {}),
   };
 }
 
@@ -2491,6 +2631,7 @@ function applyGalleryHistoryContext(raw, options = {}) {
   state.selectedAssetIDs = new Set(context.selectedAssetIDs);
   state.selectionAnchorID = context.selectionAnchorID;
   state.inspectorDismissed = false;
+  state.inspectorDismissedByUser = false;
   return context;
 }
 
@@ -2534,6 +2675,7 @@ function closeVisibleWorkspaceOneLevel({ restoreFocus = true } = {}) {
 }
 
 function closeAllWorkspacesToGallery({ restoreFocus = true } = {}) {
+  closeMobileSidebar({ restoreFocus: false, checkpoint: false });
   if (!elements.lightbox.classList.contains("hidden")) closeLightbox({ restoreFocus });
   let remaining = 6;
   while (visibleWorkspaceRoute() !== "gallery" && remaining > 0) {
@@ -2550,15 +2692,31 @@ async function applyWorkspaceHistoryEntry(entry) {
   try {
     const current = visibleWorkspaceRoute();
     if (target === current) {
+      const navigationLevel = activeEntry?.navigationLevel || "workspace";
+      const inspectorLevel = navigationLevel === "sidebar"
+        ? (context.gallerySidebarBaseLevel === "inspector" ? "inspector" : "workspace")
+        : navigationLevel;
       reconcileGalleryInspectorFromWorkspaceHistory(
         target,
-        activeEntry?.navigationLevel || "workspace"
+        inspectorLevel
       );
+      reconcileMobileSidebarFromWorkspaceHistory(target, navigationLevel, context);
       reconcileLightboxFromWorkspaceHistory(target, context);
       return;
     }
     if (target === "gallery") {
       closeAllWorkspacesToGallery();
+      const navigationLevel = activeEntry?.navigationLevel || "workspace";
+      const inspectorLevel = navigationLevel === "sidebar"
+        ? (context.gallerySidebarBaseLevel === "inspector" ? "inspector" : "workspace")
+        : navigationLevel;
+      reconcileGalleryInspectorFromWorkspaceHistory(
+        "gallery",
+        inspectorLevel,
+        { focus: false, restoreFocusOnClose: false }
+      );
+      reconcileMobileSidebarFromWorkspaceHistory("gallery", navigationLevel, context);
+      reconcileLightboxFromWorkspaceHistory("gallery", context);
       return;
     }
     if (target === "review" && current === "training"
@@ -6765,7 +6923,7 @@ async function applyFavoritesFilter() {
   renderTagNavigation();
   syncFilterControlsFromState();
   updateLibraryTitle();
-  elements.sourceSidebar.classList.remove("open");
+  closeMobileSidebar({ restoreFocus: false });
   await loadAssets();
 }
 
@@ -12897,7 +13055,10 @@ async function loadInspector(assetID, {
   const keepExisting = preserveExisting
     && state.selectedAssetID === assetID
     && Boolean(state.selectedDetail);
-  if (reveal) state.inspectorDismissed = false;
+  if (reveal) {
+    state.inspectorDismissed = false;
+    state.inspectorDismissedByUser = false;
+  }
   state.selectedAssetID = assetID;
   scheduleWorkspaceHistoryCheckpoint();
   if (!keepExisting) {
@@ -13418,9 +13579,11 @@ function setSelectionMode(enabled, { seedCurrent = false } = {}) {
   state.selectionMode = enabled;
   if (enabled) {
     state.inspectorDismissed = !galleryOverviewLayoutQuery.matches;
+    state.inspectorDismissedByUser = state.inspectorDismissed;
     if (state.inspectorDismissed) elements.inspector.classList.remove("open");
   }
   if (!enabled) {
+    state.inspectorDismissedByUser = false;
     state.inspectorOverlayReturnFocus = null;
     state.selectedAssetIDs.clear();
     state.selectionAnchorID = null;
@@ -13439,6 +13602,7 @@ function openSelectionInspectorOverlay() {
   if (!state.selectionMode || !state.selectedAssetIDs.size) return;
   state.inspectorOverlayReturnFocus = elements.selectionInspectorOverlayButton;
   state.inspectorDismissed = false;
+  state.inspectorDismissedByUser = false;
   renderInspectorSurface();
   requestAnimationFrame(() => {
     elements.closeInspectorButton.focus({ preventScroll: true });
@@ -24989,7 +25153,11 @@ function reconcileLightboxFromWorkspaceHistory(route, context) {
   restoreLightboxFromHistory(raw, expectedContext);
 }
 
-function reconcileGalleryInspectorFromWorkspaceHistory(route, navigationLevel) {
+function reconcileGalleryInspectorFromWorkspaceHistory(
+  route,
+  navigationLevel,
+  { focus = true, restoreFocusOnClose = true } = {}
+) {
   if (route !== "gallery") return;
   const hasContent = Boolean(
     (!state.selectionMode && state.selectedDetail)
@@ -24998,15 +25166,19 @@ function reconcileGalleryInspectorFromWorkspaceHistory(route, navigationLevel) {
   const shouldOpen = hasContent && ["inspector", "lightbox"].includes(navigationLevel);
   if (shouldOpen) {
     state.inspectorDismissed = false;
+    state.inspectorDismissedByUser = false;
     elements.inspector.classList.add("open");
-    if (navigationLevel === "inspector") {
+    if (focus && navigationLevel === "inspector") {
       requestAnimationFrame(() => {
         elements.closeInspectorButton.focus({ preventScroll: true });
       });
     }
   } else if (elements.lightbox.classList.contains("hidden")
     && elements.inspector.classList.contains("open")) {
-    closeInspectorOverlay();
+    closeInspectorOverlay({
+      restoreFocus: restoreFocusOnClose,
+      markDismissed: false,
+    });
   }
 }
 
@@ -25314,8 +25486,16 @@ async function loadWorkspace({ restoreHistory = false } = {}) {
   const generation = state.workspaceGeneration;
   showApp({ restoreHistory });
   const restoreEntry = state.workspaceNavigation.pendingRestoreEntry;
+  const restoreGalleryNavigationLevel = restoreEntry?.route === "gallery"
+    ? (restoreEntry.navigationLevel || "workspace")
+    : "workspace";
+  const restoreGalleryBaseLevel = restoreGalleryNavigationLevel === "sidebar"
+    ? (restoreEntry?.context?.gallerySidebarBaseLevel === "inspector"
+      ? "inspector"
+      : "workspace")
+    : restoreGalleryNavigationLevel;
   const restoresGalleryInspector = restoreEntry?.route === "gallery"
-    && ["inspector", "lightbox"].includes(restoreEntry.navigationLevel);
+    && ["inspector", "lightbox"].includes(restoreGalleryBaseLevel);
   const galleryRestoreSource = restoreEntry?.route === "gallery"
     ? restoreEntry.context
     : restoreEntry?.context?.galleryContext;
@@ -25428,6 +25608,15 @@ async function loadWorkspace({ restoreHistory = false } = {}) {
       Math.max(0, elements.libraryScroll.scrollHeight - elements.libraryScroll.clientHeight)
     );
     restoreLightboxFromHistory(galleryRestore.lightbox, "library");
+    reconcileGalleryInspectorFromWorkspaceHistory(
+      "gallery",
+      restoreGalleryBaseLevel
+    );
+    reconcileMobileSidebarFromWorkspaceHistory(
+      "gallery",
+      restoreGalleryNavigationLevel,
+      restoreEntry?.context || {}
+    );
   }
   if (supportsLibrarySlimming()) {
     await Promise.all([
@@ -26001,7 +26190,12 @@ function resetWorkspaceSessionState() {
   state.personalModelActivities.requestGeneration += 1;
   if (elements.tagSuggestionDialog.open) elements.tagSuggestionDialog.close();
   state.inspectorDismissed = false;
+  state.inspectorDismissedByUser = false;
   state.inspectorOverlayReturnFocus = null;
+  closeMobileSidebar({ restoreFocus: false, checkpoint: false });
+  state.sidebarOverlayReturnFocus = null;
+  state.sidebarOverlayBaseLevel = "workspace";
+  state.sidebarOverlayInertSnapshot = null;
   state.selectionAggregates = [];
   state.aggregateGeneration += 1;
   state.tagMutating = false;
@@ -26177,7 +26371,7 @@ async function selectSource(sourceID) {
   renderInspectorSurface();
   renderSources();
   updateLibraryTitle();
-  elements.sourceSidebar.classList.remove("open");
+  closeMobileSidebar({ restoreFocus: false });
   await loadAssets();
 }
 
@@ -29175,9 +29369,16 @@ function bindEvents() {
   );
   elements.logoutButton.addEventListener("click", logout);
   elements.sidebarToggle.addEventListener("click", () => {
-    const isOpen = elements.sourceSidebar.classList.toggle("open");
-    if (isOpen) requestAnimationFrame(focusCurrentSidebarPrimaryNavigation);
+    if (mobileSidebarOverlayIsOpen()) {
+      void returnFromMobileSidebar();
+    } else {
+      openMobileSidebar();
+    }
   });
+  elements.mobileSidebarScrim.addEventListener(
+    "click",
+    () => void returnFromMobileSidebar()
+  );
   elements.sidebarVisibilityButton.addEventListener("click", () => {
     setSidebarVisible(!state.layout.sidebarVisible);
   });
@@ -31176,11 +31377,13 @@ function bindEvents() {
       || (trainingOpen && !trainingModalOpen)
       || (slimmingOpen && !slimmingModalOpen);
     const jobsOpen = !elements.jobsPopover.classList.contains("hidden");
+    const mobileSidebarOpen = mobileSidebarOverlayIsOpen();
     const inspectorOverlayOpen = globalThis.matchMedia("(max-width: 980px)").matches
       && elements.inspector.classList.contains("open");
     const customOverlayOpen = lightboxOpen || reviewModalOpen || trainingModalOpen || slimmingModalOpen || worldMapModalOpen
       || galleryOverviewModalOpen
       || jobsOpen
+      || mobileSidebarOpen
       || inspectorOverlayOpen;
     if ((event.metaKey || event.ctrlKey) && event.key === ",") {
       event.preventDefault();
@@ -31327,6 +31530,10 @@ function bindEvents() {
         closeJobsPopover();
         return;
       }
+      if (mobileSidebarOpen) {
+        void returnFromMobileSidebar();
+        return;
+      }
       if (lightboxOpen) {
         void returnFromLightbox();
         return;
@@ -31370,7 +31577,7 @@ function bindEvents() {
       elements.filterPopover.classList.add("hidden");
       elements.filterButton.setAttribute("aria-expanded", "false");
       closeJobsPopover({ restoreFocus: false });
-      elements.sourceSidebar.classList.remove("open");
+      closeMobileSidebar({ restoreFocus: false });
       return;
     }
     if (elements.commandPalette.open
@@ -31391,6 +31598,9 @@ function bindEvents() {
       || elements.worldMapLocationBackfillDialog.open) return;
     if (jobsOpen) {
       if (trapOverlayFocus(event, elements.jobsPopover)) return;
+      return;
+    } else if (mobileSidebarOpen) {
+      if (trapOverlayFocus(event, elements.sourceSidebar)) return;
       return;
     }
     if (lightboxOpen) {
@@ -31730,7 +31940,23 @@ function bindEvents() {
   integratedWorkspaceResizeObserver.observe(elements.libraryPane);
   integratedWorkspaceResizeObserver.observe(elements.reviewQueuePane);
   globalThis.addEventListener("resize", scheduleAdaptiveToolbarSync, { passive: true });
-  galleryOverviewLayoutQuery.addEventListener("change", () => {
+  galleryOverviewLayoutQuery.addEventListener("change", (event) => {
+    const enteringOverlayLayout = !event.matches
+      && visibleWorkspaceRoute() === "gallery"
+      && elements.lightbox.classList.contains("hidden")
+      && state.layout.inspectorVisible
+      && Boolean(
+        (!state.selectionMode && state.selectedDetail)
+          || (state.selectionMode && state.selectedAssetIDs.size)
+      );
+    if (enteringOverlayLayout && !state.inspectorDismissedByUser) {
+      elements.inspector.classList.add("responsive-continuity");
+      state.inspectorDismissed = false;
+      renderInspectorSurface();
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        elements.inspector.classList.remove("responsive-continuity");
+      }));
+    }
     if (reviewWorkspaceIsOpen()) {
       syncReviewPresentation({ focus: true });
       if (state.lightboxContext === "review"
@@ -31753,6 +31979,7 @@ function bindEvents() {
     }
     checkpointGalleryInspectorHistory();
   });
+  mobileSidebarLayoutQuery.addEventListener("change", handleMobileSidebarLayoutChange);
   globalThis.matchMedia("(max-width: 720px)").addEventListener(
     "change",
     scheduleAdaptiveToolbarSync
@@ -31765,6 +31992,7 @@ async function boot() {
   ensureMediaWorker();
   loadWorkspacePreferences();
   renderLayoutPreferences();
+  syncMobileSidebarAccessibility();
   renderMediaKindTabs();
   elements.deviceName.value = defaultDeviceName();
   renderSelectionBar();

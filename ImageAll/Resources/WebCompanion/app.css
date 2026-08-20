@@ -818,6 +818,10 @@ select:focus-visible,
   transition: grid-template-columns 160ms ease;
 }
 
+.mobile-sidebar-scrim {
+  display: none;
+}
+
 .workspace.sidebar-hidden {
   grid-template-columns: 0 minmax(320px, 1fr) var(--inspector-width);
 }
@@ -10248,6 +10252,10 @@ button.world-map-place-candidate:focus-visible {
     transform: translateX(0);
   }
 
+  .inspector.responsive-continuity {
+    transition: none;
+  }
+
   .inspector-header {
     position: absolute;
     top: 7px;
@@ -13690,10 +13698,35 @@ button.world-map-place-candidate:focus-visible {
     box-shadow: var(--shadow);
     transform: translateX(-105%);
     transition: transform 180ms ease;
+    overscroll-behavior: contain;
   }
 
   .source-sidebar.open {
     transform: translateX(0);
+  }
+
+  .mobile-sidebar-scrim {
+    position: fixed;
+    z-index: 39;
+    inset: calc(48px + var(--safe-top)) 0 0;
+    display: block;
+    width: 100%;
+    height: auto;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: color-mix(in srgb, var(--text) 24%, transparent);
+    -webkit-backdrop-filter: blur(2px) saturate(0.92);
+    backdrop-filter: blur(2px) saturate(0.92);
+    cursor: default;
+    touch-action: none;
+    animation: mobile-sidebar-scrim-in 160ms ease-out both;
+  }
+
+  .app-shell.mobile-sidebar-open #sidebarToggle {
+    color: white;
+    background: var(--accent);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 58%, transparent);
   }
 
   .library-pane {
@@ -14146,6 +14179,15 @@ button.world-map-place-candidate:focus-visible {
     right: 44px;
     left: 44px;
   }
+}
+
+@keyframes mobile-sidebar-scrim-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mobile-sidebar-scrim { animation: none; }
 }
 
 @media (max-width: 520px) {

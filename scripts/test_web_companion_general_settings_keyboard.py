@@ -552,6 +552,71 @@ def main():
             "() => document.activeElement?.id === 'compactToolbarMenuButton'"
         )
         page.screenshot(path="/tmp/imageall-source-refresh-390.png", full_page=True)
+
+        drawer_history_length = page.evaluate("history.length")
+        drawer_asset_request_count = len(asset_requests)
+        page.locator("#sidebarToggle").click()
+        page.locator("#sourceSidebar.open").wait_for()
+        page.locator("#mobileSidebarScrim:not(.hidden)").wait_for()
+        assert page.locator("#sidebarToggle").get_attribute("aria-expanded") == "true"
+        assert page.locator("#libraryPane").get_attribute("inert") == ""
+        assert page.locator("#inspector").get_attribute("inert") == ""
+        assert page.evaluate("document.activeElement?.closest('#sourceSidebar') !== null")
+        assert page.evaluate("history.length") == drawer_history_length + 1
+        assert page.evaluate(
+            "history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "sidebar"
+        page.wait_for_timeout(220)
+        page.screenshot(path="/tmp/imageall-mobile-sidebar-open-390.png", full_page=True)
+        page.locator("#sidebarToggle").click()
+        page.wait_for_function(
+            "() => !document.querySelector('#sourceSidebar').classList.contains('open')"
+        )
+        assert page.evaluate("document.activeElement?.id") == "sidebarToggle"
+        page.locator("#sidebarToggle").click()
+        page.locator("#sourceSidebar.open").wait_for()
+        page.evaluate(
+            """() => {
+              const focusable = [...document.querySelectorAll(
+                '#sourceSidebar button:not(:disabled), #sourceSidebar input:not(:disabled)'
+              )].filter((node) => node.getClientRects().length > 0);
+              focusable.at(-1)?.focus();
+            }"""
+        )
+        page.keyboard.press("Tab")
+        assert page.evaluate("document.activeElement?.closest('#sourceSidebar') !== null")
+        page.locator("#mobileSidebarScrim").click(position={"x": 370, "y": 200})
+        page.wait_for_function(
+            "() => !document.querySelector('#sourceSidebar').classList.contains('open')"
+        )
+        assert page.locator("#mobileSidebarScrim").is_hidden()
+        assert page.locator("#libraryPane").get_attribute("inert") is None
+        assert page.evaluate("document.activeElement?.id") == "sidebarToggle"
+        page.evaluate("history.forward()")
+        page.locator("#sourceSidebar.open").wait_for()
+        page.locator("#mobileSidebarScrim:not(.hidden)").wait_for()
+        page.keyboard.press("Escape")
+        page.wait_for_function(
+            "() => !document.querySelector('#sourceSidebar').classList.contains('open')"
+        )
+        assert page.evaluate("document.activeElement?.id") == "sidebarToggle"
+        page.screenshot(path="/tmp/imageall-mobile-sidebar-history-390.png", full_page=True)
+
+        page.evaluate("history.forward()")
+        page.locator("#sourceSidebar.open").wait_for()
+        page.set_viewport_size({"width": 820, "height": 844})
+        page.wait_for_function(
+            "() => !document.querySelector('#sourceSidebar').classList.contains('open')"
+        )
+        assert page.locator("#mobileSidebarScrim").is_hidden()
+        assert page.locator("#sourceSidebar").get_attribute("inert") is None
+        assert page.locator("#libraryPane").get_attribute("inert") is None
+        assert page.locator("#inspector").get_attribute("inert") is None
+        assert page.evaluate(
+            "history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "workspace"
+        assert len(asset_requests) == drawer_asset_request_count
+
         page.set_viewport_size({"width": 1440, "height": 960})
         page.wait_for_function(
             "() => !document.querySelector('#appView').classList.contains('compact-toolbar-active')"

@@ -10,8 +10,8 @@
   <meta name="apple-mobile-web-app-title" content="ImageAll">
   <title>ImageAll 网页版</title>
   <link rel="manifest" href="/manifest.webmanifest">
-    <link rel="stylesheet" href="/app.css?v=20260818-108">
-    <script src="/app.js?v=20260818-108" defer></script>
+    <link rel="stylesheet" href="/app.css?v=20260820-109">
+    <script src="/app.js?v=20260820-109" defer></script>
 </head>
 <body>
   <div id="bootView" class="centered-state">
@@ -110,6 +110,7 @@
     <header class="titlebar">
       <div class="titlebar-leading">
         <button id="sidebarToggle" class="icon-button mobile-only" type="button" aria-label="显示来源"
+          aria-haspopup="true" aria-expanded="false" aria-controls="sourceSidebar"
           data-help-detail="打开包含图库、来源和标签的导航侧栏。">
           <span aria-hidden="true">☰</span>
         </button>
@@ -281,6 +282,8 @@
     </div>
 
     <div id="workspace" class="workspace">
+      <button id="mobileSidebarScrim" class="mobile-sidebar-scrim hidden" type="button"
+        tabindex="-1" aria-label="关闭图库导航" aria-hidden="true"></button>
       <aside id="sourceSidebar" class="source-sidebar" aria-label="图库来源">
         <div class="sidebar-section">
           <h2>图库</h2>
