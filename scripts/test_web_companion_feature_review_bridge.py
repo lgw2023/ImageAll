@@ -38,6 +38,7 @@ def main():
     actions = []
     launches = []
     library_launches = []
+    training_setup_reads = [0]
     overview_source_queries = []
     queue_source_queries = []
     page_errors = []
@@ -387,9 +388,9 @@ def main():
             fulfill_json(route, {})
 
         page.route(re.compile(r".*/v1/jobs/[0-9a-f-]+/actions$"), route_job_action)
-        page.route(
-            "**/v1/training/setup?**",
-            lambda route: fulfill_json(
+        def route_training_setup(route):
+            training_setup_reads[0] += 1
+            fulfill_json(
                 route,
                 {
                     "mediaKind": "image",
@@ -411,8 +412,9 @@ def main():
                         {"method": "personalAdamW", "isAvailable": False},
                     ],
                 },
-            ),
-        )
+            )
+
+        page.route("**/v1/training/setup?**", route_training_setup)
         page.route(
             "**/v1/training/workspace?**",
             lambda route: fulfill_json(
@@ -599,14 +601,38 @@ def main():
         page.get_by_role("button", name="更新特征向量").click()
         dialog = page.locator("#trainingSetupDialog")
         dialog.wait_for(state="visible")
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "trainingSetup"
         assert page.locator('[data-training-setup-method="featureKnn"]').get_attribute("aria-checked") == "true"
         assert page.locator(f'[data-training-tag-id="{TAG_ID}"]').is_checked()
         assert page.locator("[data-training-source-id]:checked").count() == 1
         assert page.locator(
             f'[data-training-source-id="{SOURCE_IDS[0]}"]'
         ).is_checked()
+        training_reads_after_open = training_setup_reads[0]
+        page.locator("#trainingTagSearch").fill("猫草稿")
+        training_history_payload = page.evaluate(
+            "() => JSON.stringify(history.state?.imageAllWorkspace || null)"
+        )
+        assert "猫草稿" not in training_history_payload
+        assert "Apple Photos" not in training_history_payload
+        page.evaluate("() => history.back()")
+        dialog.wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.reviewFeatureTagId != null"
+        )
+        page.evaluate("() => history.forward()")
+        page.locator("#trainingSetupDialog[open]").wait_for()
+        assert page.locator("#trainingTagSearch").input_value() == "猫草稿"
+        assert training_setup_reads[0] == training_reads_after_open
+        page.locator("#trainingTagSearch").fill("猫")
+        assert page.locator(f'[data-training-tag-id="{TAG_ID}"]').is_checked()
         page.locator("#launchTrainingButton").click()
         page.wait_for_function("() => !document.querySelector('#trainingSetupDialog').open")
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) != "trainingSetup"
         assert len(launches) == 1
         assert launches[0]["method"] == "featureKnn"
         assert launches[0]["tagIDs"] == [TAG_ID]

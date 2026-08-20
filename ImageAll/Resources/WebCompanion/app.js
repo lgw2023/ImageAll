@@ -1132,6 +1132,10 @@ const state = {
       method: "personalCentroid",
       selectedSourceIDs: new Set(),
       returnFocus: null,
+      baseLevel: "workspace",
+      historyRestoreFocus: true,
+      focusID: "closeTagSuggestionDialogButton",
+      restorable: false,
     },
   },
   personalModelActivities: {
@@ -1257,6 +1261,11 @@ const state = {
       requestGeneration: 0,
       operationID: null,
       returnFocus: null,
+      baseLevel: "workspace",
+      historyRestoreFocus: true,
+      focusID: "closeTrainingSetupButton",
+      restorable: false,
+      opening: false,
     },
   },
   slimming: {
@@ -1880,6 +1889,12 @@ function closeOverlays() {
   if (elements.confirmDialog.open) {
     closeConfirmation({ restoreFocus: false, checkpoint: false, preserveState: false });
   }
+  if (elements.trainingSetupDialog.open) {
+    closeTrainingSetupDialog({ restoreFocus: false, checkpoint: false, preserveState: false });
+  }
+  if (elements.tagSuggestionDialog.open) {
+    closeTagSuggestionDialog({ restoreFocus: false, checkpoint: false, preserveState: false });
+  }
   if (elements.newTagDialog.open) {
     closeNewTagDialog({ restoreFocus: false, checkpoint: false, preserveState: false });
   }
@@ -1898,11 +1913,9 @@ function closeOverlays() {
   if (elements.storageDialog.open) {
     closeStorageMaintenance({ restoreFocus: false, checkpoint: false });
   }
-  if (elements.trainingSetupDialog.open) elements.trainingSetupDialog.close();
   if (elements.slimmingThresholdDialog.open) {
     closeSlimmingThresholdEditor({ restoreFocus: false });
   }
-  if (elements.tagSuggestionDialog.open) elements.tagSuggestionDialog.close();
   if (elements.worldMapLocationBackfillDialog.open) {
     closeWorldMapLocationBackfill({ restoreFocus: false });
   }
@@ -1943,6 +1956,16 @@ function closeOverlays() {
   state.trainingReturnFocus = null;
   state.slimmingReturnFocus = null;
   state.training.setup.returnFocus = null;
+  state.training.setup.baseLevel = "workspace";
+  state.training.setup.historyRestoreFocus = true;
+  state.training.setup.focusID = "closeTrainingSetupButton";
+  state.training.setup.restorable = false;
+  state.training.setup.opening = false;
+  state.tagLibrarySuggestions.dialog.returnFocus = null;
+  state.tagLibrarySuggestions.dialog.baseLevel = "workspace";
+  state.tagLibrarySuggestions.dialog.historyRestoreFocus = true;
+  state.tagLibrarySuggestions.dialog.focusID = "closeTagSuggestionDialogButton";
+  state.tagLibrarySuggestions.dialog.restorable = false;
   state.review.returnTarget = null;
   state.review.pendingFocusTrainingJobID = null;
   state.training.returnTarget = null;
@@ -2408,6 +2431,8 @@ function workspaceLightboxContext(route) {
 function workspaceHistoryEntry(route, context = null, navigationLevel = "workspace") {
   const safeNavigationLevel = [
     "confirmation",
+    "trainingSetup",
+    "tagSuggestion",
     "newTag",
     "tagManager",
     "sourceManager",
@@ -2445,6 +2470,16 @@ function workspaceNavigationBaseLevel(navigationLevel, context = {}) {
       ? context.confirmationBaseLevel
       : "workspace";
     return workspaceNavigationBaseLevel(parentLevel, context);
+  }
+  if (navigationLevel === "trainingSetup") {
+    return ["sidebar", "inspector", "lightbox"].includes(context.trainingSetupBaseLevel)
+      ? context.trainingSetupBaseLevel
+      : "workspace";
+  }
+  if (navigationLevel === "tagSuggestion") {
+    return ["sidebar", "inspector", "lightbox"].includes(context.tagSuggestionBaseLevel)
+      ? context.tagSuggestionBaseLevel
+      : "workspace";
   }
   if (navigationLevel === "newTag") {
     return ["sidebar", "inspector", "lightbox"].includes(context.newTagBaseLevel)
@@ -2530,6 +2565,8 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
     || mode === "none") return;
   const current = activeWorkspaceHistoryEntry();
   const hasConfirmation = elements.confirmDialog.open;
+  const hasTrainingSetup = elements.trainingSetupDialog.open;
+  const hasTagSuggestion = elements.tagSuggestionDialog.open;
   const hasNewTag = elements.newTagDialog.open;
   const hasTagManager = elements.tagManagerDialog.open;
   const hasSourceManager = elements.sourceManagerDialog.open;
@@ -2553,6 +2590,16 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
         ...(hasStorageMaintenance
           ? { storageBaseLevel: state.storageBaseLevel }
           : {}),
+      }
+    : hasTrainingSetup
+    ? {
+        ...(context || {}),
+        trainingSetupBaseLevel: state.training.setup.baseLevel,
+      }
+    : hasTagSuggestion
+    ? {
+        ...(context || {}),
+        tagSuggestionBaseLevel: state.tagLibrarySuggestions.dialog.baseLevel,
       }
     : hasNewTag
     ? {
@@ -2600,6 +2647,12 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
   const navigationLevel = hasConfirmation
     && (mode === "pushConfirmation" || current?.navigationLevel === "confirmation")
     ? "confirmation"
+    : hasTrainingSetup
+    && (mode === "pushTrainingSetup" || current?.navigationLevel === "trainingSetup")
+    ? "trainingSetup"
+    : hasTagSuggestion
+    && (mode === "pushTagSuggestion" || current?.navigationLevel === "tagSuggestion")
+    ? "tagSuggestion"
     : hasNewTag
     && (mode === "pushNewTag" || current?.navigationLevel === "newTag")
     ? "newTag"
@@ -2646,6 +2699,8 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
   };
   if ([
     "pushConfirmation",
+    "pushTrainingSetup",
+    "pushTagSuggestion",
     "pushNewTag",
     "pushTagManager",
     "pushSourceManager",
@@ -2942,6 +2997,8 @@ function closeAllWorkspacesToGallery({ restoreFocus = true } = {}) {
     checkpoint: false,
     preserveState: false,
   });
+  closeTrainingSetupDialog({ restoreFocus: false, checkpoint: false, preserveState: false });
+  closeTagSuggestionDialog({ restoreFocus: false, checkpoint: false, preserveState: false });
   closeNewTagDialog({ restoreFocus: false, checkpoint: false, preserveState: false });
   closeTagManager({ restoreFocus: false, checkpoint: false, preserveState: false });
   closeSourceManager({ restoreFocus: false, checkpoint: false });
@@ -2996,6 +3053,8 @@ async function applyWorkspaceHistoryEntry(entry) {
         navigationLevel,
         context
       );
+      reconcileTrainingSetupFromWorkspaceHistory(target, navigationLevel, context);
+      reconcileTagSuggestionFromWorkspaceHistory(target, navigationLevel, context);
       reconcileNewTagFromWorkspaceHistory(target, navigationLevel, context);
       reconcileTagManagerFromWorkspaceHistory(target, navigationLevel, context);
       await reconcileSourceManagerFromWorkspaceHistory(target, navigationLevel, context);
@@ -3035,6 +3094,8 @@ async function applyWorkspaceHistoryEntry(entry) {
         navigationLevel,
         context
       );
+      reconcileTrainingSetupFromWorkspaceHistory("gallery", navigationLevel, context);
+      reconcileTagSuggestionFromWorkspaceHistory("gallery", navigationLevel, context);
       reconcileNewTagFromWorkspaceHistory("gallery", navigationLevel, context);
       reconcileTagManagerFromWorkspaceHistory("gallery", navigationLevel, context);
       await reconcileSourceManagerFromWorkspaceHistory("gallery", navigationLevel, context);
@@ -3175,6 +3236,16 @@ async function applyWorkspaceHistoryEntry(entry) {
       context
     );
     await reconcileGeneralSettingsFromWorkspaceHistory(
+      target,
+      activeEntry?.navigationLevel || "workspace",
+      context
+    );
+    reconcileTrainingSetupFromWorkspaceHistory(
+      target,
+      activeEntry?.navigationLevel || "workspace",
+      context
+    );
+    reconcileTagSuggestionFromWorkspaceHistory(
       target,
       activeEntry?.navigationLevel || "workspace",
       context
@@ -16664,12 +16735,140 @@ function renderTagSuggestionDialog() {
     : "开始扫描";
 }
 
-function closeTagSuggestionDialog() {
+function tagSuggestionBaseLevelFromHistory(context = {}) {
+  return ["sidebar", "inspector", "lightbox"].includes(context.tagSuggestionBaseLevel)
+    ? context.tagSuggestionBaseLevel
+    : "workspace";
+}
+
+function replaceTagSuggestionHistoryWithBase(baseLevel) {
+  if (!state.workspaceNavigation.initialized
+    || elements.appView.classList.contains("hidden")) return;
+  const current = activeWorkspaceHistoryEntry();
+  const route = visibleWorkspaceRoute();
+  if (current?.route !== route || current.navigationLevel !== "tagSuggestion") return;
+  const context = currentWorkspaceHistoryContext(route);
+  if (context && typeof context === "object") delete context.tagSuggestionBaseLevel;
+  const navigationLevel = visibleWorkspaceNavigationBaseLevel(route, baseLevel);
+  history.replaceState({
+    ...(history.state || {}),
+    [WORKSPACE_HISTORY_KEY]: workspaceHistoryEntry(route, context, navigationLevel),
+  }, "", location.href);
+}
+
+function clearTagSuggestionDialogState() {
+  const dialog = state.tagLibrarySuggestions.dialog;
+  dialog.tagID = null;
+  dialog.method = "personalCentroid";
+  dialog.selectedSourceIDs.clear();
+  dialog.returnFocus = null;
+  dialog.baseLevel = "workspace";
+  dialog.historyRestoreFocus = true;
+  dialog.focusID = "closeTagSuggestionDialogButton";
+  dialog.restorable = false;
+  elements.tagSuggestionError.textContent = "";
+}
+
+function presentTagSuggestionDialog({
+  historyMode = "pushTagSuggestion",
+  baseLevel = null,
+  focus = true,
+} = {}) {
+  const dialog = state.tagLibrarySuggestions.dialog;
+  if (elements.tagSuggestionDialog.open) {
+    if (focus) restoreOverlayFocus(elements.closeTagSuggestionDialogButton);
+    return;
+  }
+  const current = activeWorkspaceHistoryEntry();
+  dialog.baseLevel = baseLevel
+    || workspaceNavigationBaseLevel(
+      current?.navigationLevel || "workspace",
+      current?.context || {}
+    );
+  renderTagSuggestionDialog();
+  elements.tagSuggestionDialog.showModal();
+  if (historyMode !== "none") {
+    const route = visibleWorkspaceRoute();
+    recordWorkspaceHistory(route, currentWorkspaceHistoryContext(route), historyMode);
+  }
+  dialog.restorable = true;
+  if (focus) {
+    restoreOverlayFocus(
+      document.getElementById(dialog.focusID) || elements.closeTagSuggestionDialogButton
+    );
+  }
+}
+
+function closeTagSuggestionDialog({
+  restoreFocus = true,
+  checkpoint = true,
+  preserveState = false,
+} = {}) {
   if (!elements.tagSuggestionDialog.open) return;
+  const dialog = state.tagLibrarySuggestions.dialog;
+  const active = document.activeElement;
+  if (active instanceof HTMLElement && elements.tagSuggestionDialog.contains(active) && active.id) {
+    dialog.focusID = active.id;
+  }
+  const baseLevel = dialog.baseLevel;
+  const returnFocus = dialog.returnFocus;
   elements.tagSuggestionDialog.close();
-  const returnFocus = state.tagLibrarySuggestions.dialog.returnFocus;
-  state.tagLibrarySuggestions.dialog.returnFocus = null;
-  restoreOverlayFocus(returnFocus);
+  if (restoreFocus) {
+    restoreOverlayFocus(stableReturnFocusTarget(returnFocus, elements.reviewButton));
+  }
+  if (checkpoint) replaceTagSuggestionHistoryWithBase(baseLevel);
+  if (!preserveState) clearTagSuggestionDialogState();
+}
+
+function returnFromTagSuggestion({ restoreFocus = true } = {}) {
+  if (!elements.tagSuggestionDialog.open) return Promise.resolve();
+  const dialog = state.tagLibrarySuggestions.dialog;
+  dialog.historyRestoreFocus = restoreFocus;
+  if (state.workspaceNavigation.pendingReturnPromise) {
+    return state.workspaceNavigation.pendingReturnPromise;
+  }
+  const current = activeWorkspaceHistoryEntry();
+  if (state.workspaceNavigation.initialized
+    && current?.route === visibleWorkspaceRoute()
+    && current.navigationLevel === "tagSuggestion") {
+    const pending = new Promise((resolve) => {
+      state.workspaceNavigation.pendingReturnResolve = resolve;
+    });
+    state.workspaceNavigation.pendingReturnPromise = pending;
+    history.back();
+    return pending;
+  }
+  closeTagSuggestionDialog({ restoreFocus });
+  dialog.historyRestoreFocus = true;
+  return Promise.resolve();
+}
+
+function reconcileTagSuggestionFromWorkspaceHistory(route, navigationLevel, context = {}) {
+  const shouldOpen = navigationLevel === "tagSuggestion"
+    && route === visibleWorkspaceRoute();
+  const suggestions = state.tagLibrarySuggestions;
+  const dialog = suggestions.dialog;
+  if (shouldOpen && (!dialog.restorable
+    || !tagByID(dialog.tagID)
+    || Boolean(activeTagLibrarySuggestion()))) {
+    clearTagSuggestionDialogState();
+    replaceTagSuggestionHistoryWithBase(tagSuggestionBaseLevelFromHistory(context));
+    return;
+  }
+  if (shouldOpen && !elements.tagSuggestionDialog.open) {
+    presentTagSuggestionDialog({
+      historyMode: "none",
+      baseLevel: tagSuggestionBaseLevelFromHistory(context),
+    });
+  } else if (!shouldOpen && elements.tagSuggestionDialog.open) {
+    const restoreFocus = dialog.historyRestoreFocus;
+    closeTagSuggestionDialog({
+      restoreFocus,
+      checkpoint: false,
+      preserveState: true,
+    });
+    dialog.historyRestoreFocus = true;
+  }
 }
 
 function openTagSuggestionDialog(tagID, method, returnFocus = null) {
@@ -16688,9 +16887,9 @@ function openTagSuggestionDialog(tagID, method, returnFocus = null) {
   suggestions.dialog.selectedSourceIDs = selectedSourceIDs;
   suggestions.dialog.returnFocus = returnFocus || document.activeElement;
   elements.tagSuggestionError.textContent = "";
-  renderTagSuggestionDialog();
-  elements.tagSuggestionDialog.showModal();
-  requestAnimationFrame(() => elements.closeTagSuggestionDialogButton.focus({ preventScroll: true }));
+  suggestions.dialog.focusID = "closeTagSuggestionDialogButton";
+  suggestions.dialog.restorable = true;
+  presentTagSuggestionDialog();
 }
 
 function scheduleTagLibrarySuggestionPoll() {
@@ -16770,8 +16969,12 @@ async function generateTagLibrarySuggestions() {
         ),
       ],
     };
-    closeTagSuggestionDialog();
-    toast(`已交给 Mac 用${tagLibrarySuggestionMethodText(dialog.method)}扫描所选来源`);
+    const returnFocus = dialog.returnFocus;
+    const submittedMethod = dialog.method;
+    await returnFromTagSuggestion({ restoreFocus: false });
+    clearTagSuggestionDialogState();
+    toast(`已交给 Mac 用${tagLibrarySuggestionMethodText(submittedMethod)}扫描所选来源`);
+    restoreOverlayFocus(stableReturnFocusTarget(returnFocus, elements.reviewButton));
   } catch (error) {
     elements.tagSuggestionError.textContent = error.message || "无法开始生成标签建议";
   } finally {
@@ -19561,12 +19764,79 @@ function applyTrainingSetupPrefill(prefill) {
   }
 }
 
+function trainingSetupBaseLevelFromHistory(context = {}) {
+  return ["sidebar", "inspector", "lightbox"].includes(context.trainingSetupBaseLevel)
+    ? context.trainingSetupBaseLevel
+    : "workspace";
+}
+
+function replaceTrainingSetupHistoryWithBase(baseLevel) {
+  if (!state.workspaceNavigation.initialized
+    || elements.appView.classList.contains("hidden")) return;
+  const current = activeWorkspaceHistoryEntry();
+  const route = visibleWorkspaceRoute();
+  if (current?.route !== route || current.navigationLevel !== "trainingSetup") return;
+  const context = currentWorkspaceHistoryContext(route);
+  if (context && typeof context === "object") delete context.trainingSetupBaseLevel;
+  const navigationLevel = visibleWorkspaceNavigationBaseLevel(route, baseLevel);
+  history.replaceState({
+    ...(history.state || {}),
+    [WORKSPACE_HISTORY_KEY]: workspaceHistoryEntry(route, context, navigationLevel),
+  }, "", location.href);
+}
+
+function clearTrainingSetupDialogState({ cancelRequest = true } = {}) {
+  const setup = state.training.setup;
+  if (cancelRequest) setup.requestGeneration += 1;
+  setup.loading = false;
+  setup.launching = false;
+  setup.operationID = null;
+  setup.returnFocus = null;
+  setup.baseLevel = "workspace";
+  setup.historyRestoreFocus = true;
+  setup.focusID = "closeTrainingSetupButton";
+  setup.restorable = false;
+  setup.opening = false;
+}
+
+function presentTrainingSetupDialog({
+  historyMode = "pushTrainingSetup",
+  baseLevel = null,
+  focus = true,
+} = {}) {
+  const setup = state.training.setup;
+  if (elements.trainingSetupDialog.open) {
+    if (focus) restoreOverlayFocus(elements.closeTrainingSetupButton);
+    return;
+  }
+  const current = activeWorkspaceHistoryEntry();
+  setup.baseLevel = baseLevel
+    || workspaceNavigationBaseLevel(
+      current?.navigationLevel || "workspace",
+      current?.context || {}
+    );
+  elements.trainingSetupDialog.showModal();
+  if (historyMode !== "none") {
+    const route = visibleWorkspaceRoute();
+    recordWorkspaceHistory(route, currentWorkspaceHistoryContext(route), historyMode);
+  }
+  setup.restorable = true;
+  renderTrainingSetup();
+  if (focus) {
+    restoreOverlayFocus(
+      document.getElementById(setup.focusID) || elements.closeTrainingSetupButton
+    );
+  }
+}
+
 async function openTrainingSetupDialog(prefill = null) {
   if (currentActiveTrainingActivity()) {
     toast("当前已有个人模型训练正在运行；完成或取消后再新建任务");
     return;
   }
   const setup = state.training.setup;
+  if (elements.trainingSetupDialog.open || setup.opening) return;
+  setup.opening = true;
   setup.loading = true;
   setup.launching = false;
   setup.snapshot = null;
@@ -19575,12 +19845,15 @@ async function openTrainingSetupDialog(prefill = null) {
   setup.operationID = null;
   setup.returnFocus = prefill?.returnFocus || document.activeElement;
   const generation = ++setup.requestGeneration;
-  elements.trainingSetupDialog.showModal();
-  renderTrainingSetup();
+  try {
+    presentTrainingSetupDialog();
+  } finally {
+    setup.opening = false;
+  }
   try {
     const query = new URLSearchParams({ mediaKind: state.training.mediaKind });
     const snapshot = await api(`/v1/training/setup?${query}`);
-    if (generation !== setup.requestGeneration || !elements.trainingSetupDialog.open) return;
+    if (generation !== setup.requestGeneration) return;
     setup.snapshot = snapshot;
     resetTrainingSetupSelection(chooseInitialTrainingSetupMethod());
     applyTrainingSetupPrefill(prefill);
@@ -19591,7 +19864,7 @@ async function openTrainingSetupDialog(prefill = null) {
   } finally {
     if (generation === setup.requestGeneration) {
       setup.loading = false;
-      renderTrainingSetup();
+      if (elements.trainingSetupDialog.open) renderTrainingSetup();
     }
   }
 }
@@ -19613,13 +19886,74 @@ function openTrainingSetupForRun(runID) {
   });
 }
 
-function closeTrainingSetupDialog() {
-  const returnFocus = state.training.setup.returnFocus;
-  state.training.setup.requestGeneration += 1;
-  state.training.setup.launching = false;
-  state.training.setup.returnFocus = null;
-  if (elements.trainingSetupDialog.open) elements.trainingSetupDialog.close();
-  restoreOverlayFocus(returnFocus || elements.newTrainingButton);
+function closeTrainingSetupDialog({
+  restoreFocus = true,
+  checkpoint = true,
+  preserveState = false,
+} = {}) {
+  if (!elements.trainingSetupDialog.open) return;
+  const setup = state.training.setup;
+  const active = document.activeElement;
+  if (active instanceof HTMLElement && elements.trainingSetupDialog.contains(active) && active.id) {
+    setup.focusID = active.id;
+  }
+  const baseLevel = setup.baseLevel;
+  const returnFocus = setup.returnFocus;
+  elements.trainingSetupDialog.close();
+  if (restoreFocus) {
+    restoreOverlayFocus(stableReturnFocusTarget(returnFocus, elements.newTrainingButton));
+  }
+  if (checkpoint) replaceTrainingSetupHistoryWithBase(baseLevel);
+  if (!preserveState) clearTrainingSetupDialogState();
+}
+
+function returnFromTrainingSetup({ restoreFocus = true } = {}) {
+  if (!elements.trainingSetupDialog.open) return Promise.resolve();
+  const setup = state.training.setup;
+  setup.historyRestoreFocus = restoreFocus;
+  if (state.workspaceNavigation.pendingReturnPromise) {
+    return state.workspaceNavigation.pendingReturnPromise;
+  }
+  const current = activeWorkspaceHistoryEntry();
+  if (state.workspaceNavigation.initialized
+    && current?.route === visibleWorkspaceRoute()
+    && current.navigationLevel === "trainingSetup") {
+    const pending = new Promise((resolve) => {
+      state.workspaceNavigation.pendingReturnResolve = resolve;
+    });
+    state.workspaceNavigation.pendingReturnPromise = pending;
+    history.back();
+    return pending;
+  }
+  closeTrainingSetupDialog({ restoreFocus });
+  setup.historyRestoreFocus = true;
+  return Promise.resolve();
+}
+
+function reconcileTrainingSetupFromWorkspaceHistory(route, navigationLevel, context = {}) {
+  const shouldOpen = navigationLevel === "trainingSetup"
+    && route === visibleWorkspaceRoute();
+  const setup = state.training.setup;
+  if (shouldOpen && (!setup.restorable
+    || (Boolean(currentActiveTrainingActivity()) && !setup.launching))) {
+    clearTrainingSetupDialogState();
+    replaceTrainingSetupHistoryWithBase(trainingSetupBaseLevelFromHistory(context));
+    return;
+  }
+  if (shouldOpen && !elements.trainingSetupDialog.open) {
+    presentTrainingSetupDialog({
+      historyMode: "none",
+      baseLevel: trainingSetupBaseLevelFromHistory(context),
+    });
+  } else if (!shouldOpen && elements.trainingSetupDialog.open) {
+    const restoreFocus = setup.historyRestoreFocus;
+    closeTrainingSetupDialog({
+      restoreFocus,
+      checkpoint: false,
+      preserveState: true,
+    });
+    setup.historyRestoreFocus = true;
+  }
 }
 
 async function submitTrainingSetup() {
@@ -19645,8 +19979,11 @@ async function submitTrainingSetup() {
       }),
     });
     const copy = trainingSetupMethodCopy(result.method);
-    closeTrainingSetupDialog();
+    const returnFocus = setup.returnFocus;
+    await returnFromTrainingSetup({ restoreFocus: false });
+    clearTrainingSetupDialogState({ cancelRequest: false });
     toast(`${copy.title}已交给 Mac · ${result.scheduledTagCount} 个标签`);
+    restoreOverlayFocus(stableReturnFocusTarget(returnFocus, elements.newTrainingButton));
     await Promise.all([
       loadTrainingWorkspace({ quiet: true }),
       loadTrainingActivities({ quiet: true }),
@@ -26787,6 +27124,16 @@ async function loadWorkspace({ restoreHistory = false } = {}) {
       restoreGalleryNavigationLevel,
       restoreEntry?.context || {}
     );
+    reconcileTrainingSetupFromWorkspaceHistory(
+      "gallery",
+      restoreGalleryNavigationLevel,
+      restoreEntry?.context || {}
+    );
+    reconcileTagSuggestionFromWorkspaceHistory(
+      "gallery",
+      restoreGalleryNavigationLevel,
+      restoreEntry?.context || {}
+    );
     reconcileNewTagFromWorkspaceHistory(
       "gallery",
       restoreGalleryNavigationLevel,
@@ -27413,6 +27760,10 @@ function resetWorkspaceSessionState() {
   state.tagLibrarySuggestions.dialog.method = "personalCentroid";
   state.tagLibrarySuggestions.dialog.selectedSourceIDs.clear();
   state.tagLibrarySuggestions.dialog.returnFocus = null;
+  state.tagLibrarySuggestions.dialog.baseLevel = "workspace";
+  state.tagLibrarySuggestions.dialog.historyRestoreFocus = true;
+  state.tagLibrarySuggestions.dialog.focusID = "closeTagSuggestionDialogButton";
+  state.tagLibrarySuggestions.dialog.restorable = false;
   clearTimeout(state.personalModelActivities.pollTimer);
   state.personalModelActivities.pollTimer = null;
   state.personalModelActivities.mediaKind = "image";
@@ -27514,6 +27865,12 @@ function resetWorkspaceSessionState() {
   state.training.setup.notice = "";
   state.training.setup.operationID = null;
   state.training.setup.requestGeneration += 1;
+  state.training.setup.returnFocus = null;
+  state.training.setup.baseLevel = "workspace";
+  state.training.setup.historyRestoreFocus = true;
+  state.training.setup.focusID = "closeTrainingSetupButton";
+  state.training.setup.restorable = false;
+  state.training.setup.opening = false;
   state.training.returnTarget = null;
   state.training.pendingReturnFocusRunID = null;
   state.reviewReturnFocus = null;
@@ -32000,15 +32357,19 @@ function bindEvents() {
     void returnFromWorkspace("training");
   });
   elements.newTrainingButton.addEventListener("click", () => openTrainingSetupDialog());
-  elements.closeTrainingSetupButton.addEventListener("click", closeTrainingSetupDialog);
-  elements.cancelTrainingSetupButton.addEventListener("click", closeTrainingSetupDialog);
+  elements.closeTrainingSetupButton.addEventListener("click", () => {
+    void returnFromTrainingSetup();
+  });
+  elements.cancelTrainingSetupButton.addEventListener("click", () => {
+    void returnFromTrainingSetup();
+  });
   elements.trainingSetupForm.addEventListener("submit", (event) => {
     event.preventDefault();
     submitTrainingSetup();
   });
   elements.trainingSetupDialog.addEventListener("cancel", (event) => {
     event.preventDefault();
-    closeTrainingSetupDialog();
+    void returnFromTrainingSetup();
   });
   elements.trainingSetupMethods.addEventListener("click", (event) => {
     const button = event.target.closest("[data-training-setup-method]");
@@ -32233,11 +32594,15 @@ function bindEvents() {
     toggles[nextIndex].focus({ preventScroll: true });
     toggles[nextIndex].scrollIntoView({ block: "nearest" });
   });
-  elements.closeTagSuggestionDialogButton.addEventListener("click", closeTagSuggestionDialog);
-  elements.cancelTagSuggestionDialogButton.addEventListener("click", closeTagSuggestionDialog);
+  elements.closeTagSuggestionDialogButton.addEventListener("click", () => {
+    void returnFromTagSuggestion();
+  });
+  elements.cancelTagSuggestionDialogButton.addEventListener("click", () => {
+    void returnFromTagSuggestion();
+  });
   elements.tagSuggestionDialog.addEventListener("cancel", (event) => {
     event.preventDefault();
-    closeTagSuggestionDialog();
+    void returnFromTagSuggestion();
   });
   elements.tagSuggestionSourceOptions.addEventListener("change", (event) => {
     const input = event.target.closest('input[type="checkbox"]');
@@ -33065,7 +33430,7 @@ function bindEvents() {
         return;
       }
       if (elements.tagSuggestionDialog.open) {
-        closeTagSuggestionDialog();
+        void returnFromTagSuggestion();
         return;
       }
       if (elements.storageDialog.open) {
@@ -33085,7 +33450,7 @@ function bindEvents() {
         return;
       }
       if (elements.trainingSetupDialog.open) {
-        closeTrainingSetupDialog();
+        void returnFromTrainingSetup();
         return;
       }
       if (elements.worldMapLocationBackfillDialog.open) {

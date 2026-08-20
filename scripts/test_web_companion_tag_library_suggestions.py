@@ -88,6 +88,7 @@ def main():
     submitted = []
     suggestion_active = False
     suggestion_reads = 0
+    tag_snapshot_reads = 0
     suggestion_completed = False
     review_queue_reads = 0
     page_errors = []
@@ -250,7 +251,8 @@ def main():
         )
 
         def route_tag_snapshot(route):
-            nonlocal suggestion_reads, suggestion_active, suggestion_completed
+            nonlocal suggestion_reads, tag_snapshot_reads, suggestion_active, suggestion_completed
+            tag_snapshot_reads += 1
             activities = []
             if suggestion_active:
                 suggestion_reads += 1
@@ -314,6 +316,9 @@ def main():
 
         dialog = page.locator("#tagSuggestionDialog")
         dialog.wait_for(state="visible")
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "tagSuggestion"
         assert "猫" in page.locator("#tagSuggestionDialogTitle").inner_text()
         assert page.locator("#tagSuggestionThresholdSummary").inner_text() == "0.420"
         assert page.locator("#tagSuggestionLimitSummary").inner_text() == "Top 25"
@@ -321,6 +326,27 @@ def main():
         assert page.locator(
             f'#tagSuggestionSourceOptions input[value="{SOURCE_IDS[0]}"]'
         ).is_checked()
+        tag_reads_after_open = tag_snapshot_reads
+        page.locator(
+            f'#tagSuggestionSourceOptions input[value="{SOURCE_IDS[1]}"]'
+        ).check()
+        suggestion_history_payload = page.evaluate(
+            "() => JSON.stringify(history.state?.imageAllWorkspace || null)"
+        )
+        assert "猫" not in suggestion_history_payload
+        assert "Apple Photos" not in suggestion_history_payload
+        page.evaluate("() => history.back()")
+        dialog.wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.tagSuggestionMethod === 'personalCentroid'"
+        )
+        page.evaluate("() => history.forward()")
+        page.locator("#tagSuggestionDialog[open]").wait_for()
+        assert page.locator("#tagSuggestionSourceOptions input:checked").count() == 2
+        assert tag_snapshot_reads == tag_reads_after_open
+        page.locator(
+            f'#tagSuggestionSourceOptions input[value="{SOURCE_IDS[1]}"]'
+        ).uncheck()
 
         page.set_viewport_size({"width": 390, "height": 844})
         assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
@@ -330,6 +356,9 @@ def main():
         assert page.locator("#tagSuggestionSelectionSummary").inner_text() == "已选择 1 个来源"
         page.locator("#launchTagSuggestionButton").click()
         page.wait_for_function("() => !document.querySelector('#tagSuggestionDialog').open")
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) != "tagSuggestion"
         assert len(submitted) == 1
         assert submitted[0]["mediaKind"] == "image"
         assert submitted[0]["method"] == "personalCentroid"
