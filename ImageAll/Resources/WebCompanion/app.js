@@ -19083,6 +19083,7 @@ function openJobsPopover({
   historyMode = "pushJobs",
   baseLevel = null,
   focus = true,
+  returnFocus = null,
 } = {}) {
   if (state.jobsOpening) return;
   if (!elements.jobsPopover.classList.contains("hidden")) {
@@ -19093,13 +19094,16 @@ function openJobsPopover({
   const restoring = historyMode === "none" && state.jobsRestorable;
   try {
     if (!restoring) {
-      state.jobsReturnFocus = document.activeElement;
+      const origin = returnFocus instanceof HTMLElement
+        ? returnFocus
+        : document.activeElement;
+      state.jobsReturnFocus = origin;
       state.jobsReturnTarget = {
-        trainingRunID: document.activeElement?.closest?.("[data-training-run-id]")
+        trainingRunID: origin?.closest?.("[data-training-run-id]")
           ?.dataset.trainingRunId || null,
-        reviewTrainingJobID: document.activeElement?.closest?.("[data-review-training-job-id]")
+        reviewTrainingJobID: origin?.closest?.("[data-review-training-job-id]")
           ?.dataset.reviewTrainingJobId || null,
-        slimmingJobID: document.activeElement?.closest?.("[data-slimming-job-id]")
+        slimmingJobID: origin?.closest?.("[data-slimming-job-id]")
           ?.dataset.slimmingJobId || null,
       };
       state.jobsFocusSnapshot = null;
@@ -32565,8 +32569,9 @@ async function executeCommand(commandID) {
     await submitStorageMaintenanceAction("chooseExternalStorage");
     break;
   case "openJobs":
-    await navigateCommandToGallery();
-    toggleJobsPopover();
+    openJobsPopover({
+      returnFocus: commandReturnFocus || elements.jobsButton,
+    });
     break;
   case "toggleSidebar":
     await toggleSidebarVisibility(commandReturnFocus || elements.commandButton);

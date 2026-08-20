@@ -2090,7 +2090,8 @@ def main(*, inspector_actions_only=False):
         page.set_viewport_size({"width": 2200, "height": 960})
         page.wait_for_function(
             "() => document.querySelector('#toolbarPrepareSelectedFeaturesButton')"
-            "?.getClientRects().length > 0"
+            "?.getClientRects().length > 0 "
+            "&& state.selectionFavoriteToolbarWasVisible"
         )
 
         # Shrinking while a direct action owns focus must move focus to the

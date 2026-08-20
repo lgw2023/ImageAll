@@ -827,11 +827,31 @@ def main():
         assert page.locator("#commandContextLabel").inner_text() == "当前：训练工程"
         assert page.locator('[data-command-id="selectAll"]').count() == 0
         assert page.locator('[data-command-id="media:video"]').count() == 1
-        page.keyboard.press("Escape")
+        command_jobs_workspace_requests = len(workspace_requests)
+        command_jobs_requests = len(jobs_requests)
+        with page.expect_response("**/v1/jobs"):
+            page.locator('[data-command-id="openJobs"]').click()
+        page.locator("#jobsPopover:not(.hidden)").wait_for()
+        page.wait_for_function(
+            "() => history.state?.imageAllWorkspace?.route === 'training' "
+            "&& history.state?.imageAllWorkspace?.navigationLevel === 'jobs'"
+        )
+        assert page.locator("#trainingWorkspace").is_visible()
+        assert len(workspace_requests) == command_jobs_workspace_requests
+        assert len(jobs_requests) == command_jobs_requests + 1
+        page.screenshot(
+            path="/tmp/imageall-training-command-activity.png",
+            full_page=True,
+        )
+        page.locator("#closeJobsButton").click()
+        page.locator("#jobsPopover").wait_for(state="hidden")
         page.wait_for_function(
             "runID => document.activeElement?.dataset.trainingRunId === runID",
             arg=FAILED_RUN_ID,
         )
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.route"
+        ) == "training"
         page.keyboard.press("Meta+K")
         page.locator('[data-command-id="media:video"]').click()
         page.wait_for_function(
