@@ -550,7 +550,12 @@ def main():
         page.locator(
             f'#inspectorTags [data-tag-chip-action][data-tag-id="{REVIEW_TAG_ID}"]'
         ).wait_for()
-        page.locator("#inspectorTagSearch").fill("")
+        page.locator("#inspectorTagSearch").press("Escape")
+        assert page.locator("#inspectorTagSearch").input_value() == ""
+        assert page.evaluate("() => state.inspectorTagSearchText") == ""
+        assert page.evaluate("() => document.activeElement?.id") == "inspectorTagSearch"
+        assert page.locator("#lightbox").is_visible()
+        assert page.locator("#lightboxTitle").inner_text() == "ITEM_072.JPG"
         page.evaluate("""() => {
           const focusable = [...document.querySelector('#inspector').querySelectorAll(
             'button:not([disabled]), input:not([disabled]), select:not([disabled]), '

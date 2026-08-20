@@ -15521,6 +15521,59 @@ async function clearLibrarySearch({ restoreFocus = true } = {}) {
   if (restoreFocus) elements.searchInput.focus({ preventScroll: true });
 }
 
+async function clearSlimmingRecycleSearch({ restoreFocus = true } = {}) {
+  clearTimeout(state.slimming.recycle.searchTimer);
+  state.slimming.recycle.searchTimer = null;
+  state.slimming.recycle.searchText = "";
+  state.slimming.recycle.limit = 60;
+  await loadSlimmingRecycle({ quiet: true });
+  if (restoreFocus) elements.slimmingRecycleSearchInput.focus({ preventScroll: true });
+}
+
+function clearInlineSearchFromEscape(target) {
+  if (target === elements.searchInput
+    && (elements.searchInput.value || state.searchText)) {
+    void clearLibrarySearch();
+    return true;
+  }
+  if (target === elements.tagNavigationSearch && elements.tagNavigationSearch.value) {
+    elements.tagNavigationSearch.value = "";
+    renderTagNavigation();
+    elements.tagNavigationSearch.focus({ preventScroll: true });
+    return true;
+  }
+  if (target === elements.selectionTagSearch
+    && (elements.selectionTagSearch.value || state.selectionTagSearchText)) {
+    state.selectionTagSearchText = "";
+    elements.selectionTagSearch.value = "";
+    renderSelectionInspector();
+    elements.selectionTagSearch.focus({ preventScroll: true });
+    return true;
+  }
+  if (target === elements.inspectorTagSearch
+    && (elements.inspectorTagSearch.value || state.inspectorTagSearchText)) {
+    state.inspectorTagSearchText = "";
+    elements.inspectorTagSearch.value = "";
+    if (state.selectedDetail) renderInspector(state.selectedDetail);
+    elements.inspectorTagSearch.focus({ preventScroll: true });
+    return true;
+  }
+  if (target === elements.reviewTagSearch
+    && (elements.reviewTagSearch.value || state.review.tagSearchText)) {
+    state.review.tagSearchText = "";
+    elements.reviewTagSearch.value = "";
+    renderReviewDetail();
+    elements.reviewTagSearch.focus({ preventScroll: true });
+    return true;
+  }
+  if (target === elements.slimmingRecycleSearchInput
+    && (elements.slimmingRecycleSearchInput.value || state.slimming.recycle.searchText)) {
+    void clearSlimmingRecycleSearch();
+    return true;
+  }
+  return false;
+}
+
 async function clearLibraryFilters({ tags = false, properties = false } = {}) {
   cancelPendingFilterApply();
   const filters = cloneFilters(state.filters);
@@ -35808,20 +35861,12 @@ function bindEvents() {
     state.slimming.recycle.searchTimer = setTimeout(() => loadSlimmingRecycle({ quiet: true }), 240);
   });
   elements.clearSlimmingRecycleSearchButton.addEventListener("click", async () => {
-    clearTimeout(state.slimming.recycle.searchTimer);
-    state.slimming.recycle.searchText = "";
-    state.slimming.recycle.limit = 60;
-    await loadSlimmingRecycle({ quiet: true });
-    elements.slimmingRecycleSearchInput.focus({ preventScroll: true });
+    await clearSlimmingRecycleSearch();
   });
   elements.slimmingRecycleEmptyAction.addEventListener("click", async () => {
     const action = elements.slimmingRecycleEmptyAction.dataset.action;
     if (action === "clearSearch") {
-      clearTimeout(state.slimming.recycle.searchTimer);
-      state.slimming.recycle.searchText = "";
-      state.slimming.recycle.limit = 60;
-      await loadSlimmingRecycle({ quiet: true });
-      elements.slimmingRecycleSearchInput.focus({ preventScroll: true });
+      await clearSlimmingRecycleSearch();
     } else if (action === "clearSource") {
       state.slimming.recycle.sourceID = "";
       state.slimming.recycle.limit = 60;
@@ -37124,10 +37169,8 @@ function bindEvents() {
       return;
     }
     if (event.key === "Escape") {
-      if (event.target === elements.searchInput
-        && (elements.searchInput.value || state.searchText)) {
+      if (clearInlineSearchFromEscape(event.target)) {
         event.preventDefault();
-        void clearLibrarySearch();
         return;
       }
       event.preventDefault();

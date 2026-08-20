@@ -2991,7 +2991,12 @@ def main():
             f'#reviewTags [data-tag-chip-action][data-tag-id="{TRAVEL_TAG_ID}"]'
         ).is_visible()
         assert "REVIEW_1.JPG" in page.locator("#lightboxTitle").inner_text()
-        page.locator("#reviewTagSearch").fill("")
+        page.locator("#reviewTagSearch").press("Escape")
+        assert page.locator("#reviewTagSearch").input_value() == ""
+        assert page.evaluate("() => state.review.tagSearchText") == ""
+        assert page.evaluate("() => document.activeElement?.id") == "reviewTagSearch"
+        assert page.locator("#lightbox").is_visible()
+        assert "REVIEW_1.JPG" in page.locator("#lightboxTitle").inner_text()
         page.locator("#lightboxZoomInButton").focus()
         zoom_controls = page.locator("#lightboxZoomControls")
         assert zoom_controls.is_visible()

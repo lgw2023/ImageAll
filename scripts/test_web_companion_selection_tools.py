@@ -1381,7 +1381,11 @@ def main(*, inspector_actions_only=False):
         sidebar_cat_chip.hover()
         page.locator("#persistentHelp:not(.hidden)").wait_for(timeout=2_000)
         assert "正在搜索标签" in page.locator("#persistentHelpDetail").inner_text()
-        page.locator("#tagNavigationSearch").fill("")
+        tag_search_asset_requests = len(asset_request_urls)
+        page.locator("#tagNavigationSearch").press("Escape")
+        assert page.locator("#tagNavigationSearch").input_value() == ""
+        assert page.evaluate("() => document.activeElement?.id") == "tagNavigationSearch"
+        assert len(asset_request_urls) == tag_search_asset_requests
 
         page.set_viewport_size({"width": 390, "height": 844})
         page.locator("#sidebarToggle").click()
@@ -1872,7 +1876,14 @@ def main(*, inspector_actions_only=False):
         family_chip = page.locator(
             f'#selectionInspectorTags [data-tag-chip-action][data-tag-id="{SELECTION_CREATED_TAG_ID}"]'
         )
-        page.locator("#selectionTagSearch").focus()
+        selection_search_asset_requests = len(asset_request_urls)
+        page.locator("#selectionTagSearch").fill("家")
+        page.locator("#selectionTagSearch").press("Escape")
+        assert page.locator("#selectionTagSearch").input_value() == ""
+        assert page.evaluate("() => state.selectionTagSearchText") == ""
+        assert page.evaluate("() => state.selectionMode") is True
+        assert page.evaluate("() => document.activeElement?.id") == "selectionTagSearch"
+        assert len(asset_request_urls) == selection_search_asset_requests
         family_chip.focus()
         page.locator("#persistentHelp:not(.hidden)").wait_for(timeout=2_000)
         page.wait_for_timeout(150)
@@ -3724,6 +3735,19 @@ def main(*, inspector_actions_only=False):
             and "search=RECYCLE" in url
             for url in recycle_request_urls
         )
+
+        recycle_escape_requests = len(recycle_request_urls)
+        page.locator("#slimmingRecycleSearchInput").press("Escape")
+        page.wait_for_function("() => !state.slimming.recycle.loading")
+        assert page.locator("#slimmingRecycleSearchInput").input_value() == ""
+        assert page.evaluate("() => state.slimming.recycle.searchText") == ""
+        assert page.evaluate("() => document.activeElement?.id") == "slimmingRecycleSearchInput"
+        assert page.locator("#slimmingWorkspace").is_visible()
+        assert page.locator("#slimmingRecycleSourceSelect").input_value() == SOURCE_ID
+        assert len(recycle_request_urls) == recycle_escape_requests + 1
+        assert "search=" not in recycle_request_urls[-1]
+        page.locator("#slimmingRecycleSearchInput").fill("RECYCLE")
+        page.wait_for_timeout(300)
 
         photos_scope = page.locator('[data-slimming-recycle-scope="photos"]')
         photos_scope.click()
