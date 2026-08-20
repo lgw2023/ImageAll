@@ -757,7 +757,8 @@ def main():
         page.locator("#trainingWorkspace:not(.hidden)").wait_for(state="visible")
         page.wait_for_function(
             "runID => state.training.selectedRunID === runID && "
-            "document.querySelector(`[data-training-run-id='${runID}']`)?.getAttribute('aria-selected') === 'true'",
+            "document.querySelector(`[data-training-run-id='${runID}']`)?.getAttribute('aria-selected') === 'true' && "
+            "document.activeElement?.dataset.trainingRunId === runID",
             arg=selected_training_run,
         )
         assert len(workspace_requests) == training_search_request_count + 1
@@ -1515,7 +1516,8 @@ def main():
             "runID => history.state?.imageAllWorkspace?.route === 'training' "
             "&& document.querySelector('#appView').inert "
             "&& document.querySelector(`[data-training-run-id='${runID}']`)"
-            "?.getAttribute('aria-selected') === 'true'",
+            "?.getAttribute('aria-selected') === 'true' "
+            "&& document.activeElement?.dataset.trainingRunId === runID",
             arg=FAILED_RUN_ID,
         )
 

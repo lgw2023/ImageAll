@@ -4004,6 +4004,9 @@ async function applyWorkspaceHistoryEntry(entry) {
       activeEntry?.navigationLevel || "workspace",
       context
     );
+    if ((activeEntry?.navigationLevel || "workspace") === "workspace") {
+      focusWorkspacePrimaryControl(target);
+    }
   } finally {
     state.workspaceNavigation.applyingHistory = false;
     const resolve = state.workspaceNavigation.pendingReturnResolve;
