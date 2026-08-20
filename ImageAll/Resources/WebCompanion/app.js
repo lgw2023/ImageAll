@@ -31641,6 +31641,12 @@ async function navigateCommandToGallery({ focus = false } = {}) {
   if (focus) focusWorkspacePrimaryControl("gallery");
 }
 
+async function focusLibrarySearch() {
+  await navigateCommandToGallery();
+  elements.searchInput.focus({ preventScroll: true });
+  elements.searchInput.select();
+}
+
 async function openWorkspaceFromCommand(target) {
   const current = visibleWorkspaceRoute();
   const lightboxOpen = !elements.lightbox.classList.contains("hidden");
@@ -32319,9 +32325,7 @@ async function executeCommand(commandID) {
     if (state.filters.tagPresence !== "untagged") await applyUntaggedFilter();
     break;
   case "focusSearch":
-    await navigateCommandToGallery();
-    elements.searchInput.focus({ preventScroll: true });
-    elements.searchInput.select();
+    await focusLibrarySearch();
     break;
   case "openFilter":
     await navigateCommandToGallery();
@@ -36470,11 +36474,6 @@ function bindEvents() {
     const galleryOverviewOpen = !elements.galleryOverviewWorkspace.classList.contains("hidden");
     const galleryOverviewModalOpen = galleryOverviewOpen
       && !galleryOverviewUsesIntegratedLayout();
-    const integratedWorkspaceOpen = (worldMapOpen && !worldMapModalOpen)
-      || (galleryOverviewOpen && !galleryOverviewModalOpen)
-      || (reviewOpen && !reviewModalOpen)
-      || (trainingOpen && !trainingModalOpen)
-      || (slimmingOpen && !slimmingModalOpen);
     const jobsOpen = !elements.jobsPopover.classList.contains("hidden");
     const filterOpen = !elements.filterPopover.classList.contains("hidden");
     const layoutMenuOpen = Boolean(activeLayoutMenuDescriptor());
@@ -36521,14 +36520,12 @@ function bindEvents() {
       return;
     }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
-      if (blockingDialogOpen || elements.commandPalette.open || customOverlayOpen
-        || integratedWorkspaceOpen) {
+      if (blockingDialogOpen || elements.commandPalette.open || customOverlayOpen) {
         event.preventDefault();
         return;
       }
       event.preventDefault();
-      elements.searchInput.focus({ preventScroll: true });
-      elements.searchInput.select();
+      void focusLibrarySearch();
       return;
     }
     if (event.key === "Escape") {

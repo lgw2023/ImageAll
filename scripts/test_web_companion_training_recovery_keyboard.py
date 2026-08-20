@@ -738,9 +738,29 @@ def main():
             path="/tmp/imageall-training-integrated.png",
             full_page=True,
         )
+        training_search_history_length = page.evaluate("history.length")
+        training_search_request_count = len(workspace_requests)
+        selected_training_run = page.evaluate("state.training.selectedRunID")
         page.locator("#closeTrainingButton").focus()
         page.keyboard.press("Meta+f")
-        assert page.evaluate("() => document.activeElement?.id") != "searchInput"
+        page.locator("#trainingWorkspace").wait_for(state="hidden")
+        page.wait_for_function("() => document.activeElement?.id === 'searchInput'")
+        assert page.evaluate("history.length") == training_search_history_length + 1
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.route"
+        ) == "gallery"
+        assert not page.locator("#searchForm").evaluate(
+            "element => Boolean(element.closest('[inert]'))"
+        )
+        assert len(workspace_requests) == training_search_request_count
+        page.evaluate("history.back()")
+        page.locator("#trainingWorkspace:not(.hidden)").wait_for(state="visible")
+        page.wait_for_function(
+            "runID => state.training.selectedRunID === runID && "
+            "document.querySelector(`[data-training-run-id='${runID}']`)?.getAttribute('aria-selected') === 'true'",
+            arg=selected_training_run,
+        )
+        assert len(workspace_requests) == training_search_request_count + 1
         page.locator(f'[data-training-run-id="{PERSONAL_RUN_ID}"]').click()
         page.wait_for_function(
             "() => document.querySelector('#inspectorTrainingWorkspaceTask')?.textContent === '快速个人模型'"

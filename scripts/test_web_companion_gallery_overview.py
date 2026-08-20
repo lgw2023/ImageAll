@@ -227,10 +227,27 @@ def main():
         page.locator("#galleryOverviewNavigationButton").click()
         page.locator("#galleryOverviewWorkspace:not(.hidden)").wait_for()
         page.locator("#galleryOverviewBody:not(.hidden)").wait_for()
+        overview_search_history_length = page.evaluate("history.length")
+        overview_search_requests = overview_requests
+        overview_search_asset_queries = len(asset_queries)
         page.locator("#refreshGalleryOverviewButton").focus()
         page.keyboard.press("Meta+F")
-        assert page.evaluate("() => document.activeElement?.id") == \
-            "refreshGalleryOverviewButton"
+        page.locator("#galleryOverviewWorkspace").wait_for(state="hidden")
+        page.wait_for_function("() => document.activeElement?.id === 'searchInput'")
+        assert page.evaluate("history.length") == overview_search_history_length + 1
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.route"
+        ) == "gallery"
+        assert overview_requests == overview_search_requests
+        assert len(asset_queries) == overview_search_asset_queries
+        page.evaluate("history.back()")
+        page.locator("#galleryOverviewWorkspace:not(.hidden)").wait_for()
+        page.locator("#galleryOverviewBody:not(.hidden)").wait_for()
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'refreshGalleryOverviewButton'"
+        )
+        assert overview_requests == overview_search_requests
+        assert len(asset_queries) == overview_search_asset_queries
         page.keyboard.press("Meta+K")
         page.locator("#commandPalette[open]").wait_for()
         assert page.locator("#commandContextLabel").inner_text() == "当前：图库总览"
