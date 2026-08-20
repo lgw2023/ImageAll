@@ -5439,7 +5439,7 @@ html.split-resizing * {
 .jobs-popover {
   top: calc(45px + var(--safe-top));
   right: 64px;
-  z-index: 130;
+  z-index: 150;
   width: min(370px, calc(100vw - 24px));
   max-height: min(520px, calc(100vh - 68px));
   overflow: hidden;

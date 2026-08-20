@@ -22,6 +22,7 @@ def fulfill_json(route, payload, status=200):
 def main():
     asset_queries = []
     overview_requests = 0
+    jobs_requests = 0
     console_errors = []
     page_errors = []
     overview = {
@@ -149,7 +150,12 @@ def main():
             ),
         )
         page.route("**/v1/tag-groups", lambda route: fulfill_json(route, []))
-        page.route("**/v1/jobs", lambda route: fulfill_json(route, []))
+        def route_jobs(route):
+            nonlocal jobs_requests
+            jobs_requests += 1
+            fulfill_json(route, [])
+
+        page.route("**/v1/jobs", route_jobs)
         page.route(
             "**/v1/embedding-preparation?**",
             lambda route: fulfill_json(route, {"mediaKind": "image", "isAvailable": True, "activities": []}),
@@ -214,6 +220,31 @@ def main():
         assert page.evaluate(
             "() => history.state?.imageAllWorkspace?.route"
         ) == "galleryOverview"
+        page.locator("#refreshGalleryOverviewButton").focus()
+        overview_jobs_before = jobs_requests
+        page.keyboard.press("j")
+        page.locator("#jobsPopover:not(.hidden)").wait_for()
+        page.wait_for_function(
+            "() => history.state?.imageAllWorkspace?.route === 'galleryOverview' "
+            "&& history.state?.imageAllWorkspace?.navigationLevel === 'jobs'"
+        )
+        assert jobs_requests == overview_jobs_before + 1
+        page.keyboard.press("j")
+        page.locator("#jobsPopover").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'refreshGalleryOverviewButton'"
+        )
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.route"
+        ) == "galleryOverview"
+        page.evaluate("() => history.forward()")
+        page.locator("#jobsPopover:not(.hidden)").wait_for()
+        assert jobs_requests == overview_jobs_before + 1
+        page.keyboard.press("Escape")
+        page.locator("#jobsPopover").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'refreshGalleryOverviewButton'"
+        )
         all_media_button = page.locator('#libraryNavigation [data-source-id=""]')
         all_media_button.click()
         page.locator("#galleryOverviewWorkspace").wait_for(state="hidden")

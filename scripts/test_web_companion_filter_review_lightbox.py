@@ -255,6 +255,7 @@ def main():
     source_requests = []
     complete_next_refresh_all_without_job = [False]
     media_requests = []
+    preview_requests = []
     opened_originals = []
     favorite_mutations = []
     submitted_review_removals = []
@@ -789,6 +790,7 @@ def main():
                 )
                 return
             if path.endswith("/preview"):
+                preview_requests.append(route.request.url)
                 route.fulfill(
                     status=200,
                     content_type="image/svg+xml; charset=utf-8",
@@ -2967,6 +2969,37 @@ def main():
         page.wait_for_function(
             "() => document.activeElement?.id === 'lightboxZoomInButton'"
         )
+        lightbox_jobs_before = catalog_job_fetches[0]
+        lightbox_previews_before = len(preview_requests)
+        page.keyboard.press("j")
+        page.locator("#jobsPopover:not(.hidden)").wait_for()
+        page.wait_for_function(
+            "() => history.state?.imageAllWorkspace?.route === 'review' "
+            "&& history.state?.imageAllWorkspace?.navigationLevel === 'jobs' "
+            "&& history.state?.imageAllWorkspace?.context?.jobsBaseLevel === 'lightbox'"
+        )
+        assert catalog_job_fetches[0] == lightbox_jobs_before + 1
+        assert page.locator("#lightbox:not(.hidden)").is_visible()
+        assert page.locator("#jobsPopover").evaluate(
+            "element => Number(getComputedStyle(element).zIndex)"
+        ) > page.locator("#lightbox").evaluate(
+            "element => Number(getComputedStyle(element).zIndex)"
+        )
+        assert "REVIEW_1.JPG" in page.locator("#lightboxTitle").inner_text()
+        page.screenshot(
+            path="/tmp/imageall-lightbox-activity-shortcut.png",
+            full_page=True,
+        )
+        page.keyboard.press("j")
+        page.locator("#jobsPopover").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => history.state?.imageAllWorkspace?.navigationLevel === 'lightbox'"
+        )
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'lightboxZoomInButton'"
+        )
+        assert len(preview_requests) == lightbox_previews_before
+        assert "REVIEW_1.JPG" in page.locator("#lightboxTitle").inner_text()
         assert page.locator("#lightboxZoomPercentage").inner_text() == "100%"
         assert page.locator("#lightboxZoomOutButton").is_disabled()
         page.locator("#lightboxZoomInButton").click()
@@ -3426,6 +3459,14 @@ def main():
             "立即重扫",
             "立即同步",
         }
+        page.wait_for_function(
+            """() => {
+              const sort = document.querySelector('#sortButton')?.getBoundingClientRect();
+              const close = document.querySelector('#closeInspectorButton')?.getBoundingClientRect();
+              return sort && close && (sort.right <= close.left || sort.left >= close.right
+                || sort.bottom <= close.top || sort.top >= close.bottom);
+            }"""
+        )
         sort_button.click()
         page.screenshot(path="/tmp/imageall-sort-menu-desktop.png", full_page=True)
         page.locator('#sortPopover [data-sort="oldest"]').press("Escape")
@@ -3482,6 +3523,11 @@ def main():
         ).is_visible()
         assert page.locator("#jobsButton").is_visible()
         page.evaluate("() => closeCompactToolbarMenu({ restoreFocus: false })")
+        page.wait_for_function(
+            "() => !state.loadingAssets && !state.assetLoadPromise "
+            "&& !state.queuedAssetLoadOptions && !state.nextCursor "
+            "&& state.assetRenderedQuerySignature === assetQuerySignature()"
+        )
         sort_button.click()
         page.locator("#sortPopover:not(.hidden)").wait_for()
         sort_history_queries = len(asset_queries)

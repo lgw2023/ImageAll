@@ -19208,6 +19208,15 @@ function toggleJobsPopover() {
   else void returnFromJobsPopover();
 }
 
+function openJobsFromKeyboardShortcut() {
+  const trainingOpen = !elements.trainingWorkspace.classList.contains("hidden");
+  const selectedRun = trainingOpen
+    ? state.training.runs.find((run) => run.id === state.training.selectedRunID)
+    : null;
+  if (selectedRun?.jobID) void openAssociatedJob(selectedRun.jobID);
+  else openJobsPopover();
+}
+
 function renderJobs() {
   syncJobsRefreshControl();
   syncCatalogProgressStatus();
@@ -29056,7 +29065,8 @@ function reconcileLightboxFromWorkspaceHistory(route, context) {
   const alreadyOpen = !elements.lightbox.classList.contains("hidden")
     && state.lightboxContext === expectedContext
     && state.lightboxAssetID === desired.assetID;
-  if (!alreadyOpen && !elements.lightbox.classList.contains("hidden")) {
+  if (alreadyOpen) return;
+  if (!elements.lightbox.classList.contains("hidden")) {
     closeLightbox({ restoreFocus: false });
   }
   restoreLightboxFromHistory(raw, expectedContext);
@@ -31990,7 +32000,7 @@ function availableCommands() {
       hint: "⌘,",
       disabled: !supportsGeneralSettings(),
     },
-    { id: "openJobs", icon: "◷", title: "打开活动", hint: "" },
+    { id: "openJobs", icon: "◷", title: "打开活动", hint: "J" },
     {
       id: "toggleSidebar",
       icon: "◫",
@@ -37133,6 +37143,15 @@ function bindEvents() {
       return;
     }
     if (isTextInputTarget(event.target)) return;
+    if (!event.repeat
+      && !event.metaKey
+      && !event.ctrlKey
+      && !event.altKey
+      && event.key.toLowerCase() === "j") {
+      event.preventDefault();
+      openJobsFromKeyboardShortcut();
+      return;
+    }
     if ((event.metaKey || event.ctrlKey)
       && !event.altKey
       && !event.shiftKey
@@ -37218,12 +37237,6 @@ function bindEvents() {
     }
     if (worldMapOpen || galleryOverviewOpen) return;
     if (reviewOpen) {
-      if (!event.repeat && !event.metaKey && !event.ctrlKey && !event.altKey
-        && event.key.toLowerCase() === "j") {
-        event.preventDefault();
-        openJobsPopover();
-        return;
-      }
       if (state.review.mode !== "queue") return;
       if (event.target.closest("input, select, textarea, [contenteditable='true']")) return;
       if ((event.metaKey || event.ctrlKey) && !event.altKey
@@ -37310,12 +37323,6 @@ function bindEvents() {
       const selectedRun = state.training.runs.find(
         (run) => run.id === state.training.selectedRunID
       );
-      if (key === "j") {
-        event.preventDefault();
-        if (selectedRun?.jobID) void openAssociatedJob(selectedRun.jobID);
-        else openJobsPopover();
-        return;
-      }
       if (key === "v" && selectedRun?.tagID) {
         event.preventDefault();
         openReviewFromTrainingRun(selectedRun.id);
@@ -37377,12 +37384,6 @@ function bindEvents() {
       && currentTagTargetAssetIDs().length > 0) {
       event.preventDefault();
       void submitGalleryRemoval();
-      return;
-    }
-    if (!event.repeat && !event.metaKey && !event.ctrlKey && !event.altKey
-      && event.key.toLowerCase() === "j") {
-      event.preventDefault();
-      openJobsPopover();
       return;
     }
     if (isInteractiveControlTarget(event.target)) return;
