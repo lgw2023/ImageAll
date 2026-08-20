@@ -10,8 +10,8 @@
   <meta name="apple-mobile-web-app-title" content="ImageAll">
   <title>ImageAll 网页版</title>
   <link rel="manifest" href="/manifest.webmanifest">
-    <link rel="stylesheet" href="/app.css?v=20260820-116">
-    <script src="/app.js?v=20260820-116" defer></script>
+    <link rel="stylesheet" href="/app.css?v=20260820-117">
+    <script src="/app.js?v=20260820-117" defer></script>
 </head>
 <body>
   <div id="bootView" class="centered-state">
@@ -2644,7 +2644,7 @@
           </p>
           <div class="slimming-threshold-grid">
             <label><span>Feature Print 候选</span><select id="slimmingThresholdRecallMode"><option value="topK">Top-K</option><option value="allCandidates">全部候选</option></select><input id="slimmingThresholdRecallTopK" type="number" min="1" max="128" step="1"></label>
-            <label><span>Feature Print L2</span><select id="slimmingThresholdL2Mode"><option value="radius">半径</option><option value="unlimited">不限</option></select><input id="slimmingThresholdL2Distance" type="number" min="0" max="200" step="1"></label>
+            <label><span>Feature Print L2</span><select id="slimmingThresholdL2Mode"><option value="radius">半径</option><option value="unlimited">不限</option></select><input id="slimmingThresholdL2Distance" type="number" min="0" max="200" step="any"></label>
             <label><span>DINOv2 余弦下限</span><select id="slimmingThresholdDINOMode"><option value="minimum">最低值</option><option value="unlimited">不限</option></select><input id="slimmingThresholdDINOSimilarity" type="number" min="0" max="1" step="0.01"></label>
             <label><span>按拍摄日分桶</span><select id="slimmingThresholdBucketingMode"><option value="automatic">自动</option><option value="always">始终</option><option value="never">从不</option></select><input id="slimmingThresholdBucketActivationCount" type="number" min="2" max="10000" step="1"></label>
           </div>
@@ -2710,7 +2710,7 @@
             </div>
             <div class="slimming-threshold-grid">
               <label><span>Feature Print 候选</span><select id="slimmingRecallMode"><option value="topK">Top-K</option><option value="allCandidates">全部候选</option></select><input id="slimmingRecallTopK" type="number" min="1" max="128" step="1"></label>
-              <label><span>Feature Print L2</span><select id="slimmingL2Mode"><option value="radius">半径</option><option value="unlimited">不限</option></select><input id="slimmingL2Distance" type="number" min="0" max="200" step="1"></label>
+              <label><span>Feature Print L2</span><select id="slimmingL2Mode"><option value="radius">半径</option><option value="unlimited">不限</option></select><input id="slimmingL2Distance" type="number" min="0" max="200" step="any"></label>
               <label><span>DINO 余弦相似度</span><select id="slimmingDINOMode"><option value="minimum">最低值</option><option value="unlimited">不限</option></select><input id="slimmingDINOSimilarity" type="number" min="0" max="1" step="0.01"></label>
               <label><span>拍摄日分桶</span><select id="slimmingBucketingMode"><option value="automatic">自动</option><option value="always">始终</option><option value="never">从不</option></select><input id="slimmingBucketActivationCount" type="number" min="2" max="10000" step="1"></label>
             </div>

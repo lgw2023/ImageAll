@@ -69,6 +69,11 @@ def fulfill_json(route, payload, status=200):
 
 
 def drag_marquee_to_bottom_edge(page, container_selector, grid_selector):
+    page.wait_for_function(
+        "selector => { const element = document.querySelector(selector); "
+        "return element && element.scrollHeight - element.clientHeight >= 360; }",
+        arg=container_selector,
+    )
     container = page.locator(container_selector)
     grid = page.locator(grid_selector)
     container_box = container.bounding_box()
@@ -115,6 +120,7 @@ def main(*, inspector_actions_only=False):
     submitted_slimming_job_actions = []
     submitted_slimming_source_maintenance = []
     submitted_slimming_thresholds = []
+    slimming_setup_reads = [0]
     submitted_slimming_removals = []
     submitted_slimming_recycle_actions = []
     submitted_source_management = []
@@ -146,6 +152,7 @@ def main(*, inspector_actions_only=False):
     expanded_slimming_history_enabled = False
     expanded_slimming_pagination_enabled = False
     expanded_slimming_recycle_pagination_enabled = False
+    expanded_slimming_marquee_enabled = False
     source_index_reads = 0
     source_index_building = False
     active_slimming_thresholds = {
@@ -689,6 +696,7 @@ def main(*, inspector_actions_only=False):
             }
 
         def handle_slimming_setup(route):
+            slimming_setup_reads[0] += 1
             query = parse_qs(urlparse(route.request.url).query)
             fulfill_json(
                 route,
@@ -813,6 +821,14 @@ def main(*, inspector_actions_only=False):
                     SLIMMING_IGNORED_CLUSTER_ID: visible_slimming_asset_ids[:1],
                 }
                 cluster_dispositions = slimming_cluster_dispositions
+            if expanded_slimming_marquee_enabled and selected_job_id == SLIMMING_JOB_ID:
+                cluster_members[SLIMMING_CLUSTER_ID] = [
+                    *visible_slimming_asset_ids,
+                    *[
+                        f"91000000-0000-4000-8000-{index:012d}"
+                        for index in range(1, 97)
+                    ],
+                ]
             eligible_cluster_ids = [
                 cluster_id for cluster_id, disposition in cluster_dispositions.items()
                 if disposition is not None or len(cluster_members[cluster_id]) >= 2
@@ -2223,6 +2239,83 @@ def main(*, inspector_actions_only=False):
         page.locator("#slimmingAnalysisOptionsButton").click()
         page.locator("#slimmingAnalysisOptionsPopover:not(.hidden)").wait_for()
         page.locator("#slimmingAnalysisOptionsContent:not(.hidden)").wait_for()
+        page.locator("#openSlimmingSetupButton").click()
+        page.locator("#slimmingSetupDialog[open]").wait_for()
+        page.locator("#slimmingSetupConfiguration:not(.hidden)").wait_for()
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "slimmingSetup"
+        slimming_setup_reads_after_open = slimming_setup_reads[0]
+        page.locator('[data-slimming-mode="catalog"]').click()
+        page.locator("#slimmingRecallMode").select_option("allCandidates")
+        assert page.locator("#slimmingRecallTopK").is_disabled()
+        assert page.locator(
+            f'[data-slimming-source-id="{SOURCE_ID}"]'
+        ).is_checked()
+        assert not page.locator(
+            f'[data-slimming-source-id="{SECOND_SOURCE_ID}"]'
+        ).is_checked()
+        slimming_setup_history_payload = page.evaluate(
+            "() => JSON.stringify(history.state?.imageAllWorkspace || null)"
+        )
+        assert "Apple Photos" not in slimming_setup_history_payload
+        assert "旅行归档" not in slimming_setup_history_payload
+        assert "allCandidates" not in slimming_setup_history_payload
+        page.evaluate("() => history.back()")
+        page.locator("#slimmingSetupDialog").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'slimmingAnalysisOptionsButton'"
+        )
+        page.evaluate("() => history.forward()")
+        page.locator("#slimmingSetupDialog[open]").wait_for()
+        assert slimming_setup_reads[0] == slimming_setup_reads_after_open
+        assert page.locator(
+            '[data-slimming-mode="catalog"]'
+        ).get_attribute("aria-checked") == "true"
+        assert page.locator("#slimmingRecallMode").input_value() == "allCandidates"
+        assert page.locator(
+            f'[data-slimming-source-id="{SOURCE_ID}"]'
+        ).is_checked()
+        assert not page.locator(
+            f'[data-slimming-source-id="{SECOND_SOURCE_ID}"]'
+        ).is_checked()
+        assert page.locator("#launchSlimmingButton").is_enabled(), page.evaluate(
+            "() => ({ online: state.online, setup: { "
+            "loading: state.slimming.setup.loading, saving: state.slimming.setup.saving, "
+            "launching: state.slimming.setup.launching, mode: state.slimming.setup.mode, "
+            "selectedSourceIDs: [...state.slimming.setup.selectedSourceIDs], "
+            "thresholds: state.slimming.setup.thresholds } })"
+        )
+        slimming_launch_count_before_setup = len(submitted_slimming)
+        slimming_generation_before_setup_launch = page.evaluate(
+            "() => state.slimming.requestGeneration"
+        )
+        page.locator("#launchSlimmingButton").click()
+        page.locator("#slimmingSetupDialog").wait_for(state="hidden")
+        assert len(submitted_slimming) == slimming_launch_count_before_setup + 1, {
+            "setup": page.evaluate(
+                "() => ({ error: state.slimming.setup.error, "
+                "loading: state.slimming.setup.loading, saving: state.slimming.setup.saving, "
+                "launching: state.slimming.setup.launching, "
+                "operationID: state.slimming.setup.launchOperationID })"
+            ),
+            "pageErrors": page_errors,
+            "thresholdWrites": submitted_slimming_thresholds,
+        }
+        page.wait_for_function(
+            "generation => state.slimming.requestGeneration > generation "
+            "&& !state.slimming.loading && !state.slimming.appending",
+            arg=slimming_generation_before_setup_launch,
+        )
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) != "slimmingSetup"
+        assert submitted_slimming[-1]["mode"] == "catalog"
+        assert submitted_slimming[-1]["sourceIDs"] == [SOURCE_ID]
+
+        page.locator("#slimmingAnalysisOptionsButton").click()
+        page.locator("#slimmingAnalysisOptionsPopover:not(.hidden)").wait_for()
+        page.locator("#slimmingAnalysisOptionsContent:not(.hidden)").wait_for()
         slimming_context_before_thresholds = page.evaluate(
             "() => ({ jobID: state.slimming.selectedJobID, "
             "clusterID: state.slimming.selectedClusterID, "
@@ -2236,9 +2329,29 @@ def main(*, inspector_actions_only=False):
         assert page.locator("#slimmingAnalysisOptionsPopover").is_hidden()
         assert page.locator("#slimmingThresholdRecallTopK").input_value() == "32"
         assert page.locator("#slimmingThresholdL2Distance").input_value() == "0.4"
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "slimmingThreshold"
+        slimming_threshold_reads_after_open = slimming_setup_reads[0]
         page.locator("#slimmingThresholdRecallMode").select_option("allCandidates")
+        page.locator("#slimmingThresholdL2Mode").select_option("unlimited")
         assert page.locator("#slimmingThresholdRecallTopK").is_disabled()
         assert page.locator("#slimmingThresholdDialogExtremeWarning").is_visible()
+        slimming_threshold_history_payload = page.evaluate(
+            "() => JSON.stringify(history.state?.imageAllWorkspace || null)"
+        )
+        assert "allCandidates" not in slimming_threshold_history_payload
+        assert "unlimited" not in slimming_threshold_history_payload
+        page.evaluate("() => history.back()")
+        page.locator("#slimmingThresholdDialog").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'slimmingAnalysisOptionsButton'"
+        )
+        page.evaluate("() => history.forward()")
+        page.locator("#slimmingThresholdDialog[open]").wait_for()
+        assert slimming_setup_reads[0] == slimming_threshold_reads_after_open
+        assert page.locator("#slimmingThresholdRecallMode").input_value() == "allCandidates"
+        assert page.locator("#slimmingThresholdL2Mode").input_value() == "unlimited"
         assert page.locator("#applySlimmingThresholdDialogButton").is_enabled(), page.evaluate(
             "() => ({ online: state.online, editor: state.slimming.thresholdEditor })"
         )
@@ -2642,8 +2755,14 @@ def main(*, inspector_actions_only=False):
         )
         page.set_viewport_size({"width": 1440, "height": 960})
         page.wait_for_timeout(100)
+        expanded_slimming_marquee_enabled = True
         page.evaluate(
             """() => {
+              // Keep this synthetic geometry fixture isolated from any workspace
+              // refresh legitimately still settling after the preceding actions.
+              state.slimming.requestGeneration += 1;
+              state.slimming.loading = false;
+              state.slimming.appending = null;
               window.__slimmingMarqueeMembers = state.slimming.members;
               window.__slimmingMarqueeMinWidth = document.documentElement.style.getPropertyValue(
                 '--slimming-member-min-width'
@@ -2711,7 +2830,14 @@ def main(*, inspector_actions_only=False):
         slimming_narrow_marquee_selection = page.evaluate(
             "() => [...state.slimming.selectedMemberIDs]"
         )
-        assert slimming_narrow_marquee_scroll > 80
+        slimming_narrow_marquee_metrics = page.locator(".slimming-member-pane").evaluate(
+            "element => ({ scrollTop: element.scrollTop, clientHeight: element.clientHeight, "
+            "scrollHeight: element.scrollHeight, gridHeight: "
+            "document.querySelector('#slimmingMemberGrid').getBoundingClientRect().height, "
+            "stateMemberCount: state.slimming.members.length, cardCount: "
+            "document.querySelectorAll('#slimmingMemberGrid > .slimming-member-card').length })"
+        )
+        assert slimming_narrow_marquee_scroll > 80, slimming_narrow_marquee_metrics
         assert SLIMMING_ASSET_IDS[0] in slimming_narrow_marquee_selection
         assert any(
             asset_id.startswith("91000000-0000-4000-8000-")
@@ -2743,6 +2869,7 @@ def main(*, inspector_actions_only=False):
               renderSlimmingMembers();
             }"""
         )
+        expanded_slimming_marquee_enabled = False
         slimming_cards = page.locator("#slimmingMemberGrid > .slimming-member-card")
         first_slimming_main = slimming_cards.nth(0).locator(":scope > .slimming-member-main")
         second_slimming_main = slimming_cards.nth(1).locator(":scope > .slimming-member-main")

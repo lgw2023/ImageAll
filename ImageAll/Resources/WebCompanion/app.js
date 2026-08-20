@@ -1360,6 +1360,11 @@ const state = {
       thresholdOperationID: null,
       launchOperationID: null,
       returnFocus: null,
+      baseLevel: "workspace",
+      historyRestoreFocus: true,
+      focusID: "closeSlimmingSetupButton",
+      restorable: false,
+      opening: false,
     },
     sourceMaintenance: {
       loading: false,
@@ -1380,6 +1385,12 @@ const state = {
       error: "",
       requestGeneration: 0,
       operationID: null,
+      returnFocus: null,
+      baseLevel: "workspace",
+      historyRestoreFocus: true,
+      focusID: "closeSlimmingThresholdDialogButton",
+      restorable: false,
+      opening: false,
     },
   },
   worldMap: {
@@ -1889,6 +1900,12 @@ function closeOverlays() {
   if (elements.confirmDialog.open) {
     closeConfirmation({ restoreFocus: false, checkpoint: false, preserveState: false });
   }
+  if (elements.slimmingSetupDialog.open) {
+    closeSlimmingSetupDialog({ restoreFocus: false, checkpoint: false, preserveState: false });
+  }
+  if (elements.slimmingThresholdDialog.open) {
+    closeSlimmingThresholdEditor({ restoreFocus: false, checkpoint: false, preserveState: false });
+  }
   if (elements.trainingSetupDialog.open) {
     closeTrainingSetupDialog({ restoreFocus: false, checkpoint: false, preserveState: false });
   }
@@ -1912,9 +1929,6 @@ function closeOverlays() {
   }
   if (elements.storageDialog.open) {
     closeStorageMaintenance({ restoreFocus: false, checkpoint: false });
-  }
-  if (elements.slimmingThresholdDialog.open) {
-    closeSlimmingThresholdEditor({ restoreFocus: false });
   }
   if (elements.worldMapLocationBackfillDialog.open) {
     closeWorldMapLocationBackfill({ restoreFocus: false });
@@ -1961,6 +1975,18 @@ function closeOverlays() {
   state.training.setup.focusID = "closeTrainingSetupButton";
   state.training.setup.restorable = false;
   state.training.setup.opening = false;
+  state.slimming.setup.returnFocus = null;
+  state.slimming.setup.baseLevel = "workspace";
+  state.slimming.setup.historyRestoreFocus = true;
+  state.slimming.setup.focusID = "closeSlimmingSetupButton";
+  state.slimming.setup.restorable = false;
+  state.slimming.setup.opening = false;
+  state.slimming.thresholdEditor.returnFocus = null;
+  state.slimming.thresholdEditor.baseLevel = "workspace";
+  state.slimming.thresholdEditor.historyRestoreFocus = true;
+  state.slimming.thresholdEditor.focusID = "closeSlimmingThresholdDialogButton";
+  state.slimming.thresholdEditor.restorable = false;
+  state.slimming.thresholdEditor.opening = false;
   state.tagLibrarySuggestions.dialog.returnFocus = null;
   state.tagLibrarySuggestions.dialog.baseLevel = "workspace";
   state.tagLibrarySuggestions.dialog.historyRestoreFocus = true;
@@ -2431,6 +2457,8 @@ function workspaceLightboxContext(route) {
 function workspaceHistoryEntry(route, context = null, navigationLevel = "workspace") {
   const safeNavigationLevel = [
     "confirmation",
+    "slimmingSetup",
+    "slimmingThreshold",
     "trainingSetup",
     "tagSuggestion",
     "newTag",
@@ -2474,6 +2502,16 @@ function workspaceNavigationBaseLevel(navigationLevel, context = {}) {
   if (navigationLevel === "trainingSetup") {
     return ["sidebar", "inspector", "lightbox"].includes(context.trainingSetupBaseLevel)
       ? context.trainingSetupBaseLevel
+      : "workspace";
+  }
+  if (navigationLevel === "slimmingSetup") {
+    return ["sidebar", "inspector", "lightbox"].includes(context.slimmingSetupBaseLevel)
+      ? context.slimmingSetupBaseLevel
+      : "workspace";
+  }
+  if (navigationLevel === "slimmingThreshold") {
+    return ["sidebar", "inspector", "lightbox"].includes(context.slimmingThresholdBaseLevel)
+      ? context.slimmingThresholdBaseLevel
       : "workspace";
   }
   if (navigationLevel === "tagSuggestion") {
@@ -2565,6 +2603,8 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
     || mode === "none") return;
   const current = activeWorkspaceHistoryEntry();
   const hasConfirmation = elements.confirmDialog.open;
+  const hasSlimmingSetup = elements.slimmingSetupDialog.open;
+  const hasSlimmingThreshold = elements.slimmingThresholdDialog.open;
   const hasTrainingSetup = elements.trainingSetupDialog.open;
   const hasTagSuggestion = elements.tagSuggestionDialog.open;
   const hasNewTag = elements.newTagDialog.open;
@@ -2590,6 +2630,16 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
         ...(hasStorageMaintenance
           ? { storageBaseLevel: state.storageBaseLevel }
           : {}),
+      }
+    : hasSlimmingSetup
+    ? {
+        ...(context || {}),
+        slimmingSetupBaseLevel: state.slimming.setup.baseLevel,
+      }
+    : hasSlimmingThreshold
+    ? {
+        ...(context || {}),
+        slimmingThresholdBaseLevel: state.slimming.thresholdEditor.baseLevel,
       }
     : hasTrainingSetup
     ? {
@@ -2647,6 +2697,12 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
   const navigationLevel = hasConfirmation
     && (mode === "pushConfirmation" || current?.navigationLevel === "confirmation")
     ? "confirmation"
+    : hasSlimmingSetup
+    && (mode === "pushSlimmingSetup" || current?.navigationLevel === "slimmingSetup")
+    ? "slimmingSetup"
+    : hasSlimmingThreshold
+    && (mode === "pushSlimmingThreshold" || current?.navigationLevel === "slimmingThreshold")
+    ? "slimmingThreshold"
     : hasTrainingSetup
     && (mode === "pushTrainingSetup" || current?.navigationLevel === "trainingSetup")
     ? "trainingSetup"
@@ -2699,6 +2755,8 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
   };
   if ([
     "pushConfirmation",
+    "pushSlimmingSetup",
+    "pushSlimmingThreshold",
     "pushTrainingSetup",
     "pushTagSuggestion",
     "pushNewTag",
@@ -2997,6 +3055,8 @@ function closeAllWorkspacesToGallery({ restoreFocus = true } = {}) {
     checkpoint: false,
     preserveState: false,
   });
+  closeSlimmingSetupDialog({ restoreFocus: false, checkpoint: false, preserveState: false });
+  closeSlimmingThresholdEditor({ restoreFocus: false, checkpoint: false, preserveState: false });
   closeTrainingSetupDialog({ restoreFocus: false, checkpoint: false, preserveState: false });
   closeTagSuggestionDialog({ restoreFocus: false, checkpoint: false, preserveState: false });
   closeNewTagDialog({ restoreFocus: false, checkpoint: false, preserveState: false });
@@ -3053,6 +3113,8 @@ async function applyWorkspaceHistoryEntry(entry) {
         navigationLevel,
         context
       );
+      reconcileSlimmingSetupFromWorkspaceHistory(target, navigationLevel, context);
+      reconcileSlimmingThresholdFromWorkspaceHistory(target, navigationLevel, context);
       reconcileTrainingSetupFromWorkspaceHistory(target, navigationLevel, context);
       reconcileTagSuggestionFromWorkspaceHistory(target, navigationLevel, context);
       reconcileNewTagFromWorkspaceHistory(target, navigationLevel, context);
@@ -3094,6 +3156,8 @@ async function applyWorkspaceHistoryEntry(entry) {
         navigationLevel,
         context
       );
+      reconcileSlimmingSetupFromWorkspaceHistory("gallery", navigationLevel, context);
+      reconcileSlimmingThresholdFromWorkspaceHistory("gallery", navigationLevel, context);
       reconcileTrainingSetupFromWorkspaceHistory("gallery", navigationLevel, context);
       reconcileTagSuggestionFromWorkspaceHistory("gallery", navigationLevel, context);
       reconcileNewTagFromWorkspaceHistory("gallery", navigationLevel, context);
@@ -3236,6 +3300,16 @@ async function applyWorkspaceHistoryEntry(entry) {
       context
     );
     await reconcileGeneralSettingsFromWorkspaceHistory(
+      target,
+      activeEntry?.navigationLevel || "workspace",
+      context
+    );
+    reconcileSlimmingSetupFromWorkspaceHistory(
+      target,
+      activeEntry?.navigationLevel || "workspace",
+      context
+    );
+    reconcileSlimmingThresholdFromWorkspaceHistory(
       target,
       activeEntry?.navigationLevel || "workspace",
       context
@@ -25400,27 +25474,95 @@ function readSlimmingThresholdEditorControls() {
   renderSlimmingThresholdEditor();
 }
 
-async function openSlimmingThresholdEditor() {
-  closeSlimmingAnalysisOptions({ restoreFocus: false });
+function slimmingThresholdBaseLevelFromHistory(context = {}) {
+  return ["sidebar", "inspector", "lightbox"].includes(context.slimmingThresholdBaseLevel)
+    ? context.slimmingThresholdBaseLevel
+    : "workspace";
+}
+
+function replaceSlimmingThresholdHistoryWithBase(baseLevel) {
+  if (!state.workspaceNavigation.initialized
+    || elements.appView.classList.contains("hidden")) return;
+  const current = activeWorkspaceHistoryEntry();
+  const route = visibleWorkspaceRoute();
+  if (current?.route !== route || current.navigationLevel !== "slimmingThreshold") return;
+  const context = currentWorkspaceHistoryContext(route);
+  if (context && typeof context === "object") delete context.slimmingThresholdBaseLevel;
+  const navigationLevel = visibleWorkspaceNavigationBaseLevel(route, baseLevel);
+  history.replaceState({
+    ...(history.state || {}),
+    [WORKSPACE_HISTORY_KEY]: workspaceHistoryEntry(route, context, navigationLevel),
+  }, "", location.href);
+}
+
+function clearSlimmingThresholdEditorState({ cancelRequest = true } = {}) {
   const editor = state.slimming.thresholdEditor;
+  if (cancelRequest) editor.requestGeneration += 1;
+  editor.loading = false;
+  editor.saving = false;
+  editor.operationID = null;
+  editor.returnFocus = null;
+  editor.baseLevel = "workspace";
+  editor.historyRestoreFocus = true;
+  editor.focusID = "closeSlimmingThresholdDialogButton";
+  editor.restorable = false;
+  editor.opening = false;
+}
+
+function presentSlimmingThresholdEditor({
+  historyMode = "pushSlimmingThreshold",
+  baseLevel = null,
+  focus = true,
+} = {}) {
+  const editor = state.slimming.thresholdEditor;
+  if (elements.slimmingThresholdDialog.open) {
+    if (focus) restoreOverlayFocus(elements.closeSlimmingThresholdDialogButton);
+    return;
+  }
+  const current = activeWorkspaceHistoryEntry();
+  editor.baseLevel = baseLevel
+    || workspaceNavigationBaseLevel(
+      current?.navigationLevel || "workspace",
+      current?.context || {}
+    );
+  elements.slimmingThresholdDialog.showModal();
+  if (historyMode !== "none") {
+    const route = visibleWorkspaceRoute();
+    recordWorkspaceHistory(route, currentWorkspaceHistoryContext(route), historyMode);
+  }
+  editor.restorable = true;
+  renderSlimmingThresholdEditor();
+  if (focus) {
+    restoreOverlayFocus(
+      document.getElementById(editor.focusID) || elements.closeSlimmingThresholdDialogButton
+    );
+  }
+}
+
+async function openSlimmingThresholdEditor(
+  returnFocus = elements.slimmingAnalysisOptionsButton
+) {
+  const editor = state.slimming.thresholdEditor;
+  if (elements.slimmingThresholdDialog.open || editor.opening) return;
+  closeSlimmingAnalysisOptions({ restoreFocus: false });
+  editor.opening = true;
   editor.loading = true;
   editor.saving = false;
   editor.thresholds = null;
   editor.factoryThresholds = null;
   editor.error = "";
   editor.operationID = null;
+  editor.returnFocus = returnFocus;
   const generation = ++editor.requestGeneration;
-  elements.slimmingThresholdDialog.showModal();
-  renderSlimmingThresholdEditor();
-  requestAnimationFrame(() => {
-    elements.closeSlimmingThresholdDialogButton.focus({ preventScroll: true });
-  });
+  try {
+    presentSlimmingThresholdEditor();
+  } finally {
+    editor.opening = false;
+  }
   try {
     const query = new URLSearchParams({ mediaKind: state.slimming.mediaKind });
     const snapshot = await api(`/v1/library-slimming/setup?${query}`);
-    if (generation !== editor.requestGeneration || !elements.slimmingThresholdDialog.open) {
-      return;
-    }
+    if (generation !== editor.requestGeneration) return;
     editor.thresholds = normalizeSlimmingThresholdDraft(snapshot.thresholds);
     editor.factoryThresholds = normalizeSlimmingThresholdDraft(snapshot.factoryThresholds);
   } catch (error) {
@@ -25430,18 +25572,82 @@ async function openSlimmingThresholdEditor() {
   } finally {
     if (generation === editor.requestGeneration) {
       editor.loading = false;
-      renderSlimmingThresholdEditor();
+      if (elements.slimmingThresholdDialog.open) renderSlimmingThresholdEditor();
     }
   }
 }
 
-function closeSlimmingThresholdEditor({ restoreFocus = true } = {}) {
+function closeSlimmingThresholdEditor({
+  restoreFocus = true,
+  checkpoint = true,
+  preserveState = false,
+} = {}) {
+  if (!elements.slimmingThresholdDialog.open) return;
   const editor = state.slimming.thresholdEditor;
-  editor.requestGeneration += 1;
-  editor.loading = false;
-  editor.saving = false;
-  if (elements.slimmingThresholdDialog.open) elements.slimmingThresholdDialog.close();
-  if (restoreFocus) restoreOverlayFocus(elements.slimmingAnalysisOptionsButton);
+  const active = document.activeElement;
+  if (active instanceof HTMLElement && elements.slimmingThresholdDialog.contains(active) && active.id) {
+    editor.focusID = active.id;
+  }
+  const baseLevel = editor.baseLevel;
+  const returnFocus = editor.returnFocus;
+  elements.slimmingThresholdDialog.close();
+  if (restoreFocus) {
+    restoreOverlayFocus(stableReturnFocusTarget(
+      returnFocus,
+      elements.slimmingAnalysisOptionsButton
+    ));
+  }
+  if (checkpoint) replaceSlimmingThresholdHistoryWithBase(baseLevel);
+  if (!preserveState) clearSlimmingThresholdEditorState();
+}
+
+function returnFromSlimmingThreshold({ restoreFocus = true } = {}) {
+  if (!elements.slimmingThresholdDialog.open) return Promise.resolve();
+  const editor = state.slimming.thresholdEditor;
+  editor.historyRestoreFocus = restoreFocus;
+  if (state.workspaceNavigation.pendingReturnPromise) {
+    return state.workspaceNavigation.pendingReturnPromise;
+  }
+  const current = activeWorkspaceHistoryEntry();
+  if (state.workspaceNavigation.initialized
+    && current?.route === visibleWorkspaceRoute()
+    && current.navigationLevel === "slimmingThreshold") {
+    const pending = new Promise((resolve) => {
+      state.workspaceNavigation.pendingReturnResolve = resolve;
+    });
+    state.workspaceNavigation.pendingReturnPromise = pending;
+    history.back();
+    return pending;
+  }
+  closeSlimmingThresholdEditor({ restoreFocus });
+  editor.historyRestoreFocus = true;
+  return Promise.resolve();
+}
+
+function reconcileSlimmingThresholdFromWorkspaceHistory(route, navigationLevel, context = {}) {
+  const shouldOpen = navigationLevel === "slimmingThreshold"
+    && route === "slimming"
+    && route === visibleWorkspaceRoute();
+  const editor = state.slimming.thresholdEditor;
+  if (shouldOpen && !editor.restorable) {
+    clearSlimmingThresholdEditorState();
+    replaceSlimmingThresholdHistoryWithBase(slimmingThresholdBaseLevelFromHistory(context));
+    return;
+  }
+  if (shouldOpen && !elements.slimmingThresholdDialog.open) {
+    presentSlimmingThresholdEditor({
+      historyMode: "none",
+      baseLevel: slimmingThresholdBaseLevelFromHistory(context),
+    });
+  } else if (!shouldOpen && elements.slimmingThresholdDialog.open) {
+    const restoreFocus = editor.historyRestoreFocus;
+    closeSlimmingThresholdEditor({
+      restoreFocus,
+      checkpoint: false,
+      preserveState: true,
+    });
+    editor.historyRestoreFocus = true;
+  }
 }
 
 async function saveSlimmingThresholdEditor({ restoreFactory = false } = {}) {
@@ -25637,11 +25843,80 @@ function renderSlimmingSetup() {
   syncWriteActionControls();
 }
 
+function slimmingSetupBaseLevelFromHistory(context = {}) {
+  return ["sidebar", "inspector", "lightbox"].includes(context.slimmingSetupBaseLevel)
+    ? context.slimmingSetupBaseLevel
+    : "workspace";
+}
+
+function replaceSlimmingSetupHistoryWithBase(baseLevel) {
+  if (!state.workspaceNavigation.initialized
+    || elements.appView.classList.contains("hidden")) return;
+  const current = activeWorkspaceHistoryEntry();
+  const route = visibleWorkspaceRoute();
+  if (current?.route !== route || current.navigationLevel !== "slimmingSetup") return;
+  const context = currentWorkspaceHistoryContext(route);
+  if (context && typeof context === "object") delete context.slimmingSetupBaseLevel;
+  const navigationLevel = visibleWorkspaceNavigationBaseLevel(route, baseLevel);
+  history.replaceState({
+    ...(history.state || {}),
+    [WORKSPACE_HISTORY_KEY]: workspaceHistoryEntry(route, context, navigationLevel),
+  }, "", location.href);
+}
+
+function clearSlimmingSetupDialogState({ cancelRequest = true } = {}) {
+  const setup = state.slimming.setup;
+  if (cancelRequest) setup.requestGeneration += 1;
+  setup.loading = false;
+  setup.saving = false;
+  setup.launching = false;
+  setup.thresholdOperationID = null;
+  setup.launchOperationID = null;
+  setup.returnFocus = null;
+  setup.baseLevel = "workspace";
+  setup.historyRestoreFocus = true;
+  setup.focusID = "closeSlimmingSetupButton";
+  setup.restorable = false;
+  setup.opening = false;
+}
+
+function presentSlimmingSetupDialog({
+  historyMode = "pushSlimmingSetup",
+  baseLevel = null,
+  focus = true,
+} = {}) {
+  const setup = state.slimming.setup;
+  if (elements.slimmingSetupDialog.open) {
+    if (focus) restoreOverlayFocus(elements.closeSlimmingSetupButton);
+    return;
+  }
+  const current = activeWorkspaceHistoryEntry();
+  setup.baseLevel = baseLevel
+    || workspaceNavigationBaseLevel(
+      current?.navigationLevel || "workspace",
+      current?.context || {}
+    );
+  elements.slimmingSetupDialog.showModal();
+  if (historyMode !== "none") {
+    const route = visibleWorkspaceRoute();
+    recordWorkspaceHistory(route, currentWorkspaceHistoryContext(route), historyMode);
+  }
+  setup.restorable = true;
+  renderSlimmingSetup();
+  if (focus) {
+    restoreOverlayFocus(
+      document.getElementById(setup.focusID) || elements.closeSlimmingSetupButton
+    );
+  }
+}
+
 async function openSlimmingSetupDialog(
   returnFocus = elements.slimmingAnalysisOptionsButton
 ) {
-  closeSlimmingAnalysisOptions({ restoreFocus: false });
   const setup = state.slimming.setup;
+  if (elements.slimmingSetupDialog.open || setup.opening) return;
+  closeSlimmingAnalysisOptions({ restoreFocus: false });
+  setup.opening = true;
   setup.returnFocus = returnFocus;
   setup.loading = true;
   setup.saving = false;
@@ -25651,12 +25926,15 @@ async function openSlimmingSetupDialog(
   setup.thresholdOperationID = null;
   setup.launchOperationID = null;
   const generation = ++setup.requestGeneration;
-  elements.slimmingSetupDialog.showModal();
-  renderSlimmingSetup();
+  try {
+    presentSlimmingSetupDialog();
+  } finally {
+    setup.opening = false;
+  }
   try {
     const query = new URLSearchParams({ mediaKind: state.slimming.mediaKind });
     const snapshot = await api(`/v1/library-slimming/setup?${query}`);
-    if (generation !== setup.requestGeneration || !elements.slimmingSetupDialog.open) return;
+    if (generation !== setup.requestGeneration) return;
     setup.snapshot = snapshot;
     state.slimming.catalogSources.snapshot = snapshot;
     setup.mode = slimmingModeAvailable("currentFilter") ? "currentFilter" : "catalog";
@@ -25669,23 +25947,82 @@ async function openSlimmingSetupDialog(
   } finally {
     if (generation === setup.requestGeneration) {
       setup.loading = false;
-      renderSlimmingSetup();
+      if (elements.slimmingSetupDialog.open) renderSlimmingSetup();
     }
   }
 }
 
-function closeSlimmingSetupDialog() {
+function closeSlimmingSetupDialog({
+  restoreFocus = true,
+  checkpoint = true,
+  preserveState = false,
+} = {}) {
+  if (!elements.slimmingSetupDialog.open) return;
   const setup = state.slimming.setup;
-  setup.requestGeneration += 1;
-  setup.saving = false;
-  setup.launching = false;
-  if (elements.slimmingSetupDialog.open) elements.slimmingSetupDialog.close();
+  const active = document.activeElement;
+  if (active instanceof HTMLElement && elements.slimmingSetupDialog.contains(active) && active.id) {
+    setup.focusID = active.id;
+  }
+  const baseLevel = setup.baseLevel;
   const returnFocus = setup.returnFocus;
-  setup.returnFocus = null;
-  restoreOverlayFocus(stableReturnFocusTarget(
-    returnFocus,
-    elements.slimmingAnalysisOptionsButton
-  ));
+  elements.slimmingSetupDialog.close();
+  if (restoreFocus) {
+    restoreOverlayFocus(stableReturnFocusTarget(
+      returnFocus,
+      elements.slimmingAnalysisOptionsButton
+    ));
+  }
+  if (checkpoint) replaceSlimmingSetupHistoryWithBase(baseLevel);
+  if (!preserveState) clearSlimmingSetupDialogState();
+}
+
+function returnFromSlimmingSetup({ restoreFocus = true } = {}) {
+  if (!elements.slimmingSetupDialog.open) return Promise.resolve();
+  const setup = state.slimming.setup;
+  setup.historyRestoreFocus = restoreFocus;
+  if (state.workspaceNavigation.pendingReturnPromise) {
+    return state.workspaceNavigation.pendingReturnPromise;
+  }
+  const current = activeWorkspaceHistoryEntry();
+  if (state.workspaceNavigation.initialized
+    && current?.route === visibleWorkspaceRoute()
+    && current.navigationLevel === "slimmingSetup") {
+    const pending = new Promise((resolve) => {
+      state.workspaceNavigation.pendingReturnResolve = resolve;
+    });
+    state.workspaceNavigation.pendingReturnPromise = pending;
+    history.back();
+    return pending;
+  }
+  closeSlimmingSetupDialog({ restoreFocus });
+  setup.historyRestoreFocus = true;
+  return Promise.resolve();
+}
+
+function reconcileSlimmingSetupFromWorkspaceHistory(route, navigationLevel, context = {}) {
+  const shouldOpen = navigationLevel === "slimmingSetup"
+    && route === "slimming"
+    && route === visibleWorkspaceRoute();
+  const setup = state.slimming.setup;
+  if (shouldOpen && !setup.restorable) {
+    clearSlimmingSetupDialogState();
+    replaceSlimmingSetupHistoryWithBase(slimmingSetupBaseLevelFromHistory(context));
+    return;
+  }
+  if (shouldOpen && !elements.slimmingSetupDialog.open) {
+    presentSlimmingSetupDialog({
+      historyMode: "none",
+      baseLevel: slimmingSetupBaseLevelFromHistory(context),
+    });
+  } else if (!shouldOpen && elements.slimmingSetupDialog.open) {
+    const restoreFocus = setup.historyRestoreFocus;
+    closeSlimmingSetupDialog({
+      restoreFocus,
+      checkpoint: false,
+      preserveState: true,
+    });
+    setup.historyRestoreFocus = true;
+  }
 }
 
 function readSlimmingThresholdControls() {
@@ -25764,9 +26101,15 @@ async function submitSlimmingSetup() {
         filter: setup.mode === "catalog" ? null : currentSlimmingFilterRequest(),
       }),
     });
-    closeSlimmingSetupDialog();
+    const returnFocus = setup.returnFocus;
+    await returnFromSlimmingSetup({ restoreFocus: false });
+    clearSlimmingSetupDialogState({ cancelRequest: false });
     state.slimming.selectedJobID = result.jobID;
     toast(`分析已交给 Mac · ${result.memberCount} 项`);
+    restoreOverlayFocus(stableReturnFocusTarget(
+      returnFocus,
+      elements.slimmingAnalysisOptionsButton
+    ));
     await loadSlimmingWorkspace({ jobID: result.jobID, quiet: true });
   } catch (error) {
     setup.error = error.message || "图库瘦身分析创建失败";
@@ -27124,6 +27467,16 @@ async function loadWorkspace({ restoreHistory = false } = {}) {
       restoreGalleryNavigationLevel,
       restoreEntry?.context || {}
     );
+    reconcileSlimmingSetupFromWorkspaceHistory(
+      "gallery",
+      restoreGalleryNavigationLevel,
+      restoreEntry?.context || {}
+    );
+    reconcileSlimmingThresholdFromWorkspaceHistory(
+      "gallery",
+      restoreGalleryNavigationLevel,
+      restoreEntry?.context || {}
+    );
     reconcileTrainingSetupFromWorkspaceHistory(
       "gallery",
       restoreGalleryNavigationLevel,
@@ -27837,6 +28190,25 @@ function resetWorkspaceSessionState() {
   state.review.returnTarget = null;
   state.review.pendingFocusTrainingJobID = null;
   state.slimming.selectionMode = false;
+  state.slimming.setup.loading = false;
+  state.slimming.setup.saving = false;
+  state.slimming.setup.launching = false;
+  state.slimming.setup.requestGeneration += 1;
+  state.slimming.setup.returnFocus = null;
+  state.slimming.setup.baseLevel = "workspace";
+  state.slimming.setup.historyRestoreFocus = true;
+  state.slimming.setup.focusID = "closeSlimmingSetupButton";
+  state.slimming.setup.restorable = false;
+  state.slimming.setup.opening = false;
+  state.slimming.thresholdEditor.loading = false;
+  state.slimming.thresholdEditor.saving = false;
+  state.slimming.thresholdEditor.requestGeneration += 1;
+  state.slimming.thresholdEditor.returnFocus = null;
+  state.slimming.thresholdEditor.baseLevel = "workspace";
+  state.slimming.thresholdEditor.historyRestoreFocus = true;
+  state.slimming.thresholdEditor.focusID = "closeSlimmingThresholdDialogButton";
+  state.slimming.thresholdEditor.restorable = false;
+  state.slimming.thresholdEditor.opening = false;
   closeIdenticalCleanupBlockingOverlay({ restoreFocus: false });
   clearTimeout(state.slimming.identicalCleanup.pollTimer);
   state.slimming.identicalCleanup.pollTimer = null;
@@ -31861,15 +32233,15 @@ function bindEvents() {
   });
   elements.closeSlimmingThresholdDialogButton.addEventListener(
     "click",
-    closeSlimmingThresholdEditor
+    () => { void returnFromSlimmingThreshold(); }
   );
   elements.cancelSlimmingThresholdDialogButton.addEventListener(
     "click",
-    closeSlimmingThresholdEditor
+    () => { void returnFromSlimmingThreshold(); }
   );
   elements.slimmingThresholdDialog.addEventListener("cancel", (event) => {
     event.preventDefault();
-    closeSlimmingThresholdEditor();
+    void returnFromSlimmingThreshold();
   });
   elements.slimmingThresholdForm.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -31926,15 +32298,19 @@ function bindEvents() {
   elements.initializeSlimmingSourceIndexButton.addEventListener("click", () => {
     void submitSlimmingSourceMaintenance("initializeSimilarityIndex");
   });
-  elements.closeSlimmingSetupButton.addEventListener("click", closeSlimmingSetupDialog);
-  elements.cancelSlimmingSetupButton.addEventListener("click", closeSlimmingSetupDialog);
+  elements.closeSlimmingSetupButton.addEventListener("click", () => {
+    void returnFromSlimmingSetup();
+  });
+  elements.cancelSlimmingSetupButton.addEventListener("click", () => {
+    void returnFromSlimmingSetup();
+  });
   elements.slimmingSetupForm.addEventListener("submit", (event) => {
     event.preventDefault();
     submitSlimmingSetup();
   });
   elements.slimmingSetupDialog.addEventListener("cancel", (event) => {
     event.preventDefault();
-    closeSlimmingSetupDialog();
+    void returnFromSlimmingSetup();
   });
   elements.slimmingModeOptions.addEventListener("click", (event) => {
     const button = event.target.closest("[data-slimming-mode]");
@@ -33442,11 +33818,11 @@ function bindEvents() {
         return;
       }
       if (elements.slimmingThresholdDialog.open) {
-        closeSlimmingThresholdEditor();
+        void returnFromSlimmingThreshold();
         return;
       }
       if (elements.slimmingSetupDialog.open) {
-        closeSlimmingSetupDialog();
+        void returnFromSlimmingSetup();
         return;
       }
       if (elements.trainingSetupDialog.open) {
