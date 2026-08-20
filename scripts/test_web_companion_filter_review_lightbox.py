@@ -1071,8 +1071,47 @@ def main():
         assert filter_bounds["x"] + filter_bounds["width"] <= 390
         assert page.evaluate("() => document.documentElement.scrollWidth <= 390")
         page.screenshot(path="/tmp/imageall-filter-multiselect-390.png", full_page=True)
+        filter_history_queries = len(asset_queries)
+        filter_history_state = page.evaluate(
+            """() => {
+              const entry = history.state?.imageAllWorkspace;
+              const filter = document.querySelector('#filterPopover');
+              filter.style.paddingBottom = '320px';
+              filter.scrollTop = 120;
+              return {
+                route: entry?.route,
+                navigationLevel: entry?.navigationLevel,
+                baseLevel: entry?.context?.filterBaseLevel,
+                historyKeys: Object.keys(entry?.context || {}).sort(),
+                serialized: JSON.stringify(entry),
+                scrollTop: document.querySelector('#filterPopover').scrollTop,
+              };
+            }"""
+        )
+        assert filter_history_state["route"] == "gallery"
+        assert filter_history_state["navigationLevel"] == "filter"
+        assert filter_history_state["baseLevel"] == "workspace"
+        assert filter_history_state["scrollTop"] > 0
+        assert "filterFocusedControl" not in filter_history_state["serialized"]
+        assert "filterScrollTop" not in filter_history_state["serialized"]
+        assert "filterDraft" not in filter_history_state["serialized"]
+        page.evaluate("() => history.back()")
+        page.locator("#filterPopover").wait_for(state="hidden")
+        page.wait_for_function("() => document.activeElement?.id === 'filterButton'")
+        assert len(asset_queries) == filter_history_queries
+        page.evaluate("() => history.forward()")
+        page.locator("#filterPopover:not(.hidden)").wait_for()
+        page.wait_for_function("() => document.activeElement?.value === 'raw'")
+        assert page.evaluate(
+            "() => document.querySelector('#filterPopover').scrollTop"
+        ) == filter_history_state["scrollTop"]
+        assert len(asset_queries) == filter_history_queries
+        page.evaluate(
+            "() => document.querySelector('#filterPopover').style.removeProperty('padding-bottom')"
+        )
         page.set_viewport_size({"width": 1440, "height": 960})
         page.locator("#applyFiltersButton").click()
+        page.locator("#filterPopover").wait_for(state="hidden")
         page.locator("#activeFilterBar:not(.hidden)").wait_for()
         assert page.locator("#filterBadge").inner_text() == "5"
         filter_summary = page.locator("#activeFilterSummary").inner_text()
@@ -1101,6 +1140,7 @@ def main():
         assert page.evaluate("() => document.activeElement?.id") == "tagMatchMode"
         assert any(query.get("tagMatchMode") == ["any"] for query in asset_queries)
         page.locator("#applyFiltersButton").click()
+        page.locator("#filterPopover").wait_for(state="hidden")
         page.locator("#activeFilterRelation:not(.hidden)").wait_for()
         assert "旅行 已拒绝" in page.locator("#activeFilterSummary").inner_text()
         page.wait_for_function(
@@ -1143,6 +1183,7 @@ def main():
         )
         assert page.evaluate("() => document.activeElement?.id") == "clearAvailabilityFilter"
         page.locator("#applyFiltersButton").click()
+        page.locator("#filterPopover").wait_for(state="hidden")
 
         # Mac-style zero-result recovery keeps source/media scope and exposes the exact
         # condition groups that can be removed instead of leaving a dead-end message.
@@ -1172,6 +1213,7 @@ def main():
             "() => document.querySelector('#filterLiveStatus').dataset.state === 'ready'"
         )
         page.locator("#applyFiltersButton").click()
+        page.locator("#filterPopover").wait_for(state="hidden")
         page.locator("#emptyState:not(.hidden)").wait_for()
         assert "搜索“不存在”与当前筛选" in page.locator(
             "#emptyStateCopy"
@@ -1227,12 +1269,35 @@ def main():
             "() => document.querySelector('#filterLiveStatus').dataset.state === 'ready'"
         )
         page.locator("#applyFiltersButton").click()
+        page.locator("#filterPopover").wait_for(state="hidden")
         assert page.locator("#emptyClearAllConditionsButton").is_visible()
         page.locator("#emptyClearAllConditionsButton").click()
         page.locator(f'[data-asset-id="{IMAGE_IDS[0]}"]').wait_for()
         page.wait_for_function("() => document.activeElement?.id === 'filterButton'")
         assert "q" not in asset_queries[-1]
         assert "availabilities" not in asset_queries[-1]
+
+        filter_escape_queries = len(asset_queries)
+        page.locator("#selectionModeButton").click()
+        page.wait_for_function("() => state.selectionMode === true")
+        page.locator(f'[data-asset-id="{IMAGE_IDS[0]}"] > .asset-card-main').click()
+        page.wait_for_function(
+            "assetID => state.selectedAssetIDs.has(assetID)",
+            arg=IMAGE_IDS[0],
+        )
+        page.locator("#filterButton").click()
+        page.locator("#filterPopover:not(.hidden)").wait_for()
+        page.keyboard.press("Escape")
+        page.locator("#filterPopover").wait_for(state="hidden")
+        page.wait_for_function("() => document.activeElement?.id === 'filterButton'")
+        assert page.evaluate("() => state.selectionMode") is True
+        assert page.evaluate(
+            "assetID => state.selectedAssetIDs.has(assetID)",
+            IMAGE_IDS[0],
+        ) is True
+        assert len(asset_queries) == filter_escape_queries
+        page.locator("#selectionModeButton").click()
+        page.wait_for_function("() => state.selectionMode === false")
 
         first_asset_main = page.locator(
             f'[data-asset-id="{IMAGE_IDS[0]}"] > .asset-card-main'
@@ -2784,6 +2849,7 @@ def main():
         ).count() == 1
         assert page.locator('#mediaTypeFilter input[value="mp4mov"]').is_visible()
         page.locator("#closeFilterButton").click()
+        page.locator("#filterPopover").wait_for(state="hidden")
         video_card_main = video_card.locator(":scope > .asset-card-main")
         assert video_card.locator(".asset-video-badge").inner_text() == "▶ 0:12"
         assert "视频" in video_card_main.get_attribute("aria-label")
@@ -3160,6 +3226,7 @@ def main():
             "() => document.querySelector('#filterLiveStatus').dataset.state === 'ready'"
         )
         page.locator("#applyFiltersButton").click()
+        page.locator("#filterPopover").wait_for(state="hidden")
         page.locator("#sortButton").evaluate("button => button.click()")
         page.locator('#sortPopover [data-sort="oldest"]').click()
         page.wait_for_function(

@@ -1076,6 +1076,11 @@ const state = {
   filterDraft: null,
   filterApplyTimer: null,
   filterApplyGeneration: 0,
+  filterReturnFocus: null,
+  filterBaseLevel: "workspace",
+  filterHistoryRestoreFocus: true,
+  filterFocusedControl: null,
+  filterScrollTop: 0,
   selectionMode: false,
   selectedAssetIDs: new Set(),
   selectionAnchorID: null,
@@ -1926,8 +1931,7 @@ function closeOverlays() {
   closeIdenticalCleanupBlockingOverlay({ restoreFocus: false });
   closeCompactToolbarMenu({ restoreFocus: false, checkpoint: false });
   closeGridDensityPopovers({ restoreFocus: false });
-  elements.filterPopover.classList.add("hidden");
-  elements.filterButton.setAttribute("aria-expanded", "false");
+  closeFilterPopover({ restoreFocus: false, checkpoint: false, preserveState: false });
   closePersonalModelPopover({ restoreFocus: false });
   closeJobsPopover({ restoreFocus: false, checkpoint: false, preserveState: false });
   closeReviewSourceFilter({ restoreFocus: false });
@@ -2586,8 +2590,7 @@ function openMobileSidebar({
   hidePersistentHelp();
   closeCompactToolbarMenu({ restoreFocus: false });
   closeGridDensityPopovers({ restoreFocus: false });
-  elements.filterPopover.classList.add("hidden");
-  elements.filterButton.setAttribute("aria-expanded", "false");
+  closeFilterPopover({ restoreFocus: false });
   closePersonalModelPopover({ restoreFocus: false });
   closeJobsPopover({ restoreFocus: false });
   state.sidebarOverlayReturnFocus = elements.sidebarToggle;
@@ -2717,6 +2720,7 @@ function workspaceHistoryEntry(route, context = null, navigationLevel = "workspa
     "keyboardShortcuts",
     "commandPalette",
     "jobs",
+    "filter",
     "toolbarMenu",
     "sidebar",
     "inspector",
@@ -2842,6 +2846,11 @@ function workspaceNavigationBaseLevel(navigationLevel, context = {}) {
       ? context.jobsBaseLevel
       : "workspace";
   }
+  if (navigationLevel === "filter") {
+    return ["sidebar", "inspector", "lightbox"].includes(context.filterBaseLevel)
+      ? context.filterBaseLevel
+      : "workspace";
+  }
   if (navigationLevel !== "toolbarMenu") return navigationLevel;
   return ["sidebar", "inspector", "lightbox"].includes(context.toolbarMenuBaseLevel)
     ? context.toolbarMenuBaseLevel
@@ -2907,6 +2916,7 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
   const hasKeyboardShortcuts = elements.shortcutDialog.open;
   const hasCommandPalette = elements.commandPalette.open;
   const hasJobs = !elements.jobsPopover.classList.contains("hidden");
+  const hasFilter = !elements.filterPopover.classList.contains("hidden");
   const hasToolbarMenu = compactToolbarMenuIsOpen();
   const hasSidebar = route === "gallery" && mobileSidebarOverlayIsOpen();
   const historyContext = hasConfirmation
@@ -3009,6 +3019,11 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
         ...(context || {}),
         jobsBaseLevel: state.jobsBaseLevel,
       }
+    : hasFilter
+    ? {
+        ...(context || {}),
+        filterBaseLevel: state.filterBaseLevel,
+      }
     : hasToolbarMenu
     ? {
         ...(context || {}),
@@ -3082,6 +3097,9 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
     : hasJobs
     && (mode === "pushJobs" || current?.navigationLevel === "jobs")
     ? "jobs"
+    : hasFilter
+    && (mode === "pushFilter" || current?.navigationLevel === "filter")
+    ? "filter"
     : hasToolbarMenu
     && (mode === "pushToolbarMenu" || current?.navigationLevel === "toolbarMenu")
     ? "toolbarMenu"
@@ -3119,6 +3137,7 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
     "pushKeyboardShortcuts",
     "pushCommandPalette",
     "pushJobs",
+    "pushFilter",
     "pushToolbarMenu",
     "pushSidebar",
     "pushLightbox",
@@ -3444,6 +3463,7 @@ function closeAllWorkspacesToGallery({ restoreFocus = true } = {}) {
   closeGeneralSettings({ restoreFocus: false, checkpoint: false });
   closeKeyboardShortcuts({ restoreFocus: false, checkpoint: false });
   closeCommandPalette({ restoreFocus: false, checkpoint: false });
+  closeFilterPopover({ restoreFocus: false, checkpoint: false, preserveState: false });
   closeCompactToolbarMenu({ restoreFocus: false, checkpoint: false });
   closeMobileSidebar({ restoreFocus: false, checkpoint: false });
   if (!elements.lightbox.classList.contains("hidden")) closeLightbox({ restoreFocus });
@@ -3477,6 +3497,7 @@ async function applyWorkspaceHistoryEntry(entry) {
         context
       );
       reconcileJobsPopoverFromWorkspaceHistory(target, navigationLevel, context);
+      reconcileFilterPopoverFromWorkspaceHistory(target, navigationLevel, context);
       await reconcileCommandPaletteFromWorkspaceHistory(
         target,
         navigationLevel,
@@ -3538,6 +3559,7 @@ async function applyWorkspaceHistoryEntry(entry) {
         context
       );
       reconcileJobsPopoverFromWorkspaceHistory("gallery", navigationLevel, context);
+      reconcileFilterPopoverFromWorkspaceHistory("gallery", navigationLevel, context);
       await reconcileCommandPaletteFromWorkspaceHistory(
         "gallery",
         navigationLevel,
@@ -3704,6 +3726,11 @@ async function applyWorkspaceHistoryEntry(entry) {
       context
     );
     reconcileJobsPopoverFromWorkspaceHistory(
+      target,
+      activeEntry?.navigationLevel || "workspace",
+      context
+    );
+    reconcileFilterPopoverFromWorkspaceHistory(
       target,
       activeEntry?.navigationLevel || "workspace",
       context
@@ -4645,8 +4672,7 @@ async function openGalleryOverviewWorkspace({ historyMode = "push" } = {}) {
   elements.worldMapWorkspace.classList.add("hidden");
   state.worldMapReturnFocus = null;
   closeJobsPopover({ restoreFocus: false });
-  elements.filterPopover.classList.add("hidden");
-  elements.filterButton.setAttribute("aria-expanded", "false");
+  closeFilterPopover({ restoreFocus: false });
   if (elements.galleryOverviewWorkspace.classList.contains("hidden")) {
     state.galleryOverviewReturnFocus = document.activeElement;
   }
@@ -5062,8 +5088,7 @@ async function openWorldMapWorkspace({ historyMode = "push" } = {}) {
   syncSlimmingPresentation({ renderSurfaces: false });
   state.slimmingReturnFocus = null;
   closeJobsPopover({ restoreFocus: false });
-  elements.filterPopover.classList.add("hidden");
-  elements.filterButton.setAttribute("aria-expanded", "false");
+  closeFilterPopover({ restoreFocus: false });
   if (elements.worldMapWorkspace.classList.contains("hidden")) {
     state.worldMapReturnFocus = document.activeElement;
   }
@@ -14484,8 +14509,7 @@ function togglePersonalModelPopover() {
   closeCompactToolbarMenu({ restoreFocus: false });
   closeSortPopover({ restoreFocus: false });
   closeGridDensityPopovers({ restoreFocus: false });
-  elements.filterPopover.classList.add("hidden");
-  elements.filterButton.setAttribute("aria-expanded", "false");
+  closeFilterPopover({ restoreFocus: false });
   closeJobsPopover({ restoreFocus: false });
   if (!willOpen) {
     closePersonalModelPopover();
@@ -18432,8 +18456,7 @@ function openJobsPopover({
     closeCompactToolbarMenu({ restoreFocus: false });
     closeSortPopover({ restoreFocus: false });
     closeGridDensityPopovers({ restoreFocus: false });
-    elements.filterPopover.classList.add("hidden");
-    elements.filterButton.setAttribute("aria-expanded", "false");
+    closeFilterPopover({ restoreFocus: false });
     closePersonalModelPopover({ restoreFocus: false });
     elements.jobsPopover.classList.remove("hidden");
     const targetID = jobID && state.jobs.some((job) => job.id === jobID)
@@ -20372,8 +20395,7 @@ async function openReviewWorkspace({
   syncSlimmingPresentation({ renderSurfaces: false });
   state.slimmingReturnFocus = null;
   closeJobsPopover({ restoreFocus: false });
-  elements.filterPopover.classList.add("hidden");
-  elements.filterButton.setAttribute("aria-expanded", "false");
+  closeFilterPopover({ restoreFocus: false });
   if (!returnToTrainingRunID && elements.reviewWorkspace.classList.contains("hidden")) {
     state.reviewReturnFocus = document.activeElement;
   }
@@ -22441,8 +22463,7 @@ async function openTrainingWorkspace({
   syncSlimmingPresentation({ renderSurfaces: false });
   state.slimmingReturnFocus = null;
   closeJobsPopover({ restoreFocus: false });
-  elements.filterPopover.classList.add("hidden");
-  elements.filterButton.setAttribute("aria-expanded", "false");
+  closeFilterPopover({ restoreFocus: false });
   if (elements.trainingWorkspace.classList.contains("hidden")) {
     state.trainingReturnFocus = document.activeElement;
   }
@@ -25996,8 +26017,7 @@ async function openSlimmingWorkspace({ historyMode = "push" } = {}) {
   syncTrainingPresentation({ renderSurfaces: false });
   state.trainingReturnFocus = null;
   closeJobsPopover({ restoreFocus: false });
-  elements.filterPopover.classList.add("hidden");
-  elements.filterButton.setAttribute("aria-expanded", "false");
+  closeFilterPopover({ restoreFocus: false });
   if (elements.slimmingWorkspace.classList.contains("hidden")) {
     state.slimmingReturnFocus = document.activeElement;
   }
@@ -26471,7 +26491,7 @@ function openSlimmingCatalogSourcePicker() {
   closeSlimmingAnalysisOptions({ restoreFocus: false });
   closeJobsPopover({ restoreFocus: false });
   closePersonalModelPopover({ restoreFocus: false });
-  elements.filterPopover.classList.add("hidden");
+  closeFilterPopover({ restoreFocus: false });
   elements.slimmingCatalogSourcePopover.classList.remove("hidden");
   elements.slimmingCatalogSourceButton.setAttribute("aria-expanded", "true");
   positionSlimmingCatalogSourcePicker();
@@ -26737,7 +26757,7 @@ function closeSlimmingAnalysisOptions({ restoreFocus = true } = {}) {
 
 function openSlimmingAnalysisOptions() {
   closeGridDensityPopovers({ restoreFocus: false });
-  elements.filterPopover.classList.add("hidden");
+  closeFilterPopover({ restoreFocus: false });
   closeSlimmingCatalogSourcePicker({ restoreFocus: false });
   closeJobsPopover({ restoreFocus: false });
   closePersonalModelPopover({ restoreFocus: false });
@@ -28867,6 +28887,11 @@ async function loadWorkspace({ restoreHistory = false } = {}) {
       restoreGalleryNavigationLevel,
       restoreEntry?.context || {}
     );
+    reconcileFilterPopoverFromWorkspaceHistory(
+      "gallery",
+      restoreGalleryNavigationLevel,
+      restoreEntry?.context || {}
+    );
     await reconcileCommandPaletteFromWorkspaceHistory(
       "gallery",
       restoreGalleryNavigationLevel,
@@ -29499,6 +29524,11 @@ function resetWorkspaceSessionState() {
   state.filters.mediaKind = state.mediaKind;
   state.filterDraft = null;
   state.filterApplyTimer = null;
+  state.filterReturnFocus = null;
+  state.filterBaseLevel = "workspace";
+  state.filterHistoryRestoreFocus = true;
+  state.filterFocusedControl = null;
+  state.filterScrollTop = 0;
   state.selectionMode = false;
   state.selectedAssetIDs.clear();
   state.selectionAnchorID = null;
@@ -29841,9 +29871,7 @@ function toggleSortPopover() {
   }
   closeCompactToolbarMenu({ restoreFocus: false });
   closeGridDensityPopovers({ restoreFocus: false });
-  elements.filterPopover.classList.add("hidden");
-  elements.filterButton.setAttribute("aria-expanded", "false");
-  state.filterDraft = null;
+  closeFilterPopover({ restoreFocus: false });
   closeJobsPopover({ restoreFocus: false });
   closePersonalModelPopover({ restoreFocus: false });
   hideContextMenus();
@@ -29926,9 +29954,7 @@ function openGridDensityPopover(button) {
   closeCompactToolbarMenu({ restoreFocus: false });
   closeSortPopover({ restoreFocus: false });
   closeGridDensityPopovers({ restoreFocus: false });
-  elements.filterPopover.classList.add("hidden");
-  elements.filterButton.setAttribute("aria-expanded", "false");
-  state.filterDraft = null;
+  closeFilterPopover({ restoreFocus: false });
   closeJobsPopover({ restoreFocus: false });
   closePersonalModelPopover({ restoreFocus: false });
   closeReviewSourceFilter({ restoreFocus: false });
@@ -29994,23 +30020,153 @@ function bindGridDensityControls() {
   }
 }
 
-function togglePopover(popover) {
-  const willOpen = popover.classList.contains("hidden");
+function filterBaseLevelFromHistory(context = {}) {
+  return ["sidebar", "inspector", "lightbox"].includes(context.filterBaseLevel)
+    ? context.filterBaseLevel
+    : "workspace";
+}
+
+function replaceFilterHistoryWithBase(baseLevel) {
+  if (!state.workspaceNavigation.initialized
+    || elements.appView.classList.contains("hidden")) return;
+  const current = activeWorkspaceHistoryEntry();
+  if (current?.route !== "gallery" || current.navigationLevel !== "filter") return;
+  const context = currentGalleryHistoryContext();
+  if (context && typeof context === "object") delete context.filterBaseLevel;
+  const navigationLevel = visibleWorkspaceNavigationBaseLevel("gallery", baseLevel);
+  history.replaceState({
+    ...(history.state || {}),
+    [WORKSPACE_HISTORY_KEY]: workspaceHistoryEntry("gallery", context, navigationLevel),
+  }, "", location.href);
+}
+
+function filterRestorableFocusTarget() {
+  const target = state.filterFocusedControl;
+  if (target instanceof HTMLElement
+    && target.isConnected
+    && elements.filterPopover.contains(target)
+    && !target.matches(":disabled")
+    && target.getClientRects().length > 0) return target;
+  return elements.filterPopover.querySelector(
+    'input:not(:disabled), select:not(:disabled), button:not(:disabled)'
+  ) || elements.closeFilterButton;
+}
+
+function closeFilterPopover({
+  restoreFocus = true,
+  checkpoint = true,
+  preserveState = true,
+} = {}) {
+  if (elements.filterPopover.classList.contains("hidden")) return;
+  if (elements.filterPopover.contains(document.activeElement)) {
+    state.filterFocusedControl = document.activeElement;
+  }
+  state.filterScrollTop = elements.filterPopover.scrollTop;
+  const baseLevel = state.filterBaseLevel;
+  const returnFocus = state.filterReturnFocus;
+  elements.filterPopover.classList.add("hidden");
+  elements.filterButton.setAttribute("aria-expanded", "false");
+  state.filterDraft = null;
+  state.filterReturnFocus = null;
+  state.filterBaseLevel = "workspace";
+  if (!preserveState) {
+    state.filterFocusedControl = null;
+    state.filterScrollTop = 0;
+  }
+  if (restoreFocus) restoreOverlayFocus(stableReturnFocusTarget(
+    returnFocus || elements.filterButton,
+    elements.commandButton
+  ));
+  if (checkpoint) replaceFilterHistoryWithBase(baseLevel);
+}
+
+function returnFromFilterPopover({ restoreFocus = true } = {}) {
+  if (elements.filterPopover.classList.contains("hidden")) return Promise.resolve();
+  state.filterHistoryRestoreFocus = restoreFocus;
+  if (state.workspaceNavigation.pendingReturnPromise) {
+    return state.workspaceNavigation.pendingReturnPromise;
+  }
+  const current = activeWorkspaceHistoryEntry();
+  if (state.workspaceNavigation.initialized
+    && current?.route === "gallery"
+    && current.navigationLevel === "filter") {
+    const pending = new Promise((resolve) => {
+      state.workspaceNavigation.pendingReturnResolve = resolve;
+    });
+    state.workspaceNavigation.pendingReturnPromise = pending;
+    history.back();
+    return pending;
+  }
+  closeFilterPopover({ restoreFocus });
+  state.filterHistoryRestoreFocus = true;
+  return Promise.resolve();
+}
+
+function openFilterPopover({
+  focus = true,
+  historyMode = "pushFilter",
+  baseLevel = null,
+  restoring = false,
+} = {}) {
+  if (visibleWorkspaceRoute() !== "gallery"
+    || elements.filterButton.getClientRects().length === 0) return;
+  if (!elements.filterPopover.classList.contains("hidden")) {
+    if (focus) restoreOverlayFocus(filterRestorableFocusTarget());
+    return;
+  }
+  state.filterReturnFocus = document.activeElement instanceof HTMLElement
+    ? document.activeElement
+    : elements.filterButton;
+  const current = activeWorkspaceHistoryEntry();
+  state.filterBaseLevel = baseLevel
+    || workspaceNavigationBaseLevel(
+      current?.navigationLevel || "workspace",
+      current?.context || {}
+    );
+  if (!restoring) {
+    state.filterFocusedControl = null;
+    state.filterScrollTop = 0;
+  }
   closeCompactToolbarMenu({ restoreFocus: false });
   closeSortPopover({ restoreFocus: false });
   closeGridDensityPopovers({ restoreFocus: false });
-  elements.filterPopover.classList.add("hidden");
   closeJobsPopover({ restoreFocus: false });
   closePersonalModelPopover({ restoreFocus: false });
-  elements.filterButton.setAttribute("aria-expanded", "false");
-  if (willOpen) {
-    popover.classList.remove("hidden");
-    if (popover === elements.filterPopover) {
-      state.filterDraft = cloneFilters(state.filters);
-      syncFilterControlsFromState();
-      elements.filterButton.setAttribute("aria-expanded", "true");
-    }
+  state.filterDraft = cloneFilters(state.filters);
+  syncFilterControlsFromState();
+  elements.filterPopover.classList.remove("hidden");
+  elements.filterButton.setAttribute("aria-expanded", "true");
+  if (historyMode !== "none") {
+    recordWorkspaceHistory("gallery", currentGalleryHistoryContext(), historyMode);
   }
+  requestAnimationFrame(() => {
+    elements.filterPopover.scrollTop = state.filterScrollTop;
+    if (focus) filterRestorableFocusTarget().focus({ preventScroll: true });
+  });
+}
+
+function reconcileFilterPopoverFromWorkspaceHistory(route, navigationLevel, context = {}) {
+  const shouldOpen = route === "gallery"
+    && navigationLevel === "filter"
+    && elements.filterButton.getClientRects().length > 0;
+  if (shouldOpen && elements.filterPopover.classList.contains("hidden")) {
+    openFilterPopover({
+      historyMode: "none",
+      baseLevel: filterBaseLevelFromHistory(context),
+      restoring: true,
+    });
+  } else if (!shouldOpen && !elements.filterPopover.classList.contains("hidden")) {
+    const restoreFocus = state.filterHistoryRestoreFocus;
+    closeFilterPopover({ restoreFocus, checkpoint: false, preserveState: true });
+    state.filterHistoryRestoreFocus = true;
+  } else if (navigationLevel === "filter" && !shouldOpen) {
+    replaceFilterHistoryWithBase(filterBaseLevelFromHistory(context));
+  }
+}
+
+function toggleFilterPopover() {
+  if (elements.filterPopover.classList.contains("hidden")) openFilterPopover();
+  else void returnFromFilterPopover();
 }
 
 function compactToolbarOriginalIsAvailable(element, { optional = false } = {}) {
@@ -30290,8 +30446,7 @@ function openCompactToolbarMenu({
     );
   closeSortPopover({ restoreFocus: false });
   closeGridDensityPopovers({ restoreFocus: false });
-  elements.filterPopover.classList.add("hidden");
-  elements.filterButton.setAttribute("aria-expanded", "false");
+  closeFilterPopover({ restoreFocus: false });
   closeJobsPopover({ restoreFocus: false });
   closePersonalModelPopover({ restoreFocus: false });
   hideContextMenus();
@@ -31409,7 +31564,7 @@ async function executeCommand(commandID) {
     break;
   case "openFilter":
     await navigateCommandToGallery();
-    togglePopover(elements.filterPopover);
+    toggleFilterPopover();
     break;
   case "selectAll":
     selectAllCommandContext(contextRoute);
@@ -31599,8 +31754,7 @@ async function openCommandPalette({
     state.commandContext = commandContextSnapshot();
     closeSortPopover({ restoreFocus: false });
     closeGridDensityPopovers({ restoreFocus: false });
-    elements.filterPopover.classList.add("hidden");
-    elements.filterButton.setAttribute("aria-expanded", "false");
+    closeFilterPopover({ restoreFocus: false });
     closePersonalModelPopover({ restoreFocus: false });
     closeJobsPopover({ restoreFocus: false });
     closeReviewSourceFilter({ restoreFocus: false });
@@ -33211,12 +33365,10 @@ function bindEvents() {
   }
 
   elements.filterButton.addEventListener("click", () => {
-    togglePopover(elements.filterPopover);
+    toggleFilterPopover();
   });
   elements.closeFilterButton.addEventListener("click", () => {
-    elements.filterPopover.classList.add("hidden");
-    elements.filterButton.setAttribute("aria-expanded", "false");
-    state.filterDraft = null;
+    void returnFromFilterPopover();
   });
   elements.addTagFilterButton.addEventListener("click", () => {
     const tagID = elements.filterTagSelect.value;
@@ -33273,9 +33425,7 @@ function bindEvents() {
     applyFilterControlsImmediately(elements.resetFiltersButton);
   });
   elements.applyFiltersButton.addEventListener("click", () => {
-    elements.filterPopover.classList.add("hidden");
-    elements.filterButton.setAttribute("aria-expanded", "false");
-    state.filterDraft = null;
+    void returnFromFilterPopover();
   });
   elements.clearActiveFiltersButton.addEventListener("click", async () => {
     await clearLibraryFilters({ tags: true, properties: true });
@@ -35043,9 +35193,7 @@ function bindEvents() {
     if (!elements.filterPopover.classList.contains("hidden")
       && !elements.filterPopover.contains(event.target)
       && !elements.filterButton.contains(event.target)) {
-      elements.filterPopover.classList.add("hidden");
-      elements.filterButton.setAttribute("aria-expanded", "false");
-      state.filterDraft = null;
+      void returnFromFilterPopover({ restoreFocus: false });
     }
     if (!elements.sortPopover.classList.contains("hidden")
       && !eventPath.includes(elements.sortPopover)
@@ -35134,6 +35282,7 @@ function bindEvents() {
       || (trainingOpen && !trainingModalOpen)
       || (slimmingOpen && !slimmingModalOpen);
     const jobsOpen = !elements.jobsPopover.classList.contains("hidden");
+    const filterOpen = !elements.filterPopover.classList.contains("hidden");
     const compactToolbarOpen = compactToolbarMenuIsOpen();
     const mobileSidebarOpen = mobileSidebarOverlayIsOpen();
     const inspectorOverlayOpen = globalThis.matchMedia("(max-width: 980px)").matches
@@ -35141,6 +35290,7 @@ function bindEvents() {
     const customOverlayOpen = lightboxOpen || reviewModalOpen || trainingModalOpen || slimmingModalOpen || worldMapModalOpen
       || galleryOverviewModalOpen
       || jobsOpen
+      || filterOpen
       || compactToolbarOpen
       || mobileSidebarOpen
       || inspectorOverlayOpen;
@@ -35217,6 +35367,10 @@ function bindEvents() {
             `[data-slimming-member-id="${CSS.escape(memberID || "")}"]`
           )
         ));
+        return;
+      }
+      if (filterOpen) {
+        void returnFromFilterPopover();
         return;
       }
       if (!elements.personalModelPopover.classList.contains("hidden")) {
@@ -35353,8 +35507,6 @@ function bindEvents() {
         setSelectionMode(false);
         return;
       }
-      elements.filterPopover.classList.add("hidden");
-      elements.filterButton.setAttribute("aria-expanded", "false");
       closeJobsPopover({ restoreFocus: false });
       closeMobileSidebar({ restoreFocus: false });
       return;
@@ -35385,7 +35537,10 @@ function bindEvents() {
       || elements.slimmingSetupDialog.open
       || elements.worldMapPlaceTagDialog.open
       || elements.worldMapLocationBackfillDialog.open) return;
-    if (compactToolbarOpen) {
+    if (filterOpen) {
+      if (trapOverlayFocus(event, elements.filterPopover)) return;
+      return;
+    } else if (compactToolbarOpen) {
       if (trapOverlayFocus(event, elements.compactToolbarMenu)) return;
       return;
     } else if (jobsOpen) {
