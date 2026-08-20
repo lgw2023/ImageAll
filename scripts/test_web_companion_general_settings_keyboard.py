@@ -556,9 +556,13 @@ def main():
         page.locator("#jobsPopover:not(.hidden)").wait_for()
         assert page.evaluate(
             "history.state?.imageAllWorkspace?.navigationLevel"
-        ) == "workspace"
+        ) == "jobs"
+        jobs_history = page.evaluate("() => JSON.stringify(history.state)")
+        assert "77777777-0000-4000-8000-777777777777" not in jobs_history
+        assert "photosReconcile" not in jobs_history
         assert "Apple Photos · 照片图库同步" in page.locator("#jobsList").inner_text()
         page.locator("#closeJobsButton").click()
+        page.locator("#jobsPopover").wait_for(state="hidden")
         page.wait_for_function(
             "() => document.activeElement?.id === 'compactToolbarMenuButton'"
         )

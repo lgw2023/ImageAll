@@ -1263,6 +1263,32 @@ def main():
         page.locator("#jobsList").evaluate("element => { element.scrollTop = 120; }")
         preserved_scroll_top = page.locator("#jobsList").evaluate("element => element.scrollTop")
         assert preserved_scroll_top > 0
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "jobs"
+        jobs_history = page.evaluate("() => JSON.stringify(history.state)")
+        assert JOB_ID not in jobs_history
+        assert SECOND_JOB_ID not in jobs_history
+        assert "staleSnapshot" not in jobs_history
+        jobs_before_history_return = len(jobs_requests)
+        page.go_back()
+        page.locator("#jobsPopover").wait_for(state="hidden")
+        page.wait_for_function(
+            "runID => document.activeElement?.dataset.trainingRunId === runID",
+            arg=FAILED_RUN_ID,
+        )
+        assert len(jobs_requests) == jobs_before_history_return
+        page.go_forward()
+        page.locator("#jobsPopover:not(.hidden)").wait_for(state="visible")
+        page.wait_for_function(
+            "jobID => document.activeElement?.dataset.jobRowId === jobID",
+            arg=SECOND_JOB_ID,
+        )
+        assert len(jobs_requests) == jobs_before_history_return
+        assert abs(
+            page.locator("#jobsList").evaluate("element => element.scrollTop")
+            - preserved_scroll_top
+        ) <= 1
         before_jobs_refresh = len(jobs_requests)
         page.keyboard.press("r")
         page.wait_for_timeout(100)
@@ -1381,6 +1407,7 @@ def main():
             full_page=True,
         )
         page.keyboard.press("Escape")
+        page.locator("#compactToolbarMenuButton").focus()
         page.keyboard.press("j")
         page.locator("#jobsPopover:not(.hidden)").wait_for(state="visible")
         popover_bounds = page.locator("#jobsPopover").bounding_box()
@@ -1394,6 +1421,19 @@ def main():
             assert bounds["x"] + bounds["width"] <= popover_bounds["x"] + popover_bounds["width"]
         page.screenshot(path="/tmp/imageall-jobs-activity-390.png", full_page=True)
         page.locator("#closeJobsButton").click()
+        page.locator("#jobsPopover").wait_for(state="hidden")
+        assert page.evaluate(
+            "() => document.activeElement?.id"
+        ) == "compactToolbarMenuButton"
+        mobile_jobs_requests = len(jobs_requests)
+        page.go_forward()
+        page.locator("#jobsPopover:not(.hidden)").wait_for(state="visible")
+        assert len(jobs_requests) == mobile_jobs_requests
+        page.keyboard.press("j")
+        page.locator("#jobsPopover").wait_for(state="hidden")
+        assert page.evaluate(
+            "() => document.activeElement?.id"
+        ) == "compactToolbarMenuButton"
 
         # A browser refresh must preserve the active Mac-style workspace and
         # its durable navigation context instead of silently returning to the

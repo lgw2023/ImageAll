@@ -1575,6 +1575,12 @@ const state = {
   trainingReturnFocus: null,
   jobsReturnFocus: null,
   jobsReturnTarget: null,
+  jobsBaseLevel: "workspace",
+  jobsHistoryRestoreFocus: true,
+  jobsFocusSnapshot: null,
+  jobsScrollTop: 0,
+  jobsRestorable: false,
+  jobsOpening: false,
   slimmingReturnFocus: null,
   worldMapReturnFocus: null,
   galleryOverviewReturnFocus: null,
@@ -1915,7 +1921,7 @@ function closeOverlays() {
   elements.filterPopover.classList.add("hidden");
   elements.filterButton.setAttribute("aria-expanded", "false");
   closePersonalModelPopover({ restoreFocus: false });
-  closeJobsPopover({ restoreFocus: false });
+  closeJobsPopover({ restoreFocus: false, checkpoint: false, preserveState: false });
   closeReviewSourceFilter({ restoreFocus: false });
   closeMobileSidebar({ restoreFocus: false, checkpoint: false });
   hideContextMenus();
@@ -2084,6 +2090,12 @@ function closeOverlays() {
   state.training.pendingReturnFocusRunID = null;
   state.jobsReturnFocus = null;
   state.jobsReturnTarget = null;
+  state.jobsBaseLevel = "workspace";
+  state.jobsHistoryRestoreFocus = true;
+  state.jobsFocusSnapshot = null;
+  state.jobsScrollTop = 0;
+  state.jobsRestorable = false;
+  state.jobsOpening = false;
   state.generalSettings.returnFocus = null;
   state.generalSettings.thresholdReturnFocus = null;
   state.generalSettings.pendingDefaultFocus = null;
@@ -2560,6 +2572,7 @@ function workspaceHistoryEntry(route, context = null, navigationLevel = "workspa
     "generalSettings",
     "keyboardShortcuts",
     "commandPalette",
+    "jobs",
     "toolbarMenu",
     "sidebar",
     "inspector",
@@ -2680,6 +2693,11 @@ function workspaceNavigationBaseLevel(navigationLevel, context = {}) {
       ? context.commandPaletteBaseLevel
       : "workspace";
   }
+  if (navigationLevel === "jobs") {
+    return ["sidebar", "inspector", "lightbox"].includes(context.jobsBaseLevel)
+      ? context.jobsBaseLevel
+      : "workspace";
+  }
   if (navigationLevel !== "toolbarMenu") return navigationLevel;
   return ["sidebar", "inspector", "lightbox"].includes(context.toolbarMenuBaseLevel)
     ? context.toolbarMenuBaseLevel
@@ -2744,6 +2762,7 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
   const hasGeneralSettings = elements.generalSettingsDialog.open;
   const hasKeyboardShortcuts = elements.shortcutDialog.open;
   const hasCommandPalette = elements.commandPalette.open;
+  const hasJobs = !elements.jobsPopover.classList.contains("hidden");
   const hasToolbarMenu = compactToolbarMenuIsOpen();
   const hasSidebar = route === "gallery" && mobileSidebarOverlayIsOpen();
   const historyContext = hasConfirmation
@@ -2841,6 +2860,11 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
         ...(context || {}),
         commandPaletteBaseLevel: state.commandPaletteBaseLevel,
       }
+    : hasJobs
+    ? {
+        ...(context || {}),
+        jobsBaseLevel: state.jobsBaseLevel,
+      }
     : hasToolbarMenu
     ? {
         ...(context || {}),
@@ -2911,6 +2935,9 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
     : hasCommandPalette
     && (mode === "pushCommandPalette" || current?.navigationLevel === "commandPalette")
     ? "commandPalette"
+    : hasJobs
+    && (mode === "pushJobs" || current?.navigationLevel === "jobs")
+    ? "jobs"
     : hasToolbarMenu
     && (mode === "pushToolbarMenu" || current?.navigationLevel === "toolbarMenu")
     ? "toolbarMenu"
@@ -2947,6 +2974,7 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
     "pushGeneralSettings",
     "pushKeyboardShortcuts",
     "pushCommandPalette",
+    "pushJobs",
     "pushToolbarMenu",
     "pushSidebar",
     "pushLightbox",
@@ -3304,6 +3332,7 @@ async function applyWorkspaceHistoryEntry(entry) {
         navigationLevel,
         context
       );
+      reconcileJobsPopoverFromWorkspaceHistory(target, navigationLevel, context);
       await reconcileCommandPaletteFromWorkspaceHistory(
         target,
         navigationLevel,
@@ -3364,6 +3393,7 @@ async function applyWorkspaceHistoryEntry(entry) {
         navigationLevel,
         context
       );
+      reconcileJobsPopoverFromWorkspaceHistory("gallery", navigationLevel, context);
       await reconcileCommandPaletteFromWorkspaceHistory(
         "gallery",
         navigationLevel,
@@ -3525,6 +3555,11 @@ async function applyWorkspaceHistoryEntry(entry) {
       await openGalleryOverviewWorkspace({ historyMode: "none" });
     }
     reconcileCompactToolbarMenuFromWorkspaceHistory(
+      target,
+      activeEntry?.navigationLevel || "workspace",
+      context
+    );
+    reconcileJobsPopoverFromWorkspaceHistory(
       target,
       activeEntry?.navigationLevel || "workspace",
       context
@@ -18142,12 +18177,53 @@ async function refreshJobs({
   }
 }
 
-function closeJobsPopover({ restoreFocus = true } = {}) {
-  elements.jobsPopover.classList.add("hidden");
-  const returnFocus = state.jobsReturnFocus;
-  const returnTarget = state.jobsReturnTarget;
+function jobsBaseLevelFromHistory(context = {}) {
+  return ["sidebar", "inspector", "lightbox"].includes(context.jobsBaseLevel)
+    ? context.jobsBaseLevel
+    : "workspace";
+}
+
+function replaceJobsHistoryWithBase(baseLevel) {
+  if (!state.workspaceNavigation.initialized
+    || elements.appView.classList.contains("hidden")) return;
+  const current = activeWorkspaceHistoryEntry();
+  const route = visibleWorkspaceRoute();
+  if (current?.route !== route || current.navigationLevel !== "jobs") return;
+  const context = currentWorkspaceHistoryContext(route);
+  if (context && typeof context === "object") delete context.jobsBaseLevel;
+  const navigationLevel = visibleWorkspaceNavigationBaseLevel(route, baseLevel);
+  history.replaceState({
+    ...(history.state || {}),
+    [WORKSPACE_HISTORY_KEY]: workspaceHistoryEntry(route, context, navigationLevel),
+  }, "", location.href);
+}
+
+function clearJobsPopoverState() {
   state.jobsReturnFocus = null;
   state.jobsReturnTarget = null;
+  state.jobsBaseLevel = "workspace";
+  state.jobsHistoryRestoreFocus = true;
+  state.jobsFocusSnapshot = null;
+  state.jobsScrollTop = 0;
+  state.jobsRestorable = false;
+  state.jobsOpening = false;
+}
+
+function closeJobsPopover({
+  restoreFocus = true,
+  checkpoint = true,
+  preserveState = false,
+} = {}) {
+  const wasOpen = !elements.jobsPopover.classList.contains("hidden");
+  if (!wasOpen) return;
+  state.jobsFocusSnapshot = captureJobFocusSnapshot();
+  state.jobsScrollTop = elements.jobsList.scrollTop;
+  const baseLevel = state.jobsBaseLevel;
+  const returnFocus = state.jobsReturnFocus;
+  const returnTarget = state.jobsReturnTarget;
+  elements.jobsPopover.classList.add("hidden");
+  if (checkpoint) replaceJobsHistoryWithBase(baseLevel);
+  if (!preserveState) clearJobsPopoverState();
   if (!restoreFocus) return;
   const resolveReturnFocus = () => {
     const target = returnTarget?.trainingRunID
@@ -18175,38 +18251,127 @@ function closeJobsPopover({ restoreFocus = true } = {}) {
   );
 }
 
-function openJobsPopover({ jobID = null, refreshProjection = true } = {}) {
-  if (elements.jobsPopover.classList.contains("hidden")) {
-    state.jobsReturnFocus = document.activeElement;
-    state.jobsReturnTarget = {
-      trainingRunID: document.activeElement?.closest?.("[data-training-run-id]")
-        ?.dataset.trainingRunId || null,
-      reviewTrainingJobID: document.activeElement?.closest?.("[data-review-training-job-id]")
-        ?.dataset.reviewTrainingJobId || null,
-      slimmingJobID: document.activeElement?.closest?.("[data-slimming-job-id]")
-        ?.dataset.slimmingJobId || null,
-    };
+function openJobsPopover({
+  jobID = null,
+  refreshProjection = true,
+  historyMode = "pushJobs",
+  baseLevel = null,
+  focus = true,
+} = {}) {
+  if (state.jobsOpening) return;
+  if (!elements.jobsPopover.classList.contains("hidden")) {
+    if (focus) restoreJobFocusSnapshot(state.jobsFocusSnapshot);
+    return;
   }
-  closeCompactToolbarMenu({ restoreFocus: false });
-  closeSortPopover({ restoreFocus: false });
-  closeGridDensityPopovers({ restoreFocus: false });
-  elements.filterPopover.classList.add("hidden");
-  elements.filterButton.setAttribute("aria-expanded", "false");
-  closePersonalModelPopover({ restoreFocus: false });
-  elements.jobsPopover.classList.remove("hidden");
-  const targetID = jobID && state.jobs.some((job) => job.id === jobID)
-    ? jobID
-    : (state.focusedActivityJobID && state.jobs.some((job) => job.id === state.focusedActivityJobID)
-      ? state.focusedActivityJobID
-      : state.jobs[0]?.id);
-  if (targetID) selectJobRow(targetID, { focus: true });
-  else requestAnimationFrame(() => elements.refreshJobsButton.focus({ preventScroll: true }));
-  if (refreshProjection) void refreshJobs({ announce: false });
+  state.jobsOpening = true;
+  const restoring = historyMode === "none" && state.jobsRestorable;
+  try {
+    if (!restoring) {
+      state.jobsReturnFocus = document.activeElement;
+      state.jobsReturnTarget = {
+        trainingRunID: document.activeElement?.closest?.("[data-training-run-id]")
+          ?.dataset.trainingRunId || null,
+        reviewTrainingJobID: document.activeElement?.closest?.("[data-review-training-job-id]")
+          ?.dataset.reviewTrainingJobId || null,
+        slimmingJobID: document.activeElement?.closest?.("[data-slimming-job-id]")
+          ?.dataset.slimmingJobId || null,
+      };
+      state.jobsFocusSnapshot = null;
+      state.jobsScrollTop = 0;
+    }
+    const current = activeWorkspaceHistoryEntry();
+    state.jobsBaseLevel = baseLevel
+      || workspaceNavigationBaseLevel(
+        current?.navigationLevel || "workspace",
+        current?.context || {}
+      );
+    closeCompactToolbarMenu({ restoreFocus: false });
+    closeSortPopover({ restoreFocus: false });
+    closeGridDensityPopovers({ restoreFocus: false });
+    elements.filterPopover.classList.add("hidden");
+    elements.filterButton.setAttribute("aria-expanded", "false");
+    closePersonalModelPopover({ restoreFocus: false });
+    elements.jobsPopover.classList.remove("hidden");
+    const targetID = jobID && state.jobs.some((job) => job.id === jobID)
+      ? jobID
+      : (state.jobsFocusSnapshot?.jobID
+        && state.jobs.some((job) => job.id === state.jobsFocusSnapshot.jobID)
+        ? state.jobsFocusSnapshot.jobID
+        : (state.focusedActivityJobID
+          && state.jobs.some((job) => job.id === state.focusedActivityJobID)
+          ? state.focusedActivityJobID
+          : state.jobs[0]?.id));
+    if (targetID) selectJobRow(targetID);
+    if (historyMode !== "none") {
+      const route = visibleWorkspaceRoute();
+      recordWorkspaceHistory(route, currentWorkspaceHistoryContext(route), historyMode);
+    }
+    state.jobsRestorable = true;
+    requestAnimationFrame(() => {
+      elements.jobsList.scrollTop = state.jobsScrollTop;
+      if (!focus) return;
+      if (restoring) restoreJobFocusSnapshot(state.jobsFocusSnapshot);
+      else if (targetID) selectJobRow(targetID, { focus: true });
+      else elements.refreshJobsButton.focus({ preventScroll: true });
+    });
+    if (refreshProjection) void refreshJobs({ announce: false });
+  } finally {
+    state.jobsOpening = false;
+  }
+}
+
+function returnFromJobsPopover({ restoreFocus = true } = {}) {
+  if (elements.jobsPopover.classList.contains("hidden")) return Promise.resolve();
+  state.jobsHistoryRestoreFocus = restoreFocus;
+  if (state.workspaceNavigation.pendingReturnPromise) {
+    return state.workspaceNavigation.pendingReturnPromise;
+  }
+  const current = activeWorkspaceHistoryEntry();
+  if (state.workspaceNavigation.initialized
+    && current?.route === visibleWorkspaceRoute()
+    && current.navigationLevel === "jobs") {
+    const pending = new Promise((resolve) => {
+      state.workspaceNavigation.pendingReturnResolve = resolve;
+    });
+    state.workspaceNavigation.pendingReturnPromise = pending;
+    history.back();
+    return pending;
+  }
+  closeJobsPopover({ restoreFocus });
+  state.jobsHistoryRestoreFocus = true;
+  return Promise.resolve();
+}
+
+function reconcileJobsPopoverFromWorkspaceHistory(route, navigationLevel, context = {}) {
+  const shouldOpen = navigationLevel === "jobs" && route === visibleWorkspaceRoute();
+  if (shouldOpen && !state.jobsRestorable) {
+    clearJobsPopoverState();
+    if (history.length > 1 && Object.prototype.hasOwnProperty.call(
+      context,
+      "jobsBaseLevel"
+    )) {
+      history.back();
+    } else {
+      replaceJobsHistoryWithBase(jobsBaseLevelFromHistory(context));
+    }
+    return;
+  }
+  if (shouldOpen && elements.jobsPopover.classList.contains("hidden")) {
+    openJobsPopover({
+      refreshProjection: false,
+      historyMode: "none",
+      baseLevel: jobsBaseLevelFromHistory(context),
+    });
+  } else if (!shouldOpen && !elements.jobsPopover.classList.contains("hidden")) {
+    const restoreFocus = state.jobsHistoryRestoreFocus;
+    closeJobsPopover({ restoreFocus, checkpoint: false, preserveState: true });
+    state.jobsHistoryRestoreFocus = true;
+  }
 }
 
 function toggleJobsPopover() {
   if (elements.jobsPopover.classList.contains("hidden")) openJobsPopover();
-  else closeJobsPopover();
+  else void returnFromJobsPopover();
 }
 
 function renderJobs() {
@@ -28552,6 +28717,11 @@ async function loadWorkspace({ restoreHistory = false } = {}) {
       restoreGalleryNavigationLevel,
       restoreEntry?.context || {}
     );
+    reconcileJobsPopoverFromWorkspaceHistory(
+      "gallery",
+      restoreGalleryNavigationLevel,
+      restoreEntry?.context || {}
+    );
     await reconcileCommandPaletteFromWorkspaceHistory(
       "gallery",
       restoreGalleryNavigationLevel,
@@ -33118,7 +33288,7 @@ function bindEvents() {
     void refreshJobs();
   });
   elements.closeJobsButton.addEventListener("click", () => {
-    closeJobsPopover();
+    void returnFromJobsPopover();
   });
   elements.jobsPopover.addEventListener("keydown", (event) => {
     if (event.repeat
@@ -34749,7 +34919,7 @@ function bindEvents() {
       && !elements.jobsPopover.contains(event.target)
       && !elements.jobsButton.contains(event.target)
       && !elements.catalogProgressStatusButton.contains(event.target)) {
-      closeJobsPopover({ restoreFocus: false });
+      void returnFromJobsPopover({ restoreFocus: false });
     }
     if (!elements.personalModelPopover.classList.contains("hidden")
       && !elements.personalModelPopover.contains(event.target)
@@ -34991,7 +35161,7 @@ function bindEvents() {
         return;
       }
       if (jobsOpen) {
-        closeJobsPopover();
+        void returnFromJobsPopover();
         return;
       }
       if (mobileSidebarOpen) {
@@ -35042,6 +35212,16 @@ function bindEvents() {
       elements.filterButton.setAttribute("aria-expanded", "false");
       closeJobsPopover({ restoreFocus: false });
       closeMobileSidebar({ restoreFocus: false });
+      return;
+    }
+    if (jobsOpen
+      && !event.repeat
+      && !event.metaKey
+      && !event.ctrlKey
+      && !event.altKey
+      && event.key.toLowerCase() === "j") {
+      event.preventDefault();
+      void returnFromJobsPopover();
       return;
     }
     if (elements.commandPalette.open
