@@ -1258,7 +1258,18 @@ actor RemoteHTTPServer {
                 let payload = await pairingStore.listDevices()
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             default:
-                if ["GET", "HEAD"].contains(method), let assetID = Self.mediaAssetID(from: path) {
+                if ["GET", "HEAD"].contains(method),
+                   let assetID = Self.originalAssetID(from: path)
+                {
+                    let resource = try await mediaResources.openOriginalResource(assetID: assetID)
+                    await respondMedia(
+                        connection,
+                        method: method,
+                        resource: resource,
+                        rangeHeader: headers["range"],
+                        timeoutTask: timeoutTask
+                    )
+                } else if ["GET", "HEAD"].contains(method), let assetID = Self.mediaAssetID(from: path) {
                     let resource = try await mediaResources.openMediaResource(assetID: assetID)
                     await respondMedia(
                         connection,
@@ -2116,6 +2127,11 @@ actor RemoteHTTPServer {
     private static func mediaAssetID(from path: String) -> UUID? {
         // /v1/assets/{uuid}/media
         pathParameter(path, expectedSegments: ["v1", "assets", nil, "media"])
+    }
+
+    private static func originalAssetID(from path: String) -> UUID? {
+        // /v1/assets/{uuid}/original
+        pathParameter(path, expectedSegments: ["v1", "assets", nil, "original"])
     }
 
     private static func assetOpenOriginalID(from path: String) -> UUID? {

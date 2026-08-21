@@ -382,6 +382,9 @@ const elements = {
   expandInspectorSuggestionsButton: $("#expandInspectorSuggestionsButton"),
   assetFileName: $("#assetFileName"),
   assetMetadata: $("#assetMetadata"),
+  viewOriginalButton: $("#viewOriginalButton"),
+  viewOriginalButtonIcon: $("#viewOriginalButtonIcon"),
+  viewOriginalButtonLabel: $("#viewOriginalButtonLabel"),
   openOriginalButton: $("#openOriginalButton"),
   inspectorDeleteButton: $("#inspectorDeleteButton"),
   inspectorDeleteButtonLabel: $("#inspectorDeleteButtonLabel"),
@@ -594,6 +597,9 @@ const elements = {
   nextReviewButton: $("#nextReviewButton"),
   reviewMetadataState: $("#reviewMetadataState"),
   reviewAssetMetadata: $("#reviewAssetMetadata"),
+  reviewViewOriginalButton: $("#reviewViewOriginalButton"),
+  reviewViewOriginalButtonIcon: $("#reviewViewOriginalButtonIcon"),
+  reviewViewOriginalButtonLabel: $("#reviewViewOriginalButtonLabel"),
   reviewOpenOriginalButton: $("#reviewOpenOriginalButton"),
   reviewOpenOriginalButtonIcon: $("#reviewOpenOriginalButtonIcon"),
   reviewOpenOriginalButtonLabel: $("#reviewOpenOriginalButtonLabel"),
@@ -910,6 +916,9 @@ const elements = {
   lightboxZoomResetButton: $("#lightboxZoomResetButton"),
   lightboxZoomPercentage: $("#lightboxZoomPercentage"),
   lightboxZoomInButton: $("#lightboxZoomInButton"),
+  lightboxViewOriginalButton: $("#lightboxViewOriginalButton"),
+  lightboxViewOriginalButtonIcon: $("#lightboxViewOriginalButtonIcon"),
+  lightboxViewOriginalButtonLabel: $("#lightboxViewOriginalButtonLabel"),
   lightboxOpenOriginalButton: $("#lightboxOpenOriginalButton"),
   lightboxOpenOriginalButtonIcon: $("#lightboxOpenOriginalButtonIcon"),
   lightboxOpenOriginalButtonLabel: $("#lightboxOpenOriginalButtonLabel"),
@@ -1510,6 +1519,8 @@ const state = {
   lightboxContext: null,
   lightboxAssetID: null,
   lightboxRequestGeneration: 0,
+  lightboxOriginalAssetID: null,
+  lightboxOriginalLoading: false,
   lightboxFavoriteRequestGeneration: 0,
   lightboxFavoriteLoadingAssetID: null,
   lightboxFavoriteStates: new Map(),
@@ -2079,6 +2090,8 @@ function closeOverlays() {
   elements.lightbox.setAttribute("aria-modal", "true");
   state.lightboxContext = null;
   state.lightboxAssetID = null;
+  state.lightboxOriginalAssetID = null;
+  state.lightboxOriginalLoading = false;
   resetLightboxViewport(null);
   state.lightboxFavoriteRequestGeneration += 1;
   state.lightboxFavoriteLoadingAssetID = null;
@@ -3401,6 +3414,7 @@ function normalizedLightboxHistoryContext(raw) {
     offsetX: workspaceHistoryFiniteNumber(context.offsetX),
     offsetY: workspaceHistoryFiniteNumber(context.offsetY),
     videoTime: Math.max(0, workspaceHistoryFiniteNumber(context.videoTime, 0, 86_400)),
+    original: context.original === true,
   };
 }
 
@@ -3414,6 +3428,8 @@ function currentLightboxHistoryContext(expectedContext) {
     offsetX: state.lightboxViewportOffsetX,
     offsetY: state.lightboxViewportOffsetY,
     videoTime: lightboxMediaKind() === "video" ? elements.lightboxVideo.currentTime : 0,
+    original: lightboxMediaKind() !== "video"
+      && state.lightboxOriginalAssetID === state.lightboxAssetID,
   });
 }
 
@@ -6619,6 +6635,8 @@ function closeLightbox({ restoreFocus = true } = {}) {
   elements.lightbox.setAttribute("aria-modal", "true");
   state.lightboxContext = null;
   state.lightboxAssetID = null;
+  state.lightboxOriginalAssetID = null;
+  state.lightboxOriginalLoading = false;
   resetLightboxViewport(null);
   renderLightboxFavorite();
   renderCloudPreviewRecovery();
@@ -7009,9 +7027,16 @@ function syncWriteActionControls() {
   renderFavoriteControls();
   renderGalleryRemovalControls();
   renderUndoControls();
-  elements.openOriginalButton.disabled = !state.online
-    || state.selectedDetail?.availability !== "available"
-    || state.openingOriginal;
+  if (state.selectedDetail) {
+    syncInspectorViewOriginalControl(state.selectedDetail);
+    syncInspectorOpenOriginalControl(state.selectedDetail);
+  }
+  const reviewItem = state.review.items[state.review.selectedIndex];
+  if (reviewWorkspaceIsOpen() && reviewItem) {
+    const detail = reviewInspectorDetailMatches(reviewItem) ? state.review.detail : null;
+    syncReviewViewOriginalControl(detail, reviewItem);
+    syncReviewOpenOriginalControl(detail, reviewItem);
+  }
   syncManagedTagFields({ updateValues: false });
   syncManagedGroupFields({ updateValues: false });
   syncInlineTagCreationControls();
@@ -14038,6 +14063,16 @@ async function applyAssetLocalSuggestionDecision(button) {
   renderInspectorLocalSuggestions(state.selectedDetail);
 }
 
+function syncInspectorViewOriginalControl(detail) {
+  const isVideo = state.mediaKind === "video";
+  elements.viewOriginalButtonLabel.textContent = isVideo
+    ? "在网页播放原视频"
+    : "在网页查看原图";
+  elements.viewOriginalButtonIcon.textContent = isVideo ? "▶" : "⌕";
+  elements.viewOriginalButton.disabled = !state.online
+    || detail.availability !== "available";
+}
+
 function syncInspectorOpenOriginalControl(detail) {
   const isVideo = state.mediaKind === "video";
   elements.openOriginalButtonLabel.textContent = state.openingOriginal
@@ -14046,8 +14081,8 @@ function syncInspectorOpenOriginalControl(detail) {
   elements.openOriginalButtonIcon.textContent = isVideo ? "▶" : "↗";
   elements.openOriginalButton.classList.toggle("busy", state.openingOriginal);
   elements.openOriginalHint.textContent = isVideo
-    ? "以只读方式在运行 ImageAll 的这台 Mac 上播放原始视频"
-    : "以只读方式在运行 ImageAll 的这台 Mac 上打开原始照片";
+    ? "网页直接播放原始视频；也可交给运行 ImageAll 的 Mac 系统播放器"
+    : "网页只在明确点击后读取本地原图；iCloud 原图不会静默下载，也可在 Mac 打开";
   elements.openOriginalButton.disabled = !state.online
     || detail.availability !== "available"
     || state.openingOriginal;
@@ -14122,6 +14157,7 @@ function renderInspector(detail) {
     metadataRow("状态", availabilityText(detail.availability)),
   ];
   for (const pair of rows) elements.assetMetadata.append(...pair);
+  syncInspectorViewOriginalControl(detail);
   syncInspectorOpenOriginalControl(detail);
   renderFavoriteControls();
   renderGalleryRemovalControls();
@@ -14208,6 +14244,24 @@ async function openLightboxOriginalOnMac() {
   const item = lightboxItems().find((candidate) => candidate.id === state.lightboxAssetID);
   if (!item) return;
   await openOriginalAssetOnMac(item.id, lightboxMediaKind(), item.availability);
+}
+
+function viewOriginalAssetInWeb(context, assetID, mediaKind, availability) {
+  if (!assetID || availability !== "available" || !state.online) return;
+  openLightbox(context, assetID, { original: mediaKind !== "video" });
+}
+
+function viewSelectedOriginalInWeb() {
+  const detail = state.selectedDetail;
+  if (!detail) return;
+  viewOriginalAssetInWeb("library", detail.assetID, state.mediaKind, detail.availability);
+}
+
+function viewReviewOriginalInWeb() {
+  const item = state.review.items[state.review.selectedIndex];
+  const detail = reviewInspectorDetailMatches(item) ? state.review.detail : null;
+  if (!item || !detail || state.review.selectedAssetIDs.size !== 1) return;
+  viewOriginalAssetInWeb("review", item.assetID, state.mediaKind, detail.availability);
 }
 
 function updateInspectorNavigation() {
@@ -16120,6 +16174,8 @@ async function toggleLightboxFavorite() {
       return;
     }
     state.lightboxAssetID = fallbackID;
+    state.lightboxOriginalAssetID = null;
+    state.lightboxOriginalLoading = false;
   }
   renderLightbox();
   if (restoreFavoriteFocus && !elements.lightboxFavoriteButton.disabled) {
@@ -16806,6 +16862,8 @@ function reconcileReviewPreviewAfterGalleryRemoval(context, hiddenAssetIDs) {
   state.review.selectedAssetIDs = new Set([replacementID]);
   state.review.selectionAnchorIndex = replacementIndex;
   state.lightboxAssetID = replacementID;
+  state.lightboxOriginalAssetID = null;
+  state.lightboxOriginalLoading = false;
   const replacementCard = elements.reviewGrid.querySelector(
     `[data-review-index="${replacementIndex}"]`
   );
@@ -20535,6 +20593,19 @@ function reviewInspectorDetailMatches(item) {
     && state.review.detailSelectionKey === reviewInspectorSelectionKey();
 }
 
+function syncReviewViewOriginalControl(detail, item) {
+  const isVideo = state.mediaKind === "video";
+  elements.reviewViewOriginalButton.dataset.assetId = item?.assetID || detail?.assetID || "";
+  elements.reviewViewOriginalButtonLabel.textContent = isVideo
+    ? "在网页播放原视频"
+    : "在网页查看原图";
+  elements.reviewViewOriginalButtonIcon.textContent = isVideo ? "▶" : "⌕";
+  elements.reviewViewOriginalButton.disabled = !state.online
+    || !detail
+    || detail.availability !== "available"
+    || state.review.selectedAssetIDs.size !== 1;
+}
+
 function syncReviewOpenOriginalControl(detail, item) {
   const isVideo = state.mediaKind === "video";
   const assetID = item?.assetID || detail?.assetID || "";
@@ -20544,8 +20615,8 @@ function syncReviewOpenOriginalControl(detail, item) {
     : (isVideo ? "在 Mac 上用系统播放器打开" : "在 Mac 上用“预览”打开原图");
   elements.reviewOpenOriginalButtonIcon.textContent = isVideo ? "▶" : "↗";
   elements.reviewOpenOriginalHint.textContent = isVideo
-    ? "以只读方式在运行 ImageAll 的这台 Mac 上播放原始视频"
-    : "以只读方式在运行 ImageAll 的这台 Mac 上打开原始照片";
+    ? "网页直接播放原始视频；也可交给运行 ImageAll 的 Mac 系统播放器"
+    : "网页只在明确点击后读取本地原图；iCloud 原图不会静默下载，也可在 Mac 打开";
   elements.reviewOpenOriginalButton.classList.toggle("busy", state.openingOriginal);
   elements.reviewOpenOriginalButton.disabled = !state.online
     || !detail
@@ -20581,6 +20652,7 @@ function renderReviewInspectorMetadata(item, detail) {
     ];
     for (const pair of rows) elements.reviewAssetMetadata.append(...pair);
   }
+  syncReviewViewOriginalControl(detail, item);
   syncReviewOpenOriginalControl(detail, item);
 }
 
@@ -25924,6 +25996,8 @@ function reconcileSlimmingPreviewAfterRemoval(request, hiddenAssetIDs) {
     return;
   }
   state.lightboxAssetID = replacementID;
+  state.lightboxOriginalAssetID = null;
+  state.lightboxOriginalLoading = false;
   const card = elements.slimmingMemberGrid.querySelector(
     `[data-slimming-member-id="${CSS.escape(replacementID)}"]`
   );
@@ -28657,12 +28731,19 @@ function deferReviewSelection() {
 
 function lightboxItemsForContext(context = state.lightboxContext) {
   if (context === "review") {
-    return state.review.items.map((item) => ({
-      id: item.assetID,
-      fileName: item.fileName,
-      contentRevision: item.contentRevision,
-      availability: item.availability,
-    }));
+    return state.review.items.map((item) => {
+      const detail = state.review.detail?.assetID === item.assetID
+        ? state.review.detail
+        : null;
+      return {
+        id: item.assetID,
+        fileName: item.fileName,
+        contentRevision: detail?.contentRevision ?? item.contentRevision,
+        availability: detail?.availability ?? item.availability,
+        width: detail?.width ?? item.width,
+        height: detail?.height ?? item.height,
+      };
+    });
   }
   if (context === "slimming") {
     return state.slimming.members;
@@ -29081,9 +29162,10 @@ async function renderLightboxMedia(item) {
     if (item.height) elements.lightboxImage.dataset.height = String(item.height);
     else delete elements.lightboxImage.dataset.height;
     const revision = item.contentRevision == null ? "" : `?r=${item.contentRevision}`;
+    const original = state.lightboxOriginalAssetID === item.id;
     setProtectedImageSource(
       elements.lightboxImage,
-      `/v1/assets/${item.id}/preview${revision}`,
+      `/v1/assets/${item.id}/${original ? "original" : "preview"}${revision}`,
       { priority: "high", forceFetch: true }
     );
     syncLightboxViewport();
@@ -29120,7 +29202,7 @@ async function renderLightboxMedia(item) {
   elements.lightboxVideo.load();
 }
 
-function openLightbox(context, assetID) {
+function openLightbox(context, assetID, { original = false } = {}) {
   if (!assetID) return;
   stopAssetHoverVideo();
   const wasHidden = elements.lightbox.classList.contains("hidden");
@@ -29129,6 +29211,8 @@ function openLightbox(context, assetID) {
   }
   state.lightboxContext = context;
   state.lightboxAssetID = assetID;
+  state.lightboxOriginalAssetID = original ? assetID : null;
+  state.lightboxOriginalLoading = original;
   if (context === "review") {
     elements.reviewWorkspace.inert = true;
   } else if (context === "slimming") {
@@ -29169,7 +29253,7 @@ function restoreLightboxFromHistory(raw, expectedContext) {
     (item) => item.id === context.assetID
   )) return false;
 
-  openLightbox(expectedContext, context.assetID);
+  openLightbox(expectedContext, context.assetID, { original: context.original });
   if (expectedContext === "library") {
     state.lightboxReturnFocus = assetCardMainButton(elements.assetGrid.querySelector(
       `[data-asset-id="${CSS.escape(context.assetID)}"]`
@@ -29265,7 +29349,8 @@ function reconcileLightboxFromWorkspaceHistory(route, context) {
 
   const alreadyOpen = !elements.lightbox.classList.contains("hidden")
     && state.lightboxContext === expectedContext
-    && state.lightboxAssetID === desired.assetID;
+    && state.lightboxAssetID === desired.assetID
+    && Boolean(state.lightboxOriginalAssetID === desired.assetID) === desired.original;
   if (alreadyOpen) return;
   if (!elements.lightbox.classList.contains("hidden")) {
     closeLightbox({ restoreFocus: false });
@@ -29323,6 +29408,43 @@ function syncLightboxOpenOriginalControl(item) {
   elements.lightboxOpenOriginalButton.setAttribute("aria-label", description);
 }
 
+function syncLightboxViewOriginalControl(item) {
+  const isVideo = lightboxMediaKind() === "video";
+  const isOriginal = !isVideo && state.lightboxOriginalAssetID === item?.id;
+  elements.lightbox.classList.toggle("image-preview", !isVideo);
+  elements.lightboxViewOriginalButton.classList.toggle("hidden", isVideo);
+  elements.lightboxViewOriginalButton.setAttribute("aria-pressed", String(isOriginal));
+  elements.lightboxViewOriginalButtonIcon.textContent = isOriginal ? "▧" : "⌕";
+  elements.lightboxViewOriginalButtonLabel.textContent = isOriginal ? "标准预览" : "查看原图";
+  const fileName = item?.fileName || "当前照片";
+  const description = isOriginal
+    ? `切回${fileName}的标准网页预览`
+    : `在网页中读取并查看${fileName}的本地原图`;
+  elements.lightboxViewOriginalButton.title = state.lightboxOriginalLoading
+    ? `正在读取${fileName}的原图`
+    : description;
+  elements.lightboxViewOriginalButton.setAttribute("aria-label", description);
+  elements.lightboxViewOriginalButton.disabled = isVideo
+    || !state.online
+    || item?.availability !== "available"
+    || state.lightboxNavigating;
+  elements.lightboxViewOriginalButton.classList.toggle(
+    "busy",
+    isOriginal && state.lightboxOriginalLoading
+  );
+}
+
+function toggleLightboxOriginalView() {
+  const item = lightboxItems().find((candidate) => candidate.id === state.lightboxAssetID);
+  if (!item || lightboxMediaKind() === "video" || item.availability !== "available") return;
+  const isOriginal = state.lightboxOriginalAssetID === item.id;
+  state.lightboxOriginalAssetID = isOriginal ? null : item.id;
+  state.lightboxOriginalLoading = !isOriginal;
+  void renderLightboxMedia(item);
+  syncLightboxViewOriginalControl(item);
+  scheduleWorkspaceHistoryCheckpoint();
+}
+
 function renderLightbox() {
   const items = lightboxItems();
   const index = items.findIndex((item) => item.id === state.lightboxAssetID);
@@ -29363,6 +29485,7 @@ function renderLightbox() {
     "aria-label",
     `处理当前预览${noun}：${item.fileName || `未命名${noun}`}`
   );
+  syncLightboxViewOriginalControl(item);
   syncLightboxOpenOriginalControl(item);
   renderLightboxFavorite();
   if (!favoriteStateForAssetID(item.id)) void loadLightboxFavorite(item.id);
@@ -29377,6 +29500,10 @@ function syncReviewLightboxSelection() {
   if (!item) {
     closeLightbox();
     return;
+  }
+  if (state.lightboxAssetID !== item.assetID) {
+    state.lightboxOriginalAssetID = null;
+    state.lightboxOriginalLoading = false;
   }
   state.lightboxAssetID = item.assetID;
   renderLightbox();
@@ -29478,6 +29605,8 @@ async function navigateLightbox(direction) {
       resetCloudPreviewRecovery();
     }
     state.lightboxAssetID = nextAssetID;
+    state.lightboxOriginalAssetID = null;
+    state.lightboxOriginalLoading = false;
     renderLightbox();
     scheduleWorkspaceHistoryCheckpoint();
     if (state.lightboxContext === "review") {
@@ -30649,6 +30778,8 @@ function resetWorkspaceSessionState() {
   state.lightboxReturnFocus = null;
   state.lightboxContext = null;
   state.lightboxAssetID = null;
+  state.lightboxOriginalAssetID = null;
+  state.lightboxOriginalLoading = false;
   state.lightboxFavoriteRequestGeneration += 1;
   state.lightboxFavoriteLoadingAssetID = null;
   state.lightboxFavoriteStates.clear();
@@ -35069,6 +35200,7 @@ function bindEvents() {
   elements.closeInspectorButton.addEventListener("click", () => void returnFromInspector());
   elements.inspectorPreviousButton.addEventListener("click", () => navigateLibrarySelection(-1));
   elements.inspectorNextButton.addEventListener("click", () => navigateLibrarySelection(1));
+  elements.viewOriginalButton.addEventListener("click", viewSelectedOriginalInWeb);
   elements.openOriginalButton.addEventListener("click", openSelectedOriginalOnMac);
   elements.inspectorDeleteButton.addEventListener("click", () => {
     void submitGalleryRemoval();
@@ -36558,6 +36690,7 @@ function bindEvents() {
     if (!item || !detail || state.review.selectedAssetIDs.size !== 1) return;
     void openOriginalAssetOnMac(item.assetID, state.mediaKind, detail.availability);
   });
+  elements.reviewViewOriginalButton.addEventListener("click", viewReviewOriginalInWeb);
   elements.reviewOpenLightboxButton.addEventListener("click", () => {
     const item = state.review.items[state.review.selectedIndex];
     if (item && state.review.selectedAssetIDs.size > 1) {
@@ -36574,6 +36707,7 @@ function bindEvents() {
   });
 
   elements.lightboxBackButton.addEventListener("click", () => void returnFromLightbox());
+  elements.lightboxViewOriginalButton.addEventListener("click", toggleLightboxOriginalView);
   elements.lightboxOpenOriginalButton.addEventListener("click", () => {
     void openLightboxOriginalOnMac();
   });
@@ -36610,6 +36744,12 @@ function bindEvents() {
   elements.lightboxImage.addEventListener("imageall-protected-load", (event) => {
     if (String(event.detail?.requestID)
       !== elements.lightboxImage.dataset.protectedRequestId) return;
+    if (state.lightboxOriginalAssetID === state.lightboxAssetID
+      && elements.lightboxImage.dataset.protectedPath?.includes("/original")) {
+      state.lightboxOriginalLoading = false;
+      const item = lightboxItems().find((candidate) => candidate.id === state.lightboxAssetID);
+      if (item) syncLightboxViewOriginalControl(item);
+    }
     elements.lightboxImage.classList.remove("hidden");
     if (state.lightboxContext === "review"
       && state.review.cloudPreview.assetID === state.lightboxAssetID) {
@@ -36628,6 +36768,18 @@ function bindEvents() {
       !== elements.lightboxImage.dataset.protectedRequestId) return;
     delete elements.lightboxImage.dataset.protectedPath;
     const assetID = state.lightboxAssetID;
+    if (assetID && state.lightboxOriginalAssetID === assetID) {
+      state.lightboxOriginalAssetID = null;
+      state.lightboxOriginalLoading = false;
+      const item = lightboxItems().find((candidate) => candidate.id === assetID);
+      if (item) {
+        void renderLightboxMedia(item);
+        syncLightboxViewOriginalControl(item);
+      }
+      toast(event.detail?.message || "浏览器无法显示这份原图，已恢复标准预览");
+      scheduleWorkspaceHistoryCheckpoint();
+      return;
+    }
     const needsCloudPreview = event.detail?.status === 409
       && event.detail?.code === "conflict"
       && event.detail?.message === "cloud preview required";

@@ -1130,11 +1130,17 @@
               <h2 id="assetFileName">未命名照片</h2>
               <dl id="assetMetadata" class="metadata-list"></dl>
               <div class="inspector-source-actions">
-                <button id="openOriginalButton" class="button button-primary source-action" type="button">
-                  <span id="openOriginalButtonIcon" aria-hidden="true">↗</span>
-                  <span id="openOriginalButtonLabel">在 Mac 上打开原图</span>
-                </button>
-                <p id="openOriginalHint" class="secondary">以只读方式在运行 ImageAll 的这台 Mac 上打开</p>
+                <div class="inspector-source-action-buttons">
+                  <button id="viewOriginalButton" class="button button-primary source-action" type="button">
+                    <span id="viewOriginalButtonIcon" aria-hidden="true">⌕</span>
+                    <span id="viewOriginalButtonLabel">在网页查看原图</span>
+                  </button>
+                  <button id="openOriginalButton" class="button source-action" type="button">
+                    <span id="openOriginalButtonIcon" aria-hidden="true">↗</span>
+                    <span id="openOriginalButtonLabel">在 Mac 上打开</span>
+                  </button>
+                </div>
+                <p id="openOriginalHint" class="secondary">原图只在明确点击后读取；iCloud 原图不会静默下载</p>
               </div>
             </section>
             <section class="inspector-section tag-section">
@@ -1736,13 +1742,20 @@
             </div>
             <dl id="reviewAssetMetadata" class="metadata-list"></dl>
             <div class="inspector-source-actions">
-              <button id="reviewOpenOriginalButton"
-                class="button button-primary source-action" type="button">
-                <span id="reviewOpenOriginalButtonIcon" aria-hidden="true">↗</span>
-                <span id="reviewOpenOriginalButtonLabel">在 Mac 上打开原图</span>
-              </button>
+              <div class="inspector-source-action-buttons">
+                <button id="reviewViewOriginalButton"
+                  class="button button-primary source-action" type="button">
+                  <span id="reviewViewOriginalButtonIcon" aria-hidden="true">⌕</span>
+                  <span id="reviewViewOriginalButtonLabel">在网页查看原图</span>
+                </button>
+                <button id="reviewOpenOriginalButton"
+                  class="button source-action" type="button">
+                  <span id="reviewOpenOriginalButtonIcon" aria-hidden="true">↗</span>
+                  <span id="reviewOpenOriginalButtonLabel">在 Mac 上打开</span>
+                </button>
+              </div>
               <p id="reviewOpenOriginalHint" class="secondary">
-                以只读方式在运行 ImageAll 的这台 Mac 上打开
+                原图只在明确点击后读取；iCloud 原图不会静默下载
               </p>
             </div>
           </section>
@@ -2867,6 +2880,12 @@
           </button>
           <button id="lightboxZoomInButton" type="button" aria-label="放大预览" title="放大（+）">+</button>
         </span>
+        <button id="lightboxViewOriginalButton"
+          class="lightbox-open-original-button hidden" type="button" aria-pressed="false"
+          aria-label="查看原图" title="查看原图">
+          <span id="lightboxViewOriginalButtonIcon" aria-hidden="true">⌕</span>
+          <span id="lightboxViewOriginalButtonLabel">查看原图</span>
+        </button>
         <button id="lightboxOpenOriginalButton"
           class="lightbox-open-original-button write-action hidden" type="button"
           aria-label="在 Mac 上打开原图" title="在 Mac 上打开原图">

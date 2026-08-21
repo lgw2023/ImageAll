@@ -5205,6 +5205,12 @@ html.split-resizing * {
   margin-top: 14px;
 }
 
+.inspector-source-action-buttons {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
+  gap: 7px;
+}
+
 .inspector-source-actions .button {
   width: 100%;
   min-height: 30px;
@@ -8698,6 +8704,12 @@ html.split-resizing * {
 .lightbox-open-original-button:focus-visible {
   border-color: rgba(255, 255, 255, 0.3);
   background: rgba(255, 255, 255, 0.16);
+}
+
+.lightbox-open-original-button[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--accent), white 28%);
+  background: color-mix(in srgb, var(--accent), transparent 24%);
+  color: white;
 }
 
 .lightbox-open-original-button:disabled {
@@ -14393,6 +14405,10 @@ button.world-map-place-candidate:focus-visible {
 
   .lightbox-open-original-button > span:last-child,
   .lightbox-delete-button > span:last-child {
+    display: none;
+  }
+
+  .lightbox.image-preview #lightboxOpenOriginalButton {
     display: none;
   }
 

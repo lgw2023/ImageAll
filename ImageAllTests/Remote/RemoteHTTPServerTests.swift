@@ -2314,6 +2314,7 @@ final class RemoteHTTPServerTests: XCTestCase {
             "reviewInspectorDeleteButton",
             "reviewInspectorActionStatus",
             "reviewAssetMetadata",
+            "reviewViewOriginalButton",
             "reviewOpenOriginalButton",
             "reviewInlineTagForm",
             "reviewInlineTagName",
@@ -2354,6 +2355,7 @@ final class RemoteHTTPServerTests: XCTestCase {
             "lightboxZoomResetButton",
             "lightboxZoomPercentage",
             "lightboxZoomInButton",
+            "lightboxViewOriginalButton",
             "lightboxDeleteButton",
             "accountLoginForm",
             "accountUsername",
@@ -2458,6 +2460,7 @@ final class RemoteHTTPServerTests: XCTestCase {
             "lightboxCloudPreviewButton",
             "lightboxCloudPreviewProgress",
             "openOriginalButton",
+            "viewOriginalButton",
             "openOriginalButtonLabel",
             "openOriginalHint",
             "inspectorTagSearch",
@@ -2860,6 +2863,10 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function catalogJobProgressLabel"))
         XCTAssertTrue(script.contains("function drillDownFromGalleryOverview"))
         XCTAssertTrue(script.contains("function renderActiveFilterBar"))
+        XCTAssertTrue(script.contains("function viewOriginalAssetInWeb"))
+        XCTAssertTrue(script.contains("function toggleLightboxOriginalView"))
+        XCTAssertTrue(script.contains("lightboxOriginalAssetID"))
+        XCTAssertTrue(script.contains("original ? \"original\" : \"preview\""))
         XCTAssertTrue(script.contains("async function openLightboxOriginalOnMac"))
         XCTAssertTrue(script.contains("async function requestAssetLocalSuggestions"))
         XCTAssertTrue(script.contains("async function applyAssetLocalSuggestionDecision"))
@@ -3784,6 +3791,61 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(fullData, Data("0123456789".utf8))
         XCTAssertEqual(full.value(forHTTPHeaderField: "Content-Type"), "video/mp4")
         XCTAssertEqual(full.value(forHTTPHeaderField: "Accept-Ranges"), "bytes")
+    }
+
+    func testOriginalRouteUsesTheProtectedRangeStream() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RemoteHTTPServerTests-Original-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fixtureURL = directory.appendingPathComponent("fixture.jpg")
+        try Data("original-bytes".utf8).write(to: fixtureURL)
+
+        let assetID = UUID()
+        let port = UInt16.random(in: 19_000...29_000)
+        let (server, _) = makeServer(
+            port: port,
+            mediaResources: RemoteHTTPServerTestMediaProvider(
+                url: fixtureURL,
+                contentType: "image/jpeg"
+            )
+        )
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        defer { Task { await server.stop() } }
+
+        var request = URLRequest(
+            url: try XCTUnwrap(
+                URL(string: "http://127.0.0.1:\(port)/v1/assets/\(assetID.uuidString)/original")
+            )
+        )
+        request.setValue(
+            "Bearer \(Self.legacyDebugToken)",
+            forHTTPHeaderField: "Authorization"
+        )
+        request.setValue("bytes=0-7", forHTTPHeaderField: "Range")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let http = try XCTUnwrap(response as? HTTPURLResponse)
+
+        XCTAssertEqual(http.statusCode, 206)
+        XCTAssertEqual(data, Data("original".utf8))
+        XCTAssertEqual(http.value(forHTTPHeaderField: "Content-Type"), "image/jpeg")
+        XCTAssertEqual(http.value(forHTTPHeaderField: "Accept-Ranges"), "bytes")
+        XCTAssertEqual(http.value(forHTTPHeaderField: "Content-Range"), "bytes 0-7/14")
+        XCTAssertEqual(http.value(forHTTPHeaderField: "Cache-Control"), "no-store")
+        XCTAssertEqual(http.value(forHTTPHeaderField: "X-Content-Type-Options"), "nosniff")
+
+        var headRequest = request
+        headRequest.httpMethod = "HEAD"
+        headRequest.setValue(nil, forHTTPHeaderField: "Range")
+        let (headData, headResponse) = try await URLSession.shared.data(for: headRequest)
+        let headHTTP = try XCTUnwrap(headResponse as? HTTPURLResponse)
+        XCTAssertEqual(headHTTP.statusCode, 200)
+        XCTAssertTrue(headData.isEmpty)
+        XCTAssertEqual(headHTTP.value(forHTTPHeaderField: "Content-Length"), "14")
+        XCTAssertEqual(headHTTP.value(forHTTPHeaderField: "Accept-Ranges"), "bytes")
+        XCTAssertEqual(headHTTP.value(forHTTPHeaderField: "Cache-Control"), "no-store")
+        XCTAssertEqual(headHTTP.value(forHTTPHeaderField: "X-Content-Type-Options"), "nosniff")
     }
 
     func testOpenOriginalRouteDelegatesToMacOpener() async throws {
@@ -5531,6 +5593,7 @@ private final class RemoteHTTPStorageMaintenanceCommandStub:
 
 private struct RemoteHTTPServerTestMediaProvider: RemoteMediaResourceProviding {
     let url: URL
+    var contentType = "video/mp4"
 
     func openMediaResource(assetID _: UUID) async throws -> RemoteMediaResource {
         let descriptor = try DerivedImageSecureIO.openReadOnlyNoFollow(at: url)
@@ -5538,7 +5601,7 @@ private struct RemoteHTTPServerTestMediaProvider: RemoteMediaResourceProviding {
             let facts = try DerivedImageSecureIO.fstatRegularFile(fd: descriptor)
             return RemoteMediaResource(
                 descriptor: descriptor,
-                contentType: "video/mp4",
+                contentType: contentType,
                 contentLength: facts.sizeBytes
             ) {
                 Darwin.close(descriptor)

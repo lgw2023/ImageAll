@@ -54,6 +54,13 @@ final class RemoteMediaResource: @unchecked Sendable {
 
 protocol RemoteMediaResourceProviding: Sendable {
     func openMediaResource(assetID: UUID) async throws -> RemoteMediaResource
+    func openOriginalResource(assetID: UUID) async throws -> RemoteMediaResource
+}
+
+extension RemoteMediaResourceProviding {
+    func openOriginalResource(assetID: UUID) async throws -> RemoteMediaResource {
+        try await openMediaResource(assetID: assetID)
+    }
 }
 
 struct UnavailableRemoteMediaResourceProvider: RemoteMediaResourceProviding {
@@ -83,13 +90,27 @@ struct ProductionRemoteMediaResourceProvider: RemoteMediaResourceProviding {
         guard locator.availability == .available, locator.mediaKind == .video else {
             throw RemoteAPIError(code: .notFound, message: "video unavailable")
         }
+        return try await openResource(locator, purpose: "video")
+    }
 
+    func openOriginalResource(assetID: UUID) async throws -> RemoteMediaResource {
+        let locator = try fetchLocator(assetID: assetID)
+        guard locator.availability == .available else {
+            throw RemoteAPIError(code: .notFound, message: "original media unavailable")
+        }
+        return try await openResource(locator, purpose: "original media")
+    }
+
+    private func openResource(
+        _ locator: Locator,
+        purpose: String
+    ) async throws -> RemoteMediaResource {
         switch (locator.sourceKind, locator.locatorKind) {
         case (.folder, .file):
             guard let relativePath = locator.relativePath,
                   case let .success(validatedPath) = RelativePathRules.validate(relativePath)
             else {
-                throw RemoteAPIError(code: .notFound, message: "unsafe video locator")
+                throw RemoteAPIError(code: .notFound, message: "unsafe \(purpose) locator")
             }
             let accessLease: FolderSourceAccessLease
             do {
@@ -97,7 +118,7 @@ struct ProductionRemoteMediaResourceProvider: RemoteMediaResourceProviding {
                     sourceID: locator.sourceID
                 )
             } catch {
-                throw RemoteAPIError(code: .notFound, message: "video source unavailable")
+                throw RemoteAPIError(code: .notFound, message: "\(purpose) source unavailable")
             }
             do {
                 let rootFD = try DerivedImageSecureIO.openDirectoryNoFollow(
@@ -111,7 +132,7 @@ struct ProductionRemoteMediaResourceProvider: RemoteMediaResourceProviding {
                 do {
                     let facts = try DerivedImageSecureIO.fstatRegularFile(fd: descriptor)
                     guard facts.sizeBytes > 0 else {
-                        throw RemoteAPIError(code: .notFound, message: "video file is empty")
+                        throw RemoteAPIError(code: .notFound, message: "\(purpose) file is empty")
                     }
                     return RemoteMediaResource(
                         descriptor: descriptor,
@@ -130,26 +151,33 @@ struct ProductionRemoteMediaResourceProvider: RemoteMediaResourceProviding {
                 }
             } catch {
                 accessLease.release()
-                throw RemoteAPIError(code: .notFound, message: "video file unavailable")
+                throw RemoteAPIError(code: .notFound, message: "\(purpose) file unavailable")
             }
         case (.photos, .photos):
             guard let identifier = locator.photosLocalIdentifier else {
-                throw RemoteAPIError(code: .notFound, message: "unsafe Photos video locator")
+                throw RemoteAPIError(code: .notFound, message: "unsafe Photos \(purpose) locator")
             }
             let url: URL
             do {
-                url = try await photosLibrary.requestOriginalVideoURL(
-                    localIdentifier: identifier
-                )
+                switch locator.mediaKind {
+                case .image:
+                    url = try await photosLibrary.requestOriginalImageURL(
+                        localIdentifier: identifier
+                    )
+                case .video:
+                    url = try await photosLibrary.requestOriginalVideoURL(
+                        localIdentifier: identifier
+                    )
+                }
             } catch {
-                throw RemoteAPIError(code: .notFound, message: "Photos video unavailable")
+                throw RemoteAPIError(code: .notFound, message: "Photos \(purpose) unavailable")
             }
             do {
                 let descriptor = try DerivedImageSecureIO.openReadOnlyNoFollow(at: url)
                 do {
                     let facts = try DerivedImageSecureIO.fstatRegularFile(fd: descriptor)
                     guard facts.sizeBytes > 0 else {
-                        throw RemoteAPIError(code: .notFound, message: "Photos video is empty")
+                        throw RemoteAPIError(code: .notFound, message: "Photos \(purpose) is empty")
                     }
                     return RemoteMediaResource(
                         descriptor: descriptor,
@@ -163,10 +191,13 @@ struct ProductionRemoteMediaResourceProvider: RemoteMediaResourceProviding {
                     throw error
                 }
             } catch {
-                throw RemoteAPIError(code: .notFound, message: "Photos video resource unavailable")
+                throw RemoteAPIError(
+                    code: .notFound,
+                    message: "Photos \(purpose) resource unavailable"
+                )
             }
         default:
-            throw RemoteAPIError(code: .notFound, message: "video unavailable")
+            throw RemoteAPIError(code: .notFound, message: "\(purpose) unavailable")
         }
     }
 
@@ -212,12 +243,11 @@ struct ProductionRemoteMediaResourceProvider: RemoteMediaResourceProviding {
     }
 
     private static func contentType(mediaType: String, url: URL?) -> String {
-        if let mime = UTType(mediaType)?.preferredMIMEType, mime.hasPrefix("video/") {
+        if let mime = UTType(mediaType)?.preferredMIMEType {
             return mime
         }
         if let extensionName = url?.pathExtension,
-           let mime = UTType(filenameExtension: extensionName)?.preferredMIMEType,
-           mime.hasPrefix("video/")
+           let mime = UTType(filenameExtension: extensionName)?.preferredMIMEType
         {
             return mime
         }

@@ -847,6 +847,32 @@ def main():
             route_media,
         )
 
+        viewed_originals = []
+        original_failures = set()
+
+        def route_view_original(route):
+            assert route.request.method == "GET"
+            asset_id = urlparse(route.request.url).path.split("/")[-2]
+            viewed_originals.append(asset_id)
+            if asset_id in original_failures:
+                fulfill_json(
+                    route,
+                    {"code": "conflict", "message": "合成原图当前不可用"},
+                    status=409,
+                )
+                return
+            route.fulfill(
+                status=200,
+                content_type="image/svg+xml",
+                headers={"Accept-Ranges": "bytes", "Cache-Control": "no-store"},
+                body=original_thumbnail_svg(asset_id),
+            )
+
+        page.route(
+            re.compile(r".*/v1/assets/[0-9a-f-]+/original(\?.*)?$"),
+            route_view_original,
+        )
+
         def route_open_original(route):
             assert route.request.method == "POST"
             opened_originals.append(urlparse(route.request.url).path.split("/")[-2])
@@ -2222,6 +2248,29 @@ def main():
         )
         assert "Apple Photos" in page.locator("#reviewAssetMetadata").inner_text()
         assert "1200 × 900" in page.locator("#reviewAssetMetadata").inner_text()
+        review_view_original = page.locator("#reviewViewOriginalButton")
+        assert review_view_original.is_enabled()
+        assert page.locator("#reviewViewOriginalButtonLabel").inner_text() == "在网页查看原图"
+        review_view_original.click()
+        page.locator("#lightbox:not(.hidden)").wait_for()
+        page.wait_for_function(
+            f"() => document.querySelector('#lightboxImage').dataset.protectedPath "
+            f"=== '/v1/assets/{REVIEW_IDS[0]}/original?r=1'"
+        )
+        assert viewed_originals[-1] == REVIEW_IDS[0]
+        assert page.locator("#lightboxViewOriginalButton").get_attribute("aria-pressed") == "true"
+        assert page.locator("#lightboxViewOriginalButtonLabel").inner_text() == "标准预览"
+        assert opened_originals == []
+        page.screenshot(path="/tmp/imageall-web-original-view.png", full_page=True)
+        page.locator("#lightboxViewOriginalButton").click()
+        page.wait_for_function(
+            f"() => document.querySelector('#lightboxImage').dataset.protectedPath "
+            f"=== '/v1/assets/{REVIEW_IDS[0]}/preview?r=1'"
+        )
+        assert page.locator("#lightboxViewOriginalButton").get_attribute("aria-pressed") == "false"
+        assert page.locator("#lightboxViewOriginalButtonLabel").inner_text() == "查看原图"
+        page.locator("#lightboxBackButton").click()
+        page.locator("#lightbox").wait_for(state="hidden")
         assert page.locator("#reviewOpenOriginalButton").is_enabled()
         page.locator("#reviewOpenOriginalButton").click()
         page.wait_for_function(
@@ -3092,18 +3141,20 @@ def main():
         assert dragged_viewport["x"] > 70, dragged_viewport
         assert dragged_viewport["y"] == 0, dragged_viewport
         assert dragged_viewport["dragging"] is False, dragged_viewport
-        lightbox_mac_preview = page.locator("#lightboxOpenOriginalButton")
-        assert lightbox_mac_preview.is_visible()
-        assert lightbox_mac_preview.is_enabled()
-        assert lightbox_mac_preview.get_attribute("aria-label") == (
-            "在 Mac 上用“预览”打开原图REVIEW_1.JPG"
-        )
-        assert page.locator("#lightboxOpenOriginalButtonLabel").inner_text() == "Mac 预览"
-        lightbox_mac_preview.click()
+        lightbox_original = page.locator("#lightboxViewOriginalButton")
+        assert lightbox_original.is_visible()
+        assert lightbox_original.is_enabled()
+        assert lightbox_original.get_attribute("aria-pressed") == "false"
+        assert page.locator("#lightboxViewOriginalButtonLabel").inner_text() == "查看原图"
+        assert page.locator("#lightboxOpenOriginalButton").is_hidden()
+        lightbox_original.click()
         page.wait_for_function(
-            "() => document.querySelector('#toastMessage').textContent.includes('Mac“预览”')"
+            f"() => document.querySelector('#lightboxImage').dataset.protectedPath "
+            f"=== '/v1/assets/{REVIEW_IDS[0]}/original?r=1'"
         )
-        assert opened_originals[-1] == REVIEW_IDS[0]
+        assert lightbox_original.get_attribute("aria-pressed") == "true"
+        assert page.locator("#lightboxViewOriginalButtonLabel").inner_text() == "标准预览"
+        assert viewed_originals[-1] == REVIEW_IDS[0]
         assert "REVIEW_1.JPG" in page.locator("#lightboxTitle").inner_text()
         assert page.locator("#lightboxZoomPercentage").inner_text() == "200%"
         page.screenshot(path="/tmp/imageall-lightbox-zoom-390.png", full_page=True)
@@ -3121,7 +3172,20 @@ def main():
         page.wait_for_function(
             "() => document.querySelector('#lightboxTitle').textContent.includes('REVIEW_2.JPG')"
         )
+        assert page.locator("#lightboxViewOriginalButton").get_attribute("aria-pressed") == "false"
+        next_preview_path = page.locator("#lightboxImage").get_attribute("data-protected-path")
+        assert f"/v1/assets/{REVIEW_IDS[1]}/preview" in next_preview_path
+        assert "/original" not in next_preview_path
         assert page.locator("#lightboxZoomPercentage").inner_text() == "100%"
+        original_failures.add(REVIEW_IDS[1])
+        page.locator("#lightboxViewOriginalButton").click()
+        page.wait_for_function(
+            f"() => state.lightboxOriginalAssetID === null "
+            f"&& document.querySelector('#lightboxImage').dataset.protectedPath"
+            f"?.includes('/v1/assets/{REVIEW_IDS[1]}/preview')"
+        )
+        assert "合成原图当前不可用" in page.locator("#toast").inner_text()
+        assert viewed_originals[-1] == REVIEW_IDS[1]
         page.locator("#lightboxPreviousButton").click()
         page.wait_for_function(
             "() => document.querySelector('#lightboxTitle').textContent.includes('REVIEW_1.JPG')"
@@ -3327,7 +3391,7 @@ def main():
         page.wait_for_function(
             "() => document.querySelector('#toastMessage').textContent.includes('系统播放器')"
         )
-        assert opened_originals == [REVIEW_IDS[0], REVIEW_IDS[0], VIDEO_ID]
+        assert opened_originals == [REVIEW_IDS[0], VIDEO_ID]
         assert page.locator("#lightbox:not(.hidden)").is_visible()
         page.set_viewport_size({"width": 1440, "height": 960})
         page.locator("#closeLightboxButton").click()
