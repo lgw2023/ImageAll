@@ -2932,8 +2932,38 @@ def main():
             path="/tmp/imageall-review-touch-selection-active-390.png",
             full_page=True,
         )
-        page.locator('[data-review-index="1"] > .review-card-main').dispatch_event("dblclick")
-        assert page.locator("#lightbox").is_hidden()
+        review_double_click_snapshot = page.evaluate(
+            """() => ({
+              selectedAssetIDs: [...state.review.selectedAssetIDs].sort(),
+              selectedIndex: state.review.selectedIndex,
+              selectionAnchorIndex: state.review.selectionAnchorIndex,
+              scrollTop: document.querySelector('#reviewQueuePane').scrollTop,
+            })"""
+        )
+        page.locator('[data-review-index="1"] > .review-card-main').dblclick()
+        page.locator("#lightbox:not(.hidden)").wait_for()
+        assert "REVIEW_2.JPG" in page.locator("#lightboxTitle").inner_text()
+        assert page.evaluate(
+            """() => ({
+              selectedAssetIDs: [...state.review.selectedAssetIDs].sort(),
+              selectedIndex: state.review.selectedIndex,
+              selectionAnchorIndex: state.review.selectionAnchorIndex,
+              scrollTop: document.querySelector('#reviewQueuePane').scrollTop,
+            })"""
+        ) == review_double_click_snapshot
+        page.keyboard.press("Escape")
+        page.locator("#lightbox").wait_for(state="hidden")
+        assert page.evaluate(
+            """() => ({
+              selectedAssetIDs: [...state.review.selectedAssetIDs].sort(),
+              selectedIndex: state.review.selectedIndex,
+              selectionAnchorIndex: state.review.selectionAnchorIndex,
+              scrollTop: document.querySelector('#reviewQueuePane').scrollTop,
+            })"""
+        ) == review_double_click_snapshot
+        page.wait_for_function(
+            "() => document.activeElement?.classList.contains('review-card-main')"
+        )
         review_selection_mode.click()
         assert review_selection_mode.get_attribute("aria-pressed") == "false"
         assert review_selection_mode.inner_text() == "选择"

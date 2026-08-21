@@ -1711,6 +1711,38 @@ def main(*, inspector_actions_only=False):
         cards.nth(0).click()
         cards.nth(1).click(modifiers=["Meta"])
         assert "已选择 2 项" in page.locator("#selectionSummary").inner_text()
+        gallery_double_click_snapshot = page.evaluate(
+            """() => ({
+              selectedAssetIDs: [...state.selectedAssetIDs].sort(),
+              selectedAssetID: state.selectedAssetID,
+              selectionAnchorID: state.selectionAnchorID,
+              scrollTop: document.querySelector('#libraryScroll').scrollTop,
+            })"""
+        )
+        cards.nth(0).locator(":scope > .asset-card-main").dblclick()
+        page.locator("#lightbox:not(.hidden)").wait_for()
+        assert "IMG_0001.JPG" in page.locator("#lightboxTitle").inner_text()
+        assert page.evaluate(
+            """() => ({
+              selectedAssetIDs: [...state.selectedAssetIDs].sort(),
+              selectedAssetID: state.selectedAssetID,
+              selectionAnchorID: state.selectionAnchorID,
+              scrollTop: document.querySelector('#libraryScroll').scrollTop,
+            })"""
+        ) == gallery_double_click_snapshot
+        page.keyboard.press("Escape")
+        page.locator("#lightbox").wait_for(state="hidden")
+        assert page.evaluate(
+            """() => ({
+              selectedAssetIDs: [...state.selectedAssetIDs].sort(),
+              selectedAssetID: state.selectedAssetID,
+              selectionAnchorID: state.selectionAnchorID,
+              scrollTop: document.querySelector('#libraryScroll').scrollTop,
+            })"""
+        ) == gallery_double_click_snapshot
+        page.wait_for_function(
+            "() => document.activeElement?.classList.contains('asset-card-main')"
+        )
         page.locator("#selectionInspector:not(.hidden)").wait_for()
         page.locator("#selectionInspectorPrimary:not(.hidden)").wait_for()
         page.wait_for_function(
@@ -2898,10 +2930,35 @@ def main(*, inspector_actions_only=False):
         slimming_cards.nth(1).locator(":scope > .slimming-member-main").click()
         assert page.evaluate("() => state.slimming.selectedMemberIDs.size") == 2
         assert slimming_select_all.is_enabled()
-        slimming_cards.nth(1).locator(":scope > .slimming-member-main").dispatch_event(
-            "dblclick"
+        slimming_double_click_snapshot = page.evaluate(
+            """() => ({
+              selectedMemberIDs: [...state.slimming.selectedMemberIDs].sort(),
+              selectionAnchorID: state.slimming.selectionAnchorID,
+              scrollTop: document.querySelector('#slimmingAnalysisBody').scrollTop,
+            })"""
         )
-        assert page.locator("#lightbox").is_hidden()
+        slimming_cards.nth(1).locator(":scope > .slimming-member-main").dblclick()
+        page.locator("#lightbox:not(.hidden)").wait_for()
+        assert "SLIM_0002.JPG" in page.locator("#lightboxTitle").inner_text()
+        assert page.evaluate(
+            """() => ({
+              selectedMemberIDs: [...state.slimming.selectedMemberIDs].sort(),
+              selectionAnchorID: state.slimming.selectionAnchorID,
+              scrollTop: document.querySelector('#slimmingAnalysisBody').scrollTop,
+            })"""
+        ) == slimming_double_click_snapshot
+        page.keyboard.press("Escape")
+        page.locator("#lightbox").wait_for(state="hidden")
+        assert page.evaluate(
+            """() => ({
+              selectedMemberIDs: [...state.slimming.selectedMemberIDs].sort(),
+              selectionAnchorID: state.slimming.selectionAnchorID,
+              scrollTop: document.querySelector('#slimmingAnalysisBody').scrollTop,
+            })"""
+        ) == slimming_double_click_snapshot
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.slimmingMemberMain === 'true'"
+        )
         slimming_select_all.click()
         assert page.evaluate("() => state.slimming.selectedMemberIDs.size") == 3
         page.screenshot(

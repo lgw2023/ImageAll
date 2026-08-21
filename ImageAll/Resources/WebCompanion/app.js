@@ -7,6 +7,7 @@ const SLIMMING_CLUSTER_LIMIT_MAX = 10_000;
 const SLIMMING_MEMBER_LIMIT_MAX = 5_000;
 const LIGHTBOX_MIN_SCALE = 1;
 const LIGHTBOX_MAX_SCALE = 8;
+const GRID_DOUBLE_CLICK_MAX_DELAY_MS = 900;
 const WORKSPACE_HISTORY_KEY = "imageAllWorkspace";
 const WORKSPACE_HISTORY_ROUTES = new Set([
   "gallery",
@@ -1123,6 +1124,7 @@ const state = {
   actionMenuKind: null,
   actionMenuFocusedSelector: null,
   actionMenuScrollTop: 0,
+  gridDoubleClickSelectionSnapshot: null,
   selectionMode: false,
   selectedAssetIDs: new Set(),
   selectionAnchorID: null,
@@ -16586,6 +16588,7 @@ async function toggleAssetCardFavorite(button) {
 }
 
 function setSelectionMode(enabled, { seedCurrent = false } = {}) {
+  state.gridDoubleClickSelectionSnapshot = null;
   const enteringSelectionMode = enabled && !state.selectionMode;
   if (enabled && seedCurrent && state.selectedAssetID
     && state.assets.some((asset) => asset.id === state.selectedAssetID)) {
@@ -16683,6 +16686,88 @@ function handleAssetSelection(assetID, { additive = false, range = false } = {})
     focusInspector: true,
     preserveExisting: preservesCloudPreview,
   });
+}
+
+function rememberGridSelectionBeforeClick(surface, itemID, event) {
+  const clickCount = Number(event.detail);
+  const pending = state.gridDoubleClickSelectionSnapshot;
+  if (clickCount >= 2) {
+    if (pending
+      && pending.surface === surface
+      && pending.itemID === itemID
+      && performance.now() - pending.capturedAt <= GRID_DOUBLE_CLICK_MAX_DELAY_MS) {
+      pending.ready = true;
+      return true;
+    }
+    state.gridDoubleClickSelectionSnapshot = null;
+    return false;
+  }
+  if (clickCount !== 1) return false;
+
+  let selection;
+  if (surface === "library") {
+    selection = {
+      selectedIDs: [...state.selectedAssetIDs],
+      primaryID: state.selectedAssetID,
+      anchorID: state.selectionAnchorID,
+    };
+  } else if (surface === "review") {
+    selection = {
+      selectedIDs: [...state.review.selectedAssetIDs],
+      selectedIndex: state.review.selectedIndex,
+      anchorIndex: state.review.selectionAnchorIndex,
+    };
+  } else if (surface === "slimming") {
+    selection = {
+      selectedIDs: [...state.slimming.selectedMemberIDs],
+      anchorID: state.slimming.selectionAnchorID,
+    };
+  } else {
+    return false;
+  }
+  state.gridDoubleClickSelectionSnapshot = {
+    surface,
+    itemID,
+    selection,
+    capturedAt: performance.now(),
+    ready: false,
+  };
+  return false;
+}
+
+function restoreGridSelectionForDoubleClick(surface, itemID) {
+  const pending = state.gridDoubleClickSelectionSnapshot;
+  state.gridDoubleClickSelectionSnapshot = null;
+  if (!pending
+    || !pending.ready
+    || pending.surface !== surface
+    || pending.itemID !== itemID
+    || performance.now() - pending.capturedAt > GRID_DOUBLE_CLICK_MAX_DELAY_MS) return false;
+
+  if (surface === "library" && state.selectionMode) {
+    state.selectedAssetIDs = new Set(pending.selection.selectedIDs);
+    state.selectedAssetID = pending.selection.primaryID;
+    state.selectionAnchorID = pending.selection.anchorID;
+    renderAssetSelectionState();
+    renderSelectionMutation();
+    scheduleSelectionAggregate();
+    return true;
+  }
+  if (surface === "review" && state.review.selectionMode) {
+    state.review.selectedAssetIDs = new Set(pending.selection.selectedIDs);
+    state.review.selectedIndex = pending.selection.selectedIndex;
+    state.review.selectionAnchorIndex = pending.selection.anchorIndex;
+    renderReviewSelectionState();
+    checkpointActiveWorkspaceHistory();
+    return true;
+  }
+  if (surface === "slimming" && state.slimming.selectionMode) {
+    state.slimming.selectedMemberIDs = new Set(pending.selection.selectedIDs);
+    state.slimming.selectionAnchorID = pending.selection.anchorID;
+    renderSlimmingMemberSelection();
+    return true;
+  }
+  return false;
 }
 
 function selectAllLoadedAssets() {
@@ -20514,6 +20599,7 @@ function syncReviewSelectionModeControls({ controlsLocked = false } = {}) {
 }
 
 function setReviewSelectionMode(enabled, { restoreFocus = true } = {}) {
+  state.gridDoubleClickSelectionSnapshot = null;
   const available = state.review.mode === "queue" && state.review.items.length > 0;
   const next = Boolean(enabled) && available;
   if (next === state.review.selectionMode) {
@@ -24233,6 +24319,7 @@ function syncSlimmingSelectionModeControls() {
 }
 
 function setSlimmingSelectionMode(enabled, { restoreFocus = true } = {}) {
+  state.gridDoubleClickSelectionSnapshot = null;
   const available = state.slimming.view === "analysis"
     && state.slimming.members.length > 0;
   const next = Boolean(enabled) && available;
@@ -35100,6 +35187,8 @@ function bindEvents() {
     }
     const card = event.target.closest("[data-asset-id]");
     if (!card) return;
+    if (state.selectionMode
+      && rememberGridSelectionBeforeClick("library", card.dataset.assetId, event)) return;
     handleAssetSelection(card.dataset.assetId, {
       additive: event.metaKey || event.ctrlKey,
       range: event.shiftKey,
@@ -35108,7 +35197,9 @@ function bindEvents() {
   elements.assetGrid.addEventListener("dblclick", (event) => {
     if (event.target.closest("[data-asset-card-favorite]")) return;
     const card = event.target.closest("[data-asset-id]");
-    if (card && !state.selectionMode) openLightbox("library", card.dataset.assetId);
+    if (!card) return;
+    restoreGridSelectionForDoubleClick("library", card.dataset.assetId);
+    openLightbox("library", card.dataset.assetId);
   });
   elements.assetGrid.addEventListener("contextmenu", (event) => {
     const card = event.target.closest("[data-asset-id]");
@@ -36407,7 +36498,14 @@ function bindEvents() {
     }
     const main = event.target.closest("[data-slimming-member-main]");
     const card = main?.closest("[data-slimming-member-id]");
-    if (card) selectSlimmingMember(card.dataset.slimmingMemberId, event);
+    if (!card) return;
+    if (state.slimming.selectionMode
+      && rememberGridSelectionBeforeClick(
+        "slimming",
+        card.dataset.slimmingMemberId,
+        event
+      )) return;
+    selectSlimmingMember(card.dataset.slimmingMemberId, event);
   });
   elements.slimmingMemberGrid.addEventListener("contextmenu", (event) => {
     const card = event.target.closest("[data-slimming-member-id]");
@@ -36435,10 +36533,11 @@ function bindEvents() {
     );
   });
   elements.slimmingMemberGrid.addEventListener("dblclick", (event) => {
-    if (state.slimming.selectionMode) return;
     const main = event.target.closest("[data-slimming-member-main]");
     const card = main?.closest("[data-slimming-member-id]");
-    if (card) openLightbox("slimming", card.dataset.slimmingMemberId);
+    if (!card) return;
+    restoreGridSelectionForDoubleClick("slimming", card.dataset.slimmingMemberId);
+    openLightbox("slimming", card.dataset.slimmingMemberId);
   });
   elements.slimmingRemovalStatus.addEventListener("click", (event) => {
     const button = event.target.closest("[data-slimming-verification-request-id]");
@@ -36865,7 +36964,12 @@ function bindEvents() {
     }
     const card = event.target.closest("[data-review-index]");
     if (card) {
-      selectReviewIndex(Number(card.dataset.reviewIndex), {
+      const index = Number(card.dataset.reviewIndex);
+      const item = Number.isInteger(index) ? state.review.items[index] : null;
+      if (!item) return;
+      if (state.review.selectionMode
+        && rememberGridSelectionBeforeClick("review", item.assetID, event)) return;
+      selectReviewIndex(index, {
         additive: state.review.selectionMode || event.metaKey || event.ctrlKey,
         extendRange: event.shiftKey,
       });
@@ -36873,12 +36977,12 @@ function bindEvents() {
   });
   elements.reviewGrid.addEventListener("dblclick", (event) => {
     if (event.target.closest("[data-review-card-favorite]")) return;
-    if (state.review.selectionMode) return;
     const card = event.target.closest("[data-review-index]");
     const index = Number(card?.dataset.reviewIndex);
     const item = Number.isInteger(index) ? state.review.items[index] : null;
     if (!item) return;
-    selectReviewIndex(index);
+    const restoredSelection = restoreGridSelectionForDoubleClick("review", item.assetID);
+    if (!state.review.selectionMode && !restoredSelection) selectReviewIndex(index);
     openLightbox("review", item.assetID);
   });
   elements.previousReviewButton.addEventListener("click", () => {
