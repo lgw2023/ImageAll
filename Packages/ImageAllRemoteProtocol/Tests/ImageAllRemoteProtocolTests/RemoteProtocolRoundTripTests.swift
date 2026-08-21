@@ -502,6 +502,7 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
             assetID: assetID,
             fileName: "review.jpg",
             availability: .available,
+            contentRevision: 7,
             acceptedTagCount: 1,
             rejectedTagCount: 0,
             suggestionOrigin: .personalModel,
@@ -516,6 +517,7 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
             )
         )
         try assertRoundTrip(item)
+        XCTAssertEqual(item.contentRevision, 7)
 
         let legacy = try decoder.decode(
             RemoteReviewQueueItem.self,
@@ -536,6 +538,7 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
         XCTAssertNil(legacy.width)
         XCTAssertNil(legacy.height)
         XCTAssertNil(legacy.favorite)
+        XCTAssertNil(legacy.contentRevision)
     }
 
     func testBonjourTXTRoundTripHelpers() {

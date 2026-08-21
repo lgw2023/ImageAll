@@ -236,6 +236,7 @@ def review_item(asset_id, index):
         "assetID": asset_id,
         "fileName": f"REVIEW_{index}.JPG",
         "availability": "available",
+        "contentRevision": index,
         "acceptedTagCount": 0,
         "rejectedTagCount": 0,
         "suggestionOrigin": "featurePrint",
@@ -678,10 +679,12 @@ def main():
                     "public.mpeg-4",
                 )
             elif asset_id in REVIEW_IDS:
+                review_index = REVIEW_IDS.index(asset_id)
                 detail = asset_detail(
                     asset_id,
-                    f"REVIEW_{REVIEW_IDS.index(asset_id) + 1}.JPG",
+                    f"REVIEW_{review_index + 1}.JPG",
                 )
+                detail["contentRevision"] = review_index + 1
             elif asset_id in IMAGE_PAGE_2_IDS:
                 detail = asset_detail(
                     asset_id,
@@ -2996,9 +2999,28 @@ def main():
         page.screenshot(path="/tmp/imageall-review-card-favorite-390.png", full_page=True)
         page.set_viewport_size({"width": 1440, "height": 960})
 
+        prefetched_review_2_path = f"/v1/assets/{REVIEW_IDS[1]}/preview?r=2"
+        review_2_preview_count_before_prefetch = sum(
+            prefetched_review_2_path in url for url in preview_requests
+        )
         page.locator("#reviewOpenLightboxButton").click()
         page.locator("#lightboxReviewActions:not(.hidden)").wait_for()
         assert "REVIEW_1.JPG" in page.locator("#lightboxTitle").inner_text()
+        page.wait_for_function(
+            "path => state.lightboxPreviewPrefetches instanceof Map "
+            "&& state.lightboxPreviewPrefetches.get(path)?.status === 'ready'",
+            arg=prefetched_review_2_path,
+        )
+        prefetched_review_2_request_count = sum(
+            prefetched_review_2_path in url for url in preview_requests
+        )
+        assert prefetched_review_2_request_count == review_2_preview_count_before_prefetch + 1, [
+            url for url in preview_requests if prefetched_review_2_path in url
+        ]
+        assert page.evaluate(
+            "() => [...state.lightboxPreviewPrefetches.keys()]"
+            ".every(path => path.includes('/preview') && !path.includes('/original'))"
+        )
         review_lightbox_layout = page.evaluate(
             """() => {
               const lightbox = document.querySelector('#lightbox');
@@ -3172,6 +3194,18 @@ def main():
         page.wait_for_function(
             "() => document.querySelector('#lightboxTitle').textContent.includes('REVIEW_2.JPG')"
         )
+        assert sum(prefetched_review_2_path in url for url in preview_requests) \
+            == prefetched_review_2_request_count
+        prefetched_review_3_path = f"/v1/assets/{REVIEW_IDS[2]}/preview?r=3"
+        page.wait_for_function(
+            "path => state.lightboxPreviewPrefetches.get(path)?.status === 'ready' "
+            "&& state.lightboxPreviewPrefetches.size === 2",
+            arg=prefetched_review_3_path,
+        )
+        assert page.evaluate(
+            "() => [...state.lightboxPreviewPrefetches.keys()]"
+            ".every(path => path.includes('/preview') && !path.includes('/original'))"
+        )
         assert page.locator("#lightboxViewOriginalButton").get_attribute("aria-pressed") == "false"
         next_preview_path = page.locator("#lightboxImage").get_attribute("data-protected-path")
         assert f"/v1/assets/{REVIEW_IDS[1]}/preview" in next_preview_path
@@ -3186,6 +3220,7 @@ def main():
         )
         assert "合成原图当前不可用" in page.locator("#toast").inner_text()
         assert viewed_originals[-1] == REVIEW_IDS[1]
+        assert page.evaluate("() => state.lightboxPreviewPrefetches.size <= 2")
         page.locator("#lightboxPreviousButton").click()
         page.wait_for_function(
             "() => document.querySelector('#lightboxTitle').textContent.includes('REVIEW_1.JPG')"
@@ -3283,6 +3318,8 @@ def main():
         assert len(review_decisions) == 1, review_decisions
         page.keyboard.press("x")
         page.locator("#lightbox").wait_for(state="hidden")
+        assert page.evaluate("() => state.lightboxPreviewPrefetches.size") == 0
+        assert page.evaluate("() => state.lightboxPreviewPrefetchTimer") is None
         assert review_decisions[-1]["action"] == "reject"
         page.wait_for_function(
             "() => state.review.items.length === 0 "
@@ -3354,6 +3391,8 @@ def main():
 
         video_card.dblclick()
         page.locator("#lightboxVideo:not(.hidden)").wait_for()
+        assert page.evaluate("() => state.lightboxPreviewPrefetches.size") == 0
+        assert page.evaluate("() => state.lightboxPreviewPrefetchTimer") is None
         assert f"/v1/assets/{VIDEO_ID}/media?r=1" in page.locator("#lightboxVideo").get_attribute("src")
         assert page.locator("#lightboxImage").is_hidden()
         assert page.locator("#lightboxZoomControls").is_hidden()

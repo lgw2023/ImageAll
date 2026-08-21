@@ -168,6 +168,8 @@ public struct RemoteReviewQueueItem: Codable, Sendable, Equatable, Identifiable 
     public let assetID: UUID
     public let fileName: String?
     public let availability: RemoteAssetAvailability
+    /// `nil` when decoded from a Host predating revision-aware review previews.
+    public let contentRevision: Int?
     public let acceptedTagCount: Int
     public let rejectedTagCount: Int
     public let suggestionOrigin: RemoteReviewSuggestionOrigin
@@ -182,6 +184,7 @@ public struct RemoteReviewQueueItem: Codable, Sendable, Equatable, Identifiable 
         assetID: UUID,
         fileName: String?,
         availability: RemoteAssetAvailability,
+        contentRevision: Int? = nil,
         acceptedTagCount: Int,
         rejectedTagCount: Int,
         suggestionOrigin: RemoteReviewSuggestionOrigin,
@@ -193,6 +196,7 @@ public struct RemoteReviewQueueItem: Codable, Sendable, Equatable, Identifiable 
         self.assetID = assetID
         self.fileName = fileName
         self.availability = availability
+        self.contentRevision = contentRevision
         self.acceptedTagCount = acceptedTagCount
         self.rejectedTagCount = rejectedTagCount
         self.suggestionOrigin = suggestionOrigin

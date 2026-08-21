@@ -80,6 +80,7 @@ struct ReviewQueueItemProjection: Identifiable, Equatable, Sendable {
     let assetID: UUID
     let fileName: String?
     let availability: AssetAvailability
+    let contentRevision: Int
     let acceptedTagCount: Int
     let rejectedTagCount: Int
     let suggestionOrigin: ReviewQueueSuggestionOrigin
@@ -91,6 +92,7 @@ struct ReviewQueueItemProjection: Identifiable, Equatable, Sendable {
         assetID: UUID,
         fileName: String?,
         availability: AssetAvailability,
+        contentRevision: Int = 0,
         acceptedTagCount: Int,
         rejectedTagCount: Int,
         suggestionOrigin: ReviewQueueSuggestionOrigin = .featurePrint,
@@ -101,6 +103,7 @@ struct ReviewQueueItemProjection: Identifiable, Equatable, Sendable {
         self.assetID = assetID
         self.fileName = fileName
         self.availability = availability
+        self.contentRevision = contentRevision
         self.acceptedTagCount = acceptedTagCount
         self.rejectedTagCount = rejectedTagCount
         self.suggestionOrigin = suggestionOrigin

@@ -1521,6 +1521,8 @@ const state = {
   lightboxRequestGeneration: 0,
   lightboxOriginalAssetID: null,
   lightboxOriginalLoading: false,
+  lightboxPreviewPrefetches: new Map(),
+  lightboxPreviewPrefetchTimer: null,
   lightboxFavoriteRequestGeneration: 0,
   lightboxFavoriteLoadingAssetID: null,
   lightboxFavoriteStates: new Map(),
@@ -1863,24 +1865,37 @@ async function monitorProtectedImageDecode(image, requestID, objectURL = null) {
   }
 }
 
+async function fetchProtectedImageBlob(path, { signal, priority = "auto" } = {}) {
+  const response = await rawFetch(path, { signal, priority });
+  if (!response.ok) {
+    let payload = null;
+    try {
+      payload = await parseResponse(response);
+    } catch {
+      // Preserve the HTTP status even if a proxy returned a non-JSON body.
+    }
+    throw new APIError(response.status, typeof payload === "object" ? payload : {
+      message: `图片请求失败（${response.status}）`,
+    });
+  }
+  return response.blob();
+}
+
+async function protectedImageBlob(path, { signal, priority = "auto" } = {}) {
+  const prefetched = state.lightboxPreviewPrefetches.get(path);
+  if (prefetched) {
+    const blob = await prefetched.promise;
+    if (blob) return blob;
+  }
+  return fetchProtectedImageBlob(path, { signal, priority });
+}
+
 function startProtectedImageRequest(image, path, requestID, priority = "auto") {
   if (protectedImageRequests.get(image) !== requestID) return;
   const controller = new AbortController();
   protectedImageAbortControllers.set(image, controller);
-  rawFetch(path, { signal: controller.signal, priority })
-    .then(async (response) => {
-      if (!response.ok) {
-        let payload = null;
-        try {
-          payload = await parseResponse(response);
-        } catch {
-          // Preserve the HTTP status even if a proxy returned a non-JSON body.
-        }
-        throw new APIError(response.status, typeof payload === "object" ? payload : {
-          message: `图片请求失败（${response.status}）`,
-        });
-      }
-      const blob = await response.blob();
+  protectedImageBlob(path, { signal: controller.signal, priority })
+    .then(async (blob) => {
       if (protectedImageRequests.get(image) !== requestID) return;
       const objectURL = URL.createObjectURL(blob);
       if (protectedImageRequests.get(image) !== requestID) {
@@ -2083,6 +2098,7 @@ function closeOverlays() {
   elements.lightbox.classList.add("hidden");
   elements.lightbox.classList.remove("reviewing");
   elements.appView.inert = false;
+  clearLightboxPreviewPrefetches();
   clearProtectedImageSource(elements.lightboxImage);
   stopLightboxVideo();
   elements.lightboxReviewActions.classList.add("hidden");
@@ -6628,6 +6644,7 @@ function closeLightbox({ restoreFocus = true } = {}) {
   ++state.lightboxRequestGeneration;
   ++state.lightboxFavoriteRequestGeneration;
   state.lightboxFavoriteLoadingAssetID = null;
+  clearLightboxPreviewPrefetches();
   clearProtectedImageSource(elements.lightboxImage);
   stopLightboxVideo();
   elements.lightboxReviewActions.classList.add("hidden");
@@ -28758,6 +28775,81 @@ function lightboxItems() {
   return lightboxItemsForContext();
 }
 
+function lightboxStandardPreviewPath(item) {
+  if (!item?.id) return null;
+  const revision = item.contentRevision == null ? "" : `?r=${item.contentRevision}`;
+  return `/v1/assets/${item.id}/preview${revision}`;
+}
+
+function clearLightboxPreviewPrefetches() {
+  clearTimeout(state.lightboxPreviewPrefetchTimer);
+  state.lightboxPreviewPrefetchTimer = null;
+  for (const entry of state.lightboxPreviewPrefetches.values()) {
+    entry.controller.abort();
+  }
+  state.lightboxPreviewPrefetches.clear();
+}
+
+function prefetchLightboxPreview(path) {
+  if (!path || state.lightboxPreviewPrefetches.has(path)) return;
+  const controller = new AbortController();
+  const entry = {
+    controller,
+    status: "loading",
+    promise: null,
+  };
+  entry.promise = fetchProtectedImageBlob(path, {
+    signal: controller.signal,
+    priority: "low",
+  }).then((blob) => {
+    if (state.lightboxPreviewPrefetches.get(path) === entry) {
+      entry.status = "ready";
+    }
+    return blob;
+  }).catch(() => {
+    if (state.lightboxPreviewPrefetches.get(path) === entry) {
+      state.lightboxPreviewPrefetches.delete(path);
+    }
+    return null;
+  });
+  state.lightboxPreviewPrefetches.set(path, entry);
+}
+
+function prefetchAdjacentLightboxPreviews() {
+  if (elements.lightbox.classList.contains("hidden")
+    || !state.lightboxAssetID
+    || lightboxMediaKind() === "video") {
+    clearLightboxPreviewPrefetches();
+    return;
+  }
+  const items = lightboxItems();
+  const index = items.findIndex((item) => item.id === state.lightboxAssetID);
+  if (index < 0) {
+    clearLightboxPreviewPrefetches();
+    return;
+  }
+  const desiredPaths = new Set(
+    [items[index - 1], items[index + 1]]
+      .filter((item) => item?.availability === "available")
+      .map(lightboxStandardPreviewPath)
+      .filter(Boolean)
+  );
+  for (const [path, entry] of state.lightboxPreviewPrefetches) {
+    if (desiredPaths.has(path)) continue;
+    entry.controller.abort();
+    state.lightboxPreviewPrefetches.delete(path);
+  }
+  for (const path of desiredPaths) prefetchLightboxPreview(path);
+}
+
+function scheduleAdjacentLightboxPreviewPrefetch() {
+  clearTimeout(state.lightboxPreviewPrefetchTimer);
+  state.lightboxPreviewPrefetchTimer = setTimeout(() => {
+    state.lightboxPreviewPrefetchTimer = null;
+    prefetchAdjacentLightboxPreviews();
+  }, 80);
+}
+
 function lightboxViewportMetrics(overrides = null) {
   if (overrides) return overrides;
   const viewport = elements.lightboxStage.getBoundingClientRect();
@@ -29172,6 +29264,7 @@ async function renderLightboxMedia(item) {
     return;
   }
 
+  clearLightboxPreviewPrefetches();
   const requestGeneration = ++state.lightboxRequestGeneration;
   clearProtectedImageSource(elements.lightboxImage);
   elements.lightboxImage.classList.add("hidden");
@@ -29207,6 +29300,7 @@ function openLightbox(context, assetID, { original = false } = {}) {
   stopAssetHoverVideo();
   const wasHidden = elements.lightbox.classList.contains("hidden");
   if (wasHidden) {
+    clearLightboxPreviewPrefetches();
     state.lightboxReturnFocus = document.activeElement;
   }
   state.lightboxContext = context;
@@ -36750,6 +36844,7 @@ function bindEvents() {
       const item = lightboxItems().find((candidate) => candidate.id === state.lightboxAssetID);
       if (item) syncLightboxViewOriginalControl(item);
     }
+    scheduleAdjacentLightboxPreviewPrefetch();
     elements.lightboxImage.classList.remove("hidden");
     if (state.lightboxContext === "review"
       && state.review.cloudPreview.assetID === state.lightboxAssetID) {
@@ -36768,6 +36863,7 @@ function bindEvents() {
       !== elements.lightboxImage.dataset.protectedRequestId) return;
     delete elements.lightboxImage.dataset.protectedPath;
     const assetID = state.lightboxAssetID;
+    scheduleAdjacentLightboxPreviewPrefetch();
     if (assetID && state.lightboxOriginalAssetID === assetID) {
       state.lightboxOriginalAssetID = null;
       state.lightboxOriginalLoading = false;

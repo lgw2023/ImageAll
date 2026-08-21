@@ -1317,6 +1317,7 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         let page = try service.fetchReviewQueue(tagID: fixture.tagID, cursor: nil, limit: 10)
         let item = try XCTUnwrap(page.items.first(where: { $0.assetID == candidate.assetID }))
         XCTAssertEqual(item.suggestionOrigin, .personalModel)
+        XCTAssertEqual(item.contentRevision, candidate.contentRevision)
         XCTAssertEqual(item.width, 1_200)
         XCTAssertEqual(item.height, 900)
     }

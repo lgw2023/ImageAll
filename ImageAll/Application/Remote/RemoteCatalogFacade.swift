@@ -4296,6 +4296,7 @@ actor RemoteCatalogFacade {
             assetID: item.assetID,
             fileName: item.fileName,
             availability: mapAvailability(item.availability),
+            contentRevision: item.contentRevision,
             acceptedTagCount: item.acceptedTagCount,
             rejectedTagCount: item.rejectedTagCount,
             suggestionOrigin: mapSuggestionOrigin(item.suggestionOrigin),

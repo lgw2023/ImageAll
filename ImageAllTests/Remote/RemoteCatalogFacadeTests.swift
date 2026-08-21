@@ -3126,6 +3126,7 @@ final class RemoteCatalogFacadeTests: XCTestCase {
                         assetID: assetID,
                         fileName: "a.jpg",
                         availability: .available,
+                        contentRevision: 6,
                         acceptedTagCount: 0,
                         rejectedTagCount: 0,
                         suggestionOrigin: .personalModel,
@@ -3157,6 +3158,7 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         XCTAssertEqual(page.items.count, 1)
         XCTAssertEqual(page.items[0].assetID, assetID)
         XCTAssertEqual(page.items[0].suggestionOrigin, .personalModel)
+        XCTAssertEqual(page.items[0].contentRevision, 6)
         XCTAssertEqual(page.items[0].width, 4_032)
         XCTAssertEqual(page.items[0].height, 3_024)
         XCTAssertEqual(page.items[0].favorite?.isFavorite, true)
