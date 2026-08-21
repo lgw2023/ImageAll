@@ -2428,6 +2428,7 @@ final class RemoteHTTPServerTests: XCTestCase {
             "reviewSelectionModeButton",
             "reviewContextMenu",
             "reviewContextMenuTitle",
+            "reviewPreviewContextAction",
             "reviewFavoriteContextAction",
             "activeFilterBar",
             "activeFilterSummary",
@@ -2877,6 +2878,25 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("restoreGridSelectionForDoubleClick(\"library\""))
         XCTAssertTrue(script.contains("restoreGridSelectionForDoubleClick(\"review\""))
         XCTAssertTrue(script.contains("restoreGridSelectionForDoubleClick(\"slimming\""))
+        XCTAssertTrue(script.contains("function openLightboxFromContextMenu"))
+        XCTAssertTrue(
+            script.contains(
+                "openLightboxFromContextMenu(\"library\", assetID, assetCardFocusTarget(assetID))"
+            )
+        )
+        XCTAssertTrue(
+            script.contains(
+                "openLightboxFromContextMenu(\"review\", assetID, reviewCardFocusTarget(assetID))"
+            )
+        )
+        XCTAssertTrue(
+            script.contains("openLightboxFromContextMenu(\"slimming\", memberID, returnFocus)")
+        )
+        XCTAssertFalse(
+            script.contains(
+                "state.selectedAssetID = assetID;\n      openLightbox(\"library\", assetID)"
+            )
+        )
         XCTAssertFalse(script.contains("if (state.review.selectionMode) return;"))
         XCTAssertFalse(script.contains("if (state.slimming.selectionMode) return;"))
         XCTAssertTrue(script.contains("priority: \"low\""))

@@ -953,6 +953,7 @@ const elements = {
   assetDeleteContextAction: $("#assetDeleteContextAction"),
   reviewContextMenu: $("#reviewContextMenu"),
   reviewContextMenuTitle: $("#reviewContextMenuTitle"),
+  reviewPreviewContextAction: $("#reviewPreviewContextAction"),
   reviewFavoriteContextAction: $("#reviewFavoriteContextAction"),
   sourceContextMenu: $("#sourceContextMenu"),
   sourceContextMenuTitle: $("#sourceContextMenuTitle"),
@@ -16768,6 +16769,15 @@ function restoreGridSelectionForDoubleClick(surface, itemID) {
     return true;
   }
   return false;
+}
+
+function openLightboxFromContextMenu(context, assetID, returnFocus) {
+  const resolvedReturnFocus = returnFocus instanceof HTMLElement
+    && document.contains(returnFocus)
+    ? returnFocus
+    : null;
+  openLightbox(context, assetID);
+  if (resolvedReturnFocus) state.lightboxReturnFocus = resolvedReturnFocus;
 }
 
 function selectAllLoadedAssets() {
@@ -33793,7 +33803,7 @@ function showReviewContextMenu(clientX, clientY, assetID, {
   );
   elements.reviewContextMenu.classList.remove("hidden");
   positionContextMenu(elements.reviewContextMenu, clientX, clientY);
-  restoreOverlayFocus(elements.reviewFavoriteContextAction);
+  restoreOverlayFocus(elements.reviewPreviewContextAction);
   registerContextMenuSession({
     kind: "review",
     targetID: assetID,
@@ -33825,6 +33835,12 @@ function showSlimmingMemberContextMenu(clientX, clientY, memberID, {
   elements.slimmingMemberContextMenuActions.replaceChildren();
   const actions = [
     {
+      action: "preview",
+      label: "单图查看",
+      shortcut: "Space",
+      requiresOnline: false,
+    },
+    {
       action: "favorite",
       label: favorite?.isFavorite ? "取消红心" : "加入红心",
       disabled: !supportsFavorites() || !favorite || state.favoriteMutating,
@@ -33846,8 +33862,13 @@ function showSlimmingMemberContextMenu(clientX, clientY, memberID, {
     button.type = "button";
     button.setAttribute("role", "menuitem");
     button.dataset.slimmingMemberContextAction = item.action;
-    button.textContent = item.label;
-    button.disabled = !state.online || item.disabled;
+    button.append(document.createTextNode(item.label));
+    if (item.shortcut) {
+      const shortcut = document.createElement("kbd");
+      shortcut.textContent = item.shortcut;
+      button.append(" ", shortcut);
+    }
+    button.disabled = (item.requiresOnline !== false && !state.online) || item.disabled;
     button.classList.toggle("danger", Boolean(item.destructive));
     elements.slimmingMemberContextMenuActions.append(button);
   }
@@ -37236,8 +37257,7 @@ function bindEvents() {
     const action = button.dataset.contextAction;
     await returnFromContextMenu({ restoreFocus: false });
     if (action === "preview") {
-      state.selectedAssetID = assetID;
-      openLightbox("library", assetID);
+      openLightboxFromContextMenu("library", assetID, assetCardFocusTarget(assetID));
     } else if (action === "toggleSelection") {
       if (!state.selectionMode) setSelectionMode(true);
       toggleAssetSelection(assetID);
@@ -37289,6 +37309,10 @@ function bindEvents() {
     if (!button || !assetID || button.disabled) return;
     const action = button.dataset.reviewContextAction;
     await returnFromContextMenu({ restoreFocus: false });
+    if (action === "preview") {
+      openLightboxFromContextMenu("review", assetID, reviewCardFocusTarget(assetID));
+      return;
+    }
     if (action === "favorite") await toggleReviewItemFavorite(assetID);
     restoreOverlayFocus(reviewCardFocusTarget(assetID));
   });
@@ -37317,6 +37341,15 @@ function bindEvents() {
     if (!button || !memberID || button.disabled) return;
     const action = button.dataset.slimmingMemberContextAction;
     await returnFromContextMenu({ restoreFocus: false });
+    if (action === "preview") {
+      const returnFocus = slimmingMemberMainButton(
+        elements.slimmingMemberGrid.querySelector(
+          `[data-slimming-member-id="${CSS.escape(memberID)}"]`
+        )
+      );
+      openLightboxFromContextMenu("slimming", memberID, returnFocus);
+      return;
+    }
     if (action === "favorite") {
       const favoriteButton = elements.slimmingMemberGrid.querySelector(
         `[data-slimming-member-id="${CSS.escape(memberID)}"] [data-slimming-member-favorite]`

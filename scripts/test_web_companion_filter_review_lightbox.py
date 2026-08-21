@@ -1533,6 +1533,44 @@ def main():
         assert page.locator("#libraryScroll").evaluate(
             "element => element.scrollTop"
         ) == context_scroll_top
+        asset_preview_snapshot = page.evaluate(
+            """() => ({
+              selectedAssetIDs: [...state.selectedAssetIDs].sort(),
+              selectedAssetID: state.selectedAssetID,
+              selectionAnchorID: state.selectionAnchorID,
+              scrollTop: document.querySelector('#libraryScroll').scrollTop,
+            })"""
+        )
+        second_asset_main = page.locator(
+            f'[data-asset-id="{IMAGE_IDS[1]}"] > .asset-card-main'
+        )
+        second_asset_main.press("Shift+F10")
+        asset_context_menu.wait_for()
+        page.locator('[data-context-action="preview"]').click()
+        page.locator("#lightbox:not(.hidden)").wait_for()
+        assert "TRIP_0002.JPG" in page.locator("#lightboxTitle").inner_text()
+        assert page.evaluate(
+            """() => ({
+              selectedAssetIDs: [...state.selectedAssetIDs].sort(),
+              selectedAssetID: state.selectedAssetID,
+              selectionAnchorID: state.selectionAnchorID,
+              scrollTop: document.querySelector('#libraryScroll').scrollTop,
+            })"""
+        ) == asset_preview_snapshot
+        page.keyboard.press("Escape")
+        page.locator("#lightbox").wait_for(state="hidden")
+        page.wait_for_function(
+            "assetID => document.activeElement?.closest('[data-asset-id]')?.dataset.assetId === assetID",
+            arg=IMAGE_IDS[1],
+        )
+        assert page.evaluate(
+            """() => ({
+              selectedAssetIDs: [...state.selectedAssetIDs].sort(),
+              selectedAssetID: state.selectedAssetID,
+              selectionAnchorID: state.selectionAnchorID,
+              scrollTop: document.querySelector('#libraryScroll').scrollTop,
+            })"""
+        ) == asset_preview_snapshot
         page.keyboard.press("Escape")
         page.wait_for_function(
             "() => document.querySelector('.asset-card.batch-selected') === null"
@@ -2758,11 +2796,13 @@ def main():
         review_context_menu = page.locator("#reviewContextMenu:not(.hidden)")
         review_context_menu.wait_for()
         assert page.locator("#reviewContextMenuTitle").inner_text() == "REVIEW_1.JPG"
+        review_context_preview = page.locator("#reviewPreviewContextAction")
         review_context_favorite = page.locator("#reviewFavoriteContextAction")
+        assert "单图查看" in review_context_preview.inner_text()
         assert review_context_favorite.inner_text() == "加入红心"
         assert review_context_favorite.get_attribute("data-favorite") == "false"
         page.wait_for_function(
-            "() => document.activeElement?.id === 'reviewFavoriteContextAction'"
+            "() => document.activeElement?.id === 'reviewPreviewContextAction'"
         )
         review_context_history = page.evaluate(
             """() => {
@@ -2793,7 +2833,7 @@ def main():
         page.evaluate("() => history.forward()")
         review_context_menu.wait_for()
         page.wait_for_function(
-            "() => document.activeElement?.id === 'reviewFavoriteContextAction'"
+            "() => document.activeElement?.id === 'reviewPreviewContextAction'"
         )
         assert page.evaluate(
             "() => ({ selectedIndex: state.review.selectedIndex, "
@@ -2853,7 +2893,22 @@ def main():
         review_context_menu.wait_for()
         assert review_context_favorite.inner_text() == "加入红心"
         page.screenshot(path="/tmp/imageall-review-long-press-menu.png", full_page=True)
+        review_context_preview.click()
+        page.locator("#lightbox:not(.hidden)").wait_for()
+        assert "REVIEW_1.JPG" in page.locator("#lightboxTitle").inner_text()
+        assert page.evaluate(
+            "() => ({ selectedIndex: state.review.selectedIndex, "
+            "selectedAssetIDs: [...state.review.selectedAssetIDs], "
+            "selectionAnchorIndex: state.review.selectionAnchorIndex, "
+            "itemIDs: state.review.items.map(item => item.assetID), "
+            "nextCursor: state.review.nextCursor, "
+            "scrollTop: document.querySelector('#reviewQueuePane').scrollTop })"
+        ) == review_context_snapshot
         page.keyboard.press("Escape")
+        page.locator("#lightbox").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.activeElement?.classList.contains('review-card-main')"
+        )
         assert page.evaluate(
             "() => ({ selectedIndex: state.review.selectedIndex, "
             "selectedAssetIDs: [...state.review.selectedAssetIDs], "

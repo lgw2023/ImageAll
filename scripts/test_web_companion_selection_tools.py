@@ -3184,7 +3184,7 @@ def main(*, inspector_actions_only=False):
         first_slimming_main.press("Shift+F10")
         slimming_context_menu.wait_for()
         page.wait_for_function(
-            "() => document.activeElement?.dataset.slimmingMemberContextAction === 'favorite'"
+            "() => document.activeElement?.dataset.slimmingMemberContextAction === 'preview'"
         )
         assert page.evaluate(
             "() => history.state?.imageAllWorkspace?.context?.contextMenuKind"
@@ -3197,7 +3197,7 @@ def main(*, inspector_actions_only=False):
         page.evaluate("() => history.forward()")
         slimming_context_menu.wait_for()
         page.wait_for_function(
-            "() => document.activeElement?.dataset.slimmingMemberContextAction === 'favorite'"
+            "() => document.activeElement?.dataset.slimmingMemberContextAction === 'preview'"
         )
         page.screenshot(path="/tmp/imageall-slimming-context-menu.png", full_page=True)
         page.keyboard.press("End")
@@ -3205,11 +3205,44 @@ def main(*, inspector_actions_only=False):
             "() => document.activeElement?.dataset.slimmingMemberContextAction"
             " === 'releaseSourceSpace'"
         )
+        page.keyboard.press("Home")
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.slimmingMemberContextAction"
+            " === 'preview'"
+        )
+        slimming_context_preview = page.locator(
+            '[data-slimming-member-context-action="preview"]'
+        )
+        assert "单图查看" in slimming_context_preview.inner_text()
+        slimming_context_preview_snapshot = page.evaluate(
+            """() => ({
+              selectedMemberIDs: [...state.slimming.selectedMemberIDs].sort(),
+              selectionAnchorID: state.slimming.selectionAnchorID,
+              scrollTop: document.querySelector('#slimmingAnalysisBody').scrollTop,
+            })"""
+        )
+        slimming_context_preview.click()
+        page.locator("#lightbox:not(.hidden)").wait_for()
+        assert "SLIM_0001.JPG" in page.locator("#lightboxTitle").inner_text()
+        assert page.evaluate(
+            """() => ({
+              selectedMemberIDs: [...state.slimming.selectedMemberIDs].sort(),
+              selectionAnchorID: state.slimming.selectionAnchorID,
+              scrollTop: document.querySelector('#slimmingAnalysisBody').scrollTop,
+            })"""
+        ) == slimming_context_preview_snapshot
         page.keyboard.press("Escape")
-        assert slimming_context_menu.is_hidden()
+        page.locator("#lightbox").wait_for(state="hidden")
         page.wait_for_function(
             "() => document.activeElement?.dataset.slimmingMemberMain === 'true'"
         )
+        assert page.evaluate(
+            """() => ({
+              selectedMemberIDs: [...state.slimming.selectedMemberIDs].sort(),
+              selectionAnchorID: state.slimming.selectionAnchorID,
+              scrollTop: document.querySelector('#slimmingAnalysisBody').scrollTop,
+            })"""
+        ) == slimming_context_preview_snapshot
 
         first_slimming_favorite = slimming_cards.nth(0).locator(
             ":scope > .slimming-member-favorite"
