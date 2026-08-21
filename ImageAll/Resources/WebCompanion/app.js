@@ -8450,7 +8450,7 @@ function configureSidebarTagFilterState(button, tag, query) {
           ? "点击取消；Command-点击或 Command-Return 保持交集，Command-Option-点击改为排除。"
           : "点击取消；Command-点击或 Command-Return 改为交集，Command-Option-点击改为排除。")
         : "点击加入并集；Command-点击或 Command-Return 加入交集，Command-Option-点击改为排除。",
-    "右键、Context Menu 或 Shift-F10 可仅筛选、排除、重命名或归档。",
+    "右键、触控长按、Context Menu 或 Shift-F10 可排序、移动分组、筛选、重命名或归档。",
     query
       ? "正在搜索标签；清除搜索后可拖动或用 Option + 方向键调整分组与顺序。"
       : "拖动可调整分组与顺序；Option + 左/右调整组内顺序，上/下移动到相邻分组。",
@@ -9597,8 +9597,8 @@ function sourceSidebarHelpDetail(source) {
   return [
     availability,
     `点击只显示“${source.displayName}”中的当前媒体。${refresh}`,
-    "右键、触控长按、Context Menu 或 Shift-F10 查看同步、缓存、授权、管理和移除动作。",
-    "拖动可调整来源顺序；Option + 上/下可用键盘移动。",
+    "右键、触控长按、Context Menu 或 Shift-F10 可排序，并查看同步、缓存、授权、管理和移除动作。",
+    "拖动可直接调整来源顺序；Option + 上/下可用键盘移动。",
   ].join("\n");
 }
 
@@ -33890,8 +33890,22 @@ function showSourceContextMenu(clientX, clientY, sourceID, {
   elements.sourceContextMenuTitle.textContent = source.displayName;
   elements.sourceContextMenuActions.replaceChildren();
   const activeRequest = sourceManagementActiveRequest();
+  const orderedSourceIDs = orderedSources().map((item) => item.id);
+  const sourceOrderIndex = orderedSourceIDs.indexOf(sourceID);
   const actions = [
     { action: "view", label: "在图库中查看" },
+    ...(orderedSourceIDs.length > 1 ? [
+      {
+        action: "moveEarlier",
+        label: "上移来源",
+        disabled: sourceOrderIndex <= 0,
+      },
+      {
+        action: "moveLater",
+        label: "下移来源",
+        disabled: sourceOrderIndex < 0 || sourceOrderIndex >= orderedSourceIDs.length - 1,
+      },
+    ] : []),
     ...sourceManagementActionsForCurrentState(source).map((action) => ({
       action,
       label: sourceManagementActionLabel(action, source),
@@ -33908,10 +33922,13 @@ function showSourceContextMenu(clientX, clientY, sourceID, {
     const canCancelPrewarm = item.action === "cancelPrewarm"
       && activeRequest?.sourceID === source.id
       && sourceManagementIsPrewarmAction(activeRequest.action);
-    button.disabled = (!state.online && item.action !== "view")
+    const localOrderingAction = ["moveEarlier", "moveLater"].includes(item.action);
+    button.disabled = Boolean(item.disabled)
+      || (!state.online && item.action !== "view" && !localOrderingAction)
       || (Boolean(activeRequest)
         && item.action !== "view"
         && item.action !== "manage"
+        && !localOrderingAction
         && !canCancelPrewarm);
     button.classList.toggle("danger", Boolean(item.destructive));
     elements.sourceContextMenuActions.append(button);
@@ -33960,6 +33977,13 @@ function showTagContextMenu(
   const excluded = state.filters.tagConditions.some(
     (condition) => condition.tagID === tagID && condition.decision === "excluded"
   );
+  const groupID = tag.groupID || "";
+  const groupTagIDs = tagIDsForGroup(groupID);
+  const tagOrderIndex = groupTagIDs.indexOf(tagID);
+  const groups = orderedTagGroups();
+  const groupIndex = groups.findIndex((group) => group.id === groupID);
+  const orderingDisabled = tagReorderSearchActive("sidebar")
+    || state.tagManagementMutating;
   appendTagContextAction({
     action: "filterOnly",
     label: "仅筛选此标签",
@@ -33969,6 +33993,31 @@ function showTagContextMenu(
     action: "toggleExcluded",
     label: excluded ? "取消排除此标签" : "排除此标签",
     disabled: !state.online,
+  });
+  appendTagContextAction({
+    action: "moveEarlier",
+    label: "在分组内前移",
+    disabled: orderingDisabled || tagOrderIndex <= 0,
+  });
+  appendTagContextAction({
+    action: "moveLater",
+    label: "在分组内后移",
+    disabled: orderingDisabled
+      || tagOrderIndex < 0
+      || tagOrderIndex >= groupTagIDs.length - 1,
+  });
+  appendTagContextAction({
+    action: "movePreviousGroup",
+    label: "移到上一分组",
+    disabled: orderingDisabled || !state.online || groupIndex <= 0,
+  });
+  appendTagContextAction({
+    action: "moveNextGroup",
+    label: "移到下一分组",
+    disabled: orderingDisabled
+      || !state.online
+      || groupIndex < 0
+      || groupIndex >= groups.length - 1,
   });
   appendTagContextAction({ action: "renameTag", label: "重命名…" });
   appendTagContextAction({
@@ -37264,7 +37313,7 @@ function bindEvents() {
   elements.sourceContextMenu.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-source-context-action]");
     const sourceID = state.contextSourceID;
-    if (!button || !sourceID) return;
+    if (!button || !sourceID || button.disabled) return;
     const action = button.dataset.sourceContextAction;
     const returnTarget = elements.sourceList.querySelector(
       `[data-source-id="${CSS.escape(sourceID)}"]`
@@ -37282,6 +37331,10 @@ function bindEvents() {
         selectedSourceID: sourceID,
         returnFocus: returnTarget,
       });
+      return;
+    }
+    if (action === "moveEarlier" || action === "moveLater") {
+      reorderSourceByOffset(sourceID, action === "moveEarlier" ? -1 : 1);
       return;
     }
     returnTarget?.focus({ preventScroll: true });
@@ -37306,7 +37359,7 @@ function bindEvents() {
   });
   elements.tagContextMenu.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-tag-context-action]");
-    if (!button) return;
+    if (!button || button.disabled) return;
     const action = button.dataset.tagContextAction;
     const tagID = state.contextTagID;
     const groupID = state.contextTagGroupID;
@@ -37318,6 +37371,14 @@ function bindEvents() {
       await filterToSingleSidebarTag(tagID);
     } else if (action === "toggleExcluded" && tagID) {
       await toggleSidebarTagFilter(tagID, { excluded: true });
+    } else if (action === "moveEarlier" && tagID) {
+      reorderSidebarTagByOffset(tagID, -1);
+    } else if (action === "moveLater" && tagID) {
+      reorderSidebarTagByOffset(tagID, 1);
+    } else if (action === "movePreviousGroup" && tagID) {
+      moveSidebarTagToAdjacentGroup(tagID, -1);
+    } else if (action === "moveNextGroup" && tagID) {
+      moveSidebarTagToAdjacentGroup(tagID, 1);
     } else if (action === "renameTag" && tagID) {
       openTagManagerForTag(tagID, returnFocus);
     } else if (action === "archiveTag" && tag) {

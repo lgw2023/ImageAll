@@ -1341,6 +1341,8 @@ def main():
         menu_labels = page.locator("#sourceContextMenuActions button").all_inner_texts()
         assert menu_labels == [
             "在图库中查看",
+            "上移来源",
+            "下移来源",
             "立即同步",
             "预热缩略图缓存",
             "专门用于原比例的缓存",
@@ -1355,7 +1357,7 @@ def main():
         page.keyboard.press("ArrowDown")
         assert page.evaluate(
             "() => document.activeElement?.dataset.sourceContextAction"
-        ) == "syncPhotos"
+        ) == "moveLater"
         page.keyboard.press("Escape")
         page.wait_for_function(
             f"() => document.activeElement?.dataset.sourceId === '{SOURCE_ID}'"
@@ -1718,6 +1720,8 @@ def main():
         folder_menu_labels = page.locator("#sourceContextMenuActions button").all_inner_texts()
         assert folder_menu_labels == [
             "在图库中查看",
+            "上移来源",
+            "下移来源",
             "立即重扫",
             "预热缩略图缓存",
             "专门用于原比例的缓存",

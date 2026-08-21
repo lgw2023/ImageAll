@@ -431,6 +431,32 @@ def main():
         folder.press("Alt+ArrowDown")
         assert source_names(page) == ["Apple Photos", "Downloads"]
 
+        photos = page.locator(
+            f'#sourceList .sidebar-row[data-source-id="{SOURCE_PHOTOS}"]'
+        )
+        photos.click(button="right")
+        source_menu = page.locator("#sourceContextMenu:not(.hidden)")
+        source_menu.wait_for()
+        assert source_menu.locator(
+            '[data-source-context-action="moveEarlier"]'
+        ).is_disabled()
+        assert not source_menu.locator(
+            '[data-source-context-action="moveLater"]'
+        ).is_disabled()
+        source_menu.locator('[data-source-context-action="moveLater"]').click()
+        assert source_names(page) == ["Downloads", "Apple Photos"]
+        page.wait_for_function(
+            "id => document.activeElement?.dataset.sourceId === id",
+            arg=SOURCE_PHOTOS,
+        )
+        photos.click(button="right")
+        source_menu.locator('[data-source-context-action="moveEarlier"]').click()
+        assert source_names(page) == ["Apple Photos", "Downloads"]
+        page.wait_for_function(
+            "id => document.activeElement?.dataset.sourceId === id",
+            arg=SOURCE_PHOTOS,
+        )
+
         subject_toggle = sidebar_group_toggle(page, GROUP_SUBJECT)
         scene_toggle = sidebar_group_toggle(page, GROUP_SCENE)
         assert subject_toggle.get_attribute("aria-expanded") == "true"
@@ -587,6 +613,18 @@ def main():
 
         page.locator("#tagNavigationSearch").fill("猫")
         assert page.locator(f'[data-quick-tag-id="{TAG_CAT}"]').get_attribute("draggable") == "false"
+        page.locator(f'[data-quick-tag-id="{TAG_CAT}"]').click(button="right")
+        search_tag_menu = page.locator("#tagContextMenu:not(.hidden)")
+        for action in [
+            "moveEarlier",
+            "moveLater",
+            "movePreviousGroup",
+            "moveNextGroup",
+        ]:
+            assert search_tag_menu.locator(
+                f'[data-tag-context-action="{action}"]'
+            ).is_disabled()
+        page.keyboard.press("Escape")
         page.locator("#tagNavigationSearch").fill("")
 
         page.reload(wait_until="networkidle")
@@ -721,10 +759,44 @@ def main():
         assert tag_menu.locator("[data-tag-context-action]").all_inner_texts() == [
             "仅筛选此标签",
             "取消排除此标签",
+            "在分组内前移",
+            "在分组内后移",
+            "移到上一分组",
+            "移到下一分组",
             "重命名…",
             "归档标签",
         ]
+        assert tag_menu.locator(
+            '[data-tag-context-action="moveEarlier"]'
+        ).is_disabled()
+        assert not tag_menu.locator(
+            '[data-tag-context-action="moveLater"]'
+        ).is_disabled()
         page.screenshot(path="/tmp/imageall-tag-context-menu.png", full_page=True)
+        tag_menu.locator('[data-tag-context-action="moveLater"]').click()
+        assert sidebar_group_names(page, GROUP_SUBJECT) == ["猫", "狗"]
+        page.wait_for_function(
+            "id => document.activeElement?.dataset.quickTagId === id",
+            arg=TAG_DOG,
+        )
+        dog_chip.click(button="right")
+        tag_menu.locator('[data-tag-context-action="moveEarlier"]').click()
+        assert sidebar_group_names(page, GROUP_SUBJECT) == ["狗", "猫"]
+        page.wait_for_function(
+            "id => document.activeElement?.dataset.quickTagId === id",
+            arg=TAG_DOG,
+        )
+        page.evaluate("() => { state.online = false; }")
+        dog_chip.click(button="right")
+        assert not tag_menu.locator(
+            '[data-tag-context-action="moveLater"]'
+        ).is_disabled()
+        assert tag_menu.locator(
+            '[data-tag-context-action="moveNextGroup"]'
+        ).is_disabled()
+        page.keyboard.press("Escape")
+        page.evaluate("() => { state.online = true; }")
+        dog_chip.click(button="right")
         tag_menu.locator('[data-tag-context-action="filterOnly"]').click()
         assert dog_chip.get_attribute("data-tag-filter-state") == "included"
         assert travel_chip.get_attribute("data-tag-filter-state") == "none"
@@ -854,6 +926,56 @@ def main():
 
         page.set_viewport_size({"width": 390, "height": 844})
         page.wait_for_timeout(100)
+        page.locator("#sidebarToggle").click()
+        page.locator("#sourceSidebar.open").wait_for()
+        mobile_dog_chip = page.locator(f'[data-quick-tag-id="{TAG_DOG}"]')
+        mobile_dog_chip.scroll_into_view_if_needed()
+        mobile_dog_bounds = mobile_dog_chip.bounding_box()
+        assert mobile_dog_bounds is not None
+        mobile_dog_point = {
+            "x": mobile_dog_bounds["x"] + mobile_dog_bounds["width"] / 2,
+            "y": mobile_dog_bounds["y"] + mobile_dog_bounds["height"] / 2,
+        }
+        page.evaluate(
+            """({ tagID, point }) => {
+              document.querySelector(`[data-quick-tag-id="${tagID}"]`).dispatchEvent(
+                new PointerEvent('pointerdown', {
+                  bubbles: true,
+                  pointerId: 94,
+                  pointerType: 'touch',
+                  button: 0,
+                  clientX: point.x,
+                  clientY: point.y,
+                  isPrimary: true,
+                })
+              );
+            }""",
+            {"tagID": TAG_DOG, "point": mobile_dog_point},
+        )
+        page.wait_for_timeout(580)
+        tag_menu.wait_for()
+        assert not tag_menu.locator(
+            '[data-tag-context-action="moveNextGroup"]'
+        ).is_disabled()
+        assert tag_menu.locator(
+            '[data-tag-context-action="movePreviousGroup"]'
+        ).is_disabled()
+        page.screenshot(
+            path="/tmp/imageall-sidebar-touch-ordering-390.png",
+            full_page=False,
+        )
+        previous_tag_move_count = len(tag_moves)
+        tag_menu.locator('[data-tag-context-action="moveNextGroup"]').click()
+        page.wait_for_function(
+            "() => document.querySelector('#toastMessage').textContent.includes('移动到')"
+        )
+        assert len(tag_moves) == previous_tag_move_count + 1
+        assert tag_moves[-1]["tagID"] == TAG_DOG
+        assert tag_moves[-1]["groupID"] == GROUP_SCENE
+        page.wait_for_function(
+            "id => document.activeElement?.dataset.quickTagId === id",
+            arg=TAG_DOG,
+        )
         dimensions = page.evaluate(
             "() => ({ viewport: innerWidth, scroll: document.documentElement.scrollWidth })"
         )

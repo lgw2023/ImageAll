@@ -1259,7 +1259,7 @@ def main(*, inspector_actions_only=False):
         for expected in [
             "来源可用",
             "点击只显示“Apple Photos”",
-            "Shift-F10 查看同步、缓存、授权、管理和移除动作",
+            "Shift-F10 可排序，并查看同步、缓存、授权、管理和移除动作",
             "Option + 上/下可用键盘移动",
         ]:
             assert expected in source_help_detail, (expected, source_help_detail)
@@ -1330,7 +1330,7 @@ def main(*, inspector_actions_only=False):
         unfiltered_tag_help = page.locator("#persistentHelpDetail").inner_text()
         assert "当前：未筛选" in unfiltered_tag_help
         assert "Command-点击或 Command-Return 加入交集" in unfiltered_tag_help
-        assert "Shift-F10 可仅筛选、排除、重命名或归档" in unfiltered_tag_help
+        assert "Shift-F10 可排序、移动分组、筛选、重命名或归档" in unfiltered_tag_help
         sidebar_cat_chip.click()
         page.wait_for_function(
             "tagID => state.filters.tagConditions.some((item) => "
