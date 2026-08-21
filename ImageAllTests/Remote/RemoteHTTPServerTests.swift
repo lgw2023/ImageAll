@@ -2887,6 +2887,7 @@ final class RemoteHTTPServerTests: XCTestCase {
             )
         )
         XCTAssertTrue(script.contains("function openLightboxFromContextMenu"))
+        XCTAssertTrue(script.contains("function slimmingSelectionPrimaryID"))
         XCTAssertTrue(script.contains("lightboxPreservesSelection: false"))
         XCTAssertTrue(script.contains("preserveSelection: context.preserveSelection === true"))
         XCTAssertTrue(script.contains("preserveSelection: state.lightboxPreservesSelection"))
@@ -2906,6 +2907,23 @@ final class RemoteHTTPServerTests: XCTestCase {
         )
         XCTAssertTrue(
             script.contains(
+                "const assetID = slimmingSelectionPrimaryID();\n        if (assetID)"
+            )
+        )
+        XCTAssertTrue(
+            script.contains(
+                "preserveSelection: state.slimming.selectedMemberIDs.size > 1"
+            )
+        )
+        XCTAssertTrue(script.contains("returnFocus instanceof HTMLElement"))
+        XCTAssertTrue(
+            script.contains(
+                "preserveSelection: state.slimming.selectedMemberIDs.size > 1,\n"
+                    + "            returnFocus,"
+            )
+        )
+        XCTAssertTrue(
+            script.contains(
                 "state.lightboxContext === \"review\" && !state.lightboxPreservesSelection"
             )
         )
@@ -2921,6 +2939,11 @@ final class RemoteHTTPServerTests: XCTestCase {
         )
         XCTAssertFalse(script.contains("if (state.review.selectionMode) return;"))
         XCTAssertFalse(script.contains("if (state.slimming.selectionMode) return;"))
+        XCTAssertFalse(
+            script.contains(
+                "event.code === \"Space\" && state.slimming.selectedMemberIDs.size === 1"
+            )
+        )
         XCTAssertTrue(script.contains("priority: \"low\""))
         XCTAssertTrue(script.contains("preserveCurrent: true"))
         XCTAssertTrue(script.contains("const decoder = new Image()"))

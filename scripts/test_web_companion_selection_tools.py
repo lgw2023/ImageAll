@@ -2958,6 +2958,44 @@ def main(*, inspector_actions_only=False):
         slimming_select_all.click()
         assert page.evaluate("() => state.slimming.selectedMemberIDs.size") == 3
         assert slimming_select_all.is_disabled()
+        slimming_space_preview_snapshot = page.evaluate(
+            """() => ({
+              selectedMemberIDs: [...state.slimming.selectedMemberIDs].sort(),
+              selectionAnchorID: state.slimming.selectionAnchorID,
+              scrollTop: document.querySelector('#slimmingAnalysisBody').scrollTop,
+            })"""
+        )
+        page.keyboard.press("Space")
+        page.locator("#lightbox:not(.hidden)").wait_for()
+        assert "SLIM_0001.JPG" in page.locator("#lightboxTitle").inner_text()
+        assert page.evaluate("() => state.lightboxPreservesSelection") is True
+        page.locator("#lightboxNextButton").click()
+        page.wait_for_function(
+            "() => document.querySelector('#lightboxTitle').textContent.includes('SLIM_0002.JPG')"
+        )
+        assert page.evaluate(
+            """() => ({
+              selectedMemberIDs: [...state.slimming.selectedMemberIDs].sort(),
+              selectionAnchorID: state.slimming.selectionAnchorID,
+              scrollTop: document.querySelector('#slimmingAnalysisBody').scrollTop,
+            })"""
+        ) == slimming_space_preview_snapshot
+        page.keyboard.press("Escape")
+        page.locator("#lightbox").wait_for(state="hidden")
+        assert page.evaluate(
+            """() => ({
+              selectedMemberIDs: [...state.slimming.selectedMemberIDs].sort(),
+              selectionAnchorID: state.slimming.selectionAnchorID,
+              scrollTop: document.querySelector('#slimmingAnalysisBody').scrollTop,
+            })"""
+        ) == slimming_space_preview_snapshot
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.slimmingMemberMain === 'true'"
+        )
+        assert page.evaluate(
+            "() => document.activeElement.closest('[data-slimming-member-id]')"
+            ".dataset.slimmingMemberId"
+        ) == SLIMMING_ASSET_IDS[0]
         slimming_cards.nth(1).locator(":scope > .slimming-member-main").click()
         assert page.evaluate("() => state.slimming.selectedMemberIDs.size") == 2
         assert slimming_select_all.is_enabled()
@@ -3001,6 +3039,25 @@ def main(*, inspector_actions_only=False):
         ) == slimming_double_click_snapshot
         page.wait_for_function(
             "() => document.activeElement?.dataset.slimmingMemberMain === 'true'"
+        )
+        # The context target is not selected, so the saved anchor is stale.
+        # Space must fall back to the first still-selected member in visual order.
+        page.keyboard.press("Space")
+        page.locator("#lightbox:not(.hidden)").wait_for()
+        assert "SLIM_0001.JPG" in page.locator("#lightboxTitle").inner_text()
+        assert page.evaluate("() => state.lightboxPreservesSelection") is True
+        assert page.evaluate(
+            """() => ({
+              selectedMemberIDs: [...state.slimming.selectedMemberIDs].sort(),
+              selectionAnchorID: state.slimming.selectionAnchorID,
+              scrollTop: document.querySelector('#slimmingAnalysisBody').scrollTop,
+            })"""
+        ) == slimming_double_click_snapshot
+        page.keyboard.press("Escape")
+        page.locator("#lightbox").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.activeElement?.closest('[data-slimming-member-id]')"
+            f"?.dataset.slimmingMemberId === '{SLIMMING_ASSET_IDS[0]}'"
         )
         slimming_select_all.click()
         assert page.evaluate("() => state.slimming.selectedMemberIDs.size") == 3

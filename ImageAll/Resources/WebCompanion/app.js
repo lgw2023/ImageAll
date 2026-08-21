@@ -20703,6 +20703,16 @@ function selectAllSlimmingMembers() {
     : elements.closeSlimmingButton);
 }
 
+function slimmingSelectionPrimaryID() {
+  const selectedIDs = state.slimming.selectedMemberIDs;
+  const anchorID = state.slimming.selectionAnchorID;
+  if (anchorID && selectedIDs.has(anchorID)
+    && state.slimming.members.some((member) => member.id === anchorID)) {
+    return anchorID;
+  }
+  return state.slimming.members.find((member) => selectedIDs.has(member.id))?.id || null;
+}
+
 function renderReviewCollectionSummary() {
   elements.reviewEmpty.classList.toggle("hidden", state.review.items.length > 0);
   elements.loadMoreReviewButton.classList.toggle("hidden", !state.review.nextCursor);
@@ -29484,13 +29494,17 @@ async function renderLightboxMedia(item) {
 function openLightbox(context, assetID, {
   original = false,
   preserveSelection = false,
+  returnFocus = null,
 } = {}) {
   if (!assetID) return;
   stopAssetHoverVideo();
   const wasHidden = elements.lightbox.classList.contains("hidden");
   if (wasHidden) {
     clearLightboxPreviewPrefetches();
-    state.lightboxReturnFocus = document.activeElement;
+    state.lightboxReturnFocus = returnFocus instanceof HTMLElement
+      && document.contains(returnFocus)
+      ? returnFocus
+      : document.activeElement;
   }
   state.lightboxContext = context;
   state.lightboxAssetID = assetID;
@@ -32541,7 +32555,7 @@ function commandSelectionContext(route = commandContextRoute()) {
       noun: "候选成员",
       allIDs: state.slimming.members.map((member) => member.id),
       selectedIDs,
-      primaryID: state.slimming.selectionAnchorID || selectedIDs[0] || null,
+      primaryID: slimmingSelectionPrimaryID(),
     };
   }
   return null;
@@ -38178,9 +38192,20 @@ function bindEvents() {
         moveSlimmingMemberSelection(event.key, { extendRange: event.shiftKey });
         return;
       }
-      if (event.code === "Space" && state.slimming.selectedMemberIDs.size === 1) {
-        event.preventDefault();
-        openLightbox("slimming", [...state.slimming.selectedMemberIDs][0]);
+      if (event.code === "Space" && state.slimming.selectedMemberIDs.size > 0) {
+        const assetID = slimmingSelectionPrimaryID();
+        if (assetID) {
+          const returnFocus = slimmingMemberMainButton(
+            elements.slimmingMemberGrid.querySelector(
+              `[data-slimming-member-id="${CSS.escape(assetID)}"]`
+            )
+          );
+          event.preventDefault();
+          openLightbox("slimming", assetID, {
+            preserveSelection: state.slimming.selectedMemberIDs.size > 1,
+            returnFocus,
+          });
+        }
       }
       return;
     }
