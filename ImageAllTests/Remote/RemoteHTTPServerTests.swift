@@ -2304,6 +2304,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         for controlID in [
             "filterPopover",
             "batchBar",
+            "selectionToolActions",
             "reviewWorkspace",
             "reviewQueuePane",
             "reviewMarqueeSelection",
@@ -3526,6 +3527,11 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("(showsSelection || showsDetail)"))
         XCTAssertTrue(script.contains("&& !state.inspectorDismissed"))
         XCTAssertTrue(html.contains("id=\"selectionInspectorOverlayButton\""))
+        XCTAssertTrue(stylesheet.contains("scroll-snap-type: inline proximity"))
+        XCTAssertTrue(stylesheet.contains("touch-action: pan-x"))
+        XCTAssertTrue(script.contains("function resetCompactSelectionToolScroll"))
+        XCTAssertTrue(script.contains("function revealCompactSelectionToolAction"))
+        XCTAssertTrue(script.contains("elements.selectionToolActions.addEventListener(\"focusout\""))
         XCTAssertTrue(html.contains("id=\"mobileSidebarScrim\""))
         XCTAssertTrue(stylesheet.contains(".mobile-sidebar-scrim"))
         XCTAssertTrue(stylesheet.contains(".app-shell.mobile-sidebar-open #sidebarToggle"))

@@ -4830,6 +4830,67 @@ def main(*, inspector_actions_only=False):
         page.wait_for_function(
             "() => !document.querySelector('#inspector').classList.contains('open')"
         )
+        compact_tool_geometry = page.evaluate(
+            """() => {
+              const bar = document.querySelector('#batchBar').getBoundingClientRect();
+              const strip = document.querySelector('#selectionToolActions');
+              const stripRect = strip.getBoundingClientRect();
+              const first = document.querySelector('#favoriteSelectedButton').getBoundingClientRect();
+              const last = document.querySelector('#deleteSelectedButton').getBoundingClientRect();
+              return {
+                barHeight: bar.height,
+                clientWidth: strip.clientWidth,
+                scrollWidth: strip.scrollWidth,
+                scrollLeft: strip.scrollLeft,
+                stripLeft: stripRect.left,
+                stripRight: stripRect.right,
+                firstLeft: first.left,
+                firstRight: first.right,
+                lastLeft: last.left,
+                lastRight: last.right,
+              };
+            }"""
+        )
+        assert compact_tool_geometry["barHeight"] <= 190, compact_tool_geometry
+        assert compact_tool_geometry["scrollWidth"] > compact_tool_geometry["clientWidth"], (
+            compact_tool_geometry
+        )
+        assert compact_tool_geometry["scrollLeft"] <= 1, compact_tool_geometry
+        assert compact_tool_geometry["firstLeft"] >= compact_tool_geometry["stripLeft"] - 1, (
+            compact_tool_geometry
+        )
+        assert compact_tool_geometry["firstRight"] <= compact_tool_geometry["stripRight"] + 1, (
+            compact_tool_geometry
+        )
+        page.locator("#deleteSelectedButton").focus()
+        page.wait_for_function(
+            """() => {
+              const strip = document.querySelector('#selectionToolActions');
+              const stripRect = strip.getBoundingClientRect();
+              const buttonRect = document.querySelector('#deleteSelectedButton')
+                .getBoundingClientRect();
+              return strip.scrollLeft > 0
+                && buttonRect.left >= stripRect.left - 1
+                && buttonRect.right <= stripRect.right + 1;
+            }"""
+        )
+        end_scroll_left = page.locator("#selectionToolActions").evaluate(
+            "element => element.scrollLeft"
+        )
+        page.locator("#favoriteSelectedButton").focus()
+        page.wait_for_function(
+            """() => {
+              const strip = document.querySelector('#selectionToolActions');
+              const stripRect = strip.getBoundingClientRect();
+              const buttonRect = document.querySelector('#favoriteSelectedButton')
+                .getBoundingClientRect();
+              return buttonRect.left >= stripRect.left - 1
+                && buttonRect.right <= stripRect.right + 1;
+            }"""
+        )
+        assert page.locator("#selectionToolActions").evaluate(
+            "element => element.scrollLeft"
+        ) < end_scroll_left
         narrow_favorite = page.locator("#assetGrid .asset-card-favorite").first
         assert narrow_favorite.is_visible()
         narrow_scroll = page.locator("#libraryScroll").evaluate("element => element.scrollTop")

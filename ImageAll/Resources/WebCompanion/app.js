@@ -477,6 +477,7 @@ const elements = {
   preparePersonalSelectionTitle: $("#preparePersonalSelectionTitle"),
   findSimilarPersonalSelectionButton: $("#findSimilarPersonalSelectionButton"),
   batchBar: $("#batchBar"),
+  selectionToolActions: $("#selectionToolActions"),
   selectionSummary: $("#selectionSummary"),
   selectionInspectorOverlayButton: $("#selectionInspectorOverlayButton"),
   selectAllLoadedButton: $("#selectAllLoadedButton"),
@@ -2818,6 +2819,11 @@ function handleMobileSidebarLayoutChange() {
     recordWorkspaceHistory("gallery", currentGalleryHistoryContext(), "replace");
   } else {
     syncMobileSidebarAccessibility();
+  }
+  if (mobileSidebarLayoutQuery.matches) {
+    requestAnimationFrame(() => resetCompactSelectionToolScroll({
+      preserveFocusedAction: true,
+    }));
   }
   scheduleAdaptiveToolbarSync();
 }
@@ -7773,6 +7779,30 @@ function syncSelectionModeControls() {
     selectionModeLabel.textContent = state.selectionMode ? "完成" : "选择";
   }
   elements.batchBar.classList.toggle("hidden", !state.selectionMode);
+}
+
+function resetCompactSelectionToolScroll({ preserveFocusedAction = false } = {}) {
+  if (!mobileSidebarLayoutQuery.matches || !state.selectionMode) return;
+  if (preserveFocusedAction
+    && elements.selectionToolActions.contains(document.activeElement)) return;
+  elements.selectionToolActions.scrollLeft = 0;
+}
+
+function revealCompactSelectionToolAction(action) {
+  if (!mobileSidebarLayoutQuery.matches
+    || !state.selectionMode
+    || !(action instanceof HTMLElement)) return;
+  requestAnimationFrame(() => {
+    const stripRect = elements.selectionToolActions.getBoundingClientRect();
+    const actionRect = action.getBoundingClientRect();
+    const leadingEdge = stripRect.left + 2;
+    const trailingEdge = stripRect.right - 2;
+    if (actionRect.left < leadingEdge) {
+      elements.selectionToolActions.scrollLeft -= leadingEdge - actionRect.left;
+    } else if (actionRect.right > trailingEdge) {
+      elements.selectionToolActions.scrollLeft += actionRect.right - trailingEdge;
+    }
+  });
 }
 
 async function switchMediaKind(mediaKind) {
@@ -16556,6 +16586,7 @@ async function toggleAssetCardFavorite(button) {
 }
 
 function setSelectionMode(enabled, { seedCurrent = false } = {}) {
+  const enteringSelectionMode = enabled && !state.selectionMode;
   if (enabled && seedCurrent && state.selectedAssetID
     && state.assets.some((asset) => asset.id === state.selectedAssetID)) {
     state.selectedAssetIDs.add(state.selectedAssetID);
@@ -16579,6 +16610,9 @@ function setSelectionMode(enabled, { seedCurrent = false } = {}) {
     state.selectionPrimaryRequestGeneration += 1;
   }
   syncSelectionModeControls();
+  if (enteringSelectionMode) {
+    requestAnimationFrame(resetCompactSelectionToolScroll);
+  }
   renderAssetSelectionState();
   renderSelectionMutation();
 }
@@ -35464,6 +35498,13 @@ function bindEvents() {
 
   elements.selectionModeButton.addEventListener("click", () => {
     setSelectionMode(!state.selectionMode);
+  });
+  elements.selectionToolActions.addEventListener("focusout", (event) => {
+    if (elements.selectionToolActions.contains(event.relatedTarget)) return;
+    requestAnimationFrame(resetCompactSelectionToolScroll);
+  });
+  elements.selectionToolActions.addEventListener("focusin", (event) => {
+    revealCompactSelectionToolAction(event.target.closest("button"));
   });
   elements.selectionInspectorOverlayButton.addEventListener(
     "click",
