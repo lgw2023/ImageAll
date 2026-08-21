@@ -8788,13 +8788,18 @@ html.split-resizing * {
 }
 
 .lightbox-stage img {
+  opacity: 1;
   transform-origin: center;
-  will-change: transform;
+  will-change: transform, opacity;
   -webkit-user-drag: none;
 }
 
 .lightbox-stage:not(.dragging) img {
-  transition: transform 120ms ease-out;
+  transition: transform 120ms ease-out, opacity 100ms ease-out;
+}
+
+.lightbox-stage img.protected-image-transitioning {
+  opacity: 0.72;
 }
 
 .lightbox-stage video {

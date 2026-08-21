@@ -1844,7 +1844,10 @@ function dispatchProtectedImageEvent(image, type, requestID, detail = {}) {
 function failProtectedImage(image, requestID, error = null) {
   if (protectedImageRequests.get(image) !== requestID) return;
   delete image.dataset.protectedPath;
+  delete image.dataset.protectedVisiblePath;
   image.dataset.protectedAssignedRequestId = String(requestID);
+  image.classList.remove("protected-image-transitioning");
+  image.setAttribute("aria-busy", "false");
   image.removeAttribute("src");
   dispatchProtectedImageEvent(image, "imageall-protected-error", requestID, {
     status: error?.status || 0,
@@ -1857,6 +1860,10 @@ function failProtectedImage(image, requestID, error = null) {
 async function monitorProtectedImageDecode(image, requestID, objectURL = null) {
   try {
     await image.decode();
+    if (protectedImageRequests.get(image) !== requestID) return;
+    image.dataset.protectedVisiblePath = image.dataset.protectedPath || "";
+    image.classList.remove("protected-image-transitioning");
+    image.setAttribute("aria-busy", "false");
     dispatchProtectedImageEvent(image, "imageall-protected-load", requestID);
   } catch {
     failProtectedImage(image, requestID);
@@ -1890,7 +1897,13 @@ async function protectedImageBlob(path, { signal, priority = "auto" } = {}) {
   return fetchProtectedImageBlob(path, { signal, priority });
 }
 
-function startProtectedImageRequest(image, path, requestID, priority = "auto") {
+function startProtectedImageRequest(
+  image,
+  path,
+  requestID,
+  priority = "auto",
+  preserveVisibleFrame = false
+) {
   if (protectedImageRequests.get(image) !== requestID) return;
   const controller = new AbortController();
   protectedImageAbortControllers.set(image, controller);
@@ -1901,6 +1914,21 @@ function startProtectedImageRequest(image, path, requestID, priority = "auto") {
       if (protectedImageRequests.get(image) !== requestID) {
         URL.revokeObjectURL(objectURL);
         return;
+      }
+      if (preserveVisibleFrame) {
+        const decoder = new Image();
+        decoder.src = objectURL;
+        try {
+          await decoder.decode();
+        } catch {
+          URL.revokeObjectURL(objectURL);
+          failProtectedImage(image, requestID);
+          return;
+        }
+        if (protectedImageRequests.get(image) !== requestID) {
+          URL.revokeObjectURL(objectURL);
+          return;
+        }
       }
       image.dataset.protectedAssignedRequestId = String(requestID);
       image.src = objectURL;
@@ -1917,7 +1945,11 @@ function startProtectedImageRequest(image, path, requestID, priority = "auto") {
     });
 }
 
-function setProtectedImageSource(image, path, { priority = "auto", forceFetch = false } = {}) {
+function setProtectedImageSource(
+  image,
+  path,
+  { priority = "auto", forceFetch = false, preserveCurrent = false } = {}
+) {
   if (image.dataset.protectedPath === path) return;
   protectedImageIntersectionObserver?.unobserve(image);
   protectedImageAbortControllers.get(image)?.abort();
@@ -1927,7 +1959,13 @@ function setProtectedImageSource(image, path, { priority = "auto", forceFetch = 
   image.dataset.protectedRequestId = String(requestID);
   image.dataset.protectedPath = path;
   delete image.dataset.protectedAssignedRequestId;
-  image.removeAttribute("src");
+  const preservesVisibleFrame = preserveCurrent && image.hasAttribute("src");
+  image.classList.toggle("protected-image-transitioning", preservesVisibleFrame);
+  image.setAttribute("aria-busy", "true");
+  if (!preservesVisibleFrame) {
+    delete image.dataset.protectedVisiblePath;
+    image.removeAttribute("src");
+  }
   if (!state.accountAuthorization && !forceFetch) {
     image.dataset.protectedAssignedRequestId = String(requestID);
     image.src = path;
@@ -1938,7 +1976,7 @@ function setProtectedImageSource(image, path, { priority = "auto", forceFetch = 
     protectedImageIntersectionObserver.observe(image);
     return;
   }
-  startProtectedImageRequest(image, path, requestID, priority);
+  startProtectedImageRequest(image, path, requestID, priority, preservesVisibleFrame);
 }
 
 function clearProtectedImageSource(image) {
@@ -1949,7 +1987,10 @@ function clearProtectedImageSource(image) {
   protectedImageRequests.set(image, requestID);
   image.dataset.protectedRequestId = String(requestID);
   delete image.dataset.protectedPath;
+  delete image.dataset.protectedVisiblePath;
   delete image.dataset.protectedAssignedRequestId;
+  image.classList.remove("protected-image-transitioning");
+  image.setAttribute("aria-busy", "false");
   image.removeAttribute("src");
 }
 
@@ -29258,7 +29299,7 @@ async function renderLightboxMedia(item) {
     setProtectedImageSource(
       elements.lightboxImage,
       `/v1/assets/${item.id}/${original ? "original" : "preview"}${revision}`,
-      { priority: "high", forceFetch: true }
+      { priority: "high", forceFetch: true, preserveCurrent: true }
     );
     syncLightboxViewport();
     return;

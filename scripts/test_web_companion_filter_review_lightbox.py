@@ -3021,6 +3021,163 @@ def main():
             "() => [...state.lightboxPreviewPrefetches.keys()]"
             ".every(path => path.includes('/preview') && !path.includes('/original'))"
         )
+        held_frame_path = "/v1/assets/frame-hold/preview"
+        previous_frame = page.evaluate(
+            """path => {
+              const image = document.querySelector('#lightboxImage');
+              const originalFetch = window.fetch.bind(window);
+              window.__imageAllOriginalFetch = originalFetch;
+              window.__imageAllOriginalDecode = HTMLImageElement.prototype.decode;
+              window.__imageAllHeldDecode = null;
+              HTMLImageElement.prototype.decode = function() {
+                if (!this.isConnected && !window.__imageAllHeldDecode) {
+                  return new Promise(resolve => {
+                    window.__imageAllHeldDecode = { resolve };
+                  });
+                }
+                return window.__imageAllOriginalDecode.call(this);
+              };
+              window.fetch = (input, options) => {
+                const requestPath = typeof input === 'string' ? input : input?.url;
+                if (requestPath === path) {
+                  return new Promise((resolve, reject) => {
+                    window.__imageAllHeldFrame = { resolve, reject };
+                  });
+                }
+                return originalFetch(input, options);
+              };
+              const previous = {
+                src: image.getAttribute('src'),
+                visiblePath: image.dataset.protectedVisiblePath,
+              };
+              setProtectedImageSource(image, path, {
+                priority: 'high',
+                forceFetch: true,
+                preserveCurrent: true,
+              });
+              return {
+                previous,
+                currentSrc: image.getAttribute('src'),
+                requestedPath: image.dataset.protectedPath,
+                visiblePath: image.dataset.protectedVisiblePath,
+                transitioning: image.classList.contains('protected-image-transitioning'),
+                busy: image.getAttribute('aria-busy'),
+              };
+            }""",
+            held_frame_path,
+        )
+        assert previous_frame["previous"]["src"]
+        assert previous_frame["currentSrc"] == previous_frame["previous"]["src"]
+        assert previous_frame["requestedPath"] == held_frame_path
+        assert previous_frame["visiblePath"] == previous_frame["previous"]["visiblePath"]
+        assert previous_frame["transitioning"] is True
+        assert previous_frame["busy"] == "true"
+        held_png = base64.b64encode(PNG_BYTES).decode("ascii")
+        page.evaluate(
+            """payload => {
+              const bytes = Uint8Array.from(atob(payload), character => character.charCodeAt(0));
+              window.__imageAllHeldFrame.resolve(new Response(bytes, {
+                status: 200,
+                headers: { 'Content-Type': 'image/png' },
+              }));
+            }""",
+            held_png,
+        )
+        page.wait_for_function("() => Boolean(window.__imageAllHeldDecode)")
+        held_after_fetch = page.evaluate(
+            """() => {
+              const image = document.querySelector('#lightboxImage');
+              return {
+                src: image.getAttribute('src'),
+                visiblePath: image.dataset.protectedVisiblePath,
+                requestedPath: image.dataset.protectedPath,
+                transitioning: image.classList.contains('protected-image-transitioning'),
+                busy: image.getAttribute('aria-busy'),
+              };
+            }"""
+        )
+        assert held_after_fetch == {
+            "src": previous_frame["previous"]["src"],
+            "visiblePath": previous_frame["previous"]["visiblePath"],
+            "requestedPath": held_frame_path,
+            "transitioning": True,
+            "busy": "true",
+        }
+        page.evaluate(
+            """() => {
+              HTMLImageElement.prototype.decode = window.__imageAllOriginalDecode;
+              window.__imageAllHeldDecode.resolve();
+            }"""
+        )
+        page.wait_for_function(
+            "path => document.querySelector('#lightboxImage').dataset.protectedVisiblePath === path "
+            "&& !document.querySelector('#lightboxImage')"
+            ".classList.contains('protected-image-transitioning') "
+            "&& document.querySelector('#lightboxImage').getAttribute('aria-busy') === 'false'",
+            arg=held_frame_path,
+        )
+        resolved_frame_src = page.locator("#lightboxImage").get_attribute("src")
+        assert resolved_frame_src != previous_frame["previous"]["src"]
+        held_failure_path = "/v1/assets/frame-failure/preview"
+        pending_failure = page.evaluate(
+            """path => {
+              const image = document.querySelector('#lightboxImage');
+              window.fetch = (input, options) => {
+                const requestPath = typeof input === 'string' ? input : input?.url;
+                if (requestPath === path) {
+                  return new Promise(resolve => {
+                    window.__imageAllHeldFrameFailure = { resolve };
+                  });
+                }
+                return window.__imageAllOriginalFetch(input, options);
+              };
+              const previousSrc = image.getAttribute('src');
+              setProtectedImageSource(image, path, {
+                priority: 'high',
+                forceFetch: true,
+                preserveCurrent: true,
+              });
+              return {
+                previousSrc,
+                currentSrc: image.getAttribute('src'),
+                transitioning: image.classList.contains('protected-image-transitioning'),
+              };
+            }""",
+            held_failure_path,
+        )
+        assert pending_failure == {
+            "previousSrc": resolved_frame_src,
+            "currentSrc": resolved_frame_src,
+            "transitioning": True,
+        }
+        page.evaluate(
+            """() => window.__imageAllHeldFrameFailure.resolve(new Response(
+              JSON.stringify({ message: 'synthetic frame failure' }),
+              { status: 503, headers: { 'Content-Type': 'application/json' } }
+            ))"""
+        )
+        page.wait_for_function(
+            "() => !document.querySelector('#lightboxImage').hasAttribute('src') "
+            "&& !document.querySelector('#lightboxImage')"
+            ".classList.contains('protected-image-transitioning') "
+            "&& document.querySelector('#lightboxImage').getAttribute('aria-busy') === 'false'"
+        )
+        page.evaluate(
+            """path => {
+              const image = document.querySelector('#lightboxImage');
+              window.fetch = window.__imageAllOriginalFetch;
+              setProtectedImageSource(image, path, {
+                priority: 'high',
+                forceFetch: true,
+                preserveCurrent: true,
+              });
+            }""",
+            f"/v1/assets/{REVIEW_IDS[0]}/preview?r=1",
+        )
+        page.wait_for_function(
+            "path => document.querySelector('#lightboxImage').dataset.protectedVisiblePath === path",
+            arg=f"/v1/assets/{REVIEW_IDS[0]}/preview?r=1",
+        )
         review_lightbox_layout = page.evaluate(
             """() => {
               const lightbox = document.querySelector('#lightbox');
