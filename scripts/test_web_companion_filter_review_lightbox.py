@@ -3006,6 +3006,19 @@ def main():
               scrollTop: document.querySelector('#reviewQueuePane').scrollTop,
             })"""
         ) == review_double_click_snapshot
+        assert page.evaluate("() => state.lightboxPreservesSelection") is True
+        page.locator("#lightboxNextButton").click()
+        page.wait_for_function(
+            "() => document.querySelector('#lightboxTitle').textContent.includes('REVIEW_3.JPG')"
+        )
+        assert page.evaluate(
+            """() => ({
+              selectedAssetIDs: [...state.review.selectedAssetIDs].sort(),
+              selectedIndex: state.review.selectedIndex,
+              selectionAnchorIndex: state.review.selectionAnchorIndex,
+              scrollTop: document.querySelector('#reviewQueuePane').scrollTop,
+            })"""
+        ) == review_double_click_snapshot
         page.keyboard.press("Escape")
         page.locator("#lightbox").wait_for(state="hidden")
         assert page.evaluate(

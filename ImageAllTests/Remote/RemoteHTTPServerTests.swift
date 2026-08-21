@@ -2875,10 +2875,22 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("GRID_DOUBLE_CLICK_MAX_DELAY_MS"))
         XCTAssertTrue(script.contains("function rememberGridSelectionBeforeClick"))
         XCTAssertTrue(script.contains("function restoreGridSelectionForDoubleClick"))
-        XCTAssertTrue(script.contains("restoreGridSelectionForDoubleClick(\"library\""))
+        XCTAssertTrue(
+            script.contains(
+                "const preservesSelection = restoreGridSelectionForDoubleClick(\n      \"library\""
+            )
+        )
         XCTAssertTrue(script.contains("restoreGridSelectionForDoubleClick(\"review\""))
-        XCTAssertTrue(script.contains("restoreGridSelectionForDoubleClick(\"slimming\""))
+        XCTAssertTrue(
+            script.contains(
+                "const preservesSelection = restoreGridSelectionForDoubleClick(\n      \"slimming\""
+            )
+        )
         XCTAssertTrue(script.contains("function openLightboxFromContextMenu"))
+        XCTAssertTrue(script.contains("lightboxPreservesSelection: false"))
+        XCTAssertTrue(script.contains("preserveSelection: context.preserveSelection === true"))
+        XCTAssertTrue(script.contains("preserveSelection: state.lightboxPreservesSelection"))
+        XCTAssertTrue(script.contains("function continuesGridSelectionDoubleClick"))
         XCTAssertTrue(
             script.contains(
                 "openLightboxFromContextMenu(\"library\", assetID, assetCardFocusTarget(assetID))"
@@ -2891,6 +2903,16 @@ final class RemoteHTTPServerTests: XCTestCase {
         )
         XCTAssertTrue(
             script.contains("openLightboxFromContextMenu(\"slimming\", memberID, returnFocus)")
+        )
+        XCTAssertTrue(
+            script.contains(
+                "state.lightboxContext === \"review\" && !state.lightboxPreservesSelection"
+            )
+        )
+        XCTAssertTrue(
+            script.contains(
+                "state.lightboxContext === \"library\" && !state.lightboxPreservesSelection"
+            )
         )
         XCTAssertFalse(
             script.contains(

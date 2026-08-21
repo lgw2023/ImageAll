@@ -1522,6 +1522,7 @@ const state = {
   },
   lightboxContext: null,
   lightboxAssetID: null,
+  lightboxPreservesSelection: false,
   lightboxRequestGeneration: 0,
   lightboxOriginalAssetID: null,
   lightboxOriginalLoading: false,
@@ -2151,6 +2152,7 @@ function closeOverlays() {
   elements.lightbox.setAttribute("aria-modal", "true");
   state.lightboxContext = null;
   state.lightboxAssetID = null;
+  state.lightboxPreservesSelection = false;
   state.lightboxOriginalAssetID = null;
   state.lightboxOriginalLoading = false;
   resetLightboxViewport(null);
@@ -3481,6 +3483,7 @@ function normalizedLightboxHistoryContext(raw) {
     offsetY: workspaceHistoryFiniteNumber(context.offsetY),
     videoTime: Math.max(0, workspaceHistoryFiniteNumber(context.videoTime, 0, 86_400)),
     original: context.original === true,
+    preserveSelection: context.preserveSelection === true,
   };
 }
 
@@ -3496,6 +3499,7 @@ function currentLightboxHistoryContext(expectedContext) {
     videoTime: lightboxMediaKind() === "video" ? elements.lightboxVideo.currentTime : 0,
     original: lightboxMediaKind() !== "video"
       && state.lightboxOriginalAssetID === state.lightboxAssetID,
+    preserveSelection: state.lightboxPreservesSelection,
   });
 }
 
@@ -6702,6 +6706,7 @@ function closeLightbox({ restoreFocus = true } = {}) {
   elements.lightbox.setAttribute("aria-modal", "true");
   state.lightboxContext = null;
   state.lightboxAssetID = null;
+  state.lightboxPreservesSelection = false;
   state.lightboxOriginalAssetID = null;
   state.lightboxOriginalLoading = false;
   resetLightboxViewport(null);
@@ -16736,6 +16741,13 @@ function rememberGridSelectionBeforeClick(surface, itemID, event) {
   return false;
 }
 
+function continuesGridSelectionDoubleClick(surface, itemID, event) {
+  const pending = state.gridDoubleClickSelectionSnapshot;
+  return Number(event.detail) >= 2
+    && pending?.surface === surface
+    && pending.itemID === itemID;
+}
+
 function restoreGridSelectionForDoubleClick(surface, itemID) {
   const pending = state.gridDoubleClickSelectionSnapshot;
   state.gridDoubleClickSelectionSnapshot = null;
@@ -16754,7 +16766,8 @@ function restoreGridSelectionForDoubleClick(surface, itemID) {
     scheduleSelectionAggregate();
     return true;
   }
-  if (surface === "review" && state.review.selectionMode) {
+  if (surface === "review"
+    && (state.review.selectionMode || pending.selection.selectedIDs.length > 1)) {
     state.review.selectedAssetIDs = new Set(pending.selection.selectedIDs);
     state.review.selectedIndex = pending.selection.selectedIndex;
     state.review.selectionAnchorIndex = pending.selection.anchorIndex;
@@ -16762,7 +16775,8 @@ function restoreGridSelectionForDoubleClick(surface, itemID) {
     checkpointActiveWorkspaceHistory();
     return true;
   }
-  if (surface === "slimming" && state.slimming.selectionMode) {
+  if (surface === "slimming"
+    && (state.slimming.selectionMode || pending.selection.selectedIDs.length > 1)) {
     state.slimming.selectedMemberIDs = new Set(pending.selection.selectedIDs);
     state.slimming.selectionAnchorID = pending.selection.anchorID;
     renderSlimmingMemberSelection();
@@ -16776,7 +16790,7 @@ function openLightboxFromContextMenu(context, assetID, returnFocus) {
     && document.contains(returnFocus)
     ? returnFocus
     : null;
-  openLightbox(context, assetID);
+  openLightbox(context, assetID, { preserveSelection: true });
   if (resolvedReturnFocus) state.lightboxReturnFocus = resolvedReturnFocus;
 }
 
@@ -29467,7 +29481,10 @@ async function renderLightboxMedia(item) {
   elements.lightboxVideo.load();
 }
 
-function openLightbox(context, assetID, { original = false } = {}) {
+function openLightbox(context, assetID, {
+  original = false,
+  preserveSelection = false,
+} = {}) {
   if (!assetID) return;
   stopAssetHoverVideo();
   const wasHidden = elements.lightbox.classList.contains("hidden");
@@ -29477,6 +29494,7 @@ function openLightbox(context, assetID, { original = false } = {}) {
   }
   state.lightboxContext = context;
   state.lightboxAssetID = assetID;
+  state.lightboxPreservesSelection = Boolean(preserveSelection);
   state.lightboxOriginalAssetID = original ? assetID : null;
   state.lightboxOriginalLoading = original;
   if (context === "review") {
@@ -29519,7 +29537,10 @@ function restoreLightboxFromHistory(raw, expectedContext) {
     (item) => item.id === context.assetID
   )) return false;
 
-  openLightbox(expectedContext, context.assetID, { original: context.original });
+  openLightbox(expectedContext, context.assetID, {
+    original: context.original,
+    preserveSelection: context.preserveSelection,
+  });
   if (expectedContext === "library") {
     state.lightboxReturnFocus = assetCardMainButton(elements.assetGrid.querySelector(
       `[data-asset-id="${CSS.escape(context.assetID)}"]`
@@ -29778,6 +29799,7 @@ function syncReviewLightboxSelection() {
 
 async function applyLightboxReviewDecision(action) {
   if (state.lightboxContext !== "review") return;
+  state.lightboxPreservesSelection = false;
   const currentIndex = state.review.items.findIndex(
     (item) => item.assetID === state.lightboxAssetID
   );
@@ -29874,10 +29896,10 @@ async function navigateLightbox(direction) {
     state.lightboxOriginalAssetID = null;
     state.lightboxOriginalLoading = false;
     renderLightbox();
-    scheduleWorkspaceHistoryCheckpoint();
-    if (state.lightboxContext === "review") {
+    checkpointActiveWorkspaceHistory();
+    if (state.lightboxContext === "review" && !state.lightboxPreservesSelection) {
       selectReviewIndex(next);
-    } else if (state.lightboxContext === "library") {
+    } else if (state.lightboxContext === "library" && !state.lightboxPreservesSelection) {
       await syncLibraryLightboxSelection(nextAssetID);
     }
   } catch (error) {
@@ -32539,7 +32561,8 @@ function previewCommandContext(route) {
   const context = commandSelectionContext(route);
   if (!context?.primaryID) return;
   openLightbox(route === "review" ? "review" : route === "slimming" ? "slimming" : "library",
-    context.primaryID);
+    context.primaryID,
+    { preserveSelection: context.selectedIDs.length > 1 });
 }
 
 function availableCommands() {
@@ -35219,8 +35242,11 @@ function bindEvents() {
     if (event.target.closest("[data-asset-card-favorite]")) return;
     const card = event.target.closest("[data-asset-id]");
     if (!card) return;
-    restoreGridSelectionForDoubleClick("library", card.dataset.assetId);
-    openLightbox("library", card.dataset.assetId);
+    const preservesSelection = restoreGridSelectionForDoubleClick(
+      "library",
+      card.dataset.assetId
+    );
+    openLightbox("library", card.dataset.assetId, { preserveSelection: preservesSelection });
   });
   elements.assetGrid.addEventListener("contextmenu", (event) => {
     const card = event.target.closest("[data-asset-id]");
@@ -35752,7 +35778,7 @@ function bindEvents() {
   });
   elements.selectionInspectorPrimaryPreview.addEventListener("click", () => {
     const assetID = selectionPrimaryAssetID();
-    if (assetID) openLightbox("library", assetID);
+    if (assetID) openLightbox("library", assetID, { preserveSelection: true });
   });
   elements.selectionInspectorCancelPreparationButton.addEventListener(
     "click",
@@ -36520,7 +36546,9 @@ function bindEvents() {
     const main = event.target.closest("[data-slimming-member-main]");
     const card = main?.closest("[data-slimming-member-id]");
     if (!card) return;
-    if (state.slimming.selectionMode
+    if ((state.slimming.selectionMode
+      || state.slimming.selectedMemberIDs.size > 1
+      || continuesGridSelectionDoubleClick("slimming", card.dataset.slimmingMemberId, event))
       && rememberGridSelectionBeforeClick(
         "slimming",
         card.dataset.slimmingMemberId,
@@ -36557,8 +36585,13 @@ function bindEvents() {
     const main = event.target.closest("[data-slimming-member-main]");
     const card = main?.closest("[data-slimming-member-id]");
     if (!card) return;
-    restoreGridSelectionForDoubleClick("slimming", card.dataset.slimmingMemberId);
-    openLightbox("slimming", card.dataset.slimmingMemberId);
+    const preservesSelection = restoreGridSelectionForDoubleClick(
+      "slimming",
+      card.dataset.slimmingMemberId
+    );
+    openLightbox("slimming", card.dataset.slimmingMemberId, {
+      preserveSelection: preservesSelection,
+    });
   });
   elements.slimmingRemovalStatus.addEventListener("click", (event) => {
     const button = event.target.closest("[data-slimming-verification-request-id]");
@@ -36988,7 +37021,9 @@ function bindEvents() {
       const index = Number(card.dataset.reviewIndex);
       const item = Number.isInteger(index) ? state.review.items[index] : null;
       if (!item) return;
-      if (state.review.selectionMode
+      if ((state.review.selectionMode
+        || state.review.selectedAssetIDs.size > 1
+        || continuesGridSelectionDoubleClick("review", item.assetID, event))
         && rememberGridSelectionBeforeClick("review", item.assetID, event)) return;
       selectReviewIndex(index, {
         additive: state.review.selectionMode || event.metaKey || event.ctrlKey,
@@ -37004,7 +37039,7 @@ function bindEvents() {
     if (!item) return;
     const restoredSelection = restoreGridSelectionForDoubleClick("review", item.assetID);
     if (!state.review.selectionMode && !restoredSelection) selectReviewIndex(index);
-    openLightbox("review", item.assetID);
+    openLightbox("review", item.assetID, { preserveSelection: restoredSelection });
   });
   elements.previousReviewButton.addEventListener("click", () => {
     selectReviewIndex(state.review.selectedIndex - 1);
@@ -38047,7 +38082,9 @@ function bindEvents() {
         const item = state.review.items[state.review.selectedIndex];
         if (item) {
           event.preventDefault();
-          openLightbox("review", item.assetID);
+          openLightbox("review", item.assetID, {
+            preserveSelection: state.review.selectedAssetIDs.size > 1,
+          });
         }
         return;
       }
@@ -38172,7 +38209,7 @@ function bindEvents() {
         : state.selectedAssetID;
       if (assetID) {
         event.preventDefault();
-        openLightbox("library", assetID);
+        openLightbox("library", assetID, { preserveSelection: state.selectionMode });
       }
       return;
     }

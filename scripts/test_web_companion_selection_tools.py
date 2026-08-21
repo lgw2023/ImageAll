@@ -1730,6 +1730,19 @@ def main(*, inspector_actions_only=False):
               scrollTop: document.querySelector('#libraryScroll').scrollTop,
             })"""
         ) == gallery_double_click_snapshot
+        assert page.evaluate("() => state.lightboxPreservesSelection") is True
+        page.locator("#lightboxNextButton").click()
+        page.wait_for_function(
+            "() => document.querySelector('#lightboxTitle').textContent.includes('IMG_0002.JPG')"
+        )
+        assert page.evaluate(
+            """() => ({
+              selectedAssetIDs: [...state.selectedAssetIDs].sort(),
+              selectedAssetID: state.selectedAssetID,
+              selectionAnchorID: state.selectionAnchorID,
+              scrollTop: document.querySelector('#libraryScroll').scrollTop,
+            })"""
+        ) == gallery_double_click_snapshot
         page.keyboard.press("Escape")
         page.locator("#lightbox").wait_for(state="hidden")
         assert page.evaluate(
@@ -1740,6 +1753,24 @@ def main(*, inspector_actions_only=False):
               scrollTop: document.querySelector('#libraryScroll').scrollTop,
             })"""
         ) == gallery_double_click_snapshot
+        page.evaluate("() => history.forward()")
+        page.locator("#lightbox:not(.hidden)").wait_for()
+        assert "IMG_0002.JPG" in page.locator("#lightboxTitle").inner_text()
+        assert page.evaluate(
+            "() => state.lightboxPreservesSelection "
+            "&& history.state?.imageAllWorkspace?.context?.galleryLightbox"
+            "?.preserveSelection === true"
+        )
+        assert page.evaluate(
+            """() => ({
+              selectedAssetIDs: [...state.selectedAssetIDs].sort(),
+              selectedAssetID: state.selectedAssetID,
+              selectionAnchorID: state.selectionAnchorID,
+              scrollTop: document.querySelector('#libraryScroll').scrollTop,
+            })"""
+        ) == gallery_double_click_snapshot
+        page.keyboard.press("Escape")
+        page.locator("#lightbox").wait_for(state="hidden")
         page.wait_for_function(
             "() => document.activeElement?.classList.contains('asset-card-main')"
         )
@@ -2940,6 +2971,18 @@ def main(*, inspector_actions_only=False):
         slimming_cards.nth(1).locator(":scope > .slimming-member-main").dblclick()
         page.locator("#lightbox:not(.hidden)").wait_for()
         assert "SLIM_0002.JPG" in page.locator("#lightboxTitle").inner_text()
+        assert page.evaluate(
+            """() => ({
+              selectedMemberIDs: [...state.slimming.selectedMemberIDs].sort(),
+              selectionAnchorID: state.slimming.selectionAnchorID,
+              scrollTop: document.querySelector('#slimmingAnalysisBody').scrollTop,
+            })"""
+        ) == slimming_double_click_snapshot
+        assert page.evaluate("() => state.lightboxPreservesSelection") is True
+        page.locator("#lightboxNextButton").click()
+        page.wait_for_function(
+            "() => document.querySelector('#lightboxTitle').textContent.includes('SLIM_0003.JPG')"
+        )
         assert page.evaluate(
             """() => ({
               selectedMemberIDs: [...state.slimming.selectedMemberIDs].sort(),
