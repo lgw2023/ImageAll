@@ -297,7 +297,7 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         )
     }
 
-    func testIdenticalCleanupPlannerDeletesPhotosThenLongerSourceNamesAndKeepsOne() {
+    func testOneClickCleanupKeepsLargestThenOldestAcrossSources() {
         let photosID = UUID(uuidString: "00000000-0000-0000-0000-000000000003")!
         let longNameID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
         let shortNameID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
@@ -314,19 +314,25 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
                 assetID: photosID,
                 sourceID: UUID(),
                 sourceKind: .photos,
-                sourceDisplayName: "Apple Photos"
+                sourceDisplayName: "Apple Photos",
+                encodedByteCount: 1_000,
+                mediaDateMs: 1_000
             ),
             LibrarySlimmingIdenticalCleanupCandidate(
                 assetID: longNameID,
                 sourceID: UUID(),
                 sourceKind: .file,
-                sourceDisplayName: "2024 下半年 粒粒和卫卫 iCloud 备份"
+                sourceDisplayName: "2024 下半年 粒粒和卫卫 iCloud 备份",
+                encodedByteCount: 2_000,
+                mediaDateMs: 3_000
             ),
             LibrarySlimmingIdenticalCleanupCandidate(
                 assetID: shortNameID,
                 sourceID: UUID(),
                 sourceKind: .file,
-                sourceDisplayName: "2024"
+                sourceDisplayName: "2024",
+                encodedByteCount: 2_000,
+                mediaDateMs: 2_000
             ),
         ]
 
@@ -344,6 +350,80 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         XCTAssertEqual(plan.photosAssetCount, 1)
         XCTAssertEqual(plan.fileAssetCount, 1)
         XCTAssertEqual(plan.skippedGroupCount, 0)
+    }
+
+    func testOneClickCleanupIncludesOnlyPerfectVisualMatchesAndKeepsLargestOldestImage() {
+        let largestOldestID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        let largestNewerID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+        let smallerID = UUID(uuidString: "00000000-0000-0000-0000-000000000003")!
+        let belowPerfectIDs = [
+            UUID(uuidString: "00000000-0000-0000-0000-000000000004")!,
+            UUID(uuidString: "00000000-0000-0000-0000-000000000005")!,
+        ]
+        let clusters = [
+            SlimmingCluster(
+                id: UUID(),
+                kind: .perceptualDuplicate,
+                memberAssetIDs: [smallerID, largestNewerID, largestOldestID],
+                representativeAssetID: largestOldestID,
+                score: 1,
+                modelIdentity: .featurePrintOnly
+            ),
+            SlimmingCluster(
+                id: UUID(),
+                kind: .perceptualDuplicate,
+                memberAssetIDs: belowPerfectIDs,
+                representativeAssetID: belowPerfectIDs[0],
+                score: 0.99,
+                modelIdentity: .featurePrintOnly
+            ),
+        ]
+        let sharedSourceID = UUID()
+        let candidates = [
+            LibrarySlimmingIdenticalCleanupCandidate(
+                assetID: largestOldestID,
+                sourceID: sharedSourceID,
+                sourceKind: .file,
+                sourceDisplayName: "南大",
+                encodedByteCount: 3_000,
+                mediaDateMs: 1_000
+            ),
+            LibrarySlimmingIdenticalCleanupCandidate(
+                assetID: largestNewerID,
+                sourceID: sharedSourceID,
+                sourceKind: .file,
+                sourceDisplayName: "南大",
+                encodedByteCount: 3_000,
+                mediaDateMs: 2_000
+            ),
+            LibrarySlimmingIdenticalCleanupCandidate(
+                assetID: smallerID,
+                sourceID: sharedSourceID,
+                sourceKind: .file,
+                sourceDisplayName: "南大",
+                encodedByteCount: 2_000,
+                mediaDateMs: 500
+            ),
+        ] + belowPerfectIDs.map {
+            LibrarySlimmingIdenticalCleanupCandidate(
+                assetID: $0,
+                sourceID: sharedSourceID,
+                sourceKind: .file,
+                sourceDisplayName: "南大",
+                encodedByteCount: 4_000,
+                mediaDateMs: 100
+            )
+        }
+
+        let plan = LibrarySlimmingIdenticalCleanupPlanner.makePlan(
+            clusters: clusters,
+            candidates: candidates
+        )
+
+        XCTAssertEqual(plan.groupCount, 1)
+        XCTAssertEqual(plan.survivorAssetIDs, [largestOldestID])
+        XCTAssertEqual(Set(plan.assetIDsToRecycle), Set([largestNewerID, smallerID]))
+        XCTAssertTrue(plan.assetIDsToRecycle.allSatisfy { !belowPerfectIDs.contains($0) })
     }
 
     func testIdenticalCleanupPlannerHandlesAllGroupsButIgnoresSimilarGroups() {
@@ -403,7 +483,7 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
 
         XCTAssertEqual(plan.groupCount, 2)
         XCTAssertEqual(plan.assetIDsToRecycle.count, 3)
-        XCTAssertEqual(Set(plan.survivorAssetIDs), Set([firstIDs[0], secondIDs[0]]))
+        XCTAssertEqual(Set(plan.survivorAssetIDs), Set([firstIDs[1], secondIDs[2]]))
         XCTAssertEqual(plan.retainedAssetCount, 2)
         XCTAssertEqual(plan.verifiedAssetCount, 5)
         XCTAssertEqual(plan.groupSizeHistogram, [2: 1, 3: 1])
@@ -421,6 +501,21 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         let digest = Data(SHA256.hash(data: Data("identical".utf8)))
         try env.seedVerifiedSimilarityFingerprint(assetID: file.assetID, sha256: digest)
         try env.seedVerifiedSimilarityFingerprint(assetID: photosID, sha256: digest)
+        try env.database.pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE asset_similarity_fingerprint
+                SET verification_signature = NULL,
+                    pixel_width = NULL,
+                    pixel_height = NULL
+                WHERE asset_id IN (?, ?)
+                """,
+                arguments: [
+                    file.assetID.uuidString.lowercased(),
+                    photosID.uuidString.lowercased(),
+                ]
+            )
+        }
         let cluster = SlimmingCluster(
             id: UUID(),
             kind: .byteIdentical,
@@ -441,6 +536,101 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         XCTAssertEqual(plan.fileAssetCount, 0)
         XCTAssertEqual(plan.skippedGroupCount, 0)
         XCTAssertEqual(Set(plan.assetProofs.map(\.assetID)), Set([file.assetID, photosID]))
+    }
+
+    func testRecycleServiceExecutesPerfectVisualCleanupWithDifferentOriginalHashes() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let smaller = try env.seedAsset(
+            relativePath: "南大/smaller.png",
+            contents: Data("small".utf8)
+        )
+        let larger = try env.seedAsset(
+            relativePath: "南大/larger.png",
+            contents: Data("a much larger encoded image".utf8)
+        )
+        try env.seedVerifiedSimilarityFingerprint(
+            assetID: smaller.assetID,
+            sha256: Data(SHA256.hash(data: Data("small".utf8)))
+        )
+        try env.seedVerifiedSimilarityFingerprint(
+            assetID: larger.assetID,
+            sha256: Data(SHA256.hash(data: Data("a much larger encoded image".utf8)))
+        )
+        let cluster = SlimmingCluster(
+            id: UUID(),
+            kind: .perceptualDuplicate,
+            memberAssetIDs: [smaller.assetID, larger.assetID],
+            representativeAssetID: smaller.assetID,
+            score: 1,
+            modelIdentity: .featurePrintOnly
+        )
+        let service = env.makeRecycleService()
+
+        let plan = try service.makeIdenticalCleanupPlan(clusters: [cluster])
+
+        XCTAssertEqual(plan.perfectVisualGroupCount, 1)
+        XCTAssertEqual(plan.survivorAssetIDs, [larger.assetID])
+        XCTAssertEqual(plan.assetIDsToRecycle, [smaller.assetID])
+
+        let outcome = try service.moveIdenticalCleanupAssetsToRecycle(
+            plan: plan,
+            onProgress: { _ in }
+        )
+
+        XCTAssertTrue(outcome.failedAssetIDs.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: smaller.fileURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: larger.fileURL.path))
+    }
+
+    func testPerfectVisualCleanupRejectsChangedVisualProofBeforeMutation() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let firstBytes = Data("first visual encoding".utf8)
+        let secondBytes = Data("second visual encoding is larger".utf8)
+        let first = try env.seedAsset(relativePath: "first.png", contents: firstBytes)
+        let second = try env.seedAsset(relativePath: "second.png", contents: secondBytes)
+        try env.seedVerifiedSimilarityFingerprint(
+            assetID: first.assetID,
+            sha256: Data(SHA256.hash(data: firstBytes))
+        )
+        try env.seedVerifiedSimilarityFingerprint(
+            assetID: second.assetID,
+            sha256: Data(SHA256.hash(data: secondBytes))
+        )
+        let cluster = SlimmingCluster(
+            id: UUID(),
+            kind: .perceptualDuplicate,
+            memberAssetIDs: [first.assetID, second.assetID],
+            representativeAssetID: first.assetID,
+            score: 1,
+            modelIdentity: .featurePrintOnly
+        )
+        let service = env.makeRecycleService()
+        let plan = try service.makeIdenticalCleanupPlan(clusters: [cluster])
+        XCTAssertEqual(plan.perfectVisualGroupCount, 1)
+
+        try env.database.pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE asset_similarity_fingerprint
+                SET verification_signature = ?
+                WHERE asset_id = ?
+                """,
+                arguments: [
+                    Data(repeating: 127, count: 768),
+                    plan.assetIDsToRecycle[0].uuidString.lowercased(),
+                ]
+            )
+        }
+
+        XCTAssertThrowsError(
+            try service.moveIdenticalCleanupAssetsToRecycle(plan: plan, onProgress: { _ in })
+        ) { error in
+            XCTAssertEqual(error as? LibrarySlimmingRecycleError, .cleanupPlanChanged)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: first.fileURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: second.fileURL.path))
     }
 
     func testRecycleServiceRejectsStaleExactClusterWhenCurrentHashesDiffer() throws {
@@ -3139,15 +3329,19 @@ private final class RecycleTestEnv {
                 INSERT INTO asset_similarity_fingerprint (
                     asset_id, content_revision, algo_version, perceptual_hash,
                     created_at_ms, updated_at_ms, content_sha256,
-                    content_digest_origin
-                ) VALUES (?, 1, ?, ?, ?, ?, ?, ?)
+                    content_digest_origin, verification_signature,
+                    pixel_width, pixel_height
+                ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, 1_500, 844)
                 ON CONFLICT(asset_id) DO UPDATE SET
                     content_revision = excluded.content_revision,
                     algo_version = excluded.algo_version,
                     perceptual_hash = excluded.perceptual_hash,
                     updated_at_ms = excluded.updated_at_ms,
                     content_sha256 = excluded.content_sha256,
-                    content_digest_origin = excluded.content_digest_origin
+                    content_digest_origin = excluded.content_digest_origin,
+                    verification_signature = excluded.verification_signature,
+                    pixel_width = excluded.pixel_width,
+                    pixel_height = excluded.pixel_height
                 """,
                 arguments: [
                     assetID.uuidString.lowercased(),
@@ -3157,6 +3351,7 @@ private final class RecycleTestEnv {
                     FolderReconcileTestSupport.baseTimeMs,
                     sha256,
                     AssetContentDigestOrigin.verifiedOriginalBytes.rawValue,
+                    Data(repeating: 128, count: 768),
                 ]
             )
         }

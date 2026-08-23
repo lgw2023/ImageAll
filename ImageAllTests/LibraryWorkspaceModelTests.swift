@@ -6849,7 +6849,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
     }
 
-    func testLibrarySlimmingIdenticalCleanupPreviewsAndMovesEveryPlannedRedundantAsset() async {
+    func testLibrarySlimmingOneClickCleanupIncludesExactAndPerfectVisualGroups() async {
         let sourceID = UUID()
         let assets = ["a.jpg", "b.jpg", "c.jpg", "d.jpg", "e.jpg"].map {
             Self.makeAsset(sourceID: sourceID, fileName: $0)
@@ -6864,7 +6864,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
         let secondCluster = SlimmingCluster(
             id: UUID(),
-            kind: .byteIdentical,
+            kind: .perceptualDuplicate,
             memberAssetIDs: [assets[2].assetID, assets[3].assetID, assets[4].assetID],
             representativeAssetID: assets[2].assetID,
             score: 1,
@@ -6880,7 +6880,8 @@ final class LibraryWorkspaceModelTests: XCTestCase {
                 LibrarySlimmingIdenticalCleanupDecision(
                     clusterID: secondCluster.id,
                     survivorAssetID: assets[2].assetID,
-                    assetIDsToRecycle: [assets[3].assetID, assets[4].assetID]
+                    assetIDsToRecycle: [assets[3].assetID, assets[4].assetID],
+                    matchKind: .perceptualDuplicate
                 ),
             ],
             skippedGroupCount: 0,
@@ -6953,6 +6954,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         await model.findLibrarySlimmingFromSelection()
         await model.analyzeLibrarySlimming(mode: .seeds)
 
+        XCTAssertEqual(model.librarySlimmingIdenticalGroupCount, 2)
         let prepared = await model.prepareLibrarySlimmingIdenticalCleanup()
         XCTAssertEqual(prepared, plan)
         XCTAssertEqual(prepared?.retainedAssetCount, 2)

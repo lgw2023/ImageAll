@@ -165,7 +165,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         let assetIDs = Array(
             Set(
                 clusters
-                    .filter { $0.kind == .byteIdentical }
+                    .filter(LibrarySlimmingIdenticalCleanupPlanner.isEligibleForOneClickCleanup)
                     .flatMap(\.memberAssetIDs)
             )
         )
@@ -183,12 +183,13 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         )
         var validatedClusters: [SlimmingCluster] = []
         var invalidGroupCount = 0
-        for cluster in clusters where cluster.kind == .byteIdentical {
+        for cluster in clusters
+        where LibrarySlimmingIdenticalCleanupPlanner.isEligibleForOneClickCleanup(cluster) {
             let memberIDs = Array(Set(cluster.memberAssetIDs))
             let memberFacts = memberIDs.compactMap { factsByAssetID[$0] }
             guard memberIDs.count >= 2,
                   memberFacts.count == memberIDs.count,
-                  Set(memberFacts.map(\.proof.verifiedOriginalSHA256)).count == 1
+                  isVerifiedCleanupCluster(kind: cluster.kind, facts: memberFacts)
             else {
                 invalidGroupCount += 1
                 continue
@@ -243,6 +244,15 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                         a.content_revision AS content_revision,
                         s.display_name AS source_display_name,
                         sf.content_sha256 AS content_sha256,
+                        COALESCE(file_fingerprint.size_bytes, photos_original.byte_size)
+                            AS encoded_byte_count,
+                        COALESCE(a.media_created_at_ms, a.media_modified_at_ms)
+                            AS media_date_ms,
+                        sf.algo_version AS perceptual_algo_version,
+                        sf.perceptual_hash AS perceptual_hash,
+                        sf.verification_signature AS verification_signature,
+                        sf.pixel_width AS pixel_width,
+                        sf.pixel_height AS pixel_height,
                         CASE WHEN favorite.desired_value = 1
                                    OR favorite.photos_observed_value = 1
                              THEN 1 ELSE 0 END AS is_favorite_protected
@@ -251,6 +261,13 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                     JOIN asset_similarity_fingerprint sf
                       ON sf.asset_id = a.id
                      AND sf.content_revision = a.content_revision
+                    LEFT JOIN file_fingerprint
+                      ON file_fingerprint.asset_id = a.id
+                    LEFT JOIN photos_original_cache_entry photos_original
+                      ON photos_original.asset_id = a.id
+                     AND photos_original.content_revision = a.content_revision
+                     AND photos_original.photos_local_identifier = a.photos_local_identifier
+                     AND photos_original.encoded_sha256 = sf.content_sha256
                     LEFT JOIN asset_favorite_state favorite
                       ON favorite.asset_id = a.id
                     WHERE a.id IN (\(placeholders))
@@ -276,6 +293,10 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                           let sha256: Data = row["content_sha256"],
                           sha256.count == 32
                     else { continue }
+                    let perceptualHash: Data? = row["perceptual_hash"]
+                    let verificationSignature: Data? = row["verification_signature"]
+                    let pixelWidth: Int? = row["pixel_width"]
+                    let pixelHeight: Int? = row["pixel_height"]
                     let sourceKind: RecycleSourceKind
                     switch row["locator_kind"] as String {
                     case AssetLocatorKind.photos.rawValue:
@@ -292,6 +313,8 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                                 sourceID: sourceID,
                                 sourceKind: sourceKind,
                                 sourceDisplayName: row["source_display_name"],
+                                encodedByteCount: row["encoded_byte_count"],
+                                mediaDateMs: row["media_date_ms"],
                                 isFavoriteProtected: (row["is_favorite_protected"] as Int) == 1
                             ),
                             proof: LibrarySlimmingIdenticalCleanupAssetProof(
@@ -300,7 +323,16 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                                 sourceKind: sourceKind,
                                 locatorIdentity: locatorIdentity,
                                 contentRevision: row["content_revision"],
-                                verifiedOriginalSHA256: sha256
+                                verifiedOriginalSHA256: sha256,
+                                encodedByteCount: row["encoded_byte_count"],
+                                mediaDateMs: row["media_date_ms"],
+                                perceptualAlgoVersion: row["perceptual_algo_version"],
+                                perceptualHash: perceptualHash?.count == 8
+                                    ? perceptualHash : nil,
+                                verificationSignature: verificationSignature?.count == 768
+                                    ? verificationSignature : nil,
+                                pixelWidth: pixelWidth.flatMap { $0 > 0 ? $0 : nil },
+                                pixelHeight: pixelHeight.flatMap { $0 > 0 ? $0 : nil }
                             )
                         )
                     )
@@ -308,6 +340,59 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             }
             return loaded
         }
+    }
+
+    private func isVerifiedCleanupCluster(
+        kind: SlimmingClusterKind,
+        facts: [IdenticalCleanupFact]
+    ) -> Bool {
+        switch kind {
+        case .byteIdentical:
+            return Set(facts.map(\.proof.verifiedOriginalSHA256)).count == 1
+        case .perceptualDuplicate:
+            return isVerifiedPerfectVisualMatch(facts.map(\.proof))
+        case .nearDuplicateScene:
+            return false
+        }
+    }
+
+    private func isVerifiedPerfectVisualMatch(
+        _ proofs: [LibrarySlimmingIdenticalCleanupAssetProof]
+    ) -> Bool {
+        guard proofs.count >= 2 else { return false }
+        let hashes = proofs.compactMap(\.perceptualHash)
+        guard hashes.count == proofs.count,
+              Set(hashes).count == 1,
+              proofs.allSatisfy({
+                  $0.perceptualAlgoVersion == IdenticalDuplicatePolicy.perceptualAlgoVersion
+              })
+        else {
+            return false
+        }
+        for leftIndex in proofs.indices {
+            for rightIndex in proofs.index(after: leftIndex)..<proofs.endIndex {
+                let left = proofs[leftIndex]
+                let right = proofs[rightIndex]
+                guard let leftSignature = left.verificationSignature,
+                      let leftWidth = left.pixelWidth,
+                      let leftHeight = left.pixelHeight,
+                      let rightSignature = right.verificationSignature,
+                      let rightWidth = right.pixelWidth,
+                      let rightHeight = right.pixelHeight,
+                      PerceptualImageHash.verificationMatches(
+                          leftSignature: leftSignature,
+                          leftWidth: leftWidth,
+                          leftHeight: leftHeight,
+                          rightSignature: rightSignature,
+                          rightWidth: rightWidth,
+                          rightHeight: rightHeight
+                      )
+                else {
+                    return false
+                }
+            }
+        }
+        return true
     }
 
     func verifyIdenticalCleanup(
@@ -759,12 +844,11 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         var assignedAssetIDs = Set<UUID>()
         for decision in plan.decisions {
             let groupIDs = Set(decision.assetIDsToRecycle + decision.retainedAssetIDs)
-            let hashes = Set(groupIDs.compactMap {
-                currentProofs[$0]?.verifiedOriginalSHA256
-            })
+            let groupProofs = groupIDs.compactMap { currentProofs[$0] }
             guard Set(decision.assetIDsToRecycle).isDisjoint(with: decision.retainedAssetIDs),
                   Set(decision.assetIDsToRecycle).count == decision.assetIDsToRecycle.count,
-                  hashes.count == 1,
+                  groupProofs.count == groupIDs.count,
+                  isVerifiedCleanupDecision(decision, proofs: groupProofs),
                   groupIDs.count >= 2,
                   assignedAssetIDs.isDisjoint(with: groupIDs)
             else {
@@ -774,6 +858,20 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         }
         guard assignedAssetIDs == plannedAssetIDs else {
             throw LibrarySlimmingRecycleError.cleanupPlanChanged
+        }
+    }
+
+    private func isVerifiedCleanupDecision(
+        _ decision: LibrarySlimmingIdenticalCleanupDecision,
+        proofs: [LibrarySlimmingIdenticalCleanupAssetProof]
+    ) -> Bool {
+        switch decision.matchKind {
+        case .byteIdentical:
+            return Set(proofs.map(\.verifiedOriginalSHA256)).count == 1
+        case .perceptualDuplicate:
+            return isVerifiedPerfectVisualMatch(proofs)
+        case .nearDuplicateScene:
+            return false
         }
     }
 

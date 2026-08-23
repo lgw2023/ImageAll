@@ -200,6 +200,8 @@ struct LibrarySlimmingIdenticalCleanupPlanSnapshot: Equatable, Sendable {
     let jobID: UUID
     let mediaKind: MediaKind
     let groupCount: Int
+    var byteIdenticalGroupCount: Int = 0
+    var perfectVisualGroupCount: Int = 0
     let verifiedAssetCount: Int
     let retainedAssetCount: Int
     let favoriteRetainedAssetCount: Int

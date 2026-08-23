@@ -1594,7 +1594,7 @@ actor RemoteCatalogFacade {
         _ request: RemoteLibrarySlimmingIdenticalCleanupPlanRequest
     ) async throws -> RemoteLibrarySlimmingIdenticalCleanupPlanSnapshot {
         guard let librarySlimmingCommands else {
-            throw RemoteAPIError(code: .notFound, message: "完全相同项清理当前不可用")
+            throw RemoteAPIError(code: .notFound, message: "重复媒体一键清理当前不可用")
         }
         do {
             let snapshot = try await librarySlimmingCommands.prepareIdenticalCleanup(
@@ -1606,6 +1606,8 @@ actor RemoteCatalogFacade {
                 jobID: snapshot.jobID,
                 mediaKind: snapshot.mediaKind == .video ? .video : .image,
                 groupCount: snapshot.groupCount,
+                byteIdenticalGroupCount: snapshot.byteIdenticalGroupCount,
+                perfectVisualGroupCount: snapshot.perfectVisualGroupCount,
                 verifiedAssetCount: snapshot.verifiedAssetCount,
                 retainedAssetCount: snapshot.retainedAssetCount,
                 favoriteRetainedAssetCount: snapshot.favoriteRetainedAssetCount,

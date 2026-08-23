@@ -2588,7 +2588,12 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     var librarySlimmingIdenticalGroupCount: Int {
-        actionablePendingLibrarySlimmingClusters.filter { $0.kind == .byteIdentical }.count
+        actionablePendingLibrarySlimmingClusters.filter {
+            $0.kind == .byteIdentical
+                || (selectedMediaKind == .image
+                    && $0.kind == .perceptualDuplicate
+                    && $0.cluster.score == 1)
+        }.count
     }
 
     private var actionablePendingLibrarySlimmingClusters:
@@ -2614,7 +2619,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             return "回收站服务未就绪"
         }
         if librarySlimmingIdenticalGroupCount == 0 {
-            return "当前分析结果中没有完全相同分组"
+            return "当前分析结果中没有完全相同或视觉匹配 100% 的分组"
         }
         if isPreparingLibrarySlimmingIdenticalCleanup {
             return "正在计算清理方案…"
@@ -2703,7 +2708,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                 let skipped = plan.skippedGroupCount > 0
                     ? "；另有 \(plan.skippedGroupCount) 组因来源状态变化已跳过"
                     : ""
-                let message = "当前没有可安全清理的完全相同照片\(skipped)"
+                let message = "当前没有可安全一键清理的重复照片\(skipped)"
                 librarySlimmingStatusMessage = message
                 librarySlimmingRecycleActionMessage = message
                 return nil
@@ -3015,10 +3020,10 @@ final class LibraryWorkspaceModel: ObservableObject {
                     Set(decision.assetIDsToRecycle).isSubset(of: recycled)
                 }.count
                 if completedGroups == identicalCleanupPlan.groupCount {
-                    parts.append("已清理 \(completedGroups) 组完全相同照片")
+                    parts.append("已清理 \(completedGroups) 组重复照片")
                 } else if completedGroups > 0 {
                     parts.append(
-                        "已清理 \(completedGroups)/\(identicalCleanupPlan.groupCount) 组完全相同照片"
+                        "已清理 \(completedGroups)/\(identicalCleanupPlan.groupCount) 组重复照片"
                     )
                 }
             }

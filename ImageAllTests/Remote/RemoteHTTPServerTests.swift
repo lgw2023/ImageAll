@@ -600,6 +600,8 @@ final class RemoteHTTPServerTests: XCTestCase {
             from: planData
         )
         XCTAssertEqual(plan.groupCount, 2)
+        XCTAssertEqual(plan.byteIdenticalGroupCount, 1)
+        XCTAssertEqual(plan.perfectVisualGroupCount, 1)
         XCTAssertEqual(plan.favoriteRetainedAssetCount, 1)
         XCTAssertEqual(plan.ordinaryRetainedAssetCount, 1)
         XCTAssertEqual(plan.protectedSkippedAssetCount, 2)
@@ -5501,6 +5503,8 @@ private final class RemoteHTTPSlimmingCommandStub:
             jobID: jobID,
             mediaKind: mediaKind,
             groupCount: 2,
+            byteIdenticalGroupCount: 1,
+            perfectVisualGroupCount: 1,
             verifiedAssetCount: 5,
             retainedAssetCount: 2,
             favoriteRetainedAssetCount: 1,

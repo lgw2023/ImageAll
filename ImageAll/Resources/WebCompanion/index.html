@@ -11,7 +11,7 @@
   <title>ImageAll 网页版</title>
   <link rel="manifest" href="/manifest.webmanifest">
     <link rel="stylesheet" href="/app.css?v=20260821-139">
-    <script src="/app.js?v=20260821-139" defer></script>
+    <script src="/app.js?v=20260823-140" defer></script>
 </head>
 <body>
   <div id="bootView" class="centered-state">
@@ -2002,7 +2002,7 @@
         </button>
         <button id="slimmingIdenticalCleanupButton"
           class="button button-danger write-action hidden" type="button">
-          一键清理完全相同…
+          一键清理重复媒体…
         </button>
         <button id="slimmingNavigatorButton" class="icon-button slimming-navigator-button"
           type="button" aria-pressed="true" aria-label="隐藏分析记录"
@@ -2344,8 +2344,8 @@
       <header class="identical-cleanup-heading">
         <div class="identical-cleanup-icon" aria-hidden="true">⌫</div>
         <div>
-          <h2 id="slimmingIdenticalCleanupTitle">一键清理完全相同媒体</h2>
-          <p id="slimmingIdenticalCleanupSubtitle">这是基于当前运行时资产与来源状态生成的实际清理预览。</p>
+          <h2 id="slimmingIdenticalCleanupTitle">一键清理重复媒体</h2>
+          <p id="slimmingIdenticalCleanupSubtitle">包含原文件完全相同与视觉特征匹配 100% 的照片；这是基于当前状态生成的实际清理预览。</p>
         </div>
       </header>
       <div id="slimmingIdenticalCleanupLoading" class="slimming-setup-loading">
@@ -2368,7 +2368,7 @@
                 class="identical-cleanup-disposition-chart" role="img"></div>
             </section>
             <section class="identical-cleanup-chart-card">
-              <h4>完全相同组规模</h4>
+              <h4>重复组规模</h4>
               <div id="slimmingIdenticalCleanupGroupHistogram"
                 class="identical-cleanup-group-histogram" role="img"></div>
             </section>
@@ -2381,11 +2381,11 @@
         </section>
         <div class="identical-cleanup-detail-grid">
           <section>
-            <h3>删除优先级</h3>
+            <h3>保留优先级</h3>
             <ol>
-              <li>优先清理 Apple Photos 中的重复项</li>
-              <li>再清理来源名称较长的文件夹重复项</li>
-              <li>同长度时使用稳定顺序，每个已核验分组严格保留一项</li>
+              <li>红心始终保留；无红心组优先保留编码文件最大的一项</li>
+              <li>大小相同时保留拍摄或媒体日期最早的一项</li>
+              <li>缺失值后置，仍相同时使用稳定顺序；每组至少保留一项</li>
             </ol>
           </section>
           <section class="identical-cleanup-protection-card">
@@ -2420,7 +2420,7 @@
       </header>
       <div class="slimming-verification-score">
         <strong id="slimmingVerificationScore">0 / 0</strong>
-        <span>组完全相同媒体已完成去重</span>
+        <span>组重复媒体已完成去重</span>
         <p id="slimmingVerificationGoal"></p>
       </div>
       <div id="slimmingVerificationMetrics" class="identical-cleanup-metrics"></div>

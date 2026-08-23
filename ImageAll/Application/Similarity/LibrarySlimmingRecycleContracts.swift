@@ -270,6 +270,8 @@ struct LibrarySlimmingIdenticalCleanupCandidate: Sendable, Equatable {
     let sourceID: UUID
     let sourceKind: RecycleSourceKind
     let sourceDisplayName: String
+    var encodedByteCount: Int64? = nil
+    var mediaDateMs: Int64? = nil
     var isFavoriteProtected: Bool = false
 }
 
@@ -280,12 +282,20 @@ struct LibrarySlimmingIdenticalCleanupAssetProof: Sendable, Equatable {
     let locatorIdentity: String
     let contentRevision: Int
     let verifiedOriginalSHA256: Data
+    var encodedByteCount: Int64? = nil
+    var mediaDateMs: Int64? = nil
+    var perceptualAlgoVersion: String? = nil
+    var perceptualHash: Data? = nil
+    var verificationSignature: Data? = nil
+    var pixelWidth: Int? = nil
+    var pixelHeight: Int? = nil
 }
 
 struct LibrarySlimmingIdenticalCleanupDecision: Sendable, Equatable {
     let clusterID: UUID
     let survivorAssetID: UUID
     let assetIDsToRecycle: [UUID]
+    var matchKind: SlimmingClusterKind = .byteIdentical
     var additionalRetainedAssetIDs: [UUID] = []
     var favoriteRetainedAssetIDs: [UUID] = []
 
@@ -320,6 +330,14 @@ struct LibrarySlimmingIdenticalCleanupPlan: Sendable, Equatable {
 
     var groupCount: Int {
         decisions.count
+    }
+
+    var byteIdenticalGroupCount: Int {
+        decisions.filter { $0.matchKind == .byteIdentical }.count
+    }
+
+    var perfectVisualGroupCount: Int {
+        decisions.filter { $0.matchKind == .perceptualDuplicate }.count
     }
 
     var assetIDsToRecycle: [UUID] {
@@ -372,8 +390,8 @@ struct LibrarySlimmingIdenticalCleanupVerification: Sendable, Equatable {
     let observedAssetIDs: [UUID]
     /// Assets that are still current and available after the cleanup attempt.
     let currentAvailableAssetIDs: [UUID]
-    /// Survivors from groups that now contain exactly one available asset and whose
-    /// redundant members all have completed recycle records.
+    /// Planned survivors from groups whose redundant members all have completed
+    /// recycle records and whose current available set exactly matches the plan.
     let retainedNonredundantAssetIDs: [UUID]
     /// Planned redundant assets confirmed in the recycle state after execution.
     let recycledRedundantAssetIDs: [UUID]
@@ -453,7 +471,7 @@ enum LibrarySlimmingIdenticalCleanupPlanner {
         var fileAssetCount = 0
         var protectedSkippedAssetCount = 0
 
-        for cluster in clusters where cluster.kind == .byteIdentical {
+        for cluster in clusters where isEligibleForOneClickCleanup(cluster) {
             var seen = Set<UUID>()
             let memberIDs = cluster.memberAssetIDs.filter { seen.insert($0).inserted }
             guard memberIDs.count >= 2 else { continue }
@@ -479,6 +497,7 @@ enum LibrarySlimmingIdenticalCleanupPlanner {
                         clusterID: cluster.id,
                         survivorAssetID: survivor.assetID,
                         assetIDsToRecycle: redundant.map(\.assetID),
+                        matchKind: cluster.kind,
                         additionalRetainedAssetIDs: protected.dropLast().map(\.assetID),
                         favoriteRetainedAssetIDs: protected.map(\.assetID)
                     )
@@ -496,7 +515,8 @@ enum LibrarySlimmingIdenticalCleanupPlanner {
                 LibrarySlimmingIdenticalCleanupDecision(
                     clusterID: cluster.id,
                     survivorAssetID: survivor.assetID,
-                    assetIDsToRecycle: redundant.map(\.assetID)
+                    assetIDsToRecycle: redundant.map(\.assetID),
+                    matchKind: cluster.kind
                 )
             )
         }
@@ -510,26 +530,50 @@ enum LibrarySlimmingIdenticalCleanupPlanner {
         )
     }
 
-    /// Earlier entries are removed first; the final entry is the single survivor.
+    static func isEligibleForOneClickCleanup(_ cluster: SlimmingCluster) -> Bool {
+        cluster.kind == .byteIdentical
+            || (cluster.kind == .perceptualDuplicate && cluster.score == 1)
+    }
+
+    /// Earlier entries are removed first; for groups without protected favorites,
+    /// the final entry is the single survivor.
     private static func shouldDeleteBefore(
         _ lhs: LibrarySlimmingIdenticalCleanupCandidate,
         _ rhs: LibrarySlimmingIdenticalCleanupCandidate
     ) -> Bool {
-        if lhs.sourceKind != rhs.sourceKind {
-            return lhs.sourceKind == .photos
+        if lhs.encodedByteCount != rhs.encodedByteCount {
+            switch (lhs.encodedByteCount, rhs.encodedByteCount) {
+            case let (.some(lhsBytes), .some(rhsBytes)):
+                return lhsBytes < rhsBytes
+            case (.none, .some):
+                return true
+            case (.some, .none):
+                return false
+            case (.none, .none):
+                break
+            }
         }
-        if lhs.sourceDisplayName.count != rhs.sourceDisplayName.count {
-            return lhs.sourceDisplayName.count > rhs.sourceDisplayName.count
+        if lhs.mediaDateMs != rhs.mediaDateMs {
+            switch (lhs.mediaDateMs, rhs.mediaDateMs) {
+            case let (.some(lhsDate), .some(rhsDate)):
+                return lhsDate > rhsDate
+            case (.none, .some):
+                return true
+            case (.some, .none):
+                return false
+            case (.none, .none):
+                break
+            }
         }
         if lhs.sourceDisplayName != rhs.sourceDisplayName {
-            return lhs.sourceDisplayName > rhs.sourceDisplayName
+            return lhs.sourceDisplayName < rhs.sourceDisplayName
         }
         let lhsSourceID = lhs.sourceID.uuidString.lowercased()
         let rhsSourceID = rhs.sourceID.uuidString.lowercased()
         if lhsSourceID != rhsSourceID {
-            return lhsSourceID > rhsSourceID
+            return lhsSourceID < rhsSourceID
         }
-        return lhs.assetID.uuidString.lowercased() > rhs.assetID.uuidString.lowercased()
+        return lhs.assetID.uuidString.lowercased() < rhs.assetID.uuidString.lowercased()
     }
 }
 

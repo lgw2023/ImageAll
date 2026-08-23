@@ -36,7 +36,7 @@ private extension RemoteLibrarySlimmingNativeApproval {
         case let .releaseSpaceBatch(count, mediaKind):
             "立即删除选中的 \(count) \(mediaKind == .video ? "段视频" : "张照片")并释放空间？"
         case let .identicalCleanup(groupCount, removalCount, mediaKind, _):
-            "一键清理 \(groupCount) 组完全相同\(mediaKind == .video ? "视频" : "照片")中的 \(removalCount) 项？"
+            "一键清理 \(groupCount) 组重复\(mediaKind == .video ? "视频" : "照片")中的 \(removalCount) 项？"
         }
     }
 
@@ -53,7 +53,7 @@ private extension RemoteLibrarySlimmingNativeApproval {
         case .releaseSpaceBatch:
             "文件来源会在身份校验后永久删除，不能从 ImageAll 恢复。Apple Photos 项仍只会移入系统“最近删除”，并遵循系统保留期。"
         case let .identicalCleanup(groupCount, removalCount, _, mode):
-            "已重新核验 \(groupCount) 组，并为每组严格保留一项；其余 \(removalCount) 项将"
+            "已重新核验 \(groupCount) 组原文件完全相同或视觉匹配 100% 的媒体；红心项全部保留，无红心组按文件大小、媒体日期确定保留项。计划清理的 \(removalCount) 项将"
                 + (mode == .releaseSourceSpace
                     ? "立即清理。文件夹原始媒体会永久删除，Apple Photos 项进入系统“最近删除”。"
                     : "移入可恢复回收站。文件夹媒体保留 30 天，Apple Photos 项进入系统“最近删除”。")
@@ -646,6 +646,8 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
             jobID: jobID,
             mediaKind: mediaKind,
             groupCount: plan.groupCount,
+            byteIdenticalGroupCount: plan.byteIdenticalGroupCount,
+            perfectVisualGroupCount: plan.perfectVisualGroupCount,
             verifiedAssetCount: plan.verifiedAssetCount,
             retainedAssetCount: plan.retainedAssetCount,
             favoriteRetainedAssetCount: plan.favoriteRetainedAssetCount,

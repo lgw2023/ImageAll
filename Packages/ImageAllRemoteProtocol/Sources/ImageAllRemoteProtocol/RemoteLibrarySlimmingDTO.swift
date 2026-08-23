@@ -983,6 +983,8 @@ public struct RemoteLibrarySlimmingIdenticalCleanupPlanSnapshot:
     public let jobID: UUID
     public let mediaKind: RemoteAssetMediaKind
     public let groupCount: Int
+    public let byteIdenticalGroupCount: Int?
+    public let perfectVisualGroupCount: Int?
     public let verifiedAssetCount: Int
     public let retainedAssetCount: Int
     /// Exact number of retained assets protected by a red-heart favorite.
@@ -1004,6 +1006,8 @@ public struct RemoteLibrarySlimmingIdenticalCleanupPlanSnapshot:
         jobID: UUID,
         mediaKind: RemoteAssetMediaKind,
         groupCount: Int,
+        byteIdenticalGroupCount: Int? = nil,
+        perfectVisualGroupCount: Int? = nil,
         verifiedAssetCount: Int,
         retainedAssetCount: Int,
         favoriteRetainedAssetCount: Int? = nil,
@@ -1020,6 +1024,8 @@ public struct RemoteLibrarySlimmingIdenticalCleanupPlanSnapshot:
         self.jobID = jobID
         self.mediaKind = mediaKind
         self.groupCount = groupCount
+        self.byteIdenticalGroupCount = byteIdenticalGroupCount
+        self.perfectVisualGroupCount = perfectVisualGroupCount
         self.verifiedAssetCount = verifiedAssetCount
         self.retainedAssetCount = retainedAssetCount
         self.favoriteRetainedAssetCount = favoriteRetainedAssetCount

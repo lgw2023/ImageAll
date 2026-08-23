@@ -764,7 +764,7 @@ struct LibrarySlimmingWorkspaceView: View {
                                 Text("正在计算清理方案…")
                             } else {
                                 Label(
-                                    "一键清理完全相同（\(model.librarySlimmingIdenticalGroupCount) 组）",
+                                    "一键清理重复媒体（\(model.librarySlimmingIdenticalGroupCount) 组）",
                                     systemImage: "trash.square"
                                 )
                             }
@@ -772,7 +772,7 @@ struct LibrarySlimmingWorkspaceView: View {
                         .disabled(!model.canPrepareLibrarySlimmingIdenticalCleanup)
                         .persistentHelp(
                             model.librarySlimmingIdenticalCleanupDisabledReason
-                                ?? "为当前分析结果的每个完全相同分组保留一个，并预览其余媒体的批量回收方案。"
+                                ?? "处理原文件完全相同及视觉匹配 100% 的照片；每组保留文件最大、同大小时日期最早的一项。"
                         )
                     }
 
@@ -3176,9 +3176,9 @@ private struct LibrarySlimmingIdenticalCleanupConfirmationSheet: View {
                 .frame(width: 42, height: 42)
                 .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
             VStack(alignment: .leading, spacing: 5) {
-                Text("一键清理完全相同媒体")
+                Text("一键清理重复媒体")
                     .font(.title2.weight(.semibold))
-                Text("这是基于当前运行时资产与来源状态生成的实际清理预览。")
+                Text("包含原文件完全相同与视觉特征匹配 100% 的照片；这是基于当前状态生成的实际清理预览。")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -3228,6 +3228,12 @@ private struct LibrarySlimmingIdenticalCleanupConfirmationSheet: View {
             )
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            Text(
+                "原文件完全相同 \(plan.byteIdenticalGroupCount) 组；"
+                    + "视觉匹配 100% \(plan.perfectVisualGroupCount) 组。"
+            )
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -3269,7 +3275,7 @@ private struct LibrarySlimmingIdenticalCleanupConfirmationSheet: View {
                 }
                 .frame(width: 260)
 
-                GroupBox("完全相同组规模") {
+                GroupBox("重复组规模") {
                     Chart(groupSizeData) { item in
                         BarMark(
                             x: .value("每组媒体数", item.label),
@@ -3285,7 +3291,7 @@ private struct LibrarySlimmingIdenticalCleanupConfirmationSheet: View {
                     .chartXAxisLabel("每组媒体数")
                     .chartYAxisLabel("分组数")
                     .frame(height: 180)
-                    .accessibilityLabel("完全相同组规模分布")
+                    .accessibilityLabel("重复组规模分布")
                 }
                 .frame(maxWidth: .infinity)
             }
@@ -3311,15 +3317,15 @@ private struct LibrarySlimmingIdenticalCleanupConfirmationSheet: View {
     }
 
     private var cleanupRules: some View {
-        GroupBox("删除优先级") {
+        GroupBox("保留优先级") {
             HStack(alignment: .top, spacing: 28) {
-                Label("1. Apple Photos", systemImage: "photo.on.rectangle")
-                Label("2. 来源名较长", systemImage: "textformat.size.larger")
-                Label("3. 来源名较短", systemImage: "textformat.size.smaller")
+                Label("1. 文件最大", systemImage: "internaldrive")
+                Label("2. 日期最早", systemImage: "calendar.badge.clock")
+                Label("3. 稳定顺序", systemImage: "arrow.up.arrow.down")
             }
             .font(.callout)
             .frame(maxWidth: .infinity, alignment: .leading)
-            Text("同长度时使用稳定顺序，只用于保证每次结果一致；每个已核验分组严格保留一张。")
+            Text("红心照片始终保留；无红心组优先保留编码文件最大者，大小相同时保留拍摄或媒体日期最早者；缺失值后置，仍相同时使用稳定顺序。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(.top, 6)
@@ -3328,6 +3334,14 @@ private struct LibrarySlimmingIdenticalCleanupConfirmationSheet: View {
 
     @ViewBuilder
     private var notices: some View {
+        if plan.perfectVisualGroupCount > 0 {
+            Label(
+                "其中 \(plan.perfectVisualGroupCount.formatted()) 组是视觉特征匹配 100%，原文件字节并不完全相同；请在确认后再清理。",
+                systemImage: "exclamationmark.triangle"
+            )
+            .font(.caption)
+            .foregroundStyle(.orange)
+        }
         if plan.fileAssetCount > 0 {
             Label(
                 "“快速清理”会永久删除 \(plan.fileAssetCount.formatted()) 个文件夹媒体，ImageAll 无法恢复。",
@@ -3528,7 +3542,7 @@ private struct LibrarySlimmingIdenticalCleanupVerificationSheet: View {
                     .font(.system(size: 54, weight: .bold, design: .rounded))
                     .monospacedDigit()
                     .foregroundStyle(verification.isComplete ? Color.green : Color.orange)
-                Text("组完全相同媒体已完成去重")
+                Text("组重复媒体已完成去重")
                     .font(.title3.weight(.medium))
                 Text(
                     "目标是保留全部红心资产；没有红心时每组保留 1 张，"

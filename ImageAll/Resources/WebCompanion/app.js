@@ -24595,7 +24595,7 @@ function identicalCleanupExecutionPresentation(request) {
     recyclingAssets: {
       icon: "⌫",
       title: request?.mode === "releaseSourceSpace"
-        ? "正在清理完全相同媒体"
+        ? "正在清理重复媒体"
         : "正在移入回收站",
       detail: "按已确认的优先级逐项处理；这里显示本次运行的实际进度。",
     },
@@ -26033,6 +26033,9 @@ function renderSlimmingWorkspace({
   }
   const identicalGroupCount = state.slimming.clusters.filter(
     (cluster) => cluster.kind === "byteIdentical"
+      || (state.slimming.mediaKind === "image"
+        && cluster.kind === "perceptualDuplicate"
+        && cluster.score === 1)
   ).length;
   const identicalActive = currentSlimmingIdenticalCleanupRequest();
   const analysisBlocksIdenticalCleanup = state.slimming.jobs.some(
@@ -26048,17 +26051,17 @@ function renderSlimmingWorkspace({
     || analysisBlocksIdenticalCleanup
     || ["awaitingMac", "running"].includes(identicalActive?.phase);
   elements.slimmingIdenticalCleanupButton.textContent = identicalGroupCount
-    ? `一键清理完全相同（${identicalGroupCount} 组）…`
-    : "一键清理完全相同…";
+    ? `一键清理重复媒体（${identicalGroupCount} 组）…`
+    : "一键清理重复媒体…";
   elements.slimmingIdenticalCleanupButton.setAttribute(
     "aria-label",
     identicalGroupCount
-      ? `一键清理完全相同，共 ${identicalGroupCount} 组`
-      : "一键清理完全相同"
+      ? `一键清理重复媒体，共 ${identicalGroupCount} 组`
+      : "一键清理重复媒体"
   );
   elements.slimmingIdenticalCleanupButton.title = analysisBlocksIdenticalCleanup
     ? "请先等待当前分析完成或暂停"
-    : "按 Mac 端规则为每个完全相同分组保留一项，并预览其余项目的清理方案";
+    : "处理原文件完全相同及视觉匹配 100% 的照片；每组保留文件最大、同大小时日期最早的一项";
   const loading = recycleView ? state.slimming.recycle.loading : state.slimming.loading;
   elements.refreshSlimmingButton.disabled = loading;
   elements.refreshSlimmingButton.setAttribute("aria-busy", String(loading));
@@ -26406,7 +26409,7 @@ function renderIdenticalCleanupGroupHistogram(plan) {
     }
   }
   const summary = visibleBuckets.map(([label, count]) => `每组 ${label} 项有 ${count} 组`).join("，");
-  container.setAttribute("aria-label", `完全相同组规模分布${summary ? `：${summary}` : "不可用"}`);
+  container.setAttribute("aria-label", `重复组规模分布${summary ? `：${summary}` : "不可用"}`);
 }
 
 function renderIdenticalCleanupSourceChart(plan) {
@@ -26500,6 +26503,23 @@ function renderSlimmingIdenticalCleanupDialog() {
     const fileAssetCount = identicalCleanupPlanCount(plan, "fileAssetCount") || 0;
     const photosAssetCount = identicalCleanupPlanCount(plan, "photosAssetCount") || 0;
     const skippedGroupCount = identicalCleanupPlanCount(plan, "skippedGroupCount") || 0;
+    const byteIdenticalGroupCount = identicalCleanupPlanCount(
+      plan, "byteIdenticalGroupCount"
+    );
+    const perfectVisualGroupCount = identicalCleanupPlanCount(
+      plan, "perfectVisualGroupCount"
+    );
+    if (byteIdenticalGroupCount !== null && perfectVisualGroupCount !== null) {
+      elements.slimmingIdenticalCleanupRetentionSummary.textContent +=
+        ` 原文件完全相同 ${byteIdenticalGroupCount.toLocaleString()} 组；视觉匹配 100% ${perfectVisualGroupCount.toLocaleString()} 组。`;
+    }
+    if ((perfectVisualGroupCount || 0) > 0) {
+      appendIdenticalCleanupNotice(
+        `其中 ${perfectVisualGroupCount.toLocaleString()} 组是视觉特征匹配 100%，原文件字节并不完全相同；请在确认后再清理。`,
+        "warning",
+        "△"
+      );
+    }
     if (fileAssetCount > 0) {
       appendIdenticalCleanupNotice(
         `“快速清理”会永久删除 ${fileAssetCount.toLocaleString()} 个文件夹媒体，ImageAll 无法恢复。`,

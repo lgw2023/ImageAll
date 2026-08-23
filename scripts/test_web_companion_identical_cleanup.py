@@ -127,6 +127,8 @@ async def main():
                         "favoriteRetainedAssetCount": 2,
                         "ordinaryRetainedAssetCount": 2,
                         "protectedSkippedAssetCount": 3,
+                        "byteIdenticalGroupCount": 2,
+                        "perfectVisualGroupCount": 2,
                     })
                 await fulfill_json(route, plan)
                 return
@@ -214,7 +216,7 @@ async def main():
         assert (await metrics.nth(3).inner_text()).splitlines()[-1] == "8"
         assert (
             await page.locator("#slimmingIdenticalCleanupRetentionSummary").inner_text()
-            == "普通保留 2 项；全组红心而安全跳过 3 项。红心资产不会进入自动删除计划。"
+            == "普通保留 2 项；全组红心而安全跳过 3 项。红心资产不会进入自动删除计划。 原文件完全相同 2 组；视觉匹配 100% 2 组。"
         )
         assert (
             await page.locator("#slimmingIdenticalCleanupDispositionChart").get_attribute(
@@ -228,7 +230,10 @@ async def main():
         sources = page.locator("#slimmingIdenticalCleanupSources")
         assert await sources.locator(".identical-cleanup-source-row").count() == 2
         assert "Apple Photos 5 张" in await sources.get_attribute("aria-label")
-        assert await page.locator("#slimmingIdenticalCleanupNotice > p").count() == 3
+        assert await page.locator("#slimmingIdenticalCleanupNotice > p").count() == 4
+        assert "原文件字节并不完全相同" in await page.locator(
+            "#slimmingIdenticalCleanupNotice"
+        ).inner_text()
         assert "永久删除 3 个文件夹媒体" in await page.locator(
             "#slimmingIdenticalCleanupNotice"
         ).inner_text()
