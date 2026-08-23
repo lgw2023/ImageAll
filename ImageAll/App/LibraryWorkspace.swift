@@ -1880,6 +1880,9 @@ final class LibraryWorkspaceModel: ObservableObject {
         if selectedAssetIDs.isEmpty {
             return "请先选择要删除的照片或视频"
         }
+        if selectedAssetDeletionCandidateCount == 0 {
+            return "所选项目均有红心保护；请先取消红心再删除"
+        }
         return nil
     }
 
@@ -1891,6 +1894,10 @@ final class LibraryWorkspaceModel: ObservableObject {
         selectedAssetIDs.lazy.filter {
             self.favoriteState(for: $0).isDeletionProtected
         }.count
+    }
+
+    var selectedAssetDeletionCandidateCount: Int {
+        selectedAssetIDs.count - selectedAssetDeletionFavoriteProtectionCount
     }
 
     var supportsLibrarySlimmingThresholds: Bool {
@@ -2552,7 +2559,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     var shouldConfirmSelectedLibrarySlimmingMoveToRecycle: Bool {
         selectedLibrarySlimmingFavoriteProtectionCount > 0
             || LibrarySlimmingMoveConfirmationPolicy.requiresConfirmation(
-            assetCount: selectedLibrarySlimmingMemberIDs.count,
+            assetCount: selectedLibrarySlimmingRemovalCandidateCount,
             skipsSmallMoveConfirmation: skipsLibrarySlimmingMoveToRecycleConfirmation,
             isIdenticalCleanup: false
         )
@@ -2564,10 +2571,15 @@ final class LibraryWorkspaceModel: ObservableObject {
         }.count
     }
 
+    var selectedLibrarySlimmingRemovalCandidateCount: Int {
+        selectedLibrarySlimmingMemberIDs.count
+            - selectedLibrarySlimmingFavoriteProtectionCount
+    }
+
     var canPersistentlySkipSelectedLibrarySlimmingMoveConfirmation: Bool {
         selectedLibrarySlimmingFavoriteProtectionCount == 0
             && LibrarySlimmingMoveConfirmationPolicy.canPersistentlySkip(
-            assetCount: selectedLibrarySlimmingMemberIDs.count
+            assetCount: selectedLibrarySlimmingRemovalCandidateCount
         )
     }
 
@@ -2631,6 +2643,9 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
         if selectedLibrarySlimmingMemberIDs.isEmpty {
             return "请先选择要删除或回收的照片"
+        }
+        if selectedLibrarySlimmingRemovalCandidateCount == 0 {
+            return "所选项目均有红心保护；请先取消红心再删除或回收"
         }
         return nil
     }
@@ -2773,14 +2788,35 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     private func moveLibrarySlimmingAssetsToRecycle(
-        _ assetIDs: [UUID],
+        _ requestedAssetIDs: [UUID],
         identicalCleanupPlan: LibrarySlimmingIdenticalCleanupPlan?,
         removalMode: LibrarySlimmingRemovalMode,
         mutationStateAlreadyHeld: Bool = false
     ) async {
-        guard !assetIDs.isEmpty,
+        guard !requestedAssetIDs.isEmpty,
               let recycle = librarySlimmingRecycle
         else { return }
+        var removalAssetIDs = requestedAssetIDs
+        var protectedFavoriteCount = 0
+        if identicalCleanupPlan == nil {
+            guard await refreshFavoriteStatesForRemoval(assetIDs: requestedAssetIDs) else {
+                return
+            }
+            let protectedAssetIDs = Set(requestedAssetIDs.filter {
+                favoriteState(for: $0).isDeletionProtected
+            })
+            protectedFavoriteCount = protectedAssetIDs.count
+            removalAssetIDs.removeAll { protectedAssetIDs.contains($0) }
+            guard !removalAssetIDs.isEmpty else {
+                let message = librarySlimmingFavoriteRetentionMessage(
+                    count: protectedFavoriteCount
+                )
+                librarySlimmingStatusMessage = message
+                librarySlimmingRecycleActionMessage = message
+                return
+            }
+        }
+        let assetIDs = removalAssetIDs
         if mutationStateAlreadyHeld {
             guard isMutatingLibrarySlimmingRecycle else { return }
         } else {
@@ -3002,6 +3038,13 @@ final class LibraryWorkspaceModel: ObservableObject {
                     "已提交快速删除 \(outcome.durabilityPendingAssetIDs.count) 张，等待后台确认磁盘状态"
                 )
             }
+            if protectedFavoriteCount > 0 {
+                parts.append(
+                    librarySlimmingFavoriteRetentionMessage(
+                        count: protectedFavoriteCount
+                    )
+                )
+            }
             if !outcome.authorizationDeniedPhotosAssetIDs.isEmpty {
                 parts.append(
                     "Photos 未授权 \(outcome.authorizationDeniedPhotosAssetIDs.count) 张，请在系统设置中允许 ImageAll 访问照片库"
@@ -3105,6 +3148,41 @@ final class LibraryWorkspaceModel: ObservableObject {
                 )
             }
         }
+    }
+
+    private func refreshFavoriteStatesForRemoval(assetIDs: [UUID]) async -> Bool {
+        let requestedAssetIDs = Set(assetIDs)
+        let service = service
+        do {
+            let refreshed = try await Self.offMain(priority: .utility) {
+                try service.fetchFavoriteStates(assetIDs: Array(requestedAssetIDs))
+            }
+            guard requestedAssetIDs.isSubset(of: refreshed.keys) else {
+                let message = "无法核验红心保护，未删除或回收任何项目"
+                favoriteStatusMessage = message
+                librarySlimmingStatusMessage = message
+                librarySlimmingRecycleActionMessage = message
+                return false
+            }
+            favoriteStates.merge(refreshed) { current, latestRead in
+                current.intentRevision > latestRead.intentRevision
+                    ? current
+                    : latestRead
+            }
+            return true
+        } catch {
+            let message = "无法核验红心保护，未删除或回收任何项目"
+            favoriteStatusMessage = message
+            librarySlimmingStatusMessage = message
+            librarySlimmingRecycleActionMessage = message
+            return false
+        }
+    }
+
+    private func librarySlimmingFavoriteRetentionMessage(count: Int) -> String {
+        selectedMediaKind == .video
+            ? "已保留 \(count) 个红心视频"
+            : "已保留 \(count) 张红心照片"
     }
 
     private func setLibrarySlimmingIdenticalCleanupExecutionPhase(
@@ -11310,7 +11388,7 @@ struct LibraryWorkspaceView: View {
         }
         .sheet(isPresented: $showSelectedAssetDeleteConfirmation) {
             LibraryFastDeleteConfirmationSheet(
-                selectedCount: model.selectedAssetIDs.count,
+                selectedCount: model.selectedAssetDeletionCandidateCount,
                 mediaKind: model.selectedMediaKind,
                 favoriteCount: model.selectedAssetDeletionFavoriteProtectionCount,
                 onConfirm: {

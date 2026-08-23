@@ -568,7 +568,7 @@ struct LibrarySlimmingWorkspaceView: View {
         }
         .sheet(isPresented: $confirmMoveToRecycle) {
             LibrarySlimmingMoveToRecycleConfirmationSheet(
-                selectedCount: model.selectedLibrarySlimmingMemberIDs.count,
+                selectedCount: model.selectedLibrarySlimmingRemovalCandidateCount,
                 mediaKind: model.selectedMediaKind,
                 favoriteCount: model.selectedLibrarySlimmingFavoriteProtectionCount,
                 allowsSuppressingFutureConfirmation:
@@ -595,7 +595,7 @@ struct LibrarySlimmingWorkspaceView: View {
         }
         .sheet(isPresented: $confirmFastDelete) {
             LibraryFastDeleteConfirmationSheet(
-                selectedCount: model.selectedLibrarySlimmingMemberIDs.count,
+                selectedCount: model.selectedLibrarySlimmingRemovalCandidateCount,
                 mediaKind: model.selectedMediaKind,
                 favoriteCount: model.selectedLibrarySlimmingFavoriteProtectionCount,
                 onConfirm: {
@@ -788,7 +788,7 @@ struct LibrarySlimmingWorkspaceView: View {
                                 Label("快速清理", systemImage: "trash.fill")
                             } else {
                                 Label(
-                                    "快速清理 (\(model.selectedLibrarySlimmingMemberIDs.count))",
+                                    "快速清理 (\(model.selectedLibrarySlimmingRemovalCandidateCount))",
                                     systemImage: "trash.fill"
                                 )
                             }
@@ -1547,10 +1547,10 @@ struct LibrarySlimmingWorkspaceView: View {
 
     @ViewBuilder
     private func slimmingMemberContextMenu(for assetID: UUID) -> some View {
-        let moveCount = model.selectedLibrarySlimmingMemberIDs.contains(assetID)
-            ? model.selectedLibrarySlimmingMemberIDs.count
-            : 1
         let favoriteState = model.favoriteState(for: assetID)
+        let moveCount = model.selectedLibrarySlimmingMemberIDs.contains(assetID)
+            ? model.selectedLibrarySlimmingRemovalCandidateCount
+            : (favoriteState.isDeletionProtected ? 0 : 1)
         Button(favoriteState.isFavorite ? "取消红心" : "加入红心") {
             Task { await model.toggleFavorite(assetID: assetID) }
         }
@@ -1561,13 +1561,29 @@ struct LibrarySlimmingWorkspaceView: View {
             }
             requestFastDeleteConfirmation()
         }
-        .disabled(!model.supportsLibrarySlimmingRecycle || model.isMutatingLibrarySlimmingRecycle)
-        .persistentHelp("文件夹媒体会在身份核验后永久删除；Photos 仍由系统移入“最近删除”。")
+        .disabled(
+            !model.supportsLibrarySlimmingRecycle
+                || model.isMutatingLibrarySlimmingRecycle
+                || moveCount == 0
+        )
+        .persistentHelp(
+            moveCount == 0
+                ? "所选项目均有红心保护；请先取消红心再删除。"
+                : "文件夹媒体会在身份核验后永久删除；Photos 仍由系统移入“最近删除”。"
+        )
         Button("移入可恢复回收站 (\(moveCount))") {
             presentMoveToRecycle(for: assetID)
         }
-        .disabled(!model.supportsLibrarySlimmingRecycle || model.isMutatingLibrarySlimmingRecycle)
-        .persistentHelp("把当前媒体或已选媒体移入可恢复回收站；跨磁盘时可能较慢。")
+        .disabled(
+            !model.supportsLibrarySlimmingRecycle
+                || model.isMutatingLibrarySlimmingRecycle
+                || moveCount == 0
+        )
+        .persistentHelp(
+            moveCount == 0
+                ? "所选项目均有红心保护；请先取消红心再回收。"
+                : "把当前媒体或已选媒体移入可恢复回收站；跨磁盘时可能较慢。"
+        )
     }
 
     private var recycleBinList: some View {
@@ -2999,10 +3015,10 @@ private struct LibrarySlimmingMoveToRecycleConfirmationSheet: View {
             .fixedSize(horizontal: false, vertical: true)
             if favoriteCount > 0 {
                 Label(
-                    "其中 \(favoriteCount) 项带红心。自动清理不会删除红心项，但你正在手动确认回收它们。",
+                    "将保留 \(favoriteCount) 项红心，只把其余 \(selectedCount) 项移入回收站。",
                     systemImage: "heart.fill"
                 )
-                .foregroundStyle(.red)
+                .foregroundStyle(.secondary)
                 .font(.callout.weight(.semibold))
             }
             if allowsSuppressingFutureConfirmation {
@@ -3010,8 +3026,12 @@ private struct LibrarySlimmingMoveToRecycleConfirmationSheet: View {
                     "不再确认单张或 5 张以内的普通回收",
                     isOn: $suppressFutureConfirmation
                 )
-            } else {
+            } else if selectedCount > 5 {
                 Text("超过 5 个媒体的批量回收每次都需要确认。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if favoriteCount > 0 {
+                Text("本次确认不会改变普通小批量回收的确认偏好。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -3062,10 +3082,10 @@ struct LibraryFastDeleteConfirmationSheet: View {
             .fixedSize(horizontal: false, vertical: true)
             if favoriteCount > 0 {
                 Label(
-                    "其中 \(favoriteCount) 项带红心。继续会绕过红心自动保护并执行手动删除。",
+                    "将保留 \(favoriteCount) 项红心，只快速删除其余 \(selectedCount) 项。",
                     systemImage: "heart.fill"
                 )
-                .foregroundStyle(.red)
+                .foregroundStyle(.secondary)
                 .font(.callout.weight(.semibold))
             }
             Text("此确认每次都会显示，不能设置为不再提醒。")

@@ -5882,6 +5882,80 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
     }
 
+    func testLibrarySlimmingFastDeleteRetainsFavoriteMemberFromMultiSelection() async throws {
+        let sourceID = UUID()
+        let assets = (0 ..< 5).map {
+            Self.makeAsset(sourceID: sourceID, fileName: "favorite-protection-\($0).jpg")
+        }
+        let favoriteAssetID = assets[1].assetID
+        let cluster = SlimmingCluster(
+            id: UUID(),
+            kind: .nearDuplicateScene,
+            memberAssetIDs: assets.map(\.assetID),
+            representativeAssetID: assets[0].assetID,
+            score: 0.94,
+            modelIdentity: .featurePrintOnly
+        )
+        let scan = StubLibrarySlimmingScanPort()
+        scan.seedClusters = [cluster]
+        let recycle = FakeLibrarySlimmingRecyclePort()
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: assets,
+                initialItems: assets,
+                startsConnected: true,
+                hasPendingCatalogReconcileJobs: false,
+                favoriteStates: [
+                    favoriteAssetID: MediaFavoriteState(
+                        assetID: favoriteAssetID,
+                        isFavorite: true,
+                        photosObservedValue: nil,
+                        syncStatus: .localOnly,
+                        intentRevision: 1,
+                        requestedAtMs: 1,
+                        photosObservedModifiedAtMs: nil,
+                        lastErrorCode: nil
+                    ),
+                ]
+            ),
+            librarySlimming: scan,
+            librarySlimmingRecycle: recycle,
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.start()
+        await model.selectAssets(Set(assets.map(\.assetID)))
+        await model.findLibrarySlimmingFromSelection()
+        await model.analyzeLibrarySlimming(mode: .seeds)
+        let presentedClusterID = try XCTUnwrap(model.librarySlimmingClusters.first?.id)
+        model.selectLibrarySlimmingCluster(presentedClusterID)
+        model.selectLibrarySlimmingMembers(
+            [assets[0].assetID, favoriteAssetID, assets[2].assetID]
+        )
+
+        XCTAssertEqual(model.selectedLibrarySlimmingRemovalCandidateCount, 2)
+        await model.deleteSelectedLibrarySlimmingMembersImmediately()
+
+        XCTAssertEqual(
+            Set(try XCTUnwrap(recycle.fastDeleteAssetIDCalls.first)),
+            [assets[0].assetID, assets[2].assetID]
+        )
+        XCTAssertEqual(model.selectedLibrarySlimmingMemberIDs, [favoriteAssetID])
+        XCTAssertTrue(
+            model.librarySlimmingClusters.contains {
+                $0.memberAssetIDs.contains(favoriteAssetID)
+            }
+        )
+        XCTAssertEqual(
+            model.librarySlimmingStatusMessage,
+            "已永久删除 2 张，来源空间已可回收 · 已保留 1 张红心照片"
+        )
+    }
+
     func testInspectorDeleteUsesLibrarySlimmingFastDeleteAndRemovesAssetFromGallery() async {
         let sourceID = UUID()
         let assets = (0 ..< 3).map {
