@@ -346,6 +346,7 @@ Photos 的 `localIdentifier` 只在当前本地照片库上下文中使用。跨
 | 表 | 关键字段 | 职责 |
 |---|---|---|
 | `source` | `id`, `kind`, `display_name`, `bookmark`, `sync_cursor`, `scan_generation`, `dirty_epoch`, `state` | 文件夹或 Photos 来源 |
+| `source_folder` | `source_id`, `relative_path`, `parent_relative_path`, `name` | v037 文件夹来源中含当前媒体的目录及其祖先；仅用于层级导航，不持有独立授权 |
 | `asset` | `id`, `source_id`, `locator`, `locator_state`, `media_type`, `width`, `height`, `created_at`, `modified_at`, `content_revision`, `last_seen_generation`, `availability` | 统一资产元数据；当前定位与来源可用性分离 |
 | `asset_favorite_state` | `asset_id`, `desired_value`, `photos_observed_value`, `sync_status`, `intent_revision`, 请求/观测/写回时间, `last_error_code` | v035 独立红心事实和可恢复 Photos 同步意图；不属于标签/模型语义 |
 | `asset_location` | `asset_id`, `latitude`, `longitude`, `source_kind`, `place_id`, `updated_at_ms` | v031/v032 每张照片唯一 canonical location；GPS 优先，已确认地点标签仅补全无 GPS 资产 |
@@ -451,6 +452,7 @@ entitlement 不能被解释为允许写入来源树。
 - 目录离线或外置盘拔出时暂停任务，并保留持久化目录工作队列；
 - 每次对账创建新的 `scan_generation`，流式枚举目录并标记本轮已见资产；
 - 只有完整 generation 成功结束后，才把本轮未见资产标记为不可用；中断扫描不得据此判定删除；
+- 完整 generation 在同一提交事务中重建 `source_folder`；中断扫描保留上一棵完整目录树。来源仍是唯一授权根，子目录只作为 Mac 层级导航与递归筛选范围（ADR-061）；
 - 每个批次的 Asset upsert、`last_seen_generation` 和 Job checkpoint 在同一 SQLite 事务提交；崩溃后允许从头重跑同一 generation，依靠唯一约束实现 at-least-once 幂等；
 - 通过快速指纹比较后，只有新增或变化资产进入缩略图、特征和预测流水线；
 - FSEvents 在 MVP 只用于合并并触发新的对账，不直接翻译成资产事实；应用启动、用户手动刷新和事件日志重置也会触发对账。每次文件事件在数据库事务中递增 Source 的 `dirty_epoch`。Job 启动时捕获 `started_dirty_epoch`；完成 generation 时只有两者仍相等才可标记 clean，否则必须先持久化下一次对账 Job，不能用当前扫描完成状态覆盖扫描期间到达的新事件。

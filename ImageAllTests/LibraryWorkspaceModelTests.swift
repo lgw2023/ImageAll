@@ -4548,6 +4548,122 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.selectionSummaryTitle, "已选择 1 张照片")
     }
 
+    func testFolderNavigationFiltersDescendantsAndPublishesBreadcrumb() async {
+        let sourceID = UUID()
+        let selected = Self.makeAsset(
+            sourceID: sourceID,
+            fileName: "毕业照.jpg",
+            relativePath: "本科/2018级/毕业照.jpg",
+            sourceDisplayName: "南大"
+        )
+        let sibling = Self.makeAsset(
+            sourceID: sourceID,
+            fileName: "活动.jpg",
+            relativePath: "本科/2019级/活动.jpg",
+            sourceDisplayName: "南大"
+        )
+        let folders = [
+            LibrarySourceFolder(
+                sourceID: sourceID,
+                relativePath: "本科",
+                parentRelativePath: nil,
+                name: "本科"
+            ),
+            LibrarySourceFolder(
+                sourceID: sourceID,
+                relativePath: "本科/2018级",
+                parentRelativePath: "本科",
+                name: "2018级"
+            ),
+            LibrarySourceFolder(
+                sourceID: sourceID,
+                relativePath: "本科/2019级",
+                parentRelativePath: "本科",
+                name: "2019级"
+            ),
+        ]
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "南大",
+                state: .active
+            ),
+            reconciledItems: [selected, sibling],
+            initialItems: [selected, sibling],
+            startsConnected: true,
+            hasPendingCatalogReconcileJobs: false,
+            sourceFolders: folders
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        let tree = model.sourceFolderTree(for: sourceID)
+        XCTAssertEqual(tree.map(\.folder.name), ["本科"])
+        XCTAssertEqual(tree.first?.children.map(\.folder.name), ["2018级", "2019级"])
+        let scope = AssetFolderScope(sourceID: sourceID, relativePath: "本科/2018级")
+        let destination = LibraryBrowsingDestination.folder(scope)
+        model.applyImmediateBrowsingPresentation(for: destination)
+        let requestID = model.beginBrowsingNavigation()
+        await model.navigate(to: destination, requestID: requestID)
+
+        XCTAssertEqual(model.items.map(\.assetID), [selected.assetID])
+        XCTAssertEqual(service.lastFilter.folderScope, scope)
+        XCTAssertEqual(model.browsingTitle, "南大 › 本科 › 2018级")
+        XCTAssertEqual(model.folderBreadcrumb.map(\.title), ["南大", "本科", "2018级"])
+    }
+
+    func testMissingSelectedFolderFallsBackToNearestAncestorThenSourceRoot() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(
+            sourceID: sourceID,
+            fileName: "毕业照.jpg",
+            relativePath: "本科/2018级/毕业照.jpg",
+            sourceDisplayName: "南大"
+        )
+        let undergraduate = LibrarySourceFolder(
+            sourceID: sourceID,
+            relativePath: "本科",
+            parentRelativePath: nil,
+            name: "本科"
+        )
+        let graduatingClass = LibrarySourceFolder(
+            sourceID: sourceID,
+            relativePath: "本科/2018级",
+            parentRelativePath: "本科",
+            name: "2018级"
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "南大",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset],
+            startsConnected: true,
+            hasPendingCatalogReconcileJobs: false,
+            sourceFolders: [undergraduate, graduatingClass]
+        )
+        let model = LibraryWorkspaceModel(service: service)
+
+        await model.start()
+        let leafScope = graduatingClass.id
+        let destination = LibraryBrowsingDestination.folder(leafScope)
+        model.applyImmediateBrowsingPresentation(for: destination)
+        let requestID = model.beginBrowsingNavigation()
+        await model.navigate(to: destination, requestID: requestID)
+
+        service.replaceSourceFolders([undergraduate])
+        await model.refreshFolderNavigation()
+        XCTAssertEqual(model.selectedFolderScope, undergraduate.id)
+        XCTAssertEqual(model.folderNavigationRevision, 1)
+
+        service.replaceSourceFolders([])
+        await model.refreshFolderNavigation()
+        XCTAssertNil(model.selectedFolderScope)
+        XCTAssertEqual(model.folderNavigationRevision, 2)
+    }
+
     func testFavoritesNavigationUsesSharedFavoriteFilter() async {
         let sourceID = UUID()
         let favorite = Self.makeAsset(
@@ -12903,6 +13019,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         sourceID: UUID,
         assetID: UUID = UUID(),
         fileName: String = "sample.jpg",
+        relativePath: String? = nil,
         mediaType: String = "public.jpeg",
         mediaKind: MediaKind = .image,
         durationMs: Int64? = nil,
@@ -12914,7 +13031,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             sourceID: sourceID,
             sourceDisplayName: sourceDisplayName,
             sourceState: .active,
-            relativePath: fileName,
+            relativePath: relativePath ?? fileName,
             fileName: fileName,
             mediaKind: mediaKind,
             mediaType: mediaType,
@@ -15469,6 +15586,7 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
     private var storedRestoreDefaultSourceAuthorizationsCallCount = 0
     private let additionalSources: [LibrarySourceSummary]
     private var storedFavoriteStates: [UUID: MediaFavoriteState]
+    private var storedSourceFolders: [LibrarySourceFolder]
 
     init(
         connectedSource: LibrarySourceSummary,
@@ -15521,7 +15639,8 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
         blocksInspectorDetailFetches: Int = 0,
         blocksCatalogSourceMonitoring: Bool = false,
         favoriteStates: [UUID: MediaFavoriteState] = [:],
-        favoriteStateFetchDelayNanoseconds: UInt64 = 0
+        favoriteStateFetchDelayNanoseconds: UInt64 = 0,
+        sourceFolders: [LibrarySourceFolder] = []
     ) {
         self.connectedSource = connectedSource
         self.reconciledItems = reconciledItems
@@ -15572,6 +15691,7 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
         self.blocksCatalogSourceMonitoring = blocksCatalogSourceMonitoring
         self.additionalSources = additionalSources
         storedFavoriteStates = favoriteStates
+        storedSourceFolders = sourceFolders
         storedSources = startsConnected ? [connectedSource] + additionalSources : []
         storedItems = initialItems
         storedTags = tags.map { tag in
@@ -15964,6 +16084,14 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
         lock.withLock { storedSources }
     }
 
+    func fetchSourceFolders(sourceID: UUID) throws -> [LibrarySourceFolder] {
+        lock.withLock { storedSourceFolders.filter { $0.sourceID == sourceID } }
+    }
+
+    func replaceSourceFolders(_ folders: [LibrarySourceFolder]) {
+        lock.withLock { storedSourceFolders = folders }
+    }
+
     func connectFolder() async throws -> ConnectFolderOutcome {
         lock.withLock {
             storedSources = [connectedSource]
@@ -16209,6 +16337,15 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
                    !filter.sourceIDs.contains(item.sourceID)
                 {
                     return false
+                }
+                if let folderScope = filter.folderScope {
+                    guard item.sourceID == folderScope.sourceID,
+                          item.relativePath?.hasPrefix(
+                              folderScope.relativePath + "/"
+                          ) == true
+                    else {
+                        return false
+                    }
                 }
                 if !filter.availabilities.isEmpty,
                    !filter.availabilities.contains(item.availability)

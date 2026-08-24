@@ -369,6 +369,24 @@ enum LibraryBrowsingDestination: Equatable, Sendable {
     case trainingWorkspace
     case librarySlimming
     case source(UUID)
+    case folder(AssetFolderScope)
+}
+
+struct LibraryFolderBreadcrumbItem: Identifiable, Equatable, Sendable {
+    var id: String {
+        "\(sourceID.uuidString.lowercased())|\(relativePath ?? "")"
+    }
+
+    let sourceID: UUID
+    let relativePath: String?
+    let title: String
+}
+
+struct LibrarySourceFolderTreeNode: Identifiable, Equatable, Sendable {
+    var id: AssetFolderScope { folder.id }
+
+    let folder: LibrarySourceFolder
+    let children: [LibrarySourceFolderTreeNode]
 }
 
 enum LibrarySlimmingWorkspaceTab: String, Equatable, Sendable {
@@ -1371,6 +1389,9 @@ struct LibrarySlimmingIdenticalCleanupExecutionProgress: Equatable, Sendable {
 final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var phase: LibraryWorkspacePhase = .loading
     @Published private(set) var sources: [LibrarySourceSummary] = []
+    @Published private(set) var sourceFolders: [LibrarySourceFolder] = []
+    @Published private(set) var selectedFolderScope: AssetFolderScope?
+    @Published private(set) var folderNavigationRevision = 0
     @Published private(set) var items: [AssetGridItemProjection] = []
     @Published private(set) var selectedAssetIDs: Set<UUID> = []
     @Published private(set) var isSinglePhotoPresented = false
@@ -4480,6 +4501,31 @@ final class LibraryWorkspaceModel: ObservableObject {
         return sourceOrderPreferences.ordered(sources)
     }
 
+    func sourceFolderTree(for sourceID: UUID) -> [LibrarySourceFolderTreeNode] {
+        let matchingFolders = sourceFolders.filter { $0.sourceID == sourceID }
+        let grouped = Dictionary(grouping: matchingFolders) {
+            $0.parentRelativePath ?? ""
+        }
+
+        func build(parentRelativePath: String?) -> [LibrarySourceFolderTreeNode] {
+            let folders = grouped[parentRelativePath ?? "", default: []].sorted {
+                let comparison = $0.name.localizedStandardCompare($1.name)
+                if comparison != .orderedSame {
+                    return comparison == .orderedAscending
+                }
+                return $0.relativePath < $1.relativePath
+            }
+            return folders.map { folder in
+                LibrarySourceFolderTreeNode(
+                    folder: folder,
+                    children: build(parentRelativePath: folder.relativePath)
+                )
+            }
+        }
+
+        return build(parentRelativePath: nil)
+    }
+
     var tagGroupSections: [LibraryTagGroupSection] {
         _ = tagGroupCollapseRevision
         _ = tagOrderRevision
@@ -4842,6 +4888,9 @@ final class LibraryWorkspaceModel: ObservableObject {
         if let worldMapGalleryScope {
             return "\(worldMapGalleryScope.displayName) · 照片世界"
         }
+        if selectedFolderScope != nil {
+            return folderBreadcrumb.map(\.title).joined(separator: " › ")
+        }
         if let selectedSourceID,
            let source = sources.first(where: { $0.id == selectedSourceID })
         {
@@ -4854,6 +4903,35 @@ final class LibraryWorkspaceModel: ObservableObject {
             return selectedMediaKind == .image ? "红心照片" : "红心视频"
         }
         return selectedMediaKind == .image ? "全部照片" : "全部视频"
+    }
+
+    var folderBreadcrumb: [LibraryFolderBreadcrumbItem] {
+        guard let scope = selectedFolderScope,
+              let source = sources.first(where: { $0.id == scope.sourceID })
+        else {
+            return []
+        }
+        var result = [
+            LibraryFolderBreadcrumbItem(
+                sourceID: scope.sourceID,
+                relativePath: nil,
+                title: source.displayName
+            ),
+        ]
+        var accumulated = ""
+        for component in scope.relativePath.split(separator: "/") {
+            accumulated = accumulated.isEmpty
+                ? String(component)
+                : accumulated + "/" + component
+            result.append(
+                LibraryFolderBreadcrumbItem(
+                    sourceID: scope.sourceID,
+                    relativePath: accumulated,
+                    title: String(component)
+                )
+            )
+        }
+        return result
     }
 
     var selectionSummaryTitle: String {
@@ -6260,6 +6338,8 @@ final class LibraryWorkspaceModel: ObservableObject {
         do {
             let outcome = try await service.deleteLibrarySource(sourceID: sourceID)
             selectedSourceID = nil
+            selectedFolderScope = nil
+            sourceFolders.removeAll { $0.sourceID == sourceID }
             sourceOrderPreferences.remove(sourceID)
             sourceOrderRevision &+= 1
             if var selectedSourceIDs = librarySlimmingCatalogSourceIDs {
@@ -6531,9 +6611,10 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     func selectSource(_ sourceID: UUID?) async {
-        guard selectedSourceID != sourceID else { return }
+        guard selectedSourceID != sourceID || selectedFolderScope != nil else { return }
         stopVideoHoverPlayback()
         selectedSourceID = sourceID
+        selectedFolderScope = nil
         // Navigation only swaps the visible filter. Photos integrity / sync is
         // handled once at start() so switching sources stays flicker-free.
         await loadFirstPage(remountGrid: true)
@@ -6593,7 +6674,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                 navigationRequestID: requestID
             )
 
-        case .all, .favorites, .untagged, .source, .worldMapGallery:
+        case .all, .favorites, .untagged, .source, .folder, .worldMapGallery:
             cancelPendingLibrarySlimmingSeedAnalyze()
             clearReviewModeState()
             applyGalleryBrowsingFilters(for: destination)
@@ -8837,18 +8918,64 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
 
         guard !sources.isEmpty else {
+            sourceFolders = []
             items = []
             nextCursor = nil
             phase = .empty
             return
         }
 
+        await refreshFolderNavigation()
         await loadFirstPage()
         await refreshReviewState()
         if runPendingJobs {
             startCatalogReconcileRunnerIfNeeded()
             startPersonalizationRunnerIfNeeded()
         }
+    }
+
+    func refreshFolderNavigation() async {
+        let service = service
+        let folderSourceIDs = sources.filter { $0.kind == .folder }.map(\.id)
+        do {
+            let refreshed = try await Self.offMain(priority: .utility) {
+                try folderSourceIDs.flatMap { sourceID in
+                    try service.fetchSourceFolders(sourceID: sourceID)
+                }
+            }
+            sourceFolders = refreshed
+            reconcileSelectedFolderAfterRefresh()
+        } catch {
+            // A transient catalog read failure must not erase the last complete
+            // tree or force the user out of the selected folder.
+        }
+    }
+
+    private func reconcileSelectedFolderAfterRefresh() {
+        guard var scope = selectedFolderScope else { return }
+        let availablePaths = Set(
+            sourceFolders.lazy
+                .filter { $0.sourceID == scope.sourceID }
+                .map(\.relativePath)
+        )
+        guard !availablePaths.contains(scope.relativePath) else { return }
+
+        var components = scope.relativePath.split(separator: "/").map(String.init)
+        while components.count > 1 {
+            components.removeLast()
+            let ancestor = components.joined(separator: "/")
+            if availablePaths.contains(ancestor) {
+                scope = AssetFolderScope(
+                    sourceID: scope.sourceID,
+                    relativePath: ancestor
+                )
+                selectedFolderScope = scope
+                folderNavigationRevision &+= 1
+                return
+            }
+        }
+        selectedFolderScope = nil
+        folderNavigationRevision &+= 1
     }
 
     private func startCatalogReconcileRunnerIfNeeded(
@@ -8882,6 +9009,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                     if let refreshed = try? await Self.offMain({ try service.fetchSources() }) {
                         self.sources = refreshed
                     }
+                    await self.refreshFolderNavigation()
                     await self.reloadLoadedAssetWindow()
                     await self.refreshReviewState()
                     self.startPersonalizationRunnerIfNeeded()
@@ -9378,6 +9506,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var currentFilter: AssetPageFilter {
         AssetPageFilter(
             sourceIDs: selectedSourceID.map { [$0] } ?? [],
+            folderScope: selectedFolderScope,
             tagDecisionFilters: tags
                 .filter { selectedTagFilterIDs.contains($0.id) }
                 .compactMap { tag in
@@ -10136,7 +10265,7 @@ extension LibraryWorkspaceModel {
             worldMapGalleryScope = nil
             clearReviewModeState()
             isSinglePhotoPresented = false
-        case .all, .favorites, .untagged, .source, .worldMapGallery:
+        case .all, .favorites, .untagged, .source, .folder, .worldMapGallery:
             clearReviewModeState()
             applyGalleryBrowsingFilters(for: destination)
             // Drop stale gallery rows so the previous filter cannot paint under
@@ -10173,6 +10302,7 @@ extension LibraryWorkspaceModel {
             searchDebounceTask = nil
             selectedMediaKind = .image
             selectedSourceID = nil
+            selectedFolderScope = nil
             selectedTagFilterDecisions = [:]
             selectedTagFilterIDs = []
             excludedTagFilterIDs = []
@@ -10185,11 +10315,13 @@ extension LibraryWorkspaceModel {
             isBrowsingFavorites = false
             worldMapGalleryScope = nil
             selectedSourceID = nil
+            selectedFolderScope = nil
             tagPresence = .any
         case .favorites:
             isBrowsingFavorites = true
             worldMapGalleryScope = nil
             selectedSourceID = nil
+            selectedFolderScope = nil
             tagPresence = .any
             selectedTagFilterDecisions = [:]
             selectedTagFilterIDs = []
@@ -10198,6 +10330,7 @@ extension LibraryWorkspaceModel {
             isBrowsingFavorites = false
             worldMapGalleryScope = nil
             selectedSourceID = nil
+            selectedFolderScope = nil
             tagPresence = .untagged
             selectedTagFilterDecisions = [:]
             selectedTagFilterIDs = []
@@ -10206,6 +10339,13 @@ extension LibraryWorkspaceModel {
             isBrowsingFavorites = false
             worldMapGalleryScope = nil
             selectedSourceID = sourceID
+            selectedFolderScope = nil
+            tagPresence = .any
+        case let .folder(scope):
+            isBrowsingFavorites = false
+            worldMapGalleryScope = nil
+            selectedSourceID = scope.sourceID
+            selectedFolderScope = scope
             tagPresence = .any
         case .reviewSuggestions, .trainingWorkspace, .librarySlimming:
             isBrowsingFavorites = false
@@ -10900,6 +11040,61 @@ private enum LibrarySidebarSelection: Hashable {
     case trainingWorkspace
     case librarySlimming
     case source(UUID)
+    case folder(AssetFolderScope)
+}
+
+private struct LibrarySourceFolderOutline: View {
+    let nodes: [LibrarySourceFolderTreeNode]
+    @Binding var selection: LibrarySidebarSelection?
+    @Binding var expandedFolderScopes: Set<AssetFolderScope>
+
+    var body: some View {
+        ForEach(nodes) { node in
+            if node.children.isEmpty {
+                folderLabel(node.folder)
+                    .tag(LibrarySidebarSelection.folder(node.folder.id))
+                    .onTapGesture {
+                        selection = .folder(node.folder.id)
+                    }
+            } else {
+                DisclosureGroup(
+                    isExpanded: expansionBinding(for: node.folder.id)
+                ) {
+                    LibrarySourceFolderOutline(
+                        nodes: node.children,
+                        selection: $selection,
+                        expandedFolderScopes: $expandedFolderScopes
+                    )
+                } label: {
+                    folderLabel(node.folder)
+                }
+                .tag(LibrarySidebarSelection.folder(node.folder.id))
+                .onTapGesture {
+                    selection = .folder(node.folder.id)
+                }
+            }
+        }
+    }
+
+    private func folderLabel(_ folder: LibrarySourceFolder) -> some View {
+        Label(folder.name, systemImage: "folder")
+            .lineLimit(1)
+            .contentShape(Rectangle())
+            .persistentHelp("只显示“\(folder.relativePath)”目录及其所有子目录中的媒体。")
+    }
+
+    private func expansionBinding(for scope: AssetFolderScope) -> Binding<Bool> {
+        Binding(
+            get: { expandedFolderScopes.contains(scope) },
+            set: { isExpanded in
+                if isExpanded {
+                    expandedFolderScopes.insert(scope)
+                } else {
+                    expandedFolderScopes.remove(scope)
+                }
+            }
+        )
+    }
 }
 
 private enum LibraryWorkspaceSheet: String, Identifiable {
@@ -11345,6 +11540,9 @@ struct LibraryWorkspaceView: View {
     @State private var sourceRowFrames: [UUID: CGRect] = [:]
     @State private var draggedSourceID: UUID?
     @State private var sourceInsertionOffset: Int?
+    @State private var expandedSourceIDs: Set<UUID> = []
+    @State private var discoveredFolderSourceIDs: Set<UUID> = []
+    @State private var expandedFolderScopes: Set<AssetFolderScope> = []
     @State private var draggedTagID: UUID?
     @State private var draggedTagGroupID: UUID?
     @State private var activeTagReorderSurface: LibraryTagReorderSurface?
@@ -12044,6 +12242,11 @@ struct LibraryWorkspaceView: View {
                 .librarySlimming
             case let .source(sourceID):
                 .source(sourceID)
+            case let .folder(scope):
+                .folder(scope)
+            }
+            if case let .folder(scope) = destination {
+                expandFolderAncestors(scope)
             }
             if destination == .galleryOverview || destination == .worldMap {
                 layoutState.setInspectorPresented(false)
@@ -12072,6 +12275,20 @@ struct LibraryWorkspaceView: View {
         }
         .onChange(of: model.favoriteNavigationNonce) { _, _ in
             selection = .favorites
+        }
+        .onChange(of: model.sourceFolders) { _, folders in
+            let folderSourceIDs = Set(folders.map(\.sourceID))
+            let newlyDiscovered = folderSourceIDs.subtracting(discoveredFolderSourceIDs)
+            expandedSourceIDs.formUnion(newlyDiscovered)
+            discoveredFolderSourceIDs.formUnion(folderSourceIDs)
+        }
+        .onChange(of: model.folderNavigationRevision) { _, _ in
+            if let scope = model.selectedFolderScope {
+                selection = .folder(scope)
+                expandFolderAncestors(scope)
+            } else if case let .folder(scope) = selection {
+                selection = .source(scope.sourceID)
+            }
         }
     }
 
@@ -12331,38 +12548,30 @@ struct LibraryWorkspaceView: View {
             }
             Section {
                 ForEach(orderedSources) { source in
-                    sourceRow(source)
-                        .frame(
-                            maxWidth: .infinity,
-                            minHeight: Self.sourceDropRowHeight,
-                            maxHeight: Self.sourceDropRowHeight,
-                            alignment: .leading
-                        )
-                        .contentShape(Rectangle())
-                        .background {
-                            GeometryReader { proxy in
-                                Color.clear.preference(
-                                    key: LibrarySourceRowFramePreferenceKey.self,
-                                    value: [
-                                        source.id: proxy.frame(
-                                            in: .named(Self.sourceReorderCoordinateSpace)
-                                        ),
-                                    ]
-                                )
-                            }
-                        }
-                        .overlay {
-                            sourceInsertionIndicator(
-                                for: source.id,
-                                orderedSources: orderedSources
+                    let folderTree = model.sourceFolderTree(for: source.id)
+                    if source.kind == .folder, !folderTree.isEmpty {
+                        DisclosureGroup(
+                            isExpanded: sourceExpansionBinding(for: source.id)
+                        ) {
+                            LibrarySourceFolderOutline(
+                                nodes: folderTree,
+                                selection: $selection,
+                                expandedFolderScopes: $expandedFolderScopes
                             )
+                        } label: {
+                            sourceNavigationRow(source, orderedSources: orderedSources)
                         }
-                        .opacity(draggedSourceID == source.id ? 0.55 : 1)
                         .tag(LibrarySidebarSelection.source(source.id))
                         .onTapGesture {
                             selection = .source(source.id)
                         }
-                        .simultaneousGesture(sourceReorderGesture(for: source.id))
+                    } else {
+                        sourceNavigationRow(source, orderedSources: orderedSources)
+                            .tag(LibrarySidebarSelection.source(source.id))
+                            .onTapGesture {
+                                selection = .source(source.id)
+                            }
+                    }
                 }
                 Button {
                     Task { await model.connectFolder() }
@@ -13066,6 +13275,62 @@ struct LibraryWorkspaceView: View {
         }
     }
 
+    private func sourceNavigationRow(
+        _ source: LibrarySourceSummary,
+        orderedSources: [LibrarySourceSummary]
+    ) -> some View {
+        sourceRow(source)
+            .frame(
+                maxWidth: .infinity,
+                minHeight: Self.sourceDropRowHeight,
+                maxHeight: Self.sourceDropRowHeight,
+                alignment: .leading
+            )
+            .contentShape(Rectangle())
+            .background {
+                GeometryReader { proxy in
+                    Color.clear.preference(
+                        key: LibrarySourceRowFramePreferenceKey.self,
+                        value: [
+                            source.id: proxy.frame(in: .named(Self.sourceReorderCoordinateSpace)),
+                        ]
+                    )
+                }
+            }
+            .overlay {
+                sourceInsertionIndicator(for: source.id, orderedSources: orderedSources)
+            }
+            .opacity(draggedSourceID == source.id ? 0.55 : 1)
+            .simultaneousGesture(sourceReorderGesture(for: source.id))
+    }
+
+    private func sourceExpansionBinding(for sourceID: UUID) -> Binding<Bool> {
+        Binding(
+            get: { expandedSourceIDs.contains(sourceID) },
+            set: { isExpanded in
+                if isExpanded {
+                    expandedSourceIDs.insert(sourceID)
+                } else {
+                    expandedSourceIDs.remove(sourceID)
+                }
+            }
+        )
+    }
+
+    private func expandFolderAncestors(_ scope: AssetFolderScope) {
+        expandedSourceIDs.insert(scope.sourceID)
+        var components = scope.relativePath.split(separator: "/").map(String.init)
+        while components.count > 1 {
+            components.removeLast()
+            expandedFolderScopes.insert(
+                AssetFolderScope(
+                    sourceID: scope.sourceID,
+                    relativePath: components.joined(separator: "/")
+                )
+            )
+        }
+    }
+
     @ViewBuilder
     private var content: some View {
         if selection == .galleryOverview {
@@ -13107,9 +13372,48 @@ struct LibraryWorkspaceView: View {
             } else {
                 mediaKindTabs
             }
+            if !model.folderBreadcrumb.isEmpty {
+                Divider()
+                folderBreadcrumbBar
+            }
             Divider()
             libraryContentBody
         }
+    }
+
+    private var folderBreadcrumbBar: some View {
+        let breadcrumbs = model.folderBreadcrumb
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(Array(breadcrumbs.enumerated()), id: \.element.id) { index, item in
+                    if index > 0 {
+                        Image(systemName: "chevron.right")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                    Button(item.title) {
+                        if let relativePath = item.relativePath {
+                            let scope = AssetFolderScope(
+                                sourceID: item.sourceID,
+                                relativePath: relativePath
+                            )
+                            selection = .folder(scope)
+                            expandFolderAncestors(scope)
+                        } else {
+                            selection = .source(item.sourceID)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .font(.callout.weight(index == breadcrumbs.count - 1 ? .semibold : .regular))
+                    .foregroundStyle(index == breadcrumbs.count - 1 ? .primary : Color.accentColor)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("当前文件夹路径")
+        .accessibilityIdentifier("libraryFolderBreadcrumb")
     }
 
     private func worldMapGalleryBanner(_ scope: WorldMapGalleryScope) -> some View {

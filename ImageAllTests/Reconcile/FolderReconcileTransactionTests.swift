@@ -777,6 +777,15 @@ final class FolderReconcileTransactionTests: XCTestCase {
         let sourceID = UUID()
         let bookmark = root.path.data(using: .utf8)!
         try FolderReconcileTestSupport.seedActiveFolderSource(database: database, sourceID: sourceID, bookmark: bookmark)
+        try database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO source_folder (source_id, relative_path, parent_relative_path, name)
+                VALUES (?, 'previous', NULL, 'previous')
+                """,
+                arguments: [sourceID.uuidString.lowercased()]
+            )
+        }
         _ = try FolderReconcileTestSupport.enqueueReconcileJob(queue: queue, sourceID: sourceID)
         let (handler, _) = FolderReconcileTestSupport.makeHandler(database: database, root: root, bookmark: bookmark)
         let coordinator = FolderReconcileTestSupport.makeCoordinator(queue: queue, handler: handler)
@@ -787,6 +796,9 @@ final class FolderReconcileTransactionTests: XCTestCase {
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset WHERE availability = 'missing'")
         }
         XCTAssertEqual(missingCount, 0)
+        let retainedFolders = try GRDBAssetCatalogQueryRepository(database: database)
+            .fetchSourceFolders(sourceID: sourceID)
+        XCTAssertEqual(retainedFolders.map(\.relativePath), ["previous"])
     }
 
     func testExpiredLeaseRejectedBeforeBusinessClosure() throws {

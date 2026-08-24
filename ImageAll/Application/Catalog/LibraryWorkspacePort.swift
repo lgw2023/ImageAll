@@ -421,6 +421,7 @@ protocol LibraryWorkspacePort: Sendable {
     func fetchJobActivity() throws -> [JobActivityItem]
     func applyJobActivityAction(_ action: JobActivityAction, jobID: UUID) throws
     func fetchSources() throws -> [LibrarySourceSummary]
+    func fetchSourceFolders(sourceID: UUID) throws -> [LibrarySourceFolder]
     func fetchGalleryOverview() throws -> GalleryOverviewSnapshot
     func cachedWorldMapSnapshot(query: WorldMapCatalogQuery) -> WorldMapCatalogSnapshot?
     func fetchWorldMapSnapshot(query: WorldMapCatalogQuery) throws -> WorldMapCatalogSnapshot
@@ -515,6 +516,10 @@ protocol LibraryWorkspacePort: Sendable {
 }
 
 extension LibraryWorkspacePort {
+    func fetchSourceFolders(sourceID _: UUID) throws -> [LibrarySourceFolder] {
+        []
+    }
+
     func startCatalogSourceMonitoring(onChange: @escaping @Sendable () -> Void) throws {}
     func stopCatalogSourceMonitoring() {}
 

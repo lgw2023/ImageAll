@@ -2249,6 +2249,10 @@ struct ProductionLibraryWorkspaceService:
         try photosConnection.fetchSources()
     }
 
+    func fetchSourceFolders(sourceID: UUID) throws -> [LibrarySourceFolder] {
+        try query.fetchSourceFolders(sourceID: sourceID)
+    }
+
     func fetchGalleryOverview() throws -> GalleryOverviewSnapshot {
         try query.fetchGalleryOverview()
     }

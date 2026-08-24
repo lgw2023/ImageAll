@@ -42,6 +42,7 @@ struct CatalogDatabase: Sendable {
         V034BackfillSlimmingConfirmedHistoryMigration.register(on: &migrator)
         V035AddAssetFavoriteStateMigration.register(on: &migrator)
         V036AddTrainingRunSampleManifestMigration.register(on: &migrator)
+        V037AddSourceFolderIndexMigration.register(on: &migrator)
         return migrator
     }
 
@@ -433,6 +434,97 @@ enum V036AddTrainingRunSampleManifestMigration {
                 """
             )
         }
+    }
+}
+
+enum V037AddSourceFolderIndexMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v037AddSourceFolderIndex) { db in
+            try db.execute(
+                sql: """
+                CREATE TABLE source_folder (
+                    source_id TEXT NOT NULL REFERENCES source(id) ON DELETE CASCADE,
+                    relative_path TEXT NOT NULL CHECK(length(relative_path) > 0),
+                    parent_relative_path TEXT,
+                    name TEXT NOT NULL CHECK(length(name) > 0),
+                    PRIMARY KEY(source_id, relative_path),
+                    CHECK(parent_relative_path IS NULL OR length(parent_relative_path) > 0)
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE INDEX source_folder_parent_name_idx
+                ON source_folder(source_id, parent_relative_path, name COLLATE NOCASE)
+                """
+            )
+            try SourceFolderIndex.rebuildAll(in: db)
+        }
+    }
+}
+
+/// A committed, media-bearing view of folder-source paths. Rebuilding happens
+/// in the same transaction that completes a scan, so interrupted scans retain
+/// the previous complete tree.
+enum SourceFolderIndex {
+    static func rebuildAll(in db: Database) throws {
+        try db.execute(sql: "DELETE FROM source_folder")
+        try insertFolders(in: db, sourceID: nil)
+    }
+
+    static func rebuild(in db: Database, sourceID: UUID) throws {
+        let sourceID = sourceID.uuidString.lowercased()
+        try db.execute(
+            sql: "DELETE FROM source_folder WHERE source_id = ?",
+            arguments: [sourceID]
+        )
+        try insertFolders(in: db, sourceID: sourceID)
+    }
+
+    private static func insertFolders(in db: Database, sourceID: String?) throws {
+        let sourceClause = sourceID == nil ? "" : "AND asset.source_id = ?"
+        let arguments: StatementArguments = sourceID.map { [$0] } ?? []
+        try db.execute(
+            sql: """
+            WITH RECURSIVE folder_component(
+                source_id, remaining_path, relative_path, parent_relative_path, name
+            ) AS (
+                SELECT asset.source_id, asset.relative_path, '', NULL, ''
+                FROM asset
+                JOIN source ON source.id = asset.source_id
+                WHERE source.kind = 'folder'
+                  AND asset.locator_kind = 'file'
+                  AND asset.locator_state = 'current'
+                  AND asset.availability NOT IN ('missing', 'recycled')
+                  AND asset.relative_path IS NOT NULL
+                  AND instr(asset.relative_path, '/') > 0
+                  \(sourceClause)
+
+                UNION ALL
+
+                SELECT
+                    source_id,
+                    substr(remaining_path, instr(remaining_path, '/') + 1),
+                    CASE
+                        WHEN relative_path = ''
+                            THEN substr(remaining_path, 1, instr(remaining_path, '/') - 1)
+                        ELSE relative_path || '/' ||
+                            substr(remaining_path, 1, instr(remaining_path, '/') - 1)
+                    END,
+                    nullif(relative_path, ''),
+                    substr(remaining_path, 1, instr(remaining_path, '/') - 1)
+                FROM folder_component
+                WHERE instr(remaining_path, '/') > 0
+            )
+            INSERT OR IGNORE INTO source_folder (
+                source_id, relative_path, parent_relative_path, name
+            )
+            SELECT source_id, relative_path, parent_relative_path, name
+            FROM folder_component
+            WHERE relative_path != ''
+            """,
+            arguments: arguments
+        )
     }
 }
 

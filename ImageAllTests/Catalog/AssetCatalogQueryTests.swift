@@ -405,6 +405,117 @@ final class AssetCatalogQueryTests: XCTestCase {
         try testSourceFilterUsesORSemanticsAndExcludesUnselectedSources()
     }
 
+    func testFolderScopeReturnsEveryAssetBelowTheSelectedDirectory() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+
+        let page = try fixture.query.fetchAssetPage(
+            AssetPageRequest(
+                filter: AssetPageFilter(
+                    folderScope: AssetFolderScope(
+                        sourceID: fixture.ids.sourceA,
+                        relativePath: "2024"
+                    )
+                ),
+                sort: .fileNameAscending,
+                cursor: nil,
+                limit: 200
+            )
+        )
+
+        XCTAssertFalse(page.items.isEmpty)
+        XCTAssertTrue(page.items.allSatisfy { item in
+            item.sourceID == fixture.ids.sourceA
+                && item.relativePath?.hasPrefix("2024/") == true
+        })
+    }
+
+    func testFolderScopeTreatsPercentUnderscoreAndBackslashAsLiteralPathCharacters() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+        try fixture.database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE asset SET relative_path = ? WHERE id = ?",
+                arguments: [
+                    "100%_complete/hit.jpg",
+                    fixture.ids.assetLiteralWildcard.uuidString.lowercased(),
+                ]
+            )
+            try db.execute(
+                sql: "UPDATE asset SET relative_path = ? WHERE id = ?",
+                arguments: [
+                    "100%_Complete/miss.jpg",
+                    fixture.ids.assetDecoyWildcard.uuidString.lowercased(),
+                ]
+            )
+            try db.execute(
+                sql: "UPDATE asset SET relative_path = ? WHERE id = ?",
+                arguments: [
+                    "weird\\segment/hit.jpg",
+                    fixture.ids.assetLiteralBackslash.uuidString.lowercased(),
+                ]
+            )
+            try db.execute(
+                sql: "UPDATE asset SET relative_path = ? WHERE id = ?",
+                arguments: [
+                    "weirdsegment/miss.jpg",
+                    fixture.ids.assetDecoyBackslash.uuidString.lowercased(),
+                ]
+            )
+        }
+
+        let wildcardPage = try fixture.query.fetchAssetPage(
+            AssetPageRequest(
+                filter: AssetPageFilter(
+                    folderScope: AssetFolderScope(
+                        sourceID: fixture.ids.sourceA,
+                        relativePath: "100%_complete"
+                    )
+                ),
+                sort: .newest,
+                cursor: nil,
+                limit: 200
+            )
+        )
+        XCTAssertEqual(wildcardPage.items.map(\.assetID), [fixture.ids.assetLiteralWildcard])
+
+        let backslashPage = try fixture.query.fetchAssetPage(
+            AssetPageRequest(
+                filter: AssetPageFilter(
+                    folderScope: AssetFolderScope(
+                        sourceID: fixture.ids.sourceA,
+                        relativePath: "weird\\segment"
+                    )
+                ),
+                sort: .newest,
+                cursor: nil,
+                limit: 200
+            )
+        )
+        XCTAssertEqual(backslashPage.items.map(\.assetID), [fixture.ids.assetLiteralBackslash])
+    }
+
+    func testFolderScopeRejectsTraversalAndAbsolutePaths() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+        for relativePath in ["../outside", "/absolute", "本科//2018级"] {
+            XCTAssertThrowsError(
+                try fixture.query.fetchAssetPage(
+                    AssetPageRequest(
+                        filter: AssetPageFilter(
+                            folderScope: AssetFolderScope(
+                                sourceID: fixture.ids.sourceA,
+                                relativePath: relativePath
+                            )
+                        ),
+                        sort: .newest,
+                        cursor: nil,
+                        limit: 50
+                    )
+                )
+            ) { error in
+                XCTAssertEqual(error as? CatalogQueryError, .invalidFolderScope)
+            }
+        }
+    }
+
     func testAvailabilityAndMediaTypeFilters() throws {
         let fixture = try CatalogQueryTestSupport.openQueryDatabase()
         let availabilityPage = try fixture.query.fetchAssetPage(
@@ -999,6 +1110,26 @@ final class AssetCatalogQueryTests: XCTestCase {
                 sourceAndTypePage.items.map(\.assetID),
                 stride(from: topFolderJPEG, through: topFolderJPEG - 24, by: -6)
                     .map(CatalogQueryTestSupport.scaleAssetID)
+            )
+
+            queryStartedAt = ContinuousClock.now
+            let folderPage = try fixture.query.fetchAssetPage(
+                AssetPageRequest(
+                    filter: AssetPageFilter(
+                        folderScope: AssetFolderScope(
+                            sourceID: fixture.folderSourceID,
+                            relativePath: "synthetic/000000"
+                        )
+                    ),
+                    sort: .newest,
+                    cursor: nil,
+                    limit: 5
+                )
+            )
+            queryTimings.append("folder=\(ContinuousClock.now - queryStartedAt)")
+            XCTAssertEqual(
+                folderPage.items.map(\.assetID),
+                [998, 996, 994, 992, 990].map(CatalogQueryTestSupport.scaleAssetID)
             )
 
             let topAccepted = lastIndex - (lastIndex % 10)

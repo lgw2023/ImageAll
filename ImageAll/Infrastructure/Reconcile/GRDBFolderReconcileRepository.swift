@@ -296,6 +296,7 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
                         input.generation,
                     ]
                 )
+                try SourceFolderIndex.rebuild(in: db, sourceID: input.sourceID)
             }
 
             let terminalState: JobState

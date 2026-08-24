@@ -4,6 +4,40 @@ import GRDB
 struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
     let database: CatalogDatabase
 
+    func fetchSourceFolders(sourceID: UUID) throws -> [LibrarySourceFolder] {
+        try CatalogQueryErrorMapping.perform {
+            try database.pool.read { db in
+                let rows = try Row.fetchAll(
+                    db,
+                    sql: """
+                    SELECT source_id, relative_path, parent_relative_path, name
+                    FROM source_folder
+                    WHERE source_id = ?
+                    ORDER BY relative_path COLLATE NOCASE, relative_path
+                    """,
+                    arguments: [CatalogQuerySQLHelpers.lowercaseUUID(sourceID)]
+                )
+                return try rows.map { row in
+                    guard let rawSourceID: String = row["source_id"],
+                          let rowSourceID = UUID(uuidString: rawSourceID),
+                          let relativePath: String = row["relative_path"],
+                          let name: String = row["name"],
+                          case .success = RelativePathRules.validate(relativePath)
+                    else {
+                        throw CatalogQueryError.persistenceFailure
+                    }
+                    let parentRelativePath: String? = row["parent_relative_path"]
+                    return LibrarySourceFolder(
+                        sourceID: rowSourceID,
+                        relativePath: relativePath,
+                        parentRelativePath: parentRelativePath,
+                        name: name
+                    )
+                }
+            }
+        }
+    }
+
     func fetchAssetPage(_ request: AssetPageRequest) throws -> AssetPageResult {
         guard (CatalogQuerySQLHelpers.minPageLimit ... CatalogQuerySQLHelpers.maxPageLimit).contains(request.limit) else {
             throw CatalogQueryError.invalidPageLimit
@@ -581,6 +615,32 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
             for sourceID in filter.sourceIDs {
                 arguments += [CatalogQuerySQLHelpers.lowercaseUUID(sourceID)]
             }
+        }
+
+        if let folderScope = filter.folderScope {
+            guard case let .success(relativePath) = RelativePathRules.validate(
+                folderScope.relativePath
+            ) else {
+                throw CatalogQueryError.invalidFolderScope
+            }
+            let lowerBound = relativePath + "/"
+            // Every descendant starts with `<directory>/`. In SQLite's BINARY
+            // collation, `0` is the immediate byte successor to `/`, so this
+            // half-open range covers every possible following filename.
+            let upperBound = relativePath + "0"
+            clauses.append(
+                """
+                (asset.source_id = ?
+                    AND asset.locator_kind = 'file'
+                    AND asset.relative_path >= ?
+                    AND asset.relative_path < ?)
+                """
+            )
+            arguments += [
+                CatalogQuerySQLHelpers.lowercaseUUID(folderScope.sourceID),
+                lowerBound,
+                upperBound,
+            ]
         }
 
         if !filter.availabilities.isEmpty {

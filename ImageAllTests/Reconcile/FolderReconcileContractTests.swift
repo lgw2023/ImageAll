@@ -367,6 +367,63 @@ final class FolderReconcileContractTests: XCTestCase {
         XCTAssertNil(result.snapshot.lastErrorCode?.rawValue)
     }
 
+    func testCompletedNestedFolderScanPublishesNavigableFolderIndex() throws {
+        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
+        defer { fixture.cleanup() }
+        let root = try fixture.makeRoot(label: "folder-index")
+        let png = FolderReconcileTestSupport.minimalPNGData()
+        let graduatingPhoto = try fixture.writeFile(
+            root: root,
+            relativePath: "本科/2018级/毕业照.png",
+            contents: png
+        )
+        _ = try fixture.writeFile(root: root, relativePath: "本科/2019级/活动.png", contents: png)
+        _ = try fixture.writeFile(root: root, relativePath: "研究生/论文答辩.png", contents: png)
+        _ = try fixture.writeFile(root: root, relativePath: "校门.png", contents: png)
+
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let queue = FolderReconcileTestSupport.makeQueue(database: database)
+        let sourceID = UUID()
+        let bookmark = Data(root.path.utf8)
+        try FolderReconcileTestSupport.seedActiveFolderSource(
+            database: database,
+            sourceID: sourceID,
+            bookmark: bookmark,
+            displayName: "南大"
+        )
+        _ = try FolderReconcileTestSupport.enqueueReconcileJob(queue: queue, sourceID: sourceID)
+        let (handler, _) = FolderReconcileTestSupport.makeHandler(
+            database: database,
+            root: root,
+            bookmark: bookmark
+        )
+        let coordinator = FolderReconcileTestSupport.makeCoordinator(queue: queue, handler: handler)
+
+        let result = try XCTUnwrap(
+            coordinator.claimAndExecuteOnce(
+                ClaimNextInput(owner: "folder-index", leaseDurationMs: 60_000)
+            )
+        )
+        XCTAssertEqual(result.snapshot.state, .completed)
+
+        let folders = try GRDBAssetCatalogQueryRepository(database: database)
+            .fetchSourceFolders(sourceID: sourceID)
+        XCTAssertEqual(folders.map(\.relativePath), ["本科", "本科/2018级", "本科/2019级", "研究生"])
+        XCTAssertEqual(folders.map(\.parentRelativePath), [nil, "本科", "本科", nil])
+
+        try FileManager.default.removeItem(at: graduatingPhoto)
+        _ = try FolderReconcileTestSupport.enqueueReconcileJob(queue: queue, sourceID: sourceID)
+        let refreshedResult = try XCTUnwrap(
+            coordinator.claimAndExecuteOnce(
+                ClaimNextInput(owner: "folder-index-refresh", leaseDurationMs: 60_000)
+            )
+        )
+        XCTAssertEqual(refreshedResult.snapshot.state, .completed)
+        let refreshedFolders = try GRDBAssetCatalogQueryRepository(database: database)
+            .fetchSourceFolders(sourceID: sourceID)
+        XCTAssertEqual(refreshedFolders.map(\.relativePath), ["本科", "本科/2019级", "研究生"])
+    }
+
     func testFakeHandlerRegressionStillCoordinatorSettles() throws {
         let url = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: url)

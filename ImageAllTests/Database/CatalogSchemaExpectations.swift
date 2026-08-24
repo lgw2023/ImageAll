@@ -103,6 +103,7 @@ enum CatalogSchemaExpectations {
         "prediction",
         "recycle_entry",
         "source",
+        "source_folder",
         "source_mutation_authorization",
         "source_similarity_bucket_member",
         "source_similarity_index",
@@ -154,6 +155,7 @@ enum CatalogSchemaExpectations {
         "recycle_entry_purge_due_idx",
         "source_similarity_bucket_lookup_idx",
         "source_similarity_cluster_lookup_idx",
+        "source_folder_parent_name_idx",
         "standard_prediction_review_rank_idx",
         "tag_group_id_idx",
         "tag_group_name_uq",
@@ -319,6 +321,12 @@ enum CatalogSchemaExpectations {
             .init(name: "state", type: "TEXT", notNull: true, defaultValue: "'active'", primaryKeyOrder: 0),
             .init(name: "created_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "updated_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+        ],
+        "source_folder": [
+            .init(name: "source_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "relative_path", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
+            .init(name: "parent_relative_path", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "name", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
         ],
         "source_mutation_authorization": [
             .init(name: "source_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
@@ -599,6 +607,9 @@ enum CatalogSchemaExpectations {
             .init(from: "asset_id", toTable: "asset", to: "id", onDelete: "CASCADE"),
         ],
         "source": [],
+        "source_folder": [
+            .init(from: "source_id", toTable: "source", to: "id", onDelete: "CASCADE"),
+        ],
         "source_mutation_authorization": [
             .init(from: "source_id", toTable: "source", to: "id", onDelete: "CASCADE"),
         ],
@@ -794,6 +805,7 @@ enum CatalogSchemaExpectations {
         "recycle_entry_purge_due_idx": "recycle_entry",
         "source_similarity_bucket_lookup_idx": "source_similarity_bucket_member",
         "source_similarity_cluster_lookup_idx": "source_similarity_bucket_member",
+        "source_folder_parent_name_idx": "source_folder",
     ]
 
     static let indexes: [IndexExpectation] = [
@@ -1222,6 +1234,15 @@ enum CatalogSchemaExpectations {
                 .init(name: "media_kind", descending: false, collation: "BINARY"),
                 .init(name: "cluster_id", descending: false, collation: "BINARY"),
                 .init(name: "asset_id", descending: false, collation: "BINARY"),
+            ],
+            unique: false
+        ),
+        .init(
+            name: "source_folder_parent_name_idx",
+            keyColumns: [
+                .init(name: "source_id", descending: false, collation: "BINARY"),
+                .init(name: "parent_relative_path", descending: false, collation: "BINARY"),
+                .init(name: "name", descending: false, collation: "NOCASE"),
             ],
             unique: false
         ),

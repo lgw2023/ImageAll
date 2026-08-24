@@ -3,6 +3,39 @@ import XCTest
 @testable import ImageAll
 
 final class CatalogMigrationTests: XCTestCase {
+    func testV037BackfillsMediaBearingFoldersAndAncestorsFromExistingAssets() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let sourceID = UUID()
+        let assetID = UUID()
+        try DatabaseTestSupport.makeFolderSourceWithFileAsset(
+            repository: CatalogRepository(database: database),
+            sourceID: sourceID,
+            assetID: assetID
+        )
+        try database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE asset SET relative_path = ?, file_name = ? WHERE id = ?",
+                arguments: [
+                    "本科/2018级/毕业照.jpg",
+                    "毕业照.jpg",
+                    assetID.uuidString.lowercased(),
+                ]
+            )
+            try db.execute(sql: "DROP TABLE source_folder")
+            try db.execute(
+                sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
+                arguments: [CatalogMigrationID.v037AddSourceFolderIndex]
+            )
+        }
+
+        try database.migrate()
+
+        let folders = try GRDBAssetCatalogQueryRepository(database: database)
+            .fetchSourceFolders(sourceID: sourceID)
+        XCTAssertEqual(folders.map(\.relativePath), ["本科", "本科/2018级"])
+        XCTAssertEqual(folders.map(\.parentRelativePath), [nil, "本科"])
+    }
+
     func testV035AddsIndependentFavoriteStateAndFavoritePageFilter() throws {
         let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
         let repository = CatalogRepository(database: database)
@@ -1203,8 +1236,13 @@ final class CatalogMigrationTests: XCTestCase {
     }
 
     private static func dropV035AndLaterTables(_ db: Database) throws {
+        try db.execute(sql: "DROP TABLE IF EXISTS source_folder")
         try db.execute(sql: "DROP TABLE IF EXISTS training_run_sample")
         try db.execute(sql: "DROP TABLE IF EXISTS asset_favorite_state")
+        try db.execute(
+            sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
+            arguments: [CatalogMigrationID.v037AddSourceFolderIndex]
+        )
         try db.execute(
             sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
             arguments: [CatalogMigrationID.v036AddTrainingRunSampleManifest]

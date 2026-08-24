@@ -129,8 +129,25 @@ struct TagDecisionFilter: Sendable, Equatable {
     let decision: PersistableTagDecision
 }
 
+/// A media-bearing directory inside one folder source. The path is always
+/// relative to the source authorization root and includes every descendant.
+struct AssetFolderScope: Sendable, Equatable, Hashable {
+    let sourceID: UUID
+    let relativePath: String
+}
+
+struct LibrarySourceFolder: Identifiable, Sendable, Equatable, Hashable {
+    var id: AssetFolderScope { AssetFolderScope(sourceID: sourceID, relativePath: relativePath) }
+
+    let sourceID: UUID
+    let relativePath: String
+    let parentRelativePath: String?
+    let name: String
+}
+
 struct AssetPageFilter: Sendable, Equatable {
     var sourceIDs: [UUID] = []
+    var folderScope: AssetFolderScope?
     var tagDecisionFilters: [TagDecisionFilter] = []
     var excludedTagIDs: [UUID] = []
     var tagMatchMode: TagMatchMode = .all
@@ -144,6 +161,7 @@ struct AssetPageFilter: Sendable, Equatable {
 
     init(
         sourceIDs: [UUID] = [],
+        folderScope: AssetFolderScope? = nil,
         tagDecisionFilters: [TagDecisionFilter] = [],
         excludedTagIDs: [UUID] = [],
         tagMatchMode: TagMatchMode = .all,
@@ -156,6 +174,7 @@ struct AssetPageFilter: Sendable, Equatable {
         worldMapSelection: WorldMapCatalogSelectionQuery? = nil
     ) {
         self.sourceIDs = sourceIDs
+        self.folderScope = folderScope
         self.tagDecisionFilters = tagDecisionFilters
         self.excludedTagIDs = excludedTagIDs
         self.tagMatchMode = tagMatchMode

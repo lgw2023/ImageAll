@@ -2,6 +2,7 @@ import Foundation
 
 enum CatalogQueryError: Error, Equatable, Sendable {
     case invalidPageLimit
+    case invalidFolderScope
     case invalidSpatialFilter
     case cursorSortMismatch
     case notFound
