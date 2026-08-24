@@ -2253,6 +2253,32 @@ struct ProductionLibraryWorkspaceService:
         try query.fetchSourceFolders(sourceID: sourceID)
     }
 
+    func fetchSourceFolderPage(
+        sourceID: UUID,
+        parentRelativePath: String?,
+        offset: Int,
+        limit: Int
+    ) throws -> LibrarySourceFolderPage {
+        try query.fetchSourceFolderPage(
+            sourceID: sourceID,
+            parentRelativePath: parentRelativePath,
+            offset: offset,
+            limit: limit
+        )
+    }
+
+    func sourceFolderExists(_ scope: AssetFolderScope) throws -> Bool {
+        try query.sourceFolderExists(scope)
+    }
+
+    func searchSourceFolders(
+        sourceID: UUID,
+        text: String,
+        limit: Int
+    ) throws -> LibrarySourceFolderPage {
+        try query.searchSourceFolders(sourceID: sourceID, text: text, limit: limit)
+    }
+
     func fetchGalleryOverview() throws -> GalleryOverviewSnapshot {
         try query.fetchGalleryOverview()
     }

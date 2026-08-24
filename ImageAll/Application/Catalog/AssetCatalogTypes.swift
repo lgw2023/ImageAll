@@ -145,6 +145,12 @@ struct LibrarySourceFolder: Identifiable, Sendable, Equatable, Hashable {
     let name: String
 }
 
+struct LibrarySourceFolderPage: Sendable, Equatable {
+    let folders: [LibrarySourceFolder]
+    let totalCount: Int
+    let nextOffset: Int?
+}
+
 struct AssetPageFilter: Sendable, Equatable {
     var sourceIDs: [UUID] = []
     var folderScope: AssetFolderScope?

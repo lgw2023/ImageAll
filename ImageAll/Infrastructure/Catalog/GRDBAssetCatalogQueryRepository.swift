@@ -17,25 +17,163 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
                     """,
                     arguments: [CatalogQuerySQLHelpers.lowercaseUUID(sourceID)]
                 )
-                return try rows.map { row in
-                    guard let rawSourceID: String = row["source_id"],
-                          let rowSourceID = UUID(uuidString: rawSourceID),
-                          let relativePath: String = row["relative_path"],
-                          let name: String = row["name"],
-                          case .success = RelativePathRules.validate(relativePath)
-                    else {
-                        throw CatalogQueryError.persistenceFailure
-                    }
-                    let parentRelativePath: String? = row["parent_relative_path"]
-                    return LibrarySourceFolder(
-                        sourceID: rowSourceID,
-                        relativePath: relativePath,
-                        parentRelativePath: parentRelativePath,
-                        name: name
-                    )
-                }
+                return try rows.map(Self.decodeSourceFolder)
             }
         }
+    }
+
+    func fetchSourceFolderPage(
+        sourceID: UUID,
+        parentRelativePath: String?,
+        offset: Int,
+        limit: Int
+    ) throws -> LibrarySourceFolderPage {
+        guard (CatalogQuerySQLHelpers.minPageLimit ... CatalogQuerySQLHelpers.maxPageLimit).contains(limit),
+              offset >= 0
+        else {
+            throw CatalogQueryError.invalidPageLimit
+        }
+        if let parentRelativePath,
+           case .failure = RelativePathRules.validate(parentRelativePath)
+        {
+            throw CatalogQueryError.invalidFolderScope
+        }
+
+        return try CatalogQueryErrorMapping.perform {
+            try database.pool.read { db in
+                let parentPredicate: String
+                var baseArguments = StatementArguments()
+                baseArguments += [CatalogQuerySQLHelpers.lowercaseUUID(sourceID)]
+                if let parentRelativePath {
+                    parentPredicate = "parent_relative_path = ?"
+                    baseArguments += [parentRelativePath]
+                } else {
+                    parentPredicate = "parent_relative_path IS NULL"
+                }
+
+                let totalCount = try Int.fetchOne(
+                    db,
+                    sql: """
+                    SELECT COUNT(*)
+                    FROM source_folder
+                    WHERE source_id = ? AND \(parentPredicate)
+                    """,
+                    arguments: baseArguments
+                ) ?? 0
+
+                var pageArguments = baseArguments
+                pageArguments += [limit, offset]
+                let rows = try Row.fetchAll(
+                    db,
+                    sql: """
+                    SELECT source_id, relative_path, parent_relative_path, name
+                    FROM source_folder
+                    WHERE source_id = ? AND \(parentPredicate)
+                    ORDER BY name COLLATE NOCASE, name, relative_path
+                    LIMIT ? OFFSET ?
+                    """,
+                    arguments: pageArguments
+                )
+                let folders = try rows.map(Self.decodeSourceFolder)
+                let consumedCount = offset + folders.count
+                return LibrarySourceFolderPage(
+                    folders: folders,
+                    totalCount: totalCount,
+                    nextOffset: consumedCount < totalCount ? consumedCount : nil
+                )
+            }
+        }
+    }
+
+    func sourceFolderExists(_ scope: AssetFolderScope) throws -> Bool {
+        guard case .success = RelativePathRules.validate(scope.relativePath) else {
+            throw CatalogQueryError.invalidFolderScope
+        }
+        return try CatalogQueryErrorMapping.perform {
+            try database.pool.read { db in
+                try Bool.fetchOne(
+                    db,
+                    sql: """
+                    SELECT EXISTS(
+                        SELECT 1
+                        FROM source_folder
+                        WHERE source_id = ? AND relative_path = ?
+                    )
+                    """,
+                    arguments: [
+                        CatalogQuerySQLHelpers.lowercaseUUID(scope.sourceID),
+                        scope.relativePath,
+                    ]
+                ) ?? false
+            }
+        }
+    }
+
+    func searchSourceFolders(
+        sourceID: UUID,
+        text: String,
+        limit: Int
+    ) throws -> LibrarySourceFolderPage {
+        guard (CatalogQuerySQLHelpers.minPageLimit ... CatalogQuerySQLHelpers.maxPageLimit).contains(limit) else {
+            throw CatalogQueryError.invalidPageLimit
+        }
+        let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else {
+            return LibrarySourceFolderPage(folders: [], totalCount: 0, nextOffset: nil)
+        }
+
+        return try CatalogQueryErrorMapping.perform {
+            try database.pool.read { db in
+                let sourceArgument = CatalogQuerySQLHelpers.lowercaseUUID(sourceID)
+                let predicate = """
+                source_id = ? AND (
+                    instr(lower(name), lower(?)) > 0
+                    OR instr(lower(relative_path), lower(?)) > 0
+                )
+                """
+                let arguments: StatementArguments = [sourceArgument, query, query]
+                let totalCount = try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM source_folder WHERE \(predicate)",
+                    arguments: arguments
+                ) ?? 0
+                var pageArguments = arguments
+                pageArguments += [limit]
+                let rows = try Row.fetchAll(
+                    db,
+                    sql: """
+                    SELECT source_id, relative_path, parent_relative_path, name
+                    FROM source_folder
+                    WHERE \(predicate)
+                    ORDER BY relative_path COLLATE NOCASE, relative_path
+                    LIMIT ?
+                    """,
+                    arguments: pageArguments
+                )
+                return LibrarySourceFolderPage(
+                    folders: try rows.map(Self.decodeSourceFolder),
+                    totalCount: totalCount,
+                    nextOffset: nil
+                )
+            }
+        }
+    }
+
+    private static func decodeSourceFolder(_ row: Row) throws -> LibrarySourceFolder {
+        guard let rawSourceID: String = row["source_id"],
+              let sourceID = UUID(uuidString: rawSourceID),
+              let relativePath: String = row["relative_path"],
+              let name: String = row["name"],
+              case .success = RelativePathRules.validate(relativePath)
+        else {
+            throw CatalogQueryError.persistenceFailure
+        }
+        return LibrarySourceFolder(
+            sourceID: sourceID,
+            relativePath: relativePath,
+            parentRelativePath: row["parent_relative_path"],
+            name: name
+        )
     }
 
     func fetchAssetPage(_ request: AssetPageRequest) throws -> AssetPageResult {

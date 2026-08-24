@@ -4548,6 +4548,71 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.selectionSummaryTitle, "已选择 1 张照片")
     }
 
+    func testFolderChildrenStayUnloadedUntilExpansionAndThenPageAtBoundedSize() {
+        let completed = expectation(description: "folder pages loaded")
+        Task { @MainActor in
+            defer { completed.fulfill() }
+            let sourceID = UUID()
+            let asset = Self.makeAsset(
+                sourceID: sourceID,
+                fileName: "封面.jpg",
+                relativePath: "folder-000/封面.jpg",
+                sourceDisplayName: "超宽目录"
+            )
+            let folders = (0 ..< 250).map { index in
+                let name = String(format: "folder-%03d", index)
+                return LibrarySourceFolder(
+                    sourceID: sourceID,
+                    relativePath: name,
+                    parentRelativePath: nil,
+                    name: name
+                )
+            }
+            let service = FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "超宽目录",
+                    state: .active
+                ),
+                reconciledItems: [asset],
+                initialItems: [asset],
+                startsConnected: true,
+                hasPendingCatalogReconcileJobs: false,
+                sourceFolders: folders
+            )
+            let model = LibraryWorkspaceModel(service: service)
+
+            await model.start()
+            XCTAssertEqual(
+                model.sourceFolderChildren(sourceID: sourceID, parentRelativePath: nil),
+                .notLoaded
+            )
+
+            await model.loadSourceFolderChildren(sourceID: sourceID, parentRelativePath: nil)
+            guard case let .loaded(firstPage, isLoadingMore) = model.sourceFolderChildren(
+                sourceID: sourceID,
+                parentRelativePath: nil
+            ) else {
+                return XCTFail("Expected the first folder page")
+            }
+            XCTAssertFalse(isLoadingMore)
+            XCTAssertEqual(firstPage.folders.count, 100)
+            XCTAssertEqual(firstPage.totalCount, 250)
+            XCTAssertEqual(firstPage.nextOffset, 100)
+
+            await model.loadMoreSourceFolderChildren(sourceID: sourceID, parentRelativePath: nil)
+            guard case let .loaded(secondPage, _) = model.sourceFolderChildren(
+                sourceID: sourceID,
+                parentRelativePath: nil
+            ) else {
+                return XCTFail("Expected two loaded folder pages")
+            }
+            XCTAssertEqual(secondPage.folders.count, 200)
+            XCTAssertEqual(secondPage.nextOffset, 200)
+        }
+        wait(for: [completed], timeout: 5)
+    }
+
     func testFolderNavigationFiltersDescendantsAndPublishesBreadcrumb() async {
         let sourceID = UUID()
         let selected = Self.makeAsset(
@@ -4597,9 +4662,25 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         let model = LibraryWorkspaceModel(service: service)
 
         await model.start()
-        let tree = model.sourceFolderTree(for: sourceID)
-        XCTAssertEqual(tree.map(\.folder.name), ["本科"])
-        XCTAssertEqual(tree.first?.children.map(\.folder.name), ["2018级", "2019级"])
+        await model.loadSourceFolderChildren(sourceID: sourceID, parentRelativePath: nil)
+        guard case let .loaded(rootPage, _) = model.sourceFolderChildren(
+            sourceID: sourceID,
+            parentRelativePath: nil
+        ) else {
+            return XCTFail("Expected root folders")
+        }
+        XCTAssertEqual(rootPage.folders.map(\.name), ["本科"])
+        await model.loadSourceFolderChildren(
+            sourceID: sourceID,
+            parentRelativePath: "本科"
+        )
+        guard case let .loaded(childPage, _) = model.sourceFolderChildren(
+            sourceID: sourceID,
+            parentRelativePath: "本科"
+        ) else {
+            return XCTFail("Expected nested folders")
+        }
+        XCTAssertEqual(childPage.folders.map(\.name), ["2018级", "2019级"])
         let scope = AssetFolderScope(sourceID: sourceID, relativePath: "本科/2018级")
         let destination = LibraryBrowsingDestination.folder(scope)
         model.applyImmediateBrowsingPresentation(for: destination)
@@ -4612,7 +4693,16 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.folderBreadcrumb.map(\.title), ["南大", "本科", "2018级"])
     }
 
-    func testMissingSelectedFolderFallsBackToNearestAncestorThenSourceRoot() async {
+    func testMissingSelectedFolderFallsBackToNearestAncestorThenSourceRoot() {
+        let completed = expectation(description: "folder fallback reconciled")
+        Task { @MainActor in
+            await verifyMissingSelectedFolderFallback()
+            completed.fulfill()
+        }
+        wait(for: [completed], timeout: 5)
+    }
+
+    private func verifyMissingSelectedFolderFallback() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(
             sourceID: sourceID,
@@ -4657,6 +4747,10 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         await model.refreshFolderNavigation()
         XCTAssertEqual(model.selectedFolderScope, undergraduate.id)
         XCTAssertEqual(model.folderNavigationRevision, 1)
+        XCTAssertEqual(
+            model.sourceFolderChildren(sourceID: sourceID, parentRelativePath: nil),
+            .notLoaded
+        )
 
         service.replaceSourceFolders([])
         await model.refreshFolderNavigation()

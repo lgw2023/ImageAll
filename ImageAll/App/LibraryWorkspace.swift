@@ -382,11 +382,16 @@ struct LibraryFolderBreadcrumbItem: Identifiable, Equatable, Sendable {
     let title: String
 }
 
-struct LibrarySourceFolderTreeNode: Identifiable, Equatable, Sendable {
-    var id: AssetFolderScope { folder.id }
+struct LibrarySourceFolderBranchID: Hashable, Sendable {
+    let sourceID: UUID
+    let parentRelativePath: String?
+}
 
-    let folder: LibrarySourceFolder
-    let children: [LibrarySourceFolderTreeNode]
+enum LibrarySourceFolderChildrenState: Equatable, Sendable {
+    case notLoaded
+    case loading
+    case loaded(LibrarySourceFolderPage, isLoadingMore: Bool)
+    case failed
 }
 
 enum LibrarySlimmingWorkspaceTab: String, Equatable, Sendable {
@@ -1389,7 +1394,14 @@ struct LibrarySlimmingIdenticalCleanupExecutionProgress: Equatable, Sendable {
 final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var phase: LibraryWorkspacePhase = .loading
     @Published private(set) var sources: [LibrarySourceSummary] = []
-    @Published private(set) var sourceFolders: [LibrarySourceFolder] = []
+    @Published private(set) var sourceFolderBranches: [
+        LibrarySourceFolderBranchID: LibrarySourceFolderChildrenState
+    ] = [:]
+    @Published private(set) var sourceFolderSearchStates: [
+        UUID: LibrarySourceFolderChildrenState
+    ] = [:]
+    private var sourceFolderCacheRevision = 0
+    private var sourceFolderSearchRequestIDs: [UUID: UUID] = [:]
     @Published private(set) var selectedFolderScope: AssetFolderScope?
     @Published private(set) var folderNavigationRevision = 0
     @Published private(set) var items: [AssetGridItemProjection] = []
@@ -4501,29 +4513,122 @@ final class LibraryWorkspaceModel: ObservableObject {
         return sourceOrderPreferences.ordered(sources)
     }
 
-    func sourceFolderTree(for sourceID: UUID) -> [LibrarySourceFolderTreeNode] {
-        let matchingFolders = sourceFolders.filter { $0.sourceID == sourceID }
-        let grouped = Dictionary(grouping: matchingFolders) {
-            $0.parentRelativePath ?? ""
+    func sourceFolderChildren(
+        sourceID: UUID,
+        parentRelativePath: String?
+    ) -> LibrarySourceFolderChildrenState {
+        sourceFolderBranches[
+            LibrarySourceFolderBranchID(
+                sourceID: sourceID,
+                parentRelativePath: parentRelativePath
+            )
+        ] ?? .notLoaded
+    }
+
+    func loadSourceFolderChildren(
+        sourceID: UUID,
+        parentRelativePath: String?
+    ) async {
+        let branchID = LibrarySourceFolderBranchID(
+            sourceID: sourceID,
+            parentRelativePath: parentRelativePath
+        )
+        switch sourceFolderBranches[branchID] ?? .notLoaded {
+        case .notLoaded, .failed:
+            break
+        case .loading, .loaded:
+            return
         }
 
-        func build(parentRelativePath: String?) -> [LibrarySourceFolderTreeNode] {
-            let folders = grouped[parentRelativePath ?? "", default: []].sorted {
-                let comparison = $0.name.localizedStandardCompare($1.name)
-                if comparison != .orderedSame {
-                    return comparison == .orderedAscending
-                }
-                return $0.relativePath < $1.relativePath
-            }
-            return folders.map { folder in
-                LibrarySourceFolderTreeNode(
-                    folder: folder,
-                    children: build(parentRelativePath: folder.relativePath)
+        sourceFolderBranches[branchID] = .loading
+        let cacheRevision = sourceFolderCacheRevision
+        let service = service
+        do {
+            let page = try await Self.offMain(priority: .utility) {
+                try service.fetchSourceFolderPage(
+                    sourceID: sourceID,
+                    parentRelativePath: parentRelativePath,
+                    offset: 0,
+                    limit: 100
                 )
             }
+            guard cacheRevision == sourceFolderCacheRevision else { return }
+            sourceFolderBranches[branchID] = .loaded(page, isLoadingMore: false)
+        } catch {
+            guard cacheRevision == sourceFolderCacheRevision else { return }
+            sourceFolderBranches[branchID] = .failed
+        }
+    }
+
+    func loadMoreSourceFolderChildren(
+        sourceID: UUID,
+        parentRelativePath: String?
+    ) async {
+        let branchID = LibrarySourceFolderBranchID(
+            sourceID: sourceID,
+            parentRelativePath: parentRelativePath
+        )
+        guard case let .loaded(currentPage, isLoadingMore) = sourceFolderBranches[branchID],
+              !isLoadingMore,
+              let nextOffset = currentPage.nextOffset
+        else {
+            return
         }
 
-        return build(parentRelativePath: nil)
+        sourceFolderBranches[branchID] = .loaded(currentPage, isLoadingMore: true)
+        let cacheRevision = sourceFolderCacheRevision
+        let service = service
+        do {
+            let nextPage = try await Self.offMain(priority: .utility) {
+                try service.fetchSourceFolderPage(
+                    sourceID: sourceID,
+                    parentRelativePath: parentRelativePath,
+                    offset: nextOffset,
+                    limit: 100
+                )
+            }
+            guard cacheRevision == sourceFolderCacheRevision else { return }
+            let mergedPage = LibrarySourceFolderPage(
+                folders: currentPage.folders + nextPage.folders,
+                totalCount: nextPage.totalCount,
+                nextOffset: nextPage.nextOffset
+            )
+            sourceFolderBranches[branchID] = .loaded(mergedPage, isLoadingMore: false)
+        } catch {
+            guard cacheRevision == sourceFolderCacheRevision else { return }
+            sourceFolderBranches[branchID] = .loaded(currentPage, isLoadingMore: false)
+        }
+    }
+
+    func sourceFolderSearchState(sourceID: UUID) -> LibrarySourceFolderChildrenState {
+        sourceFolderSearchStates[sourceID] ?? .notLoaded
+    }
+
+    func searchSourceFolders(sourceID: UUID, text: String) async {
+        let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else {
+            sourceFolderSearchRequestIDs.removeValue(forKey: sourceID)
+            sourceFolderSearchStates.removeValue(forKey: sourceID)
+            return
+        }
+        let requestID = UUID()
+        sourceFolderSearchRequestIDs[sourceID] = requestID
+        sourceFolderSearchStates[sourceID] = .loading
+        let service = service
+        do {
+            let page = try await Self.offMain(priority: .userInitiated) {
+                try service.searchSourceFolders(
+                    sourceID: sourceID,
+                    text: query,
+                    limit: 50
+                )
+            }
+            guard sourceFolderSearchRequestIDs[sourceID] == requestID else { return }
+            sourceFolderSearchStates[sourceID] = .loaded(page, isLoadingMore: false)
+        } catch {
+            guard sourceFolderSearchRequestIDs[sourceID] == requestID else { return }
+            sourceFolderSearchStates[sourceID] = .failed
+        }
     }
 
     var tagGroupSections: [LibraryTagGroupSection] {
@@ -6339,7 +6444,12 @@ final class LibraryWorkspaceModel: ObservableObject {
             let outcome = try await service.deleteLibrarySource(sourceID: sourceID)
             selectedSourceID = nil
             selectedFolderScope = nil
-            sourceFolders.removeAll { $0.sourceID == sourceID }
+            sourceFolderCacheRevision &+= 1
+            sourceFolderBranches = sourceFolderBranches.filter { branchID, _ in
+                branchID.sourceID != sourceID
+            }
+            sourceFolderSearchRequestIDs.removeValue(forKey: sourceID)
+            sourceFolderSearchStates.removeValue(forKey: sourceID)
             sourceOrderPreferences.remove(sourceID)
             sourceOrderRevision &+= 1
             if var selectedSourceIDs = librarySlimmingCatalogSourceIDs {
@@ -8918,14 +9028,16 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
 
         guard !sources.isEmpty else {
-            sourceFolders = []
+            sourceFolderCacheRevision &+= 1
+            sourceFolderBranches = [:]
+            sourceFolderSearchRequestIDs = [:]
+            sourceFolderSearchStates = [:]
             items = []
             nextCursor = nil
             phase = .empty
             return
         }
 
-        await refreshFolderNavigation()
         await loadFirstPage()
         await refreshReviewState()
         if runPendingJobs {
@@ -8935,47 +9047,45 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     func refreshFolderNavigation() async {
-        let service = service
-        let folderSourceIDs = sources.filter { $0.kind == .folder }.map(\.id)
-        do {
-            let refreshed = try await Self.offMain(priority: .utility) {
-                try folderSourceIDs.flatMap { sourceID in
-                    try service.fetchSourceFolders(sourceID: sourceID)
-                }
-            }
-            sourceFolders = refreshed
-            reconcileSelectedFolderAfterRefresh()
-        } catch {
-            // A transient catalog read failure must not erase the last complete
-            // tree or force the user out of the selected folder.
-        }
+        sourceFolderCacheRevision &+= 1
+        sourceFolderBranches = [:]
+        sourceFolderSearchRequestIDs = [:]
+        sourceFolderSearchStates = [:]
+        await reconcileSelectedFolderAfterRefresh()
     }
 
-    private func reconcileSelectedFolderAfterRefresh() {
+    private func reconcileSelectedFolderAfterRefresh() async {
         guard var scope = selectedFolderScope else { return }
-        let availablePaths = Set(
-            sourceFolders.lazy
-                .filter { $0.sourceID == scope.sourceID }
-                .map(\.relativePath)
-        )
-        guard !availablePaths.contains(scope.relativePath) else { return }
-
-        var components = scope.relativePath.split(separator: "/").map(String.init)
-        while components.count > 1 {
-            components.removeLast()
-            let ancestor = components.joined(separator: "/")
-            if availablePaths.contains(ancestor) {
+        let service = service
+        do {
+            while true {
+                let candidateScope = scope
+                let exists = try await Self.offMain(priority: .utility) {
+                    try service.sourceFolderExists(candidateScope)
+                }
+                if exists {
+                    if scope != selectedFolderScope {
+                        selectedFolderScope = scope
+                        folderNavigationRevision &+= 1
+                    }
+                    return
+                }
+                var components = scope.relativePath.split(separator: "/").map(String.init)
+                guard components.count > 1 else {
+                    selectedFolderScope = nil
+                    folderNavigationRevision &+= 1
+                    return
+                }
+                components.removeLast()
                 scope = AssetFolderScope(
                     sourceID: scope.sourceID,
-                    relativePath: ancestor
+                    relativePath: components.joined(separator: "/")
                 )
-                selectedFolderScope = scope
-                folderNavigationRevision &+= 1
-                return
             }
+        } catch {
+            // A transient catalog read failure must not force the user out of
+            // the selected folder.
         }
-        selectedFolderScope = nil
-        folderNavigationRevision &+= 1
     }
 
     private func startCatalogReconcileRunnerIfNeeded(
@@ -11044,34 +11154,99 @@ private enum LibrarySidebarSelection: Hashable {
 }
 
 private struct LibrarySourceFolderOutline: View {
-    let nodes: [LibrarySourceFolderTreeNode]
+    @ObservedObject var model: LibraryWorkspaceModel
+    let sourceID: UUID
+    let parentRelativePath: String?
     @Binding var selection: LibrarySidebarSelection?
     @Binding var expandedFolderScopes: Set<AssetFolderScope>
 
+    @ViewBuilder
     var body: some View {
-        ForEach(nodes) { node in
-            if node.children.isEmpty {
-                folderLabel(node.folder)
-                    .tag(LibrarySidebarSelection.folder(node.folder.id))
-                    .onTapGesture {
-                        selection = .folder(node.folder.id)
-                    }
-            } else {
-                DisclosureGroup(
-                    isExpanded: expansionBinding(for: node.folder.id)
-                ) {
-                    LibrarySourceFolderOutline(
-                        nodes: node.children,
-                        selection: $selection,
-                        expandedFolderScopes: $expandedFolderScopes
+        switch model.sourceFolderChildren(
+            sourceID: sourceID,
+            parentRelativePath: parentRelativePath
+        ) {
+        case .notLoaded, .loading:
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("正在载入子文件夹…")
+                    .foregroundStyle(.secondary)
+            }
+            .task {
+                await model.loadSourceFolderChildren(
+                    sourceID: sourceID,
+                    parentRelativePath: parentRelativePath
+                )
+            }
+        case .failed:
+            Button("重新载入子文件夹") {
+                Task {
+                    await model.loadSourceFolderChildren(
+                        sourceID: sourceID,
+                        parentRelativePath: parentRelativePath
                     )
+                }
+            }
+            .buttonStyle(.plain)
+        case let .loaded(page, isLoadingMore):
+            if page.totalCount > 500 {
+                Label("共 \(page.totalCount) 个子文件夹，按需显示", systemImage: "gauge.with.dots.needle.33percent")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if parentRelativePath == nil {
+                    LibrarySourceFolderSearchControls(
+                        model: model,
+                        sourceID: sourceID,
+                        selection: $selection
+                    )
+                }
+            }
+            if page.folders.isEmpty {
+                Text("没有已索引的子文件夹")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(page.folders) { folder in
+                DisclosureGroup(
+                    isExpanded: expansionBinding(for: folder.id)
+                ) {
+                    if expandedFolderScopes.contains(folder.id) {
+                        LibrarySourceFolderOutline(
+                            model: model,
+                            sourceID: folder.sourceID,
+                            parentRelativePath: folder.relativePath,
+                            selection: $selection,
+                            expandedFolderScopes: $expandedFolderScopes
+                        )
+                    }
                 } label: {
-                    folderLabel(node.folder)
+                    folderLabel(folder)
                 }
-                .tag(LibrarySidebarSelection.folder(node.folder.id))
+                .tag(LibrarySidebarSelection.folder(folder.id))
                 .onTapGesture {
-                    selection = .folder(node.folder.id)
+                    selection = .folder(folder.id)
                 }
+            }
+            if page.nextOffset != nil {
+                Button {
+                    Task {
+                        await model.loadMoreSourceFolderChildren(
+                            sourceID: sourceID,
+                            parentRelativePath: parentRelativePath
+                        )
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        if isLoadingMore {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Text("显示更多（\(page.folders.count)/\(page.totalCount)）")
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(isLoadingMore)
             }
         }
     }
@@ -11089,11 +11264,91 @@ private struct LibrarySourceFolderOutline: View {
             set: { isExpanded in
                 if isExpanded {
                     expandedFolderScopes.insert(scope)
+                    Task {
+                        await model.loadSourceFolderChildren(
+                            sourceID: scope.sourceID,
+                            parentRelativePath: scope.relativePath
+                        )
+                    }
                 } else {
                     expandedFolderScopes.remove(scope)
                 }
             }
         )
+    }
+}
+
+private struct LibrarySourceFolderSearchControls: View {
+    @ObservedObject var model: LibraryWorkspaceModel
+    let sourceID: UUID
+    @Binding var selection: LibrarySidebarSelection?
+    @State private var query = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                TextField("搜索此来源的目录", text: $query)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { submitSearch() }
+                Button {
+                    submitSearch()
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                }
+                .buttonStyle(.borderless)
+                .disabled(query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            searchResults
+        }
+        .onChange(of: query) { _, newValue in
+            if newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Task { await model.searchSourceFolders(sourceID: sourceID, text: "") }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var searchResults: some View {
+        switch model.sourceFolderSearchState(sourceID: sourceID) {
+        case .notLoaded:
+            EmptyView()
+        case .loading:
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("正在搜索目录…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        case .failed:
+            Button("搜索失败，重试") { submitSearch() }
+                .buttonStyle(.plain)
+        case let .loaded(page, _):
+            if page.folders.isEmpty {
+                Text("没有匹配的目录")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(page.folders) { folder in
+                    Button {
+                        selection = .folder(folder.id)
+                    } label: {
+                        Label(folder.relativePath, systemImage: "folder")
+                            .lineLimit(1)
+                    }
+                    .buttonStyle(.plain)
+                }
+                if page.totalCount > page.folders.count {
+                    Text("显示前 \(page.folders.count) 个结果，共 \(page.totalCount) 个；请缩小搜索范围。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func submitSearch() {
+        Task { await model.searchSourceFolders(sourceID: sourceID, text: query) }
     }
 }
 
@@ -11541,7 +11796,6 @@ struct LibraryWorkspaceView: View {
     @State private var draggedSourceID: UUID?
     @State private var sourceInsertionOffset: Int?
     @State private var expandedSourceIDs: Set<UUID> = []
-    @State private var discoveredFolderSourceIDs: Set<UUID> = []
     @State private var expandedFolderScopes: Set<AssetFolderScope> = []
     @State private var draggedTagID: UUID?
     @State private var draggedTagGroupID: UUID?
@@ -12276,12 +12530,6 @@ struct LibraryWorkspaceView: View {
         .onChange(of: model.favoriteNavigationNonce) { _, _ in
             selection = .favorites
         }
-        .onChange(of: model.sourceFolders) { _, folders in
-            let folderSourceIDs = Set(folders.map(\.sourceID))
-            let newlyDiscovered = folderSourceIDs.subtracting(discoveredFolderSourceIDs)
-            expandedSourceIDs.formUnion(newlyDiscovered)
-            discoveredFolderSourceIDs.formUnion(folderSourceIDs)
-        }
         .onChange(of: model.folderNavigationRevision) { _, _ in
             if let scope = model.selectedFolderScope {
                 selection = .folder(scope)
@@ -12548,16 +12796,19 @@ struct LibraryWorkspaceView: View {
             }
             Section {
                 ForEach(orderedSources) { source in
-                    let folderTree = model.sourceFolderTree(for: source.id)
-                    if source.kind == .folder, !folderTree.isEmpty {
+                    if source.kind == .folder {
                         DisclosureGroup(
                             isExpanded: sourceExpansionBinding(for: source.id)
                         ) {
-                            LibrarySourceFolderOutline(
-                                nodes: folderTree,
-                                selection: $selection,
-                                expandedFolderScopes: $expandedFolderScopes
-                            )
+                            if expandedSourceIDs.contains(source.id) {
+                                LibrarySourceFolderOutline(
+                                    model: model,
+                                    sourceID: source.id,
+                                    parentRelativePath: nil,
+                                    selection: $selection,
+                                    expandedFolderScopes: $expandedFolderScopes
+                                )
+                            }
                         } label: {
                             sourceNavigationRow(source, orderedSources: orderedSources)
                         }
@@ -13310,6 +13561,12 @@ struct LibraryWorkspaceView: View {
             set: { isExpanded in
                 if isExpanded {
                     expandedSourceIDs.insert(sourceID)
+                    Task {
+                        await model.loadSourceFolderChildren(
+                            sourceID: sourceID,
+                            parentRelativePath: nil
+                        )
+                    }
                 } else {
                     expandedSourceIDs.remove(sourceID)
                 }
@@ -13327,6 +13584,24 @@ struct LibraryWorkspaceView: View {
                     sourceID: scope.sourceID,
                     relativePath: components.joined(separator: "/")
                 )
+            )
+        }
+        Task { await loadFolderAncestorBranches(scope) }
+    }
+
+    private func loadFolderAncestorBranches(_ scope: AssetFolderScope) async {
+        await model.loadSourceFolderChildren(
+            sourceID: scope.sourceID,
+            parentRelativePath: nil
+        )
+        let components = scope.relativePath.split(separator: "/").map(String.init)
+        guard components.count > 1 else { return }
+        var parentComponents: [String] = []
+        for component in components.dropLast() {
+            parentComponents.append(component)
+            await model.loadSourceFolderChildren(
+                sourceID: scope.sourceID,
+                parentRelativePath: parentComponents.joined(separator: "/")
             )
         }
     }

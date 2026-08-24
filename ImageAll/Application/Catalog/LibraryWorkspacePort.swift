@@ -422,6 +422,18 @@ protocol LibraryWorkspacePort: Sendable {
     func applyJobActivityAction(_ action: JobActivityAction, jobID: UUID) throws
     func fetchSources() throws -> [LibrarySourceSummary]
     func fetchSourceFolders(sourceID: UUID) throws -> [LibrarySourceFolder]
+    func fetchSourceFolderPage(
+        sourceID: UUID,
+        parentRelativePath: String?,
+        offset: Int,
+        limit: Int
+    ) throws -> LibrarySourceFolderPage
+    func sourceFolderExists(_ scope: AssetFolderScope) throws -> Bool
+    func searchSourceFolders(
+        sourceID: UUID,
+        text: String,
+        limit: Int
+    ) throws -> LibrarySourceFolderPage
     func fetchGalleryOverview() throws -> GalleryOverviewSnapshot
     func cachedWorldMapSnapshot(query: WorldMapCatalogQuery) -> WorldMapCatalogSnapshot?
     func fetchWorldMapSnapshot(query: WorldMapCatalogQuery) throws -> WorldMapCatalogSnapshot
@@ -518,6 +530,62 @@ protocol LibraryWorkspacePort: Sendable {
 extension LibraryWorkspacePort {
     func fetchSourceFolders(sourceID _: UUID) throws -> [LibrarySourceFolder] {
         []
+    }
+
+    func fetchSourceFolderPage(
+        sourceID: UUID,
+        parentRelativePath: String?,
+        offset: Int,
+        limit: Int
+    ) throws -> LibrarySourceFolderPage {
+        let matching = try fetchSourceFolders(sourceID: sourceID)
+            .filter { $0.parentRelativePath == parentRelativePath }
+            .sorted {
+                let comparison = $0.name.localizedStandardCompare($1.name)
+                if comparison != .orderedSame {
+                    return comparison == .orderedAscending
+                }
+                return $0.relativePath < $1.relativePath
+            }
+        let start = min(max(offset, 0), matching.count)
+        let end = min(start + max(limit, 0), matching.count)
+        let folders = Array(matching[start ..< end])
+        return LibrarySourceFolderPage(
+            folders: folders,
+            totalCount: matching.count,
+            nextOffset: end < matching.count ? end : nil
+        )
+    }
+
+    func sourceFolderExists(_ scope: AssetFolderScope) throws -> Bool {
+        try fetchSourceFolders(sourceID: scope.sourceID).contains {
+            $0.relativePath == scope.relativePath
+        }
+    }
+
+    func searchSourceFolders(
+        sourceID: UUID,
+        text: String,
+        limit: Int
+    ) throws -> LibrarySourceFolderPage {
+        let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else {
+            return LibrarySourceFolderPage(folders: [], totalCount: 0, nextOffset: nil)
+        }
+        let matching = try fetchSourceFolders(sourceID: sourceID)
+            .filter {
+                $0.name.localizedCaseInsensitiveContains(query)
+                    || $0.relativePath.localizedCaseInsensitiveContains(query)
+            }
+            .sorted {
+                let comparison = $0.relativePath.localizedStandardCompare($1.relativePath)
+                return comparison == .orderedAscending
+            }
+        return LibrarySourceFolderPage(
+            folders: Array(matching.prefix(max(limit, 0))),
+            totalCount: matching.count,
+            nextOffset: nil
+        )
     }
 
     func startCatalogSourceMonitoring(onChange: @escaping @Sendable () -> Void) throws {}

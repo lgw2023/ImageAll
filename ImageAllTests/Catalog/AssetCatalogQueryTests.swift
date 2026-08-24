@@ -2,6 +2,155 @@ import XCTest
 @testable import ImageAll
 
 final class AssetCatalogQueryTests: XCTestCase {
+    func testSourceFolderPagesLoadOnlyDirectChildrenWithinLimit() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+        let sourceID = fixture.ids.sourceA
+        try fixture.database.pool.write { db in
+            for index in 0 ..< 150 {
+                let name = String(format: "folder-%03d", index)
+                try db.execute(
+                    sql: """
+                    INSERT INTO source_folder (
+                        source_id, relative_path, parent_relative_path, name
+                    ) VALUES (?, ?, NULL, ?)
+                    """,
+                    arguments: [sourceID.uuidString.lowercased(), name, name]
+                )
+            }
+            try db.execute(
+                sql: """
+                INSERT INTO source_folder (
+                    source_id, relative_path, parent_relative_path, name
+                ) VALUES (?, 'folder-000/nested', 'folder-000', 'nested')
+                """,
+                arguments: [sourceID.uuidString.lowercased()]
+            )
+        }
+
+        let firstPage = try fixture.query.fetchSourceFolderPage(
+            sourceID: sourceID,
+            parentRelativePath: nil,
+            offset: 0,
+            limit: 100
+        )
+        XCTAssertEqual(firstPage.folders.count, 100)
+        XCTAssertEqual(firstPage.folders.first?.relativePath, "folder-000")
+        XCTAssertEqual(firstPage.folders.last?.relativePath, "folder-099")
+        XCTAssertEqual(firstPage.totalCount, 150)
+        XCTAssertEqual(firstPage.nextOffset, 100)
+
+        let secondPage = try fixture.query.fetchSourceFolderPage(
+            sourceID: sourceID,
+            parentRelativePath: nil,
+            offset: try XCTUnwrap(firstPage.nextOffset),
+            limit: 100
+        )
+        XCTAssertEqual(secondPage.folders.count, 50)
+        XCTAssertEqual(secondPage.folders.first?.relativePath, "folder-100")
+        XCTAssertNil(secondPage.nextOffset)
+
+        let nestedPage = try fixture.query.fetchSourceFolderPage(
+            sourceID: sourceID,
+            parentRelativePath: "folder-000",
+            offset: 0,
+            limit: 100
+        )
+        XCTAssertEqual(nestedPage.folders.map(\.relativePath), ["folder-000/nested"])
+        XCTAssertEqual(nestedPage.totalCount, 1)
+        XCTAssertTrue(
+            try fixture.query.sourceFolderExists(
+                AssetFolderScope(sourceID: sourceID, relativePath: "folder-000/nested")
+            )
+        )
+        XCTAssertFalse(
+            try fixture.query.sourceFolderExists(
+                AssetFolderScope(sourceID: sourceID, relativePath: "folder-000/missing")
+            )
+        )
+    }
+
+    func testSourceFolderSearchFindsUnloadedDescendantsWithoutWildcardExpansion() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+        let sourceID = fixture.ids.sourceA
+        try fixture.database.pool.write { db in
+            for index in 0 ..< 1_000 {
+                let parent = String(format: "bucket-%04d", index)
+                let child = "\(parent)/nested"
+                try db.execute(
+                    sql: """
+                    INSERT INTO source_folder (
+                        source_id, relative_path, parent_relative_path, name
+                    ) VALUES
+                        (?, ?, NULL, ?),
+                        (?, ?, ?, 'nested')
+                    """,
+                    arguments: [
+                        sourceID.uuidString.lowercased(), parent, parent,
+                        sourceID.uuidString.lowercased(), child, parent,
+                    ]
+                )
+            }
+            try db.execute(
+                sql: """
+                INSERT INTO source_folder (
+                    source_id, relative_path, parent_relative_path, name
+                ) VALUES (?, 'literal%_folder', NULL, 'literal%_folder')
+                """,
+                arguments: [sourceID.uuidString.lowercased()]
+            )
+        }
+
+        let exact = try fixture.query.searchSourceFolders(
+            sourceID: sourceID,
+            text: "bucket-0731",
+            limit: 50
+        )
+        XCTAssertEqual(
+            exact.folders.map(\.relativePath),
+            ["bucket-0731", "bucket-0731/nested"]
+        )
+        XCTAssertEqual(exact.totalCount, 2)
+
+        let literal = try fixture.query.searchSourceFolders(
+            sourceID: sourceID,
+            text: "%_",
+            limit: 50
+        )
+        XCTAssertEqual(literal.folders.map(\.relativePath), ["literal%_folder"])
+    }
+
+    func testTenThousandSiblingFoldersStillReturnOnlyOneBoundedPage() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+        let sourceID = fixture.ids.sourceA
+        try fixture.database.pool.write { db in
+            for index in 0 ..< 10_000 {
+                let name = String(format: "wide-%05d", index)
+                try db.execute(
+                    sql: """
+                    INSERT INTO source_folder (
+                        source_id, relative_path, parent_relative_path, name
+                    ) VALUES (?, ?, NULL, ?)
+                    """,
+                    arguments: [sourceID.uuidString.lowercased(), name, name]
+                )
+            }
+        }
+
+        let startedAt = ContinuousClock.now
+        let page = try fixture.query.fetchSourceFolderPage(
+            sourceID: sourceID,
+            parentRelativePath: nil,
+            offset: 0,
+            limit: 100
+        )
+        let elapsed = ContinuousClock.now - startedAt
+
+        XCTAssertEqual(page.folders.count, 100)
+        XCTAssertEqual(page.totalCount, 10_000)
+        XCTAssertEqual(page.nextOffset, 100)
+        XCTAssertLessThan(elapsed, .seconds(1))
+    }
+
     func testBroadAssetPagesFollowTheRequestedSortIndex() throws {
         let fixture = try CatalogQueryTestSupport.openQueryDatabase()
         var statements: [String] = []
