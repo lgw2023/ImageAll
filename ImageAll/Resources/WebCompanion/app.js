@@ -10620,9 +10620,120 @@ function appendSourceFolderTree(source) {
   return tree;
 }
 
+function sourceSidebarNodeKey(node) {
+  if (!(node instanceof HTMLElement)) return null;
+  if (node.dataset.sourceId !== undefined) return `source:${node.dataset.sourceId}`;
+  if (node.dataset.folderTreeSourceId) {
+    return `tree:${node.dataset.folderTreeSourceId}`;
+  }
+  if (node.dataset.folderSearchSourceId) {
+    return `search:${node.dataset.folderSearchSourceId}`;
+  }
+  if (node.dataset.folderSearchSubmitSourceId) {
+    return `search-submit:${node.dataset.folderSearchSubmitSourceId}`;
+  }
+  if (node.dataset.folderSearchRetrySourceId) {
+    return `search-retry:${node.dataset.folderSearchRetrySourceId}`;
+  }
+  if (node.dataset.folderPath && node.dataset.folderSourceId) {
+    const surface = node.dataset.folderSearchResult === "true" ? "search" : "tree";
+    return `folder:${surface}:${node.dataset.folderSourceId}:${node.dataset.folderPath}`;
+  }
+  if (node.dataset.folderLoadMore) return `more:${node.dataset.folderLoadMore}`;
+  if (node.dataset.folderRetrySourceId) {
+    return `retry:${node.dataset.folderRetrySourceId}:`
+      + `${node.dataset.folderRetryParentPath || "root"}`;
+  }
+  if (node.dataset.folderSourceToggle) {
+    return `source-toggle:${node.dataset.folderSourceToggle}`;
+  }
+  if (node.dataset.folderToggle) return `folder-toggle:${node.dataset.folderToggle}`;
+  const stableClass = [
+    "source-folder-capacity",
+    "source-folder-search-controls",
+    "source-folder-search-results",
+    "source-folder-search-summary",
+    "sidebar-icon",
+    "sidebar-count",
+    "folder-disclosure",
+    "folder-name",
+  ].find((className) => node.classList.contains(className));
+  return stableClass ? `class:${stableClass}` : null;
+}
+
+function sourceSidebarNodesCanReconcile(existing, desired) {
+  if (existing.nodeType !== desired.nodeType) return false;
+  if (existing.nodeType === Node.TEXT_NODE) return true;
+  if (!(existing instanceof HTMLElement) || !(desired instanceof HTMLElement)) return false;
+  if (existing.tagName !== desired.tagName) return false;
+  const desiredKey = sourceSidebarNodeKey(desired);
+  const existingKey = sourceSidebarNodeKey(existing);
+  return desiredKey ? existingKey === desiredKey : !existingKey;
+}
+
+function syncSourceSidebarAttributes(existing, desired) {
+  const desiredNames = new Set([...desired.attributes].map((attribute) => attribute.name));
+  for (const attribute of [...existing.attributes]) {
+    if (!desiredNames.has(attribute.name)) existing.removeAttribute(attribute.name);
+  }
+  for (const attribute of desired.attributes) {
+    if (existing.getAttribute(attribute.name) !== attribute.value) {
+      existing.setAttribute(attribute.name, attribute.value);
+    }
+  }
+  if (existing instanceof HTMLInputElement && desired instanceof HTMLInputElement) {
+    if (existing.value !== desired.value) existing.value = desired.value;
+    existing.disabled = desired.disabled;
+  }
+  if (existing instanceof HTMLButtonElement && desired instanceof HTMLButtonElement) {
+    existing.disabled = desired.disabled;
+    existing.draggable = desired.draggable;
+  }
+}
+
+function syncSourceSidebarNode(existing, desired) {
+  if (existing.nodeType === Node.TEXT_NODE) {
+    if (existing.nodeValue !== desired.nodeValue) existing.nodeValue = desired.nodeValue;
+    return existing;
+  }
+  syncSourceSidebarAttributes(existing, desired);
+  reconcileSourceSidebarChildren(existing, [...desired.childNodes]);
+  return existing;
+}
+
+function reconcileSourceSidebarChildren(container, desiredChildren) {
+  const existingChildren = [...container.childNodes];
+  const used = new Set();
+  for (const [index, desired] of desiredChildren.entries()) {
+    const desiredKey = sourceSidebarNodeKey(desired);
+    let existing = null;
+    if (desiredKey) {
+      existing = existingChildren.find((candidate) =>
+        !used.has(candidate) && sourceSidebarNodeKey(candidate) === desiredKey
+      ) || null;
+    } else {
+      const candidate = existingChildren[index];
+      if (candidate && !used.has(candidate)
+        && sourceSidebarNodesCanReconcile(candidate, desired)) {
+        existing = candidate;
+      }
+    }
+    const child = existing ? syncSourceSidebarNode(existing, desired) : desired;
+    if (existing) used.add(existing);
+    if (container.childNodes[index] !== child) {
+      container.insertBefore(child, container.childNodes[index] || null);
+    }
+  }
+  for (const child of existingChildren) {
+    if (!used.has(child) && child.parentNode === container) child.remove();
+  }
+}
+
 function renderSources() {
+  const priorActive = elements.sourceList.contains(document.activeElement)
+    ? document.activeElement
+    : null;
   const priorFocus = captureFolderSidebarFocus();
-  clearElement(elements.sourceList);
   elements.sourceEmpty.classList.toggle("hidden", state.sources.length > 0);
   const galleryOverviewSelected = galleryOverviewIsOpen()
     && galleryOverviewUsesIntegratedLayout();
@@ -10635,6 +10746,7 @@ function renderSources() {
     || reviewSelected
     || trainingSelected
     || slimmingSelected;
+  const desiredSources = document.createDocumentFragment();
 
   for (const source of orderedSources()) {
     const button = document.createElement("button");
@@ -10696,12 +10808,13 @@ function renderSources() {
     status.className = "sidebar-count";
     status.textContent = sourceStateText(source.state);
     button.append(icon, name, status);
-    elements.sourceList.append(button);
+    desiredSources.append(button);
     if (folderSourceSupportsHierarchy(source)
       && state.folderNavigation.expanded.has(folderScopeKey(source.id))) {
-      elements.sourceList.append(appendSourceFolderTree(source));
+      desiredSources.append(appendSourceFolderTree(source));
     }
   }
+  reconcileSourceSidebarChildren(elements.sourceList, [...desiredSources.childNodes]);
 
   const allMediaButton = document.querySelector('[data-source-id=""]');
   const allMediaSelected = !integratedWorkspaceSelected
@@ -10755,7 +10868,9 @@ function renderSources() {
   }
   renderSidebarSourceActions();
   syncCurrentSourceRefreshControl();
-  restoreFolderSidebarFocus(priorFocus);
+  if (priorFocus && (!priorActive?.isConnected || document.activeElement !== priorActive)) {
+    restoreFolderSidebarFocus(priorFocus);
+  }
 }
 
 function sidebarPrimaryNavigationItems() {

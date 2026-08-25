@@ -568,6 +568,35 @@ def main():
             assert expected in folder_help_detail, (expected, folder_help_detail)
         assert page.locator("#persistentHelp").get_attribute("data-kind") == "source"
         assert trips.get_attribute("title") is None
+        folder_search = page.locator(
+            f'[data-folder-search-source-id="{SOURCE_FOLDER}"]'
+        )
+        trips.focus()
+        page.evaluate(
+            """({ photosID, folderID }) => {
+              const sourceList = document.querySelector("#sourceList");
+              sourceList.scrollTop = 18;
+              window.__stableSourceSidebar = {
+                photos: sourceList.querySelector(
+                  `[data-source-id="${photosID}"]`
+                ),
+                folder: sourceList.querySelector(
+                  `[data-source-id="${folderID}"]`
+                ),
+                tree: sourceList.querySelector(
+                  `[data-folder-tree-source-id="${folderID}"]`
+                ),
+                search: sourceList.querySelector(
+                  `[data-folder-search-source-id="${folderID}"]`
+                ),
+                trips: sourceList.querySelector(
+                  `[data-folder-path="Trips"]:not([data-folder-search-result])`
+                ),
+                scrollTop: sourceList.scrollTop,
+              };
+            }""",
+            {"photosID": SOURCE_PHOTOS, "folderID": SOURCE_FOLDER},
+        )
         page.evaluate("() => renderSources()")
         page.wait_for_function(
             "sourceID => persistentHelpTarget?.isConnected "
@@ -576,6 +605,70 @@ def main():
             "&& document.querySelector('#persistentHelpTitle').textContent === 'Trips'",
             arg=SOURCE_FOLDER,
         )
+        stable_source_sidebar = page.evaluate(
+            """({ photosID, folderID }) => {
+              const frame = window.__stableSourceSidebar;
+              const sourceList = document.querySelector("#sourceList");
+              return {
+                photos: sourceList.querySelector(
+                  `[data-source-id="${photosID}"]`
+                ) === frame.photos,
+                folder: sourceList.querySelector(
+                  `[data-source-id="${folderID}"]`
+                ) === frame.folder,
+                tree: sourceList.querySelector(
+                  `[data-folder-tree-source-id="${folderID}"]`
+                ) === frame.tree,
+                search: sourceList.querySelector(
+                  `[data-folder-search-source-id="${folderID}"]`
+                ) === frame.search,
+                trips: sourceList.querySelector(
+                  `[data-folder-path="Trips"]:not([data-folder-search-result])`
+                ) === frame.trips,
+                helpTarget: persistentHelpTarget === frame.trips,
+                focus: document.activeElement === frame.trips,
+                scroll: sourceList.scrollTop === frame.scrollTop,
+              };
+            }""",
+            {"photosID": SOURCE_PHOTOS, "folderID": SOURCE_FOLDER},
+        )
+        assert all(stable_source_sidebar.values()), stable_source_sidebar
+        source_status_continuity = page.evaluate(
+            """({ photosID, folderID }) => {
+              const frame = window.__stableSourceSidebar;
+              const photos = state.sources.find((source) => source.id === photosID);
+              photos.state = "authorizationRequired";
+              renderSources();
+              const unavailable = {
+                identity: document.querySelector(
+                  `#sourceList [data-source-id="${photosID}"]`
+                ) === frame.photos,
+                status: frame.photos.querySelector(".sidebar-count").textContent
+                  === "需授权",
+                unavailable: frame.photos.classList.contains("unavailable"),
+                help: frame.photos.dataset.helpDetail.includes("需要重新授权"),
+                tree: document.querySelector(
+                  `#sourceList [data-folder-tree-source-id="${folderID}"]`
+                ) === frame.tree,
+                focus: document.activeElement === frame.trips,
+              };
+              photos.state = "active";
+              renderSources();
+              return {
+                ...Object.fromEntries(
+                  Object.entries(unavailable).map(([key, value]) => [`unavailable_${key}`, value])
+                ),
+                restoredIdentity: document.querySelector(
+                  `#sourceList [data-source-id="${photosID}"]`
+                ) === frame.photos,
+                restoredStatus: frame.photos.querySelector(".sidebar-count").textContent === "",
+                restoredAvailability: !frame.photos.classList.contains("unavailable"),
+                restoredFocus: document.activeElement === frame.trips,
+              };
+            }""",
+            {"photosID": SOURCE_PHOTOS, "folderID": SOURCE_FOLDER},
+        )
+        assert all(source_status_continuity.values()), source_status_continuity
         page.screenshot(
             path="/tmp/imageall-web-folder-scope-help.png",
             full_page=True,
@@ -837,10 +930,58 @@ def main():
         )
         assert folder_search_submit.is_disabled()
 
+        page.evaluate(
+            """sourceID => {
+              const sourceList = document.querySelector("#sourceList");
+              sourceList.scrollTop = 45;
+              window.__stableFolderSearch = {
+                tree: sourceList.querySelector(
+                  `[data-folder-tree-source-id="${sourceID}"]`
+                ),
+                input: sourceList.querySelector(
+                  `[data-folder-search-source-id="${sourceID}"]`
+                ),
+                submit: sourceList.querySelector(
+                  `[data-folder-search-submit-source-id="${sourceID}"]`
+                ),
+                trips: sourceList.querySelector(
+                  '[data-folder-path="Trips"]:not([data-folder-search-result])'
+                ),
+                scrollTop: sourceList.scrollTop,
+              };
+            }""",
+            SOURCE_FOLDER,
+        )
         folder_search.fill("%_")
         page.wait_for_function(
             "() => Boolean(document.querySelector('[data-folder-path=\"Literal %_/Match\"]'))"
         )
+        stable_folder_search = page.evaluate(
+            """sourceID => {
+              const frame = window.__stableFolderSearch;
+              const sourceList = document.querySelector("#sourceList");
+              return {
+                tree: sourceList.querySelector(
+                  `[data-folder-tree-source-id="${sourceID}"]`
+                ) === frame.tree,
+                input: sourceList.querySelector(
+                  `[data-folder-search-source-id="${sourceID}"]`
+                ) === frame.input,
+                submit: sourceList.querySelector(
+                  `[data-folder-search-submit-source-id="${sourceID}"]`
+                ) === frame.submit,
+                trips: sourceList.querySelector(
+                  '[data-folder-path="Trips"]:not([data-folder-search-result])'
+                ) === frame.trips,
+                focus: document.activeElement === frame.input,
+                value: frame.input.value === "%_",
+                caret: frame.input.selectionStart === 2 && frame.input.selectionEnd === 2,
+                scroll: sourceList.scrollTop === frame.scrollTop,
+              };
+            }""",
+            SOURCE_FOLDER,
+        )
+        assert all(stable_folder_search.values()), stable_folder_search
         assert page.locator(".source-folder-search-results").is_visible()
         assert page.locator(
             '[data-folder-path="Trips"]:not([data-folder-search-result])'
@@ -1117,6 +1258,16 @@ def main():
         )
         test_phase[0] = "source-reorder"
         assert source_names(page) == ["Apple Photos", "Downloads"]
+        page.evaluate(
+            """({ photosID, folderID }) => {
+              const sourceList = document.querySelector("#sourceList");
+              window.__stableReorderedSources = {
+                photos: sourceList.querySelector(`[data-source-id="${photosID}"]`),
+                folder: sourceList.querySelector(`[data-source-id="${folderID}"]`),
+              };
+            }""",
+            {"photosID": SOURCE_PHOTOS, "folderID": SOURCE_FOLDER},
+        )
         page.locator(f'#sourceList .sidebar-row[data-source-id="{SOURCE_FOLDER}"]').drag_to(
             page.locator(f'#sourceList .sidebar-row[data-source-id="{SOURCE_PHOTOS}"]')
         )
@@ -1130,6 +1281,17 @@ def main():
             arg=SOURCE_FOLDER,
         )
         assert page.evaluate("() => document.activeElement?.dataset.sourceId") == SOURCE_FOLDER
+        assert page.evaluate(
+            """({ photosID, folderID }) => {
+              const frame = window.__stableReorderedSources;
+              const sourceList = document.querySelector("#sourceList");
+              return sourceList.querySelector(`[data-source-id="${photosID}"]`)
+                  === frame.photos
+                && sourceList.querySelector(`[data-source-id="${folderID}"]`)
+                  === frame.folder;
+            }""",
+            {"photosID": SOURCE_PHOTOS, "folderID": SOURCE_FOLDER},
+        )
         assert page.evaluate(
             "() => JSON.parse(localStorage.getItem('imageall.web.workspace-preferences'))"
             ".sourceOrderIDs[0]"
