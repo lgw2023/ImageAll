@@ -205,12 +205,18 @@ def main():
                         "nextOffset": None,
                     })
                     return
+                search_result_paths = {
+                    "%_": ("Literal %_/Match", "Literal %_"),
+                    "button-query": ("Button Search/Match", "Button Search"),
+                    "enter-query": ("Enter Search/Match", "Enter Search"),
+                }
+                result_path = search_result_paths.get(search)
                 folders = [{
                     "sourceID": SOURCE_FOLDER,
-                    "relativePath": "Literal %_/Match",
-                    "parentRelativePath": "Literal %_",
+                    "relativePath": result_path[0],
+                    "parentRelativePath": result_path[1],
                     "name": "Match",
-                }] if search == "%_" else []
+                }] if result_path else []
                 fulfill_json(route, {
                     "folders": folders,
                     "totalCount": len(folders),
@@ -592,6 +598,123 @@ def main():
         folder_search = page.locator(
             f'[data-folder-search-source-id="{SOURCE_FOLDER}"]'
         )
+        folder_search_submit = page.locator(
+            f'[data-folder-search-submit-source-id="{SOURCE_FOLDER}"]'
+        )
+        assert folder_search_submit.is_disabled()
+        explicit_search_asset_query_count = len(asset_queries)
+        page.evaluate(
+            """({ sourceID, value }) => {
+              const input = document.querySelector(
+                `[data-folder-search-source-id="${CSS.escape(sourceID)}"]`
+              );
+              input.value = value;
+              input.dispatchEvent(new Event('input', { bubbles: true }));
+              const button = document.querySelector(
+                `[data-folder-search-submit-source-id="${CSS.escape(sourceID)}"]`
+              );
+              button.focus();
+              button.click();
+            }""",
+            {"sourceID": SOURCE_FOLDER, "value": "button-query"},
+        )
+        page.wait_for_function(
+            "() => Boolean(document.querySelector("
+            "'[data-folder-path=\"Button Search/Match\"]'"
+            "))"
+        )
+        page.wait_for_timeout(300)
+        assert sum(
+            query.get("q") == ["button-query"] for query in folder_queries
+        ) == 1
+        page.wait_for_function(
+            "sourceID => "
+            "document.activeElement?.dataset.folderSearchSubmitSourceId === sourceID",
+            arg=SOURCE_FOLDER,
+        )
+        assert folder_search.input_value() == "button-query"
+        assert len(asset_queries) == explicit_search_asset_query_count
+        folder_search.focus()
+        folder_search.press("Escape")
+        page.wait_for_function(
+            "() => !document.querySelector('.source-folder-search-results')"
+        )
+        assert folder_search_submit.is_disabled()
+
+        page.evaluate(
+            """({ sourceID, value }) => {
+              const input = document.querySelector(
+                `[data-folder-search-source-id="${CSS.escape(sourceID)}"]`
+              );
+              input.value = value;
+              input.dispatchEvent(new Event('input', { bubbles: true }));
+              input.focus();
+              input.dispatchEvent(new KeyboardEvent('keydown', {
+                key: 'Enter',
+                code: 'Enter',
+                bubbles: true,
+              }));
+            }""",
+            {"sourceID": SOURCE_FOLDER, "value": "enter-query"},
+        )
+        page.wait_for_function(
+            "() => Boolean(document.querySelector("
+            "'[data-folder-path=\"Enter Search/Match\"]'"
+            "))"
+        )
+        page.wait_for_timeout(300)
+        assert sum(
+            query.get("q") == ["enter-query"] for query in folder_queries
+        ) == 1
+        page.wait_for_function(
+            "sourceID => document.activeElement?.dataset.folderSearchSourceId === sourceID",
+            arg=SOURCE_FOLDER,
+        )
+        assert folder_search.input_value() == "enter-query"
+        assert len(asset_queries) == explicit_search_asset_query_count
+        search_control_geometry = page.evaluate(
+            """sourceID => {
+              const sidebar = document.querySelector('#sourceSidebar');
+              const controls = document.querySelector('.source-folder-search-controls');
+              const input = document.querySelector(
+                `[data-folder-search-source-id="${CSS.escape(sourceID)}"]`
+              );
+              const button = document.querySelector(
+                `[data-folder-search-submit-source-id="${CSS.escape(sourceID)}"]`
+              );
+              const controlsRect = controls.getBoundingClientRect();
+              const inputRect = input.getBoundingClientRect();
+              const buttonRect = button.getBoundingClientRect();
+              return {
+                sidebarScrollLeft: sidebar.scrollLeft,
+                controlsLeft: controlsRect.left,
+                controlsRight: controlsRect.right,
+                inputLeft: inputRect.left,
+                inputRight: inputRect.right,
+                buttonLeft: buttonRect.left,
+                buttonRight: buttonRect.right,
+                buttonWidth: buttonRect.width,
+              };
+            }""",
+            SOURCE_FOLDER,
+        )
+        assert search_control_geometry["sidebarScrollLeft"] == 0, search_control_geometry
+        assert search_control_geometry["inputLeft"] >= search_control_geometry["controlsLeft"]
+        assert search_control_geometry["inputRight"] < search_control_geometry["buttonLeft"]
+        assert search_control_geometry["buttonRight"] <= (
+            search_control_geometry["controlsRight"] + 0.5
+        )
+        assert search_control_geometry["buttonWidth"] >= 27
+        page.screenshot(
+            path="/tmp/imageall-web-folder-search-submit.png",
+            full_page=True,
+        )
+        folder_search.press("Escape")
+        page.wait_for_function(
+            "() => !document.querySelector('.source-folder-search-results')"
+        )
+        assert folder_search_submit.is_disabled()
+
         folder_search.fill("%_")
         page.wait_for_function(
             "() => Boolean(document.querySelector('[data-folder-path=\"Literal %_/Match\"]'))"

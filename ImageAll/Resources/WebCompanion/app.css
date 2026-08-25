@@ -1280,16 +1280,49 @@ html.split-resizing * {
 .source-folder-retry:hover,
 .source-folder-search-retry:hover { background: color-mix(in srgb, var(--selection), transparent 40%); }
 
-.source-folder-search {
+.source-folder-search-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   width: calc(100% - 16px);
-  min-height: 28px;
   margin: 5px 8px 3px;
+}
+
+.source-folder-search {
+  flex: 1 1 auto;
+  width: 0;
+  min-width: 0;
+  min-height: 28px;
+  margin: 0;
   padding: 4px 8px;
   border: 1px solid var(--separator);
   border-radius: 7px;
   color: var(--text);
   background: var(--control);
   font: inherit;
+}
+
+.source-folder-search-submit {
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--separator);
+  border-radius: 7px;
+  color: var(--accent);
+  background: var(--control);
+  font: inherit;
+  cursor: pointer;
+}
+
+.source-folder-search-submit:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--selection), transparent 35%);
+}
+
+.source-folder-search-submit:disabled {
+  color: var(--tertiary);
+  cursor: default;
+  opacity: 0.55;
 }
 
 .source-folder-search-results {

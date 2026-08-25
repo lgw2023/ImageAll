@@ -9699,6 +9699,9 @@ function captureFolderSidebarFocus() {
   if (active.matches("[data-folder-search-source-id]")) {
     return { kind: "search", sourceID: active.dataset.folderSearchSourceId };
   }
+  if (active.matches("[data-folder-search-submit-source-id]")) {
+    return { kind: "searchSubmit", sourceID: active.dataset.folderSearchSubmitSourceId };
+  }
   if (active.matches("[data-folder-search-retry-source-id]")) {
     return { kind: "searchRetry", sourceID: active.dataset.folderSearchRetrySourceId };
   }
@@ -9733,6 +9736,8 @@ function restoreFolderSidebarFocus(focus) {
       target = elements.sourceList.querySelector(
         `[data-folder-search-source-id="${CSS.escape(focus.sourceID)}"]`
       );
+    } else if (focus.kind === "searchSubmit") {
+      target = folderSearchSubmitButton(focus.sourceID);
     } else if (focus.kind === "searchRetry") {
       target = folderSearchRetryButton(focus.sourceID);
     } else if (focus.kind === "folder") {
@@ -9872,6 +9877,28 @@ async function searchFolders(sourceID, text) {
     });
   }
   renderSources();
+}
+
+function folderSearchInput(sourceID) {
+  return elements.sourceList.querySelector(
+    `[data-folder-search-source-id="${CSS.escape(sourceID)}"]`
+  );
+}
+
+function folderSearchSubmitButton(sourceID) {
+  return elements.sourceList.querySelector(
+    `[data-folder-search-submit-source-id="${CSS.escape(sourceID)}"]`
+  );
+}
+
+function submitFolderSearch(sourceID) {
+  const text = folderSearchInput(sourceID)?.value
+    ?? state.folderNavigation.searches.get(sourceID)?.query
+    ?? "";
+  if (!text.trim()) return;
+  clearTimeout(state.folderNavigation.searchTimers.get(sourceID));
+  state.folderNavigation.searchTimers.delete(sourceID);
+  void searchFolders(sourceID, text);
 }
 
 function folderSearchRetryButton(sourceID) {
@@ -10085,14 +10112,27 @@ function appendSourceFolderTree(source) {
   const root = folderBranch(source.id);
   if (root?.totalCount > 500) {
     const search = state.folderNavigation.searches.get(source.id);
+    const controls = document.createElement("div");
+    controls.className = "source-folder-search-controls";
     const input = document.createElement("input");
     input.type = "search";
     input.className = "source-folder-search";
     input.dataset.folderSearchSourceId = source.id;
     input.placeholder = `搜索 ${root.totalCount} 个文件夹`;
     input.value = search?.query || "";
+    input.enterKeyHint = "search";
     input.setAttribute("aria-label", `搜索${source.displayName}中的文件夹`);
-    tree.append(input);
+    const submit = document.createElement("button");
+    submit.type = "button";
+    submit.className = "source-folder-search-submit";
+    submit.dataset.folderSearchSubmitSourceId = source.id;
+    submit.textContent = "⌕";
+    submit.disabled = !input.value.trim();
+    submit.title = "搜索目录（Enter）";
+    submit.setAttribute("aria-label", `搜索${source.displayName}中的文件夹`);
+    submit.setAttribute("aria-keyshortcuts", "Enter");
+    controls.append(input, submit);
+    tree.append(controls);
     if (search?.query) {
       const results = document.createElement("div");
       results.className = "source-folder-search-results";
@@ -35793,6 +35833,11 @@ function bindEvents() {
       void retryFolderSearch(searchRetry.dataset.folderSearchRetrySourceId);
       return;
     }
+    const searchSubmit = event.target.closest("[data-folder-search-submit-source-id]");
+    if (searchSubmit) {
+      submitFolderSearch(searchSubmit.dataset.folderSearchSubmitSourceId);
+      return;
+    }
     const button = event.target.closest("[data-source-id]");
     if (button) selectSource(button.dataset.sourceId);
   });
@@ -35810,6 +35855,8 @@ function bindEvents() {
       ...(state.folderNavigation.searches.get(sourceID) || {}),
       query: text,
     });
+    const submit = folderSearchSubmitButton(sourceID);
+    if (submit) submit.disabled = !text.trim();
     const timer = setTimeout(() => {
       state.folderNavigation.searchTimers.delete(sourceID);
       void searchFolders(sourceID, text);
@@ -35817,6 +35864,13 @@ function bindEvents() {
     state.folderNavigation.searchTimers.set(sourceID, timer);
   });
   elements.sourceList.addEventListener("keydown", (event) => {
+    const input = event.target.closest("[data-folder-search-source-id]");
+    if (input && event.key === "Enter" && !event.isComposing) {
+      event.preventDefault();
+      event.stopPropagation();
+      submitFolderSearch(input.dataset.folderSearchSourceId);
+      return;
+    }
     moveFolderTreeHorizontalNavigation(event);
   });
   elements.folderBreadcrumb.addEventListener("click", (event) => {
