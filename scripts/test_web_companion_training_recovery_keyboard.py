@@ -1138,10 +1138,91 @@ def main():
             "element => element.scrollTop"
         )
         assert detail_scroll_before_refresh > 80
-        page.evaluate("loadTrainingWorkspace({ quiet: true })")
+        training_refresh_continuity_before = page.evaluate(
+            """runID => {
+              const run = document.querySelector(
+                `[data-training-run-id="${CSS.escape(runID)}"]`
+              );
+              const originalFetch = window.fetch.bind(window);
+              window.__imageAllTrainingRefreshRun = run;
+              window.__imageAllTrainingRefreshSlot = document.querySelector(
+                '[data-training-slot-method="personalCentroid"]'
+              );
+              window.__imageAllTrainingRefreshAction = document.querySelector(
+                `[data-training-review-run-id="${CSS.escape(runID)}"]`
+              );
+              window.__imageAllTrainingRefreshRelease = null;
+              window.fetch = (...args) => {
+                const requestURL = String(args[0]?.url || args[0]);
+                if (requestURL.includes('/v1/training/workspace?')) {
+                  return new Promise((resolve, reject) => {
+                    window.__imageAllTrainingRefreshRelease = () => {
+                      window.fetch = originalFetch;
+                      originalFetch(...args).then(resolve, reject);
+                    };
+                  });
+                }
+                return originalFetch(...args);
+              };
+              return {
+                runID,
+                runScrollTop: document.querySelector('#trainingRunPane').scrollTop,
+                detailScrollTop: document.querySelector('#trainingDetailPane').scrollTop,
+              };
+            }""",
+            scroll_run_ids[32],
+        )
+        page.evaluate("() => { void loadTrainingWorkspace({ quiet: true }); }")
+        page.wait_for_function(
+            "() => state.training.loading "
+            "&& typeof window.__imageAllTrainingRefreshRelease === 'function'"
+        )
+        training_refresh_inflight = page.evaluate(
+            """expected => {
+              const run = document.querySelector(
+                `[data-training-run-id="${CSS.escape(expected.runID)}"]`
+              );
+              return {
+                runStable: run === window.__imageAllTrainingRefreshRun,
+                slotStable: document.querySelector('[data-training-slot-method="personalCentroid"]')
+                  === window.__imageAllTrainingRefreshSlot,
+                actionStable: document.querySelector(
+                  `[data-training-review-run-id="${CSS.escape(expected.runID)}"]`
+                ) === window.__imageAllTrainingRefreshAction,
+                runScrollTop: document.querySelector('#trainingRunPane').scrollTop,
+                detailScrollTop: document.querySelector('#trainingDetailPane').scrollTop,
+                focusedRunID: document.activeElement?.dataset.trainingRunId || null,
+              };
+            }""",
+            training_refresh_continuity_before,
+        )
+        assert training_refresh_inflight == {
+            "runStable": True,
+            "slotStable": True,
+            "actionStable": True,
+            "runScrollTop": training_refresh_continuity_before["runScrollTop"],
+            "detailScrollTop": training_refresh_continuity_before["detailScrollTop"],
+            "focusedRunID": scroll_run_ids[32],
+        }, training_refresh_inflight
+        page.evaluate("() => window.__imageAllTrainingRefreshRelease()")
+        page.wait_for_function("() => !state.training.loading")
         page.wait_for_function(
             "runID => document.activeElement?.dataset.trainingRunId === runID",
             arg=scroll_run_ids[32],
+        )
+        assert page.evaluate(
+            """expected => {
+              const run = document.querySelector(
+                `[data-training-run-id="${CSS.escape(expected.runID)}"]`
+              );
+              return run === window.__imageAllTrainingRefreshRun
+                && document.querySelector('[data-training-slot-method="personalCentroid"]')
+                  === window.__imageAllTrainingRefreshSlot
+                && document.querySelector(
+                  `[data-training-review-run-id="${CSS.escape(expected.runID)}"]`
+                ) === window.__imageAllTrainingRefreshAction;
+            }""",
+            training_refresh_continuity_before,
         )
         assert abs(page.locator("#trainingRunPane").evaluate(
             "element => element.scrollTop"
@@ -1152,6 +1233,125 @@ def main():
         assert detail_scroll_after_refresh == detail_scroll_before_refresh, (
             detail_scroll_before_refresh,
             detail_scroll_after_refresh,
+        )
+
+        original_failed_run = runs[0]
+        runs[0] = {
+            **original_failed_run,
+            "state": "running",
+            "finishedAtMs": None,
+            "errorCode": None,
+            "failureGuidance": None,
+        }
+        page.evaluate(
+            """runID => {
+              window.__imageAllTrainingChangedRun = document.querySelector(
+                `[data-training-run-id="${CSS.escape(runID)}"]`
+              );
+            }""",
+            FAILED_RUN_ID,
+        )
+        page.evaluate("loadTrainingWorkspace({ quiet: true })")
+        page.wait_for_function(
+            "runID => document.querySelector(`[data-training-run-id='${runID}']`)"
+            "?.innerText.includes('训练中')",
+            arg=FAILED_RUN_ID,
+        )
+        training_changed_refresh_after = page.evaluate(
+            """expected => {
+              const selectedRun = document.querySelector(
+                `[data-training-run-id="${CSS.escape(expected.selectedRunID)}"]`
+              );
+              return {
+                changedRunStable: document.querySelector(
+                  `[data-training-run-id="${CSS.escape(expected.changedRunID)}"]`
+                ) === window.__imageAllTrainingChangedRun,
+                selectedRunStable: selectedRun === window.__imageAllTrainingRefreshRun,
+                slotStable: document.querySelector(
+                  '[data-training-slot-method="personalCentroid"]'
+                ) === window.__imageAllTrainingRefreshSlot,
+                actionStable: document.querySelector(
+                  `[data-training-review-run-id="${CSS.escape(expected.selectedRunID)}"]`
+                ) === window.__imageAllTrainingRefreshAction,
+                runScrollTop: document.querySelector('#trainingRunPane').scrollTop,
+                detailScrollTop: document.querySelector('#trainingDetailPane').scrollTop,
+                focusedRunID: document.activeElement?.dataset.trainingRunId || null,
+              };
+            }""",
+            {
+                "changedRunID": FAILED_RUN_ID,
+                "selectedRunID": scroll_run_ids[32],
+            },
+        )
+        assert training_changed_refresh_after == {
+            "changedRunStable": True,
+            "selectedRunStable": True,
+            "slotStable": True,
+            "actionStable": True,
+            "runScrollTop": training_refresh_continuity_before["runScrollTop"],
+            "detailScrollTop": training_refresh_continuity_before["detailScrollTop"],
+            "focusedRunID": scroll_run_ids[32],
+        }, training_changed_refresh_after
+        runs[0] = original_failed_run
+        page.evaluate("loadTrainingWorkspace({ quiet: true })")
+        page.wait_for_function(
+            "runID => document.querySelector(`[data-training-run-id='${runID}']`)"
+            "?.innerText.includes('失败')",
+            arg=FAILED_RUN_ID,
+        )
+        page.wait_for_function(
+            "runID => document.activeElement?.dataset.trainingRunId === runID",
+            arg=scroll_run_ids[32],
+        )
+        training_failure_before = page.evaluate(
+            """runID => {
+              const originalFetch = window.fetch.bind(window);
+              window.fetch = (...args) => {
+                const requestURL = String(args[0]?.url || args[0]);
+                if (requestURL.includes('/v1/training/workspace?')) {
+                  window.fetch = originalFetch;
+                  return Promise.reject(new Error('训练记录暂时不可用'));
+                }
+                return originalFetch(...args);
+              };
+              return {
+                runScrollTop: document.querySelector('#trainingRunPane').scrollTop,
+                detailScrollTop: document.querySelector('#trainingDetailPane').scrollTop,
+                runID,
+              };
+            }""",
+            scroll_run_ids[32],
+        )
+        page.evaluate("loadTrainingWorkspace()")
+        assert "训练记录暂时不可用" in page.locator("#toastMessage").inner_text()
+        training_failure_after = page.evaluate(
+            """expected => ({
+              runStable: document.querySelector(
+                `[data-training-run-id="${CSS.escape(expected.runID)}"]`
+              ) === window.__imageAllTrainingRefreshRun,
+              slotStable: document.querySelector(
+                '[data-training-slot-method="personalCentroid"]'
+              ) === window.__imageAllTrainingRefreshSlot,
+              actionStable: document.querySelector(
+                `[data-training-review-run-id="${CSS.escape(expected.runID)}"]`
+              ) === window.__imageAllTrainingRefreshAction,
+              runScrollTop: document.querySelector('#trainingRunPane').scrollTop,
+              detailScrollTop: document.querySelector('#trainingDetailPane').scrollTop,
+              focusedRunID: document.activeElement?.dataset.trainingRunId || null,
+            })""",
+            training_failure_before,
+        )
+        assert training_failure_after == {
+            "runStable": True,
+            "slotStable": True,
+            "actionStable": True,
+            "runScrollTop": training_failure_before["runScrollTop"],
+            "detailScrollTop": training_failure_before["detailScrollTop"],
+            "focusedRunID": scroll_run_ids[32],
+        }, training_failure_after
+        page.screenshot(
+            path="/tmp/imageall-training-refresh-continuity.png",
+            full_page=True,
         )
 
         page.evaluate("setTrainingRunScope('batch')")

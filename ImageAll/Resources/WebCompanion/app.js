@@ -1313,6 +1313,8 @@ const state = {
     runListScrollOffsets: new Map(),
     renderedRunListContextKey: null,
     renderedDetailRunID: null,
+    renderedDetailFingerprint: null,
+    renderedContentFingerprint: null,
     setup: {
       loading: false,
       launching: false,
@@ -23958,22 +23960,21 @@ async function openTrainingSlot(method) {
   focusTrainingRun(slot.publishedRunID, { reveal: true });
 }
 
-function renderTrainingSlots() {
-  clearElement(elements.trainingSlotStrip);
-  const slots = state.training.slots.length
-    ? state.training.slots
-    : ["featureKnn", "personalCentroid", "personalAdamW"].map((method) => ({
-      method,
-      isPublished: false,
-    }));
-  for (const slot of slots) {
-    const presentation = trainingMethodPresentation(slot.method, state.training.mediaKind);
-    const run = trainingSlotRun(slot);
-    const selectedRun = state.training.runs.find(
-      (item) => item.id === state.training.selectedRunID
-    );
-    const item = document.createElement("button");
-    item.type = "button";
+function syncTrainingSlot(item, slot) {
+  const presentation = trainingMethodPresentation(slot.method, state.training.mediaKind);
+  const run = trainingSlotRun(slot);
+  const selectedRun = state.training.runs.find(
+    (candidate) => candidate.id === state.training.selectedRunID
+  );
+  const fingerprint = JSON.stringify({
+    slot,
+    run,
+    selected: selectedRun?.method === slot.method,
+    mediaKind: state.training.mediaKind,
+  });
+  if (item.dataset.trainingFingerprint === fingerprint) return;
+  clearElement(item);
+  item.type = "button";
     item.className = `training-slot${slot.isPublished ? " published" : ""}${selectedRun?.method === slot.method ? " selected" : ""}`;
     item.dataset.trainingSlotMethod = slot.method;
     item.setAttribute("aria-pressed", String(selectedRun?.method === slot.method));
@@ -24010,49 +24011,40 @@ function renderTrainingSlots() {
       kind: "training",
       keyShortcuts: "ArrowLeft ArrowRight Home End",
     });
-    elements.trainingSlotStrip.append(item);
-  }
+    item.dataset.trainingFingerprint = fingerprint;
 }
 
-function renderTrainingRunList() {
-  captureTrainingRunListScroll();
-  const contextKey = trainingRunListContextKey();
-  const runs = visibleTrainingRuns();
-  clearElement(elements.trainingRunList);
-  elements.trainingRunCount.textContent = state.training.runScope === "all"
-    ? String(runs.length)
-    : `${runs.length} / ${state.training.runs.length}`;
-  elements.trainingEmpty.classList.toggle(
-    "hidden",
-    state.training.loading || runs.length > 0
+function renderTrainingSlots() {
+  const slots = state.training.slots.length
+    ? state.training.slots
+    : ["featureKnn", "personalCentroid", "personalAdamW"].map((method) => ({
+      method,
+      isPublished: false,
+    }));
+  const existingSlots = new Map(
+    [...elements.trainingSlotStrip.querySelectorAll("[data-training-slot-method]")]
+      .map((item) => [item.dataset.trainingSlotMethod, item])
   );
-  if (!state.training.loading && !runs.length) {
-    const title = elements.trainingEmpty.querySelector("strong");
-    const message = elements.trainingEmpty.querySelector("p");
-    const filtered = state.training.runs.length > 0;
-    title.textContent = filtered ? "没有匹配的训练记录" : "暂无训练记录";
-    message.textContent = filtered
-      ? "切换到“全部”或其他记录类型；筛选不会删除或停止任务。"
-      : "从“新建任务”开始；失败和取消的记录也会保留。";
+  for (const [index, slot] of slots.entries()) {
+    const item = existingSlots.get(slot.method) || document.createElement("button");
+    existingSlots.delete(slot.method);
+    syncTrainingSlot(item, slot);
+    const currentItem = elements.trainingSlotStrip.children[index] || null;
+    if (currentItem !== item) elements.trainingSlotStrip.insertBefore(item, currentItem);
   }
-  const activeCount = state.training.runs.filter(
-    (run) => run.state === "queued" || run.state === "running"
-  ).length + state.training.activities.filter(
-    (activity) => !["completed", "failed", "cancelled"].includes(activity.phase)
-  ).length;
-  elements.trainingNavigationCount.textContent = activeCount ? String(activeCount) : "";
-  if (state.training.selectedRunID) {
-    elements.trainingRunList.setAttribute(
-      "aria-activedescendant",
-      `training-run-${state.training.selectedRunID}`
-    );
-  } else {
-    elements.trainingRunList.removeAttribute("aria-activedescendant");
-  }
-  for (const run of runs) {
-    const presentation = trainingMethodPresentation(run.method, run.mediaKind);
-    const row = document.createElement("button");
-    row.type = "button";
+  for (const item of existingSlots.values()) item.remove();
+}
+
+function syncTrainingRunRow(row, run) {
+  const presentation = trainingMethodPresentation(run.method, run.mediaKind);
+  const fingerprint = JSON.stringify({
+    run,
+    selected: run.id === state.training.selectedRunID,
+    tagName: trainingRunTagName(run),
+  });
+  if (row.dataset.trainingFingerprint === fingerprint) return;
+  clearElement(row);
+  row.type = "button";
     row.className = "training-run-row";
     row.classList.toggle("selected", run.id === state.training.selectedRunID);
     row.dataset.trainingRunId = run.id;
@@ -24113,8 +24105,55 @@ function renderTrainingRunList() {
     subtitle.className = "training-run-row-subtitle";
     subtitle.textContent = `${presentation.technical} · ${trainingDate(run.createdAtMs)}`;
     row.append(heading, context, subtitle);
-    elements.trainingRunList.append(row);
+    row.dataset.trainingFingerprint = fingerprint;
+}
+
+function renderTrainingRunList() {
+  captureTrainingRunListScroll();
+  const contextKey = trainingRunListContextKey();
+  const runs = visibleTrainingRuns();
+  elements.trainingRunCount.textContent = state.training.runScope === "all"
+    ? String(runs.length)
+    : `${runs.length} / ${state.training.runs.length}`;
+  elements.trainingEmpty.classList.toggle(
+    "hidden",
+    state.training.loading || runs.length > 0
+  );
+  if (!state.training.loading && !runs.length) {
+    const title = elements.trainingEmpty.querySelector("strong");
+    const message = elements.trainingEmpty.querySelector("p");
+    const filtered = state.training.runs.length > 0;
+    title.textContent = filtered ? "没有匹配的训练记录" : "暂无训练记录";
+    message.textContent = filtered
+      ? "切换到“全部”或其他记录类型；筛选不会删除或停止任务。"
+      : "从“新建任务”开始；失败和取消的记录也会保留。";
   }
+  const activeCount = state.training.runs.filter(
+    (run) => run.state === "queued" || run.state === "running"
+  ).length + state.training.activities.filter(
+    (activity) => !["completed", "failed", "cancelled"].includes(activity.phase)
+  ).length;
+  elements.trainingNavigationCount.textContent = activeCount ? String(activeCount) : "";
+  if (state.training.selectedRunID) {
+    elements.trainingRunList.setAttribute(
+      "aria-activedescendant",
+      `training-run-${state.training.selectedRunID}`
+    );
+  } else {
+    elements.trainingRunList.removeAttribute("aria-activedescendant");
+  }
+  const existingRows = new Map(
+    [...elements.trainingRunList.querySelectorAll("[data-training-run-id]")]
+      .map((row) => [row.dataset.trainingRunId, row])
+  );
+  for (const [index, run] of runs.entries()) {
+    const row = existingRows.get(run.id) || document.createElement("button");
+    existingRows.delete(run.id);
+    syncTrainingRunRow(row, run);
+    const currentRow = elements.trainingRunList.children[index] || null;
+    if (currentRow !== row) elements.trainingRunList.insertBefore(row, currentRow);
+  }
+  for (const row of existingRows.values()) row.remove();
   restoreTrainingRunListScroll(contextKey);
 }
 
@@ -24137,6 +24176,9 @@ function selectTrainingRun(runID, { focus = false, reveal = false } = {}) {
   if (selectionChanged) resetTrainingDetailScroll();
   renderTrainingRunList();
   renderTrainingDetail();
+  if (trainingWorkspaceIsOpen() && trainingWorkspaceUsesIntegratedLayout()) {
+    renderTrainingWorkspaceInspector();
+  }
   checkpointActiveWorkspaceHistory();
   if (focus) focusTrainingRun(runID, { reveal });
 }
@@ -24292,6 +24334,17 @@ async function openReviewFromTrainingRun(runID) {
   toast("已定位到对应标签；当前没有待审核建议");
 }
 
+function trainingDetailFingerprint(run) {
+  const job = run.jobID ? state.jobs.find((item) => item.id === run.jobID) : null;
+  return JSON.stringify({
+    run,
+    job,
+    jobMutating: Boolean(run.jobID && state.jobMutatingIDs.has(run.jobID)),
+    online: state.online,
+    tagName: trainingRunTagName(run),
+  });
+}
+
 function renderTrainingDetail() {
   const run = state.training.runs.find((item) => item.id === state.training.selectedRunID);
   const renderedRunID = state.training.renderedDetailRunID;
@@ -24300,7 +24353,15 @@ function renderTrainingDetail() {
   elements.trainingDetail.classList.toggle("hidden", !run);
   if (!run) {
     state.training.renderedDetailRunID = null;
+    state.training.renderedDetailFingerprint = null;
     resetTrainingDetailScroll();
+    state.training.renderedContentFingerprint = trainingWorkspaceContentFingerprint();
+    return;
+  }
+  const detailFingerprint = trainingDetailFingerprint(run);
+  if (renderedRunID === run.id
+    && state.training.renderedDetailFingerprint === detailFingerprint) {
+    state.training.renderedContentFingerprint = trainingWorkspaceContentFingerprint();
     return;
   }
 
@@ -24400,6 +24461,8 @@ function renderTrainingDetail() {
   appendTrainingTechnicalBlock("结果", run.resultSummaryJSON, "没有结果摘要");
   elements.trainingDetailPane.scrollTop = renderedRunID === run.id ? detailScrollTop : 0;
   state.training.renderedDetailRunID = run.id;
+  state.training.renderedDetailFingerprint = detailFingerprint;
+  state.training.renderedContentFingerprint = trainingWorkspaceContentFingerprint();
 }
 
 function renderTrainingWorkspaceInspector() {
@@ -24442,7 +24505,27 @@ function renderTrainingWorkspaceInspector() {
   elements.inspectorTrainingWorkspaceIdentifier.textContent = `训练编号 ${run.id}`;
 }
 
-function renderTrainingWorkspace() {
+function trainingWorkspaceContentFingerprint() {
+  return JSON.stringify({
+    mediaKind: state.training.mediaKind,
+    method: state.training.method,
+    runScope: state.training.runScope,
+    selectedRunID: state.training.selectedRunID,
+    runs: state.training.runs,
+    slots: state.training.slots,
+    activities: state.training.activities,
+    mutatingActivityIDs: [...state.training.activityMutatingIDs].sort(),
+    jobs: state.jobs,
+    tags: activeTags().map((tag) => ({ id: tag.id, displayName: tag.displayName })),
+  });
+}
+
+function trainingWorkspaceCanPreserveContent() {
+  return state.training.renderedContentFingerprint !== null
+    && state.training.renderedContentFingerprint === trainingWorkspaceContentFingerprint();
+}
+
+function renderTrainingWorkspace({ preserveContent = false } = {}) {
   for (const button of elements.trainingMediaKindTabs.querySelectorAll(
     "[data-training-media-kind]"
   )) {
@@ -24526,13 +24609,15 @@ function renderTrainingWorkspace() {
   elements.trainingSummary.textContent = state.training.loading
     ? `正在读取${noun}训练记录…`
     : `${visibleRunCount} 条${noun}训练记录${state.training.runScope === "all" ? "" : ` · 共 ${state.training.runs.length} 条`}`;
-  renderTrainingSlots();
-  renderTrainingActivities();
-  renderTrainingBatchHistory();
-  renderTrainingRunList();
-  renderTrainingDetail();
-  if (trainingWorkspaceIsOpen() && trainingWorkspaceUsesIntegratedLayout()) {
-    renderTrainingWorkspaceInspector();
+  if (!preserveContent) {
+    renderTrainingSlots();
+    renderTrainingActivities();
+    renderTrainingBatchHistory();
+    renderTrainingRunList();
+    renderTrainingDetail();
+    if (trainingWorkspaceIsOpen() && trainingWorkspaceUsesIntegratedLayout()) {
+      renderTrainingWorkspaceInspector();
+    }
   }
 }
 
@@ -24543,7 +24628,7 @@ async function loadTrainingWorkspace({ quiet = false } = {}) {
     : null;
   const generation = ++state.training.requestGeneration;
   state.training.loading = true;
-  renderTrainingWorkspace();
+  renderTrainingWorkspace({ preserveContent: trainingWorkspaceCanPreserveContent() });
   const query = new URLSearchParams({ mediaKind: state.training.mediaKind });
   if (state.training.method) query.set("method", state.training.method);
   try {
@@ -24581,7 +24666,7 @@ async function loadTrainingWorkspace({ quiet = false } = {}) {
   } finally {
     if (generation === state.training.requestGeneration) {
       state.training.loading = false;
-      renderTrainingWorkspace();
+      renderTrainingWorkspace({ preserveContent: trainingWorkspaceCanPreserveContent() });
       const pendingReturnFocusRunID = state.training.pendingReturnFocusRunID;
       state.training.pendingReturnFocusRunID = null;
       if (pendingReturnFocusRunID
@@ -32439,6 +32524,9 @@ function resetWorkspaceSessionState() {
   state.training.runs = [];
   state.training.slots = [];
   state.training.activities = [];
+  state.training.renderedDetailRunID = null;
+  state.training.renderedDetailFingerprint = null;
+  state.training.renderedContentFingerprint = null;
   state.training.activityMutatingIDs.clear();
   state.training.focusedJobID = null;
   state.training.focusedTagID = null;
