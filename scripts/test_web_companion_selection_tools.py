@@ -154,6 +154,7 @@ def main(*, inspector_actions_only=False):
     expanded_slimming_history_enabled = False
     expanded_slimming_pagination_enabled = False
     expanded_slimming_recycle_pagination_enabled = False
+    slimming_recycle_poll_revision = 0
     expanded_slimming_marquee_enabled = False
     source_index_reads = 0
     source_index_building = False
@@ -1128,6 +1129,20 @@ def main(*, inspector_actions_only=False):
                         "favorite": favorite_state(asset_id),
                         **spec,
                     })
+            if slimming_recycle_poll_revision > 0 and entries:
+                entries[0]["policyMessage"] = "Mac 已更新这条 Photos 回收记录的说明"
+            if slimming_recycle_poll_revision > 1 and len(entries) > 1:
+                entries[1].update({
+                    "errorCode": "restoreConflict",
+                    "problem": "locationConflict",
+                    "resolution": "reinspectFileLocations",
+                    "availableActions": ["retryInterruptedOperation"],
+                    "stateMessage": "原位置与隔离区同时存在内容，需要核对",
+                    "policyMessage": "两处内容均会保留，ImageAll 不会覆盖或删除",
+                    "explanationMessage": "原位置与 ImageAll 隔离区同时存在内容。",
+                })
+            if slimming_recycle_poll_revision > 2 and len(entries) > 1:
+                entries.pop(1)
             source_id = query.get("sourceID", [None])[0]
             search = query.get("search", [""])[0].strip().casefold()
             filtered_entries = [
@@ -4268,6 +4283,184 @@ def main(*, inspector_actions_only=False):
             "requests": len(recycle_request_urls),
             "favorites": len(submitted_favorites),
             "actions": len(submitted_slimming_recycle_actions),
+            "removals": len(submitted_slimming_removals),
+        }
+        recycle_poll_request_count = len(recycle_request_urls)
+        recycle_poll_write_snapshot = {
+            "favorites": len(submitted_favorites),
+            "actions": len(submitted_slimming_recycle_actions),
+            "sourceActions": len(submitted_source_management),
+            "removals": len(submitted_slimming_removals),
+        }
+        recycle_poll_before = page.evaluate(
+            """entryID => {
+              const body = document.querySelector('#slimmingRecycleBody');
+              const row = document.querySelector(
+                `[data-slimming-recycle-row-id="${CSS.escape(entryID)}"]`
+              );
+              const action = row.querySelector('[data-slimming-recycle-recovery-action]');
+              body.scrollTop = Math.min(90, Math.max(0, body.scrollHeight - body.clientHeight));
+              action.focus();
+              window.__imageAllRecyclePollRow = row;
+              window.__imageAllRecyclePollImage = row.querySelector('img');
+              return {
+                scrollTop: body.scrollTop,
+                focusedAction: action.dataset.slimmingRecycleRecoveryAction,
+              };
+            }""",
+            SLIMMING_RECYCLE_IDS[1],
+        )
+        assert page.evaluate("() => loadSlimmingRecycle({ quiet: true })") is True
+        assert len(recycle_request_urls) == recycle_poll_request_count + 1
+        assert page.evaluate(
+            """expected => {
+              const body = document.querySelector('#slimmingRecycleBody');
+              const row = document.querySelector(
+                `[data-slimming-recycle-row-id="${CSS.escape(expected.entryID)}"]`
+              );
+              return row === window.__imageAllRecyclePollRow
+                && row.querySelector('img') === window.__imageAllRecyclePollImage
+                && body.scrollTop === expected.scrollTop;
+            }""",
+            {
+                "entryID": SLIMMING_RECYCLE_IDS[1],
+                "scrollTop": recycle_poll_before["scrollTop"],
+            },
+        )
+        assert page.evaluate(
+            "entryID => document.activeElement?.closest('[data-slimming-recycle-row-id]')"
+            "?.dataset.slimmingRecycleRowId === entryID "
+            "&& document.activeElement?.dataset.slimmingRecycleRecoveryAction "
+            "=== 'rescan'",
+            SLIMMING_RECYCLE_IDS[1],
+        )
+        slimming_recycle_poll_revision = 1
+        recycle_poll_changed_before = page.evaluate(
+            """entryID => {
+              const body = document.querySelector('#slimmingRecycleBody');
+              const rows = document.querySelectorAll(
+                '#slimmingRecycleList > .slimming-recycle-row'
+              );
+              const focusedRow = document.querySelector(
+                `[data-slimming-recycle-row-id="${CSS.escape(entryID)}"]`
+              );
+              const action = focusedRow.querySelector(
+                '[data-slimming-recycle-recovery-action]'
+              );
+              action.focus();
+              window.__imageAllRecycleChangedRow = rows[0];
+              window.__imageAllRecycleChangedThumbnail = rows[0].querySelector(
+                '.slimming-recycle-thumbnail-card'
+              );
+              window.__imageAllRecycleFocusedRow = focusedRow;
+              window.__imageAllRecycleFocusedThumbnail = focusedRow.querySelector(
+                '.slimming-recycle-thumbnail-card'
+              );
+              return body.scrollTop;
+            }""",
+            SLIMMING_RECYCLE_IDS[1],
+        )
+        assert page.evaluate("() => loadSlimmingRecycle({ quiet: true })") is True
+        assert "Mac 已更新" in recycle_rows.nth(0).locator(
+            ".slimming-recycle-policy"
+        ).inner_text()
+        assert page.evaluate(
+            """expected => {
+              const body = document.querySelector('#slimmingRecycleBody');
+              const changedRow = document.querySelector(
+                `[data-slimming-recycle-row-id="${CSS.escape(expected.changedID)}"]`
+              );
+              const focusedRow = document.querySelector(
+                `[data-slimming-recycle-row-id="${CSS.escape(expected.focusedID)}"]`
+              );
+              return changedRow === window.__imageAllRecycleChangedRow
+                && changedRow.querySelector('.slimming-recycle-thumbnail-card')
+                  === window.__imageAllRecycleChangedThumbnail
+                && focusedRow === window.__imageAllRecycleFocusedRow
+                && focusedRow.querySelector('.slimming-recycle-thumbnail-card')
+                  === window.__imageAllRecycleFocusedThumbnail
+                && body.scrollTop === expected.scrollTop;
+            }""",
+            {
+                "changedID": SLIMMING_RECYCLE_IDS[0],
+                "focusedID": SLIMMING_RECYCLE_IDS[1],
+                "scrollTop": recycle_poll_changed_before,
+            },
+        )
+        assert page.evaluate(
+            "entryID => document.activeElement?.closest('[data-slimming-recycle-row-id]')"
+            "?.dataset.slimmingRecycleRowId === entryID "
+            "&& document.activeElement?.dataset.slimmingRecycleRecoveryAction "
+            "=== 'rescan'",
+            SLIMMING_RECYCLE_IDS[1],
+        )
+        slimming_recycle_poll_revision = 2
+        page.evaluate(
+            """entryID => {
+              const row = document.querySelector(
+                `[data-slimming-recycle-row-id="${CSS.escape(entryID)}"]`
+              );
+              window.__imageAllRecycleFocusedChangedRow = row;
+              window.__imageAllRecycleFocusedChangedThumbnail = row.querySelector(
+                '.slimming-recycle-thumbnail-card'
+              );
+              row.querySelector('[data-slimming-recycle-recovery-action="rescan"]').focus();
+            }""",
+            SLIMMING_RECYCLE_IDS[1],
+        )
+        assert page.evaluate("() => loadSlimmingRecycle({ quiet: true })") is True
+        assert "原位置与隔离区" in recycle_rows.nth(1).locator(
+            ".slimming-recycle-detail"
+        ).inner_text()
+        assert recycle_rows.nth(1).locator(
+            '[data-slimming-recycle-recovery-action="rescan"]'
+        ).count() == 0
+        assert recycle_rows.nth(1).get_by_role(
+            "button", name="重新检查", exact=True
+        ).count() == 1
+        assert page.evaluate(
+            """entryID => {
+              const row = document.querySelector(
+                `[data-slimming-recycle-row-id="${CSS.escape(entryID)}"]`
+              );
+              return row === window.__imageAllRecycleFocusedChangedRow
+                && row.querySelector('.slimming-recycle-thumbnail-card')
+                  === window.__imageAllRecycleFocusedChangedThumbnail
+                && document.activeElement
+                  === row.querySelector('.slimming-recycle-thumbnail-card');
+            }""",
+            SLIMMING_RECYCLE_IDS[1],
+        )
+        slimming_recycle_poll_revision = 3
+        page.evaluate(
+            """() => {
+              window.__imageAllRecycleStructureRow = document.querySelector(
+                '#slimmingRecycleList > .slimming-recycle-row'
+              );
+            }"""
+        )
+        assert page.evaluate("() => loadSlimmingRecycle({ quiet: true })") is True
+        assert page.locator(
+            f'[data-slimming-recycle-row-id="{SLIMMING_RECYCLE_IDS[1]}"]'
+        ).count() == 0
+        assert page.evaluate(
+            """firstID => {
+              const firstRow = document.querySelector(
+                '#slimmingRecycleList > .slimming-recycle-row'
+              );
+              return firstRow !== window.__imageAllRecycleStructureRow
+                && firstRow.dataset.slimmingRecycleRowId === firstID
+                && document.activeElement
+                  === firstRow.querySelector('.slimming-recycle-thumbnail-card');
+            }""",
+            SLIMMING_RECYCLE_IDS[0],
+        )
+        slimming_recycle_poll_revision = 0
+        assert page.evaluate("() => loadSlimmingRecycle({ quiet: true })") is True
+        assert recycle_poll_write_snapshot == {
+            "favorites": len(submitted_favorites),
+            "actions": len(submitted_slimming_recycle_actions),
+            "sourceActions": len(submitted_source_management),
             "removals": len(submitted_slimming_removals),
         }
         page.screenshot(

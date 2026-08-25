@@ -1423,6 +1423,7 @@ const state = {
       appending: false,
       mutatingEntryIDs: new Set(),
       requestGeneration: 0,
+      renderedQuerySignature: null,
       pollTimer: null,
       searchTimer: null,
       lastTerminalRequestID: null,
@@ -26650,12 +26651,18 @@ function renderSlimmingRecycleSummary({ preserveSourceOptions = false } = {}) {
 
 function syncSlimmingRecycleRow(row, entry) {
     const recycle = state.slimming.recycle;
+    let thumbnail = row.querySelector(":scope > .slimming-recycle-thumbnail-card");
+    const reusesThumbnail = thumbnail?.dataset.slimmingRecycleAssetId === entry.assetID
+      && thumbnail.dataset.slimmingRecycleMediaKind === entry.mediaKind;
+    if (reusesThumbnail) thumbnail.remove();
     clearElement(row);
     row.className = "slimming-recycle-row";
     row.dataset.slimmingRecycleRowId = entry.id;
-    const thumbnail = document.createElement("div");
+    if (!reusesThumbnail) thumbnail = document.createElement("div");
     thumbnail.className = "slimming-recycle-thumbnail-card";
     thumbnail.dataset.slimmingRecycleThumbnailEntryId = entry.id;
+    thumbnail.dataset.slimmingRecycleAssetId = entry.assetID;
+    thumbnail.dataset.slimmingRecycleMediaKind = entry.mediaKind;
     thumbnail.tabIndex = -1;
     thumbnail.setAttribute("role", "group");
     thumbnail.setAttribute("aria-haspopup", "menu");
@@ -26673,18 +26680,20 @@ function syncSlimmingRecycleRow(row, entry) {
       keyShortcuts: "ArrowLeft ArrowRight ArrowUp ArrowDown Home End "
         + "PageUp PageDown Shift+F10 ContextMenu",
     });
-    const image = document.createElement("img");
-    image.className = "slimming-recycle-thumbnail";
-    image.alt = "";
-    image.setAttribute("aria-hidden", "true");
-    syncProtectedThumbnailSource(image, entry.assetID, { width: 180 });
-    thumbnail.append(image);
-    if (entry.mediaKind === "video") {
-      const video = document.createElement("span");
-      video.className = "slimming-recycle-video-badge";
-      video.textContent = "▶";
-      video.setAttribute("aria-label", "视频代表缩略图");
-      thumbnail.append(video);
+    if (!reusesThumbnail) {
+      const image = document.createElement("img");
+      image.className = "slimming-recycle-thumbnail";
+      image.alt = "";
+      image.setAttribute("aria-hidden", "true");
+      syncProtectedThumbnailSource(image, entry.assetID, { width: 180 });
+      thumbnail.append(image);
+      if (entry.mediaKind === "video") {
+        const video = document.createElement("span");
+        video.className = "slimming-recycle-video-badge";
+        video.textContent = "▶";
+        video.setAttribute("aria-label", "视频代表缩略图");
+        thumbnail.append(video);
+      }
     }
     syncSlimmingRecycleFavoriteButton(thumbnail, entry);
     const copy = document.createElement("div");
@@ -26822,6 +26831,21 @@ function appendSlimmingRecycleRows(entries, rovingEntryID) {
   elements.slimmingRecycleList.append(fragment);
 }
 
+function updateSlimmingRecycleRows(entryIDs, rovingEntryID) {
+  const entriesByID = new Map(
+    state.slimming.recycle.entries.map((entry) => [entry.id, entry])
+  );
+  for (const entryID of entryIDs) {
+    const entry = entriesByID.get(entryID);
+    const row = elements.slimmingRecycleList.querySelector(
+      `[data-slimming-recycle-row-id="${CSS.escape(entryID)}"]`
+    );
+    if (!entry || !row) continue;
+    syncSlimmingRecycleRow(row, entry);
+    syncSlimmingRecycleRowKeyboardAccess(row, rovingEntryID);
+  }
+}
+
 function syncSlimmingRecycleAppendLocks() {
   if (!state.slimming.recycle.appending) return;
   for (const button of elements.slimmingRecycleList.querySelectorAll("button.write-action")) {
@@ -26831,6 +26855,7 @@ function syncSlimmingRecycleAppendLocks() {
 
 function renderSlimmingRecycle({
   appendItems = null,
+  updateEntryIDs = null,
   preserveList = false,
   preserveSourceOptions = false,
 } = {}) {
@@ -26842,6 +26867,8 @@ function renderSlimmingRecycle({
     appendSlimmingRecycleRows(state.slimming.recycle.entries, rovingEntryID);
   } else if (appendItems !== null) {
     appendSlimmingRecycleRows(appendItems, rovingEntryID);
+  } else if (updateEntryIDs !== null) {
+    updateSlimmingRecycleRows(updateEntryIDs, rovingEntryID);
   }
   renderSlimmingRecycleRequest();
   syncWriteActionControls();
@@ -26870,6 +26897,25 @@ function renderedSlimmingRecycleEntriesMatch(entries) {
     entries,
     "slimmingRecycleRowId"
   );
+}
+
+function slimmingRecycleQuerySignature() {
+  const recycle = state.slimming.recycle;
+  return JSON.stringify({
+    mediaKind: state.slimming.mediaKind,
+    scope: recycle.scope,
+    sourceID: recycle.sourceID,
+    searchText: recycle.searchText.trim(),
+  });
+}
+
+function slimmingRecycleEntryFingerprint(entry) {
+  return JSON.stringify(entry);
+}
+
+function slimmingRecycleEntriesShareStructure(left, right) {
+  return left.length === right.length
+    && left.every((entry, index) => entry.id === right[index]?.id);
 }
 
 function captureSlimmingRecycleContinuity() {
@@ -26924,6 +26970,7 @@ function restoreSlimmingRecycleContinuity(continuity) {
       )}"] > .slimming-recycle-thumbnail-card`
     );
   }
+  if (!target) target = slimmingRecycleFocusTarget();
   target?.focus({ preventScroll: true });
 }
 
@@ -26957,6 +27004,10 @@ async function loadSlimmingRecycle({ quiet = false, append = false } = {}) {
   const recycle = state.slimming.recycle;
   const generation = ++recycle.requestGeneration;
   const appending = append === true;
+  const requestSignature = slimmingRecycleQuerySignature();
+  const renderedQueryMatches = recycle.renderedQuerySignature === requestSignature;
+  const renderedEntriesMatch = renderedSlimmingRecycleEntriesMatch(recycle.entries);
+  const canPreserveCurrentList = renderedEntriesMatch && renderedQueryMatches;
   const previous = {
     mediaKind: state.slimming.mediaKind,
     scope: recycle.scope,
@@ -26969,10 +27020,14 @@ async function loadSlimmingRecycle({ quiet = false, append = false } = {}) {
       ? { ...recycle.scopeCounts }
       : { all: Number(recycle.totalCount || 0), photos: 0, files: 0, attention: 0 },
     requests: recycle.requests,
-    renderedEntriesMatch: renderedSlimmingRecycleEntriesMatch(recycle.entries),
-    continuity: appending ? captureSlimmingRecycleContinuity() : null,
+    renderedEntriesMatch,
+    continuity: appending || canPreserveCurrentList
+      ? captureSlimmingRecycleContinuity()
+      : null,
   };
-  let renderOptions = appending ? { preserveRecycle: true } : {};
+  let renderOptions = appending || canPreserveCurrentList
+    ? { preserveRecycle: true }
+    : {};
   recycle.loading = true;
   recycle.appending = appending;
   renderSlimmingWorkspace(renderOptions);
@@ -26990,6 +27045,20 @@ async function loadSlimmingRecycle({ quiet = false, append = false } = {}) {
     const appendIsStable = appending
       ? slimmingRecycleAppendSnapshotIsStable(previous, snapshot)
       : false;
+    const entriesAreUnchanged = !appending
+      && canPreserveCurrentList
+      && slimmingItemsEqual(previous.entries, nextEntries);
+    const canUpdateExistingRows = !appending
+      && canPreserveCurrentList
+      && slimmingRecycleEntriesShareStructure(previous.entries, nextEntries);
+    const updatedEntryIDs = canUpdateExistingRows
+      ? nextEntries
+        .filter((entry, index) => (
+          slimmingRecycleEntryFingerprint(entry)
+            !== slimmingRecycleEntryFingerprint(previous.entries[index])
+        ))
+        .map((entry) => entry.id)
+      : null;
     recycle.entries = nextEntries;
     recycle.totalCount = snapshot.totalCount || 0;
     recycle.requests = snapshot.requests || [];
@@ -27011,9 +27080,16 @@ async function loadSlimmingRecycle({ quiet = false, append = false } = {}) {
         attention: 0,
       };
     }
-    renderOptions = appendIsStable
-      ? { appendRecycle: nextEntries.slice(previous.entries.length) }
-      : {};
+    if (appendIsStable) {
+      renderOptions = { appendRecycle: nextEntries.slice(previous.entries.length) };
+    } else if (entriesAreUnchanged) {
+      renderOptions = { preserveRecycle: true };
+    } else if (updatedEntryIDs !== null) {
+      renderOptions = { preserveRecycle: true, updateRecycleIDs: updatedEntryIDs };
+    } else {
+      renderOptions = {};
+    }
+    recycle.renderedQuerySignature = requestSignature;
     return true;
   } catch (error) {
     if (generation === recycle.requestGeneration && !quiet) {
@@ -27025,7 +27101,7 @@ async function loadSlimmingRecycle({ quiet = false, append = false } = {}) {
       recycle.loading = false;
       recycle.appending = false;
       renderSlimmingWorkspace(renderOptions);
-      if (appending) restoreSlimmingRecycleContinuity(previous.continuity);
+      if (previous.continuity) restoreSlimmingRecycleContinuity(previous.continuity);
       scheduleSlimmingRecyclePoll();
     }
   }
@@ -27178,6 +27254,7 @@ function renderSlimmingWorkspace({
   appendMembers = null,
   preserveRecycle = false,
   appendRecycle = null,
+  updateRecycleIDs = null,
 } = {}) {
   const recycleView = state.slimming.view === "recycle";
   renderSlimmingNavigator();
@@ -27255,8 +27332,11 @@ function renderSlimmingWorkspace({
   if (recycleView) {
     renderSlimmingRecycle({
       appendItems: appendRecycle,
+      updateEntryIDs: updateRecycleIDs,
       preserveList: preserveRecycle,
-      preserveSourceOptions: preserveRecycle || appendRecycle !== null,
+      preserveSourceOptions: preserveRecycle
+        || appendRecycle !== null
+        || updateRecycleIDs !== null,
     });
     renderSlimmingInspector();
     return;
@@ -32254,6 +32334,7 @@ function resetWorkspaceSessionState() {
   state.review.pendingFocusTrainingJobID = null;
   state.slimming.memberGridFocusAssetID = null;
   state.slimming.recycle.focusEntryID = null;
+  state.slimming.recycle.renderedQuerySignature = null;
   state.slimming.selectionMode = false;
   state.slimming.setup.loading = false;
   state.slimming.setup.saving = false;
