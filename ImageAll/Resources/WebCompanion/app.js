@@ -12277,6 +12277,15 @@ function sourceManagementHasActiveRequest() {
   return Boolean(sourceManagementActiveRequest());
 }
 
+function sourceManagementSnapshotFingerprint(snapshot) {
+  if (!snapshot) return null;
+  return JSON.stringify([
+    Boolean(snapshot.canConnectPhotos),
+    snapshot.sources || [],
+    snapshot.requests || [],
+  ]);
+}
+
 function sourceManagementActionsForCurrentState(source) {
   const actions = sourceManagementActions(source);
   const active = sourceManagementActiveRequest();
@@ -12340,7 +12349,234 @@ async function cancelActiveSourcePrewarm() {
   }
 }
 
-function renderSourceManagement() {
+function syncRenderedSourceManagerDetailActions(selectedSource, activeRequest, busy) {
+  if (!selectedSource) return;
+  for (const button of elements.sourceManagerList.querySelectorAll(
+    ".source-manager-detail [data-source-action][data-source-id]"
+  )) {
+    const action = button.dataset.sourceAction;
+    const canCancelPrewarm = action === "cancelPrewarm"
+      && activeRequest?.sourceID === selectedSource.id
+      && sourceManagementIsPrewarmAction(activeRequest.action);
+    button.disabled = !state.online
+      || state.sourceManagement.submitting
+      || (action === "cancelPrewarm" ? !canCancelPrewarm : busy);
+  }
+}
+
+function sourceManagerRowFingerprint(source, selectedSourceID) {
+  return JSON.stringify([
+    source.id,
+    source.kind,
+    source.displayName,
+    source.state,
+    source.id === selectedSourceID,
+  ]);
+}
+
+function syncSourceManagerRow(row, source, selectedSourceID) {
+  row.type = "button";
+  row.className = "source-manager-row";
+  row.dataset.sourceManagerId = source.id;
+  row.dataset.sourceManagerSelect = source.id;
+  row.dataset.sourceManagerFingerprint = sourceManagerRowFingerprint(
+    source,
+    selectedSourceID
+  );
+  row.setAttribute("role", "option");
+  const selected = source.id === selectedSourceID;
+  row.setAttribute("aria-selected", String(selected));
+  row.classList.toggle("selected", selected);
+
+  let icon = row.querySelector(":scope > .source-manager-icon");
+  if (!icon) {
+    icon = document.createElement("span");
+    icon.className = "source-manager-icon";
+    icon.setAttribute("aria-hidden", "true");
+    row.append(icon);
+  }
+  icon.textContent = sourceIcon(source.kind);
+
+  let copy = row.querySelector(":scope > .source-manager-identity");
+  if (!copy) {
+    copy = document.createElement("span");
+    copy.className = "source-manager-identity";
+    row.append(copy);
+  }
+  let name = copy.querySelector(":scope > .source-manager-name");
+  if (!name) {
+    name = document.createElement("span");
+    name.className = "source-manager-name";
+    copy.append(name);
+  }
+  name.textContent = source.displayName;
+  let status = copy.querySelector(":scope > .source-manager-state");
+  if (!status) {
+    status = document.createElement("span");
+    status.className = "source-manager-state";
+    copy.append(status);
+  }
+  status.textContent = source.kind === "photos" ? "Apple Photos" : "文件夹";
+
+  let stateBadge = row.querySelector(":scope > .source-manager-state-badge");
+  if (!stateBadge) {
+    stateBadge = document.createElement("span");
+    stateBadge.className = "source-manager-state-badge";
+    row.append(stateBadge);
+  }
+  stateBadge.dataset.state = source.state;
+  stateBadge.textContent = sourceStateText(source.state) || "可用";
+}
+
+function sourceManagerDetailFingerprint(source, activeRequest, busy) {
+  return JSON.stringify([
+    source.id,
+    source.kind,
+    source.displayName,
+    source.state,
+    sourceManagementActionsForCurrentState(source),
+    activeRequest?.id || null,
+    activeRequest?.action || null,
+    activeRequest?.sourceID || null,
+    activeRequest?.phase || null,
+    Boolean(busy),
+    Boolean(state.online),
+    Boolean(state.sourceManagement.submitting),
+  ]);
+}
+
+function reconcileSourceManagerContent(sources, selectedSource, activeRequest, busy) {
+  const navigation = elements.sourceManagerList.querySelector(
+    ":scope > .source-manager-source-list"
+  );
+  const detail = elements.sourceManagerList.querySelector(
+    ":scope > .source-manager-detail"
+  );
+  const rows = [...(navigation?.querySelectorAll(":scope > .source-manager-row") || [])];
+  if (!navigation
+    || !detail
+    || rows.length !== sources.length
+    || detail.dataset.sourceManagerDetail !== selectedSource.id
+    || !rows.every((row, index) => row.dataset.sourceManagerId === sources[index].id)) {
+    return false;
+  }
+  const nextDetailFingerprint = sourceManagerDetailFingerprint(
+    selectedSource,
+    activeRequest,
+    busy
+  );
+  if (detail.dataset.sourceManagerFingerprint !== nextDetailFingerprint) return false;
+  for (const [index, source] of sources.entries()) {
+    const row = rows[index];
+    const nextFingerprint = sourceManagerRowFingerprint(source, selectedSource.id);
+    if (row.dataset.sourceManagerFingerprint !== nextFingerprint) {
+      syncSourceManagerRow(row, source, selectedSource.id);
+    }
+  }
+  return true;
+}
+
+function sourceManagerPendingPart(part, tagName, className = "") {
+  let node = elements.sourceManagerPending.querySelector(
+    `[data-source-manager-pending-part="${CSS.escape(part)}"]`
+  );
+  if (node && node.localName !== tagName) {
+    node.remove();
+    node = null;
+  }
+  if (!node) {
+    node = document.createElement(tagName);
+    node.dataset.sourceManagerPendingPart = part;
+    node.className = className;
+  }
+  return node;
+}
+
+function syncSourceManagerPending(activeRequest) {
+  const pending = elements.sourceManagerPending;
+  pending.classList.toggle("hidden", !activeRequest);
+  if (!activeRequest) {
+    if (pending.childElementCount) pending.replaceChildren();
+    return;
+  }
+
+  const wanted = [];
+  const copy = sourceManagerPendingPart("message", "span");
+  copy.textContent = `${activeRequest.message}（可切回网页等待，完成后会自动更新）`;
+  wanted.push(copy);
+
+  if (sourceManagementIsPrewarmAction(activeRequest.action)) {
+    if (Number.isInteger(activeRequest.completedCount)
+      && Number.isInteger(activeRequest.totalCount)) {
+      const progress = sourceManagerPendingPart(
+        "progress",
+        "progress",
+        "source-prewarm-progress"
+      );
+      progress.max = Math.max(1, activeRequest.totalCount);
+      progress.value = Math.min(activeRequest.completedCount, progress.max);
+      progress.setAttribute(
+        "aria-label",
+        `缩略图预热 ${activeRequest.completedCount} / ${activeRequest.totalCount}`
+      );
+      wanted.push(progress);
+
+      const counts = sourceManagerPendingPart("counts", "small");
+      const sourceCounts = Number.isInteger(activeRequest.completedSourceCount)
+        && Number.isInteger(activeRequest.totalSourceCount)
+        ? `来源 ${activeRequest.completedSourceCount + 1} / ${activeRequest.totalSourceCount} · `
+        : "";
+      const reused = Number(activeRequest.reusedCount || 0);
+      const ineligible = Number(activeRequest.ineligibleCount || 0);
+      const details = [
+        `生成 ${activeRequest.warmedCount || 0}`,
+        reused > 0 ? `复用 ${reused}` : null,
+        ineligible > 0 ? `不可处理跳过 ${ineligible}` : null,
+        `失败 ${activeRequest.failedCount || 0}`,
+      ].filter(Boolean).join(" · ");
+      counts.textContent = `${sourceCounts}${details}`;
+      wanted.push(counts);
+    }
+
+    const cancel = sourceManagerPendingPart(
+      "cancel",
+      "button",
+      "button button-small"
+    );
+    cancel.type = "button";
+    cancel.dataset.sourcePendingAction = "cancelPrewarm";
+    cancel.dataset.sourceId = activeRequest.sourceID || "";
+    cancel.textContent = "取消";
+    cancel.disabled = state.sourceManagement.submitting || !state.online;
+    if (!cancel.dataset.sourceManagerPendingBound) {
+      cancel.dataset.sourceManagerPendingBound = "true";
+      cancel.addEventListener("click", () => {
+        submitSourceManagementAction(
+          cancel.dataset.sourcePendingAction,
+          cancel.dataset.sourceId || null
+        );
+      });
+    }
+    wanted.push(cancel);
+  } else if (sourceManagementIsBatchAuthorizationAction(activeRequest.action)
+    && Number.isInteger(activeRequest.completedSourceCount)
+    && Number.isInteger(activeRequest.totalSourceCount)) {
+    const progress = sourceManagerPendingPart("batch-progress", "small");
+    progress.textContent = `已完成来源 ${activeRequest.completedSourceCount} / ${activeRequest.totalSourceCount}`;
+    wanted.push(progress);
+  }
+
+  for (const [index, node] of wanted.entries()) {
+    if (pending.children[index] !== node) {
+      pending.insertBefore(node, pending.children[index] || null);
+    }
+  }
+  for (const child of [...pending.children]) {
+    if (!wanted.includes(child)) child.remove();
+  }
+}
+
+function renderSourceManagement({ preserveContent = false, reconcileContent = false } = {}) {
   const manager = state.sourceManagement;
   const snapshot = manager.snapshot;
   const activeRequest = sourceManagementActiveRequest();
@@ -12396,69 +12632,30 @@ function renderSourceManagement() {
     ? "在 Mac 上确认并请求 Apple Photos 权限"
     : "已有 Apple Photos 来源；请在对应来源上恢复或重新绑定";
   elements.sourceManagerRefreshButton.disabled = manager.loading;
-  elements.sourceManagerPending.classList.toggle("hidden", !activeRequest);
-  elements.sourceManagerPending.replaceChildren();
-  if (activeRequest) {
-    const copy = document.createElement("span");
-    copy.textContent = `${activeRequest.message}（可切回网页等待，完成后会自动更新）`;
-    elements.sourceManagerPending.append(copy);
-    if (sourceManagementIsPrewarmAction(activeRequest.action)) {
-      if (Number.isInteger(activeRequest.completedCount)
-        && Number.isInteger(activeRequest.totalCount)) {
-        const progress = document.createElement("progress");
-        progress.className = "source-prewarm-progress";
-        progress.max = Math.max(1, activeRequest.totalCount);
-        progress.value = Math.min(activeRequest.completedCount, progress.max);
-        progress.setAttribute(
-          "aria-label",
-          `缩略图预热 ${activeRequest.completedCount} / ${activeRequest.totalCount}`
-        );
-        elements.sourceManagerPending.append(progress);
-        const counts = document.createElement("small");
-        const sourceCounts = Number.isInteger(activeRequest.completedSourceCount)
-          && Number.isInteger(activeRequest.totalSourceCount)
-          ? `来源 ${activeRequest.completedSourceCount + 1} / ${activeRequest.totalSourceCount} · `
-          : "";
-        const reused = Number(activeRequest.reusedCount || 0);
-        const ineligible = Number(activeRequest.ineligibleCount || 0);
-        const details = [
-          `生成 ${activeRequest.warmedCount || 0}`,
-          reused > 0 ? `复用 ${reused}` : null,
-          ineligible > 0 ? `不可处理跳过 ${ineligible}` : null,
-          `失败 ${activeRequest.failedCount || 0}`,
-        ].filter(Boolean).join(" · ");
-        counts.textContent = `${sourceCounts}${details}`;
-        elements.sourceManagerPending.append(counts);
-      }
-      const cancel = document.createElement("button");
-      cancel.type = "button";
-      cancel.className = "button button-small";
-      cancel.dataset.sourcePendingAction = "cancelPrewarm";
-      cancel.dataset.sourceId = activeRequest.sourceID || "";
-      cancel.textContent = "取消";
-      cancel.disabled = manager.submitting || !state.online;
-      cancel.addEventListener("click", () => {
-        submitSourceManagementAction("cancelPrewarm", activeRequest.sourceID);
-      });
-      elements.sourceManagerPending.append(cancel);
-    } else if (sourceManagementIsBatchAuthorizationAction(activeRequest.action)
-      && Number.isInteger(activeRequest.completedSourceCount)
-      && Number.isInteger(activeRequest.totalSourceCount)) {
-      const progress = document.createElement("small");
-      progress.textContent = `已完成来源 ${activeRequest.completedSourceCount} / ${activeRequest.totalSourceCount}`;
-      elements.sourceManagerPending.append(progress);
-    }
-  }
+  syncSourceManagerPending(activeRequest);
   renderSourcePrewarmStatus();
 
-  clearElement(elements.sourceManagerList);
+  const preservedSelectedSource = sourceManagerSelectedSource();
+  if (preserveContent
+    && preservedSelectedSource
+    && elements.sourceManagerList.querySelector(".source-manager-source-list")
+    && elements.sourceManagerList.querySelector(
+      `[data-source-manager-detail="${CSS.escape(preservedSelectedSource.id)}"]`
+    )) {
+    syncRenderedSourceManagerDetailActions(preservedSelectedSource, activeRequest, busy);
+    return;
+  }
+
   const sources = snapshot?.sources || [];
   const activeSourceCount = sources.filter((source) => source.state === "active").length;
   elements.sourceManagerListSummary.textContent = sources.length
     ? `${sources.length} 个来源 · ${activeSourceCount} 个可用`
     : manager.loading ? "正在读取 Mac 上的来源…" : "没有已连接来源";
   elements.sourceManagerEmpty.classList.toggle("hidden", sources.length > 0 || manager.loading);
-  if (!sources.length) return;
+  if (!sources.length) {
+    clearElement(elements.sourceManagerList);
+    return;
+  }
 
   const preferredSourceIDs = [
     state.sourceManagement.selectedSourceID,
@@ -12474,38 +12671,18 @@ function renderSourceManagement() {
   }
   const selectedSource = sourceManagerSelectedSource() || sources[0];
 
+  if (reconcileContent
+    && reconcileSourceManagerContent(sources, selectedSource, activeRequest, busy)) return;
+
+  clearElement(elements.sourceManagerList);
+
   const sourceNavigation = document.createElement("nav");
   sourceNavigation.className = "source-manager-source-list";
   sourceNavigation.setAttribute("aria-label", "已连接来源");
   sourceNavigation.setAttribute("role", "listbox");
   for (const source of sources) {
     const row = document.createElement("button");
-    row.type = "button";
-    row.className = "source-manager-row";
-    row.dataset.sourceManagerId = source.id;
-    row.dataset.sourceManagerSelect = source.id;
-    row.setAttribute("role", "option");
-    row.setAttribute("aria-selected", String(source.id === selectedSource.id));
-    row.classList.toggle("selected", source.id === selectedSource.id);
-
-    const icon = document.createElement("span");
-    icon.className = "source-manager-icon";
-    icon.setAttribute("aria-hidden", "true");
-    icon.textContent = sourceIcon(source.kind);
-    const copy = document.createElement("span");
-    copy.className = "source-manager-identity";
-    const name = document.createElement("span");
-    name.className = "source-manager-name";
-    name.textContent = source.displayName;
-    const status = document.createElement("span");
-    status.className = "source-manager-state";
-    status.textContent = source.kind === "photos" ? "Apple Photos" : "文件夹";
-    const stateBadge = document.createElement("span");
-    stateBadge.className = "source-manager-state-badge";
-    stateBadge.dataset.state = source.state;
-    stateBadge.textContent = sourceStateText(source.state) || "可用";
-    copy.append(name, status);
-    row.append(icon, copy, stateBadge);
+    syncSourceManagerRow(row, source, selectedSource.id);
     sourceNavigation.append(row);
   }
 
@@ -12588,6 +12765,11 @@ function renderSourceManagement() {
     section.append(heading, actionsContainer);
     detail.append(section);
   }
+  detail.dataset.sourceManagerFingerprint = sourceManagerDetailFingerprint(
+    selectedSource,
+    activeRequest,
+    busy
+  );
   elements.sourceManagerList.append(sourceNavigation, detail);
 }
 
@@ -12605,11 +12787,17 @@ async function loadSourceManagement({ quiet = false, notifyTerminal = false } = 
   if (manager.loading) return;
   const generation = ++manager.requestGeneration;
   const hadSnapshot = Boolean(manager.snapshot);
+  const previousSnapshotFingerprint = sourceManagementSnapshotFingerprint(manager.snapshot);
+  let preserveLoadedContent = hadSnapshot;
+  let reconcileLoadedContent = false;
   manager.loading = !quiet;
-  renderSourceManagement();
+  renderSourceManagement({ preserveContent: hadSnapshot });
   try {
     const snapshot = await api("/v1/source-management");
     if (generation !== manager.requestGeneration) return;
+    preserveLoadedContent = previousSnapshotFingerprint
+      === sourceManagementSnapshotFingerprint(snapshot);
+    reconcileLoadedContent = hadSnapshot && !preserveLoadedContent;
     manager.snapshot = snapshot;
     const sourceProjectionChanged = projectionFingerprint(snapshot.sources)
       !== projectionFingerprint(state.sources);
@@ -12639,7 +12827,10 @@ async function loadSourceManagement({ quiet = false, notifyTerminal = false } = 
   } finally {
     if (generation === manager.requestGeneration) {
       manager.loading = false;
-      renderSourceManagement();
+      renderSourceManagement({
+        preserveContent: preserveLoadedContent,
+        reconcileContent: reconcileLoadedContent,
+      });
       if (!elements.slimmingWorkspace.classList.contains("hidden")
         && state.slimming.view === "recycle") {
         const scrollTop = elements.slimmingRecycleBody.scrollTop;
