@@ -25,6 +25,7 @@ extension RemoteAPIError: LocalizedError {
 public enum RemoteHTTPPaths {
     public static let capabilities = "/v1/capabilities"
     public static let sources = "/v1/sources"
+    public static let sourceFolders = "/v1/source-folders"
     public static let sourceManagement = "/v1/source-management"
     public static let sourceManagementRequests = "/v1/source-management/requests"
     public static let storageMaintenance = "/v1/storage-maintenance"

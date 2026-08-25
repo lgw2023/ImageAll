@@ -10,6 +10,17 @@ protocol RemoteCatalogServing: Sendable {
     func installStandardOntologyPackage(_ package: StandardOntologyPackageInput) throws
     func installPresetTags() throws -> TagPresetInstallResult
     func fetchGalleryOverview() throws -> GalleryOverviewSnapshot
+    func fetchSourceFolderPage(
+        sourceID: UUID,
+        parentRelativePath: String?,
+        offset: Int,
+        limit: Int
+    ) throws -> LibrarySourceFolderPage
+    func searchSourceFolders(
+        sourceID: UUID,
+        text: String,
+        limit: Int
+    ) throws -> LibrarySourceFolderPage
     func fetchAssetPage(
         filter: AssetPageFilter,
         sort: AssetPageSort,
@@ -64,6 +75,23 @@ protocol RemoteCatalogServing: Sendable {
 }
 
 extension RemoteCatalogServing {
+    func fetchSourceFolderPage(
+        sourceID _: UUID,
+        parentRelativePath _: String?,
+        offset _: Int,
+        limit _: Int
+    ) throws -> LibrarySourceFolderPage {
+        LibrarySourceFolderPage(folders: [], totalCount: 0, nextOffset: nil)
+    }
+
+    func searchSourceFolders(
+        sourceID _: UUID,
+        text _: String,
+        limit _: Int
+    ) throws -> LibrarySourceFolderPage {
+        LibrarySourceFolderPage(folders: [], totalCount: 0, nextOffset: nil)
+    }
+
     func loadOriginalAspectThumbnailIfCached(assetID _: UUID) async throws -> Data? {
         nil
     }

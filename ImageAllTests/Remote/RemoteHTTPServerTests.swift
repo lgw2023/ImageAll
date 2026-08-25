@@ -1034,6 +1034,55 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(capabilities.protocolVersion, RemoteProtocolVersion.current)
     }
 
+    func testFolderHierarchyRoutesParsePairedRelativeScopeWithoutAbsolutePaths() async throws {
+        let port = UInt16.random(in: 19_000...29_000)
+        let sourceID = UUID()
+        let (server, _) = makeServer(port: port)
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        defer { Task { await server.stop() } }
+
+        func request(_ path: String) async throws -> (Data, HTTPURLResponse) {
+            var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)\(path)")!)
+            request.setValue(
+                "Bearer \(Self.legacyDebugToken)",
+                forHTTPHeaderField: "Authorization"
+            )
+            let (data, response) = try await URLSession.shared.data(for: request)
+            return (data, try XCTUnwrap(response as? HTTPURLResponse))
+        }
+
+        var folderComponents = URLComponents(string: "/v1/source-folders")!
+        folderComponents.queryItems = [
+            URLQueryItem(name: "sourceID", value: sourceID.uuidString),
+            URLQueryItem(name: "parentRelativePath", value: "Trips/2026"),
+            URLQueryItem(name: "offset", value: "0"),
+            URLQueryItem(name: "limit", value: "100"),
+        ]
+        let folderQuery = try XCTUnwrap(folderComponents.string)
+        let (folderData, folderResponse) = try await request(folderQuery)
+        XCTAssertEqual(folderResponse.statusCode, 200)
+        XCTAssertEqual(
+            try JSONDecoder().decode(RemoteSourceFolderPage.self, from: folderData).folders,
+            []
+        )
+
+        var assetsComponents = URLComponents(string: "/v1/assets")!
+        assetsComponents.queryItems = [
+            URLQueryItem(name: "sourceIDs", value: sourceID.uuidString),
+            URLQueryItem(name: "folderSourceID", value: sourceID.uuidString),
+            URLQueryItem(name: "folderRelativePath", value: "Trips/2026"),
+        ]
+        let assetsQuery = try XCTUnwrap(assetsComponents.string)
+        let (_, assetsResponse) = try await request(assetsQuery)
+        XCTAssertEqual(assetsResponse.statusCode, 200)
+
+        let (_, partialResponse) = try await request(
+            "/v1/assets?folderSourceID=\(sourceID.uuidString)"
+        )
+        XCTAssertEqual(partialResponse.statusCode, 400)
+    }
+
     func testWorldMapRoutesRequireAuthenticationAndReturnCatalogProjection() async throws {
         let port = UInt16.random(in: 19_000...29_000)
         let sourceID = UUID()
@@ -2369,6 +2418,8 @@ final class RemoteHTTPServerTests: XCTestCase {
             "dismissWorkspaceNoticeButton",
             "worldMapBrowseClusterButton",
             "worldMapGalleryBanner",
+            "folderBreadcrumb",
+            "folderBreadcrumbItems",
             "returnToWorldMapButton",
             "clearWorldMapGalleryButton",
             "sourceRefreshAllButton",
@@ -3617,6 +3668,13 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(stylesheet.contains(".mobile-sidebar-scrim"))
         XCTAssertTrue(stylesheet.contains(".app-shell.mobile-sidebar-open #sidebarToggle"))
         XCTAssertTrue(script.contains("galleryContext: currentGalleryHistoryContext()"))
+        XCTAssertTrue(script.contains("function supportsFolderHierarchy()"))
+        XCTAssertTrue(script.contains("function loadFolderBranch("))
+        XCTAssertTrue(script.contains("function selectFolder("))
+        XCTAssertTrue(script.contains("query.set(\"folderRelativePath\""))
+        XCTAssertTrue(script.contains("galleryFolderSessionID"))
+        XCTAssertTrue(stylesheet.contains(".source-folder-tree"))
+        XCTAssertTrue(stylesheet.contains(".folder-breadcrumb"))
         XCTAssertTrue(script.contains("loadWorldMapSnapshot({ bounds: state.worldMap.viewport })"))
         XCTAssertTrue(script.contains("function renderWorldMapFooter()"))
         XCTAssertTrue(script.contains("function restorePendingWorldMapViewport()"))

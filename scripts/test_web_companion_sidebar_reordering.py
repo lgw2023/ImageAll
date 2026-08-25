@@ -54,6 +54,7 @@ def main():
     archived_tag_ids = []
     group_renames = []
     asset_queries = []
+    folder_queries = []
     fail_next_move = [False]
     page_errors = []
     console_errors = []
@@ -147,6 +148,7 @@ def main():
                     "hostID": "50000000-0000-4000-8000-000000000001",
                     "hostDisplayName": "Synthetic Mac",
                     "hostAppVersion": "test",
+                    "capabilities": ["folderHierarchy"],
                 },
             ),
         )
@@ -173,14 +175,83 @@ def main():
             lambda route: fulfill_json(route, list(groups)),
         )
         page.route("**/v1/jobs", lambda route: fulfill_json(route, []))
+
+        def source_folders(route):
+            parsed = urlparse(route.request.url)
+            query = parse_qs(parsed.query)
+            folder_queries.append(query)
+            search = query.get("q", [""])[0]
+            parent = query.get("parentRelativePath", [None])[0]
+            offset = int(query.get("offset", ["0"])[0])
+            if search:
+                folders = [{
+                    "sourceID": SOURCE_FOLDER,
+                    "relativePath": "Literal %_/Match",
+                    "parentRelativePath": "Literal %_",
+                    "name": "Match",
+                }] if search == "%_" else []
+                fulfill_json(route, {
+                    "folders": folders,
+                    "totalCount": len(folders),
+                    "nextOffset": None,
+                })
+                return
+            if parent == "Trips":
+                fulfill_json(route, {
+                    "folders": [{
+                        "sourceID": SOURCE_FOLDER,
+                        "relativePath": "Trips/2026",
+                        "parentRelativePath": "Trips",
+                        "name": "2026",
+                    }],
+                    "totalCount": 1,
+                    "nextOffset": None,
+                })
+                return
+            if offset >= 100:
+                fulfill_json(route, {
+                    "folders": [{
+                        "sourceID": SOURCE_FOLDER,
+                        "relativePath": "Archive",
+                        "parentRelativePath": None,
+                        "name": "Archive",
+                    }],
+                    "totalCount": 501,
+                    "nextOffset": None,
+                })
+                return
+            fulfill_json(route, {
+                "folders": [
+                    {
+                        "sourceID": SOURCE_FOLDER,
+                        "relativePath": "Trips",
+                        "parentRelativePath": None,
+                        "name": "Trips",
+                    },
+                    {
+                        "sourceID": SOURCE_FOLDER,
+                        "relativePath": "Literal %_",
+                        "parentRelativePath": None,
+                        "name": "Literal %_",
+                    },
+                ],
+                "totalCount": 501,
+                "nextOffset": 100,
+            })
+
+        page.route("**/v1/source-folders?**", source_folders)
+
         def asset_page(route):
             asset_queries.append(route.request.url)
+            query = parse_qs(urlparse(route.request.url).query)
+            folder_path = query.get("folderRelativePath", [None])[0]
             fulfill_json(route, {
                 "items": [{
                     "id": ASSET_ID,
-                    "fileName": "SYNTHETIC.JPG",
-                    "sourceID": SOURCE_PHOTOS,
-                    "sourceDisplayName": "Apple Photos",
+                    "fileName": "FOLDER.JPG" if folder_path else "SYNTHETIC.JPG",
+                    "sourceID": SOURCE_FOLDER if folder_path else SOURCE_PHOTOS,
+                    "sourceDisplayName": "Downloads" if folder_path else "Apple Photos",
+                    "relativePath": f"{folder_path}/FOLDER.JPG" if folder_path else None,
                     "availability": "available",
                     "contentRevision": 1,
                     "acceptedTagCount": 1,
@@ -359,6 +430,83 @@ def main():
         assert inspector_group_names(
             page, "inspectorPlaceholderTags", GROUP_SUBJECT
         ) == ["猫", "狗"]
+
+        test_phase[0] = "folder-hierarchy"
+        assert not folder_queries
+        folder_source = page.locator(
+            f'#sourceList .sidebar-row[data-source-id="{SOURCE_FOLDER}"]'
+        )
+        folder_source.locator("[data-folder-source-toggle]").click()
+        page.wait_for_function("() => document.querySelectorAll('[data-folder-path]').length === 2")
+        assert folder_queries[-1].get("limit") == ["100"]
+        assert page.locator(
+            f'[data-folder-search-source-id="{SOURCE_FOLDER}"]'
+        ).is_visible()
+
+        trips = page.locator(
+            f'[data-folder-source-id="{SOURCE_FOLDER}"][data-folder-path="Trips"]'
+        )
+        trips.locator("[data-folder-toggle]").click()
+        page.wait_for_function(
+            "() => Boolean(document.querySelector('[data-folder-path=\"Trips/2026\"]'))"
+        )
+        page.locator('[data-folder-path="Trips/2026"] .folder-name').click()
+        page.wait_for_function(
+            "() => document.querySelector('#folderBreadcrumb')"
+            ".classList.contains('hidden') === false"
+        )
+        assert "2026" in page.locator("#libraryTitle").inner_text()
+        folder_asset_query = parse_qs(urlparse(asset_queries[-1]).query)
+        assert folder_asset_query["folderSourceID"] == [SOURCE_FOLDER]
+        assert folder_asset_query["folderRelativePath"] == ["Trips/2026"]
+        page.wait_for_function(
+            "() => JSON.stringify(history.state).includes('galleryFolderSessionID')"
+        )
+        history_payload = page.evaluate("() => JSON.stringify(history.state)")
+        assert "Trips/2026" not in history_payload
+        assert "galleryFolderSessionID" in history_payload
+        page.screenshot(
+            path="/tmp/imageall-web-folder-hierarchy.png",
+            full_page=True,
+        )
+
+        page.locator(
+            f'#folderBreadcrumb [data-folder-breadcrumb-source-id="{SOURCE_FOLDER}"]'
+        ).first.click()
+        page.wait_for_function(
+            "() => document.querySelector('#folderBreadcrumb').classList.contains('hidden')"
+        )
+        root_asset_query = parse_qs(urlparse(asset_queries[-1]).query)
+        assert "folderRelativePath" not in root_asset_query
+
+        folder_search = page.locator(
+            f'[data-folder-search-source-id="{SOURCE_FOLDER}"]'
+        )
+        folder_search.fill("%_")
+        page.wait_for_function(
+            "() => Boolean(document.querySelector('[data-folder-path=\"Literal %_/Match\"]'))"
+        )
+        assert folder_queries[-1].get("q") == ["%_"]
+        assert folder_queries[-1].get("limit") == ["50"]
+        folder_search.fill("")
+        page.wait_for_function(
+            "() => Boolean(document.querySelector('[data-folder-load-more]'))"
+        )
+        page.locator("[data-folder-load-more]").click()
+        page.wait_for_function(
+            "() => Boolean(document.querySelector('[data-folder-path=\"Archive\"]'))"
+        )
+        assert folder_queries[-1].get("offset") == ["100"]
+
+        page.set_viewport_size({"width": 390, "height": 844})
+        assert page.evaluate("() => document.documentElement.scrollWidth <= innerWidth")
+        page.set_viewport_size({"width": 1440, "height": 960})
+        folder_source = page.locator(
+            f'#sourceList .sidebar-row[data-source-id="{SOURCE_FOLDER}"]'
+        )
+        folder_source.locator("[data-folder-source-toggle]").click()
+        assert page.locator("#sourceList [data-folder-tree-source-id]").count() == 0
+
         placeholder_dog = page.locator(
             f'#inspectorPlaceholderTags [data-tag-reorder-surface="placeholder"]'
             f'[data-tag-id="{TAG_DOG}"]'

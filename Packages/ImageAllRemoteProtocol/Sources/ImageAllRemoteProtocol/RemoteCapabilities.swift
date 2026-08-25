@@ -9,6 +9,7 @@ public enum RemoteCapability: String, Codable, Sendable, Hashable, CaseIterable 
     case sources
     case tags
     case assetPages
+    case folderHierarchy
     case assetDetail
     case assetLocalSuggestions
     case cloudPreviewLifecycle

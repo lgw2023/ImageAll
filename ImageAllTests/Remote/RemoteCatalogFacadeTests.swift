@@ -304,6 +304,62 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         XCTAssertEqual(page.items[0].durationMs, 12_345)
     }
 
+    func testFolderHierarchyUsesBoundedHostQueriesAndRecursiveAssetScope() async throws {
+        let sourceID = UUID()
+        let folder = LibrarySourceFolder(
+            sourceID: sourceID,
+            relativePath: "Trips/2026",
+            parentRelativePath: "Trips",
+            name: "2026"
+        )
+        let catalog = RemoteCatalogServingStub(
+            sourceFolderPage: LibrarySourceFolderPage(
+                folders: [folder],
+                totalCount: 501,
+                nextOffset: 100
+            ),
+            searchedSourceFolderPage: LibrarySourceFolderPage(
+                folders: [folder],
+                totalCount: 1,
+                nextOffset: nil
+            )
+        )
+        let facade = makeFacade(catalog: catalog)
+
+        let page = try await facade.fetchSourceFolders(RemoteSourceFolderPageRequest(
+            sourceID: sourceID,
+            parentRelativePath: "Trips",
+            offset: 100,
+            limit: 500
+        ))
+        XCTAssertEqual(page.folders.first?.relativePath, "Trips/2026")
+        XCTAssertEqual(page.totalCount, 501)
+        XCTAssertEqual(catalog.lastFolderPageRequest?.parentRelativePath, "Trips")
+        XCTAssertEqual(catalog.lastFolderPageRequest?.offset, 100)
+        XCTAssertEqual(catalog.lastFolderPageRequest?.limit, 100)
+
+        let search = try await facade.fetchSourceFolders(RemoteSourceFolderPageRequest(
+            sourceID: sourceID,
+            limit: 100,
+            searchText: "%_2026"
+        ))
+        XCTAssertEqual(search.folders, page.folders)
+        XCTAssertEqual(catalog.lastFolderSearch?.text, "%_2026")
+        XCTAssertEqual(catalog.lastFolderSearch?.limit, 50)
+
+        _ = try await facade.fetchAssets(RemoteAssetPageRequest(
+            sourceIDs: [sourceID],
+            folderScope: RemoteAssetFolderScope(
+                sourceID: sourceID,
+                relativePath: "Trips/2026"
+            )
+        ))
+        XCTAssertEqual(
+            catalog.lastRequestedFilter?.folderScope,
+            AssetFolderScope(sourceID: sourceID, relativePath: "Trips/2026")
+        )
+    }
+
     func testFavoritesUseCatalogFilterAndIdempotentMacMutation() async throws {
         let sourceID = UUID()
         let assetID = UUID()
@@ -3703,6 +3759,8 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
     private let worldMapPlaceSearchResult: WorldMapPlaceTagResolution?
     private let worldMapPlaceConfirmResult: WorldMapPlaceTagResolution?
     private let galleryOverview: GalleryOverviewSnapshot
+    private let sourceFolderPage: LibrarySourceFolderPage
+    private let searchedSourceFolderPage: LibrarySourceFolderPage
     private let favoriteMutationSummary: FavoriteMutationSummary
     private let favoriteRetrySummary: FavoriteMutationSummary
     private var storedFavoriteStates: [UUID: MediaFavoriteState]
@@ -3727,6 +3785,26 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
     private var storedFavoriteMutationCallCount = 0
     private var storedFavoriteRetryCallCount = 0
     private var storedStandardOntologyInstallCount = 0
+    private var storedLastFolderPageRequest: (
+        sourceID: UUID,
+        parentRelativePath: String?,
+        offset: Int,
+        limit: Int
+    )?
+    private var storedLastFolderSearch: (sourceID: UUID, text: String, limit: Int)?
+
+    var lastFolderPageRequest: (
+        sourceID: UUID,
+        parentRelativePath: String?,
+        offset: Int,
+        limit: Int
+    )? {
+        lock.withLock { storedLastFolderPageRequest }
+    }
+
+    var lastFolderSearch: (sourceID: UUID, text: String, limit: Int)? {
+        lock.withLock { storedLastFolderSearch }
+    }
 
     var worldMapLocationBackfillStartCount: Int {
         lock.withLock { storedWorldMapLocationBackfillStartCount }
@@ -3875,6 +3953,12 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
         aggregates: [TagSelectionAggregate] = [],
         jobs: [JobActivityItem] = [],
         galleryOverview: GalleryOverviewSnapshot = .empty,
+        sourceFolderPage: LibrarySourceFolderPage = LibrarySourceFolderPage(
+            folders: [], totalCount: 0, nextOffset: nil
+        ),
+        searchedSourceFolderPage: LibrarySourceFolderPage = LibrarySourceFolderPage(
+            folders: [], totalCount: 0, nextOffset: nil
+        ),
         worldMapSnapshot: WorldMapCatalogSnapshot = .empty,
         worldMapSelection: WorldMapCatalogSelection = .empty,
         worldMapLocationBackfills: [WorldMapLocationBackfillSnapshot] = [],
@@ -3898,6 +3982,8 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
         self.aggregates = aggregates
         self.jobs = jobs
         self.galleryOverview = galleryOverview
+        self.sourceFolderPage = sourceFolderPage
+        self.searchedSourceFolderPage = searchedSourceFolderPage
         self.worldMapSnapshot = worldMapSnapshot
         self.worldMapSelection = worldMapSelection
         self.worldMapLocationBackfills = worldMapLocationBackfills
@@ -3911,6 +3997,27 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
 
     func fetchSources() throws -> [LibrarySourceSummary] {
         sources
+    }
+
+    func fetchSourceFolderPage(
+        sourceID: UUID,
+        parentRelativePath: String?,
+        offset: Int,
+        limit: Int
+    ) throws -> LibrarySourceFolderPage {
+        lock.withLock {
+            storedLastFolderPageRequest = (sourceID, parentRelativePath, offset, limit)
+        }
+        return sourceFolderPage
+    }
+
+    func searchSourceFolders(
+        sourceID: UUID,
+        text: String,
+        limit: Int
+    ) throws -> LibrarySourceFolderPage {
+        lock.withLock { storedLastFolderSearch = (sourceID, text, limit) }
+        return searchedSourceFolderPage
     }
 
     func listTags() throws -> [TagListItem] {

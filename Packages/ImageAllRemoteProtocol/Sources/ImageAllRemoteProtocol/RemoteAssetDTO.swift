@@ -154,6 +154,9 @@ public struct RemoteAssetPageRequest: Codable, Sendable, Equatable {
     /// Exact Host-issued spatial scope used when a photo tower opens in the gallery.
     /// `nil` keeps the ordinary all/source/favorite gallery behavior.
     public var worldMapSelection: RemoteWorldMapSelectionQuery?
+    /// A source-relative directory scope. Hosts apply it recursively and never expose
+    /// the folder source's absolute authorization path.
+    public var folderScope: RemoteAssetFolderScope?
 
     public init(
         sourceIDs: [UUID] = [],
@@ -169,7 +172,8 @@ public struct RemoteAssetPageRequest: Codable, Sendable, Equatable {
         mediaTypes: [String] = [],
         tagPresence: RemoteAssetTagPresence = .any,
         favorite: RemoteAssetFavoriteFilter? = nil,
-        worldMapSelection: RemoteWorldMapSelectionQuery? = nil
+        worldMapSelection: RemoteWorldMapSelectionQuery? = nil,
+        folderScope: RemoteAssetFolderScope? = nil
     ) {
         self.sourceIDs = sourceIDs
         self.searchText = searchText
@@ -185,6 +189,70 @@ public struct RemoteAssetPageRequest: Codable, Sendable, Equatable {
         self.tagPresence = tagPresence
         self.favorite = favorite
         self.worldMapSelection = worldMapSelection
+        self.folderScope = folderScope
+    }
+}
+
+public struct RemoteAssetFolderScope: Codable, Sendable, Equatable, Hashable {
+    public let sourceID: UUID
+    public let relativePath: String
+
+    public init(sourceID: UUID, relativePath: String) {
+        self.sourceID = sourceID
+        self.relativePath = relativePath
+    }
+}
+
+public struct RemoteSourceFolder: Codable, Sendable, Equatable, Hashable {
+    public let sourceID: UUID
+    public let relativePath: String
+    public let parentRelativePath: String?
+    public let name: String
+
+    public init(
+        sourceID: UUID,
+        relativePath: String,
+        parentRelativePath: String?,
+        name: String
+    ) {
+        self.sourceID = sourceID
+        self.relativePath = relativePath
+        self.parentRelativePath = parentRelativePath
+        self.name = name
+    }
+}
+
+public struct RemoteSourceFolderPageRequest: Codable, Sendable, Equatable {
+    public let sourceID: UUID
+    public let parentRelativePath: String?
+    public let offset: Int
+    public let limit: Int
+    public let searchText: String?
+
+    public init(
+        sourceID: UUID,
+        parentRelativePath: String? = nil,
+        offset: Int = 0,
+        limit: Int = 100,
+        searchText: String? = nil
+    ) {
+        self.sourceID = sourceID
+        self.parentRelativePath = parentRelativePath
+        self.offset = offset
+        self.limit = limit
+        self.searchText = searchText
+    }
+}
+
+public struct RemoteSourceFolderPage: Codable, Sendable, Equatable {
+    public let folders: [RemoteSourceFolder]
+    public let totalCount: Int
+    public let nextOffset: Int?
+
+    public init(folders: [RemoteSourceFolder], totalCount: Int, nextOffset: Int?) {
+        self.folders = folders
+        self.totalCount = totalCount
+        self.nextOffset = nextOffset
     }
 }
 

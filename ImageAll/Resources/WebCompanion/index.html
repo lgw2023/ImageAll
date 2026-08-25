@@ -10,8 +10,8 @@
   <meta name="apple-mobile-web-app-title" content="ImageAll">
   <title>ImageAll 网页版</title>
   <link rel="manifest" href="/manifest.webmanifest">
-    <link rel="stylesheet" href="/app.css?v=20260821-139">
-    <script src="/app.js?v=20260823-140" defer></script>
+    <link rel="stylesheet" href="/app.css?v=20260825-141">
+    <script src="/app.js?v=20260825-141" defer></script>
 </head>
 <body>
   <div id="bootView" class="centered-state">
@@ -546,6 +546,12 @@
             </button>
           </div>
         </section>
+
+        <nav id="folderBreadcrumb" class="folder-breadcrumb hidden"
+          aria-label="当前文件夹路径">
+          <span class="folder-breadcrumb-icon" aria-hidden="true">▱</span>
+          <div id="folderBreadcrumbItems" class="folder-breadcrumb-items"></div>
+        </nav>
 
         <section id="personalModelPopover" class="popover personal-model-popover hidden"
           aria-label="个人模型" role="menu">

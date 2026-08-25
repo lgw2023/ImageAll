@@ -123,6 +123,7 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
             .fileNameAscending
         )
         XCTAssertNil(RemoteAssetPageRequest().worldMapSelection)
+        XCTAssertNil(RemoteAssetPageRequest().folderScope)
     }
 
     private let encoder: JSONEncoder = {
@@ -644,9 +645,45 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
                     north: 33
                 ),
                 maximumAssets: 36
+            ),
+            folderScope: RemoteAssetFolderScope(
+                sourceID: UUID(uuidString: "66666666-6666-6666-6666-666666666666")!,
+                relativePath: "Trips/2026"
             )
         )
         try assertRoundTrip(original)
+    }
+
+    func testSourceFolderHierarchyRoundTrip() throws {
+        let sourceID = UUID(uuidString: "77777777-7777-7777-7777-777777777777")!
+        let folders = [
+            RemoteSourceFolder(
+                sourceID: sourceID,
+                relativePath: "Trips",
+                parentRelativePath: nil,
+                name: "Trips"
+            ),
+            RemoteSourceFolder(
+                sourceID: sourceID,
+                relativePath: "Trips/2026",
+                parentRelativePath: "Trips",
+                name: "2026"
+            ),
+        ]
+        try assertRoundTrip(RemoteSourceFolderPageRequest(
+            sourceID: sourceID,
+            parentRelativePath: "Trips",
+            offset: 100,
+            limit: 100,
+            searchText: nil
+        ))
+        try assertRoundTrip(RemoteSourceFolderPage(
+            folders: folders,
+            totalCount: 201,
+            nextOffset: 200
+        ))
+        XCTAssertEqual(RemoteHTTPPaths.sourceFolders, "/v1/source-folders")
+        XCTAssertTrue(RemoteCapability.allCases.contains(.folderHierarchy))
     }
 
     func testFavoriteMutationRoundTrip() throws {

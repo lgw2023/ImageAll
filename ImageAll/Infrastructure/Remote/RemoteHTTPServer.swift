@@ -969,6 +969,10 @@ actor RemoteHTTPServer {
                 let request = try Self.parseAssetPageRequest(query: query)
                 let payload = try await facade.fetchAssets(request)
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("GET", RemoteHTTPPaths.sourceFolders):
+                let request = try Self.parseSourceFolderPageRequest(query: query)
+                let payload = try await facade.fetchSourceFolders(request)
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             case ("POST", RemoteHTTPPaths.favorites):
                 let request = try jsonDecoder.decode(
                     RemoteFavoriteMutationRequest.self,
@@ -1976,7 +1980,41 @@ actor RemoteHTTPServer {
                 .map(String.init),
             tagPresence: RemoteAssetTagPresence(rawValue: query["tagPresence"] ?? "") ?? .any,
             favorite: RemoteAssetFavoriteFilter(rawValue: query["favorite"] ?? ""),
-            worldMapSelection: try parseAssetWorldMapSelection(query: query)
+            worldMapSelection: try parseAssetWorldMapSelection(query: query),
+            folderScope: try parseAssetFolderScope(query: query)
+        )
+    }
+
+    private static func parseAssetFolderScope(
+        query: [String: String]
+    ) throws -> RemoteAssetFolderScope? {
+        let sourceID = query["folderSourceID"]
+        let relativePath = query["folderRelativePath"]
+        guard sourceID != nil || relativePath != nil else { return nil }
+        guard let sourceID,
+              let id = UUID(uuidString: sourceID),
+              let relativePath,
+              !relativePath.isEmpty
+        else {
+            throw RemoteAPIError(code: .badRequest, message: "文件夹范围参数不完整")
+        }
+        return RemoteAssetFolderScope(sourceID: id, relativePath: relativePath)
+    }
+
+    private static func parseSourceFolderPageRequest(
+        query: [String: String]
+    ) throws -> RemoteSourceFolderPageRequest {
+        guard let rawSourceID = query["sourceID"],
+              let sourceID = UUID(uuidString: rawSourceID)
+        else {
+            throw RemoteAPIError(code: .badRequest, message: "来源 ID 无效")
+        }
+        return RemoteSourceFolderPageRequest(
+            sourceID: sourceID,
+            parentRelativePath: query["parentRelativePath"],
+            offset: Int(query["offset"] ?? "0") ?? 0,
+            limit: Int(query["limit"] ?? "100") ?? 100,
+            searchText: query["q"]
         )
     }
 

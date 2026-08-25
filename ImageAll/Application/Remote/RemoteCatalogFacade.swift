@@ -394,6 +394,8 @@ actor RemoteCatalogFacade {
             )
         } catch CatalogQueryError.invalidSpatialFilter {
             throw RemoteAPIError(code: .badRequest, message: "地点图库范围无效")
+        } catch CatalogQueryError.invalidFolderScope {
+            throw RemoteAPIError(code: .badRequest, message: "文件夹范围无效")
         }
         let favoriteStates = try catalog.fetchFavoriteStates(
             assetIDs: page.items.map(\.assetID)
@@ -407,6 +409,44 @@ actor RemoteCatalogFacade {
                 )
             },
             nextCursor: try Self.encodeCursor(page.nextCursor)
+        )
+    }
+
+    func fetchSourceFolders(
+        _ request: RemoteSourceFolderPageRequest
+    ) throws -> RemoteSourceFolderPage {
+        let searchText = request.searchText?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let limit = max(1, min(request.limit, searchText?.isEmpty == false ? 50 : 100))
+        let page: LibrarySourceFolderPage
+        do {
+            if let searchText, !searchText.isEmpty {
+                page = try catalog.searchSourceFolders(
+                    sourceID: request.sourceID,
+                    text: searchText,
+                    limit: limit
+                )
+            } else {
+                page = try catalog.fetchSourceFolderPage(
+                    sourceID: request.sourceID,
+                    parentRelativePath: request.parentRelativePath,
+                    offset: max(0, request.offset),
+                    limit: limit
+                )
+            }
+        } catch CatalogQueryError.invalidFolderScope {
+            throw RemoteAPIError(code: .badRequest, message: "文件夹范围无效")
+        }
+        return RemoteSourceFolderPage(
+            folders: page.folders.map {
+                RemoteSourceFolder(
+                    sourceID: $0.sourceID,
+                    relativePath: $0.relativePath,
+                    parentRelativePath: $0.parentRelativePath,
+                    name: $0.name
+                )
+            },
+            totalCount: page.totalCount,
+            nextOffset: page.nextOffset
         )
     }
 
@@ -2925,6 +2965,9 @@ actor RemoteCatalogFacade {
     ) -> AssetPageFilter {
         AssetPageFilter(
             sourceIDs: request.sourceIDs,
+            folderScope: request.folderScope.map {
+                AssetFolderScope(sourceID: $0.sourceID, relativePath: $0.relativePath)
+            },
             tagDecisionFilters: request.tagDecisionFilters.map {
                 TagDecisionFilter(
                     tagID: $0.tagID,

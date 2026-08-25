@@ -129,6 +129,8 @@ const elements = {
   sidebarResizeHandle: $("#sidebarResizeHandle"),
   libraryNavigation: $("#libraryNavigation"),
   sourceList: $("#sourceList"),
+  folderBreadcrumb: $("#folderBreadcrumb"),
+  folderBreadcrumbItems: $("#folderBreadcrumbItems"),
   sourceEmpty: $("#sourceEmpty"),
   sourceSectionHeading: $("#sourceSectionHeading"),
   sourceAllActionsButton: $("#sourceAllActionsButton"),
@@ -1085,6 +1087,15 @@ const state = {
   selectedSourceID: "",
   libraryScope: "all",
   worldMapGalleryScope: null,
+  folderScope: null,
+  folderNavigation: {
+    branches: new Map(),
+    expanded: new Set(),
+    searches: new Map(),
+    requestGeneration: 0,
+    selectedSessionID: null,
+    historyScopes: new Map(),
+  },
   selectedAssetID: null,
   selectedDetail: null,
   cloudPreview: {
@@ -3388,6 +3399,9 @@ function currentGalleryHistoryContext() {
     galleryMediaKind: state.mediaKind,
     gallerySourceID: state.libraryScope === "all" ? (state.selectedSourceID || null) : null,
     galleryScope: state.libraryScope === "favorites" ? "favorites" : "all",
+    ...(state.folderScope && state.folderNavigation.selectedSessionID
+      ? { galleryFolderSessionID: state.folderNavigation.selectedSessionID }
+      : {}),
     gallerySort: state.sort,
     galleryFilters: cloneFilters(state.filters),
     gallerySelectedAssetID: state.selectedAssetID || null,
@@ -3521,6 +3535,14 @@ function normalizedGalleryHistoryContext(raw, { validateCatalog = false } = {}) 
   const scope = requestedScope === "favorites" && (!validateCatalog || supportsFavorites())
     ? "favorites"
     : "all";
+  const folderSessionID = galleryHistoryIdentifier(context.galleryFolderSessionID);
+  const rememberedFolderScope = folderSessionID
+    ? state.folderNavigation.historyScopes.get(folderSessionID)
+    : null;
+  const folderScope = scope === "all"
+    && rememberedFolderScope?.sourceID === validSourceID
+    ? cloneFolderScope(rememberedFolderScope)
+    : null;
   const activeTagIDs = validateCatalog ? new Set(activeTags().map((tag) => tag.id)) : null;
   const seenTagIDs = new Set();
   const tagConditions = [];
@@ -3567,6 +3589,8 @@ function normalizedGalleryHistoryContext(raw, { validateCatalog = false } = {}) 
     mediaKind,
     sourceID: scope === "all" ? validSourceID : null,
     scope,
+    folderScope,
+    folderSessionID: folderScope ? folderSessionID : null,
     sort: GALLERY_HISTORY_SORTS.has(context.gallerySort)
       ? context.gallerySort
       : "fileNameAscending",
@@ -3604,6 +3628,8 @@ function applyGalleryHistoryContext(raw, options = {}) {
   state.selectedSourceID = context.sourceID || "";
   state.libraryScope = context.scope;
   state.worldMapGalleryScope = null;
+  state.folderScope = cloneFolderScope(context.folderScope);
+  state.folderNavigation.selectedSessionID = context.folderSessionID || null;
   state.searchText = "";
   state.sort = context.sort;
   state.filters = cloneFilters(context.filters);
@@ -5563,6 +5589,8 @@ async function openWorldMapClusterInGallery() {
     photoCount: totalPhotoCount,
     selectionQuery: cluster.selectionQuery,
   });
+  state.folderScope = null;
+  state.folderNavigation.selectedSessionID = null;
   state.selectedSourceID = "";
   state.selectedAssetID = null;
   state.selectedDetail = null;
@@ -5599,6 +5627,8 @@ async function clearWorldMapGalleryScope() {
   if (state.libraryScope !== "worldMapGallery" && !state.worldMapGalleryScope) return;
   state.libraryScope = "all";
   state.worldMapGalleryScope = null;
+  state.folderScope = null;
+  state.folderNavigation.selectedSessionID = null;
   state.selectedSourceID = "";
   state.selectedAssetID = null;
   state.selectedDetail = null;
@@ -7584,6 +7614,8 @@ function captureMediaSession() {
     selectedSourceID: state.selectedSourceID,
     libraryScope: state.libraryScope,
     worldMapGalleryScope: cloneWorldMapGalleryScope(state.worldMapGalleryScope),
+    folderScope: cloneFolderScope(state.folderScope),
+    folderSessionID: state.folderNavigation.selectedSessionID,
     selectedAssetID: state.selectedAssetID,
     selectedDetail: state.selectedDetail,
     searchText: state.searchText,
@@ -7832,6 +7864,8 @@ async function switchMediaKind(mediaKind) {
     state.selectedSourceID = saved.selectedSourceID;
     state.libraryScope = saved.libraryScope || "all";
     state.worldMapGalleryScope = cloneWorldMapGalleryScope(saved.worldMapGalleryScope);
+    state.folderScope = cloneFolderScope(saved.folderScope);
+    state.folderNavigation.selectedSessionID = saved.folderSessionID || null;
     state.selectedAssetID = saved.selectedAssetID;
     state.selectedDetail = saved.selectedDetail;
     state.searchText = saved.searchText;
@@ -7848,6 +7882,8 @@ async function switchMediaKind(mediaKind) {
     state.selectedSourceID = "";
     state.libraryScope = "all";
     state.worldMapGalleryScope = null;
+    state.folderScope = null;
+    state.folderNavigation.selectedSessionID = null;
     state.selectedAssetID = null;
     state.selectedDetail = null;
     state.searchText = "";
@@ -8729,6 +8765,8 @@ async function applyFavoritesFilter() {
   if (state.selectionMode) setSelectionMode(false);
   state.libraryScope = "favorites";
   state.worldMapGalleryScope = null;
+  state.folderScope = null;
+  state.folderNavigation.selectedSessionID = null;
   state.selectedSourceID = "";
   state.filters.tagPresence = "any";
   state.filters.tagConditions = [];
@@ -9610,7 +9648,316 @@ function sourceSidebarHelpDetail(source) {
   ].join("\n");
 }
 
+function supportsFolderHierarchy() {
+  return state.capabilities?.capabilities?.includes("folderHierarchy") === true;
+}
+
+function cloneFolderScope(scope) {
+  return scope ? { sourceID: scope.sourceID, relativePath: scope.relativePath } : null;
+}
+
+function folderScopeKey(sourceID, relativePath = "") {
+  return `${sourceID}\u0000${relativePath || ""}`;
+}
+
+function folderBranchKey(sourceID, parentRelativePath = null) {
+  return folderScopeKey(sourceID, parentRelativePath || "");
+}
+
+function folderSourceSupportsHierarchy(source) {
+  return supportsFolderHierarchy() && source?.kind === "folder";
+}
+
+function folderBranch(sourceID, parentRelativePath = null) {
+  return state.folderNavigation.branches.get(folderBranchKey(sourceID, parentRelativePath));
+}
+
+function selectedFolderMatches(sourceID, relativePath) {
+  return state.folderScope?.sourceID === sourceID
+    && state.folderScope?.relativePath === relativePath;
+}
+
+function captureFolderSidebarFocus() {
+  const active = document.activeElement;
+  if (!active || !elements.sourceList.contains(active)) return null;
+  if (active.matches("[data-folder-search-source-id]")) {
+    return { kind: "search", sourceID: active.dataset.folderSearchSourceId };
+  }
+  if (active.matches("[data-folder-path]")) {
+    return {
+      kind: "folder",
+      sourceID: active.dataset.folderSourceId,
+      relativePath: active.dataset.folderPath,
+    };
+  }
+  if (active.matches("[data-folder-load-more]")) {
+    return { kind: "more", key: active.dataset.folderLoadMore };
+  }
+  if (active.matches("[data-source-id]")) {
+    return { kind: "source", sourceID: active.dataset.sourceId };
+  }
+  return null;
+}
+
+function restoreFolderSidebarFocus(focus) {
+  if (!focus) return;
+  requestAnimationFrame(() => {
+    let target = null;
+    if (focus.kind === "search") {
+      target = elements.sourceList.querySelector(
+        `[data-folder-search-source-id="${CSS.escape(focus.sourceID)}"]`
+      );
+    } else if (focus.kind === "folder") {
+      target = elements.sourceList.querySelector(
+        `[data-folder-source-id="${CSS.escape(focus.sourceID)}"]`
+        + `[data-folder-path="${CSS.escape(focus.relativePath)}"]`
+      );
+    } else if (focus.kind === "more") {
+      target = elements.sourceList.querySelector(
+        `[data-folder-load-more="${CSS.escape(focus.key)}"]`
+      );
+    } else if (focus.kind === "source") {
+      target = elements.sourceList.querySelector(
+        `[data-source-id="${CSS.escape(focus.sourceID)}"]`
+      );
+    }
+    target?.focus({ preventScroll: true });
+  });
+}
+
+async function loadFolderBranch(sourceID, parentRelativePath = null, { append = false } = {}) {
+  const key = folderBranchKey(sourceID, parentRelativePath);
+  const current = state.folderNavigation.branches.get(key);
+  if (current?.loading) return;
+  const generation = state.folderNavigation.requestGeneration;
+  const offset = append ? (current?.nextOffset || 0) : 0;
+  state.folderNavigation.branches.set(key, {
+    folders: append ? [...(current?.folders || [])] : [],
+    totalCount: current?.totalCount || 0,
+    nextOffset: current?.nextOffset ?? null,
+    loading: true,
+    error: null,
+  });
+  renderSources();
+  const query = new URLSearchParams({
+    sourceID,
+    offset: String(offset),
+    limit: "100",
+  });
+  if (parentRelativePath) query.set("parentRelativePath", parentRelativePath);
+  try {
+    const page = await api(`/v1/source-folders?${query}`);
+    if (generation !== state.folderNavigation.requestGeneration) return;
+    const previous = append ? (current?.folders || []) : [];
+    state.folderNavigation.branches.set(key, {
+      folders: [...previous, ...(page.folders || [])],
+      totalCount: page.totalCount || 0,
+      nextOffset: page.nextOffset ?? null,
+      loading: false,
+      error: null,
+    });
+  } catch (error) {
+    if (generation !== state.folderNavigation.requestGeneration) return;
+    state.folderNavigation.branches.set(key, {
+      folders: append ? [...(current?.folders || [])] : [],
+      totalCount: current?.totalCount || 0,
+      nextOffset: current?.nextOffset ?? null,
+      loading: false,
+      error: error.message || "无法读取文件夹",
+    });
+  }
+  renderSources();
+}
+
+async function searchFolders(sourceID, text) {
+  const queryText = text.trim();
+  const generation = ++state.folderNavigation.requestGeneration;
+  if (!queryText) {
+    state.folderNavigation.searches.delete(sourceID);
+    renderSources();
+    return;
+  }
+  state.folderNavigation.searches.set(sourceID, {
+    query: text,
+    folders: [],
+    loading: true,
+    error: null,
+  });
+  renderSources();
+  try {
+    const query = new URLSearchParams({ sourceID, q: queryText, limit: "50" });
+    const page = await api(`/v1/source-folders?${query}`);
+    if (generation !== state.folderNavigation.requestGeneration) return;
+    state.folderNavigation.searches.set(sourceID, {
+      query: text,
+      folders: page.folders || [],
+      totalCount: page.totalCount || 0,
+      loading: false,
+      error: null,
+    });
+  } catch (error) {
+    if (generation !== state.folderNavigation.requestGeneration) return;
+    state.folderNavigation.searches.set(sourceID, {
+      query: text,
+      folders: [],
+      loading: false,
+      error: error.message || "搜索失败",
+    });
+  }
+  renderSources();
+}
+
+async function reconcileSelectedFolderAfterSourceRefresh() {
+  const original = cloneFolderScope(state.folderScope);
+  if (!original) return;
+  if (!state.sources.some((source) => source.id === original.sourceID)) {
+    state.folderScope = null;
+    state.folderNavigation.selectedSessionID = null;
+    return;
+  }
+  const components = original.relativePath.split("/").filter(Boolean);
+  while (components.length) {
+    const candidate = components.join("/");
+    const query = new URLSearchParams({
+      sourceID: original.sourceID,
+      q: candidate,
+      limit: "50",
+    });
+    try {
+      const page = await api(`/v1/source-folders?${query}`);
+      if ((page.folders || []).some((folder) => folder.relativePath === candidate)) {
+        state.folderScope = { sourceID: original.sourceID, relativePath: candidate };
+        if (state.folderNavigation.selectedSessionID) {
+          state.folderNavigation.historyScopes.set(
+            state.folderNavigation.selectedSessionID,
+            cloneFolderScope(state.folderScope)
+          );
+        }
+        if (candidate !== original.relativePath) {
+          toast("原文件夹已移动或移除，已回到最近的可用上级目录");
+        }
+        return;
+      }
+    } catch {
+      return;
+    }
+    components.pop();
+  }
+  state.folderScope = null;
+  state.folderNavigation.selectedSessionID = null;
+  toast("原文件夹已不在最新索引中，已返回来源根目录");
+}
+
+function appendFolderRows(container, sourceID, folders, depth = 0, { search = false } = {}) {
+  for (const folder of folders) {
+    const key = folderScopeKey(sourceID, folder.relativePath);
+    const expanded = state.folderNavigation.expanded.has(key);
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "source-folder-row";
+    row.dataset.folderSourceId = sourceID;
+    row.dataset.folderPath = folder.relativePath;
+    row.style.setProperty("--folder-depth", String(depth));
+    row.classList.toggle("selected", selectedFolderMatches(sourceID, folder.relativePath));
+    row.setAttribute("aria-current", selectedFolderMatches(sourceID, folder.relativePath) ? "page" : "false");
+    row.title = folder.relativePath;
+    const disclosure = document.createElement("span");
+    disclosure.className = "folder-disclosure";
+    disclosure.dataset.folderToggle = key;
+    disclosure.setAttribute("aria-hidden", "true");
+    disclosure.textContent = search ? "·" : (expanded ? "▾" : "▸");
+    const name = document.createElement("span");
+    name.className = "folder-name";
+    name.textContent = search ? folder.relativePath : folder.name;
+    row.append(disclosure, name);
+    container.append(row);
+    if (!search && expanded) {
+      const branch = folderBranch(sourceID, folder.relativePath);
+      appendFolderBranch(container, sourceID, folder.relativePath, branch, depth + 1);
+    }
+  }
+}
+
+function appendFolderBranch(container, sourceID, parentRelativePath, branch, depth = 0) {
+  if (!branch) return;
+  if (branch.loading && !branch.folders.length) {
+    const status = document.createElement("p");
+    status.className = "source-folder-status";
+    status.textContent = "正在读取…";
+    container.append(status);
+    return;
+  }
+  if (branch.error) {
+    const status = document.createElement("p");
+    status.className = "source-folder-status";
+    status.textContent = branch.error;
+    container.append(status);
+  }
+  appendFolderRows(container, sourceID, branch.folders, depth);
+  if (!branch.loading && !branch.error && !branch.folders.length) {
+    const empty = document.createElement("p");
+    empty.className = "source-folder-status";
+    empty.textContent = "没有已索引的子文件夹";
+    container.append(empty);
+  }
+  if (branch.nextOffset != null) {
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "source-folder-more";
+    more.dataset.folderLoadMore = folderBranchKey(sourceID, parentRelativePath);
+    more.dataset.folderSourceId = sourceID;
+    more.dataset.folderParentPath = parentRelativePath || "";
+    more.textContent = branch.loading
+      ? "正在读取…"
+      : `显示更多（${branch.folders.length} / ${branch.totalCount}）`;
+    more.disabled = branch.loading;
+    container.append(more);
+  }
+}
+
+function appendSourceFolderTree(source) {
+  const tree = document.createElement("div");
+  tree.className = "source-folder-tree";
+  tree.dataset.folderTreeSourceId = source.id;
+  const root = folderBranch(source.id);
+  if (root?.totalCount > 500) {
+    const search = state.folderNavigation.searches.get(source.id);
+    const input = document.createElement("input");
+    input.type = "search";
+    input.className = "source-folder-search";
+    input.dataset.folderSearchSourceId = source.id;
+    input.placeholder = `搜索 ${root.totalCount} 个文件夹`;
+    input.value = search?.query || "";
+    input.setAttribute("aria-label", `搜索${source.displayName}中的文件夹`);
+    tree.append(input);
+    if (search?.query) {
+      if (search.loading) {
+        const status = document.createElement("p");
+        status.className = "source-folder-status";
+        status.textContent = "正在搜索…";
+        tree.append(status);
+      } else if (search.error) {
+        const status = document.createElement("p");
+        status.className = "source-folder-status";
+        status.textContent = search.error;
+        tree.append(status);
+      } else if (search.folders.length) {
+        appendFolderRows(tree, source.id, search.folders, 0, { search: true });
+      } else {
+        const empty = document.createElement("p");
+        empty.className = "source-folder-search-empty";
+        empty.textContent = "没有匹配的文件夹";
+        tree.append(empty);
+      }
+      return tree;
+    }
+  }
+  appendFolderBranch(tree, source.id, null, root, 0);
+  return tree;
+}
+
 function renderSources() {
+  const priorFocus = captureFolderSidebarFocus();
   clearElement(elements.sourceList);
   elements.sourceEmpty.classList.toggle("hidden", state.sources.length > 0);
   const galleryOverviewSelected = galleryOverviewIsOpen()
@@ -9656,7 +10003,14 @@ function renderSources() {
     const icon = document.createElement("span");
     icon.className = "sidebar-icon";
     icon.setAttribute("aria-hidden", "true");
-    icon.textContent = sourceIcon(source.kind);
+    if (folderSourceSupportsHierarchy(source)) {
+      const expanded = state.folderNavigation.expanded.has(folderScopeKey(source.id));
+      icon.dataset.folderSourceToggle = source.id;
+      icon.textContent = expanded ? "▾" : "▸";
+      button.setAttribute("aria-expanded", String(expanded));
+    } else {
+      icon.textContent = sourceIcon(source.kind);
+    }
     const name = document.createElement("span");
     name.textContent = source.displayName;
     const status = document.createElement("span");
@@ -9664,6 +10018,10 @@ function renderSources() {
     status.textContent = sourceStateText(source.state);
     button.append(icon, name, status);
     elements.sourceList.append(button);
+    if (folderSourceSupportsHierarchy(source)
+      && state.folderNavigation.expanded.has(folderScopeKey(source.id))) {
+      elements.sourceList.append(appendSourceFolderTree(source));
+    }
   }
 
   const allMediaButton = document.querySelector('[data-source-id=""]');
@@ -9718,12 +10076,15 @@ function renderSources() {
   }
   renderSidebarSourceActions();
   syncCurrentSourceRefreshControl();
+  restoreFolderSidebarFocus(priorFocus);
 }
 
 function sidebarPrimaryNavigationItems() {
   return [...elements.sourceSidebar.querySelectorAll([
     "#libraryNavigation .sidebar-row:not(.hidden):not(:disabled)",
     "#sourceList .sidebar-row:not(.hidden):not(:disabled)",
+    "#sourceList .source-folder-row:not(.hidden):not(:disabled)",
+    "#sourceList .source-folder-more:not(.hidden):not(:disabled)",
     "#sidebarSourceActions button:not(.hidden):not(:disabled)",
   ].join(", "))].filter((item) => item.offsetParent !== null);
 }
@@ -9732,7 +10093,9 @@ function moveSidebarPrimaryNavigation(event) {
   if (event.altKey || event.metaKey || event.ctrlKey) return false;
   if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return false;
   const current = event.target.closest(
-    "#libraryNavigation .sidebar-row, #sourceList .sidebar-row, #sidebarSourceActions button"
+    "#libraryNavigation .sidebar-row, #sourceList .sidebar-row, "
+      + "#sourceList .source-folder-row, #sourceList .source-folder-more, "
+      + "#sidebarSourceActions button"
   );
   if (!current) return false;
   const items = sidebarPrimaryNavigationItems();
@@ -14676,12 +15039,50 @@ function updateLibraryTitle() {
   } else if (state.libraryScope === "favorites") {
     elements.libraryTitle.textContent = `红心收藏 · ${mediaTitle}`;
   } else if (source) {
-    elements.libraryTitle.textContent = `${source.displayName} · ${mediaTitle}`;
+    const folderName = state.folderScope?.relativePath.split("/").filter(Boolean).at(-1);
+    elements.libraryTitle.textContent = folderName
+      ? `${folderName} · ${source.displayName} · ${mediaTitle}`
+      : `${source.displayName} · ${mediaTitle}`;
   } else {
     elements.libraryTitle.textContent = `全部${mediaTitle}`;
   }
   renderWorldMapGalleryScope();
+  renderFolderBreadcrumb();
   scheduleAdaptiveToolbarSync();
+}
+
+function renderFolderBreadcrumb() {
+  const scope = state.libraryScope === "all" ? state.folderScope : null;
+  const source = scope
+    ? state.sources.find((candidate) => candidate.id === scope.sourceID)
+    : null;
+  elements.folderBreadcrumb.classList.toggle("hidden", !scope || !source);
+  clearElement(elements.folderBreadcrumbItems);
+  if (!scope || !source) return;
+  const root = document.createElement("button");
+  root.type = "button";
+  root.className = "folder-breadcrumb-button";
+  root.dataset.folderBreadcrumbSourceId = source.id;
+  root.textContent = source.displayName;
+  elements.folderBreadcrumbItems.append(root);
+  const components = scope.relativePath.split("/").filter(Boolean);
+  components.forEach((name, index) => {
+    const separator = document.createElement("span");
+    separator.className = "folder-breadcrumb-separator";
+    separator.setAttribute("aria-hidden", "true");
+    separator.textContent = "›";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "folder-breadcrumb-button";
+    button.dataset.folderBreadcrumbSourceId = source.id;
+    button.dataset.folderBreadcrumbPath = components.slice(0, index + 1).join("/");
+    button.textContent = name;
+    if (index === components.length - 1) button.setAttribute("aria-current", "page");
+    elements.folderBreadcrumbItems.append(separator, button);
+  });
+  requestAnimationFrame(() => {
+    elements.folderBreadcrumbItems.scrollLeft = elements.folderBreadcrumbItems.scrollWidth;
+  });
 }
 
 function renderWorldMapGalleryScope() {
@@ -15837,6 +16238,7 @@ function assetQuerySnapshot() {
     selectedSourceID: state.selectedSourceID,
     libraryScope: state.libraryScope,
     worldMapGalleryScope: cloneWorldMapGalleryScope(state.worldMapGalleryScope),
+    folderScope: cloneFolderScope(state.folderScope),
     searchText: state.searchText,
     sort: state.sort,
     filters: cloneFilters(state.filters),
@@ -15872,6 +16274,10 @@ function assetPageQuery({
     limit: String(limit),
   });
   if (snapshot.selectedSourceID) query.set("sourceIDs", snapshot.selectedSourceID);
+  if (snapshot.folderScope) {
+    query.set("folderSourceID", snapshot.folderScope.sourceID);
+    query.set("folderRelativePath", snapshot.folderScope.relativePath);
+  }
   if (snapshot.libraryScope === "favorites") query.set("favorite", "favorited");
   if (snapshot.libraryScope === "worldMapGallery") {
     appendWorldMapSelectionQuery(query, snapshot.worldMapGalleryScope);
@@ -30442,6 +30848,11 @@ async function refreshWorkspace({ quiet = false, kinds = null } = {}) {
         state.workspaceNotice.notice = workspaceNotice.notice || null;
         renderWorkspaceNotice();
       }
+      if (batch.has("sourcesChanged")) {
+        state.folderNavigation.branches.clear();
+        state.folderNavigation.searches.clear();
+        state.folderNavigation.requestGeneration += 1;
+      }
       if (sourcesChanged) {
         state.sources = sources;
         if (state.selectedSourceID
@@ -30456,6 +30867,11 @@ async function refreshWorkspace({ quiet = false, kinds = null } = {}) {
         renderReviewLocalModelStatus();
         updateLibraryTitle();
         renderLibraryEmptyState();
+      }
+      if (batch.has("sourcesChanged")) {
+        await reconcileSelectedFolderAfterSourceRefresh();
+        renderSources();
+        updateLibraryTitle();
       }
       if (tagsChanged || tagGroupsChanged) {
         if (tags) state.tags = tags;
@@ -30869,6 +31285,15 @@ function resetWorkspaceSessionState() {
   state.selectedSourceID = "";
   state.libraryScope = "all";
   state.worldMapGalleryScope = null;
+  state.folderScope = null;
+  state.folderNavigation.branches.clear();
+  state.folderNavigation.expanded.clear();
+  state.folderNavigation.searches.clear();
+  clearTimeout(state.folderNavigation.searchTimer);
+  state.folderNavigation.searchTimer = null;
+  state.folderNavigation.requestGeneration += 1;
+  state.folderNavigation.selectedSessionID = null;
+  state.folderNavigation.historyScopes.clear();
   state.selectedAssetID = null;
   state.selectedDetail = null;
   resetAssetLocalSuggestionState();
@@ -31166,6 +31591,8 @@ async function selectSource(sourceID) {
   if (state.selectionMode) setSelectionMode(false);
   state.libraryScope = "all";
   state.worldMapGalleryScope = null;
+  state.folderScope = null;
+  state.folderNavigation.selectedSessionID = null;
   state.selectedSourceID = sourceID;
   state.selectedAssetID = null;
   state.selectedDetail = null;
@@ -31177,6 +31604,44 @@ async function selectSource(sourceID) {
   updateLibraryTitle();
   closeMobileSidebar({ restoreFocus: false });
   await loadAssets();
+}
+
+async function selectFolder(sourceID, relativePath, { historySessionID = null } = {}) {
+  const source = state.sources.find((candidate) => candidate.id === sourceID);
+  if (!folderSourceSupportsHierarchy(source) || !relativePath) return;
+  leaveIntegratedReviewForLibrary();
+  leaveIntegratedGalleryOverviewForLibrary();
+  leaveIntegratedWorldMapForLibrary();
+  leaveIntegratedTrainingForLibrary();
+  leaveIntegratedSlimmingForLibrary();
+  if (state.selectionMode) setSelectionMode(false);
+  const scope = { sourceID, relativePath };
+  const sessionID = historySessionID || crypto.randomUUID();
+  state.folderNavigation.historyScopes.set(sessionID, cloneFolderScope(scope));
+  state.folderNavigation.selectedSessionID = sessionID;
+  state.folderScope = scope;
+  state.libraryScope = "all";
+  state.worldMapGalleryScope = null;
+  state.selectedSourceID = sourceID;
+  state.selectedAssetID = null;
+  state.selectedDetail = null;
+  resetAssetLocalSuggestionState();
+  state.inspectorDismissed = false;
+  elements.inspector.classList.remove("open");
+  renderInspectorSurface();
+  renderSources();
+  updateLibraryTitle();
+  closeMobileSidebar({ restoreFocus: false });
+  try {
+    await loadAssets();
+  } catch (error) {
+    if (error.status === 400 && state.folderScope?.sourceID === sourceID) {
+      toast("这个文件夹已不在最新索引中，已返回来源根目录");
+      await selectSource(sourceID);
+      return;
+    }
+    toast(error.message || "无法打开文件夹");
+  }
 }
 
 const LIBRARY_SORT_OPTIONS = [
@@ -34689,7 +35154,10 @@ function setupSidebarReordering() {
     let beforeID = null;
     if (target && target.dataset.sourceId !== sourceID) {
       if (target.classList.contains("drop-after")) {
-        beforeID = target.nextElementSibling?.dataset.sourceId || null;
+        const rows = [...elements.sourceList.querySelectorAll(":scope > [data-source-id]")];
+        const targetIndex = rows.indexOf(target);
+        beforeID = rows.slice(targetIndex + 1)
+          .find((row) => row.dataset.sourceId !== sourceID)?.dataset.sourceId || null;
       } else {
         beforeID = target.dataset.sourceId;
       }
@@ -34875,8 +35343,94 @@ function bindEvents() {
   elements.pairingForm.addEventListener("submit", pair);
   elements.sourceList.addEventListener("click", (event) => {
     if (performance.now() < state.sidebarDrag.suppressClickUntil) return;
+    const sourceToggle = event.target.closest("[data-folder-source-toggle]");
+    if (sourceToggle) {
+      event.preventDefault();
+      event.stopPropagation();
+      const sourceID = sourceToggle.dataset.folderSourceToggle;
+      const key = folderScopeKey(sourceID);
+      if (state.folderNavigation.expanded.has(key)) {
+        state.folderNavigation.expanded.delete(key);
+        renderSources();
+      } else {
+        state.folderNavigation.expanded.add(key);
+        if (folderBranch(sourceID)) renderSources();
+        else void loadFolderBranch(sourceID);
+      }
+      return;
+    }
+    const folderRow = event.target.closest("[data-folder-path]");
+    if (folderRow) {
+      const sourceID = folderRow.dataset.folderSourceId;
+      const relativePath = folderRow.dataset.folderPath;
+      if (event.target.closest("[data-folder-toggle]")) {
+        const key = folderScopeKey(sourceID, relativePath);
+        if (state.folderNavigation.expanded.has(key)) {
+          state.folderNavigation.expanded.delete(key);
+          renderSources();
+        } else {
+          state.folderNavigation.expanded.add(key);
+          if (folderBranch(sourceID, relativePath)) renderSources();
+          else void loadFolderBranch(sourceID, relativePath);
+        }
+      } else {
+        void selectFolder(sourceID, relativePath);
+      }
+      return;
+    }
+    const more = event.target.closest("[data-folder-load-more]");
+    if (more) {
+      void loadFolderBranch(
+        more.dataset.folderSourceId,
+        more.dataset.folderParentPath || null,
+        { append: true }
+      );
+      return;
+    }
     const button = event.target.closest("[data-source-id]");
     if (button) selectSource(button.dataset.sourceId);
+  });
+  elements.sourceList.addEventListener("input", (event) => {
+    const input = event.target.closest("[data-folder-search-source-id]");
+    if (!input) return;
+    clearTimeout(state.folderNavigation.searchTimer);
+    const sourceID = input.dataset.folderSearchSourceId;
+    const text = input.value;
+    state.folderNavigation.searches.set(sourceID, {
+      ...(state.folderNavigation.searches.get(sourceID) || {}),
+      query: text,
+    });
+    state.folderNavigation.searchTimer = setTimeout(() => {
+      void searchFolders(sourceID, text);
+    }, 220);
+  });
+  elements.sourceList.addEventListener("keydown", (event) => {
+    if (!["ArrowRight", "ArrowLeft"].includes(event.key)) return;
+    const folderRow = event.target.closest("[data-folder-path]");
+    const sourceRow = event.target.closest("[data-source-id]");
+    const sourceID = folderRow?.dataset.folderSourceId || sourceRow?.dataset.sourceId;
+    if (!sourceID) return;
+    const relativePath = folderRow?.dataset.folderPath || "";
+    const key = folderScopeKey(sourceID, relativePath);
+    const expanded = state.folderNavigation.expanded.has(key);
+    if (event.key === "ArrowRight" && !expanded) {
+      event.preventDefault();
+      state.folderNavigation.expanded.add(key);
+      if (folderBranch(sourceID, relativePath || null)) renderSources();
+      else void loadFolderBranch(sourceID, relativePath || null);
+    } else if (event.key === "ArrowLeft" && expanded) {
+      event.preventDefault();
+      state.folderNavigation.expanded.delete(key);
+      renderSources();
+    }
+  });
+  elements.folderBreadcrumb.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-folder-breadcrumb-source-id]");
+    if (!button) return;
+    const sourceID = button.dataset.folderBreadcrumbSourceId;
+    const relativePath = button.dataset.folderBreadcrumbPath;
+    if (relativePath) void selectFolder(sourceID, relativePath);
+    else void selectSource(sourceID);
   });
   elements.sourceAllActionsButton.addEventListener("click", () => {
     toggleActionMenu("sourceActions");
