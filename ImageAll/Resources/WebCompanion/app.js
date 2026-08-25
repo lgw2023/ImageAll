@@ -26155,19 +26155,24 @@ function renderSlimmingMembers({ appendItems = null } = {}) {
 }
 
 function slimmingRecycleCountdown(entry) {
-  if (entry.sourceKind === "photos") {
-    return "实际保留期限与永久删除由系统“照片”App 管理";
-  }
   const remaining = Number(entry.purgeAfterMs) - Date.now();
-  if (remaining <= 0) return "即将永久删除";
+  const photos = entry.sourceKind === "photos";
+  if (remaining <= 0) {
+    return photos ? "ImageAll 即将清理此记录" : "即将永久删除";
+  }
   const hour = 60 * 60 * 1000;
   const day = 24 * hour;
-  if (remaining < day) return `${Math.max(1, Math.ceil(remaining / hour))} 小时后永久删除`;
-  return `${Math.max(1, Math.ceil(remaining / day))} 天后永久删除`;
+  const amount = remaining < day
+    ? `${Math.max(1, Math.ceil(remaining / hour))} 小时`
+    : `${Math.max(1, Math.ceil(remaining / day))} 天`;
+  return photos ? `ImageAll 将在 ${amount}后清理此记录` : `${amount}后永久删除`;
 }
 
 function slimmingRecycleStateCopy(entry) {
+  if (entry.state === "recycled") return slimmingRecycleCountdown(entry);
   if (entry.stateMessage) return entry.stateMessage;
+  if (entry.state === "restored") return "媒体已经恢复";
+  if (entry.state === "purged") return "媒体已经永久清理";
   if (entry.resolution === "discardPreflightFailure") {
     return "未执行：缺少来源写入授权，可安全撤销失败意图";
   }
@@ -26180,10 +26185,44 @@ function slimmingRecycleStateCopy(entry) {
   return slimmingRecycleCountdown(entry);
 }
 
+function slimmingRecycleLifecycleIcon(entry) {
+  if (entry.state === "recycled") return entry.sourceKind === "photos" ? "◷" : "⌛";
+  if (["pending", "restoring", "purging"].includes(entry.state)) return "↻";
+  if (entry.state === "failed") return "!";
+  return entry.state === "purged" ? "⌫" : "✓";
+}
+
+function slimmingRecycleMovedCaption(entry) {
+  const action = {
+    recycled: "移入",
+    pending: "开始处理",
+    restoring: "开始恢复",
+    purging: "开始清理",
+    failed: "尝试处理",
+    restored: "恢复",
+    purged: "清理",
+  }[entry.state] || "更新";
+  const date = new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  }).format(new Date(entry.trashedAtMs));
+  return `${date} ${action}`;
+}
+
 function slimmingRecyclePolicyCopy(entry) {
   if (entry.policyMessage) return entry.policyMessage;
-  if (entry.state === "recycled") return slimmingRecycleCountdown(entry);
-  return "现有内容会继续受到保护";
+  return {
+    recycled: entry.sourceKind === "photos"
+      ? "恢复与永久删除由“照片”App 管理"
+      : "可恢复到原位置",
+    pending: "ImageAll 会先确认实际位置，不会重复删除",
+    restoring: "正在协调原位置与 ImageAll 隔离区",
+    purging: "永久清理已经开始，完成后不可恢复",
+    restored: "媒体已经恢复",
+    purged: "媒体已经永久清理",
+    failed: "未确认删除完成；现有内容会继续受到保护",
+  }[entry.state] || "现有内容会继续受到保护";
 }
 
 function slimmingRecycleRecoveryDescriptor(entry) {
@@ -26654,12 +26693,26 @@ function syncSlimmingRecycleRow(row, entry) {
     title.textContent = entry.fileName || "未命名媒体";
     const meta = document.createElement("span");
     meta.className = "slimming-recycle-meta";
-    meta.textContent = `${entry.sourceKind === "photos" ? "Apple Photos" : "文件夹"} · ${entry.sourceDisplayName} · ${formatDate(entry.trashedAtMs)}`;
+    const sourceKind = entry.sourceKind === "photos" ? "Apple Photos" : "文件夹";
+    const sourceName = entry.sourceDisplayName && entry.sourceDisplayName !== sourceKind
+      ? ` · ${entry.sourceDisplayName}`
+      : "";
+    meta.textContent = `${sourceKind}${sourceName} · ${slimmingRecycleMovedCaption(entry)}`;
     const detail = document.createElement("span");
     detail.className = "slimming-recycle-detail";
     detail.classList.toggle("warning", entry.resolution !== "restoreOrPurge"
       && entry.resolution !== "photosManagedBySystem");
-    detail.textContent = slimmingRecycleStateCopy(entry);
+    detail.classList.toggle(
+      "folder-countdown",
+      entry.state === "recycled" && entry.sourceKind === "file"
+    );
+    const detailIcon = document.createElement("span");
+    detailIcon.className = "slimming-recycle-detail-icon";
+    detailIcon.setAttribute("aria-hidden", "true");
+    detailIcon.textContent = slimmingRecycleLifecycleIcon(entry);
+    const detailText = document.createElement("span");
+    detailText.textContent = slimmingRecycleStateCopy(entry);
+    detail.append(detailIcon, detailText);
     const policy = document.createElement("span");
     policy.className = "slimming-recycle-policy";
     policy.textContent = slimmingRecyclePolicyCopy(entry);
@@ -26669,7 +26722,7 @@ function syncSlimmingRecycleRow(row, entry) {
     if (entry.resolution === "photosManagedBySystem") {
       const info = document.createElement("button");
       info.type = "button";
-      info.className = "button button-compact";
+      info.className = "button button-compact button-primary";
       info.dataset.slimmingRecycleExplanationId = entry.id;
       info.dataset.helpDetail = "查看如何从 Apple Photos“最近删除”中恢复这个媒体。";
       info.textContent = "恢复说明";
@@ -26679,7 +26732,7 @@ function syncSlimmingRecycleRow(row, entry) {
     if (recovery) {
       const button = document.createElement("button");
       button.type = "button";
-      button.className = `button button-compact${
+      button.className = `button button-compact button-primary${
         recovery.kind === "source" ? " write-action" : ""
       }`;
       button.dataset.slimmingRecycleEntryId = entry.id;
@@ -26695,7 +26748,12 @@ function syncSlimmingRecycleRow(row, entry) {
     for (const action of entry.availableActions || []) {
       const button = document.createElement("button");
       button.type = "button";
-      button.className = `button button-compact write-action${action === "purge" ? " button-danger" : ""}`;
+      const primary = ["restore", "retryInterruptedOperation"].includes(action)
+        ? " button-primary"
+        : "";
+      button.className = `button button-compact write-action${primary}${
+        action === "purge" ? " button-danger" : ""
+      }`;
       button.dataset.slimmingRecycleEntryId = entry.id;
       button.dataset.action = action;
       button.dataset.helpDetail = slimmingRecycleDirectActionHelp(entry, action);

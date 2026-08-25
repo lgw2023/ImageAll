@@ -13638,6 +13638,24 @@ button.world-map-place-candidate:focus-visible {
   color: var(--warning-text, #8a5a00);
 }
 
+.slimming-recycle-detail.folder-countdown {
+  color: var(--warning-text, #8a5a00);
+  font-weight: 600;
+}
+
+.slimming-recycle-detail {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.slimming-recycle-detail-icon {
+  display: inline-grid;
+  min-width: 14px;
+  place-content: center;
+  font-weight: 700;
+}
+
 .slimming-recycle-actions {
   display: flex;
   flex-wrap: wrap;
@@ -13652,6 +13670,16 @@ button.world-map-place-candidate:focus-visible {
 .slimming-recycle-actions .button {
   white-space: nowrap;
   font-size: 10px;
+}
+
+.slimming-recycle-actions .button.button-primary {
+  color: white;
+  border-color: transparent;
+  background: var(--accent);
+}
+
+.slimming-recycle-actions .button.button-primary:hover {
+  background: color-mix(in srgb, var(--accent), white 8%);
 }
 
 .slimming-recycle-body > .slimming-empty {

@@ -3169,11 +3169,18 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("elements.slimmingMemberGrid.addEventListener(\"focusin\""))
         XCTAssertTrue(script.contains("function slimmingRecycleGridRovingEntryID"))
         XCTAssertTrue(script.contains("function syncSlimmingRecycleGridTabStops"))
+        XCTAssertTrue(script.contains("function slimmingRecycleCountdown"))
+        XCTAssertTrue(script.contains("function slimmingRecycleLifecycleIcon"))
+        XCTAssertTrue(script.contains("function slimmingRecycleMovedCaption"))
+        XCTAssertTrue(script.contains("ImageAll 即将清理此记录"))
+        XCTAssertTrue(script.contains("entry.state === \"recycled\""))
         XCTAssertTrue(script.contains("state.slimming.recycle.focusEntryID"))
         XCTAssertTrue(script.contains("elements.slimmingRecycleList.addEventListener(\"focusin\""))
         XCTAssertTrue(script.contains("renderedGridPageItemCount(\n      elements.slimmingRecycleBody"))
         XCTAssertTrue(stylesheet.contains(".slimming-recycle-row:focus-within"))
         XCTAssertTrue(stylesheet.contains(".slimming-recycle-thumbnail-card:focus-visible"))
+        XCTAssertTrue(stylesheet.contains(".slimming-recycle-detail.folder-countdown"))
+        XCTAssertTrue(stylesheet.contains(".slimming-recycle-actions .button.button-primary"))
         XCTAssertTrue(script.contains("focusedNavigationButton"))
         XCTAssertTrue(
             script.contains(

@@ -2,6 +2,7 @@
 import argparse
 import base64
 import json
+import time
 from urllib.parse import parse_qs, urlparse
 
 from playwright.sync_api import sync_playwright
@@ -58,6 +59,7 @@ SCENE_GROUP_ID = "bbbbbbbb-1111-2222-3333-bbbbbbbbbbbb"
 PIXEL = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 )
+RECYCLE_PURGE_AFTER_MS = int(time.time() * 1_000) + 30 * 24 * 60 * 60 * 1_000
 
 
 def fulfill_json(route, payload, status=200):
@@ -1110,7 +1112,7 @@ def main(*, inspector_actions_only=False):
                         ),
                         "explanationMessage": None,
                         "trashedAtMs": 1_700_000_000_000 + index,
-                        "purgeAfterMs": 4_102_444_800_000,
+                        "purgeAfterMs": RECYCLE_PURGE_AFTER_MS,
                         "favorite": favorite_state(asset_id),
                     })
             else:
@@ -1122,7 +1124,7 @@ def main(*, inspector_actions_only=False):
                         "mediaKind": media_kind,
                         "fileName": f"RECYCLE_{index + 1:04}.{'MOV' if media_kind == 'video' else 'JPG'}",
                         "trashedAtMs": 1_700_000_000_000,
-                        "purgeAfterMs": 4_102_444_800_000,
+                        "purgeAfterMs": RECYCLE_PURGE_AFTER_MS,
                         "favorite": favorite_state(asset_id),
                         **spec,
                     })
@@ -4114,6 +4116,71 @@ def main(*, inspector_actions_only=False):
         second_recycle_thumbnail = recycle_rows.nth(1).locator(
             ".slimming-recycle-thumbnail-card"
         )
+        recycle_countdown_copy = page.evaluate(
+            """() => {
+              const originalNow = Date.now;
+              Date.now = () => 1_700_000_000_000;
+              try {
+                return {
+                  photosDays: slimmingRecycleCountdown({
+                    sourceKind: 'photos',
+                    purgeAfterMs: 1_700_000_000_000 + 3 * 24 * 60 * 60 * 1_000,
+                  }),
+                  photosExpired: slimmingRecycleCountdown({
+                    sourceKind: 'photos',
+                    purgeAfterMs: 1_699_999_999_999,
+                  }),
+                  folderHours: slimmingRecycleCountdown({
+                    sourceKind: 'file',
+                    purgeAfterMs: 1_700_000_000_000 + 5 * 60 * 60 * 1_000,
+                  }),
+                  photosPolicy: slimmingRecyclePolicyCopy({
+                    sourceKind: 'photos',
+                    state: 'recycled',
+                  }),
+                  folderPolicy: slimmingRecyclePolicyCopy({
+                    sourceKind: 'file',
+                    state: 'recycled',
+                  }),
+                  restoredState: slimmingRecycleStateCopy({ state: 'restored' }),
+                  purgedState: slimmingRecycleStateCopy({ state: 'purged' }),
+                };
+              } finally {
+                Date.now = originalNow;
+              }
+            }"""
+        )
+        assert recycle_countdown_copy == {
+            "photosDays": "ImageAll 将在 3 天后清理此记录",
+            "photosExpired": "ImageAll 即将清理此记录",
+            "folderHours": "5 小时后永久删除",
+            "photosPolicy": "恢复与永久删除由“照片”App 管理",
+            "folderPolicy": "可恢复到原位置",
+            "restoredState": "媒体已经恢复",
+            "purgedState": "媒体已经永久清理",
+        }
+        first_recycle_meta = recycle_rows.nth(0).locator(".slimming-recycle-meta")
+        first_recycle_detail = recycle_rows.nth(0).locator(".slimming-recycle-detail")
+        assert "Apple Photos · Apple Photos" not in first_recycle_meta.inner_text()
+        assert "移入" in first_recycle_meta.inner_text()
+        assert "ImageAll 将在" in first_recycle_detail.inner_text()
+        assert "清理此记录" in first_recycle_detail.inner_text()
+        assert first_recycle_detail.locator(".slimming-recycle-detail-icon").inner_text() == "◷"
+        assert "button-primary" in recycle_rows.nth(0).get_by_role(
+            "button", name="恢复说明", exact=True
+        ).get_attribute("class")
+        second_recycle_detail = recycle_rows.nth(1).locator(".slimming-recycle-detail")
+        assert "来源文件已变化" in second_recycle_detail.inner_text()
+        assert second_recycle_detail.locator(".slimming-recycle-detail-icon").inner_text() == "!"
+        assert "尝试处理" in recycle_rows.nth(1).locator(
+            ".slimming-recycle-meta"
+        ).inner_text()
+        assert "button-primary" in recycle_rows.nth(1).get_by_role(
+            "button", name="刷新来源", exact=True
+        ).get_attribute("class")
+        assert "button-primary" not in recycle_rows.nth(1).get_by_role(
+            "button", name="说明", exact=True
+        ).get_attribute("class")
         assert recycle_thumbnail.get_attribute("tabindex") == "0"
         assert all(
             first_recycle_buttons.nth(index).get_attribute("tabindex") == "0"
@@ -4495,6 +4562,32 @@ def main(*, inspector_actions_only=False):
         page.wait_for_function(
             "() => document.querySelectorAll('#slimmingRecycleList .slimming-recycle-row').length === 60"
         )
+        pagination_recycle_rows = page.locator(
+            "#slimmingRecycleList .slimming-recycle-row"
+        )
+        assert "ImageAll 将在" in pagination_recycle_rows.nth(0).locator(
+            ".slimming-recycle-detail"
+        ).inner_text()
+        assert "清理此记录" in pagination_recycle_rows.nth(0).locator(
+            ".slimming-recycle-detail"
+        ).inner_text()
+        folder_recycle_detail = pagination_recycle_rows.nth(1).locator(
+            ".slimming-recycle-detail"
+        )
+        assert "永久删除" in folder_recycle_detail.inner_text()
+        assert "ImageAll" not in folder_recycle_detail.inner_text()
+        assert folder_recycle_detail.get_attribute("class") == (
+            "slimming-recycle-detail folder-countdown"
+        )
+        folder_restore = pagination_recycle_rows.nth(1).get_by_role(
+            "button", name="恢复", exact=True
+        )
+        folder_purge = pagination_recycle_rows.nth(1).get_by_role(
+            "button", name="立即删除", exact=True
+        )
+        assert "button-primary" in folder_restore.get_attribute("class")
+        assert "button-danger" in folder_purge.get_attribute("class")
+        assert "button-primary" not in folder_purge.get_attribute("class")
         recycle_append_progress = page.evaluate(
             """() => {
               state.slimming.recycle.loading = true;
