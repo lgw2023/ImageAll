@@ -208,6 +208,18 @@ def main():
                     "nextOffset": None,
                 })
                 return
+            if parent == "Literal %_":
+                fulfill_json(route, {
+                    "folders": [{
+                        "sourceID": SOURCE_FOLDER,
+                        "relativePath": "Literal %_/Match",
+                        "parentRelativePath": "Literal %_",
+                        "name": "Match",
+                    }],
+                    "totalCount": 1,
+                    "nextOffset": None,
+                })
+                return
             if offset >= 100:
                 fulfill_json(route, {
                     "folders": [{
@@ -486,9 +498,54 @@ def main():
         page.wait_for_function(
             "() => Boolean(document.querySelector('[data-folder-path=\"Literal %_/Match\"]'))"
         )
+        assert page.locator(".source-folder-search-results").is_visible()
+        assert page.locator(
+            '[data-folder-path="Trips"]:not([data-folder-search-result])'
+        ).is_visible()
         assert folder_queries[-1].get("q") == ["%_"]
         assert folder_queries[-1].get("limit") == ["50"]
-        folder_search.fill("")
+        search_result = page.locator(
+            '[data-folder-search-result="true"]'
+            '[data-folder-path="Literal %_/Match"]'
+        )
+        search_result.click()
+        page.wait_for_function(
+            "() => Boolean(document.querySelector("
+            "'[data-folder-path=\"Literal %_/Match\"]:not([data-folder-search-result])'"
+            "))"
+        )
+        assert page.locator(
+            '[data-folder-path="Literal %_"]:not([data-folder-search-result]) '
+            '[data-folder-toggle]'
+        ).inner_text() == "▾"
+        assert "Match" in page.locator("#folderBreadcrumb").inner_text()
+        folder_asset_query = parse_qs(urlparse(asset_queries[-1]).query)
+        assert folder_asset_query["folderRelativePath"] == ["Literal %_/Match"]
+        page.screenshot(
+            path="/tmp/imageall-web-folder-search-context.png",
+            full_page=True,
+        )
+
+        asset_query_count = len(asset_queries)
+        folder_search = page.locator(
+            f'[data-folder-search-source-id="{SOURCE_FOLDER}"]'
+        )
+        folder_search.focus()
+        folder_search.press("Escape")
+        page.wait_for_function(
+            "() => !document.querySelector('.source-folder-search-results')"
+        )
+        assert folder_search.input_value() == ""
+        page.wait_for_function(
+            "sourceID => document.activeElement?.dataset.folderSearchSourceId === sourceID",
+            arg=SOURCE_FOLDER,
+        )
+        assert page.locator(
+            '[data-folder-path="Literal %_/Match"]:not([data-folder-search-result])'
+        ).is_visible()
+        assert len(asset_queries) == asset_query_count
+        assert page.locator("#folderBreadcrumb").is_visible()
+
         page.wait_for_function(
             "() => Boolean(document.querySelector('[data-folder-load-more]'))"
         )

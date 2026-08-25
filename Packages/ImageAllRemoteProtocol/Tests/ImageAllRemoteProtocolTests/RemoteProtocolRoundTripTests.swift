@@ -677,6 +677,13 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
             limit: 100,
             searchText: nil
         ))
+        try assertRoundTrip(RemoteSourceFolderPageRequest(
+            sourceID: sourceID,
+            parentRelativePath: nil,
+            offset: 0,
+            limit: 50,
+            searchText: "%_"
+        ))
         try assertRoundTrip(RemoteSourceFolderPage(
             folders: folders,
             totalCount: 201,

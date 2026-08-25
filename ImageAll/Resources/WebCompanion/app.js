@@ -1090,8 +1090,11 @@ const state = {
   folderScope: null,
   folderNavigation: {
     branches: new Map(),
+    branchRequestGenerations: new Map(),
     expanded: new Set(),
     searches: new Map(),
+    searchRequestGenerations: new Map(),
+    searchTimers: new Map(),
     requestGeneration: 0,
     selectedSessionID: null,
     historyScopes: new Map(),
@@ -9739,7 +9742,10 @@ async function loadFolderBranch(sourceID, parentRelativePath = null, { append = 
   const key = folderBranchKey(sourceID, parentRelativePath);
   const current = state.folderNavigation.branches.get(key);
   if (current?.loading) return;
-  const generation = state.folderNavigation.requestGeneration;
+  const catalogGeneration = state.folderNavigation.requestGeneration;
+  const requestGeneration =
+    (state.folderNavigation.branchRequestGenerations.get(key) || 0) + 1;
+  state.folderNavigation.branchRequestGenerations.set(key, requestGeneration);
   const offset = append ? (current?.nextOffset || 0) : 0;
   state.folderNavigation.branches.set(key, {
     folders: append ? [...(current?.folders || [])] : [],
@@ -9757,7 +9763,8 @@ async function loadFolderBranch(sourceID, parentRelativePath = null, { append = 
   if (parentRelativePath) query.set("parentRelativePath", parentRelativePath);
   try {
     const page = await api(`/v1/source-folders?${query}`);
-    if (generation !== state.folderNavigation.requestGeneration) return;
+    if (catalogGeneration !== state.folderNavigation.requestGeneration
+      || requestGeneration !== state.folderNavigation.branchRequestGenerations.get(key)) return;
     const previous = append ? (current?.folders || []) : [];
     state.folderNavigation.branches.set(key, {
       folders: [...previous, ...(page.folders || [])],
@@ -9767,7 +9774,8 @@ async function loadFolderBranch(sourceID, parentRelativePath = null, { append = 
       error: null,
     });
   } catch (error) {
-    if (generation !== state.folderNavigation.requestGeneration) return;
+    if (catalogGeneration !== state.folderNavigation.requestGeneration
+      || requestGeneration !== state.folderNavigation.branchRequestGenerations.get(key)) return;
     state.folderNavigation.branches.set(key, {
       folders: append ? [...(current?.folders || [])] : [],
       totalCount: current?.totalCount || 0,
@@ -9781,7 +9789,10 @@ async function loadFolderBranch(sourceID, parentRelativePath = null, { append = 
 
 async function searchFolders(sourceID, text) {
   const queryText = text.trim();
-  const generation = ++state.folderNavigation.requestGeneration;
+  const catalogGeneration = state.folderNavigation.requestGeneration;
+  const requestGeneration =
+    (state.folderNavigation.searchRequestGenerations.get(sourceID) || 0) + 1;
+  state.folderNavigation.searchRequestGenerations.set(sourceID, requestGeneration);
   if (!queryText) {
     state.folderNavigation.searches.delete(sourceID);
     renderSources();
@@ -9797,7 +9808,8 @@ async function searchFolders(sourceID, text) {
   try {
     const query = new URLSearchParams({ sourceID, q: queryText, limit: "50" });
     const page = await api(`/v1/source-folders?${query}`);
-    if (generation !== state.folderNavigation.requestGeneration) return;
+    if (catalogGeneration !== state.folderNavigation.requestGeneration
+      || requestGeneration !== state.folderNavigation.searchRequestGenerations.get(sourceID)) return;
     state.folderNavigation.searches.set(sourceID, {
       query: text,
       folders: page.folders || [],
@@ -9806,7 +9818,8 @@ async function searchFolders(sourceID, text) {
       error: null,
     });
   } catch (error) {
-    if (generation !== state.folderNavigation.requestGeneration) return;
+    if (catalogGeneration !== state.folderNavigation.requestGeneration
+      || requestGeneration !== state.folderNavigation.searchRequestGenerations.get(sourceID)) return;
     state.folderNavigation.searches.set(sourceID, {
       query: text,
       folders: [],
@@ -9815,6 +9828,40 @@ async function searchFolders(sourceID, text) {
     });
   }
   renderSources();
+}
+
+function expandFolderScopeAncestors(sourceID, relativePath) {
+  const branchParents = [null];
+  state.folderNavigation.expanded.add(folderScopeKey(sourceID));
+  const components = relativePath.split("/").filter(Boolean);
+  for (let length = 1; length < components.length; length += 1) {
+    const ancestor = components.slice(0, length).join("/");
+    state.folderNavigation.expanded.add(folderScopeKey(sourceID, ancestor));
+    branchParents.push(ancestor);
+  }
+  return branchParents;
+}
+
+function loadFolderScopeAncestorBranches(sourceID, branchParents) {
+  for (const parentRelativePath of branchParents) {
+    const branch = folderBranch(sourceID, parentRelativePath);
+    if (!branch || branch.error) {
+      void loadFolderBranch(sourceID, parentRelativePath);
+    }
+  }
+}
+
+function loadExpandedFolderBranches() {
+  for (const key of state.folderNavigation.expanded) {
+    const separator = key.indexOf("\u0000");
+    if (separator < 1) continue;
+    const sourceID = key.slice(0, separator);
+    const parentRelativePath = key.slice(separator + 1) || null;
+    const source = state.sources.find((candidate) => candidate.id === sourceID);
+    if (!folderSourceSupportsHierarchy(source)) continue;
+    const branch = folderBranch(sourceID, parentRelativePath);
+    if (!branch || branch.error) void loadFolderBranch(sourceID, parentRelativePath);
+  }
 }
 
 async function reconcileSelectedFolderAfterSourceRefresh() {
@@ -9867,13 +9914,14 @@ function appendFolderRows(container, sourceID, folders, depth = 0, { search = fa
     row.className = "source-folder-row";
     row.dataset.folderSourceId = sourceID;
     row.dataset.folderPath = folder.relativePath;
+    if (search) row.dataset.folderSearchResult = "true";
     row.style.setProperty("--folder-depth", String(depth));
     row.classList.toggle("selected", selectedFolderMatches(sourceID, folder.relativePath));
     row.setAttribute("aria-current", selectedFolderMatches(sourceID, folder.relativePath) ? "page" : "false");
     row.title = folder.relativePath;
     const disclosure = document.createElement("span");
     disclosure.className = "folder-disclosure";
-    disclosure.dataset.folderToggle = key;
+    if (!search) disclosure.dataset.folderToggle = key;
     disclosure.setAttribute("aria-hidden", "true");
     disclosure.textContent = search ? "·" : (expanded ? "▾" : "▸");
     const name = document.createElement("span");
@@ -9941,25 +9989,27 @@ function appendSourceFolderTree(source) {
     input.setAttribute("aria-label", `搜索${source.displayName}中的文件夹`);
     tree.append(input);
     if (search?.query) {
+      const results = document.createElement("div");
+      results.className = "source-folder-search-results";
+      results.setAttribute("role", "group");
+      results.setAttribute("aria-label", "文件夹搜索结果");
+      const summary = document.createElement("p");
+      summary.className = "source-folder-search-summary";
       if (search.loading) {
-        const status = document.createElement("p");
-        status.className = "source-folder-status";
-        status.textContent = "正在搜索…";
-        tree.append(status);
+        summary.textContent = "正在搜索…";
       } else if (search.error) {
-        const status = document.createElement("p");
-        status.className = "source-folder-status";
-        status.textContent = search.error;
-        tree.append(status);
+        summary.textContent = search.error;
       } else if (search.folders.length) {
-        appendFolderRows(tree, source.id, search.folders, 0, { search: true });
+        summary.textContent = search.totalCount > search.folders.length
+          ? `搜索结果 ${search.folders.length} / ${search.totalCount} · 请缩小范围`
+          : `搜索结果 ${search.folders.length} 项`;
+        results.append(summary);
+        appendFolderRows(results, source.id, search.folders, 0, { search: true });
       } else {
-        const empty = document.createElement("p");
-        empty.className = "source-folder-search-empty";
-        empty.textContent = "没有匹配的文件夹";
-        tree.append(empty);
+        summary.textContent = "没有匹配的文件夹";
       }
-      return tree;
+      if (!results.contains(summary)) results.append(summary);
+      tree.append(results);
     }
   }
   appendFolderBranch(tree, source.id, null, root, 0);
@@ -16092,6 +16142,17 @@ async function clearSlimmingRecycleSearch({ restoreFocus = true } = {}) {
 }
 
 function clearInlineSearchFromEscape(target) {
+  const folderSearch = target?.closest?.("[data-folder-search-source-id]");
+  if (folderSearch) {
+    const sourceID = folderSearch.dataset.folderSearchSourceId;
+    const search = state.folderNavigation.searches.get(sourceID);
+    if (folderSearch.value || search?.query) {
+      clearTimeout(state.folderNavigation.searchTimers.get(sourceID));
+      state.folderNavigation.searchTimers.delete(sourceID);
+      void searchFolders(sourceID, "");
+      return true;
+    }
+  }
   if (target === elements.searchInput
     && (elements.searchInput.value || state.searchText)) {
     void clearLibrarySearch();
@@ -30661,6 +30722,12 @@ async function loadWorkspace({ restoreHistory = false } = {}) {
       state.inspectorDismissed = !restoresGalleryInspector;
     }
   }
+  const restoredFolderAncestorBranches = galleryRestore?.folderScope
+    ? expandFolderScopeAncestors(
+      galleryRestore.folderScope.sourceID,
+      galleryRestore.folderScope.relativePath
+    )
+    : [];
   renderWorkspaceNotice();
   elements.hostVersion.textContent = `Mac Host ${capabilities.hostAppVersion}`;
   elements.settingsButton.disabled = !supportsGeneralSettings();
@@ -30670,6 +30737,12 @@ async function loadWorkspace({ restoreHistory = false } = {}) {
   if (supportsGeneralSettings()) await loadGeneralSettings({ quiet: true });
   if (generation !== state.workspaceGeneration) return;
   renderSources();
+  if (galleryRestore?.folderScope) {
+    loadFolderScopeAncestorBranches(
+      galleryRestore.folderScope.sourceID,
+      restoredFolderAncestorBranches
+    );
+  }
   renderReviewSourceFilter();
   renderTagSelects();
   renderJobs();
@@ -30938,7 +31011,9 @@ async function refreshWorkspace({ quiet = false, kinds = null } = {}) {
       }
       if (batch.has("sourcesChanged")) {
         state.folderNavigation.branches.clear();
+        state.folderNavigation.branchRequestGenerations.clear();
         state.folderNavigation.searches.clear();
+        state.folderNavigation.searchRequestGenerations.clear();
         state.folderNavigation.requestGeneration += 1;
       }
       if (sourcesChanged) {
@@ -30959,6 +31034,7 @@ async function refreshWorkspace({ quiet = false, kinds = null } = {}) {
       if (batch.has("sourcesChanged")) {
         await reconcileSelectedFolderAfterSourceRefresh();
         renderSources();
+        loadExpandedFolderBranches();
         updateLibraryTitle();
       }
       if (tagsChanged || tagGroupsChanged) {
@@ -31375,10 +31451,12 @@ function resetWorkspaceSessionState() {
   state.worldMapGalleryScope = null;
   state.folderScope = null;
   state.folderNavigation.branches.clear();
+  state.folderNavigation.branchRequestGenerations.clear();
   state.folderNavigation.expanded.clear();
   state.folderNavigation.searches.clear();
-  clearTimeout(state.folderNavigation.searchTimer);
-  state.folderNavigation.searchTimer = null;
+  state.folderNavigation.searchRequestGenerations.clear();
+  for (const timer of state.folderNavigation.searchTimers.values()) clearTimeout(timer);
+  state.folderNavigation.searchTimers.clear();
   state.folderNavigation.requestGeneration += 1;
   state.folderNavigation.selectedSessionID = null;
   state.folderNavigation.historyScopes.clear();
@@ -31708,6 +31786,7 @@ async function selectFolder(sourceID, relativePath, { historySessionID = null } 
   state.folderNavigation.historyScopes.set(sessionID, cloneFolderScope(scope));
   state.folderNavigation.selectedSessionID = sessionID;
   state.folderScope = scope;
+  const ancestorBranches = expandFolderScopeAncestors(sourceID, relativePath);
   state.libraryScope = "all";
   state.worldMapGalleryScope = null;
   state.selectedSourceID = sourceID;
@@ -31718,6 +31797,7 @@ async function selectFolder(sourceID, relativePath, { historySessionID = null } 
   elements.inspector.classList.remove("open");
   renderInspectorSurface();
   renderSources();
+  loadFolderScopeAncestorBranches(sourceID, ancestorBranches);
   updateLibraryTitle();
   closeMobileSidebar({ restoreFocus: false });
   try {
@@ -35500,16 +35580,22 @@ function bindEvents() {
   elements.sourceList.addEventListener("input", (event) => {
     const input = event.target.closest("[data-folder-search-source-id]");
     if (!input) return;
-    clearTimeout(state.folderNavigation.searchTimer);
     const sourceID = input.dataset.folderSearchSourceId;
+    clearTimeout(state.folderNavigation.searchTimers.get(sourceID));
     const text = input.value;
+    state.folderNavigation.searchRequestGenerations.set(
+      sourceID,
+      (state.folderNavigation.searchRequestGenerations.get(sourceID) || 0) + 1
+    );
     state.folderNavigation.searches.set(sourceID, {
       ...(state.folderNavigation.searches.get(sourceID) || {}),
       query: text,
     });
-    state.folderNavigation.searchTimer = setTimeout(() => {
+    const timer = setTimeout(() => {
+      state.folderNavigation.searchTimers.delete(sourceID);
       void searchFolders(sourceID, text);
     }, 220);
+    state.folderNavigation.searchTimers.set(sourceID, timer);
   });
   elements.sourceList.addEventListener("keydown", (event) => {
     if (!["ArrowRight", "ArrowLeft"].includes(event.key)) return;

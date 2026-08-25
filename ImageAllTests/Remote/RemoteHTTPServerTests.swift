@@ -1067,6 +1067,21 @@ final class RemoteHTTPServerTests: XCTestCase {
             []
         )
 
+        var searchComponents = URLComponents(string: "/v1/source-folders")!
+        searchComponents.queryItems = [
+            URLQueryItem(name: "sourceID", value: sourceID.uuidString),
+            URLQueryItem(name: "q", value: "%_"),
+            URLQueryItem(name: "offset", value: "0"),
+            URLQueryItem(name: "limit", value: "50"),
+        ]
+        let searchQuery = try XCTUnwrap(searchComponents.string)
+        let (searchData, searchResponse) = try await request(searchQuery)
+        XCTAssertEqual(searchResponse.statusCode, 200)
+        XCTAssertEqual(
+            try JSONDecoder().decode(RemoteSourceFolderPage.self, from: searchData).folders,
+            []
+        )
+
         var assetsComponents = URLComponents(string: "/v1/assets")!
         assetsComponents.queryItems = [
             URLQueryItem(name: "sourceIDs", value: sourceID.uuidString),
@@ -3676,9 +3691,16 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function supportsFolderHierarchy()"))
         XCTAssertTrue(script.contains("function loadFolderBranch("))
         XCTAssertTrue(script.contains("function selectFolder("))
+        XCTAssertTrue(script.contains("branchRequestGenerations: new Map()"))
+        XCTAssertTrue(script.contains("searchRequestGenerations: new Map()"))
+        XCTAssertTrue(script.contains("searchTimers: new Map()"))
+        XCTAssertTrue(script.contains("function expandFolderScopeAncestors("))
+        XCTAssertTrue(script.contains("function loadExpandedFolderBranches("))
+        XCTAssertTrue(script.contains("[data-folder-search-source-id]"))
         XCTAssertTrue(script.contains("query.set(\"folderRelativePath\""))
         XCTAssertTrue(script.contains("galleryFolderSessionID"))
         XCTAssertTrue(stylesheet.contains(".source-folder-tree"))
+        XCTAssertTrue(stylesheet.contains(".source-folder-search-results"))
         XCTAssertTrue(stylesheet.contains(".folder-breadcrumb"))
         XCTAssertTrue(script.contains("loadWorldMapSnapshot({ bounds: state.worldMap.viewport })"))
         XCTAssertTrue(script.contains("function renderWorldMapFooter()"))

@@ -1286,6 +1286,19 @@ html.split-resizing * {
   font: inherit;
 }
 
+.source-folder-search-results {
+  margin: 2px 4px 5px;
+  padding: 3px 3px 5px;
+  border-bottom: 1px solid color-mix(in srgb, var(--separator) 70%, transparent);
+}
+
+.source-folder-search-summary {
+  margin: 2px 8px 3px 22px;
+  color: var(--tertiary);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
 .folder-breadcrumb {
   display: flex;
   align-items: center;
