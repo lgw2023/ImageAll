@@ -17907,7 +17907,9 @@ async function submitGalleryRemoval({
     : elements.libraryScroll.scrollTop;
   state.galleryRemoval.submitting = true;
   renderGalleryRemovalControls();
-  if (previewAssetID && state.lightboxContext === "library") renderLightbox();
+  if (effectivePreviewAssetID
+    && state.lightboxAssetID === effectivePreviewAssetID
+    && ["library", "review"].includes(state.lightboxContext)) renderLightbox();
   try {
     const request = await api("/v1/library-slimming/removals", {
       method: "POST",
@@ -17958,7 +17960,9 @@ async function submitGalleryRemoval({
     if (workspaceGeneration === state.workspaceGeneration) {
       state.galleryRemoval.submitting = false;
       renderGalleryRemovalControls();
-      if (previewAssetID && state.lightboxContext === "library"
+      if (effectivePreviewAssetID
+        && state.lightboxAssetID === effectivePreviewAssetID
+        && ["library", "review"].includes(state.lightboxContext)
         && !elements.lightbox.classList.contains("hidden")) renderLightbox();
       scheduleGalleryRemovalPoll();
     }
@@ -30858,8 +30862,9 @@ function renderLightbox() {
     state.lightboxContext !== "review"
   );
   elements.lightbox.classList.toggle("reviewing", state.lightboxContext === "review");
-  const showsDelete = state.lightboxContext === "slimming"
-    || state.lightboxContext === "library";
+  const showsDelete = ["library", "review", "slimming"].includes(
+    state.lightboxContext
+  );
   elements.lightboxDeleteButton.classList.toggle("hidden", !showsDelete);
   elements.lightboxDeleteButton.disabled = !state.online
     || state.lightboxNavigating
@@ -38438,10 +38443,11 @@ function bindEvents() {
         assetIDs: [state.lightboxAssetID],
         previewAssetID: state.lightboxAssetID,
       });
-    } else if (state.lightboxContext === "library") {
+    } else if (["library", "review"].includes(state.lightboxContext)) {
       void submitGalleryRemoval({
         assetIDs: [state.lightboxAssetID],
         previewAssetID: state.lightboxAssetID,
+        surface: state.lightboxContext === "review" ? "review" : "gallery",
       });
     }
   });
@@ -39357,7 +39363,7 @@ function bindEvents() {
         });
         return;
       }
-      if (state.lightboxContext === "library"
+      if (["library", "review"].includes(state.lightboxContext)
         && !event.repeat
         && !event.metaKey
         && !event.ctrlKey
@@ -39367,6 +39373,7 @@ function bindEvents() {
         void submitGalleryRemoval({
           assetIDs: [state.lightboxAssetID],
           previewAssetID: state.lightboxAssetID,
+          surface: state.lightboxContext === "review" ? "review" : "gallery",
         });
         return;
       }

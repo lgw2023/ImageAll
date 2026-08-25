@@ -3143,6 +3143,14 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(stylesheet.contains(".lightbox-stage"))
         XCTAssertTrue(stylesheet.contains(".lightbox-gesture-hint"))
         XCTAssertTrue(stylesheet.contains(".lightbox-delete-button"))
+        XCTAssertTrue(html.contains("图库、审核与瘦身预览删除当前项"))
+        XCTAssertTrue(
+            script.contains(
+                "[\"library\", \"review\", \"slimming\"].includes("
+            )
+        )
+        XCTAssertTrue(script.contains("surface: state.lightboxContext === \"review\" ? \"review\" : \"gallery\""))
+        XCTAssertTrue(script.contains("[\"library\", \"review\"].includes(state.lightboxContext)"))
         XCTAssertTrue(script.contains("function loadMoreLightboxItems"))
         XCTAssertTrue(script.contains("function syncLibraryLightboxSelection"))
         XCTAssertTrue(script.contains("function lightboxNavigationFocusTarget"))

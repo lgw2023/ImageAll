@@ -3518,9 +3518,14 @@ def main():
             "() => !document.querySelector('#lightboxFavoriteButton').disabled"
         )
         assert page.locator("#lightboxFavoriteButton").is_visible()
+        review_lightbox_delete = page.locator("#lightboxDeleteButton")
+        assert review_lightbox_delete.is_visible()
+        assert review_lightbox_delete.is_enabled()
+        assert "REVIEW_1.JPG" in review_lightbox_delete.get_attribute("aria-label")
         page.locator("#lightboxFavoriteButton").click()
         page.wait_for_function(
-            "() => document.querySelector('#lightboxFavoriteButton')?.dataset.favorite === 'true'"
+            "() => document.querySelector('#lightboxFavoriteButton')?.dataset.favorite === 'true' "
+            "&& document.querySelector('#lightboxDeleteButton').disabled"
         )
         assert favorite_mutations[-1]["assetIDs"] == [REVIEW_IDS[0]]
         assert favorite_mutations[-1]["isFavorite"] is True
@@ -3532,17 +3537,26 @@ def main():
             "() => document.querySelector('#reviewInspectorDeleteButton').disabled"
         )
         assert "红心保护" in review_delete_action.get_attribute("title")
+        assert "红心保护" in review_lightbox_delete.get_attribute("aria-label")
         assert "请先取消红心再删除" in page.locator(
             "#reviewInspectorActionStatus"
         ).inner_text()
         page.locator("#lightboxFavoriteButton").click()
         page.wait_for_function(
             "() => document.querySelector('#lightboxFavoriteButton')?.dataset.favorite === 'false' "
-            "&& !document.querySelector('#reviewInspectorDeleteButton').disabled"
+            "&& !document.querySelector('#reviewInspectorDeleteButton').disabled "
+            "&& !document.querySelector('#lightboxDeleteButton').disabled"
         )
         assert favorite_mutations[-1]["assetIDs"] == [REVIEW_IDS[0]]
         assert favorite_mutations[-1]["isFavorite"] is False
-        review_delete_action.click()
+        page.keyboard.press("Delete")
+        page.locator("#confirmDialog[open]").wait_for()
+        page.keyboard.press("Escape")
+        page.locator("#confirmDialog").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'lightboxDeleteButton'"
+        )
+        review_lightbox_delete.click()
         page.locator("#confirmDialog[open]").wait_for()
         assert page.locator("#confirmDialog").get_attribute("data-tone") == "danger"
         review_delete_confirmation = page.locator("#confirmDialogMessage").inner_text()
@@ -3600,6 +3614,9 @@ def main():
             "&& document.querySelector('#lightboxTitle').textContent.includes('REVIEW_2.JPG') "
             "&& document.querySelector('#reviewFileName').textContent === 'REVIEW_2.JPG'"
         )
+        assert page.locator("#lightboxDeleteButton").is_visible()
+        assert page.locator("#lightboxDeleteButton").is_enabled()
+        page.screenshot(path="/tmp/imageall-review-lightbox-delete.png", full_page=True)
         assert page.locator("#lightbox").get_attribute("aria-modal") == "false"
         assert page.locator("#reviewQueuePane").evaluate("element => element.inert")
 
