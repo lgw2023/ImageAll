@@ -1174,7 +1174,49 @@ def main():
         scene_toggle = sidebar_group_toggle(page, GROUP_SCENE)
         assert subject_toggle.get_attribute("aria-expanded") == "true"
         assert subject_toggle.locator(".tag-navigation-group-count").inner_text() == "2"
-        subject_toggle.click()
+        collapse_identity = page.evaluate(
+            f"""() => {{
+              const navigation = document.querySelector("#tagNavigation");
+              const subject = navigation.querySelector(
+                '[data-sidebar-tag-group-id="{GROUP_SUBJECT}"]'
+              );
+              const scene = navigation.querySelector(
+                '[data-sidebar-tag-group-id="{GROUP_SCENE}"]'
+              );
+              const toggle = subject.querySelector(".tag-navigation-group-title");
+              const cat = subject.querySelector('[data-quick-tag-id="{TAG_CAT}"]');
+              const dog = subject.querySelector('[data-quick-tag-id="{TAG_DOG}"]');
+              toggle.focus({{ preventScroll: true }});
+              window.__stableSidebarCollapseFrame = {{
+                subject,
+                scene,
+                toggle,
+                list: subject.querySelector(".tag-navigation-group-tags"),
+                cat,
+                dog,
+              }};
+              toggle.click();
+              const frame = window.__stableSidebarCollapseFrame;
+              return {{
+                subject: navigation.querySelector(
+                  '[data-sidebar-tag-group-id="{GROUP_SUBJECT}"]'
+                ) === frame.subject,
+                scene: navigation.querySelector(
+                  '[data-sidebar-tag-group-id="{GROUP_SCENE}"]'
+                ) === frame.scene,
+                toggle: frame.subject.querySelector(".tag-navigation-group-title")
+                  === frame.toggle,
+                list: frame.subject.querySelector(".tag-navigation-group-tags")
+                  === frame.list,
+                cat: frame.subject.querySelector('[data-quick-tag-id="{TAG_CAT}"]')
+                  === frame.cat,
+                dog: frame.subject.querySelector('[data-quick-tag-id="{TAG_DOG}"]')
+                  === frame.dog,
+                focus: document.activeElement === frame.toggle,
+              }};
+            }}"""
+        )
+        assert all(collapse_identity.values()), collapse_identity
         assert subject_toggle.get_attribute("aria-expanded") == "false"
         assert not page.locator(f'[data-quick-tag-id="{TAG_CAT}"]').is_visible()
         page.reload(wait_until="networkidle")
@@ -1261,6 +1303,22 @@ def main():
         ) == "true"
         assert inspector_group_names(page, "inspectorTags", GROUP_SUBJECT) == ["狗", "猫"]
 
+        page.evaluate(
+            f"""() => {{
+              const navigation = document.querySelector("#tagNavigation");
+              window.__stableSidebarMoveFrame = {{
+                subject: navigation.querySelector(
+                  '[data-sidebar-tag-group-id="{GROUP_SUBJECT}"]'
+                ),
+                scene: navigation.querySelector(
+                  '[data-sidebar-tag-group-id="{GROUP_SCENE}"]'
+                ),
+                cat: navigation.querySelector('[data-quick-tag-id="{TAG_CAT}"]'),
+                dog: navigation.querySelector('[data-quick-tag-id="{TAG_DOG}"]'),
+                travel: navigation.querySelector('[data-quick-tag-id="{TAG_TRAVEL}"]'),
+              }};
+            }}"""
+        )
         page.locator(f'[data-quick-tag-id="{TAG_DOG}"]').drag_to(
             page.locator(f'[data-quick-tag-id="{TAG_TRAVEL}"]')
         )
@@ -1276,6 +1334,29 @@ def main():
             arg=TAG_DOG,
         )
         assert page.evaluate("() => document.activeElement?.dataset.quickTagId") == TAG_DOG
+        move_identity = page.evaluate(
+            f"""() => {{
+              const frame = window.__stableSidebarMoveFrame;
+              const navigation = document.querySelector("#tagNavigation");
+              const dog = navigation.querySelector('[data-quick-tag-id="{TAG_DOG}"]');
+              return {{
+                subject: navigation.querySelector(
+                  '[data-sidebar-tag-group-id="{GROUP_SUBJECT}"]'
+                ) === frame.subject,
+                scene: navigation.querySelector(
+                  '[data-sidebar-tag-group-id="{GROUP_SCENE}"]'
+                ) === frame.scene,
+                cat: navigation.querySelector('[data-quick-tag-id="{TAG_CAT}"]')
+                  === frame.cat,
+                dog: dog === frame.dog,
+                travel: navigation.querySelector('[data-quick-tag-id="{TAG_TRAVEL}"]')
+                  === frame.travel,
+                moved: dog.closest('[data-sidebar-tag-group-id]') === frame.scene,
+                focus: document.activeElement === dog,
+              }};
+            }}"""
+        )
+        assert all(move_identity.values()), move_identity
 
         dog = page.locator(f'[data-quick-tag-id="{TAG_DOG}"]')
         dog.focus()
@@ -1284,6 +1365,22 @@ def main():
         assert inspector_group_names(page, "inspectorTags", GROUP_SCENE) == ["旅行", "狗"]
         assert len(tag_moves) == 1
 
+        page.evaluate(
+            f"""() => {{
+              const navigation = document.querySelector("#tagNavigation");
+              window.__stableSidebarRollbackFrame = {{
+                subject: navigation.querySelector(
+                  '[data-sidebar-tag-group-id="{GROUP_SUBJECT}"]'
+                ),
+                scene: navigation.querySelector(
+                  '[data-sidebar-tag-group-id="{GROUP_SCENE}"]'
+                ),
+                cat: navigation.querySelector('[data-quick-tag-id="{TAG_CAT}"]'),
+                dog: navigation.querySelector('[data-quick-tag-id="{TAG_DOG}"]'),
+                travel: navigation.querySelector('[data-quick-tag-id="{TAG_TRAVEL}"]'),
+              }};
+            }}"""
+        )
         fail_next_move[0] = True
         page.locator(f'[data-quick-tag-id="{TAG_CAT}"]').drag_to(
             page.locator(f'[data-quick-tag-id="{TAG_TRAVEL}"]')
@@ -1295,6 +1392,27 @@ def main():
         assert sidebar_group_names(page, GROUP_SUBJECT) == ["猫"]
         assert sidebar_group_names(page, GROUP_SCENE) == ["旅行", "狗"]
         assert inspector_group_names(page, "inspectorTags", GROUP_SUBJECT) == ["猫"]
+        rollback_identity = page.evaluate(
+            f"""() => {{
+              const frame = window.__stableSidebarRollbackFrame;
+              const navigation = document.querySelector("#tagNavigation");
+              return {{
+                subject: navigation.querySelector(
+                  '[data-sidebar-tag-group-id="{GROUP_SUBJECT}"]'
+                ) === frame.subject,
+                scene: navigation.querySelector(
+                  '[data-sidebar-tag-group-id="{GROUP_SCENE}"]'
+                ) === frame.scene,
+                cat: navigation.querySelector('[data-quick-tag-id="{TAG_CAT}"]')
+                  === frame.cat,
+                dog: navigation.querySelector('[data-quick-tag-id="{TAG_DOG}"]')
+                  === frame.dog,
+                travel: navigation.querySelector('[data-quick-tag-id="{TAG_TRAVEL}"]')
+                  === frame.travel,
+              }};
+            }}"""
+        )
+        assert all(rollback_identity.values()), rollback_identity
 
         test_phase[0] = "single-inspector-reorder"
         page.locator(
@@ -1413,7 +1531,84 @@ def main():
         test_phase[0] = "tag-filtering"
         dog_chip = page.locator(f'[data-quick-tag-id="{TAG_DOG}"]')
         travel_chip = page.locator(f'[data-quick-tag-id="{TAG_TRAVEL}"]')
-        dog_chip.click()
+        page.evaluate(
+            f"""() => {{
+              const navigation = document.querySelector("#tagNavigation");
+              const dog = navigation.querySelector('[data-quick-tag-id="{TAG_DOG}"]');
+              const travel = navigation.querySelector('[data-quick-tag-id="{TAG_TRAVEL}"]');
+              const subject = navigation.querySelector(
+                '[data-sidebar-tag-group-id="{GROUP_SUBJECT}"]'
+              );
+              const scene = navigation.querySelector(
+                '[data-sidebar-tag-group-id="{GROUP_SCENE}"]'
+              );
+              const mutations = [];
+              const observer = new MutationObserver((records) => mutations.push(...records));
+              dog.focus({{ preventScroll: true }});
+              observer.observe(travel, {{
+                attributes: true,
+                childList: true,
+                characterData: true,
+                subtree: true,
+              }});
+              observer.observe(scene, {{
+                attributes: true,
+                childList: true,
+                characterData: true,
+                subtree: true,
+              }});
+              window.__stableSidebarTagFrame = {{
+                navigation,
+                dog,
+                travel,
+                subject,
+                scene,
+                subjectToggle: subject.querySelector(".tag-navigation-group-title"),
+                subjectList: subject.querySelector(".tag-navigation-group-tags"),
+                sceneToggle: scene.querySelector(".tag-navigation-group-title"),
+                sceneList: scene.querySelector(".tag-navigation-group-tags"),
+                mutations,
+                observer,
+              }};
+              dog.click();
+            }}"""
+        )
+        page.wait_for_function("() => !state.loadingAssets && !state.assetLoadPromise")
+        stable_sidebar_filter = page.evaluate(
+            f"""() => {{
+              const frame = window.__stableSidebarTagFrame;
+              frame.mutations.push(...frame.observer.takeRecords());
+              frame.observer.disconnect();
+              const navigation = document.querySelector("#tagNavigation");
+              const dog = navigation.querySelector('[data-quick-tag-id="{TAG_DOG}"]');
+              const travel = navigation.querySelector('[data-quick-tag-id="{TAG_TRAVEL}"]');
+              const subject = navigation.querySelector(
+                '[data-sidebar-tag-group-id="{GROUP_SUBJECT}"]'
+              );
+              const scene = navigation.querySelector(
+                '[data-sidebar-tag-group-id="{GROUP_SCENE}"]'
+              );
+              return {{
+                navigation: navigation === frame.navigation,
+                dog: dog === frame.dog,
+                travel: travel === frame.travel,
+                subject: subject === frame.subject,
+                scene: scene === frame.scene,
+                subjectToggle: subject.querySelector(".tag-navigation-group-title")
+                  === frame.subjectToggle,
+                subjectList: subject.querySelector(".tag-navigation-group-tags")
+                  === frame.subjectList,
+                sceneToggle: scene.querySelector(".tag-navigation-group-title")
+                  === frame.sceneToggle,
+                sceneList: scene.querySelector(".tag-navigation-group-tags")
+                  === frame.sceneList,
+                focus: document.activeElement === dog,
+                selected: dog.dataset.tagFilterState === "included",
+                unrelatedMutations: frame.mutations.length === 0,
+              }};
+            }}"""
+        )
+        assert all(stable_sidebar_filter.values()), stable_sidebar_filter
         assert dog_chip.get_attribute("data-tag-filter-state") == "included"
         travel_chip.click(modifiers=["Meta"])
         assert travel_chip.get_attribute("data-tag-filter-state") == "included"

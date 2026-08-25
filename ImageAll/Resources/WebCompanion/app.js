@@ -8601,6 +8601,27 @@ function toggleSidebarTagGroup(groupID) {
   });
 }
 
+function setSidebarTagText(element, text) {
+  if (element.textContent !== text) element.textContent = text;
+}
+
+function setSidebarTagAttribute(element, name, value) {
+  if (element.getAttribute(name) !== value) element.setAttribute(name, value);
+}
+
+function setSidebarTagData(element, key, value) {
+  if (element.dataset[key] !== value) element.dataset[key] = value;
+}
+
+function toggleSidebarTagClass(element, className, enabled) {
+  if (element.classList.contains(className) !== enabled) {
+    element.classList.toggle(className, enabled);
+  }
+}
+
+const sidebarTagNavigationSectionCache = new Map();
+const sidebarTagNavigationChipCache = new Map();
+
 function configureSidebarTagFilterState(button, tag, query) {
   const condition = state.filters.tagConditions.find((item) => item.tagID === tag.id);
   const included = condition?.decision === "accepted";
@@ -8610,14 +8631,18 @@ function configureSidebarTagFilterState(button, tag, query) {
     : included
       ? (state.filters.tagMatchMode === "all" ? "交集筛选" : "并集筛选")
       : "未筛选";
-  button.dataset.tagFilterState = excluded ? "excluded" : included ? "included" : "none";
-  button.classList.toggle("selected", included);
-  button.classList.toggle("excluded", excluded);
-  button.setAttribute("aria-pressed", String(included || excluded));
-  button.setAttribute("aria-label", `${tag.displayName}，${stateLabel}`);
-  button.dataset.helpTitle = tag.displayName;
-  button.dataset.helpKind = "tag";
-  button.dataset.helpDetail = [
+  setSidebarTagData(
+    button,
+    "tagFilterState",
+    excluded ? "excluded" : included ? "included" : "none"
+  );
+  toggleSidebarTagClass(button, "selected", included);
+  toggleSidebarTagClass(button, "excluded", excluded);
+  setSidebarTagAttribute(button, "aria-pressed", String(included || excluded));
+  setSidebarTagAttribute(button, "aria-label", `${tag.displayName}，${stateLabel}`);
+  setSidebarTagData(button, "helpTitle", tag.displayName);
+  setSidebarTagData(button, "helpKind", "tag");
+  setSidebarTagData(button, "helpDetail", [
     `当前：${stateLabel}。`,
     excluded
       ? "点击改为并集筛选；Command-Option-点击或 Command-Option-Return 取消排除。"
@@ -8630,14 +8655,158 @@ function configureSidebarTagFilterState(button, tag, query) {
     query
       ? "正在搜索标签；清除搜索后可拖动或用 Option + 方向键调整分组与顺序。"
       : "拖动可调整分组与顺序；Option + 左/右调整组内顺序，上/下移动到相邻分组。",
-  ].join("\n");
-  button.title = query
+  ].join("\n"));
+  const title = query
     ? "清除标签搜索后可拖放排序"
     : excluded
       ? "已从当前范围排除；⌘⌥点击取消排除；拖动可排序"
       : included
         ? `${stateLabel}；点击切换；⌘⌥点击排除；拖动可排序`
         : "点击并集筛选；⌘点击交集筛选；⌘⌥点击排除；拖动可排序";
+  if (button.title !== title) button.title = title;
+}
+
+function sidebarTagNavigationSections(tags, knownGroups) {
+  const sections = [];
+  if (knownGroups.length) {
+    for (const group of knownGroups) {
+      const groupTags = orderedTagsInGroup(
+        tags.filter((tag) => tag.groupID === group.id),
+        group.id
+      );
+      if (groupTags.length) {
+        sections.push({
+          preferenceID: group.id,
+          groupID: group.id,
+          displayName: group.displayName,
+          isSystem: Boolean(group.isSystem),
+          allowsVerticalMove: true,
+          tags: groupTags,
+        });
+      }
+    }
+    const orphanedTags = orderedTagsInGroup(
+      tags.filter((tag) => !groupByID(tag.groupID)),
+      null
+    );
+    if (orphanedTags.length) {
+      sections.push({
+        preferenceID: "__other__",
+        groupID: "",
+        displayName: "其他",
+        isSystem: true,
+        allowsVerticalMove: false,
+        tags: orphanedTags,
+      });
+    }
+  } else if (tags.length) {
+    sections.push({
+      preferenceID: "__all__",
+      groupID: "",
+      displayName: "标签",
+      isSystem: true,
+      allowsVerticalMove: true,
+      tags: orderedTagsInGroup(tags, null),
+    });
+  }
+  return sections;
+}
+
+function syncSidebarTagNavigationSection(section, descriptor, query) {
+  if (!section) {
+    section = document.createElement("section");
+    section.className = "tag-navigation-group";
+  }
+  sidebarTagNavigationSectionCache.set(descriptor.preferenceID, section);
+  setSidebarTagData(section, "tagDropGroupId", descriptor.groupID);
+  setSidebarTagData(section, "sidebarTagGroupId", descriptor.preferenceID);
+  const collapsed = !query
+    && state.layout.collapsedTagGroupIDs.has(descriptor.preferenceID);
+
+  let title = section.querySelector(":scope > .tag-navigation-group-title");
+  if (!title) {
+    title = document.createElement("button");
+    title.type = "button";
+    title.className = "tag-navigation-group-title";
+    section.prepend(title);
+  }
+  setSidebarTagData(title, "sidebarTagGroupToggle", descriptor.preferenceID);
+  setSidebarTagAttribute(title, "aria-expanded", String(!collapsed));
+  setSidebarTagAttribute(
+    title,
+    "aria-keyshortcuts",
+    "ArrowUp ArrowDown Home End Shift+F10 ContextMenu"
+  );
+  const titleText = collapsed
+    ? `展开“${descriptor.displayName}”`
+    : `折叠“${descriptor.displayName}”`;
+  if (title.title !== titleText) title.title = titleText;
+  setSidebarTagData(title, "helpTitle", `标签分组 · ${descriptor.displayName}`);
+  setSidebarTagData(title, "helpKind", "tag");
+  setSidebarTagData(title, "helpDetail", [
+    query
+      ? `搜索中显示 ${descriptor.tags.length} 个匹配标签；清除搜索后恢复折叠状态。`
+      : collapsed
+        ? `当前已折叠，点击展开 ${descriptor.tags.length} 个标签。`
+        : `当前已展开，点击暂时隐藏 ${descriptor.tags.length} 个标签。`,
+    "上/下或 Home/End 在分组之间移动。",
+    descriptor.isSystem
+      ? "这是系统分组，不能重命名或删除。"
+      : "右键、Context Menu 或 Shift-F10 可重命名或删除分组；删除只移动组内标签。",
+  ].join("\n"));
+
+  let chevron = title.querySelector(":scope > .tag-navigation-group-chevron");
+  if (!chevron) {
+    chevron = document.createElement("span");
+    chevron.className = "tag-navigation-group-chevron";
+    chevron.setAttribute("aria-hidden", "true");
+    title.prepend(chevron);
+  }
+  setSidebarTagText(chevron, collapsed ? "›" : "⌄");
+  let name = title.querySelector(":scope > strong");
+  if (!name) {
+    name = document.createElement("strong");
+    title.append(name);
+  }
+  setSidebarTagText(name, descriptor.displayName);
+  let count = title.querySelector(":scope > .tag-navigation-group-count");
+  if (!count) {
+    count = document.createElement("span");
+    count.className = "tag-navigation-group-count";
+    title.append(count);
+  }
+  setSidebarTagText(count, String(descriptor.tags.length));
+
+  let list = section.querySelector(":scope > .tag-navigation-group-tags");
+  if (!list) {
+    list = document.createElement("div");
+    list.className = "tag-navigation-group-tags";
+    section.append(list);
+  }
+  toggleSidebarTagClass(list, "hidden", collapsed);
+  return { section, list };
+}
+
+function syncSidebarTagNavigationChip(button, tag, query, allowsVerticalMove) {
+  if (!button) {
+    button = document.createElement("button");
+    button.type = "button";
+    button.className = "sidebar-tag-chip";
+  }
+  sidebarTagNavigationChipCache.set(tag.id, button);
+  setSidebarTagData(button, "quickTagId", tag.id);
+  const draggable = !query && !state.tagManagementMutating;
+  if (button.draggable !== draggable) button.draggable = draggable;
+  setSidebarTagAttribute(
+    button,
+    "aria-keyshortcuts",
+    allowsVerticalMove
+      ? "Meta+Enter Meta+Alt+Enter Shift+F10 Alt+ArrowLeft Alt+ArrowRight Alt+ArrowUp Alt+ArrowDown"
+      : "Meta+Enter Meta+Alt+Enter Shift+F10 Alt+ArrowLeft Alt+ArrowRight"
+  );
+  setSidebarTagText(button, tag.displayName);
+  configureSidebarTagFilterState(button, tag, query);
+  return button;
 }
 
 function renderTagNavigation() {
@@ -8646,7 +8815,6 @@ function renderTagNavigation() {
   const tags = allActiveTags.filter((tag) => (
     !query || tag.displayName.toLocaleLowerCase("zh-CN").includes(query)
   ));
-  clearElement(elements.tagNavigation);
   elements.tagNavigationEmpty.classList.toggle("hidden", tags.length > 0);
   elements.tagNavigationEmptyText.textContent = allActiveTags.length
     ? "没有匹配的标签"
@@ -8655,137 +8823,55 @@ function renderTagNavigation() {
   elements.sidebarInstallPresetTagsButton.classList.toggle("hidden", !offersPresets);
   elements.sidebarInstallPresetTagsButton.disabled = !state.online || state.installingPresetTags;
 
-  const knownGroups = orderedTagGroups();
-  const groups = knownGroups.length
-    ? knownGroups
-    : [{ id: "", displayName: "标签", sortOrder: 0, isSystem: true }];
-  for (const group of groups) {
-    const groupTags = orderedTagsInGroup(
-      tags.filter((tag) => (
-        knownGroups.length ? tag.groupID === group.id : true
-      )),
-      knownGroups.length ? group.id : null
-    );
-    if (!groupTags.length) continue;
-    const preferenceID = knownGroups.length ? group.id : "__all__";
-    const collapsed = !query && state.layout.collapsedTagGroupIDs.has(preferenceID);
-    const section = document.createElement("section");
-    section.className = "tag-navigation-group";
-    section.dataset.tagDropGroupId = group.id;
-    section.dataset.sidebarTagGroupId = preferenceID;
-    const title = document.createElement("button");
-    title.type = "button";
-    title.className = "tag-navigation-group-title";
-    title.dataset.sidebarTagGroupToggle = preferenceID;
-    title.setAttribute("aria-expanded", String(!collapsed));
-    title.setAttribute(
-      "aria-keyshortcuts",
-      "ArrowUp ArrowDown Home End Shift+F10 ContextMenu"
-    );
-    title.title = collapsed ? `展开“${group.displayName}”` : `折叠“${group.displayName}”`;
-    title.dataset.helpTitle = `标签分组 · ${group.displayName}`;
-    title.dataset.helpKind = "tag";
-    title.dataset.helpDetail = [
+  const descriptors = sidebarTagNavigationSections(tags, orderedTagGroups());
+  const existingSections = new Map(
+    [...elements.tagNavigation.querySelectorAll(":scope > [data-sidebar-tag-group-id]")]
+      .map((section) => [section.dataset.sidebarTagGroupId, section])
+  );
+  const existingChips = new Map(
+    [...elements.tagNavigation.querySelectorAll("[data-quick-tag-id]")]
+      .map((button) => [button.dataset.quickTagId, button])
+  );
+  const wantedSections = [];
+  const wantedLists = [];
+  for (const descriptor of descriptors) {
+    const synced = syncSidebarTagNavigationSection(
+      existingSections.get(descriptor.preferenceID)
+        || sidebarTagNavigationSectionCache.get(descriptor.preferenceID),
+      descriptor,
       query
-        ? `搜索中显示 ${groupTags.length} 个匹配标签；清除搜索后恢复折叠状态。`
-        : collapsed
-          ? `当前已折叠，点击展开 ${groupTags.length} 个标签。`
-          : `当前已展开，点击暂时隐藏 ${groupTags.length} 个标签。`,
-      "上/下或 Home/End 在分组之间移动。",
-      group.isSystem
-        ? "这是系统分组，不能重命名或删除。"
-        : "右键、Context Menu 或 Shift-F10 可重命名或删除分组；删除只移动组内标签。",
-    ].join("\n");
-    const chevron = document.createElement("span");
-    chevron.className = "tag-navigation-group-chevron";
-    chevron.setAttribute("aria-hidden", "true");
-    chevron.textContent = collapsed ? "›" : "⌄";
-    const name = document.createElement("strong");
-    name.textContent = group.displayName;
-    const count = document.createElement("span");
-    count.className = "tag-navigation-group-count";
-    count.textContent = String(groupTags.length);
-    title.append(chevron, name, count);
-    const list = document.createElement("div");
-    list.className = "tag-navigation-group-tags";
-    list.classList.toggle("hidden", collapsed);
-    for (const tag of groupTags) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "sidebar-tag-chip";
-      button.dataset.quickTagId = tag.id;
-      button.draggable = !query && !state.tagManagementMutating;
-      button.setAttribute(
-        "aria-keyshortcuts",
-        "Meta+Enter Meta+Alt+Enter Shift+F10 Alt+ArrowLeft Alt+ArrowRight Alt+ArrowUp Alt+ArrowDown"
-      );
-      button.textContent = tag.displayName;
-      configureSidebarTagFilterState(button, tag, query);
-      list.append(button);
+    );
+    const wantedChips = descriptor.tags.map((tag) => (
+      syncSidebarTagNavigationChip(
+        existingChips.get(tag.id) || sidebarTagNavigationChipCache.get(tag.id),
+        tag,
+        query,
+        descriptor.allowsVerticalMove
+      )
+    ));
+    for (const [index, button] of wantedChips.entries()) {
+      if (synced.list.children[index] !== button) {
+        synced.list.insertBefore(button, synced.list.children[index] || null);
+      }
     }
-    section.append(title, list);
-    elements.tagNavigation.append(section);
+    wantedLists.push({ list: synced.list, buttons: wantedChips });
+    wantedSections.push(synced.section);
   }
-  const orphanedTags = knownGroups.length
-    ? orderedTagsInGroup(tags.filter((tag) => !groupByID(tag.groupID)), null)
-    : [];
-  if (orphanedTags.length) {
-    const preferenceID = "__other__";
-    const collapsed = !query && state.layout.collapsedTagGroupIDs.has(preferenceID);
-    const section = document.createElement("section");
-    section.className = "tag-navigation-group";
-    section.dataset.tagDropGroupId = "";
-    section.dataset.sidebarTagGroupId = preferenceID;
-    const title = document.createElement("button");
-    title.type = "button";
-    title.className = "tag-navigation-group-title";
-    title.dataset.sidebarTagGroupToggle = preferenceID;
-    title.setAttribute("aria-expanded", String(!collapsed));
-    title.setAttribute(
-      "aria-keyshortcuts",
-      "ArrowUp ArrowDown Home End Shift+F10 ContextMenu"
-    );
-    title.title = collapsed ? "展开“其他”" : "折叠“其他”";
-    title.dataset.helpTitle = "标签分组 · 其他";
-    title.dataset.helpKind = "tag";
-    title.dataset.helpDetail = [
-      query
-        ? `搜索中显示 ${orphanedTags.length} 个匹配标签；清除搜索后恢复折叠状态。`
-        : collapsed
-          ? `当前已折叠，点击展开 ${orphanedTags.length} 个标签。`
-          : `当前已展开，点击暂时隐藏 ${orphanedTags.length} 个标签。`,
-      "上/下或 Home/End 在分组之间移动。",
-      "这是系统分组，不能重命名或删除。",
-    ].join("\n");
-    const chevron = document.createElement("span");
-    chevron.className = "tag-navigation-group-chevron";
-    chevron.setAttribute("aria-hidden", "true");
-    chevron.textContent = collapsed ? "›" : "⌄";
-    const name = document.createElement("strong");
-    name.textContent = "其他";
-    const count = document.createElement("span");
-    count.className = "tag-navigation-group-count";
-    count.textContent = String(orphanedTags.length);
-    title.append(chevron, name, count);
-    const list = document.createElement("div");
-    list.className = "tag-navigation-group-tags";
-    list.classList.toggle("hidden", collapsed);
-    for (const tag of orphanedTags) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "sidebar-tag-chip";
-      button.dataset.quickTagId = tag.id;
-      button.draggable = !query && !state.tagManagementMutating;
-      button.setAttribute(
-        "aria-keyshortcuts",
-        "Meta+Enter Meta+Alt+Enter Shift+F10 Alt+ArrowLeft Alt+ArrowRight"
+  for (const [index, section] of wantedSections.entries()) {
+    if (elements.tagNavigation.children[index] !== section) {
+      elements.tagNavigation.insertBefore(
+        section,
+        elements.tagNavigation.children[index] || null
       );
-      button.textContent = tag.displayName;
-      configureSidebarTagFilterState(button, tag, query);
-      list.append(button);
     }
-    section.append(title, list);
-    elements.tagNavigation.append(section);
+  }
+  for (const { list, buttons } of wantedLists) {
+    for (const button of [...list.children]) {
+      if (!buttons.includes(button)) button.remove();
+    }
+  }
+  for (const section of [...elements.tagNavigation.children]) {
+    if (!wantedSections.includes(section)) section.remove();
   }
   elements.untaggedNavigationButton.classList.toggle(
     "selected",
@@ -10013,6 +10099,7 @@ async function retryFolderBranch(sourceID, parentRelativePath = null) {
 }
 
 async function searchFolders(sourceID, text) {
+  const focus = captureFolderSidebarFocus();
   const queryText = text.trim();
   const catalogGeneration = state.folderNavigation.requestGeneration;
   const requestGeneration =
@@ -10053,6 +10140,7 @@ async function searchFolders(sourceID, text) {
     });
   }
   renderSources();
+  restoreFolderSidebarFocus(focus);
 }
 
 function folderSearchInput(sourceID) {
