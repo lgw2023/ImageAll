@@ -1317,6 +1317,7 @@ const state = {
     renderedDetailRunID: null,
     renderedDetailFingerprint: null,
     renderedContentFingerprint: null,
+    pendingDetailActionFocusKey: null,
     setup: {
       loading: false,
       launching: false,
@@ -21870,6 +21871,7 @@ async function applyJobAction(jobID, action) {
     if (generation === state.workspaceGeneration) {
       state.jobMutatingIDs.delete(jobID);
       syncWriteActionControls();
+      restoreTrainingDetailActionFocus();
     }
   }
 }
@@ -25598,75 +25600,154 @@ function appendTrainingTechnicalBlock(title, value, fallback) {
   elements.trainingTechnicalBlocks.append(block);
 }
 
-function renderTrainingDetailActions(run) {
-  clearElement(elements.trainingDetailActions);
+function trainingDetailJobActionKey(jobID, action) {
+  if (["pause", "resume"].includes(action)) return `job:${jobID}:primary`;
+  return `job:${jobID}:${action}`;
+}
+
+function syncTrainingDetailAction(button, descriptor) {
+  button.type = "button";
+  button.className = descriptor.className;
+  button.setAttribute("data-training-detail-action-key", descriptor.key);
+  for (const name of [
+    "jobId",
+    "trainingJobId",
+    "trainingRunJobId",
+    "trainingReconfigureRunId",
+    "trainingReviewRunId",
+    "action",
+  ]) {
+    delete button.dataset[name];
+  }
+  for (const [name, value] of Object.entries(descriptor.dataset || {})) {
+    button.dataset[name] = value;
+  }
+  button.disabled = Boolean(descriptor.disabled);
+  button.textContent = descriptor.text;
+  configurePersistentHelp(button, descriptor.help);
+}
+
+function restoreTrainingDetailActionFocus() {
+  const key = state.training.pendingDetailActionFocusKey;
+  if (!key) return;
+  if (elements.trainingWorkspace.classList.contains("hidden")) {
+    state.training.pendingDetailActionFocusKey = null;
+    return;
+  }
+  requestAnimationFrame(() => {
+    if (state.training.pendingDetailActionFocusKey !== key) return;
+    const buttons = [...elements.trainingDetailActions.children];
+    const exact = buttons.find(
+      (candidate) => candidate.dataset.trainingDetailActionKey === key
+    );
+    if (exact?.disabled) return;
+    const button = exact || buttons.find((candidate) => !candidate.disabled);
+    if (!button) {
+      state.training.pendingDetailActionFocusKey = null;
+      return;
+    }
+    button.focus({ preventScroll: true });
+    state.training.pendingDetailActionFocusKey = null;
+  });
+}
+
+function reconcileTrainingDetailActions(run) {
+  const descriptors = [];
   const job = run.jobID ? state.jobs.find((item) => item.id === run.jobID) : null;
   if (run.jobID) {
-    const viewJob = document.createElement("button");
-    viewJob.type = "button";
-    viewJob.className = "button button-compact";
-    viewJob.dataset.trainingJobId = run.jobID;
-    viewJob.textContent = "查看关联任务";
-    configurePersistentHelp(viewJob, {
-      title: "查看关联任务",
-      detail: "在活动面板中定位这个 Run 的后台任务；训练详情、选择和滚动位置保持不变。",
-      kind: "training",
+    descriptors.push({
+      key: `job:${run.jobID}:view`,
+      className: "button button-compact",
+      dataset: { trainingJobId: run.jobID },
+      text: "查看关联任务",
+      help: {
+        title: "查看关联任务",
+        detail: "在活动面板中定位这个 Run 的后台任务；训练详情、选择和滚动位置保持不变。",
+        kind: "training",
+      },
     });
-    elements.trainingDetailActions.append(viewJob);
 
     for (const action of job?.availableActions || []) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = `button button-compact job-action write-action${action === "cancel" ? " button-danger" : ""}`;
-      button.dataset.jobId = run.jobID;
-      button.dataset.trainingRunJobId = run.jobID;
-      button.dataset.action = action;
-      button.disabled = !state.online || state.jobMutatingIDs.has(run.jobID);
-      button.textContent = action === "resume" && job.state === "retryableFailed"
+      const text = action === "resume" && job.state === "retryableFailed"
         ? "重试任务"
         : jobActionText(action);
-      configurePersistentHelp(button, {
-        title: button.textContent,
-        detail: {
-          pause: "暂停关联任务并保留已经完成的进度；可以稍后从活动面板或这里继续。",
-          resume: job.state === "retryableFailed"
-            ? "从 Mac 保存的恢复点重试失败任务；不会创建重复 Run。"
-            : "从 Mac 保存的进度继续关联任务。",
-          cancel: "请求 Mac 取消尚未完成的工作；已经保存的训练记录和成功产物不会被删除。",
-        }[action] || "把这个任务动作交给 Mac 执行，并保留当前训练详情。",
-        kind: "training",
+      descriptors.push({
+        key: trainingDetailJobActionKey(run.jobID, action),
+        className: `button button-compact job-action write-action${action === "cancel" ? " button-danger" : ""}`,
+        dataset: {
+          jobId: run.jobID,
+          trainingRunJobId: run.jobID,
+          action,
+        },
+        disabled: !state.online || state.jobMutatingIDs.has(run.jobID),
+        text,
+        help: {
+          title: text,
+          detail: {
+            pause: "暂停关联任务并保留已经完成的进度；可以稍后从活动面板或这里继续。",
+            resume: job.state === "retryableFailed"
+              ? "从 Mac 保存的恢复点重试失败任务；不会创建重复 Run。"
+              : "从 Mac 保存的进度继续关联任务。",
+            cancel: "请求 Mac 取消尚未完成的工作；已经保存的训练记录和成功产物不会被删除。",
+          }[action] || "把这个任务动作交给 Mac 执行，并保留当前训练详情。",
+          kind: "training",
+        },
       });
-      elements.trainingDetailActions.append(button);
     }
   }
 
   if (["failed", "cancelled"].includes(run.state)) {
-    const reconfigure = document.createElement("button");
-    reconfigure.type = "button";
-    reconfigure.className = "button button-compact button-primary";
-    reconfigure.dataset.trainingReconfigureRunId = run.id;
-    reconfigure.textContent = "重新配置";
-    configurePersistentHelp(reconfigure, {
-      title: "重新配置训练",
-      detail: "从这条失败或取消记录恢复可证明的方法、标签与来源；无法证明的历史范围会要求重新确认。",
-      kind: "training",
+    descriptors.push({
+      key: `run:${run.id}:reconfigure`,
+      className: "button button-compact button-primary",
+      dataset: { trainingReconfigureRunId: run.id },
+      text: "重新配置",
+      help: {
+        title: "重新配置训练",
+        detail: "从这条失败或取消记录恢复可证明的方法、标签与来源；无法证明的历史范围会要求重新确认。",
+        kind: "training",
+      },
     });
-    elements.trainingDetailActions.append(reconfigure);
   }
 
   if (run.tagID) {
-    const review = document.createElement("button");
-    review.type = "button";
-    review.className = "button button-compact";
-    review.dataset.trainingReviewRunId = run.id;
-    review.textContent = "打开标签审核";
-    configurePersistentHelp(review, {
-      title: "打开标签审核",
-      detail: `进入“${trainingRunTagName(run)}”的建议审核；返回后仍定位到当前 Run 和详情滚动位置。`,
-      kind: "training",
+    descriptors.push({
+      key: `run:${run.id}:review`,
+      className: "button button-compact",
+      dataset: { trainingReviewRunId: run.id },
+      text: "打开标签审核",
+      help: {
+        title: "打开标签审核",
+        detail: `进入“${trainingRunTagName(run)}”的建议审核；返回后仍定位到当前 Run 和详情滚动位置。`,
+        kind: "training",
+      },
     });
-    elements.trainingDetailActions.append(review);
   }
+
+  const existing = new Map(
+    [...elements.trainingDetailActions.children].map((button) => [
+      button.dataset.trainingDetailActionKey,
+      button,
+    ])
+  );
+  const wanted = [];
+  for (const descriptor of descriptors) {
+    const button = existing.get(descriptor.key) || document.createElement("button");
+    syncTrainingDetailAction(button, descriptor);
+    wanted.push(button);
+  }
+  for (const [index, button] of wanted.entries()) {
+    if (elements.trainingDetailActions.children[index] !== button) {
+      elements.trainingDetailActions.insertBefore(
+        button,
+        elements.trainingDetailActions.children[index] || null
+      );
+    }
+  }
+  for (const button of [...elements.trainingDetailActions.children]) {
+    if (!wanted.includes(button)) button.remove();
+  }
+  restoreTrainingDetailActionFocus();
 }
 
 async function openReviewFromTrainingRun(runID) {
@@ -25754,7 +25835,7 @@ function renderTrainingDetail() {
   }
   elements.trainingDetailState.textContent = trainingStateText(run.state);
   elements.trainingDetailState.className = `training-state-pill ${run.state}`;
-  renderTrainingDetailActions(run);
+  reconcileTrainingDetailActions(run);
 
   clearElement(elements.trainingFactLedger);
   appendTrainingFact(elements.trainingFactLedger, "标签", trainingRunTagName(run));
@@ -40002,6 +40083,8 @@ function bindEvents() {
     }
     const actionButton = event.target.closest("[data-training-run-job-id][data-action]");
     if (actionButton) {
+      state.training.pendingDetailActionFocusKey =
+        actionButton.dataset.trainingDetailActionKey || null;
       applyJobAction(actionButton.dataset.trainingRunJobId, actionButton.dataset.action);
       return;
     }

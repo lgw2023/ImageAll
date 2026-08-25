@@ -39,6 +39,7 @@ def main():
     launches = []
     library_launches = []
     training_setup_reads = [0]
+    job_action_fail_next = [False]
     overview_source_queries = []
     queue_source_queries = []
     page_errors = []
@@ -367,6 +368,14 @@ def main():
         def route_job_action(route):
             payload = route.request.post_data_json
             job_id = urlparse(route.request.url).path.split("/")[-2]
+            if job_id == JOB_ID and job_action_fail_next[0]:
+                job_action_fail_next[0] = False
+                fulfill_json(
+                    route,
+                    {"message": "合成任务动作失败"},
+                    status=409,
+                )
+                return
             if job_id == JOB_ID:
                 actions.append(payload["action"])
                 target = task_state
@@ -625,6 +634,118 @@ def main():
         page.get_by_role("button", name="训练记录").click()
         page.locator("#trainingWorkspace:not(.hidden)").wait_for(state="visible")
         assert page.locator(f'[data-training-run-id="{RUN_ID}"]').get_attribute("aria-selected") == "true"
+        page.evaluate(
+            f"""() => {{
+              const actions = document.querySelector("#trainingDetailActions");
+              window.__stableTrainingDetailActions = {{
+                viewJob: actions.querySelector('[data-training-job-id="{JOB_ID}"]'),
+                primary: actions.querySelector(
+                  '[data-training-run-job-id="{JOB_ID}"][data-action="pause"]'
+                ),
+                cancel: actions.querySelector(
+                  '[data-training-run-job-id="{JOB_ID}"][data-action="cancel"]'
+                ),
+                review: actions.querySelector('[data-training-review-run-id="{RUN_ID}"]'),
+                scrollTop: document.querySelector("#trainingDetailPane").scrollTop,
+              }};
+            }}"""
+        )
+        training_pause = page.locator(
+            f'#trainingDetailActions [data-training-run-job-id="{JOB_ID}"]'
+            '[data-action="pause"]'
+        )
+        training_pause.click()
+        training_resume = page.locator(
+            f'#trainingDetailActions [data-training-run-job-id="{JOB_ID}"]'
+            '[data-action="resume"]'
+        )
+        training_resume.wait_for(state="visible")
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.action === 'resume'"
+        )
+        stable_training_detail_actions = page.evaluate(
+            f"""() => {{
+              const frame = window.__stableTrainingDetailActions;
+              const actions = document.querySelector("#trainingDetailActions");
+              const primary = actions.querySelector(
+                '[data-training-run-job-id="{JOB_ID}"][data-action="resume"]'
+              );
+              return {{
+                viewJob: actions.querySelector('[data-training-job-id="{JOB_ID}"]')
+                  === frame.viewJob,
+                primary: primary === frame.primary,
+                cancel: actions.querySelector(
+                  '[data-training-run-job-id="{JOB_ID}"][data-action="cancel"]'
+                ) === frame.cancel,
+                review: actions.querySelector('[data-training-review-run-id="{RUN_ID}"]')
+                  === frame.review,
+                focus: document.activeElement === frame.primary,
+                scroll: document.querySelector("#trainingDetailPane").scrollTop
+                  === frame.scrollTop,
+              }};
+            }}"""
+        )
+        assert all(stable_training_detail_actions.values()), stable_training_detail_actions
+        assert actions[-1] == "pause"
+        page.evaluate(
+            f"""() => {{
+              const actions = document.querySelector("#trainingDetailActions");
+              window.__failedTrainingDetailActionFrame = {{
+                viewJob: actions.querySelector('[data-training-job-id="{JOB_ID}"]'),
+                primary: actions.querySelector(
+                  '[data-training-run-job-id="{JOB_ID}"][data-action="resume"]'
+                ),
+                cancel: actions.querySelector(
+                  '[data-training-run-job-id="{JOB_ID}"][data-action="cancel"]'
+                ),
+                review: actions.querySelector('[data-training-review-run-id="{RUN_ID}"]'),
+                scrollTop: document.querySelector("#trainingDetailPane").scrollTop,
+              }};
+            }}"""
+        )
+        failed_resource_count = len(failed_resources)
+        console_error_count = len(console_errors)
+        job_action_fail_next[0] = True
+        training_resume.click()
+        page.wait_for_function(
+            "() => document.querySelector('#toastMessage').textContent.includes('合成任务动作失败')"
+        )
+        page.wait_for_function(
+            f"""() => !document.querySelector(
+              '#trainingDetailActions [data-training-run-job-id="{JOB_ID}"]'
+              + '[data-action="resume"]'
+            ).disabled"""
+        )
+        failed_training_detail_action = page.evaluate(
+            f"""() => {{
+              const frame = window.__failedTrainingDetailActionFrame;
+              const actions = document.querySelector("#trainingDetailActions");
+              return {{
+                viewJob: actions.querySelector('[data-training-job-id="{JOB_ID}"]')
+                  === frame.viewJob,
+                primary: actions.querySelector(
+                  '[data-training-run-job-id="{JOB_ID}"][data-action="resume"]'
+                ) === frame.primary,
+                cancel: actions.querySelector(
+                  '[data-training-run-job-id="{JOB_ID}"][data-action="cancel"]'
+                ) === frame.cancel,
+                review: actions.querySelector('[data-training-review-run-id="{RUN_ID}"]')
+                  === frame.review,
+                focus: document.activeElement === frame.primary,
+                scroll: document.querySelector("#trainingDetailPane").scrollTop
+                  === frame.scrollTop,
+              }};
+            }}"""
+        )
+        assert all(failed_training_detail_action.values()), failed_training_detail_action
+        assert task_state["value"] == "paused"
+        assert actions[-1] == "pause"
+        assert len(failed_resources) == failed_resource_count + 1
+        assert failed_resources[-1][0] == 409
+        failed_resources.pop()
+        assert len(console_errors) == console_error_count + 1
+        assert "409" in console_errors[-1]
+        console_errors.pop()
         page.get_by_role("button", name="打开标签审核").click()
         page.locator("#reviewQueueLayout:not(.hidden)").wait_for(state="visible")
         assert page.locator("#reviewTagSelect").input_value() == TAG_ID
@@ -635,7 +756,7 @@ def main():
         page.locator("#reviewOverview:not(.hidden)").wait_for(state="visible")
         page.get_by_role("button", name="取消").click()
         page.get_by_role("button", name="更新特征向量").wait_for(state="visible")
-        assert actions[-2:] == ["resume", "cancel"]
+        assert actions[-2:] == ["pause", "cancel"]
 
         page.get_by_role("button", name="更新特征向量").click()
         dialog = page.locator("#trainingSetupDialog")
