@@ -26696,60 +26696,172 @@ function renderSlimmingJobs({ appendItems = null } = {}) {
   renderSlimmingJobActions();
 }
 
+function slimmingJobStatusPart(key, tagName, className) {
+  let part = elements.slimmingJobStatus.querySelector(
+    `:scope > [data-slimming-job-status-part="${key}"]`
+  );
+  if (!part) {
+    part = document.createElement(tagName);
+    part.dataset.slimmingJobStatusPart = key;
+  }
+  part.className = className;
+  return part;
+}
+
+function reconcileSlimmingJobStatusChildren(container, wanted) {
+  for (const [index, child] of wanted.entries()) {
+    if (container.childNodes[index] !== child) {
+      container.insertBefore(child, container.childNodes[index] || null);
+    }
+  }
+  for (const child of [...container.childNodes]) {
+    if (!wanted.includes(child)) child.remove();
+  }
+}
+
+function syncSlimmingJobStatusProgress(job) {
+  if (!job.scanProgress) return null;
+  const progress = slimmingJobStatusPart(
+    "progress",
+    "span",
+    "slimming-scan-progress"
+  );
+  let track = progress.querySelector(":scope > .slimming-scan-progress-track");
+  if (!track) {
+    track = document.createElement("span");
+    track.className = "slimming-scan-progress-track";
+  }
+  let fill = track.querySelector(":scope > span");
+  if (!fill) {
+    fill = document.createElement("span");
+    track.append(fill);
+  }
+  let copy = progress.querySelector(":scope > span:not(.slimming-scan-progress-track)");
+  if (!copy) copy = document.createElement("span");
+  const completed = Math.max(0, Number(job.scanProgress.completedUnitCount || 0));
+  const total = Math.max(1, Number(job.scanProgress.totalUnitCount || 1));
+  fill.style.width = `${Math.min(100, Math.max(0, completed / total * 100))}%`;
+  copy.textContent = `${slimmingScanPhaseText(job.scanProgress)} ${completed}/${total}`;
+  reconcileSlimmingJobStatusChildren(progress, [track, copy]);
+  return progress;
+}
+
+function syncSlimmingJobStatusActions(job) {
+  const actions = slimmingJobStatusPart(
+    "actions",
+    "span",
+    "slimming-job-status-actions"
+  );
+  let activity = actions.querySelector('[data-slimming-job-status-action="activity"]');
+  if (!activity) {
+    activity = document.createElement("button");
+    activity.type = "button";
+    activity.className = "button button-compact";
+    activity.dataset.slimmingJobStatusAction = "activity";
+  }
+  activity.dataset.openJobActivityId = job.id;
+  activity.textContent = "在任务中查看";
+  const wanted = [activity];
+  if (job.state === "retryableFailed" && job.availableActions?.includes("resume")) {
+    let resume = actions.querySelector('[data-slimming-job-status-action="resume"]');
+    if (!resume) {
+      resume = document.createElement("button");
+      resume.type = "button";
+      resume.className = "button button-compact write-action";
+      resume.dataset.slimmingJobStatusAction = "resume";
+    }
+    resume.dataset.slimmingJobActionId = job.id;
+    resume.dataset.action = "resume";
+    resume.textContent = "继续分析";
+    wanted.push(resume);
+  }
+  reconcileSlimmingJobStatusChildren(actions, wanted);
+  return actions;
+}
+
+function syncSlimmingJobStatusDiagnosis(job) {
+  if (!["retryableFailed", "terminalFailed"].includes(job.state)) return null;
+  const diagnosis = slimmingJobStatusPart(
+    "diagnosis",
+    "span",
+    "slimming-job-diagnosis"
+  );
+  let copy = diagnosis.querySelector(':scope > [data-slimming-job-status-diagnosis="copy"]');
+  if (!copy) {
+    copy = document.createElement("span");
+    copy.dataset.slimmingJobStatusDiagnosis = "copy";
+  }
+  copy.textContent = jobFailureGuidance(job);
+  const wanted = [copy];
+  if (job.lastErrorCode) {
+    let code = diagnosis.querySelector(":scope > code");
+    if (!code) code = document.createElement("code");
+    code.textContent = job.lastErrorCode;
+    wanted.push(document.createTextNode(" "), code);
+  }
+  reconcileSlimmingJobStatusChildren(diagnosis, wanted);
+  return diagnosis;
+}
+
+function reconcileSlimmingJobStatusParts(parts) {
+  reconcileSlimmingJobStatusChildren(elements.slimmingJobStatus, parts);
+}
+
 function renderSlimmingJobStatus() {
-  clearElement(elements.slimmingJobStatus);
   const job = selectedSlimmingJob();
   const visible = job && [
     "pending", "running", "paused", "retryableFailed", "terminalFailed", "cancelled",
   ].includes(job.state);
   elements.slimmingJobStatus.classList.toggle("hidden", !visible);
-  if (!visible) return;
+  if (!visible) {
+    reconcileSlimmingJobStatusParts([]);
+    delete elements.slimmingJobStatus.dataset.slimmingJobStatusJobId;
+    return;
+  }
+  if (elements.slimmingJobStatus.dataset.slimmingJobStatusJobId !== job.id) {
+    reconcileSlimmingJobStatusParts([]);
+    elements.slimmingJobStatus.dataset.slimmingJobStatusJobId = job.id;
+  }
   elements.slimmingJobStatus.className = `slimming-job-status ${job.state}`;
-  const copy = document.createElement("div");
-  copy.className = "slimming-job-status-copy";
-  const heading = document.createElement("strong");
+  const parts = [];
+  const copy = slimmingJobStatusPart("copy", "div", "slimming-job-status-copy");
+  let heading = copy.querySelector(":scope > strong");
+  if (!heading) heading = document.createElement("strong");
   heading.textContent = slimmingJobStateText(job);
-  const detail = document.createElement("span");
+  let detail = copy.querySelector(":scope > span");
+  if (!detail) detail = document.createElement("span");
   const source = job.sourceNames?.length ? job.sourceNames.join("、") : "任务来源不可用";
   detail.textContent = `${slimmingModeText(job.mode)} · ${source} · 尝试 ${job.attempts}/${job.maxAttempts}`;
-  copy.append(heading, detail);
-  elements.slimmingJobStatus.append(copy);
-  appendSlimmingScanProgress(elements.slimmingJobStatus, job);
-  const actions = document.createElement("span");
-  actions.className = "slimming-job-status-actions";
-  const activity = document.createElement("button");
-  activity.type = "button";
-  activity.className = "button button-compact";
-  activity.dataset.openJobActivityId = job.id;
-  activity.textContent = "在任务中查看";
-  actions.append(activity);
-  if (job.state === "retryableFailed" && job.availableActions?.includes("resume")) {
-    const resume = document.createElement("button");
-    resume.type = "button";
-    resume.className = "button button-compact write-action";
-    resume.dataset.slimmingJobActionId = job.id;
-    resume.dataset.action = "resume";
-    resume.textContent = "继续分析";
-    actions.append(resume);
-  }
-  elements.slimmingJobStatus.append(actions);
+  reconcileSlimmingJobStatusChildren(copy, [heading, detail]);
+  parts.push(copy);
+  const progress = syncSlimmingJobStatusProgress(job);
+  if (progress) parts.push(progress);
+  parts.push(syncSlimmingJobStatusActions(job));
   if (["pending", "running"].includes(job.state)) {
-    const guard = document.createElement("span");
-    guard.className = "slimming-job-guard";
+    const guard = slimmingJobStatusPart("guard", "span", "slimming-job-guard");
     guard.textContent = "分析完成或暂停前，一键清理保持锁定";
-    elements.slimmingJobStatus.append(guard);
+    parts.push(guard);
   }
-  if (["retryableFailed", "terminalFailed"].includes(job.state)) {
-    const diagnosis = document.createElement("span");
-    diagnosis.className = "slimming-job-diagnosis";
-    diagnosis.textContent = jobFailureGuidance(job);
-    if (job.lastErrorCode) {
-      const code = document.createElement("code");
-      code.textContent = job.lastErrorCode;
-      diagnosis.append(" ", code);
-    }
-    elements.slimmingJobStatus.append(diagnosis);
-  }
+  const diagnosis = syncSlimmingJobStatusDiagnosis(job);
+  if (diagnosis) parts.push(diagnosis);
+  reconcileSlimmingJobStatusParts(parts);
+}
+
+function focusSlimmingJobStatusAction(jobID, preferredAction = null) {
+  requestAnimationFrame(() => {
+    if (selectedSlimmingJob()?.id !== jobID
+      || elements.slimmingJobStatus.classList.contains("hidden")) return;
+    const preferred = preferredAction
+      ? elements.slimmingJobStatus.querySelector(
+        `[data-slimming-job-action-id="${CSS.escape(jobID)}"]`
+        + `[data-action="${CSS.escape(preferredAction)}"]:not(:disabled)`
+      )
+      : null;
+    const activity = elements.slimmingJobStatus.querySelector(
+      `[data-open-job-activity-id="${CSS.escape(jobID)}"]:not(:disabled)`
+    );
+    (preferred || activity)?.focus({ preventScroll: true });
+  });
 }
 
 function appendSlimmingInspectorField(label, value, className = "") {
@@ -31874,6 +31986,8 @@ async function applySlimmingJobAction(
       focusSlimmingCurrentJobAction(jobID, nextAction);
     } else if (returnFocus === "navigator") {
       focusSlimmingNavigatorJobAction(jobID, nextAction);
+    } else if (returnFocus === "status") {
+      focusSlimmingJobStatusAction(jobID, nextAction);
     } else if (returnFocus || action === "deleteRecord") {
       focusSelectedSlimmingJob();
     }
@@ -39599,7 +39713,11 @@ function bindEvents() {
     }
     const action = event.target.closest("[data-slimming-job-action-id][data-action]");
     if (action) {
-      applySlimmingJobAction(action.dataset.slimmingJobActionId, action.dataset.action);
+      applySlimmingJobAction(
+        action.dataset.slimmingJobActionId,
+        action.dataset.action,
+        { returnFocus: "status" }
+      );
     }
   });
   elements.slimmingWorkspaceTabs.addEventListener("click", (event) => {

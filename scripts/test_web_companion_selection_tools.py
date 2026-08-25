@@ -154,6 +154,18 @@ def main(*, inspector_actions_only=False):
         SLIMMING_JOB_ID: "completed",
         SLIMMING_SECOND_JOB_ID: "completed",
     }
+    slimming_job_attempts = {
+        SLIMMING_JOB_ID: 1,
+        SLIMMING_SECOND_JOB_ID: 1,
+    }
+    slimming_job_error_codes = {
+        SLIMMING_JOB_ID: None,
+        SLIMMING_SECOND_JOB_ID: None,
+    }
+    slimming_job_scan_progress = {
+        SLIMMING_JOB_ID: None,
+        SLIMMING_SECOND_JOB_ID: None,
+    }
     expanded_slimming_history_enabled = False
     expanded_slimming_pagination_enabled = False
     expanded_slimming_recycle_pagination_enabled = False
@@ -761,8 +773,10 @@ def main(*, inspector_actions_only=False):
                 "mode": mode,
                 "mediaKind": media_kind,
                 "state": state,
-                "attempts": 1,
+                "attempts": slimming_job_attempts.get(job_id, 1),
                 "maxAttempts": 10,
+                "lastErrorCode": slimming_job_error_codes.get(job_id),
+                "scanProgress": slimming_job_scan_progress.get(job_id),
                 "memberCount": len(SLIMMING_ASSET_IDS),
                 "seedCount": 2 if mode == "seeds" else 0,
                 "clusterCount": 3 if job_id == SLIMMING_JOB_ID else 0,
@@ -3238,7 +3252,184 @@ def main(*, inspector_actions_only=False):
               === window.__navigatorSlimmingPrimary
               && document.activeElement === window.__navigatorSlimmingPrimary"""
         )
+        slimming_job_states[SLIMMING_JOB_ID] = "retryableFailed"
+        slimming_job_attempts[SLIMMING_JOB_ID] = 2
+        slimming_job_error_codes[SLIMMING_JOB_ID] = "synthetic_retryable"
+        page.evaluate("async () => { await loadSlimmingWorkspace({ quiet: true }); }")
+        page.locator("#slimmingJobStatus:not(.hidden)").wait_for()
+        page.locator("#slimmingJobStatus [data-open-job-activity-id]").focus()
+        page.evaluate(
+            """() => {
+              const status = document.querySelector("#slimmingJobStatus");
+              window.__stableSlimmingJobStatus = {
+                copy: status.querySelector(".slimming-job-status-copy"),
+                heading: status.querySelector(".slimming-job-status-copy strong"),
+                detail: status.querySelector(".slimming-job-status-copy span"),
+                actions: status.querySelector(".slimming-job-status-actions"),
+                activity: status.querySelector("[data-open-job-activity-id]"),
+                resume: status.querySelector('[data-action="resume"]'),
+                diagnosis: status.querySelector(".slimming-job-diagnosis"),
+                code: status.querySelector(".slimming-job-diagnosis code"),
+              };
+            }"""
+        )
+        slimming_job_attempts[SLIMMING_JOB_ID] = 3
+        slimming_job_error_codes[SLIMMING_JOB_ID] = "synthetic_retryable_changed"
+        page.evaluate("async () => { await loadSlimmingWorkspace({ quiet: true }); }")
+        stable_slimming_job_status = page.evaluate(
+            """() => {
+              const frame = window.__stableSlimmingJobStatus;
+              const status = document.querySelector("#slimmingJobStatus");
+              return {
+                copy: status.querySelector(".slimming-job-status-copy") === frame.copy,
+                heading: status.querySelector(".slimming-job-status-copy strong")
+                  === frame.heading,
+                detail: status.querySelector(".slimming-job-status-copy span")
+                  === frame.detail,
+                actions: status.querySelector(".slimming-job-status-actions")
+                  === frame.actions,
+                activity: status.querySelector("[data-open-job-activity-id]")
+                  === frame.activity,
+                resume: status.querySelector('[data-action="resume"]') === frame.resume,
+                diagnosis: status.querySelector(".slimming-job-diagnosis")
+                  === frame.diagnosis,
+                code: status.querySelector(".slimming-job-diagnosis code") === frame.code,
+                focus: document.activeElement === frame.activity,
+                detailUpdated: frame.detail.textContent.includes("尝试 3/10"),
+                codeUpdated: frame.code.textContent === "synthetic_retryable_changed",
+              };
+            }"""
+        )
+        assert all(stable_slimming_job_status.values()), stable_slimming_job_status
+        page.evaluate(
+            """() => {
+              const status = document.querySelector("#slimmingJobStatus");
+              window.__failedSlimmingJobStatus = {
+                copy: status.querySelector(".slimming-job-status-copy"),
+                actions: status.querySelector(".slimming-job-status-actions"),
+                activity: status.querySelector("[data-open-job-activity-id]"),
+                resume: status.querySelector('[data-action="resume"]'),
+                diagnosis: status.querySelector(".slimming-job-diagnosis"),
+                code: status.querySelector(".slimming-job-diagnosis code"),
+              };
+            }"""
+        )
+        status_resume = page.locator('#slimmingJobStatus [data-action="resume"]')
+        status_resume.focus()
+        failed_resource_count = len(failed_resources)
+        console_error_count = len(console_errors)
+        slimming_job_action_fail_next[0] = True
+        status_resume.click()
+        page.wait_for_function(
+            "() => document.querySelector('#toastMessage').textContent"
+            ".includes('合成瘦身任务动作失败')"
+        )
+        failed_slimming_job_status = page.evaluate(
+            """() => {
+              const frame = window.__failedSlimmingJobStatus;
+              const status = document.querySelector("#slimmingJobStatus");
+              return {
+                copy: status.querySelector(".slimming-job-status-copy") === frame.copy,
+                actions: status.querySelector(".slimming-job-status-actions")
+                  === frame.actions,
+                activity: status.querySelector("[data-open-job-activity-id]")
+                  === frame.activity,
+                resume: status.querySelector('[data-action="resume"]') === frame.resume,
+                diagnosis: status.querySelector(".slimming-job-diagnosis")
+                  === frame.diagnosis,
+                code: status.querySelector(".slimming-job-diagnosis code") === frame.code,
+                focus: document.activeElement === frame.resume,
+              };
+            }"""
+        )
+        assert all(failed_slimming_job_status.values()), failed_slimming_job_status
+        assert slimming_job_states[SLIMMING_JOB_ID] == "retryableFailed"
+        assert len(failed_resources) == failed_resource_count + 1
+        assert failed_resources[-1][0] == 409
+        failed_resources.pop()
+        assert len(console_errors) == console_error_count + 1
+        assert "409" in console_errors[-1]
+        console_errors.pop()
+        slimming_job_scan_progress[SLIMMING_JOB_ID] = {
+            "phase": "loadingEmbeddings",
+            "completedUnitCount": 2,
+            "totalUnitCount": 10,
+        }
+        status_resume.click()
+        page.wait_for_function(
+            "() => document.querySelector('#slimmingJobStatus')"
+            ".classList.contains('running')"
+        )
+        resumed_slimming_job_status = page.evaluate(
+            """() => {
+              const frame = window.__failedSlimmingJobStatus;
+              const status = document.querySelector("#slimmingJobStatus");
+              return {
+                copy: status.querySelector(".slimming-job-status-copy") === frame.copy,
+                actions: status.querySelector(".slimming-job-status-actions")
+                  === frame.actions,
+                activity: status.querySelector("[data-open-job-activity-id]")
+                  === frame.activity,
+                focus: document.activeElement === frame.activity,
+                resumeRemoved: !status.querySelector('[data-action="resume"]'),
+                diagnosisRemoved: !status.querySelector(".slimming-job-diagnosis"),
+                guardVisible: Boolean(status.querySelector(".slimming-job-guard")),
+              };
+            }"""
+        )
+        assert all(resumed_slimming_job_status.values()), resumed_slimming_job_status
+        assert submitted_slimming_job_actions[-1]["action"] == "resume"
+        page.evaluate(
+            """() => {
+              const progress = document.querySelector(
+                '#slimmingJobStatus .slimming-scan-progress'
+              );
+              window.__stableSlimmingJobStatusProgress = {
+                progress,
+                track: progress.querySelector('.slimming-scan-progress-track'),
+                fill: progress.querySelector('.slimming-scan-progress-track > span'),
+                copy: progress.querySelector(':scope > span:not(.slimming-scan-progress-track)'),
+                activity: document.querySelector(
+                  '#slimmingJobStatus [data-open-job-activity-id]'
+                ),
+              };
+            }"""
+        )
+        slimming_job_scan_progress[SLIMMING_JOB_ID] = {
+            "phase": "clustering",
+            "completedUnitCount": 7,
+            "totalUnitCount": 10,
+        }
+        page.evaluate("async () => { await loadSlimmingWorkspace({ quiet: true }); }")
+        stable_slimming_job_status_progress = page.evaluate(
+            """() => {
+              const frame = window.__stableSlimmingJobStatusProgress;
+              const progress = document.querySelector(
+                '#slimmingJobStatus .slimming-scan-progress'
+              );
+              return {
+                progress: progress === frame.progress,
+                track: progress.querySelector('.slimming-scan-progress-track') === frame.track,
+                fill: progress.querySelector('.slimming-scan-progress-track > span') === frame.fill,
+                copy: progress.querySelector(
+                  ':scope > span:not(.slimming-scan-progress-track)'
+                ) === frame.copy,
+                activity: document.querySelector(
+                  '#slimmingJobStatus [data-open-job-activity-id]'
+                ) === frame.activity,
+                focus: document.activeElement === frame.activity,
+                textUpdated: frame.copy.textContent === "聚类分析 7/10",
+                widthUpdated: frame.fill.style.width === "70%",
+              };
+            }"""
+        )
+        assert all(stable_slimming_job_status_progress.values()), (
+            stable_slimming_job_status_progress
+        )
         slimming_job_states[SLIMMING_JOB_ID] = "completed"
+        slimming_job_attempts[SLIMMING_JOB_ID] = 1
+        slimming_job_error_codes[SLIMMING_JOB_ID] = None
+        slimming_job_scan_progress[SLIMMING_JOB_ID] = None
         page.evaluate("async () => { await loadSlimmingWorkspace({ quiet: true }); }")
         navigator_delete = page.locator(
             '#slimmingJobActions [data-action="deleteRecord"]'
