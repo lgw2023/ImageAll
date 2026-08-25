@@ -9777,6 +9777,7 @@ async function loadFolderBranch(sourceID, parentRelativePath = null, { append = 
     nextOffset: current?.nextOffset ?? null,
     loading: true,
     error: null,
+    loadMoreError: null,
   });
   renderSources();
   const query = new URLSearchParams({
@@ -9796,6 +9797,7 @@ async function loadFolderBranch(sourceID, parentRelativePath = null, { append = 
       nextOffset: page.nextOffset ?? null,
       loading: false,
       error: null,
+      loadMoreError: null,
     });
   } catch (error) {
     if (catalogGeneration !== state.folderNavigation.requestGeneration
@@ -9805,7 +9807,8 @@ async function loadFolderBranch(sourceID, parentRelativePath = null, { append = 
       totalCount: current?.totalCount || 0,
       nextOffset: current?.nextOffset ?? null,
       loading: false,
-      error: error.message || "无法读取文件夹",
+      error: append ? null : (error.message || "无法读取文件夹"),
+      loadMoreError: append ? (error.message || "无法载入更多目录") : null,
     });
   }
   renderSources();
@@ -10128,6 +10131,13 @@ function appendFolderBranch(container, sourceID, parentRelativePath, branch, dep
     empty.textContent = "没有已索引的子文件夹";
     container.append(empty);
   }
+  if (branch.loadMoreError) {
+    const status = document.createElement("p");
+    status.className = "source-folder-status";
+    status.setAttribute("role", "status");
+    status.textContent = `无法载入更多目录：${branch.loadMoreError}`;
+    container.append(status);
+  }
   if (branch.nextOffset != null) {
     const more = document.createElement("button");
     more.type = "button";
@@ -10135,9 +10145,15 @@ function appendFolderBranch(container, sourceID, parentRelativePath, branch, dep
     more.dataset.folderLoadMore = folderBranchKey(sourceID, parentRelativePath);
     more.dataset.folderSourceId = sourceID;
     more.dataset.folderParentPath = parentRelativePath || "";
+    const pageProgress = `${branch.folders.length} / ${branch.totalCount}`;
     more.textContent = branch.loading
       ? "正在读取…"
-      : `显示更多（${branch.folders.length} / ${branch.totalCount}）`;
+      : branch.loadMoreError
+        ? `重试显示更多（${pageProgress}）`
+        : `显示更多（${pageProgress}）`;
+    more.title = branch.loadMoreError
+      ? "从上次失败的位置继续载入；不会重读已经显示的目录"
+      : "载入下一页目录";
     more.disabled = branch.loading;
     container.append(more);
   }

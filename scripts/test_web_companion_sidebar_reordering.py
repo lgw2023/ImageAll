@@ -57,6 +57,7 @@ def main():
     folder_queries = []
     folder_retry_attempts = [0]
     folder_search_retry_attempts = [0]
+    folder_pagination_attempts = [0]
     fail_next_move = [False]
     page_errors = []
     console_errors = []
@@ -279,6 +280,13 @@ def main():
                 })
                 return
             if offset >= 100:
+                folder_pagination_attempts[0] += 1
+                if folder_pagination_attempts[0] == 1:
+                    fulfill_json(route, {
+                        "code": "temporarilyUnavailable",
+                        "message": "测试目录续页暂时失败",
+                    }, status=503)
+                    return
                 fulfill_json(route, {
                     "folders": [{
                         "sourceID": SOURCE_FOLDER,
@@ -900,9 +908,30 @@ def main():
         folder_load_more = page.locator("[data-folder-load-more]")
         folder_load_more.click()
         page.wait_for_function(
+            "() => document.activeElement?.textContent?.startsWith('重试显示更多')"
+        )
+        assert folder_queries[-1].get("offset") == ["100"]
+        assert folder_pagination_attempts[0] == 1
+        assert folder_load_more.inner_text() == "重试显示更多（3 / 501）"
+        assert "测试目录续页暂时失败" in page.locator(
+            ".source-folder-status[role=status]"
+        ).last.inner_text()
+        assert page.locator(
+            '[data-folder-path="Trips"]:not([data-folder-search-result])'
+        ).is_visible()
+        assert page.locator("[data-folder-retry-source-id]").count() == 0
+        assert len(asset_queries) == pagination_asset_query_count
+        page.screenshot(
+            path="/tmp/imageall-web-folder-pagination-retry.png",
+            full_page=True,
+        )
+
+        folder_load_more.click()
+        page.wait_for_function(
             "() => Boolean(document.querySelector('[data-folder-path=\"Archive\"]'))"
         )
         assert folder_queries[-1].get("offset") == ["100"]
+        assert folder_pagination_attempts[0] == 2
         page.wait_for_timeout(300)
         pagination_focus = page.evaluate(
             """() => ({
@@ -1576,7 +1605,7 @@ def main():
             "unexpectedTagDecisions": unexpected_tag_decisions,
         }
         assert any("status of 409" in message for message in console_errors)
-        assert sum("status of 503" in message for message in console_errors) == 4
+        assert sum("status of 503" in message for message in console_errors) == 5
         browser.close()
 
     print(

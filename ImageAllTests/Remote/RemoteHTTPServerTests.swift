@@ -3700,6 +3700,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function firstFolderTreeChild("))
         XCTAssertTrue(script.contains("function retryFolderBranch("))
         XCTAssertTrue(script.contains("function loadMoreFolderBranch("))
+        XCTAssertTrue(script.contains("loadMoreError"))
         XCTAssertTrue(script.contains("function retryFolderSearch("))
         XCTAssertTrue(script.contains("function submitFolderSearch("))
         XCTAssertTrue(script.contains("data-folder-retry-source-id"))
