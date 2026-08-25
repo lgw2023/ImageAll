@@ -2287,6 +2287,31 @@ def main():
             f"() => state.review.detail?.assetID === '{REVIEW_IDS[0]}' "
             "&& !state.review.detailLoadingAssetID"
         )
+        review_cards = page.locator("#reviewGrid > .review-card")
+        first_review_main = review_cards.nth(0).locator(":scope > .review-card-main")
+        second_review_main = review_cards.nth(1).locator(":scope > .review-card-main")
+        first_review_favorite = review_cards.nth(0).locator(":scope > .review-card-favorite")
+        second_review_favorite = review_cards.nth(1).locator(":scope > .review-card-favorite")
+        assert first_review_main.get_attribute("tabindex") == "0"
+        assert first_review_favorite.get_attribute("tabindex") == "0"
+        assert second_review_main.get_attribute("tabindex") == "-1"
+        assert second_review_favorite.get_attribute("tabindex") == "-1"
+        first_review_main.focus()
+        page.keyboard.press("Tab")
+        assert page.evaluate(
+            "() => document.activeElement?.classList.contains('review-card-favorite')"
+        )
+        page.keyboard.press("Tab")
+        assert not page.evaluate(
+            "() => document.querySelector('#reviewGrid').contains(document.activeElement)"
+        )
+        second_review_main.focus()
+        assert first_review_main.get_attribute("tabindex") == "-1"
+        assert first_review_favorite.get_attribute("tabindex") == "-1"
+        assert second_review_main.get_attribute("tabindex") == "0"
+        assert second_review_favorite.get_attribute("tabindex") == "0"
+        first_review_main.focus()
+        page.screenshot(path="/tmp/imageall-review-roving-focus.png", full_page=False)
         assert "Apple Photos" in page.locator("#reviewAssetMetadata").inner_text()
         assert "1200 × 900" in page.locator("#reviewAssetMetadata").inner_text()
         review_view_original = page.locator("#reviewViewOriginalButton")
@@ -2464,6 +2489,15 @@ def main():
         page.keyboard.press("ArrowRight")
         assert page.evaluate("() => state.review.selectedIndex") == 1
         assert page.evaluate("() => state.review.selectedAssetIDs.size") == 1
+        assert page.evaluate(
+            "id => document.activeElement?.closest('[data-review-asset-id]')"
+            "?.dataset.reviewAssetId === id "
+            "&& document.querySelectorAll('#reviewGrid .review-card-main[tabindex=\"0\"]')"
+            ".length === 1 "
+            "&& document.querySelectorAll('#reviewGrid .review-card-favorite[tabindex=\"0\"]')"
+            ".length === 1",
+            REVIEW_IDS[1],
+        )
         page.keyboard.down("Shift")
         page.keyboard.press("ArrowRight")
         page.keyboard.up("Shift")
@@ -3494,6 +3528,20 @@ def main():
         page.screenshot(path="/tmp/imageall-review-lightbox-synthetic.png", full_page=True)
 
         review_delete_action = page.locator("#reviewInspectorDeleteButton")
+        page.wait_for_function(
+            "() => document.querySelector('#reviewInspectorDeleteButton').disabled"
+        )
+        assert "红心保护" in review_delete_action.get_attribute("title")
+        assert "请先取消红心再删除" in page.locator(
+            "#reviewInspectorActionStatus"
+        ).inner_text()
+        page.locator("#lightboxFavoriteButton").click()
+        page.wait_for_function(
+            "() => document.querySelector('#lightboxFavoriteButton')?.dataset.favorite === 'false' "
+            "&& !document.querySelector('#reviewInspectorDeleteButton').disabled"
+        )
+        assert favorite_mutations[-1]["assetIDs"] == [REVIEW_IDS[0]]
+        assert favorite_mutations[-1]["isFavorite"] is False
         review_delete_action.click()
         page.locator("#confirmDialog[open]").wait_for()
         assert page.locator("#confirmDialog").get_attribute("data-tone") == "danger"

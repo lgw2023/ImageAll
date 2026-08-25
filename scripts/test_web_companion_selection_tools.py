@@ -2926,11 +2926,51 @@ def main(*, inspector_actions_only=False):
         first_slimming_main = slimming_cards.nth(0).locator(
             ":scope > .slimming-member-main"
         )
+        second_slimming_main = slimming_cards.nth(1).locator(
+            ":scope > .slimming-member-main"
+        )
+        first_slimming_favorite = slimming_cards.nth(0).locator(
+            ":scope > .slimming-member-favorite"
+        )
+        second_slimming_favorite = slimming_cards.nth(1).locator(
+            ":scope > .slimming-member-favorite"
+        )
+        assert first_slimming_main.get_attribute("tabindex") == "0"
+        assert first_slimming_favorite.get_attribute("tabindex") == "0"
+        assert second_slimming_main.get_attribute("tabindex") == "-1"
+        assert second_slimming_favorite.get_attribute("tabindex") == "-1"
         first_slimming_main.focus()
+        page.keyboard.press("Tab")
+        assert page.evaluate(
+            "() => document.activeElement?.classList.contains('slimming-member-favorite')"
+        )
+        page.keyboard.press("Tab")
+        assert not page.evaluate(
+            "() => document.querySelector('#slimmingMemberGrid')"
+            ".contains(document.activeElement)"
+        )
+        second_slimming_main.focus()
+        assert first_slimming_main.get_attribute("tabindex") == "-1"
+        assert first_slimming_favorite.get_attribute("tabindex") == "-1"
+        assert second_slimming_main.get_attribute("tabindex") == "0"
+        assert second_slimming_favorite.get_attribute("tabindex") == "0"
+        first_slimming_main.focus()
+        page.screenshot(path="/tmp/imageall-slimming-roving-focus.png", full_page=False)
         page.keyboard.press("ArrowRight")
         assert page.evaluate(
             "id => state.slimming.selectedMemberIDs.size === 1 "
             "&& state.slimming.selectedMemberIDs.has(id)",
+            SLIMMING_ASSET_IDS[1],
+        )
+        assert page.evaluate(
+            "id => document.activeElement?.closest('[data-slimming-member-id]')"
+            "?.dataset.slimmingMemberId === id "
+            "&& document.querySelectorAll('#slimmingMemberGrid "
+            ".slimming-member-main[tabindex=\"0\"]')"
+            ".length === 1 "
+            "&& document.querySelectorAll('#slimmingMemberGrid "
+            ".slimming-member-favorite[tabindex=\"0\"]')"
+            ".length === 1",
             SLIMMING_ASSET_IDS[1],
         )
         page.keyboard.down("Shift")

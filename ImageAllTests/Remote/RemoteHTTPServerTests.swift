@@ -3151,6 +3151,14 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("mainButton.tabIndex = isTabStop ? 0 : -1"))
         XCTAssertTrue(script.contains("favoriteButton.tabIndex = isTabStop ? 0 : -1"))
         XCTAssertTrue(script.contains("elements.assetGrid.addEventListener(\"focusin\""))
+        XCTAssertTrue(script.contains("function reviewGridRovingAssetID"))
+        XCTAssertTrue(script.contains("function syncReviewGridTabStops"))
+        XCTAssertTrue(script.contains("state.review.gridFocusAssetID"))
+        XCTAssertTrue(script.contains("elements.reviewGrid.addEventListener(\"focusin\""))
+        XCTAssertTrue(script.contains("function slimmingMemberGridRovingAssetID"))
+        XCTAssertTrue(script.contains("function syncSlimmingMemberGridTabStops"))
+        XCTAssertTrue(script.contains("state.slimming.memberGridFocusAssetID"))
+        XCTAssertTrue(script.contains("elements.slimmingMemberGrid.addEventListener(\"focusin\""))
         XCTAssertTrue(script.contains("focusedNavigationButton"))
         XCTAssertTrue(
             script.contains(

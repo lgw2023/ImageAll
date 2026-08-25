@@ -1261,6 +1261,7 @@ const state = {
     items: [],
     nextCursor: null,
     selectedIndex: -1,
+    gridFocusAssetID: null,
     selectedAssetIDs: new Set(),
     selectionAnchorIndex: -1,
     selectionMode: false,
@@ -1352,6 +1353,7 @@ const state = {
     policyVersion: null,
     selectedMemberIDs: new Set(),
     selectionAnchorID: null,
+    memberGridFocusAssetID: null,
     selectionMode: false,
     contextMemberID: null,
     contextRecycleEntryID: null,
@@ -21417,6 +21419,36 @@ function reviewCardMainButton(card, { create = false } = {}) {
   return button;
 }
 
+function reviewGridRovingAssetID() {
+  const visibleIDs = new Set(state.review.items.map((item) => item.assetID));
+  const focusedCard = document.activeElement?.closest?.("#reviewGrid > .review-card");
+  if (visibleIDs.has(focusedCard?.dataset.reviewAssetId)) {
+    return focusedCard.dataset.reviewAssetId;
+  }
+  const selectedAssetID = state.review.items[state.review.selectedIndex]?.assetID || null;
+  if (visibleIDs.has(selectedAssetID)) return selectedAssetID;
+  if (visibleIDs.has(state.review.gridFocusAssetID)) return state.review.gridFocusAssetID;
+  return state.review.items[0]?.assetID || null;
+}
+
+function syncReviewCardKeyboardAccess(card, rovingAssetID = reviewGridRovingAssetID()) {
+  const isTabStop = card?.dataset.reviewAssetId === rovingAssetID;
+  const mainButton = reviewCardMainButton(card);
+  if (mainButton) mainButton.tabIndex = isTabStop ? 0 : -1;
+  const favoriteButton = card?.querySelector(":scope > .review-card-favorite");
+  if (favoriteButton) favoriteButton.tabIndex = isTabStop ? 0 : -1;
+}
+
+function syncReviewGridTabStops(assetID = null) {
+  const visibleIDs = new Set(state.review.items.map((item) => item.assetID));
+  if (assetID && visibleIDs.has(assetID)) state.review.gridFocusAssetID = assetID;
+  const rovingAssetID = reviewGridRovingAssetID();
+  state.review.gridFocusAssetID = rovingAssetID;
+  for (const card of elements.reviewGrid.querySelectorAll(":scope > .review-card")) {
+    syncReviewCardKeyboardAccess(card, rovingAssetID);
+  }
+}
+
 function syncReviewCardFavoriteButton(card, item) {
   let button = card.querySelector(":scope > .review-card-favorite");
   if (!supportsFavorites() || !item.favorite) {
@@ -21591,6 +21623,7 @@ function renderReviewSelectionState({ renderDetail = true } = {}) {
     const button = elements.reviewGrid.querySelector(`[data-review-index="${index}"]`);
     if (button) syncReviewCardSelection(button, item, index);
   });
+  syncReviewGridTabStops();
   const count = state.review.selectedAssetIDs.size;
   elements.reviewSummary.textContent = state.review.loading && !state.review.appending
     ? "正在载入…"
@@ -21652,7 +21685,7 @@ function renderReviewCollectionSummary() {
   syncReviewControls();
 }
 
-function syncReviewCard(card, item, index) {
+function syncReviewCard(card, item, index, rovingAssetID) {
   card.className = "review-card";
   card.dataset.reviewKey = reviewItemKey(item);
   card.dataset.reviewIndex = String(index);
@@ -21670,6 +21703,7 @@ function syncReviewCard(card, item, index) {
   syncAssetCardImage(card, item);
   syncReviewCardSelection(card, item, index);
   syncReviewCardFavoriteButton(card, item);
+  syncReviewCardKeyboardAccess(card, rovingAssetID);
   let origin = card.querySelector(".review-origin-badge");
   if (!origin) {
     origin = document.createElement("span");
@@ -21692,6 +21726,8 @@ function syncReviewCard(card, item, index) {
 
 function renderReview() {
   renderReviewCollectionSummary();
+  state.review.gridFocusAssetID = reviewGridRovingAssetID();
+  const rovingAssetID = state.review.gridFocusAssetID;
   const existing = new Map(
     [...elements.reviewGrid.querySelectorAll(":scope > .review-card")]
       .map((button) => [button.dataset.reviewKey, button])
@@ -21700,7 +21736,7 @@ function renderReview() {
     const key = reviewItemKey(item);
     const card = existing.get(key) || document.createElement("div");
     existing.delete(key);
-    syncReviewCard(card, item, index);
+    syncReviewCard(card, item, index, rovingAssetID);
     elements.reviewGrid.append(card);
   });
   for (const card of existing.values()) {
@@ -21712,9 +21748,10 @@ function renderReview() {
 
 function appendReviewCards(items, startIndex) {
   const fragment = document.createDocumentFragment();
+  const rovingAssetID = reviewGridRovingAssetID();
   items.forEach((item, offset) => {
     const card = document.createElement("div");
-    syncReviewCard(card, item, startIndex + offset);
+    syncReviewCard(card, item, startIndex + offset, rovingAssetID);
     fragment.append(card);
   });
   elements.reviewGrid.append(fragment);
@@ -21887,6 +21924,7 @@ function renderReviewInspectorActions(selectedItems = selectedReviewItems()) {
     || selectedCount === 0;
   const activeRemoval = activeGalleryRemovalRequest();
   const deletionIDs = galleryRemovalTargetAssetIDs(assetIDs, { surface: "review" });
+  const deletionProtection = removalFavoriteProtectionPlan(deletionIDs);
   const deletionUnavailable = !supportsLibrarySlimming()
     || !state.online
     || state.review.loading
@@ -21894,6 +21932,8 @@ function renderReviewInspectorActions(selectedItems = selectedReviewItems()) {
     || state.galleryRemoval.submitting
     || Boolean(activeRemoval)
     || deletionIDs.length !== selectedCount
+    || deletionProtection.removalAssetIDs.length === 0
+    || deletionProtection.unverifiableAssetIDs.length > 0
     || selectedCount === 0;
 
   elements.reviewInspectorSelectionTitle.textContent = selectedCount
@@ -21922,15 +21962,27 @@ function renderReviewInspectorActions(selectedItems = selectedReviewItems()) {
   } else if (selectedCount && deletionIDs.length !== selectedCount) {
     elements.reviewInspectorActionStatus.textContent =
       "所选项目包含当前不可用的媒体，暂不能安全删除。";
+  } else if (deletionProtection.unverifiableAssetIDs.length) {
+    elements.reviewInspectorActionStatus.textContent =
+      "无法核验红心保护，未删除任何项目。";
+  } else if (deletionProtection.favoriteProtectedAssetIDs.length) {
+    elements.reviewInspectorActionStatus.textContent = deletionProtection.removalAssetIDs.length
+      ? `将保留 ${deletionProtection.favoriteProtectedAssetIDs.length} 项红心，只删除其余 ${deletionProtection.removalAssetIDs.length} 项。`
+      : "所选项目均有红心保护；请先取消红心再删除。";
   } else {
     elements.reviewInspectorActionStatus.textContent =
       "文件夹原始媒体将永久删除；Apple Photos 项进入系统“最近删除”。";
   }
   elements.reviewInspectorDeleteButton.title = !supportsLibrarySlimming()
     ? "当前 Mac Host 不支持图库快速删除"
-    : (activeText || (deletionUnavailable
-      ? "当前审核选区暂不能删除"
-      : `删除 ${mediaItemCountText(selectedCount)}；仍需在 Mac 原生窗口确认`));
+    : (activeText || (deletionProtection.unverifiableAssetIDs.length
+      ? "无法核验红心保护，暂不能删除"
+      : deletionProtection.removalAssetIDs.length === 0 && selectedCount
+        ? "所选项目均有红心保护；请先取消红心再删除"
+        : deletionUnavailable
+          ? "当前审核选区暂不能删除"
+          : `删除 ${mediaItemCountText(deletionProtection.removalAssetIDs.length)}`
+            + `${deletionProtection.favoriteProtectedAssetIDs.length ? `，保留 ${deletionProtection.favoriteProtectedAssetIDs.length} 项红心` : ""}；仍需在 Mac 原生窗口确认`));
   elements.reviewInspectorDeleteButton.setAttribute(
     "aria-label",
     elements.reviewInspectorDeleteButton.title
@@ -25320,6 +25372,7 @@ function renderSlimmingMemberSelection({ renderInspector = true } = {}) {
       state.slimming.members.find((member) => member.id === card.dataset.slimmingMemberId)
     );
   }
+  syncSlimmingMemberGridTabStops();
   const selectedCount = state.slimming.selectedMemberIDs.size;
   const protection = removalFavoriteProtectionPlan([...state.slimming.selectedMemberIDs]);
   elements.slimmingSelectionSummary.textContent = selectedCount
@@ -25367,6 +25420,55 @@ function slimmingMemberMainButton(card, { create = false } = {}) {
     card.append(button);
   }
   return button;
+}
+
+function slimmingMemberGridRovingAssetID() {
+  const focusableIDs = new Set(
+    state.slimming.members
+      .filter((member) => !activeSlimmingRemovalPhase(member.id))
+      .map((member) => member.id)
+  );
+  const focusedCard = document.activeElement?.closest?.(
+    "#slimmingMemberGrid > .slimming-member-card"
+  );
+  if (focusableIDs.has(focusedCard?.dataset.slimmingMemberId)) {
+    return focusedCard.dataset.slimmingMemberId;
+  }
+  const selectedMemberID = slimmingSelectionPrimaryID();
+  if (focusableIDs.has(selectedMemberID)) return selectedMemberID;
+  if (focusableIDs.has(state.slimming.memberGridFocusAssetID)) {
+    return state.slimming.memberGridFocusAssetID;
+  }
+  return state.slimming.members.find((member) => focusableIDs.has(member.id))?.id || null;
+}
+
+function syncSlimmingMemberCardKeyboardAccess(
+  card,
+  rovingAssetID = slimmingMemberGridRovingAssetID()
+) {
+  const isTabStop = card?.dataset.slimmingMemberId === rovingAssetID;
+  const mainButton = slimmingMemberMainButton(card);
+  if (mainButton) mainButton.tabIndex = isTabStop ? 0 : -1;
+  const favoriteButton = card?.querySelector(":scope > .slimming-member-favorite");
+  if (favoriteButton) favoriteButton.tabIndex = isTabStop ? 0 : -1;
+}
+
+function syncSlimmingMemberGridTabStops(assetID = null) {
+  const focusableIDs = new Set(
+    state.slimming.members
+      .filter((member) => !activeSlimmingRemovalPhase(member.id))
+      .map((member) => member.id)
+  );
+  if (assetID && focusableIDs.has(assetID)) {
+    state.slimming.memberGridFocusAssetID = assetID;
+  }
+  const rovingAssetID = slimmingMemberGridRovingAssetID();
+  state.slimming.memberGridFocusAssetID = rovingAssetID;
+  for (const card of elements.slimmingMemberGrid.querySelectorAll(
+    ":scope > .slimming-member-card"
+  )) {
+    syncSlimmingMemberCardKeyboardAccess(card, rovingAssetID);
+  }
 }
 
 function activeSlimmingRemovalPhase(assetID) {
@@ -25953,7 +26055,7 @@ function renderSlimmingMemberSummary() {
   return cluster;
 }
 
-function syncSlimmingMemberCard(card, member) {
+function syncSlimmingMemberCard(card, member, rovingAssetID) {
   clearElement(card);
   card.className = "slimming-member-card";
   card.dataset.slimmingMemberId = member.id;
@@ -26018,21 +26120,31 @@ function syncSlimmingMemberCard(card, member) {
     overlay.append(spinner, copy);
     card.append(overlay);
   }
+  syncSlimmingMemberCardKeyboardAccess(card, rovingAssetID);
   return card;
 }
 
-function appendSlimmingMemberCards(members) {
+function appendSlimmingMemberCards(members, rovingAssetID) {
   const fragment = document.createDocumentFragment();
   for (const member of members) {
-    fragment.append(syncSlimmingMemberCard(document.createElement("div"), member));
+    fragment.append(syncSlimmingMemberCard(
+      document.createElement("div"),
+      member,
+      rovingAssetID
+    ));
   }
   elements.slimmingMemberGrid.append(fragment);
 }
 
 function renderSlimmingMembers({ appendItems = null } = {}) {
   renderSlimmingMemberSummary();
+  state.slimming.memberGridFocusAssetID = slimmingMemberGridRovingAssetID();
+  const rovingAssetID = state.slimming.memberGridFocusAssetID;
   if (appendItems === null) clearElement(elements.slimmingMemberGrid);
-  appendSlimmingMemberCards(appendItems === null ? state.slimming.members : appendItems);
+  appendSlimmingMemberCards(
+    appendItems === null ? state.slimming.members : appendItems,
+    rovingAssetID
+  );
   renderSlimmingMemberSelection();
 }
 
@@ -32002,6 +32114,7 @@ function resetWorkspaceSessionState() {
   state.review.overviewGeneration += 1;
   state.review.nextCursor = null;
   state.review.selectedIndex = -1;
+  state.review.gridFocusAssetID = null;
   state.review.selectedAssetIDs.clear();
   state.review.selectionAnchorIndex = -1;
   state.review.selectionMode = false;
@@ -32025,6 +32138,7 @@ function resetWorkspaceSessionState() {
   state.review.pendingThresholdFocus = null;
   state.review.returnTarget = null;
   state.review.pendingFocusTrainingJobID = null;
+  state.slimming.memberGridFocusAssetID = null;
   state.slimming.selectionMode = false;
   state.slimming.setup.loading = false;
   state.slimming.setup.saving = false;
@@ -37767,6 +37881,10 @@ function bindEvents() {
       )) return;
     selectSlimmingMember(card.dataset.slimmingMemberId, event);
   });
+  elements.slimmingMemberGrid.addEventListener("focusin", (event) => {
+    const card = event.target.closest?.(".slimming-member-card[data-slimming-member-id]");
+    if (card) syncSlimmingMemberGridTabStops(card.dataset.slimmingMemberId);
+  });
   elements.slimmingMemberGrid.addEventListener("contextmenu", (event) => {
     const card = event.target.closest("[data-slimming-member-id]");
     if (!card) return;
@@ -38241,6 +38359,10 @@ function bindEvents() {
         extendRange: event.shiftKey,
       });
     }
+  });
+  elements.reviewGrid.addEventListener("focusin", (event) => {
+    const card = event.target.closest?.(".review-card[data-review-asset-id]");
+    if (card) syncReviewGridTabStops(card.dataset.reviewAssetId);
   });
   elements.reviewGrid.addEventListener("dblclick", (event) => {
     if (event.target.closest("[data-review-card-favorite]")) return;
