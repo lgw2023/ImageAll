@@ -3703,6 +3703,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("loadMoreError"))
         XCTAssertTrue(script.contains("source-folder-capacity"))
         XCTAssertTrue(script.contains("folder-capacity:"))
+        XCTAssertTrue(script.contains("function focusFolderBreadcrumbNavigation("))
         XCTAssertTrue(script.contains("function retryFolderSearch("))
         XCTAssertTrue(script.contains("function submitFolderSearch("))
         XCTAssertTrue(script.contains("data-folder-retry-source-id"))

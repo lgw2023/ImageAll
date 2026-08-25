@@ -643,14 +643,79 @@ def main():
             full_page=True,
         )
 
-        page.locator(
+        current_breadcrumb = page.locator(
             f'#folderBreadcrumb [data-folder-breadcrumb-source-id="{SOURCE_FOLDER}"]'
-        ).first.click()
+            '[data-folder-breadcrumb-path="Trips/2026"]'
+        )
+        current_breadcrumb.focus()
+        current_breadcrumb.press("Enter")
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.folderBreadcrumbPath === 'Trips/2026'"
+        )
+        page.wait_for_timeout(300)
+        assert len(asset_queries) == tree_navigation_asset_query_count + 1
+
+        ancestor_breadcrumb = page.locator(
+            f'#folderBreadcrumb [data-folder-breadcrumb-source-id="{SOURCE_FOLDER}"]'
+            '[data-folder-breadcrumb-path="Trips"]'
+        )
+        ancestor_breadcrumb.focus()
+        with page.expect_request(
+            lambda request: "/v1/assets?" in request.url
+        ) as ancestor_request_info:
+            ancestor_breadcrumb.press("Enter")
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.folderBreadcrumbPath === 'Trips'"
+        )
+        ancestor_asset_query = parse_qs(
+            urlparse(ancestor_request_info.value.url).query
+        )
+        assert ancestor_asset_query["folderRelativePath"] == ["Trips"]
+        page.screenshot(
+            path="/tmp/imageall-web-folder-breadcrumb-focus.png",
+            full_page=True,
+        )
+
+        with page.expect_request(
+            lambda request: "/v1/assets?" in request.url
+        ) as root_request_info:
+            page.locator(
+                f'#folderBreadcrumb [data-folder-breadcrumb-source-id="{SOURCE_FOLDER}"]'
+            ).first.press("Enter")
         page.wait_for_function(
             "() => document.querySelector('#folderBreadcrumb').classList.contains('hidden')"
         )
-        root_asset_query = parse_qs(urlparse(asset_queries[-1]).query)
+        page.wait_for_function(
+            "sourceID => document.activeElement?.dataset.sourceId === sourceID",
+            arg=SOURCE_FOLDER,
+        )
+        root_asset_query = parse_qs(urlparse(root_request_info.value.url).query)
         assert "folderRelativePath" not in root_asset_query
+
+        page.locator(
+            '[data-folder-path="Trips"]:not([data-folder-search-result]) .folder-name'
+        ).click()
+        page.wait_for_function(
+            "() => !document.querySelector('#folderBreadcrumb').classList.contains('hidden')"
+        )
+        page.set_viewport_size({"width": 390, "height": 844})
+        with page.expect_request(
+            lambda request: "/v1/assets?" in request.url
+        ) as narrow_root_request_info:
+            page.locator(
+                f'#folderBreadcrumb [data-folder-breadcrumb-source-id="{SOURCE_FOLDER}"]'
+            ).first.press("Enter")
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'sidebarToggle'"
+        )
+        narrow_root_asset_query = parse_qs(
+            urlparse(narrow_root_request_info.value.url).query
+        )
+        assert "folderRelativePath" not in narrow_root_asset_query
+        assert page.evaluate(
+            "() => document.documentElement.scrollWidth <= innerWidth"
+        )
+        page.set_viewport_size({"width": 1440, "height": 960})
 
         folder_search = page.locator(
             f'[data-folder-search-source-id="{SOURCE_FOLDER}"]'

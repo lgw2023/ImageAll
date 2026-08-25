@@ -15498,6 +15498,25 @@ function renderFolderBreadcrumb() {
   });
 }
 
+function folderBreadcrumbButton(sourceID, relativePath = null) {
+  const expectedPath = relativePath || "";
+  return [...elements.folderBreadcrumbItems.querySelectorAll(
+    `[data-folder-breadcrumb-source-id="${CSS.escape(sourceID)}"]`
+  )].find((button) => (button.dataset.folderBreadcrumbPath || "") === expectedPath) || null;
+}
+
+function focusFolderBreadcrumbNavigation(sourceID, relativePath = null) {
+  const target = relativePath
+    ? folderBreadcrumbButton(sourceID, relativePath)
+    : mobileSidebarLayoutQuery.matches
+      ? elements.sidebarToggle
+      : elements.sourceList.querySelector(
+        `[data-source-id="${CSS.escape(sourceID)}"]`
+      );
+  target?.focus({ preventScroll: true });
+  target?.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
 function renderWorldMapGalleryScope() {
   const scope = state.libraryScope === "worldMapGallery"
     ? state.worldMapGalleryScope
@@ -32101,7 +32120,7 @@ async function logout() {
   }
 }
 
-async function selectSource(sourceID) {
+async function selectSource(sourceID, { focusAfterNavigation = false } = {}) {
   leaveIntegratedReviewForLibrary();
   leaveIntegratedGalleryOverviewForLibrary();
   leaveIntegratedWorldMapForLibrary();
@@ -32121,11 +32140,16 @@ async function selectSource(sourceID) {
   renderInspectorSurface();
   renderSources();
   updateLibraryTitle();
+  if (focusAfterNavigation) focusFolderBreadcrumbNavigation(sourceID);
   closeMobileSidebar({ restoreFocus: false });
   await loadAssets();
 }
 
-async function selectFolder(sourceID, relativePath, { historySessionID = null } = {}) {
+async function selectFolder(
+  sourceID,
+  relativePath,
+  { historySessionID = null, focusAfterNavigation = false } = {}
+) {
   const source = state.sources.find((candidate) => candidate.id === sourceID);
   if (!folderSourceSupportsHierarchy(source) || !relativePath) return;
   leaveIntegratedReviewForLibrary();
@@ -32152,13 +32176,14 @@ async function selectFolder(sourceID, relativePath, { historySessionID = null } 
   renderSources();
   loadFolderScopeAncestorBranches(sourceID, ancestorBranches);
   updateLibraryTitle();
+  if (focusAfterNavigation) focusFolderBreadcrumbNavigation(sourceID, relativePath);
   closeMobileSidebar({ restoreFocus: false });
   try {
     await loadAssets();
   } catch (error) {
     if (error.status === 400 && state.folderScope?.sourceID === sourceID) {
       toast("这个文件夹已不在最新索引中，已返回来源根目录");
-      await selectSource(sourceID);
+      await selectSource(sourceID, { focusAfterNavigation });
       return;
     }
     toast(error.message || "无法打开文件夹");
@@ -35984,8 +36009,15 @@ function bindEvents() {
     if (!button) return;
     const sourceID = button.dataset.folderBreadcrumbSourceId;
     const relativePath = button.dataset.folderBreadcrumbPath;
-    if (relativePath) void selectFolder(sourceID, relativePath);
-    else void selectSource(sourceID);
+    if (relativePath && selectedFolderMatches(sourceID, relativePath)) {
+      button.focus({ preventScroll: true });
+      return;
+    }
+    if (relativePath) {
+      void selectFolder(sourceID, relativePath, { focusAfterNavigation: true });
+    } else {
+      void selectSource(sourceID, { focusAfterNavigation: true });
+    }
   });
   elements.sourceAllActionsButton.addEventListener("click", () => {
     toggleActionMenu("sourceActions");
