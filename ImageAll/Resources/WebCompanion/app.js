@@ -12428,6 +12428,207 @@ function syncSourceManagerRow(row, source, selectedSourceID) {
   stateBadge.textContent = sourceStateText(source.state) || "可用";
 }
 
+function sourceManagerActionDisabled(action, source, activeRequest, busy) {
+  const canCancelPrewarm = action === "cancelPrewarm"
+    && activeRequest?.sourceID === source.id
+    && sourceManagementIsPrewarmAction(activeRequest.action);
+  return !state.online
+    || state.sourceManagement.submitting
+    || (action === "cancelPrewarm" ? !canCancelPrewarm : busy);
+}
+
+function syncSourceManagerActionButton(
+  button,
+  action,
+  source,
+  activeRequest,
+  busy
+) {
+  button.type = "button";
+  button.className = `button button-small write-action${action === "delete" ? " button-danger" : ""}`;
+  button.dataset.sourceAction = action;
+  button.dataset.sourceId = source.id;
+  button.textContent = sourceManagementActionLabel(action, source);
+  button.title = sourceManagementActionHelp(action, source);
+  button.disabled = sourceManagerActionDisabled(action, source, activeRequest, busy);
+}
+
+function syncSourceManagerActionGroup(
+  section,
+  group,
+  actions,
+  source,
+  activeRequest,
+  busy
+) {
+  const groupDetails = {
+    update: ["更新与缓存", "更新索引或准备网页和 Mac 共用的缩略图缓存。"],
+    recovery: ["权限与修复", "需要系统权限或选择器的步骤会在 Mac 上继续。"],
+    remove: ["移除来源", "只清理 ImageAll 中的记录和缓存，原始媒体保持不变。"],
+  };
+  section.className = `source-manager-action-group source-manager-action-group-${group}`;
+  section.dataset.sourceManagerActionGroup = group;
+
+  let heading = section.querySelector(":scope > .source-manager-action-heading");
+  if (!heading) {
+    heading = document.createElement("div");
+    heading.className = "source-manager-action-heading";
+    section.append(heading);
+  }
+  let headingTitle = heading.querySelector(":scope > h5");
+  if (!headingTitle) {
+    headingTitle = document.createElement("h5");
+    heading.append(headingTitle);
+  }
+  headingTitle.textContent = groupDetails[group][0];
+  let headingCopy = heading.querySelector(":scope > p");
+  if (!headingCopy) {
+    headingCopy = document.createElement("p");
+    heading.append(headingCopy);
+  }
+  headingCopy.textContent = groupDetails[group][1];
+
+  let actionsContainer = section.querySelector(":scope > .source-manager-actions");
+  if (!actionsContainer) {
+    actionsContainer = document.createElement("div");
+    actionsContainer.className = "source-manager-actions";
+    section.append(actionsContainer);
+  }
+  const existing = new Map(
+    [...actionsContainer.querySelectorAll(":scope > [data-source-action]")]
+      .map((button) => [button.dataset.sourceAction, button])
+  );
+  const wanted = actions.map((action) => {
+    const button = existing.get(action) || document.createElement("button");
+    syncSourceManagerActionButton(button, action, source, activeRequest, busy);
+    return button;
+  });
+  for (const [index, button] of wanted.entries()) {
+    if (actionsContainer.children[index] !== button) {
+      actionsContainer.insertBefore(button, actionsContainer.children[index] || null);
+    }
+  }
+  for (const button of [...actionsContainer.children]) {
+    if (!wanted.includes(button)) button.remove();
+  }
+}
+
+function syncSourceManagerDetail(detail, source, activeRequest, busy) {
+  const scrollTop = detail.scrollTop;
+  const focused = detail.contains(document.activeElement) ? document.activeElement : null;
+  const focusedAction = focused?.closest("[data-source-action]")?.dataset.sourceAction || null;
+
+  detail.className = "source-manager-detail";
+  detail.dataset.sourceManagerDetail = source.id;
+  detail.setAttribute("aria-label", `${source.displayName} 来源操作`);
+
+  let header = detail.querySelector(":scope > .source-manager-detail-header");
+  if (!header) {
+    header = document.createElement("header");
+    header.className = "source-manager-detail-header";
+    detail.append(header);
+  }
+  let identity = header.querySelector(":scope > .source-manager-detail-identity");
+  if (!identity) {
+    identity = document.createElement("div");
+    identity.className = "source-manager-detail-identity";
+    header.append(identity);
+  }
+  let icon = identity.querySelector(":scope > .source-manager-detail-icon");
+  if (!icon) {
+    icon = document.createElement("span");
+    icon.className = "source-manager-detail-icon";
+    icon.setAttribute("aria-hidden", "true");
+    identity.append(icon);
+  }
+  icon.textContent = sourceIcon(source.kind);
+  let copy = identity.querySelector(":scope > .source-manager-detail-copy");
+  if (!copy) {
+    copy = document.createElement("div");
+    copy.className = "source-manager-detail-copy";
+    identity.append(copy);
+  }
+  let title = copy.querySelector(":scope > h4");
+  if (!title) {
+    title = document.createElement("h4");
+    copy.append(title);
+  }
+  title.textContent = source.displayName;
+  let typeAndState = copy.querySelector(":scope > p");
+  if (!typeAndState) {
+    typeAndState = document.createElement("p");
+    copy.append(typeAndState);
+  }
+  typeAndState.textContent = `${source.kind === "photos" ? "Apple Photos" : "文件夹"} · ${sourceStateText(source.state) || "可用"}`;
+
+  let viewButton = header.querySelector(":scope > [data-source-manager-view]");
+  if (!viewButton) {
+    viewButton = document.createElement("button");
+    header.append(viewButton);
+  }
+  viewButton.type = "button";
+  viewButton.className = "button button-small";
+  viewButton.dataset.sourceManagerView = source.id;
+  viewButton.textContent = "在图库中查看";
+  viewButton.title = `关闭来源管理并只显示“${source.displayName}”中的媒体`;
+
+  let status = detail.querySelector(":scope > .source-manager-detail-status");
+  if (!status) {
+    status = document.createElement("p");
+    status.className = "source-manager-detail-status";
+    detail.append(status);
+  }
+  status.dataset.state = source.state;
+  status.textContent = sourceManagerStatusDescription(source);
+
+  const actionsByGroup = new Map([
+    ["update", []],
+    ["recovery", []],
+    ["remove", []],
+  ]);
+  for (const action of sourceManagementActionsForCurrentState(source)) {
+    actionsByGroup.get(sourceManagementActionGroup(action)).push(action);
+  }
+  const existingGroups = new Map(
+    [...detail.querySelectorAll(":scope > [data-source-manager-action-group]")]
+      .map((section) => [section.dataset.sourceManagerActionGroup, section])
+  );
+  const wantedGroups = [];
+  for (const [group, actions] of actionsByGroup) {
+    if (!actions.length) continue;
+    const section = existingGroups.get(group) || document.createElement("section");
+    syncSourceManagerActionGroup(section, group, actions, source, activeRequest, busy);
+    wantedGroups.push(section);
+  }
+  const stableChildren = [header, status, ...wantedGroups];
+  for (const [index, child] of stableChildren.entries()) {
+    if (detail.children[index] !== child) {
+      detail.insertBefore(child, detail.children[index] || null);
+    }
+  }
+  for (const child of [...detail.children]) {
+    if (!stableChildren.includes(child)) child.remove();
+  }
+
+  detail.dataset.sourceManagerFingerprint = sourceManagerDetailFingerprint(
+    source,
+    activeRequest,
+    busy
+  );
+  detail.scrollTop = scrollTop;
+
+  if (focusedAction) {
+    const sameAction = detail.querySelector(
+      `[data-source-action="${CSS.escape(focusedAction)}"]:not(:disabled)`
+    );
+    const fallback = sameAction
+      || detail.querySelector("[data-source-action]:not(:disabled)")
+      || viewButton;
+    fallback?.focus({ preventScroll: true });
+    detail.scrollTop = scrollTop;
+  }
+}
+
 function sourceManagerDetailFingerprint(source, activeRequest, busy) {
   return JSON.stringify([
     source.id,
@@ -12465,13 +12666,15 @@ function reconcileSourceManagerContent(sources, selectedSource, activeRequest, b
     activeRequest,
     busy
   );
-  if (detail.dataset.sourceManagerFingerprint !== nextDetailFingerprint) return false;
   for (const [index, source] of sources.entries()) {
     const row = rows[index];
     const nextFingerprint = sourceManagerRowFingerprint(source, selectedSource.id);
     if (row.dataset.sourceManagerFingerprint !== nextFingerprint) {
       syncSourceManagerRow(row, source, selectedSource.id);
     }
+  }
+  if (detail.dataset.sourceManagerFingerprint !== nextDetailFingerprint) {
+    syncSourceManagerDetail(detail, selectedSource, activeRequest, busy);
   }
   return true;
 }
@@ -12687,89 +12890,7 @@ function renderSourceManagement({ preserveContent = false, reconcileContent = fa
   }
 
   const detail = document.createElement("section");
-  detail.className = "source-manager-detail";
-  detail.dataset.sourceManagerDetail = selectedSource.id;
-  detail.setAttribute("aria-label", `${selectedSource.displayName} 来源操作`);
-
-  const detailHeader = document.createElement("header");
-  detailHeader.className = "source-manager-detail-header";
-  const detailIdentity = document.createElement("div");
-  detailIdentity.className = "source-manager-detail-identity";
-  const detailIcon = document.createElement("span");
-  detailIcon.className = "source-manager-detail-icon";
-  detailIcon.setAttribute("aria-hidden", "true");
-  detailIcon.textContent = sourceIcon(selectedSource.kind);
-  const detailCopy = document.createElement("div");
-  const detailTitle = document.createElement("h4");
-  detailTitle.textContent = selectedSource.displayName;
-  const detailStatus = document.createElement("p");
-  detailStatus.textContent = `${selectedSource.kind === "photos" ? "Apple Photos" : "文件夹"} · ${sourceStateText(selectedSource.state) || "可用"}`;
-  detailCopy.append(detailTitle, detailStatus);
-  detailIdentity.append(detailIcon, detailCopy);
-  const viewButton = document.createElement("button");
-  viewButton.type = "button";
-  viewButton.className = "button button-small";
-  viewButton.dataset.sourceManagerView = selectedSource.id;
-  viewButton.textContent = "在图库中查看";
-  viewButton.title = `关闭来源管理并只显示“${selectedSource.displayName}”中的媒体`;
-  detailHeader.append(detailIdentity, viewButton);
-
-  const statusCopy = document.createElement("p");
-  statusCopy.className = "source-manager-detail-status";
-  statusCopy.dataset.state = selectedSource.state;
-  statusCopy.textContent = sourceManagerStatusDescription(selectedSource);
-  detail.append(detailHeader, statusCopy);
-
-  const actionsByGroup = new Map([
-    ["update", []],
-    ["recovery", []],
-    ["remove", []],
-  ]);
-  for (const action of sourceManagementActionsForCurrentState(selectedSource)) {
-    actionsByGroup.get(sourceManagementActionGroup(action)).push(action);
-  }
-  const groupDetails = {
-    update: ["更新与缓存", "更新索引或准备网页和 Mac 共用的缩略图缓存。"],
-    recovery: ["权限与修复", "需要系统权限或选择器的步骤会在 Mac 上继续。"],
-    remove: ["移除来源", "只清理 ImageAll 中的记录和缓存，原始媒体保持不变。"],
-  };
-  for (const [group, actions] of actionsByGroup) {
-    if (!actions.length) continue;
-    const section = document.createElement("section");
-    section.className = `source-manager-action-group source-manager-action-group-${group}`;
-    const heading = document.createElement("div");
-    heading.className = "source-manager-action-heading";
-    const headingTitle = document.createElement("h5");
-    headingTitle.textContent = groupDetails[group][0];
-    const headingCopy = document.createElement("p");
-    headingCopy.textContent = groupDetails[group][1];
-    heading.append(headingTitle, headingCopy);
-    const actionsContainer = document.createElement("div");
-    actionsContainer.className = "source-manager-actions";
-    for (const action of actions) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = `button button-small write-action${action === "delete" ? " button-danger" : ""}`;
-      button.dataset.sourceAction = action;
-      button.dataset.sourceId = selectedSource.id;
-      button.textContent = sourceManagementActionLabel(action, selectedSource);
-      button.title = sourceManagementActionHelp(action, selectedSource);
-      const canCancelPrewarm = action === "cancelPrewarm"
-        && activeRequest?.sourceID === selectedSource.id
-        && sourceManagementIsPrewarmAction(activeRequest.action);
-      button.disabled = !state.online
-        || manager.submitting
-        || (action === "cancelPrewarm" ? !canCancelPrewarm : busy);
-      actionsContainer.append(button);
-    }
-    section.append(heading, actionsContainer);
-    detail.append(section);
-  }
-  detail.dataset.sourceManagerFingerprint = sourceManagerDetailFingerprint(
-    selectedSource,
-    activeRequest,
-    busy
-  );
+  syncSourceManagerDetail(detail, selectedSource, activeRequest, busy);
   elements.sourceManagerList.append(sourceNavigation, detail);
 }
 

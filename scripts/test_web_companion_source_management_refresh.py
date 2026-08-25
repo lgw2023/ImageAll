@@ -340,13 +340,76 @@ def main():
             "completedSourceCount": 0,
             "totalSourceCount": 1,
         }]
-        page.evaluate("() => loadSourceManagement({ quiet: true })")
+        page.evaluate(
+            """() => {
+              const workspace = document.querySelector("#sourceManagerList");
+              const navigation = workspace.querySelector(".source-manager-source-list");
+              const detail = workspace.querySelector(".source-manager-detail");
+              const prewarm = detail.querySelector(
+                '[data-source-action="prewarmThumbnails"]'
+              );
+              detail.style.paddingBottom = "640px";
+              detail.scrollTop = 66;
+              prewarm.focus({ preventScroll: true });
+              window.__sourceManagerRequestStartedFrame = {
+                navigation,
+                rows: [...navigation.querySelectorAll(".source-manager-row")],
+                detail,
+                header: detail.querySelector(".source-manager-detail-header"),
+                status: detail.querySelector(".source-manager-detail-status"),
+                update: detail.querySelector(".source-manager-action-group-update"),
+                recovery: detail.querySelector(".source-manager-action-group-recovery"),
+                remove: detail.querySelector(".source-manager-action-group-remove"),
+                syncAction: detail.querySelector('[data-source-action="syncPhotos"]'),
+                deleteAction: detail.querySelector('[data-source-action="delete"]'),
+                navigationScrollTop: navigation.scrollTop,
+                detailScrollTop: detail.scrollTop,
+              };
+              void loadSourceManagement({ quiet: true });
+            }"""
+        )
         page.wait_for_function(
             "() => state.sourceManagement.snapshot.requests[0]?.completedCount === 1"
         )
         page.wait_for_function(
             "() => Boolean(document.querySelector('#sourceManagerPending [data-source-pending-action]'))"
         )
+        request_started_frame = page.evaluate(
+            """() => {
+              const frame = window.__sourceManagerRequestStartedFrame;
+              const workspace = document.querySelector("#sourceManagerList");
+              const navigation = workspace.querySelector(".source-manager-source-list");
+              const detail = workspace.querySelector(".source-manager-detail");
+              const rows = [...navigation.querySelectorAll(".source-manager-row")];
+              const cancel = detail.querySelector('[data-source-action="cancelPrewarm"]');
+              return {
+                navigation: navigation === frame.navigation,
+                rows: rows.length === frame.rows.length
+                  && rows.every((row, index) => row === frame.rows[index]),
+                detail: detail === frame.detail,
+                header: detail.querySelector(".source-manager-detail-header") === frame.header,
+                status: detail.querySelector(".source-manager-detail-status") === frame.status,
+                update: detail.querySelector(".source-manager-action-group-update")
+                  === frame.update,
+                recovery: detail.querySelector(".source-manager-action-group-recovery")
+                  === frame.recovery,
+                remove: detail.querySelector(".source-manager-action-group-remove")
+                  === frame.remove,
+                syncAction: detail.querySelector('[data-source-action="syncPhotos"]')
+                  === frame.syncAction && frame.syncAction.disabled,
+                deleteAction: detail.querySelector('[data-source-action="delete"]')
+                  === frame.deleteAction,
+                oldActionRemoved: !detail.querySelector(
+                  '[data-source-action="prewarmThumbnails"]'
+                ),
+                cancelAction: Boolean(cancel),
+                focusMigrated: document.activeElement === cancel,
+                navigationScroll: navigation.scrollTop === frame.navigationScrollTop,
+                detailScroll: detail.scrollTop === frame.detailScrollTop,
+              };
+            }"""
+        )
+        assert all(request_started_frame.values()), request_started_frame
 
         page.evaluate(
             """() => {
@@ -454,17 +517,73 @@ def main():
         )
         assert all(changed_progress_frame.values()), changed_progress_frame
 
-        source_requests.clear()
         page.evaluate(
             """() => {
               clearTimeout(state.sourceManagement.pollTimer);
               state.sourceManagement.pollTimer = null;
+              const workspace = document.querySelector("#sourceManagerList");
+              const navigation = workspace.querySelector(".source-manager-source-list");
+              const detail = workspace.querySelector(".source-manager-detail");
+              const cancel = detail.querySelector('[data-source-action="cancelPrewarm"]');
+              cancel.focus({ preventScroll: true });
+              window.__sourceManagerRequestEndedFrame = {
+                navigation,
+                rows: [...navigation.querySelectorAll(".source-manager-row")],
+                detail,
+                header: detail.querySelector(".source-manager-detail-header"),
+                status: detail.querySelector(".source-manager-detail-status"),
+                update: detail.querySelector(".source-manager-action-group-update"),
+                recovery: detail.querySelector(".source-manager-action-group-recovery"),
+                remove: detail.querySelector(".source-manager-action-group-remove"),
+                syncAction: detail.querySelector('[data-source-action="syncPhotos"]'),
+                deleteAction: detail.querySelector('[data-source-action="delete"]'),
+                navigationScrollTop: navigation.scrollTop,
+                detailScrollTop: detail.scrollTop,
+              };
               void loadSourceManagement({ quiet: true });
             }"""
         )
+        source_requests.clear()
         page.wait_for_function(
             "() => state.sourceManagement.snapshot.requests.length === 0"
         )
+        request_ended_frame = page.evaluate(
+            """() => {
+              const frame = window.__sourceManagerRequestEndedFrame;
+              const workspace = document.querySelector("#sourceManagerList");
+              const navigation = workspace.querySelector(".source-manager-source-list");
+              const detail = workspace.querySelector(".source-manager-detail");
+              const rows = [...navigation.querySelectorAll(".source-manager-row")];
+              const syncAction = detail.querySelector('[data-source-action="syncPhotos"]');
+              return {
+                navigation: navigation === frame.navigation,
+                rows: rows.length === frame.rows.length
+                  && rows.every((row, index) => row === frame.rows[index]),
+                detail: detail === frame.detail,
+                header: detail.querySelector(".source-manager-detail-header") === frame.header,
+                status: detail.querySelector(".source-manager-detail-status") === frame.status,
+                update: detail.querySelector(".source-manager-action-group-update")
+                  === frame.update,
+                recovery: detail.querySelector(".source-manager-action-group-recovery")
+                  === frame.recovery,
+                remove: detail.querySelector(".source-manager-action-group-remove")
+                  === frame.remove,
+                syncAction: syncAction === frame.syncAction && !syncAction.disabled,
+                deleteAction: detail.querySelector('[data-source-action="delete"]')
+                  === frame.deleteAction,
+                oldActionRemoved: !detail.querySelector(
+                  '[data-source-action="cancelPrewarm"]'
+                ),
+                restoredAction: Boolean(detail.querySelector(
+                  '[data-source-action="prewarmThumbnails"]'
+                )),
+                focusMigrated: document.activeElement === syncAction,
+                navigationScroll: navigation.scrollTop === frame.navigationScrollTop,
+                detailScroll: detail.scrollTop === frame.detailScrollTop,
+              };
+            }"""
+        )
+        assert all(request_ended_frame.values()), request_ended_frame
         page.evaluate(
             f"""() => {{
               const originalFetch = window.fetch.bind(window);
@@ -531,8 +650,182 @@ def main():
             }"""
         )
         assert all(failure_frame.values()), failure_frame
+
+        page.evaluate(
+            f"""() => {{
+              const originalFetch = window.fetch.bind(window);
+              window.__sourceManagerSelectedStateRelease = null;
+              window.fetch = (input, init) => {{
+                const url = new URL(typeof input === "string" ? input : input.url, location.href);
+                if (url.pathname !== "/v1/source-management") return originalFetch(input, init);
+                return new Promise((resolve, reject) => {{
+                  window.__sourceManagerSelectedStateRelease = () => {{
+                    window.fetch = originalFetch;
+                    originalFetch(input, init).then(resolve, reject);
+                  }};
+                }});
+              }};
+              const workspace = document.querySelector("#sourceManagerList");
+              const navigation = workspace.querySelector(".source-manager-source-list");
+              const detail = workspace.querySelector(".source-manager-detail");
+              const rows = [...navigation.querySelectorAll(".source-manager-row")];
+              const syncAction = detail.querySelector('[data-source-action="syncPhotos"]');
+              detail.style.paddingBottom = "640px";
+              detail.scrollTop = 60;
+              syncAction.focus({{ preventScroll: true }});
+              window.__sourceManagerSelectedStateFrame = {{
+                navigation,
+                rows,
+                detail,
+                header: detail.querySelector(".source-manager-detail-header"),
+                view: detail.querySelector('[data-source-manager-view="{PHOTOS_SOURCE_ID}"]'),
+                status: detail.querySelector(".source-manager-detail-status"),
+                recovery: detail.querySelector(".source-manager-action-group-recovery"),
+                remove: detail.querySelector(".source-manager-action-group-remove"),
+                deleteAction: detail.querySelector('[data-source-action="delete"]'),
+                focused: syncAction,
+                navigationScrollTop: navigation.scrollTop,
+                detailScrollTop: detail.scrollTop,
+              }};
+              void loadSourceManagement({{ quiet: true }});
+            }}"""
+        )
+        page.wait_for_function(
+            "() => Boolean(window.__sourceManagerSelectedStateRelease)"
+        )
+        sources[0]["state"] = "authorizationRequired"
+        page.evaluate("() => window.__sourceManagerSelectedStateRelease()")
+        page.wait_for_function(
+            f"() => state.sourceManagement.snapshot.sources"
+            f".find(source => source.id === '{PHOTOS_SOURCE_ID}')?.state"
+            " === 'authorizationRequired'"
+            " && Boolean(document.querySelector('[data-source-action=\"reauthorize\"]'))"
+        )
+        selected_state_frame = page.evaluate(
+            f"""() => {{
+              const frame = window.__sourceManagerSelectedStateFrame;
+              const workspace = document.querySelector("#sourceManagerList");
+              const navigation = workspace.querySelector(".source-manager-source-list");
+              const detail = workspace.querySelector(".source-manager-detail");
+              const rows = [...navigation.querySelectorAll(".source-manager-row")];
+              const reauthorize = detail.querySelector('[data-source-action="reauthorize"]');
+              const badge = navigation.querySelector(
+                '[data-source-manager-select="{PHOTOS_SOURCE_ID}"] .source-manager-state-badge'
+              );
+              return {{
+                navigation: navigation === frame.navigation,
+                rows: rows.length === frame.rows.length
+                  && rows.every((row, index) => row === frame.rows[index]),
+                selectedState: badge?.dataset.state === "authorizationRequired"
+                  && badge.textContent === "需授权",
+                detail: detail === frame.detail,
+                header: detail.querySelector(".source-manager-detail-header") === frame.header,
+                view: detail.querySelector("[data-source-manager-view]") === frame.view,
+                status: detail.querySelector(".source-manager-detail-status") === frame.status
+                  && frame.status.dataset.state === "authorizationRequired"
+                  && frame.status.textContent.includes("重新授予"),
+                recovery: detail.querySelector(".source-manager-action-group-recovery")
+                  === frame.recovery,
+                remove: detail.querySelector(".source-manager-action-group-remove")
+                  === frame.remove,
+                deleteAction: detail.querySelector('[data-source-action="delete"]')
+                  === frame.deleteAction,
+                oldActionRemoved: !detail.querySelector('[data-source-action="syncPhotos"]'),
+                newAction: Boolean(reauthorize),
+                focusMigrated: document.activeElement === reauthorize,
+                navigationScroll: navigation.scrollTop === frame.navigationScrollTop,
+                detailScroll: detail.scrollTop === frame.detailScrollTop,
+              }};
+            }}"""
+        )
+        assert all(selected_state_frame.values()), selected_state_frame
+
+        page.evaluate(
+            """() => {
+              const originalFetch = window.fetch.bind(window);
+              window.__sourceManagerRestoredStateRelease = null;
+              window.fetch = (input, init) => {
+                const url = new URL(typeof input === "string" ? input : input.url, location.href);
+                if (url.pathname !== "/v1/source-management") return originalFetch(input, init);
+                return new Promise((resolve, reject) => {
+                  window.__sourceManagerRestoredStateRelease = () => {
+                    window.fetch = originalFetch;
+                    originalFetch(input, init).then(resolve, reject);
+                  };
+                });
+              };
+              const workspace = document.querySelector("#sourceManagerList");
+              const navigation = workspace.querySelector(".source-manager-source-list");
+              const detail = workspace.querySelector(".source-manager-detail");
+              const reauthorize = detail.querySelector('[data-source-action="reauthorize"]');
+              detail.scrollTop = 56;
+              reauthorize.focus({ preventScroll: true });
+              window.__sourceManagerRestoredStateFrame = {
+                navigation,
+                rows: [...navigation.querySelectorAll(".source-manager-row")],
+                detail,
+                header: detail.querySelector(".source-manager-detail-header"),
+                view: detail.querySelector("[data-source-manager-view]"),
+                status: detail.querySelector(".source-manager-detail-status"),
+                recovery: detail.querySelector(".source-manager-action-group-recovery"),
+                remove: detail.querySelector(".source-manager-action-group-remove"),
+                deleteAction: detail.querySelector('[data-source-action="delete"]'),
+                navigationScrollTop: navigation.scrollTop,
+                detailScrollTop: detail.scrollTop,
+              };
+              void loadSourceManagement({ quiet: true });
+            }"""
+        )
+        page.wait_for_function(
+            "() => Boolean(window.__sourceManagerRestoredStateRelease)"
+        )
+        sources[0]["state"] = "active"
+        page.evaluate("() => window.__sourceManagerRestoredStateRelease()")
+        page.wait_for_function(
+            f"() => state.sourceManagement.snapshot.sources"
+            f".find(source => source.id === '{PHOTOS_SOURCE_ID}')?.state === 'active'"
+            " && Boolean(document.querySelector('[data-source-action=\"syncPhotos\"]'))"
+        )
+        restored_state_frame = page.evaluate(
+            f"""() => {{
+              const frame = window.__sourceManagerRestoredStateFrame;
+              const workspace = document.querySelector("#sourceManagerList");
+              const navigation = workspace.querySelector(".source-manager-source-list");
+              const detail = workspace.querySelector(".source-manager-detail");
+              const rows = [...navigation.querySelectorAll(".source-manager-row")];
+              const syncAction = detail.querySelector('[data-source-action="syncPhotos"]');
+              const badge = navigation.querySelector(
+                '[data-source-manager-select="{PHOTOS_SOURCE_ID}"] .source-manager-state-badge'
+              );
+              return {{
+                navigation: navigation === frame.navigation,
+                rows: rows.length === frame.rows.length
+                  && rows.every((row, index) => row === frame.rows[index]),
+                selectedState: badge?.dataset.state === "active"
+                  && badge.textContent === "可用",
+                detail: detail === frame.detail,
+                header: detail.querySelector(".source-manager-detail-header") === frame.header,
+                view: detail.querySelector("[data-source-manager-view]") === frame.view,
+                status: detail.querySelector(".source-manager-detail-status") === frame.status
+                  && frame.status.dataset.state === "active"
+                  && frame.status.textContent.includes("可以浏览、同步"),
+                recovery: detail.querySelector(".source-manager-action-group-recovery")
+                  === frame.recovery,
+                remove: detail.querySelector(".source-manager-action-group-remove")
+                  === frame.remove,
+                deleteAction: detail.querySelector('[data-source-action="delete"]')
+                  === frame.deleteAction,
+                oldActionRemoved: !detail.querySelector('[data-source-action="reauthorize"]'),
+                newAction: Boolean(syncAction),
+                focusMigrated: document.activeElement === syncAction,
+                navigationScroll: navigation.scrollTop === frame.navigationScrollTop,
+                detailScroll: detail.scrollTop === frame.detailScrollTop,
+              }};
+            }}"""
+        )
+        assert all(restored_state_frame.values()), restored_state_frame
         page.screenshot(
-            path="/tmp/imageall-source-management-refresh-continuity.png",
+            path="/tmp/imageall-source-manager-state-continuity.png",
             full_page=True,
         )
 
