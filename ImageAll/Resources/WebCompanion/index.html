@@ -11,7 +11,7 @@
   <title>ImageAll 网页版</title>
   <link rel="manifest" href="/manifest.webmanifest">
     <link rel="stylesheet" href="/app.css?v=20260826-143">
-    <script src="/app.js?v=20260826-143" defer></script>
+    <script src="/app.js?v=20260826-144" defer></script>
 </head>
 <body>
   <div id="bootView" class="centered-state">
@@ -346,8 +346,9 @@
                 aria-label="打开来源管理" title="连接、授权或管理来源">⚙</button>
             </div>
           </div>
-          <nav id="sourceList" class="sidebar-list"
-            aria-label="来源导航" aria-keyshortcuts="ArrowUp ArrowDown Home End"></nav>
+          <nav id="sourceList" class="sidebar-list" role="tree"
+            aria-label="来源导航"
+            aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight Home End"></nav>
           <p id="sourceEmpty" class="sidebar-empty hidden">尚无可用来源</p>
           <div id="sidebarSourceActions" class="sidebar-source-actions"
             aria-label="连接来源" aria-keyshortcuts="ArrowUp ArrowDown Home End">

@@ -9656,6 +9656,9 @@ function sourceSidebarHelpDetail(source) {
   return [
     availability,
     `点击只显示“${source.displayName}”中的当前媒体。${refresh}`,
+    ...(folderSourceSupportsHierarchy(source)
+      ? ["左右方向键可展开、进入子目录、折叠或返回父目录；上下键继续沿可见层级移动。"]
+      : []),
     "右键、触控长按、Context Menu 或 Shift-F10 可排序，并查看同步、缓存、授权、管理和移除动作。",
     "拖动可直接调整来源顺序；Option + 上/下可用键盘移动。",
   ].join("\n");
@@ -9905,7 +9908,13 @@ async function reconcileSelectedFolderAfterSourceRefresh() {
   toast("原文件夹已不在最新索引中，已返回来源根目录");
 }
 
-function appendFolderRows(container, sourceID, folders, depth = 0, { search = false } = {}) {
+function appendFolderRows(
+  container,
+  sourceID,
+  folders,
+  depth = 0,
+  { search = false, parentRelativePath = null } = {}
+) {
   for (const folder of folders) {
     const key = folderScopeKey(sourceID, folder.relativePath);
     const expanded = state.folderNavigation.expanded.has(key);
@@ -9915,6 +9924,17 @@ function appendFolderRows(container, sourceID, folders, depth = 0, { search = fa
     row.dataset.folderSourceId = sourceID;
     row.dataset.folderPath = folder.relativePath;
     if (search) row.dataset.folderSearchResult = "true";
+    else {
+      row.dataset.folderParentPath = folder.parentRelativePath ?? parentRelativePath ?? "";
+      row.setAttribute("role", "treeitem");
+      row.setAttribute("aria-level", String(depth + 2));
+      row.setAttribute("aria-expanded", String(expanded));
+      row.setAttribute("aria-selected", String(selectedFolderMatches(
+        sourceID,
+        folder.relativePath
+      )));
+      row.setAttribute("aria-keyshortcuts", "ArrowLeft ArrowRight");
+    }
     row.style.setProperty("--folder-depth", String(depth));
     row.classList.toggle("selected", selectedFolderMatches(sourceID, folder.relativePath));
     row.setAttribute("aria-current", selectedFolderMatches(sourceID, folder.relativePath) ? "page" : "false");
@@ -9951,7 +9971,7 @@ function appendFolderBranch(container, sourceID, parentRelativePath, branch, dep
     status.textContent = branch.error;
     container.append(status);
   }
-  appendFolderRows(container, sourceID, branch.folders, depth);
+  appendFolderRows(container, sourceID, branch.folders, depth, { parentRelativePath });
   if (!branch.loading && !branch.error && !branch.folders.length) {
     const empty = document.createElement("p");
     empty.className = "source-folder-status";
@@ -9977,6 +9997,9 @@ function appendSourceFolderTree(source) {
   const tree = document.createElement("div");
   tree.className = "source-folder-tree";
   tree.dataset.folderTreeSourceId = source.id;
+  tree.id = `source-folder-tree-${source.id}`;
+  tree.setAttribute("role", "group");
+  tree.setAttribute("aria-label", `${source.displayName}中的文件夹`);
   const root = folderBranch(source.id);
   if (root?.totalCount > 500) {
     const search = state.folderNavigation.searches.get(source.id);
@@ -10038,6 +10061,8 @@ function renderSources() {
     button.className = "sidebar-row";
     button.dataset.sourceId = source.id;
     button.draggable = true;
+    button.setAttribute("role", "treeitem");
+    button.setAttribute("aria-level", "1");
     button.setAttribute(
       "aria-keyshortcuts",
       "Alt+ArrowUp Alt+ArrowDown Shift+F10 ContextMenu"
@@ -10058,6 +10083,11 @@ function renderSources() {
       && state.selectedSourceID === source.id) {
       button.setAttribute("aria-current", "page");
     }
+    button.setAttribute("aria-selected", String(
+      !integratedWorkspaceSelected
+        && state.libraryScope === "all"
+        && state.selectedSourceID === source.id
+    ));
     button.classList.toggle("unavailable", source.state !== "active");
 
     const icon = document.createElement("span");
@@ -10068,6 +10098,14 @@ function renderSources() {
       icon.dataset.folderSourceToggle = source.id;
       icon.textContent = expanded ? "▾" : "▸";
       button.setAttribute("aria-expanded", String(expanded));
+      button.setAttribute(
+        "aria-keyshortcuts",
+        "ArrowLeft ArrowRight Alt+ArrowUp Alt+ArrowDown Shift+F10 ContextMenu"
+      );
+      if (expanded) {
+        button.setAttribute("aria-controls", `source-folder-tree-${source.id}`);
+        button.setAttribute("aria-owns", `source-folder-tree-${source.id}`);
+      }
     } else {
       icon.textContent = sourceIcon(source.kind);
     }
@@ -10190,6 +10228,80 @@ function focusSidebarSource(sourceID) {
     elements.sourceList.querySelector(`[data-source-id="${CSS.escape(sourceID)}"]`)
       ?.focus({ preventScroll: true });
   });
+}
+
+function folderTreeRow(sourceID, relativePath) {
+  return [...elements.sourceList.querySelectorAll(
+    `[data-folder-source-id="${CSS.escape(sourceID)}"]`
+      + ":not([data-folder-search-result])"
+  )].find((row) => row.dataset.folderPath === relativePath) || null;
+}
+
+function firstFolderTreeChild(sourceID, parentRelativePath = null) {
+  const expectedParent = parentRelativePath || "";
+  return [...elements.sourceList.querySelectorAll(
+    `[data-folder-source-id="${CSS.escape(sourceID)}"]`
+      + ":not([data-folder-search-result])"
+  )].find((row) => row.dataset.folderParentPath === expectedParent) || null;
+}
+
+function focusFolderTreeParent(sourceID, parentRelativePath = null) {
+  const target = parentRelativePath
+    ? folderTreeRow(sourceID, parentRelativePath)
+    : elements.sourceList.querySelector(
+      `[data-source-id="${CSS.escape(sourceID)}"]`
+    );
+  target?.focus({ preventScroll: true });
+  target?.scrollIntoView({ block: "nearest" });
+}
+
+function moveFolderTreeHorizontalNavigation(event) {
+  if (event.altKey || event.metaKey || event.ctrlKey
+    || !["ArrowRight", "ArrowLeft"].includes(event.key)) return false;
+  const folderRow = event.target.closest(
+    "[data-folder-path]:not([data-folder-search-result])"
+  );
+  const sourceRow = event.target.closest("[data-source-id]");
+  const sourceID = folderRow?.dataset.folderSourceId || sourceRow?.dataset.sourceId;
+  const source = state.sources.find((candidate) => candidate.id === sourceID);
+  if (!sourceID || !folderSourceSupportsHierarchy(source)) return false;
+  const relativePath = folderRow?.dataset.folderPath || null;
+  const key = folderScopeKey(sourceID, relativePath || "");
+  const expanded = state.folderNavigation.expanded.has(key);
+
+  if (event.key === "ArrowRight") {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!expanded) {
+      state.folderNavigation.expanded.add(key);
+      if (folderBranch(sourceID, relativePath)) renderSources();
+      else void loadFolderBranch(sourceID, relativePath);
+      return true;
+    }
+    const child = firstFolderTreeChild(sourceID, relativePath);
+    if (child) {
+      child.focus({ preventScroll: true });
+      child.scrollIntoView({ block: "nearest" });
+    } else if (!folderBranch(sourceID, relativePath)) {
+      void loadFolderBranch(sourceID, relativePath);
+    }
+    return true;
+  }
+
+  if (expanded) {
+    event.preventDefault();
+    event.stopPropagation();
+    state.folderNavigation.expanded.delete(key);
+    renderSources();
+    return true;
+  }
+  if (folderRow) {
+    event.preventDefault();
+    event.stopPropagation();
+    focusFolderTreeParent(sourceID, folderRow.dataset.folderParentPath || null);
+    return true;
+  }
+  return false;
 }
 
 function focusSidebarTag(tagID) {
@@ -35598,24 +35710,7 @@ function bindEvents() {
     state.folderNavigation.searchTimers.set(sourceID, timer);
   });
   elements.sourceList.addEventListener("keydown", (event) => {
-    if (!["ArrowRight", "ArrowLeft"].includes(event.key)) return;
-    const folderRow = event.target.closest("[data-folder-path]");
-    const sourceRow = event.target.closest("[data-source-id]");
-    const sourceID = folderRow?.dataset.folderSourceId || sourceRow?.dataset.sourceId;
-    if (!sourceID) return;
-    const relativePath = folderRow?.dataset.folderPath || "";
-    const key = folderScopeKey(sourceID, relativePath);
-    const expanded = state.folderNavigation.expanded.has(key);
-    if (event.key === "ArrowRight" && !expanded) {
-      event.preventDefault();
-      state.folderNavigation.expanded.add(key);
-      if (folderBranch(sourceID, relativePath || null)) renderSources();
-      else void loadFolderBranch(sourceID, relativePath || null);
-    } else if (event.key === "ArrowLeft" && expanded) {
-      event.preventDefault();
-      state.folderNavigation.expanded.delete(key);
-      renderSources();
-    }
+    moveFolderTreeHorizontalNavigation(event);
   });
   elements.folderBreadcrumb.addEventListener("click", (event) => {
     const button = event.target.closest("[data-folder-breadcrumb-source-id]");

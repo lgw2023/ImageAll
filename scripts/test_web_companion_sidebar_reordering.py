@@ -445,6 +445,14 @@ def main():
 
         test_phase[0] = "folder-hierarchy"
         assert not folder_queries
+        photos_source = page.locator(
+            f'#sourceList .sidebar-row[data-source-id="{SOURCE_PHOTOS}"]'
+        )
+        photos_source.focus()
+        photos_source.press("ArrowRight")
+        assert photos_source.get_attribute("aria-expanded") is None
+        assert not folder_queries
+
         folder_source = page.locator(
             f'#sourceList .sidebar-row[data-source-id="{SOURCE_FOLDER}"]'
         )
@@ -454,14 +462,58 @@ def main():
         assert page.locator(
             f'[data-folder-search-source-id="{SOURCE_FOLDER}"]'
         ).is_visible()
+        assert page.locator("#sourceList").get_attribute("role") == "tree"
+        assert folder_source.get_attribute("role") == "treeitem"
+        assert folder_source.get_attribute("aria-level") == "1"
+        assert folder_source.get_attribute("aria-expanded") == "true"
+        assert folder_source.get_attribute("aria-owns") == (
+            f"source-folder-tree-{SOURCE_FOLDER}"
+        )
+        tree_navigation_asset_query_count = len(asset_queries)
 
         trips = page.locator(
             f'[data-folder-source-id="{SOURCE_FOLDER}"][data-folder-path="Trips"]'
         )
-        trips.locator("[data-folder-toggle]").click()
+        assert trips.get_attribute("role") == "treeitem"
+        assert trips.get_attribute("aria-level") == "2"
+        folder_source.focus()
+        folder_source.press("ArrowRight")
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.folderPath === 'Trips'"
+        )
+        trips.press("ArrowRight")
         page.wait_for_function(
             "() => Boolean(document.querySelector('[data-folder-path=\"Trips/2026\"]'))"
         )
+        assert trips.get_attribute("aria-expanded") == "true"
+        trips.press("ArrowRight")
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.folderPath === 'Trips/2026'"
+        )
+        trip_2026 = page.locator('[data-folder-path="Trips/2026"]')
+        assert trip_2026.get_attribute("aria-level") == "3"
+        assert trip_2026.get_attribute("data-folder-parent-path") == "Trips"
+        trip_2026.press("ArrowLeft")
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.folderPath === 'Trips'"
+        )
+        trips.press("ArrowLeft")
+        assert trips.get_attribute("aria-expanded") == "false"
+        trips.press("ArrowLeft")
+        page.wait_for_function(
+            "sourceID => document.activeElement?.dataset.sourceId === sourceID",
+            arg=SOURCE_FOLDER,
+        )
+        folder_source.press("ArrowRight")
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.folderPath === 'Trips'"
+        )
+        trips.press("ArrowRight")
+        trips.press("ArrowRight")
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.folderPath === 'Trips/2026'"
+        )
+        assert len(asset_queries) == tree_navigation_asset_query_count
         page.locator('[data-folder-path="Trips/2026"] .folder-name').click()
         page.wait_for_function(
             "() => document.querySelector('#folderBreadcrumb')"
@@ -508,6 +560,11 @@ def main():
             '[data-folder-search-result="true"]'
             '[data-folder-path="Literal %_/Match"]'
         )
+        search_folder_query_count = len(folder_queries)
+        search_result.focus()
+        search_result.press("ArrowRight")
+        assert search_result.get_attribute("aria-expanded") is None
+        assert len(folder_queries) == search_folder_query_count
         search_result.click()
         page.wait_for_function(
             "() => Boolean(document.querySelector("
