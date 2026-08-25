@@ -1257,6 +1257,7 @@ html.split-resizing * {
 .source-folder-status,
 .source-folder-more,
 .source-folder-retry,
+.source-folder-search-retry,
 .source-folder-search-empty {
   margin: 3px 8px 4px 25px;
   color: var(--tertiary);
@@ -1265,7 +1266,8 @@ html.split-resizing * {
 }
 
 .source-folder-more,
-.source-folder-retry {
+.source-folder-retry,
+.source-folder-search-retry {
   padding: 4px 7px;
   border: 0;
   border-radius: 6px;
@@ -1275,7 +1277,8 @@ html.split-resizing * {
 }
 
 .source-folder-more:hover,
-.source-folder-retry:hover { background: color-mix(in srgb, var(--selection), transparent 40%); }
+.source-folder-retry:hover,
+.source-folder-search-retry:hover { background: color-mix(in srgb, var(--selection), transparent 40%); }
 
 .source-folder-search {
   width: calc(100% - 16px);

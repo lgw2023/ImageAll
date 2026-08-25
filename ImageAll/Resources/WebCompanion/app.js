@@ -9699,6 +9699,9 @@ function captureFolderSidebarFocus() {
   if (active.matches("[data-folder-search-source-id]")) {
     return { kind: "search", sourceID: active.dataset.folderSearchSourceId };
   }
+  if (active.matches("[data-folder-search-retry-source-id]")) {
+    return { kind: "searchRetry", sourceID: active.dataset.folderSearchRetrySourceId };
+  }
   if (active.matches("[data-folder-path]")) {
     return {
       kind: "folder",
@@ -9730,6 +9733,8 @@ function restoreFolderSidebarFocus(focus) {
       target = elements.sourceList.querySelector(
         `[data-folder-search-source-id="${CSS.escape(focus.sourceID)}"]`
       );
+    } else if (focus.kind === "searchRetry") {
+      target = folderSearchRetryButton(focus.sourceID);
     } else if (focus.kind === "folder") {
       target = elements.sourceList.querySelector(
         `[data-folder-source-id="${CSS.escape(focus.sourceID)}"]`
@@ -9867,6 +9872,37 @@ async function searchFolders(sourceID, text) {
     });
   }
   renderSources();
+}
+
+function folderSearchRetryButton(sourceID) {
+  return elements.sourceList.querySelector(
+    `[data-folder-search-retry-source-id="${CSS.escape(sourceID)}"]`
+  );
+}
+
+async function retryFolderSearch(sourceID) {
+  const query = state.folderNavigation.searches.get(sourceID)?.query || "";
+  if (!query.trim()) return;
+  clearTimeout(state.folderNavigation.searchTimers.get(sourceID));
+  state.folderNavigation.searchTimers.delete(sourceID);
+  await searchFolders(sourceID, query);
+  requestAnimationFrame(() => {
+    if (!document.hasFocus()) return;
+    const active = document.activeElement;
+    if (active !== document.body && active !== document.documentElement) return;
+    const search = state.folderNavigation.searches.get(sourceID);
+    if (search?.query !== query) return;
+    const target = search.error
+      ? folderSearchRetryButton(sourceID)
+      : elements.sourceList.querySelector(
+        `[data-folder-search-result="true"]`
+        + `[data-folder-source-id="${CSS.escape(sourceID)}"]`
+      ) || elements.sourceList.querySelector(
+        `[data-folder-search-source-id="${CSS.escape(sourceID)}"]`
+      );
+    target?.focus({ preventScroll: true });
+    target?.scrollIntoView({ block: "nearest" });
+  });
 }
 
 function expandFolderScopeAncestors(sourceID, relativePath) {
@@ -10068,6 +10104,15 @@ function appendSourceFolderTree(source) {
         summary.textContent = "正在搜索…";
       } else if (search.error) {
         summary.textContent = search.error;
+        results.append(summary);
+        const retry = document.createElement("button");
+        retry.type = "button";
+        retry.className = "source-folder-search-retry";
+        retry.dataset.folderSearchRetrySourceId = source.id;
+        retry.textContent = "搜索失败，重试";
+        retry.title = `重新搜索${source.displayName}中的文件夹`;
+        retry.setAttribute("aria-label", `重新搜索${source.displayName}中的文件夹`);
+        results.append(retry);
       } else if (search.folders.length) {
         summary.textContent = search.totalCount > search.folders.length
           ? `搜索结果 ${search.folders.length} / ${search.totalCount} · 请缩小范围`
@@ -10230,6 +10275,7 @@ function sidebarPrimaryNavigationItems() {
     "#sourceList .source-folder-row:not(.hidden):not(:disabled)",
     "#sourceList .source-folder-more:not(.hidden):not(:disabled)",
     "#sourceList .source-folder-retry:not(.hidden):not(:disabled)",
+    "#sourceList .source-folder-search-retry:not(.hidden):not(:disabled)",
     "#sidebarSourceActions button:not(.hidden):not(:disabled)",
   ].join(", "))].filter((item) => item.offsetParent !== null);
 }
@@ -10240,7 +10286,7 @@ function moveSidebarPrimaryNavigation(event) {
   const current = event.target.closest(
     "#libraryNavigation .sidebar-row, #sourceList .sidebar-row, "
       + "#sourceList .source-folder-row, #sourceList .source-folder-more, "
-      + "#sourceList .source-folder-retry, "
+      + "#sourceList .source-folder-retry, #sourceList .source-folder-search-retry, "
       + "#sidebarSourceActions button"
   );
   if (!current) return false;
@@ -35740,6 +35786,11 @@ function bindEvents() {
         retry.dataset.folderRetrySourceId,
         retry.dataset.folderRetryParentPath || null
       );
+      return;
+    }
+    const searchRetry = event.target.closest("[data-folder-search-retry-source-id]");
+    if (searchRetry) {
+      void retryFolderSearch(searchRetry.dataset.folderSearchRetrySourceId);
       return;
     }
     const button = event.target.closest("[data-source-id]");
