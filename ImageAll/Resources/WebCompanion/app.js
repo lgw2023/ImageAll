@@ -26708,7 +26708,7 @@ function slimmingJobStatusPart(key, tagName, className) {
   return part;
 }
 
-function reconcileSlimmingJobStatusChildren(container, wanted) {
+function reconcileStableChildren(container, wanted) {
   for (const [index, child] of wanted.entries()) {
     if (container.childNodes[index] !== child) {
       container.insertBefore(child, container.childNodes[index] || null);
@@ -26742,7 +26742,7 @@ function syncSlimmingJobStatusProgress(job) {
   const total = Math.max(1, Number(job.scanProgress.totalUnitCount || 1));
   fill.style.width = `${Math.min(100, Math.max(0, completed / total * 100))}%`;
   copy.textContent = `${slimmingScanPhaseText(job.scanProgress)} ${completed}/${total}`;
-  reconcileSlimmingJobStatusChildren(progress, [track, copy]);
+  reconcileStableChildren(progress, [track, copy]);
   return progress;
 }
 
@@ -26775,7 +26775,7 @@ function syncSlimmingJobStatusActions(job) {
     resume.textContent = "继续分析";
     wanted.push(resume);
   }
-  reconcileSlimmingJobStatusChildren(actions, wanted);
+  reconcileStableChildren(actions, wanted);
   return actions;
 }
 
@@ -26799,12 +26799,12 @@ function syncSlimmingJobStatusDiagnosis(job) {
     code.textContent = job.lastErrorCode;
     wanted.push(document.createTextNode(" "), code);
   }
-  reconcileSlimmingJobStatusChildren(diagnosis, wanted);
+  reconcileStableChildren(diagnosis, wanted);
   return diagnosis;
 }
 
 function reconcileSlimmingJobStatusParts(parts) {
-  reconcileSlimmingJobStatusChildren(elements.slimmingJobStatus, parts);
+  reconcileStableChildren(elements.slimmingJobStatus, parts);
 }
 
 function renderSlimmingJobStatus() {
@@ -26832,7 +26832,7 @@ function renderSlimmingJobStatus() {
   if (!detail) detail = document.createElement("span");
   const source = job.sourceNames?.length ? job.sourceNames.join("、") : "任务来源不可用";
   detail.textContent = `${slimmingModeText(job.mode)} · ${source} · 尝试 ${job.attempts}/${job.maxAttempts}`;
-  reconcileSlimmingJobStatusChildren(copy, [heading, detail]);
+  reconcileStableChildren(copy, [heading, detail]);
   parts.push(copy);
   const progress = syncSlimmingJobStatusProgress(job);
   if (progress) parts.push(progress);
@@ -27577,19 +27577,50 @@ function renderIdenticalCleanupBlockingOverlay() {
   }
 }
 
+function slimmingRemovalStatusPart(key, tagName, className) {
+  let part = elements.slimmingRemovalStatus.querySelector(
+    `:scope > [data-slimming-removal-status-part="${key}"]`
+  );
+  if (!part) {
+    part = document.createElement(tagName);
+    part.dataset.slimmingRemovalStatusPart = key;
+  }
+  part.className = className;
+  return part;
+}
+
+function reconcileSlimmingRemovalStatusParts(parts) {
+  reconcileStableChildren(elements.slimmingRemovalStatus, parts);
+}
+
 function renderSlimmingRemovalStatus() {
   const request = currentSlimmingIdenticalCleanupRequest()
     || currentSlimmingRemovalRequest();
   elements.slimmingRemovalStatus.classList.toggle("hidden", !request);
-  clearElement(elements.slimmingRemovalStatus);
-  if (!request) return;
+  if (!request) {
+    reconcileSlimmingRemovalStatusParts([]);
+    delete elements.slimmingRemovalStatus.dataset.slimmingRemovalStatusRequestId;
+    return;
+  }
+  if (elements.slimmingRemovalStatus.dataset.slimmingRemovalStatusRequestId !== request.id) {
+    reconcileSlimmingRemovalStatusParts([]);
+    elements.slimmingRemovalStatus.dataset.slimmingRemovalStatusRequestId = request.id;
+  }
+  const parts = [];
 
-  const header = document.createElement("div");
-  header.className = "slimming-removal-status-header";
-  const message = document.createElement("strong");
+  const header = slimmingRemovalStatusPart(
+    "header",
+    "div",
+    "slimming-removal-status-header"
+  );
+  let message = header.querySelector(":scope > strong");
+  if (!message) message = document.createElement("strong");
   message.textContent = request.message || "Mac 正在处理批量操作…";
-  const phase = document.createElement("span");
-  phase.className = "secondary";
+  let phase = header.querySelector(":scope > .secondary");
+  if (!phase) {
+    phase = document.createElement("span");
+    phase.className = "secondary";
+  }
   phase.textContent = {
     awaitingMac: "等待 Mac 确认",
     running: "处理中",
@@ -27597,52 +27628,58 @@ function renderSlimmingRemovalStatus() {
     cancelled: "已取消",
     failed: "未完成",
   }[request.phase] || request.phase;
-  header.append(message, phase);
-  elements.slimmingRemovalStatus.append(header);
+  reconcileStableChildren(header, [message, phase]);
+  parts.push(header);
 
   if (request.progress && request.phase === "running") {
-    const progress = document.createElement("progress");
+    const progress = slimmingRemovalStatusPart("progress", "progress", "");
     progress.max = Math.max(1, Number(request.progress.totalAssetCount || 1));
     progress.value = Math.max(0, Number(request.progress.completedAssetCount || 0));
     progress.setAttribute(
       "aria-label",
       `已完成 ${progress.value}/${progress.max} 项`
     );
-    elements.slimmingRemovalStatus.append(progress);
+    parts.push(progress);
   }
   if (request.audit) {
-    const audit = document.createElement("div");
-    audit.className = "slimming-removal-audit";
-    const parts = [];
+    const audit = slimmingRemovalStatusPart("audit", "div", "slimming-removal-audit");
+    const auditParts = [];
     if (request.audit.hiddenAssetIDs?.length) {
-      parts.push(`已从候选结果隐藏 ${request.audit.hiddenAssetIDs.length} 项`);
+      auditParts.push(`已从候选结果隐藏 ${request.audit.hiddenAssetIDs.length} 项`);
     }
     if (request.audit.failedAssetIDs?.length) {
-      parts.push(`失败 ${request.audit.failedAssetIDs.length} 项`);
+      auditParts.push(`失败 ${request.audit.failedAssetIDs.length} 项`);
     }
     if (request.audit.authorizationRequiredAssetIDs?.length) {
-      parts.push(`待来源授权 ${request.audit.authorizationRequiredAssetIDs.length} 项`);
+      auditParts.push(`待来源授权 ${request.audit.authorizationRequiredAssetIDs.length} 项`);
     }
     if (request.audit.authorizationDeniedPhotosAssetIDs?.length) {
-      parts.push(`Photos 未授权 ${request.audit.authorizationDeniedPhotosAssetIDs.length} 项`);
+      auditParts.push(`Photos 未授权 ${request.audit.authorizationDeniedPhotosAssetIDs.length} 项`);
     }
-    audit.textContent = parts.join(" · ") || "逐项结果已由 Mac 安全核验";
-    elements.slimmingRemovalStatus.append(audit);
+    audit.textContent = auditParts.join(" · ") || "逐项结果已由 Mac 安全核验";
+    parts.push(audit);
   }
   if (request.verification) {
-    const verification = document.createElement("div");
-    verification.className = "slimming-removal-audit";
+    const verification = slimmingRemovalStatusPart(
+      "verification",
+      "div",
+      "slimming-removal-audit"
+    );
     verification.textContent = request.verification.isComplete
       ? `已独立核验：${request.verification.verifiedGroupCount}/${request.verification.targetGroupCount} 组均只保留一项`
       : `核验结果：完成 ${request.verification.verifiedGroupCount}/${request.verification.targetGroupCount} 组 · 尚有 ${request.verification.remainingRedundantAssetCount} 项冗余`;
-    elements.slimmingRemovalStatus.append(verification);
-    const report = document.createElement("button");
+    parts.push(verification);
+    const report = slimmingRemovalStatusPart(
+      "verificationAction",
+      "button",
+      "button button-compact slimming-verification-button"
+    );
     report.type = "button";
-    report.className = "button button-compact slimming-verification-button";
     report.dataset.slimmingVerificationRequestId = request.id;
     report.textContent = "查看完整核验报告";
-    elements.slimmingRemovalStatus.append(report);
+    parts.push(report);
   }
+  reconcileSlimmingRemovalStatusParts(parts);
 }
 
 function appendSlimmingVerificationMetric(label, value, tone) {

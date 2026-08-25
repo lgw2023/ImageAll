@@ -354,6 +354,52 @@ async def main():
         assert await page.locator("#identicalCleanupBlockingTitle").inner_text() == "正在移入回收站"
         assert await page.locator("#identicalCleanupBlockingProgressLabel").inner_text() == "已处理 3 / 8 张"
         assert await page.locator("#identicalCleanupBlockingProgressBar").get_attribute("value") == "3"
+        await page.evaluate(
+            """() => {
+              const status = document.querySelector("#slimmingRemovalStatus");
+              window.__stableRunningRemovalStatus = {
+                header: status.querySelector(".slimming-removal-status-header"),
+                message: status.querySelector(".slimming-removal-status-header strong"),
+                phase: status.querySelector(".slimming-removal-status-header .secondary"),
+                progress: status.querySelector("progress"),
+                blockingCard: document.querySelector("#identicalCleanupBlockingCard"),
+              };
+            }"""
+        )
+        cleanup_request.update({
+            "progress": {
+                **cleanup_request["progress"],
+                "completedAssetCount": 6,
+                "copiedBytes": 3072,
+            },
+            "message": "已安全处理 6/8 项，正在继续…",
+            "updatedAtMs": 1_700_000_050_250,
+        })
+        await page.evaluate(
+            "() => loadSlimmingIdenticalCleanupRequests({ quiet: true })"
+        )
+        stable_running_status = await page.evaluate(
+            """() => {
+              const frame = window.__stableRunningRemovalStatus;
+              const status = document.querySelector("#slimmingRemovalStatus");
+              const progress = status.querySelector("progress");
+              return {
+                header: status.querySelector(".slimming-removal-status-header")
+                  === frame.header,
+                message: status.querySelector(".slimming-removal-status-header strong")
+                  === frame.message,
+                phase: status.querySelector(".slimming-removal-status-header .secondary")
+                  === frame.phase,
+                progress: progress === frame.progress,
+                blockingCard: document.activeElement === frame.blockingCard,
+                messageUpdated: frame.message.textContent
+                  === "已安全处理 6/8 项，正在继续…",
+                progressUpdated: progress.value === 6
+                  && progress.getAttribute("aria-label") === "已完成 6/8 项",
+              };
+            }"""
+        )
+        assert all(stable_running_status.values()), stable_running_status
         await page.screenshot(
             path="/tmp/imageall-identical-cleanup-blocking.png",
             full_page=True,
@@ -391,6 +437,12 @@ async def main():
         cleanup_request.update({
             "phase": "cancelled",
             "message": "已在 Mac 上取消一键清理",
+            "audit": {
+                "hiddenAssetIDs": ["RECYCLE_0001"],
+                "failedAssetIDs": ["RECYCLE_0002"],
+                "authorizationRequiredAssetIDs": [],
+                "authorizationDeniedPhotosAssetIDs": [],
+            },
             "verification": {
                 "isComplete": False,
                 "verifiedGroupCount": 3,
@@ -423,6 +475,9 @@ async def main():
         await page.wait_for_function(
             "() => !document.querySelector('#slimmingVerificationDialog').open"
         )
+        await page.wait_for_function(
+            "() => !state.workspaceNavigation.pendingReturnPromise"
+        )
         assert await page.evaluate("() => document.activeElement?.id") == "searchInput"
         await page.go_forward()
         await page.locator("#slimmingVerificationDialog[open]").wait_for()
@@ -431,7 +486,105 @@ async def main():
         await page.wait_for_function(
             "() => !document.querySelector('#slimmingVerificationDialog').open"
         )
+        await page.wait_for_function(
+            "() => !state.workspaceNavigation.pendingReturnPromise"
+        )
         assert await page.evaluate("() => document.activeElement?.id") == "searchInput"
+        await page.evaluate(
+            "() => new Promise(resolve => requestAnimationFrame("
+            "() => requestAnimationFrame(resolve)))"
+        )
+        cleanup_request["updatedAtMs"] = await page.evaluate("() => Date.now()")
+        await page.evaluate(
+            """fixture => {
+              document.querySelector("#slimmingWorkspace").classList.remove("hidden");
+              syncSlimmingPresentation({ focus: false, renderSurfaces: false });
+              state.slimming.selectedJobID = fixture.jobID;
+              state.slimming.identicalCleanup.requests = [fixture.request];
+              renderSlimmingRemovalStatus();
+            }""",
+            {"jobID": JOB_ID, "request": cleanup_request},
+        )
+
+        verification_button = page.locator(
+            "#slimmingRemovalStatus [data-slimming-verification-request-id]"
+        )
+        await verification_button.focus()
+        assert await page.evaluate(
+            "() => document.activeElement?.hasAttribute("
+            "'data-slimming-verification-request-id')"
+        )
+        await page.evaluate(
+            """() => {
+              const status = document.querySelector("#slimmingRemovalStatus");
+              window.__stableSlimmingRemovalStatus = {
+                header: status.querySelector(".slimming-removal-status-header"),
+                message: status.querySelector(".slimming-removal-status-header strong"),
+                phase: status.querySelector(".slimming-removal-status-header .secondary"),
+                audit: status.querySelectorAll(".slimming-removal-audit")[0],
+                verification: status.querySelectorAll(".slimming-removal-audit")[1],
+                report: status.querySelector(
+                  "[data-slimming-verification-request-id]"
+                ),
+              };
+            }"""
+        )
+        cleanup_request.update({
+            "message": "已在 Mac 上取消；核验数据已刷新",
+            "verification": {
+                **cleanup_request["verification"],
+                "isComplete": True,
+                "verifiedGroupCount": 4,
+                "currentAvailableAssetCount": 4,
+                "unresolvedGroupCount": 0,
+                "recycledRedundantAssetCount": 8,
+                "remainingRedundantAssetCount": 0,
+            },
+            "audit": {
+                **cleanup_request["audit"],
+                "hiddenAssetIDs": ["RECYCLE_0001", "RECYCLE_0002"],
+                "failedAssetIDs": [],
+            },
+            "updatedAtMs": cleanup_request["updatedAtMs"] + 100,
+        })
+        await page.evaluate(
+            "() => loadSlimmingIdenticalCleanupRequests({ quiet: true })"
+        )
+        stable_removal_status = await page.evaluate(
+            """() => {
+              const frame = window.__stableSlimmingRemovalStatus;
+              const status = document.querySelector("#slimmingRemovalStatus");
+              return {
+                header: status.querySelector(".slimming-removal-status-header")
+                  === frame.header,
+                message: status.querySelector(".slimming-removal-status-header strong")
+                  === frame.message,
+                phase: status.querySelector(".slimming-removal-status-header .secondary")
+                  === frame.phase,
+                audit: status.querySelectorAll(".slimming-removal-audit")[0]
+                  === frame.audit,
+                verification: status.querySelectorAll(".slimming-removal-audit")[1]
+                  === frame.verification,
+                report: status.querySelector(
+                  "[data-slimming-verification-request-id]"
+                ) === frame.report,
+                focus: document.activeElement === frame.report,
+                messageUpdated: frame.message.textContent
+                  === "已在 Mac 上取消；核验数据已刷新",
+                auditUpdated: frame.audit.textContent
+                  === "已从候选结果隐藏 2 项",
+                verificationUpdated: frame.verification.textContent.includes("4/4"),
+              };
+            }"""
+        )
+        assert all(stable_removal_status.values()), stable_removal_status
+        await verification_button.click()
+        await page.locator("#slimmingVerificationDialog[open]").wait_for()
+        assert "4 / 4" in await page.locator("#slimmingVerificationScore").inner_text()
+        await page.keyboard.press("Escape")
+        await page.wait_for_function(
+            "() => !document.querySelector('#slimmingVerificationDialog').open"
+        )
 
         assert len(plan_requests) == 2
         assert page_errors == [], page_errors
