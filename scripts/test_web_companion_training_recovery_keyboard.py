@@ -1642,6 +1642,132 @@ def main():
             - preserved_scroll_top
         ) <= 1
 
+        stable_jobs_refresh_requests = len(jobs_requests)
+        page.evaluate(
+            f"""() => {{
+              const list = document.querySelector("#jobsList");
+              const rows = [...list.querySelectorAll("[data-job-row-id]")];
+              const first = list.querySelector('[data-job-row-id="{JOB_ID}"]');
+              const action = first.querySelector('[data-action="resume"]');
+              action.focus({{ preventScroll: true }});
+              window.__stableJobsRefreshFrame = {{
+                list,
+                rows,
+                first,
+                heading: first.querySelector(".job-heading"),
+                progress: first.querySelector(".job-progress"),
+                stateLine: first.querySelector(".job-state-line"),
+                action,
+                scrollTop: list.scrollTop,
+              }};
+              document.querySelector("#refreshJobsButton").click();
+            }}"""
+        )
+        page.wait_for_function("() => !state.jobsRefreshing")
+        assert len(jobs_requests) == stable_jobs_refresh_requests + 1
+        stable_jobs_refresh = page.evaluate(
+            f"""() => {{
+              const frame = window.__stableJobsRefreshFrame;
+              const list = document.querySelector("#jobsList");
+              const rows = [...list.querySelectorAll("[data-job-row-id]")];
+              const first = list.querySelector('[data-job-row-id="{JOB_ID}"]');
+              return {{
+                list: list === frame.list,
+                rows: rows.length === frame.rows.length
+                  && rows.every((row, index) => row === frame.rows[index]),
+                first: first === frame.first,
+                heading: first.querySelector(".job-heading") === frame.heading,
+                progress: first.querySelector(".job-progress") === frame.progress,
+                stateLine: first.querySelector(".job-state-line") === frame.stateLine,
+                action: first.querySelector('[data-action="resume"]') === frame.action,
+                focus: document.activeElement === frame.action,
+                scroll: list.scrollTop === frame.scrollTop,
+              }};
+            }}"""
+        )
+        assert all(stable_jobs_refresh.values()), stable_jobs_refresh
+
+        original_first_job = json.loads(json.dumps(jobs_payload[0]))
+        page.evaluate(
+            f"""() => {{
+              const list = document.querySelector("#jobsList");
+              const first = list.querySelector('[data-job-row-id="{JOB_ID}"]');
+              const second = list.querySelector('[data-job-row-id="{SECOND_JOB_ID}"]');
+              const action = first.querySelector('[data-action="resume"]');
+              const mutations = [];
+              const observer = new MutationObserver((records) => mutations.push(...records));
+              action.focus({{ preventScroll: true }});
+              observer.observe(second, {{
+                attributes: true,
+                childList: true,
+                characterData: true,
+                subtree: true,
+              }});
+              window.__changedJobsRefreshFrame = {{
+                rows: [...list.querySelectorAll("[data-job-row-id]")],
+                first,
+                second,
+                heading: first.querySelector(".job-heading"),
+                progress: first.querySelector(".job-progress"),
+                stateLine: first.querySelector(".job-state-line"),
+                action,
+                scrollTop: list.scrollTop,
+                mutations,
+                observer,
+              }};
+            }}"""
+        )
+        jobs_payload[0].update({
+            "state": "running",
+            "progress": {"completedUnitCount": 5, "totalUnitCount": 12},
+            "availableActions": ["pause", "cancel"],
+            "lastErrorCode": None,
+        })
+        changed_jobs_refresh_requests = len(jobs_requests)
+        page.keyboard.press("r")
+        page.wait_for_function("() => !state.jobsRefreshing")
+        assert len(jobs_requests) == changed_jobs_refresh_requests + 1
+        changed_jobs_refresh = page.evaluate(
+            f"""() => {{
+              const frame = window.__changedJobsRefreshFrame;
+              frame.mutations.push(...frame.observer.takeRecords());
+              frame.observer.disconnect();
+              const list = document.querySelector("#jobsList");
+              const rows = [...list.querySelectorAll("[data-job-row-id]")];
+              const first = list.querySelector('[data-job-row-id="{JOB_ID}"]');
+              const pause = first.querySelector('[data-action="pause"]');
+              return {{
+                rows: rows.length === frame.rows.length
+                  && rows.every((row, index) => row === frame.rows[index]),
+                first: first === frame.first,
+                second: list.querySelector('[data-job-row-id="{SECOND_JOB_ID}"]')
+                  === frame.second,
+                heading: first.querySelector(".job-heading") === frame.heading,
+                progress: first.querySelector(".job-progress") === frame.progress,
+                stateLine: first.querySelector(".job-state-line") === frame.stateLine,
+                state: first.querySelector(".job-heading .secondary")?.textContent === "进行中",
+                amount: first.querySelector('[data-job-state-part="amount"]')?.textContent
+                  === "5 / 12",
+                percent: first.querySelector('[data-job-state-part="percent"]')?.textContent
+                  === "42%",
+                resumeRemoved: !first.querySelector('[data-action="resume"]'),
+                pauseAdded: Boolean(pause),
+                cancelAdded: Boolean(first.querySelector('[data-action="cancel"]')),
+                focusMigrated: document.activeElement === pause,
+                unaffectedMutations: frame.mutations.length === 0,
+                scroll: list.scrollTop === frame.scrollTop,
+              }};
+            }}"""
+        )
+        assert all(changed_jobs_refresh.values()), changed_jobs_refresh
+        jobs_payload[0] = original_first_job
+        page.locator("#refreshJobsButton").click()
+        page.wait_for_function("() => !state.jobsRefreshing")
+        assert page.locator(
+            f'[data-job-row-id="{JOB_ID}"] [data-action="resume"]'
+        ).is_visible()
+        page.locator(f'[data-job-row-id="{SECOND_JOB_ID}"]').focus()
+
         jobs_before_command_palette = len(jobs_requests)
         page.keyboard.press("Meta+K")
         page.locator("#commandPalette[open]").wait_for()
@@ -1677,6 +1803,21 @@ def main():
         ) <= 1
 
         failed_resource_count = len(failed_resources)
+        page.evaluate(
+            f"""() => {{
+              const list = document.querySelector("#jobsList");
+              const first = list.querySelector('[data-job-row-id="{JOB_ID}"]');
+              window.__failedJobsRefreshFrame = {{
+                rows: [...list.querySelectorAll("[data-job-row-id]")],
+                first,
+                heading: first.querySelector(".job-heading"),
+                progress: first.querySelector(".job-progress"),
+                stateLine: first.querySelector(".job-state-line"),
+                action: first.querySelector('[data-action="resume"]'),
+                scrollTop: list.scrollTop,
+              }};
+            }}"""
+        )
         jobs_fail_next[0] = True
         before_jobs_refresh = len(jobs_requests)
         page.locator("#refreshJobsButton").click()
@@ -1686,6 +1827,25 @@ def main():
         assert page.locator("#refreshJobsButton").is_enabled()
         assert page.locator("#refreshJobsButton").get_attribute("aria-label") == "重试刷新活动"
         assert page.evaluate("() => document.activeElement?.id") == "refreshJobsButton"
+        failed_jobs_refresh = page.evaluate(
+            f"""() => {{
+              const frame = window.__failedJobsRefreshFrame;
+              const list = document.querySelector("#jobsList");
+              const rows = [...list.querySelectorAll("[data-job-row-id]")];
+              const first = list.querySelector('[data-job-row-id="{JOB_ID}"]');
+              return {{
+                rows: rows.length === frame.rows.length
+                  && rows.every((row, index) => row === frame.rows[index]),
+                first: first === frame.first,
+                heading: first.querySelector(".job-heading") === frame.heading,
+                progress: first.querySelector(".job-progress") === frame.progress,
+                stateLine: first.querySelector(".job-state-line") === frame.stateLine,
+                action: first.querySelector('[data-action="resume"]') === frame.action,
+                scroll: list.scrollTop === frame.scrollTop,
+              }};
+            }}"""
+        )
+        assert all(failed_jobs_refresh.values()), failed_jobs_refresh
         assert len(failed_resources) == failed_resource_count + 1
         assert failed_resources[-1][0] == 503
         failed_resources.pop()

@@ -20704,12 +20704,24 @@ function jobRows() {
 function selectJobRow(jobID, { focus = false } = {}) {
   if (!state.jobs.some((job) => job.id === jobID)) return;
   state.focusedActivityJobID = jobID;
+  const jobsByID = new Map(state.jobs.map((job) => [job.id, job]));
   for (const row of jobRows()) {
     const selected = row.dataset.jobRowId === jobID;
-    row.classList.toggle("focused", selected);
-    if (selected) row.setAttribute("aria-current", "true");
-    else row.removeAttribute("aria-current");
-    row.tabIndex = selected ? 0 : -1;
+    if (row.classList.contains("focused") !== selected) {
+      row.classList.toggle("focused", selected);
+    }
+    if (selected && row.getAttribute("aria-current") !== "true") {
+      row.setAttribute("aria-current", "true");
+    } else if (!selected && row.hasAttribute("aria-current")) {
+      row.removeAttribute("aria-current");
+    }
+    const tabIndex = selected ? 0 : -1;
+    if (row.tabIndex !== tabIndex) row.tabIndex = tabIndex;
+    const job = jobsByID.get(row.dataset.jobRowId);
+    const fingerprint = job ? jobRowFingerprint(job, selected) : null;
+    if (fingerprint && row.dataset.jobFingerprint !== fingerprint) {
+      row.dataset.jobFingerprint = fingerprint;
+    }
   }
   if (focus) {
     requestAnimationFrame(() => {
@@ -20776,10 +20788,18 @@ function restoreJobFocusSnapshot(snapshot) {
     elements.refreshJobsButton.focus({ preventScroll: true });
     return;
   }
+  const matchingAction = snapshot?.action
+    ? row.querySelector(`[data-action="${CSS.escape(snapshot.action)}"]`)
+    : null;
+  const firstAvailableAction = row.querySelector(".job-actions button:not(:disabled)");
   const target = snapshot?.action
-    ? row.querySelector(`[data-action="${CSS.escape(snapshot.action)}"]`) || row
+    ? (matchingAction && !matchingAction.disabled ? matchingAction : null)
+      || firstAvailableAction
+      || row
     : (snapshot?.opensSlimming
-      ? row.querySelector("[data-open-slimming-job-id]") || row
+      ? row.querySelector("[data-open-slimming-job-id]")
+        || firstAvailableAction
+        || row
       : row);
   target.focus({ preventScroll: true });
 }
@@ -21051,11 +21071,205 @@ function openJobsFromKeyboardShortcut() {
   else openJobsPopover();
 }
 
+function jobRowFingerprint(job, selected) {
+  return JSON.stringify([
+    job,
+    Boolean(selected),
+    Boolean(state.online),
+    state.jobMutatingIDs.has(job.id),
+  ]);
+}
+
+function syncJobRowDiagnostic(row, job) {
+  const showsDiagnostic = job.attempts != null || job.lastErrorCode;
+  let diagnostic = row.querySelector(":scope > .job-diagnostic");
+  if (!showsDiagnostic) {
+    diagnostic?.remove();
+    return null;
+  }
+  if (!diagnostic) {
+    diagnostic = document.createElement("div");
+    diagnostic.className = "job-diagnostic";
+  }
+  const wanted = [];
+  if (job.attempts != null) {
+    let attempts = diagnostic.querySelector('[data-job-diagnostic="attempts"]');
+    if (!attempts) {
+      attempts = document.createElement("span");
+      attempts.dataset.jobDiagnostic = "attempts";
+    }
+    attempts.textContent = `尝试 ${job.attempts}/${job.maxAttempts ?? "—"}`;
+    wanted.push(attempts);
+  }
+  if (job.lastErrorCode) {
+    let guidance = diagnostic.querySelector('[data-job-diagnostic="guidance"]');
+    if (!guidance) {
+      guidance = document.createElement("span");
+      guidance.dataset.jobDiagnostic = "guidance";
+    }
+    guidance.textContent = jobFailureGuidance(job);
+    let code = diagnostic.querySelector('[data-job-diagnostic="code"]');
+    if (!code) {
+      code = document.createElement("code");
+      code.dataset.jobDiagnostic = "code";
+    }
+    code.textContent = job.lastErrorCode;
+    wanted.push(guidance, code);
+  }
+  for (const [index, child] of wanted.entries()) {
+    if (diagnostic.children[index] !== child) {
+      diagnostic.insertBefore(child, diagnostic.children[index] || null);
+    }
+  }
+  for (const child of [...diagnostic.children]) {
+    if (!wanted.includes(child)) child.remove();
+  }
+  return diagnostic;
+}
+
+function jobActionSemanticKey(button) {
+  if (button.dataset.openSlimmingJobId) return "openSlimming";
+  return button.dataset.action ? `action:${button.dataset.action}` : null;
+}
+
+function syncJobRowActions(row, job) {
+  const availableActions = job.availableActions || [];
+  const opensSlimming = job.navigationTarget?.workspace === "librarySlimming";
+  let actions = row.querySelector(":scope > .job-actions");
+  if (!availableActions.length && !opensSlimming) {
+    actions?.remove();
+    return null;
+  }
+  if (!actions) {
+    actions = document.createElement("div");
+    actions.className = "job-actions";
+  }
+  const existing = new Map(
+    [...actions.querySelectorAll(":scope > button")]
+      .map((button) => [jobActionSemanticKey(button), button])
+      .filter(([key]) => key)
+  );
+  const wanted = [];
+  if (opensSlimming) {
+    const open = existing.get("openSlimming") || document.createElement("button");
+    open.type = "button";
+    open.className = "button job-action job-context-action";
+    open.dataset.openSlimmingJobId = job.id;
+    open.textContent = "在图库瘦身中查看";
+    wanted.push(open);
+  }
+  for (const action of availableActions) {
+    const key = `action:${action}`;
+    const button = existing.get(key) || document.createElement("button");
+    button.type = "button";
+    button.className = "button job-action write-action";
+    button.dataset.jobId = job.id;
+    button.dataset.action = action;
+    button.disabled = !state.online || state.jobMutatingIDs.has(job.id);
+    button.textContent = jobActionText(action);
+    wanted.push(button);
+  }
+  for (const [index, button] of wanted.entries()) {
+    if (actions.children[index] !== button) {
+      actions.insertBefore(button, actions.children[index] || null);
+    }
+  }
+  for (const button of [...actions.children]) {
+    if (!wanted.includes(button)) button.remove();
+  }
+  return actions;
+}
+
+function syncJobRow(row, job, selected) {
+  row.className = "job-row";
+  row.tabIndex = selected ? 0 : -1;
+  row.setAttribute("role", "listitem");
+  if (selected) row.setAttribute("aria-current", "true");
+  else row.removeAttribute("aria-current");
+  row.dataset.jobRowId = job.id;
+  row.classList.toggle("focused", selected);
+
+  let heading = row.querySelector(":scope > .job-heading");
+  if (!heading) {
+    heading = document.createElement("div");
+    heading.className = "job-heading";
+    row.append(heading);
+  }
+  let title = heading.querySelector(":scope > strong");
+  if (!title) {
+    title = document.createElement("strong");
+    heading.append(title);
+  }
+  title.textContent = jobTitle(job);
+  let stateLabel = heading.querySelector(":scope > .secondary");
+  if (!stateLabel) {
+    stateLabel = document.createElement("span");
+    stateLabel.className = "secondary";
+    heading.append(stateLabel);
+  }
+  stateLabel.textContent = jobStateText(job);
+
+  const completed = Number(job.progress?.completedUnitCount || 0);
+  const total = Number(job.progress?.totalUnitCount || 0);
+  const percent = total > 0 ? Math.max(0, Math.min(100, completed / total * 100)) : 0;
+  let progress = row.querySelector(":scope > .job-progress");
+  if (!progress) {
+    progress = document.createElement("div");
+    progress.className = "job-progress";
+    row.append(progress);
+  }
+  progress.classList.toggle(
+    "indeterminate",
+    total <= 0 && ["pending", "running"].includes(job.state)
+  );
+  let fill = progress.querySelector(":scope > span");
+  if (!fill) {
+    fill = document.createElement("span");
+    progress.append(fill);
+  }
+  fill.style.width = `${percent}%`;
+
+  let stateLine = row.querySelector(":scope > .job-state-line");
+  if (!stateLine) {
+    stateLine = document.createElement("div");
+    stateLine.className = "job-state-line";
+    row.append(stateLine);
+  }
+  let amount = stateLine.querySelector(':scope > [data-job-state-part="amount"]');
+  if (!amount) {
+    amount = document.createElement("span");
+    amount.dataset.jobStatePart = "amount";
+    stateLine.append(amount);
+  }
+  amount.textContent = total > 0 ? `${completed} / ${total}` : `${completed} 项`;
+  let percentLabel = stateLine.querySelector(':scope > [data-job-state-part="percent"]');
+  if (!percentLabel) {
+    percentLabel = document.createElement("span");
+    percentLabel.dataset.jobStatePart = "percent";
+    stateLine.append(percentLabel);
+  }
+  percentLabel.textContent = total > 0 ? `${Math.round(percent)}%` : "";
+
+  const diagnostic = syncJobRowDiagnostic(row, job);
+  const actions = syncJobRowActions(row, job);
+  const children = [heading, progress, stateLine, diagnostic, actions].filter(Boolean);
+  for (const [index, child] of children.entries()) {
+    if (row.children[index] !== child) {
+      row.insertBefore(child, row.children[index] || null);
+    }
+  }
+  for (const child of [...row.children]) {
+    if (!children.includes(child)) child.remove();
+  }
+  row.dataset.jobFingerprint = jobRowFingerprint(job, selected);
+}
+
 function renderJobs() {
+  const focusSnapshot = captureJobFocusSnapshot();
+  const scrollTop = elements.jobsList.scrollTop;
   syncJobsRefreshControl();
   syncCatalogProgressStatus();
   scheduleCatalogProgressPoll();
-  clearElement(elements.jobsList);
   elements.jobsEmpty.classList.toggle("hidden", state.jobs.length > 0);
   const activeCount = state.jobs.filter((job) =>
     ["pending", "running", "paused", "retryableFailed"].includes(job.state)
@@ -21066,88 +21280,31 @@ function renderJobs() {
     state.focusedActivityJobID = state.jobs[0]?.id || null;
   }
 
+  const existing = new Map(
+    jobRows().map((row) => [row.dataset.jobRowId, row])
+  );
+  const wanted = [];
   for (const job of state.jobs) {
-    const row = document.createElement("article");
-    row.className = "job-row";
     const selected = state.focusedActivityJobID === job.id;
-    row.tabIndex = selected ? 0 : -1;
-    row.setAttribute("role", "listitem");
-    if (selected) row.setAttribute("aria-current", "true");
-    row.dataset.jobRowId = job.id;
-    row.classList.toggle("focused", selected);
-    const heading = document.createElement("div");
-    heading.className = "job-heading";
-    const title = document.createElement("strong");
-    title.textContent = jobTitle(job);
-    const stateLabel = document.createElement("span");
-    stateLabel.className = "secondary";
-    stateLabel.textContent = jobStateText(job);
-    heading.append(title, stateLabel);
-
-    const completed = Number(job.progress?.completedUnitCount || 0);
-    const total = Number(job.progress?.totalUnitCount || 0);
-    const percent = total > 0 ? Math.max(0, Math.min(100, completed / total * 100)) : 0;
-    const progress = document.createElement("div");
-    progress.className = "job-progress";
-    progress.classList.toggle(
-      "indeterminate",
-      total <= 0 && ["pending", "running"].includes(job.state)
-    );
-    const fill = document.createElement("span");
-    fill.style.width = `${percent}%`;
-    progress.append(fill);
-
-    const stateLine = document.createElement("div");
-    stateLine.className = "job-state-line";
-    const amount = document.createElement("span");
-    amount.textContent = total > 0 ? `${completed} / ${total}` : `${completed} 项`;
-    const percentLabel = document.createElement("span");
-    percentLabel.textContent = total > 0 ? `${Math.round(percent)}%` : "";
-    stateLine.append(amount, percentLabel);
-    row.append(heading, progress, stateLine);
-
-    if (job.attempts != null || job.lastErrorCode) {
-      const diagnostic = document.createElement("div");
-      diagnostic.className = "job-diagnostic";
-      if (job.attempts != null) {
-        const attempts = document.createElement("span");
-        attempts.textContent = `尝试 ${job.attempts}/${job.maxAttempts ?? "—"}`;
-        diagnostic.append(attempts);
-      }
-      if (job.lastErrorCode) {
-        const guidance = document.createElement("span");
-        guidance.textContent = jobFailureGuidance(job);
-        const code = document.createElement("code");
-        code.textContent = job.lastErrorCode;
-        diagnostic.append(guidance, code);
-      }
-      row.append(diagnostic);
+    const row = existing.get(job.id) || document.createElement("article");
+    const fingerprint = jobRowFingerprint(job, selected);
+    if (row.dataset.jobFingerprint !== fingerprint) {
+      syncJobRow(row, job, selected);
     }
-
-    if (job.availableActions?.length || job.navigationTarget?.workspace === "librarySlimming") {
-      const actions = document.createElement("div");
-      actions.className = "job-actions";
-      if (job.navigationTarget?.workspace === "librarySlimming") {
-        const open = document.createElement("button");
-        open.type = "button";
-        open.className = "button job-action job-context-action";
-        open.dataset.openSlimmingJobId = job.id;
-        open.textContent = "在图库瘦身中查看";
-        actions.append(open);
-      }
-      for (const action of job.availableActions) {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "button job-action write-action";
-        button.dataset.jobId = job.id;
-        button.dataset.action = action;
-        button.disabled = !state.online || state.jobMutatingIDs.has(job.id);
-        button.textContent = jobActionText(action);
-        actions.append(button);
-      }
-      row.append(actions);
+    wanted.push(row);
+  }
+  for (const [index, row] of wanted.entries()) {
+    if (elements.jobsList.children[index] !== row) {
+      elements.jobsList.insertBefore(row, elements.jobsList.children[index] || null);
     }
-    elements.jobsList.append(row);
+  }
+  for (const row of [...elements.jobsList.children]) {
+    if (!wanted.includes(row)) row.remove();
+  }
+  elements.jobsList.scrollTop = scrollTop;
+  if (focusSnapshot) {
+    restoreJobFocusSnapshot(focusSnapshot);
+    elements.jobsList.scrollTop = scrollTop;
   }
 }
 
