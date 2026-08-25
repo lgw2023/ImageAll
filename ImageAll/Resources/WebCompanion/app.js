@@ -1036,6 +1036,7 @@ const state = {
     notice: null,
     dismissing: false,
     activeActionID: null,
+    pendingReturnActionID: null,
     requestGeneration: 0,
   },
   sources: [],
@@ -10918,46 +10919,138 @@ function supportsLibrarySlimming() {
   return state.capabilities?.capabilities?.includes("librarySlimming") === true;
 }
 
+function setWorkspaceNoticeText(element, text) {
+  if (element.textContent !== text) element.textContent = text;
+}
+
+function setWorkspaceNoticeAttribute(element, name, value) {
+  if (element.getAttribute(name) !== value) element.setAttribute(name, value);
+}
+
+function workspaceNoticeVisibleActions(notice) {
+  const actions = Array.isArray(notice?.actions) ? notice.actions : [];
+  return actions.filter((action) => (
+    action?.id && ["undoTagMutation", "openRecycleBin"].includes(action.kind)
+  ));
+}
+
+function syncWorkspaceNoticeActionButton(button, action) {
+  if (!button) {
+    button = document.createElement("button");
+    button.type = "button";
+    button.className = "button button-plain workspace-notice-action";
+    button.addEventListener("click", () => {
+      void performWorkspaceNoticeAction(button.dataset.workspaceNoticeActionId);
+    });
+  }
+  if (button.dataset.workspaceNoticeActionId !== action.id) {
+    button.dataset.workspaceNoticeActionId = action.id;
+  }
+  const isActive = state.workspaceNotice.activeActionID === action.id;
+  setWorkspaceNoticeText(button, isActive ? "正在处理…" : (action.title || "执行"));
+  const disabled = state.workspaceNotice.dismissing
+    || Boolean(state.workspaceNotice.activeActionID)
+    || !state.online;
+  if (button.disabled !== disabled) button.disabled = disabled;
+  setWorkspaceNoticeAttribute(
+    button,
+    "aria-label",
+    action.title || "执行状态提示操作"
+  );
+  return button;
+}
+
+function workspaceNoticeFocusTarget(actionID = null) {
+  const preferred = actionID
+    ? elements.workspaceNoticeActions.querySelector(
+      `[data-workspace-notice-action-id="${CSS.escape(actionID)}"]`
+    )
+    : null;
+  if (preferred && !preferred.disabled) return preferred;
+  return elements.workspaceNoticeActions.querySelector("button:not(:disabled)")
+    || (!elements.dismissWorkspaceNoticeButton.disabled
+      ? elements.dismissWorkspaceNoticeButton
+      : elements.refreshButton);
+}
+
 function renderWorkspaceNotice() {
   const notice = state.workspaceNotice.notice;
+  const focusedActionID = document.activeElement?.dataset?.workspaceNoticeActionId || null;
   elements.workspaceNoticeBanner.classList.toggle("hidden", !notice);
-  clearElement(elements.workspaceNoticeActions);
   if (!notice) {
     elements.workspaceNoticeBanner.removeAttribute("data-severity");
-    elements.workspaceNoticeMessage.textContent = "";
-    elements.dismissWorkspaceNoticeButton.disabled = false;
+    setWorkspaceNoticeText(elements.workspaceNoticeMessage, "");
+    for (const button of [...elements.workspaceNoticeActions.children]) button.remove();
+    if (elements.dismissWorkspaceNoticeButton.disabled) {
+      elements.dismissWorkspaceNoticeButton.disabled = false;
+    }
+    setWorkspaceNoticeText(elements.dismissWorkspaceNoticeButton, "关闭");
+    if (focusedActionID || state.workspaceNotice.pendingReturnActionID) {
+      state.workspaceNotice.pendingReturnActionID = null;
+      elements.refreshButton.focus({ preventScroll: true });
+    }
     return;
   }
   const severity = ["information", "success", "warning"].includes(notice.severity)
     ? notice.severity
     : "warning";
-  elements.workspaceNoticeBanner.dataset.severity = severity;
-  elements.workspaceNoticeIcon.textContent = {
+  if (elements.workspaceNoticeBanner.dataset.severity !== severity) {
+    elements.workspaceNoticeBanner.dataset.severity = severity;
+  }
+  setWorkspaceNoticeText(elements.workspaceNoticeIcon, {
     information: "i",
     success: "✓",
     warning: "!",
-  }[severity];
-  elements.workspaceNoticeMessage.textContent = notice.message || "Mac 状态已更新。";
-  for (const action of Array.isArray(notice.actions) ? notice.actions : []) {
-    if (!action?.id || !["undoTagMutation", "openRecycleBin"].includes(action.kind)) continue;
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "button button-plain workspace-notice-action";
-    button.dataset.workspaceNoticeActionId = action.id;
-    const isActive = state.workspaceNotice.activeActionID === action.id;
-    button.textContent = isActive ? "正在处理…" : (action.title || "执行");
-    button.disabled = state.workspaceNotice.dismissing
-      || Boolean(state.workspaceNotice.activeActionID)
-      || !state.online;
-    button.setAttribute("aria-label", action.title || "执行状态提示操作");
-    button.addEventListener("click", () => performWorkspaceNoticeAction(action.id));
-    elements.workspaceNoticeActions.append(button);
+  }[severity]);
+  setWorkspaceNoticeText(
+    elements.workspaceNoticeMessage,
+    notice.message || "Mac 状态已更新。"
+  );
+
+  const existing = new Map(
+    [...elements.workspaceNoticeActions.querySelectorAll(
+      ":scope > [data-workspace-notice-action-id]"
+    )].map((button) => [button.dataset.workspaceNoticeActionId, button])
+  );
+  const wanted = workspaceNoticeVisibleActions(notice).map((action) => (
+    syncWorkspaceNoticeActionButton(existing.get(action.id), action)
+  ));
+  for (const [index, button] of wanted.entries()) {
+    if (elements.workspaceNoticeActions.children[index] !== button) {
+      elements.workspaceNoticeActions.insertBefore(
+        button,
+        elements.workspaceNoticeActions.children[index] || null
+      );
+    }
   }
-  elements.dismissWorkspaceNoticeButton.disabled = state.workspaceNotice.dismissing
+  for (const button of [...elements.workspaceNoticeActions.children]) {
+    if (!wanted.includes(button)) button.remove();
+  }
+  const dismissDisabled = state.workspaceNotice.dismissing
     || Boolean(state.workspaceNotice.activeActionID);
-  elements.dismissWorkspaceNoticeButton.textContent = state.workspaceNotice.dismissing
-    ? "正在关闭…"
-    : "关闭";
+  if (elements.dismissWorkspaceNoticeButton.disabled !== dismissDisabled) {
+    elements.dismissWorkspaceNoticeButton.disabled = dismissDisabled;
+  }
+  setWorkspaceNoticeText(
+    elements.dismissWorkspaceNoticeButton,
+    state.workspaceNotice.dismissing ? "正在关闭…" : "关闭"
+  );
+
+  if (focusedActionID) {
+    const focusedAction = elements.workspaceNoticeActions.querySelector(
+      `[data-workspace-notice-action-id="${CSS.escape(focusedActionID)}"]`
+    );
+    if (document.activeElement !== focusedAction) {
+      workspaceNoticeFocusTarget(focusedActionID)?.focus({ preventScroll: true });
+    }
+  }
+  if (state.workspaceNotice.pendingReturnActionID
+    && !state.workspaceNotice.activeActionID
+    && !state.workspaceNotice.dismissing) {
+    const pendingActionID = state.workspaceNotice.pendingReturnActionID;
+    state.workspaceNotice.pendingReturnActionID = null;
+    workspaceNoticeFocusTarget(pendingActionID)?.focus({ preventScroll: true });
+  }
 }
 
 async function dismissWorkspaceNotice() {
@@ -11014,6 +11107,7 @@ async function performWorkspaceNoticeAction(actionID) {
   if (!notice || !action || state.workspaceNotice.dismissing
     || state.workspaceNotice.activeActionID || !state.online) return;
   const generation = ++state.workspaceNotice.requestGeneration;
+  state.workspaceNotice.pendingReturnActionID = actionID;
   state.workspaceNotice.activeActionID = actionID;
   renderWorkspaceNotice();
   try {
@@ -11037,6 +11131,7 @@ async function performWorkspaceNoticeAction(actionID) {
       });
       toast("已撤销最近一次标签操作");
     } else if (action.kind === "openRecycleBin") {
+      state.workspaceNotice.pendingReturnActionID = null;
       state.slimming.view = "recycle";
       state.slimming.recycle.sourceID = action.sourceID || "";
       state.slimming.recycle.searchText = "";
@@ -32592,6 +32687,7 @@ async function loadWorkspace({ restoreHistory = false } = {}) {
   state.workspaceNotice.notice = workspaceNotice?.notice || null;
   state.workspaceNotice.dismissing = false;
   state.workspaceNotice.activeActionID = null;
+  state.workspaceNotice.pendingReturnActionID = null;
   if (galleryRestore) {
     galleryRestore = applyGalleryHistoryContext(
       galleryRestoreSource,
@@ -33249,6 +33345,7 @@ function resetWorkspaceSessionState() {
   state.workspaceNotice.notice = null;
   state.workspaceNotice.dismissing = false;
   state.workspaceNotice.activeActionID = null;
+  state.workspaceNotice.pendingReturnActionID = null;
   state.workspaceNotice.requestGeneration += 1;
   renderWorkspaceNotice();
   state.sources = [];

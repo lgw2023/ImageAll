@@ -262,6 +262,8 @@ def main():
     submitted_review_removals = []
     review_removal = {"request": None}
     thumbnail_queries = []
+    workspace_notice_requests = []
+    workspace_notice_fail_next = [False]
     workspace_notice_actions = []
     recycle_queries = []
     storage_requests = []
@@ -406,10 +408,15 @@ def main():
                 "sourceID": SOURCE_ID,
             }],
         }
-        page.route(
-            "**/v1/workspace-notice",
-            lambda route: fulfill_json(route, {"notice": workspace_notice or None}),
-        )
+        def route_workspace_notice(route):
+            workspace_notice_requests.append(route.request.url)
+            if workspace_notice_fail_next[0]:
+                workspace_notice_fail_next[0] = False
+                fulfill_json(route, {"error": "noticeUnavailable"}, status=503)
+                return
+            fulfill_json(route, {"notice": workspace_notice or None})
+
+        page.route("**/v1/workspace-notice", route_workspace_notice)
 
         def route_workspace_notice_action(route):
             payload = route.request.post_data_json
@@ -445,6 +452,26 @@ def main():
             })
 
         page.route("**/v1/library-slimming/recycle?**", route_slimming_recycle)
+        page.route(
+            "**/v1/library-slimming/workspace?**",
+            lambda route: fulfill_json(route, {
+                "mediaKind": "image",
+                "jobs": [],
+                "totalJobCount": 0,
+                "selectedJobID": None,
+                "clusters": [],
+                "selectedClusterID": None,
+                "members": [],
+                "pendingAnalysisCount": 0,
+                "analyzedAssetCount": 0,
+                "policyVersion": "librarySlimming.v1",
+                "clusterScopeCounts": {
+                    "pending": 0,
+                    "confirmed": 0,
+                    "ignored": 0,
+                },
+            }),
+        )
         page.route("**/v1/tags", lambda route: fulfill_json(route, tags))
         page.route(
             "**/v1/tag-groups",
@@ -1013,10 +1040,161 @@ def main():
 
         page.goto(BASE_URL, wait_until="networkidle")
 
+        stable_notice_requests = len(workspace_notice_requests)
+        page.evaluate(
+            """() => {
+              const banner = document.querySelector("#workspaceNoticeBanner");
+              const action = banner.querySelector(
+                '[data-workspace-notice-action-id="openRecycleBin"]'
+              );
+              const mutations = [];
+              const observer = new MutationObserver((records) => mutations.push(...records));
+              action.focus({ preventScroll: true });
+              observer.observe(banner, {
+                attributes: true,
+                childList: true,
+                characterData: true,
+                subtree: true,
+              });
+              window.__stableWorkspaceNoticeFrame = {
+                banner,
+                message: document.querySelector("#workspaceNoticeMessage"),
+                actions: document.querySelector("#workspaceNoticeActions"),
+                action,
+                dismiss: document.querySelector("#dismissWorkspaceNoticeButton"),
+                mutations,
+                observer,
+              };
+              document.querySelector("#refreshButton").click();
+            }"""
+        )
+        page.wait_for_function("() => !state.refreshingWorkspace")
+        assert len(workspace_notice_requests) == stable_notice_requests + 1
+        stable_notice_refresh = page.evaluate(
+            """() => {
+              const frame = window.__stableWorkspaceNoticeFrame;
+              frame.mutations.push(...frame.observer.takeRecords());
+              frame.observer.disconnect();
+              const action = document.querySelector(
+                '[data-workspace-notice-action-id="openRecycleBin"]'
+              );
+              return {
+                banner: document.querySelector("#workspaceNoticeBanner") === frame.banner,
+                message: document.querySelector("#workspaceNoticeMessage") === frame.message,
+                actions: document.querySelector("#workspaceNoticeActions") === frame.actions,
+                action: action === frame.action,
+                dismiss: document.querySelector("#dismissWorkspaceNoticeButton") === frame.dismiss,
+                focus: document.activeElement === frame.action,
+                mutations: frame.mutations.length === 0,
+              };
+            }"""
+        )
+        assert all(stable_notice_refresh.values()), stable_notice_refresh
+
+        failed_notice_requests = len(workspace_notice_requests)
+        workspace_notice_fail_next[0] = True
+        page.evaluate("() => document.querySelector('#refreshButton').click()")
+        page.wait_for_function("() => !state.refreshingWorkspace")
+        assert len(workspace_notice_requests) == failed_notice_requests + 1
+        failed_notice_refresh = page.evaluate(
+            """() => {
+              const frame = window.__stableWorkspaceNoticeFrame;
+              const action = document.querySelector(
+                '[data-workspace-notice-action-id="openRecycleBin"]'
+              );
+              return {
+                banner: document.querySelector("#workspaceNoticeBanner") === frame.banner,
+                message: document.querySelector("#workspaceNoticeMessage") === frame.message,
+                actions: document.querySelector("#workspaceNoticeActions") === frame.actions,
+                action: action === frame.action,
+                focus: document.activeElement === frame.action,
+              };
+            }"""
+        )
+        assert all(failed_notice_refresh.values()), failed_notice_refresh
+        page.evaluate(
+            """() => {
+              clearTimeout(state.refreshRetryTimer);
+              state.refreshRetryTimer = null;
+              state.pendingRefreshKinds.clear();
+              state.refreshRetryAttempt = 0;
+            }"""
+        )
+
+        original_workspace_notice = json.loads(json.dumps(workspace_notice))
+        workspace_notice.clear()
+        workspace_notice.update({
+            "id": "notice-tag-preview",
+            "severity": "success",
+            "message": "已将 2 张照片标记为属于“猫”。",
+            "actions": [{
+                "id": "undoTagMutation",
+                "kind": "undoTagMutation",
+                "title": "撤销",
+                "sourceID": None,
+            }],
+        })
+        changed_notice_requests = len(workspace_notice_requests)
+        page.evaluate("() => document.querySelector('#refreshButton').click()")
+        page.wait_for_function("() => !state.refreshingWorkspace")
+        assert len(workspace_notice_requests) == changed_notice_requests + 1
+        changed_notice_refresh = page.evaluate(
+            """() => {
+              const frame = window.__stableWorkspaceNoticeFrame;
+              const undo = document.querySelector(
+                '[data-workspace-notice-action-id="undoTagMutation"]'
+              );
+              return {
+                banner: document.querySelector("#workspaceNoticeBanner") === frame.banner,
+                message: document.querySelector("#workspaceNoticeMessage") === frame.message,
+                actions: document.querySelector("#workspaceNoticeActions") === frame.actions,
+                oldActionRemoved: !frame.action.isConnected,
+                undoAdded: Boolean(undo),
+                focusMigrated: document.activeElement === undo,
+                messageUpdated: frame.message.textContent.includes("2 张照片"),
+                severityUpdated: frame.banner.dataset.severity === "success",
+              };
+            }"""
+        )
+        assert all(changed_notice_refresh.values()), changed_notice_refresh
+
+        workspace_notice.clear()
+        workspace_notice.update(original_workspace_notice)
+        restored_notice_requests = len(workspace_notice_requests)
+        page.evaluate("() => document.querySelector('#refreshButton').click()")
+        page.wait_for_function("() => !state.refreshingWorkspace")
+        assert len(workspace_notice_requests) == restored_notice_requests + 1
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.workspaceNoticeActionId "
+            "=== 'openRecycleBin'"
+        )
+        page.evaluate(
+            """() => {
+              window.__stableWorkspaceNoticeFrame.action = document.querySelector(
+                '[data-workspace-notice-action-id="openRecycleBin"]'
+              );
+            }"""
+        )
+
         page.locator('[data-workspace-notice-action-id="openRecycleBin"]').click()
         page.wait_for_function(
-            "() => state.workspaceNotice.notice?.id === 'notice-source-recycle-new'"
+            "() => state.workspaceNotice.notice?.id === 'notice-source-recycle-new' "
+            "&& !state.workspaceNotice.activeActionID"
         )
+        updated_notice_action = page.evaluate(
+            """() => {
+              const frame = window.__stableWorkspaceNoticeFrame;
+              const action = document.querySelector(
+                '[data-workspace-notice-action-id="openRecycleBin"]'
+              );
+              return {
+                action: action === frame.action,
+                focus: document.activeElement === action,
+                enabled: !action.disabled,
+              };
+            }"""
+        )
+        assert all(updated_notice_action.values()), updated_notice_action
         assert workspace_notice_actions[0] == {
             "noticeID": "notice-source-recycle",
             "actionID": "openRecycleBin",
@@ -1028,6 +1206,10 @@ def main():
             "actionID": "openRecycleBin",
         }
         assert recycle_queries[-1].get("sourceID") == [SOURCE_ID]
+        page.wait_for_function(
+            "sourceID => document.querySelector('#slimmingRecycleSourceSelect').value === sourceID",
+            arg=SOURCE_ID,
+        )
         assert page.locator("#slimmingRecycleSourceSelect").input_value() == SOURCE_ID
         page.locator("#closeSlimmingButton").click()
         page.locator("#slimmingWorkspace.hidden").wait_for(state="attached")
@@ -3850,6 +4032,11 @@ def main():
         page.locator("#personalModelPopover:not(.hidden)").wait_for()
         assert page.locator("#sortPopover").is_hidden()
         assert sort_button.get_attribute("aria-expanded") == "false"
+        page.wait_for_function(
+            "() => !state.loadingAssets && !state.assetLoadPromise "
+            "&& !state.queuedAssetLoadOptions && !state.nextCursor "
+            "&& state.assetRenderedQuerySignature === assetQuerySignature()"
+        )
         personal_history_queries = len(asset_queries)
         page.locator("#rebuildPersonalAdamWButton").focus()
         page.locator("#personalModelPopover").evaluate(
@@ -4013,6 +4200,7 @@ def main():
         ).is_visible()
         assert page.locator("#jobsButton").is_visible()
         page.evaluate("() => closeCompactToolbarMenu({ restoreFocus: false })")
+        page.wait_for_timeout(350)
         page.wait_for_function(
             "() => !state.loadingAssets && !state.assetLoadPromise "
             "&& !state.queuedAssetLoadOptions && !state.nextCursor "
@@ -4073,6 +4261,7 @@ def main():
             "() => !state.workspaceNavigation.applyingHistory "
             "&& !state.workspaceNavigation.pendingReturnPromise"
         )
+        page.wait_for_timeout(350)
         page.wait_for_function(
             "() => !state.loadingAssets && !state.assetLoadPromise "
             "&& !state.queuedAssetLoadOptions "
@@ -4346,11 +4535,13 @@ def main():
         assert not page_errors, page_errors
         unexpected_console_errors = [
             message for message in console_errors
-            if "status of 409" not in message and "status of 500" not in message
+            if "status of 409" not in message
+            and "status of 500" not in message
+            and "status of 503" not in message
         ]
         unexpected_http_errors = [
             response for response in http_errors
-            if response["status"] not in {409, 500}
+            if response["status"] not in {409, 500, 503}
         ]
         assert not unexpected_console_errors, {
             "console": unexpected_console_errors,
