@@ -1424,6 +1424,7 @@ const state = {
       mutatingEntryIDs: new Set(),
       requestGeneration: 0,
       renderedQuerySignature: null,
+      renderedLimit: 60,
       pollTimer: null,
       searchTimer: null,
       lastTerminalRequestID: null,
@@ -16551,9 +16552,13 @@ async function clearLibrarySearch({ restoreFocus = true } = {}) {
   if (restoreFocus) elements.searchInput.focus({ preventScroll: true });
 }
 
-async function clearSlimmingRecycleSearch({ restoreFocus = true } = {}) {
+function cancelPendingSlimmingRecycleSearch() {
   clearTimeout(state.slimming.recycle.searchTimer);
   state.slimming.recycle.searchTimer = null;
+}
+
+async function clearSlimmingRecycleSearch({ restoreFocus = true } = {}) {
+  cancelPendingSlimmingRecycleSearch();
   state.slimming.recycle.searchText = "";
   state.slimming.recycle.limit = 60;
   await loadSlimmingRecycle({ quiet: true });
@@ -26590,7 +26595,11 @@ function renderSlimmingRecycleRequest() {
 function renderSlimmingRecycleSummary({ preserveSourceOptions = false } = {}) {
   const recycle = state.slimming.recycle;
   elements.slimmingRecycleSearchInput.value = recycle.searchText;
-  if (!preserveSourceOptions) renderSlimmingRecycleSourceOptions();
+  if (preserveSourceOptions) {
+    elements.slimmingRecycleSourceSelect.value = recycle.sourceID;
+  } else {
+    renderSlimmingRecycleSourceOptions();
+  }
   renderSlimmingRecycleScopes();
   renderSlimmingRecycleHeader();
   const appending = recycle.appending === true;
@@ -26931,6 +26940,32 @@ function slimmingRecycleQuerySignature() {
   });
 }
 
+function restoreRenderedSlimmingRecycleQuery() {
+  const recycle = state.slimming.recycle;
+  if (!recycle.renderedQuerySignature) return false;
+  let renderedQuery;
+  try {
+    renderedQuery = JSON.parse(recycle.renderedQuerySignature);
+  } catch {
+    return false;
+  }
+  if (!renderedQuery || !["image", "video"].includes(renderedQuery.mediaKind)) return false;
+  state.slimming.mediaKind = renderedQuery.mediaKind;
+  recycle.scope = ["all", "photos", "files", "attention"].includes(renderedQuery.scope)
+    ? renderedQuery.scope
+    : "all";
+  recycle.sourceID = typeof renderedQuery.sourceID === "string"
+    ? renderedQuery.sourceID
+    : "";
+  recycle.searchText = typeof renderedQuery.searchText === "string"
+    ? renderedQuery.searchText
+    : "";
+  recycle.limit = Number.isFinite(recycle.renderedLimit)
+    ? recycle.renderedLimit
+    : 60;
+  return true;
+}
+
 function slimmingRecycleEntryFingerprint(entry) {
   return JSON.stringify(entry);
 }
@@ -27036,8 +27071,11 @@ async function loadSlimmingRecycle({ quiet = false, append = false } = {}) {
   const appending = append === true;
   const requestSignature = slimmingRecycleQuerySignature();
   const renderedQueryMatches = recycle.renderedQuerySignature === requestSignature;
+  const queryTransition = recycle.renderedQuerySignature !== null
+    && !renderedQueryMatches;
   const renderedEntriesMatch = renderedSlimmingRecycleEntriesMatch(recycle.entries);
   const canPreserveCurrentList = renderedEntriesMatch && renderedQueryMatches;
+  const canPreserveLoadingList = renderedEntriesMatch;
   const previous = {
     mediaKind: state.slimming.mediaKind,
     scope: recycle.scope,
@@ -27055,7 +27093,7 @@ async function loadSlimmingRecycle({ quiet = false, append = false } = {}) {
       ? captureSlimmingRecycleContinuity()
       : null,
   };
-  let renderOptions = appending || canPreserveCurrentList
+  let renderOptions = appending || canPreserveLoadingList
     ? { preserveRecycle: true }
     : {};
   recycle.loading = true;
@@ -27076,10 +27114,10 @@ async function loadSlimmingRecycle({ quiet = false, append = false } = {}) {
       ? slimmingRecycleAppendSnapshotIsStable(previous, snapshot)
       : false;
     const entriesAreUnchanged = !appending
-      && canPreserveCurrentList
+      && previous.renderedEntriesMatch
       && slimmingItemsEqual(previous.entries, nextEntries);
     const canUpdateExistingRows = !appending
-      && canPreserveCurrentList
+      && previous.renderedEntriesMatch
       && slimmingRecycleEntriesShareStructure(previous.entries, nextEntries);
     const updatedEntryIDs = canUpdateExistingRows
       ? nextEntries
@@ -27119,11 +27157,13 @@ async function loadSlimmingRecycle({ quiet = false, append = false } = {}) {
     } else {
       renderOptions = {};
     }
-    recycle.renderedQuerySignature = requestSignature;
+    recycle.renderedQuerySignature = slimmingRecycleQuerySignature();
+    recycle.renderedLimit = recycle.limit;
     return true;
   } catch (error) {
-    if (generation === recycle.requestGeneration && !quiet) {
-      toast(error.message || "回收站载入失败");
+    if (generation === recycle.requestGeneration) {
+      const restoredQuery = queryTransition && restoreRenderedSlimmingRecycleQuery();
+      if (!quiet || restoredQuery) toast(error.message || "回收站载入失败");
     }
     return false;
   } finally {
@@ -28546,6 +28586,7 @@ async function switchSlimmingMediaKind(mediaKind) {
   if (!["image", "video"].includes(mediaKind)
     || mediaKind === state.slimming.mediaKind) return;
   finishSlimmingMarqueeSelection();
+  cancelPendingSlimmingRecycleSearch();
   state.slimming.selectionMode = false;
   state.slimming.mediaKind = mediaKind;
   state.slimming.jobLimit = SLIMMING_JOB_PAGE_SIZE;
@@ -37868,6 +37909,7 @@ function bindEvents() {
     const button = event.target.closest("[data-slimming-recycle-scope]");
     if (!button || button.disabled
       || button.dataset.slimmingRecycleScope === state.slimming.recycle.scope) return;
+    cancelPendingSlimmingRecycleSearch();
     state.slimming.recycle.scope = button.dataset.slimmingRecycleScope;
     state.slimming.recycle.limit = 60;
     await loadSlimmingRecycle();
@@ -37890,11 +37932,13 @@ function bindEvents() {
     buttons[next].click();
   });
   elements.slimmingRecycleSourceSelect.addEventListener("change", () => {
+    cancelPendingSlimmingRecycleSearch();
     state.slimming.recycle.sourceID = elements.slimmingRecycleSourceSelect.value;
     state.slimming.recycle.limit = 60;
     loadSlimmingRecycle();
   });
   elements.clearSlimmingRecycleSourceButton.addEventListener("click", async () => {
+    cancelPendingSlimmingRecycleSearch();
     state.slimming.recycle.sourceID = "";
     state.slimming.recycle.limit = 60;
     await loadSlimmingRecycle();
@@ -37914,11 +37958,13 @@ function bindEvents() {
     if (action === "clearSearch") {
       await clearSlimmingRecycleSearch();
     } else if (action === "clearSource") {
+      cancelPendingSlimmingRecycleSearch();
       state.slimming.recycle.sourceID = "";
       state.slimming.recycle.limit = 60;
       await loadSlimmingRecycle({ quiet: true });
       elements.slimmingRecycleSourceSelect.focus({ preventScroll: true });
     } else if (action === "showAll") {
+      cancelPendingSlimmingRecycleSearch();
       state.slimming.recycle.scope = "all";
       state.slimming.recycle.limit = 60;
       await loadSlimmingRecycle({ quiet: true });

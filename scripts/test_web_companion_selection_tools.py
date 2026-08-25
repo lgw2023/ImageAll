@@ -126,6 +126,7 @@ def main(*, inspector_actions_only=False):
     submitted_slimming_removals = []
     submitted_slimming_recycle_actions = []
     slimming_recycle_action_failures = [0]
+    slimming_recycle_query_failures = [0]
     submitted_source_management = []
     submitted_sample_suggestions = []
     submitted_tag_decisions = []
@@ -991,6 +992,14 @@ def main(*, inspector_actions_only=False):
 
         def handle_slimming_recycle(route):
             recycle_request_urls.append(route.request.url)
+            if slimming_recycle_query_failures[0] > 0:
+                slimming_recycle_query_failures[0] -= 1
+                fulfill_json(
+                    route,
+                    {"code": "syntheticQueryFailure", "message": "模拟回收筛选失败"},
+                    status=409,
+                )
+                return
             query = parse_qs(urlparse(route.request.url).query)
             media_kind = "video" if query.get("mediaKind") == ["video"] else "image"
             scope = query.get("scope", ["all"])[0]
@@ -4029,7 +4038,141 @@ def main(*, inspector_actions_only=False):
         page.set_viewport_size({"width": 1440, "height": 960})
         page.wait_for_timeout(100)
 
+        recycle_query_continuity_before = page.evaluate(
+            """() => {
+              const row = document.querySelector(
+                '#slimmingRecycleList > .slimming-recycle-row'
+              );
+              const originalFetch = window.fetch.bind(window);
+              window.__imageAllRecycleQueryRow = row;
+              window.__imageAllRecycleQueryThumbnail = row.querySelector(
+                '.slimming-recycle-thumbnail-card'
+              );
+              window.__imageAllRecycleQueryRelease = null;
+              window.fetch = (...args) => {
+                const requestURL = String(args[0]?.url || args[0]);
+                if (requestURL.includes('/v1/library-slimming/recycle?')
+                    && requestURL.includes('search=RECYCLE')) {
+                  return new Promise((resolve, reject) => {
+                    window.__imageAllRecycleQueryRelease = () => {
+                      window.fetch = originalFetch;
+                      originalFetch(...args).then(resolve, reject);
+                    };
+                  });
+                }
+                return originalFetch(...args);
+              };
+              return {
+                rowID: row.dataset.slimmingRecycleRowId,
+                scrollTop: document.querySelector('#slimmingRecycleBody').scrollTop,
+              };
+            }"""
+        )
+        page.locator("#slimmingRecycleSearchInput").fill("RECYCLE")
+        page.wait_for_function(
+            "() => state.slimming.recycle.loading "
+            "&& typeof window.__imageAllRecycleQueryRelease === 'function'"
+        )
+        assert page.evaluate(
+            """expected => {
+              const row = document.querySelector(
+                `[data-slimming-recycle-row-id="${CSS.escape(expected.rowID)}"]`
+              );
+              return row === window.__imageAllRecycleQueryRow
+                && row.querySelector('.slimming-recycle-thumbnail-card')
+                  === window.__imageAllRecycleQueryThumbnail
+                && document.querySelector('#slimmingRecycleBody').scrollTop
+                  === expected.scrollTop
+                && document.activeElement?.id === 'slimmingRecycleSearchInput';
+            }""",
+            recycle_query_continuity_before,
+        )
+        page.evaluate("() => window.__imageAllRecycleQueryRelease()")
+        page.wait_for_function("() => !state.slimming.recycle.loading")
+        assert page.evaluate(
+            """expected => {
+              const row = document.querySelector(
+                `[data-slimming-recycle-row-id="${CSS.escape(expected.rowID)}"]`
+              );
+              return row === window.__imageAllRecycleQueryRow
+                && row.querySelector('.slimming-recycle-thumbnail-card')
+                  === window.__imageAllRecycleQueryThumbnail
+                && document.activeElement?.id === 'slimmingRecycleSearchInput';
+            }""",
+            recycle_query_continuity_before,
+        )
+
+        slimming_recycle_query_failures[0] = 1
+        recycle_failed_media_query_count = len(recycle_request_urls)
+        image_media_tab = page.locator('[data-slimming-media-kind="image"]')
+        image_media_tab.click()
+        page.wait_for_function("() => !state.slimming.recycle.loading")
+        page.wait_for_function(
+            "() => document.querySelector('#toast')?.textContent.includes('模拟回收筛选失败')"
+        )
+        assert len(recycle_request_urls) == recycle_failed_media_query_count + 1
+        assert page.evaluate("() => state.slimming.mediaKind") == "video"
+        assert page.locator(
+            '[data-slimming-media-kind="video"]'
+        ).get_attribute("aria-pressed") == "true"
+        assert page.evaluate(
+            """expected => {
+              const row = document.querySelector(
+                `[data-slimming-recycle-row-id="${CSS.escape(expected.rowID)}"]`
+              );
+              return row === window.__imageAllRecycleQueryRow
+                && row.querySelector('.slimming-recycle-thumbnail-card')
+                  === window.__imageAllRecycleQueryThumbnail
+                && document.activeElement?.dataset.slimmingMediaKind === 'image';
+            }""",
+            recycle_query_continuity_before,
+        )
+
+        slimming_recycle_query_failures[0] = 1
+        recycle_failed_query_count = len(recycle_request_urls)
+        page.locator("#slimmingRecycleSourceSelect").focus()
         page.locator("#slimmingRecycleSourceSelect").select_option(SOURCE_ID)
+        page.wait_for_function("() => !state.slimming.recycle.loading")
+        page.wait_for_function(
+            "() => document.querySelector('#toast')?.textContent.includes('模拟回收筛选失败')"
+        )
+        assert len(recycle_request_urls) == recycle_failed_query_count + 1
+        assert page.locator("#slimmingRecycleSourceSelect").input_value() == ""
+        assert page.locator("#slimmingRecycleSourceBanner").is_hidden()
+        assert page.locator("#slimmingRecycleSearchInput").input_value() == "RECYCLE"
+        recycle_failed_query_after = page.evaluate(
+            """expected => {
+              const row = document.querySelector(
+                `[data-slimming-recycle-row-id="${CSS.escape(expected.rowID)}"]`
+              );
+              return {
+                rowStable: row === window.__imageAllRecycleQueryRow,
+                thumbnailStable: row.querySelector('.slimming-recycle-thumbnail-card')
+                  === window.__imageAllRecycleQueryThumbnail,
+                focusedControlID: document.activeElement?.id || null,
+              };
+            }""",
+            recycle_query_continuity_before,
+        )
+        assert recycle_failed_query_after == {
+            "rowStable": True,
+            "thumbnailStable": True,
+            "focusedControlID": "slimmingRecycleSourceSelect",
+        }, recycle_failed_query_after
+
+        recycle_combined_query_count = len(recycle_request_urls)
+        page.locator("#slimmingRecycleSearchInput").fill("RECYCLE_0001")
+        page.locator("#slimmingRecycleSourceSelect").focus()
+        page.locator("#slimmingRecycleSourceSelect").select_option(SOURCE_ID)
+        page.wait_for_function("() => !state.slimming.recycle.loading")
+        page.wait_for_timeout(300)
+        assert len(recycle_request_urls) == recycle_combined_query_count + 1
+        assert "search=RECYCLE_0001" in recycle_request_urls[-1]
+        assert f"sourceID={SOURCE_ID}" in recycle_request_urls[-1]
+        assert page.locator(
+            "#slimmingRecycleList .slimming-recycle-row"
+        ).count() == 1
+
         page.locator("#slimmingRecycleSearchInput").fill("RECYCLE")
         page.wait_for_timeout(300)
         attention_scope = page.locator('[data-slimming-recycle-scope="attention"]')
@@ -4054,6 +4197,11 @@ def main(*, inspector_actions_only=False):
             and f"sourceID={SOURCE_ID}" in url
             and "search=RECYCLE" in url
             for url in recycle_request_urls
+        )
+        page.locator("#toast").wait_for(state="hidden", timeout=5_000)
+        page.screenshot(
+            path="/tmp/imageall-slimming-recycle-query-continuity.png",
+            full_page=False,
         )
 
         recycle_escape_requests = len(recycle_request_urls)
@@ -5867,9 +6015,11 @@ def main(*, inspector_actions_only=False):
             for message in console_errors
             if message not in expected_conflict_console
         ]
-        assert len(expected_conflict_console) == 2, console_errors
+        assert len(expected_conflict_console) == 4, console_errors
         assert failed_resources == [
             (409, f"{BASE_URL}/v1/tags/create-and-apply"),
+            (409, f"{BASE_URL}/v1/library-slimming/recycle?mediaKind=image&scope=all&limit=60&search=RECYCLE"),
+            (409, f"{BASE_URL}/v1/library-slimming/recycle?mediaKind=video&scope=all&limit=60&sourceID={SOURCE_ID}&search=RECYCLE"),
             (409, f"{BASE_URL}/v1/library-slimming/recycle/requests"),
         ], failed_resources
         assert not page_errors, page_errors
