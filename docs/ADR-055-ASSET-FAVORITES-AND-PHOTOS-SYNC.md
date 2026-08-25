@@ -1,7 +1,7 @@
 # ADR-055：全 App 资产红心与 Apple Photos 双向同步
 
-> 状态：已决定并实施（2026-08-08；2026-08-23 手动删除红心硬保护修订，项目所有者对话批准）
-> 范围：macOS 主 App；Remote/Web/iOS Companion 不在首轮范围
+> 状态：已决定并实施（2026-08-08；2026-08-23 手动删除红心硬保护修订；2026-08-25 Remote/Web 对齐）
+> 范围：macOS 主 App 与 Remote/Web Companion；iOS Companion 不在当前范围
 > 相关：`ADR-044-LIBRARY-SLIMMING-AND-RECYCLE.md`、`LIBRARY-SLIMMING-SPEC.md`、`ARCHITECTURE.md`
 
 ## 背景
@@ -65,6 +65,9 @@
 - 普通图库 Inspector 与图库瘦身分析结果中的手动快速删除或可恢复回收，在提交物理处置前重新读取
   共享红心状态并从目标集中排除全部受保护资产。界面显示实际处置数与红心保留数；全部所选资产均
   受保护时不发起来源 mutation，用户须先取消红心。该保护不能被确认框绕过。
+- Remote/Web 同样按该契约执行：Web 先提供候选数与保留数反馈，Host 接单与 Mac 原生确认后各自重新
+  读取权威红心状态；远程请求快照分别公开实际处理 ID 与保留 ID。状态缺失、读取失败或全部受保护时
+  失败关闭，不得调用任何来源 mutation。
 - 文件夹回收项红心期间被到期清理跳过；取消最后一层保护时从该次操作重新获得完整 30 天期限。
   对已经进入 ImageAll 回收站的单项手动永久删除仍可在红心警告后执行。
 - Apple Photos 回收记录可以修改 ImageAll 本地目标并显示待同步，但系统“最近删除”不受 ImageAll

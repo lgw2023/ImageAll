@@ -10,6 +10,8 @@ enum LibrarySlimmingCommandError: Error, Equatable, Sendable {
     case operationConflict
     case cleanupPlanNotFound
     case cleanupPlanChanged
+    case favoriteProtectionUnavailable
+    case allSelectedAssetsFavoriteProtected
 }
 
 struct LibrarySlimmingCommandSetupSnapshot: Equatable, Sendable {
@@ -183,12 +185,45 @@ struct LibrarySlimmingRemovalCommandRequestSnapshot: Equatable, Sendable {
     let clusterID: UUID?
     let mediaKind: MediaKind
     let assetIDs: [UUID]
+    let favoriteProtectedAssetIDs: [UUID]
     let mode: LibrarySlimmingRemovalCommandMode
     let phase: LibrarySlimmingRecycleCommandPhase
     let progress: LibrarySlimmingRemovalCommandProgress?
     let audit: LibrarySlimmingRemovalCommandAudit?
     let message: String
     let updatedAtMs: Int64
+
+    init(
+        id: UUID,
+        operationID: UUID,
+        scope: LibrarySlimmingRemovalCommandScope,
+        jobID: UUID?,
+        clusterID: UUID?,
+        mediaKind: MediaKind,
+        assetIDs: [UUID],
+        favoriteProtectedAssetIDs: [UUID] = [],
+        mode: LibrarySlimmingRemovalCommandMode,
+        phase: LibrarySlimmingRecycleCommandPhase,
+        progress: LibrarySlimmingRemovalCommandProgress?,
+        audit: LibrarySlimmingRemovalCommandAudit?,
+        message: String,
+        updatedAtMs: Int64
+    ) {
+        self.id = id
+        self.operationID = operationID
+        self.scope = scope
+        self.jobID = jobID
+        self.clusterID = clusterID
+        self.mediaKind = mediaKind
+        self.assetIDs = assetIDs
+        self.favoriteProtectedAssetIDs = favoriteProtectedAssetIDs
+        self.mode = mode
+        self.phase = phase
+        self.progress = progress
+        self.audit = audit
+        self.message = message
+        self.updatedAtMs = updatedAtMs
+    }
 }
 
 struct LibrarySlimmingRemovalCommandSnapshot: Equatable, Sendable {
@@ -297,8 +332,8 @@ enum RemoteLibrarySlimmingNativeApproval: Equatable, Sendable {
     case restore(fileName: String)
     case retry(fileName: String)
     case purge(fileName: String)
-    case recoverableBatch(count: Int, mediaKind: MediaKind)
-    case releaseSpaceBatch(count: Int, mediaKind: MediaKind)
+    case recoverableBatch(count: Int, favoriteProtectedCount: Int, mediaKind: MediaKind)
+    case releaseSpaceBatch(count: Int, favoriteProtectedCount: Int, mediaKind: MediaKind)
     case identicalCleanup(
         groupCount: Int,
         removalCount: Int,

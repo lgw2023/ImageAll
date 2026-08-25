@@ -3258,12 +3258,17 @@ def main(*, inspector_actions_only=False):
         slimming_context_menu = page.locator("#slimmingMemberContextMenu:not(.hidden)")
         slimming_context_menu.wait_for()
         assert page.locator("#slimmingMemberGrid > .slimming-member-card.selected").count() == 2
-        assert "(2)" in slimming_context_menu.locator(
+        protected_recycle_action = slimming_context_menu.locator(
             '[data-slimming-member-context-action="recoverableRecycle"]'
-        ).inner_text()
-        assert "(2)" in slimming_context_menu.locator(
+        )
+        protected_delete_action = slimming_context_menu.locator(
             '[data-slimming-member-context-action="releaseSourceSpace"]'
-        ).inner_text()
+        )
+        assert "(0)" in protected_recycle_action.inner_text()
+        assert "(0)" in protected_delete_action.inner_text()
+        assert protected_recycle_action.is_disabled()
+        assert protected_delete_action.is_disabled()
+        assert "保留 2 项红心" in page.locator("#slimmingSelectionSummary").inner_text()
         slimming_context_menu.locator(
             '[data-slimming-member-context-action="favorite"]'
         ).click()
@@ -3277,15 +3282,17 @@ def main(*, inspector_actions_only=False):
         page.wait_for_function(
             "() => document.activeElement?.dataset.slimmingMemberMain === 'true'"
         )
-        assert page.evaluate(
-            "() => document.activeElement?.dataset.slimmingMemberMain === 'true'"
-        )
 
         first_slimming_main.press("Shift+F10")
         slimming_context_menu.wait_for()
         page.wait_for_function(
             "() => document.activeElement?.dataset.slimmingMemberContextAction === 'preview'"
         )
+        mixed_selection_recycle_action = slimming_context_menu.locator(
+            '[data-slimming-member-context-action="recoverableRecycle"]'
+        )
+        assert "(1)" in mixed_selection_recycle_action.inner_text()
+        assert not mixed_selection_recycle_action.is_disabled()
         assert page.evaluate(
             "() => history.state?.imageAllWorkspace?.context?.contextMenuKind"
         ) == "slimmingMember"
@@ -3408,9 +3415,11 @@ def main(*, inspector_actions_only=False):
         ).evaluate_all(
             "cards => cards.map(card => card.dataset.slimmingMemberId)"
         ) == selected_ids_before_context
-        assert "(1)" in slimming_context_menu.locator(
+        single_favorite_recycle_action = slimming_context_menu.locator(
             '[data-slimming-member-context-action="recoverableRecycle"]'
-        ).inner_text()
+        )
+        assert "(0)" in single_favorite_recycle_action.inner_text()
+        assert single_favorite_recycle_action.is_disabled()
         page.keyboard.press("Escape")
 
         selection_before_layout = page.locator(
@@ -3614,6 +3623,17 @@ def main(*, inspector_actions_only=False):
 
         removal_count_before_cancel = len(submitted_slimming_removals)
         page.keyboard.press("Delete")
+        page.wait_for_timeout(200)
+        assert page.locator("#confirmDialog").get_attribute("open") is None
+        assert len(submitted_slimming_removals) == removal_count_before_cancel
+        page.keyboard.press("Meta+K")
+        with page.expect_response("**/v1/favorites"):
+            page.locator('[data-command-id="unfavoriteSelection"]').click()
+        page.wait_for_function(
+            "() => [...state.slimming.selectedMemberIDs].every("
+            "id => favoriteStateForAssetID(id)?.isFavorite === false)"
+        )
+        page.keyboard.press("Delete")
         page.locator("#confirmDialog[open]").wait_for()
         assert page.locator("#confirmDialog").get_attribute("data-tone") == "danger"
         assert "立即处理选中的" in page.locator("#confirmDialogTitle").inner_text()
@@ -3769,6 +3789,17 @@ def main(*, inspector_actions_only=False):
         assert "SLIM_0002" in page.locator("#lightboxTitle").inner_text()
         lightbox_delete = page.locator("#lightboxDeleteButton")
         assert lightbox_delete.is_visible()
+        assert lightbox_delete.is_disabled()
+        assert "红心保护" in lightbox_delete.get_attribute("aria-label")
+        with page.expect_response("**/v1/favorites"):
+            page.locator("#lightboxFavoriteButton").click()
+        page.wait_for_function(
+            "id => favoriteStateForAssetID(id)?.isFavorite === false",
+            arg=SLIMMING_ASSET_IDS[1],
+        )
+        page.wait_for_function(
+            "() => !document.querySelector('#lightboxDeleteButton').disabled"
+        )
         assert lightbox_delete.is_enabled()
         assert "SLIM_0002" in lightbox_delete.get_attribute("aria-label")
         preview_removal_count_before_cancel = len(submitted_slimming_removals)
@@ -5098,6 +5129,12 @@ def main(*, inspector_actions_only=False):
         page.wait_for_function(
             "() => document.querySelector('#assetGrid .asset-card-favorite')"
             "?.dataset.favorite === 'true'"
+        )
+        with page.expect_response("**/v1/favorites"):
+            page.locator("#favoriteSelectedButton").click()
+        page.wait_for_function(
+            "ids => ids.every(id => favoriteStateForAssetID(id)?.isFavorite === true)",
+            arg=ASSET_IDS,
         )
         page.screenshot(path="/tmp/imageall-grid-favorite-390.png", full_page=True)
 

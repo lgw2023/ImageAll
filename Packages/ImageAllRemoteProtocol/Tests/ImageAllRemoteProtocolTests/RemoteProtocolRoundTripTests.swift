@@ -1514,6 +1514,7 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
         let jobID = UUID()
         let clusterID = UUID()
         let assetIDs = [UUID(), UUID()]
+        let favoriteProtectedAssetID = UUID()
         let audit = RemoteLibrarySlimmingRemovalAudit(
             hiddenAssetIDs: [assetIDs[0]],
             recycledEntryIDs: [UUID()],
@@ -1536,6 +1537,7 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
             clusterID: clusterID,
             mediaKind: .image,
             assetIDs: assetIDs,
+            favoriteProtectedAssetIDs: [favoriteProtectedAssetID],
             mode: .recoverableRecycle,
             phase: .completed,
             progress: RemoteLibrarySlimmingRemovalProgress(
@@ -1585,6 +1587,29 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
             message: "请回到 Mac 核对并确认删除当前图库选区",
             updatedAtMs: 1_700_000_006_001
         ))
+        let legacyData = Data(#"""
+        {
+          "id":"10000000-0000-4000-8000-000000000001",
+          "operationID":"10000000-0000-4000-8000-000000000002",
+          "jobID":null,
+          "clusterID":null,
+          "scope":"gallerySelection",
+          "mediaKind":"image",
+          "assetIDs":["10000000-0000-4000-8000-000000000003"],
+          "mode":"releaseSourceSpace",
+          "phase":"awaitingMac",
+          "progress":null,
+          "audit":null,
+          "message":"等待 Mac 确认",
+          "updatedAtMs":1700000006002
+        }
+        """#.utf8)
+        XCTAssertNil(
+            try JSONDecoder().decode(
+                RemoteLibrarySlimmingRemovalRequestSnapshot.self,
+                from: legacyData
+            ).favoriteProtectedAssetIDs
+        )
     }
 
     func testLibrarySlimmingIdenticalCleanupPlanExecutionAndVerificationRoundTrip() throws {

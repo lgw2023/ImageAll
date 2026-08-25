@@ -295,6 +295,15 @@ def main():
                 payload = route.request.post_data_json
                 submitted_removals.append(payload)
                 canonical_ids = sorted(set(payload["assetIDs"]))
+                protected_ids = [
+                    asset_id for asset_id in canonical_ids
+                    if favorite_state(asset_id)["isFavorite"]
+                    or favorite_state(asset_id)["photosObservedValue"] is True
+                ]
+                removal_ids = [
+                    asset_id for asset_id in canonical_ids
+                    if asset_id not in protected_ids
+                ]
                 removal["request"] = {
                     "id": "77777777-4444-4444-4444-444444444444",
                     "operationID": payload["operationID"],
@@ -302,7 +311,8 @@ def main():
                     "jobID": payload.get("jobID"),
                     "clusterID": payload.get("clusterID"),
                     "mediaKind": payload["mediaKind"],
-                    "assetIDs": canonical_ids,
+                    "assetIDs": removal_ids,
+                    "favoriteProtectedAssetIDs": protected_ids,
                     "mode": payload["mode"],
                     "phase": "awaitingMac",
                     "progress": None,
@@ -515,7 +525,7 @@ def main():
         page.locator("#confirmDialog[open]").wait_for()
         assert page.locator("#confirmDialog").get_attribute("data-tone") == "danger"
         confirmation = page.locator("#confirmDialogMessage").inner_text()
-        assert "其中 1 项有红心" in confirmation
+        assert "将保留 1 项红心，只删除其余 1 项" in confirmation
         assert "文件夹来源会在身份核验后永久删除" in confirmation
         assert "Apple Photos 项只会进入系统“最近删除”" in confirmation
         assert not submitted_removals
@@ -529,15 +539,17 @@ def main():
         assert payload["clusterID"] is None
         assert payload["mode"] == "releaseSourceSpace"
         assert set(payload["assetIDs"]) == {ASSET_IDS[2], ASSET_IDS[55]}
+        assert removal["request"]["assetIDs"] == [ASSET_IDS[55]]
+        assert removal["request"]["favoriteProtectedAssetIDs"] == [ASSET_IDS[2]]
 
-        hidden_ids = set(payload["assetIDs"])
+        hidden_ids = set(removal["request"]["assetIDs"])
         visible_ids[:] = [asset_id for asset_id in visible_ids if asset_id not in hidden_ids]
         removal["request"].update({
             "phase": "completed",
             "progress": {
                 "phase": "completedAsset",
-                "completedAssetCount": 2,
-                "totalAssetCount": 2,
+                "completedAssetCount": 1,
+                "totalAssetCount": 1,
                 "copiedBytes": 0,
                 "totalFileBytes": 0,
             },
@@ -556,7 +568,7 @@ def main():
                 "photosMutationFailureCodes": [],
                 "sourceChangedAssetIDs": [],
             },
-            "message": "已永久删除 2 张，来源空间已可回收",
+            "message": "已永久删除 1 张，来源空间已可回收 · 已保留 1 项红心",
             "updatedAtMs": 1_700_000_003_000,
         })
 
@@ -564,11 +576,17 @@ def main():
             "ids => ids.every(id => !state.assets.some(asset => asset.id === id))",
             arg=sorted(hidden_ids),
         )
-        assert page.locator("#assetGrid .asset-card-main").count() == 86
-        assert page.evaluate("() => state.selectedAssetIDs.size") == 0
+        assert page.locator("#assetGrid .asset-card-main").count() == 87
+        assert page.evaluate("() => [...state.selectedAssetIDs]") == [ASSET_IDS[2]]
         assert page.evaluate("() => state.selectedAssetID") is None
         assert abs(page.locator("#libraryScroll").evaluate("element => element.scrollTop") - scroll_before) < 3
-        assert page.locator("#inspectorPlaceholder").is_visible()
+        assert page.locator("#selectionInspectorDeleteButton").is_disabled()
+        assert "所选项目均有红心保护" in page.locator(
+            "#selectionInspectorDeleteButton"
+        ).get_attribute("title")
+        assert "将保留 1 项红心，只删除其余 0 项" in page.locator(
+            "#inspectorDeleteHint"
+        ).inner_text()
 
         remaining_cards = page.locator("#assetGrid .asset-card-main")
         page.locator("#cancelSelectionButton").click()
@@ -605,7 +623,7 @@ def main():
         )
         page.wait_for_function(
             "expected => document.activeElement?.closest('.asset-card')?.dataset.assetId === expected",
-            arg=ASSET_IDS[5],
+            arg=ASSET_IDS[4],
         )
         remaining_cards.nth(5).click(modifiers=["Meta"])
         remaining_cards.nth(6).click(modifiers=["Meta"])

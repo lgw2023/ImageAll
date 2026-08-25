@@ -6759,7 +6759,17 @@ function closeLightbox({ restoreFocus = true } = {}) {
   }
   const returnFocus = state.lightboxReturnFocus;
   state.lightboxReturnFocus = null;
-  if (restoreFocus) restoreOverlayFocus(returnFocus);
+  if (restoreFocus) {
+    restoreOverlayFocus(returnFocus);
+    if (closingContext === "slimming") {
+      stabilizeDismissedOverlayFocus(
+        () => returnFocus,
+        elements.lightbox,
+        () => visibleWorkspaceRoute() === "slimming"
+          && elements.lightbox.classList.contains("hidden")
+      );
+    }
+  }
   if (consumesLightboxHistory) history.back();
   else scheduleWorkspaceHistoryCheckpoint();
 }
@@ -16922,6 +16932,14 @@ async function applyFavoriteMutation(assetIDs, isFavorite) {
     }
     renderSelectionBar({ updateInspector: false });
     renderFavoriteControls();
+    renderGalleryRemovalControls();
+    if (state.slimming.view === "analysis" && state.slimming.members.length) {
+      renderSlimmingMemberSelection();
+    }
+    if (["library", "slimming"].includes(state.lightboxContext)
+      && !elements.lightbox.classList.contains("hidden")) {
+      renderLightbox();
+    }
     if (!state.selectionMode && nextSelectedAssetID && !state.selectedDetail) {
       await loadInspector(nextSelectedAssetID, { reveal: true, quiet: true });
     } else if (!nextSelectedAssetID) {
@@ -17237,6 +17255,26 @@ function galleryRemovalTargetAssetIDs(
   });
 }
 
+function assetIsDeletionProtected(assetID) {
+  const favorite = favoriteStateForAssetID(assetID);
+  return favorite?.isFavorite === true || favorite?.photosObservedValue === true;
+}
+
+function removalFavoriteProtectionPlan(assetIDs) {
+  const requestedAssetIDs = [...new Set(assetIDs)];
+  const unverifiableAssetIDs = requestedAssetIDs.filter(
+    (assetID) => !favoriteStateForAssetID(assetID)
+  );
+  const favoriteProtectedAssetIDs = requestedAssetIDs.filter(assetIsDeletionProtected);
+  const protectedSet = new Set(favoriteProtectedAssetIDs);
+  return {
+    requestedAssetIDs,
+    removalAssetIDs: requestedAssetIDs.filter((assetID) => !protectedSet.has(assetID)),
+    favoriteProtectedAssetIDs,
+    unverifiableAssetIDs,
+  };
+}
+
 function activeGalleryRemovalRequest() {
   return state.galleryRemoval.requests.find(
     (request) => request.phase === "awaitingMac" || request.phase === "running"
@@ -17258,15 +17296,19 @@ function galleryRemovalStatusText(request) {
 
 function renderGalleryRemovalControls() {
   const targetIDs = galleryRemovalTargetAssetIDs();
+  const protection = removalFavoriteProtectionPlan(targetIDs);
   const active = activeGalleryRemovalRequest();
   const unavailable = !supportsLibrarySlimming()
     || !state.online
     || state.galleryRemoval.submitting
     || Boolean(active)
-    || targetIDs.length === 0;
+    || protection.removalAssetIDs.length === 0
+    || protection.unverifiableAssetIDs.length > 0;
   const activeText = galleryRemovalStatusText(active);
   const noun = state.mediaKind === "video" ? "个视频" : "张照片";
-  const targetLabel = targetIDs.length > 1 ? `删除 ${targetIDs.length} 项` : "删除";
+  const targetLabel = protection.removalAssetIDs.length > 1
+    ? `删除 ${protection.removalAssetIDs.length} 项`
+    : "删除";
   for (const button of [
     elements.deleteSelectedButton,
     elements.selectionInspectorDeleteButton,
@@ -17276,8 +17318,13 @@ function renderGalleryRemovalControls() {
     button.disabled = unavailable;
     button.title = !supportsLibrarySlimming()
       ? "当前 Mac Host 不支持图库快速删除"
-      : activeText || (targetIDs.length
-        ? `立即删除选中的 ${targetIDs.length} ${noun}；仍需在 Mac 原生窗口确认`
+      : activeText || (protection.unverifiableAssetIDs.length
+        ? "无法核验红心保护，暂不能删除"
+        : protection.removalAssetIDs.length
+          ? `立即删除 ${protection.removalAssetIDs.length} ${noun}`
+            + `${protection.favoriteProtectedAssetIDs.length ? `，保留 ${protection.favoriteProtectedAssetIDs.length} 项红心` : ""}；仍需在 Mac 原生窗口确认`
+          : targetIDs.length
+            ? "所选项目均有红心保护；请先取消红心再删除"
         : `请先选择要删除的${currentMediaNoun()}`);
     button.setAttribute("aria-label", button.title);
   }
@@ -17296,11 +17343,11 @@ function renderGalleryRemovalControls() {
     status.classList.toggle("hidden", !showsStatus);
     status.textContent = activeText;
   }
-  const favoriteCount = targetIDs.filter(
-    (assetID) => favoriteStateForAssetID(assetID)?.isFavorite === true
-  ).length;
-  elements.inspectorDeleteHint.textContent = favoriteCount
-    ? `其中 ${favoriteCount} 项有红心；红心只用于整理，不会阻止删除。文件夹原始媒体将永久删除，Apple Photos 项进入系统“最近删除”。`
+  const favoriteCount = protection.favoriteProtectedAssetIDs.length;
+  elements.inspectorDeleteHint.textContent = protection.unverifiableAssetIDs.length
+    ? "无法核验红心保护，未删除任何项目。"
+    : favoriteCount
+    ? `将保留 ${favoriteCount} 项红心，只删除其余 ${protection.removalAssetIDs.length} 项。文件夹原始媒体将永久删除，Apple Photos 项进入系统“最近删除”。`
     : "文件夹原始媒体将永久删除；Apple Photos 项进入系统“最近删除”。";
   if (elements.assetDeleteContextAction) {
     const contextAsset = state.assets.find((asset) => asset.id === state.contextAssetID);
@@ -17308,17 +17355,17 @@ function renderGalleryRemovalControls() {
     elements.assetDeleteContextAction.disabled = !state.online
       || state.galleryRemoval.submitting
       || Boolean(active)
-      || contextAsset?.availability !== "available";
+      || contextAsset?.availability !== "available"
+      || !favoriteStateForAssetID(contextAsset?.id)
+      || assetIsDeletionProtected(contextAsset?.id);
   }
   renderReviewInspectorActions();
 }
 
-function galleryRemovalConfirmationMessage(assetIDs) {
-  const favoriteCount = assetIDs.filter(
-    (assetID) => favoriteStateForAssetID(assetID)?.isFavorite === true
-  ).length;
+function galleryRemovalConfirmationMessage(protection) {
+  const favoriteCount = protection.favoriteProtectedAssetIDs.length;
   const favoriteWarning = favoriteCount
-    ? `其中 ${favoriteCount} 项有红心；红心只用于整理，不会暂停本次删除。`
+    ? `将保留 ${favoriteCount} 项红心，只删除其余 ${protection.removalAssetIDs.length} 项。`
     : "";
   return `${favoriteWarning}文件夹来源会在身份核验后永久删除，无法从 ImageAll 恢复；Apple Photos 项只会进入系统“最近删除”。提交后还需要在 Mac 原生窗口再次确认。`;
 }
@@ -17341,6 +17388,7 @@ async function submitGalleryRemoval({
   surface = "gallery",
 } = {}) {
   const assetIDs = galleryRemovalTargetAssetIDs(requestedAssetIDs, { surface });
+  const protection = removalFavoriteProtectionPlan(assetIDs);
   const activeReviewPreviewID = surface === "review"
     && state.lightboxContext === "review"
     && !elements.lightbox.classList.contains("hidden")
@@ -17356,6 +17404,14 @@ async function submitGalleryRemoval({
     toast(`请先选择至少${mediaItemCountText(1)}`);
     return;
   }
+  if (protection.unverifiableAssetIDs.length) {
+    toast("无法核验红心保护，未删除任何项目");
+    return;
+  }
+  if (!protection.removalAssetIDs.length) {
+    toast("所选项目均有红心保护；请先取消红心再删除");
+    return;
+  }
   if (active || state.galleryRemoval.submitting) {
     toast(galleryRemovalStatusText(active) || "已有删除或回收正在处理");
     return;
@@ -17364,8 +17420,8 @@ async function submitGalleryRemoval({
   if (!confirmed) {
     requestConfirmation({
       eyebrow: "QUICK DELETE",
-      title: `立即删除选中的 ${assetIDs.length} ${noun}？`,
-      message: galleryRemovalConfirmationMessage(assetIDs),
+      title: `立即删除选中的 ${protection.removalAssetIDs.length} ${noun}？`,
+      message: galleryRemovalConfirmationMessage(protection),
       actionLabel: "删除",
       tone: "danger",
       returnFocus: returnFocus || galleryRemovalReturnFocus(previewAssetID),
@@ -24801,8 +24857,9 @@ function renderSlimmingMemberSelection({ renderInspector = true } = {}) {
     );
   }
   const selectedCount = state.slimming.selectedMemberIDs.size;
+  const protection = removalFavoriteProtectionPlan([...state.slimming.selectedMemberIDs]);
   elements.slimmingSelectionSummary.textContent = selectedCount
-    ? `已选择 ${selectedCount} 项`
+    ? `已选择 ${selectedCount} 项${protection.favoriteProtectedAssetIDs.length ? ` · 保留 ${protection.favoriteProtectedAssetIDs.length} 项红心` : ""}`
     : "";
   elements.slimmingSelectionBar.classList.toggle("hidden", selectedCount === 0);
   elements.slimmingSelectionBarSummary.textContent = `已选择 ${selectedCount} 项`;
@@ -24814,9 +24871,26 @@ function renderSlimmingMemberSelection({ renderInspector = true } = {}) {
     || active === "awaitingMac"
     || active === "running"
     || identicalActive === "awaitingMac"
-    || identicalActive === "running";
-  elements.slimmingMoveToRecycleButton.disabled = unavailable || selectedCount === 0;
-  elements.slimmingReleaseSpaceButton.disabled = unavailable || selectedCount === 0;
+    || identicalActive === "running"
+    || protection.unverifiableAssetIDs.length > 0;
+  const noRemovalCandidates = protection.removalAssetIDs.length === 0;
+  elements.slimmingMoveToRecycleButton.disabled = unavailable || noRemovalCandidates;
+  elements.slimmingReleaseSpaceButton.disabled = unavailable || noRemovalCandidates;
+  elements.slimmingMoveToRecycleButton.textContent = protection.removalAssetIDs.length > 0
+    ? `移入可恢复回收站 (${protection.removalAssetIDs.length})`
+    : "移入可恢复回收站";
+  elements.slimmingReleaseSpaceButton.textContent = protection.removalAssetIDs.length > 0
+    ? `快速删除 (${protection.removalAssetIDs.length})`
+    : "快速删除";
+  const removalHelp = protection.unverifiableAssetIDs.length
+    ? "无法核验红心保护，暂不能处理"
+    : noRemovalCandidates && selectedCount
+      ? "所选项目均有红心保护；请先取消红心"
+      : protection.favoriteProtectedAssetIDs.length
+        ? `将保留 ${protection.favoriteProtectedAssetIDs.length} 项红心`
+        : "";
+  elements.slimmingMoveToRecycleButton.title = removalHelp;
+  elements.slimmingReleaseSpaceButton.title = removalHelp;
   if (renderInspector) renderSlimmingInspector();
 }
 
@@ -24909,7 +24983,7 @@ function syncSlimmingRecycleFavoriteButton(card, entry) {
   button.setAttribute("aria-label", `${entry.fileName || "当前项目"}：${button.title}`);
 }
 
-async function toggleSlimmingMemberFavorite(button) {
+async function toggleSlimmingMemberFavorite(button, { restoreFocus = true } = {}) {
   const card = button?.closest(".slimming-member-card");
   const assetID = button?.dataset.mediaFavoriteAssetId || card?.dataset.slimmingMemberId;
   const memberIndex = state.slimming.members.findIndex((member) => member.id === assetID);
@@ -24927,6 +25001,7 @@ async function toggleSlimmingMemberFavorite(button) {
   renderSlimmingMemberSelection();
   scrollContainer.scrollTop = scrollTop;
 
+  if (!restoreFocus) return;
   if (button.isConnected) {
     button.focus({ preventScroll: true });
     return;
@@ -26635,8 +26710,17 @@ async function submitSlimmingRemoval(
   const memberIDs = new Set(state.slimming.members.map((member) => member.id));
   const assetIDs = (requestedAssetIDs || [...state.slimming.selectedMemberIDs])
     .filter((id) => memberIDs.has(id) && !activeSlimmingRemovalPhase(id));
+  const protection = removalFavoriteProtectionPlan(assetIDs);
   if (!assetIDs.length || !state.slimming.selectedJobID || !state.slimming.selectedClusterID) {
     toast("请先在一个候选分组中选择项目");
+    return;
+  }
+  if (protection.unverifiableAssetIDs.length) {
+    toast("无法核验红心保护，未删除或回收任何项目");
+    return;
+  }
+  if (!protection.removalAssetIDs.length) {
+    toast("所选项目均有红心保护；请先取消红心再删除或回收");
     return;
   }
   const noun = state.slimming.mediaKind === "video" ? "段视频" : "张照片";
@@ -26646,11 +26730,11 @@ async function submitSlimmingRemoval(
     requestConfirmation({
       eyebrow: releasesSpace ? "QUICK DELETE" : "RECOVERABLE RECYCLE",
       title: releasesSpace
-        ? `立即处理${targetCopy} ${assetIDs.length} ${noun}？`
+        ? `立即处理${targetCopy} ${protection.removalAssetIDs.length} ${noun}？`
         : `移入可恢复回收站？`,
       message: releasesSpace
-        ? "文件夹来源会在身份核验后永久删除，无法从 ImageAll 恢复；Apple Photos 项只会进入系统“最近删除”。提交后还需要在 Mac 原生窗口再次确认。"
-        : `将${targetCopy} ${assetIDs.length} ${noun}移入回收站。文件夹来源会先复制并校验并保留 30 天；Apple Photos 项会进入系统“最近删除”。提交后还需要在 Mac 原生窗口再次确认。`,
+        ? `${protection.favoriteProtectedAssetIDs.length ? `将保留 ${protection.favoriteProtectedAssetIDs.length} 项红心，只处理其余 ${protection.removalAssetIDs.length} 项。` : ""}文件夹来源会在身份核验后永久删除，无法从 ImageAll 恢复；Apple Photos 项只会进入系统“最近删除”。提交后还需要在 Mac 原生窗口再次确认。`
+        : `${protection.favoriteProtectedAssetIDs.length ? `将保留 ${protection.favoriteProtectedAssetIDs.length} 项红心，只处理其余 ${protection.removalAssetIDs.length} 项。` : ""}将${targetCopy} ${protection.removalAssetIDs.length} ${noun}移入回收站。文件夹来源会先复制并校验并保留 30 天；Apple Photos 项会进入系统“最近删除”。提交后还需要在 Mac 原生窗口再次确认。`,
       actionLabel: releasesSpace ? "快速删除" : "可恢复回收",
       tone: releasesSpace ? "danger" : "warning",
       returnFocus: previewAssetID
@@ -30203,6 +30287,8 @@ function renderLightbox() {
   elements.lightboxDeleteButton.classList.toggle("hidden", !showsDelete);
   elements.lightboxDeleteButton.disabled = !state.online
     || state.lightboxNavigating
+    || !favoriteStateForAssetID(item.id)
+    || assetIsDeletionProtected(item.id)
     || (state.lightboxContext === "slimming"
       ? state.slimming.removal.submitting || Boolean(activeSlimmingRemovalPhase(item.id))
       : !supportsLibrarySlimming()
@@ -30210,7 +30296,9 @@ function renderLightbox() {
         || Boolean(activeGalleryRemovalRequest()));
   elements.lightboxDeleteButton.setAttribute(
     "aria-label",
-    `处理当前预览${noun}：${item.fileName || `未命名${noun}`}`
+    assetIsDeletionProtected(item.id)
+      ? `当前预览${noun}有红心保护；请先取消红心再删除`
+      : `处理当前预览${noun}：${item.fileName || `未命名${noun}`}`
   );
   syncLightboxViewOriginalControl(item);
   syncLightboxOpenOriginalControl(item);
@@ -33268,6 +33356,7 @@ function availableCommands() {
       });
   }
   if (selectionContext?.route === "gallery" && selectionContext.selectedIDs.length) {
+    const galleryRemovalProtection = removalFavoriteProtectionPlan(selectionContext.selectedIDs);
     commands.splice(8, 0,
       {
         id: "newTag",
@@ -33313,7 +33402,9 @@ function availableCommands() {
         disabled: !supportsLibrarySlimming()
           || !state.online
           || state.galleryRemoval.submitting
-          || Boolean(activeGalleryRemovalRequest()),
+          || Boolean(activeGalleryRemovalRequest())
+          || galleryRemovalProtection.unverifiableAssetIDs.length > 0
+          || galleryRemovalProtection.removalAssetIDs.length === 0,
       });
     for (const tag of activeTags()) {
       commands.push(
@@ -33342,6 +33433,7 @@ function availableCommands() {
     }
   }
   if (selectionContext?.route === "review" && selectionContext.selectedIDs.length) {
+    const reviewRemovalProtection = removalFavoriteProtectionPlan(selectionContext.selectedIDs);
     commands.splice(8, 0,
       {
         id: "reviewAcceptSelection",
@@ -33375,12 +33467,15 @@ function availableCommands() {
           || state.review.mutating
           || state.galleryRemoval.submitting
           || Boolean(activeGalleryRemovalRequest())
+          || reviewRemovalProtection.unverifiableAssetIDs.length > 0
+          || reviewRemovalProtection.removalAssetIDs.length === 0
           || galleryRemovalTargetAssetIDs(selectionContext.selectedIDs, {
             surface: "review",
           }).length !== selectionContext.selectedIDs.length,
       });
   }
   if (selectionContext?.route === "slimming" && selectionContext.selectedIDs.length) {
+    const slimmingRemovalProtection = removalFavoriteProtectionPlan(selectionContext.selectedIDs);
     const removalPhase = currentSlimmingRemovalRequest()?.phase;
     const removalUnavailable = state.slimming.removal.submitting
       || ["awaitingMac", "running"].includes(removalPhase)
@@ -33393,14 +33488,20 @@ function availableCommands() {
         icon: "↙",
         title: "将所选候选成员移入可恢复回收站",
         hint: "Mac 确认",
-        disabled: !state.online || removalUnavailable,
+        disabled: !state.online
+          || removalUnavailable
+          || slimmingRemovalProtection.unverifiableAssetIDs.length > 0
+          || slimmingRemovalProtection.removalAssetIDs.length === 0,
       },
       {
         id: "releaseSlimmingSelection",
         icon: "⌫",
         title: "快速删除所选候选成员并释放空间",
         hint: "Delete · Mac 确认",
-        disabled: !state.online || removalUnavailable,
+        disabled: !state.online
+          || removalUnavailable
+          || slimmingRemovalProtection.unverifiableAssetIDs.length > 0
+          || slimmingRemovalProtection.removalAssetIDs.length === 0,
       });
   }
   commands.push({
@@ -34345,7 +34446,9 @@ function showSlimmingMemberContextMenu(clientX, clientY, memberID, {
   hideContextMenus();
   state.slimming.contextMemberID = memberID;
   const usesSelection = state.slimming.selectedMemberIDs.has(memberID);
-  const actionCount = usesSelection ? state.slimming.selectedMemberIDs.size : 1;
+  const actionIDs = usesSelection ? [...state.slimming.selectedMemberIDs] : [memberID];
+  const actionProtection = removalFavoriteProtectionPlan(actionIDs);
+  const actionCount = actionProtection.removalAssetIDs.length;
   const favorite = favoriteStateForAssetID(memberID);
   const removalPhase = currentSlimmingRemovalRequest()?.phase;
   const identicalPhase = currentSlimmingIdenticalCleanupRequest()?.phase;
@@ -34370,12 +34473,16 @@ function showSlimmingMemberContextMenu(clientX, clientY, memberID, {
     {
       action: "recoverableRecycle",
       label: `移入可恢复回收站 (${actionCount})`,
-      disabled: removalUnavailable,
+      disabled: removalUnavailable
+        || actionProtection.unverifiableAssetIDs.length > 0
+        || actionCount === 0,
     },
     {
       action: "releaseSourceSpace",
       label: `快速删除并释放空间 (${actionCount})`,
-      disabled: removalUnavailable,
+      disabled: removalUnavailable
+        || actionProtection.unverifiableAssetIDs.length > 0
+        || actionCount === 0,
       destructive: true,
     },
   ];
@@ -37977,7 +38084,23 @@ function bindEvents() {
       const favoriteButton = elements.slimmingMemberGrid.querySelector(
         `[data-slimming-member-id="${CSS.escape(memberID)}"] [data-slimming-member-favorite]`
       );
-      if (favoriteButton) await toggleSlimmingMemberFavorite(favoriteButton);
+      try {
+        if (favoriteButton) {
+          await toggleSlimmingMemberFavorite(favoriteButton, { restoreFocus: false });
+        }
+      } finally {
+        stabilizeDismissedOverlayFocus(
+          () => slimmingMemberMainButton(
+            elements.slimmingMemberGrid.querySelector(
+              `[data-slimming-member-id="${CSS.escape(memberID)}"]`
+            )
+          ),
+          elements.slimmingMemberContextMenu,
+          () => visibleWorkspaceRoute() === "slimming"
+            && elements.slimmingMemberContextMenu.classList.contains("hidden")
+        );
+      }
+      return;
     } else if (["recoverableRecycle", "releaseSourceSpace"].includes(action)) {
       if (!state.slimming.selectedMemberIDs.has(memberID)) {
         state.slimming.selectedMemberIDs = new Set([memberID]);
@@ -37986,11 +38109,17 @@ function bindEvents() {
       }
       await submitSlimmingRemoval(action);
     }
-    restoreOverlayFocus(slimmingMemberMainButton(
+    const returnFocus = slimmingMemberMainButton(
       elements.slimmingMemberGrid.querySelector(
         `[data-slimming-member-id="${CSS.escape(memberID)}"]`
       )
-    ));
+    );
+    restoreOverlayFocus(returnFocus);
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
+      });
+    });
   });
   elements.slimmingMemberContextMenu.addEventListener("keydown", (event) => {
     const buttons = [

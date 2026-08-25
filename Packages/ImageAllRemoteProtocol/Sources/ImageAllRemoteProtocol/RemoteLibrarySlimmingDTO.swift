@@ -886,6 +886,9 @@ public struct RemoteLibrarySlimmingRemovalRequestSnapshot: Codable, Sendable, Eq
     public let mediaKind: RemoteAssetMediaKind
     /// Immutable, canonical selection captured when the Host accepts the command.
     public let assetIDs: [UUID]
+    /// Selected assets retained because the Host's authoritative favorite state protects them.
+    /// `nil` preserves compatibility with Hosts predating favorite hard protection.
+    public let favoriteProtectedAssetIDs: [UUID]?
     public let mode: RemoteLibrarySlimmingRemovalMode
     public let phase: RemoteLibrarySlimmingRemovalRequestPhase
     public let progress: RemoteLibrarySlimmingRemovalProgress?
@@ -901,6 +904,7 @@ public struct RemoteLibrarySlimmingRemovalRequestSnapshot: Codable, Sendable, Eq
         scope: RemoteLibrarySlimmingRemovalScope? = nil,
         mediaKind: RemoteAssetMediaKind,
         assetIDs: [UUID],
+        favoriteProtectedAssetIDs: [UUID]? = nil,
         mode: RemoteLibrarySlimmingRemovalMode,
         phase: RemoteLibrarySlimmingRemovalRequestPhase,
         progress: RemoteLibrarySlimmingRemovalProgress?,
@@ -915,6 +919,7 @@ public struct RemoteLibrarySlimmingRemovalRequestSnapshot: Codable, Sendable, Eq
         self.clusterID = clusterID
         self.mediaKind = mediaKind
         self.assetIDs = assetIDs
+        self.favoriteProtectedAssetIDs = favoriteProtectedAssetIDs
         self.mode = mode
         self.phase = phase
         self.progress = progress

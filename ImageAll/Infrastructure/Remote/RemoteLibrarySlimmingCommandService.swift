@@ -31,10 +31,12 @@ private extension RemoteLibrarySlimmingNativeApproval {
         case let .restore(fileName): "恢复“\(fileName)”？"
         case let .retry(fileName): "重新检查“\(fileName)”的回收状态？"
         case let .purge(fileName): "永久删除“\(fileName)”？"
-        case let .recoverableBatch(count, mediaKind):
+        case let .recoverableBatch(count, protectedCount, mediaKind):
             "将选中的 \(count) \(mediaKind == .video ? "段视频" : "张照片")移入可恢复回收站？"
-        case let .releaseSpaceBatch(count, mediaKind):
+                + favoriteRetentionTitleSuffix(count: protectedCount)
+        case let .releaseSpaceBatch(count, protectedCount, mediaKind):
             "立即删除选中的 \(count) \(mediaKind == .video ? "段视频" : "张照片")并释放空间？"
+                + favoriteRetentionTitleSuffix(count: protectedCount)
         case let .identicalCleanup(groupCount, removalCount, mediaKind, _):
             "一键清理 \(groupCount) 组重复\(mediaKind == .video ? "视频" : "照片")中的 \(removalCount) 项？"
         }
@@ -48,10 +50,12 @@ private extension RemoteLibrarySlimmingNativeApproval {
             "ImageAll 只会核对原位置和隔离区，并在结果唯一时继续协调状态；不会猜测或删除两侧文件。"
         case .purge:
             "这会永久删除 ImageAll 隔离区中的原始媒体文件，无法恢复。Apple Photos 项不支持此操作。"
-        case .recoverableBatch:
-            "文件来源会先复制到 ImageAll 隔离区并验证，保留 30 天后清理；跨磁盘复制可能需要一些时间。Apple Photos 项会移入系统“最近删除”。"
-        case .releaseSpaceBatch:
-            "文件来源会在身份校验后永久删除，不能从 ImageAll 恢复。Apple Photos 项仍只会移入系统“最近删除”，并遵循系统保留期。"
+        case let .recoverableBatch(_, protectedCount, _):
+            favoriteRetentionDetail(count: protectedCount)
+                + "文件来源会先复制到 ImageAll 隔离区并验证，保留 30 天后清理；跨磁盘复制可能需要一些时间。Apple Photos 项会移入系统“最近删除”。"
+        case let .releaseSpaceBatch(_, protectedCount, _):
+            favoriteRetentionDetail(count: protectedCount)
+                + "文件来源会在身份校验后永久删除，不能从 ImageAll 恢复。Apple Photos 项仍只会移入系统“最近删除”，并遵循系统保留期。"
         case let .identicalCleanup(groupCount, removalCount, _, mode):
             "已重新核验 \(groupCount) 组原文件完全相同或视觉匹配 100% 的媒体；红心项全部保留，无红心组按文件大小、媒体日期确定保留项。计划清理的 \(removalCount) 项将"
                 + (mode == .releaseSourceSpace
@@ -70,6 +74,14 @@ private extension RemoteLibrarySlimmingNativeApproval {
         case let .identicalCleanup(_, _, _, mode):
             mode == .releaseSourceSpace ? "快速清理" : "可恢复回收"
         }
+    }
+
+    private func favoriteRetentionTitleSuffix(count: Int) -> String {
+        count > 0 ? "（另保留 \(count) 项红心）" : ""
+    }
+
+    private func favoriteRetentionDetail(count: Int) -> String {
+        count > 0 ? "已排除并保留 \(count) 项红心。" : ""
     }
 }
 
@@ -91,7 +103,7 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
     }
 
     private struct AcceptedRemovalOperation: Sendable {
-        let command: LibrarySlimmingRemovalCommand
+        let requestedCommand: LibrarySlimmingRemovalCommand
         let requestID: UUID
     }
 
@@ -514,7 +526,7 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
             throw LibrarySlimmingCommandError.operationConflict
         }
         let canonicalAssetIDs = Array(Set(requested.assetIDs)).sorted(by: Self.uuidLessThan)
-        let command = LibrarySlimmingRemovalCommand(
+        let requestedCommand = LibrarySlimmingRemovalCommand(
             operationID: requested.operationID,
             scope: requested.scope,
             jobID: requested.jobID,
@@ -523,8 +535,8 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
             assetIDs: canonicalAssetIDs,
             mode: requested.mode
         )
-        if let accepted = acceptedRemovalOperations[command.operationID] {
-            guard accepted.command == command else {
+        if let accepted = acceptedRemovalOperations[requestedCommand.operationID] {
+            guard accepted.requestedCommand == requestedCommand else {
                 throw LibrarySlimmingCommandError.operationConflict
             }
             guard let existing = removalRequestsByID[accepted.requestID] else {
@@ -542,12 +554,14 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
         guard !canonicalAssetIDs.isEmpty, canonicalAssetIDs.count <= 5_000 else {
             throw LibrarySlimmingCommandError.invalidSelection
         }
-        switch command.scope {
+        switch requestedCommand.scope {
         case .analysisCluster:
-            guard let jobID = command.jobID, let clusterID = command.clusterID else {
+            guard let jobID = requestedCommand.jobID,
+                  let clusterID = requestedCommand.clusterID
+            else {
                 throw LibrarySlimmingCommandError.invalidSelection
             }
-            let summaries = try analysis.listJobs(mediaKind: command.mediaKind)
+            let summaries = try analysis.listJobs(mediaKind: requestedCommand.mediaKind)
             guard summaries.contains(where: { $0.jobID == jobID }) else {
                 throw LibrarySlimmingCommandError.jobNotFound
             }
@@ -573,22 +587,38 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
                 throw LibrarySlimmingCommandError.invalidSelection
             }
         case .gallerySelection:
-            guard command.jobID == nil,
-                  command.clusterID == nil,
-                  command.mode == .releaseSourceSpace
+            guard requestedCommand.jobID == nil,
+                  requestedCommand.clusterID == nil,
+                  requestedCommand.mode == .releaseSourceSpace
             else {
                 throw LibrarySlimmingCommandError.invalidSelection
             }
             for assetID in canonicalAssetIDs {
                 guard let detail = try? catalog.fetchInspectorDetail(assetID: assetID),
                       detail.assetID == assetID,
-                      detail.mediaKind == command.mediaKind,
+                      detail.mediaKind == requestedCommand.mediaKind,
                       detail.availability == .available
                 else {
                     throw LibrarySlimmingCommandError.invalidSelection
                 }
             }
         }
+
+        let protectedAssetIDs = try favoriteProtectedAssetIDs(in: canonicalAssetIDs)
+        let protectedSet = Set(protectedAssetIDs)
+        let removalAssetIDs = canonicalAssetIDs.filter { !protectedSet.contains($0) }
+        guard !removalAssetIDs.isEmpty else {
+            throw LibrarySlimmingCommandError.allSelectedAssetsFavoriteProtected
+        }
+        let command = LibrarySlimmingRemovalCommand(
+            operationID: requestedCommand.operationID,
+            scope: requestedCommand.scope,
+            jobID: requestedCommand.jobID,
+            clusterID: requestedCommand.clusterID,
+            mediaKind: requestedCommand.mediaKind,
+            assetIDs: removalAssetIDs,
+            mode: requestedCommand.mode
+        )
 
         let requestID = UUID()
         let request = LibrarySlimmingRemovalCommandRequestSnapshot(
@@ -598,19 +628,21 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
             jobID: command.jobID,
             clusterID: command.clusterID,
             mediaKind: command.mediaKind,
-            assetIDs: canonicalAssetIDs,
+            assetIDs: removalAssetIDs,
+            favoriteProtectedAssetIDs: protectedAssetIDs,
             mode: command.mode,
             phase: .awaitingMac,
             progress: nil,
             audit: nil,
-            message: command.scope == .gallerySelection
-                ? "请回到 Mac 核对并确认删除当前图库选区"
-                : "请回到 Mac 核对并确认这次批量操作",
+            message: removalAcceptanceMessage(
+                scope: command.scope,
+                protectedFavoriteCount: protectedAssetIDs.count
+            ),
             updatedAtMs: clock.nowMs
         )
         removalRequestsByID[requestID] = request
         acceptedRemovalOperations[command.operationID] = AcceptedRemovalOperation(
-            command: command,
+            requestedCommand: requestedCommand,
             requestID: requestID
         )
         removalTasksByID[requestID] = Task { [weak self] in
@@ -1021,9 +1053,19 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
     ) async {
         let approval: RemoteLibrarySlimmingNativeApproval = switch command.mode {
         case .recoverableRecycle:
-            .recoverableBatch(count: command.assetIDs.count, mediaKind: command.mediaKind)
+            .recoverableBatch(
+                count: command.assetIDs.count,
+                favoriteProtectedCount:
+                    removalRequestsByID[requestID]?.favoriteProtectedAssetIDs.count ?? 0,
+                mediaKind: command.mediaKind
+            )
         case .releaseSourceSpace:
-            .releaseSpaceBatch(count: command.assetIDs.count, mediaKind: command.mediaKind)
+            .releaseSpaceBatch(
+                count: command.assetIDs.count,
+                favoriteProtectedCount:
+                    removalRequestsByID[requestID]?.favoriteProtectedAssetIDs.count ?? 0,
+                mediaKind: command.mediaKind
+            )
         }
         guard await approvalPresenter.confirm(approval) else {
             finishRemoval(
@@ -1033,6 +1075,44 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
             )
             return
         }
+        let protectedAfterConfirmation: [UUID]
+        do {
+            protectedAfterConfirmation = try favoriteProtectedAssetIDs(in: command.assetIDs)
+        } catch {
+            finishRemoval(
+                requestID,
+                phase: .failed,
+                message: "无法核验红心保护，未删除或回收任何项目"
+            )
+            return
+        }
+        let newlyProtectedSet = Set(protectedAfterConfirmation)
+        let finalAssetIDs = command.assetIDs.filter { !newlyProtectedSet.contains($0) }
+        let previouslyProtected = removalRequestsByID[requestID]?.favoriteProtectedAssetIDs ?? []
+        let allProtected = Array(Set(previouslyProtected + protectedAfterConfirmation))
+            .sorted(by: Self.uuidLessThan)
+        updateRemovalSelection(
+            requestID,
+            assetIDs: finalAssetIDs,
+            favoriteProtectedAssetIDs: allProtected
+        )
+        guard !finalAssetIDs.isEmpty else {
+            finishRemoval(
+                requestID,
+                phase: .cancelled,
+                message: "所选项目均有红心保护；未删除或回收任何项目"
+            )
+            return
+        }
+        let effectiveCommand = LibrarySlimmingRemovalCommand(
+            operationID: command.operationID,
+            scope: command.scope,
+            jobID: command.jobID,
+            clusterID: command.clusterID,
+            mediaKind: command.mediaKind,
+            assetIDs: finalAssetIDs,
+            mode: command.mode
+        )
         markRemovalRunning(
             requestID,
             message: command.mode == .releaseSourceSpace
@@ -1041,9 +1121,9 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
         )
         do {
             var outcome = try await performRemoval(
-                command,
+                effectiveCommand,
                 requestID: requestID,
-                assetIDs: command.assetIDs,
+                assetIDs: effectiveCommand.assetIDs,
                 completedBeforeRetry: 0
             )
             if !outcome.authorizationRequiredSourceIDs.isEmpty {
@@ -1066,11 +1146,11 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
                         !Set(retryAssetIDs).contains($0)
                     }
                     let retry = try await performRemoval(
-                        command,
+                        effectiveCommand,
                         requestID: requestID,
                         assetIDs: retryAssetIDs,
                         completedBeforeRetry: Self.completedAssetCount(
-                            total: command.assetIDs.count,
+                            total: effectiveCommand.assetIDs.count,
                             outcome: outcome
                         )
                     )
@@ -1115,11 +1195,11 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
                         !retrySet.contains($0)
                     }
                     let retry = try await performRemoval(
-                        command,
+                        effectiveCommand,
                         requestID: requestID,
                         assetIDs: retryAssetIDs,
                         completedBeforeRetry: Self.completedAssetCount(
-                            total: command.assetIDs.count,
+                            total: effectiveCommand.assetIDs.count,
                             outcome: outcome
                         )
                     )
@@ -1155,7 +1235,7 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
                     outcome.sourceChangedAssetIDs.append(contentsOf: retry.sourceChangedAssetIDs)
                 }
             }
-            let hidden = try await slimmingHiddenAssetIDs(from: command.assetIDs)
+            let hidden = try await slimmingHiddenAssetIDs(from: effectiveCommand.assetIDs)
             try? recycle.enqueuePurgeExpired()
             if command.mode == .releaseSourceSpace,
                !outcome.permanentlyDeletedAssetIDs.isEmpty
@@ -1168,11 +1248,16 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
                 }
             }
             let audit = Self.makeAudit(outcome: outcome, hidden: hidden)
+            let protectedFavoriteCount =
+                removalRequestsByID[requestID]?.favoriteProtectedAssetIDs.count ?? 0
+            let baseMessage = Self.removalMessage(mode: command.mode, outcome: outcome)
             finishRemoval(
                 requestID,
                 phase: .completed,
                 audit: audit,
-                message: Self.removalMessage(mode: command.mode, outcome: outcome)
+                message: protectedFavoriteCount > 0
+                    ? "\(baseMessage) · 已保留 \(protectedFavoriteCount) 项红心"
+                    : baseMessage
             )
         } catch {
             finishRemoval(
@@ -1237,6 +1322,7 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
             clusterID: current.clusterID,
             mediaKind: current.mediaKind,
             assetIDs: current.assetIDs,
+            favoriteProtectedAssetIDs: current.favoriteProtectedAssetIDs,
             mode: current.mode,
             phase: .running,
             progress: LibrarySlimmingRemovalCommandProgress(
@@ -1277,6 +1363,7 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
             clusterID: current.clusterID,
             mediaKind: current.mediaKind,
             assetIDs: current.assetIDs,
+            favoriteProtectedAssetIDs: current.favoriteProtectedAssetIDs,
             mode: current.mode,
             phase: phase,
             progress: current.progress,
@@ -1286,6 +1373,56 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
         )
         if clearTask { removalTasksByID[requestID] = nil }
         pruneRemovalRequests()
+    }
+
+    private func favoriteProtectedAssetIDs(in assetIDs: [UUID]) throws -> [UUID] {
+        let states: [UUID: MediaFavoriteState]
+        do {
+            states = try catalog.fetchFavoriteStates(assetIDs: assetIDs)
+        } catch {
+            throw LibrarySlimmingCommandError.favoriteProtectionUnavailable
+        }
+        guard Set(assetIDs).isSubset(of: Set(states.keys)) else {
+            throw LibrarySlimmingCommandError.favoriteProtectionUnavailable
+        }
+        return assetIDs.filter { states[$0]?.isDeletionProtected == true }
+            .sorted(by: Self.uuidLessThan)
+    }
+
+    private func updateRemovalSelection(
+        _ requestID: UUID,
+        assetIDs: [UUID],
+        favoriteProtectedAssetIDs: [UUID]
+    ) {
+        guard let current = removalRequestsByID[requestID] else { return }
+        removalRequestsByID[requestID] = LibrarySlimmingRemovalCommandRequestSnapshot(
+            id: current.id,
+            operationID: current.operationID,
+            scope: current.scope,
+            jobID: current.jobID,
+            clusterID: current.clusterID,
+            mediaKind: current.mediaKind,
+            assetIDs: assetIDs,
+            favoriteProtectedAssetIDs: favoriteProtectedAssetIDs,
+            mode: current.mode,
+            phase: current.phase,
+            progress: current.progress,
+            audit: current.audit,
+            message: current.message,
+            updatedAtMs: clock.nowMs
+        )
+    }
+
+    private func removalAcceptanceMessage(
+        scope: LibrarySlimmingRemovalCommandScope,
+        protectedFavoriteCount: Int
+    ) -> String {
+        let base = scope == .gallerySelection
+            ? "请回到 Mac 核对并确认删除当前图库选区"
+            : "请回到 Mac 核对并确认这次批量操作"
+        return protectedFavoriteCount > 0
+            ? "\(base)；已保留 \(protectedFavoriteCount) 项红心"
+            : base
     }
 
     private func pruneRemovalRequests() {

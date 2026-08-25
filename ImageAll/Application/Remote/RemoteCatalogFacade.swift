@@ -3274,6 +3274,10 @@ actor RemoteCatalogFacade {
             return RemoteAPIError(code: .notFound, message: "一键清理方案已过期，请重新预览")
         case .cleanupPlanChanged:
             return RemoteAPIError(code: .conflict, message: "分析结果或来源状态已变化，请重新预览")
+        case .favoriteProtectionUnavailable:
+            return RemoteAPIError(code: .conflict, message: "无法核验红心保护，未删除或回收任何项目")
+        case .allSelectedAssetsFavoriteProtected:
+            return RemoteAPIError(code: .conflict, message: "所选项目均有红心保护；请先取消红心再删除或回收")
         }
     }
 
@@ -3511,6 +3515,7 @@ actor RemoteCatalogFacade {
                 : .analysisCluster,
             mediaKind: request.mediaKind == .video ? .video : .image,
             assetIDs: request.assetIDs,
+            favoriteProtectedAssetIDs: request.favoriteProtectedAssetIDs,
             mode: request.mode == .releaseSourceSpace
                 ? .releaseSourceSpace
                 : .recoverableRecycle,

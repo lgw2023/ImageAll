@@ -501,6 +501,80 @@ final class RemoteLibrarySlimmingSourceMaintenanceServiceTests: XCTestCase {
         }
     }
 
+    func testGalleryRemovalRetainsFavoritesAndRejectsAnAllProtectedSelection() async throws {
+        let workspace = RemoteSlimmingMaintenanceWorkspaceStub()
+        workspace.setFavoriteProtectedAssetIDs([workspace.secondGalleryAssetID])
+        let service = makeService(workspace: workspace)
+        let commandPort: any RemoteLibrarySlimmingCommandPort = service
+
+        let accepted = try await commandPort.submitRemoval(
+            LibrarySlimmingRemovalCommand(
+                operationID: UUID(),
+                scope: .gallerySelection,
+                jobID: nil,
+                clusterID: nil,
+                mediaKind: .image,
+                assetIDs: [workspace.galleryAssetID, workspace.secondGalleryAssetID],
+                mode: .releaseSourceSpace
+            )
+        )
+
+        XCTAssertEqual(accepted.assetIDs, [workspace.galleryAssetID])
+        XCTAssertEqual(accepted.favoriteProtectedAssetIDs, [workspace.secondGalleryAssetID])
+        _ = try await waitForRemovalTerminal(service, id: accepted.id)
+
+        workspace.setFavoriteProtectedAssetIDs([
+            workspace.galleryAssetID,
+            workspace.secondGalleryAssetID,
+        ])
+        do {
+            _ = try await commandPort.submitRemoval(
+                LibrarySlimmingRemovalCommand(
+                    operationID: UUID(),
+                    scope: .gallerySelection,
+                    jobID: nil,
+                    clusterID: nil,
+                    mediaKind: .image,
+                    assetIDs: [workspace.galleryAssetID, workspace.secondGalleryAssetID],
+                    mode: .releaseSourceSpace
+                )
+            )
+            XCTFail("An all-favorite selection must not reach native approval")
+        } catch {
+            XCTAssertEqual(
+                error as? LibrarySlimmingCommandError,
+                .allSelectedAssetsFavoriteProtected
+            )
+        }
+    }
+
+    func testGalleryRemovalRechecksFavoriteProtectionAfterNativeApproval() async throws {
+        let workspace = RemoteSlimmingMaintenanceWorkspaceStub()
+        let approval = RemoteSlimmingApprovalStub {
+            workspace.setFavoriteProtectedAssetIDs([workspace.galleryAssetID])
+            return true
+        }
+        let service = makeService(workspace: workspace, approvalPresenter: approval)
+
+        let accepted = try await service.submitRemoval(
+            LibrarySlimmingRemovalCommand(
+                operationID: UUID(),
+                scope: .gallerySelection,
+                jobID: nil,
+                clusterID: nil,
+                mediaKind: .image,
+                assetIDs: [workspace.galleryAssetID],
+                mode: .releaseSourceSpace
+            )
+        )
+        let terminal = try await waitForRemovalTerminal(service, id: accepted.id)
+
+        XCTAssertEqual(terminal.phase, .cancelled)
+        XCTAssertTrue(terminal.assetIDs.isEmpty)
+        XCTAssertEqual(terminal.favoriteProtectedAssetIDs, [workspace.galleryAssetID])
+        XCTAssertEqual(terminal.message, "所选项目均有红心保护；未删除或回收任何项目")
+    }
+
     func testRefreshCatalogAcceptsOnlyActiveSubsetAndStartsBothRunners() async throws {
         let workspace = RemoteSlimmingMaintenanceWorkspaceStub()
         let service = makeService(workspace: workspace)
@@ -574,7 +648,9 @@ final class RemoteLibrarySlimmingSourceMaintenanceServiceTests: XCTestCase {
 
     private func makeService(
         workspace: RemoteSlimmingMaintenanceWorkspaceStub,
-        sourceIndex: RemoteSlimmingSourceIndexStub = RemoteSlimmingSourceIndexStub()
+        sourceIndex: RemoteSlimmingSourceIndexStub = RemoteSlimmingSourceIndexStub(),
+        approvalPresenter: any RemoteLibrarySlimmingNativeApprovalPresenting =
+            RemoteSlimmingApprovalStub()
     ) -> RemoteLibrarySlimmingCommandService {
         RemoteLibrarySlimmingCommandService(
             catalog: workspace,
@@ -585,9 +661,25 @@ final class RemoteLibrarySlimmingSourceMaintenanceServiceTests: XCTestCase {
             recycle: RemoteSlimmingRecycleStub(),
             mutationAuthorization: RemoteFolderMutationAuthorizationStub(outcome: .cancelled),
             photosMutation: RemotePhotosMutationAuthorizationStub(state: .authorized),
-            approvalPresenter: RemoteSlimmingApprovalStub(),
+            approvalPresenter: approvalPresenter,
             clock: FixedJobClock(nowMs: 456)
         )
+    }
+
+    private func waitForRemovalTerminal(
+        _ service: RemoteLibrarySlimmingCommandService,
+        id: UUID
+    ) async throws -> LibrarySlimmingRemovalCommandRequestSnapshot {
+        for _ in 0..<200 {
+            if let request = try await service.removalSnapshot(mediaKind: .image).requests.first(
+                where: { $0.id == id }
+            ), ![.awaitingMac, .running].contains(request.phase) {
+                return request
+            }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        let snapshot = try await service.removalSnapshot(mediaKind: .image)
+        return try XCTUnwrap(snapshot.requests.first { $0.id == id })
     }
 
     private func waitUntil(_ predicate: @escaping () -> Bool) async {
@@ -1030,13 +1122,19 @@ private final class RemoteSlimmingMaintenanceWorkspaceStub:
         state: .unavailable
     )
     let galleryAssetID = UUID(uuidString: "71000000-0000-0000-0000-000000000010")!
+    let secondGalleryAssetID = UUID(uuidString: "71000000-0000-0000-0000-000000000011")!
     private var storedEnqueuedSourceIDs: [UUID] = []
     private var storedFolderRunnerCount = 0
     private var storedPhotosRunnerCount = 0
+    private var storedFavoriteProtectedAssetIDs: Set<UUID> = []
 
     var enqueuedSourceIDs: [UUID] { lock.withLock { storedEnqueuedSourceIDs } }
     var folderRunnerCount: Int { lock.withLock { storedFolderRunnerCount } }
     var photosRunnerCount: Int { lock.withLock { storedPhotosRunnerCount } }
+
+    func setFavoriteProtectedAssetIDs(_ assetIDs: Set<UUID>) {
+        lock.withLock { storedFavoriteProtectedAssetIDs = assetIDs }
+    }
 
     func fetchSources() throws -> [LibrarySourceSummary] {
         activeSources + [unavailableSource]
@@ -1078,9 +1176,11 @@ private final class RemoteSlimmingMaintenanceWorkspaceStub:
     }
 
     func fetchInspectorDetail(assetID: UUID) throws -> AssetInspectorDetail {
-        guard assetID == galleryAssetID else { throw CatalogQueryError.notFound }
+        guard [galleryAssetID, secondGalleryAssetID].contains(assetID) else {
+            throw CatalogQueryError.notFound
+        }
         return AssetInspectorDetail(
-            assetID: galleryAssetID,
+            assetID: assetID,
             sourceID: activeSources[0].id,
             sourceDisplayName: activeSources[0].displayName,
             sourceState: .active,
@@ -1100,6 +1200,27 @@ private final class RemoteSlimmingMaintenanceWorkspaceStub:
             fingerprintModifiedAtNs: 456_000_000,
             tags: []
         )
+    }
+
+    func fetchFavoriteStates(assetIDs: [UUID]) throws -> [UUID: MediaFavoriteState] {
+        lock.withLock {
+            Dictionary(uniqueKeysWithValues: assetIDs.map { assetID in
+                let isProtected = storedFavoriteProtectedAssetIDs.contains(assetID)
+                return (
+                    assetID,
+                    MediaFavoriteState(
+                        assetID: assetID,
+                        isFavorite: isProtected,
+                        photosObservedValue: isProtected,
+                        syncStatus: .synced,
+                        intentRevision: isProtected ? 1 : 0,
+                        requestedAtMs: 1,
+                        photosObservedModifiedAtMs: isProtected ? 1 : nil,
+                        lastErrorCode: nil
+                    )
+                )
+            })
+        }
     }
 
     func selectionAggregate(
@@ -1250,6 +1371,12 @@ private struct RemoteSlimmingRecycleStub: LibrarySlimmingRecyclePort {
 }
 
 private struct RemoteSlimmingApprovalStub: RemoteLibrarySlimmingNativeApprovalPresenting {
+    let confirmation: @MainActor @Sendable () -> Bool
+
+    init(confirmation: @escaping @MainActor @Sendable () -> Bool = { false }) {
+        self.confirmation = confirmation
+    }
+
     @MainActor
-    func confirm(_: RemoteLibrarySlimmingNativeApproval) -> Bool { false }
+    func confirm(_: RemoteLibrarySlimmingNativeApproval) -> Bool { confirmation() }
 }
