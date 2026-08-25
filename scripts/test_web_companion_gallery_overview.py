@@ -358,12 +358,171 @@ def main():
         assert any(query.get("acceptedTagIDs") == [TAG_ID] for query in asset_queries)
 
         page.locator("#galleryOverviewNavigationButton").click()
-        page.locator("#refreshGalleryOverviewButton").click()
+        page.evaluate(
+            """
+            () => {
+              const originalFetch = window.fetch.bind(window);
+              window.__galleryOverviewRefreshRelease = null;
+              window.fetch = (input, init) => {
+                const url = new URL(typeof input === "string" ? input : input.url, location.href);
+                if (url.pathname !== "/v1/gallery-overview") return originalFetch(input, init);
+                return new Promise((resolve, reject) => {
+                  window.__galleryOverviewRefreshRelease = () => {
+                    window.fetch = originalFetch;
+                    originalFetch(input, init).then(resolve, reject);
+                  };
+                });
+              };
+              const scroll = document.querySelector("#galleryOverviewScroll");
+              const source = document.querySelector("[data-gallery-overview-source-id]");
+              scroll.scrollTop = 180;
+              source.focus({ preventScroll: true });
+              window.__galleryOverviewStableFrame = {
+                photo: document.querySelector('[data-gallery-overview-media-kind="image"]'),
+                source,
+                tag: document.querySelector("[data-gallery-overview-tag-id]"),
+                year: document.querySelector(".gallery-overview-year"),
+                scrollTop: scroll.scrollTop,
+              };
+              document.querySelector("#refreshGalleryOverviewButton").click();
+            }
+            """
+        )
+        page.wait_for_function(
+            "() => document.querySelector('#galleryOverviewWorkspace').getAttribute('aria-busy') === 'true'"
+        )
+        assert page.evaluate(
+            """
+            () => {
+              const frame = window.__galleryOverviewStableFrame;
+              return frame.photo === document.querySelector('[data-gallery-overview-media-kind="image"]')
+                && frame.source === document.querySelector("[data-gallery-overview-source-id]")
+                && frame.tag === document.querySelector("[data-gallery-overview-tag-id]")
+                && frame.year === document.querySelector(".gallery-overview-year")
+                && document.activeElement === frame.source
+                && document.querySelector("#galleryOverviewScroll").scrollTop === frame.scrollTop;
+            }
+            """
+        ), "refresh replaced visible overview content while the request was pending"
+        page.evaluate("() => window.__galleryOverviewRefreshRelease()")
         page.wait_for_function(
             "() => !document.querySelector('#galleryOverviewWorkspace').getAttribute('aria-busy')?.includes('true')"
         )
+        assert page.evaluate(
+            """
+            () => {
+              const frame = window.__galleryOverviewStableFrame;
+              return frame.photo === document.querySelector('[data-gallery-overview-media-kind="image"]')
+                && frame.source === document.querySelector("[data-gallery-overview-source-id]")
+                && frame.tag === document.querySelector("[data-gallery-overview-tag-id]")
+                && frame.year === document.querySelector(".gallery-overview-year")
+                && document.activeElement === frame.source
+                && document.querySelector("#galleryOverviewScroll").scrollTop === frame.scrollTop;
+            }
+            """
+        ), "unchanged refresh replaced visible overview content"
+        page.evaluate(
+            """
+            () => {
+              const originalFetch = window.fetch.bind(window);
+              window.__galleryOverviewRefreshRelease = null;
+              window.fetch = (input, init) => {
+                const url = new URL(typeof input === "string" ? input : input.url, location.href);
+                if (url.pathname !== "/v1/gallery-overview") return originalFetch(input, init);
+                return new Promise((resolve, reject) => {
+                  window.__galleryOverviewRefreshRelease = () => {
+                    window.fetch = originalFetch;
+                    originalFetch(input, init).then(resolve, reject);
+                  };
+                });
+              };
+              const scroll = document.querySelector("#galleryOverviewScroll");
+              const source = document.querySelector("[data-gallery-overview-source-id]");
+              scroll.scrollTop = 180;
+              source.focus({ preventScroll: true });
+              window.__galleryOverviewChangedFrame = {
+                photo: document.querySelector('[data-gallery-overview-media-kind="image"]'),
+                source,
+                tag: document.querySelector("[data-gallery-overview-tag-id]"),
+                year: document.querySelector(".gallery-overview-year"),
+                scrollTop: scroll.scrollTop,
+              };
+              document.querySelector("#refreshGalleryOverviewButton").click();
+            }
+            """
+        )
+        page.wait_for_function("() => Boolean(window.__galleryOverviewRefreshRelease)")
+        overview["sources"][0]["imageCount"] = 121
+        overview["media"][0]["totalCount"] = 121
+        overview["media"][0]["exactUniqueCount"] = 111
+        overview["media"][0]["exactFingerprintCount"] = 119
+        overview["availability"][0]["imageCount"] = 119
+        page.evaluate("() => window.__galleryOverviewRefreshRelease()")
+        page.wait_for_function(
+            "() => document.querySelector('#galleryOverviewWorkspace').getAttribute('aria-busy') === 'false'"
+        )
+        assert page.evaluate(
+            """
+            () => {
+              const frame = window.__galleryOverviewChangedFrame;
+              const source = document.querySelector("[data-gallery-overview-source-id]");
+              return frame.photo === document.querySelector('[data-gallery-overview-media-kind="image"]')
+                && frame.source === source
+                && frame.tag === document.querySelector("[data-gallery-overview-tag-id]")
+                && frame.year === document.querySelector(".gallery-overview-year")
+                && source.querySelector(".gallery-overview-bar-count").textContent === "151"
+                && document.activeElement === frame.source
+                && document.querySelector("#galleryOverviewScroll").scrollTop === frame.scrollTop;
+            }
+            """
+        ), "changed refresh did not update the existing overview frame in place"
+        page.evaluate(
+            """
+            () => {
+              const originalFetch = window.fetch.bind(window);
+              window.fetch = (input, init) => {
+                const url = new URL(typeof input === "string" ? input : input.url, location.href);
+                if (url.pathname !== "/v1/gallery-overview") return originalFetch(input, init);
+                window.fetch = originalFetch;
+                return Promise.reject(new Error("模拟图库总览刷新失败"));
+              };
+              const scroll = document.querySelector("#galleryOverviewScroll");
+              const source = document.querySelector("[data-gallery-overview-source-id]");
+              scroll.scrollTop = 180;
+              source.focus({ preventScroll: true });
+              window.__galleryOverviewFailedFrame = {
+                photo: document.querySelector('[data-gallery-overview-media-kind="image"]'),
+                source,
+                tag: document.querySelector("[data-gallery-overview-tag-id]"),
+                year: document.querySelector(".gallery-overview-year"),
+                scrollTop: scroll.scrollTop,
+              };
+              document.querySelector("#refreshGalleryOverviewButton").click();
+            }
+            """
+        )
+        page.wait_for_function(
+            "() => document.querySelector('#toastMessage').textContent.includes('模拟图库总览刷新失败')"
+        )
+        assert page.evaluate(
+            """
+            () => {
+              const frame = window.__galleryOverviewFailedFrame;
+              return frame.photo === document.querySelector('[data-gallery-overview-media-kind="image"]')
+                && frame.source === document.querySelector("[data-gallery-overview-source-id]")
+                && frame.tag === document.querySelector("[data-gallery-overview-tag-id]")
+                && frame.year === document.querySelector(".gallery-overview-year")
+                && document.activeElement === frame.source
+                && document.querySelector("#galleryOverviewScroll").scrollTop === frame.scrollTop;
+            }
+            """
+        ), "failed refresh replaced the last successful overview frame"
+        page.screenshot(
+            path="/tmp/imageall-gallery-overview-refresh-continuity.png",
+            full_page=True,
+        )
         page.wait_for_timeout(500)
-        assert overview_requests == 2, f"unexpected repeated overview refreshes: {overview_requests}"
+        assert overview_requests == 3, f"unexpected repeated overview refreshes: {overview_requests}"
 
         page.set_viewport_size({"width": 390, "height": 844})
         page.wait_for_timeout(100)
@@ -520,7 +679,7 @@ def main():
             "() => document.documentElement.scrollWidth <= window.innerWidth"
         )
         page.screenshot(path="/tmp/imageall-gallery-overview-empty-390.png", full_page=True)
-        assert overview_requests == 3
+        assert overview_requests == 4
 
         page.keyboard.press("Escape")
         page.locator("#galleryOverviewWorkspace").wait_for(state="hidden")
