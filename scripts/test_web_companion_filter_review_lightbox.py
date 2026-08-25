@@ -33,6 +33,7 @@ VIDEO_PAGE_2_IDS = [
 SUGGESTION_TAG_IDS = [
     f"77777777-7777-7777-7777-77777777777{index}" for index in range(6)
 ]
+LOCAL_SUGGESTION_IDS = ["personal:cat", "personal:travel"]
 PNG_BYTES = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 )
@@ -268,6 +269,7 @@ def main():
     workspace_notice_actions = []
     recycle_queries = []
     storage_requests = []
+    local_suggestion_requests = []
     storage_snapshot = {
         "previewCache": {"entryCount": 12, "registeredBytes": 1_500_000},
         "photosOriginals": {"entryCount": 3, "registeredBytes": 9_000_000},
@@ -369,6 +371,7 @@ def main():
                         "favorites",
                         "librarySlimming",
                         "workspaceNotices",
+                        "assetLocalSuggestions",
                     ],
                 },
             ),
@@ -742,6 +745,40 @@ def main():
             fulfill_json(route, detail)
 
         page.route(re.compile(r".*/v1/assets/[0-9a-f-]+$"), route_asset_detail)
+
+        def route_local_suggestions(route):
+            payload = route.request.post_data_json
+            asset_id = urlparse(route.request.url).path.split("/")[-2]
+            local_suggestion_requests.append({"assetID": asset_id, **payload})
+            suggestions = [
+                {
+                    "id": suggestion_id,
+                    "track": payload["track"],
+                    "tagID": tag_id,
+                    "displayName": display_name,
+                    "recommendation": "suggested",
+                }
+                for suggestion_id, tag_id, display_name in [
+                    (LOCAL_SUGGESTION_IDS[0], CAT_TAG_ID, "猫"),
+                    (LOCAL_SUGGESTION_IDS[1], TRAVEL_TAG_ID, "旅行"),
+                ]
+            ]
+            fulfill_json(
+                route,
+                {
+                    "operationID": payload["operationID"],
+                    "assetID": asset_id,
+                    "track": payload["track"],
+                    "state": "results",
+                    "suggestions": suggestions,
+                    "replayed": False,
+                },
+            )
+
+        page.route(
+            re.compile(r".*/v1/assets/[0-9a-f-]+/local-suggestions$"),
+            route_local_suggestions,
+        )
 
         def route_favorite_mutation(route):
             payload = route.request.post_data_json
@@ -1769,6 +1806,100 @@ def main():
 
         page.locator(f'[data-asset-id="{IMAGE_IDS[0]}"]').click()
         page.locator("#inspectorContent:not(.hidden)").wait_for()
+        page.locator("#inspectorLocalModelSection:not(.hidden)").wait_for()
+        page.locator("#inspectorPersonalModelButton").click()
+        page.wait_for_function(
+            "() => state.assetLocalSuggestions.phase === 'results' "
+            "&& !state.assetLocalSuggestions.submitting"
+        )
+        assert local_suggestion_requests[-1]["assetID"] == IMAGE_IDS[0]
+        assert local_suggestion_requests[-1]["track"] == "personal"
+        assert page.locator("#inspectorLocalModelBody .inspector-local-model-result").count() == 2
+        page.evaluate(
+            """() => {
+              const container = document.querySelector("#inspectorLocalModelBody");
+              window.__stableLocalSuggestionFrame = {
+                rows: [...container.querySelectorAll(".inspector-local-model-result")],
+                actions: [...container.querySelectorAll("[data-local-suggestion-id][data-action]")],
+                scrollTop: container.scrollTop,
+              };
+            }"""
+        )
+        page.locator(
+            f'#inspectorLocalModelBody [data-local-suggestion-id="{LOCAL_SUGGESTION_IDS[0]}"]'
+            '[data-action="accept"]'
+        ).click()
+        page.wait_for_function(
+            "(id) => document.activeElement?.dataset.localSuggestionId === id "
+            "&& state.assetLocalSuggestions.suggestions.length === 1",
+            arg=LOCAL_SUGGESTION_IDS[1],
+        )
+        stable_local_suggestion = page.evaluate(
+            """() => {
+              const frame = window.__stableLocalSuggestionFrame;
+              const container = document.querySelector("#inspectorLocalModelBody");
+              const row = container.querySelector(".inspector-local-model-result");
+              const actions = [...container.querySelectorAll(
+                "[data-local-suggestion-id][data-action]"
+              )];
+              return {
+                row: row === frame.rows[1],
+                reject: actions[0] === frame.actions[2],
+                accept: actions[1] === frame.actions[3],
+                focus: document.activeElement === frame.actions[3],
+                scroll: container.scrollTop === frame.scrollTop,
+              };
+            }"""
+        )
+        assert all(stable_local_suggestion.values()), stable_local_suggestion
+
+        page.evaluate(
+            """() => {
+              const container = document.querySelector("#inspectorLocalModelBody");
+              window.__stableFailedLocalSuggestionFrame = {
+                row: container.querySelector(".inspector-local-model-result"),
+                actions: [...container.querySelectorAll(
+                  "[data-local-suggestion-id][data-action]"
+                )],
+                scrollTop: container.scrollTop,
+              };
+            }"""
+        )
+        fail_next_tag_decision[0] = True
+        page.locator(
+            f'#inspectorLocalModelBody [data-local-suggestion-id="{LOCAL_SUGGESTION_IDS[1]}"]'
+            '[data-action="reject"]'
+        ).click()
+        page.wait_for_function(
+            "() => !state.tagMutating "
+            "&& document.querySelector('#toastMessage').textContent.includes("
+            "'synthetic tag decision denied')"
+        )
+        page.wait_for_function(
+            "(id) => document.activeElement?.dataset.localSuggestionId === id",
+            arg=LOCAL_SUGGESTION_IDS[1],
+        )
+        stable_failed_local_suggestion = page.evaluate(
+            """() => {
+              const frame = window.__stableFailedLocalSuggestionFrame;
+              const container = document.querySelector("#inspectorLocalModelBody");
+              const actions = [...container.querySelectorAll(
+                "[data-local-suggestion-id][data-action]"
+              )];
+              return {
+                row: container.querySelector(".inspector-local-model-result") === frame.row,
+                reject: actions[0] === frame.actions[0],
+                accept: actions[1] === frame.actions[1],
+                focus: document.activeElement === frame.actions[0],
+                retained: state.assetLocalSuggestions.suggestions.length === 1,
+                scroll: container.scrollTop === frame.scrollTop,
+              };
+            }"""
+        )
+        assert all(stable_failed_local_suggestion.values()), (
+            stable_failed_local_suggestion
+        )
+
         page.locator("#inspectorSuggestionsSection:not(.hidden)").wait_for()
         assert page.locator("#inspectorSuggestionCount").inner_text() == "6"
         assert page.locator("#inspectorSuggestions .inspector-suggestion-row").count() == 5

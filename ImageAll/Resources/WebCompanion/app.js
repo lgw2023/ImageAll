@@ -15702,19 +15702,112 @@ function restoreAssetLocalSuggestionFocus() {
   });
 }
 
-function appendAssetLocalSuggestionState(message, { loading = false } = {}) {
-  const row = document.createElement("p");
-  row.className = "inspector-local-model-state";
-  if (loading) {
+function syncAssetLocalSuggestionState(message, { loading = false } = {}) {
+  let row = elements.inspectorLocalModelBody.querySelector(
+    ":scope > [data-local-suggestion-state]"
+  );
+  if (!row) {
+    row = document.createElement("p");
+    row.className = "inspector-local-model-state";
+    row.dataset.localSuggestionState = "true";
     const spinner = document.createElement("span");
     spinner.className = "spinner";
     spinner.setAttribute("aria-hidden", "true");
-    row.append(spinner);
+    const copy = document.createElement("span");
+    row.append(spinner, copy);
   }
-  const copy = document.createElement("span");
-  copy.textContent = message;
+  row.querySelector(".spinner").classList.toggle("hidden", !loading);
+  const existingCopy = row.querySelector("span:last-child");
+  if (existingCopy.textContent !== message) existingCopy.textContent = message;
+  for (const child of [...elements.inspectorLocalModelBody.children]) {
+    if (child !== row) child.remove();
+  }
+  if (elements.inspectorLocalModelBody.firstElementChild !== row) {
+    elements.inspectorLocalModelBody.prepend(row);
+  }
+}
+
+function createAssetLocalSuggestionRow(suggestionID) {
+  const row = document.createElement("div");
+  row.className = "inspector-local-model-result";
+  row.dataset.localSuggestionRowId = suggestionID;
+  const copy = document.createElement("div");
+  copy.className = "inspector-local-model-result-copy";
+  const name = document.createElement("strong");
+  const recommendation = document.createElement("span");
+  recommendation.className = "inspector-local-model-recommendation";
+  copy.append(name, recommendation);
   row.append(copy);
-  elements.inspectorLocalModelBody.append(row);
+  return row;
+}
+
+function syncAssetLocalSuggestionRow(row, suggestion, index, selectedTrack, localState) {
+  row.dataset.localSuggestionRowId = suggestion.id;
+  const name = row.querySelector(".inspector-local-model-result-copy strong");
+  const recommendation = row.querySelector(".inspector-local-model-recommendation");
+  const displayName = suggestion.displayName || "未命名标签";
+  if (name.textContent !== displayName) name.textContent = displayName;
+  const recommendationText = assetLocalSuggestionRecommendationText(suggestion.recommendation);
+  if (recommendation.textContent !== recommendationText) {
+    recommendation.textContent = recommendationText;
+  }
+
+  let actions = row.querySelector(".inspector-local-model-result-actions");
+  if (selectedTrack !== "personal" || !suggestion.tagID) {
+    actions?.remove();
+    return;
+  }
+  if (!actions) {
+    actions = document.createElement("div");
+    actions.className = "inspector-local-model-result-actions";
+    actions.setAttribute("role", "group");
+    for (const [action, symbol, label] of [
+      ["reject", "×", "不属于"],
+      ["accept", "✓", "属于"],
+    ]) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "button button-plain write-action";
+      button.dataset.action = action;
+      button.title = label;
+      button.setAttribute("aria-label", label);
+      button.textContent = symbol;
+      actions.append(button);
+    }
+    row.append(actions);
+  }
+  actions.setAttribute("aria-label", `${displayName} 个人模型建议`);
+  for (const button of actions.querySelectorAll("[data-action]")) {
+    button.dataset.localSuggestionId = suggestion.id;
+    button.dataset.localSuggestionIndex = String(index);
+    button.dataset.tagId = suggestion.tagID;
+    button.disabled = !state.online || state.tagMutating || localState.submitting;
+  }
+}
+
+function reconcileAssetLocalSuggestionRows(suggestions, selectedTrack, localState) {
+  elements.inspectorLocalModelBody.querySelector(
+    ":scope > [data-local-suggestion-state]"
+  )?.remove();
+  const wanted = [];
+  for (const [index, suggestion] of suggestions.entries()) {
+    const row = elements.inspectorLocalModelBody.querySelector(
+      `[data-local-suggestion-row-id="${CSS.escape(suggestion.id)}"]`
+    ) || createAssetLocalSuggestionRow(suggestion.id);
+    syncAssetLocalSuggestionRow(row, suggestion, index, selectedTrack, localState);
+    wanted.push(row);
+  }
+  for (const [index, row] of wanted.entries()) {
+    if (elements.inspectorLocalModelBody.children[index] !== row) {
+      elements.inspectorLocalModelBody.insertBefore(
+        row,
+        elements.inspectorLocalModelBody.children[index] || null
+      );
+    }
+  }
+  for (const row of [...elements.inspectorLocalModelBody.children]) {
+    if (!wanted.includes(row)) row.remove();
+  }
 }
 
 function renderInspectorLocalSuggestions(detail) {
@@ -15747,30 +15840,29 @@ function renderInspectorLocalSuggestions(detail) {
   const showsTrack = localState.phase !== "ready";
   elements.inspectorLocalModelTrack.classList.toggle("hidden", !showsTrack);
   elements.inspectorLocalModelTrack.textContent = assetLocalSuggestionTrackText(selectedTrack);
-  clearElement(elements.inspectorLocalModelBody);
 
   if (localState.phase === "ready") {
-    appendAssetLocalSuggestionState("对当前照片运行标准场景或个人标签模型。");
+    syncAssetLocalSuggestionState("对当前照片运行标准场景或个人标签模型。");
     return;
   }
   if (localState.phase === "loading") {
-    appendAssetLocalSuggestionState("正在分析当前照片…", { loading: true });
+    syncAssetLocalSuggestionState("正在分析当前照片…", { loading: true });
     return;
   }
   if (localState.phase === "previewUnavailable") {
-    appendAssetLocalSuggestionState("这张照片的本地预览尚不可用，请先使用上方的 iCloud 获取入口。");
+    syncAssetLocalSuggestionState("这张照片的本地预览尚不可用，请先使用上方的 iCloud 获取入口。");
     return;
   }
   if (localState.phase === "personalUnavailable") {
-    appendAssetLocalSuggestionState("当前目录没有可用于这些标签的个人模型。");
+    syncAssetLocalSuggestionState("当前目录没有可用于这些标签的个人模型。");
     return;
   }
   if (localState.phase === "serviceUnavailable") {
-    appendAssetLocalSuggestionState("本地模型服务当前不可用；照片、标签和已有建议不受影响。");
+    syncAssetLocalSuggestionState("本地模型服务当前不可用；照片、标签和已有建议不受影响。");
     return;
   }
   if (localState.phase === "failed") {
-    appendAssetLocalSuggestionState(
+    syncAssetLocalSuggestionState(
       localState.errorMessage || "结果未通过安全校验，已忽略本次分析。"
     );
     return;
@@ -15780,51 +15872,10 @@ function renderInspectorLocalSuggestions(detail) {
     ? localState.suggestions
     : [];
   if (!suggestions.length) {
-    appendAssetLocalSuggestionState("当前模型没有给出建议。");
+    syncAssetLocalSuggestionState("当前模型没有给出建议。");
     return;
   }
-
-  for (const [index, suggestion] of suggestions.entries()) {
-    const row = document.createElement("div");
-    row.className = "inspector-local-model-result";
-    const copy = document.createElement("div");
-    copy.className = "inspector-local-model-result-copy";
-    const name = document.createElement("strong");
-    name.textContent = suggestion.displayName || "未命名标签";
-    const recommendation = document.createElement("span");
-    recommendation.className = "inspector-local-model-recommendation";
-    recommendation.textContent = assetLocalSuggestionRecommendationText(
-      suggestion.recommendation
-    );
-    copy.append(name, recommendation);
-    row.append(copy);
-
-    if (selectedTrack === "personal" && suggestion.tagID) {
-      const actions = document.createElement("div");
-      actions.className = "inspector-local-model-result-actions";
-      actions.setAttribute("role", "group");
-      actions.setAttribute("aria-label", `${suggestion.displayName} 个人模型建议`);
-      for (const [action, symbol, label] of [
-        ["reject", "×", "不属于"],
-        ["accept", "✓", "属于"],
-      ]) {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "button button-plain write-action";
-        button.dataset.localSuggestionId = suggestion.id;
-        button.dataset.localSuggestionIndex = String(index);
-        button.dataset.tagId = suggestion.tagID;
-        button.dataset.action = action;
-        button.title = label;
-        button.setAttribute("aria-label", label);
-        button.disabled = !state.online || state.tagMutating || localState.submitting;
-        button.textContent = symbol;
-        actions.append(button);
-      }
-      row.append(actions);
-    }
-    elements.inspectorLocalModelBody.append(row);
-  }
+  reconcileAssetLocalSuggestionRows(suggestions, selectedTrack, localState);
   restoreAssetLocalSuggestionFocus();
 }
 
