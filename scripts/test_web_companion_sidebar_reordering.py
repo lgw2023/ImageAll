@@ -55,6 +55,7 @@ def main():
     group_renames = []
     asset_queries = []
     folder_queries = []
+    folder_retry_attempts = [0]
     fail_next_move = [False]
     page_errors = []
     console_errors = []
@@ -196,6 +197,25 @@ def main():
                     "nextOffset": None,
                 })
                 return
+            if parent == "Retry":
+                folder_retry_attempts[0] += 1
+                if folder_retry_attempts[0] <= 2:
+                    fulfill_json(route, {
+                        "code": "temporarilyUnavailable",
+                        "message": "测试目录暂时无法读取",
+                    }, status=503)
+                    return
+                fulfill_json(route, {
+                    "folders": [{
+                        "sourceID": SOURCE_FOLDER,
+                        "relativePath": "Retry/Recovered",
+                        "parentRelativePath": "Retry",
+                        "name": "Recovered",
+                    }],
+                    "totalCount": 1,
+                    "nextOffset": None,
+                })
+                return
             if parent == "Trips":
                 fulfill_json(route, {
                     "folders": [{
@@ -245,6 +265,12 @@ def main():
                         "relativePath": "Literal %_",
                         "parentRelativePath": None,
                         "name": "Literal %_",
+                    },
+                    {
+                        "sourceID": SOURCE_FOLDER,
+                        "relativePath": "Retry",
+                        "parentRelativePath": None,
+                        "name": "Retry",
                     },
                 ],
                 "totalCount": 501,
@@ -457,7 +483,7 @@ def main():
             f'#sourceList .sidebar-row[data-source-id="{SOURCE_FOLDER}"]'
         )
         folder_source.locator("[data-folder-source-toggle]").click()
-        page.wait_for_function("() => document.querySelectorAll('[data-folder-path]').length === 2")
+        page.wait_for_function("() => document.querySelectorAll('[data-folder-path]').length === 3")
         assert folder_queries[-1].get("limit") == ["100"]
         assert page.locator(
             f'[data-folder-search-source-id="{SOURCE_FOLDER}"]'
@@ -602,6 +628,52 @@ def main():
         ).is_visible()
         assert len(asset_queries) == asset_query_count
         assert page.locator("#folderBreadcrumb").is_visible()
+
+        retry_asset_query_count = len(asset_queries)
+        retry_folder = page.locator(
+            '[data-folder-path="Retry"]:not([data-folder-search-result])'
+        )
+        retry_folder.focus()
+        retry_folder.press("ArrowRight")
+        retry_button = page.locator(
+            f'[data-folder-retry-source-id="{SOURCE_FOLDER}"]'
+            '[data-folder-retry-parent-path="Retry"]'
+        )
+        retry_button.wait_for(state="visible")
+        assert folder_retry_attempts[0] == 1
+        assert retry_button.inner_text() == "重新载入子文件夹"
+        assert "测试目录暂时无法读取" in page.locator(
+            '[data-folder-path="Retry"] + .source-folder-status'
+        ).inner_text()
+        retry_button.focus()
+        retry_button.press("ArrowUp")
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.folderPath === 'Retry'"
+        )
+        retry_folder.press("ArrowDown")
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.folderRetryParentPath === 'Retry'"
+        )
+        page.screenshot(
+            path="/tmp/imageall-web-folder-retry.png",
+            full_page=True,
+        )
+
+        retry_button.click()
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.folderRetryParentPath === 'Retry'"
+        )
+        assert folder_retry_attempts[0] == 2
+        retry_button.click()
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.folderPath === 'Retry/Recovered'"
+        )
+        assert folder_retry_attempts[0] == 3
+        assert retry_button.count() == 0
+        assert page.locator(
+            '[data-folder-path="Retry/Recovered"]'
+        ).get_attribute("aria-level") == "3"
+        assert len(asset_queries) == retry_asset_query_count
 
         page.wait_for_function(
             "() => Boolean(document.querySelector('[data-folder-load-more]'))"
@@ -1248,7 +1320,7 @@ def main():
         assert not unexpected_tag_decisions, unexpected_tag_decisions
         unexpected_console_errors = [
             message for message in console_errors
-            if "status of 409" not in message
+            if "status of 409" not in message and "status of 503" not in message
         ]
         assert not unexpected_console_errors, {
             "console": unexpected_console_errors,
@@ -1256,6 +1328,7 @@ def main():
             "unexpectedTagDecisions": unexpected_tag_decisions,
         }
         assert any("status of 409" in message for message in console_errors)
+        assert sum("status of 503" in message for message in console_errors) == 2
         browser.close()
 
     print(

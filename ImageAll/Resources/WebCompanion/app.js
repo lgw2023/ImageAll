@@ -9709,6 +9709,13 @@ function captureFolderSidebarFocus() {
   if (active.matches("[data-folder-load-more]")) {
     return { kind: "more", key: active.dataset.folderLoadMore };
   }
+  if (active.matches("[data-folder-retry-source-id]")) {
+    return {
+      kind: "retry",
+      sourceID: active.dataset.folderRetrySourceId,
+      parentRelativePath: active.dataset.folderRetryParentPath || null,
+    };
+  }
   if (active.matches("[data-source-id]")) {
     return { kind: "source", sourceID: active.dataset.sourceId };
   }
@@ -9732,6 +9739,8 @@ function restoreFolderSidebarFocus(focus) {
       target = elements.sourceList.querySelector(
         `[data-folder-load-more="${CSS.escape(focus.key)}"]`
       );
+    } else if (focus.kind === "retry") {
+      target = folderBranchRetryButton(focus.sourceID, focus.parentRelativePath);
     } else if (focus.kind === "source") {
       target = elements.sourceList.querySelector(
         `[data-source-id="${CSS.escape(focus.sourceID)}"]`
@@ -9788,6 +9797,33 @@ async function loadFolderBranch(sourceID, parentRelativePath = null, { append = 
     });
   }
   renderSources();
+}
+
+function folderBranchRetryButton(sourceID, parentRelativePath = null) {
+  const expectedParent = parentRelativePath || "";
+  return [...elements.sourceList.querySelectorAll(
+    `[data-folder-retry-source-id="${CSS.escape(sourceID)}"]`
+  )].find((button) => button.dataset.folderRetryParentPath === expectedParent) || null;
+}
+
+async function retryFolderBranch(sourceID, parentRelativePath = null) {
+  await loadFolderBranch(sourceID, parentRelativePath);
+  requestAnimationFrame(() => {
+    if (!document.hasFocus()) return;
+    const active = document.activeElement;
+    if (active !== document.body && active !== document.documentElement) return;
+    const branch = folderBranch(sourceID, parentRelativePath);
+    const target = branch?.error
+      ? folderBranchRetryButton(sourceID, parentRelativePath)
+      : firstFolderTreeChild(sourceID, parentRelativePath)
+        || (parentRelativePath
+          ? folderTreeRow(sourceID, parentRelativePath)
+          : elements.sourceList.querySelector(
+            `[data-source-id="${CSS.escape(sourceID)}"]`
+          ));
+    target?.focus({ preventScroll: true });
+    target?.scrollIntoView({ block: "nearest" });
+  });
 }
 
 async function searchFolders(sourceID, text) {
@@ -9968,8 +10004,18 @@ function appendFolderBranch(container, sourceID, parentRelativePath, branch, dep
   if (branch.error) {
     const status = document.createElement("p");
     status.className = "source-folder-status";
+    status.setAttribute("role", "status");
     status.textContent = branch.error;
     container.append(status);
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "source-folder-retry";
+    retry.dataset.folderRetrySourceId = sourceID;
+    retry.dataset.folderRetryParentPath = parentRelativePath || "";
+    retry.textContent = "重新载入子文件夹";
+    retry.title = "重新读取这个目录的第一页；不会改变当前图库范围";
+    retry.setAttribute("aria-label", `${retry.textContent}：${parentRelativePath || "来源根目录"}`);
+    container.append(retry);
   }
   appendFolderRows(container, sourceID, branch.folders, depth, { parentRelativePath });
   if (!branch.loading && !branch.error && !branch.folders.length) {
@@ -10183,6 +10229,7 @@ function sidebarPrimaryNavigationItems() {
     "#sourceList .sidebar-row:not(.hidden):not(:disabled)",
     "#sourceList .source-folder-row:not(.hidden):not(:disabled)",
     "#sourceList .source-folder-more:not(.hidden):not(:disabled)",
+    "#sourceList .source-folder-retry:not(.hidden):not(:disabled)",
     "#sidebarSourceActions button:not(.hidden):not(:disabled)",
   ].join(", "))].filter((item) => item.offsetParent !== null);
 }
@@ -10193,6 +10240,7 @@ function moveSidebarPrimaryNavigation(event) {
   const current = event.target.closest(
     "#libraryNavigation .sidebar-row, #sourceList .sidebar-row, "
       + "#sourceList .source-folder-row, #sourceList .source-folder-more, "
+      + "#sourceList .source-folder-retry, "
       + "#sidebarSourceActions button"
   );
   if (!current) return false;
@@ -35683,6 +35731,14 @@ function bindEvents() {
         more.dataset.folderSourceId,
         more.dataset.folderParentPath || null,
         { append: true }
+      );
+      return;
+    }
+    const retry = event.target.closest("[data-folder-retry-source-id]");
+    if (retry) {
+      void retryFolderBranch(
+        retry.dataset.folderRetrySourceId,
+        retry.dataset.folderRetryParentPath || null
       );
       return;
     }
