@@ -9713,7 +9713,11 @@ function captureFolderSidebarFocus() {
     };
   }
   if (active.matches("[data-folder-load-more]")) {
-    return { kind: "more", key: active.dataset.folderLoadMore };
+    return {
+      kind: "more",
+      sourceID: active.dataset.folderSourceId,
+      parentRelativePath: active.dataset.folderParentPath || null,
+    };
   }
   if (active.matches("[data-folder-retry-source-id]")) {
     return {
@@ -9746,9 +9750,7 @@ function restoreFolderSidebarFocus(focus) {
         + `[data-folder-path="${CSS.escape(focus.relativePath)}"]`
       );
     } else if (focus.kind === "more") {
-      target = elements.sourceList.querySelector(
-        `[data-folder-load-more="${CSS.escape(focus.key)}"]`
-      );
+      target = folderLoadMoreButton(focus.sourceID, focus.parentRelativePath);
     } else if (focus.kind === "retry") {
       target = folderBranchRetryButton(focus.sourceID, focus.parentRelativePath);
     } else if (focus.kind === "source") {
@@ -9814,6 +9816,45 @@ function folderBranchRetryButton(sourceID, parentRelativePath = null) {
   return [...elements.sourceList.querySelectorAll(
     `[data-folder-retry-source-id="${CSS.escape(sourceID)}"]`
   )].find((button) => button.dataset.folderRetryParentPath === expectedParent) || null;
+}
+
+function folderLoadMoreButton(sourceID, parentRelativePath = null) {
+  const expectedParent = parentRelativePath || "";
+  return [...elements.sourceList.querySelectorAll(
+    `[data-folder-load-more][data-folder-source-id="${CSS.escape(sourceID)}"]`
+  )].find((button) => button.dataset.folderParentPath === expectedParent) || null;
+}
+
+async function loadMoreFolderBranch(sourceID, parentRelativePath = null) {
+  const key = folderBranchKey(sourceID, parentRelativePath);
+  const current = folderBranch(sourceID, parentRelativePath);
+  if (!current || current.loading || current.nextOffset == null) return;
+  const previousCount = current.folders.length;
+  const catalogGeneration = state.folderNavigation.requestGeneration;
+  const requestGeneration =
+    (state.folderNavigation.branchRequestGenerations.get(key) || 0) + 1;
+  await loadFolderBranch(sourceID, parentRelativePath, { append: true });
+  if (catalogGeneration !== state.folderNavigation.requestGeneration
+    || requestGeneration !== state.folderNavigation.branchRequestGenerations.get(key)) return;
+  requestAnimationFrame(() => {
+    if (!document.hasFocus()) return;
+    const active = document.activeElement;
+    if (active !== document.body && active !== document.documentElement) return;
+    const branch = folderBranch(sourceID, parentRelativePath);
+    const firstAppendedFolder = branch?.folders?.[previousCount] || null;
+    const target = branch?.error
+      ? folderBranchRetryButton(sourceID, parentRelativePath)
+      : folderLoadMoreButton(sourceID, parentRelativePath)
+        || (firstAppendedFolder
+          ? folderTreeRow(sourceID, firstAppendedFolder.relativePath)
+          : parentRelativePath
+            ? folderTreeRow(sourceID, parentRelativePath)
+            : elements.sourceList.querySelector(
+              `[data-source-id="${CSS.escape(sourceID)}"]`
+            ));
+    target?.focus({ preventScroll: true });
+    target?.scrollIntoView({ block: "nearest" });
+  });
 }
 
 async function retryFolderBranch(sourceID, parentRelativePath = null) {
@@ -35813,10 +35854,9 @@ function bindEvents() {
     }
     const more = event.target.closest("[data-folder-load-more]");
     if (more) {
-      void loadFolderBranch(
+      void loadMoreFolderBranch(
         more.dataset.folderSourceId,
-        more.dataset.folderParentPath || null,
-        { append: true }
+        more.dataset.folderParentPath || null
       );
       return;
     }

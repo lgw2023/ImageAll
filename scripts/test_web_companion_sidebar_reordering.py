@@ -266,6 +266,18 @@ def main():
                     "nextOffset": None,
                 })
                 return
+            if offset >= 200:
+                fulfill_json(route, {
+                    "folders": [{
+                        "sourceID": SOURCE_FOLDER,
+                        "relativePath": "Vault",
+                        "parentRelativePath": None,
+                        "name": "Vault",
+                    }],
+                    "totalCount": 501,
+                    "nextOffset": None,
+                })
+                return
             if offset >= 100:
                 fulfill_json(route, {
                     "folders": [{
@@ -275,7 +287,7 @@ def main():
                         "name": "Archive",
                     }],
                     "totalCount": 501,
-                    "nextOffset": None,
+                    "nextOffset": 200,
                 })
                 return
             fulfill_json(route, {
@@ -881,14 +893,44 @@ def main():
         assert folder_search.input_value() == ""
         assert len(asset_queries) == search_retry_asset_query_count
 
+        pagination_asset_query_count = len(asset_queries)
         page.wait_for_function(
             "() => Boolean(document.querySelector('[data-folder-load-more]'))"
         )
-        page.locator("[data-folder-load-more]").click()
+        folder_load_more = page.locator("[data-folder-load-more]")
+        folder_load_more.click()
         page.wait_for_function(
             "() => Boolean(document.querySelector('[data-folder-path=\"Archive\"]'))"
         )
         assert folder_queries[-1].get("offset") == ["100"]
+        page.wait_for_timeout(300)
+        pagination_focus = page.evaluate(
+            """() => ({
+              tag: document.activeElement?.tagName,
+              text: document.activeElement?.textContent,
+              folderLoadMore: document.activeElement?.dataset.folderLoadMore,
+              buttonCount: document.querySelectorAll('[data-folder-load-more]').length,
+            })"""
+        )
+        assert pagination_focus["folderLoadMore"] is not None, pagination_focus
+        assert folder_load_more.inner_text() == "显示更多（4 / 501）"
+        assert len(asset_queries) == pagination_asset_query_count
+        page.screenshot(
+            path="/tmp/imageall-web-folder-pagination-focus.png",
+            full_page=True,
+        )
+
+        folder_load_more.click()
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.folderPath === 'Vault'"
+        )
+        assert folder_queries[-1].get("offset") == ["200"]
+        assert page.locator("[data-folder-load-more]").count() == 0
+        assert page.locator(
+            '[data-folder-path="Vault"]:not([data-folder-search-result])'
+        ).is_visible()
+        assert len(asset_queries) == pagination_asset_query_count
+        assert page.locator("#folderBreadcrumb").is_visible()
 
         page.set_viewport_size({"width": 390, "height": 844})
         assert page.evaluate("() => document.documentElement.scrollWidth <= innerWidth")
