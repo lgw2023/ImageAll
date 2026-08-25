@@ -2339,6 +2339,250 @@ def main(*, inspector_actions_only=False):
         assert "2 张" in slimming_workspace_inspector.inner_text()
         assert page.locator("#slimmingInspector").is_hidden()
         page.screenshot(path="/tmp/imageall-slimming-integrated.png", full_page=False)
+        slimming_refresh_before = page.evaluate(
+            """() => {
+              const memberMain = document.querySelector(
+                '#slimmingMemberGrid .slimming-member-main'
+              );
+              const memberCard = memberMain?.closest('[data-slimming-member-id]');
+              const originalFetch = window.fetch.bind(window);
+              memberMain?.focus({ preventScroll: true });
+              window.__imageAllSlimmingRefreshJob = document.querySelector(
+                `[data-slimming-job-id="${CSS.escape(state.slimming.selectedJobID)}"]`
+              );
+              window.__imageAllSlimmingRefreshCluster = document.querySelector(
+                `[data-slimming-cluster-row-id="${CSS.escape(state.slimming.selectedClusterID)}"]`
+              );
+              window.__imageAllSlimmingRefreshMember = memberCard;
+              window.__imageAllSlimmingRefreshImage = memberCard?.querySelector('img');
+              window.__imageAllSlimmingRefreshRelease = null;
+              window.fetch = (...args) => {
+                const requestURL = String(args[0]?.url || args[0]);
+                if (requestURL.includes('/v1/library-slimming/workspace?')) {
+                  return new Promise((resolve, reject) => {
+                    window.__imageAllSlimmingRefreshRelease = () => {
+                      window.fetch = originalFetch;
+                      originalFetch(...args).then(resolve, reject);
+                    };
+                  });
+                }
+                return originalFetch(...args);
+              };
+              return {
+                jobID: state.slimming.selectedJobID,
+                clusterID: state.slimming.selectedClusterID,
+                memberID: memberCard?.dataset.slimmingMemberId || null,
+              };
+            }"""
+        )
+        page.evaluate("() => { void loadSlimmingWorkspace({ quiet: true }); }")
+        page.wait_for_function(
+            "() => state.slimming.loading "
+            "&& typeof window.__imageAllSlimmingRefreshRelease === 'function'"
+        )
+        slimming_refresh_inflight = page.evaluate(
+            """expected => {
+              const member = document.querySelector(
+                `[data-slimming-member-id="${CSS.escape(expected.memberID)}"]`
+              );
+              return {
+                jobStable: document.querySelector(
+                  `[data-slimming-job-id="${CSS.escape(expected.jobID)}"]`
+                ) === window.__imageAllSlimmingRefreshJob,
+                clusterStable: document.querySelector(
+                  `[data-slimming-cluster-row-id="${CSS.escape(expected.clusterID)}"]`
+                ) === window.__imageAllSlimmingRefreshCluster,
+                memberStable: member === window.__imageAllSlimmingRefreshMember,
+                imageStable: member?.querySelector('img')
+                  === window.__imageAllSlimmingRefreshImage,
+                focusedMemberID: document.activeElement?.closest(
+                  '[data-slimming-member-id]'
+                )?.dataset.slimmingMemberId || null,
+              };
+            }""",
+            slimming_refresh_before,
+        )
+        assert slimming_refresh_inflight == {
+            "jobStable": True,
+            "clusterStable": True,
+            "memberStable": True,
+            "imageStable": True,
+            "focusedMemberID": slimming_refresh_before["memberID"],
+        }, slimming_refresh_inflight
+        page.evaluate("() => window.__imageAllSlimmingRefreshRelease()")
+        page.wait_for_function("() => !state.slimming.loading")
+        slimming_refresh_after = page.evaluate(
+            """expected => {
+              const member = document.querySelector(
+                `[data-slimming-member-id="${CSS.escape(expected.memberID)}"]`
+              );
+              return {
+                jobStable: document.querySelector(
+                  `[data-slimming-job-id="${CSS.escape(expected.jobID)}"]`
+                ) === window.__imageAllSlimmingRefreshJob,
+                clusterStable: document.querySelector(
+                  `[data-slimming-cluster-row-id="${CSS.escape(expected.clusterID)}"]`
+                ) === window.__imageAllSlimmingRefreshCluster,
+                memberStable: member === window.__imageAllSlimmingRefreshMember,
+                imageStable: member?.querySelector('img')
+                  === window.__imageAllSlimmingRefreshImage,
+                focusedMemberID: document.activeElement?.closest(
+                  '[data-slimming-member-id]'
+                )?.dataset.slimmingMemberId || null,
+              };
+            }""",
+            slimming_refresh_before,
+        )
+        assert slimming_refresh_after == slimming_refresh_inflight, slimming_refresh_after
+        page.evaluate(
+            """jobID => {
+              window.__imageAllSlimmingChangedJob = document.querySelector(
+                `[data-slimming-job-id="${CSS.escape(jobID)}"]`
+              );
+            }""",
+            SLIMMING_SECOND_JOB_ID,
+        )
+        slimming_job_states[SLIMMING_SECOND_JOB_ID] = "running"
+        page.evaluate("loadSlimmingWorkspace({ quiet: true })")
+        page.wait_for_function(
+            "jobID => document.querySelector(`[data-slimming-job-id=\"${jobID}\"]`)"
+            "?.innerText.includes('进行中')",
+            arg=SLIMMING_SECOND_JOB_ID,
+        )
+        slimming_changed_refresh_after = page.evaluate(
+            """expected => {
+              const member = document.querySelector(
+                `[data-slimming-member-id="${CSS.escape(expected.memberID)}"]`
+              );
+              return {
+                changedJobStable: document.querySelector(
+                  `[data-slimming-job-id="${CSS.escape(expected.changedJobID)}"]`
+                ) === window.__imageAllSlimmingChangedJob,
+                selectedJobStable: document.querySelector(
+                  `[data-slimming-job-id="${CSS.escape(expected.jobID)}"]`
+                ) === window.__imageAllSlimmingRefreshJob,
+                clusterStable: document.querySelector(
+                  `[data-slimming-cluster-row-id="${CSS.escape(expected.clusterID)}"]`
+                ) === window.__imageAllSlimmingRefreshCluster,
+                memberStable: member === window.__imageAllSlimmingRefreshMember,
+                imageStable: member?.querySelector('img')
+                  === window.__imageAllSlimmingRefreshImage,
+                focusedMemberID: document.activeElement?.closest(
+                  '[data-slimming-member-id]'
+                )?.dataset.slimmingMemberId || null,
+              };
+            }""",
+            {**slimming_refresh_before, "changedJobID": SLIMMING_SECOND_JOB_ID},
+        )
+        assert slimming_changed_refresh_after == {
+            "changedJobStable": True,
+            "selectedJobStable": True,
+            "clusterStable": True,
+            "memberStable": True,
+            "imageStable": True,
+            "focusedMemberID": slimming_refresh_before["memberID"],
+        }, slimming_changed_refresh_after
+        slimming_job_states[SLIMMING_SECOND_JOB_ID] = "completed"
+        page.evaluate("loadSlimmingWorkspace({ quiet: true })")
+        page.wait_for_function(
+            "jobID => document.querySelector(`[data-slimming-job-id=\"${jobID}\"]`)"
+            "?.innerText.includes('已完成')",
+            arg=SLIMMING_SECOND_JOB_ID,
+        )
+        page.evaluate(
+            """memberID => {
+              const card = document.querySelector(
+                `[data-slimming-member-id="${CSS.escape(memberID)}"]`
+              );
+              window.__imageAllSlimmingChangedMember = card;
+              window.__imageAllSlimmingChangedMemberImage = card?.querySelector('img');
+            }""",
+            SLIMMING_ASSET_IDS[2],
+        )
+        favorite_states[SLIMMING_ASSET_IDS[2]] = True
+        page.evaluate("loadSlimmingWorkspace({ quiet: true })")
+        page.wait_for_function(
+            "memberID => document.querySelector("
+            "`[data-slimming-member-id=\"${memberID}\"] "
+            "[data-slimming-member-favorite]`)?.dataset.favorite === 'true'",
+            arg=SLIMMING_ASSET_IDS[2],
+        )
+        slimming_changed_member_after = page.evaluate(
+            """expected => {
+              const changedMember = document.querySelector(
+                `[data-slimming-member-id="${CSS.escape(expected.changedMemberID)}"]`
+              );
+              return {
+                memberStable: changedMember === window.__imageAllSlimmingChangedMember,
+                imageStable: changedMember?.querySelector('img')
+                  === window.__imageAllSlimmingChangedMemberImage,
+                focusedMemberID: document.activeElement?.closest(
+                  '[data-slimming-member-id]'
+                )?.dataset.slimmingMemberId || null,
+              };
+            }""",
+            {
+                **slimming_refresh_before,
+                "changedMemberID": SLIMMING_ASSET_IDS[2],
+            },
+        )
+        assert slimming_changed_member_after == {
+            "memberStable": True,
+            "imageStable": True,
+            "focusedMemberID": slimming_refresh_before["memberID"],
+        }, slimming_changed_member_after
+        favorite_states[SLIMMING_ASSET_IDS[2]] = False
+        page.evaluate("loadSlimmingWorkspace({ quiet: true })")
+        page.wait_for_function(
+            "memberID => document.querySelector("
+            "`[data-slimming-member-id=\"${memberID}\"] "
+            "[data-slimming-member-favorite]`)?.dataset.favorite === 'false'",
+            arg=SLIMMING_ASSET_IDS[2],
+        )
+        page.evaluate(
+            """() => {
+              const originalFetch = window.fetch.bind(window);
+              window.fetch = (...args) => {
+                const requestURL = String(args[0]?.url || args[0]);
+                if (requestURL.includes('/v1/library-slimming/workspace?')) {
+                  window.fetch = originalFetch;
+                  return Promise.reject(new Error('图库瘦身结果暂时不可用'));
+                }
+                return originalFetch(...args);
+              };
+            }"""
+        )
+        page.evaluate("loadSlimmingWorkspace()")
+        assert "图库瘦身结果暂时不可用" in page.locator("#toastMessage").inner_text()
+        slimming_failed_refresh_after = page.evaluate(
+            """expected => {
+              const member = document.querySelector(
+                `[data-slimming-member-id="${CSS.escape(expected.memberID)}"]`
+              );
+              return {
+                jobStable: document.querySelector(
+                  `[data-slimming-job-id="${CSS.escape(expected.jobID)}"]`
+                ) === window.__imageAllSlimmingRefreshJob,
+                clusterStable: document.querySelector(
+                  `[data-slimming-cluster-row-id="${CSS.escape(expected.clusterID)}"]`
+                ) === window.__imageAllSlimmingRefreshCluster,
+                memberStable: member === window.__imageAllSlimmingRefreshMember,
+                imageStable: member?.querySelector('img')
+                  === window.__imageAllSlimmingRefreshImage,
+                focusedMemberID: document.activeElement?.closest(
+                  '[data-slimming-member-id]'
+                )?.dataset.slimmingMemberId || null,
+              };
+            }""",
+            slimming_refresh_before,
+        )
+        assert slimming_failed_refresh_after == slimming_refresh_inflight, (
+            slimming_failed_refresh_after
+        )
+        page.screenshot(
+            path="/tmp/imageall-slimming-refresh-continuity.png",
+            full_page=True,
+        )
         assert page.locator("#closeSlimmingButton").get_attribute("aria-label") == "返回图库"
         assert page.evaluate(
             "() => history.state?.imageAllWorkspace?.route"

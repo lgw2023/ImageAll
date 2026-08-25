@@ -1364,6 +1364,7 @@ const state = {
     loading: false,
     appending: null,
     requestGeneration: 0,
+    renderedCollectionFingerprint: null,
     clusterLimit: 48,
     memberLimit: 96,
     inspectorCompactInitialized: false,
@@ -25177,6 +25178,11 @@ function renderSlimmingJobSummary() {
 }
 
 function syncSlimmingJobRow(row, job) {
+  const fingerprint = JSON.stringify({
+    job,
+    selected: job.id === state.slimming.selectedJobID,
+  });
+  if (row.dataset.slimmingFingerprint === fingerprint) return row;
   clearElement(row);
   row.type = "button";
   row.className = "slimming-job-row";
@@ -25210,6 +25216,7 @@ function syncSlimmingJobRow(row, job) {
   row.append(heading, counts);
   appendSlimmingScanProgress(row, job, true);
   row.append(source, date);
+  row.dataset.slimmingFingerprint = fingerprint;
   return row;
 }
 
@@ -25223,8 +25230,22 @@ function appendSlimmingJobRows(jobs) {
 
 function renderSlimmingJobs({ appendItems = null } = {}) {
   renderSlimmingJobSummary();
-  if (appendItems === null) clearElement(elements.slimmingJobList);
-  appendSlimmingJobRows(appendItems === null ? state.slimming.jobs : appendItems);
+  if (appendItems !== null) {
+    appendSlimmingJobRows(appendItems);
+  } else {
+    const existingRows = new Map(
+      [...elements.slimmingJobList.querySelectorAll(":scope > [data-slimming-job-id]")]
+        .map((row) => [row.dataset.slimmingJobId, row])
+    );
+    for (const [index, job] of state.slimming.jobs.entries()) {
+      const row = existingRows.get(job.id) || document.createElement("button");
+      existingRows.delete(job.id);
+      syncSlimmingJobRow(row, job);
+      const currentRow = elements.slimmingJobList.children[index] || null;
+      if (currentRow !== row) elements.slimmingJobList.insertBefore(row, currentRow);
+    }
+    for (const row of existingRows.values()) row.remove();
+  }
   renderSlimmingJobActions();
 }
 
@@ -25475,6 +25496,14 @@ function renderSlimmingClusterSummary() {
 }
 
 function syncSlimmingClusterRow(row, cluster) {
+  const fingerprint = JSON.stringify({
+    cluster,
+    selected: cluster.id === state.slimming.selectedClusterID,
+    reviewSupported: state.slimming.clusterScopeSupported === true,
+    reviewPending: state.slimming.clusterReviewPendingIDs.has(cluster.id),
+    online: state.online,
+  });
+  if (row.dataset.slimmingFingerprint === fingerprint) return row;
   clearElement(row);
   const copy = slimmingClusterPresentation(cluster);
   row.className = "slimming-cluster-row";
@@ -25523,6 +25552,7 @@ function syncSlimmingClusterRow(row, cluster) {
     appendSlimmingClusterReviewButton(actions, cluster, "ignored", "忽略", "⊘");
     row.append(actions);
   }
+  row.dataset.slimmingFingerprint = fingerprint;
   return row;
 }
 
@@ -25536,8 +25566,23 @@ function appendSlimmingClusterRows(clusters) {
 
 function renderSlimmingClusters({ appendItems = null } = {}) {
   renderSlimmingClusterSummary();
-  if (appendItems === null) clearElement(elements.slimmingClusterList);
-  appendSlimmingClusterRows(appendItems === null ? state.slimming.clusters : appendItems);
+  if (appendItems !== null) {
+    appendSlimmingClusterRows(appendItems);
+    return;
+  }
+  const existingRows = new Map(
+    [...elements.slimmingClusterList.querySelectorAll(
+      ":scope > .slimming-cluster-row[data-slimming-cluster-row-id]"
+    )].map((row) => [row.dataset.slimmingClusterRowId, row])
+  );
+  for (const [index, cluster] of state.slimming.clusters.entries()) {
+    const row = existingRows.get(cluster.id) || document.createElement("div");
+    existingRows.delete(cluster.id);
+    syncSlimmingClusterRow(row, cluster);
+    const currentRow = elements.slimmingClusterList.children[index] || null;
+    if (currentRow !== row) elements.slimmingClusterList.insertBefore(row, currentRow);
+  }
+  for (const row of existingRows.values()) row.remove();
 }
 
 function syncSlimmingSelectionModeControls() {
@@ -26292,7 +26337,21 @@ function renderSlimmingMemberSummary() {
 }
 
 function syncSlimmingMemberCard(card, member, rovingAssetID) {
-  clearElement(card);
+  const removalPhase = activeSlimmingRemovalPhase(member.id);
+  const fingerprint = JSON.stringify({
+    member,
+    mediaKind: state.slimming.mediaKind,
+    removalPhase,
+  });
+  if (card.dataset.slimmingFingerprint === fingerprint) return card;
+  const existingMain = slimmingMemberMainButton(card);
+  const existingImage = existingMain?.querySelector(":scope > img") || null;
+  const existingFavorite = card.querySelector(":scope > .slimming-member-favorite");
+  existingImage?.remove();
+  for (const child of [...card.children]) {
+    if (child !== existingMain && child !== existingFavorite) child.remove();
+  }
+  if (existingMain) clearElement(existingMain);
   card.className = "slimming-member-card";
   card.dataset.slimmingMemberId = member.id;
   if (Number(member.width) > 0 && Number(member.height) > 0) {
@@ -26303,7 +26362,7 @@ function syncSlimmingMemberCard(card, member, rovingAssetID) {
   } else {
     card.style.removeProperty("--slimming-member-aspect");
   }
-  const main = slimmingMemberMainButton(card, { create: true });
+  const main = existingMain || slimmingMemberMainButton(card, { create: true });
   main.dataset.slimmingMemberMain = "true";
   main.setAttribute(
     "aria-label",
@@ -26314,7 +26373,7 @@ function syncSlimmingMemberCard(card, member, rovingAssetID) {
     "ArrowLeft ArrowRight ArrowUp ArrowDown Home End PageUp PageDown Space"
   );
   main.title = "方向键移动，Shift 扩展选择，Space 打开单图";
-  const image = document.createElement("img");
+  const image = existingImage || document.createElement("img");
   image.loading = "lazy";
   image.alt = "";
   image.setAttribute("aria-hidden", "true");
@@ -26338,7 +26397,6 @@ function syncSlimmingMemberCard(card, member, rovingAssetID) {
     main.append(video);
   }
   syncSlimmingMemberFavoriteButton(card, member);
-  const removalPhase = activeSlimmingRemovalPhase(member.id);
   card.classList.toggle("pending-removal", Boolean(removalPhase));
   if (removalPhase) {
     main.disabled = true;
@@ -26357,6 +26415,7 @@ function syncSlimmingMemberCard(card, member, rovingAssetID) {
     card.append(overlay);
   }
   syncSlimmingMemberCardKeyboardAccess(card, rovingAssetID);
+  card.dataset.slimmingFingerprint = fingerprint;
   return card;
 }
 
@@ -26376,11 +26435,23 @@ function renderSlimmingMembers({ appendItems = null } = {}) {
   renderSlimmingMemberSummary();
   state.slimming.memberGridFocusAssetID = slimmingMemberGridRovingAssetID();
   const rovingAssetID = state.slimming.memberGridFocusAssetID;
-  if (appendItems === null) clearElement(elements.slimmingMemberGrid);
-  appendSlimmingMemberCards(
-    appendItems === null ? state.slimming.members : appendItems,
-    rovingAssetID
-  );
+  if (appendItems !== null) {
+    appendSlimmingMemberCards(appendItems, rovingAssetID);
+  } else {
+    const existingCards = new Map(
+      [...elements.slimmingMemberGrid.querySelectorAll(
+        ":scope > .slimming-member-card[data-slimming-member-id]"
+      )].map((card) => [card.dataset.slimmingMemberId, card])
+    );
+    for (const [index, member] of state.slimming.members.entries()) {
+      const card = existingCards.get(member.id) || document.createElement("div");
+      existingCards.delete(member.id);
+      syncSlimmingMemberCard(card, member, rovingAssetID);
+      const currentCard = elements.slimmingMemberGrid.children[index] || null;
+      if (currentCard !== card) elements.slimmingMemberGrid.insertBefore(card, currentCard);
+    }
+    for (const card of existingCards.values()) card.remove();
+  }
   renderSlimmingMemberSelection();
 }
 
@@ -27642,6 +27713,7 @@ function renderSlimmingWorkspace({
   renderSlimmingJobStatus();
   renderSlimmingRemovalStatus();
   syncSlimmingAppendInteractionLocks();
+  state.slimming.renderedCollectionFingerprint = slimmingWorkspaceCollectionFingerprint();
 }
 
 function scheduleSlimmingRemovalPoll() {
@@ -28459,6 +28531,34 @@ function renderedSlimmingMembersMatch(items) {
   );
 }
 
+function slimmingWorkspaceCollectionFingerprint() {
+  return JSON.stringify({
+    mediaKind: state.slimming.mediaKind,
+    jobs: state.slimming.jobs,
+    totalJobCount: state.slimming.totalJobCount,
+    selectedJobID: state.slimming.selectedJobID,
+    jobMutatingIDs: [...state.slimming.jobMutatingIDs].sort(),
+    clusters: state.slimming.clusters,
+    selectedClusterID: state.slimming.selectedClusterID,
+    clusterScope: state.slimming.clusterScope,
+    clusterScopeCounts: state.slimming.clusterScopeCounts,
+    clusterScopeSupported: state.slimming.clusterScopeSupported,
+    clusterReviewPendingIDs: [...state.slimming.clusterReviewPendingIDs].sort(),
+    members: state.slimming.members,
+    removalRequests: state.slimming.removal.requests,
+    online: state.online,
+  });
+}
+
+function slimmingWorkspaceCanPreserveCollections() {
+  return state.slimming.renderedCollectionFingerprint !== null
+    && state.slimming.renderedCollectionFingerprint
+      === slimmingWorkspaceCollectionFingerprint()
+    && renderedSlimmingJobsMatch(state.slimming.jobs)
+    && renderedSlimmingClustersMatch(state.slimming.clusters)
+    && renderedSlimmingMembersMatch(state.slimming.members);
+}
+
 function captureSlimmingRenderContinuity() {
   const active = document.activeElement;
   return {
@@ -28581,7 +28681,7 @@ async function loadSlimmingWorkspace({
     renderedMembersMatch: renderedSlimmingMembersMatch(state.slimming.members),
     continuity: appending ? captureSlimmingRenderContinuity() : null,
   };
-  let renderOptions = appending
+  let renderOptions = appending || slimmingWorkspaceCanPreserveCollections()
     ? { preserveJobs: true, preserveClusters: true, preserveMembers: true }
     : {};
   state.slimming.loading = true;
@@ -28667,6 +28767,8 @@ async function loadSlimmingWorkspace({
         preserveClusters: true,
         appendMembers: nextMembers.slice(previous.members.length),
       };
+    } else if (!appending && slimmingWorkspaceCanPreserveCollections()) {
+      renderOptions = { preserveJobs: true, preserveClusters: true, preserveMembers: true };
     } else {
       renderOptions = {};
     }
@@ -32614,6 +32716,7 @@ function resetWorkspaceSessionState() {
   state.review.pendingThresholdFocus = null;
   state.review.returnTarget = null;
   state.review.pendingFocusTrainingJobID = null;
+  state.slimming.renderedCollectionFingerprint = null;
   state.slimming.memberGridFocusAssetID = null;
   state.slimming.recycle.focusEntryID = null;
   state.slimming.recycle.renderedQuerySignature = null;
