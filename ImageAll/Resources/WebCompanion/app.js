@@ -1410,6 +1410,7 @@ const state = {
     },
     recycle: {
       entries: [],
+      focusEntryID: null,
       totalCount: 0,
       scope: "all",
       scopeCounts: { all: 0, photos: 0, files: 0, attention: 0 },
@@ -17204,6 +17205,7 @@ function renderFavoriteControls() {
     );
     if (entry) syncSlimmingRecycleFavoriteButton(card, entry);
   }
+  syncSlimmingRecycleGridTabStops();
   const selectedCount = state.selectedAssetIDs.size;
   elements.selectionFavoriteToolbarActions.classList.toggle(
     "hidden",
@@ -26615,7 +26617,7 @@ function syncSlimmingRecycleRow(row, entry) {
     const thumbnail = document.createElement("div");
     thumbnail.className = "slimming-recycle-thumbnail-card";
     thumbnail.dataset.slimmingRecycleThumbnailEntryId = entry.id;
-    thumbnail.tabIndex = 0;
+    thumbnail.tabIndex = -1;
     thumbnail.setAttribute("role", "group");
     thumbnail.setAttribute("aria-haspopup", "menu");
     thumbnail.setAttribute(
@@ -26629,7 +26631,8 @@ function syncSlimmingRecycleRow(row, entry) {
           ? " Apple Photos 的“最近删除”由系统管理，红心不能暂停系统永久删除。"
           : " 红心只用于整理，不会阻止恢复、回收或永久删除。"),
       kind: "slimming",
-      keyShortcuts: "Shift+F10 ContextMenu",
+      keyShortcuts: "ArrowLeft ArrowRight ArrowUp ArrowDown Home End "
+        + "PageUp PageDown Shift+F10 ContextMenu",
     });
     const image = document.createElement("img");
     image.className = "slimming-recycle-thumbnail";
@@ -26713,10 +26716,50 @@ function syncSlimmingRecycleRow(row, entry) {
   return row;
 }
 
-function appendSlimmingRecycleRows(entries) {
+function slimmingRecycleGridRovingEntryID() {
+  const visibleIDs = new Set(state.slimming.recycle.entries.map((entry) => entry.id));
+  const focusedRow = document.activeElement?.closest?.(
+    "#slimmingRecycleList > .slimming-recycle-row"
+  );
+  if (visibleIDs.has(focusedRow?.dataset.slimmingRecycleRowId)) {
+    return focusedRow.dataset.slimmingRecycleRowId;
+  }
+  if (visibleIDs.has(state.slimming.recycle.focusEntryID)) {
+    return state.slimming.recycle.focusEntryID;
+  }
+  return state.slimming.recycle.entries[0]?.id || null;
+}
+
+function syncSlimmingRecycleRowKeyboardAccess(
+  row,
+  rovingEntryID = slimmingRecycleGridRovingEntryID()
+) {
+  const isTabStop = row?.dataset.slimmingRecycleRowId === rovingEntryID;
+  const thumbnail = row?.querySelector(":scope > .slimming-recycle-thumbnail-card");
+  if (thumbnail) thumbnail.tabIndex = isTabStop ? 0 : -1;
+  for (const button of row?.querySelectorAll("button") || []) {
+    button.tabIndex = isTabStop && !button.disabled ? 0 : -1;
+  }
+}
+
+function syncSlimmingRecycleGridTabStops(entryID = null) {
+  const visibleIDs = new Set(state.slimming.recycle.entries.map((entry) => entry.id));
+  if (entryID && visibleIDs.has(entryID)) state.slimming.recycle.focusEntryID = entryID;
+  const rovingEntryID = slimmingRecycleGridRovingEntryID();
+  state.slimming.recycle.focusEntryID = rovingEntryID;
+  for (const row of elements.slimmingRecycleList.querySelectorAll(
+    ":scope > .slimming-recycle-row"
+  )) {
+    syncSlimmingRecycleRowKeyboardAccess(row, rovingEntryID);
+  }
+}
+
+function appendSlimmingRecycleRows(entries, rovingEntryID) {
   const fragment = document.createDocumentFragment();
   for (const entry of entries) {
-    fragment.append(syncSlimmingRecycleRow(document.createElement("article"), entry));
+    const row = syncSlimmingRecycleRow(document.createElement("article"), entry);
+    syncSlimmingRecycleRowKeyboardAccess(row, rovingEntryID);
+    fragment.append(row);
   }
   elements.slimmingRecycleList.append(fragment);
 }
@@ -26733,16 +26776,19 @@ function renderSlimmingRecycle({
   preserveList = false,
   preserveSourceOptions = false,
 } = {}) {
+  const rovingEntryID = slimmingRecycleGridRovingEntryID();
+  state.slimming.recycle.focusEntryID = rovingEntryID;
   renderSlimmingRecycleSummary({ preserveSourceOptions });
   if (appendItems === null && !preserveList) {
     clearElement(elements.slimmingRecycleList);
-    appendSlimmingRecycleRows(state.slimming.recycle.entries);
+    appendSlimmingRecycleRows(state.slimming.recycle.entries, rovingEntryID);
   } else if (appendItems !== null) {
-    appendSlimmingRecycleRows(appendItems);
+    appendSlimmingRecycleRows(appendItems, rovingEntryID);
   }
   renderSlimmingRecycleRequest();
   syncWriteActionControls();
   syncSlimmingRecycleAppendLocks();
+  syncSlimmingRecycleGridTabStops();
 }
 
 function scheduleSlimmingRecyclePoll() {
@@ -26802,7 +26848,12 @@ function restoreSlimmingRecycleContinuity(continuity) {
     );
     target = continuity.actionSelector
       ? row?.querySelector(continuity.actionSelector)
-      : row?.querySelector("button");
+      : row?.querySelector(":scope > .slimming-recycle-thumbnail-card");
+    if (target?.disabled) target = null;
+    if (!target) {
+      target = row?.querySelector(":scope > .slimming-recycle-thumbnail-card")
+        || slimmingRecycleFocusTarget();
+    }
   }
   if (!target && continuity.focusedControlID) {
     const control = document.getElementById(continuity.focusedControlID);
@@ -26812,7 +26863,7 @@ function restoreSlimmingRecycleContinuity(continuity) {
     target = elements.slimmingRecycleList.querySelector(
       `[data-slimming-recycle-row-id="${CSS.escape(
         continuity.previousLastEntryID || ""
-      )}"] button`
+      )}"] > .slimming-recycle-thumbnail-card`
     );
   }
   target?.focus({ preventScroll: true });
@@ -32144,6 +32195,7 @@ function resetWorkspaceSessionState() {
   state.review.returnTarget = null;
   state.review.pendingFocusTrainingJobID = null;
   state.slimming.memberGridFocusAssetID = null;
+  state.slimming.recycle.focusEntryID = null;
   state.slimming.selectionMode = false;
   state.slimming.setup.loading = false;
   state.slimming.setup.saving = false;
@@ -37718,22 +37770,67 @@ function bindEvents() {
       thumbnail.dataset.slimmingRecycleThumbnailEntryId
     );
   });
+  elements.slimmingRecycleList.addEventListener("focusin", (event) => {
+    const row = event.target.closest?.(
+      ".slimming-recycle-row[data-slimming-recycle-row-id]"
+    );
+    if (row) syncSlimmingRecycleGridTabStops(row.dataset.slimmingRecycleRowId);
+  });
   elements.slimmingRecycleList.addEventListener("keydown", (event) => {
     const thumbnail = event.target.closest(
       "[data-slimming-recycle-thumbnail-entry-id]"
     );
-    if (!thumbnail
-      || !(event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))) {
+    if (thumbnail
+      && (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))) {
+      event.preventDefault();
+      event.stopPropagation();
+      const rect = thumbnail.getBoundingClientRect();
+      showSlimmingRecycleContextMenu(
+        rect.left + Math.min(28, rect.width / 2),
+        rect.top + Math.min(28, rect.height / 2),
+        thumbnail.dataset.slimmingRecycleThumbnailEntryId
+      );
       return;
     }
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown",
+      "Home", "End", "PageUp", "PageDown"].includes(event.key)) return;
+    const row = event.target.closest("[data-slimming-recycle-row-id]");
+    if (!row) return;
+    const rows = [...elements.slimmingRecycleList.querySelectorAll(
+      ":scope > .slimming-recycle-row"
+    )];
+    const currentIndex = rows.indexOf(row);
+    if (currentIndex < 0) return;
     event.preventDefault();
     event.stopPropagation();
-    const rect = thumbnail.getBoundingClientRect();
-    showSlimmingRecycleContextMenu(
-      rect.left + Math.min(28, rect.width / 2),
-      rect.top + Math.min(28, rect.height / 2),
-      thumbnail.dataset.slimmingRecycleThumbnailEntryId
+    const columns = renderedGridColumnCount(
+      elements.slimmingRecycleList,
+      ":scope > .slimming-recycle-row"
     );
+    const pageItems = renderedGridPageItemCount(
+      elements.slimmingRecycleBody,
+      elements.slimmingRecycleList,
+      ":scope > .slimming-recycle-row"
+    );
+    const delta = {
+      ArrowLeft: -1,
+      ArrowRight: 1,
+      ArrowUp: -columns,
+      ArrowDown: columns,
+      PageUp: -pageItems,
+      PageDown: pageItems,
+    }[event.key];
+    const nextIndex = event.key === "Home" ? 0
+      : event.key === "End" ? rows.length - 1
+        : Math.max(0, Math.min(rows.length - 1, currentIndex + delta));
+    const nextRow = rows[nextIndex];
+    const nextEntryID = nextRow?.dataset.slimmingRecycleRowId;
+    if (!nextEntryID) return;
+    syncSlimmingRecycleGridTabStops(nextEntryID);
+    nextRow.scrollIntoView({ block: "nearest", inline: "nearest" });
+    nextRow.querySelector(":scope > .slimming-recycle-thumbnail-card")
+      ?.focus({ preventScroll: true });
   });
   elements.slimmingRecycleList.addEventListener("click", (event) => {
     const favorite = event.target.closest("[data-slimming-recycle-favorite]");

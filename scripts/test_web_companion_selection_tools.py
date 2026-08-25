@@ -4110,6 +4110,103 @@ def main(*, inspector_actions_only=False):
             ".slimming-recycle-thumbnail-card"
         )
         recycle_favorite = recycle_rows.nth(0).locator(".slimming-recycle-favorite")
+        first_recycle_buttons = recycle_rows.nth(0).locator("button")
+        second_recycle_thumbnail = recycle_rows.nth(1).locator(
+            ".slimming-recycle-thumbnail-card"
+        )
+        assert recycle_thumbnail.get_attribute("tabindex") == "0"
+        assert all(
+            first_recycle_buttons.nth(index).get_attribute("tabindex") == "0"
+            for index in range(first_recycle_buttons.count())
+        )
+        assert second_recycle_thumbnail.get_attribute("tabindex") == "-1"
+        second_recycle_buttons = recycle_rows.nth(1).locator("button")
+        assert all(
+            second_recycle_buttons.nth(index).get_attribute("tabindex") == "-1"
+            for index in range(second_recycle_buttons.count())
+        )
+        recycle_keyboard_snapshot = {
+            "requests": len(recycle_request_urls),
+            "favorites": len(submitted_favorites),
+            "actions": len(submitted_slimming_recycle_actions),
+            "removals": len(submitted_slimming_removals),
+        }
+        recycle_thumbnail.focus()
+        for _ in range(first_recycle_buttons.count()):
+            page.keyboard.press("Tab")
+            assert page.evaluate(
+                "() => document.querySelector('#slimmingRecycleList .slimming-recycle-row')"
+                ".contains(document.activeElement)"
+            )
+        page.keyboard.press("Tab")
+        assert not page.evaluate(
+            "() => document.querySelector('#slimmingRecycleList')"
+            ".contains(document.activeElement)"
+        )
+        second_recycle_thumbnail.focus()
+        assert page.evaluate(
+            "id => state.slimming.recycle.focusEntryID === id "
+            "&& document.querySelectorAll('#slimmingRecycleList "
+            ".slimming-recycle-thumbnail-card[tabindex=\"0\"]')"
+            ".length === 1",
+            SLIMMING_RECYCLE_IDS[1],
+        )
+        page.keyboard.press("ArrowRight")
+        assert page.evaluate(
+            "id => state.slimming.recycle.focusEntryID === id "
+            "&& document.activeElement?.dataset.slimmingRecycleThumbnailEntryId === id",
+            SLIMMING_RECYCLE_IDS[2],
+        )
+        recycle_rows.nth(2).locator(".slimming-recycle-favorite").focus()
+        page.keyboard.press("ArrowRight")
+        assert page.evaluate(
+            "id => state.slimming.recycle.focusEntryID === id "
+            "&& document.activeElement?.dataset.slimmingRecycleThumbnailEntryId === id",
+            SLIMMING_RECYCLE_IDS[3],
+        )
+        page.keyboard.press("Home")
+        assert page.evaluate(
+            "id => document.activeElement?.dataset.slimmingRecycleThumbnailEntryId === id",
+            SLIMMING_RECYCLE_IDS[0],
+        )
+        recycle_page_step = page.evaluate(
+            "() => renderedGridPageItemCount("
+            "document.querySelector('#slimmingRecycleBody'), "
+            "document.querySelector('#slimmingRecycleList'), "
+            "':scope > .slimming-recycle-row')"
+        )
+        page.keyboard.press("PageDown")
+        assert page.evaluate(
+            "id => document.activeElement?.dataset.slimmingRecycleThumbnailEntryId === id",
+            SLIMMING_RECYCLE_IDS[min(len(SLIMMING_RECYCLE_IDS) - 1, recycle_page_step)],
+        )
+        page.keyboard.press("End")
+        assert page.evaluate(
+            "id => document.activeElement?.dataset.slimmingRecycleThumbnailEntryId === id",
+            SLIMMING_RECYCLE_IDS[-1],
+        )
+        page.keyboard.press("Home")
+        assert page.evaluate(
+            "id => state.slimming.recycle.focusEntryID === id "
+            "&& document.activeElement?.dataset.slimmingRecycleThumbnailEntryId === id "
+            "&& document.querySelectorAll('#slimmingRecycleList [tabindex=\"0\"]')"
+            ".length === document.querySelectorAll("
+            "'#slimmingRecycleList .slimming-recycle-row:first-child "
+            ".slimming-recycle-thumbnail-card, "
+            "#slimmingRecycleList .slimming-recycle-row:first-child button:not(:disabled)'"
+            ").length",
+            SLIMMING_RECYCLE_IDS[0],
+        )
+        assert recycle_keyboard_snapshot == {
+            "requests": len(recycle_request_urls),
+            "favorites": len(submitted_favorites),
+            "actions": len(submitted_slimming_recycle_actions),
+            "removals": len(submitted_slimming_removals),
+        }
+        page.screenshot(
+            path="/tmp/imageall-slimming-recycle-roving-focus.png",
+            full_page=False,
+        )
         recycle_rows.nth(0).hover()
         assert recycle_favorite.is_visible()
         assert "不会暂停系统“照片”的永久删除" in recycle_favorite.get_attribute("title")
@@ -4468,6 +4565,10 @@ def main(*, inspector_actions_only=False):
               focusedFavorite: document.activeElement?.classList.contains(
                 'slimming-recycle-favorite'
               ),
+              rovingEntryID: state.slimming.recycle.focusEntryID,
+              rovingThumbnailCount: document.querySelectorAll(
+                '#slimmingRecycleList .slimming-recycle-thumbnail-card[tabindex="0"]'
+              ).length,
             })"""
         )
         assert recycle_append["syncCalls"] == 60, recycle_append
@@ -4475,6 +4576,8 @@ def main(*, inspector_actions_only=False):
         assert recycle_append["scrollTop"] == recycle_append_baseline["scrollTop"]
         assert recycle_append["focusedEntryID"] == recycle_append_baseline["focusedEntryID"]
         assert recycle_append["focusedFavorite"] is True
+        assert recycle_append["rovingEntryID"] == recycle_append_baseline["focusedEntryID"]
+        assert recycle_append["rovingThumbnailCount"] == 1
 
         page.evaluate(
             """() => {
@@ -4504,6 +4607,10 @@ def main(*, inspector_actions_only=False):
               focusedFavorite: document.activeElement?.classList.contains(
                 'slimming-recycle-favorite'
               ),
+              rovingEntryID: state.slimming.recycle.focusEntryID,
+              rovingThumbnailCount: document.querySelectorAll(
+                '#slimmingRecycleList .slimming-recycle-thumbnail-card[tabindex="0"]'
+              ).length,
             })"""
         )
         assert recycle_fallback["syncCalls"] == 135, recycle_fallback
@@ -4511,6 +4618,8 @@ def main(*, inspector_actions_only=False):
         assert recycle_fallback["scrollTop"] == recycle_append_baseline["scrollTop"]
         assert recycle_fallback["focusedEntryID"] == recycle_append_baseline["focusedEntryID"]
         assert recycle_fallback["focusedFavorite"] is True
+        assert recycle_fallback["rovingEntryID"] == recycle_append_baseline["focusedEntryID"]
+        assert recycle_fallback["rovingThumbnailCount"] == 1
 
         expanded_slimming_recycle_pagination_enabled = False
         page.evaluate(

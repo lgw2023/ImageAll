@@ -3167,6 +3167,13 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function syncSlimmingMemberGridTabStops"))
         XCTAssertTrue(script.contains("state.slimming.memberGridFocusAssetID"))
         XCTAssertTrue(script.contains("elements.slimmingMemberGrid.addEventListener(\"focusin\""))
+        XCTAssertTrue(script.contains("function slimmingRecycleGridRovingEntryID"))
+        XCTAssertTrue(script.contains("function syncSlimmingRecycleGridTabStops"))
+        XCTAssertTrue(script.contains("state.slimming.recycle.focusEntryID"))
+        XCTAssertTrue(script.contains("elements.slimmingRecycleList.addEventListener(\"focusin\""))
+        XCTAssertTrue(script.contains("renderedGridPageItemCount(\n      elements.slimmingRecycleBody"))
+        XCTAssertTrue(stylesheet.contains(".slimming-recycle-row:focus-within"))
+        XCTAssertTrue(stylesheet.contains(".slimming-recycle-thumbnail-card:focus-visible"))
         XCTAssertTrue(script.contains("focusedNavigationButton"))
         XCTAssertTrue(
             script.contains(
