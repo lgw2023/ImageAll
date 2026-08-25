@@ -120,6 +120,7 @@ def main(*, inspector_actions_only=False):
     submitted_slimming = []
     submitted_slimming_cluster_reviews = []
     submitted_slimming_job_actions = []
+    slimming_job_action_fail_next = [False]
     submitted_slimming_source_maintenance = []
     submitted_slimming_thresholds = []
     slimming_setup_reads = [0]
@@ -938,6 +939,10 @@ def main(*, inspector_actions_only=False):
         def handle_slimming_job_action(route):
             payload = route.request.post_data_json
             job_id = route.request.url.split("/jobs/", 1)[1].split("/", 1)[0]
+            if slimming_job_action_fail_next[0]:
+                slimming_job_action_fail_next[0] = False
+                fulfill_json(route, {"message": "合成瘦身任务动作失败"}, status=409)
+                return
             submitted_slimming_job_actions.append({"jobID": job_id, **payload})
             if payload["action"] == "deleteRecord":
                 deleted_slimming_job_ids.add(job_id)
@@ -3038,6 +3043,21 @@ def main(*, inspector_actions_only=False):
         assert page.locator(
             '#slimmingCurrentJobActions [data-action="deleteRecord"]'
         ).count() == 0
+        page.evaluate(
+            f"""() => {{
+              window.__stableSlimmingJobActions = {{
+                navigatorPrimary: document.querySelector(
+                  '#slimmingJobActions [data-slimming-job-action-id="{SLIMMING_JOB_ID}"]'
+                  + '[data-action="pause"]'
+                ),
+                optionsPrimary: document.querySelector(
+                  '#slimmingCurrentJobActions [data-slimming-job-action-id="{SLIMMING_JOB_ID}"]'
+                  + '[data-action="pause"]'
+                ),
+                scrollTop: document.querySelector("#slimmingAnalysisOptionsContent").scrollTop,
+              }};
+            }}"""
+        )
         pause_current.click()
         page.wait_for_function(
             "() => document.querySelector('#slimmingCurrentJobState')?.textContent === '已暂停'"
@@ -3053,6 +3073,27 @@ def main(*, inspector_actions_only=False):
             "&& document.activeElement?.dataset.action === 'resume'",
             arg=SLIMMING_JOB_ID,
         )
+        stable_slimming_job_actions = page.evaluate(
+            f"""() => {{
+              const frame = window.__stableSlimmingJobActions;
+              const navigatorPrimary = document.querySelector(
+                '#slimmingJobActions [data-slimming-job-action-id="{SLIMMING_JOB_ID}"]'
+                + '[data-action="resume"]'
+              );
+              const optionsPrimary = document.querySelector(
+                '#slimmingCurrentJobActions [data-slimming-job-action-id="{SLIMMING_JOB_ID}"]'
+                + '[data-action="resume"]'
+              );
+              return {{
+                navigatorPrimary: navigatorPrimary === frame.navigatorPrimary,
+                optionsPrimary: optionsPrimary === frame.optionsPrimary,
+                focus: document.activeElement === frame.optionsPrimary,
+                scroll: document.querySelector("#slimmingAnalysisOptionsContent").scrollTop
+                  === frame.scrollTop,
+              }};
+            }}"""
+        )
+        assert all(stable_slimming_job_actions.values()), stable_slimming_job_actions
 
         paused_delete = page.locator(
             '#slimmingCurrentJobActions [data-action="deleteRecord"]'
@@ -3067,6 +3108,79 @@ def main(*, inspector_actions_only=False):
             "&& document.activeElement?.dataset.action === 'deleteRecord'",
             arg=SLIMMING_JOB_ID,
         )
+        page.evaluate(
+            f"""() => {{
+              window.__failedSlimmingJobActionFrame = {{
+                navigatorPrimary: document.querySelector(
+                  '#slimmingJobActions [data-slimming-job-action-id="{SLIMMING_JOB_ID}"]'
+                  + '[data-action="resume"]'
+                ),
+                navigatorDelete: document.querySelector(
+                  '#slimmingJobActions [data-slimming-job-action-id="{SLIMMING_JOB_ID}"]'
+                  + '[data-action="deleteRecord"]'
+                ),
+                optionsPrimary: document.querySelector(
+                  '#slimmingCurrentJobActions [data-slimming-job-action-id="{SLIMMING_JOB_ID}"]'
+                  + '[data-action="resume"]'
+                ),
+                optionsDelete: document.querySelector(
+                  '#slimmingCurrentJobActions [data-slimming-job-action-id="{SLIMMING_JOB_ID}"]'
+                  + '[data-action="deleteRecord"]'
+                ),
+                scrollTop: document.querySelector("#slimmingAnalysisOptionsContent").scrollTop,
+              }};
+            }}"""
+        )
+        failed_resource_count = len(failed_resources)
+        console_error_count = len(console_errors)
+        slimming_job_action_fail_next[0] = True
+        page.locator('#slimmingCurrentJobActions [data-action="resume"]').click()
+        page.wait_for_function(
+            "() => document.querySelector('#toastMessage').textContent"
+            ".includes('合成瘦身任务动作失败')"
+        )
+        page.wait_for_function(
+            "() => !document.querySelector("
+            "'#slimmingCurrentJobActions [data-action=\"resume\"]'"
+            ").disabled"
+        )
+        failed_slimming_job_action = page.evaluate(
+            f"""() => {{
+              const frame = window.__failedSlimmingJobActionFrame;
+              const navigatorPrimary = document.querySelector(
+                '#slimmingJobActions [data-slimming-job-action-id="{SLIMMING_JOB_ID}"]'
+                + '[data-action="resume"]'
+              );
+              const optionsPrimary = document.querySelector(
+                '#slimmingCurrentJobActions [data-slimming-job-action-id="{SLIMMING_JOB_ID}"]'
+                + '[data-action="resume"]'
+              );
+              return {{
+                navigatorPrimary: navigatorPrimary === frame.navigatorPrimary,
+                navigatorDelete: document.querySelector(
+                  '#slimmingJobActions [data-slimming-job-action-id="{SLIMMING_JOB_ID}"]'
+                  + '[data-action="deleteRecord"]'
+                ) === frame.navigatorDelete,
+                optionsPrimary: optionsPrimary === frame.optionsPrimary,
+                optionsDelete: document.querySelector(
+                  '#slimmingCurrentJobActions [data-slimming-job-action-id="{SLIMMING_JOB_ID}"]'
+                  + '[data-action="deleteRecord"]'
+                ) === frame.optionsDelete,
+                focus: document.activeElement === frame.optionsPrimary,
+                scroll: document.querySelector("#slimmingAnalysisOptionsContent").scrollTop
+                  === frame.scrollTop,
+              }};
+            }}"""
+        )
+        assert all(failed_slimming_job_action.values()), failed_slimming_job_action
+        assert slimming_job_states[SLIMMING_JOB_ID] == "paused"
+        assert submitted_slimming_job_actions[-1]["action"] == "pause"
+        assert len(failed_resources) == failed_resource_count + 1
+        assert failed_resources[-1][0] == 409
+        failed_resources.pop()
+        assert len(console_errors) == console_error_count + 1
+        assert "409" in console_errors[-1]
+        console_errors.pop()
         page.locator('#slimmingCurrentJobActions [data-action="resume"]').click()
         page.wait_for_function(
             "() => document.querySelector('#slimmingCurrentJobState')?.textContent === '进行中'"
@@ -3085,6 +3199,67 @@ def main(*, inspector_actions_only=False):
         page.evaluate("() => toggleSlimmingNavigator()")
         assert not page.locator("#slimmingAnalysisBody").evaluate(
             "element => element.classList.contains('navigator-hidden')"
+        )
+        slimming_job_states[SLIMMING_JOB_ID] = "running"
+        page.evaluate("async () => { await loadSlimmingWorkspace({ quiet: true }); }")
+        navigator_pause = page.locator(
+            '#slimmingJobActions [data-action="pause"]'
+        )
+        page.evaluate(
+            """() => {
+              window.__navigatorSlimmingPrimary = document.querySelector(
+                '#slimmingJobActions [data-action="pause"]'
+              );
+              window.__navigatorSlimmingScrollTop =
+                document.querySelector("#slimmingNavigatorPane").scrollTop;
+            }"""
+        )
+        navigator_pause.click()
+        page.wait_for_function(
+            "jobID => document.activeElement?.dataset.slimmingJobActionId === jobID "
+            "&& document.activeElement?.dataset.action === 'resume'",
+            arg=SLIMMING_JOB_ID,
+        )
+        assert page.evaluate(
+            """() => document.querySelector('#slimmingJobActions [data-action="resume"]')
+              === window.__navigatorSlimmingPrimary
+              && document.activeElement === window.__navigatorSlimmingPrimary
+              && document.querySelector("#slimmingNavigatorPane").scrollTop
+                === window.__navigatorSlimmingScrollTop"""
+        )
+        page.locator('#slimmingJobActions [data-action="resume"]').click()
+        page.wait_for_function(
+            "jobID => document.activeElement?.dataset.slimmingJobActionId === jobID "
+            "&& document.activeElement?.dataset.action === 'pause'",
+            arg=SLIMMING_JOB_ID,
+        )
+        assert page.evaluate(
+            """() => document.querySelector('#slimmingJobActions [data-action="pause"]')
+              === window.__navigatorSlimmingPrimary
+              && document.activeElement === window.__navigatorSlimmingPrimary"""
+        )
+        slimming_job_states[SLIMMING_JOB_ID] = "completed"
+        page.evaluate("async () => { await loadSlimmingWorkspace({ quiet: true }); }")
+        navigator_delete = page.locator(
+            '#slimmingJobActions [data-action="deleteRecord"]'
+        )
+        page.evaluate(
+            """() => {
+              window.__navigatorSlimmingDelete = document.querySelector(
+                '#slimmingJobActions [data-action="deleteRecord"]'
+              );
+            }"""
+        )
+        navigator_delete.click()
+        page.locator("#confirmDialog[open]").wait_for()
+        page.locator("#cancelConfirmButton").click()
+        page.wait_for_function(
+            "() => document.activeElement === window.__navigatorSlimmingDelete"
+        )
+        assert page.evaluate(
+            """() => document.querySelector(
+              '#slimmingJobActions [data-action="deleteRecord"]'
+            ) === window.__navigatorSlimmingDelete"""
         )
         page.evaluate("() => openSlimmingAnalysisOptions()")
         page.locator("#slimmingAnalysisOptionsContent:not(.hidden)").wait_for()

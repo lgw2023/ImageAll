@@ -9604,6 +9604,21 @@ function restoreConfirmationReturnFocus(pending) {
     });
     return;
   }
+  if (pending.slimmingJobID && pending.slimmingJobActionSurface === "navigator") {
+    requestAnimationFrame(() => {
+      const action = elements.slimmingJobActions.querySelector(
+        `[data-slimming-job-action-id="${CSS.escape(pending.slimmingJobID)}"]`
+        + `[data-action="${CSS.escape(pending.slimmingJobAction || "")}"]`
+      );
+      const fallback = elements.slimmingJobActions.querySelector(
+        "[data-slimming-job-action-id]:not(:disabled)"
+      );
+      (action || fallback || elements.slimmingJobList.querySelector(
+        `[data-slimming-job-id="${CSS.escape(pending.slimmingJobID)}"]`
+      ))?.focus({ preventScroll: true });
+    });
+    return;
+  }
   if (pending.slimmingJobID) {
     requestAnimationFrame(() => {
       const job = elements.slimmingJobList.querySelector(
@@ -26400,33 +26415,89 @@ function slimmingClusterPresentation(cluster) {
   return { title, detail, historicalDetail };
 }
 
-function renderSlimmingJobActions() {
-  clearElement(elements.slimmingJobActions);
-  const job = state.slimming.jobs.find((item) => item.id === state.slimming.selectedJobID);
-  if (!job) return;
+function slimmingJobActionKey(jobID, action) {
+  if (["pause", "resume"].includes(action)) return `job:${jobID}:primary`;
+  return `job:${jobID}:${action}`;
+}
+
+function syncSlimmingJobActionButton(button, descriptor) {
+  button.type = "button";
+  button.className = descriptor.className;
+  button.setAttribute("data-slimming-job-action-key", descriptor.key);
+  button.dataset.slimmingJobActionId = descriptor.jobID;
+  button.dataset.action = descriptor.action;
+  button.disabled = descriptor.disabled;
+  button.textContent = descriptor.text;
+  if (descriptor.title) button.title = descriptor.title;
+  else button.removeAttribute("title");
+}
+
+function reconcileSlimmingJobActionButtons(container, descriptors) {
+  const existing = new Map(
+    [...container.children].map((button) => [button.dataset.slimmingJobActionKey, button])
+  );
+  const wanted = [];
+  for (const descriptor of descriptors) {
+    const button = existing.get(descriptor.key) || document.createElement("button");
+    syncSlimmingJobActionButton(button, descriptor);
+    wanted.push(button);
+  }
+  for (const [index, button] of wanted.entries()) {
+    if (container.children[index] !== button) {
+      container.insertBefore(button, container.children[index] || null);
+    }
+  }
+  for (const button of [...container.children]) {
+    if (!wanted.includes(button)) button.remove();
+  }
+}
+
+function slimmingJobActionDescriptors(job, { surface }) {
+  if (!job) return [];
   const mutating = state.slimming.jobMutatingIDs.has(job.id);
+  const options = surface === "options";
+  const locked = !state.online || mutating || Boolean(state.slimming.appending);
+  const descriptors = [];
   for (const action of job.availableActions || []) {
-    if (!['pause', 'resume'].includes(action)) continue;
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "button button-compact write-action slimming-job-action";
-    button.dataset.slimmingJobActionId = job.id;
-    button.dataset.action = action;
-    button.disabled = mutating;
-    button.textContent = action === "pause" ? "暂停" : "继续";
-    elements.slimmingJobActions.append(button);
+    if (!["pause", "resume"].includes(action)) continue;
+    descriptors.push({
+      key: slimmingJobActionKey(job.id, action),
+      jobID: job.id,
+      action,
+      className: `button button-compact write-action${options ? "" : " slimming-job-action"}`,
+      disabled: locked,
+      text: mutating
+        ? (action === "pause" ? "正在暂停…" : "正在继续…")
+        : options
+          ? (action === "pause" ? "暂停当前" : "继续当前")
+          : (action === "pause" ? "暂停" : "继续"),
+      title: options
+        ? (action === "pause"
+          ? "暂停当前分析并保留已经完成的进度"
+          : "从保存的进度继续当前分析")
+        : null,
+    });
   }
   if (job.state !== "running") {
-    const remove = document.createElement("button");
-    remove.type = "button";
-    remove.className = "button button-compact button-danger write-action slimming-job-action";
-    remove.dataset.slimmingJobActionId = job.id;
-    remove.dataset.action = "deleteRecord";
-    remove.disabled = mutating;
-    remove.textContent = "删除记录";
-    remove.title = "只删除分析记录和结果，不会删除任何原始媒体";
-    elements.slimmingJobActions.append(remove);
+    descriptors.push({
+      key: slimmingJobActionKey(job.id, "deleteRecord"),
+      jobID: job.id,
+      action: "deleteRecord",
+      className: `button button-compact button-danger write-action${options ? "" : " slimming-job-action"}`,
+      disabled: locked,
+      text: options ? "删除当前记录" : "删除记录",
+      title: "只删除分析记录和结果，不会删除任何原始媒体",
+    });
   }
+  return descriptors;
+}
+
+function renderSlimmingJobActions() {
+  const job = state.slimming.jobs.find((item) => item.id === state.slimming.selectedJobID);
+  reconcileSlimmingJobActionButtons(
+    elements.slimmingJobActions,
+    slimmingJobActionDescriptors(job, { surface: "navigator" })
+  );
 }
 
 function renderSlimmingCurrentJobControls() {
@@ -26437,11 +26508,16 @@ function renderSlimmingCurrentJobControls() {
     ? {
       jobID: activeAction.dataset.slimmingJobActionId,
       action: activeAction.dataset.action,
+      key: activeAction.dataset.slimmingJobActionKey,
     }
     : null;
   const restoreFocusedAction = () => {
     if (!focusedAction) return;
-    const matching = elements.slimmingCurrentJobActions.querySelector(
+    const stable = [...elements.slimmingCurrentJobActions.children].find(
+      (button) => button.dataset.slimmingJobActionKey === focusedAction.key
+    );
+    if (stable?.disabled) return;
+    const matching = stable || elements.slimmingCurrentJobActions.querySelector(
       `[data-slimming-job-action-id="${CSS.escape(focusedAction.jobID)}"]`
       + `[data-action="${CSS.escape(focusedAction.action)}"]:not(:disabled)`
     );
@@ -26453,12 +26529,12 @@ function renderSlimmingCurrentJobControls() {
   };
   const job = selectedSlimmingJob();
   clearElement(elements.slimmingCurrentJobProgress);
-  clearElement(elements.slimmingCurrentJobActions);
   elements.slimmingCurrentJobProgress.classList.add("hidden");
   elements.slimmingCurrentJobState.className = "slimming-current-job-state";
   if (!job) {
     elements.slimmingCurrentJobSummary.textContent = "尚未选择分析记录。";
     elements.slimmingCurrentJobState.textContent = "—";
+    reconcileSlimmingJobActionButtons(elements.slimmingCurrentJobActions, []);
     restoreFocusedAction();
     return;
   }
@@ -26472,35 +26548,10 @@ function renderSlimmingCurrentJobControls() {
     appendSlimmingScanProgress(elements.slimmingCurrentJobProgress, job);
   }
 
-  const mutating = state.slimming.jobMutatingIDs.has(job.id);
-  const locked = !state.online || mutating || Boolean(state.slimming.appending);
-  for (const action of job.availableActions || []) {
-    if (!["pause", "resume"].includes(action)) continue;
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "button button-compact write-action";
-    button.dataset.slimmingJobActionId = job.id;
-    button.dataset.action = action;
-    button.disabled = locked;
-    button.textContent = mutating
-      ? (action === "pause" ? "正在暂停…" : "正在继续…")
-      : (action === "pause" ? "暂停当前" : "继续当前");
-    button.title = action === "pause"
-      ? "暂停当前分析并保留已经完成的进度"
-      : "从保存的进度继续当前分析";
-    elements.slimmingCurrentJobActions.append(button);
-  }
-  if (job.state !== "running") {
-    const remove = document.createElement("button");
-    remove.type = "button";
-    remove.className = "button button-compact button-danger write-action";
-    remove.dataset.slimmingJobActionId = job.id;
-    remove.dataset.action = "deleteRecord";
-    remove.disabled = locked;
-    remove.textContent = "删除当前记录";
-    remove.title = "只删除分析记录和结果，不会删除任何原始媒体";
-    elements.slimmingCurrentJobActions.append(remove);
-  }
+  reconcileSlimmingJobActionButtons(
+    elements.slimmingCurrentJobActions,
+    slimmingJobActionDescriptors(job, { surface: "options" })
+  );
   restoreFocusedAction();
 }
 
@@ -26518,6 +26569,23 @@ function focusSlimmingCurrentJobAction(jobID, preferredAction = null) {
     );
     (preferred || fallback || elements.closeSlimmingAnalysisOptionsButton)
       ?.focus({ preventScroll: true });
+  });
+}
+
+function focusSlimmingNavigatorJobAction(jobID, preferredAction = null) {
+  requestAnimationFrame(() => {
+    if (elements.slimmingWorkspace.classList.contains("hidden")) return;
+    const preferred = preferredAction
+      ? elements.slimmingJobActions.querySelector(
+        `[data-slimming-job-action-id="${CSS.escape(jobID)}"]`
+        + `[data-action="${CSS.escape(preferredAction)}"]`
+      )
+      : null;
+    const fallback = elements.slimmingJobActions.querySelector(
+      "[data-slimming-job-action-id]:not(:disabled)"
+    );
+    if (preferred || fallback) (preferred || fallback).focus({ preventScroll: true });
+    else focusSelectedSlimmingJob();
   });
 }
 
@@ -31758,7 +31826,13 @@ async function applySlimmingJobAction(
           slimmingJobActionSurface: "options",
           slimmingJobAction: action,
         }
-        : { slimmingJobID: jobID },
+        : returnFocus === "navigator"
+          ? {
+            slimmingJobID: jobID,
+            slimmingJobActionSurface: "navigator",
+            slimmingJobAction: action,
+          }
+          : { slimmingJobID: jobID },
       action: () => applySlimmingJobAction(jobID, action, {
         returnFocus,
         confirmed: true,
@@ -31793,11 +31867,13 @@ async function applySlimmingJobAction(
     state.slimming.jobMutatingIDs.delete(jobID);
     renderSlimmingJobs();
     renderSlimmingCurrentJobControls();
+    const nextAction = succeeded
+      ? ({ pause: "resume", resume: "pause" }[action] || null)
+      : action;
     if (returnFocus === "options") {
-      const nextAction = succeeded
-        ? ({ pause: "resume", resume: "pause" }[action] || null)
-        : action;
       focusSlimmingCurrentJobAction(jobID, nextAction);
+    } else if (returnFocus === "navigator") {
+      focusSlimmingNavigatorJobAction(jobID, nextAction);
     } else if (returnFocus || action === "deleteRecord") {
       focusSelectedSlimmingJob();
     }
@@ -39507,7 +39583,11 @@ function bindEvents() {
   });
   elements.slimmingJobActions.addEventListener("click", (event) => {
     const button = event.target.closest("[data-slimming-job-action-id][data-action]");
-    if (button) applySlimmingJobAction(button.dataset.slimmingJobActionId, button.dataset.action);
+    if (button) applySlimmingJobAction(
+      button.dataset.slimmingJobActionId,
+      button.dataset.action,
+      { returnFocus: "navigator" }
+    );
   });
   elements.slimmingJobStatus.addEventListener("click", async (event) => {
     const activity = event.target.closest("[data-open-job-activity-id]");
