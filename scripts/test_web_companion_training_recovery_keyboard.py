@@ -43,6 +43,8 @@ def main():
     unexpected_dialogs = []
     activity_updated_at_ms = [int(time.time() * 1000)]
     activity_phase = ["completed"]
+    activity_completed_unit_count = [3]
+    activity_second_tag_phase = ["failed"]
     toolbar_activity_phase = ["completed"]
 
     runs = [
@@ -338,7 +340,7 @@ def main():
                         "mediaKind": "image",
                         "method": "personalCentroid",
                         "phase": activity_phase[0],
-                        "completedUnitCount": 3,
+                        "completedUnitCount": activity_completed_unit_count[0],
                         "totalUnitCount": 3,
                         "sampleCount": None,
                         "errorCode": "staleSnapshot",
@@ -349,7 +351,17 @@ def main():
                         "updatedAtMs": activity_updated_at_ms[0],
                         "tagActivities": [
                             {"tagID": TAG_ID, "displayName": "猫", "phase": "succeeded", "sampleCount": 12},
-                            {"tagID": SECOND_TAG_ID, "displayName": "旅行", "phase": "failed", "sampleCount": 8, "errorCode": "staleSnapshot"},
+                            {
+                                "tagID": SECOND_TAG_ID,
+                                "displayName": "旅行",
+                                "phase": activity_second_tag_phase[0],
+                                "sampleCount": 8,
+                                "errorCode": (
+                                    "staleSnapshot"
+                                    if activity_second_tag_phase[0] == "failed"
+                                    else None
+                                ),
+                            },
                             {"tagID": THIRD_TAG_ID, "displayName": "家人", "phase": "skipped", "errorCode": "insufficientSamples"},
                         ],
                     }],
@@ -981,6 +993,53 @@ def main():
         cancel_training = page.locator(
             f'[data-training-activity-id="{BATCH_ID}"][data-action="cancel"]'
         )
+        cancel_training.focus()
+        page.evaluate(
+            """operationID => {
+              window.__imageAllTrainingActivityAction = document.querySelector(
+                `[data-training-activity-id="${CSS.escape(operationID)}"][data-action="cancel"]`
+              );
+            }""",
+            BATCH_ID,
+        )
+        activity_completed_unit_count[0] = 2
+        page.evaluate("loadTrainingWorkspace({ quiet: true })")
+        assert "2 / 3 个标签" in page.locator(".training-activity-summary").inner_text()
+        training_activity_refresh_after = page.evaluate(
+            """operationID => {
+              const action = document.querySelector(
+                `[data-training-activity-id="${CSS.escape(operationID)}"][data-action="cancel"]`
+              );
+              return {
+                actionStable: action === window.__imageAllTrainingActivityAction,
+                focusedOperationID: document.activeElement?.dataset.trainingActivityId || null,
+                focusedAction: document.activeElement?.dataset.action || null,
+              };
+            }""",
+            BATCH_ID,
+        )
+        assert training_activity_refresh_after == {
+            "actionStable": True,
+            "focusedOperationID": BATCH_ID,
+            "focusedAction": "cancel",
+        }, training_activity_refresh_after
+        activity_completed_unit_count[0] = 3
+        activity_phase[0] = "completed"
+        page.evaluate("loadTrainingWorkspace({ quiet: true })")
+        page.wait_for_function(
+            "operationID => document.activeElement?.dataset.trainingBatchReconfigureId === operationID "
+            "&& document.querySelector('#trainingActivityStrip')?.contains(document.activeElement)",
+            arg=BATCH_ID,
+        )
+        page.evaluate("elements.toast.classList.add('hidden')")
+        page.screenshot(
+            path="/tmp/imageall-training-activity-refresh-continuity.png",
+            full_page=True,
+        )
+        activity_completed_unit_count[0] = 2
+        activity_phase[0] = "preparingEmbeddings"
+        page.evaluate("loadTrainingWorkspace({ quiet: true })")
+        cancel_training.focus()
         cancel_training.click()
         page.locator("#confirmDialog[open]").wait_for()
         assert page.locator("#confirmDialog").get_attribute("data-tone") == "warning"
@@ -1023,7 +1082,47 @@ def main():
         page.evaluate("loadTrainingWorkspace({ quiet: true })")
         assert page.locator("#trainingActivityStrip").is_hidden()
         assert page.locator("#trainingBatchHistory").is_visible()
-        page.locator(f'[data-training-batch-view-id="{BATCH_ID}"]').click()
+        batch_view = page.locator(f'[data-training-batch-view-id="{BATCH_ID}"]')
+        batch_view.focus()
+        page.evaluate(
+            """operationID => {
+              window.__imageAllTrainingBatchCard = document.querySelector(
+                `[data-training-batch-id="${CSS.escape(operationID)}"]`
+              );
+              window.__imageAllTrainingBatchAction = document.querySelector(
+                `[data-training-batch-view-id="${CSS.escape(operationID)}"]`
+              );
+            }""",
+            BATCH_ID,
+        )
+        activity_second_tag_phase[0] = "succeeded"
+        page.evaluate("loadTrainingWorkspace({ quiet: true })")
+        assert "完成 2" in page.locator(".training-batch-card").inner_text()
+        training_batch_refresh_after = page.evaluate(
+            """operationID => {
+              const card = document.querySelector(
+                `[data-training-batch-id="${CSS.escape(operationID)}"]`
+              );
+              const action = document.querySelector(
+                `[data-training-batch-view-id="${CSS.escape(operationID)}"]`
+              );
+              return {
+                cardStable: card === window.__imageAllTrainingBatchCard,
+                actionStable: action === window.__imageAllTrainingBatchAction,
+                focusedBatchViewID: document.activeElement?.dataset.trainingBatchViewId || null,
+              };
+            }""",
+            BATCH_ID,
+        )
+        assert training_batch_refresh_after == {
+            "cardStable": True,
+            "actionStable": True,
+            "focusedBatchViewID": BATCH_ID,
+        }, training_batch_refresh_after
+        activity_second_tag_phase[0] = "failed"
+        page.evaluate("loadTrainingWorkspace({ quiet: true })")
+        assert "完成 1" in page.locator(".training-batch-card").inner_text()
+        batch_view.click()
         assert page.locator(
             f'[data-training-run-id="{PERSONAL_RUN_ID}"]'
         ).get_attribute("aria-selected") == "true"

@@ -23623,6 +23623,106 @@ function cycleTrainingRunScope() {
   setTrainingRunScope(scopes[(index + 1) % scopes.length], { focus: true });
 }
 
+function syncTrainingBatchCard(card, activity) {
+  const presentation = trainingBatchPresentation(activity);
+  const method = trainingMethodPresentation(activity.method, activity.mediaKind);
+  const hasRun = state.training.runs.some(
+    (run) => trainingRunBatchID(run) === activity.operationID
+  );
+  const fingerprint = JSON.stringify({ activity, hasRun });
+  if (card.dataset.trainingFingerprint === fingerprint) return;
+  card.className = `training-batch-card ${presentation.className}`;
+  card.dataset.trainingBatchId = activity.operationID;
+  let heading = card.querySelector(":scope > header");
+  if (!heading) {
+    heading = document.createElement("header");
+    const copy = document.createElement("div");
+    const title = document.createElement("strong");
+    const date = document.createElement("span");
+    date.className = "secondary";
+    copy.append(title, date);
+    const status = document.createElement("span");
+    heading.append(copy, status);
+    const summary = document.createElement("p");
+    const tags = document.createElement("div");
+    tags.className = "training-batch-tags";
+    const actions = document.createElement("footer");
+    card.append(heading, summary, tags, actions);
+  }
+  const title = heading.querySelector("strong");
+  const date = heading.querySelector(".secondary");
+  const status = heading.querySelector(":scope > .training-batch-state, :scope > span");
+  title.textContent = method.title;
+  date.textContent = trainingDate(Number(activity.acceptedAtMs || activity.updatedAtMs));
+  status.className = `training-batch-state ${presentation.className}`;
+  status.textContent = presentation.label;
+
+  const summary = card.querySelector(":scope > p");
+  const countParts = [
+    presentation.counts.succeeded ? `完成 ${presentation.counts.succeeded}` : "",
+    presentation.counts.skipped ? `跳过 ${presentation.counts.skipped}` : "",
+    presentation.counts.failed ? `失败 ${presentation.counts.failed}` : "",
+    presentation.counts.cancelled ? `取消 ${presentation.counts.cancelled}` : "",
+    presentation.counts.pending ? `处理中 ${presentation.counts.pending}` : "",
+  ].filter(Boolean);
+  summary.textContent = countParts.join(" · ") || `${activity.totalUnitCount || 0} 个标签`;
+
+  const tags = card.querySelector(":scope > .training-batch-tags");
+  clearElement(tags);
+  for (const tag of (activity.tagActivities || []).slice(0, 8)) {
+    const chip = document.createElement("span");
+    chip.className = tag.phase;
+    chip.textContent = tag.displayName || tag.tagID.slice(0, 8);
+    chip.title = `${chip.textContent} · ${tag.phase}`;
+    tags.append(chip);
+  }
+  if ((activity.tagActivities || []).length > 8) {
+    const more = document.createElement("span");
+    more.textContent = `＋${activity.tagActivities.length - 8}`;
+    tags.append(more);
+  }
+
+  const actions = card.querySelector(":scope > footer");
+  const retainedActions = new Set();
+  if (hasRun) {
+    const view = actions.querySelector(
+      `:scope > [data-training-batch-view-id="${CSS.escape(activity.operationID)}"]`
+    ) || document.createElement("button");
+    view.type = "button";
+    view.className = "button button-compact";
+    view.dataset.trainingBatchViewId = activity.operationID;
+    view.textContent = "查看 Run";
+    configurePersistentHelp(view, {
+      title: "查看批次 Run",
+      detail: "定位到这个批次已经生成的训练记录；不会重新运行或改变模型发布状态。",
+      kind: "training",
+    });
+    retainedActions.add(view);
+    if (!actions.contains(view)) actions.append(view);
+  }
+  const unfinished = (activity.tagActivities || []).some((tag) => tag.phase !== "succeeded");
+  if (!isActiveTrainingActivity(activity) && unfinished) {
+    const retry = actions.querySelector(
+      `:scope > [data-training-batch-reconfigure-id="${CSS.escape(activity.operationID)}"]`
+    ) || document.createElement("button");
+    retry.type = "button";
+    retry.className = "button button-compact button-primary";
+    retry.dataset.trainingBatchReconfigureId = activity.operationID;
+    retry.textContent = "重新处理未完成标签";
+    configurePersistentHelp(retry, {
+      title: "重新处理未完成标签",
+      detail: "只把失败、跳过、取消或未开始的标签带回训练设置；已经成功发布的标签保持不变。",
+      kind: "training",
+    });
+    retainedActions.add(retry);
+    if (!actions.contains(retry)) actions.append(retry);
+  }
+  for (const button of actions.querySelectorAll(":scope > button")) {
+    if (!retainedActions.has(button)) button.remove();
+  }
+  card.dataset.trainingFingerprint = fingerprint;
+}
+
 function renderTrainingBatchHistory() {
   const batches = (state.training.activities || [])
     .filter((activity) =>
@@ -23633,83 +23733,18 @@ function renderTrainingBatchHistory() {
     .slice(0, 12);
   elements.trainingBatchHistory.classList.toggle("hidden", batches.length === 0);
   elements.trainingBatchCount.textContent = String(batches.length);
-  clearElement(elements.trainingBatchList);
-  for (const activity of batches) {
-    const presentation = trainingBatchPresentation(activity);
-    const method = trainingMethodPresentation(activity.method, activity.mediaKind);
-    const card = document.createElement("article");
-    card.className = `training-batch-card ${presentation.className}`;
-    card.dataset.trainingBatchId = activity.operationID;
-
-    const heading = document.createElement("header");
-    const copy = document.createElement("div");
-    const title = document.createElement("strong");
-    title.textContent = method.title;
-    const date = document.createElement("span");
-    date.className = "secondary";
-    date.textContent = trainingDate(Number(activity.acceptedAtMs || activity.updatedAtMs));
-    copy.append(title, date);
-    const status = document.createElement("span");
-    status.className = `training-batch-state ${presentation.className}`;
-    status.textContent = presentation.label;
-    heading.append(copy, status);
-
-    const summary = document.createElement("p");
-    const countParts = [
-      presentation.counts.succeeded ? `完成 ${presentation.counts.succeeded}` : "",
-      presentation.counts.skipped ? `跳过 ${presentation.counts.skipped}` : "",
-      presentation.counts.failed ? `失败 ${presentation.counts.failed}` : "",
-      presentation.counts.cancelled ? `取消 ${presentation.counts.cancelled}` : "",
-      presentation.counts.pending ? `处理中 ${presentation.counts.pending}` : "",
-    ].filter(Boolean);
-    summary.textContent = countParts.join(" · ") || `${activity.totalUnitCount || 0} 个标签`;
-
-    const tags = document.createElement("div");
-    tags.className = "training-batch-tags";
-    for (const tag of (activity.tagActivities || []).slice(0, 8)) {
-      const chip = document.createElement("span");
-      chip.className = tag.phase;
-      chip.textContent = tag.displayName || tag.tagID.slice(0, 8);
-      chip.title = `${chip.textContent} · ${tag.phase}`;
-      tags.append(chip);
-    }
-    if ((activity.tagActivities || []).length > 8) {
-      const more = document.createElement("span");
-      more.textContent = `＋${activity.tagActivities.length - 8}`;
-      tags.append(more);
-    }
-
-    const actions = document.createElement("footer");
-    if (state.training.runs.some((run) => trainingRunBatchID(run) === activity.operationID)) {
-      const view = document.createElement("button");
-      view.type = "button";
-      view.className = "button button-compact";
-      view.dataset.trainingBatchViewId = activity.operationID;
-      view.textContent = "查看 Run";
-      configurePersistentHelp(view, {
-        title: "查看批次 Run",
-        detail: "定位到这个批次已经生成的训练记录；不会重新运行或改变模型发布状态。",
-        kind: "training",
-      });
-      actions.append(view);
-    }
-    const unfinished = (activity.tagActivities || []).some((tag) => tag.phase !== "succeeded");
-    if (!isActiveTrainingActivity(activity) && unfinished) {
-      const retry = document.createElement("button");
-      retry.type = "button";
-      retry.className = "button button-compact button-primary";
-      retry.dataset.trainingBatchReconfigureId = activity.operationID;
-      retry.textContent = "重新处理未完成标签";
-      configurePersistentHelp(retry, {
-        title: "重新处理未完成标签",
-        detail: "只把失败、跳过、取消或未开始的标签带回训练设置；已经成功发布的标签保持不变。",
-        kind: "training",
-      });
-      actions.append(retry);
-    }
-    card.append(heading, summary, tags, actions);
-    elements.trainingBatchList.append(card);
+  const existingCards = new Map(
+    [...elements.trainingBatchList.querySelectorAll("[data-training-batch-id]")]
+      .map((card) => [card.dataset.trainingBatchId, card])
+  );
+  for (const [index, activity] of batches.entries()) {
+    const card = existingCards.get(activity.operationID) || document.createElement("article");
+    existingCards.delete(activity.operationID);
+    syncTrainingBatchCard(card, activity);
+    const currentCard = elements.trainingBatchList.children[index] || null;
+    if (currentCard !== card) elements.trainingBatchList.insertBefore(card, currentCard);
   }
+  for (const card of existingCards.values()) card.remove();
 }
 
 function renderTrainingActivities() {
@@ -23721,11 +23756,30 @@ function renderTrainingActivities() {
   elements.trainingActivityStrip.classList.toggle("completed", activity?.phase === "completed");
   elements.trainingActivityStrip.classList.toggle("cancelled", activity?.phase === "cancelled");
   if (!activity) return;
-  clearElement(elements.trainingActivityStrip);
+  const operationChanged = elements.trainingActivityStrip.dataset.trainingActivityOperationId
+    !== activity.operationID;
+  if (operationChanged) {
+    clearElement(elements.trainingActivityStrip);
+    delete elements.trainingActivityStrip.dataset.trainingActivityOperationId;
+  }
   const copy = trainingMethodPresentation(activity.method, activity.mediaKind);
-  const summary = document.createElement("div");
-  summary.className = "training-activity-summary";
-  const heading = document.createElement("strong");
+  let summary = elements.trainingActivityStrip.querySelector(":scope > .training-activity-summary");
+  if (!summary) {
+    summary = document.createElement("div");
+    summary.className = "training-activity-summary";
+    const progress = document.createElement("span");
+    progress.className = "training-activity-progress";
+    const fill = document.createElement("span");
+    progress.append(fill);
+    const heading = document.createElement("strong");
+    const detail = document.createElement("span");
+    summary.append(progress, heading, detail);
+    elements.trainingActivityStrip.append(summary);
+  }
+  const progress = summary.querySelector(":scope > .training-activity-progress");
+  const fill = progress.querySelector(":scope > span");
+  const heading = summary.querySelector(":scope > strong");
+  const detail = summary.querySelector(":scope > span:not(.training-activity-progress)");
   const phaseText = {
     preparingSamples: "正在准备样本",
     preparingEmbeddings: "正在准备 AI 特征",
@@ -23735,7 +23789,6 @@ function renderTrainingActivities() {
     cancelled: "训练已取消",
   }[activity.phase] || "训练处理中";
   heading.textContent = `${copy.title} · ${phaseText}`;
-  const detail = document.createElement("span");
   const tagActivities = activity.tagActivities || [];
   const succeededCount = tagActivities.filter((tag) => tag.phase === "succeeded").length;
   const skippedCount = tagActivities.filter((tag) => tag.phase === "skipped").length;
@@ -23749,17 +23802,15 @@ function renderTrainingActivities() {
     + (activity.sampleCount ? ` · 当前 ${activity.sampleCount} 个样本` : "")
     + (resultParts.length ? ` · ${resultParts.join(" · ")}` : "")
     + (activity.phase === "failed" && activity.errorCode ? ` · ${activity.errorCode}` : "");
-  const progress = document.createElement("span");
-  progress.className = "training-activity-progress";
-  const fill = document.createElement("span");
   const ratio = activity.phase === "completed"
     ? 1
     : Math.max(0.08, activity.completedUnitCount / Math.max(activity.totalUnitCount, 1));
   fill.style.width = `${Math.round(ratio * 100)}%`;
-  progress.append(fill);
-  summary.append(progress, heading, detail);
+  const retainedActions = new Set();
   if (activity.availableActions?.includes("cancel")) {
-    const cancel = document.createElement("button");
+    const cancel = summary.querySelector(
+      `:scope > [data-training-activity-id="${CSS.escape(activity.operationID)}"][data-action="cancel"]`
+    ) || document.createElement("button");
     cancel.type = "button";
     cancel.className = "button button-compact button-danger write-action";
     cancel.dataset.trainingActivityId = activity.operationID;
@@ -23771,14 +23822,17 @@ function renderTrainingActivities() {
       detail: "Mac 会停止尚未完成的标签；已经训练并发布成功的标签继续保留。确认前不会提交取消请求。",
       kind: "training",
     });
-    summary.append(cancel);
+    retainedActions.add(cancel);
+    if (!summary.contains(cancel)) summary.append(cancel);
   }
   const unfinishedTags = tagActivities.filter(
     (tag) => !["succeeded"].includes(tag.phase)
   );
   if (["completed", "failed", "cancelled"].includes(activity.phase)
     && unfinishedTags.length) {
-    const retry = document.createElement("button");
+    const retry = summary.querySelector(
+      `:scope > [data-training-batch-reconfigure-id="${CSS.escape(activity.operationID)}"]`
+    ) || document.createElement("button");
     retry.type = "button";
     retry.className = "button button-compact button-primary";
     retry.dataset.trainingBatchReconfigureId = activity.operationID;
@@ -23788,13 +23842,23 @@ function renderTrainingActivities() {
       detail: "只回填这个批次中尚未成功的标签，保留已经完成的标签；提交前仍可调整范围。",
       kind: "training",
     });
-    summary.append(retry);
+    retainedActions.add(retry);
+    if (!summary.contains(retry)) summary.append(retry);
   }
-  elements.trainingActivityStrip.append(summary);
+  for (const button of summary.querySelectorAll(":scope > button")) {
+    if (!retainedActions.has(button)) button.remove();
+  }
 
   if (tagActivities.length) {
-    const list = document.createElement("ol");
-    list.className = "training-tag-activity-list";
+    let list = elements.trainingActivityStrip.querySelector(
+      ":scope > .training-tag-activity-list"
+    );
+    if (!list) {
+      list = document.createElement("ol");
+      list.className = "training-tag-activity-list";
+      elements.trainingActivityStrip.append(list);
+    }
+    clearElement(list);
     const phaseCopy = {
       pending: "等待",
       preparingSamples: "准备样本",
@@ -23820,8 +23884,12 @@ function renderTrainingActivities() {
       item.append(mark, name, status);
       list.append(item);
     }
-    elements.trainingActivityStrip.append(list);
+  } else {
+    elements.trainingActivityStrip.querySelector(
+      ":scope > .training-tag-activity-list"
+    )?.remove();
   }
+  elements.trainingActivityStrip.dataset.trainingActivityOperationId = activity.operationID;
 }
 
 function openTrainingSetupForActivity(operationID) {
@@ -24626,6 +24694,32 @@ async function loadTrainingWorkspace({ quiet = false } = {}) {
   const restoreFocusedRunID = elements.trainingRunList.contains(document.activeElement)
     ? (activeRunRow?.dataset.trainingRunId || state.training.selectedRunID)
     : null;
+  const activeActivityAction = elements.trainingActivityStrip.contains(document.activeElement)
+    ? document.activeElement?.closest?.(
+      "[data-training-activity-id][data-action], [data-training-batch-reconfigure-id]"
+    )
+    : null;
+  const restoreFocusedActivityAction = activeActivityAction
+    ? {
+      operationID: activeActivityAction.dataset.trainingActivityId
+        || activeActivityAction.dataset.trainingBatchReconfigureId,
+      action: activeActivityAction.dataset.action || "reconfigure",
+    }
+    : null;
+  const activeBatchAction = elements.trainingBatchList.contains(document.activeElement)
+    ? document.activeElement?.closest?.(
+      "[data-training-batch-view-id], [data-training-batch-reconfigure-id]"
+    )
+    : null;
+  const restoreFocusedBatchAction = activeBatchAction
+    ? {
+      attribute: activeBatchAction.dataset.trainingBatchViewId
+        ? "data-training-batch-view-id"
+        : "data-training-batch-reconfigure-id",
+      operationID: activeBatchAction.dataset.trainingBatchViewId
+        || activeBatchAction.dataset.trainingBatchReconfigureId,
+    }
+    : null;
   const generation = ++state.training.requestGeneration;
   state.training.loading = true;
   renderTrainingWorkspace({ preserveContent: trainingWorkspaceCanPreserveContent() });
@@ -24678,6 +24772,38 @@ async function loadTrainingWorkspace({ quiet = false } = {}) {
           elements.reviewWorkspace,
           () => !elements.trainingWorkspace.classList.contains("hidden")
         );
+      } else if (restoreFocusedActivityAction) {
+        const operationID = CSS.escape(restoreFocusedActivityAction.operationID);
+        const primarySelector = restoreFocusedActivityAction.action === "reconfigure"
+          ? `[data-training-batch-reconfigure-id="${operationID}"]`
+          : `[data-training-activity-id="${operationID}"]`
+            + `[data-action="${CSS.escape(restoreFocusedActivityAction.action)}"]`;
+        const fallbackSelector = restoreFocusedActivityAction.action === "reconfigure"
+          ? `[data-training-activity-id="${operationID}"][data-action="cancel"]`
+          : `[data-training-batch-reconfigure-id="${operationID}"]`;
+        const activityAction = elements.trainingActivityStrip.querySelector(primarySelector)
+          || elements.trainingActivityStrip.querySelector(fallbackSelector);
+        const batchAction = elements.trainingBatchList.querySelector(
+          `[data-training-batch-view-id="${operationID}"]`
+        ) || elements.trainingBatchList.querySelector(
+          `[data-training-batch-reconfigure-id="${operationID}"]`
+        );
+        const action = activityAction?.offsetParent !== null ? activityAction : batchAction;
+        (action && !action.disabled ? action : elements.refreshTrainingButton)
+          .focus({ preventScroll: true });
+      } else if (restoreFocusedBatchAction) {
+        const primaryAction = elements.trainingBatchList.querySelector(
+          `[${restoreFocusedBatchAction.attribute}="${CSS.escape(restoreFocusedBatchAction.operationID)}"]`
+        );
+        const operationID = CSS.escape(restoreFocusedBatchAction.operationID);
+        const fallbackAction = elements.trainingBatchList.querySelector(
+          `[data-training-batch-view-id="${operationID}"]`
+        ) || elements.trainingBatchList.querySelector(
+          `[data-training-batch-reconfigure-id="${operationID}"]`
+        );
+        const action = primaryAction || fallbackAction;
+        (action && !action.disabled ? action : elements.refreshTrainingButton)
+          .focus({ preventScroll: true });
       } else if (restoreFocusedRunID) {
         const nextFocusID = visibleTrainingRuns().some((run) => run.id === restoreFocusedRunID)
           ? restoreFocusedRunID
