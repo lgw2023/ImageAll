@@ -1397,6 +1397,7 @@ def main(*, inspector_actions_only=False):
             "item.tagID === tagID && item.decision === 'accepted')",
             arg=CAT_TAG_ID,
         )
+        page.mouse.move(2, 2)
         sidebar_cat_chip.hover()
         page.locator("#persistentHelp:not(.hidden)").wait_for(timeout=2_000)
         assert "当前：并集筛选" in page.locator("#persistentHelpDetail").inner_text()
@@ -1438,6 +1439,7 @@ def main(*, inspector_actions_only=False):
             arg=CAT_TAG_ID,
         )
         page.locator("#tagNavigationSearch").fill("猫")
+        page.mouse.move(2, 2)
         sidebar_cat_chip.hover()
         page.locator("#persistentHelp:not(.hidden)").wait_for(timeout=2_000)
         assert "正在搜索标签" in page.locator("#persistentHelpDetail").inner_text()
@@ -1451,6 +1453,7 @@ def main(*, inspector_actions_only=False):
         page.locator("#sidebarToggle").click()
         page.locator("#sourceSidebar.open").wait_for()
         sidebar_cat_chip.scroll_into_view_if_needed()
+        page.mouse.move(389, 2)
         sidebar_cat_chip.hover()
         page.locator("#persistentHelp:not(.hidden)").wait_for(timeout=2_000)
         page.wait_for_timeout(150)
@@ -2028,6 +2031,7 @@ def main(*, inspector_actions_only=False):
         assert narrow_help_bounds["y"] >= 8, narrow_help_bounds
         assert narrow_help_bounds["y"] + narrow_help_bounds["height"] <= 836, narrow_help_bounds
         page.screenshot(path="/tmp/imageall-selection-tag-help-390.png", full_page=False)
+        page.locator("#selectionTagSearch").focus()
         page.mouse.move(2, 2)
         page.locator("#persistentHelp").wait_for(state="hidden")
         page.screenshot(path="/tmp/imageall-selection-inline-tag-390.png", full_page=True)
@@ -2049,11 +2053,74 @@ def main(*, inspector_actions_only=False):
             SCENE_GROUP_ID,
         )
         scene_toggle.click()
+        page.evaluate(
+            f"""() => {{
+              const container = document.querySelector("#selectionInspectorTags");
+              const subject = container.querySelector(
+                '[data-inspector-tag-group-id="{SUBJECT_GROUP_ID}"]'
+              );
+              const scene = container.querySelector(
+                '[data-inspector-tag-group-id="{SCENE_GROUP_ID}"]'
+              );
+              const cat = container.querySelector(
+                '[data-tag-chip-action][data-tag-id="{CAT_TAG_ID}"]'
+              );
+              const travel = container.querySelector(
+                '[data-tag-chip-action][data-tag-id="{TRAVEL_TAG_ID}"]'
+              );
+              window.__stableSelectionInspectorTagFrame = {{
+                container,
+                subject,
+                scene,
+                cat,
+                travel,
+                catRow: cat.closest(".selection-tag-row"),
+                travelRow: travel.closest(".selection-tag-row"),
+                catActions: [...cat.closest(".selection-tag-row").querySelectorAll(
+                  '[data-action][data-tag-id]'
+                )],
+                travelActions: [...travel.closest(".selection-tag-row").querySelectorAll(
+                  '[data-action][data-tag-id]'
+                )],
+              }};
+            }}"""
+        )
         travel_chip.click()
         page.wait_for_function(
             "(tagID) => document.activeElement?.dataset.tagId === tagID",
             arg=TRAVEL_TAG_ID,
         )
+        stable_selection_inspector = page.evaluate(
+            f"""() => {{
+              const frame = window.__stableSelectionInspectorTagFrame;
+              const container = document.querySelector("#selectionInspectorTags");
+              const subject = container.querySelector(
+                '[data-inspector-tag-group-id="{SUBJECT_GROUP_ID}"]'
+              );
+              const scene = container.querySelector(
+                '[data-inspector-tag-group-id="{SCENE_GROUP_ID}"]'
+              );
+              const cat = container.querySelector(
+                '[data-tag-chip-action][data-tag-id="{CAT_TAG_ID}"]'
+              );
+              const travel = container.querySelector(
+                '[data-tag-chip-action][data-tag-id="{TRAVEL_TAG_ID}"]'
+              );
+              return {{
+                container: container === frame.container,
+                subject: subject === frame.subject,
+                scene: scene === frame.scene,
+                cat: cat === frame.cat,
+                travel: travel === frame.travel,
+                catRow: cat.closest(".selection-tag-row") === frame.catRow,
+                travelRow: travel.closest(".selection-tag-row") === frame.travelRow,
+                catActions: frame.catActions.every((button) => button.isConnected),
+                travelActions: frame.travelActions.every((button) => button.isConnected),
+                focus: document.activeElement === travel,
+              }};
+            }}"""
+        )
+        assert all(stable_selection_inspector.values()), stable_selection_inspector
         assert submitted_tag_decisions[-1]["action"] == "accept"
         assert set(submitted_tag_decisions[-1]["assetIDs"]) == set(ASSET_IDS)
         travel_chip.click(button="right")

@@ -8259,50 +8259,157 @@ function inspectorTagGroupSections(tags) {
   return sections;
 }
 
-function appendInspectorTagGroups(container, tags, appendTagRow) {
-  const sections = inspectorTagGroupSections(tags);
-  for (const section of sections) {
-    const collapsed = state.layout.collapsedTagGroupIDs.has(section.id);
-    const group = document.createElement("section");
+const inspectorTagNodeCaches = new WeakMap();
+
+function inspectorTagNodeCache(container) {
+  let cache = inspectorTagNodeCaches.get(container);
+  if (!cache) {
+    cache = { groups: new Map(), rows: new Map() };
+    inspectorTagNodeCaches.set(container, cache);
+  }
+  return cache;
+}
+
+function setInspectorTagText(element, text) {
+  if (element.textContent !== text) element.textContent = text;
+}
+
+function setInspectorTagAttribute(element, name, value) {
+  if (element.getAttribute(name) !== value) element.setAttribute(name, value);
+}
+
+function setInspectorTagData(element, key, value) {
+  if (element.dataset[key] !== value) element.dataset[key] = value;
+}
+
+function toggleInspectorTagClass(element, className, enabled) {
+  if (element.classList.contains(className) !== enabled) {
+    element.classList.toggle(className, enabled);
+  }
+}
+
+function syncInspectorTagGroup(group, section) {
+  if (!group) {
+    group = document.createElement("section");
     group.className = "inspector-tag-group";
-    group.dataset.inspectorTagGroupId = section.id;
-    if (groupByID(section.id)) group.dataset.inspectorTagDropGroupId = section.id;
-    const toggle = document.createElement("button");
+  }
+  setInspectorTagData(group, "inspectorTagGroupId", section.id);
+  if (groupByID(section.id)) {
+    setInspectorTagData(group, "inspectorTagDropGroupId", section.id);
+  } else if (group.hasAttribute("data-inspector-tag-drop-group-id")) {
+    group.removeAttribute("data-inspector-tag-drop-group-id");
+  }
+  const collapsed = state.layout.collapsedTagGroupIDs.has(section.id);
+
+  let toggle = group.querySelector(":scope > .inspector-tag-group-toggle");
+  if (!toggle) {
+    toggle = document.createElement("button");
     toggle.type = "button";
     toggle.className = "inspector-tag-group-toggle";
-    toggle.dataset.inspectorTagGroupToggle = section.id;
-    toggle.setAttribute("aria-expanded", String(!collapsed));
-    toggle.setAttribute(
-      "aria-keyshortcuts",
-      "ArrowUp ArrowDown Home End Shift+F10 ContextMenu"
-    );
-    toggle.title = collapsed ? `展开“${section.displayName}”` : `折叠“${section.displayName}”`;
-    toggle.dataset.helpTitle = `标签分组 · ${section.displayName}`;
-    toggle.dataset.helpKind = "tag";
-    toggle.dataset.helpDetail = [
-      collapsed
-        ? `当前已折叠，点击展开 ${section.tags.length} 个标签。`
-        : `当前已展开，点击暂时隐藏 ${section.tags.length} 个标签。`,
-      "上/下或 Home/End 在分组之间移动。",
-      groupByID(section.id)?.isSystem === false
-        ? "右键或 Shift-F10 可重命名或删除分组；删除只移动组内标签，不会归档标签。"
-        : "这是系统分组，不能重命名或删除。",
-    ].join("\n");
-    const chevron = document.createElement("span");
+    group.prepend(toggle);
+  }
+  setInspectorTagData(toggle, "inspectorTagGroupToggle", section.id);
+  setInspectorTagAttribute(toggle, "aria-expanded", String(!collapsed));
+  setInspectorTagAttribute(
+    toggle,
+    "aria-keyshortcuts",
+    "ArrowUp ArrowDown Home End Shift+F10 ContextMenu"
+  );
+  const title = collapsed
+    ? `展开“${section.displayName}”`
+    : `折叠“${section.displayName}”`;
+  if (toggle.title !== title) toggle.title = title;
+  setInspectorTagData(toggle, "helpTitle", `标签分组 · ${section.displayName}`);
+  setInspectorTagData(toggle, "helpKind", "tag");
+  setInspectorTagData(toggle, "helpDetail", [
+    collapsed
+      ? `当前已折叠，点击展开 ${section.tags.length} 个标签。`
+      : `当前已展开，点击暂时隐藏 ${section.tags.length} 个标签。`,
+    "上/下或 Home/End 在分组之间移动。",
+    groupByID(section.id)?.isSystem === false
+      ? "右键或 Shift-F10 可重命名或删除分组；删除只移动组内标签，不会归档标签。"
+      : "这是系统分组，不能重命名或删除。",
+  ].join("\n"));
+
+  let chevron = toggle.querySelector(":scope > span:first-child");
+  if (!chevron) {
+    chevron = document.createElement("span");
     chevron.setAttribute("aria-hidden", "true");
-    chevron.textContent = collapsed ? "›" : "⌄";
-    const title = document.createElement("strong");
-    title.textContent = section.displayName;
-    const count = document.createElement("span");
+    toggle.prepend(chevron);
+  }
+  setInspectorTagText(chevron, collapsed ? "›" : "⌄");
+  let name = toggle.querySelector(":scope > strong");
+  if (!name) {
+    name = document.createElement("strong");
+    toggle.append(name);
+  }
+  setInspectorTagText(name, section.displayName);
+  let count = toggle.querySelector(":scope > .secondary");
+  if (!count) {
+    count = document.createElement("span");
     count.className = "secondary";
-    count.textContent = String(section.tags.length);
-    toggle.append(chevron, title, count);
-    const rows = document.createElement("div");
+    toggle.append(count);
+  }
+  setInspectorTagText(count, String(section.tags.length));
+
+  let rows = group.querySelector(":scope > .inspector-tag-group-rows");
+  if (!rows) {
+    rows = document.createElement("div");
     rows.className = "inspector-tag-group-rows";
-    rows.classList.toggle("hidden", collapsed);
-    for (const tag of section.tags) appendTagRow(rows, tag);
-    group.append(toggle, rows);
-    container.append(group);
+    group.append(rows);
+  }
+  toggleInspectorTagClass(rows, "hidden", collapsed);
+  return { group, rows };
+}
+
+function reconcileInspectorTagGroups(container, tags, syncTagRow) {
+  const cache = inspectorTagNodeCache(container);
+  const existingGroups = new Map(
+    [...container.querySelectorAll(":scope > [data-inspector-tag-group-id]")]
+      .map((group) => [group.dataset.inspectorTagGroupId, group])
+  );
+  const existingRows = new Map(
+    [...container.querySelectorAll("[data-inspector-tag-row-id]")]
+      .map((row) => [row.dataset.inspectorTagRowId, row])
+  );
+  const wantedGroups = [];
+  const wantedRowLists = [];
+  for (const section of inspectorTagGroupSections(tags)) {
+    const synced = syncInspectorTagGroup(
+      existingGroups.get(section.id) || cache.groups.get(section.id),
+      section
+    );
+    cache.groups.set(section.id, synced.group);
+    const wantedRows = section.tags.map((tag) => {
+      const tagID = tag.tagID || tag.id;
+      const row = syncTagRow(
+        existingRows.get(tagID) || cache.rows.get(tagID),
+        tag
+      );
+      setInspectorTagData(row, "inspectorTagRowId", tagID);
+      cache.rows.set(tagID, row);
+      return row;
+    });
+    for (const [index, row] of wantedRows.entries()) {
+      if (synced.rows.children[index] !== row) {
+        synced.rows.insertBefore(row, synced.rows.children[index] || null);
+      }
+    }
+    wantedGroups.push(synced.group);
+    wantedRowLists.push({ rows: synced.rows, wantedRows });
+  }
+  for (const [index, group] of wantedGroups.entries()) {
+    if (container.children[index] !== group) {
+      container.insertBefore(group, container.children[index] || null);
+    }
+  }
+  for (const { rows, wantedRows } of wantedRowLists) {
+    for (const row of [...rows.children]) {
+      if (!wantedRows.includes(row)) row.remove();
+    }
+  }
+  for (const group of [...container.children]) {
+    if (!wantedGroups.includes(group)) group.remove();
   }
 }
 
@@ -15053,29 +15160,37 @@ async function showInspectorVideo(detail) {
   elements.previewVideo.load();
 }
 
-function createInspectorTagChip({
+function syncInspectorTagChip(chip, {
   tagID,
   displayName,
   decision,
   summary = "",
   batch = false,
   disabled = false,
+  surface = null,
+  searchActive = false,
+  baseTitle = null,
+  baseHelpDetail = null,
 }) {
-  const chip = document.createElement("button");
-  chip.type = "button";
-  chip.className = `inspector-tag-chip write-action${batch ? " batch" : ""}`;
-  chip.dataset.tagChipAction = "accept";
-  chip.dataset.tagId = tagID;
-  chip.dataset.decision = decision;
-  chip.setAttribute("aria-pressed", String(decision === "accepted"));
-  chip.setAttribute(
+  const created = !chip;
+  if (!chip) {
+    chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "inspector-tag-chip write-action";
+  }
+  toggleInspectorTagClass(chip, "batch", batch);
+  setInspectorTagData(chip, "tagChipAction", "accept");
+  setInspectorTagData(chip, "tagId", tagID);
+  setInspectorTagData(chip, "decision", decision);
+  setInspectorTagAttribute(chip, "aria-pressed", String(decision === "accepted"));
+  setInspectorTagAttribute(
+    chip,
     "aria-label",
     `${displayName}，${summary || ({ accepted: "已确认", rejected: "已拒绝", unknown: "未决定", mixed: "混合状态" }[decision] || decision)}；点击确认，右键清除`
   );
-  chip.title = `点击确认“${displayName}”；右键清除`;
-  chip.dataset.helpTitle = displayName;
-  chip.dataset.helpKind = "tag";
-  chip.dataset.helpDetail = [
+  setInspectorTagData(chip, "helpTitle", displayName);
+  setInspectorTagData(chip, "helpKind", "tag");
+  const defaultHelpDetail = [
     batch
       ? `所选项目：${summary || ({ accepted: "全部确认", rejected: "全部拒绝", unknown: "全部未决定", mixed: "状态不一致" }[decision] || decision)}。`
       : `当前项目：${({ accepted: "已确认", rejected: "已拒绝", unknown: "未决定", mixed: "状态不一致" }[decision] || decision)}。`,
@@ -15084,83 +15199,263 @@ function createInspectorTagChip({
       : "左键确认，右键清除；右侧按钮可确认、拒绝或设为未决定。",
     "聚焦后按 X 拒绝，按 Delete 清除。",
   ].join("\n");
-  chip.disabled = !state.online || state.tagMutating || disabled;
-  const icon = document.createElement("span");
-  icon.className = "inspector-tag-chip-icon";
-  icon.setAttribute("aria-hidden", "true");
-  icon.textContent = "#";
-  const copy = document.createElement("span");
-  copy.className = "inspector-tag-chip-copy";
-  const name = document.createElement("strong");
-  name.textContent = displayName;
-  copy.append(name);
-  if (summary) {
-    const detail = document.createElement("small");
-    detail.textContent = summary;
-    copy.append(detail);
+  const nextDisabled = !state.online || state.tagMutating || disabled;
+  if (chip.disabled !== nextDisabled) chip.disabled = nextDisabled;
+  const resolvedTitle = baseTitle || `点击确认“${displayName}”；右键清除`;
+  const resolvedHelpDetail = baseHelpDetail || defaultHelpDetail;
+  const reorderTitle = surface
+    ? (searchActive ? "；清除标签搜索后可拖放排序" : "；拖动可排序或移动分组")
+    : "";
+  const reorderHelpDetail = surface
+    ? (searchActive
+      ? "\n当前正在搜索；清除搜索后才能调整标签顺序或分组。"
+      : "\n拖动可调整顺序或分组；Option + 上/下调整顺序，Option + 左/右移动分组。")
+    : "";
+  const title = resolvedTitle + reorderTitle;
+  if (chip.title !== title) chip.title = title;
+  setInspectorTagData(chip, "helpDetail", resolvedHelpDetail + reorderHelpDetail);
+  if (surface) {
+    setInspectorTagData(chip, "tagReorderSurface", surface);
+    const draggable = !searchActive
+      && !state.tagManagementMutating
+      && !state.tagMutating
+      && !chip.disabled;
+    if (chip.draggable !== draggable) chip.draggable = draggable;
+    setInspectorTagAttribute(
+      chip,
+      "aria-keyshortcuts",
+      "Alt+ArrowUp Alt+ArrowDown Alt+ArrowLeft Alt+ArrowRight"
+    );
   }
-  const marker = document.createElement("span");
-  marker.className = "inspector-tag-chip-marker";
-  marker.setAttribute("aria-hidden", "true");
-  marker.textContent = { accepted: "✓", rejected: "×", mixed: "混" }[decision] || "";
-  chip.append(icon, copy, marker);
+
+  let icon = chip.querySelector(":scope > .inspector-tag-chip-icon");
+  if (!icon) {
+    icon = document.createElement("span");
+    icon.className = "inspector-tag-chip-icon";
+    icon.setAttribute("aria-hidden", "true");
+    icon.textContent = "#";
+    chip.prepend(icon);
+  }
+  let copy = chip.querySelector(":scope > .inspector-tag-chip-copy");
+  if (!copy) {
+    copy = document.createElement("span");
+    copy.className = "inspector-tag-chip-copy";
+    if (icon.nextSibling) chip.insertBefore(copy, icon.nextSibling);
+    else chip.append(copy);
+  }
+  let name = copy.querySelector(":scope > strong");
+  if (!name) {
+    name = document.createElement("strong");
+    copy.prepend(name);
+  }
+  setInspectorTagText(name, displayName);
+  let detail = copy.querySelector(":scope > small");
+  if (summary) {
+    if (!detail) {
+      detail = document.createElement("small");
+      copy.append(detail);
+    }
+    setInspectorTagText(detail, summary);
+  } else {
+    detail?.remove();
+  }
+  let marker = chip.querySelector(":scope > .inspector-tag-chip-marker");
+  if (!marker) {
+    marker = document.createElement("span");
+    marker.className = "inspector-tag-chip-marker";
+    marker.setAttribute("aria-hidden", "true");
+    chip.append(marker);
+  }
+  setInspectorTagText(
+    marker,
+    { accepted: "✓", rejected: "×", mixed: "混" }[decision] || ""
+  );
+  if (created) chip.append(icon, copy, marker);
   return chip;
 }
 
-function configureInspectorTagReordering(chip, surface, searchActive) {
-  chip.dataset.tagReorderSurface = surface;
-  chip.draggable = !searchActive
-    && !state.tagManagementMutating
-    && !state.tagMutating
-    && !chip.disabled;
-  chip.setAttribute(
-    "aria-keyshortcuts",
-    "Alt+ArrowUp Alt+ArrowDown Alt+ArrowLeft Alt+ArrowRight"
+function syncSingleInspectorTagRow(row, tag, searchActive) {
+  if (!row) {
+    row = document.createElement("div");
+    row.className = "tag-row";
+  }
+  let chip = row.querySelector(":scope > [data-tag-chip-action]");
+  chip = syncInspectorTagChip(chip, {
+    tagID: tag.tagID,
+    displayName: tag.displayName,
+    decision: tag.decision,
+    surface: "single",
+    searchActive,
+  });
+
+  let actions = row.querySelector(":scope > .tag-actions");
+  if (!actions) {
+    actions = document.createElement("div");
+    actions.className = "tag-actions";
+    actions.setAttribute("role", "group");
+    row.append(actions);
+  }
+  setInspectorTagAttribute(actions, "aria-label", `${tag.displayName} 标签决定`);
+  appendTagDecisionButtons(actions, tag.tagID, {
+    accepted: tag.decision === "accepted",
+    rejected: tag.decision === "rejected",
+    unknown: tag.decision === "unknown",
+  }, {
+    displayName: tag.displayName,
+  });
+  if (row.firstElementChild !== chip) row.prepend(chip);
+  if (chip.nextElementSibling !== actions) row.insertBefore(actions, chip.nextElementSibling);
+  return row;
+}
+
+function syncSelectionInspectorTagRow(
+  row,
+  tag,
+  aggregate,
+  total,
+  loading,
+  searchActive
+) {
+  if (!row) {
+    row = document.createElement("div");
+    row.className = "selection-tag-row";
+  }
+  const summary = loading
+    ? "正在统计…"
+    : selectionAggregateText(aggregate, total);
+  const decision = aggregate?.acceptedCount === total
+    ? "accepted"
+    : aggregate?.rejectedCount === total
+      ? "rejected"
+      : aggregate?.unknownCount === total
+        ? "unknown"
+        : "mixed";
+  let chip = row.querySelector(":scope > [data-tag-chip-action]");
+  chip = syncInspectorTagChip(chip, {
+    tagID: tag.id,
+    displayName: tag.displayName,
+    decision,
+    summary,
+    batch: true,
+    // Reordering remains available while aggregate counts refresh. Decision
+    // buttons below stay disabled until the authoritative projection arrives.
+    disabled: !total,
+    surface: "selection",
+    searchActive,
+  });
+
+  let actions = row.querySelector(":scope > .tag-actions");
+  if (!actions) {
+    actions = document.createElement("div");
+    actions.className = "tag-actions";
+    actions.setAttribute("role", "group");
+    row.append(actions);
+  }
+  setInspectorTagAttribute(actions, "aria-label", `${tag.displayName} 批量标签决定`);
+  appendTagDecisionButtons(actions, tag.id, {
+    accepted: aggregate?.acceptedCount === total,
+    rejected: aggregate?.rejectedCount === total,
+    unknown: aggregate?.unknownCount === total,
+    disabled: !total || loading,
+  }, {
+    displayName: tag.displayName,
+    batch: true,
+  });
+  if (row.firstElementChild !== chip) row.prepend(chip);
+  if (chip.nextElementSibling !== actions) row.insertBefore(actions, chip.nextElementSibling);
+  return row;
+}
+
+function syncReviewInspectorTagRow(
+  row,
+  tag,
+  projection,
+  selectedCount,
+  searchActive
+) {
+  if (!row) {
+    row = document.createElement("div");
+    row.className = "tag-row";
+  }
+  const batch = selectedCount > 1;
+  let chip = row.querySelector(":scope > [data-tag-chip-action]");
+  chip = syncInspectorTagChip(chip, {
+    tagID: tag.id,
+    displayName: tag.displayName,
+    decision: projection.decision,
+    summary: projection.summary,
+    batch,
+    disabled: !selectedCount || Boolean(projection.states.disabled),
+    surface: "review",
+    searchActive,
+  });
+
+  let actions = row.querySelector(":scope > .tag-actions");
+  if (!actions) {
+    actions = document.createElement("div");
+    actions.className = "tag-actions";
+    actions.setAttribute("role", "group");
+    row.append(actions);
+  }
+  setInspectorTagAttribute(actions, "aria-label", `${tag.displayName} 标签决定`);
+  appendTagDecisionButtons(actions, tag.id, projection.states, {
+    displayName: tag.displayName,
+    batch,
+  });
+  if (row.firstElementChild !== chip) row.prepend(chip);
+  if (chip.nextElementSibling !== actions) row.insertBefore(actions, chip.nextElementSibling);
+  return row;
+}
+
+function syncPlaceholderInspectorTagRow(row, tag) {
+  if (!row) {
+    row = document.createElement("div");
+    row.className = "tag-row inspector-placeholder-tag-row";
+  }
+  let chip = row.querySelector(":scope > [data-tag-chip-action]");
+  chip = syncInspectorTagChip(chip, {
+    tagID: tag.id,
+    displayName: tag.displayName,
+    decision: "unknown",
+    summary: "选择照片后可应用",
+    surface: "placeholder",
+    baseTitle: `选择照片后可应用“${tag.displayName}”；当前可拖动整理`,
+    baseHelpDetail: [
+      "当前没有选择照片；点击、右键、X 或 Delete 不会写入标签决定。",
+      "选择照片后可在同一检查器直接确认、拒绝或清除这个标签。",
+    ].join("\n"),
+  });
+  toggleInspectorTagClass(chip, "labeling-disabled", true);
+  setInspectorTagAttribute(chip, "aria-disabled", "true");
+  setInspectorTagAttribute(
+    chip,
+    "aria-label",
+    `${tag.displayName}，当前未选择照片；可整理顺序或移动分组`
   );
-  chip.title += searchActive
-    ? "；清除标签搜索后可拖放排序"
-    : "；拖动可排序或移动分组";
-  chip.dataset.helpDetail += searchActive
-    ? "\n当前正在搜索；清除搜索后才能调整标签顺序或分组。"
-    : "\n拖动可调整顺序或分组；Option + 上/下调整顺序，Option + 左/右移动分组。";
+  setInspectorTagData(chip, "helpTitle", tag.displayName);
+  setInspectorTagData(chip, "helpKind", "tag");
+  if (row.firstElementChild !== chip) row.prepend(chip);
+  for (const child of [...row.children]) {
+    if (child !== chip) child.remove();
+  }
+  return row;
 }
 
 function renderPlaceholderTagEditor() {
   const container = elements.inspectorPlaceholderTags;
   if (!container || container.dataset.activeTagDrag) return;
-  clearElement(container);
   const tags = orderedActiveTags();
-  appendInspectorTagGroups(container, tags, (parent, tag) => {
-    const row = document.createElement("div");
-    row.className = "tag-row inspector-placeholder-tag-row";
-    const chip = createInspectorTagChip({
-      tagID: tag.id,
-      displayName: tag.displayName,
-      decision: "unknown",
-      summary: "选择照片后可应用",
-    });
-    chip.classList.add("labeling-disabled");
-    chip.setAttribute("aria-disabled", "true");
-    chip.setAttribute(
-      "aria-label",
-      `${tag.displayName}，当前未选择照片；可整理顺序或移动分组`
-    );
-    chip.title = `选择照片后可应用“${tag.displayName}”；当前可拖动整理`;
-    chip.dataset.helpTitle = tag.displayName;
-    chip.dataset.helpKind = "tag";
-    chip.dataset.helpDetail = [
-      "当前没有选择照片；点击、右键、X 或 Delete 不会写入标签决定。",
-      "选择照片后可在同一检查器直接确认、拒绝或清除这个标签。",
-    ].join("\n");
-    configureInspectorTagReordering(chip, "placeholder", false);
-    row.append(chip);
-    parent.append(row);
-  });
+  reconcileInspectorTagGroups(container, tags, syncPlaceholderInspectorTagRow);
   if (!tags.length) {
-    const empty = document.createElement("p");
-    empty.className = "sidebar-empty";
-    empty.textContent = "尚无活动标签；选择照片后可新建并应用。";
-    container.append(empty);
+    let empty = container.querySelector(":scope > .sidebar-empty");
+    if (!empty) {
+      empty = document.createElement("p");
+      empty.className = "sidebar-empty";
+      container.append(empty);
+    }
+    setInspectorTagText(empty, "尚无活动标签；选择照片后可新建并应用。");
+  } else {
+    container.querySelector(":scope > .sidebar-empty")?.remove();
   }
   restoreInspectorTagFocus("placeholder");
 }
@@ -15202,28 +15497,45 @@ function appendTagDecisionButtons(
   states,
   { displayName = "当前标签", batch = false } = {}
 ) {
+  const existing = new Map(
+    [...actions.querySelectorAll(":scope > [data-action]")]
+      .map((button) => [button.dataset.action, button])
+  );
+  const wanted = [];
   for (const [action, symbol, label, active] of [
     ["accept", "✓", "确认", states.accepted],
     ["reject", "×", "拒绝", states.rejected],
     ["clear", "−", "清除", states.unknown],
   ]) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "tag-action write-action";
-    button.dataset.action = action;
-    button.dataset.tagId = tagID;
-    button.title = label;
-    button.dataset.helpTitle = `${displayName} · ${label}`;
-    button.dataset.helpKind = "tag";
-    button.dataset.helpDetail = active
+    let button = existing.get(action);
+    if (!button) {
+      button = document.createElement("button");
+      button.type = "button";
+      button.className = "tag-action write-action";
+    }
+    setInspectorTagData(button, "action", action);
+    setInspectorTagData(button, "tagId", tagID);
+    if (button.title !== label) button.title = label;
+    setInspectorTagData(button, "helpTitle", `${displayName} · ${label}`);
+    setInspectorTagData(button, "helpKind", "tag");
+    setInspectorTagData(button, "helpDetail", active
       ? `当前已是“${label}”状态；再次执行保持不变。`
-      : `${batch ? "把全部所选项目" : "把当前项目"}设为“${label}”；不会改变其他标签。`;
-    button.setAttribute("aria-label", label);
-    button.setAttribute("aria-pressed", String(Boolean(active)));
-    button.classList.toggle("active", Boolean(active));
-    button.disabled = !state.online || state.tagMutating || Boolean(states.disabled);
-    button.textContent = symbol;
-    actions.append(button);
+      : `${batch ? "把全部所选项目" : "把当前项目"}设为“${label}”；不会改变其他标签。`);
+    setInspectorTagAttribute(button, "aria-label", label);
+    setInspectorTagAttribute(button, "aria-pressed", String(Boolean(active)));
+    toggleInspectorTagClass(button, "active", Boolean(active));
+    const disabled = !state.online || state.tagMutating || Boolean(states.disabled);
+    if (button.disabled !== disabled) button.disabled = disabled;
+    setInspectorTagText(button, symbol);
+    wanted.push(button);
+  }
+  for (const [index, button] of wanted.entries()) {
+    if (actions.children[index] !== button) {
+      actions.insertBefore(button, actions.children[index] || null);
+    }
+  }
+  for (const button of [...actions.children]) {
+    if (!wanted.includes(button)) button.remove();
   }
 }
 
@@ -15689,7 +16001,6 @@ function renderInspector(detail) {
   renderFavoriteControls();
   renderGalleryRemovalControls();
 
-  clearElement(elements.inspectorTags);
   const tagQuery = state.inspectorTagSearchText.toLocaleLowerCase("zh-CN");
   const tags = detail.tags.filter((tag) => (
     tagByID(tag.tagID)?.state !== "archived"
@@ -15698,29 +16009,9 @@ function renderInspector(detail) {
   elements.tagEmpty.classList.toggle("hidden", tags.length > 0);
   elements.tagSummary.textContent = `已确认 ${detail.acceptedTagCount} · 已拒绝 ${detail.rejectedTagCount}`;
 
-  appendInspectorTagGroups(elements.inspectorTags, tags, (parent, tag) => {
-    const row = document.createElement("div");
-    row.className = "tag-row";
-    const chip = createInspectorTagChip({
-      tagID: tag.tagID,
-      displayName: tag.displayName,
-      decision: tag.decision,
-    });
-    configureInspectorTagReordering(chip, "single", Boolean(tagQuery));
-    const actions = document.createElement("div");
-    actions.className = "tag-actions";
-    actions.setAttribute("role", "group");
-    actions.setAttribute("aria-label", `${tag.displayName} 标签决定`);
-    appendTagDecisionButtons(actions, tag.tagID, {
-      accepted: tag.decision === "accepted",
-      rejected: tag.decision === "rejected",
-      unknown: tag.decision === "unknown",
-    }, {
-      displayName: tag.displayName,
-    });
-    row.append(chip, actions);
-    parent.append(row);
-  });
+  reconcileInspectorTagGroups(elements.inspectorTags, tags, (row, tag) => (
+    syncSingleInspectorTagRow(row, tag, Boolean(tagQuery))
+  ));
   restoreInspectorTagFocus("single");
   updateInspectorNavigation();
   renderInspectorSurface();
@@ -15948,7 +16239,6 @@ function renderSelectionInspector() {
   const total = state.selectedAssetIDs.size;
   renderFavoriteControls();
   renderSelectionInspectorHeader({ pending: state.loadingAggregate });
-  clearElement(elements.selectionInspectorTags);
   const aggregates = new Map(
     state.selectionAggregates.map((aggregate) => [aggregate.tagID, aggregate])
   );
@@ -15957,56 +16247,27 @@ function renderSelectionInspector() {
     !query || tag.displayName.toLocaleLowerCase("zh-CN").includes(query)
   ));
 
-  appendInspectorTagGroups(elements.selectionInspectorTags, tags, (parent, tag) => {
-    const aggregate = aggregates.get(tag.id);
-    const row = document.createElement("div");
-    row.className = "selection-tag-row";
-    const summary = state.loadingAggregate
-      ? "正在统计…"
-      : selectionAggregateText(aggregate, total);
-    const decision = aggregate?.acceptedCount === total
-      ? "accepted"
-      : aggregate?.rejectedCount === total
-        ? "rejected"
-        : aggregate?.unknownCount === total
-          ? "unknown"
-          : "mixed";
-    const chip = createInspectorTagChip({
-      tagID: tag.id,
-      displayName: tag.displayName,
-      decision,
-      summary,
-      batch: true,
-      // Reordering is independent from the aggregate counts. Leaving the chip
-      // interactive while counts refresh prevents an in-flight aggregate
-      // repaint from cancelling a drag that the user already started. The
-      // explicit decision buttons remain disabled until the counts settle.
-      disabled: !total,
-    });
-    configureInspectorTagReordering(chip, "selection", Boolean(query));
-
-    const actions = document.createElement("div");
-    actions.className = "tag-actions";
-    actions.setAttribute("role", "group");
-    actions.setAttribute("aria-label", `${tag.displayName} 批量标签决定`);
-    appendTagDecisionButtons(actions, tag.id, {
-      accepted: aggregate?.acceptedCount === total,
-      rejected: aggregate?.rejectedCount === total,
-      unknown: aggregate?.unknownCount === total,
-      disabled: !total || state.loadingAggregate,
-    }, {
-      displayName: tag.displayName,
-      batch: true,
-    });
-    row.append(chip, actions);
-    parent.append(row);
-  });
+  reconcileInspectorTagGroups(elements.selectionInspectorTags, tags, (row, tag) => (
+    syncSelectionInspectorTagRow(
+      row,
+      tag,
+      aggregates.get(tag.id),
+      total,
+      state.loadingAggregate,
+      Boolean(query)
+    )
+  ));
 
   if (!tags.length) {
-    const empty = document.createElement("p");
-    empty.className = "sidebar-empty";
-    empty.textContent = "没有匹配的标签";
-    elements.selectionInspectorTags.append(empty);
+    let empty = elements.selectionInspectorTags.querySelector(":scope > .sidebar-empty");
+    if (!empty) {
+      empty = document.createElement("p");
+      empty.className = "sidebar-empty";
+      elements.selectionInspectorTags.append(empty);
+    }
+    setInspectorTagText(empty, "没有匹配的标签");
+  } else {
+    elements.selectionInspectorTags.querySelector(":scope > .sidebar-empty")?.remove();
   }
   restoreInspectorTagFocus("selection");
 }
@@ -22836,34 +23097,20 @@ function renderReviewInspectorTags(item, detail, selectedItems) {
       ? `已确认 ${detail.acceptedTagCount} · 已拒绝 ${detail.rejectedTagCount}`
       : "正在读取…");
   if (elements.reviewTags.dataset.activeTagDrag) return;
-  clearElement(elements.reviewTags);
   const query = state.review.tagSearchText.toLocaleLowerCase("zh-CN");
   const tags = orderedActiveTags().filter((tag) => (
     !query || tag.displayName.toLocaleLowerCase("zh-CN").includes(query)
   ));
   elements.reviewTagEmpty.classList.toggle("hidden", tags.length > 0);
-  appendInspectorTagGroups(elements.reviewTags, tags, (parent, tag) => {
+  reconcileInspectorTagGroups(elements.reviewTags, tags, (row, tag) => {
     const projection = reviewTagDecisionProjection(tag.id, detail, selectedCount);
-    const row = document.createElement("div");
-    row.className = "tag-row";
-    const chip = createInspectorTagChip({
-      tagID: tag.id,
-      displayName: tag.displayName,
-      decision: projection.decision,
-      summary: projection.summary,
-      disabled: !selectedCount || Boolean(projection.states.disabled),
-    });
-    configureInspectorTagReordering(chip, "review", Boolean(query));
-    const actions = document.createElement("div");
-    actions.className = "tag-actions";
-    actions.setAttribute("role", "group");
-    actions.setAttribute("aria-label", `${tag.displayName} 标签决定`);
-    appendTagDecisionButtons(actions, tag.id, projection.states, {
-      displayName: tag.displayName,
-      batch: selectedCount > 1,
-    });
-    row.append(chip, actions);
-    parent.append(row);
+    return syncReviewInspectorTagRow(
+      row,
+      tag,
+      projection,
+      selectedCount,
+      Boolean(query)
+    );
   });
   restoreInspectorTagFocus("review");
 }

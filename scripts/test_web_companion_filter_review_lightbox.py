@@ -249,6 +249,7 @@ def review_item(asset_id, index):
 def main():
     asset_queries = []
     tag_decisions = []
+    fail_next_tag_decision = [False]
     created_tag_applications = []
     review_decisions = []
     review_queue_queries = []
@@ -916,6 +917,14 @@ def main():
         def route_tag_decision(route):
             payload = route.request.post_data_json
             tag_decisions.append(payload)
+            if fail_next_tag_decision[0]:
+                fail_next_tag_decision[0] = False
+                fulfill_json(
+                    route,
+                    {"code": "conflict", "message": "synthetic tag decision denied"},
+                    status=409,
+                )
+                return
             fulfill_json(
                 route,
                 {
@@ -1810,14 +1819,116 @@ def main():
         assert scene_toggle.get_attribute("aria-expanded") == "true"
 
         travel_chip = page.locator(f'#inspectorTags [data-tag-chip-action][data-tag-id="{TRAVEL_TAG_ID}"]')
+        page.evaluate(
+            f"""() => {{
+              const container = document.querySelector("#inspectorTags");
+              const subject = container.querySelector(
+                '[data-inspector-tag-group-id="{SUBJECT_GROUP_ID}"]'
+              );
+              const scene = container.querySelector(
+                '[data-inspector-tag-group-id="{SCENE_GROUP_ID}"]'
+              );
+              const cat = container.querySelector(
+                '[data-tag-chip-action][data-tag-id="{CAT_TAG_ID}"]'
+              );
+              const travel = container.querySelector(
+                '[data-tag-chip-action][data-tag-id="{TRAVEL_TAG_ID}"]'
+              );
+              const actions = (row) => Object.fromEntries(
+                [...row.querySelectorAll('[data-action][data-tag-id]')]
+                  .map((button) => [button.dataset.action, button])
+              );
+              window.__stableSingleInspectorTagFrame = {{
+                container,
+                subject,
+                scene,
+                subjectToggle: subject.querySelector(".inspector-tag-group-toggle"),
+                sceneToggle: scene.querySelector(".inspector-tag-group-toggle"),
+                subjectRows: subject.querySelector(".inspector-tag-group-rows"),
+                sceneRows: scene.querySelector(".inspector-tag-group-rows"),
+                cat,
+                travel,
+                catRow: cat.closest(".tag-row"),
+                travelRow: travel.closest(".tag-row"),
+                catActions: actions(cat.closest(".tag-row")),
+                travelActions: actions(travel.closest(".tag-row")),
+              }};
+            }}"""
+        )
         travel_chip.click()
         page.wait_for_function(
             "(tagID) => document.activeElement?.dataset.tagId === tagID",
             arg=TRAVEL_TAG_ID,
         )
+        stable_single_inspector = page.evaluate(
+            f"""() => {{
+              const frame = window.__stableSingleInspectorTagFrame;
+              const container = document.querySelector("#inspectorTags");
+              const subject = container.querySelector(
+                '[data-inspector-tag-group-id="{SUBJECT_GROUP_ID}"]'
+              );
+              const scene = container.querySelector(
+                '[data-inspector-tag-group-id="{SCENE_GROUP_ID}"]'
+              );
+              const cat = container.querySelector(
+                '[data-tag-chip-action][data-tag-id="{CAT_TAG_ID}"]'
+              );
+              const travel = container.querySelector(
+                '[data-tag-chip-action][data-tag-id="{TRAVEL_TAG_ID}"]'
+              );
+              const sameActions = (row, expected) =>
+                [...row.querySelectorAll('[data-action][data-tag-id]')]
+                  .every((button) => expected[button.dataset.action] === button);
+              return {{
+                container: container === frame.container,
+                subject: subject === frame.subject,
+                scene: scene === frame.scene,
+                subjectToggle: subject.querySelector(".inspector-tag-group-toggle")
+                  === frame.subjectToggle,
+                sceneToggle: scene.querySelector(".inspector-tag-group-toggle")
+                  === frame.sceneToggle,
+                subjectRows: subject.querySelector(".inspector-tag-group-rows")
+                  === frame.subjectRows,
+                sceneRows: scene.querySelector(".inspector-tag-group-rows")
+                  === frame.sceneRows,
+                cat: cat === frame.cat,
+                travel: travel === frame.travel,
+                catRow: cat.closest(".tag-row") === frame.catRow,
+                travelRow: travel.closest(".tag-row") === frame.travelRow,
+                catActions: sameActions(cat.closest(".tag-row"), frame.catActions),
+                travelActions: sameActions(travel.closest(".tag-row"), frame.travelActions),
+                focus: document.activeElement === travel,
+              }};
+            }}"""
+        )
+        assert all(stable_single_inspector.values()), stable_single_inspector
         assert tag_decisions[-1]["action"] == "accept"
         assert tag_decisions[-1]["assetIDs"] == [IMAGE_IDS[0]]
         cat_chip = page.locator(f'#inspectorTags [data-tag-chip-action][data-tag-id="{CAT_TAG_ID}"]')
+        page.evaluate(
+            f"""() => {{
+              const container = document.querySelector("#inspectorTags");
+              const cat = container.querySelector(
+                '[data-tag-chip-action][data-tag-id="{CAT_TAG_ID}"]'
+              );
+              const travel = container.querySelector(
+                '[data-tag-chip-action][data-tag-id="{TRAVEL_TAG_ID}"]'
+              );
+              window.__stableFailedSingleInspectorTagFrame = {{
+                subject: container.querySelector(
+                  '[data-inspector-tag-group-id="{SUBJECT_GROUP_ID}"]'
+                ),
+                scene: container.querySelector(
+                  '[data-inspector-tag-group-id="{SCENE_GROUP_ID}"]'
+                ),
+                cat,
+                travel,
+                catRow: cat.closest(".tag-row"),
+                travelRow: travel.closest(".tag-row"),
+              }};
+            }}"""
+        )
+        fail_next_tag_decision[0] = True
         cat_chip.click(
             button="right"
         )
@@ -1825,6 +1936,37 @@ def main():
             "(tagID) => document.activeElement?.dataset.tagId === tagID",
             arg=CAT_TAG_ID,
         )
+        page.wait_for_function(
+            "() => !state.tagMutating "
+            "&& document.querySelector('#toastMessage').textContent.includes("
+            "'synthetic tag decision denied')"
+        )
+        failed_single_inspector = page.evaluate(
+            f"""() => {{
+              const frame = window.__stableFailedSingleInspectorTagFrame;
+              const container = document.querySelector("#inspectorTags");
+              const cat = container.querySelector(
+                '[data-tag-chip-action][data-tag-id="{CAT_TAG_ID}"]'
+              );
+              const travel = container.querySelector(
+                '[data-tag-chip-action][data-tag-id="{TRAVEL_TAG_ID}"]'
+              );
+              return {{
+                subject: container.querySelector(
+                  '[data-inspector-tag-group-id="{SUBJECT_GROUP_ID}"]'
+                ) === frame.subject,
+                scene: container.querySelector(
+                  '[data-inspector-tag-group-id="{SCENE_GROUP_ID}"]'
+                ) === frame.scene,
+                cat: cat === frame.cat,
+                travel: travel === frame.travel,
+                catRow: cat.closest(".tag-row") === frame.catRow,
+                travelRow: travel.closest(".tag-row") === frame.travelRow,
+                focus: document.activeElement === cat,
+              }};
+            }}"""
+        )
+        assert all(failed_single_inspector.values()), failed_single_inspector
         assert tag_decisions[-1]["action"] == "clear"
         travel_chip.focus()
         page.keyboard.press("x")
@@ -2529,6 +2671,39 @@ def main():
         review_travel_accept = page.locator(
             f'#reviewTags [data-tag-id="{TRAVEL_TAG_ID}"][data-action="accept"]'
         )
+        page.evaluate(
+            f"""() => {{
+              const container = document.querySelector("#reviewTags");
+              const subject = container.querySelector(
+                '[data-inspector-tag-group-id="{SUBJECT_GROUP_ID}"]'
+              );
+              const scene = container.querySelector(
+                '[data-inspector-tag-group-id="{SCENE_GROUP_ID}"]'
+              );
+              const cat = container.querySelector(
+                '[data-tag-chip-action][data-tag-id="{CAT_TAG_ID}"]'
+              );
+              const travel = container.querySelector(
+                '[data-tag-chip-action][data-tag-id="{TRAVEL_TAG_ID}"]'
+              );
+              window.__stableReviewInspectorTagFrame = {{
+                container,
+                subject,
+                scene,
+                cat,
+                travel,
+                catRow: cat.closest(".tag-row"),
+                travelRow: travel.closest(".tag-row"),
+                catActions: [...cat.closest(".tag-row").querySelectorAll(
+                  '[data-action][data-tag-id]'
+                )],
+                travelActions: [...travel.closest(".tag-row").querySelectorAll(
+                  '[data-action][data-tag-id]'
+                )],
+                accept: travel.closest(".tag-row").querySelector('[data-action="accept"]'),
+              }};
+            }}"""
+        )
         with page.expect_response("**/v1/tag-decisions/batch"):
             review_travel_accept.click()
         page.wait_for_function(
@@ -2536,6 +2711,41 @@ def main():
             f"&& state.review.detail?.assetID === '{REVIEW_IDS[0]}' "
             "&& !state.review.detailLoadingAssetID"
         )
+        stable_review_inspector = page.evaluate(
+            f"""() => {{
+              const frame = window.__stableReviewInspectorTagFrame;
+              const container = document.querySelector("#reviewTags");
+              const subject = container.querySelector(
+                '[data-inspector-tag-group-id="{SUBJECT_GROUP_ID}"]'
+              );
+              const scene = container.querySelector(
+                '[data-inspector-tag-group-id="{SCENE_GROUP_ID}"]'
+              );
+              const cat = container.querySelector(
+                '[data-tag-chip-action][data-tag-id="{CAT_TAG_ID}"]'
+              );
+              const travel = container.querySelector(
+                '[data-tag-chip-action][data-tag-id="{TRAVEL_TAG_ID}"]'
+              );
+              const accept = travel.closest(".tag-row").querySelector(
+                '[data-action="accept"]'
+              );
+              return {{
+                container: container === frame.container,
+                subject: subject === frame.subject,
+                scene: scene === frame.scene,
+                cat: cat === frame.cat,
+                travel: travel === frame.travel,
+                catRow: cat.closest(".tag-row") === frame.catRow,
+                travelRow: travel.closest(".tag-row") === frame.travelRow,
+                catActions: frame.catActions.every((button) => button.isConnected),
+                travelActions: frame.travelActions.every((button) => button.isConnected),
+                accept: accept === frame.accept,
+                focus: document.activeElement === accept,
+              }};
+            }}"""
+        )
+        assert all(stable_review_inspector.values()), stable_review_inspector
         assert tag_decisions[-1]["tagID"] == TRAVEL_TAG_ID
         assert tag_decisions[-1]["action"] == "accept"
         assert tag_decisions[-1]["assetIDs"] == [REVIEW_IDS[0]]
@@ -2566,12 +2776,70 @@ def main():
         page.locator(
             f'#reviewTags [data-tag-chip-action][data-tag-id="{NEW_REVIEW_TAG_ID}"]'
         ).wait_for()
+        page.evaluate(
+            f"""() => {{
+              const container = document.querySelector("#reviewTags");
+              window.__stableReviewInspectorSearchFrame = {{
+                subject: container.querySelector(
+                  '[data-inspector-tag-group-id="{SUBJECT_GROUP_ID}"]'
+                ),
+                scene: container.querySelector(
+                  '[data-inspector-tag-group-id="{SCENE_GROUP_ID}"]'
+                ),
+                cat: container.querySelector(
+                  '[data-tag-chip-action][data-tag-id="{CAT_TAG_ID}"]'
+                ),
+                travel: container.querySelector(
+                  '[data-tag-chip-action][data-tag-id="{TRAVEL_TAG_ID}"]'
+                ),
+                created: container.querySelector(
+                  '[data-tag-chip-action][data-tag-id="{NEW_REVIEW_TAG_ID}"]'
+                ),
+              }};
+            }}"""
+        )
         page.locator("#reviewTagSearch").fill("旅行")
         assert page.locator("#reviewTags [data-tag-chip-action]").count() == 1
         assert page.locator(
             f'#reviewTags [data-tag-chip-action][data-tag-id="{TRAVEL_TAG_ID}"]'
         ).is_visible()
+        assert page.evaluate(
+            f"""() => {{
+              const frame = window.__stableReviewInspectorSearchFrame;
+              const container = document.querySelector("#reviewTags");
+              return container.querySelector(
+                '[data-inspector-tag-group-id="{SCENE_GROUP_ID}"]'
+              ) === frame.scene && container.querySelector(
+                '[data-tag-chip-action][data-tag-id="{TRAVEL_TAG_ID}"]'
+              ) === frame.travel;
+            }}"""
+        )
         page.locator("#reviewTagSearch").fill("")
+        stable_review_search = page.evaluate(
+            f"""() => {{
+              const frame = window.__stableReviewInspectorSearchFrame;
+              const container = document.querySelector("#reviewTags");
+              return {{
+                subject: container.querySelector(
+                  '[data-inspector-tag-group-id="{SUBJECT_GROUP_ID}"]'
+                ) === frame.subject,
+                scene: container.querySelector(
+                  '[data-inspector-tag-group-id="{SCENE_GROUP_ID}"]'
+                ) === frame.scene,
+                cat: container.querySelector(
+                  '[data-tag-chip-action][data-tag-id="{CAT_TAG_ID}"]'
+                ) === frame.cat,
+                travel: container.querySelector(
+                  '[data-tag-chip-action][data-tag-id="{TRAVEL_TAG_ID}"]'
+                ) === frame.travel,
+                created: container.querySelector(
+                  '[data-tag-chip-action][data-tag-id="{NEW_REVIEW_TAG_ID}"]'
+                ) === frame.created,
+                focus: document.activeElement?.id === "reviewTagSearch",
+              }};
+            }}"""
+        )
+        assert all(stable_review_search.values()), stable_review_search
         page.locator('[data-review-index="0"] > .review-card-main').click()
         page.wait_for_function(
             f"() => state.review.selectedAssetIDs.size === 1 "

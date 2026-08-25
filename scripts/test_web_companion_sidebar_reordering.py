@@ -1186,6 +1186,13 @@ def main():
               const toggle = subject.querySelector(".tag-navigation-group-title");
               const cat = subject.querySelector('[data-quick-tag-id="{TAG_CAT}"]');
               const dog = subject.querySelector('[data-quick-tag-id="{TAG_DOG}"]');
+              const placeholder = document.querySelector("#inspectorPlaceholderTags");
+              const placeholderSubject = placeholder.querySelector(
+                '[data-inspector-tag-group-id="{GROUP_SUBJECT}"]'
+              );
+              const placeholderScene = placeholder.querySelector(
+                '[data-inspector-tag-group-id="{GROUP_SCENE}"]'
+              );
               toggle.focus({{ preventScroll: true }});
               window.__stableSidebarCollapseFrame = {{
                 subject,
@@ -1194,6 +1201,18 @@ def main():
                 list: subject.querySelector(".tag-navigation-group-tags"),
                 cat,
                 dog,
+                placeholder,
+                placeholderSubject,
+                placeholderScene,
+                placeholderCat: placeholderSubject.querySelector(
+                  '[data-tag-chip-action][data-tag-id="{TAG_CAT}"]'
+                ),
+                placeholderDog: placeholderSubject.querySelector(
+                  '[data-tag-chip-action][data-tag-id="{TAG_DOG}"]'
+                ),
+                placeholderTravel: placeholderScene.querySelector(
+                  '[data-tag-chip-action][data-tag-id="{TAG_TRAVEL}"]'
+                ),
               }};
               toggle.click();
               const frame = window.__stableSidebarCollapseFrame;
@@ -1212,6 +1231,23 @@ def main():
                   === frame.cat,
                 dog: frame.subject.querySelector('[data-quick-tag-id="{TAG_DOG}"]')
                   === frame.dog,
+                placeholder: document.querySelector("#inspectorPlaceholderTags")
+                  === frame.placeholder,
+                placeholderSubject: frame.placeholder.querySelector(
+                  '[data-inspector-tag-group-id="{GROUP_SUBJECT}"]'
+                ) === frame.placeholderSubject,
+                placeholderScene: frame.placeholder.querySelector(
+                  '[data-inspector-tag-group-id="{GROUP_SCENE}"]'
+                ) === frame.placeholderScene,
+                placeholderCat: frame.placeholder.querySelector(
+                  '[data-tag-chip-action][data-tag-id="{TAG_CAT}"]'
+                ) === frame.placeholderCat,
+                placeholderDog: frame.placeholder.querySelector(
+                  '[data-tag-chip-action][data-tag-id="{TAG_DOG}"]'
+                ) === frame.placeholderDog,
+                placeholderTravel: frame.placeholder.querySelector(
+                  '[data-tag-chip-action][data-tag-id="{TAG_TRAVEL}"]'
+                ) === frame.placeholderTravel,
                 focus: document.activeElement === frame.toggle,
               }};
             }}"""
