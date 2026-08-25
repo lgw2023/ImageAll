@@ -1140,6 +1140,7 @@ const state = {
   actionMenuFocusedSelector: null,
   actionMenuScrollTop: 0,
   gridDoubleClickSelectionSnapshot: null,
+  libraryGridFocusAssetID: null,
   selectionMode: false,
   selectedAssetIDs: new Set(),
   selectionAnchorID: null,
@@ -13496,6 +13497,33 @@ function assetCardMainButton(card, { create = false } = {}) {
   return button;
 }
 
+function libraryGridRovingAssetID() {
+  const visibleIDs = new Set(state.assets.map((asset) => asset.id));
+  const focusedCard = document.activeElement?.closest?.("#assetGrid > .asset-card");
+  if (visibleIDs.has(focusedCard?.dataset.assetId)) return focusedCard.dataset.assetId;
+  if (visibleIDs.has(state.selectedAssetID)) return state.selectedAssetID;
+  if (visibleIDs.has(state.libraryGridFocusAssetID)) return state.libraryGridFocusAssetID;
+  return state.assets[0]?.id || null;
+}
+
+function syncAssetCardKeyboardAccess(card, rovingAssetID = libraryGridRovingAssetID()) {
+  const isTabStop = card?.dataset.assetId === rovingAssetID;
+  const mainButton = assetCardMainButton(card);
+  if (mainButton) mainButton.tabIndex = isTabStop ? 0 : -1;
+  const favoriteButton = card?.querySelector(":scope > .asset-card-favorite");
+  if (favoriteButton) favoriteButton.tabIndex = isTabStop ? 0 : -1;
+}
+
+function syncLibraryGridTabStops(assetID = null) {
+  const visibleIDs = new Set(state.assets.map((asset) => asset.id));
+  if (assetID && visibleIDs.has(assetID)) state.libraryGridFocusAssetID = assetID;
+  const rovingAssetID = libraryGridRovingAssetID();
+  state.libraryGridFocusAssetID = rovingAssetID;
+  for (const card of elements.assetGrid.querySelectorAll(":scope > .asset-card")) {
+    syncAssetCardKeyboardAccess(card, rovingAssetID);
+  }
+}
+
 function syncMediaFavoriteButton(button, { assetID, fileName, favorite }) {
   const isFavorite = favorite?.isFavorite === true;
   const syncStatus = favorite?.syncStatus || "";
@@ -13626,6 +13654,7 @@ function syncAssetCard(card, asset) {
   syncAssetCardMeta(card, asset);
   syncAssetCardMediaBadge(card, asset);
   syncAssetCardFavoriteButton(card, asset);
+  syncAssetCardKeyboardAccess(card);
 }
 
 function syncAssetCardPosition(button, index) {
@@ -13655,6 +13684,7 @@ function renderAssetCollectionSummary() {
 
 function renderAssets() {
   renderAssetCollectionSummary();
+  state.libraryGridFocusAssetID = libraryGridRovingAssetID();
 
   const existing = new Map(
     [...elements.assetGrid.querySelectorAll(":scope > .asset-card")]
@@ -19985,6 +20015,7 @@ function renderAssetSelectionState() {
     );
     syncAssetCardSelectionMark(card);
   }
+  syncLibraryGridTabStops();
   updateInspectorNavigation();
 }
 
@@ -31863,6 +31894,7 @@ function resetWorkspaceSessionState() {
   state.contextMenuSession = null;
   state.contextMenuBaseLevel = "workspace";
   state.contextMenuHistoryRestoreFocus = true;
+  state.libraryGridFocusAssetID = null;
   state.selectionMode = false;
   state.selectedAssetIDs.clear();
   state.selectionAnchorID = null;
@@ -36412,6 +36444,10 @@ function bindEvents() {
       additive: event.metaKey || event.ctrlKey,
       range: event.shiftKey,
     });
+  });
+  elements.assetGrid.addEventListener("focusin", (event) => {
+    const card = event.target.closest?.(".asset-card[data-asset-id]");
+    if (card) syncLibraryGridTabStops(card.dataset.assetId);
   });
   elements.assetGrid.addEventListener("dblclick", (event) => {
     if (event.target.closest("[data-asset-card-favorite]")) return;

@@ -3146,6 +3146,11 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function loadMoreLightboxItems"))
         XCTAssertTrue(script.contains("function syncLibraryLightboxSelection"))
         XCTAssertTrue(script.contains("function lightboxNavigationFocusTarget"))
+        XCTAssertTrue(script.contains("function libraryGridRovingAssetID"))
+        XCTAssertTrue(script.contains("function syncLibraryGridTabStops"))
+        XCTAssertTrue(script.contains("mainButton.tabIndex = isTabStop ? 0 : -1"))
+        XCTAssertTrue(script.contains("favoriteButton.tabIndex = isTabStop ? 0 : -1"))
+        XCTAssertTrue(script.contains("elements.assetGrid.addEventListener(\"focusin\""))
         XCTAssertTrue(script.contains("focusedNavigationButton"))
         XCTAssertTrue(
             script.contains(

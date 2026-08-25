@@ -1241,6 +1241,31 @@ def main(*, inspector_actions_only=False):
         page.wait_for_function(
             "() => document.querySelectorAll('#assetGrid > .asset-card').length === 2"
         )
+        grid_cards = page.locator("#assetGrid > .asset-card")
+        first_grid_main = grid_cards.nth(0).locator(":scope > .asset-card-main")
+        second_grid_main = grid_cards.nth(1).locator(":scope > .asset-card-main")
+        first_grid_favorite = grid_cards.nth(0).locator(":scope > .asset-card-favorite")
+        second_grid_favorite = grid_cards.nth(1).locator(":scope > .asset-card-favorite")
+        assert first_grid_main.get_attribute("tabindex") == "0"
+        assert first_grid_favorite.get_attribute("tabindex") == "0"
+        assert second_grid_main.get_attribute("tabindex") == "-1"
+        assert second_grid_favorite.get_attribute("tabindex") == "-1"
+        first_grid_main.focus()
+        page.keyboard.press("Tab")
+        assert page.evaluate(
+            "() => document.activeElement?.classList.contains('asset-card-favorite')"
+        )
+        page.keyboard.press("Tab")
+        assert not page.evaluate(
+            "() => document.querySelector('#assetGrid').contains(document.activeElement)"
+        )
+        second_grid_main.focus()
+        assert first_grid_main.get_attribute("tabindex") == "-1"
+        assert first_grid_favorite.get_attribute("tabindex") == "-1"
+        assert second_grid_main.get_attribute("tabindex") == "0"
+        assert second_grid_favorite.get_attribute("tabindex") == "0"
+        first_grid_main.focus()
+        page.screenshot(path="/tmp/imageall-gallery-roving-focus.png", full_page=False)
         sidebar_help_snapshot = page.evaluate(
             """() => ({
               selectedSourceID: state.selectedSourceID,
@@ -1652,6 +1677,14 @@ def main(*, inspector_actions_only=False):
             "id => state.selectedAssetIDs.size === 1 "
             "&& state.selectedAssetIDs.has(id) "
             "&& state.selectedAssetID === id",
+            ASSET_IDS[1],
+        )
+        assert page.evaluate(
+            "id => document.activeElement?.closest('[data-asset-id]')?.dataset.assetId === id "
+            "&& document.querySelectorAll('#assetGrid .asset-card-main[tabindex=\"0\"]')"
+            ".length === 1 "
+            "&& document.querySelectorAll('#assetGrid .asset-card-favorite[tabindex=\"0\"]')"
+            ".length === 1",
             ASSET_IDS[1],
         )
         page.keyboard.down("Shift")
