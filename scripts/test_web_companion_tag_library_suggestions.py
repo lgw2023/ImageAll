@@ -90,6 +90,7 @@ def main():
     suggestion_reads = 0
     tag_snapshot_reads = 0
     suggestion_completed = False
+    review_overview_checked_count = 0
     review_queue_reads = 0
     page_errors = []
     console_errors = []
@@ -182,7 +183,9 @@ def main():
         )
 
         def route_review_overview(route):
-            fulfill_json(route, overview(suggestion_completed))
+            payload = overview(suggestion_completed)
+            payload["tags"][0]["checkedCount"] = review_overview_checked_count
+            fulfill_json(route, payload)
 
         page.route("**/v1/review/overview?**", route_review_overview)
 
@@ -301,6 +304,242 @@ def main():
         ).click()
         centroid_button = page.get_by_role("button", name="个人模型 Top 25")
         centroid_button.wait_for(state="visible")
+        page.evaluate(
+            f"""
+            () => {{
+              const originalFetch = window.fetch.bind(window);
+              window.__reviewOverviewRefreshRelease = null;
+              window.fetch = (input, init) => {{
+                const url = new URL(typeof input === "string" ? input : input.url, location.href);
+                if (url.pathname !== "/v1/review/overview") return originalFetch(input, init);
+                return new Promise((resolve, reject) => {{
+                  window.__reviewOverviewRefreshRelease = () => {{
+                    window.fetch = originalFetch;
+                    originalFetch(input, init).then(resolve, reject);
+                  }};
+                }});
+              }};
+              const grid = document.querySelector("#reviewOverviewGrid");
+              const content = document.querySelector(".review-overview-content");
+              const openButton = document.querySelector(
+                '[data-review-overview-tag-id="{TAG_ID}"]'
+              );
+              const details = document.querySelector(
+                '[data-review-control-tag-id="{TAG_ID}"]'
+              );
+              const action = details.querySelector('[data-tag-suggestion-method="personalCentroid"]');
+              grid.style.paddingBottom = "720px";
+              content.scrollTop = 60;
+              action.focus({{ preventScroll: true }});
+              window.__reviewOverviewStableFrame = {{
+                card: openButton.closest(".review-overview-card"),
+                openButton,
+                details,
+                action,
+                group: openButton.closest(".review-overview-group"),
+                groupToggle: openButton.closest(".review-overview-group")
+                  .querySelector("[data-review-overview-group-toggle]"),
+                scrollTop: content.scrollTop,
+              }};
+              void loadReviewOverview();
+            }}
+            """
+        )
+        page.wait_for_function("() => state.review.overviewLoading")
+        assert page.evaluate(
+            f"""
+            () => {{
+              const frame = window.__reviewOverviewStableFrame;
+              const openButton = document.querySelector(
+                '[data-review-overview-tag-id="{TAG_ID}"]'
+              );
+              const details = document.querySelector(
+                '[data-review-control-tag-id="{TAG_ID}"]'
+              );
+              return frame.card === openButton.closest(".review-overview-card")
+                && frame.openButton === openButton
+                && frame.details === details
+                && frame.action === details.querySelector(
+                  '[data-tag-suggestion-method="personalCentroid"]'
+                )
+                && frame.group === openButton.closest(".review-overview-group")
+                && frame.groupToggle === openButton.closest(".review-overview-group")
+                  .querySelector("[data-review-overview-group-toggle]")
+                && details.open
+                && document.activeElement === frame.action
+                && document.querySelector(".review-overview-content").scrollTop
+                  === frame.scrollTop;
+            }}
+            """
+        ), "review overview refresh replaced the expanded card while pending"
+        page.evaluate("() => window.__reviewOverviewRefreshRelease()")
+        page.wait_for_function("() => !state.review.overviewLoading")
+        assert page.evaluate(
+            f"""
+            () => {{
+              const frame = window.__reviewOverviewStableFrame;
+              const openButton = document.querySelector(
+                '[data-review-overview-tag-id="{TAG_ID}"]'
+              );
+              const details = document.querySelector(
+                '[data-review-control-tag-id="{TAG_ID}"]'
+              );
+              return frame.card === openButton.closest(".review-overview-card")
+                && frame.openButton === openButton
+                && frame.details === details
+                && frame.action === details.querySelector(
+                  '[data-tag-suggestion-method="personalCentroid"]'
+                )
+                && frame.group === openButton.closest(".review-overview-group")
+                && frame.groupToggle === openButton.closest(".review-overview-group")
+                  .querySelector("[data-review-overview-group-toggle]")
+                && details.open
+                && document.activeElement === frame.action
+                && document.querySelector(".review-overview-content").scrollTop
+                  === frame.scrollTop;
+            }}
+            """
+        ), "unchanged review overview refresh replaced the expanded card"
+        page.evaluate(
+            f"""
+            () => {{
+              const originalFetch = window.fetch.bind(window);
+              window.__reviewOverviewRefreshRelease = null;
+              window.fetch = (input, init) => {{
+                const url = new URL(typeof input === "string" ? input : input.url, location.href);
+                if (url.pathname !== "/v1/review/overview") return originalFetch(input, init);
+                return new Promise((resolve, reject) => {{
+                  window.__reviewOverviewRefreshRelease = () => {{
+                    window.fetch = originalFetch;
+                    originalFetch(input, init).then(resolve, reject);
+                  }};
+                }});
+              }};
+              const openButton = document.querySelector(
+                '[data-review-overview-tag-id="{TAG_ID}"]'
+              );
+              const details = document.querySelector(
+                '[data-review-control-tag-id="{TAG_ID}"]'
+              );
+              const action = details.querySelector('[data-tag-suggestion-method="personalCentroid"]');
+              const content = document.querySelector(".review-overview-content");
+              action.focus({{ preventScroll: true }});
+              window.__reviewOverviewChangedFrame = {{
+                card: openButton.closest(".review-overview-card"),
+                openButton,
+                details,
+                action,
+                group: openButton.closest(".review-overview-group"),
+                groupToggle: openButton.closest(".review-overview-group")
+                  .querySelector("[data-review-overview-group-toggle]"),
+                scrollTop: content.scrollTop,
+              }};
+              void loadReviewOverview();
+            }}
+            """
+        )
+        page.wait_for_function("() => Boolean(window.__reviewOverviewRefreshRelease)")
+        review_overview_checked_count = 1
+        page.evaluate("() => window.__reviewOverviewRefreshRelease()")
+        page.wait_for_function("() => !state.review.overviewLoading")
+        assert page.evaluate(
+            f"""
+            () => {{
+              const frame = window.__reviewOverviewChangedFrame;
+              const openButton = document.querySelector(
+                '[data-review-overview-tag-id="{TAG_ID}"]'
+              );
+              const details = document.querySelector(
+                '[data-review-control-tag-id="{TAG_ID}"]'
+              );
+              return frame.card === openButton.closest(".review-overview-card")
+                && frame.openButton === openButton
+                && frame.details === details
+                && frame.action === details.querySelector(
+                  '[data-tag-suggestion-method="personalCentroid"]'
+                )
+                && frame.group === openButton.closest(".review-overview-group")
+                && frame.groupToggle === openButton.closest(".review-overview-group")
+                  .querySelector("[data-review-overview-group-toggle]")
+                && openButton.querySelector(".review-overview-status")
+                  .textContent.includes("1 项已检查")
+                && details.open
+                && document.activeElement === frame.action
+                && document.querySelector(".review-overview-content").scrollTop
+                  === frame.scrollTop;
+            }}
+            """
+        ), "changed review overview did not update the existing card in place"
+        page.evaluate(
+            f"""
+            () => {{
+              const originalFetch = window.fetch.bind(window);
+              window.fetch = (input, init) => {{
+                const url = new URL(typeof input === "string" ? input : input.url, location.href);
+                if (url.pathname !== "/v1/review/overview") return originalFetch(input, init);
+                window.fetch = originalFetch;
+                return Promise.reject(new Error("模拟审核总览刷新失败"));
+              }};
+              const openButton = document.querySelector(
+                '[data-review-overview-tag-id="{TAG_ID}"]'
+              );
+              const details = document.querySelector(
+                '[data-review-control-tag-id="{TAG_ID}"]'
+              );
+              const action = details.querySelector('[data-tag-suggestion-method="personalCentroid"]');
+              const content = document.querySelector(".review-overview-content");
+              action.focus({{ preventScroll: true }});
+              window.__reviewOverviewFailedFrame = {{
+                card: openButton.closest(".review-overview-card"),
+                openButton,
+                details,
+                action,
+                group: openButton.closest(".review-overview-group"),
+                groupToggle: openButton.closest(".review-overview-group")
+                  .querySelector("[data-review-overview-group-toggle]"),
+                scrollTop: content.scrollTop,
+              }};
+              void loadReviewOverview();
+            }}
+            """
+        )
+        page.wait_for_function(
+            "() => document.querySelector('#toastMessage').textContent"
+            ".includes('模拟审核总览刷新失败')"
+        )
+        failed_refresh_frame = page.evaluate(
+            f"""
+            () => {{
+              const frame = window.__reviewOverviewFailedFrame;
+              const openButton = document.querySelector(
+                '[data-review-overview-tag-id="{TAG_ID}"]'
+              );
+              const details = document.querySelector(
+                '[data-review-control-tag-id="{TAG_ID}"]'
+              );
+              return {{
+                card: frame.card === openButton.closest(".review-overview-card"),
+                openButton: frame.openButton === openButton,
+                details: frame.details === details,
+                action: frame.action === details.querySelector(
+                  '[data-tag-suggestion-method="personalCentroid"]'
+                ),
+                group: frame.group === openButton.closest(".review-overview-group"),
+                groupToggle: frame.groupToggle === openButton.closest(".review-overview-group")
+                  .querySelector("[data-review-overview-group-toggle]"),
+                expanded: details.open,
+                focused: document.activeElement === details.querySelector(":scope > summary"),
+                scroll: document.querySelector(".review-overview-content").scrollTop
+                  === frame.scrollTop,
+              }};
+            }}
+            """
+        )
+        assert all(failed_refresh_frame.values()), failed_refresh_frame
+        page.screenshot(
+            path="/tmp/imageall-review-overview-refresh-continuity.png",
+            full_page=True,
+        )
         assert review_queue_reads == 0, "生成入口不应提前打开审核队列"
         page.locator("#reviewSourceFilterButton").click()
         second_review_source = page.locator(

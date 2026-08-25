@@ -1258,6 +1258,7 @@ const state = {
     overviewTotal: 0,
     overviewLoading: false,
     overviewGeneration: 0,
+    overviewRenderedFingerprint: null,
     items: [],
     nextCursor: null,
     selectedIndex: -1,
@@ -7074,7 +7075,10 @@ function setConnection(online, label) {
   renderPersonalModelControls();
   renderEmbeddingPreparation();
   renderSampleSuggestions();
-  renderReviewOverview();
+  renderReviewOverview({
+    preserveContent: reviewOverviewCanPreserveContent(),
+    reconcileContent: true,
+  });
   renderFavoriteControls();
   renderSourcePrewarmStatus();
   if (state.selectedDetail) renderInspectorLocalSuggestions(state.selectedDetail);
@@ -21103,6 +21107,110 @@ function reviewOverviewGroupSections() {
       : []);
 }
 
+function reviewOverviewStableNodeKey(node) {
+  if (!(node instanceof Element)) return null;
+  if (node.dataset.reviewOverviewCardId) {
+    return `card:${node.dataset.reviewOverviewCardId}`;
+  }
+  if (node.dataset.reviewOverviewTagId) {
+    return `open:${node.dataset.reviewOverviewTagId}`;
+  }
+  if (node.dataset.reviewControlTagId) {
+    return `details:${node.dataset.reviewControlTagId}`;
+  }
+  if (node.tagName === "SUMMARY" && node.parentElement?.dataset.reviewControlTagId) {
+    return `summary:${node.parentElement.dataset.reviewControlTagId}`;
+  }
+  if (node.dataset.tagSuggestionMethod && node.dataset.tagId) {
+    return `personal:${node.dataset.tagId}:${node.dataset.tagSuggestionMethod}`;
+  }
+  if (node.dataset.reviewFeatureTagId) {
+    return `feature:${node.dataset.reviewFeatureTagId}:${node.dataset.reviewFeatureMode || ""}`;
+  }
+  if (node.dataset.reviewTrainingJobId) {
+    return `training:${node.dataset.reviewTrainingJobId}`;
+  }
+  if (node.dataset.jobId && node.dataset.action) {
+    return `job:${node.dataset.jobId}:${node.dataset.action}`;
+  }
+  if (node.dataset.cancelTagSuggestionId) {
+    return `cancel:${node.dataset.cancelTagSuggestionId}`;
+  }
+  if (node.dataset.thresholdFocus && node.dataset.thresholdTagId && node.dataset.thresholdMethod) {
+    return `threshold:${node.dataset.thresholdFocus}:${node.dataset.thresholdTagId}:${node.dataset.thresholdMethod}`;
+  }
+  return null;
+}
+
+function syncReviewOverviewStableNode(target, source) {
+  for (const attribute of [...target.attributes]) {
+    if (!source.hasAttribute(attribute.name)) target.removeAttribute(attribute.name);
+  }
+  for (const attribute of source.attributes) {
+    target.setAttribute(attribute.name, attribute.value);
+  }
+  if ("disabled" in target && "disabled" in source) target.disabled = source.disabled;
+  if (target instanceof HTMLInputElement && source instanceof HTMLInputElement) {
+    target.value = source.value;
+  }
+  if (target instanceof HTMLDetailsElement && source instanceof HTMLDetailsElement) {
+    target.open = source.open;
+  }
+  target.replaceChildren(...source.childNodes);
+}
+
+function reconcileReviewOverviewCard(existingCard, renderedCard) {
+  const existingNodes = new Map(
+    [existingCard, ...existingCard.querySelectorAll("*")]
+      .map((node) => [reviewOverviewStableNodeKey(node), node])
+      .filter(([key]) => Boolean(key))
+  );
+  const renderedNodes = [renderedCard, ...renderedCard.querySelectorAll("*")]
+    .map((node) => ({ node, key: reviewOverviewStableNodeKey(node) }))
+    .filter((entry) => Boolean(entry.key))
+    .reverse();
+  let result = renderedCard;
+  for (const { node, key } of renderedNodes) {
+    const existing = existingNodes.get(key);
+    if (!existing || existing.tagName !== node.tagName) continue;
+    syncReviewOverviewStableNode(existing, node);
+    if (node === renderedCard) {
+      result = existing;
+    } else {
+      node.replaceWith(existing);
+    }
+  }
+  return result;
+}
+
+function syncReviewOverviewGroupToggle(toggle, section, collapsed) {
+  toggle.type = "button";
+  toggle.className = "review-overview-group-toggle";
+  toggle.dataset.reviewOverviewGroupToggle = section.id;
+  toggle.setAttribute("aria-expanded", String(!collapsed));
+  toggle.setAttribute("aria-keyshortcuts", "ArrowUp ArrowDown Home End");
+  const chevron = document.createElement("span");
+  chevron.setAttribute("aria-hidden", "true");
+  chevron.textContent = collapsed ? "›" : "⌄";
+  const title = document.createElement("strong");
+  title.textContent = section.displayName;
+  const count = document.createElement("span");
+  count.textContent = `${section.overviews.length} 个标签`;
+  const pending = document.createElement("span");
+  pending.className = "review-overview-group-pending";
+  pending.textContent = `${section.overviews.reduce(
+    (total, overview) => total + (overview.pendingSuggestionCount || 0),
+    0
+  )} 条待审`;
+  configurePersistentHelp(toggle, {
+    title: `${collapsed ? "展开" : "折叠"}“${section.displayName}”分组`,
+    detail: `只改变审核总览中“${section.displayName}”的显示；不会改变侧栏或检查器的标签分组状态。方向键可在分组间移动。`,
+    kind: "review",
+    keyShortcuts: "ArrowUp ArrowDown Home End",
+  });
+  toggle.replaceChildren(chevron, title, count, pending);
+}
+
 function organizeReviewOverviewGroups() {
   const cardsByTagID = new Map(
     [...elements.reviewOverviewGrid.querySelectorAll(".review-overview-card")].map((card) => [
@@ -21110,55 +21218,67 @@ function organizeReviewOverviewGroups() {
       card,
     ])
   );
-  clearElement(elements.reviewOverviewGrid);
-  for (const section of reviewOverviewGroupSections()) {
+  const existingGroups = new Map(
+    [...elements.reviewOverviewGrid.querySelectorAll(":scope > [data-review-overview-group-id]")]
+      .map((group) => [group.dataset.reviewOverviewGroupId, group])
+  );
+  for (const [index, section] of reviewOverviewGroupSections().entries()) {
     const collapsed = state.layout.collapsedReviewTagGroupIDs.has(section.id);
-    const group = document.createElement("section");
+    const group = existingGroups.get(section.id) || document.createElement("section");
+    existingGroups.delete(section.id);
     group.className = "review-overview-group";
     group.dataset.reviewOverviewGroupId = section.id;
-    const toggle = document.createElement("button");
-    toggle.type = "button";
-    toggle.className = "review-overview-group-toggle";
-    toggle.dataset.reviewOverviewGroupToggle = section.id;
-    toggle.setAttribute("aria-expanded", String(!collapsed));
-    toggle.setAttribute("aria-keyshortcuts", "ArrowUp ArrowDown Home End");
-    const chevron = document.createElement("span");
-    chevron.setAttribute("aria-hidden", "true");
-    chevron.textContent = collapsed ? "›" : "⌄";
-    const title = document.createElement("strong");
-    title.textContent = section.displayName;
-    const count = document.createElement("span");
-    count.textContent = `${section.overviews.length} 个标签`;
-    const pending = document.createElement("span");
-    pending.className = "review-overview-group-pending";
-    pending.textContent = `${section.overviews.reduce(
-      (total, overview) => total + (overview.pendingSuggestionCount || 0),
-      0
-    )} 条待审`;
-    configurePersistentHelp(toggle, {
-      title: `${collapsed ? "展开" : "折叠"}“${section.displayName}”分组`,
-      detail: `只改变审核总览中“${section.displayName}”的显示；不会改变侧栏或检查器的标签分组状态。方向键可在分组间移动。`,
-      kind: "review",
-      keyShortcuts: "ArrowUp ArrowDown Home End",
-    });
-    toggle.append(chevron, title, count, pending);
+    const toggle = group.querySelector(":scope > .review-overview-group-toggle")
+      || document.createElement("button");
+    syncReviewOverviewGroupToggle(toggle, section, collapsed);
 
-    const grid = document.createElement("div");
+    const grid = group.querySelector(":scope > .review-overview-group-grid")
+      || document.createElement("div");
     grid.className = "review-overview-group-grid";
     grid.hidden = collapsed;
-    for (const overview of section.overviews) {
-      const card = cardsByTagID.get(overview.id);
-      if (card) grid.append(card);
-    }
-    group.append(toggle, grid);
-    elements.reviewOverviewGrid.append(group);
+    grid.replaceChildren(...section.overviews.map((overview) => cardsByTagID.get(overview.id))
+      .filter(Boolean));
+    group.replaceChildren(toggle, grid);
+    const currentGroup = elements.reviewOverviewGrid.children[index] || null;
+    if (currentGroup !== group) elements.reviewOverviewGrid.insertBefore(group, currentGroup);
   }
+  for (const group of existingGroups.values()) group.remove();
 }
 
-function renderReviewOverview() {
+function reviewOverviewContentFingerprint() {
+  return JSON.stringify({
+    mediaKind: state.mediaKind,
+    overview: state.review.overview,
+    overviewTotal: state.review.overviewTotal,
+    tags: activeTags().map((tag) => ({
+      id: tag.id,
+      displayName: tag.displayName,
+      groupID: tag.groupID,
+    })),
+    groups: orderedTagGroups().map((group) => ({
+      id: group.id,
+      displayName: group.displayName,
+    })),
+    generalSettings: state.generalSettings.snapshot,
+    tagLibrarySuggestions: state.tagLibrarySuggestions.snapshot,
+    tagLibraryActivities: state.tagLibrarySuggestions.activities,
+    cancellingSuggestionIDs: [...state.tagLibrarySuggestions.cancellingIDs].sort(),
+    mutatingJobIDs: [...state.jobMutatingIDs].sort(),
+    online: state.online,
+  });
+}
+
+function reviewOverviewCanPreserveContent() {
+  return state.review.overviewRenderedFingerprint !== null
+    && state.review.overviewRenderedFingerprint === reviewOverviewContentFingerprint();
+}
+
+function renderReviewOverview({ preserveContent = false, reconcileContent = false } = {}) {
   const activeControl = elements.reviewOverviewGrid.contains(document.activeElement)
     ? document.activeElement
     : null;
+  const overviewContent = elements.reviewOverviewGrid.closest(".review-overview-content");
+  const overviewScrollTop = overviewContent?.scrollTop || 0;
   const focusedThreshold = thresholdFocusSelector(activeControl)
     || state.review.pendingThresholdFocus;
   const focusedTrainingJobID = !focusedThreshold && (state.review.pendingFocusTrainingJobID
@@ -21183,10 +21303,21 @@ function renderReviewOverview() {
     "hidden",
     loading || state.review.overview.length > 0
   );
-  clearElement(elements.reviewOverviewGrid);
+  if (preserveContent && reviewOverviewCanPreserveContent()) {
+    syncReviewControls();
+    return;
+  }
+  const existingCards = reconcileContent
+    ? new Map(
+      [...elements.reviewOverviewGrid.querySelectorAll("[data-review-overview-card-id]")]
+        .map((card) => [card.dataset.reviewOverviewCardId, card])
+    )
+    : new Map();
+  if (!reconcileContent) clearElement(elements.reviewOverviewGrid);
   for (const overview of state.review.overview) {
     const card = document.createElement("article");
     card.className = "review-overview-card";
+    card.dataset.reviewOverviewCardId = overview.id;
     const openButton = document.createElement("button");
     openButton.type = "button";
     openButton.className = "review-overview-open";
@@ -21329,8 +21460,7 @@ function renderReviewOverview() {
     const suggestions = state.tagLibrarySuggestions;
     const activeActivity = activeTagLibrarySuggestion(overview.id);
     const canGeneratePersonal = Boolean(
-      state.online
-      && state.mediaKind === "image"
+      state.mediaKind === "image"
       && overview.canGeneratePersonalModel
       && option?.personalEligible
     );
@@ -21381,7 +21511,8 @@ function renderReviewOverview() {
           button.className = "button button-plain";
           button.dataset.tagSuggestionMethod = method;
           button.dataset.tagId = overview.id;
-          button.disabled = suggestions.loading
+          button.disabled = !state.online
+            || suggestions.loading
             || suggestions.submitting
             || Boolean(activeTagLibrarySuggestion());
           button.textContent = `${labelText} Top ${suggestions.snapshot?.maximumPendingCount || 500}`;
@@ -21419,11 +21550,29 @@ function renderReviewOverview() {
       details.append(summary, controlBody);
       card.append(details);
     }
-    elements.reviewOverviewGrid.append(card);
+    const existingCard = existingCards.get(overview.id);
+    existingCards.delete(overview.id);
+    elements.reviewOverviewGrid.append(
+      existingCard ? reconcileReviewOverviewCard(existingCard, card) : card
+    );
   }
+  for (const card of existingCards.values()) card.remove();
   organizeReviewOverviewGroups();
   syncReviewControls();
+  if (reconcileContent && overviewContent) overviewContent.scrollTop = overviewScrollTop;
   const focusAfterRender = () => {
+    if (reconcileContent && activeControl?.isConnected) {
+      if (!activeControl.disabled) {
+        activeControl.focus({ preventScroll: true });
+        return;
+      }
+      const sameCardFallback = activeControl.closest("[data-review-overview-card-id]")
+        ?.querySelector("[data-review-control-tag-id] > summary");
+      if (sameCardFallback instanceof HTMLElement) {
+        sameCardFallback.focus({ preventScroll: true });
+        return;
+      }
+    }
     const thresholdTarget = reviewThresholdFocusTarget(focusedThreshold);
     const target = thresholdTarget || (focusedTrainingJobID
       ? elements.reviewOverviewGrid.querySelector(
@@ -21447,6 +21596,7 @@ function renderReviewOverview() {
   };
   focusAfterRender();
   requestAnimationFrame(focusAfterRender);
+  state.review.overviewRenderedFingerprint = reviewOverviewContentFingerprint();
 }
 
 function renderReviewMode() {
@@ -21466,14 +21616,17 @@ async function loadReviewOverview({ throwOnError = false } = {}) {
   const generation = ++state.review.overviewGeneration;
   const workspaceGeneration = state.workspaceGeneration;
   state.review.overviewLoading = true;
-  renderReviewOverview();
+  renderReviewOverview({
+    preserveContent: reviewOverviewCanPreserveContent(),
+    reconcileContent: true,
+  });
   const query = new URLSearchParams({ mediaKind: state.mediaKind });
   const sourceIDs = resolvedReviewSourceFilter();
   if (sourceIDs?.length === 0) {
     state.review.overview = [];
     state.review.overviewTotal = 0;
     state.review.overviewLoading = false;
-    renderReviewOverview();
+    renderReviewOverview({ reconcileContent: true });
     return true;
   }
   if (sourceIDs) query.set("sourceIDs", sourceIDs.join(","));
@@ -21493,7 +21646,10 @@ async function loadReviewOverview({ throwOnError = false } = {}) {
   } finally {
     if (generation === state.review.overviewGeneration) {
       state.review.overviewLoading = false;
-      renderReviewOverview();
+      renderReviewOverview({
+        preserveContent: reviewOverviewCanPreserveContent(),
+        reconcileContent: true,
+      });
     }
   }
 }
@@ -32794,6 +32950,7 @@ function resetWorkspaceSessionState() {
   state.review.overview = [];
   state.review.overviewTotal = 0;
   state.review.overviewLoading = false;
+  state.review.overviewRenderedFingerprint = null;
   state.review.overviewGeneration += 1;
   state.review.nextCursor = null;
   state.review.selectedIndex = -1;
