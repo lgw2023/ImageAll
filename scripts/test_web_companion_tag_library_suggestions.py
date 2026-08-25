@@ -92,6 +92,7 @@ def main():
     suggestion_completed = False
     review_overview_checked_count = 0
     review_queue_reads = 0
+    review_queue_score_adjustment = 0.0
     page_errors = []
     console_errors = []
     failed_resources = []
@@ -202,7 +203,8 @@ def main():
                         "acceptedTagCount": 0,
                         "rejectedTagCount": 0,
                         "suggestionOrigin": "personalModel",
-                        "score": 0.91 - index * 0.04,
+                        "score": 0.91 - index * 0.04
+                        + (review_queue_score_adjustment if index == 0 else 0.0),
                     } for index, asset_id in enumerate(REVIEW_IDS)],
                     "nextCursor": None,
                 },
@@ -608,6 +610,224 @@ def main():
         assert page.locator("#reviewTagSelect").input_value() == TAG_ID
         assert review_queue_reads >= 1
         assert page.locator("#reviewGrid .review-card").count() == 2
+        page.set_viewport_size({"width": 1440, "height": 960})
+        page.wait_for_timeout(200)
+        page.wait_for_function(
+            "() => [...document.querySelectorAll('#reviewGrid .review-card img')]"
+            ".every(image => image.complete && !image.classList.contains('loading'))"
+        )
+        page.evaluate(
+            """() => {
+              const originalFetch = window.fetch.bind(window);
+              window.__reviewQueueRefreshRelease = null;
+              window.fetch = (input, init) => {
+                const url = new URL(typeof input === "string" ? input : input.url, location.href);
+                if (url.pathname !== "/v1/review/queue") return originalFetch(input, init);
+                return new Promise((resolve, reject) => {
+                  window.__reviewQueueRefreshRelease = () => {
+                    window.fetch = originalFetch;
+                    originalFetch(input, init).then(resolve, reject);
+                  };
+                });
+              };
+              const grid = document.querySelector("#reviewGrid");
+              const pane = document.querySelector("#reviewQueuePane");
+              const card = grid.querySelector('[data-review-index="0"]');
+              const main = card.querySelector(".review-card-main");
+              grid.style.paddingBottom = "720px";
+              pane.scrollTop = 80;
+              main.focus({ preventScroll: true });
+              window.__reviewQueueStableFrame = {
+                cards: [...grid.querySelectorAll(":scope > .review-card")],
+                mains: [...grid.querySelectorAll(":scope > .review-card > .review-card-main")],
+                images: [...grid.querySelectorAll(":scope > .review-card img")],
+                focused: main,
+                scrollTop: pane.scrollTop,
+              };
+              document.querySelector("#refreshReviewButton").click();
+            }"""
+        )
+        page.wait_for_function("() => Boolean(window.__reviewQueueRefreshRelease)")
+        pending_queue_frame = page.evaluate(
+            """() => {
+              const frame = window.__reviewQueueStableFrame;
+              const grid = document.querySelector("#reviewGrid");
+              const pane = document.querySelector("#reviewQueuePane");
+              const cards = [...grid.querySelectorAll(":scope > .review-card")];
+              const mains = [...grid.querySelectorAll(":scope > .review-card > .review-card-main")];
+              const images = [...grid.querySelectorAll(":scope > .review-card img")];
+              return {
+                cards: cards.length === frame.cards.length
+                  && cards.every((card, index) => card === frame.cards[index]),
+                mains: mains.every((main, index) => main === frame.mains[index]),
+                images: images.length === frame.images.length
+                  && images.every((image, index) => image === frame.images[index]),
+                focus: document.activeElement === frame.focused,
+                scroll: pane.scrollTop === frame.scrollTop,
+              };
+            }"""
+        )
+        assert all(pending_queue_frame.values()), pending_queue_frame
+        page.evaluate("() => window.__reviewQueueRefreshRelease()")
+        page.wait_for_function("() => !state.review.loading")
+        assert page.evaluate(
+            """() => {
+              const frame = window.__reviewQueueStableFrame;
+              const grid = document.querySelector("#reviewGrid");
+              const pane = document.querySelector("#reviewQueuePane");
+              const cards = [...grid.querySelectorAll(":scope > .review-card")];
+              const mains = [...grid.querySelectorAll(":scope > .review-card > .review-card-main")];
+              const images = [...grid.querySelectorAll(":scope > .review-card img")];
+              return cards.length === frame.cards.length
+                && cards.every((card, index) => card === frame.cards[index])
+                && mains.every((main, index) => main === frame.mains[index])
+                && images.every((image, index) => image === frame.images[index])
+                && document.activeElement === frame.focused
+                && pane.scrollTop === frame.scrollTop;
+            }"""
+        ), "unchanged review queue refresh replaced the successful frame"
+        page.evaluate(
+            """() => {
+              const originalFetch = window.fetch.bind(window);
+              window.__reviewQueueChangedRelease = null;
+              window.fetch = (input, init) => {
+                const url = new URL(typeof input === "string" ? input : input.url, location.href);
+                if (url.pathname !== "/v1/review/queue") return originalFetch(input, init);
+                return new Promise((resolve, reject) => {
+                  window.__reviewQueueChangedRelease = () => {
+                    window.fetch = originalFetch;
+                    originalFetch(input, init).then(resolve, reject);
+                  };
+                });
+              };
+              const grid = document.querySelector("#reviewGrid");
+              const pane = document.querySelector("#reviewQueuePane");
+              const cards = [...grid.querySelectorAll(":scope > .review-card")];
+              const main = cards[0].querySelector(".review-card-main");
+              main.focus({ preventScroll: true });
+              const untouchedMutations = [];
+              const untouchedObserver = new MutationObserver((records) => {
+                untouchedMutations.push(...records.map(record => ({
+                  type: record.type,
+                  attribute: record.attributeName,
+                  target: record.target.id || record.target.className || record.target.nodeName,
+                })));
+              });
+              untouchedObserver.observe(cards[1], {
+                attributes: true,
+                characterData: true,
+                childList: true,
+                subtree: true,
+              });
+              window.__reviewQueueChangedFrame = {
+                cards,
+                mains: cards.map(card => card.querySelector(".review-card-main")),
+                images: cards.map(card => card.querySelector("img")),
+                scores: cards.map(card => card.querySelector(".review-score")),
+                focused: main,
+                scrollTop: pane.scrollTop,
+                untouchedObserver,
+                untouchedMutations,
+              };
+              document.querySelector("#refreshReviewButton").click();
+            }"""
+        )
+        page.wait_for_function("() => Boolean(window.__reviewQueueChangedRelease)")
+        review_queue_score_adjustment = -0.11
+        page.evaluate("() => window.__reviewQueueChangedRelease()")
+        page.wait_for_function("() => !state.review.loading")
+        changed_queue_frame = page.evaluate(
+            """() => {
+              const frame = window.__reviewQueueChangedFrame;
+              const grid = document.querySelector("#reviewGrid");
+              const pane = document.querySelector("#reviewQueuePane");
+              const cards = [...grid.querySelectorAll(":scope > .review-card")];
+              frame.untouchedMutations.push(...frame.untouchedObserver.takeRecords().map(record => ({
+                type: record.type,
+                attribute: record.attributeName,
+                target: record.target.id || record.target.className || record.target.nodeName,
+              })));
+              frame.untouchedObserver.disconnect();
+              return {
+                cards: cards.length === frame.cards.length
+                  && cards.every((card, index) => card === frame.cards[index]),
+                controls: cards.every((card, index) => (
+                  card.querySelector(".review-card-main") === frame.mains[index]
+                  && card.querySelector("img") === frame.images[index]
+                  && card.querySelector(".review-score") === frame.scores[index]
+                )),
+                content: cards[0].querySelector(".review-score").textContent === "80%",
+                untouched: frame.untouchedMutations.length === 0,
+                mutationDetails: frame.untouchedMutations,
+                focus: document.activeElement === frame.focused,
+                scroll: pane.scrollTop === frame.scrollTop,
+              };
+            }"""
+        )
+        assert all(
+            changed_queue_frame[key]
+            for key in ["cards", "controls", "content", "untouched", "focus", "scroll"]
+        ), changed_queue_frame
+        page.evaluate(
+            """() => {
+              const originalFetch = window.fetch.bind(window);
+              window.fetch = (input, init) => {
+                const url = new URL(typeof input === "string" ? input : input.url, location.href);
+                if (url.pathname !== "/v1/review/queue") return originalFetch(input, init);
+                window.fetch = originalFetch;
+                return Promise.reject(new Error("模拟审核队列刷新失败"));
+              };
+              const grid = document.querySelector("#reviewGrid");
+              const pane = document.querySelector("#reviewQueuePane");
+              const cards = [...grid.querySelectorAll(":scope > .review-card")];
+              const main = cards[0].querySelector(".review-card-main");
+              main.focus({ preventScroll: true });
+              window.__reviewQueueFailedFrame = {
+                cards,
+                mains: cards.map(card => card.querySelector(".review-card-main")),
+                images: cards.map(card => card.querySelector("img")),
+                scores: cards.map(card => card.querySelector(".review-score")),
+                focused: main,
+                scrollTop: pane.scrollTop,
+                selectedAssetIDs: [...state.review.selectedAssetIDs].sort(),
+                selectedIndex: state.review.selectedIndex,
+              };
+              document.querySelector("#refreshReviewButton").click();
+            }"""
+        )
+        page.wait_for_function(
+            "() => !state.review.loading "
+            "&& document.querySelector('#toastMessage').textContent"
+            ".includes('模拟审核队列刷新失败')"
+        )
+        failed_queue_frame = page.evaluate(
+            """() => {
+              const frame = window.__reviewQueueFailedFrame;
+              const grid = document.querySelector("#reviewGrid");
+              const pane = document.querySelector("#reviewQueuePane");
+              const cards = [...grid.querySelectorAll(":scope > .review-card")];
+              return {
+                cards: cards.length === frame.cards.length
+                  && cards.every((card, index) => card === frame.cards[index]),
+                controls: cards.every((card, index) => (
+                  card.querySelector(".review-card-main") === frame.mains[index]
+                  && card.querySelector("img") === frame.images[index]
+                  && card.querySelector(".review-score") === frame.scores[index]
+                )),
+                lastGoodContent: cards[0].querySelector(".review-score").textContent === "80%",
+                selection: JSON.stringify([...state.review.selectedAssetIDs].sort())
+                  === JSON.stringify(frame.selectedAssetIDs)
+                  && state.review.selectedIndex === frame.selectedIndex,
+                focus: document.activeElement === frame.focused,
+                scroll: pane.scrollTop === frame.scrollTop,
+              };
+            }"""
+        )
+        assert all(failed_queue_frame.values()), failed_queue_frame
+        page.screenshot(
+            path="/tmp/imageall-review-queue-refresh-continuity.png",
+            full_page=True,
+        )
         assert not page_errors, page_errors
         assert not failed_resources, failed_resources
         assert not console_errors, console_errors

@@ -3738,6 +3738,44 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function syncReviewOverviewStableNode("))
         XCTAssertTrue(script.contains("function reconcileReviewOverviewCard("))
         XCTAssertTrue(script.contains("function syncReviewOverviewGroupToggle("))
+        XCTAssertTrue(script.contains("function reviewCardFingerprint("))
+        XCTAssertTrue(script.contains("function reviewPageStructureMatches("))
+        XCTAssertTrue(script.contains("function renderReviewCardsForKeys("))
+        XCTAssertTrue(script.contains("let changedReviewKeys = null;"))
+        XCTAssertTrue(script.contains("const canPreserveExistingGrid = preserveUnchangedGrid"))
+        XCTAssertTrue(script.contains("renderReviewCardsForKeys(changedReviewKeys);"))
+        let reviewCommandRefreshStart = try XCTUnwrap(
+            script.range(of: "async function refreshCommandContext()")
+        )
+        let reviewCommandRefreshEnd = try XCTUnwrap(
+            script.range(
+                of: "async function switchCommandMediaKind",
+                range: reviewCommandRefreshStart.upperBound..<script.endIndex
+            )
+        )
+        let reviewCommandRefreshScript = String(
+            script[
+                reviewCommandRefreshStart.lowerBound..<reviewCommandRefreshEnd.lowerBound
+            ]
+        )
+        XCTAssertTrue(reviewCommandRefreshScript.contains("preserveLoadedWindow: true"))
+        XCTAssertTrue(reviewCommandRefreshScript.contains("preserveUnchangedGrid: true"))
+        let reviewButtonRefreshStart = try XCTUnwrap(
+            script.range(of: "elements.refreshReviewButton.addEventListener")
+        )
+        let reviewButtonRefreshEnd = try XCTUnwrap(
+            script.range(
+                of: "elements.generateStandardLibrarySuggestionsButton.addEventListener",
+                range: reviewButtonRefreshStart.upperBound..<script.endIndex
+            )
+        )
+        let reviewButtonRefreshScript = String(
+            script[
+                reviewButtonRefreshStart.lowerBound..<reviewButtonRefreshEnd.lowerBound
+            ]
+        )
+        XCTAssertTrue(reviewButtonRefreshScript.contains("preserveLoadedWindow: true"))
+        XCTAssertTrue(reviewButtonRefreshScript.contains("preserveUnchangedGrid: true"))
         XCTAssertTrue(script.contains("function syncTrainingRunRow("))
         XCTAssertTrue(script.contains("function syncTrainingSlot("))
         XCTAssertTrue(script.contains("function trainingDetailFingerprint("))

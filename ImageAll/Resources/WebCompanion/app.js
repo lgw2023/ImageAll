@@ -22047,6 +22047,21 @@ function appendReviewCards(items, startIndex) {
   renderReviewDetail();
 }
 
+function renderReviewCardsForKeys(reviewKeys) {
+  const requestedKeys = new Set(reviewKeys);
+  if (!requestedKeys.size) return;
+  const itemsByKey = new Map(
+    state.review.items
+      .map((item, index) => [reviewItemKey(item), { item, index }])
+      .filter(([key]) => requestedKeys.has(key))
+  );
+  const rovingAssetID = reviewGridRovingAssetID();
+  for (const card of elements.reviewGrid.querySelectorAll(":scope > .review-card")) {
+    const entry = itemsByKey.get(card.dataset.reviewKey);
+    if (entry) syncReviewCard(card, entry.item, entry.index, rovingAssetID);
+  }
+}
+
 function reviewInspectorSelectionKey() {
   return [...state.review.selectedAssetIDs].sort().join("|");
 }
@@ -22504,22 +22519,29 @@ function moveReviewSelection(key, { extendRange = false } = {}) {
   selectReviewIndex(nextIndex, { extendRange, focusGrid: true });
 }
 
+function reviewCardFingerprint(item) {
+  return JSON.stringify([
+    item.assetID,
+    item.fileName,
+    item.availability,
+    item.contentRevision,
+    item.acceptedTagCount,
+    item.rejectedTagCount,
+    item.suggestionOrigin,
+    item.score,
+    item.width,
+    item.height,
+    item.favorite?.isFavorite ?? null,
+    item.favorite?.photosObservedValue ?? null,
+    item.favorite?.syncStatus ?? null,
+    item.favorite?.lastErrorCode ?? null,
+  ]);
+}
+
 function reviewPageFingerprint(items, nextCursor) {
   return JSON.stringify([
     nextCursor || null,
-    items.map((item) => [
-      item.assetID,
-      item.fileName,
-      item.availability,
-      item.acceptedTagCount,
-      item.rejectedTagCount,
-      item.suggestionOrigin,
-      item.score,
-      item.favorite?.isFavorite ?? null,
-      item.favorite?.photosObservedValue ?? null,
-      item.favorite?.syncStatus ?? null,
-      item.favorite?.lastErrorCode ?? null,
-    ]),
+    items.map(reviewCardFingerprint),
   ]);
 }
 
@@ -22533,6 +22555,14 @@ function renderedReviewGridMatches(items) {
     && cards.every((card, index) => (
       card.dataset.reviewKey === reviewItemKey(items[index])
       && card.dataset.reviewIndex === String(index)
+    ));
+}
+
+function reviewPageStructureMatches(leftItems, leftCursor, rightItems, rightCursor) {
+  return (leftCursor || null) === (rightCursor || null)
+    && leftItems.length === rightItems.length
+    && leftItems.every((item, index) => (
+      reviewItemKey(item) === reviewItemKey(rightItems[index])
     ));
 }
 
@@ -22662,13 +22692,17 @@ async function loadReviewQueue({
     return true;
   }
 
+  const canPreserveExistingGrid = preserveUnchangedGrid
+    && existingLoadedScopeKey === scopeKey
+    && renderedReviewGridMatches(existingItems);
   state.review.loading = true;
   state.review.appending = append;
-  let shouldRender = !preserveUnchangedGrid;
+  let shouldRender = !canPreserveExistingGrid;
   let deferredForMarquee = false;
   let appendedItems = null;
+  let changedReviewKeys = null;
   if (!append) {
-    if (!preserveUnchangedGrid || state.review.loadedScopeKey !== scopeKey) {
+    if (!canPreserveExistingGrid) {
       state.review.items = [];
       state.review.nextCursor = null;
       state.review.selectedIndex = -1;
@@ -22717,6 +22751,21 @@ async function loadReviewQueue({
     shouldRender = shouldRender
       || reviewPageFingerprint(state.review.items, state.review.nextCursor)
         !== reviewPageFingerprint(nextItems, nextCursor);
+    const canRenderChangedCardsOnly = !append
+      && canPreserveExistingGrid
+      && reviewPageStructureMatches(
+        existingItems,
+        state.review.nextCursor,
+        nextItems,
+        nextCursor
+      );
+    if (canRenderChangedCardsOnly) {
+      changedReviewKeys = nextItems
+        .filter((item, index) => (
+          reviewCardFingerprint(item) !== reviewCardFingerprint(existingItems[index])
+        ))
+        .map(reviewItemKey);
+    }
     const existingKeys = append
       ? new Set(existingItems.map(reviewItemKey))
       : null;
@@ -22771,6 +22820,13 @@ async function loadReviewQueue({
         if (appendedItems !== null) {
           renderReviewCollectionSummary();
           appendReviewCards(appendedItems, existingItems.length);
+        } else if (changedReviewKeys !== null) {
+          renderReviewCollectionSummary();
+          renderReviewCardsForKeys(changedReviewKeys);
+          const selectedReviewKey = reviewItemKey(
+            state.review.items[state.review.selectedIndex]
+          );
+          if (changedReviewKeys.includes(selectedReviewKey)) renderReviewDetail();
         } else {
           renderReview();
         }
@@ -34504,7 +34560,10 @@ async function refreshCommandContext() {
       loadReviewOverview(),
     ]);
     if (state.review.mode === "queue") {
-      await loadReviewQueue({ preserveLoadedWindow: true });
+      await loadReviewQueue({
+        preserveLoadedWindow: true,
+        preserveUnchangedGrid: true,
+      });
     }
   } else if (route === "training") {
     await loadTrainingWorkspace();
@@ -39174,7 +39233,10 @@ function bindEvents() {
     ]);
     await loadReviewOverview();
     if (state.review.mode === "queue") {
-      await loadReviewQueue({ preserveLoadedWindow: true });
+      await loadReviewQueue({
+        preserveLoadedWindow: true,
+        preserveUnchangedGrid: true,
+      });
     }
   });
   elements.generateStandardLibrarySuggestionsButton.addEventListener("click", () => {
