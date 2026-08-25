@@ -10082,6 +10082,14 @@ function appendFolderRows(
     row.classList.toggle("selected", selectedFolderMatches(sourceID, folder.relativePath));
     row.setAttribute("aria-current", selectedFolderMatches(sourceID, folder.relativePath) ? "page" : "false");
     row.title = folder.relativePath;
+    configurePersistentHelp(row, {
+      title: search ? folder.relativePath : folder.name,
+      detail: search
+        ? `打开“${folder.relativePath}”，并在普通目录树中展开其上级；只显示这个目录及其所有子目录中的媒体。`
+        : `只显示“${folder.relativePath}”目录及其所有子目录中的媒体。点击打开；右方向键展开，左方向键折叠或返回上级。`,
+      kind: "source",
+      owner: `folder:${sourceID}:${search ? "search" : "tree"}:${folder.relativePath}`,
+    });
     const disclosure = document.createElement("span");
     disclosure.className = "folder-disclosure";
     if (!search) disclosure.dataset.folderToggle = key;
@@ -10122,6 +10130,12 @@ function appendFolderBranch(container, sourceID, parentRelativePath, branch, dep
     retry.textContent = "重新载入子文件夹";
     retry.title = "重新读取这个目录的第一页；不会改变当前图库范围";
     retry.setAttribute("aria-label", `${retry.textContent}：${parentRelativePath || "来源根目录"}`);
+    configurePersistentHelp(retry, {
+      title: retry.textContent,
+      detail: `重新读取“${parentRelativePath || "来源根目录"}”的第一页；不会选择目录、读取媒体或改变当前图库范围。`,
+      kind: "source",
+      owner: `folder-retry:${sourceID}:${parentRelativePath || "root"}`,
+    });
     container.append(retry);
   }
   appendFolderRows(container, sourceID, branch.folders, depth, { parentRelativePath });
@@ -10154,6 +10168,14 @@ function appendFolderBranch(container, sourceID, parentRelativePath, branch, dep
     more.title = branch.loadMoreError
       ? "从上次失败的位置继续载入；不会重读已经显示的目录"
       : "载入下一页目录";
+    configurePersistentHelp(more, {
+      title: branch.loadMoreError ? "重试显示更多" : "显示更多目录",
+      detail: branch.loadMoreError
+        ? `从上次失败的位置继续读取“${parentRelativePath || "来源根目录"}”；已显示的 ${branch.folders.length} 项保持不变。`
+        : `继续读取“${parentRelativePath || "来源根目录"}”的下一页；已显示 ${pageProgress} 项。`,
+      kind: "source",
+      owner: `folder-more:${sourceID}:${parentRelativePath || "root"}`,
+    });
     more.disabled = branch.loading;
     container.append(more);
   }
@@ -10168,6 +10190,16 @@ function appendSourceFolderTree(source) {
   tree.setAttribute("aria-label", `${source.displayName}中的文件夹`);
   const root = folderBranch(source.id);
   if (root?.totalCount > 500) {
+    const capacity = document.createElement("p");
+    capacity.className = "source-folder-capacity";
+    capacity.textContent = `共 ${root.totalCount} 个子文件夹，按需显示`;
+    configurePersistentHelp(capacity, {
+      title: `${source.displayName}的大型目录`,
+      detail: "每次读取最多 100 个直接子文件夹；可继续显示更多，也可搜索完整来源中的目录。",
+      kind: "source",
+      owner: `folder-capacity:${source.id}`,
+    });
+    tree.append(capacity);
     const search = state.folderNavigation.searches.get(source.id);
     const controls = document.createElement("div");
     controls.className = "source-folder-search-controls";
@@ -10179,6 +10211,12 @@ function appendSourceFolderTree(source) {
     input.value = search?.query || "";
     input.enterKeyHint = "search";
     input.setAttribute("aria-label", `搜索${source.displayName}中的文件夹`);
+    configurePersistentHelp(input, {
+      title: `搜索${source.displayName}中的目录`,
+      detail: "在完整来源中查找目录；结果保留在普通目录树上方，不会改变当前图库范围。Escape 清空查询。",
+      kind: "source",
+      owner: `folder-search:${source.id}`,
+    });
     const submit = document.createElement("button");
     submit.type = "button";
     submit.className = "source-folder-search-submit";
@@ -10188,6 +10226,12 @@ function appendSourceFolderTree(source) {
     submit.title = "搜索目录（Enter）";
     submit.setAttribute("aria-label", `搜索${source.displayName}中的文件夹`);
     submit.setAttribute("aria-keyshortcuts", "Enter");
+    configurePersistentHelp(submit, {
+      title: "搜索目录（Enter）",
+      detail: `立即搜索${source.displayName}中的目录；不会替换已经载入的普通目录树。`,
+      kind: "source",
+      owner: `folder-search-submit:${source.id}`,
+    });
     controls.append(input, submit);
     tree.append(controls);
     if (search?.query) {
@@ -10209,6 +10253,12 @@ function appendSourceFolderTree(source) {
         retry.textContent = "搜索失败，重试";
         retry.title = `重新搜索${source.displayName}中的文件夹`;
         retry.setAttribute("aria-label", `重新搜索${source.displayName}中的文件夹`);
+        configurePersistentHelp(retry, {
+          title: "搜索失败，重试",
+          detail: `使用保留的原查询重新搜索${source.displayName}；普通目录树和当前图库范围保持不变。`,
+          kind: "source",
+          owner: `folder-search-retry:${source.id}`,
+        });
         results.append(retry);
       } else if (search.folders.length) {
         summary.textContent = search.totalCount > search.folders.length

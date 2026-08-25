@@ -541,6 +541,11 @@ def main():
         assert folder_source.get_attribute("aria-owns") == (
             f"source-folder-tree-{SOURCE_FOLDER}"
         )
+        folder_capacity = page.locator(".source-folder-capacity")
+        assert folder_capacity.inner_text() == "共 501 个子文件夹，按需显示"
+        assert "每次读取最多 100 个" in folder_capacity.get_attribute(
+            "data-help-detail"
+        )
         tree_navigation_asset_query_count = len(asset_queries)
 
         trips = page.locator(
@@ -548,6 +553,35 @@ def main():
         )
         assert trips.get_attribute("role") == "treeitem"
         assert trips.get_attribute("aria-level") == "2"
+        assert trips.get_attribute("data-help-owner") == (
+            f"folder:{SOURCE_FOLDER}:tree:Trips"
+        )
+        trips.hover()
+        page.locator("#persistentHelp:not(.hidden)").wait_for(timeout=2_000)
+        assert page.locator("#persistentHelpTitle").inner_text() == "Trips"
+        folder_help_detail = page.locator("#persistentHelpDetail").inner_text()
+        for expected in [
+            "只显示“Trips”目录及其所有子目录中的媒体",
+            "右方向键展开",
+            "左方向键折叠或返回上级",
+        ]:
+            assert expected in folder_help_detail, (expected, folder_help_detail)
+        assert page.locator("#persistentHelp").get_attribute("data-kind") == "source"
+        assert trips.get_attribute("title") is None
+        page.evaluate("() => renderSources()")
+        page.wait_for_function(
+            "sourceID => persistentHelpTarget?.isConnected "
+            "&& persistentHelpTarget?.dataset.helpOwner === "
+            "`folder:${sourceID}:tree:Trips` "
+            "&& document.querySelector('#persistentHelpTitle').textContent === 'Trips'",
+            arg=SOURCE_FOLDER,
+        )
+        page.screenshot(
+            path="/tmp/imageall-web-folder-scope-help.png",
+            full_page=True,
+        )
+        page.mouse.move(720, 500)
+        page.locator("#persistentHelp").wait_for(state="hidden")
         folder_source.focus()
         folder_source.press("ArrowRight")
         page.wait_for_function(
@@ -571,6 +605,9 @@ def main():
         )
         trips.press("ArrowLeft")
         assert trips.get_attribute("aria-expanded") == "false"
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.folderPath === 'Trips'"
+        )
         trips.press("ArrowLeft")
         page.wait_for_function(
             "sourceID => document.activeElement?.dataset.sourceId === sourceID",

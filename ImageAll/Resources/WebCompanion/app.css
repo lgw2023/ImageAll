@@ -1255,6 +1255,7 @@ html.split-resizing * {
 }
 
 .source-folder-status,
+.source-folder-capacity,
 .source-folder-more,
 .source-folder-retry,
 .source-folder-search-retry,
@@ -1263,6 +1264,12 @@ html.split-resizing * {
   color: var(--tertiary);
   font-size: 11px;
   line-height: 1.35;
+}
+
+.source-folder-capacity {
+  padding-left: 18px;
+  background: no-repeat left 1px center / 12px 12px
+    radial-gradient(circle, var(--tertiary) 0 2px, transparent 2.5px);
 }
 
 .source-folder-more,
