@@ -15552,6 +15552,54 @@ function inspectorSuggestionKey(suggestion) {
   return `${suggestion.tagID}|${suggestion.suggestionOrigin}`;
 }
 
+function createInspectorSuggestionRow(key) {
+  const row = document.createElement("div");
+  row.className = "inspector-suggestion-row";
+  row.dataset.inspectorSuggestionRowKey = key;
+
+  const copy = document.createElement("div");
+  copy.className = "inspector-suggestion-copy";
+  const name = document.createElement("strong");
+  const origin = document.createElement("span");
+  origin.className = "inspector-suggestion-origin";
+  copy.append(name, origin);
+
+  const actions = document.createElement("div");
+  actions.className = "inspector-suggestion-actions";
+  actions.setAttribute("role", "group");
+  for (const [action, label, className] of [
+    ["accept", "属于", "accept"],
+    ["reject", "不属于", "reject"],
+  ]) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `button button-plain inspector-suggestion-action ${className} write-action`;
+    button.dataset.action = action;
+    button.textContent = label;
+    actions.append(button);
+  }
+  row.append(copy, actions);
+  return row;
+}
+
+function syncInspectorSuggestionRow(row, suggestion, index) {
+  const key = inspectorSuggestionKey(suggestion);
+  row.dataset.inspectorSuggestionRowKey = key;
+  const name = row.querySelector(".inspector-suggestion-copy strong");
+  const origin = row.querySelector(".inspector-suggestion-origin");
+  const actions = row.querySelector(".inspector-suggestion-actions");
+  if (name.textContent !== suggestion.displayName) name.textContent = suggestion.displayName;
+  const originText = suggestionOriginText(suggestion.suggestionOrigin);
+  if (origin.textContent !== originText) origin.textContent = originText;
+  actions.setAttribute("aria-label", `${suggestion.displayName} AI 建议`);
+  for (const button of actions.querySelectorAll("[data-action]")) {
+    button.dataset.tagId = suggestion.tagID;
+    button.dataset.inspectorSuggestionKey = key;
+    button.dataset.inspectorSuggestionIndex = String(index);
+    button.disabled = !state.online || state.tagMutating;
+  }
+}
+
 function restoreInspectorSuggestionFocus(suggestions) {
   const pending = state.pendingInspectorSuggestionFocus;
   if (!pending) return;
@@ -15579,42 +15627,25 @@ function renderInspectorSuggestions(detail) {
   const visible = state.inspectorSuggestionsExpanded ? suggestions : suggestions.slice(0, 5);
   elements.inspectorSuggestionsSection.classList.toggle("hidden", suggestions.length === 0);
   elements.inspectorSuggestionCount.textContent = suggestions.length ? String(suggestions.length) : "";
-  clearElement(elements.inspectorSuggestions);
-
+  const wanted = [];
   for (const [index, suggestion] of visible.entries()) {
-    const row = document.createElement("div");
-    row.className = "inspector-suggestion-row";
-    const copy = document.createElement("div");
-    copy.className = "inspector-suggestion-copy";
-    const name = document.createElement("strong");
-    name.textContent = suggestion.displayName;
-    const origin = document.createElement("span");
-    origin.className = "inspector-suggestion-origin";
-    origin.textContent = suggestionOriginText(suggestion.suggestionOrigin);
-    copy.append(name, origin);
-
-    const actions = document.createElement("div");
-    actions.className = "inspector-suggestion-actions";
-    actions.setAttribute("role", "group");
-    actions.setAttribute("aria-label", `${suggestion.displayName} AI 建议`);
     const key = inspectorSuggestionKey(suggestion);
-    for (const [action, label, className] of [
-      ["accept", "属于", "accept"],
-      ["reject", "不属于", "reject"],
-    ]) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = `button button-plain inspector-suggestion-action ${className} write-action`;
-      button.dataset.action = action;
-      button.dataset.tagId = suggestion.tagID;
-      button.dataset.inspectorSuggestionKey = key;
-      button.dataset.inspectorSuggestionIndex = String(index);
-      button.disabled = !state.online || state.tagMutating;
-      button.textContent = label;
-      actions.append(button);
+    const row = elements.inspectorSuggestions.querySelector(
+      `[data-inspector-suggestion-row-key="${CSS.escape(key)}"]`
+    ) || createInspectorSuggestionRow(key);
+    syncInspectorSuggestionRow(row, suggestion, index);
+    wanted.push(row);
+  }
+  for (const [index, row] of wanted.entries()) {
+    if (elements.inspectorSuggestions.children[index] !== row) {
+      elements.inspectorSuggestions.insertBefore(
+        row,
+        elements.inspectorSuggestions.children[index] || null
+      );
     }
-    row.append(copy, actions);
-    elements.inspectorSuggestions.append(row);
+  }
+  for (const row of [...elements.inspectorSuggestions.children]) {
+    if (!wanted.includes(row)) row.remove();
   }
 
   const remaining = suggestions.length - visible.length;

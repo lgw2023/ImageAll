@@ -1785,6 +1785,17 @@ def main():
             "(key) => document.activeElement?.dataset.inspectorSuggestionKey === key",
             arg=f"{SUGGESTION_TAG_IDS[5]}|standardModel",
         )
+        page.evaluate(
+            """() => {
+              const container = document.querySelector("#inspectorSuggestions");
+              window.__stableInspectorSuggestionFrame = {
+                container,
+                rows: [...container.querySelectorAll(".inspector-suggestion-row")],
+                actions: [...container.querySelectorAll("[data-inspector-suggestion-key][data-action]")],
+                scrollTop: container.scrollTop,
+              };
+            }"""
+        )
         first_suggestion_accept = page.locator(
             f'#inspectorSuggestions [data-tag-id="{SUGGESTION_TAG_IDS[0]}"][data-action="accept"]'
         )
@@ -1796,6 +1807,69 @@ def main():
         assert tag_decisions[-1]["tagID"] == SUGGESTION_TAG_IDS[0]
         assert tag_decisions[-1]["action"] == "accept"
         assert tag_decisions[-1]["assetIDs"] == [IMAGE_IDS[0]]
+        stable_inspector_suggestions = page.evaluate(
+            """() => {
+              const frame = window.__stableInspectorSuggestionFrame;
+              const container = document.querySelector("#inspectorSuggestions");
+              return {
+                container: container === frame.container,
+                rows: [...container.querySelectorAll(".inspector-suggestion-row")]
+                  .every((row, index) => row === frame.rows[index]),
+                actions: [...container.querySelectorAll(
+                  "[data-inspector-suggestion-key][data-action]"
+                )].every((action, index) => action === frame.actions[index]),
+                focus: document.activeElement === frame.actions[0],
+                scroll: container.scrollTop === frame.scrollTop,
+              };
+            }"""
+        )
+        assert all(stable_inspector_suggestions.values()), stable_inspector_suggestions
+
+        page.evaluate(
+            """() => {
+              const container = document.querySelector("#inspectorSuggestions");
+              window.__stableFailedInspectorSuggestionFrame = {
+                rows: [...container.querySelectorAll(".inspector-suggestion-row")],
+                actions: [...container.querySelectorAll("[data-inspector-suggestion-key][data-action]")],
+                scrollTop: container.scrollTop,
+              };
+            }"""
+        )
+        fail_next_tag_decision[0] = True
+        failed_suggestion_reject = page.locator(
+            f'#inspectorSuggestions [data-tag-id="{SUGGESTION_TAG_IDS[1]}"][data-action="reject"]'
+        )
+        failed_suggestion_reject.click()
+        page.wait_for_function(
+            "() => !state.tagMutating "
+            "&& document.querySelector('#toastMessage').textContent.includes("
+            "'synthetic tag decision denied')"
+        )
+        page.wait_for_function(
+            "(key) => document.activeElement?.dataset.inspectorSuggestionKey === key",
+            arg=f"{SUGGESTION_TAG_IDS[1]}|standardModel",
+        )
+        stable_failed_inspector_suggestions = page.evaluate(
+            """() => {
+              const frame = window.__stableFailedInspectorSuggestionFrame;
+              const container = document.querySelector("#inspectorSuggestions");
+              const rows = [...container.querySelectorAll(".inspector-suggestion-row")];
+              const actions = [...container.querySelectorAll(
+                "[data-inspector-suggestion-key][data-action]"
+              )];
+              return {
+                rows: rows.every((row, index) => row === frame.rows[index]),
+                actions: actions.every((action, index) => action === frame.actions[index]),
+                focus: document.activeElement === frame.actions[3],
+                scroll: container.scrollTop === frame.scrollTop,
+              };
+            }"""
+        )
+        assert all(stable_failed_inspector_suggestions.values()), (
+            stable_failed_inspector_suggestions
+        )
+        assert tag_decisions[-1]["tagID"] == SUGGESTION_TAG_IDS[1]
+        assert tag_decisions[-1]["action"] == "reject"
 
         assert page.locator("#inspectorTags .inspector-tag-group").count() == 2
         group_toggle_texts = page.locator(
