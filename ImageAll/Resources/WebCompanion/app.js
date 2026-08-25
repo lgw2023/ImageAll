@@ -9226,10 +9226,23 @@ function restoreConfirmationReturnFocus(pending) {
   }
   if (pending.recycleEntryID) {
     requestAnimationFrame(() => {
-      const action = elements.slimmingRecycleList.querySelector(
+      const row = elements.slimmingRecycleList.querySelector(
+        `[data-slimming-recycle-row-id="${CSS.escape(pending.recycleEntryID)}"]`
+      );
+      const originalAction = pending.recycleAction
+        ? row?.querySelector(
+          `[data-action="${CSS.escape(pending.recycleAction)}"]:not(:disabled)`
+        )
+        : null;
+      const availableAction = row?.querySelector(
         `[data-slimming-recycle-entry-id="${CSS.escape(pending.recycleEntryID)}"]:not(:disabled)`
       );
-      (action || elements.slimmingRecycleLoadMoreButton || elements.slimmingButton)
+      const thumbnail = row?.querySelector(":scope > .slimming-recycle-thumbnail-card");
+      (originalAction
+        || availableAction
+        || thumbnail
+        || elements.slimmingRecycleLoadMoreButton
+        || elements.slimmingButton)
         ?.focus({ preventScroll: true });
     });
     return;
@@ -26876,6 +26889,15 @@ function renderSlimmingRecycle({
   syncSlimmingRecycleGridTabStops();
 }
 
+function renderSlimmingRecycleEntryState(entryID, continuity = null) {
+  renderSlimmingRecycle({
+    updateEntryIDs: [entryID],
+    preserveList: true,
+    preserveSourceOptions: true,
+  });
+  if (continuity) restoreSlimmingRecycleContinuity(continuity);
+}
+
 function scheduleSlimmingRecyclePoll() {
   clearTimeout(state.slimming.recycle.pollTimer);
   state.slimming.recycle.pollTimer = null;
@@ -26939,6 +26961,14 @@ function captureSlimmingRecycleContinuity() {
     actionSelector,
     focusedControlID: active?.id || null,
     previousLastEntryID: state.slimming.recycle.entries.at(-1)?.id || null,
+  };
+}
+
+function captureSlimmingRecycleActionContinuity(entryID, actionSelector) {
+  return {
+    ...captureSlimmingRecycleContinuity(),
+    focusedEntryID: entryID,
+    actionSelector,
   };
 }
 
@@ -27124,13 +27154,17 @@ async function submitSlimmingRecycleAction(entryID, action, { confirmed = false 
         : "只移除失败意图，不会读取、移动、覆盖或删除原文件。",
       actionLabel: purge ? "继续删除" : "撤销失败记录",
       tone: purge ? "danger" : "standard",
-      returnFocus: { recycleEntryID: entryID },
+      returnFocus: { recycleEntryID: entryID, recycleAction: action },
       action: () => submitSlimmingRecycleAction(entryID, action, { confirmed: true }),
     });
     return;
   }
+  const continuity = captureSlimmingRecycleActionContinuity(
+    entryID,
+    `[data-action="${CSS.escape(action)}"]`
+  );
   state.slimming.recycle.mutatingEntryIDs.add(entryID);
-  renderSlimmingRecycle();
+  renderSlimmingRecycleEntryState(entryID, continuity);
   try {
     const request = await api("/v1/library-slimming/recycle/requests", {
       method: "POST",
@@ -27145,7 +27179,7 @@ async function submitSlimmingRecycleAction(entryID, action, { confirmed = false 
     toast(error.message || "回收站操作提交失败");
   } finally {
     state.slimming.recycle.mutatingEntryIDs.delete(entryID);
-    renderSlimmingRecycle();
+    renderSlimmingRecycleEntryState(entryID, continuity);
     scheduleSlimmingRecyclePoll();
   }
 }
@@ -27158,21 +27192,17 @@ async function submitSlimmingRecycleRecoveryAction(entryID, action) {
     || recycle.mutatingEntryIDs.has(entryID)
     || state.sourceManagement.submitting
     || sourceManagementHasActiveRequest()) return;
-  const scrollTop = elements.slimmingRecycleBody.scrollTop;
+  const continuity = captureSlimmingRecycleActionContinuity(
+    entryID,
+    `[data-slimming-recycle-recovery-action="${CSS.escape(action)}"]`
+  );
   recycle.mutatingEntryIDs.add(entryID);
-  renderSlimmingRecycle();
+  renderSlimmingRecycleEntryState(entryID, continuity);
   try {
     await submitSourceManagementAction(action, entry.sourceID);
   } finally {
     recycle.mutatingEntryIDs.delete(entryID);
-    renderSlimmingRecycle();
-    elements.slimmingRecycleBody.scrollTop = scrollTop;
-    requestAnimationFrame(() => {
-      const focusTarget = elements.slimmingRecycleList.querySelector(
-        `[data-slimming-recycle-entry-id="${CSS.escape(entryID)}"]`
-      );
-      focusTarget?.focus({ preventScroll: true });
-    });
+    renderSlimmingRecycleEntryState(entryID, continuity);
   }
 }
 

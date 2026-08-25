@@ -125,6 +125,7 @@ def main(*, inspector_actions_only=False):
     slimming_setup_reads = [0]
     submitted_slimming_removals = []
     submitted_slimming_recycle_actions = []
+    slimming_recycle_action_failures = [0]
     submitted_source_management = []
     submitted_sample_suggestions = []
     submitted_tag_decisions = []
@@ -1187,6 +1188,14 @@ def main(*, inspector_actions_only=False):
         def handle_slimming_recycle_request(route):
             payload = route.request.post_data_json
             submitted_slimming_recycle_actions.append(payload)
+            if slimming_recycle_action_failures[0] > 0:
+                slimming_recycle_action_failures[0] -= 1
+                fulfill_json(
+                    route,
+                    {"code": "syntheticFailure", "message": "模拟回收动作失败"},
+                    status=409,
+                )
+                return
             fulfill_json(
                 route,
                 {
@@ -4701,19 +4710,178 @@ def main(*, inspector_actions_only=False):
             "entryID => document.activeElement?.dataset.slimmingRecycleExplanationId === entryID",
             arg=SLIMMING_RECYCLE_IDS[1],
         )
-        refresh_row.get_by_role("button", name="刷新来源").click()
-        page.wait_for_timeout(100)
+        refresh_source_button = refresh_row.get_by_role("button", name="刷新来源")
+        recycle_source_action_scroll = page.evaluate(
+            """entryID => {
+              const body = document.querySelector('#slimmingRecycleBody');
+              const row = document.querySelector(
+                `[data-slimming-recycle-row-id="${CSS.escape(entryID)}"]`
+              );
+              const unaffectedRow = document.querySelector(
+                '#slimmingRecycleList > .slimming-recycle-row'
+              );
+              body.scrollTop = Math.min(90, Math.max(0, body.scrollHeight - body.clientHeight));
+              window.__imageAllRecycleSourceActionRow = row;
+              window.__imageAllRecycleSourceActionThumbnail = row.querySelector(
+                '.slimming-recycle-thumbnail-card'
+              );
+              window.__imageAllRecycleSourceActionUnaffectedRow = unaffectedRow;
+              window.__imageAllRecycleSourceActionUnaffectedThumbnail = unaffectedRow.querySelector(
+                '.slimming-recycle-thumbnail-card'
+              );
+              return body.scrollTop;
+            }""",
+            SLIMMING_RECYCLE_IDS[1],
+        )
+        recycle_source_action_count = len(submitted_source_management)
+        refresh_source_button.click()
+        page.wait_for_function(
+            "entryID => !state.slimming.recycle.mutatingEntryIDs.has(entryID) "
+            "&& !state.sourceManagement.submitting",
+            arg=SLIMMING_RECYCLE_IDS[1],
+        )
+        assert len(submitted_source_management) == recycle_source_action_count + 1
         assert submitted_source_management[-1]["action"] == "rescan"
         assert submitted_source_management[-1]["sourceID"] == SECOND_SOURCE_ID
+        assert page.evaluate(
+            """expected => {
+              const body = document.querySelector('#slimmingRecycleBody');
+              const row = document.querySelector(
+                `[data-slimming-recycle-row-id="${CSS.escape(expected.entryID)}"]`
+              );
+              const unaffectedRow = document.querySelector(
+                '#slimmingRecycleList > .slimming-recycle-row'
+              );
+              return row === window.__imageAllRecycleSourceActionRow
+                && row.querySelector('.slimming-recycle-thumbnail-card')
+                  === window.__imageAllRecycleSourceActionThumbnail
+                && unaffectedRow === window.__imageAllRecycleSourceActionUnaffectedRow
+                && unaffectedRow.querySelector('.slimming-recycle-thumbnail-card')
+                  === window.__imageAllRecycleSourceActionUnaffectedThumbnail
+                && body.scrollTop === expected.scrollTop
+                && document.activeElement?.dataset.slimmingRecycleRecoveryAction === 'rescan';
+            }""",
+            {
+                "entryID": SLIMMING_RECYCLE_IDS[1],
+                "scrollTop": recycle_source_action_scroll,
+            },
+        )
 
         reinspect_row = page.locator(
             f'[data-slimming-recycle-row-id="{SLIMMING_RECYCLE_IDS[2]}"]'
         )
-        assert reinspect_row.get_by_role("button", name="重新检查").is_visible()
+        reinspect_button = reinspect_row.get_by_role("button", name="重新检查")
+        assert reinspect_button.is_visible()
         assert reinspect_row.get_by_role("button", name="说明").is_visible()
-        reinspect_row.get_by_role("button", name="重新检查").click()
-        page.wait_for_timeout(100)
+        recycle_action_scroll = page.evaluate(
+            """entryID => {
+              const body = document.querySelector('#slimmingRecycleBody');
+              const row = document.querySelector(
+                `[data-slimming-recycle-row-id="${CSS.escape(entryID)}"]`
+              );
+              const unaffectedRow = document.querySelector(
+                '#slimmingRecycleList > .slimming-recycle-row'
+              );
+              body.scrollTop = Math.min(90, Math.max(0, body.scrollHeight - body.clientHeight));
+              window.__imageAllRecycleActionRow = row;
+              window.__imageAllRecycleActionThumbnail = row.querySelector(
+                '.slimming-recycle-thumbnail-card'
+              );
+              window.__imageAllRecycleActionUnaffectedRow = unaffectedRow;
+              window.__imageAllRecycleActionUnaffectedThumbnail = unaffectedRow.querySelector(
+                '.slimming-recycle-thumbnail-card'
+              );
+              return body.scrollTop;
+            }""",
+            SLIMMING_RECYCLE_IDS[2],
+        )
+        recycle_action_count = len(submitted_slimming_recycle_actions)
+        reinspect_button.click()
+        page.wait_for_function(
+            "entryID => !state.slimming.recycle.mutatingEntryIDs.has(entryID) "
+            "&& state.slimming.recycle.requests.some(request => request.entryID === entryID)",
+            arg=SLIMMING_RECYCLE_IDS[2],
+        )
+        assert len(submitted_slimming_recycle_actions) == recycle_action_count + 1
         assert submitted_slimming_recycle_actions[-1]["action"] == "retryInterruptedOperation"
+        assert page.evaluate(
+            """expected => {
+              const body = document.querySelector('#slimmingRecycleBody');
+              const row = document.querySelector(
+                `[data-slimming-recycle-row-id="${CSS.escape(expected.entryID)}"]`
+              );
+              const unaffectedRow = document.querySelector(
+                '#slimmingRecycleList > .slimming-recycle-row'
+              );
+              return row === window.__imageAllRecycleActionRow
+                && row.querySelector('.slimming-recycle-thumbnail-card')
+                  === window.__imageAllRecycleActionThumbnail
+                && unaffectedRow === window.__imageAllRecycleActionUnaffectedRow
+                && unaffectedRow.querySelector('.slimming-recycle-thumbnail-card')
+                  === window.__imageAllRecycleActionUnaffectedThumbnail
+                && body.scrollTop === expected.scrollTop
+                && document.activeElement?.dataset.action === 'retryInterruptedOperation';
+            }""",
+            {
+                "entryID": SLIMMING_RECYCLE_IDS[2],
+                "scrollTop": recycle_action_scroll,
+            },
+        )
+        slimming_recycle_action_failures[0] = 1
+        recycle_failed_action_before = page.evaluate(
+            """entryID => {
+              const body = document.querySelector('#slimmingRecycleBody');
+              const row = document.querySelector(
+                `[data-slimming-recycle-row-id="${CSS.escape(entryID)}"]`
+              );
+              window.__imageAllRecycleFailedActionRow = row;
+              window.__imageAllRecycleFailedActionThumbnail = row.querySelector(
+                '.slimming-recycle-thumbnail-card'
+              );
+              return {
+                scrollTop: body.scrollTop,
+                requestCount: state.slimming.recycle.requests.length,
+              };
+            }""",
+            SLIMMING_RECYCLE_IDS[2],
+        )
+        recycle_failed_action_count = len(submitted_slimming_recycle_actions)
+        reinspect_button.click()
+        page.wait_for_function(
+            "entryID => !state.slimming.recycle.mutatingEntryIDs.has(entryID)",
+            arg=SLIMMING_RECYCLE_IDS[2],
+        )
+        page.wait_for_function(
+            "() => document.querySelector('#toast')?.textContent.includes('模拟回收动作失败')"
+        )
+        assert len(submitted_slimming_recycle_actions) == recycle_failed_action_count + 1
+        recycle_failed_action_after = page.evaluate(
+            """expected => {
+              const body = document.querySelector('#slimmingRecycleBody');
+              const row = document.querySelector(
+                `[data-slimming-recycle-row-id="${CSS.escape(expected.entryID)}"]`
+              );
+              return {
+                rowStable: row === window.__imageAllRecycleFailedActionRow,
+                thumbnailStable: row.querySelector('.slimming-recycle-thumbnail-card')
+                  === window.__imageAllRecycleFailedActionThumbnail,
+                scrollTop: body.scrollTop,
+                requestCount: state.slimming.recycle.requests.length,
+                focusedAction: document.activeElement?.dataset.action || null,
+              };
+            }""",
+            {
+                "entryID": SLIMMING_RECYCLE_IDS[2],
+                **recycle_failed_action_before,
+            },
+        )
+        assert recycle_failed_action_after == {
+            "rowStable": True,
+            "thumbnailStable": True,
+            "scrollTop": recycle_failed_action_before["scrollTop"],
+            "requestCount": recycle_failed_action_before["requestCount"],
+            "focusedAction": "retryInterruptedOperation",
+        }, recycle_failed_action_after
 
         authorization_row = page.locator(
             f'[data-slimming-recycle-row-id="{SLIMMING_RECYCLE_IDS[3]}"]'
@@ -4735,12 +4903,65 @@ def main(*, inspector_actions_only=False):
             f'[data-slimming-recycle-row-id="{SLIMMING_RECYCLE_IDS[6]}"]'
         )
         assert discard_row.get_by_role("button", name="更新回收权限").is_visible()
+        recycle_confirm_action_scroll = page.evaluate(
+            """entryID => {
+              const body = document.querySelector('#slimmingRecycleBody');
+              const row = document.querySelector(
+                `[data-slimming-recycle-row-id="${CSS.escape(entryID)}"]`
+              );
+              const unaffectedRow = document.querySelector(
+                '#slimmingRecycleList > .slimming-recycle-row'
+              );
+              body.scrollTop = Math.min(90, Math.max(0, body.scrollHeight - body.clientHeight));
+              window.__imageAllRecycleConfirmActionRow = row;
+              window.__imageAllRecycleConfirmActionThumbnail = row.querySelector(
+                '.slimming-recycle-thumbnail-card'
+              );
+              window.__imageAllRecycleConfirmActionUnaffectedRow = unaffectedRow;
+              return body.scrollTop;
+            }""",
+            SLIMMING_RECYCLE_IDS[6],
+        )
+        recycle_confirm_action_count = len(submitted_slimming_recycle_actions)
         discard_row.get_by_role("button", name="移除记录").click()
         page.locator("#confirmDialog[open]").wait_for()
         assert "未执行的失败记录" in page.locator("#confirmDialogTitle").inner_text()
         page.locator("#confirmActionButton").click()
-        page.wait_for_timeout(100)
+        page.wait_for_function(
+            "entryID => !state.slimming.recycle.mutatingEntryIDs.has(entryID) "
+            "&& state.slimming.recycle.requests.some(request => request.entryID === entryID)",
+            arg=SLIMMING_RECYCLE_IDS[6],
+        )
+        assert len(submitted_slimming_recycle_actions) == recycle_confirm_action_count + 1
         assert submitted_slimming_recycle_actions[-1]["action"] == "discardPreflightFailure"
+        page.wait_for_timeout(100)
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.action === 'discardPreflightFailure'"
+        )
+        assert page.evaluate(
+            """expected => {
+              const body = document.querySelector('#slimmingRecycleBody');
+              const row = document.querySelector(
+                `[data-slimming-recycle-row-id="${CSS.escape(expected.entryID)}"]`
+              );
+              const unaffectedRow = document.querySelector(
+                '#slimmingRecycleList > .slimming-recycle-row'
+              );
+              return row === window.__imageAllRecycleConfirmActionRow
+                && row.querySelector('.slimming-recycle-thumbnail-card')
+                  === window.__imageAllRecycleConfirmActionThumbnail
+                && unaffectedRow === window.__imageAllRecycleConfirmActionUnaffectedRow
+                && body.scrollTop === expected.scrollTop;
+            }""",
+            {
+                "entryID": SLIMMING_RECYCLE_IDS[6],
+                "scrollTop": recycle_confirm_action_scroll,
+            },
+        )
+        page.screenshot(
+            path="/tmp/imageall-slimming-recycle-action-continuity.png",
+            full_page=False,
+        )
 
         expanded_slimming_recycle_pagination_enabled = True
         page.evaluate(
@@ -5646,9 +5867,10 @@ def main(*, inspector_actions_only=False):
             for message in console_errors
             if message not in expected_conflict_console
         ]
-        assert len(expected_conflict_console) == 1, console_errors
+        assert len(expected_conflict_console) == 2, console_errors
         assert failed_resources == [
-            (409, f"{BASE_URL}/v1/tags/create-and-apply")
+            (409, f"{BASE_URL}/v1/tags/create-and-apply"),
+            (409, f"{BASE_URL}/v1/library-slimming/recycle/requests"),
         ], failed_resources
         assert not page_errors, page_errors
         assert not unexpected_console_errors, unexpected_console_errors
