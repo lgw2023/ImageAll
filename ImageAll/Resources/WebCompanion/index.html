@@ -10,8 +10,8 @@
   <meta name="apple-mobile-web-app-title" content="ImageAll">
   <title>ImageAll 网页版</title>
   <link rel="manifest" href="/manifest.webmanifest">
-    <link rel="stylesheet" href="/app.css?v=20260826-185">
-    <script src="/app.js?v=20260826-185" defer></script>
+    <link rel="stylesheet" href="/app.css?v=20260826-186">
+    <script src="/app.js?v=20260826-186" defer></script>
 </head>
 <body>
   <div id="bootView" class="centered-state">
@@ -3046,7 +3046,8 @@
       <header>
         <span aria-hidden="true">⌘</span>
         <input id="commandSearchInput" type="search" placeholder="搜索命令" autocomplete="off"
-          aria-label="搜索命令">
+          role="combobox" aria-label="搜索命令" aria-controls="commandList"
+          aria-autocomplete="list" aria-expanded="false">
         <kbd>Esc</kbd>
       </header>
       <div id="commandList" class="command-list" role="listbox" aria-label="可用命令"></div>

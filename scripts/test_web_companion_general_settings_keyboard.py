@@ -878,6 +878,117 @@ def main():
         page.locator("#compactToolbarMenuButton").focus()
         page.keyboard.press("Meta+k")
         page.locator("#commandPalette[open]").wait_for()
+        command_keyboard_frame = page.evaluate(
+            """() => {
+              const list = document.querySelector("#commandList");
+              const items = [...list.querySelectorAll("[data-command-id]")];
+              const untouched = items.find(
+                item => item.dataset.commandId === "connectFolder"
+              );
+              const untouchedMutations = [];
+              const untouchedObserver = new MutationObserver(
+                records => untouchedMutations.push(...records)
+              );
+              untouchedObserver.observe(untouched, {
+                attributes: true,
+                characterData: true,
+                childList: true,
+                subtree: true,
+              });
+              window.__commandKeyboardFrame = {
+                list,
+                items: new Map(items.map((item) => [item.dataset.commandId, item])),
+                activeID: list.querySelector(".command-item.active")?.dataset.commandId,
+                input: document.querySelector("#commandSearchInput"),
+                untouchedObserver,
+                untouchedMutations,
+              };
+              return { itemCount: items.length };
+            }"""
+        )
+        assert command_keyboard_frame["itemCount"] > 2
+        page.keyboard.press("ArrowDown")
+        command_keyboard_continuity = page.evaluate(
+            """() => {
+              const frame = window.__commandKeyboardFrame;
+              const list = document.querySelector("#commandList");
+              const items = [...list.querySelectorAll("[data-command-id]")];
+              const activeID = list.querySelector(".command-item.active")?.dataset.commandId;
+              frame.untouchedMutations.push(...frame.untouchedObserver.takeRecords());
+              frame.untouchedObserver.disconnect();
+              return {
+                list: list === frame.list,
+                items: items.length === frame.items.size
+                  && items.every((item) => frame.items.get(item.dataset.commandId) === item),
+                moved: Boolean(activeID) && activeID !== frame.activeID,
+                selected: items.filter(
+                  item => item.getAttribute("aria-selected") === "true"
+                ).length === 1,
+                untouched: frame.untouchedMutations.length === 0,
+                focus: document.activeElement === frame.input,
+              };
+            }"""
+        )
+        assert all(command_keyboard_continuity.values()), command_keyboard_continuity
+        command_keyboard_accessibility = page.evaluate(
+            """() => {
+              const input = document.querySelector("#commandSearchInput");
+              const active = document.querySelector("#commandList .command-item.active");
+              return {
+                role: input.getAttribute("role") === "combobox",
+                controls: input.getAttribute("aria-controls") === "commandList",
+                autocomplete: input.getAttribute("aria-autocomplete") === "list",
+                expanded: input.getAttribute("aria-expanded") === "true",
+                activeID: Boolean(active?.id)
+                  && input.getAttribute("aria-activedescendant") === active.id,
+              };
+            }"""
+        )
+        assert all(command_keyboard_accessibility.values()), (
+            command_keyboard_accessibility
+        )
+        page.locator("#commandSearchInput").fill("连接文件夹")
+        command_filter_frame = page.evaluate(
+            """() => {
+              const frame = window.__commandKeyboardFrame;
+              const item = document.querySelector('[data-command-id="connectFolder"]');
+              window.__commandFilterFrame = { item };
+              return {
+                item: item === frame.items.get("connectFolder"),
+                onlyMatch: document.querySelectorAll("#commandList [data-command-id]").length
+                  === 1,
+                enabled: !item.disabled,
+                focus: document.activeElement === frame.input,
+              };
+            }"""
+        )
+        assert all(command_filter_frame.values()), command_filter_frame
+        page.evaluate("() => setConnection(false, 'Mac 离线')")
+        command_offline_frame = page.evaluate(
+            """() => {
+              const frame = window.__commandFilterFrame;
+              const item = document.querySelector('[data-command-id="connectFolder"]');
+              return {
+                item: item === frame.item,
+                disabled: item.disabled && item.getAttribute("aria-disabled") === "true",
+                visuallyMuted: Number.parseFloat(getComputedStyle(item).opacity) < 1,
+                focus: document.activeElement?.id === "commandSearchInput",
+              };
+            }"""
+        )
+        assert all(command_offline_frame.values()), command_offline_frame
+        page.screenshot(
+            path="/tmp/imageall-command-palette-continuity.png",
+            full_page=True,
+        )
+        page.evaluate("() => setConnection(true, '已连接')")
+        assert page.evaluate(
+            """() => {
+              const item = document.querySelector('[data-command-id="connectFolder"]');
+              return item === window.__commandFilterFrame.item && !item.disabled;
+            }"""
+        )
+        page.locator("#commandSearchInput").fill("")
         sidebar_command = page.locator('[data-command-id="toggleSidebar"]')
         assert "显示侧栏" in sidebar_command.inner_text()
         sidebar_command.click()

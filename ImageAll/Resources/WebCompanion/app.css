@@ -9206,6 +9206,11 @@ html.split-resizing * {
   color: var(--accent);
 }
 
+.command-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 .command-item small {
   color: var(--secondary);
 }

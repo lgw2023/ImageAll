@@ -7246,6 +7246,7 @@ function setConnection(online, label) {
     return;
   }
   syncWriteActionControls();
+  if (elements.commandPalette.open) renderCommandItems();
   renderPersonalModelControls();
   renderEmbeddingPreparation();
   renderSampleSuggestions();
@@ -36280,6 +36281,7 @@ function closeCommandPalette({ restoreFocus = true, checkpoint = true } = {}) {
   state.commandContext = null;
   state.commandPaletteBaseLevel = "workspace";
   elements.commandPalette.close();
+  syncCommandPaletteAccessibility();
   if (restoreFocus) {
     restoreOverlayFocus(stableReturnFocusTarget(returnFocus, elements.commandButton));
   }
@@ -37027,8 +37029,68 @@ function availableCommands() {
     || (!galleryOnlyCommandIDs.has(command.id) && !command.id.startsWith("tagAction:")));
 }
 
+function commandItemFingerprint(command, index) {
+  return JSON.stringify([
+    command.id,
+    command.icon,
+    command.title,
+    command.hint,
+    Boolean(command.disabled),
+    index === state.commandIndex,
+  ]);
+}
+
+function syncCommandItem(button, command, index, fingerprint) {
+  button.type = "button";
+  button.id = `command-item-${command.id}`;
+  button.classList.add("command-item");
+  button.dataset.commandId = command.id;
+  button.dataset.commandFingerprint = fingerprint;
+  button.classList.toggle("active", index === state.commandIndex);
+  button.disabled = Boolean(command.disabled);
+  button.setAttribute("role", "option");
+  button.setAttribute("aria-selected", String(index === state.commandIndex));
+  button.setAttribute("aria-disabled", String(Boolean(command.disabled)));
+
+  let icon = button.querySelector(":scope > .command-item-icon");
+  if (!icon) {
+    icon = document.createElement("span");
+    icon.className = "command-item-icon";
+    button.append(icon);
+  }
+  icon.textContent = command.icon;
+  let title = button.querySelector(":scope > .command-item-title");
+  if (!title) {
+    title = document.createElement("span");
+    title.className = "command-item-title";
+    button.append(title);
+  }
+  title.textContent = command.title;
+  let hint = button.querySelector(":scope > .command-item-hint");
+  if (!hint) {
+    hint = document.createElement("small");
+    hint.className = "command-item-hint";
+    button.append(hint);
+  }
+  hint.textContent = command.hint;
+}
+
+function syncCommandPaletteAccessibility() {
+  const expanded = elements.commandPalette.open;
+  elements.commandSearchInput.setAttribute("aria-expanded", String(expanded));
+  const active = expanded
+    ? elements.commandList.querySelector(":scope > .command-item.active")
+    : null;
+  if (active?.id) {
+    elements.commandSearchInput.setAttribute("aria-activedescendant", active.id);
+  } else {
+    elements.commandSearchInput.removeAttribute("aria-activedescendant");
+  }
+}
+
 function renderCommandItems() {
   if (!elements.commandList) return;
+  const scrollTop = elements.commandList.scrollTop;
   const query = elements.commandSearchInput.value.trim().toLocaleLowerCase("zh-CN");
   state.commandItems = availableCommands().filter(
     (command) => !query || command.title.toLocaleLowerCase("zh-CN").includes(query)
@@ -37041,33 +37103,31 @@ function renderCommandItems() {
     const firstEnabled = state.commandItems.findIndex((command) => !command.disabled);
     state.commandIndex = firstEnabled >= 0 ? firstEnabled : 0;
   }
-  clearElement(elements.commandList);
   if (!state.commandItems.length) {
-    const empty = document.createElement("div");
+    const empty = elements.commandList.querySelector(":scope > .command-empty")
+      || document.createElement("div");
     empty.className = "command-empty";
     empty.textContent = `没有与“${elements.commandSearchInput.value.trim()}”匹配的命令`;
-    elements.commandList.append(empty);
+    reconcileStableChildren(elements.commandList, [empty]);
+    elements.commandList.scrollTop = scrollTop;
+    syncCommandPaletteAccessibility();
     return;
   }
-  state.commandItems.forEach((command, index) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "command-item";
-    button.dataset.commandId = command.id;
-    button.classList.toggle("active", index === state.commandIndex);
-    button.disabled = Boolean(command.disabled);
-    button.setAttribute("role", "option");
-    button.setAttribute("aria-selected", String(index === state.commandIndex));
-    button.setAttribute("aria-disabled", String(Boolean(command.disabled)));
-    const icon = document.createElement("span");
-    icon.textContent = command.icon;
-    const title = document.createElement("span");
-    title.textContent = command.title;
-    const hint = document.createElement("small");
-    hint.textContent = command.hint;
-    button.append(icon, title, hint);
-    elements.commandList.append(button);
+  const existingItems = new Map(
+    [...elements.commandList.querySelectorAll(":scope > [data-command-id]")]
+      .map((button) => [button.dataset.commandId, button])
+  );
+  const wantedItems = state.commandItems.map((command, index) => {
+    const button = existingItems.get(command.id) || document.createElement("button");
+    const fingerprint = commandItemFingerprint(command, index);
+    if (button.dataset.commandFingerprint !== fingerprint) {
+      syncCommandItem(button, command, index, fingerprint);
+    }
+    return button;
   });
+  reconcileStableChildren(elements.commandList, wantedItems);
+  elements.commandList.scrollTop = scrollTop;
+  syncCommandPaletteAccessibility();
 }
 
 function moveCommandSelection(direction) {
@@ -37360,6 +37420,7 @@ async function openCommandPalette({
     elements.commandContextLabel.textContent = `当前：${state.commandContext.label}`;
     renderCommandItems();
     elements.commandPalette.showModal();
+    syncCommandPaletteAccessibility();
     if (historyMode !== "none") {
       const route = visibleWorkspaceRoute();
       recordWorkspaceHistory(
