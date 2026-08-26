@@ -13901,6 +13901,56 @@ function storageRequestMark(phase) {
   }[phase] || "•";
 }
 
+function storageRequestFingerprint(request) {
+  return JSON.stringify([
+    request.id,
+    request.action,
+    request.phase,
+    request.message,
+    request.updatedAtMs,
+  ]);
+}
+
+function createStorageHistoryRow() {
+  const row = document.createElement("article");
+  row.className = "storage-history-row";
+  const mark = document.createElement("span");
+  mark.className = "storage-history-mark";
+  mark.setAttribute("aria-hidden", "true");
+  const message = document.createElement("span");
+  message.className = "storage-history-message";
+  const time = document.createElement("small");
+  row.append(mark, message, time);
+  return row;
+}
+
+function syncStorageHistoryRow(row, request) {
+  const fingerprint = storageRequestFingerprint(request);
+  if (row.dataset.storageRequestFingerprint === fingerprint) return;
+  row.dataset.storageRequestId = request.id;
+  row.dataset.storageRequestFingerprint = fingerprint;
+  row.dataset.phase = request.phase;
+  row.querySelector(".storage-history-mark").textContent = storageRequestMark(request.phase);
+  const message = row.querySelector(".storage-history-message");
+  message.textContent = request.message;
+  message.title = `${storageActionLabel(request.action)}：${request.message}`;
+  row.querySelector("small").textContent = formatDate(request.updatedAtMs);
+}
+
+function reconcileStorageHistory(requests) {
+  const existing = new Map(
+    [...elements.storageHistory.querySelectorAll(":scope > [data-storage-request-id]")]
+      .map((row) => [row.dataset.storageRequestId, row])
+  );
+  const rows = requests.map((request) => {
+    const row = existing.get(request.id) || createStorageHistoryRow();
+    existing.delete(request.id);
+    syncStorageHistoryRow(row, request);
+    return row;
+  });
+  reconcileStableChildren(elements.storageHistory, rows);
+}
+
 function renderStorageMaintenance() {
   const manager = state.storageMaintenance;
   const snapshot = manager.snapshot;
@@ -13984,25 +14034,9 @@ function renderStorageMaintenance() {
   elements.chooseExternalStorageButton.textContent = snapshot.appStorage.requiresRestart
     ? "重新选择外置位置…" : "选择外置存储位置…";
 
-  clearElement(elements.storageHistory);
   const requests = (snapshot.requests || []).slice(0, 6);
   elements.storageHistorySection.classList.toggle("hidden", !requests.length);
-  for (const request of requests) {
-    const row = document.createElement("article");
-    row.className = "storage-history-row";
-    row.dataset.phase = request.phase;
-    const mark = document.createElement("span");
-    mark.className = "storage-history-mark";
-    mark.textContent = storageRequestMark(request.phase);
-    const message = document.createElement("span");
-    message.className = "storage-history-message";
-    message.textContent = request.message;
-    message.title = `${storageActionLabel(request.action)}：${request.message}`;
-    const time = document.createElement("small");
-    time.textContent = formatDate(request.updatedAtMs);
-    row.append(mark, message, time);
-    elements.storageHistory.append(row);
-  }
+  reconcileStorageHistory(requests);
 }
 
 function scheduleStorageMaintenancePoll() {
@@ -14014,7 +14048,11 @@ function scheduleStorageMaintenancePoll() {
   }, 1_000);
 }
 
-async function loadStorageMaintenance({ quiet = false, notifyTerminal = false } = {}) {
+async function loadStorageMaintenance({
+  quiet = false,
+  notifyTerminal = false,
+  returnFocus = null,
+} = {}) {
   const manager = state.storageMaintenance;
   if (manager.loading) return;
   const generation = ++manager.requestGeneration;
@@ -14041,6 +14079,17 @@ async function loadStorageMaintenance({ quiet = false, notifyTerminal = false } 
       manager.loading = false;
       renderStorageMaintenance();
       scheduleStorageMaintenancePoll();
+      if (returnFocus
+        && elements.storageDialog.open
+        && document.activeElement === document.body) {
+        requestAnimationFrame(() => {
+          if (elements.storageDialog.open
+            && document.activeElement === document.body
+            && !returnFocus.disabled) {
+            returnFocus.focus({ preventScroll: true });
+          }
+        });
+      }
     }
   }
 }
@@ -39318,7 +39367,9 @@ function bindEvents() {
   elements.storageCloseButton.addEventListener("click", () => {
     void returnFromStorageMaintenance();
   });
-  elements.storageRefreshButton.addEventListener("click", () => loadStorageMaintenance());
+  elements.storageRefreshButton.addEventListener("click", () => loadStorageMaintenance({
+    returnFocus: elements.storageRefreshButton,
+  }));
   elements.exportPortableDataButton.addEventListener("click", () => {
     submitStorageMaintenanceAction("exportPortableData");
   });

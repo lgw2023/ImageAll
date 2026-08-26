@@ -10,6 +10,19 @@ SOURCE_ID = "aaaaaaaa-1111-2222-3333-aaaaaaaaaaaa"
 REQUEST_ID = "bbbbbbbb-1111-2222-3333-bbbbbbbbbbbb"
 
 
+def historical_request(index):
+    phases = ["completed", "failed", "cancelled"]
+    phase = phases[index % len(phases)]
+    return {
+        "id": f"dddddddd-1111-2222-3333-{index:012d}",
+        "operationID": f"eeeeeeee-1111-2222-3333-{index:012d}",
+        "action": "exportPortableData" if index % 2 == 0 else "clearPreviewCache",
+        "phase": phase,
+        "message": f"合成存储操作 {index + 1} 已记录",
+        "updatedAtMs": 1_699_999_999_000 - index * 1_000,
+    }
+
+
 def fulfill_json(route, payload, status=200):
     route.fulfill(
         status=status,
@@ -26,9 +39,10 @@ def main():
     page_errors = []
     console_errors = []
     failed_resources = []
+    historical_requests = [historical_request(index) for index in range(8)]
 
     def storage_snapshot():
-        requests = [] if active_request is None else [active_request]
+        requests = ([] if active_request is None else [active_request]) + historical_requests
         return {
             "previewCache": {"entryCount": 24, "registeredBytes": 1_500_000},
             "photosOriginals": {"entryCount": 3, "registeredBytes": 9_000_000},
@@ -199,11 +213,139 @@ def main():
         assert "ImageAll-External" in page.locator("#appStorageDetail").inner_text()
         assert "/Volumes/" not in page.locator("#storageDialog").inner_text()
 
+        page.evaluate(
+            """
+            () => {
+              const originalFetch = window.fetch.bind(window);
+              window.__storageRefreshRelease = null;
+              window.fetch = (input, init) => {
+                const url = new URL(typeof input === "string" ? input : input.url, location.href);
+                if (url.pathname !== "/v1/storage-maintenance") return originalFetch(input, init);
+                return new Promise((resolve, reject) => {
+                  window.__storageRefreshRelease = () => {
+                    window.fetch = originalFetch;
+                    originalFetch(input, init).then(resolve, reject);
+                  };
+                });
+              };
+              const content = document.querySelector("#storageContent");
+              content.scrollTop = content.scrollHeight;
+            }
+            """
+        )
+        page.locator("#storageRefreshButton").focus()
+        page.locator(".storage-history-row").first.hover()
+        page.evaluate(
+            """
+            () => {
+              const content = document.querySelector("#storageContent");
+              const row = document.querySelector(".storage-history-row");
+              const textNode = row?.querySelector(".storage-history-message")?.firstChild;
+              const range = document.createRange();
+              range.selectNodeContents(textNode);
+              const selection = getSelection();
+              selection.removeAllRanges();
+              selection.addRange(range);
+              window.__storageStableFrame = {
+                row,
+                mark: row?.querySelector(".storage-history-mark"),
+                message: row?.querySelector(".storage-history-message"),
+                textNode,
+                selectedText: selection.toString(),
+                time: row?.querySelector("small"),
+                scrollTop: content.scrollTop,
+              };
+            }
+            """
+        )
+        page.keyboard.press("Enter")
+        page.wait_for_function("() => Boolean(window.__storageRefreshRelease)")
+        pending_continuity = page.evaluate(
+            """
+            () => {
+              const frame = window.__storageStableFrame;
+              const row = document.querySelector(".storage-history-row");
+              return {
+                row: frame.row === row,
+                mark: frame.mark === row?.querySelector(".storage-history-mark"),
+                message: frame.message === row?.querySelector(".storage-history-message"),
+                selection: getSelection().anchorNode === frame.textNode
+                  && getSelection().toString() === frame.selectedText,
+                time: frame.time === row?.querySelector("small"),
+                hover: row.matches(":hover"),
+                scroll: document.querySelector("#storageContent").scrollTop === frame.scrollTop,
+              };
+            }
+            """
+        )
+        assert all(pending_continuity.values()), pending_continuity
+        page.evaluate("() => window.__storageRefreshRelease()")
+        page.wait_for_function("() => !document.querySelector('#storageRefreshButton').disabled")
+        assert page.evaluate(
+            """
+            () => {
+              const frame = window.__storageStableFrame;
+              const row = document.querySelector(".storage-history-row");
+              return frame.row === row
+                && frame.mark === row?.querySelector(".storage-history-mark")
+                && frame.message === row?.querySelector(".storage-history-message")
+                && getSelection().anchorNode === frame.textNode
+                && getSelection().toString() === frame.selectedText
+                && frame.time === row?.querySelector("small")
+                && row.matches(":hover")
+                && document.activeElement?.id === "storageRefreshButton"
+                && document.querySelector("#storageContent").scrollTop === frame.scrollTop;
+            }
+            """
+        ), "unchanged storage refresh replaced the visible history row"
+
+        page.evaluate(
+            """
+            () => {
+              const rows = [...document.querySelectorAll(".storage-history-row")];
+              const existing = rows.find((row) =>
+                row.querySelector(".storage-history-message")?.textContent
+                  === "合成存储操作 1 已记录"
+              );
+              window.__storageHistoryShiftFrame = {
+                existing,
+                mark: existing?.querySelector(".storage-history-mark"),
+                message: existing?.querySelector(".storage-history-message"),
+                time: existing?.querySelector("small"),
+                evicted: rows.at(-1),
+              };
+            }
+            """
+        )
+
         page.locator("#exportPortableDataButton").click()
         page.locator("#storagePending:not(.hidden)").wait_for()
         assert submitted_actions[-1]["action"] == "exportPortableData"
         assert page.locator("#storageStatusLabel").inner_text() == "等待 Mac"
         assert page.locator("#storageButton").get_attribute("aria-busy") == "true"
+        assert page.evaluate(
+            """
+            () => {
+              const frame = window.__storageHistoryShiftFrame;
+              const active = [...document.querySelectorAll(".storage-history-row")].find((row) =>
+                row.querySelector(".storage-history-message")?.textContent
+                  === "请回到 Mac 选择用户数据导出位置"
+              );
+              window.__storageActiveHistoryFrame = {
+                row: active,
+                mark: active?.querySelector(".storage-history-mark"),
+                message: active?.querySelector(".storage-history-message"),
+                time: active?.querySelector("small"),
+              };
+              return Boolean(active)
+                && frame.existing?.isConnected
+                && frame.mark === frame.existing.querySelector(".storage-history-mark")
+                && frame.message === frame.existing.querySelector(".storage-history-message")
+                && frame.time === frame.existing.querySelector("small")
+                && !frame.evicted?.isConnected;
+            }
+            """
+        ), "inserting a new storage request rebuilt an existing history row"
         page.locator("#storageCloseButton").click()
         page.locator("#storageDialog").wait_for(state="hidden")
         page.wait_for_function("() => document.activeElement?.id === 'storageButton'")
@@ -221,6 +363,22 @@ def main():
         page.locator("#storageButton").click()
         assert page.locator("#storageContent").is_visible()
         assert page.locator("#storageHistory").get_by_text("已导出 42 条记录").is_visible()
+        assert page.evaluate(
+            """
+            () => {
+              const frame = window.__storageActiveHistoryFrame;
+              const row = [...document.querySelectorAll(".storage-history-row")].find((candidate) =>
+                candidate.querySelector(".storage-history-message")?.textContent
+                  .includes("已导出 42 条记录")
+              );
+              return frame.row === row
+                && frame.mark === row?.querySelector(".storage-history-mark")
+                && frame.message === row?.querySelector(".storage-history-message")
+                && frame.time === row?.querySelector("small")
+                && row?.dataset.phase === "completed";
+            }
+            """
+        ), "storage request phase change replaced its history row"
         page.locator("#storageContent:not(.hidden)").wait_for()
         page.wait_for_function(
             "() => document.querySelector('#storageHistory').textContent.includes('已导出 42 条记录')"
@@ -310,6 +468,19 @@ def main():
         )
         page.wait_for_function(
             "() => document.activeElement?.id === 'clearPhotosOriginalsButton'"
+        )
+
+        page.evaluate(
+            """
+            () => {
+              const content = document.querySelector("#storageContent");
+              content.scrollTop = content.scrollHeight;
+            }
+            """
+        )
+        page.screenshot(
+            path="/tmp/imageall-storage-history-continuity.png",
+            full_page=True,
         )
 
         page.set_viewport_size({"width": 390, "height": 844})
