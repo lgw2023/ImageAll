@@ -20786,6 +20786,45 @@ function reviewSourceFilterSummaryText() {
   return `仅显示：${names.join("、")}`;
 }
 
+function createReviewSourceFilterOption() {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "review-source-option";
+  button.setAttribute("role", "menuitemcheckbox");
+  const check = document.createElement("span");
+  check.className = "review-source-check";
+  check.setAttribute("aria-hidden", "true");
+  check.textContent = "✓";
+  button.append(check, document.createElement("span"));
+  return button;
+}
+
+function syncReviewSourceFilterOption(button, source, included, locked) {
+  button.dataset.reviewSourceId = source.id;
+  button.setAttribute("aria-checked", String(included));
+  button.disabled = locked;
+  configurePersistentHelp(button, {
+    title: `${included ? "已包含" : "未包含"} · ${source.displayName}`,
+    detail: `切换“${source.displayName}”是否参与建议生成和待审列表；其他来源、图库位置和当前媒体类型保持不变。`,
+    kind: "review",
+    keyShortcuts: "ArrowUp ArrowDown Home End",
+  });
+  const name = button.querySelector("span:last-child");
+  if (name.textContent !== source.displayName) name.textContent = source.displayName;
+}
+
+function reviewSourceFilterEmptyState() {
+  let empty = elements.reviewSourceFilterOptions.querySelector(
+    ":scope > .popover-empty"
+  );
+  if (!empty) {
+    empty = document.createElement("p");
+    empty.className = "popover-empty";
+  }
+  if (empty.textContent !== "没有已启用来源") empty.textContent = "没有已启用来源";
+  return empty;
+}
+
 function renderReviewSourceFilter() {
   const focusedSource = document.activeElement?.closest?.("[data-review-source-id]");
   if (focusedSource && elements.reviewSourceFilterPopover.contains(focusedSource)) {
@@ -20818,45 +20857,40 @@ function renderReviewSourceFilter() {
     kind: "review",
   });
 
-  clearElement(elements.reviewSourceFilterOptions);
   if (!sources.length) {
-    const empty = document.createElement("p");
-    empty.className = "popover-empty";
-    empty.textContent = "没有已启用来源";
-    elements.reviewSourceFilterOptions.append(empty);
+    reconcileStableChildren(
+      elements.reviewSourceFilterOptions,
+      [reviewSourceFilterEmptyState()]
+    );
     return;
   }
-  for (const source of sources) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "review-source-option";
-    button.dataset.reviewSourceId = source.id;
-    button.setAttribute("role", "menuitemcheckbox");
-    button.setAttribute("aria-checked", String(selected.has(source.id)));
-    button.disabled = locked;
-    configurePersistentHelp(button, {
-      title: `${selected.has(source.id) ? "已包含" : "未包含"} · ${source.displayName}`,
-      detail: `切换“${source.displayName}”是否参与建议生成和待审列表；其他来源、图库位置和当前媒体类型保持不变。`,
-      kind: "review",
-      keyShortcuts: "ArrowUp ArrowDown Home End",
-    });
-    const check = document.createElement("span");
-    check.className = "review-source-check";
-    check.setAttribute("aria-hidden", "true");
-    check.textContent = "✓";
-    const name = document.createElement("span");
-    name.textContent = source.displayName;
-    button.append(check, name);
-    elements.reviewSourceFilterOptions.append(button);
-  }
+  const existingOptions = new Map(
+    [...elements.reviewSourceFilterOptions.querySelectorAll(
+      ":scope > [data-review-source-id]"
+    )].map((button) => [button.dataset.reviewSourceId, button])
+  );
+  const options = sources.map((source) => {
+    const button = existingOptions.get(source.id) || createReviewSourceFilterOption();
+    syncReviewSourceFilterOption(button, source, selected.has(source.id), locked);
+    return button;
+  });
+  reconcileStableChildren(elements.reviewSourceFilterOptions, options);
   if (!locked
     && !elements.reviewSourceFilterPopover.classList.contains("hidden")
     && state.review.sourceFilterFocusSelector) {
-    requestAnimationFrame(() => {
-      elements.reviewSourceFilterPopover
-        .querySelector(state.review.sourceFilterFocusSelector)
-        ?.focus({ preventScroll: true });
-    });
+    const focusTarget = elements.reviewSourceFilterPopover.querySelector(
+      state.review.sourceFilterFocusSelector
+    );
+    if (document.activeElement !== focusTarget) {
+      requestAnimationFrame(() => {
+        const currentTarget = elements.reviewSourceFilterPopover.querySelector(
+          state.review.sourceFilterFocusSelector
+        );
+        if (document.activeElement !== currentTarget) {
+          currentTarget?.focus({ preventScroll: true });
+        }
+      });
+    }
   }
 }
 

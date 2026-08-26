@@ -499,15 +499,90 @@ def main():
         first_source.press("End")
         assert page.evaluate("document.activeElement?.dataset.reviewSourceId") == SOURCE_IDS[1]
 
-        second_source.click()
+        review_source_frame = page.evaluate(
+            """sourceIDs => {
+              const options = document.querySelector('#reviewSourceFilterOptions');
+              options.style.maxHeight = '46px';
+              options.style.overflowY = 'auto';
+              options.scrollTop = 12;
+              const first = options.querySelector(
+                `[data-review-source-id="${sourceIDs[0]}"]`
+              );
+              const second = options.querySelector(
+                `[data-review-source-id="${sourceIDs[1]}"]`
+              );
+              second.focus({ preventScroll: true });
+              window.__reviewSourceContinuityFrame = {
+                first,
+                second,
+                secondCheck: second.querySelector('.review-source-check'),
+                secondName: second.querySelector('span:last-child'),
+              };
+              return { scrollTop: options.scrollTop };
+            }""",
+            SOURCE_IDS,
+        )
+        assert review_source_frame["scrollTop"] > 0, review_source_frame
+        second_source_bounds = second_source.bounding_box()
+        assert second_source_bounds is not None
+        page.mouse.move(
+            second_source_bounds["x"] + second_source_bounds["width"] / 2,
+            second_source_bounds["y"] + second_source_bounds["height"] / 2,
+        )
+        page.mouse.click(
+            second_source_bounds["x"] + second_source_bounds["width"] / 2,
+            second_source_bounds["y"] + second_source_bounds["height"] / 2,
+        )
         page.wait_for_function(
             "() => document.querySelector('#reviewSourceFilterSummary')?.textContent"
             " === '仅显示：Apple Photos'"
         )
         page.wait_for_timeout(100)
-        focused_source_id = page.evaluate("document.activeElement?.dataset.reviewSourceId")
-        assert focused_source_id == SOURCE_IDS[1], focused_source_id
+        review_source_continuity = page.evaluate(
+            """({ sourceIDs, expectedScrollTop }) => {
+              const frame = window.__reviewSourceContinuityFrame;
+              const options = document.querySelector('#reviewSourceFilterOptions');
+              const first = options.querySelector(
+                `[data-review-source-id="${sourceIDs[0]}"]`
+              );
+              const second = options.querySelector(
+                `[data-review-source-id="${sourceIDs[1]}"]`
+              );
+              return {
+                first: first === frame.first,
+                second: second === frame.second,
+                secondCheck: second?.querySelector('.review-source-check') === frame.secondCheck,
+                secondName: second?.querySelector('span:last-child') === frame.secondName,
+                focused: document.activeElement === second,
+                hovered: second?.matches(':hover') || false,
+                scroll: options.scrollTop === expectedScrollTop,
+                checked: second?.getAttribute('aria-checked'),
+              };
+            }""",
+            {
+                "sourceIDs": SOURCE_IDS,
+                "expectedScrollTop": review_source_frame["scrollTop"],
+            },
+        )
+        assert review_source_continuity == {
+            "first": True,
+            "second": True,
+            "secondCheck": True,
+            "secondName": True,
+            "focused": True,
+            "hovered": True,
+            "scroll": True,
+            "checked": "false",
+        }, review_source_continuity
         assert overview_source_queries[-1] == (SOURCE_IDS[0],)
+        page.evaluate(
+            "() => document.querySelector('#reviewSourceFilterOptions')"
+            ".style.removeProperty('max-height')"
+        )
+        page.evaluate(
+            "() => document.querySelector('#reviewSourceFilterOptions')"
+            ".style.removeProperty('overflow-y')"
+        )
 
         overview_count = len(overview_source_queries)
         first_source.click()
