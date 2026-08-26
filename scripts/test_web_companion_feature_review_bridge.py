@@ -9,6 +9,7 @@ from playwright.sync_api import sync_playwright
 
 BASE_URL = "http://127.0.0.1:8804"
 TAG_ID = "11111111-aaaa-bbbb-cccc-111111111111"
+SECOND_TAG_ID = "11111111-aaaa-bbbb-cccc-222222222222"
 GROUP_ID = "11111111-aaaa-bbbb-cccc-999999999999"
 SOURCE_IDS = [
     "22222222-aaaa-bbbb-cccc-222222222222",
@@ -403,21 +404,31 @@ def main():
                 route,
                 {
                     "mediaKind": "image",
-                    "tags": [{
-                        "id": TAG_ID,
-                        "displayName": "猫",
-                        "acceptedSampleCount": 12,
-                        "rejectedSampleCount": 9,
-                        "featureMode": "update",
-                        "personalEligible": True,
-                    }],
+                    "tags": [
+                        {
+                            "id": TAG_ID,
+                            "displayName": "猫",
+                            "acceptedSampleCount": 12,
+                            "rejectedSampleCount": 9,
+                            "featureMode": "update",
+                            "personalEligible": True,
+                        },
+                        {
+                            "id": SECOND_TAG_ID,
+                            "displayName": "狗",
+                            "acceptedSampleCount": 8,
+                            "rejectedSampleCount": 6,
+                            "featureMode": "generate",
+                            "personalEligible": True,
+                        },
+                    ],
                     "sources": [
                         {"id": SOURCE_IDS[0], "displayName": "Apple Photos"},
                         {"id": SOURCE_IDS[1], "displayName": "旅行归档"},
                     ],
                     "methods": [
                         {"method": "featureKnn", "isAvailable": True},
-                        {"method": "personalCentroid", "isAvailable": False},
+                        {"method": "personalCentroid", "isAvailable": True},
                         {"method": "personalAdamW", "isAvailable": False},
                     ],
                 },
@@ -845,6 +856,270 @@ def main():
         assert page.locator(
             f'[data-training-source-id="{SOURCE_IDS[0]}"]'
         ).is_checked()
+        second_training_source = page.locator(
+            f'[data-training-source-id="{SOURCE_IDS[1]}"]'
+        )
+        training_source_frame = page.evaluate(
+            """sourceIDs => {
+              const options = document.querySelector('#trainingScopeOptions');
+              options.style.maxHeight = '46px';
+              options.scrollTop = options.scrollHeight;
+              const firstInput = options.querySelector(
+                `[data-training-source-id="${sourceIDs[0]}"]`
+              );
+              const secondInput = options.querySelector(
+                `[data-training-source-id="${sourceIDs[1]}"]`
+              );
+              secondInput.focus({ preventScroll: true });
+              window.__trainingSourceContinuityFrame = {
+                firstRow: firstInput.closest('label'),
+                firstInput,
+                secondRow: secondInput.closest('label'),
+                secondInput,
+                secondName: secondInput.nextElementSibling,
+              };
+              return { scrollTop: options.scrollTop };
+            }""",
+            SOURCE_IDS,
+        )
+        assert training_source_frame["scrollTop"] > 0, training_source_frame
+        second_training_source_bounds = second_training_source.bounding_box()
+        assert second_training_source_bounds is not None
+        page.mouse.move(
+            second_training_source_bounds["x"]
+            + second_training_source_bounds["width"] / 2,
+            second_training_source_bounds["y"]
+            + second_training_source_bounds["height"] / 2,
+        )
+        page.mouse.click(
+            second_training_source_bounds["x"]
+            + second_training_source_bounds["width"] / 2,
+            second_training_source_bounds["y"]
+            + second_training_source_bounds["height"] / 2,
+        )
+        training_source_continuity = page.evaluate(
+            """({ sourceIDs, expectedScrollTop }) => {
+              const frame = window.__trainingSourceContinuityFrame;
+              const options = document.querySelector('#trainingScopeOptions');
+              const firstInput = options.querySelector(
+                `[data-training-source-id="${sourceIDs[0]}"]`
+              );
+              const secondInput = options.querySelector(
+                `[data-training-source-id="${sourceIDs[1]}"]`
+              );
+              return {
+                firstRow: firstInput?.closest('label') === frame.firstRow,
+                firstInput: firstInput === frame.firstInput,
+                secondRow: secondInput?.closest('label') === frame.secondRow,
+                secondInput: secondInput === frame.secondInput,
+                secondName: secondInput?.nextElementSibling === frame.secondName,
+                focused: document.activeElement === secondInput,
+                hovered: secondInput?.matches(':hover') || false,
+                scroll: options.scrollTop === expectedScrollTop,
+                checked: secondInput?.checked || false,
+              };
+            }""",
+            {
+                "sourceIDs": SOURCE_IDS,
+                "expectedScrollTop": training_source_frame["scrollTop"],
+            },
+        )
+        assert training_source_continuity == {
+            "firstRow": True,
+            "firstInput": True,
+            "secondRow": True,
+            "secondInput": True,
+            "secondName": True,
+            "focused": True,
+            "hovered": True,
+            "scroll": True,
+            "checked": True,
+        }, training_source_continuity
+        page.evaluate(
+            "document.querySelector('#trainingScopeOptions').style.removeProperty('max-height')"
+        )
+        second_training_source.uncheck()
+        page.locator("#trainingTagSearch").fill("")
+        second_training_tag = page.locator(
+            f'[data-training-tag-id="{SECOND_TAG_ID}"]'
+        )
+        training_tag_frame = page.evaluate(
+            """tagIDs => {
+              const options = document.querySelector('#trainingTagOptions');
+              options.style.maxHeight = '46px';
+              options.scrollTop = options.scrollHeight;
+              const firstInput = options.querySelector(
+                `[data-training-tag-id="${tagIDs[0]}"]`
+              );
+              const secondInput = options.querySelector(
+                `[data-training-tag-id="${tagIDs[1]}"]`
+              );
+              secondInput.focus({ preventScroll: true });
+              window.__trainingTagContinuityFrame = {
+                firstRow: firstInput.closest('label'),
+                firstInput,
+                secondRow: secondInput.closest('label'),
+                secondInput,
+                secondName: secondInput.nextElementSibling,
+              };
+              return { scrollTop: options.scrollTop };
+            }""",
+            [TAG_ID, SECOND_TAG_ID],
+        )
+        assert training_tag_frame["scrollTop"] > 0, training_tag_frame
+        second_training_tag_bounds = second_training_tag.bounding_box()
+        assert second_training_tag_bounds is not None
+        page.mouse.move(
+            second_training_tag_bounds["x"]
+            + second_training_tag_bounds["width"] / 2,
+            second_training_tag_bounds["y"]
+            + second_training_tag_bounds["height"] / 2,
+        )
+        page.mouse.click(
+            second_training_tag_bounds["x"]
+            + second_training_tag_bounds["width"] / 2,
+            second_training_tag_bounds["y"]
+            + second_training_tag_bounds["height"] / 2,
+        )
+        training_tag_continuity = page.evaluate(
+            """({ tagIDs, expectedScrollTop }) => {
+              const frame = window.__trainingTagContinuityFrame;
+              const options = document.querySelector('#trainingTagOptions');
+              const firstInput = options.querySelector(
+                `[data-training-tag-id="${tagIDs[0]}"]`
+              );
+              const secondInput = options.querySelector(
+                `[data-training-tag-id="${tagIDs[1]}"]`
+              );
+              return {
+                firstRow: firstInput?.closest('label') === frame.firstRow,
+                firstInput: firstInput === frame.firstInput,
+                secondRow: secondInput?.closest('label') === frame.secondRow,
+                secondInput: secondInput === frame.secondInput,
+                secondName: secondInput?.nextElementSibling === frame.secondName,
+                focused: document.activeElement === secondInput,
+                hovered: secondInput?.matches(':hover') || false,
+                scroll: options.scrollTop === expectedScrollTop,
+                checked: secondInput?.checked || false,
+              };
+            }""",
+            {
+                "tagIDs": [TAG_ID, SECOND_TAG_ID],
+                "expectedScrollTop": training_tag_frame["scrollTop"],
+            },
+        )
+        assert training_tag_continuity == {
+            "firstRow": True,
+            "firstInput": True,
+            "secondRow": True,
+            "secondInput": True,
+            "secondName": True,
+            "focused": True,
+            "hovered": True,
+            "scroll": True,
+            "checked": True,
+        }, training_tag_continuity
+        page.evaluate(
+            "document.querySelector('#trainingTagOptions').style.removeProperty('max-height')"
+        )
+        page.locator(f'[data-training-tag-id="{TAG_ID}"]').check()
+        personal_method = page.locator(
+            '[data-training-setup-method="personalCentroid"]'
+        )
+        page.evaluate(
+            """() => {
+              const methods = document.querySelector('#trainingSetupMethods');
+              const feature = methods.querySelector(
+                '[data-training-setup-method="featureKnn"]'
+              );
+              const personal = methods.querySelector(
+                '[data-training-setup-method="personalCentroid"]'
+              );
+              const adamw = methods.querySelector(
+                '[data-training-setup-method="personalAdamW"]'
+              );
+              personal.focus({ preventScroll: true });
+              window.__trainingMethodContinuityFrame = { feature, personal, adamw };
+            }"""
+        )
+        personal_method_bounds = personal_method.bounding_box()
+        assert personal_method_bounds is not None
+        page.mouse.move(
+            personal_method_bounds["x"] + personal_method_bounds["width"] / 2,
+            personal_method_bounds["y"] + personal_method_bounds["height"] / 2,
+        )
+        page.mouse.click(
+            personal_method_bounds["x"] + personal_method_bounds["width"] / 2,
+            personal_method_bounds["y"] + personal_method_bounds["height"] / 2,
+        )
+        training_method_continuity = page.evaluate(
+            """() => {
+              const frame = window.__trainingMethodContinuityFrame;
+              const methods = document.querySelector('#trainingSetupMethods');
+              const feature = methods.querySelector(
+                '[data-training-setup-method="featureKnn"]'
+              );
+              const personal = methods.querySelector(
+                '[data-training-setup-method="personalCentroid"]'
+              );
+              const adamw = methods.querySelector(
+                '[data-training-setup-method="personalAdamW"]'
+              );
+              return {
+                feature: feature === frame.feature,
+                personal: personal === frame.personal,
+                adamw: adamw === frame.adamw,
+                focused: document.activeElement === personal,
+                hovered: personal?.matches(':hover') || false,
+                selected: personal?.getAttribute('aria-checked') === 'true',
+              };
+            }"""
+        )
+        assert training_method_continuity == {
+            "feature": True,
+            "personal": True,
+            "adamw": True,
+            "focused": True,
+            "hovered": True,
+            "selected": True,
+        }, training_method_continuity
+        page.evaluate(
+            """() => {
+              const input = document.querySelector(
+                '#trainingScopeOptions [data-training-scope="allSources"]'
+              );
+              window.__trainingScopeContinuityFrame = {
+                row: input.closest('label'),
+                input,
+                title: input.nextElementSibling,
+              };
+            }"""
+        )
+        page.locator(f'[data-training-tag-id="{TAG_ID}"]').check()
+        training_scope_continuity = page.evaluate(
+            """() => {
+              const frame = window.__trainingScopeContinuityFrame;
+              const input = document.querySelector(
+                '#trainingScopeOptions [data-training-scope="allSources"]'
+              );
+              return {
+                row: input?.closest('label') === frame.row,
+                input: input === frame.input,
+                title: input?.nextElementSibling === frame.title,
+                checked: input?.checked || false,
+              };
+            }"""
+        )
+        assert training_scope_continuity == {
+            "row": True,
+            "input": True,
+            "title": True,
+            "checked": True,
+        }, training_scope_continuity
+        page.locator('[data-training-setup-method="featureKnn"]').click()
+        page.locator(
+            f'[data-training-source-id="{SOURCE_IDS[1]}"]'
+        ).uncheck()
         training_reads_after_open = training_setup_reads[0]
         page.locator("#trainingTagSearch").fill("猫草稿")
         training_history_payload = page.evaluate(
@@ -852,6 +1127,25 @@ def main():
         )
         assert "猫草稿" not in training_history_payload
         assert "Apple Photos" not in training_history_payload
+        training_history_frame = page.evaluate(
+            """sourceID => {
+              const options = document.querySelector('#trainingScopeOptions');
+              options.style.maxHeight = '46px';
+              options.scrollTop = options.scrollHeight;
+              const input = options.querySelector(
+                `[data-training-source-id="${sourceID}"]`
+              );
+              input.focus({ preventScroll: true });
+              window.__trainingHistoryContinuityFrame = {
+                row: input.closest('label'),
+                input,
+                name: input.nextElementSibling,
+              };
+              return { scrollTop: options.scrollTop };
+            }""",
+            SOURCE_IDS[0],
+        )
+        assert training_history_frame["scrollTop"] > 0, training_history_frame
         page.evaluate("() => history.back()")
         dialog.wait_for(state="hidden")
         page.wait_for_function(
@@ -861,8 +1155,44 @@ def main():
         page.locator("#trainingSetupDialog[open]").wait_for()
         assert page.locator("#trainingTagSearch").input_value() == "猫草稿"
         assert training_setup_reads[0] == training_reads_after_open
+        training_history_continuity = page.evaluate(
+            """({ sourceID, expectedScrollTop }) => {
+              const frame = window.__trainingHistoryContinuityFrame;
+              const options = document.querySelector('#trainingScopeOptions');
+              const input = options.querySelector(
+                `[data-training-source-id="${sourceID}"]`
+              );
+              return {
+                row: input?.closest('label') === frame.row,
+                input: input === frame.input,
+                name: input?.nextElementSibling === frame.name,
+                focused: document.activeElement === input,
+                scroll: options.scrollTop === expectedScrollTop,
+                checked: input?.checked || false,
+              };
+            }""",
+            {
+                "sourceID": SOURCE_IDS[0],
+                "expectedScrollTop": training_history_frame["scrollTop"],
+            },
+        )
+        assert training_history_continuity == {
+            "row": True,
+            "input": True,
+            "name": True,
+            "focused": True,
+            "scroll": True,
+            "checked": True,
+        }, training_history_continuity
+        page.evaluate(
+            "document.querySelector('#trainingScopeOptions').style.removeProperty('max-height')"
+        )
         page.locator("#trainingTagSearch").fill("猫")
         assert page.locator(f'[data-training-tag-id="{TAG_ID}"]').is_checked()
+        page.screenshot(
+            path="/tmp/imageall-training-setup-continuity-wide.png",
+            full_page=True,
+        )
         page.locator("#launchTrainingButton").click()
         page.wait_for_function("() => !document.querySelector('#trainingSetupDialog').open")
         assert page.evaluate(

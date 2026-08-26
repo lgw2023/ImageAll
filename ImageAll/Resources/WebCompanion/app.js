@@ -24414,57 +24414,115 @@ function appendTrainingSetupSummary(label, value) {
   elements.trainingLaunchSummary.append(term, description);
 }
 
+function createTrainingSetupMethodOption() {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "training-method-option";
+  const icon = document.createElement("span");
+  icon.className = "training-method-icon";
+  const body = document.createElement("span");
+  body.className = "training-method-copy";
+  body.append(
+    document.createElement("strong"),
+    document.createElement("span"),
+    document.createElement("span"),
+    document.createElement("span")
+  );
+  const check = document.createElement("span");
+  check.className = "training-method-check";
+  button.append(icon, body, check);
+  return button;
+}
+
+function syncTrainingSetupMethodOption(button, method) {
+  const copy = trainingSetupMethodCopy(method);
+  const eligibleCount = trainingSetupEligibleTags(method).length;
+  const available = trainingSetupMethodAvailability(method)
+    && eligibleCount > 0
+    && (method !== "featureKnn" || Boolean(state.training.setup.snapshot?.sources?.length));
+  const selected = state.training.setup.method === method;
+  button.id = `trainingSetupMethod-${method}`;
+  button.classList.toggle("selected", selected);
+  button.disabled = !available
+    || state.training.setup.launching
+    || Boolean(currentActiveTrainingActivity());
+  button.dataset.trainingSetupMethod = method;
+  button.setAttribute("role", "radio");
+  button.setAttribute("aria-checked", String(selected));
+  configurePersistentHelp(button, {
+    title: copy.title,
+    detail: available
+      ? `${copy.detail}\n${copy.requirement}\n点击后可继续选择标签和${state.training.mediaKind === "video" ? "视频" : "照片"}范围。`
+      : `${copy.detail}\n${eligibleCount ? "当前 Mac 尚未提供此训练能力。" : copy.requirement}`,
+    kind: "training",
+  });
+  const icon = button.querySelector(":scope > .training-method-icon");
+  if (icon.textContent !== copy.icon) icon.textContent = copy.icon;
+  const body = button.querySelector(":scope > .training-method-copy");
+  const [title, technical, detail, requirement] = body.children;
+  if (title.textContent !== copy.title) title.textContent = copy.title;
+  const technicalText = `技术：${copy.technical}`;
+  if (technical.textContent !== technicalText) technical.textContent = technicalText;
+  if (detail.textContent !== copy.detail) detail.textContent = copy.detail;
+  const requirementText = available
+    ? `✓ ${copy.requirement}`
+    : (eligibleCount ? "当前设备尚未提供此训练能力" : copy.requirement);
+  if (requirement.textContent !== requirementText) requirement.textContent = requirementText;
+  const check = button.querySelector(":scope > .training-method-check");
+  const checkText = selected ? "●" : "○";
+  if (check.textContent !== checkText) check.textContent = checkText;
+}
+
 function renderTrainingSetupMethods() {
-  clearElement(elements.trainingSetupMethods);
-  for (const method of ["featureKnn", "personalCentroid", "personalAdamW"]) {
-    const copy = trainingSetupMethodCopy(method);
-    const eligibleCount = trainingSetupEligibleTags(method).length;
-    const available = trainingSetupMethodAvailability(method)
-      && eligibleCount > 0
-      && (method !== "featureKnn" || Boolean(state.training.setup.snapshot?.sources?.length));
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "training-method-option";
-    button.classList.toggle("selected", state.training.setup.method === method);
-    button.disabled = !available
-      || state.training.setup.launching
-      || Boolean(currentActiveTrainingActivity());
-    button.dataset.trainingSetupMethod = method;
-    button.setAttribute("role", "radio");
-    button.setAttribute("aria-checked", String(state.training.setup.method === method));
-    configurePersistentHelp(button, {
-      title: copy.title,
-      detail: available
-        ? `${copy.detail}\n${copy.requirement}\n点击后可继续选择标签和${state.training.mediaKind === "video" ? "视频" : "照片"}范围。`
-        : `${copy.detail}\n${eligibleCount ? "当前 Mac 尚未提供此训练能力。" : copy.requirement}`,
-      kind: "training",
-    });
-    const icon = document.createElement("span");
-    icon.className = "training-method-icon";
-    icon.textContent = copy.icon;
-    const body = document.createElement("span");
-    body.className = "training-method-copy";
-    const title = document.createElement("strong");
-    title.textContent = copy.title;
-    const technical = document.createElement("span");
-    technical.textContent = `技术：${copy.technical}`;
-    const detail = document.createElement("span");
-    detail.textContent = copy.detail;
-    const requirement = document.createElement("span");
-    requirement.textContent = available
-      ? `✓ ${copy.requirement}`
-      : (eligibleCount ? "当前设备尚未提供此训练能力" : copy.requirement);
-    body.append(title, technical, detail, requirement);
-    const check = document.createElement("span");
-    check.className = "training-method-check";
-    check.textContent = state.training.setup.method === method ? "●" : "○";
-    button.append(icon, body, check);
-    elements.trainingSetupMethods.append(button);
-  }
+  const existingOptions = new Map(
+    [...elements.trainingSetupMethods.querySelectorAll(":scope > .training-method-option")]
+      .map((button) => [button.dataset.trainingSetupMethod, button])
+  );
+  const methodOptions = ["featureKnn", "personalCentroid", "personalAdamW"].map((method) => {
+    const button = existingOptions.get(method) || createTrainingSetupMethodOption();
+    syncTrainingSetupMethodOption(button, method);
+    return button;
+  });
+  reconcileStableChildren(elements.trainingSetupMethods, methodOptions);
+}
+
+function createTrainingTagOption() {
+  const row = document.createElement("label");
+  row.className = "training-option-row";
+  row.append(
+    document.createElement("input"),
+    document.createElement("strong"),
+    document.createElement("span")
+  );
+  return row;
+}
+
+function syncTrainingTagOption(row, tag, isFeature) {
+  const input = row.querySelector(":scope > input");
+  input.id = `trainingTag-${tag.id}`;
+  input.type = isFeature ? "radio" : "checkbox";
+  input.name = "trainingTag";
+  input.value = tag.id;
+  input.checked = state.training.setup.selectedTagIDs.has(tag.id);
+  input.disabled = state.training.setup.launching;
+  input.dataset.trainingTagId = tag.id;
+  const name = row.querySelector(":scope > strong");
+  if (name.textContent !== tag.displayName) name.textContent = tag.displayName;
+  const counts = row.querySelector(":scope > span");
+  const countText = isFeature
+    ? `属于 ${tag.acceptedSampleCount} · 不属于 ${tag.rejectedSampleCount}`
+    : `已确认 ${tag.acceptedSampleCount} 个`;
+  if (counts.textContent !== countText) counts.textContent = countText;
+  configurePersistentHelp(row, {
+    title: `训练标签 · ${tag.displayName}`,
+    detail: isFeature
+      ? `属于 ${tag.acceptedSampleCount} · 不属于 ${tag.rejectedSampleCount}。相似${state.training.mediaKind === "video" ? "视频" : "照片"}一次只选择一个标签，Mac 会再次检查 2 + 2 样本门槛。`
+      : `已确认 ${tag.acceptedSampleCount} 个样本。可与其他合格标签一起训练；每个标签独立发布，单项失败不会撤销其他标签。`,
+    kind: "training",
+  });
 }
 
 function renderTrainingTagOptions() {
-  clearElement(elements.trainingTagOptions);
   const setup = state.training.setup;
   const isFeature = setup.method === "featureKnn";
   const query = setup.tagSearchText.trim().toLocaleLowerCase("zh-CN");
@@ -24472,67 +24530,103 @@ function renderTrainingTagOptions() {
     !query || tag.displayName.toLocaleLowerCase("zh-CN").includes(query)
   ));
   if (!tags.length) {
-    const empty = document.createElement("div");
-    empty.className = "training-options-empty";
+    let empty = elements.trainingTagOptions.querySelector(":scope > .training-options-empty");
+    if (!empty) {
+      empty = document.createElement("div");
+      empty.className = "training-options-empty";
+    }
     empty.textContent = query ? "没有匹配的可训练标签" : "还没有达到最低样本要求的标签";
-    elements.trainingTagOptions.append(empty);
+    reconcileStableChildren(elements.trainingTagOptions, [empty]);
     return;
   }
-  for (const tag of tags) {
-    const row = document.createElement("label");
-    row.className = "training-option-row";
-    const input = document.createElement("input");
-    input.type = isFeature ? "radio" : "checkbox";
-    input.name = "trainingTag";
-    input.value = tag.id;
-    input.checked = setup.selectedTagIDs.has(tag.id);
-    input.disabled = setup.launching;
-    input.dataset.trainingTagId = tag.id;
-    const name = document.createElement("strong");
-    name.textContent = tag.displayName;
-    const counts = document.createElement("span");
-    counts.textContent = isFeature
-      ? `属于 ${tag.acceptedSampleCount} · 不属于 ${tag.rejectedSampleCount}`
-      : `已确认 ${tag.acceptedSampleCount} 个`;
-    configurePersistentHelp(row, {
-      title: `训练标签 · ${tag.displayName}`,
-      detail: isFeature
-        ? `属于 ${tag.acceptedSampleCount} · 不属于 ${tag.rejectedSampleCount}。相似${state.training.mediaKind === "video" ? "视频" : "照片"}一次只选择一个标签，Mac 会再次检查 2 + 2 样本门槛。`
-        : `已确认 ${tag.acceptedSampleCount} 个样本。可与其他合格标签一起训练；每个标签独立发布，单项失败不会撤销其他标签。`,
-      kind: "training",
-    });
-    row.append(input, name, counts);
-    elements.trainingTagOptions.append(row);
-  }
+  const existingOptions = new Map(
+    [...elements.trainingTagOptions.querySelectorAll(":scope > .training-option-row")]
+      .map((row) => [row.querySelector("[data-training-tag-id]")?.dataset.trainingTagId, row])
+  );
+  const tagOptions = tags.map((tag) => {
+    const row = existingOptions.get(tag.id) || createTrainingTagOption();
+    syncTrainingTagOption(row, tag, isFeature);
+    return row;
+  });
+  reconcileStableChildren(elements.trainingTagOptions, tagOptions);
+}
+
+function createTrainingSourceOption() {
+  const row = document.createElement("label");
+  row.className = "training-option-row";
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  row.append(input, document.createElement("strong"), document.createElement("span"));
+  return row;
+}
+
+function syncTrainingSourceOption(row, source) {
+  const input = row.querySelector(':scope > input[type="checkbox"]');
+  input.id = `trainingSource-${source.id}`;
+  input.checked = state.training.setup.selectedSourceIDs.has(source.id);
+  input.disabled = state.training.setup.launching;
+  input.dataset.trainingSourceId = source.id;
+  const name = row.querySelector(":scope > strong");
+  if (name.textContent !== source.displayName) name.textContent = source.displayName;
+  const status = row.querySelector(":scope > span");
+  if (status.textContent !== "可用") status.textContent = "可用";
+  configurePersistentHelp(row, {
+    title: `训练来源 · ${source.displayName}`,
+    detail: `决定相似${state.training.mediaKind === "video" ? "视频" : "照片"}任务扫描哪些来源。只读取勾选来源，Mac 会冻结本次目录范围；不会改变图库侧栏位置。`,
+    kind: "training",
+  });
+}
+
+function createTrainingScopeOption() {
+  const row = document.createElement("label");
+  row.className = "training-option-row";
+  const input = document.createElement("input");
+  input.type = "radio";
+  input.name = "trainingScope";
+  row.append(input, document.createElement("strong"), document.createElement("span"));
+  return row;
+}
+
+function syncTrainingScopeOption(row, choice, noun) {
+  const input = row.querySelector(':scope > input[type="radio"]');
+  input.id = `trainingScope-${choice.value}`;
+  input.value = choice.value;
+  input.checked = state.training.setup.scope === choice.value;
+  input.disabled = state.training.setup.launching;
+  input.dataset.trainingScope = choice.value;
+  const title = row.querySelector(":scope > strong");
+  if (title.textContent !== choice.title) title.textContent = choice.title;
+  const note = row.querySelector(":scope > span");
+  if (note.textContent !== choice.note) note.textContent = choice.note;
+  configurePersistentHelp(row, {
+    title: choice.title,
+    detail: choice.value === "currentSelection"
+      ? `只使用图库当前选择的 ${state.selectedAssetIDs.size} 项；离开设置前仍由 Mac 复核媒体类型与可用性。`
+      : `使用所有来源中已确认属于所选标签的${noun}；不会受图库当前来源、搜索或滚动位置限制。`,
+    kind: "training",
+  });
 }
 
 function renderTrainingScopeOptions() {
-  clearElement(elements.trainingScopeOptions);
   const setup = state.training.setup;
   const noun = state.training.mediaKind === "video" ? "视频" : "照片";
   if (setup.method === "featureKnn") {
     elements.trainingScopeTitle.textContent = `扫描哪些${noun}来源？`;
     elements.trainingScopeHint.textContent = "只读取所选来源；任务会冻结本次范围。";
-    for (const source of setup.snapshot?.sources || []) {
-      const row = document.createElement("label");
-      row.className = "training-option-row";
-      const input = document.createElement("input");
-      input.type = "checkbox";
-      input.checked = setup.selectedSourceIDs.has(source.id);
-      input.disabled = setup.launching;
-      input.dataset.trainingSourceId = source.id;
-      const name = document.createElement("strong");
-      name.textContent = source.displayName;
-      const status = document.createElement("span");
-      status.textContent = "可用";
-      configurePersistentHelp(row, {
-        title: `训练来源 · ${source.displayName}`,
-        detail: `决定相似${noun}任务扫描哪些来源。只读取勾选来源，Mac 会冻结本次目录范围；不会改变图库侧栏位置。`,
-        kind: "training",
-      });
-      row.append(input, name, status);
-      elements.trainingScopeOptions.append(row);
-    }
+    const existingOptions = new Map(
+      [...elements.trainingScopeOptions.querySelectorAll(
+        ":scope > .training-option-row"
+      )].map((row) => [
+        row.querySelector("[data-training-source-id]")?.dataset.trainingSourceId,
+        row,
+      ])
+    );
+    const sourceOptions = (setup.snapshot?.sources || []).map((source) => {
+      const row = existingOptions.get(source.id) || createTrainingSourceOption();
+      syncTrainingSourceOption(row, source);
+      return row;
+    });
+    reconcileStableChildren(elements.trainingScopeOptions, sourceOptions);
     return;
   }
   elements.trainingScopeTitle.textContent = `使用哪些${noun}？`;
@@ -24546,30 +24640,16 @@ function renderTrainingScopeOptions() {
       note: "限制范围",
     });
   }
-  for (const choice of choices) {
-    const row = document.createElement("label");
-    row.className = "training-option-row";
-    const input = document.createElement("input");
-    input.type = "radio";
-    input.name = "trainingScope";
-    input.value = choice.value;
-    input.checked = setup.scope === choice.value;
-    input.disabled = setup.launching;
-    input.dataset.trainingScope = choice.value;
-    const title = document.createElement("strong");
-    title.textContent = choice.title;
-    const note = document.createElement("span");
-    note.textContent = choice.note;
-    configurePersistentHelp(row, {
-      title: choice.title,
-      detail: choice.value === "currentSelection"
-        ? `只使用图库当前选择的 ${state.selectedAssetIDs.size} 项；离开设置前仍由 Mac 复核媒体类型与可用性。`
-        : `使用所有来源中已确认属于所选标签的${noun}；不会受图库当前来源、搜索或滚动位置限制。`,
-      kind: "training",
-    });
-    row.append(input, title, note);
-    elements.trainingScopeOptions.append(row);
-  }
+  const existingOptions = new Map(
+    [...elements.trainingScopeOptions.querySelectorAll(":scope > .training-option-row")]
+      .map((row) => [row.querySelector("[data-training-scope]")?.dataset.trainingScope, row])
+  );
+  const scopeOptions = choices.map((choice) => {
+    const row = existingOptions.get(choice.value) || createTrainingScopeOption();
+    syncTrainingScopeOption(row, choice, noun);
+    return row;
+  });
+  reconcileStableChildren(elements.trainingScopeOptions, scopeOptions);
 }
 
 function canLaunchTrainingSetup() {
