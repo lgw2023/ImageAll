@@ -31572,6 +31572,41 @@ function slimmingSourceIndexCaption(source, available) {
   }
 }
 
+function createSlimmingMaintenanceSourceOption() {
+  const row = document.createElement("label");
+  row.className = "slimming-maintenance-source-option";
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  row.append(input, document.createElement("strong"), document.createElement("span"));
+  return row;
+}
+
+function syncSlimmingMaintenanceSourceOption(row, source, selected, disabled) {
+  const input = row.querySelector(':scope > input[type="checkbox"]');
+  input.id = `slimmingMaintenanceSource-${source.id}`;
+  input.checked = selected;
+  input.disabled = disabled;
+  input.dataset.slimmingMaintenanceSourceId = source.id;
+  const name = row.querySelector(":scope > strong");
+  if (name.textContent !== source.displayName) name.textContent = source.displayName;
+  const kind = row.querySelector(":scope > span");
+  const kindText = `${source.kind === "photos" ? "照片图库" : "文件夹"} · ${slimmingSourceIndexShortStatus(source)}`;
+  if (kind.textContent !== kindText) kind.textContent = kindText;
+}
+
+function syncSlimmingIndexSourceOptions(sources) {
+  const existingOptions = new Map(
+    [...elements.slimmingIndexSourceSelect.options].map((option) => [option.value, option])
+  );
+  const sourceOptions = sources.map((source) => {
+    const option = existingOptions.get(source.id) || document.createElement("option");
+    option.value = source.id;
+    if (option.textContent !== source.displayName) option.textContent = source.displayName;
+    return option;
+  });
+  reconcileStableChildren(elements.slimmingIndexSourceSelect, sourceOptions);
+}
+
 function renderSlimmingSourceMaintenance() {
   const maintenance = state.slimming.sourceMaintenance;
   const snapshot = maintenance.snapshot;
@@ -31583,9 +31618,11 @@ function renderSlimmingSourceMaintenance() {
     maintenance.loading || !snapshot
   );
   elements.slimmingAnalysisOptionsError.textContent = maintenance.error;
-  clearElement(elements.slimmingMaintenanceSourceOptions);
   renderSlimmingCatalogCommands();
-  if (!snapshot) return;
+  if (!snapshot) {
+    reconcileStableChildren(elements.slimmingMaintenanceSourceOptions, []);
+    return;
+  }
 
   const selected = maintenance.selectedSourceIDs;
   const allSelected = sources.length > 0
@@ -31596,21 +31633,26 @@ function renderSlimmingSourceMaintenance() {
   elements.toggleAllSlimmingMaintenanceSourcesButton.textContent = allSelected ? "清除" : "全选";
   elements.toggleAllSlimmingMaintenanceSourcesButton.disabled = submitting || sources.length === 0;
 
-  for (const source of sources) {
-    const row = document.createElement("label");
-    row.className = "slimming-maintenance-source-option";
-    const input = document.createElement("input");
-    input.type = "checkbox";
-    input.checked = selected.has(source.id);
-    input.disabled = submitting;
-    input.dataset.slimmingMaintenanceSourceId = source.id;
-    const name = document.createElement("strong");
-    name.textContent = source.displayName;
-    const kind = document.createElement("span");
-    kind.textContent = `${source.kind === "photos" ? "照片图库" : "文件夹"} · ${slimmingSourceIndexShortStatus(source)}`;
-    row.append(input, name, kind);
-    elements.slimmingMaintenanceSourceOptions.append(row);
-  }
+  const existingOptions = new Map(
+    [...elements.slimmingMaintenanceSourceOptions.querySelectorAll(
+      ":scope > .slimming-maintenance-source-option"
+    )].map((row) => [
+      row.querySelector("[data-slimming-maintenance-source-id]")
+        ?.dataset.slimmingMaintenanceSourceId,
+      row,
+    ])
+  );
+  const sourceOptions = sources.map((source) => {
+    const row = existingOptions.get(source.id) || createSlimmingMaintenanceSourceOption();
+    syncSlimmingMaintenanceSourceOption(
+      row,
+      source,
+      selected.has(source.id),
+      submitting
+    );
+    return row;
+  });
+  reconcileStableChildren(elements.slimmingMaintenanceSourceOptions, sourceOptions);
 
   elements.refreshSlimmingSourcesButton.disabled = !state.online
     || submitting
@@ -31621,13 +31663,7 @@ function renderSlimmingSourceMaintenance() {
 
   const indexAvailable = snapshot.sourceSimilarityIndexAvailable === true;
   elements.slimmingSourceIndexSection.classList.toggle("hidden", !indexAvailable);
-  clearElement(elements.slimmingIndexSourceSelect);
-  for (const source of sources) {
-    const option = document.createElement("option");
-    option.value = source.id;
-    option.textContent = source.displayName;
-    elements.slimmingIndexSourceSelect.append(option);
-  }
+  syncSlimmingIndexSourceOptions(sources);
   if (!sources.some((source) => source.id === maintenance.indexSourceID)) {
     maintenance.indexSourceID = sources.find((source) => selected.has(source.id))?.id
       || sources[0]?.id

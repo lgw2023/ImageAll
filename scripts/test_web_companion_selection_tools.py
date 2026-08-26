@@ -3825,14 +3825,191 @@ def main(*, inspector_actions_only=False):
         assert "1 / 2" in page.locator("#slimmingMaintenanceSourceSummary").inner_text()
         assert maintenance_sources.nth(0).is_checked()
         assert not maintenance_sources.nth(1).is_checked()
+        slimming_maintenance_source_frame = page.evaluate(
+            """sourceIDs => {
+              const options = document.querySelector('#slimmingMaintenanceSourceOptions');
+              options.style.maxHeight = '46px';
+              options.scrollTop = options.scrollHeight;
+              const firstInput = options.querySelector(
+                `[data-slimming-maintenance-source-id="${sourceIDs[0]}"]`
+              );
+              const secondInput = options.querySelector(
+                `[data-slimming-maintenance-source-id="${sourceIDs[1]}"]`
+              );
+              secondInput.focus({ preventScroll: true });
+              window.__slimmingMaintenanceSourceContinuityFrame = {
+                firstRow: firstInput.closest('label'),
+                firstInput,
+                secondRow: secondInput.closest('label'),
+                secondInput,
+                secondName: secondInput.parentElement.querySelector('strong'),
+                secondKind: secondInput.parentElement.querySelector('span'),
+              };
+              return { scrollTop: options.scrollTop };
+            }""",
+            [SOURCE_ID, SECOND_SOURCE_ID],
+        )
+        assert slimming_maintenance_source_frame["scrollTop"] > 0, (
+            slimming_maintenance_source_frame
+        )
+        maintenance_sources.nth(1).hover()
+        maintenance_sources.nth(1).check()
+        page.wait_for_function(
+            "() => document.querySelectorAll("
+            "'#slimmingMaintenanceSourceOptions "
+            "[data-slimming-maintenance-source-id]:checked'"
+            ").length === 2"
+        )
+        slimming_maintenance_source_continuity = page.evaluate(
+            """({ sourceIDs, expectedScrollTop }) => {
+              const frame = window.__slimmingMaintenanceSourceContinuityFrame;
+              const options = document.querySelector('#slimmingMaintenanceSourceOptions');
+              const firstInput = options.querySelector(
+                `[data-slimming-maintenance-source-id="${sourceIDs[0]}"]`
+              );
+              const secondInput = options.querySelector(
+                `[data-slimming-maintenance-source-id="${sourceIDs[1]}"]`
+              );
+              return {
+                firstRow: firstInput?.closest('label') === frame.firstRow,
+                firstInput: firstInput === frame.firstInput,
+                secondRow: secondInput?.closest('label') === frame.secondRow,
+                secondInput: secondInput === frame.secondInput,
+                secondName: secondInput?.parentElement.querySelector('strong')
+                  === frame.secondName,
+                secondKind: secondInput?.parentElement.querySelector('span')
+                  === frame.secondKind,
+                focused: document.activeElement === secondInput,
+                hovered: secondInput?.matches(':hover') || false,
+                scroll: options.scrollTop === expectedScrollTop,
+                checked: secondInput?.checked || false,
+              };
+            }""",
+            {
+                "sourceIDs": [SOURCE_ID, SECOND_SOURCE_ID],
+                "expectedScrollTop": slimming_maintenance_source_frame["scrollTop"],
+            },
+        )
+        assert slimming_maintenance_source_continuity == {
+            "firstRow": True,
+            "firstInput": True,
+            "secondRow": True,
+            "secondInput": True,
+            "secondName": True,
+            "secondKind": True,
+            "focused": True,
+            "hovered": True,
+            "scroll": True,
+            "checked": True,
+        }, slimming_maintenance_source_continuity
+        maintenance_sources.nth(1).uncheck()
+        page.locator("#toggleAllSlimmingMaintenanceSourcesButton").click()
+        page.wait_for_function(
+            "() => document.querySelectorAll("
+            "'#slimmingMaintenanceSourceOptions "
+            "[data-slimming-maintenance-source-id]:checked'"
+            ").length === 2"
+        )
+        page.locator("#toggleAllSlimmingMaintenanceSourcesButton").click()
+        page.wait_for_function(
+            "() => document.querySelectorAll("
+            "'#slimmingMaintenanceSourceOptions "
+            "[data-slimming-maintenance-source-id]:checked'"
+            ").length === 0"
+        )
+        slimming_maintenance_bulk_continuity = page.evaluate(
+            """({ sourceIDs, expectedScrollTop }) => {
+              const frame = window.__slimmingMaintenanceSourceContinuityFrame;
+              const options = document.querySelector('#slimmingMaintenanceSourceOptions');
+              const firstInput = options.querySelector(
+                `[data-slimming-maintenance-source-id="${sourceIDs[0]}"]`
+              );
+              const secondInput = options.querySelector(
+                `[data-slimming-maintenance-source-id="${sourceIDs[1]}"]`
+              );
+              return {
+                firstRow: firstInput?.closest('label') === frame.firstRow,
+                firstInput: firstInput === frame.firstInput,
+                secondRow: secondInput?.closest('label') === frame.secondRow,
+                secondInput: secondInput === frame.secondInput,
+                secondName: secondInput?.parentElement.querySelector('strong')
+                  === frame.secondName,
+                secondKind: secondInput?.parentElement.querySelector('span')
+                  === frame.secondKind,
+                scroll: options.scrollTop === expectedScrollTop,
+              };
+            }""",
+            {
+                "sourceIDs": [SOURCE_ID, SECOND_SOURCE_ID],
+                "expectedScrollTop": slimming_maintenance_source_frame["scrollTop"],
+            },
+        )
+        assert all(slimming_maintenance_bulk_continuity.values()), (
+            slimming_maintenance_bulk_continuity
+        )
+        maintenance_sources.nth(0).check()
         page.locator("#refreshSlimmingSourcesButton").click()
         page.wait_for_function(
             "() => document.querySelector('#toastMessage').textContent.includes('刷新 1 个来源')"
         )
         assert submitted_slimming_source_maintenance[-1]["action"] == "refreshCatalog"
         assert submitted_slimming_source_maintenance[-1]["sourceIDs"] == [SOURCE_ID]
+        slimming_index_source_frame = page.evaluate(
+            """sourceIDs => {
+              const select = document.querySelector('#slimmingIndexSourceSelect');
+              const maintenanceOptions = document.querySelector(
+                '#slimmingMaintenanceSourceOptions'
+              );
+              maintenanceOptions.scrollTop = maintenanceOptions.scrollHeight;
+              const firstOption = select.querySelector(
+                `:scope > option[value="${sourceIDs[0]}"]`
+              );
+              const secondOption = select.querySelector(
+                `:scope > option[value="${sourceIDs[1]}"]`
+              );
+              select.focus({ preventScroll: true });
+              window.__slimmingIndexSourceContinuityFrame = {
+                select,
+                firstOption,
+                secondOption,
+                status: document.querySelector('#slimmingSourceIndexStatus'),
+                initializeButton: document.querySelector(
+                  '#initializeSlimmingSourceIndexButton'
+                ),
+                maintenanceScrollTop: maintenanceOptions.scrollTop,
+              };
+              return {
+                value: select.value,
+                maintenanceScrollTop: maintenanceOptions.scrollTop,
+              };
+            }""",
+            [SOURCE_ID, SECOND_SOURCE_ID],
+        )
+        assert slimming_index_source_frame["value"] == SOURCE_ID
+        assert slimming_index_source_frame["maintenanceScrollTop"] > 0
         page.locator("#slimmingIndexSourceSelect").select_option(SECOND_SOURCE_ID)
         assert "未初始化" in page.locator("#slimmingSourceIndexStatus").inner_text()
+        slimming_index_source_continuity = page.evaluate(
+            """sourceIDs => {
+              const frame = window.__slimmingIndexSourceContinuityFrame;
+              const select = document.querySelector('#slimmingIndexSourceSelect');
+              return {
+                select: select === frame.select,
+                firstOption: select.querySelector(
+                  `:scope > option[value="${sourceIDs[0]}"]`
+                ) === frame.firstOption,
+                secondOption: select.querySelector(
+                  `:scope > option[value="${sourceIDs[1]}"]`
+                ) === frame.secondOption,
+                focused: document.activeElement === select,
+                selected: select.value === sourceIDs[1],
+              };
+            }""",
+            [SOURCE_ID, SECOND_SOURCE_ID],
+        )
+        assert all(slimming_index_source_continuity.values()), (
+            slimming_index_source_continuity
+        )
         page.locator("#initializeSlimmingSourceIndexButton").click()
         assert submitted_slimming_source_maintenance[-1]["action"] == "initializeSimilarityIndex"
         assert submitted_slimming_source_maintenance[-1]["sourceIDs"] == [SECOND_SOURCE_ID]
@@ -3842,6 +4019,149 @@ def main(*, inspector_actions_only=False):
             timeout=6_000,
         )
         assert page.locator("#initializeSlimmingSourceIndexButton").inner_text() == "重新构建来源索引"
+        slimming_source_polling_continuity = page.evaluate(
+            """sourceIDs => {
+              const sourceFrame = window.__slimmingMaintenanceSourceContinuityFrame;
+              const indexFrame = window.__slimmingIndexSourceContinuityFrame;
+              const options = document.querySelector('#slimmingMaintenanceSourceOptions');
+              const firstInput = options.querySelector(
+                `[data-slimming-maintenance-source-id="${sourceIDs[0]}"]`
+              );
+              const secondInput = options.querySelector(
+                `[data-slimming-maintenance-source-id="${sourceIDs[1]}"]`
+              );
+              const select = document.querySelector('#slimmingIndexSourceSelect');
+              const status = document.querySelector('#slimmingSourceIndexStatus');
+              return {
+                firstRow: firstInput?.closest('label') === sourceFrame.firstRow,
+                firstInput: firstInput === sourceFrame.firstInput,
+                secondRow: secondInput?.closest('label') === sourceFrame.secondRow,
+                secondInput: secondInput === sourceFrame.secondInput,
+                secondName: secondInput?.parentElement.querySelector('strong')
+                  === sourceFrame.secondName,
+                secondKind: secondInput?.parentElement.querySelector('span')
+                  === sourceFrame.secondKind,
+                kindUpdated: sourceFrame.secondKind.textContent.includes('索引就绪'),
+                select: select === indexFrame.select,
+                firstOption: select.querySelector(
+                  `:scope > option[value="${sourceIDs[0]}"]`
+                ) === indexFrame.firstOption,
+                secondOption: select.querySelector(
+                  `:scope > option[value="${sourceIDs[1]}"]`
+                ) === indexFrame.secondOption,
+                selected: select.value === sourceIDs[1],
+                status: status === indexFrame.status,
+                statusUpdated: status.textContent.includes('就绪 80/80 · 12 簇'),
+                initializeButton: document.querySelector(
+                  '#initializeSlimmingSourceIndexButton'
+                ) === indexFrame.initializeButton,
+                scroll: options.scrollTop === indexFrame.maintenanceScrollTop,
+              };
+            }""",
+            [SOURCE_ID, SECOND_SOURCE_ID],
+        )
+        assert all(slimming_source_polling_continuity.values()), (
+            slimming_source_polling_continuity
+        )
+        slimming_maintenance_history_frame = page.evaluate(
+            """sourceID => {
+              const popover = document.querySelector('#slimmingAnalysisOptionsPopover');
+              const options = document.querySelector('#slimmingMaintenanceSourceOptions');
+              const input = options.querySelector(
+                `[data-slimming-maintenance-source-id="${sourceID}"]`
+              );
+              popover.style.maxHeight = '196px';
+              popover.style.overflowY = 'auto';
+              popover.scrollTop = 52;
+              options.scrollTop = options.scrollHeight;
+              input.focus({ preventScroll: true });
+              return {
+                popoverScrollTop: popover.scrollTop,
+                optionsScrollTop: options.scrollTop,
+              };
+            }""",
+            SECOND_SOURCE_ID,
+        )
+        assert slimming_maintenance_history_frame["popoverScrollTop"] > 0
+        assert slimming_maintenance_history_frame["optionsScrollTop"] > 0
+        slimming_maintenance_history_reads = slimming_setup_reads[0]
+        slimming_maintenance_history_payload = page.evaluate(
+            "() => JSON.stringify(history.state?.imageAllWorkspace || null)"
+        )
+        assert '"navigationLevel":"actionMenu"' in slimming_maintenance_history_payload
+        assert '"actionMenuKind":"slimmingOptions"' in slimming_maintenance_history_payload
+        assert "slimmingMaintenanceSource" not in slimming_maintenance_history_payload
+        assert "slimmingIndexSource" not in slimming_maintenance_history_payload
+        page.evaluate("() => history.back()")
+        page.locator("#slimmingAnalysisOptionsPopover").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'slimmingAnalysisOptionsButton'"
+        )
+        page.evaluate("() => history.forward()")
+        page.locator("#slimmingAnalysisOptionsContent:not(.hidden)").wait_for()
+        page.wait_for_function(
+            "sourceID => document.activeElement?.dataset.slimmingMaintenanceSourceId "
+            "=== sourceID",
+            arg=SECOND_SOURCE_ID,
+        )
+        assert slimming_setup_reads[0] == slimming_maintenance_history_reads
+        slimming_maintenance_history_continuity = page.evaluate(
+            """({ sourceIDs, popoverScrollTop, optionsScrollTop }) => {
+              const sourceFrame = window.__slimmingMaintenanceSourceContinuityFrame;
+              const indexFrame = window.__slimmingIndexSourceContinuityFrame;
+              const popover = document.querySelector('#slimmingAnalysisOptionsPopover');
+              const options = document.querySelector('#slimmingMaintenanceSourceOptions');
+              const firstInput = options.querySelector(
+                `[data-slimming-maintenance-source-id="${sourceIDs[0]}"]`
+              );
+              const secondInput = options.querySelector(
+                `[data-slimming-maintenance-source-id="${sourceIDs[1]}"]`
+              );
+              const select = document.querySelector('#slimmingIndexSourceSelect');
+              return {
+                firstRow: firstInput?.closest('label') === sourceFrame.firstRow,
+                firstInput: firstInput === sourceFrame.firstInput,
+                secondRow: secondInput?.closest('label') === sourceFrame.secondRow,
+                secondInput: secondInput === sourceFrame.secondInput,
+                secondName: secondInput?.parentElement.querySelector('strong')
+                  === sourceFrame.secondName,
+                secondKind: secondInput?.parentElement.querySelector('span')
+                  === sourceFrame.secondKind,
+                select: select === indexFrame.select,
+                firstOption: select.querySelector(
+                  `:scope > option[value="${sourceIDs[0]}"]`
+                ) === indexFrame.firstOption,
+                secondOption: select.querySelector(
+                  `:scope > option[value="${sourceIDs[1]}"]`
+                ) === indexFrame.secondOption,
+                focused: document.activeElement === secondInput,
+                popoverScroll: popover.scrollTop === popoverScrollTop,
+                optionsScroll: options.scrollTop === optionsScrollTop,
+              };
+            }""",
+            {
+                "sourceIDs": [SOURCE_ID, SECOND_SOURCE_ID],
+                **slimming_maintenance_history_frame,
+            },
+        )
+        assert all(slimming_maintenance_history_continuity.values()), (
+            slimming_maintenance_history_continuity
+        )
+        page.evaluate(
+            """() => {
+              const popover = document.querySelector('#slimmingAnalysisOptionsPopover');
+              popover.style.removeProperty('max-height');
+              popover.style.removeProperty('overflow-y');
+              popover.scrollTop = 0;
+              const options = document.querySelector('#slimmingMaintenanceSourceOptions');
+              options.style.removeProperty('max-height');
+              options.scrollTop = 0;
+            }"""
+        )
+        page.screenshot(
+            path="/tmp/imageall-slimming-source-maintenance-continuity.png",
+            full_page=True,
+        )
         page.keyboard.press("Escape")
         assert page.locator("#slimmingAnalysisOptionsPopover").is_hidden()
         page.wait_for_function(
