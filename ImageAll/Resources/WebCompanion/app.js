@@ -13510,6 +13510,24 @@ function scheduleSourceManagementPoll() {
   }, 1_000);
 }
 
+async function reconcileSlimmingRecycleSourceProjection() {
+  if (elements.slimmingWorkspace.classList.contains("hidden")
+    || state.slimming.view !== "recycle") return;
+  const recycleSourceInvalidated = Boolean(state.slimming.recycle.sourceID)
+    && !state.sources.some(
+      (source) => source.id === state.slimming.recycle.sourceID
+    );
+  if (recycleSourceInvalidated) {
+    state.slimming.recycle.sourceID = "";
+    state.slimming.recycle.limit = 60;
+    await loadSlimmingRecycle({ quiet: true });
+    return;
+  }
+  const scrollTop = elements.slimmingRecycleBody.scrollTop;
+  renderSlimmingRecycle({ preserveList: true });
+  elements.slimmingRecycleBody.scrollTop = scrollTop;
+}
+
 async function loadSourceManagement({ quiet = false, notifyTerminal = false } = {}) {
   const manager = state.sourceManagement;
   if (manager.loading) return;
@@ -13559,12 +13577,7 @@ async function loadSourceManagement({ quiet = false, notifyTerminal = false } = 
         preserveContent: preserveLoadedContent,
         reconcileContent: reconcileLoadedContent,
       });
-      if (!elements.slimmingWorkspace.classList.contains("hidden")
-        && state.slimming.view === "recycle") {
-        const scrollTop = elements.slimmingRecycleBody.scrollTop;
-        renderSlimmingRecycle();
-        elements.slimmingRecycleBody.scrollTop = scrollTop;
-      }
+      await reconcileSlimmingRecycleSourceProjection();
       scheduleSourceManagementPoll();
     }
   }
@@ -28894,17 +28907,17 @@ function reconcileSlimmingRecycleExplanationFromWorkspaceHistory(
 
 function renderSlimmingRecycleSourceOptions() {
   const previous = state.slimming.recycle.sourceID;
-  clearElement(elements.slimmingRecycleSourceSelect);
-  const all = document.createElement("option");
-  all.value = "";
-  all.textContent = "全部来源";
-  elements.slimmingRecycleSourceSelect.append(all);
-  for (const source of state.sources) {
-    const option = document.createElement("option");
+  const existingOptions = new Map(
+    [...elements.slimmingRecycleSourceSelect.options].map((option) => [option.value, option])
+  );
+  const sources = [{ id: "", displayName: "全部来源" }, ...state.sources];
+  const sourceOptions = sources.map((source) => {
+    const option = existingOptions.get(source.id) || document.createElement("option");
     option.value = source.id;
-    option.textContent = source.displayName;
-    elements.slimmingRecycleSourceSelect.append(option);
-  }
+    if (option.textContent !== source.displayName) option.textContent = source.displayName;
+    return option;
+  });
+  reconcileStableChildren(elements.slimmingRecycleSourceSelect, sourceOptions);
   elements.slimmingRecycleSourceSelect.value = previous;
   if (elements.slimmingRecycleSourceSelect.value !== previous) {
     state.slimming.recycle.sourceID = "";
@@ -34355,6 +34368,7 @@ async function refreshWorkspace({ quiet = false, kinds = null } = {}) {
         renderReviewLocalModelStatus();
         updateLibraryTitle();
         renderLibraryEmptyState();
+        await reconcileSlimmingRecycleSourceProjection();
       }
       if (batch.has("sourcesChanged")) {
         await reconcileSelectedFolderAfterSourceRefresh();

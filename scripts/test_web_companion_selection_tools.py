@@ -136,6 +136,14 @@ def main(*, inspector_actions_only=False):
     submitted_favorite_retries = []
     asset_request_urls = []
     recycle_request_urls = []
+    source_catalog = [
+        {
+            "id": SOURCE_ID,
+            "kind": "photos",
+            "displayName": "Apple Photos",
+            "state": "active",
+        },
+    ]
     favorite_states = {asset_id: False for asset_id in SLIMMING_ASSET_IDS}
     favorite_sync_status = {
         ASSET_IDS[0]: "failed",
@@ -300,20 +308,14 @@ def main(*, inspector_actions_only=False):
         )
         page.route(
             "**/v1/sources",
-            lambda route: fulfill_json(
-                route,
-                [{"id": SOURCE_ID, "kind": "photos", "displayName": "Apple Photos", "state": "active"}],
-            ),
+            lambda route: fulfill_json(route, list(source_catalog)),
         )
 
         def handle_source_management_snapshot(route):
             fulfill_json(
                 route,
                 {
-                    "sources": [
-                        {"id": SOURCE_ID, "kind": "photos", "displayName": "Apple Photos", "state": "active"},
-                        {"id": SECOND_SOURCE_ID, "kind": "folder", "displayName": "旅行归档", "state": "active"},
-                    ],
+                    "sources": list(source_catalog),
                     "canConnectPhotos": False,
                     "requests": [],
                 },
@@ -5399,6 +5401,243 @@ def main(*, inspector_actions_only=False):
         page.set_viewport_size({"width": 1440, "height": 960})
         page.wait_for_timeout(100)
 
+        recycle_source_refresh_frame = page.evaluate(
+            """sourceID => {
+              const body = document.querySelector('#slimmingRecycleBody');
+              const row = document.querySelector(
+                '#slimmingRecycleList > .slimming-recycle-row'
+              );
+              const select = document.querySelector('#slimmingRecycleSourceSelect');
+              body.scrollTop = Math.min(90, Math.max(0, body.scrollHeight - body.clientHeight));
+              window.__slimmingRecycleSourceRefreshFrame = {
+                row,
+                thumbnail: row.querySelector('.slimming-recycle-thumbnail-card'),
+                select,
+                allOption: select.querySelector(':scope > option[value=""]'),
+                sourceOption: select.querySelector(
+                  `:scope > option[value="${sourceID}"]`
+                ),
+              };
+              return {
+                rowID: row.dataset.slimmingRecycleRowId,
+                scrollTop: body.scrollTop,
+                optionCount: select.options.length,
+                selected: select.value,
+              };
+            }""",
+            SOURCE_ID,
+        )
+        assert recycle_source_refresh_frame["scrollTop"] > 0
+        assert recycle_source_refresh_frame["optionCount"] == 2
+        assert recycle_source_refresh_frame["selected"] == ""
+        source_catalog.append({
+            "id": SECOND_SOURCE_ID,
+            "kind": "folder",
+            "displayName": "旅行归档",
+            "state": "active",
+        })
+        page.locator("#sourceManagerButton").click()
+        page.locator("#sourceManagerDialog[open]").wait_for()
+        page.wait_for_function(
+            "() => !state.sourceManagement.loading && state.sources.length === 2 "
+            "&& document.querySelector('#slimmingRecycleSourceSelect').options.length === 3"
+        )
+        recycle_source_refresh_continuity = page.evaluate(
+            """({ rowID, sourceIDs, expectedScrollTop }) => {
+              const frame = window.__slimmingRecycleSourceRefreshFrame;
+              const body = document.querySelector('#slimmingRecycleBody');
+              const row = document.querySelector(
+                `[data-slimming-recycle-row-id="${CSS.escape(rowID)}"]`
+              );
+              const select = document.querySelector('#slimmingRecycleSourceSelect');
+              return {
+                row: row === frame.row,
+                thumbnail: row?.querySelector('.slimming-recycle-thumbnail-card')
+                  === frame.thumbnail,
+                select: select === frame.select,
+                allOption: select.querySelector(':scope > option[value=""]')
+                  === frame.allOption,
+                sourceOption: select.querySelector(
+                  `:scope > option[value="${sourceIDs[0]}"]`
+                ) === frame.sourceOption,
+                addedOption: Boolean(select.querySelector(
+                  `:scope > option[value="${sourceIDs[1]}"]`
+                )),
+                selected: select.value === '',
+                scroll: body.scrollTop === expectedScrollTop,
+              };
+            }""",
+            {
+                "rowID": recycle_source_refresh_frame["rowID"],
+                "sourceIDs": [SOURCE_ID, SECOND_SOURCE_ID],
+                "expectedScrollTop": recycle_source_refresh_frame["scrollTop"],
+            },
+        )
+        assert all(recycle_source_refresh_continuity.values()), (
+            recycle_source_refresh_continuity
+        )
+        page.locator("#sourceManagerCloseButton").click()
+        page.locator("#sourceManagerDialog").wait_for(state="hidden")
+        page.locator("#slimmingRecycleSourceSelect").select_option(SECOND_SOURCE_ID)
+        page.wait_for_function(
+            "() => !state.slimming.recycle.loading "
+            "&& state.slimming.recycle.sourceID !== ''"
+        )
+        assert f"sourceID={SECOND_SOURCE_ID}" in recycle_request_urls[-1]
+        assert page.locator(
+            "#slimmingRecycleList .slimming-recycle-row"
+        ).count() == 4
+        recycle_source_invalidation_frame = page.evaluate(
+            """sourceIDs => {
+              const select = document.querySelector('#slimmingRecycleSourceSelect');
+              window.__slimmingRecycleSourceInvalidationFrame = {
+                select,
+                allOption: select.querySelector(':scope > option[value=""]'),
+                remainingOption: select.querySelector(
+                  `:scope > option[value="${sourceIDs[0]}"]`
+                ),
+                removedOption: select.querySelector(
+                  `:scope > option[value="${sourceIDs[1]}"]`
+                ),
+              };
+              return { selected: select.value };
+            }""",
+            [SOURCE_ID, SECOND_SOURCE_ID],
+        )
+        assert recycle_source_invalidation_frame["selected"] == SECOND_SOURCE_ID
+        recycle_source_invalidation_request_count = len(recycle_request_urls)
+        source_catalog[:] = [source_catalog[0]]
+        page.evaluate(
+            """() => {
+              state.socket.dispatchEvent(new MessageEvent('message', {
+                data: JSON.stringify({ kind: 'sourcesChanged' }),
+              }));
+            }"""
+        )
+        page.wait_for_function(
+            "() => !state.refreshingWorkspace && state.sources.length === 1"
+        )
+        page.wait_for_timeout(300)
+        assert len(recycle_request_urls) == recycle_source_invalidation_request_count + 1
+        assert "sourceID=" not in recycle_request_urls[-1]
+        assert page.locator(
+            "#slimmingRecycleList .slimming-recycle-row"
+        ).count() == 7
+        recycle_source_invalidation_continuity = page.evaluate(
+            """sourceIDs => {
+              const frame = window.__slimmingRecycleSourceInvalidationFrame;
+              const select = document.querySelector('#slimmingRecycleSourceSelect');
+              return {
+                select: select === frame.select,
+                allOption: select.querySelector(':scope > option[value=""]')
+                  === frame.allOption,
+                remainingOption: select.querySelector(
+                  `:scope > option[value="${sourceIDs[0]}"]`
+                ) === frame.remainingOption,
+                removedOption: !select.querySelector(
+                  `:scope > option[value="${sourceIDs[1]}"]`
+                ) && !frame.removedOption.isConnected,
+                selected: select.value === '' && state.slimming.recycle.sourceID === '',
+              };
+            }""",
+            [SOURCE_ID, SECOND_SOURCE_ID],
+        )
+        assert all(recycle_source_invalidation_continuity.values()), (
+            recycle_source_invalidation_continuity
+        )
+        source_catalog.append({
+            "id": SECOND_SOURCE_ID,
+            "kind": "folder",
+            "displayName": "旅行归档",
+            "state": "active",
+        })
+        page.evaluate(
+            """() => {
+              state.socket.dispatchEvent(new MessageEvent('message', {
+                data: JSON.stringify({ kind: 'sourcesChanged' }),
+              }));
+            }"""
+        )
+        page.wait_for_function(
+            "() => !state.refreshingWorkspace && state.sources.length === 2 "
+            "&& document.querySelector('#slimmingRecycleSourceSelect').options.length === 3"
+        )
+        page.locator("#sourceManagerButton").click()
+        page.locator("#sourceManagerDialog[open]").wait_for()
+        page.wait_for_function("() => !state.sourceManagement.loading")
+        recycle_source_rename_frame = page.evaluate(
+            """sourceIDs => {
+              const select = document.querySelector('#slimmingRecycleSourceSelect');
+              const row = document.querySelector(
+                '#slimmingRecycleList > .slimming-recycle-row'
+              );
+              window.__slimmingRecycleSourceRenameFrame = {
+                select,
+                allOption: select.querySelector(':scope > option[value=""]'),
+                firstOption: select.querySelector(
+                  ':scope > option[value="' + CSS.escape(sourceIDs[0]) + '"]'
+                ),
+                secondOption: select.querySelector(
+                  ':scope > option[value="' + CSS.escape(sourceIDs[1]) + '"]'
+                ),
+                row,
+                thumbnail: row.querySelector('.slimming-recycle-thumbnail-card'),
+              };
+            }""",
+            [SOURCE_ID, SECOND_SOURCE_ID],
+        )
+        source_catalog[1]["displayName"] = "旅行归档（已连接）"
+        page.locator("#sourceManagerRefreshButton").click()
+        page.wait_for_function(
+            "sourceID => !state.sourceManagement.loading "
+            "&& [...document.querySelector('#slimmingRecycleSourceSelect').options]"
+            ".find(option => option.value === sourceID)?.textContent.includes('已连接')",
+            arg=SECOND_SOURCE_ID,
+        )
+        recycle_source_rename_continuity = page.evaluate(
+            """sourceIDs => {
+              const frame = window.__slimmingRecycleSourceRenameFrame;
+              const select = document.querySelector('#slimmingRecycleSourceSelect');
+              const row = document.querySelector(
+                '#slimmingRecycleList > .slimming-recycle-row'
+              );
+              return {
+                select: select === frame.select,
+                allOption: select.querySelector(':scope > option[value=""]')
+                  === frame.allOption,
+                firstOption: select.querySelector(
+                  ':scope > option[value="' + CSS.escape(sourceIDs[0]) + '"]'
+                ) === frame.firstOption,
+                secondOption: select.querySelector(
+                  ':scope > option[value="' + CSS.escape(sourceIDs[1]) + '"]'
+                ) === frame.secondOption,
+                nameUpdated: frame.secondOption.textContent === '旅行归档（已连接）',
+                row: row === frame.row,
+                thumbnail: row?.querySelector('.slimming-recycle-thumbnail-card')
+                  === frame.thumbnail,
+              };
+            }""",
+            [SOURCE_ID, SECOND_SOURCE_ID],
+        )
+        assert all(recycle_source_rename_continuity.values()), (
+            recycle_source_rename_continuity
+        )
+        page.locator("#sourceManagerCloseButton").click()
+        page.locator("#sourceManagerDialog").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'sourceManagerButton'"
+        )
+        assert page.evaluate(
+            """() => {
+              const frame = window.__slimmingRecycleSourceRenameFrame;
+              const row = document.querySelector(
+                '#slimmingRecycleList > .slimming-recycle-row'
+              );
+              return row === frame.row
+                && row.querySelector('.slimming-recycle-thumbnail-card') === frame.thumbnail;
+            }"""
+        )
+
         recycle_query_continuity_before = page.evaluate(
             """() => {
               const row = document.querySelector(
@@ -5489,6 +5728,22 @@ def main(*, inspector_actions_only=False):
             recycle_query_continuity_before,
         )
 
+        page.evaluate(
+            """sourceIDs => {
+              const select = document.querySelector('#slimmingRecycleSourceSelect');
+              window.__slimmingRecycleSourceQueryFrame = {
+                select,
+                allOption: select.querySelector(':scope > option[value=""]'),
+                firstOption: select.querySelector(
+                  `:scope > option[value="${sourceIDs[0]}"]`
+                ),
+                secondOption: select.querySelector(
+                  `:scope > option[value="${sourceIDs[1]}"]`
+                ),
+              };
+            }""",
+            [SOURCE_ID, SECOND_SOURCE_ID],
+        )
         slimming_recycle_query_failures[0] = 1
         recycle_failed_query_count = len(recycle_request_urls)
         page.locator("#slimmingRecycleSourceSelect").focus()
@@ -5506,18 +5761,38 @@ def main(*, inspector_actions_only=False):
               const row = document.querySelector(
                 `[data-slimming-recycle-row-id="${CSS.escape(expected.rowID)}"]`
               );
+              const frame = window.__slimmingRecycleSourceQueryFrame;
+              const select = document.querySelector('#slimmingRecycleSourceSelect');
               return {
                 rowStable: row === window.__imageAllRecycleQueryRow,
                 thumbnailStable: row.querySelector('.slimming-recycle-thumbnail-card')
                   === window.__imageAllRecycleQueryThumbnail,
+                selectStable: select === frame.select,
+                allOptionStable: select.querySelector(':scope > option[value=""]')
+                  === frame.allOption,
+                firstOptionStable: select.querySelector(
+                  `:scope > option[value="${expected.sourceIDs[0]}"]`
+                ) === frame.firstOption,
+                secondOptionStable: select.querySelector(
+                  `:scope > option[value="${expected.sourceIDs[1]}"]`
+                ) === frame.secondOption,
+                selected: select.value,
                 focusedControlID: document.activeElement?.id || null,
               };
             }""",
-            recycle_query_continuity_before,
+            {
+                **recycle_query_continuity_before,
+                "sourceIDs": [SOURCE_ID, SECOND_SOURCE_ID],
+            },
         )
         assert recycle_failed_query_after == {
             "rowStable": True,
             "thumbnailStable": True,
+            "selectStable": True,
+            "allOptionStable": True,
+            "firstOptionStable": True,
+            "secondOptionStable": True,
+            "selected": "",
             "focusedControlID": "slimmingRecycleSourceSelect",
         }, recycle_failed_query_after
 
