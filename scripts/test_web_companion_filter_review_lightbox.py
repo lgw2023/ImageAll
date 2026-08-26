@@ -1423,6 +1423,94 @@ def main():
         page.locator("#filterTagSelect").select_option(TRAVEL_TAG_ID)
         page.locator("#filterTagDecision").select_option("rejected")
         page.locator("#addTagFilterButton").click()
+        page.wait_for_function(
+            "() => document.querySelector('#filterLiveStatus').dataset.state === 'ready'"
+        )
+        page.evaluate(
+            """() => {
+              const filter = document.querySelector('#filterPopover');
+              filter.style.maxHeight = '500px';
+              filter.style.overflowY = 'auto';
+              filter.style.paddingBottom = '1200px';
+              filter.scrollTop = 120;
+            }"""
+        )
+        cat_filter_button = page.locator(
+            f'[data-remove-tag-filter="{CAT_TAG_ID}"]'
+        )
+        cat_filter_button_bounds = cat_filter_button.bounding_box()
+        assert cat_filter_button_bounds is not None
+        page.mouse.move(
+            cat_filter_button_bounds["x"] + cat_filter_button_bounds["width"] / 2,
+            cat_filter_button_bounds["y"] + cat_filter_button_bounds["height"] / 2,
+        )
+        filter_chip_scroll = page.evaluate(
+            """(catTagID) => {
+              const catButton = document.querySelector(
+                `[data-remove-tag-filter="${catTagID}"]`
+              );
+              const filter = document.querySelector('#filterPopover');
+              catButton.focus({ preventScroll: true });
+              window.__filterChipContinuityFrame = {
+                catChip: catButton.closest('.filter-chip'),
+                catButton,
+              };
+              return filter.scrollTop;
+            }""",
+            CAT_TAG_ID,
+        )
+        assert filter_chip_scroll > 0
+        page.evaluate(
+            """(travelTagID) => {
+              document.querySelector(
+                `[data-remove-tag-filter="${travelTagID}"]`
+              ).click();
+            }""",
+            TRAVEL_TAG_ID,
+        )
+        page.wait_for_function(
+            "() => document.querySelector('#filterLiveStatus').dataset.state === 'ready'"
+        )
+        filter_chip_continuity = page.evaluate(
+            """([catTagID, travelTagID, expectedScrollTop]) => {
+              const frame = window.__filterChipContinuityFrame;
+              const catButton = document.querySelector(
+                `[data-remove-tag-filter="${catTagID}"]`
+              );
+              return {
+                chip: catButton?.closest('.filter-chip') === frame.catChip,
+                button: catButton === frame.catButton,
+                focused: document.activeElement === catButton,
+                hovered: catButton?.matches(':hover') || false,
+                scroll: document.querySelector('#filterPopover').scrollTop === expectedScrollTop,
+                travelRemoved: !document.querySelector(
+                  `[data-remove-tag-filter="${travelTagID}"]`
+                ),
+              };
+            }""",
+            [CAT_TAG_ID, TRAVEL_TAG_ID, filter_chip_scroll],
+        )
+        assert filter_chip_continuity == {
+            "chip": True,
+            "button": True,
+            "focused": True,
+            "hovered": True,
+            "scroll": True,
+            "travelRemoved": True,
+        }, filter_chip_continuity
+        assert asset_queries[-1].get("acceptedTagIDs") == [CAT_TAG_ID]
+        assert "rejectedTagIDs" not in asset_queries[-1]
+        page.evaluate(
+            """() => {
+              const filter = document.querySelector('#filterPopover');
+              filter.style.removeProperty('max-height');
+              filter.style.removeProperty('overflow-y');
+              filter.style.removeProperty('padding-bottom');
+            }"""
+        )
+        page.locator("#filterTagSelect").select_option(TRAVEL_TAG_ID)
+        page.locator("#filterTagDecision").select_option("rejected")
+        page.locator("#addTagFilterButton").click()
         page.locator("#tagMatchMode").focus()
         page.locator("#tagMatchMode").select_option("any")
         page.wait_for_function(

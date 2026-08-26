@@ -17669,23 +17669,43 @@ async function generateGalleryPersonalSuggestions() {
   await generateSampleSuggestions();
 }
 
+function createFilterChip() {
+  const chip = document.createElement("span");
+  chip.className = "filter-chip";
+  const label = document.createElement("span");
+  label.dataset.filterChipLabel = "true";
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.textContent = "×";
+  chip.append(label, remove);
+  return chip;
+}
+
+function syncFilterChip(chip, condition, tag) {
+  chip.dataset.filterTagId = condition.tagID;
+  const label = chip.querySelector(":scope > [data-filter-chip-label]");
+  label.textContent = `${filterDecisionText(condition.decision)} · ${tag.displayName}`;
+  const remove = chip.querySelector(":scope > button");
+  remove.dataset.removeTagFilter = condition.tagID;
+  remove.setAttribute("aria-label", `移除 ${tag.displayName} 条件`);
+}
+
 function renderFilterChips() {
-  clearElement(elements.filterTagChips);
   const filters = state.filterDraft || state.filters;
+  const existingChips = new Map(
+    [...elements.filterTagChips.querySelectorAll(":scope > [data-filter-tag-id]")]
+      .map((chip) => [chip.dataset.filterTagId, chip])
+  );
+  const chips = [];
   for (const condition of filters.tagConditions) {
     const tag = tagByID(condition.tagID);
     if (!tag) continue;
-    const chip = document.createElement("span");
-    chip.className = "filter-chip";
-    chip.textContent = `${filterDecisionText(condition.decision)} · ${tag.displayName}`;
-    const remove = document.createElement("button");
-    remove.type = "button";
-    remove.dataset.removeTagFilter = condition.tagID;
-    remove.setAttribute("aria-label", `移除 ${tag.displayName} 条件`);
-    remove.textContent = "×";
-    chip.append(remove);
-    elements.filterTagChips.append(chip);
+    const chip = existingChips.get(condition.tagID) || createFilterChip();
+    existingChips.delete(condition.tagID);
+    syncFilterChip(chip, condition, tag);
+    chips.push(chip);
   }
+  reconcileStableChildren(elements.filterTagChips, chips);
   elements.tagMatchModeLabel.classList.toggle(
     "hidden",
     filters.tagConditions.filter((condition) => condition.decision !== "excluded").length < 2
@@ -41507,8 +41527,8 @@ function bindEvents() {
       void returnFromCompactToolbarMenu({ restoreFocus: false });
     }
     if (!elements.filterPopover.classList.contains("hidden")
-      && !elements.filterPopover.contains(event.target)
-      && !elements.filterButton.contains(event.target)) {
+      && !eventPath.includes(elements.filterPopover)
+      && !eventPath.includes(elements.filterButton)) {
       void returnFromFilterPopover({ restoreFocus: false });
     }
     if (!elements.sortPopover.classList.contains("hidden")
