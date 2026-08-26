@@ -5213,6 +5213,81 @@ function syncWorldMapPhotoFavoriteButton(card, asset) {
   });
 }
 
+function createWorldMapPhotoCard() {
+  const card = document.createElement("div");
+  card.className = "world-map-photo-card";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "world-map-photo-button";
+  const image = document.createElement("img");
+  image.alt = "";
+  const label = document.createElement("span");
+  button.append(image, label);
+  card.append(button);
+  return card;
+}
+
+function syncWorldMapPhotoCard(card, asset) {
+  const fileName = asset.fileName || "未命名照片";
+  card.dataset.worldMapCardAssetId = asset.id;
+  const button = card.querySelector(":scope > .world-map-photo-button");
+  button.dataset.worldMapAssetId = asset.id;
+  button.title = asset.fileName || "查看照片";
+  button.setAttribute("aria-label", `查看 ${asset.fileName || "地点照片"}`);
+  const image = button.querySelector("img");
+  const imageKey = `${asset.id}:${asset.contentRevision ?? ""}`;
+  if (image.dataset.worldMapImageKey !== imageKey) {
+    image.dataset.worldMapImageKey = imageKey;
+    const revision = asset.contentRevision == null
+      ? ""
+      : `&r=${encodeURIComponent(asset.contentRevision)}`;
+    setProtectedImageSource(
+      image,
+      `/v1/assets/${encodeURIComponent(asset.id)}/thumbnail?w=180${revision}`,
+      { priority: "high", preserveCurrent: true }
+    );
+  }
+  button.querySelector(":scope > span").textContent = fileName;
+  syncWorldMapPhotoFavoriteButton(card, asset);
+}
+
+function clearWorldMapPhotoCardImages(cards) {
+  for (const card of cards) {
+    card.querySelectorAll("img[data-protected-path]").forEach(clearProtectedImageSource);
+  }
+}
+
+function reconcileWorldMapPhotoCards(assets) {
+  const existingCards = new Map(
+    [...elements.worldMapPhotoStrip.querySelectorAll(":scope > .world-map-photo-card")]
+      .map((card) => [card.dataset.worldMapCardAssetId, card])
+  );
+  const cards = assets.map((asset) => {
+    const card = existingCards.get(asset.id) || createWorldMapPhotoCard();
+    existingCards.delete(asset.id);
+    syncWorldMapPhotoCard(card, asset);
+    return card;
+  });
+  clearWorldMapPhotoCardImages(existingCards.values());
+  reconcileStableChildren(elements.worldMapPhotoStrip, cards);
+}
+
+function worldMapPhotoStripStatus(kind, className) {
+  let status = elements.worldMapPhotoStrip.querySelector(
+    `:scope > [data-world-map-photo-status="${CSS.escape(kind)}"]`
+  );
+  if (!status) {
+    status = document.createElement("div");
+    status.dataset.worldMapPhotoStatus = kind;
+  }
+  status.className = className;
+  clearWorldMapPhotoCardImages(
+    elements.worldMapPhotoStrip.querySelectorAll(":scope > .world-map-photo-card")
+  );
+  reconcileStableChildren(elements.worldMapPhotoStrip, [status]);
+  return status;
+}
+
 async function toggleWorldMapPhotoFavorite(button) {
   const assetID = button?.dataset.mediaFavoriteAssetId
     || button?.closest(".world-map-photo-card")?.dataset.worldMapCardAssetId;
@@ -5229,8 +5304,13 @@ function renderWorldMapDetail() {
   const selection = state.worldMap.selection;
   elements.worldMapDetail.classList.toggle("hidden", !cluster);
   elements.worldMapBrowseClusterButton.classList.add("hidden");
-  clearElement(elements.worldMapPhotoStrip);
-  if (!cluster) return;
+  if (!cluster) {
+    clearWorldMapPhotoCardImages(
+      elements.worldMapPhotoStrip.querySelectorAll(":scope > .world-map-photo-card")
+    );
+    reconcileStableChildren(elements.worldMapPhotoStrip, []);
+    return;
+  }
 
   elements.worldMapDetailName.textContent = cluster.displayName || "未命名地点";
   elements.worldMapDetailComposition.textContent = [
@@ -5249,29 +5329,36 @@ function renderWorldMapDetail() {
 
   if (state.worldMap.selectionLoading) {
     elements.worldMapSelectionSummary.textContent = "正在载入预览";
-    const loading = document.createElement("div");
-    loading.className = "world-map-photo-empty";
+    const loading = worldMapPhotoStripStatus("loading", "world-map-photo-empty");
     loading.textContent = "正在读取这个地点的照片…";
-    elements.worldMapPhotoStrip.append(loading);
     return;
   }
 
   if (state.worldMap.selectionError) {
     elements.worldMapSelectionSummary.textContent = "预览载入失败";
-    const failure = document.createElement("div");
-    failure.className = "world-map-photo-error";
-    const icon = document.createElement("span");
-    icon.setAttribute("aria-hidden", "true");
-    icon.textContent = "!";
-    const copy = document.createElement("span");
+    const failure = worldMapPhotoStripStatus("error", "world-map-photo-error");
+    let icon = failure.querySelector(":scope > [data-world-map-photo-error-icon]");
+    if (!icon) {
+      icon = document.createElement("span");
+      icon.dataset.worldMapPhotoErrorIcon = "true";
+      icon.setAttribute("aria-hidden", "true");
+      icon.textContent = "!";
+    }
+    let copy = failure.querySelector(":scope > [data-world-map-photo-error-copy]");
+    if (!copy) {
+      copy = document.createElement("span");
+      copy.dataset.worldMapPhotoErrorCopy = "true";
+    }
     copy.textContent = state.worldMap.selectionError;
-    const retry = document.createElement("button");
-    retry.type = "button";
-    retry.className = "button button-compact";
+    let retry = failure.querySelector(":scope > [data-retry-world-map-selection]");
+    if (!retry) {
+      retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "button button-compact";
+      retry.textContent = "重试";
+    }
     retry.dataset.retryWorldMapSelection = cluster.id;
-    retry.textContent = "重试";
-    failure.append(icon, copy, retry);
-    elements.worldMapPhotoStrip.append(failure);
+    reconcileStableChildren(failure, [icon, copy, retry]);
     return;
   }
 
@@ -5280,37 +5367,11 @@ function renderWorldMapDetail() {
     ? `显示前 ${worldMapCount(assets.length)} 张`
     : `${worldMapCount(assets.length)} 张可预览`;
   if (!assets.length) {
-    const empty = document.createElement("div");
-    empty.className = "world-map-photo-empty";
+    const empty = worldMapPhotoStripStatus("empty", "world-map-photo-empty");
     empty.textContent = "这个地点暂时没有可预览照片";
-    elements.worldMapPhotoStrip.append(empty);
     return;
   }
-
-  for (const asset of assets) {
-    const card = document.createElement("div");
-    card.className = "world-map-photo-card";
-    card.dataset.worldMapCardAssetId = asset.id;
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "world-map-photo-button";
-    button.dataset.worldMapAssetId = asset.id;
-    button.title = asset.fileName || "查看照片";
-    button.setAttribute("aria-label", `查看 ${asset.fileName || "地点照片"}`);
-    const image = document.createElement("img");
-    image.alt = "";
-    setProtectedImageSource(
-      image,
-      `/v1/assets/${encodeURIComponent(asset.id)}/thumbnail?w=180`,
-      { priority: "high" }
-    );
-    const label = document.createElement("span");
-    label.textContent = asset.fileName || "未命名照片";
-    button.append(image, label);
-    card.append(button);
-    syncWorldMapPhotoFavoriteButton(card, asset);
-    elements.worldMapPhotoStrip.append(card);
-  }
+  reconcileWorldMapPhotoCards(assets);
 }
 
 function renderWorldMap() {

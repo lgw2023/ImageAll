@@ -5,6 +5,10 @@ const { chromium } = require("playwright");
 
 const baseURL = process.env.IMAGEALL_WEB_TEST_URL || "http://127.0.0.1:8799";
 const assetID = "bbbbbbbb-1111-2222-3333-bbbbbbbbbbbb";
+const worldMapAssetIDs = [
+  assetID,
+  ...Array.from({ length: 23 }, (_, index) => `world-map-preview-${index + 2}`),
+];
 const folderSourceID = "cccccccc-1111-2222-3333-cccccccccccc";
 const photosSourceID = "dddddddd-1111-2222-3333-dddddddddddd";
 const placeTagID = "abababab-1111-2222-3333-abababababab";
@@ -78,6 +82,7 @@ let browser;
   const worldMapGalleryRequests = [];
   let selectionShouldFail = false;
   let selectionRequestCount = 0;
+  let thumbnailRequestCount = 0;
   page.on("console", (message) => {
     if (message.type() === "error") consoleErrors.push(message.text());
   });
@@ -166,8 +171,13 @@ let browser;
   }));
   await page.route(`${baseURL}/v1/training/activities**`, (route) => json(route, []));
   await page.route(
-    new RegExp(`/v1/assets/${assetID}/(thumbnail|preview)(\\?.*)?$`),
-    (route) => route.fulfill({ status: 200, contentType: "image/png", body: onePixelPNG })
+    new RegExp("/v1/assets/[^/]+/(thumbnail|preview)(\\?.*)?$"),
+    (route) => {
+      if (new URL(route.request().url()).pathname.endsWith("/thumbnail")) {
+        thumbnailRequestCount += 1;
+      }
+      return route.fulfill({ status: 200, contentType: "image/png", body: onePixelPNG });
+    }
   );
   await page.route(`${baseURL}/v1/assets?**`, (route) => {
     const requestURL = new URL(route.request().url());
@@ -230,19 +240,19 @@ let browser;
       }, 500);
     }
     return json(route, {
-      assets: [{
-        id: assetID,
-        fileName: "IMG_0001.HEIC",
+      assets: worldMapAssetIDs.map((id, index) => ({
+        id,
+        fileName: `IMG_${String(index + 1).padStart(4, "0")}.HEIC`,
         availability: "available",
         contentRevision: 7,
         favorite: {
-          assetID,
-          isFavorite: favoriteState,
-          photosObservedValue: favoriteState,
+          assetID: id,
+          isFavorite: id === assetID ? favoriteState : false,
+          photosObservedValue: id === assetID ? favoriteState : false,
           syncStatus: "synced",
           lastErrorCode: null,
         },
-      }],
+      })),
       totalPhotoCount: 42,
     });
   });
@@ -504,8 +514,97 @@ let browser;
 
   const worldMapCard = page.locator(`.world-map-photo-card[data-world-map-card-asset-id="${assetID}"]`);
   const worldMapFavorite = worldMapCard.locator(":scope > .world-map-photo-favorite");
-  const stripScrollLeft = await page.locator("#worldMapPhotoStrip").evaluate(
-    (element) => element.scrollLeft
+  const previewContinuityAssetID = worldMapAssetIDs[5];
+  const previewContinuityCard = page.locator(
+    `.world-map-photo-card[data-world-map-card-asset-id="${previewContinuityAssetID}"]`
+  );
+  const stripMetrics = await page.evaluate(
+    ({ stableAssetID, openAssetID }) => {
+      const strip = document.querySelector("#worldMapPhotoStrip");
+      strip.scrollLeft = 180;
+      const card = strip.querySelector(
+        `[data-world-map-card-asset-id="${stableAssetID}"]`
+      );
+      const button = card.querySelector(":scope > .world-map-photo-button");
+      const favorite = card.querySelector(":scope > .world-map-photo-favorite");
+      const openButton = strip.querySelector(
+        `[data-world-map-card-asset-id="${openAssetID}"] > .world-map-photo-button`
+      );
+      window.__stableWorldMapPreview = {
+        strip,
+        card,
+        button,
+        favorite,
+        image: button.querySelector("img"),
+        openButton,
+        scrollLeft: strip.scrollLeft,
+      };
+      favorite.focus();
+      return {
+        scrollLeft: strip.scrollLeft,
+        scrollWidth: strip.scrollWidth,
+        clientWidth: strip.clientWidth,
+        cardCount: strip.querySelectorAll(":scope > .world-map-photo-card").length,
+      };
+    },
+    { stableAssetID: previewContinuityAssetID, openAssetID: assetID }
+  );
+  const stripScrollLeft = stripMetrics.scrollLeft;
+  assert.ok(
+    stripScrollLeft > 0,
+    `synthetic photo strip must exercise horizontal scrolling: ${JSON.stringify(stripMetrics)}`
+  );
+  await previewContinuityCard.hover();
+  const snapshotRequestsBeforePreviewRefresh = snapshotRequestCount;
+  const thumbnailRequestsBeforePreviewRefresh = thumbnailRequestCount;
+  const previewRefreshViewport = {
+    west: 118.2, south: 30.2, east: 122.8, north: 32.8,
+    centerLongitude: 120.8, centerLatitude: 31.2, zoom: 7.1, bearing: 8, pitch: 38,
+  };
+  await page.locator("#worldMapFrame").evaluate(
+    (frame, viewport) => frame.contentWindow.setSyntheticViewport(viewport),
+    previewRefreshViewport
+  );
+  const previewRefreshDeadline = Date.now() + 5_000;
+  while (
+    snapshotRequestCount === snapshotRequestsBeforePreviewRefresh
+    && Date.now() < previewRefreshDeadline
+  ) {
+    await page.waitForTimeout(10);
+  }
+  assert.ok(
+    snapshotRequestCount > snapshotRequestsBeforePreviewRefresh,
+    "changing the synthetic viewport must trigger an authoritative map refresh"
+  );
+  await page.waitForTimeout(80);
+  const previewRefreshContinuity = await page.evaluate(({ stableAssetID, openAssetID }) => {
+    const stable = window.__stableWorldMapPreview;
+    const strip = document.querySelector("#worldMapPhotoStrip");
+    const card = strip.querySelector(
+      `[data-world-map-card-asset-id="${stableAssetID}"]`
+    );
+    return {
+      strip: strip === stable.strip,
+      card: card === stable.card,
+      button: card.querySelector(":scope > .world-map-photo-button") === stable.button,
+      favorite: card.querySelector(":scope > .world-map-photo-favorite") === stable.favorite,
+      image: card.querySelector("img") === stable.image,
+      openButton: strip.querySelector(
+        `[data-world-map-card-asset-id="${openAssetID}"] > .world-map-photo-button`
+      ) === stable.openButton,
+      focus: document.activeElement === stable.favorite,
+      hover: stable.card.matches(":hover"),
+      scroll: strip.scrollLeft === stable.scrollLeft,
+    };
+  }, { stableAssetID: previewContinuityAssetID, openAssetID: assetID });
+  assert.ok(
+    Object.values(previewRefreshContinuity).every(Boolean),
+    `world-map preview refresh continuity failed: ${JSON.stringify(previewRefreshContinuity)}`
+  );
+  assert.equal(
+    thumbnailRequestCount,
+    thumbnailRequestsBeforePreviewRefresh,
+    "an unchanged authoritative map refresh must not reload visible thumbnails"
   );
   await worldMapCard.hover();
   await worldMapFavorite.click();
@@ -516,7 +615,9 @@ let browser;
   assert.equal(favoriteMutations[0].isFavorite, true);
   assert.equal(await page.locator("#lightbox").isHidden(), true);
   assert.equal(await page.locator("#worldMapDetail").isVisible(), true);
-  assert.equal(await page.locator("#worldMapPhotoStrip").evaluate((element) => element.scrollLeft), stripScrollLeft);
+  const favoriteStripScrollLeft = await page.locator("#worldMapPhotoStrip").evaluate(
+    (element) => element.scrollLeft
+  );
   await worldMapFavorite.press("Enter");
   await page.waitForFunction(() => (
     document.querySelector(".world-map-photo-favorite")?.dataset.favorite === "false"
@@ -524,7 +625,10 @@ let browser;
   assert.equal(favoriteMutations.length, 2);
   assert.equal(favoriteMutations[1].isFavorite, false);
   assert.equal(await page.locator("#lightbox").isHidden(), true);
-  assert.equal(await page.locator("#worldMapPhotoStrip").evaluate((element) => element.scrollLeft), stripScrollLeft);
+  assert.equal(
+    await page.locator("#worldMapPhotoStrip").evaluate((element) => element.scrollLeft),
+    favoriteStripScrollLeft
+  );
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForTimeout(100);
@@ -551,6 +655,11 @@ let browser;
   await page.locator("#closeLightboxButton").click();
   assert.equal(await page.locator("#worldMapWorkspace").getAttribute("inert"), null);
   assert.equal(await page.locator("#worldMapDetail").isVisible(), true);
+  assert.equal(
+    await page.evaluate(() => document.activeElement === window.__stableWorldMapPreview.openButton),
+    true,
+    "closing the preview must return focus to the stable world-map photo button"
+  );
 
   await page.locator("#worldMapBrowseClusterButton").click();
   await page.locator("#worldMapWorkspace").waitFor({ state: "hidden" });
@@ -852,7 +961,7 @@ let browser;
   );
 
   await page.waitForTimeout(700);
-  assert.ok(snapshotRequestCount >= 6 && snapshotRequestCount <= 8,
+  assert.ok(snapshotRequestCount >= 7 && snapshotRequestCount <= 9,
     `unexpected repeated world-map refresh count: ${snapshotRequestCount}`);
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(consoleErrors, []);
