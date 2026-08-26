@@ -1213,6 +1213,13 @@ def main():
         assert sample_response.value.status == 200
         assert sample_requests[-1]["assetIDs"] == []
         assert sample_requests[-1]["sourceIDs"] == [SOURCE_ID]
+        completed_personal_increase = page.locator(
+            f'[data-review-control-tag-id="{CAT_TAG_ID}"] '
+            f'[data-threshold-method="personalCentroid"]'
+            '[data-threshold-focus="increase"]'
+        )
+        page.wait_for_timeout(1_000)
+        assert not completed_personal_increase.is_disabled()
 
         review_controls = page.locator(
             f'[data-review-control-tag-id="{CAT_TAG_ID}"]'
@@ -1231,9 +1238,10 @@ def main():
             " + ' [data-threshold-method=\"personalCentroid\"][data-threshold-focus=\"input\"]')?.value === '0.25'"
         )
         assert updates[-1]["suggestionThresholdMutation"]["minScore"] == 0.25
-        assert page.evaluate(
-            "() => document.activeElement?.dataset.thresholdFocus"
-        ) == "increase"
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.thresholdFocus === 'increase'",
+            timeout=1_000,
+        )
 
         review_controls.locator(
             f'[data-threshold-focus="adopt"][data-threshold-tag-id="{CAT_TAG_ID}"]'

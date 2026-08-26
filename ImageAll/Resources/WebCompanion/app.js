@@ -11929,12 +11929,25 @@ function decorateReviewThresholdControl(control, kind, tagID, method) {
   return control;
 }
 
+function reviewThresholdControlsUnavailable() {
+  return state.generalSettings.loading
+    || state.generalSettings.submitting
+    || !state.online;
+}
+
+function syncReviewThresholdControlAvailability() {
+  const unavailable = reviewThresholdControlsUnavailable();
+  for (const control of elements.reviewOverviewGrid.querySelectorAll(
+    "[data-threshold-focus]"
+  )) {
+    control.disabled = unavailable;
+  }
+}
+
 function renderReviewThresholdControls(overview) {
   const tag = suggestionThresholdTagRow(overview.id);
   if (!tag) return null;
-  const unavailable = state.generalSettings.loading
-    || state.generalSettings.submitting
-    || !state.online;
+  const unavailable = reviewThresholdControlsUnavailable();
   const section = document.createElement("section");
   section.className = "review-thresholds";
   configurePersistentHelp(section, {
@@ -12168,6 +12181,7 @@ function renderGeneralSettings() {
   const snapshot = manager.snapshot;
   const unavailable = manager.loading || !state.online || !snapshot;
   renderReviewSuggestionLimit();
+  syncReviewThresholdControlAvailability();
   elements.generalSettingsDialog.setAttribute("aria-busy", String(manager.submitting));
   elements.generalSettingsLoading.classList.toggle("hidden", Boolean(snapshot) || !manager.loading);
   elements.generalSettingsContent.classList.toggle("hidden", !snapshot);

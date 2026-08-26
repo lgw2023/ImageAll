@@ -3090,6 +3090,8 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function syncReviewSourceFilterOption("))
         XCTAssertTrue(script.contains("function createReviewSourceFilterOption("))
         XCTAssertFalse(script.contains("clearElement(elements.reviewSourceFilterOptions)"))
+        XCTAssertTrue(script.contains("function reviewThresholdControlsUnavailable("))
+        XCTAssertTrue(script.contains("function syncReviewThresholdControlAvailability("))
         XCTAssertTrue(script.contains("function renderSlimmingCatalogCommands"))
         XCTAssertTrue(script.contains("function renderSlimmingCatalogSourcePicker"))
         XCTAssertTrue(script.contains("async function loadSlimmingCatalogSources"))
