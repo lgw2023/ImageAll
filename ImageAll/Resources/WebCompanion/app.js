@@ -16765,37 +16765,96 @@ function updateLibraryTitle() {
   scheduleAdaptiveToolbarSync();
 }
 
+function folderBreadcrumbIdentity(sourceID, relativePath = null) {
+  return JSON.stringify([sourceID, relativePath || ""]);
+}
+
+function createFolderBreadcrumbButton() {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "folder-breadcrumb-button";
+  return button;
+}
+
+function syncFolderBreadcrumbButton(button, sourceID, relativePath, title, current) {
+  button.dataset.folderBreadcrumbSourceId = sourceID;
+  if (relativePath) button.dataset.folderBreadcrumbPath = relativePath;
+  else delete button.dataset.folderBreadcrumbPath;
+  if (button.textContent !== title) button.textContent = title;
+  if (current) button.setAttribute("aria-current", "page");
+  else button.removeAttribute("aria-current");
+}
+
+function createFolderBreadcrumbSeparator(relativePath) {
+  const separator = document.createElement("span");
+  separator.className = "folder-breadcrumb-separator";
+  separator.dataset.folderBreadcrumbSeparatorPath = relativePath;
+  separator.setAttribute("aria-hidden", "true");
+  separator.textContent = "›";
+  return separator;
+}
+
 function renderFolderBreadcrumb() {
   const scope = state.libraryScope === "all" ? state.folderScope : null;
   const source = scope
     ? state.sources.find((candidate) => candidate.id === scope.sourceID)
     : null;
+  const items = elements.folderBreadcrumbItems;
   elements.folderBreadcrumb.classList.toggle("hidden", !scope || !source);
-  clearElement(elements.folderBreadcrumbItems);
-  if (!scope || !source) return;
-  const root = document.createElement("button");
-  root.type = "button";
-  root.className = "folder-breadcrumb-button";
-  root.dataset.folderBreadcrumbSourceId = source.id;
-  root.textContent = source.displayName;
-  elements.folderBreadcrumbItems.append(root);
+  if (!scope || !source) {
+    delete items.dataset.folderBreadcrumbIdentity;
+    reconcileStableChildren(items, []);
+    return;
+  }
+
+  const identity = folderBreadcrumbIdentity(source.id, scope.relativePath);
+  const sameIdentity = items.dataset.folderBreadcrumbIdentity === identity;
+  const preservedScrollLeft = items.scrollLeft;
+  const existingButtons = new Map(
+    [...items.querySelectorAll(":scope > [data-folder-breadcrumb-source-id]")]
+      .map((button) => [
+        folderBreadcrumbIdentity(
+          button.dataset.folderBreadcrumbSourceId,
+          button.dataset.folderBreadcrumbPath
+        ),
+        button,
+      ])
+  );
+  const existingSeparators = new Map(
+    [...items.querySelectorAll(":scope > [data-folder-breadcrumb-separator-path]")]
+      .map((separator) => [separator.dataset.folderBreadcrumbSeparatorPath, separator])
+  );
+  const children = [];
+  const rootIdentity = folderBreadcrumbIdentity(source.id);
+  const root = existingButtons.get(rootIdentity) || createFolderBreadcrumbButton();
+  syncFolderBreadcrumbButton(root, source.id, null, source.displayName, false);
+  children.push(root);
+
   const components = scope.relativePath.split("/").filter(Boolean);
   components.forEach((name, index) => {
-    const separator = document.createElement("span");
-    separator.className = "folder-breadcrumb-separator";
-    separator.setAttribute("aria-hidden", "true");
-    separator.textContent = "›";
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "folder-breadcrumb-button";
-    button.dataset.folderBreadcrumbSourceId = source.id;
-    button.dataset.folderBreadcrumbPath = components.slice(0, index + 1).join("/");
-    button.textContent = name;
-    if (index === components.length - 1) button.setAttribute("aria-current", "page");
-    elements.folderBreadcrumbItems.append(separator, button);
+    const relativePath = components.slice(0, index + 1).join("/");
+    const separator = existingSeparators.get(relativePath)
+      || createFolderBreadcrumbSeparator(relativePath);
+    const buttonIdentity = folderBreadcrumbIdentity(source.id, relativePath);
+    const button = existingButtons.get(buttonIdentity) || createFolderBreadcrumbButton();
+    syncFolderBreadcrumbButton(
+      button,
+      source.id,
+      relativePath,
+      name,
+      index === components.length - 1
+    );
+    children.push(separator, button);
   });
+  reconcileStableChildren(items, children);
+  items.dataset.folderBreadcrumbIdentity = identity;
+  if (sameIdentity) {
+    items.scrollLeft = preservedScrollLeft;
+    return;
+  }
   requestAnimationFrame(() => {
-    elements.folderBreadcrumbItems.scrollLeft = elements.folderBreadcrumbItems.scrollWidth;
+    if (items.dataset.folderBreadcrumbIdentity !== identity) return;
+    items.scrollLeft = items.scrollWidth;
   });
 }
 

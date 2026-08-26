@@ -210,6 +210,7 @@ def main():
                     "%_": ("Literal %_/Match", "Literal %_"),
                     "button-query": ("Button Search/Match", "Button Search"),
                     "enter-query": ("Enter Search/Match", "Enter Search"),
+                    "Trips/2026": ("Trips/2026", "Trips"),
                 }
                 result_path = search_result_paths.get(search)
                 folders = [{
@@ -747,6 +748,100 @@ def main():
         )
         page.wait_for_timeout(300)
         assert len(asset_queries) == tree_navigation_asset_query_count + 1
+
+        breadcrumb_refresh_query_count = len(asset_queries)
+        breadcrumb_frame = page.evaluate(
+            """({ sourceID, currentPath }) => {
+              const items = document.querySelector('#folderBreadcrumbItems');
+              items.style.width = '150px';
+              const current = items.querySelector(
+                `[data-folder-breadcrumb-source-id="${sourceID}"]`
+                + `[data-folder-breadcrumb-path="${currentPath}"]`
+              );
+              const root = items.querySelector(
+                `[data-folder-breadcrumb-source-id="${sourceID}"]:not([data-folder-breadcrumb-path])`
+              );
+              const ancestor = items.querySelector(
+                `[data-folder-breadcrumb-source-id="${sourceID}"]`
+                + '[data-folder-breadcrumb-path="Trips"]'
+              );
+              const maximumScroll = Math.max(0, items.scrollWidth - items.clientWidth);
+              items.scrollLeft = Math.max(1, maximumScroll - 8);
+              current.focus({ preventScroll: true });
+              window.__folderBreadcrumbContinuityFrame = {
+                root,
+                ancestor,
+                current,
+              };
+              return {
+                scrollLeft: items.scrollLeft,
+                maximumScroll,
+              };
+            }""",
+            {"sourceID": SOURCE_FOLDER, "currentPath": "Trips/2026"},
+        )
+        assert breadcrumb_frame["maximumScroll"] > 8, breadcrumb_frame
+        assert 0 < breadcrumb_frame["scrollLeft"] < breadcrumb_frame["maximumScroll"]
+        current_breadcrumb_bounds = current_breadcrumb.bounding_box()
+        assert current_breadcrumb_bounds is not None
+        page.mouse.move(
+            current_breadcrumb_bounds["x"] + current_breadcrumb_bounds["width"] / 2,
+            current_breadcrumb_bounds["y"] + current_breadcrumb_bounds["height"] / 2,
+        )
+        page.evaluate("() => document.querySelector('#refreshButton').click()")
+        page.wait_for_function(
+            "() => !state.refreshingWorkspace && state.pendingRefreshKinds.size === 0"
+        )
+        page.evaluate(
+            "() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))"
+        )
+        breadcrumb_continuity = page.evaluate(
+            """({ sourceID, currentPath, expectedScrollLeft }) => {
+              const frame = window.__folderBreadcrumbContinuityFrame;
+              const items = document.querySelector('#folderBreadcrumbItems');
+              const current = items.querySelector(
+                `[data-folder-breadcrumb-source-id="${sourceID}"]`
+                + `[data-folder-breadcrumb-path="${currentPath}"]`
+              );
+              const root = items.querySelector(
+                `[data-folder-breadcrumb-source-id="${sourceID}"]:not([data-folder-breadcrumb-path])`
+              );
+              const ancestor = items.querySelector(
+                `[data-folder-breadcrumb-source-id="${sourceID}"]`
+                + '[data-folder-breadcrumb-path="Trips"]'
+              );
+              return {
+                root: root === frame.root,
+                ancestor: ancestor === frame.ancestor,
+                current: current === frame.current,
+                focused: document.activeElement === current,
+                hovered: current?.matches(':hover') || false,
+                scroll: items.scrollLeft === expectedScrollLeft,
+                currentPage: current?.getAttribute('aria-current') === 'page',
+              };
+            }""",
+            {
+                "sourceID": SOURCE_FOLDER,
+                "currentPath": "Trips/2026",
+                "expectedScrollLeft": breadcrumb_frame["scrollLeft"],
+            },
+        )
+        assert breadcrumb_continuity == {
+            "root": True,
+            "ancestor": True,
+            "current": True,
+            "focused": True,
+            "hovered": True,
+            "scroll": True,
+            "currentPage": True,
+        }, breadcrumb_continuity
+        assert len(asset_queries) > breadcrumb_refresh_query_count
+        refreshed_folder_query = parse_qs(urlparse(asset_queries[-1]).query)
+        assert refreshed_folder_query["folderSourceID"] == [SOURCE_FOLDER]
+        assert refreshed_folder_query["folderRelativePath"] == ["Trips/2026"]
+        page.evaluate(
+            "() => document.querySelector('#folderBreadcrumbItems').style.removeProperty('width')"
+        )
 
         ancestor_breadcrumb = page.locator(
             f'#folderBreadcrumb [data-folder-breadcrumb-source-id="{SOURCE_FOLDER}"]'
