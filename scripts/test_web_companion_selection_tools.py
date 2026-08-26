@@ -2852,7 +2852,64 @@ def main(*, inspector_actions_only=False):
             "() => history.state?.imageAllWorkspace?.navigationLevel"
         ) == "slimmingSetup"
         slimming_setup_reads_after_open = slimming_setup_reads[0]
-        page.locator('[data-slimming-mode="catalog"]').click()
+        catalog_slimming_mode = page.locator('[data-slimming-mode="catalog"]')
+        page.evaluate(
+            """() => {
+              const modes = document.querySelector('#slimmingModeOptions');
+              const catalog = modes.querySelector('[data-slimming-mode="catalog"]');
+              const currentFilter = modes.querySelector(
+                '[data-slimming-mode="currentFilter"]'
+              );
+              const seeds = modes.querySelector('[data-slimming-mode="seeds"]');
+              catalog.focus({ preventScroll: true });
+              window.__slimmingSetupModeContinuityFrame = {
+                catalog,
+                currentFilter,
+                seeds,
+              };
+            }"""
+        )
+        catalog_slimming_mode_bounds = catalog_slimming_mode.bounding_box()
+        assert catalog_slimming_mode_bounds is not None
+        page.mouse.move(
+            catalog_slimming_mode_bounds["x"]
+            + catalog_slimming_mode_bounds["width"] / 2,
+            catalog_slimming_mode_bounds["y"]
+            + catalog_slimming_mode_bounds["height"] / 2,
+        )
+        page.mouse.click(
+            catalog_slimming_mode_bounds["x"]
+            + catalog_slimming_mode_bounds["width"] / 2,
+            catalog_slimming_mode_bounds["y"]
+            + catalog_slimming_mode_bounds["height"] / 2,
+        )
+        slimming_setup_mode_continuity = page.evaluate(
+            """() => {
+              const frame = window.__slimmingSetupModeContinuityFrame;
+              const modes = document.querySelector('#slimmingModeOptions');
+              const catalog = modes.querySelector('[data-slimming-mode="catalog"]');
+              const currentFilter = modes.querySelector(
+                '[data-slimming-mode="currentFilter"]'
+              );
+              const seeds = modes.querySelector('[data-slimming-mode="seeds"]');
+              return {
+                catalog: catalog === frame.catalog,
+                currentFilter: currentFilter === frame.currentFilter,
+                seeds: seeds === frame.seeds,
+                focused: document.activeElement === catalog,
+                hovered: catalog?.matches(':hover') || false,
+                selected: catalog?.getAttribute('aria-checked') === 'true',
+              };
+            }"""
+        )
+        assert slimming_setup_mode_continuity == {
+            "catalog": True,
+            "currentFilter": True,
+            "seeds": True,
+            "focused": True,
+            "hovered": True,
+            "selected": True,
+        }, slimming_setup_mode_continuity
         page.locator("#slimmingRecallMode").select_option("allCandidates")
         assert page.locator("#slimmingRecallTopK").is_disabled()
         assert page.locator(
@@ -2861,12 +2918,109 @@ def main(*, inspector_actions_only=False):
         assert not page.locator(
             f'[data-slimming-source-id="{SECOND_SOURCE_ID}"]'
         ).is_checked()
+        second_slimming_setup_source = page.locator(
+            f'[data-slimming-source-id="{SECOND_SOURCE_ID}"]'
+        )
+        slimming_setup_source_frame = page.evaluate(
+            """sourceIDs => {
+              const options = document.querySelector('#slimmingSourceOptions');
+              options.style.maxHeight = '46px';
+              options.scrollTop = options.scrollHeight;
+              const firstInput = options.querySelector(
+                `[data-slimming-source-id="${sourceIDs[0]}"]`
+              );
+              const secondInput = options.querySelector(
+                `[data-slimming-source-id="${sourceIDs[1]}"]`
+              );
+              secondInput.focus({ preventScroll: true });
+              window.__slimmingSetupSourceContinuityFrame = {
+                firstRow: firstInput.closest('label'),
+                firstInput,
+                secondRow: secondInput.closest('label'),
+                secondInput,
+                secondName: secondInput.nextElementSibling,
+              };
+              return { scrollTop: options.scrollTop };
+            }""",
+            [SOURCE_ID, SECOND_SOURCE_ID],
+        )
+        assert slimming_setup_source_frame["scrollTop"] > 0, slimming_setup_source_frame
+        second_slimming_setup_source_bounds = second_slimming_setup_source.bounding_box()
+        assert second_slimming_setup_source_bounds is not None
+        page.mouse.move(
+            second_slimming_setup_source_bounds["x"]
+            + second_slimming_setup_source_bounds["width"] / 2,
+            second_slimming_setup_source_bounds["y"]
+            + second_slimming_setup_source_bounds["height"] / 2,
+        )
+        page.mouse.click(
+            second_slimming_setup_source_bounds["x"]
+            + second_slimming_setup_source_bounds["width"] / 2,
+            second_slimming_setup_source_bounds["y"]
+            + second_slimming_setup_source_bounds["height"] / 2,
+        )
+        slimming_setup_source_continuity = page.evaluate(
+            """({ sourceIDs, expectedScrollTop }) => {
+              const frame = window.__slimmingSetupSourceContinuityFrame;
+              const options = document.querySelector('#slimmingSourceOptions');
+              const firstInput = options.querySelector(
+                `[data-slimming-source-id="${sourceIDs[0]}"]`
+              );
+              const secondInput = options.querySelector(
+                `[data-slimming-source-id="${sourceIDs[1]}"]`
+              );
+              return {
+                firstRow: firstInput?.closest('label') === frame.firstRow,
+                firstInput: firstInput === frame.firstInput,
+                secondRow: secondInput?.closest('label') === frame.secondRow,
+                secondInput: secondInput === frame.secondInput,
+                secondName: secondInput?.nextElementSibling === frame.secondName,
+                focused: document.activeElement === secondInput,
+                hovered: secondInput?.matches(':hover') || false,
+                scroll: options.scrollTop === expectedScrollTop,
+                checked: secondInput?.checked || false,
+              };
+            }""",
+            {
+                "sourceIDs": [SOURCE_ID, SECOND_SOURCE_ID],
+                "expectedScrollTop": slimming_setup_source_frame["scrollTop"],
+            },
+        )
+        assert slimming_setup_source_continuity == {
+            "firstRow": True,
+            "firstInput": True,
+            "secondRow": True,
+            "secondInput": True,
+            "secondName": True,
+            "focused": True,
+            "hovered": True,
+            "scroll": True,
+            "checked": True,
+        }, slimming_setup_source_continuity
+        page.evaluate(
+            "document.querySelector('#slimmingSourceOptions').style.removeProperty('max-height')"
+        )
+        second_slimming_setup_source.uncheck()
         slimming_setup_history_payload = page.evaluate(
             "() => JSON.stringify(history.state?.imageAllWorkspace || null)"
         )
         assert "Apple Photos" not in slimming_setup_history_payload
         assert "旅行归档" not in slimming_setup_history_payload
         assert "allCandidates" not in slimming_setup_history_payload
+        slimming_setup_history_frame = page.evaluate(
+            """sourceID => {
+              const options = document.querySelector('#slimmingSourceOptions');
+              options.style.maxHeight = '46px';
+              options.scrollTop = options.scrollHeight;
+              const input = options.querySelector(
+                `[data-slimming-source-id="${sourceID}"]`
+              );
+              input.focus({ preventScroll: true });
+              return { scrollTop: options.scrollTop };
+            }""",
+            SECOND_SOURCE_ID,
+        )
+        assert slimming_setup_history_frame["scrollTop"] > 0, slimming_setup_history_frame
         page.evaluate("() => history.back()")
         page.locator("#slimmingSetupDialog").wait_for(state="hidden")
         page.wait_for_function(
@@ -2885,12 +3039,67 @@ def main(*, inspector_actions_only=False):
         assert not page.locator(
             f'[data-slimming-source-id="{SECOND_SOURCE_ID}"]'
         ).is_checked()
+        slimming_setup_history_continuity = page.evaluate(
+            """({ sourceIDs, expectedScrollTop }) => {
+              const sourceFrame = window.__slimmingSetupSourceContinuityFrame;
+              const modeFrame = window.__slimmingSetupModeContinuityFrame;
+              const options = document.querySelector('#slimmingSourceOptions');
+              const firstInput = options.querySelector(
+                `[data-slimming-source-id="${sourceIDs[0]}"]`
+              );
+              const secondInput = options.querySelector(
+                `[data-slimming-source-id="${sourceIDs[1]}"]`
+              );
+              const modes = document.querySelector('#slimmingModeOptions');
+              return {
+                catalogMode: modes.querySelector('[data-slimming-mode="catalog"]')
+                  === modeFrame.catalog,
+                currentFilterMode: modes.querySelector(
+                  '[data-slimming-mode="currentFilter"]'
+                ) === modeFrame.currentFilter,
+                seedsMode: modes.querySelector('[data-slimming-mode="seeds"]')
+                  === modeFrame.seeds,
+                firstRow: firstInput?.closest('label') === sourceFrame.firstRow,
+                firstInput: firstInput === sourceFrame.firstInput,
+                secondRow: secondInput?.closest('label') === sourceFrame.secondRow,
+                secondInput: secondInput === sourceFrame.secondInput,
+                secondName: secondInput?.nextElementSibling === sourceFrame.secondName,
+                focused: document.activeElement === secondInput,
+                scroll: options.scrollTop === expectedScrollTop,
+                checked: secondInput?.checked || false,
+              };
+            }""",
+            {
+                "sourceIDs": [SOURCE_ID, SECOND_SOURCE_ID],
+                "expectedScrollTop": slimming_setup_history_frame["scrollTop"],
+            },
+        )
+        assert slimming_setup_history_continuity == {
+            "catalogMode": True,
+            "currentFilterMode": True,
+            "seedsMode": True,
+            "firstRow": True,
+            "firstInput": True,
+            "secondRow": True,
+            "secondInput": True,
+            "secondName": True,
+            "focused": True,
+            "scroll": True,
+            "checked": False,
+        }, slimming_setup_history_continuity
+        page.evaluate(
+            "document.querySelector('#slimmingSourceOptions').style.removeProperty('max-height')"
+        )
         assert page.locator("#launchSlimmingButton").is_enabled(), page.evaluate(
             "() => ({ online: state.online, setup: { "
             "loading: state.slimming.setup.loading, saving: state.slimming.setup.saving, "
             "launching: state.slimming.setup.launching, mode: state.slimming.setup.mode, "
             "selectedSourceIDs: [...state.slimming.setup.selectedSourceIDs], "
             "thresholds: state.slimming.setup.thresholds } })"
+        )
+        page.screenshot(
+            path="/tmp/imageall-slimming-setup-continuity-wide.png",
+            full_page=True,
         )
         slimming_launch_count_before_setup = len(submitted_slimming)
         slimming_generation_before_setup_launch = page.evaluate(

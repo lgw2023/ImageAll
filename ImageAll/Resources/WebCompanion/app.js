@@ -32065,32 +32065,81 @@ function appendSlimmingSetupSummary(label, value) {
   elements.slimmingLaunchSummary.append(term, description);
 }
 
+function createSlimmingSetupModeOption() {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "slimming-mode-option";
+  button.append(document.createElement("strong"), document.createElement("span"));
+  return button;
+}
+
+function syncSlimmingSetupModeOption(button, mode) {
+  const copy = slimmingModeCopy(mode);
+  const selected = state.slimming.setup.mode === mode;
+  button.id = `slimmingSetupMode-${mode}`;
+  button.classList.toggle("selected", selected);
+  button.dataset.slimmingMode = mode;
+  button.disabled = !slimmingModeAvailable(mode) || state.slimming.setup.launching;
+  button.setAttribute("role", "radio");
+  button.setAttribute("aria-checked", String(selected));
+  const title = button.querySelector(":scope > strong");
+  if (title.textContent !== copy.title) title.textContent = copy.title;
+  const detail = button.querySelector(":scope > span");
+  if (detail.textContent !== copy.detail) detail.textContent = copy.detail;
+  configurePersistentHelp(button, {
+    title: `瘦身分析范围 · ${copy.title}`,
+    detail: copy.detail,
+    kind: "slimming",
+  });
+}
+
 function renderSlimmingSetupModes() {
-  clearElement(elements.slimmingModeOptions);
-  for (const mode of ["catalog", "currentFilter", "seeds"]) {
-    const copy = slimmingModeCopy(mode);
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "slimming-mode-option";
-    button.classList.toggle("selected", state.slimming.setup.mode === mode);
-    button.dataset.slimmingMode = mode;
-    button.disabled = !slimmingModeAvailable(mode) || state.slimming.setup.launching;
-    button.setAttribute("role", "radio");
-    button.setAttribute("aria-checked", String(state.slimming.setup.mode === mode));
-    const title = document.createElement("strong");
-    title.textContent = copy.title;
-    const detail = document.createElement("span");
-    detail.textContent = copy.detail;
-    button.append(title, detail);
-    elements.slimmingModeOptions.append(button);
-  }
+  const existingOptions = new Map(
+    [...elements.slimmingModeOptions.querySelectorAll(":scope > .slimming-mode-option")]
+      .map((button) => [button.dataset.slimmingMode, button])
+  );
+  const modeOptions = ["catalog", "currentFilter", "seeds"].map((mode) => {
+    const button = existingOptions.get(mode) || createSlimmingSetupModeOption();
+    syncSlimmingSetupModeOption(button, mode);
+    return button;
+  });
+  reconcileStableChildren(elements.slimmingModeOptions, modeOptions);
+}
+
+function createSlimmingSetupSourceOption() {
+  const row = document.createElement("label");
+  row.className = "training-option-row";
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  row.append(input, document.createElement("strong"), document.createElement("span"));
+  return row;
+}
+
+function syncSlimmingSetupSourceOption(row, source) {
+  const input = row.querySelector(':scope > input[type="checkbox"]');
+  input.id = `slimmingSetupSource-${source.id}`;
+  input.checked = state.slimming.setup.selectedSourceIDs.has(source.id);
+  input.disabled = state.slimming.setup.launching;
+  input.dataset.slimmingSourceId = source.id;
+  const name = row.querySelector(":scope > strong");
+  if (name.textContent !== source.displayName) name.textContent = source.displayName;
+  const kind = row.querySelector(":scope > span");
+  const kindText = source.kind === "photos" ? "照片图库" : "文件夹";
+  if (kind.textContent !== kindText) kind.textContent = kindText;
+  configurePersistentHelp(row, {
+    title: `瘦身分析来源 · ${source.displayName}`,
+    detail: "选择后只在这台 Mac 上读取该来源并纳入本次分析；不会改变图库侧栏位置。",
+    kind: "slimming",
+  });
 }
 
 function renderSlimmingSourceOptions() {
   const setup = state.slimming.setup;
-  clearElement(elements.slimmingSourceOptions);
   elements.slimmingSourceSection.classList.toggle("hidden", setup.mode !== "catalog");
-  if (setup.mode !== "catalog") return;
+  if (setup.mode !== "catalog") {
+    reconcileStableChildren(elements.slimmingSourceOptions, []);
+    return;
+  }
   const sources = setup.snapshot?.sources || [];
   const allSelected = sources.length > 0
     && sources.every((source) => setup.selectedSourceIDs.has(source.id));
@@ -32099,21 +32148,19 @@ function renderSlimmingSourceOptions() {
   elements.slimmingSourceHint.textContent = allSelected
     ? "已选择全部可用来源；提交时保留 Mac 端“全部来源”语义。"
     : `已选择 ${setup.selectedSourceIDs.size} / ${sources.length} 个来源。`;
-  for (const source of sources) {
-    const row = document.createElement("label");
-    row.className = "training-option-row";
-    const input = document.createElement("input");
-    input.type = "checkbox";
-    input.checked = setup.selectedSourceIDs.has(source.id);
-    input.disabled = setup.launching;
-    input.dataset.slimmingSourceId = source.id;
-    const name = document.createElement("strong");
-    name.textContent = source.displayName;
-    const kind = document.createElement("span");
-    kind.textContent = source.kind === "photos" ? "照片图库" : "文件夹";
-    row.append(input, name, kind);
-    elements.slimmingSourceOptions.append(row);
-  }
+  const existingOptions = new Map(
+    [...elements.slimmingSourceOptions.querySelectorAll(":scope > .training-option-row")]
+      .map((row) => [
+        row.querySelector("[data-slimming-source-id]")?.dataset.slimmingSourceId,
+        row,
+      ])
+  );
+  const sourceOptions = sources.map((source) => {
+    const row = existingOptions.get(source.id) || createSlimmingSetupSourceOption();
+    syncSlimmingSetupSourceOption(row, source);
+    return row;
+  });
+  reconcileStableChildren(elements.slimmingSourceOptions, sourceOptions);
 }
 
 function syncSlimmingThresholdControls() {
