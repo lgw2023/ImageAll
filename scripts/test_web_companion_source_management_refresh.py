@@ -8,6 +8,7 @@ from playwright.sync_api import sync_playwright
 BASE_URL = "http://127.0.0.1:8811"
 PHOTOS_SOURCE_ID = "aaaaaaaa-1111-2222-3333-aaaaaaaaaaaa"
 FOLDER_SOURCE_ID = "bbbbbbbb-1111-2222-3333-bbbbbbbbbbbb"
+SECOND_FOLDER_SOURCE_ID = "ffffffff-1111-2222-3333-ffffffffffff"
 
 
 def fulfill_json(route, payload, status=200):
@@ -148,6 +149,226 @@ def main():
         page.locator("#sourceManagerList .source-manager-row").first.wait_for()
         assert source_management_reads >= 1
         assert page.locator("#sourceManagerList .source-manager-row").count() == 2
+
+        page.evaluate(
+            f"""() => {{
+              const workspace = document.querySelector("#sourceManagerList");
+              const navigation = workspace.querySelector(".source-manager-source-list");
+              const detail = workspace.querySelector(".source-manager-detail");
+              const focused = navigation.querySelector(
+                '[data-source-manager-select="{PHOTOS_SOURCE_ID}"]'
+              );
+              focused.focus({{ preventScroll: true }});
+              window.__sourceManagerConnectionFrame = {{
+                navigation,
+                rows: [...navigation.querySelectorAll(".source-manager-row")],
+                detail,
+                header: detail.querySelector(".source-manager-detail-header"),
+                status: detail.querySelector(".source-manager-detail-status"),
+                view: detail.querySelector("[data-source-manager-view]"),
+                action: detail.querySelector('[data-source-action="syncPhotos"]'),
+                focused,
+              }};
+              setConnection(false, "Mac 离线");
+            }}"""
+        )
+        offline_source_manager_frame = page.evaluate(
+            """() => {
+              const frame = window.__sourceManagerConnectionFrame;
+              const workspace = document.querySelector("#sourceManagerList");
+              const navigation = workspace.querySelector(".source-manager-source-list");
+              const detail = workspace.querySelector(".source-manager-detail");
+              const rows = [...navigation.querySelectorAll(".source-manager-row")];
+              return {
+                navigation: navigation === frame.navigation,
+                rows: rows.length === frame.rows.length
+                  && rows.every((row, index) => row === frame.rows[index]),
+                detail: detail === frame.detail,
+                header: detail.querySelector(".source-manager-detail-header") === frame.header,
+                status: detail.querySelector(".source-manager-detail-status") === frame.status,
+                view: detail.querySelector("[data-source-manager-view]") === frame.view,
+                action: detail.querySelector('[data-source-action="syncPhotos"]')
+                  === frame.action && frame.action.disabled,
+                focus: document.activeElement === frame.focused,
+              };
+            }"""
+        )
+        assert all(offline_source_manager_frame.values()), offline_source_manager_frame
+        page.evaluate("() => setConnection(true, '已连接')")
+
+        page.evaluate(
+            f"""() => {{
+              const workspace = document.querySelector("#sourceManagerList");
+              const navigation = workspace.querySelector(".source-manager-source-list");
+              const detail = workspace.querySelector(".source-manager-detail");
+              const folderRow = navigation.querySelector(
+                '[data-source-manager-select="{FOLDER_SOURCE_ID}"]'
+              );
+              window.__sourceManagerSelectionFrame = {{
+                navigation,
+                rows: [...navigation.querySelectorAll(".source-manager-row")],
+                detail,
+                header: detail.querySelector(".source-manager-detail-header"),
+                status: detail.querySelector(".source-manager-detail-status"),
+                view: detail.querySelector("[data-source-manager-view]"),
+                folderRow,
+              }};
+              folderRow.click();
+            }}"""
+        )
+        selected_folder_frame = page.evaluate(
+            f"""() => {{
+              const frame = window.__sourceManagerSelectionFrame;
+              const workspace = document.querySelector("#sourceManagerList");
+              const navigation = workspace.querySelector(".source-manager-source-list");
+              const detail = workspace.querySelector(".source-manager-detail");
+              const rows = [...navigation.querySelectorAll(".source-manager-row")];
+              return {{
+                navigation: navigation === frame.navigation,
+                rows: rows.length === frame.rows.length
+                  && rows.every((row, index) => row === frame.rows[index]),
+                detail: detail === frame.detail,
+                header: detail.querySelector(".source-manager-detail-header") === frame.header,
+                status: detail.querySelector(".source-manager-detail-status") === frame.status,
+                view: detail.querySelector("[data-source-manager-view]") === frame.view,
+                selected: detail.dataset.sourceManagerDetail === "{FOLDER_SOURCE_ID}"
+                  && frame.folderRow.getAttribute("aria-selected") === "true",
+                action: Boolean(detail.querySelector('[data-source-action="rescan"]')),
+                focus: document.activeElement === frame.folderRow,
+              }};
+            }}"""
+        )
+        assert all(selected_folder_frame.values()), selected_folder_frame
+        page.locator(
+            f'[data-source-manager-select="{PHOTOS_SOURCE_ID}"]'
+        ).click()
+        page.wait_for_function(
+            f"() => document.querySelector('.source-manager-detail')"
+            f"?.dataset.sourceManagerDetail === '{PHOTOS_SOURCE_ID}'"
+        )
+
+        page.evaluate(
+            """() => {
+              const workspace = document.querySelector("#sourceManagerList");
+              const navigation = workspace.querySelector(".source-manager-source-list");
+              const detail = workspace.querySelector(".source-manager-detail");
+              const focused = navigation.querySelector('[aria-selected="true"]');
+              focused.focus({ preventScroll: true });
+              window.__sourceManagerInsertionFrame = {
+                navigation,
+                rows: [...navigation.querySelectorAll(".source-manager-row")],
+                detail,
+                header: detail.querySelector(".source-manager-detail-header"),
+                status: detail.querySelector(".source-manager-detail-status"),
+                view: detail.querySelector("[data-source-manager-view]"),
+                action: detail.querySelector('[data-source-action="syncPhotos"]'),
+                focused,
+              };
+            }"""
+        )
+        sources.append({
+            "id": SECOND_FOLDER_SOURCE_ID,
+            "kind": "folder",
+            "displayName": "Synthetic Backup",
+            "state": "active",
+        })
+        page.evaluate("() => loadSourceManagement({ quiet: true })")
+        page.wait_for_function(
+            "() => !state.sourceManagement.loading"
+            " && state.sourceManagement.snapshot.sources.length === 3"
+        )
+        inserted_source_frame = page.evaluate(
+            f"""() => {{
+              const frame = window.__sourceManagerInsertionFrame;
+              const workspace = document.querySelector("#sourceManagerList");
+              const navigation = workspace.querySelector(".source-manager-source-list");
+              const detail = workspace.querySelector(".source-manager-detail");
+              const rows = [...navigation.querySelectorAll(".source-manager-row")];
+              return {{
+                navigation: navigation === frame.navigation,
+                existingRows: frame.rows.every((row, index) => rows[index] === row),
+                addedRow: rows.length === 3
+                  && rows[2].dataset.sourceManagerSelect === "{SECOND_FOLDER_SOURCE_ID}",
+                detail: detail === frame.detail,
+                header: detail.querySelector(".source-manager-detail-header") === frame.header,
+                status: detail.querySelector(".source-manager-detail-status") === frame.status,
+                view: detail.querySelector("[data-source-manager-view]") === frame.view,
+                action: detail.querySelector('[data-source-action="syncPhotos"]') === frame.action,
+                focus: document.activeElement === frame.focused,
+              }};
+            }}"""
+        )
+        assert all(inserted_source_frame.values()), inserted_source_frame
+
+        page.evaluate(
+            f"""() => {{
+              const workspace = document.querySelector("#sourceManagerList");
+              const navigation = workspace.querySelector(".source-manager-source-list");
+              const detail = workspace.querySelector(".source-manager-detail");
+              const selectedRow = navigation.querySelector(
+                '[data-source-manager-select="{PHOTOS_SOURCE_ID}"]'
+              );
+              selectedRow.focus({{ preventScroll: true }});
+              window.__sourceManagerRemovalFrame = {{
+                navigation,
+                removedRow: selectedRow,
+                remainingRows: [
+                  navigation.querySelector(
+                    '[data-source-manager-select="{FOLDER_SOURCE_ID}"]'
+                  ),
+                  navigation.querySelector(
+                    '[data-source-manager-select="{SECOND_FOLDER_SOURCE_ID}"]'
+                  ),
+                ],
+                detail,
+                header: detail.querySelector(".source-manager-detail-header"),
+                status: detail.querySelector(".source-manager-detail-status"),
+                view: detail.querySelector("[data-source-manager-view]"),
+              }};
+            }}"""
+        )
+        removed_photos_source = sources.pop(0)
+        page.evaluate("() => loadSourceManagement({ quiet: true })")
+        page.wait_for_function(
+            f"() => !state.sourceManagement.loading"
+            f" && !state.sourceManagement.snapshot.sources"
+            f".some(source => source.id === '{PHOTOS_SOURCE_ID}')"
+        )
+        removed_selected_source_frame = page.evaluate(
+            f"""() => {{
+              const frame = window.__sourceManagerRemovalFrame;
+              const workspace = document.querySelector("#sourceManagerList");
+              const navigation = workspace.querySelector(".source-manager-source-list");
+              const detail = workspace.querySelector(".source-manager-detail");
+              const rows = [...navigation.querySelectorAll(".source-manager-row")];
+              return {{
+                navigation: navigation === frame.navigation,
+                removed: !frame.removedRow.isConnected,
+                remainingRows: rows.length === frame.remainingRows.length
+                  && rows.every((row, index) => row === frame.remainingRows[index]),
+                detail: detail === frame.detail,
+                header: detail.querySelector(".source-manager-detail-header") === frame.header,
+                status: detail.querySelector(".source-manager-detail-status") === frame.status,
+                view: detail.querySelector("[data-source-manager-view]") === frame.view,
+                selected: detail.dataset.sourceManagerDetail === "{FOLDER_SOURCE_ID}"
+                  && frame.remainingRows[0].getAttribute("aria-selected") === "true",
+                action: Boolean(detail.querySelector('[data-source-action="rescan"]')),
+                focus: document.activeElement === frame.remainingRows[0],
+              }};
+            }}"""
+        )
+        assert all(removed_selected_source_frame.values()), (
+            removed_selected_source_frame
+        )
+        sources.insert(0, removed_photos_source)
+        page.evaluate("() => loadSourceManagement({ quiet: true })")
+        page.wait_for_function(
+            f"() => !state.sourceManagement.loading"
+            f" && state.sourceManagement.snapshot.sources[0]?.id === '{PHOTOS_SOURCE_ID}'"
+        )
+        page.locator(
+            f'[data-source-manager-select="{PHOTOS_SOURCE_ID}"]'
+        ).click()
 
         page.evaluate(
             f"""() => {{

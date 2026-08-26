@@ -12709,7 +12709,7 @@ function selectSourceManagerSource(sourceID, { focus = false } = {}) {
   const sources = state.sourceManagement.snapshot?.sources || [];
   if (!sources.some((source) => source.id === sourceID)) return false;
   state.sourceManagement.selectedSourceID = sourceID;
-  renderSourceManagement();
+  renderSourceManagement({ reconcileContent: true });
   if (focus) {
     elements.sourceManagerList.querySelector(
       `[data-source-manager-select="${CSS.escape(sourceID)}"]`
@@ -13260,25 +13260,35 @@ function reconcileSourceManagerContent(sources, selectedSource, activeRequest, b
   const detail = elements.sourceManagerList.querySelector(
     ":scope > .source-manager-detail"
   );
-  const rows = [...(navigation?.querySelectorAll(":scope > .source-manager-row") || [])];
-  if (!navigation
-    || !detail
-    || rows.length !== sources.length
-    || detail.dataset.sourceManagerDetail !== selectedSource.id
-    || !rows.every((row, index) => row.dataset.sourceManagerId === sources[index].id)) {
-    return false;
-  }
+  if (!navigation || !detail) return false;
+  const navigationScrollTop = navigation.scrollTop;
+  const focusedRow = navigation.contains(document.activeElement)
+    ? document.activeElement.closest(".source-manager-row")
+    : null;
+  const existingRows = new Map(
+    [...navigation.querySelectorAll(":scope > .source-manager-row")]
+      .map((row) => [row.dataset.sourceManagerId, row])
+  );
   const nextDetailFingerprint = sourceManagerDetailFingerprint(
     selectedSource,
     activeRequest,
     busy
   );
-  for (const [index, source] of sources.entries()) {
-    const row = rows[index];
+  const wantedRows = sources.map((source) => {
+    const row = existingRows.get(source.id) || document.createElement("button");
     const nextFingerprint = sourceManagerRowFingerprint(source, selectedSource.id);
     if (row.dataset.sourceManagerFingerprint !== nextFingerprint) {
       syncSourceManagerRow(row, source, selectedSource.id);
     }
+    return row;
+  });
+  reconcileStableChildren(navigation, wantedRows);
+  navigation.scrollTop = navigationScrollTop;
+  if (focusedRow && !wantedRows.includes(focusedRow)) {
+    navigation.querySelector(
+      `[data-source-manager-select="${CSS.escape(selectedSource.id)}"]`
+    )?.focus({ preventScroll: true });
+    navigation.scrollTop = navigationScrollTop;
   }
   if (detail.dataset.sourceManagerFingerprint !== nextDetailFingerprint) {
     syncSourceManagerDetail(detail, selectedSource, activeRequest, busy);
@@ -13386,7 +13396,7 @@ function syncSourceManagerPending(activeRequest) {
   }
 }
 
-function renderSourceManagement({ preserveContent = false, reconcileContent = false } = {}) {
+function renderSourceManagement({ preserveContent = false, reconcileContent = true } = {}) {
   const manager = state.sourceManagement;
   const snapshot = manager.snapshot;
   const activeRequest = sourceManagementActiveRequest();
