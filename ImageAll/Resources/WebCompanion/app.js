@@ -6344,37 +6344,43 @@ function updateWorldMapPlaceQueryState(tagID) {
   card.dataset.query = query;
 }
 
-function worldMapPlaceCandidateRow(item, candidate, { interactive = true } = {}) {
+function createWorldMapPlaceCandidateRow(interactive) {
   const row = document.createElement(interactive ? "button" : "div");
   row.className = "world-map-place-candidate";
-  const candidateDetail = candidate.subtitle
-    || `${Number(candidate.latitude).toFixed(3)}°, ${Number(candidate.longitude).toFixed(3)}°`;
-  if (interactive) {
-    row.type = "button";
-    row.dataset.placeTagAction = "confirm";
-    row.dataset.tagId = item.tagID;
-    row.dataset.placeId = candidate.placeID;
-    row.disabled = state.worldMap.placeTags.busyTagIDs.has(item.tagID);
-    row.setAttribute("aria-label", `确认地点：${candidate.displayName}，${candidateDetail}`);
-    row.setAttribute("aria-keyshortcuts", "ArrowUp ArrowDown Home End");
-  }
   const mark = document.createElement("span");
   mark.className = "world-map-place-candidate-mark";
   mark.setAttribute("aria-hidden", "true");
-  mark.textContent = candidate.kind === "poi" ? "●" : "▦";
   const copy = document.createElement("span");
   copy.className = "world-map-place-candidate-copy";
   const name = document.createElement("strong");
-  name.textContent = candidate.displayName;
   const detail = document.createElement("span");
-  detail.textContent = candidateDetail;
   copy.append(name, detail);
   const affordance = document.createElement("span");
   affordance.className = "world-map-place-candidate-affordance";
   affordance.setAttribute("aria-hidden", "true");
-  affordance.textContent = interactive ? "→" : "✓";
   row.append(mark, copy, affordance);
   return row;
+}
+
+function syncWorldMapPlaceCandidateRow(row, item, candidate, { interactive = true } = {}) {
+  const candidateDetail = candidate.subtitle
+    || `${Number(candidate.latitude).toFixed(3)}°, ${Number(candidate.longitude).toFixed(3)}°`;
+  row.dataset.tagId = item.tagID;
+  row.dataset.placeId = candidate.placeID;
+  if (interactive) {
+    row.type = "button";
+    row.dataset.placeTagAction = "confirm";
+    row.disabled = state.worldMap.placeTags.busyTagIDs.has(item.tagID);
+    row.setAttribute("aria-label", `确认地点：${candidate.displayName}，${candidateDetail}`);
+    row.setAttribute("aria-keyshortcuts", "ArrowUp ArrowDown Home End");
+  }
+  row.querySelector(":scope > .world-map-place-candidate-mark").textContent =
+    candidate.kind === "poi" ? "●" : "▦";
+  const copy = row.querySelector(":scope > .world-map-place-candidate-copy");
+  copy.querySelector(":scope > strong").textContent = candidate.displayName;
+  copy.querySelector(":scope > span").textContent = candidateDetail;
+  row.querySelector(":scope > .world-map-place-candidate-affordance").textContent =
+    interactive ? "→" : "✓";
 }
 
 function captureWorldMapPlaceFocus() {
@@ -6432,8 +6438,10 @@ function restoreWorldMapPlaceFocus(snapshot, preservedScrollTop) {
   }
   if (!(target instanceof HTMLElement) || target.matches(":disabled")) return;
   let remainingFrames = 2;
+  let restoredFocus = false;
   const restore = () => {
     if (!target.isConnected || !elements.worldMapPlaceTagDialog.open) return;
+    if (restoredFocus && document.activeElement !== target) return;
     if (snapshot.kind === "query"
       && typeof snapshot.value === "string"
       && target.value !== snapshot.value) return;
@@ -6445,7 +6453,10 @@ function restoreWorldMapPlaceFocus(snapshot, preservedScrollTop) {
       elements.worldMapPlaceTagBody.scrollTop = preservedScrollTop;
     }
     const alreadyFocused = document.activeElement === target;
-    if (!alreadyFocused) target.focus({ preventScroll: true });
+    if (!alreadyFocused) {
+      target.focus({ preventScroll: true });
+      restoredFocus = true;
+    }
     if (!alreadyFocused
       && snapshot.kind === "query"
       && typeof target.setSelectionRange === "function") {
@@ -6456,14 +6467,159 @@ function restoreWorldMapPlaceFocus(snapshot, preservedScrollTop) {
       );
     }
     remainingFrames -= 1;
-    if (remainingFrames > 0) requestAnimationFrame(restore);
+    if (remainingFrames > 0 && restoredFocus) requestAnimationFrame(restore);
   };
   restore();
+}
+
+function createWorldMapPlaceCard() {
+  const card = document.createElement("article");
+  card.className = "world-map-place-card";
+
+  const heading = document.createElement("header");
+  const title = document.createElement("span");
+  title.className = "world-map-place-card-title";
+  title.append(document.createElement("strong"), document.createElement("span"));
+  const count = document.createElement("span");
+  count.className = "world-map-place-photo-count";
+  const status = document.createElement("span");
+  status.className = "world-map-place-status";
+  heading.append(title, count, status);
+
+  const editor = document.createElement("form");
+  editor.className = "world-map-place-editor";
+  const editorLabel = document.createElement("label");
+  editorLabel.innerHTML = "<strong>地点描述</strong><span>全球搜索 · 可补充城市 · 州/省 · 国家 · 景区</span>";
+  const field = document.createElement("div");
+  field.className = "world-map-place-field";
+  const input = document.createElement("input");
+  input.type = "search";
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  input.placeholder = "例如：大皇宫 曼谷 泰国 / Central Park New York USA";
+  const searchButton = document.createElement("button");
+  searchButton.className = "button button-primary";
+  searchButton.type = "submit";
+  searchButton.dataset.placeTagAction = "search";
+  field.append(input, searchButton);
+  const hint = document.createElement("span");
+  hint.className = "world-map-place-query-hint";
+  const provenance = document.createElement("span");
+  provenance.className = "world-map-place-provenance hidden";
+  editor.append(editorLabel, field, hint, provenance);
+
+  const result = document.createElement("section");
+  result.className = "world-map-place-result";
+  card.append(heading, editor, result);
+  return card;
+}
+
+function syncWorldMapPlaceResult(result, item) {
+  result.removeAttribute("role");
+  result.removeAttribute("aria-label");
+  let copy = result.querySelector(":scope > [data-world-map-place-result-copy]");
+  if (!copy) {
+    copy = document.createElement("p");
+    copy.dataset.worldMapPlaceResultCopy = "true";
+  }
+  const existingCandidates = new Map(
+    [...result.querySelectorAll(":scope > .world-map-place-candidate")]
+      .map((row) => [row.dataset.placeId, row])
+  );
+  const candidateRows = [];
+  if (item.status === "ambiguous") {
+    result.setAttribute("role", "group");
+    result.setAttribute("aria-label", `${item.tagName}的地点候选`);
+    copy.textContent = "找到多个可能地点；如果都不对，请修改描述后重新搜索：";
+    for (const candidate of item.candidates || []) {
+      let row = existingCandidates.get(candidate.placeID);
+      if (row?.tagName !== "BUTTON") row = createWorldMapPlaceCandidateRow(true);
+      existingCandidates.delete(candidate.placeID);
+      syncWorldMapPlaceCandidateRow(row, item, candidate);
+      candidateRows.push(row);
+    }
+  } else if (item.status === "resolved") {
+    const candidate = (item.candidates || []).find(
+      (value) => value.placeID === item.confirmedPlaceID
+    );
+    if (candidate) {
+      let row = existingCandidates.get(candidate.placeID);
+      if (row?.tagName !== "DIV") row = createWorldMapPlaceCandidateRow(false);
+      existingCandidates.delete(candidate.placeID);
+      syncWorldMapPlaceCandidateRow(row, item, candidate, { interactive: false });
+      candidateRows.push(row);
+    }
+    copy.textContent = candidate
+      ? "地点不对？补充更多信息后重新搜索，新结果会替换当前地点。"
+      : "地点已经确认并写入地图目录。";
+  } else {
+    if (item.status === "failed") {
+      copy.textContent = "没有找到合适地点。补充更具体的信息后可以立即重新搜索。";
+    } else if (item.status === "ignored") {
+      copy.textContent = "这个标签已标记为非地点；输入地点信息后可重新启用定位。";
+    } else {
+      copy.textContent = "标签名已作为初始线索填入；也可以补充城市、省份、国家或景区名称。";
+    }
+  }
+  const children = item.status === "resolved" ? [...candidateRows, copy] : [copy, ...candidateRows];
+  reconcileStableChildren(result, children);
+}
+
+function syncWorldMapPlaceCard(card, item, busy) {
+  card.dataset.placeTagCard = item.tagID;
+  card.dataset.status = item.status;
+  card.setAttribute("aria-busy", busy ? "true" : "false");
+
+  const heading = card.querySelector(":scope > header");
+  const title = heading.querySelector(":scope > .world-map-place-card-title");
+  title.querySelector(":scope > strong").textContent = item.tagName;
+  title.querySelector(":scope > span").textContent = item.groupName;
+  heading.querySelector(":scope > .world-map-place-photo-count").textContent =
+    `${worldMapCount(item.acceptedPhotoCount)} 张`;
+  const [statusLabel, statusTone] = worldMapPlaceStatusPresentation(item.status);
+  const status = heading.querySelector(":scope > .world-map-place-status");
+  status.dataset.tone = statusTone;
+  status.textContent = statusLabel;
+
+  const editor = card.querySelector(":scope > .world-map-place-editor");
+  editor.dataset.placeTagForm = item.tagID;
+  const inputID = `worldMapPlaceQuery-${item.tagID}`;
+  editor.querySelector(":scope > label").htmlFor = inputID;
+  const field = editor.querySelector(":scope > .world-map-place-field");
+  const input = field.querySelector(":scope > input");
+  input.id = inputID;
+  input.dataset.placeTagQuery = item.tagID;
+  const queryValue = state.worldMap.placeTags.queryByTagID.get(item.tagID) ?? item.tagName;
+  if (input.value !== queryValue) input.value = queryValue;
+  const searchButton = field.querySelector(":scope > [data-place-tag-action=search]");
+  searchButton.dataset.tagId = item.tagID;
+  searchButton.textContent = busy
+    ? "正在搜索…"
+    : (item.status === "unresolved" ? "搜索" : "重新搜索");
+  editor.querySelector(":scope > .world-map-place-query-hint").dataset.placeTagHint = item.tagID;
+  editor.querySelector(":scope > .world-map-place-provenance").dataset.placeTagProvenance = item.tagID;
+  syncWorldMapPlaceResult(card.querySelector(":scope > .world-map-place-result"), item);
+}
+
+function reconcileWorldMapPlaceCards(items, busyTagIDs) {
+  const existingCards = new Map(
+    [...elements.worldMapPlaceTagItems.querySelectorAll(":scope > .world-map-place-card")]
+      .map((card) => [card.dataset.placeTagCard, card])
+  );
+  const cards = items.map((item) => {
+    const card = existingCards.get(item.tagID) || createWorldMapPlaceCard();
+    existingCards.delete(item.tagID);
+    syncWorldMapPlaceCard(card, item, busyTagIDs.has(item.tagID));
+    return card;
+  });
+  reconcileStableChildren(elements.worldMapPlaceTagItems, cards);
+  for (const item of items) updateWorldMapPlaceQueryState(item.tagID);
 }
 
 function renderWorldMapPlaceTags({ focusTagID = null } = {}) {
   const placeTags = state.worldMap.placeTags;
   const preservedScrollTop = elements.worldMapPlaceTagBody.scrollTop;
+  const preservedActiveElement = document.activeElement;
   const preservedFocus = captureWorldMapPlaceFocus();
   const showBlockingLoading = placeTags.loading && placeTags.items.length === 0;
   elements.worldMapPlaceTagBody.setAttribute("aria-busy", placeTags.loading ? "true" : "false");
@@ -6472,103 +6628,11 @@ function renderWorldMapPlaceTags({ focusTagID = null } = {}) {
   elements.worldMapPlaceTagError.textContent = placeTags.error;
   const showEmpty = !placeTags.loading && !placeTags.error && placeTags.items.length === 0;
   elements.worldMapPlaceTagEmpty.classList.toggle("hidden", !showEmpty);
-  clearElement(elements.worldMapPlaceTagItems);
-  if (showBlockingLoading) return;
-
-  for (const item of placeTags.items) {
-    const busy = placeTags.busyTagIDs.has(item.tagID);
-    const card = document.createElement("article");
-    card.className = "world-map-place-card";
-    card.dataset.placeTagCard = item.tagID;
-    card.dataset.status = item.status;
-    card.setAttribute("aria-busy", busy ? "true" : "false");
-
-    const heading = document.createElement("header");
-    const title = document.createElement("span");
-    title.className = "world-map-place-card-title";
-    const name = document.createElement("strong");
-    name.textContent = item.tagName;
-    const group = document.createElement("span");
-    group.textContent = item.groupName;
-    title.append(name, group);
-    const count = document.createElement("span");
-    count.className = "world-map-place-photo-count";
-    count.textContent = `${worldMapCount(item.acceptedPhotoCount)} 张`;
-    const [statusLabel, statusTone] = worldMapPlaceStatusPresentation(item.status);
-    const status = document.createElement("span");
-    status.className = "world-map-place-status";
-    status.dataset.tone = statusTone;
-    status.textContent = statusLabel;
-    heading.append(title, count, status);
-
-    const editor = document.createElement("form");
-    editor.className = "world-map-place-editor";
-    editor.dataset.placeTagForm = item.tagID;
-    const editorLabel = document.createElement("label");
-    editorLabel.htmlFor = `worldMapPlaceQuery-${item.tagID}`;
-    editorLabel.innerHTML = "<strong>地点描述</strong><span>全球搜索 · 可补充城市 · 州/省 · 国家 · 景区</span>";
-    const field = document.createElement("div");
-    field.className = "world-map-place-field";
-    const input = document.createElement("input");
-    input.id = `worldMapPlaceQuery-${item.tagID}`;
-    input.type = "search";
-    input.autocomplete = "off";
-    input.spellcheck = false;
-    input.dataset.placeTagQuery = item.tagID;
-    input.placeholder = "例如：大皇宫 曼谷 泰国 / Central Park New York USA";
-    input.value = placeTags.queryByTagID.get(item.tagID) ?? item.tagName;
-    const searchButton = document.createElement("button");
-    searchButton.className = "button button-primary";
-    searchButton.type = "submit";
-    searchButton.dataset.placeTagAction = "search";
-    searchButton.dataset.tagId = item.tagID;
-    searchButton.textContent = busy ? "正在搜索…" : (item.status === "unresolved" ? "搜索" : "重新搜索");
-    field.append(input, searchButton);
-    const hint = document.createElement("span");
-    hint.className = "world-map-place-query-hint";
-    hint.dataset.placeTagHint = item.tagID;
-    const provenance = document.createElement("span");
-    provenance.className = "world-map-place-provenance hidden";
-    provenance.dataset.placeTagProvenance = item.tagID;
-    editor.append(editorLabel, field, hint, provenance);
-
-    const result = document.createElement("section");
-    result.className = "world-map-place-result";
-    if (item.status === "ambiguous") {
-      result.setAttribute("role", "group");
-      result.setAttribute("aria-label", `${item.tagName}的地点候选`);
-      const copy = document.createElement("p");
-      copy.textContent = "找到多个可能地点；如果都不对，请修改描述后重新搜索：";
-      result.append(copy);
-      for (const candidate of item.candidates || []) {
-        result.append(worldMapPlaceCandidateRow(item, candidate));
-      }
-    } else if (item.status === "resolved") {
-      const candidate = (item.candidates || []).find(
-        (value) => value.placeID === item.confirmedPlaceID
-      );
-      if (candidate) result.append(worldMapPlaceCandidateRow(item, candidate, { interactive: false }));
-      const copy = document.createElement("p");
-      copy.textContent = candidate
-        ? "地点不对？补充更多信息后重新搜索，新结果会替换当前地点。"
-        : "地点已经确认并写入地图目录。";
-      result.append(copy);
-    } else {
-      const copy = document.createElement("p");
-      if (item.status === "failed") {
-        copy.textContent = "没有找到合适地点。补充更具体的信息后可以立即重新搜索。";
-      } else if (item.status === "ignored") {
-        copy.textContent = "这个标签已标记为非地点；输入地点信息后可重新启用定位。";
-      } else {
-        copy.textContent = "标签名已作为初始线索填入；也可以补充城市、省份、国家或景区名称。";
-      }
-      result.append(copy);
-    }
-
-    card.append(heading, editor, result);
-    elements.worldMapPlaceTagItems.append(card);
-    updateWorldMapPlaceQueryState(item.tagID);
+  if (showBlockingLoading) {
+    reconcileWorldMapPlaceCards([], placeTags.busyTagIDs);
+    return;
   }
+  reconcileWorldMapPlaceCards(placeTags.items, placeTags.busyTagIDs);
 
   elements.worldMapPlaceTagBody.scrollTop = preservedScrollTop;
 
@@ -6577,7 +6641,9 @@ function renderWorldMapPlaceTags({ focusTagID = null } = {}) {
       ? { ...preservedFocus, kind: "query", tagID: focusTagID }
       : { kind: "query", tagID: focusTagID })
     : preservedFocus;
-  if (focusSnapshot && elements.worldMapPlaceTagDialog.open) {
+  const activeElementStayedInPlace = preservedActiveElement === document.activeElement
+    && elements.worldMapPlaceTagItems.contains(preservedActiveElement);
+  if (focusSnapshot && elements.worldMapPlaceTagDialog.open && !activeElementStayedInPlace) {
     requestAnimationFrame(() => restoreWorldMapPlaceFocus(focusSnapshot, preservedScrollTop));
   }
 }

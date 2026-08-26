@@ -917,8 +917,56 @@ let browser;
   assert.equal(placeTagCommands.length, 0, "overlong location queries must stay in the browser");
   assert.match(await placeCard.locator("[data-place-tag-hint]").textContent(), /160/);
   await placeInput.fill("  Paris   France  ");
+  await placeCard.hover();
+  const placeEditorBeforeSearch = await page.evaluate((tagID) => {
+    const body = document.querySelector("#worldMapPlaceTagBody");
+    const card = document.querySelector(`[data-place-tag-card="${tagID}"]`);
+    const input = card.querySelector("[data-place-tag-query]");
+    const searchButton = card.querySelector("[data-place-tag-action=search]");
+    input.focus({ preventScroll: true });
+    input.setSelectionRange(2, 7);
+    window.__stableWorldMapPlaceEditor = {
+      body,
+      card,
+      input,
+      searchButton,
+      scrollTop: body.scrollTop,
+      selectionStart: input.selectionStart,
+      selectionEnd: input.selectionEnd,
+    };
+    return {
+      selectionStart: input.selectionStart,
+      selectionEnd: input.selectionEnd,
+    };
+  }, placeTagID);
   await placeInput.press("Enter");
   while (placeTagCommands.length === 0) await page.waitForTimeout(10);
+  const placeEditorBusyContinuity = await page.evaluate((tagID) => {
+    const stable = window.__stableWorldMapPlaceEditor;
+    const body = document.querySelector("#worldMapPlaceTagBody");
+    const card = document.querySelector(`[data-place-tag-card="${tagID}"]`);
+    const input = card.querySelector("[data-place-tag-query]");
+    const searchButton = card.querySelector("[data-place-tag-action=search]");
+    return {
+      body: body === stable.body,
+      card: card === stable.card,
+      input: input === stable.input,
+      searchButton: searchButton === stable.searchButton,
+      focus: document.activeElement === stable.input,
+      selection: input.selectionStart === stable.selectionStart
+        && input.selectionEnd === stable.selectionEnd,
+      hover: stable.card.matches(":hover"),
+      scroll: body.scrollTop === stable.scrollTop,
+      busy: searchButton.disabled && searchButton.textContent === "正在搜索…",
+    };
+  }, placeTagID);
+  assert.ok(
+    Object.values(placeEditorBusyContinuity).every(Boolean),
+    `place editor busy continuity failed: ${JSON.stringify({
+      placeEditorBeforeSearch,
+      placeEditorBusyContinuity,
+    })}`
+  );
   await placeInput.fill("Paris Texas USA");
   assert.match(
     await placeCard.locator("[data-place-tag-provenance]").textContent(),
@@ -950,9 +998,45 @@ let browser;
   assert.equal(placeTagCommands[0].query, "Paris France");
   assert.equal(placeTagCommands[0].tagID, placeTagID);
   assert.match(placeTagCommands[0].operationID, /^[0-9a-f-]{36}$/i);
-  await placeInput.press("ArrowDown");
   const parisFrance = placeCard.locator("[data-place-id=paris-fr]");
   const parisTexas = placeCard.locator("[data-place-id=paris-us]");
+  await parisTexas.hover();
+  await parisFrance.focus();
+  await page.evaluate((tagID) => {
+    const body = document.querySelector("#worldMapPlaceTagBody");
+    const card = document.querySelector(`[data-place-tag-card="${tagID}"]`);
+    window.__stableWorldMapPlaceCandidates = {
+      body,
+      card,
+      input: card.querySelector("[data-place-tag-query]"),
+      parisFrance: card.querySelector("[data-place-id=paris-fr]"),
+      parisTexas: card.querySelector("[data-place-id=paris-us]"),
+      scrollTop: body.scrollTop,
+    };
+  }, placeTagID);
+  await page.evaluate(() => loadWorldMapPlaceTags());
+  const placeCandidateRefreshContinuity = await page.evaluate((tagID) => {
+    const stable = window.__stableWorldMapPlaceCandidates;
+    const body = document.querySelector("#worldMapPlaceTagBody");
+    const card = document.querySelector(`[data-place-tag-card="${tagID}"]`);
+    return {
+      body: body === stable.body,
+      card: card === stable.card,
+      input: card.querySelector("[data-place-tag-query]") === stable.input,
+      parisFrance: card.querySelector("[data-place-id=paris-fr]") === stable.parisFrance,
+      parisTexas: card.querySelector("[data-place-id=paris-us]") === stable.parisTexas,
+      focus: document.activeElement === stable.parisFrance,
+      hover: stable.parisTexas.matches(":hover"),
+      scroll: body.scrollTop === stable.scrollTop,
+    };
+  }, placeTagID);
+  assert.ok(
+    Object.values(placeCandidateRefreshContinuity).every(Boolean),
+    `place candidate refresh continuity failed: ${JSON.stringify(placeCandidateRefreshContinuity)}`
+  );
+  assert.equal(placeTagSnapshotRequestCount, 3);
+  await placeInput.focus();
+  await placeInput.press("ArrowDown");
   assert.equal(await parisFrance.evaluate((element) => document.activeElement === element), true,
     "ArrowDown from the query should enter the candidate list");
   await page.keyboard.press("ArrowDown");
