@@ -2721,12 +2721,133 @@ def main(*, inspector_actions_only=False):
         assert "全部 2 个" in page.locator(
             "#slimmingCatalogSourceSummary"
         ).inner_text()
-        catalog_sources.nth(1).uncheck()
+        slimming_catalog_source_frame = page.evaluate(
+            """sourceIDs => {
+              const options = document.querySelector('#slimmingCatalogSourceOptions');
+              options.style.maxHeight = '46px';
+              options.scrollTop = options.scrollHeight;
+              const firstInput = options.querySelector(
+                `[data-slimming-catalog-source-id="${sourceIDs[0]}"]`
+              );
+              const secondInput = options.querySelector(
+                `[data-slimming-catalog-source-id="${sourceIDs[1]}"]`
+              );
+              secondInput.focus({ preventScroll: true });
+              window.__slimmingCatalogSourceContinuityFrame = {
+                firstRow: firstInput.closest('label'),
+                firstInput,
+                secondRow: secondInput.closest('label'),
+                secondInput,
+                secondIcon: secondInput.nextElementSibling,
+                secondCopy: secondInput.parentElement.lastElementChild,
+                secondName: secondInput.parentElement.querySelector('strong'),
+              };
+              return { scrollTop: options.scrollTop };
+            }""",
+            [SOURCE_ID, SECOND_SOURCE_ID],
+        )
+        assert slimming_catalog_source_frame["scrollTop"] > 0, (
+            slimming_catalog_source_frame
+        )
+        second_catalog_source_bounds = catalog_sources.nth(1).bounding_box()
+        assert second_catalog_source_bounds is not None
+        page.mouse.move(
+            second_catalog_source_bounds["x"] + second_catalog_source_bounds["width"] / 2,
+            second_catalog_source_bounds["y"] + second_catalog_source_bounds["height"] / 2,
+        )
+        page.mouse.click(
+            second_catalog_source_bounds["x"] + second_catalog_source_bounds["width"] / 2,
+            second_catalog_source_bounds["y"] + second_catalog_source_bounds["height"] / 2,
+        )
         page.wait_for_function(
             "() => document.querySelector('#slimmingCatalogSourceButton')"
             ".textContent.includes('Apple Photos') "
             "&& document.querySelector('#slimmingCatalogAnalyzeButton')"
             ".textContent.includes('分析所选来源')"
+        )
+        slimming_catalog_source_continuity = page.evaluate(
+            """({ sourceIDs, expectedScrollTop }) => {
+              const frame = window.__slimmingCatalogSourceContinuityFrame;
+              const options = document.querySelector('#slimmingCatalogSourceOptions');
+              const firstInput = options.querySelector(
+                `[data-slimming-catalog-source-id="${sourceIDs[0]}"]`
+              );
+              const secondInput = options.querySelector(
+                `[data-slimming-catalog-source-id="${sourceIDs[1]}"]`
+              );
+              return {
+                firstRow: firstInput?.closest('label') === frame.firstRow,
+                firstInput: firstInput === frame.firstInput,
+                secondRow: secondInput?.closest('label') === frame.secondRow,
+                secondInput: secondInput === frame.secondInput,
+                secondIcon: secondInput?.nextElementSibling === frame.secondIcon,
+                secondCopy: secondInput?.parentElement.lastElementChild === frame.secondCopy,
+                secondName: secondInput?.parentElement.querySelector('strong') === frame.secondName,
+                focused: document.activeElement === secondInput,
+                hovered: secondInput?.matches(':hover') || false,
+                scroll: options.scrollTop === expectedScrollTop,
+                checked: secondInput?.checked || false,
+              };
+            }""",
+            {
+                "sourceIDs": [SOURCE_ID, SECOND_SOURCE_ID],
+                "expectedScrollTop": slimming_catalog_source_frame["scrollTop"],
+            },
+        )
+        assert slimming_catalog_source_continuity == {
+            "firstRow": True,
+            "firstInput": True,
+            "secondRow": True,
+            "secondInput": True,
+            "secondIcon": True,
+            "secondCopy": True,
+            "secondName": True,
+            "focused": True,
+            "hovered": True,
+            "scroll": True,
+            "checked": False,
+        }, slimming_catalog_source_continuity
+        page.locator("#selectAllSlimmingCatalogSourcesButton").click()
+        page.wait_for_function(
+            "() => document.querySelectorAll("
+            "'#slimmingCatalogSourceOptions [data-slimming-catalog-source-id]:checked'"
+            ").length === 2"
+        )
+        page.locator("#clearSlimmingCatalogSourcesButton").click()
+        page.wait_for_function(
+            "() => document.querySelectorAll("
+            "'#slimmingCatalogSourceOptions [data-slimming-catalog-source-id]:checked'"
+            ").length === 0"
+        )
+        slimming_catalog_bulk_continuity = page.evaluate(
+            """sourceIDs => {
+              const frame = window.__slimmingCatalogSourceContinuityFrame;
+              const options = document.querySelector('#slimmingCatalogSourceOptions');
+              const firstInput = options.querySelector(
+                `[data-slimming-catalog-source-id="${sourceIDs[0]}"]`
+              );
+              const secondInput = options.querySelector(
+                `[data-slimming-catalog-source-id="${sourceIDs[1]}"]`
+              );
+              return {
+                firstRow: firstInput?.closest('label') === frame.firstRow,
+                firstInput: firstInput === frame.firstInput,
+                secondRow: secondInput?.closest('label') === frame.secondRow,
+                secondInput: secondInput === frame.secondInput,
+                secondIcon: secondInput?.nextElementSibling === frame.secondIcon,
+                secondCopy: secondInput?.parentElement.lastElementChild === frame.secondCopy,
+                secondName: secondInput?.parentElement.querySelector('strong') === frame.secondName,
+              };
+            }""",
+            [SOURCE_ID, SECOND_SOURCE_ID],
+        )
+        assert all(slimming_catalog_bulk_continuity.values()), (
+            slimming_catalog_bulk_continuity
+        )
+        catalog_sources.nth(0).check()
+        page.evaluate(
+            "document.querySelector('#slimmingCatalogSourceOptions')"
+            ".style.removeProperty('max-height')"
         )
         catalog_sources.nth(0).focus()
         source_popover.evaluate(
@@ -2759,6 +2880,40 @@ def main(*, inspector_actions_only=False):
         assert slimming_setup_reads[0] == slimming_source_reads
         assert catalog_sources.nth(0).is_checked()
         assert not catalog_sources.nth(1).is_checked()
+        slimming_catalog_history_continuity = page.evaluate(
+            """sourceIDs => {
+              const frame = window.__slimmingCatalogSourceContinuityFrame;
+              const options = document.querySelector('#slimmingCatalogSourceOptions');
+              const firstInput = options.querySelector(
+                `[data-slimming-catalog-source-id="${sourceIDs[0]}"]`
+              );
+              const secondInput = options.querySelector(
+                `[data-slimming-catalog-source-id="${sourceIDs[1]}"]`
+              );
+              return {
+                firstRow: firstInput?.closest('label') === frame.firstRow,
+                firstInput: firstInput === frame.firstInput,
+                secondRow: secondInput?.closest('label') === frame.secondRow,
+                secondInput: secondInput === frame.secondInput,
+                secondIcon: secondInput?.nextElementSibling === frame.secondIcon,
+                secondCopy: secondInput?.parentElement.lastElementChild === frame.secondCopy,
+                secondName: secondInput?.parentElement.querySelector('strong') === frame.secondName,
+                focused: document.activeElement === firstInput,
+              };
+            }""",
+            [SOURCE_ID, SECOND_SOURCE_ID],
+        )
+        assert all(slimming_catalog_history_continuity.values()), (
+            slimming_catalog_history_continuity
+        )
+        source_popover.evaluate(
+            "element => { element.style.removeProperty('max-height'); "
+            "element.style.removeProperty('overflow-y'); element.scrollTop = 0; }"
+        )
+        page.screenshot(
+            path="/tmp/imageall-slimming-source-picker-continuity.png",
+            full_page=True,
+        )
         page.keyboard.press("Escape")
         source_popover.wait_for(state="hidden")
         page.wait_for_function(

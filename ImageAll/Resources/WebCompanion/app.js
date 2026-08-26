@@ -31347,6 +31347,43 @@ function renderSlimmingCatalogCommands() {
   });
 }
 
+function createSlimmingCatalogSourceOption() {
+  const row = document.createElement("label");
+  row.className = "slimming-catalog-source-option";
+  row.setAttribute("role", "menuitemcheckbox");
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  const icon = document.createElement("span");
+  icon.className = "slimming-catalog-source-icon";
+  const copy = document.createElement("span");
+  copy.append(document.createElement("strong"), document.createElement("small"));
+  row.append(input, icon, copy);
+  return row;
+}
+
+function syncSlimmingCatalogSourceOption(row, source, selected, disabled) {
+  row.setAttribute("aria-checked", String(selected));
+  const input = row.querySelector(':scope > input[type="checkbox"]');
+  input.id = `slimmingCatalogSource-${source.id}`;
+  input.checked = selected;
+  input.disabled = disabled;
+  input.dataset.slimmingCatalogSourceId = source.id;
+  const icon = row.querySelector(":scope > .slimming-catalog-source-icon");
+  const iconText = source.kind === "photos" ? "▣" : "▱";
+  if (icon.textContent !== iconText) icon.textContent = iconText;
+  const copy = row.querySelector(":scope > span:last-child");
+  const name = copy.querySelector(":scope > strong");
+  if (name.textContent !== source.displayName) name.textContent = source.displayName;
+  const kind = copy.querySelector(":scope > small");
+  const kindText = source.kind === "photos" ? "照片图库" : "文件夹";
+  if (kind.textContent !== kindText) kind.textContent = kindText;
+  configurePersistentHelp(row, {
+    title: `分析来源 · ${source.displayName}`,
+    detail: "勾选后纳入下一次全部来源分析；只读取这台 Mac 当前提供的可用来源。",
+    kind: "slimming",
+  });
+}
+
 function renderSlimmingCatalogSourcePicker() {
   const picker = state.slimming.catalogSources;
   const snapshot = currentSlimmingCatalogSnapshot();
@@ -31354,7 +31391,6 @@ function renderSlimmingCatalogSourcePicker() {
   const selectedIDs = resolvedSlimmingCatalogSourceIDs(snapshot);
   const allSelected = sources.length > 0
     && sources.every((source) => selectedIDs.has(source.id));
-  const focusedSourceID = document.activeElement?.dataset.slimmingCatalogSourceId || null;
 
   elements.slimmingCatalogSourceSummary.textContent = picker.loading && !snapshot
     ? "正在读取当前可用来源…"
@@ -31370,35 +31406,26 @@ function renderSlimmingCatalogSourcePicker() {
     || Boolean(state.slimming.quickLaunchMode)
     || selectedIDs.size === 0;
 
-  clearElement(elements.slimmingCatalogSourceOptions);
-  for (const source of sources) {
-    const row = document.createElement("label");
-    row.className = "slimming-catalog-source-option";
-    row.setAttribute("role", "menuitemcheckbox");
-    row.setAttribute("aria-checked", String(selectedIDs.has(source.id)));
-    const input = document.createElement("input");
-    input.type = "checkbox";
-    input.checked = selectedIDs.has(source.id);
-    input.disabled = picker.loading || Boolean(state.slimming.quickLaunchMode);
-    input.dataset.slimmingCatalogSourceId = source.id;
-    const icon = document.createElement("span");
-    icon.className = "slimming-catalog-source-icon";
-    icon.textContent = source.kind === "photos" ? "▣" : "▱";
-    const copy = document.createElement("span");
-    const name = document.createElement("strong");
-    name.textContent = source.displayName;
-    const kind = document.createElement("small");
-    kind.textContent = source.kind === "photos" ? "照片图库" : "文件夹";
-    copy.append(name, kind);
-    row.append(input, icon, copy);
-    elements.slimmingCatalogSourceOptions.append(row);
-  }
-  renderSlimmingCatalogCommands();
-  if (focusedSourceID) requestAnimationFrame(() => {
-    elements.slimmingCatalogSourceOptions.querySelector(
-      `[data-slimming-catalog-source-id="${CSS.escape(focusedSourceID)}"]`
-    )?.focus({ preventScroll: true });
+  const existingOptions = new Map(
+    [...elements.slimmingCatalogSourceOptions.querySelectorAll(
+      ":scope > .slimming-catalog-source-option"
+    )].map((row) => [
+      row.querySelector("[data-slimming-catalog-source-id]")?.dataset.slimmingCatalogSourceId,
+      row,
+    ])
+  );
+  const sourceOptions = sources.map((source) => {
+    const row = existingOptions.get(source.id) || createSlimmingCatalogSourceOption();
+    syncSlimmingCatalogSourceOption(
+      row,
+      source,
+      selectedIDs.has(source.id),
+      picker.loading || Boolean(state.slimming.quickLaunchMode)
+    );
+    return row;
   });
+  reconcileStableChildren(elements.slimmingCatalogSourceOptions, sourceOptions);
+  renderSlimmingCatalogCommands();
 }
 
 async function loadSlimmingCatalogSources({ force = false } = {}) {

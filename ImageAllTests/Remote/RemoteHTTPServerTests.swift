@@ -3112,6 +3112,14 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function syncSlimmingSetupSourceOption("))
         XCTAssertFalse(script.contains("clearElement(elements.slimmingModeOptions)"))
         XCTAssertFalse(script.contains("clearElement(elements.slimmingSourceOptions)"))
+        XCTAssertTrue(script.contains("function createSlimmingCatalogSourceOption("))
+        XCTAssertTrue(script.contains("function syncSlimmingCatalogSourceOption("))
+        XCTAssertFalse(script.contains("clearElement(elements.slimmingCatalogSourceOptions)"))
+        XCTAssertFalse(
+            script.contains(
+                "const focusedSourceID = document.activeElement?.dataset.slimmingCatalogSourceId"
+            )
+        )
         XCTAssertTrue(script.contains("function renderSlimmingCatalogCommands"))
         XCTAssertTrue(script.contains("function renderSlimmingCatalogSourcePicker"))
         XCTAssertTrue(script.contains("async function loadSlimmingCatalogSources"))
