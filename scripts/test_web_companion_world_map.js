@@ -11,6 +11,10 @@ const worldMapAssetIDs = [
 ];
 const folderSourceID = "cccccccc-1111-2222-3333-cccccccccccc";
 const photosSourceID = "dddddddd-1111-2222-3333-dddddddddddd";
+const locationBackfillPreviewSourceIDs = Array.from(
+  { length: 8 },
+  (_, index) => `location-backfill-preview-${index + 1}`
+);
 const placeTagID = "abababab-1111-2222-3333-abababababab";
 const selectionQuery = {
   cellDegrees: 0.25,
@@ -310,7 +314,20 @@ let browser;
       : null,
     canStart: photosPhase === "cancelled",
     canCancel: photosPhase === "running",
-  }];
+  }, ...locationBackfillPreviewSourceIDs.map((sourceID, index) => ({
+    sourceID,
+    sourceKind: "folder",
+    sourceDisplayName: `Synthetic Archive ${index + 1}`,
+    sourceState: "active",
+    phase: "ready",
+    totalPhotoCount: 200 + index,
+    inspectedPhotoCount: 20 + index,
+    locatedPhotoCount: 12 + index,
+    activeJobID: null,
+    scanProgress: null,
+    canStart: true,
+    canCancel: false,
+  }))];
   await page.route(`${baseURL}/v1/world-map/location-backfill`, (route) => {
     locationBackfillRequestCount += 1;
     if (folderPhase === "running") folderPhase = "completed";
@@ -730,6 +747,67 @@ let browser;
     "worldMapLocationBackfill"
   );
   const locationBackfillReadsAfterOpen = locationBackfillRequestCount;
+  const locationContinuitySourceID = locationBackfillPreviewSourceIDs[4];
+  const locationContinuityMetrics = await page.evaluate((sourceID) => {
+    const body = document.querySelector(".world-map-location-body");
+    const card = document.querySelector(
+      `.world-map-location-source-card[data-source-id="${sourceID}"]`
+    );
+    const button = card.querySelector("[data-location-backfill-action=start]");
+    card.scrollIntoView({ block: "center" });
+    body.scrollTop += 24;
+    button.focus({ preventScroll: true });
+    window.__stableLocationBackfill = {
+      body,
+      card,
+      button,
+      scrollTop: body.scrollTop,
+    };
+    return {
+      scrollTop: body.scrollTop,
+      scrollHeight: body.scrollHeight,
+      clientHeight: body.clientHeight,
+    };
+  }, locationContinuitySourceID);
+  assert.ok(
+    locationContinuityMetrics.scrollHeight > locationContinuityMetrics.clientHeight
+      && locationContinuityMetrics.scrollTop > 0,
+    `synthetic location sources must exercise vertical scrolling: ${JSON.stringify(locationContinuityMetrics)}`
+  );
+  await page.locator(
+    `.world-map-location-source-card[data-source-id="${locationContinuitySourceID}"]`
+  ).hover();
+  const locationPollDeadline = Date.now() + 4_000;
+  while (
+    locationBackfillRequestCount === locationBackfillReadsAfterOpen
+    && Date.now() < locationPollDeadline
+  ) {
+    await page.waitForTimeout(10);
+  }
+  assert.ok(
+    locationBackfillRequestCount > locationBackfillReadsAfterOpen,
+    "the open location panel must receive its scheduled authoritative poll"
+  );
+  const locationPollContinuity = await page.evaluate((sourceID) => {
+    const stable = window.__stableLocationBackfill;
+    const body = document.querySelector(".world-map-location-body");
+    const card = document.querySelector(
+      `.world-map-location-source-card[data-source-id="${sourceID}"]`
+    );
+    return {
+      body: body === stable.body,
+      card: card === stable.card,
+      button: card.querySelector("[data-location-backfill-action=start]") === stable.button,
+      focus: document.activeElement === stable.button,
+      hover: stable.card.matches(":hover"),
+      scroll: body.scrollTop === stable.scrollTop,
+    };
+  }, locationContinuitySourceID);
+  assert.ok(
+    Object.values(locationPollContinuity).every(Boolean),
+    `location backfill poll continuity failed: ${JSON.stringify(locationPollContinuity)}`
+  );
+  const locationBackfillReadsBeforeHistory = locationBackfillRequestCount;
   const locationStartButton = page.locator(
     `[data-source-id="${folderSourceID}"] [data-location-backfill-action="start"]`
   );
@@ -747,7 +825,7 @@ let browser;
     "dismissing location backfill should refresh the authoritative map once");
   await page.evaluate(() => history.forward());
   await page.locator("#worldMapLocationBackfillDialog[open]").waitFor();
-  assert.equal(locationBackfillRequestCount, locationBackfillReadsAfterOpen,
+  assert.equal(locationBackfillRequestCount, locationBackfillReadsBeforeHistory,
     "Forward should restore the location panel before its next scheduled poll");
   await page.waitForFunction(
     (selector) => document.activeElement?.matches(selector),

@@ -3076,6 +3076,8 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertFalse(script.contains("clearElement(elements.sourceList)"))
         XCTAssertTrue(script.contains("function reconcileWorldMapPhotoCards("))
         XCTAssertFalse(script.contains("clearElement(elements.worldMapPhotoStrip)"))
+        XCTAssertTrue(script.contains("function reconcileWorldMapLocationSourceCards("))
+        XCTAssertFalse(script.contains("clearElement(elements.worldMapLocationBackfillSources)"))
         XCTAssertTrue(script.contains("function renderSlimmingCatalogCommands"))
         XCTAssertTrue(script.contains("function renderSlimmingCatalogSourcePicker"))
         XCTAssertTrue(script.contains("async function loadSlimmingCatalogSources"))

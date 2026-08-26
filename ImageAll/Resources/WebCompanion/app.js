@@ -5850,6 +5850,147 @@ function appendWorldMapLocationMetric(parent, value, label) {
   caption.textContent = label;
   metric.append(count, caption);
   parent.append(metric);
+  return metric;
+}
+
+function createWorldMapLocationSourceCard() {
+  const card = document.createElement("article");
+  card.className = "world-map-location-source-card";
+
+  const heading = document.createElement("div");
+  heading.className = "world-map-location-source-heading";
+  const icon = document.createElement("span");
+  icon.className = "world-map-location-source-icon";
+  icon.setAttribute("aria-hidden", "true");
+  const title = document.createElement("span");
+  title.className = "world-map-location-source-title";
+  title.append(document.createElement("strong"), document.createElement("span"));
+  const phase = document.createElement("span");
+  phase.className = "world-map-location-phase";
+  heading.append(icon, title, phase);
+
+  const progress = document.createElement("div");
+  progress.className = "world-map-location-progress";
+  progress.setAttribute("role", "progressbar");
+  progress.append(document.createElement("span"));
+
+  const footer = document.createElement("div");
+  footer.className = "world-map-location-source-footer";
+  const metrics = document.createElement("span");
+  metrics.className = "world-map-location-metrics";
+  appendWorldMapLocationMetric(metrics, "", "已检查");
+  appendWorldMapLocationMetric(metrics, "", "已定位");
+  appendWorldMapLocationMetric(metrics, "", "无坐标");
+  footer.append(metrics);
+
+  const scan = document.createElement("div");
+  scan.className = "world-map-location-scan-progress";
+  card.append(heading, progress, footer, scan);
+  return card;
+}
+
+function syncWorldMapLocationMetric(metric, value) {
+  metric.querySelector(":scope > strong").textContent = value;
+}
+
+function syncWorldMapLocationSourceAction(footer, snapshot, busy) {
+  const metrics = footer.querySelector(":scope > .world-map-location-metrics");
+  const desiredAction = snapshot.canCancel ? "cancel" : (snapshot.canStart ? "start" : "status");
+  let action = footer.querySelector(":scope > .world-map-location-source-action");
+  const matchesDesiredAction = desiredAction === "status"
+    ? action?.tagName === "SPAN" && !action.dataset.locationBackfillAction
+    : action?.tagName === "BUTTON"
+      && action.dataset.locationBackfillAction === desiredAction;
+  if (!matchesDesiredAction) {
+    action = document.createElement(desiredAction === "status" ? "span" : "button");
+    action.className = "world-map-location-source-action";
+  }
+
+  if (desiredAction === "status") {
+    action.className = "world-map-location-scan-progress world-map-location-source-action";
+    if (snapshot.phase === "cancelling") action.textContent = "正在取消…";
+    else if (snapshot.phase === "completed") action.textContent = "✓ 目录已更新";
+    else if (snapshot.phase === "unavailable") action.textContent = "请先恢复来源访问";
+    else action.textContent = "";
+  } else {
+    action.className = desiredAction === "start"
+      ? "button button-primary world-map-location-source-action"
+      : "button world-map-location-source-action";
+    action.type = "button";
+    action.dataset.locationBackfillAction = desiredAction;
+    action.dataset.sourceId = snapshot.sourceID;
+    action.disabled = busy;
+    if (desiredAction === "cancel") {
+      action.textContent = busy ? "正在提交…" : "取消";
+    } else {
+      const retry = ["retryableFailed", "cancelled", "terminalFailed"].includes(snapshot.phase);
+      action.textContent = busy ? "正在提交…" : (retry ? "重试" : "开始检查");
+    }
+  }
+  reconcileStableChildren(footer, [metrics, action]);
+}
+
+function syncWorldMapLocationSourceCard(card, snapshot, busy) {
+  card.dataset.kind = snapshot.sourceKind;
+  card.dataset.phase = snapshot.phase;
+  card.dataset.sourceId = snapshot.sourceID;
+  const heading = card.querySelector(":scope > .world-map-location-source-heading");
+  heading.querySelector(":scope > .world-map-location-source-icon").textContent =
+    snapshot.sourceKind === "photos" ? "▧" : "▰";
+  const title = heading.querySelector(":scope > .world-map-location-source-title");
+  title.querySelector(":scope > strong").textContent = snapshot.sourceDisplayName;
+  title.querySelector(":scope > span").textContent =
+    snapshot.sourceKind === "photos" ? "APPLE PHOTOS" : "文件夹来源";
+  const [phaseLabel, phaseTone] = worldMapLocationPhasePresentation(snapshot.phase);
+  const phase = heading.querySelector(":scope > .world-map-location-phase");
+  phase.dataset.tone = phaseTone;
+  phase.textContent = phaseLabel;
+
+  const total = Math.max(0, Number(snapshot.totalPhotoCount || 0));
+  const inspected = Math.max(0, Number(snapshot.inspectedPhotoCount || 0));
+  const located = Math.max(0, Number(snapshot.locatedPhotoCount || 0));
+  const fraction = total === 0 ? 1 : Math.min(1, inspected / total);
+  const progress = card.querySelector(":scope > .world-map-location-progress");
+  progress.setAttribute("aria-label", `${snapshot.sourceDisplayName} 位置检查进度`);
+  progress.setAttribute("aria-valuemin", "0");
+  progress.setAttribute("aria-valuemax", String(total));
+  progress.setAttribute("aria-valuenow", String(Math.min(inspected, total)));
+  progress.querySelector(":scope > span").style.setProperty(
+    "--location-progress",
+    `${Math.round(fraction * 100)}%`
+  );
+
+  const footer = card.querySelector(":scope > .world-map-location-source-footer");
+  const metrics = footer.querySelectorAll(":scope > .world-map-location-metrics > .world-map-location-metric");
+  syncWorldMapLocationMetric(metrics[0], `${worldMapCount(inspected)} / ${worldMapCount(total)}`);
+  syncWorldMapLocationMetric(metrics[1], worldMapCount(located));
+  syncWorldMapLocationMetric(metrics[2], worldMapCount(Math.max(0, inspected - located)));
+  syncWorldMapLocationSourceAction(footer, snapshot, busy);
+
+  const scan = card.querySelector(":scope > .world-map-location-scan-progress");
+  if (!snapshot.scanProgress) {
+    scan.textContent = "";
+  } else {
+    const completed = worldMapCount(snapshot.scanProgress.completedUnitCount);
+    scan.textContent = snapshot.scanProgress.totalUnitCount == null
+      ? `来源扫描已处理 ${completed} 项`
+      : `来源扫描 ${completed} / ${worldMapCount(snapshot.scanProgress.totalUnitCount)}`;
+  }
+}
+
+function reconcileWorldMapLocationSourceCards(snapshots, busySourceIDs) {
+  const existingCards = new Map(
+    [...elements.worldMapLocationBackfillSources.querySelectorAll(
+      ":scope > .world-map-location-source-card"
+    )].map((card) => [card.dataset.sourceId, card])
+  );
+  const cards = snapshots.map((snapshot) => {
+    const card = existingCards.get(snapshot.sourceID) || createWorldMapLocationSourceCard();
+    existingCards.delete(snapshot.sourceID);
+    syncWorldMapLocationSourceCard(card, snapshot, busySourceIDs.has(snapshot.sourceID));
+    return card;
+  });
+  reconcileStableChildren(elements.worldMapLocationBackfillSources, cards);
 }
 
 function renderWorldMapLocationBackfill() {
@@ -5859,107 +6000,11 @@ function renderWorldMapLocationBackfill() {
   elements.worldMapLocationBackfillError.textContent = backfill.error;
   const showEmpty = !backfill.loading && !backfill.error && backfill.snapshots.length === 0;
   elements.worldMapLocationBackfillEmpty.classList.toggle("hidden", !showEmpty);
-  clearElement(elements.worldMapLocationBackfillSources);
-  if (backfill.loading && backfill.snapshots.length === 0) return;
-
-  for (const snapshot of backfill.snapshots) {
-    const card = document.createElement("article");
-    card.className = "world-map-location-source-card";
-    card.dataset.kind = snapshot.sourceKind;
-    card.dataset.phase = snapshot.phase;
-    card.dataset.sourceId = snapshot.sourceID;
-
-    const heading = document.createElement("div");
-    heading.className = "world-map-location-source-heading";
-    const icon = document.createElement("span");
-    icon.className = "world-map-location-source-icon";
-    icon.setAttribute("aria-hidden", "true");
-    icon.textContent = snapshot.sourceKind === "photos" ? "▧" : "▰";
-    const title = document.createElement("span");
-    title.className = "world-map-location-source-title";
-    const name = document.createElement("strong");
-    name.textContent = snapshot.sourceDisplayName;
-    const kind = document.createElement("span");
-    kind.textContent = snapshot.sourceKind === "photos" ? "APPLE PHOTOS" : "文件夹来源";
-    title.append(name, kind);
-    const [phaseLabel, phaseTone] = worldMapLocationPhasePresentation(snapshot.phase);
-    const phase = document.createElement("span");
-    phase.className = "world-map-location-phase";
-    phase.dataset.tone = phaseTone;
-    phase.textContent = phaseLabel;
-    heading.append(icon, title, phase);
-
-    const progress = document.createElement("div");
-    progress.className = "world-map-location-progress";
-    progress.setAttribute("role", "progressbar");
-    progress.setAttribute("aria-label", `${snapshot.sourceDisplayName} 位置检查进度`);
-    const total = Math.max(0, Number(snapshot.totalPhotoCount || 0));
-    const inspected = Math.max(0, Number(snapshot.inspectedPhotoCount || 0));
-    const fraction = total === 0 ? 1 : Math.min(1, inspected / total);
-    progress.setAttribute("aria-valuemin", "0");
-    progress.setAttribute("aria-valuemax", String(total));
-    progress.setAttribute("aria-valuenow", String(Math.min(inspected, total)));
-    const progressFill = document.createElement("span");
-    progressFill.style.setProperty("--location-progress", `${Math.round(fraction * 100)}%`);
-    progress.append(progressFill);
-
-    const footer = document.createElement("div");
-    footer.className = "world-map-location-source-footer";
-    const metrics = document.createElement("span");
-    metrics.className = "world-map-location-metrics";
-    appendWorldMapLocationMetric(
-      metrics,
-      `${worldMapCount(inspected)} / ${worldMapCount(total)}`,
-      "已检查"
-    );
-    appendWorldMapLocationMetric(metrics, worldMapCount(snapshot.locatedPhotoCount), "已定位");
-    appendWorldMapLocationMetric(
-      metrics,
-      worldMapCount(Math.max(0, inspected - Number(snapshot.locatedPhotoCount || 0))),
-      "无坐标"
-    );
-    footer.append(metrics);
-
-    const busy = backfill.busySourceIDs.has(snapshot.sourceID);
-    if (snapshot.canCancel) {
-      const button = document.createElement("button");
-      button.className = "button world-map-location-source-action";
-      button.type = "button";
-      button.dataset.locationBackfillAction = "cancel";
-      button.dataset.sourceId = snapshot.sourceID;
-      button.disabled = busy;
-      button.textContent = busy ? "正在提交…" : "取消";
-      footer.append(button);
-    } else if (snapshot.canStart) {
-      const button = document.createElement("button");
-      button.className = "button button-primary world-map-location-source-action";
-      button.type = "button";
-      button.dataset.locationBackfillAction = "start";
-      button.dataset.sourceId = snapshot.sourceID;
-      button.disabled = busy;
-      const retry = ["retryableFailed", "cancelled", "terminalFailed"].includes(snapshot.phase);
-      button.textContent = busy ? "正在提交…" : (retry ? "重试" : "开始检查");
-      footer.append(button);
-    } else {
-      const status = document.createElement("span");
-      status.className = "world-map-location-scan-progress world-map-location-source-action";
-      if (snapshot.phase === "cancelling") status.textContent = "正在取消…";
-      else if (snapshot.phase === "completed") status.textContent = "✓ 目录已更新";
-      else if (snapshot.phase === "unavailable") status.textContent = "请先恢复来源访问";
-      footer.append(status);
-    }
-
-    const scan = document.createElement("div");
-    scan.className = "world-map-location-scan-progress";
-    if (snapshot.scanProgress) {
-      const completed = worldMapCount(snapshot.scanProgress.completedUnitCount);
-      scan.textContent = snapshot.scanProgress.totalUnitCount == null
-        ? `来源扫描已处理 ${completed} 项`
-        : `来源扫描 ${completed} / ${worldMapCount(snapshot.scanProgress.totalUnitCount)}`;
-    }
-    card.append(heading, progress, footer, scan);
-    elements.worldMapLocationBackfillSources.append(card);
+  if (backfill.loading && backfill.snapshots.length === 0) {
+    reconcileWorldMapLocationSourceCards([], backfill.busySourceIDs);
+    return;
   }
+  reconcileWorldMapLocationSourceCards(backfill.snapshots, backfill.busySourceIDs);
 }
 
 function scheduleWorldMapLocationBackfillPoll() {
