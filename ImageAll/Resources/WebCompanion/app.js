@@ -11892,13 +11892,25 @@ function thresholdFocusSelector(target) {
   ];
 }
 
-function restoreThresholdFocus(key) {
-  if (!key) return;
+function restoreThresholdFocus(key, { onlyIfUnfocused = false } = {}) {
+  if (!key) return null;
   const [kind, tagID, method] = key;
   const selector = `[data-threshold-focus="${CSS.escape(kind)}"]`
     + `[data-threshold-tag-id="${CSS.escape(tagID)}"]`
     + `[data-threshold-method="${CSS.escape(method)}"]`;
-  restoreOverlayFocus(elements.suggestionThresholdList.querySelector(selector));
+  const target = elements.suggestionThresholdList.querySelector(selector)
+    || elements.suggestionThresholdList.querySelector(
+      `[data-threshold-focus="input"]`
+        + `[data-threshold-tag-id="${CSS.escape(tagID)}"]`
+        + `[data-threshold-method="${CSS.escape(method)}"]`
+    );
+  if (!target) return null;
+  requestAnimationFrame(() => {
+    const active = document.activeElement;
+    if (onlyIfUnfocused && active !== document.body && active !== document.documentElement) return;
+    if (!target.disabled && document.contains(target)) target.focus({ preventScroll: true });
+  });
+  return target;
 }
 
 function suggestionThresholdTagRow(tagID) {
@@ -12084,6 +12096,135 @@ function renderReviewThresholdControls(overview) {
   return section;
 }
 
+function setSuggestionThresholdText(element, text) {
+  if (element.textContent !== text) element.textContent = text;
+}
+
+function configureSuggestionThresholdControl(control, kind, tagID, method) {
+  control.dataset.thresholdFocus = kind;
+  control.dataset.thresholdTagId = tagID;
+  control.dataset.thresholdMethod = method;
+}
+
+function createSuggestionThresholdMethod() {
+  const block = document.createElement("div");
+  block.className = "suggestion-threshold-method";
+  const row = document.createElement("div");
+  row.className = "suggestion-threshold-method-row";
+  const label = document.createElement("label");
+  const labelText = document.createElement("span");
+  labelText.className = "suggestion-threshold-method-label";
+  const input = document.createElement("input");
+  input.type = "number";
+  input.inputMode = "decimal";
+  input.step = "0.05";
+  configureSuggestionThresholdControl(input, "input", "", "");
+  label.append(labelText, input);
+  const badge = document.createElement("span");
+  badge.className = "threshold-source-badge";
+  row.append(label, badge);
+  const reference = document.createElement("div");
+  reference.className = "suggestion-threshold-reference";
+  reference.append(document.createElement("span"));
+  block.append(row, reference);
+  return block;
+}
+
+function suggestionThresholdActionButton(block, action, label) {
+  let button = block.querySelector(`[data-threshold-action="${action}"]`);
+  if (!button) {
+    button = document.createElement("button");
+    button.type = "button";
+    button.className = "button button-small";
+    button.dataset.thresholdAction = action;
+  }
+  setSuggestionThresholdText(button, label);
+  return button;
+}
+
+function syncSuggestionThresholdMethod(block, tag, method, unavailable) {
+  const methodName = suggestionThresholdMethodLabels[method.method] || method.method;
+  block.dataset.thresholdMethod = method.method;
+  const row = block.querySelector(":scope > .suggestion-threshold-method-row");
+  const label = row.querySelector(":scope > label");
+  const labelText = label.querySelector(":scope > .suggestion-threshold-method-label");
+  const input = label.querySelector(":scope > input");
+  const badge = row.querySelector(":scope > .threshold-source-badge");
+  setSuggestionThresholdText(labelText, methodName);
+  configureSuggestionThresholdControl(input, "input", tag.tagID, method.method);
+  const persistedValue = formatSuggestionThreshold(method.effectiveMinScore);
+  const hasLocalDraft = input.dataset.persistedValue !== undefined
+    && input.value !== input.dataset.persistedValue;
+  if (!hasLocalDraft && input.value !== persistedValue) input.value = persistedValue;
+  input.dataset.persistedValue = persistedValue;
+  input.disabled = unavailable;
+  input.setAttribute("aria-label", `${tag.displayName} ${methodName}最低门槛`);
+  const inherited = method.overrideMinScore == null;
+  const badgeClass = `threshold-source-badge${inherited ? " inherited" : ""}`;
+  if (badge.className !== badgeClass) badge.className = badgeClass;
+  setSuggestionThresholdText(badge, inherited ? "继承默认" : "单独设置");
+
+  let inherit = null;
+  if (!inherited) {
+    inherit = suggestionThresholdActionButton(block, "clearOverride", "继承默认");
+    inherit.disabled = unavailable;
+    configureSuggestionThresholdControl(inherit, "inherit", tag.tagID, method.method);
+  }
+  reconcileStableChildren(row, [label, badge, inherit].filter(Boolean));
+
+  const referenceRow = block.querySelector(":scope > .suggestion-threshold-reference");
+  const referenceText = referenceRow.querySelector(":scope > span");
+  const referenceClass = `suggestion-threshold-reference${method.reference ? "" : " unavailable"}`;
+  if (referenceRow.className !== referenceClass) referenceRow.className = referenceClass;
+  setSuggestionThresholdText(referenceText, suggestionReferenceText(method.reference));
+  let adopt = null;
+  if (method.reference) {
+    adopt = suggestionThresholdActionButton(block, "setOverride", "采用");
+    adopt.disabled = unavailable;
+    adopt.dataset.thresholdScore = String(method.reference.minScore);
+    configureSuggestionThresholdControl(adopt, "adopt", tag.tagID, method.method);
+  }
+  reconcileStableChildren(referenceRow, [referenceText, adopt].filter(Boolean));
+}
+
+function createSuggestionThresholdCard() {
+  const card = document.createElement("section");
+  card.className = "suggestion-threshold-card";
+  card.append(document.createElement("h3"));
+  return card;
+}
+
+function syncSuggestionThresholdCard(card, tag, unavailable) {
+  card.dataset.thresholdTagId = tag.tagID;
+  const title = card.querySelector(":scope > h3");
+  setSuggestionThresholdText(title, tag.displayName);
+  const existingMethods = new Map(
+    [...card.querySelectorAll(":scope > [data-threshold-method]")]
+      .map((block) => [block.dataset.thresholdMethod, block])
+  );
+  const methods = (tag.methods || []).map((method) => {
+    const block = existingMethods.get(method.method) || createSuggestionThresholdMethod();
+    existingMethods.delete(method.method);
+    syncSuggestionThresholdMethod(block, tag, method, unavailable);
+    return block;
+  });
+  reconcileStableChildren(card, [title, ...methods]);
+}
+
+function reconcileSuggestionThresholdCards(tags, unavailable) {
+  const existingCards = new Map(
+    [...elements.suggestionThresholdList.querySelectorAll(":scope > [data-threshold-tag-id]")]
+      .map((card) => [card.dataset.thresholdTagId, card])
+  );
+  const cards = tags.map((tag) => {
+    const card = existingCards.get(tag.tagID) || createSuggestionThresholdCard();
+    existingCards.delete(tag.tagID);
+    syncSuggestionThresholdCard(card, tag, unavailable);
+    return card;
+  });
+  reconcileStableChildren(elements.suggestionThresholdList, cards);
+}
+
 function renderSuggestionThresholdDialog() {
   if (!elements.suggestionThresholdDialog.open) return;
   const manager = state.generalSettings;
@@ -12096,8 +12237,13 @@ function renderSuggestionThresholdDialog() {
     }
     return;
   }
-  const focusKey = thresholdFocusSelector(document.activeElement)
-    || manager.pendingThresholdFocus;
+  const activeFocusKey = thresholdFocusSelector(document.activeElement);
+  if (unavailable && activeFocusKey) manager.pendingThresholdFocus = activeFocusKey;
+  const active = document.activeElement;
+  const canRestorePending = !activeFocusKey
+    && Boolean(manager.pendingThresholdFocus)
+    && (active === document.body || active === document.documentElement);
+  const focusKey = activeFocusKey || (canRestorePending ? manager.pendingThresholdFocus : null);
   const query = elements.suggestionThresholdSearch.value.trim().toLocaleLowerCase();
   const tags = (thresholds?.tags || []).filter(
     (tag) => !query || tag.displayName.toLocaleLowerCase().includes(query)
@@ -12105,76 +12251,17 @@ function renderSuggestionThresholdDialog() {
   elements.suggestionThresholdSummary.textContent = thresholds
     ? `显示 ${tags.length} / ${thresholds.tags.length} 个活动标签`
     : "这台 Mac 暂未提供建议阈值设置。";
-  elements.suggestionThresholdList.replaceChildren();
   elements.suggestionThresholdEmpty.classList.toggle("hidden", tags.length > 0);
-  for (const tag of tags) {
-    const card = document.createElement("section");
-    card.className = "suggestion-threshold-card";
-    const title = document.createElement("h3");
-    title.textContent = tag.displayName;
-    card.append(title);
-    for (const method of tag.methods) {
-      const block = document.createElement("div");
-      block.className = "suggestion-threshold-method";
-      const row = document.createElement("div");
-      row.className = "suggestion-threshold-method-row";
-      const label = document.createElement("label");
-      label.textContent = suggestionThresholdMethodLabels[method.method] || method.method;
-      const input = document.createElement("input");
-      input.type = "number";
-      input.inputMode = "decimal";
-      input.step = "0.05";
-      input.value = formatSuggestionThreshold(method.effectiveMinScore);
-      input.dataset.persistedValue = input.value;
-      input.disabled = unavailable;
-      input.setAttribute("aria-label", `${tag.displayName} ${label.textContent}最低门槛`);
-      input.dataset.thresholdFocus = "input";
-      input.dataset.thresholdTagId = tag.tagID;
-      input.dataset.thresholdMethod = method.method;
-      label.append(input);
-      const badge = document.createElement("span");
-      badge.className = `threshold-source-badge${method.overrideMinScore == null ? " inherited" : ""}`;
-      badge.textContent = method.overrideMinScore == null ? "继承默认" : "单独设置";
-      row.append(label, badge);
-      if (method.overrideMinScore != null) {
-        const inherit = document.createElement("button");
-        inherit.type = "button";
-        inherit.className = "button button-small";
-        inherit.textContent = "继承默认";
-        inherit.disabled = unavailable;
-        inherit.dataset.thresholdAction = "clearOverride";
-        inherit.dataset.thresholdFocus = "inherit";
-        inherit.dataset.thresholdTagId = tag.tagID;
-        inherit.dataset.thresholdMethod = method.method;
-        row.append(inherit);
-      }
-      const referenceRow = document.createElement("div");
-      referenceRow.className = `suggestion-threshold-reference${method.reference ? "" : " unavailable"}`;
-      const referenceText = document.createElement("span");
-      referenceText.textContent = suggestionReferenceText(method.reference);
-      referenceRow.append(referenceText);
-      if (method.reference) {
-        const adopt = document.createElement("button");
-        adopt.type = "button";
-        adopt.className = "button button-small";
-        adopt.textContent = "采用";
-        adopt.disabled = unavailable;
-        adopt.dataset.thresholdAction = "setOverride";
-        adopt.dataset.thresholdScore = String(method.reference.minScore);
-        adopt.dataset.thresholdFocus = "adopt";
-        adopt.dataset.thresholdTagId = tag.tagID;
-        adopt.dataset.thresholdMethod = method.method;
-        referenceRow.append(adopt);
-      }
-      block.append(row, referenceRow);
-      card.append(block);
-    }
-    elements.suggestionThresholdList.append(card);
-  }
+  reconcileSuggestionThresholdCards(tags, unavailable);
   for (const control of [elements.suggestionThresholdSearch, elements.suggestionThresholdCloseButton]) {
     control.disabled = unavailable && control !== elements.suggestionThresholdCloseButton;
   }
-  restoreThresholdFocus(focusKey);
+  const restoredTarget = restoreThresholdFocus(focusKey, {
+    onlyIfUnfocused: canRestorePending,
+  });
+  if (!unavailable && canRestorePending && restoredTarget) {
+    manager.pendingThresholdFocus = null;
+  }
 }
 
 function renderGeneralSettings() {

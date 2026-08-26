@@ -1229,13 +1229,128 @@ def main():
 
         page.locator("#suggestionOverridesButton").click()
         page.wait_for_function("() => document.activeElement?.id === 'suggestionThresholdSearch'")
+        page.evaluate(
+            """
+            () => {
+              const cards = [...document.querySelectorAll(
+                "#suggestionThresholdList .suggestion-threshold-card"
+              )];
+              const card = cards.find((candidate) =>
+                candidate.querySelector(":scope > h3")?.textContent === "猫"
+              );
+              const input = card.querySelector(
+                '[data-threshold-focus="input"][data-threshold-method="featureKnn"]'
+              );
+              const list = document.querySelector("#suggestionThresholdList");
+              list.scrollTop = 36;
+              window.__thresholdSearchFrame = {
+                card,
+                title: card.querySelector(":scope > h3"),
+                method: input.closest(".suggestion-threshold-method"),
+                input,
+                scenery: cards.find((candidate) =>
+                  candidate.querySelector(":scope > h3")?.textContent === "风景"
+                ),
+                scrollTop: list.scrollTop,
+              };
+            }
+            """
+        )
+        page.locator("#suggestionThresholdList .suggestion-threshold-card").first.hover()
+        page.locator("#suggestionThresholdSearch").focus()
         page.locator("#suggestionThresholdSearch").fill("猫")
         assert page.locator("#suggestionThresholdList .suggestion-threshold-card").count() == 1
         assert page.locator("#suggestionThresholdList .suggestion-threshold-card h3").inner_text() == "猫"
+        assert page.evaluate(
+            """
+            () => {
+              const frame = window.__thresholdSearchFrame;
+              const card = document.querySelector(
+                "#suggestionThresholdList .suggestion-threshold-card"
+              );
+              const input = card?.querySelector(
+                '[data-threshold-focus="input"][data-threshold-method="featureKnn"]'
+              );
+              const search = document.querySelector("#suggestionThresholdSearch");
+              return frame.card === card
+                && frame.title === card?.querySelector(":scope > h3")
+                && frame.method === input?.closest(".suggestion-threshold-method")
+                && frame.input === input
+                && !frame.scenery?.isConnected
+                && card.matches(":hover")
+                && document.activeElement === search
+                && search.selectionStart === search.value.length
+                && document.querySelector("#suggestionThresholdList").scrollTop
+                  === frame.scrollTop;
+            }
+            """
+        ), "threshold search replaced a matching tag card or its input scene"
 
         cat_feature_input = page.locator(
             f'[data-threshold-focus="input"][data-threshold-tag-id="{CAT_TAG_ID}"]'
             '[data-threshold-method="featureKnn"]'
+        )
+        cat_feature_input.focus()
+        page.evaluate(
+            """
+            () => {
+              const input = document.activeElement;
+              window.__thresholdConnectionFrame = {
+                input,
+                value: input.value,
+              };
+            }
+            """
+        )
+        page.evaluate("() => setConnection(false, 'Mac 离线')")
+        assert page.evaluate(
+            """
+            () => {
+              const frame = window.__thresholdConnectionFrame;
+              return frame.input?.isConnected
+                && frame.input.disabled
+                && frame.input.value === frame.value;
+            }
+            """
+        ), "offline threshold gate replaced or reset the active input"
+        page.evaluate("() => setConnection(true, '已连接')")
+        page.wait_for_function(
+            "() => document.activeElement === window.__thresholdConnectionFrame.input"
+        )
+        assert page.evaluate(
+            """
+            () => {
+              const frame = window.__thresholdConnectionFrame;
+              return frame.input?.isConnected
+                && !frame.input.disabled
+                && frame.input.value === frame.value
+                && document.activeElement === frame.input;
+            }
+            """
+        ), "reconnected threshold gate did not restore the active input scene"
+        page.evaluate(
+            f"""
+            () => {{
+              const input = document.querySelector(
+                '[data-threshold-focus="input"][data-threshold-tag-id="{CAT_TAG_ID}"]'
+                  + '[data-threshold-method="featureKnn"]'
+              );
+              const card = input.closest(".suggestion-threshold-card");
+              const method = input.closest(".suggestion-threshold-method");
+              const personal = card.querySelector(
+                '[data-threshold-focus="input"][data-threshold-method="personalCentroid"]'
+              );
+              window.__thresholdMutationFrame = {{
+                card,
+                method,
+                input,
+                personalMethod: personal.closest(".suggestion-threshold-method"),
+                personal,
+                inherit: method.querySelector('[data-threshold-action="clearOverride"]'),
+                adopt: method.querySelector('[data-threshold-action="setOverride"]'),
+              }};
+            }}
+            """
         )
         cat_feature_input.fill("0.47")
         cat_feature_input.press("Enter")
@@ -1243,6 +1358,22 @@ def main():
             "() => document.activeElement?.dataset.thresholdMethod === 'featureKnn'"
         )
         assert updates[-1]["suggestionThresholdMutation"]["minScore"] == 0.47
+        assert page.evaluate(
+            """
+            () => {
+              const frame = window.__thresholdMutationFrame;
+              return frame.card?.isConnected
+                && frame.method?.isConnected
+                && frame.input?.isConnected
+                && frame.personalMethod?.isConnected
+                && frame.personal?.isConnected
+                && frame.inherit?.isConnected
+                && frame.adopt?.isConnected
+                && document.activeElement === frame.input
+                && frame.input.value === "0.47";
+            }
+            """
+        ), "threshold submit rebuilt the edited or untouched method controls"
 
         page.locator(
             f'[data-threshold-action="clearOverride"][data-threshold-tag-id="{CAT_TAG_ID}"]'
@@ -1254,6 +1385,20 @@ def main():
             " + '[data-threshold-method=\"featureKnn\"]')"
         )
         assert updates[-1]["suggestionThresholdMutation"]["action"] == "clearOverride"
+        assert page.evaluate(
+            """
+            () => {
+              const frame = window.__thresholdMutationFrame;
+              return frame.card?.isConnected
+                && frame.method?.isConnected
+                && frame.input?.isConnected
+                && frame.personalMethod?.isConnected
+                && frame.personal?.isConnected
+                && !frame.inherit?.isConnected
+                && frame.adopt?.isConnected;
+            }
+            """
+        ), "clearing one override rebuilt unrelated threshold controls"
 
         page.locator(
             f'[data-threshold-action="setOverride"][data-threshold-tag-id="{CAT_TAG_ID}"]'
@@ -1265,6 +1410,25 @@ def main():
             " + '[data-threshold-method=\"featureKnn\"]')?.value === '0.55'"
         )
         assert updates[-1]["suggestionThresholdMutation"]["minScore"] == 0.55
+        assert page.evaluate(
+            """
+            () => {
+              const frame = window.__thresholdMutationFrame;
+              const inherit = frame.method.querySelector(
+                '[data-threshold-action="clearOverride"]'
+              );
+              return frame.card?.isConnected
+                && frame.method?.isConnected
+                && frame.input?.isConnected
+                && frame.personalMethod?.isConnected
+                && frame.personal?.isConnected
+                && frame.adopt?.isConnected
+                && inherit?.isConnected
+                && inherit !== frame.inherit
+                && frame.input.value === "0.55";
+            }
+            """
+        ), "adopting a reference rebuilt stable threshold controls"
         page.keyboard.press("Escape")
         assert page.locator("#suggestionThresholdDialog").is_hidden()
         page.wait_for_function("() => document.activeElement?.id === 'suggestionOverridesButton'")
