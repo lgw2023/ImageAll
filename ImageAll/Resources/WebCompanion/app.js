@@ -21024,6 +21024,25 @@ async function adjustReviewSuggestionLimit(delta) {
   restoreOverlayFocus(returnFocus);
 }
 
+function createTagSuggestionSourceOption() {
+  const label = document.createElement("label");
+  label.className = "tag-suggestion-source-option";
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  label.append(input, document.createElement("span"));
+  return label;
+}
+
+function syncTagSuggestionSourceOption(label, source, selected, disabled) {
+  const input = label.querySelector(':scope > input[type="checkbox"]');
+  input.id = `tagSuggestionSource-${source.id}`;
+  input.value = source.id;
+  input.checked = selected;
+  input.disabled = disabled;
+  const name = label.querySelector(":scope > span");
+  if (name.textContent !== source.displayName) name.textContent = source.displayName;
+}
+
 function renderTagSuggestionDialog() {
   const suggestions = state.tagLibrarySuggestions;
   const dialog = suggestions.dialog;
@@ -21050,20 +21069,22 @@ function renderTagSuggestionDialog() {
   elements.tagSuggestionSelectionSummary.textContent =
     `已选择 ${dialog.selectedSourceIDs.size} 个来源`;
 
-  clearElement(elements.tagSuggestionSourceOptions);
-  for (const source of sources) {
-    const label = document.createElement("label");
-    label.className = "tag-suggestion-source-option";
-    const input = document.createElement("input");
-    input.type = "checkbox";
-    input.value = source.id;
-    input.checked = dialog.selectedSourceIDs.has(source.id);
-    input.disabled = suggestions.submitting;
-    const name = document.createElement("span");
-    name.textContent = source.displayName;
-    label.append(input, name);
-    elements.tagSuggestionSourceOptions.append(label);
-  }
+  const existingOptions = new Map(
+    [...elements.tagSuggestionSourceOptions.querySelectorAll(
+      ":scope > .tag-suggestion-source-option"
+    )].map((label) => [label.querySelector('input[type="checkbox"]')?.value, label])
+  );
+  const sourceOptions = sources.map((source) => {
+    const label = existingOptions.get(source.id) || createTagSuggestionSourceOption();
+    syncTagSuggestionSourceOption(
+      label,
+      source,
+      dialog.selectedSourceIDs.has(source.id),
+      suggestions.submitting
+    );
+    return label;
+  });
+  reconcileStableChildren(elements.tagSuggestionSourceOptions, sourceOptions);
 
   const locked = suggestions.submitting || suggestions.loading;
   elements.selectAllTagSuggestionSourcesButton.disabled = locked || sources.length === 0;

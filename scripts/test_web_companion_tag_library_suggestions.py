@@ -568,9 +568,78 @@ def main():
             f'#tagSuggestionSourceOptions input[value="{SOURCE_IDS[0]}"]'
         ).is_checked()
         tag_reads_after_open = tag_snapshot_reads
-        page.locator(
+        second_tag_source = page.locator(
             f'#tagSuggestionSourceOptions input[value="{SOURCE_IDS[1]}"]'
-        ).check()
+        )
+        tag_source_frame = page.evaluate(
+            """sourceIDs => {
+              const options = document.querySelector('#tagSuggestionSourceOptions');
+              options.style.gridTemplateColumns = '1fr';
+              options.style.maxHeight = '46px';
+              options.scrollTop = options.scrollHeight;
+              const firstInput = options.querySelector(`input[value="${sourceIDs[0]}"]`);
+              const secondInput = options.querySelector(`input[value="${sourceIDs[1]}"]`);
+              secondInput.focus({ preventScroll: true });
+              window.__tagSuggestionSourceContinuityFrame = {
+                firstLabel: firstInput.closest('label'),
+                firstInput,
+                secondLabel: secondInput.closest('label'),
+                secondInput,
+                secondName: secondInput.nextElementSibling,
+              };
+              return { scrollTop: options.scrollTop };
+            }""",
+            SOURCE_IDS,
+        )
+        assert tag_source_frame["scrollTop"] > 0, tag_source_frame
+        second_tag_source_bounds = second_tag_source.bounding_box()
+        assert second_tag_source_bounds is not None
+        page.mouse.move(
+            second_tag_source_bounds["x"] + second_tag_source_bounds["width"] / 2,
+            second_tag_source_bounds["y"] + second_tag_source_bounds["height"] / 2,
+        )
+        page.mouse.click(
+            second_tag_source_bounds["x"] + second_tag_source_bounds["width"] / 2,
+            second_tag_source_bounds["y"] + second_tag_source_bounds["height"] / 2,
+        )
+        page.wait_for_function(
+            "() => document.querySelector('#tagSuggestionSelectionSummary')?.textContent"
+            " === '已选择 2 个来源'"
+        )
+        tag_source_continuity = page.evaluate(
+            """({ sourceIDs, expectedScrollTop }) => {
+              const frame = window.__tagSuggestionSourceContinuityFrame;
+              const options = document.querySelector('#tagSuggestionSourceOptions');
+              const firstInput = options.querySelector(`input[value="${sourceIDs[0]}"]`);
+              const secondInput = options.querySelector(`input[value="${sourceIDs[1]}"]`);
+              return {
+                firstLabel: firstInput?.closest('label') === frame.firstLabel,
+                firstInput: firstInput === frame.firstInput,
+                secondLabel: secondInput?.closest('label') === frame.secondLabel,
+                secondInput: secondInput === frame.secondInput,
+                secondName: secondInput?.nextElementSibling === frame.secondName,
+                focused: document.activeElement === secondInput,
+                hovered: secondInput?.matches(':hover') || false,
+                scroll: options.scrollTop === expectedScrollTop,
+                checked: secondInput?.checked || false,
+              };
+            }""",
+            {
+                "sourceIDs": SOURCE_IDS,
+                "expectedScrollTop": tag_source_frame["scrollTop"],
+            },
+        )
+        assert tag_source_continuity == {
+            "firstLabel": True,
+            "firstInput": True,
+            "secondLabel": True,
+            "secondInput": True,
+            "secondName": True,
+            "focused": True,
+            "hovered": True,
+            "scroll": True,
+            "checked": True,
+        }, tag_source_continuity
         suggestion_history_payload = page.evaluate(
             "() => JSON.stringify(history.state?.imageAllWorkspace || null)"
         )
@@ -583,8 +652,45 @@ def main():
         )
         page.evaluate("() => history.forward()")
         page.locator("#tagSuggestionDialog[open]").wait_for()
+        tag_source_history_continuity = page.evaluate(
+            """expectedScrollTop => {
+              const frame = window.__tagSuggestionSourceContinuityFrame;
+              const options = document.querySelector('#tagSuggestionSourceOptions');
+              const secondInput = options.querySelector(
+                `input[value="${frame.secondInput.value}"]`
+              );
+              return {
+                firstLabel: frame.firstLabel.isConnected,
+                firstInput: frame.firstInput.isConnected,
+                secondLabel: secondInput?.closest('label') === frame.secondLabel,
+                secondInput: secondInput === frame.secondInput,
+                secondName: secondInput?.nextElementSibling === frame.secondName,
+                focused: document.activeElement === secondInput,
+                scroll: options.scrollTop === expectedScrollTop,
+                checked: secondInput?.checked || false,
+              };
+            }""",
+            tag_source_frame["scrollTop"],
+        )
+        assert tag_source_history_continuity == {
+            "firstLabel": True,
+            "firstInput": True,
+            "secondLabel": True,
+            "secondInput": True,
+            "secondName": True,
+            "focused": True,
+            "scroll": True,
+            "checked": True,
+        }, tag_source_history_continuity
         assert page.locator("#tagSuggestionSourceOptions input:checked").count() == 2
         assert tag_snapshot_reads == tag_reads_after_open
+        page.evaluate(
+            """() => {
+              const options = document.querySelector('#tagSuggestionSourceOptions');
+              options.style.removeProperty('grid-template-columns');
+              options.style.removeProperty('max-height');
+            }"""
+        )
         page.locator(
             f'#tagSuggestionSourceOptions input[value="{SOURCE_IDS[1]}"]'
         ).uncheck()
