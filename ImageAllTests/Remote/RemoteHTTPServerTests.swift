@@ -4062,6 +4062,25 @@ final class RemoteHTTPServerTests: XCTestCase {
         ]
         XCTAssertFalse(assetVideoBadgeScript.contains("badge.textContent"))
         XCTAssertFalse(assetVideoBadgeScript.contains("replaceChildren"))
+        let mediaFavoriteStart = try XCTUnwrap(
+            script.range(of: "function syncMediaFavoriteButton(")
+        )
+        let mediaFavoriteEnd = try XCTUnwrap(
+            script.range(
+                of: "function syncAssetCardFavoriteButton(",
+                range: mediaFavoriteStart.upperBound..<script.endIndex
+            )
+        )
+        let mediaFavoriteScript = script[
+            mediaFavoriteStart.lowerBound..<mediaFavoriteEnd.lowerBound
+        ]
+        XCTAssertTrue(mediaFavoriteScript.contains("syncAssetCardOverlayText(icon"))
+        XCTAssertTrue(mediaFavoriteScript.contains("syncAssetCardOverlayText(badge"))
+        XCTAssertFalse(mediaFavoriteScript.contains(".textContent ="))
+        XCTAssertTrue(script.contains("syncWorldMapPhotoFavoriteButton(card, asset)"))
+        XCTAssertTrue(script.contains("syncReviewCardFavoriteButton(card, item)"))
+        XCTAssertTrue(script.contains("syncSlimmingMemberFavoriteButton(card, member)"))
+        XCTAssertTrue(script.contains("syncSlimmingRecycleFavoriteButton(card, entry)"))
         XCTAssertTrue(stylesheet.contains(".asset-tag-count {"))
         XCTAssertTrue(stylesheet.contains("display: inline-flex;"))
         XCTAssertTrue(script.contains("function reviewCardFingerprint("))

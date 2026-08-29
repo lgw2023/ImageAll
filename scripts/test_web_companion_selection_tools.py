@@ -1288,8 +1288,102 @@ def main(*, inspector_actions_only=False):
         page.locator("#commandButton").click()
         assert page.locator('[data-command-id="retryFavoriteSync"]').is_visible()
         page.keyboard.press("Escape")
+        page.evaluate(
+            f"""() => {{
+              const originalFetch = window.fetch.bind(window);
+              window.__favoriteRetryRelease = null;
+              window.fetch = (input, init) => {{
+                const url = new URL(typeof input === "string" ? input : input.url, location.href);
+                if (url.pathname !== "/v1/favorites/retry") return originalFetch(input, init);
+                return new Promise((resolve, reject) => {{
+                  window.__favoriteRetryRelease = () => {{
+                    window.fetch = originalFetch;
+                    originalFetch(input, init).then(resolve, reject);
+                  }};
+                }});
+              }};
+              const card = document.querySelector('[data-asset-id="{ASSET_IDS[0]}"]');
+              const favorite = card.querySelector(":scope > .asset-card-favorite");
+              const icon = favorite.querySelector(":scope > .media-favorite-icon");
+              const badge = favorite.querySelector(":scope > .media-favorite-sync");
+              const frame = {{
+                card,
+                main: card.querySelector(":scope > .asset-card-main"),
+                image: card.querySelector(":scope > .asset-card-main > img"),
+                favorite,
+                icon,
+                iconText: icon.firstChild,
+                badge,
+                badgeText: badge.firstChild,
+                scrollTop: document.querySelector("#libraryScroll").scrollTop,
+                added: 0,
+                removed: 0,
+              }};
+              frame.observer = new MutationObserver((records) => {{
+                for (const record of records) {{
+                  frame.added += record.addedNodes.length;
+                  frame.removed += record.removedNodes.length;
+                }}
+              }});
+              frame.observer.observe(favorite, {{ childList: true, subtree: true }});
+              window.__favoriteRetryContinuityFrame = frame;
+            }}"""
+        )
         page.locator("#retryFavoriteSyncButton").click()
+        page.wait_for_function("() => Boolean(window.__favoriteRetryRelease)")
+        failed_favorite_card = page.locator(
+            f'[data-asset-id="{ASSET_IDS[0]}"]'
+        )
+        failed_favorite_card.hover()
+        page.evaluate(
+            """() => {
+              const frame = window.__favoriteRetryContinuityFrame;
+              frame.scrollTop = document.querySelector("#libraryScroll").scrollTop;
+              frame.main.focus({ preventScroll: true });
+              const range = document.createRange();
+              range.setStart(frame.iconText, 0);
+              range.setEnd(frame.iconText, frame.iconText.data.length);
+              const selection = getSelection();
+              selection.removeAllRanges();
+              selection.addRange(range);
+              window.__favoriteRetryRelease();
+            }"""
+        )
         page.locator("#retryFavoriteSyncButton").wait_for(state="hidden")
+        favorite_retry_continuity = page.evaluate(
+            """() => {
+              const frame = window.__favoriteRetryContinuityFrame;
+              const card = document.querySelector(
+                `[data-asset-id="${frame.card.dataset.assetId}"]`
+              );
+              const favorite = card.querySelector(":scope > .asset-card-favorite");
+              const icon = favorite.querySelector(":scope > .media-favorite-icon");
+              const badge = favorite.querySelector(":scope > .media-favorite-sync");
+              const selection = getSelection();
+              frame.observer.disconnect();
+              return {
+                card: frame.card === card,
+                main: frame.main === card.querySelector(":scope > .asset-card-main"),
+                image: frame.image === frame.main.querySelector(":scope > img"),
+                favorite: frame.favorite === favorite,
+                icon: frame.icon === icon,
+                iconText: frame.iconText === icon.firstChild,
+                badge: frame.badge === badge,
+                badgeText: frame.badgeText === badge.firstChild,
+                iconValue: icon.textContent === "♡",
+                synced: badge.classList.contains("hidden")
+                  && badge.dataset.syncStatus === "synced"
+                  && badge.textContent === "",
+                selected: selection.anchorNode === frame.iconText
+                  && selection.toString() === "♡",
+                hovered: card.matches(":hover"),
+                focused: document.activeElement === frame.main,
+                scroll: document.querySelector("#libraryScroll").scrollTop === frame.scrollTop,
+                zeroChildMutations: frame.added === 0 && frame.removed === 0,
+              };
+            }"""
+        )
+        assert all(favorite_retry_continuity.values()), favorite_retry_continuity
         assert len(submitted_favorite_retries) == 1
         page.locator("#commandButton").click()
         page.locator('[data-command-id="showFavorites"]').click()

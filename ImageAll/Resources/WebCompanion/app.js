@@ -14981,12 +14981,13 @@ function syncMediaFavoriteButton(button, { assetID, fileName, favorite }) {
   button.title = title;
   button.setAttribute("aria-label", `${fileName || "当前项目"}：${title}`);
   button.setAttribute("aria-pressed", String(isFavorite));
-  button.querySelector(":scope > .media-favorite-icon").textContent = isFavorite ? "♥" : "♡";
+  const icon = button.querySelector(":scope > .media-favorite-icon");
+  syncAssetCardOverlayText(icon, isFavorite ? "♥" : "♡");
   const badge = button.querySelector(":scope > .media-favorite-sync");
   const showBadge = syncStatus === "pending" || syncStatus === "failed";
   badge.classList.toggle("hidden", !showBadge);
   badge.dataset.syncStatus = syncStatus;
-  badge.textContent = syncStatus === "failed" ? "!" : "";
+  syncAssetCardOverlayText(badge, syncStatus === "failed" ? "!" : "");
 }
 
 function syncAssetCardFavoriteButton(card, asset) {

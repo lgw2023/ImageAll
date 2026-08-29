@@ -4559,10 +4559,18 @@ def main():
                 duration,
                 durationText: duration.firstChild,
                 favorite: card.querySelector(":scope > .asset-card-favorite"),
+                favoriteIcon: card.querySelector(
+                  ":scope > .asset-card-favorite > .media-favorite-icon"
+                ),
+                favoriteSync: card.querySelector(
+                  ":scope > .asset-card-favorite > .media-favorite-sync"
+                ),
                 scrollTop: document.querySelector("#libraryScroll").scrollTop,
                 added: 0,
                 removed: 0,
               }};
+              frame.favoriteIconText = frame.favoriteIcon.firstChild;
+              frame.favoriteSyncText = frame.favoriteSync.firstChild;
               frame.observer = new MutationObserver((records) => {{
                 for (const record of records) {{
                   frame.added += record.addedNodes.length;
@@ -4570,6 +4578,7 @@ def main():
                 }}
               }});
               frame.observer.observe(badge, {{ childList: true, subtree: true }});
+              frame.observer.observe(frame.favorite, {{ childList: true, subtree: true }});
               window.__videoBadgeContinuityFrame = frame;
             }}"""
         )
@@ -4621,7 +4630,16 @@ def main():
                 favorite: frame.favorite === card.querySelector(
                   ":scope > .asset-card-favorite"
                 ),
+                favoriteIcon: frame.favoriteIcon === frame.favorite.querySelector(
+                  ":scope > .media-favorite-icon"
+                ),
+                favoriteIconText: frame.favoriteIconText === frame.favoriteIcon.firstChild,
+                favoriteSync: frame.favoriteSync === frame.favorite.querySelector(
+                  ":scope > .media-favorite-sync"
+                ),
+                favoriteSyncText: frame.favoriteSyncText === frame.favoriteSync.firstChild,
                 updatedFavorite: frame.favorite.getAttribute("aria-pressed") === "true",
+                updatedIcon: frame.favoriteIcon.textContent === "♥",
                 text: badge.textContent === "▶ 0:12",
                 selected: selection.anchorNode === frame.durationText
                   && selection.toString() === "0:12",
