@@ -6579,6 +6579,9 @@ def main(*, inspector_actions_only=False):
               window.__imageAllRecycleChangedThumbnail = rows[0].querySelector(
                 '.slimming-recycle-thumbnail-card'
               );
+              window.__imageAllRecycleChangedAction = rows[0].querySelector(
+                '[data-slimming-recycle-explanation-id]'
+              );
               window.__imageAllRecycleFocusedRow = focusedRow;
               window.__imageAllRecycleFocusedThumbnail = focusedRow.querySelector(
                 '.slimming-recycle-thumbnail-card'
@@ -6587,6 +6590,7 @@ def main(*, inspector_actions_only=False):
             }""",
             SLIMMING_RECYCLE_IDS[1],
         )
+        recycle_rows.nth(0).get_by_role("button", name="恢复说明").hover()
         assert page.evaluate("() => loadSlimmingRecycle({ quiet: true })") is True
         assert "Mac 已更新" in recycle_rows.nth(0).locator(
             ".slimming-recycle-policy"
@@ -6603,6 +6607,9 @@ def main(*, inspector_actions_only=False):
               return changedRow === window.__imageAllRecycleChangedRow
                 && changedRow.querySelector('.slimming-recycle-thumbnail-card')
                   === window.__imageAllRecycleChangedThumbnail
+                && changedRow.querySelector('[data-slimming-recycle-explanation-id]')
+                  === window.__imageAllRecycleChangedAction
+                && window.__imageAllRecycleChangedAction.matches(':hover')
                 && focusedRow === window.__imageAllRecycleFocusedRow
                 && focusedRow.querySelector('.slimming-recycle-thumbnail-card')
                   === window.__imageAllRecycleFocusedThumbnail

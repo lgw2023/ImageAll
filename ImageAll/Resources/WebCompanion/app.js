@@ -29710,136 +29710,154 @@ function renderSlimmingRecycleSummary({ preserveSourceOptions = false } = {}) {
 }
 
 function syncSlimmingRecycleRow(row, entry) {
-    const recycle = state.slimming.recycle;
-    let thumbnail = row.querySelector(":scope > .slimming-recycle-thumbnail-card");
-    const reusesThumbnail = thumbnail?.dataset.slimmingRecycleAssetId === entry.assetID
-      && thumbnail.dataset.slimmingRecycleMediaKind === entry.mediaKind;
-    if (reusesThumbnail) thumbnail.remove();
-    clearElement(row);
-    row.className = "slimming-recycle-row";
-    row.dataset.slimmingRecycleRowId = entry.id;
-    if (!reusesThumbnail) thumbnail = document.createElement("div");
-    thumbnail.className = "slimming-recycle-thumbnail-card";
-    thumbnail.dataset.slimmingRecycleThumbnailEntryId = entry.id;
-    thumbnail.dataset.slimmingRecycleAssetId = entry.assetID;
-    thumbnail.dataset.slimmingRecycleMediaKind = entry.mediaKind;
-    thumbnail.tabIndex = -1;
-    thumbnail.setAttribute("role", "group");
-    thumbnail.setAttribute("aria-haspopup", "menu");
-    thumbnail.setAttribute(
-      "aria-label",
-      `${entry.fileName || "未命名媒体"}，回收站缩略图`
-    );
-    configurePersistentHelp(thumbnail, {
-      title: entry.fileName || "未命名媒体",
-      detail: "右键、触控长按、Context Menu 或 Shift-F10 可加入或取消红心。"
-        + (entry.sourceKind === "photos"
-          ? " Apple Photos 的“最近删除”由系统管理，红心不能暂停系统永久删除。"
-          : " 红心只用于整理，不会阻止恢复、回收或永久删除。"),
-      kind: "slimming",
-      keyShortcuts: "ArrowLeft ArrowRight ArrowUp ArrowDown Home End "
-        + "PageUp PageDown Shift+F10 ContextMenu",
-    });
-    if (!reusesThumbnail) {
-      const image = document.createElement("img");
-      image.className = "slimming-recycle-thumbnail";
-      image.alt = "";
-      image.setAttribute("aria-hidden", "true");
-      syncProtectedThumbnailSource(image, entry.assetID, { width: 180 });
-      thumbnail.append(image);
-      if (entry.mediaKind === "video") {
-        const video = document.createElement("span");
-        video.className = "slimming-recycle-video-badge";
-        video.textContent = "▶";
-        video.setAttribute("aria-label", "视频代表缩略图");
-        thumbnail.append(video);
-      }
+  const recycle = state.slimming.recycle;
+  let thumbnail = row.querySelector(":scope > .slimming-recycle-thumbnail-card");
+  const reusesThumbnail = thumbnail?.dataset.slimmingRecycleAssetId === entry.assetID
+    && thumbnail.dataset.slimmingRecycleMediaKind === entry.mediaKind;
+  if (!reusesThumbnail) {
+    thumbnail?.remove();
+    thumbnail = document.createElement("div");
+  }
+  row.className = "slimming-recycle-row";
+  row.dataset.slimmingRecycleRowId = entry.id;
+  thumbnail.className = "slimming-recycle-thumbnail-card";
+  thumbnail.dataset.slimmingRecycleThumbnailEntryId = entry.id;
+  thumbnail.dataset.slimmingRecycleAssetId = entry.assetID;
+  thumbnail.dataset.slimmingRecycleMediaKind = entry.mediaKind;
+  thumbnail.tabIndex = -1;
+  thumbnail.setAttribute("role", "group");
+  thumbnail.setAttribute("aria-haspopup", "menu");
+  thumbnail.setAttribute(
+    "aria-label",
+    `${entry.fileName || "未命名媒体"}，回收站缩略图`
+  );
+  configurePersistentHelp(thumbnail, {
+    title: entry.fileName || "未命名媒体",
+    detail: "右键、触控长按、Context Menu 或 Shift-F10 可加入或取消红心。"
+      + (entry.sourceKind === "photos"
+        ? " Apple Photos 的“最近删除”由系统管理，红心不能暂停系统永久删除。"
+        : " 红心只用于整理，不会阻止恢复、回收或永久删除。"),
+    kind: "slimming",
+    keyShortcuts: "ArrowLeft ArrowRight ArrowUp ArrowDown Home End "
+      + "PageUp PageDown Shift+F10 ContextMenu",
+  });
+  if (!reusesThumbnail) {
+    const image = document.createElement("img");
+    image.className = "slimming-recycle-thumbnail";
+    image.alt = "";
+    image.setAttribute("aria-hidden", "true");
+    syncProtectedThumbnailSource(image, entry.assetID, { width: 180 });
+    thumbnail.append(image);
+    if (entry.mediaKind === "video") {
+      const video = document.createElement("span");
+      video.className = "slimming-recycle-video-badge";
+      video.textContent = "▶";
+      video.setAttribute("aria-label", "视频代表缩略图");
+      thumbnail.append(video);
     }
-    syncSlimmingRecycleFavoriteButton(thumbnail, entry);
-    const copy = document.createElement("div");
-    copy.className = "slimming-recycle-copy";
-    const title = document.createElement("strong");
-    title.textContent = entry.fileName || "未命名媒体";
-    const meta = document.createElement("span");
-    meta.className = "slimming-recycle-meta";
-    const sourceKind = entry.sourceKind === "photos" ? "Apple Photos" : "文件夹";
-    const sourceName = entry.sourceDisplayName && entry.sourceDisplayName !== sourceKind
-      ? ` · ${entry.sourceDisplayName}`
+  }
+  syncSlimmingRecycleFavoriteButton(thumbnail, entry);
+
+  const copy = row.querySelector(":scope > .slimming-recycle-copy")
+    || document.createElement("div");
+  copy.className = "slimming-recycle-copy";
+  const title = copy.querySelector(":scope > strong") || document.createElement("strong");
+  title.textContent = entry.fileName || "未命名媒体";
+  const meta = copy.querySelector(":scope > .slimming-recycle-meta")
+    || document.createElement("span");
+  meta.className = "slimming-recycle-meta";
+  const sourceKind = entry.sourceKind === "photos" ? "Apple Photos" : "文件夹";
+  const sourceName = entry.sourceDisplayName && entry.sourceDisplayName !== sourceKind
+    ? ` · ${entry.sourceDisplayName}`
+    : "";
+  meta.textContent = `${sourceKind}${sourceName} · ${slimmingRecycleMovedCaption(entry)}`;
+  const detail = copy.querySelector(":scope > .slimming-recycle-detail")
+    || document.createElement("span");
+  detail.className = "slimming-recycle-detail";
+  detail.classList.toggle("warning", entry.resolution !== "restoreOrPurge"
+    && entry.resolution !== "photosManagedBySystem");
+  detail.classList.toggle(
+    "folder-countdown",
+    entry.state === "recycled" && entry.sourceKind === "file"
+  );
+  const detailIcon = detail.querySelector(":scope > .slimming-recycle-detail-icon")
+    || document.createElement("span");
+  detailIcon.className = "slimming-recycle-detail-icon";
+  detailIcon.setAttribute("aria-hidden", "true");
+  detailIcon.textContent = slimmingRecycleLifecycleIcon(entry);
+  const detailText = detail.querySelector(":scope > span:not(.slimming-recycle-detail-icon)")
+    || document.createElement("span");
+  detailText.textContent = slimmingRecycleStateCopy(entry);
+  reconcileStableChildren(detail, [detailIcon, detailText]);
+  reconcileStableChildren(copy, [title, meta, detail]);
+
+  const policy = row.querySelector(":scope > .slimming-recycle-policy")
+    || document.createElement("span");
+  policy.className = "slimming-recycle-policy";
+  policy.textContent = slimmingRecyclePolicyCopy(entry);
+  const actions = row.querySelector(":scope > .slimming-recycle-actions")
+    || document.createElement("div");
+  actions.className = "slimming-recycle-actions";
+  const existingActions = new Map(
+    [...actions.querySelectorAll(":scope > [data-slimming-recycle-action-key]")]
+      .map((button) => [button.dataset.slimmingRecycleActionKey, button])
+  );
+  const actionButton = (key) => {
+    const button = existingActions.get(key) || document.createElement("button");
+    button.type = "button";
+    button.dataset.slimmingRecycleActionKey = key;
+    return button;
+  };
+  const wantedActions = [];
+  if (entry.resolution === "photosManagedBySystem") {
+    const info = actionButton("explanation");
+    info.className = "button button-compact button-primary";
+    info.dataset.slimmingRecycleExplanationId = entry.id;
+    info.dataset.helpDetail = "查看如何从 Apple Photos“最近删除”中恢复这个媒体。";
+    info.textContent = "恢复说明";
+    wantedActions.push(info);
+  }
+  const recovery = slimmingRecycleRecoveryDescriptor(entry);
+  if (recovery) {
+    const button = actionButton(`recovery:${recovery.action}`);
+    button.className = `button button-compact button-primary${
+      recovery.kind === "source" ? " write-action" : ""
+    }`;
+    button.dataset.slimmingRecycleEntryId = entry.id;
+    button.dataset.slimmingRecycleRecoveryKind = recovery.kind;
+    button.dataset.slimmingRecycleRecoveryAction = recovery.action;
+    button.dataset.helpDetail = recovery.help;
+    button.disabled = recycle.mutatingEntryIDs.has(entry.id)
+      || (recovery.kind === "source"
+        && (state.sourceManagement.submitting || sourceManagementHasActiveRequest()));
+    button.textContent = recovery.label;
+    wantedActions.push(button);
+  }
+  for (const action of entry.availableActions || []) {
+    const button = actionButton(`direct:${action}`);
+    const primary = ["restore", "retryInterruptedOperation"].includes(action)
+      ? " button-primary"
       : "";
-    meta.textContent = `${sourceKind}${sourceName} · ${slimmingRecycleMovedCaption(entry)}`;
-    const detail = document.createElement("span");
-    detail.className = "slimming-recycle-detail";
-    detail.classList.toggle("warning", entry.resolution !== "restoreOrPurge"
-      && entry.resolution !== "photosManagedBySystem");
-    detail.classList.toggle(
-      "folder-countdown",
-      entry.state === "recycled" && entry.sourceKind === "file"
-    );
-    const detailIcon = document.createElement("span");
-    detailIcon.className = "slimming-recycle-detail-icon";
-    detailIcon.setAttribute("aria-hidden", "true");
-    detailIcon.textContent = slimmingRecycleLifecycleIcon(entry);
-    const detailText = document.createElement("span");
-    detailText.textContent = slimmingRecycleStateCopy(entry);
-    detail.append(detailIcon, detailText);
-    const policy = document.createElement("span");
-    policy.className = "slimming-recycle-policy";
-    policy.textContent = slimmingRecyclePolicyCopy(entry);
-    copy.append(title, meta, detail);
-    const actions = document.createElement("div");
-    actions.className = "slimming-recycle-actions";
-    if (entry.resolution === "photosManagedBySystem") {
-      const info = document.createElement("button");
-      info.type = "button";
-      info.className = "button button-compact button-primary";
-      info.dataset.slimmingRecycleExplanationId = entry.id;
-      info.dataset.helpDetail = "查看如何从 Apple Photos“最近删除”中恢复这个媒体。";
-      info.textContent = "恢复说明";
-      actions.append(info);
-    }
-    const recovery = slimmingRecycleRecoveryDescriptor(entry);
-    if (recovery) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = `button button-compact button-primary${
-        recovery.kind === "source" ? " write-action" : ""
-      }`;
-      button.dataset.slimmingRecycleEntryId = entry.id;
-      button.dataset.slimmingRecycleRecoveryKind = recovery.kind;
-      button.dataset.slimmingRecycleRecoveryAction = recovery.action;
-      button.dataset.helpDetail = recovery.help;
-      button.disabled = recycle.mutatingEntryIDs.has(entry.id)
-        || (recovery.kind === "source"
-          && (state.sourceManagement.submitting || sourceManagementHasActiveRequest()));
-      button.textContent = recovery.label;
-      actions.append(button);
-    }
-    for (const action of entry.availableActions || []) {
-      const button = document.createElement("button");
-      button.type = "button";
-      const primary = ["restore", "retryInterruptedOperation"].includes(action)
-        ? " button-primary"
-        : "";
-      button.className = `button button-compact write-action${primary}${
-        action === "purge" ? " button-danger" : ""
-      }`;
-      button.dataset.slimmingRecycleEntryId = entry.id;
-      button.dataset.action = action;
-      button.dataset.helpDetail = slimmingRecycleDirectActionHelp(entry, action);
-      button.disabled = recycle.mutatingEntryIDs.has(entry.id);
-      button.textContent = slimmingRecycleDirectActionLabel(entry, action);
-      actions.append(button);
-    }
-    if (slimmingRecycleShowsExplanation(entry)) {
-      const explanation = document.createElement("button");
-      explanation.type = "button";
-      explanation.className = "button button-compact";
-      explanation.dataset.slimmingRecycleExplanationId = entry.id;
-      explanation.dataset.helpDetail = "说明本次操作为何未完成，以及下一步如何处理。";
-      explanation.textContent = "说明";
-      actions.append(explanation);
-    }
-    row.append(thumbnail, copy, policy, actions);
+    button.className = `button button-compact write-action${primary}${
+      action === "purge" ? " button-danger" : ""
+    }`;
+    button.dataset.slimmingRecycleEntryId = entry.id;
+    button.dataset.action = action;
+    button.dataset.helpDetail = slimmingRecycleDirectActionHelp(entry, action);
+    button.disabled = recycle.mutatingEntryIDs.has(entry.id);
+    button.textContent = slimmingRecycleDirectActionLabel(entry, action);
+    wantedActions.push(button);
+  }
+  if (slimmingRecycleShowsExplanation(entry)) {
+    const explanation = actionButton("explanation");
+    explanation.className = "button button-compact";
+    explanation.dataset.slimmingRecycleExplanationId = entry.id;
+    explanation.dataset.helpDetail = "说明本次操作为何未完成，以及下一步如何处理。";
+    explanation.textContent = "说明";
+    wantedActions.push(explanation);
+  }
+  reconcileStableChildren(actions, wantedActions);
+  reconcileStableChildren(row, [thumbnail, copy, policy, actions]);
   return row;
 }
 

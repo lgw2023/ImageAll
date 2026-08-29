@@ -3287,6 +3287,11 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function updateSlimmingRecycleRows"))
         XCTAssertTrue(script.contains("function renderSlimmingRecycleEntryState"))
         XCTAssertTrue(script.contains("function captureSlimmingRecycleActionContinuity"))
+        XCTAssertTrue(script.contains("button.dataset.slimmingRecycleActionKey = key"))
+        XCTAssertTrue(script.contains("reconcileStableChildren(actions, wantedActions)"))
+        XCTAssertTrue(
+            script.contains("reconcileStableChildren(row, [thumbnail, copy, policy, actions])")
+        )
         XCTAssertTrue(script.contains("function restoreRenderedSlimmingRecycleQuery"))
         XCTAssertTrue(script.contains("function cancelPendingSlimmingRecycleSearch"))
         XCTAssertTrue(script.contains("renderedQuerySignature"))
