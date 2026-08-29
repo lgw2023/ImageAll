@@ -33430,12 +33430,103 @@ function canLaunchSlimmingSetup() {
   return state.mediaKind === state.slimming.mediaKind;
 }
 
-function appendSlimmingSetupSummary(label, value) {
-  const term = document.createElement("dt");
-  term.textContent = label;
-  const description = document.createElement("dd");
-  description.textContent = value;
-  elements.slimmingLaunchSummary.append(term, description);
+function syncSlimmingSetupText(element, text) {
+  if (element.textContent !== text) element.textContent = text;
+}
+
+function slimmingSetupSelectedSources() {
+  return (state.slimming.setup.snapshot?.sources || []).filter(
+    (source) => state.slimming.setup.selectedSourceIDs.has(source.id)
+  );
+}
+
+function slimmingSetupSourceSummary() {
+  const sources = state.slimming.setup.snapshot?.sources || [];
+  const selected = slimmingSetupSelectedSources();
+  if (!selected.length) return "未选择来源";
+  if (selected.length === sources.length) return `全部 ${sources.length} 个可用来源`;
+  if (selected.length === 1) return selected[0].displayName;
+  return `已选 ${selected.length} 个来源`;
+}
+
+function slimmingSetupThresholdSummary(thresholds = state.slimming.setup.thresholds) {
+  if (!slimmingThresholdsValid(thresholds)) return "设置值无效";
+  const number = (value, maximumFractionDigits = 2) => Number(value).toLocaleString(
+    "zh-CN",
+    { maximumFractionDigits }
+  );
+  const recall = thresholds.featurePrintRecallMode === "allCandidates"
+    ? "召回全部候选"
+    : `Top-K ${number(thresholds.featurePrintRecallTopK, 0)}`;
+  const l2 = thresholds.featurePrintL2Mode === "unlimited"
+    ? "L2 不限"
+    : `L2 ≤ ${number(thresholds.featurePrintMaxL2Distance)}`;
+  const dino = thresholds.dinoCosineMode === "unlimited"
+    ? "DINOv2 不限"
+    : `DINOv2 ≥ ${number(thresholds.dinoCosineMinSimilarity)}`;
+  const bucketing = {
+    always: "始终按拍摄日分桶",
+    never: "不按拍摄日分桶",
+    automatic: `媒体 ≥ ${number(thresholds.sceneBucketActivationAssetCount, 0)} 时按拍摄日分桶`,
+  }[thresholds.sceneBucketingMode];
+  return [recall, l2, dino, bucketing].join(" · ");
+}
+
+function slimmingSetupLaunchPresentation() {
+  const setup = state.slimming.setup;
+  if (setup.mode === "catalog") {
+    const sources = setup.snapshot?.sources || [];
+    const selected = slimmingSetupSelectedSources();
+    const allSelected = sources.length > 0 && selected.length === sources.length;
+    return {
+      idle: allSelected ? "分析全部来源" : "分析所选来源",
+      running: allSelected ? "正在分析全部来源…" : "正在分析所选来源…",
+    };
+  }
+  if (setup.mode === "seeds") {
+    return {
+      idle: `按种子查找（${currentSlimmingSeedIDs().length}）`,
+      running: "正在按种子查找…",
+    };
+  }
+  const selectedSource = (setup.snapshot?.sources || state.sources).find(
+    (source) => source.id === state.selectedSourceID
+  );
+  return selectedSource
+    ? {
+      idle: `分析来源：${selectedSource.displayName}`,
+      running: `正在分析：${selectedSource.displayName}…`,
+    }
+    : { idle: "分析当前筛选", running: "正在分析当前筛选…" };
+}
+
+function reconcileSlimmingSetupSummary(rows) {
+  const existing = new Map(
+    [...elements.slimmingLaunchSummary.querySelectorAll(
+      ":scope > dt[data-slimming-setup-summary-key]"
+    )].map((term) => {
+      const description = term.nextElementSibling;
+      return description?.matches("dd[data-slimming-setup-summary-key]")
+        && description.dataset.slimmingSetupSummaryKey === term.dataset.slimmingSetupSummaryKey
+        ? [term.dataset.slimmingSetupSummaryKey, { term, description }]
+        : null;
+    }).filter(Boolean)
+  );
+  const wanted = [];
+  for (const row of rows) {
+    let pair = existing.get(row.key) || null;
+    if (!pair) {
+      const term = document.createElement("dt");
+      const description = document.createElement("dd");
+      term.dataset.slimmingSetupSummaryKey = row.key;
+      description.dataset.slimmingSetupSummaryKey = row.key;
+      pair = { term, description };
+    }
+    syncSlimmingSetupText(pair.term, row.label);
+    syncSlimmingSetupText(pair.description, row.value);
+    wanted.push(pair.term, pair.description);
+  }
+  reconcileStableChildren(elements.slimmingLaunchSummary, wanted);
 }
 
 function createSlimmingSetupModeOption() {
@@ -33453,6 +33544,7 @@ function syncSlimmingSetupModeOption(button, mode) {
   button.classList.toggle("selected", selected);
   button.dataset.slimmingMode = mode;
   button.disabled = !slimmingModeAvailable(mode) || state.slimming.setup.launching;
+  button.tabIndex = selected ? 0 : -1;
   button.setAttribute("role", "radio");
   button.setAttribute("aria-checked", String(selected));
   const title = button.querySelector(":scope > strong");
@@ -33477,6 +33569,24 @@ function renderSlimmingSetupModes() {
     return button;
   });
   reconcileStableChildren(elements.slimmingModeOptions, modeOptions);
+}
+
+function moveSlimmingSetupModeSelection(event) {
+  if (!event.target.closest("[data-slimming-mode]")
+    || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(
+      event.key
+    )) return;
+  const options = [...elements.slimmingModeOptions.querySelectorAll("[data-slimming-mode]")]
+    .filter((button) => !button.disabled);
+  if (!options.length) return;
+  event.preventDefault();
+  const current = Math.max(0, options.indexOf(event.target.closest("[data-slimming-mode]")));
+  const backwards = event.key === "ArrowLeft" || event.key === "ArrowUp";
+  const next = event.key === "Home" ? 0
+    : event.key === "End" ? options.length - 1
+      : (current + (backwards ? -1 : 1) + options.length) % options.length;
+  options[next].focus({ preventScroll: true });
+  options[next].click();
 }
 
 function createSlimmingSetupSourceOption() {
@@ -33516,11 +33626,17 @@ function renderSlimmingSourceOptions() {
   const sources = setup.snapshot?.sources || [];
   const allSelected = sources.length > 0
     && sources.every((source) => setup.selectedSourceIDs.has(source.id));
-  elements.toggleAllSlimmingSourcesButton.textContent = allSelected ? "清除" : "全选";
+  syncSlimmingSetupText(
+    elements.toggleAllSlimmingSourcesButton,
+    allSelected ? "清除" : "全选"
+  );
   elements.toggleAllSlimmingSourcesButton.disabled = setup.launching;
-  elements.slimmingSourceHint.textContent = allSelected
-    ? "已选择全部可用来源；提交时保留 Mac 端“全部来源”语义。"
-    : `已选择 ${setup.selectedSourceIDs.size} / ${sources.length} 个来源。`;
+  syncSlimmingSetupText(
+    elements.slimmingSourceHint,
+    allSelected
+      ? "已选择全部可用来源；提交时保留 Mac 端“全部来源”语义。"
+      : `已选择 ${setup.selectedSourceIDs.size} / ${sources.length} 个来源。`
+  );
   const existingOptions = new Map(
     [...elements.slimmingSourceOptions.querySelectorAll(":scope > .training-option-row")]
       .map((row) => [
@@ -33575,38 +33691,50 @@ function syncSlimmingThresholdControls() {
 }
 
 function renderSlimmingSetupSummary() {
-  clearElement(elements.slimmingLaunchSummary);
   const setup = state.slimming.setup;
   const copy = slimmingModeCopy(setup.mode);
-  appendSlimmingSetupSummary("范围", copy.title);
+  const rows = [{ key: "scope", label: "范围", value: copy.title }];
   if (setup.mode === "catalog") {
-    const sourceCount = setup.snapshot?.sources?.length || 0;
-    appendSlimmingSetupSummary(
-      "来源",
-      setup.selectedSourceIDs.size === sourceCount
-        ? `全部 ${sourceCount} 个可用来源`
-        : `${setup.selectedSourceIDs.size} 个来源`
-    );
+    rows.push({ key: "source", label: "来源", value: slimmingSetupSourceSummary() });
   } else if (setup.mode === "seeds") {
-    appendSlimmingSetupSummary("种子", `${currentSlimmingSeedIDs().length} 项`);
+    rows.push({
+      key: "seeds",
+      label: "种子",
+      value: `${currentSlimmingSeedIDs().length} 项`,
+    });
   } else {
-    appendSlimmingSetupSummary("筛选", state.searchText ? `包含搜索“${state.searchText}”` : "网页图库当前筛选");
+    rows.push({
+      key: "filter",
+      label: "筛选",
+      value: slimmingInspectorFilterScopeSummary(),
+    });
   }
-  appendSlimmingSetupSummary(
-    "相似阈值",
-    slimmingThresholdsValid() ? "使用面板中的共享设置" : "设置值无效"
-  );
+  rows.push({
+    key: "thresholds",
+    label: "相似阈值",
+    value: slimmingSetupThresholdSummary(),
+  });
+  reconcileSlimmingSetupSummary(rows);
 }
 
 function renderSlimmingSetup() {
   const setup = state.slimming.setup;
   elements.slimmingSetupLoading.classList.toggle("hidden", !setup.loading);
   elements.slimmingSetupConfiguration.classList.toggle("hidden", setup.loading || !setup.snapshot);
-  elements.slimmingSetupError.textContent = setup.error;
-  elements.launchSlimmingButton.textContent = setup.launching ? "正在交给 Mac…" : "开始分析";
-  elements.saveSlimmingThresholdsButton.textContent = setup.saving && !setup.launching
-    ? "正在保存…"
-    : "仅保存设置";
+  syncSlimmingSetupText(elements.slimmingSetupError, setup.error);
+  const launchPresentation = slimmingSetupLaunchPresentation();
+  syncSlimmingSetupText(
+    elements.launchSlimmingButton,
+    setup.launching ? launchPresentation.running : launchPresentation.idle
+  );
+  elements.launchSlimmingButton.setAttribute(
+    "aria-label",
+    setup.launching ? launchPresentation.running : launchPresentation.idle
+  );
+  syncSlimmingSetupText(
+    elements.saveSlimmingThresholdsButton,
+    setup.saving && !setup.launching ? "正在保存…" : "仅保存设置"
+  );
   if (setup.snapshot) {
     renderSlimmingSetupModes();
     renderSlimmingSourceOptions();
@@ -41809,6 +41937,7 @@ function bindEvents() {
     state.slimming.setup.error = "";
     renderSlimmingSetup();
   });
+  elements.slimmingModeOptions.addEventListener("keydown", moveSlimmingSetupModeSelection);
   elements.slimmingSourceOptions.addEventListener("change", (event) => {
     const input = event.target.closest("[data-slimming-source-id]");
     if (!input) return;

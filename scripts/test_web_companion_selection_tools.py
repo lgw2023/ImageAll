@@ -2841,6 +2841,10 @@ def main(*, inspector_actions_only=False):
             "imageStable": True,
             "focusedMemberID": slimming_refresh_before["memberID"],
         }, slimming_changed_refresh_after
+        page.locator(
+            f'[data-slimming-job-id="{SLIMMING_SECOND_JOB_ID}"] '
+            '[data-slimming-job-row-part="source"]'
+        ).hover()
         page.evaluate(
             """() => {
               const frame = window.__imageAllSlimmingJobInnerFrame;
@@ -3490,6 +3494,85 @@ def main(*, inspector_actions_only=False):
             "hovered": True,
             "selected": True,
         }, slimming_setup_mode_continuity
+        assert page.locator("#launchSlimmingButton").inner_text() == "分析所选来源"
+        assert page.locator(
+            '#slimmingLaunchSummary dd[data-slimming-setup-summary-key="source"]'
+        ).inner_text() == "Apple Photos"
+        page.evaluate(
+            """() => {
+              const summary = document.querySelector('#slimmingLaunchSummary');
+              window.__slimmingSetupSummaryModeFrame = {
+                scopeTerm: summary.querySelector(
+                  'dt[data-slimming-setup-summary-key="scope"]'
+                ),
+                scopeValue: summary.querySelector(
+                  'dd[data-slimming-setup-summary-key="scope"]'
+                ),
+                thresholdTerm: summary.querySelector(
+                  'dt[data-slimming-setup-summary-key="thresholds"]'
+                ),
+                thresholdValue: summary.querySelector(
+                  'dd[data-slimming-setup-summary-key="thresholds"]'
+                ),
+              };
+            }"""
+        )
+        page.keyboard.press("ArrowRight")
+        assert page.locator(
+            '[data-slimming-mode="currentFilter"]'
+        ).get_attribute("aria-checked") == "true"
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.slimmingMode === 'currentFilter'"
+        )
+        assert page.locator(
+            '#slimmingLaunchSummary dd[data-slimming-setup-summary-key="filter"]'
+        ).inner_text()
+        assert not page.locator(
+            '#slimmingLaunchSummary dd[data-slimming-setup-summary-key="source"]'
+        ).count()
+        assert "分析" in page.locator("#launchSlimmingButton").inner_text()
+        page.keyboard.press("ArrowLeft")
+        assert catalog_slimming_mode.get_attribute("aria-checked") == "true"
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.slimmingMode === 'catalog'"
+        )
+        page.keyboard.press("End")
+        assert page.locator(
+            '[data-slimming-mode="seeds"]'
+        ).get_attribute("aria-checked") == "true"
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.slimmingMode === 'seeds'"
+        )
+        assert page.locator("#launchSlimmingButton").inner_text() == "按种子查找（2）"
+        page.keyboard.press("Home")
+        assert catalog_slimming_mode.get_attribute("aria-checked") == "true"
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.slimmingMode === 'catalog'"
+        )
+        summary_mode_continuity = page.evaluate(
+            """() => {
+              const frame = window.__slimmingSetupSummaryModeFrame;
+              const summary = document.querySelector('#slimmingLaunchSummary');
+              return {
+                scopeTerm: summary.querySelector(
+                  'dt[data-slimming-setup-summary-key="scope"]'
+                ) === frame.scopeTerm,
+                scopeValue: summary.querySelector(
+                  'dd[data-slimming-setup-summary-key="scope"]'
+                ) === frame.scopeValue,
+                thresholdTerm: summary.querySelector(
+                  'dt[data-slimming-setup-summary-key="thresholds"]'
+                ) === frame.thresholdTerm,
+                thresholdValue: summary.querySelector(
+                  'dd[data-slimming-setup-summary-key="thresholds"]'
+                ) === frame.thresholdValue,
+                sourceRestored: Boolean(summary.querySelector(
+                  'dd[data-slimming-setup-summary-key="source"]'
+                )),
+              };
+            }"""
+        )
+        assert all(summary_mode_continuity.values()), summary_mode_continuity
         page.evaluate(
             """() => {
               window.__slimmingSetupThresholdFrame = {
@@ -3510,8 +3593,38 @@ def main(*, inspector_actions_only=False):
                   '[data-threshold-automatic-for="slimmingBucketingMode"]'
                 ),
               };
+              const summary = document.querySelector('#slimmingLaunchSummary');
+              const scopeTerm = summary.querySelector(
+                'dt[data-slimming-setup-summary-key="scope"]'
+              );
+              const range = document.createRange();
+              range.selectNodeContents(scopeTerm);
+              const selection = window.getSelection();
+              selection.removeAllRanges();
+              selection.addRange(range);
+              const structuralChanges = [];
+              const observer = new MutationObserver((mutations) => {
+                for (const mutation of mutations) {
+                  if ([...mutation.addedNodes, ...mutation.removedNodes]
+                    .some((node) => node.nodeType === Node.ELEMENT_NODE)) {
+                    structuralChanges.push(mutation.target);
+                  }
+                }
+              });
+              observer.observe(summary, { childList: true, subtree: true });
+              window.__slimmingSetupSummaryThresholdFrame = {
+                nodes: [...summary.children],
+                thresholdValue: summary.querySelector(
+                  'dd[data-slimming-setup-summary-key="thresholds"]'
+                ),
+                observer,
+                structuralChanges,
+              };
             }"""
         )
+        page.locator(
+            '#slimmingLaunchSummary dd[data-slimming-setup-summary-key="thresholds"]'
+        ).hover()
         page.locator("#slimmingRecallTopKSlider").evaluate(
             """slider => {
               slider.focus();
@@ -3527,6 +3640,27 @@ def main(*, inspector_actions_only=False):
         assert page.evaluate(
             "() => document.activeElement === window.__slimmingSetupThresholdFrame.topKSlider"
         )
+        summary_threshold_continuity = page.evaluate(
+            """() => {
+              const frame = window.__slimmingSetupSummaryThresholdFrame;
+              const summary = document.querySelector('#slimmingLaunchSummary');
+              frame.observer.disconnect();
+              return {
+                nodes: [...summary.children].every(
+                  (node, index) => node === frame.nodes[index]
+                ) && summary.children.length === frame.nodes.length,
+                zeroStructuralChanges: frame.structuralChanges.length === 0,
+                thresholdValue: summary.querySelector(
+                  'dd[data-slimming-setup-summary-key="thresholds"]'
+                ) === frame.thresholdValue,
+                thresholdUpdated: frame.thresholdValue.textContent.includes('Top-K 48'),
+                selection: window.getSelection()?.toString() === '范围',
+                hover: frame.thresholdValue.matches(':hover'),
+                focus: document.activeElement === window.__slimmingSetupThresholdFrame.topKSlider,
+              };
+            }"""
+        )
+        assert all(summary_threshold_continuity.values()), summary_threshold_continuity
         page.locator(
             '[data-threshold-mode-target="slimmingRecallMode"]'
         ).check()
@@ -3577,6 +3711,7 @@ def main(*, inspector_actions_only=False):
                 secondRow: secondInput.closest('label'),
                 secondInput,
                 secondName: secondInput.nextElementSibling,
+                summaryNodes: [...document.querySelector('#slimmingLaunchSummary').children],
               };
               return { scrollTop: options.scrollTop };
             }""",
@@ -3617,6 +3752,14 @@ def main(*, inspector_actions_only=False):
                 hovered: secondInput?.matches(':hover') || false,
                 scroll: options.scrollTop === expectedScrollTop,
                 checked: secondInput?.checked || false,
+                summaryNodes: [...document.querySelector('#slimmingLaunchSummary').children]
+                  .every((node, index) => node === frame.summaryNodes[index]),
+                sourceSummary: document.querySelector(
+                  '#slimmingLaunchSummary '
+                    + 'dd[data-slimming-setup-summary-key="source"]'
+                )?.textContent === '全部 2 个可用来源',
+                launchTitle: document.querySelector('#launchSlimmingButton')?.textContent
+                  === '分析全部来源',
               };
             }""",
             {
@@ -3634,11 +3777,18 @@ def main(*, inspector_actions_only=False):
             "hovered": True,
             "scroll": True,
             "checked": True,
+            "summaryNodes": True,
+            "sourceSummary": True,
+            "launchTitle": True,
         }, slimming_setup_source_continuity
         page.evaluate(
             "document.querySelector('#slimmingSourceOptions').style.removeProperty('max-height')"
         )
         second_slimming_setup_source.uncheck()
+        assert page.locator("#launchSlimmingButton").inner_text() == "分析所选来源"
+        assert page.locator(
+            '#slimmingLaunchSummary dd[data-slimming-setup-summary-key="source"]'
+        ).inner_text() == "Apple Photos"
         slimming_setup_history_payload = page.evaluate(
             "() => JSON.stringify(history.state?.imageAllWorkspace || null)"
         )
