@@ -1921,6 +1921,100 @@ def main():
             page.locator("#selectionModeButton").click()
         page.locator("#assetGrid > .asset-card").first.click()
         page.wait_for_function("() => state.selectedAssetIDs.size > 0")
+        tag_select_continuity = page.evaluate(
+            """({ dogID, subjectID }) => {
+              const tagSelectIDs = [
+                'filterTagSelect',
+                'batchTagSelect',
+                'reviewTagSelect',
+                'tagManagerTagSelect',
+              ];
+              const groupSelectIDs = [
+                'tagManagerTagGroupSelect',
+                'tagManagerGroupSelect',
+              ];
+              for (const id of tagSelectIDs) document.getElementById(id).value = dogID;
+              for (const id of groupSelectIDs) document.getElementById(id).value = subjectID;
+              window.__imageAllTagSelectFrame = {
+                tags: Object.fromEntries(tagSelectIDs.map((id) => {
+                  const select = document.getElementById(id);
+                  return [id, {
+                    select,
+                    options: Object.fromEntries([...select.options]
+                      .filter((option) => option.value)
+                      .map((option) => [option.value, option])),
+                  }];
+                })),
+                groups: Object.fromEntries(groupSelectIDs.map((id) => {
+                  const select = document.getElementById(id);
+                  return [id, {
+                    select,
+                    options: Object.fromEntries([...select.options]
+                      .filter((option) => option.value)
+                      .map((option) => [option.value, option])),
+                  }];
+                })),
+              };
+              document.getElementById('batchTagSelect').focus();
+              return { tagSelectIDs, groupSelectIDs };
+            }""",
+            {"dogID": TAG_DOG, "subjectID": GROUP_SUBJECT},
+        )
+        page.locator("#batchTagSelect").hover()
+        stable_tag_select_refresh = page.evaluate(
+            """({ tagSelectIDs, groupSelectIDs, dogID, subjectID }) => {
+              const mutations = [];
+              const observers = [...tagSelectIDs, ...groupSelectIDs].map((id) => {
+                const observer = new MutationObserver((records) => mutations.push(...records));
+                observer.observe(document.getElementById(id), { childList: true });
+                return observer;
+              });
+              renderTagSelects();
+              observers.forEach((observer) => observer.disconnect());
+              const frame = window.__imageAllTagSelectFrame;
+              return {
+                tagOptions: tagSelectIDs.every((id) => {
+                  const select = document.getElementById(id);
+                  return select === frame.tags[id].select
+                    && Object.entries(frame.tags[id].options).every(
+                      ([tagID, option]) => select.querySelector(
+                        `option[value="${CSS.escape(tagID)}"]`
+                      ) === option
+                    );
+                }),
+                groupOptions: groupSelectIDs.every((id) => {
+                  const select = document.getElementById(id);
+                  return select === frame.groups[id].select
+                    && Object.entries(frame.groups[id].options).every(
+                      ([groupID, option]) => select.querySelector(
+                        `option[value="${CSS.escape(groupID)}"]`
+                      ) === option
+                    );
+                }),
+                values: tagSelectIDs.every(
+                  (id) => document.getElementById(id).value === dogID
+                ) && groupSelectIDs.every(
+                  (id) => document.getElementById(id).value === subjectID
+                ),
+                focus: document.activeElement?.id === 'batchTagSelect',
+                hover: document.getElementById('batchTagSelect').matches(':hover'),
+                childListMutations: mutations.length,
+              };
+            }""",
+            {
+                **tag_select_continuity,
+                "dogID": TAG_DOG,
+                "subjectID": GROUP_SUBJECT,
+            },
+        )
+        assert stable_tag_select_refresh == {
+            "tagOptions": True,
+            "groupOptions": True,
+            "values": True,
+            "focus": True,
+            "hover": True,
+            "childListMutations": 0,
+        }, stable_tag_select_refresh
         new_tag_history_length = page.evaluate("() => history.length")
         new_tag_asset_query_count = len(asset_queries)
         page.locator("#sidebarNewTagButton").focus()
@@ -2049,6 +2143,23 @@ def main():
             "() => document.querySelector('#toastMessage').textContent.includes('狗狗')"
         )
         assert len(tag_renames) == 1
+        renamed_tag_selects = page.evaluate(
+            """({ dogID, catID, travelID }) => {
+              const frame = window.__imageAllTagSelectFrame;
+              return Object.entries(frame.tags).every(([id, snapshot]) => {
+                const select = document.getElementById(id);
+                return select.querySelector(`option[value="${CSS.escape(dogID)}"]`)
+                    === snapshot.options[dogID]
+                  && snapshot.options[dogID].textContent === '狗狗'
+                  && select.querySelector(`option[value="${CSS.escape(catID)}"]`)
+                    === snapshot.options[catID]
+                  && select.querySelector(`option[value="${CSS.escape(travelID)}"]`)
+                    === snapshot.options[travelID];
+              });
+            }""",
+            {"dogID": TAG_DOG, "catID": TAG_CAT, "travelID": TAG_TRAVEL},
+        )
+        assert renamed_tag_selects
         page.locator("#closeTagManagerButton").click()
         page.wait_for_function(
             "id => document.activeElement?.dataset.quickTagId === id",
@@ -2099,6 +2210,17 @@ def main():
             arg=GROUP_SUBJECT,
         )
         assert subject_toggle.locator("strong").inner_text() == "主体分类"
+        assert page.evaluate(
+            """subjectID => Object.entries(window.__imageAllTagSelectFrame.groups)
+              .every(([id, snapshot]) => {
+                const option = document.getElementById(id).querySelector(
+                  `option[value="${CSS.escape(subjectID)}"]`
+                );
+                return option === snapshot.options[subjectID]
+                  && option.textContent === '主体分类';
+              })""",
+            GROUP_SUBJECT,
+        )
 
         subject_toggle.click(button="right")
         tag_menu.locator('[data-tag-context-action="deleteGroup"]').click()
@@ -2120,6 +2242,19 @@ def main():
             arg=TAG_CAT,
         )
         assert archived_tag_ids == [TAG_CAT]
+        assert page.evaluate(
+            """({ catID, dogID, travelID }) => Object.entries(
+              window.__imageAllTagSelectFrame.tags
+            ).every(([id, snapshot]) => {
+              const select = document.getElementById(id);
+              return !select.querySelector(`option[value="${CSS.escape(catID)}"]`)
+                && select.querySelector(`option[value="${CSS.escape(dogID)}"]`)
+                  === snapshot.options[dogID]
+                && select.querySelector(`option[value="${CSS.escape(travelID)}"]`)
+                  === snapshot.options[travelID];
+            })""",
+            {"catID": TAG_CAT, "dogID": TAG_DOG, "travelID": TAG_TRAVEL},
+        )
         page.wait_for_function(
             "id => document.activeElement?.dataset.sidebarTagGroupToggle === id",
             arg=GROUP_SUBJECT,

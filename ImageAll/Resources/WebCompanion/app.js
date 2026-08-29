@@ -8836,19 +8836,23 @@ function projectionFingerprint(value) {
 
 function setSelectOptions(select, tags, placeholder) {
   const previous = select.value;
-  clearElement(select);
+  const existingOptions = new Map(
+    [...select.options].map((option) => [option.value, option])
+  );
+  const wantedOptions = [];
   if (placeholder) {
-    const option = document.createElement("option");
+    const option = existingOptions.get("") || document.createElement("option");
     option.value = "";
-    option.textContent = placeholder;
-    select.append(option);
+    if (option.textContent !== placeholder) option.textContent = placeholder;
+    wantedOptions.push(option);
   }
   for (const tag of tags) {
-    const option = document.createElement("option");
+    const option = existingOptions.get(tag.id) || document.createElement("option");
     option.value = tag.id;
-    option.textContent = tag.displayName;
-    select.append(option);
+    if (option.textContent !== tag.displayName) option.textContent = tag.displayName;
+    wantedOptions.push(option);
   }
+  reconcileStableChildren(select, wantedOptions);
   if ([...select.options].some((option) => option.value === previous)) {
     select.value = previous;
   }
