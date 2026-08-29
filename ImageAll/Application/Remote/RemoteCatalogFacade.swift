@@ -3612,6 +3612,7 @@ actor RemoteCatalogFacade {
                     isComplete: $0.isComplete
                 )
             },
+            verificationUnavailableMessage: request.verificationUnavailableMessage,
             message: request.message,
             updatedAtMs: request.updatedAtMs
         )

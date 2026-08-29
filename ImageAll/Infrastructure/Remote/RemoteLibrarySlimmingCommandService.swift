@@ -823,8 +823,8 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
                 requestID,
                 stage: .recyclingAssets,
                 message: command.mode == .releaseSourceSpace
-                    ? "正在逐组保留一项并释放空间…"
-                    : "正在逐组保留一项并移入可恢复回收站…"
+                    ? "正在按红心保护与保留优先级逐组释放空间…"
+                    : "正在按红心保护与保留优先级逐组移入可恢复回收站…"
             )
             var outcome = try await performIdenticalCleanup(
                 command,
@@ -882,23 +882,34 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
                 stage: .verifyingResult,
                 message: "正在进行删除后核验…"
             )
-            let verification = try await Task.detached(priority: .utility) { [recycle] in
-                try recycle.verifyIdenticalCleanup(plan: prepared.plan)
-            }.value
             let audit = Self.makeAudit(outcome: outcome, hidden: hidden)
-            let verificationSnapshot = Self.makeIdenticalCleanupVerification(verification)
-            let message = Self.identicalCleanupMessage(
-                mode: command.mode,
-                verification: verification,
-                outcome: outcome
-            )
-            finishIdenticalCleanup(
-                requestID,
-                phase: .completed,
-                audit: audit,
-                verification: verificationSnapshot,
-                message: message
-            )
+            do {
+                let verification = try await Task.detached(priority: .utility) { [recycle] in
+                    try recycle.verifyIdenticalCleanup(plan: prepared.plan)
+                }.value
+                let verificationSnapshot = Self.makeIdenticalCleanupVerification(verification)
+                let message = Self.identicalCleanupMessage(
+                    mode: command.mode,
+                    verification: verification,
+                    outcome: outcome
+                )
+                finishIdenticalCleanup(
+                    requestID,
+                    phase: .completed,
+                    audit: audit,
+                    verification: verificationSnapshot,
+                    message: message
+                )
+            } catch {
+                finishIdenticalCleanup(
+                    requestID,
+                    phase: .completed,
+                    audit: audit,
+                    verificationUnavailableMessage:
+                        "删除动作已经结束，但无法读取删除后的实际资产状态。",
+                    message: "删除动作已经结束，但删除后核验未完成；未显示未经证实的保留数量"
+                )
+            }
             try? recycle.enqueuePurgeExpired()
         } catch LibrarySlimmingCommandError.cleanupPlanChanged,
                 LibrarySlimmingRecycleError.cleanupPlanChanged
@@ -978,6 +989,7 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
                 ),
                 audit: current.audit,
                 verification: current.verification,
+                verificationUnavailableMessage: current.verificationUnavailableMessage,
                 message: Self.progressMessage(progress.phase, mode: current.mode),
                 updatedAtMs: clock.nowMs
             )
@@ -1003,6 +1015,7 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
         executionStage: LibrarySlimmingIdenticalCleanupExecutionStage? = nil,
         audit: LibrarySlimmingRemovalCommandAudit? = nil,
         verification: LibrarySlimmingIdenticalCleanupVerificationSnapshot? = nil,
+        verificationUnavailableMessage: String? = nil,
         message: String,
         clearTask: Bool = true
     ) {
@@ -1020,6 +1033,8 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
                 progress: current.progress,
                 audit: audit ?? current.audit,
                 verification: verification ?? current.verification,
+                verificationUnavailableMessage: verificationUnavailableMessage
+                    ?? current.verificationUnavailableMessage,
                 message: message,
                 updatedAtMs: clock.nowMs
             )

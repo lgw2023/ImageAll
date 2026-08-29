@@ -10,8 +10,8 @@
   <meta name="apple-mobile-web-app-title" content="ImageAll">
   <title>ImageAll 网页版</title>
   <link rel="manifest" href="/manifest.webmanifest">
-    <link rel="stylesheet" href="/app.css?v=20260829-197">
-    <script src="/app.js?v=20260829-197" defer></script>
+  <link rel="stylesheet" href="/app.css?v=20260829-198">
+  <script src="/app.js?v=20260829-198" defer></script>
 </head>
 <body>
   <div id="bootView" class="centered-state">
@@ -2454,14 +2454,14 @@
           <p id="slimmingVerificationSubtitle">已重新读取本次处理资产的实时状态。</p>
         </div>
       </header>
-      <div class="slimming-verification-score">
+      <div id="slimmingVerificationScoreSection" class="slimming-verification-score">
         <strong id="slimmingVerificationScore">0 / 0</strong>
         <span>组重复媒体已完成去重</span>
         <p id="slimmingVerificationGoal"></p>
       </div>
       <div id="slimmingVerificationMetrics" class="identical-cleanup-metrics"></div>
       <div id="slimmingVerificationResult" class="slimming-verification-result"></div>
-      <p class="slimming-verification-footnote">
+      <p id="slimmingVerificationFootnote" class="slimming-verification-footnote">
         “完成去重”“确认已清理”和“当前实际可用”均来自删除后的再次读取；目标值来自本次冻结方案。
       </p>
       <footer class="identical-cleanup-actions">

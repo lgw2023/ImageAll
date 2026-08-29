@@ -1709,6 +1709,34 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
             from: JSONSerialization.data(withJSONObject: legacyRequestObject)
         )
         XCTAssertNil(legacyRequest.executionStage)
+
+        let unavailableRequest = RemoteLibrarySlimmingIdenticalCleanupRequestSnapshot(
+            id: UUID(),
+            operationID: UUID(),
+            planID: planID,
+            jobID: jobID,
+            mediaKind: .image,
+            mode: .recoverableRecycle,
+            phase: .completed,
+            progress: nil,
+            audit: nil,
+            verification: nil,
+            verificationUnavailableMessage: "删除动作已经结束，但合成核验读取失败",
+            message: "删除后核验未完成",
+            updatedAtMs: 1_700_000_009_000
+        )
+        try assertRoundTrip(unavailableRequest)
+        var legacyUnavailableObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(unavailableRequest)
+            ) as? [String: Any]
+        )
+        legacyUnavailableObject.removeValue(forKey: "verificationUnavailableMessage")
+        let legacyUnavailableRequest = try JSONDecoder().decode(
+            RemoteLibrarySlimmingIdenticalCleanupRequestSnapshot.self,
+            from: JSONSerialization.data(withJSONObject: legacyUnavailableObject)
+        )
+        XCTAssertNil(legacyUnavailableRequest.verificationUnavailableMessage)
     }
 
     func testAPIErrorRoundTrip() throws {

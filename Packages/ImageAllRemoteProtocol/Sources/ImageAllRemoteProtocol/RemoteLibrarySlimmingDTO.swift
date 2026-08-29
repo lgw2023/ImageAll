@@ -1131,6 +1131,9 @@ public struct RemoteLibrarySlimmingIdenticalCleanupRequestSnapshot:
     public let progress: RemoteLibrarySlimmingRemovalProgress?
     public let audit: RemoteLibrarySlimmingRemovalAudit?
     public let verification: RemoteLibrarySlimmingIdenticalCleanupVerification?
+    /// A trusted explanation for why deletion finished without an observed
+    /// post-delete verification. Optional for compatibility with older Hosts.
+    public let verificationUnavailableMessage: String?
     public let message: String
     public let updatedAtMs: Int64
 
@@ -1146,6 +1149,7 @@ public struct RemoteLibrarySlimmingIdenticalCleanupRequestSnapshot:
         progress: RemoteLibrarySlimmingRemovalProgress?,
         audit: RemoteLibrarySlimmingRemovalAudit?,
         verification: RemoteLibrarySlimmingIdenticalCleanupVerification?,
+        verificationUnavailableMessage: String? = nil,
         message: String,
         updatedAtMs: Int64
     ) {
@@ -1160,6 +1164,7 @@ public struct RemoteLibrarySlimmingIdenticalCleanupRequestSnapshot:
         self.progress = progress
         self.audit = audit
         self.verification = verification
+        self.verificationUnavailableMessage = verificationUnavailableMessage
         self.message = message
         self.updatedAtMs = updatedAtMs
     }

@@ -905,10 +905,12 @@ const elements = {
   slimmingVerificationIcon: $("#slimmingVerificationIcon"),
   slimmingVerificationTitle: $("#slimmingVerificationTitle"),
   slimmingVerificationSubtitle: $("#slimmingVerificationSubtitle"),
+  slimmingVerificationScoreSection: $("#slimmingVerificationScoreSection"),
   slimmingVerificationScore: $("#slimmingVerificationScore"),
   slimmingVerificationGoal: $("#slimmingVerificationGoal"),
   slimmingVerificationMetrics: $("#slimmingVerificationMetrics"),
   slimmingVerificationResult: $("#slimmingVerificationResult"),
+  slimmingVerificationFootnote: $("#slimmingVerificationFootnote"),
   closeSlimmingVerificationButton: $("#closeSlimmingVerificationButton"),
   lightbox: $("#lightbox"),
   lightboxTitle: $("#lightboxTitle"),
@@ -28736,15 +28738,17 @@ function renderSlimmingRemovalStatus() {
     audit.textContent = auditParts.join(" · ") || "逐项结果已由 Mac 安全核验";
     parts.push(audit);
   }
-  if (request.verification) {
+  if (hasSlimmingVerificationReport(request)) {
     const verification = slimmingRemovalStatusPart(
       "verification",
       "div",
       "slimming-removal-audit"
     );
-    verification.textContent = request.verification.isComplete
-      ? `已独立核验：${request.verification.verifiedGroupCount}/${request.verification.targetGroupCount} 组均只保留一项`
-      : `核验结果：完成 ${request.verification.verifiedGroupCount}/${request.verification.targetGroupCount} 组 · 尚有 ${request.verification.remainingRedundantAssetCount} 项冗余`;
+    verification.textContent = request.verification
+      ? request.verification.isComplete
+        ? `已独立核验：${request.verification.verifiedGroupCount}/${request.verification.targetGroupCount} 组完成去重，红心资产全部保留`
+        : `核验结果：完成 ${request.verification.verifiedGroupCount}/${request.verification.targetGroupCount} 组 · 尚有 ${request.verification.remainingRedundantAssetCount} 项冗余`
+      : "删除动作已结束；实际资产状态尚未完成独立核验";
     parts.push(verification);
     const report = slimmingRemovalStatusPart(
       "verificationAction",
@@ -28753,7 +28757,7 @@ function renderSlimmingRemovalStatus() {
     );
     report.type = "button";
     report.dataset.slimmingVerificationRequestId = request.id;
-    report.textContent = "查看完整核验报告";
+    report.textContent = request.verification ? "查看完整核验报告" : "查看核验说明";
     parts.push(report);
   }
   reconcileSlimmingRemovalStatusParts(parts);
@@ -28770,9 +28774,44 @@ function appendSlimmingVerificationMetric(label, value, tone) {
   elements.slimmingVerificationMetrics.append(card);
 }
 
+function slimmingVerificationUnavailableMessage(request) {
+  return typeof request?.verificationUnavailableMessage === "string"
+    ? request.verificationUnavailableMessage.trim()
+    : "";
+}
+
+function hasSlimmingVerificationReport(request) {
+  return Boolean(request?.verification || slimmingVerificationUnavailableMessage(request));
+}
+
 function renderSlimmingVerificationReport(request) {
   const verification = request?.verification;
-  if (!verification) return false;
+  const unavailableMessage = slimmingVerificationUnavailableMessage(request);
+  if (!verification && !unavailableMessage) return false;
+  const unavailable = !verification;
+  elements.slimmingVerificationDialog.classList.toggle("unavailable", unavailable);
+  elements.slimmingVerificationScoreSection.classList.toggle("hidden", unavailable);
+  elements.slimmingVerificationMetrics.classList.toggle("hidden", unavailable);
+  clearElement(elements.slimmingVerificationMetrics);
+  clearElement(elements.slimmingVerificationResult);
+  if (unavailable) {
+    elements.slimmingVerificationDialog.classList.add("incomplete");
+    elements.slimmingVerificationIcon.textContent = "!";
+    elements.slimmingVerificationTitle.textContent = "删除后核验未完成";
+    elements.slimmingVerificationSubtitle.textContent =
+      "删除动作已经结束，但无法取得可信的实际统计。";
+    const heading = document.createElement("strong");
+    heading.textContent = "未显示未经证实的保留数量";
+    const detail = document.createElement("p");
+    detail.textContent = unavailableMessage;
+    const guidance = document.createElement("p");
+    guidance.textContent =
+      "请保留当前回收记录并重新进入图库瘦身后再核验；在成功读取真实状态前，ImageAll 不会用删除前计划值代替结果。";
+    elements.slimmingVerificationResult.append(heading, detail, guidance);
+    elements.slimmingVerificationFootnote.textContent =
+      "此处只呈现删除动作已经结束和核验不可用这两个已证实事实。";
+    return true;
+  }
   const complete = Boolean(verification.isComplete);
   elements.slimmingVerificationDialog.classList.toggle("incomplete", !complete);
   elements.slimmingVerificationIcon.textContent = complete ? "✓" : "!";
@@ -28784,13 +28823,11 @@ function renderSlimmingVerificationReport(request) {
   elements.slimmingVerificationScore.textContent =
     `${verification.verifiedGroupCount} / ${verification.targetGroupCount}`;
   elements.slimmingVerificationGoal.textContent =
-    `目标是每组保留 1 项，共 ${verification.targetRetainedAssetCount} 项；只把删除后确实仅剩 1 项的分组计入已完成。`;
-  clearElement(elements.slimmingVerificationMetrics);
+    `目标是保留全部红心资产；没有红心时每组保留 1 项，共 ${verification.targetRetainedAssetCount} 项。`;
   appendSlimmingVerificationMetric("目标保留", verification.targetRetainedAssetCount, "blue");
   appendSlimmingVerificationMetric("当前实际可用", verification.currentAvailableAssetCount, "green");
   appendSlimmingVerificationMetric("完成去重", verification.verifiedGroupCount, "indigo");
   appendSlimmingVerificationMetric("尚未完成", verification.unresolvedGroupCount, complete ? "neutral" : "orange");
-  clearElement(elements.slimmingVerificationResult);
   const heading = document.createElement("strong");
   heading.textContent = complete ? "核验完成" : "核验发现未完成项";
   const detail = document.createElement("p");
@@ -28798,6 +28835,8 @@ function renderSlimmingVerificationReport(request) {
     ? `实际读取 ${verification.observedAssetCount} 项，确认已清理 ${verification.recycledRedundantAssetCount} 项；处理范围内没有仍处于可用状态的计划删除项。`
     : `实际读取 ${verification.observedAssetCount} 项；确认已清理 ${verification.recycledRedundantAssetCount} 项；当前实际可用 ${verification.currentAvailableAssetCount} 项；仍可用冗余 ${verification.remainingRedundantAssetCount} 项；状态无法确认 ${verification.unresolvedAssetCount} 项。`;
   elements.slimmingVerificationResult.append(heading, detail);
+  elements.slimmingVerificationFootnote.textContent =
+    "“完成去重”“确认已清理”和“当前实际可用”均来自删除后的再次读取；“目标保留”来自本次运行时逐组清理计划，不代表所有分组均已完成。";
   return true;
 }
 
@@ -28864,7 +28903,7 @@ function presentSlimmingVerificationReport({
 
 function openSlimmingVerificationReport(request) {
   const cleanup = state.slimming.identicalCleanup;
-  if (!request?.verification || cleanup.verificationOpening) return;
+  if (!hasSlimmingVerificationReport(request) || cleanup.verificationOpening) return;
   if (!elements.slimmingVerificationDialog.open) {
     cleanup.verificationReturnFocus = document.activeElement;
   }
@@ -28935,7 +28974,7 @@ function reconcileSlimmingVerificationFromWorkspaceHistory(
   const shouldOpen = navigationLevel === "slimmingVerification"
     && route === visibleWorkspaceRoute();
   if (shouldOpen && (!cleanup.verificationRestorable
-    || !cleanup.verificationRequest?.verification)) {
+    || !hasSlimmingVerificationReport(cleanup.verificationRequest))) {
     clearSlimmingVerificationState();
     if (history.length > 1 && Object.prototype.hasOwnProperty.call(
       context,
@@ -31135,7 +31174,8 @@ async function loadSlimmingIdenticalCleanupRequests({ quiet = false } = {}) {
     if (terminal && terminal.id !== cleanup.lastTerminalRequestID) {
       cleanup.lastTerminalRequestID = terminal.id;
       toast(terminal.message || "一键清理已结束");
-      if (terminal.verification && terminal.id !== cleanup.lastPresentedVerificationID) {
+      if (hasSlimmingVerificationReport(terminal)
+        && terminal.id !== cleanup.lastPresentedVerificationID) {
         cleanup.lastPresentedVerificationID = terminal.id;
         openSlimmingVerificationReport(terminal);
       }

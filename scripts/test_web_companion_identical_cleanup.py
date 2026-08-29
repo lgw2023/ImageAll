@@ -345,7 +345,7 @@ async def main():
                 "copiedBytes": 1024,
                 "totalFileBytes": 4096,
             },
-            "message": "正在逐组保留一项并移入可恢复回收站…",
+            "message": "正在按红心保护与保留优先级逐组移入可恢复回收站…",
             "updatedAtMs": 1_700_000_050_200,
         })
         await page.evaluate(
@@ -471,6 +471,12 @@ async def main():
         assert REQUEST_ID not in verification_history
         assert "RECYCLE_0002" not in verification_history
         assert "3 / 4" in await page.locator("#slimmingVerificationScore").inner_text()
+        assert "目标是保留全部红心资产；没有红心时每组保留 1 项" in await page.locator(
+            "#slimmingVerificationGoal"
+        ).inner_text()
+        assert "只把删除后确实仅剩 1 项" not in await page.locator(
+            "#slimmingVerificationDialog"
+        ).inner_text()
         await page.go_back()
         await page.wait_for_function(
             "() => !document.querySelector('#slimmingVerificationDialog').open"
@@ -581,6 +587,56 @@ async def main():
         await verification_button.click()
         await page.locator("#slimmingVerificationDialog[open]").wait_for()
         assert "4 / 4" in await page.locator("#slimmingVerificationScore").inner_text()
+        await page.keyboard.press("Escape")
+        await page.wait_for_function(
+            "() => !document.querySelector('#slimmingVerificationDialog').open"
+        )
+
+        cleanup_request.update({
+            "verification": None,
+            "verificationUnavailableMessage": (
+                "删除动作已经结束，但无法读取删除后的实际资产状态：合成核验读取失败"
+            ),
+            "message": "删除动作已经结束，但删除后核验未完成；未显示未经证实的保留数量",
+            "updatedAtMs": cleanup_request["updatedAtMs"] + 100,
+        })
+        await page.evaluate(
+            """fixture => {
+              document.querySelector("#slimmingWorkspace").classList.remove("hidden");
+              syncSlimmingPresentation({ focus: false, renderSurfaces: false });
+              state.slimming.identicalCleanup.requests = [fixture];
+              renderSlimmingRemovalStatus();
+            }""",
+            cleanup_request,
+        )
+        unavailable_button = page.locator(
+            "#slimmingRemovalStatus [data-slimming-verification-request-id]"
+        )
+        assert await unavailable_button.inner_text() == "查看核验说明"
+        assert "实际资产状态尚未完成独立核验" in await page.locator(
+            "#slimmingRemovalStatus"
+        ).inner_text()
+        await unavailable_button.click()
+        await page.locator("#slimmingVerificationDialog[open]").wait_for()
+        assert await page.locator("#slimmingVerificationTitle").inner_text() == "删除后核验未完成"
+        assert await page.locator("#slimmingVerificationScoreSection").evaluate(
+            "node => node.classList.contains('hidden')"
+        )
+        assert await page.locator("#slimmingVerificationMetrics").evaluate(
+            "node => node.classList.contains('hidden')"
+        )
+        unavailable_report = await page.locator("#slimmingVerificationDialog").inner_text()
+        assert "未显示未经证实的保留数量" in unavailable_report
+        assert "合成核验读取失败" in unavailable_report
+        assert "不会用删除前计划值代替结果" in unavailable_report
+        assert "目标保留" not in unavailable_report
+        assert await page.evaluate(
+            "() => document.documentElement.scrollWidth <= document.documentElement.clientWidth"
+        )
+        await page.screenshot(
+            path="/tmp/imageall-identical-cleanup-verification-unavailable-390.png",
+            full_page=True,
+        )
         await page.keyboard.press("Escape")
         await page.wait_for_function(
             "() => !document.querySelector('#slimmingVerificationDialog').open"

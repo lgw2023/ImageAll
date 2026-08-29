@@ -2672,8 +2672,10 @@ final class RemoteHTTPServerTests: XCTestCase {
             "identicalCleanupBlockingProgressBar",
             "identicalCleanupBlockingProgressLabel",
             "slimmingVerificationDialog",
+            "slimmingVerificationScoreSection",
             "slimmingVerificationMetrics",
             "slimmingVerificationResult",
+            "slimmingVerificationFootnote",
             "closeSlimmingVerificationButton",
             "slimmingJobActions",
             "slimmingSetupDialog",
@@ -3610,6 +3612,10 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("renderSlimmingWorkspace"))
         XCTAssertTrue(script.contains("renderIdenticalCleanupBlockingOverlay"))
         XCTAssertTrue(script.contains("identicalCleanupExecutionPresentation"))
+        XCTAssertTrue(script.contains("hasSlimmingVerificationReport"))
+        XCTAssertTrue(script.contains("verificationUnavailableMessage"))
+        XCTAssertTrue(script.contains("未显示未经证实的保留数量"))
+        XCTAssertTrue(script.contains("目标是保留全部红心资产"))
         XCTAssertTrue(script.contains("selectSlimmingMember"))
         XCTAssertTrue(script.contains("showSlimmingMemberContextMenu"))
         XCTAssertTrue(script.contains("data-slimming-member-context-action"))

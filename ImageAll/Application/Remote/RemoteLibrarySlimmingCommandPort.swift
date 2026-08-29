@@ -290,6 +290,10 @@ struct LibrarySlimmingIdenticalCleanupRequestSnapshot: Equatable, Sendable {
     let progress: LibrarySlimmingRemovalCommandProgress?
     let audit: LibrarySlimmingRemovalCommandAudit?
     let verification: LibrarySlimmingIdenticalCleanupVerificationSnapshot?
+    /// Present only when deletion finished but the independent post-delete read failed.
+    /// Keeping this separate from `verification` prevents clients from presenting plan
+    /// counts as if they were observed results.
+    let verificationUnavailableMessage: String?
     let message: String
     let updatedAtMs: Int64
 
@@ -305,6 +309,7 @@ struct LibrarySlimmingIdenticalCleanupRequestSnapshot: Equatable, Sendable {
         progress: LibrarySlimmingRemovalCommandProgress?,
         audit: LibrarySlimmingRemovalCommandAudit?,
         verification: LibrarySlimmingIdenticalCleanupVerificationSnapshot?,
+        verificationUnavailableMessage: String? = nil,
         message: String,
         updatedAtMs: Int64
     ) {
@@ -319,6 +324,7 @@ struct LibrarySlimmingIdenticalCleanupRequestSnapshot: Equatable, Sendable {
         self.progress = progress
         self.audit = audit
         self.verification = verification
+        self.verificationUnavailableMessage = verificationUnavailableMessage
         self.message = message
         self.updatedAtMs = updatedAtMs
     }

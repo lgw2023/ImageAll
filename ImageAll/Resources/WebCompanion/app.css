@@ -12045,7 +12045,8 @@ button.world-map-place-candidate:focus-visible {
   place-items: center;
 }
 
-.slimming-verification-dialog.incomplete .slimming-verification-icon {
+.slimming-verification-dialog.incomplete .slimming-verification-icon,
+.slimming-verification-dialog.unavailable .slimming-verification-icon {
   color: var(--orange);
   background: color-mix(in srgb, var(--orange), transparent 88%);
 }
@@ -12092,7 +12093,8 @@ button.world-map-place-candidate:focus-visible {
   background: color-mix(in srgb, var(--green), transparent 92%);
 }
 
-.slimming-verification-dialog.incomplete .slimming-verification-result {
+.slimming-verification-dialog.incomplete .slimming-verification-result,
+.slimming-verification-dialog.unavailable .slimming-verification-result {
   color: var(--orange);
   background: color-mix(in srgb, var(--orange), transparent 92%);
 }

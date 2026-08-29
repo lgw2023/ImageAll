@@ -575,6 +575,53 @@ final class RemoteLibrarySlimmingSourceMaintenanceServiceTests: XCTestCase {
         XCTAssertEqual(terminal.message, "所选项目均有红心保护；未删除或回收任何项目")
     }
 
+    func testIdenticalCleanupKeepsUnavailableVerificationAfterDeletionFinishes() async throws {
+        let workspace = RemoteSlimmingMaintenanceWorkspaceStub()
+        let jobID = UUID()
+        let survivorID = UUID()
+        let recycledID = UUID()
+        let plan = LibrarySlimmingIdenticalCleanupPlan(
+            decisions: [
+                LibrarySlimmingIdenticalCleanupDecision(
+                    clusterID: UUID(),
+                    survivorAssetID: survivorID,
+                    assetIDsToRecycle: [recycledID],
+                    favoriteRetainedAssetIDs: [survivorID]
+                ),
+            ],
+            skippedGroupCount: 0,
+            photosAssetCount: 0,
+            fileAssetCount: 1
+        )
+        let service = makeService(
+            workspace: workspace,
+            analysis: RemoteIdenticalCleanupAnalysisStub(jobID: jobID),
+            recycle: RemoteIdenticalCleanupVerificationFailureStub(plan: plan),
+            approvalPresenter: RemoteSlimmingApprovalStub { true }
+        )
+        let prepared = try await service.prepareIdenticalCleanup(
+            jobID: jobID,
+            mediaKind: .image
+        )
+        let accepted = try await service.submitIdenticalCleanup(
+            LibrarySlimmingIdenticalCleanupCommand(
+                operationID: UUID(),
+                planID: prepared.id,
+                mode: .recoverableRecycle
+            )
+        )
+        let terminal = try await waitForIdenticalCleanupTerminal(service, id: accepted.id)
+
+        XCTAssertEqual(terminal.phase, .completed)
+        XCTAssertNil(terminal.verification)
+        XCTAssertEqual(
+            terminal.verificationUnavailableMessage,
+            "删除动作已经结束，但无法读取删除后的实际资产状态。"
+        )
+        XCTAssertEqual(terminal.audit?.hiddenAssetIDs, [recycledID])
+        XCTAssertTrue(terminal.message.contains("未显示未经证实的保留数量"))
+    }
+
     func testRefreshCatalogAcceptsOnlyActiveSubsetAndStartsBothRunners() async throws {
         let workspace = RemoteSlimmingMaintenanceWorkspaceStub()
         let service = makeService(workspace: workspace)
@@ -648,6 +695,8 @@ final class RemoteLibrarySlimmingSourceMaintenanceServiceTests: XCTestCase {
 
     private func makeService(
         workspace: RemoteSlimmingMaintenanceWorkspaceStub,
+        analysis: any LibrarySlimmingAnalysisJobPort = RemoteSlimmingAnalysisStub(),
+        recycle: any LibrarySlimmingRecyclePort = RemoteSlimmingRecycleStub(),
         sourceIndex: RemoteSlimmingSourceIndexStub = RemoteSlimmingSourceIndexStub(),
         approvalPresenter: any RemoteLibrarySlimmingNativeApprovalPresenting =
             RemoteSlimmingApprovalStub()
@@ -655,10 +704,10 @@ final class RemoteLibrarySlimmingSourceMaintenanceServiceTests: XCTestCase {
         RemoteLibrarySlimmingCommandService(
             catalog: workspace,
             workspace: workspace,
-            analysis: RemoteSlimmingAnalysisStub(),
+            analysis: analysis,
             thresholds: RemoteSlimmingThresholdStoreStub(),
             sourceSimilarityIndex: sourceIndex,
-            recycle: RemoteSlimmingRecycleStub(),
+            recycle: recycle,
             mutationAuthorization: RemoteFolderMutationAuthorizationStub(outcome: .cancelled),
             photosMutation: RemotePhotosMutationAuthorizationStub(state: .authorized),
             approvalPresenter: approvalPresenter,
@@ -679,6 +728,24 @@ final class RemoteLibrarySlimmingSourceMaintenanceServiceTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(1))
         }
         let snapshot = try await service.removalSnapshot(mediaKind: .image)
+        return try XCTUnwrap(snapshot.requests.first { $0.id == id })
+    }
+
+    private func waitForIdenticalCleanupTerminal(
+        _ service: RemoteLibrarySlimmingCommandService,
+        id: UUID
+    ) async throws -> LibrarySlimmingIdenticalCleanupRequestSnapshot {
+        for _ in 0..<200 {
+            if let request = try await service.identicalCleanupSnapshot(
+                mediaKind: .image
+            ).requests.first(where: { $0.id == id }),
+               ![.awaitingMac, .running].contains(request.phase)
+            {
+                return request
+            }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        let snapshot = try await service.identicalCleanupSnapshot(mediaKind: .image)
         return try XCTUnwrap(snapshot.requests.first { $0.id == id })
     }
 
@@ -1353,6 +1420,99 @@ private struct RemoteSlimmingAnalysisStub: LibrarySlimmingAnalysisJobPort {
     func latestActiveOrCompleted() throws -> LibrarySlimmingAnalysisJobSnapshot? { nil }
     func listJobs() throws -> [LibrarySlimmingAnalysisJobSummary] { [] }
     func delete(jobID _: UUID) throws {}
+}
+
+private struct RemoteIdenticalCleanupAnalysisStub: LibrarySlimmingAnalysisJobPort {
+    let jobID: UUID
+
+    func enqueue(
+        mode _: LibrarySlimmingAnalyzeMode,
+        assetIDs _: [UUID],
+        seedAssetIDs _: [UUID]
+    ) throws -> LibrarySlimmingAnalysisJobSnapshot {
+        throw LibrarySlimmingCommandError.unavailable
+    }
+    func runPending() throws {}
+    func pause(jobID _: UUID) throws -> LibrarySlimmingAnalysisJobSnapshot { snapshotValue }
+    func resume(jobID _: UUID) throws -> LibrarySlimmingAnalysisJobSnapshot { snapshotValue }
+    func snapshot(jobID _: UUID) throws -> LibrarySlimmingAnalysisJobSnapshot { snapshotValue }
+    func latestActiveOrCompleted() throws -> LibrarySlimmingAnalysisJobSnapshot? { snapshotValue }
+    func listJobs() throws -> [LibrarySlimmingAnalysisJobSummary] {
+        [
+            LibrarySlimmingAnalysisJobSummary(
+                jobID: jobID,
+                mode: .catalog,
+                state: .completed,
+                controlRequest: .none,
+                progress: JobProgress(completed: 2, total: 2),
+                attempts: 1,
+                maxAttempts: 1,
+                memberCount: 2,
+                seedCount: 0,
+                clusterCount: 1,
+                hasResult: true,
+                createdAtMs: 1,
+                updatedAtMs: 1
+            ),
+        ]
+    }
+    func delete(jobID _: UUID) throws {}
+
+    private var snapshotValue: LibrarySlimmingAnalysisJobSnapshot {
+        LibrarySlimmingAnalysisJobSnapshot(
+            jobID: jobID,
+            state: .completed,
+            controlRequest: .none,
+            progress: JobProgress(completed: 2, total: 2),
+            result: LibrarySlimmingScanResult(
+                clusters: [],
+                pendingAnalysisAssetIDs: [],
+                analyzedAssetCount: 2,
+                policyVersion: "test"
+            )
+        )
+    }
+}
+
+private enum RemoteIdenticalCleanupVerificationFailure: Error {
+    case synthetic
+}
+
+private struct RemoteIdenticalCleanupVerificationFailureStub: LibrarySlimmingRecyclePort {
+    let plan: LibrarySlimmingIdenticalCleanupPlan
+
+    func makeIdenticalCleanupPlan(
+        clusters _: [SlimmingCluster]
+    ) throws -> LibrarySlimmingIdenticalCleanupPlan { plan }
+
+    func verifyIdenticalCleanup(
+        plan _: LibrarySlimmingIdenticalCleanupPlan
+    ) throws -> LibrarySlimmingIdenticalCleanupVerification {
+        throw RemoteIdenticalCleanupVerificationFailure.synthetic
+    }
+
+    func moveAssetsToRecycle(
+        assetIDs: [UUID]
+    ) throws -> LibrarySlimmingRecycleMoveOutcome {
+        LibrarySlimmingRecycleMoveOutcome(
+            recycledEntryIDs: assetIDs,
+            skippedPhotosAssetIDs: [],
+            failedAssetIDs: [],
+            authorizationRequiredSourceIDs: [],
+            authorizationRequiredAssetIDs: [],
+            authorizationDeniedPhotosAssetIDs: []
+        )
+    }
+
+    func listRecycledEntries() throws -> [RecycleEntryRecord] { [] }
+    func restore(entryID _: UUID) throws { throw LibrarySlimmingRecycleError.invalidState }
+    func purgeNow(entryID _: UUID) throws { throw LibrarySlimmingRecycleError.invalidState }
+    func purgeExpired(nowMs _: Int64) throws -> Int { 0 }
+    func enqueuePurgeExpired() throws {}
+    func recoverInterruptedOperations() throws -> Int { 0 }
+    func reconcilePhotosRecycleEntries() throws -> Int { 0 }
+    func slimmingHiddenAssetIDs(from assetIDs: [UUID]) throws -> Set<UUID> { Set(assetIDs) }
+    func restoredAssetReplacements(from _: [UUID]) throws -> [UUID: UUID] { [:] }
 }
 
 private struct RemoteSlimmingRecycleStub: LibrarySlimmingRecyclePort {
