@@ -2946,11 +2946,45 @@ def main(*, inspector_actions_only=False):
               const card = document.querySelector(
                 `[data-slimming-member-id="${CSS.escape(memberID)}"]`
               );
+              const main = card?.querySelector(':scope > .slimming-member-main');
+              const footer = main?.querySelector(
+                ':scope > [data-slimming-member-main-part="footer"]'
+              );
+              const source = footer?.querySelector(
+                ':scope > [data-slimming-member-footer-part="source"]'
+              );
+              const selection = getSelection();
+              const range = document.createRange();
+              range.selectNodeContents(source);
+              selection.removeAllRanges();
+              selection.addRange(range);
+              const observer = new MutationObserver((records) => {
+                window.__imageAllSlimmingChangedMemberFrame.elementMutations += records
+                  .flatMap((record) => [...record.addedNodes, ...record.removedNodes])
+                  .filter((node) => node.nodeType === Node.ELEMENT_NODE).length;
+              });
               window.__imageAllSlimmingChangedMember = card;
               window.__imageAllSlimmingChangedMemberImage = card?.querySelector('img');
+              window.__imageAllSlimmingChangedMemberFrame = {
+                main,
+                footer,
+                name: footer?.querySelector(
+                  ':scope > [data-slimming-member-footer-part="name"]'
+                ),
+                source,
+                favorite: card?.querySelector(':scope > .slimming-member-favorite'),
+                selectedText: selection.toString(),
+                elementMutations: 0,
+                observer,
+              };
+              observer.observe(card, { childList: true, subtree: true });
             }""",
             SLIMMING_ASSET_IDS[2],
         )
+        page.locator(
+            f'[data-slimming-member-id="{SLIMMING_ASSET_IDS[2]}"] '
+            '[data-slimming-member-footer-part="source"]'
+        ).hover()
         favorite_states[SLIMMING_ASSET_IDS[2]] = True
         page.evaluate("loadSlimmingWorkspace({ quiet: true })")
         page.wait_for_function(
@@ -2964,10 +2998,31 @@ def main(*, inspector_actions_only=False):
               const changedMember = document.querySelector(
                 `[data-slimming-member-id="${CSS.escape(expected.changedMemberID)}"]`
               );
+              const frame = window.__imageAllSlimmingChangedMemberFrame;
+              frame.observer.disconnect();
               return {
                 memberStable: changedMember === window.__imageAllSlimmingChangedMember,
                 imageStable: changedMember?.querySelector('img')
                   === window.__imageAllSlimmingChangedMemberImage,
+                innerPartsStable: frame.main === changedMember?.querySelector(
+                  ':scope > .slimming-member-main'
+                )
+                  && frame.footer === frame.main.querySelector(
+                    ':scope > [data-slimming-member-main-part="footer"]'
+                  )
+                  && frame.name === frame.footer.querySelector(
+                    ':scope > [data-slimming-member-footer-part="name"]'
+                  )
+                  && frame.source === frame.footer.querySelector(
+                    ':scope > [data-slimming-member-footer-part="source"]'
+                  )
+                  && frame.favorite === changedMember?.querySelector(
+                    ':scope > .slimming-member-favorite'
+                  ),
+                selectionStable: getSelection().toString() === frame.selectedText
+                  && getSelection().containsNode(frame.source, true),
+                hovered: frame.source.matches(':hover'),
+                elementMutations: frame.elementMutations,
                 focusedMemberID: document.activeElement?.closest(
                   '[data-slimming-member-id]'
                 )?.dataset.slimmingMemberId || null,
@@ -2981,6 +3036,10 @@ def main(*, inspector_actions_only=False):
         assert slimming_changed_member_after == {
             "memberStable": True,
             "imageStable": True,
+            "innerPartsStable": True,
+            "selectionStable": True,
+            "hovered": True,
+            "elementMutations": 0,
             "focusedMemberID": slimming_refresh_before["memberID"],
         }, slimming_changed_member_after
         favorite_states[SLIMMING_ASSET_IDS[2]] = False
@@ -6023,6 +6082,117 @@ def main(*, inspector_actions_only=False):
         assert "等待 Mac 确认" in page.locator(
             "#slimmingMemberGrid .slimming-member-pending-overlay"
         ).inner_text()
+        page.evaluate(
+            """assetID => {
+              const card = document.querySelector(
+                `[data-slimming-member-id="${CSS.escape(assetID)}"]`
+              );
+              const main = card.querySelector(':scope > .slimming-member-main');
+              const footer = main.querySelector(
+                ':scope > [data-slimming-member-main-part="footer"]'
+              );
+              const source = footer.querySelector(
+                ':scope > [data-slimming-member-footer-part="source"]'
+              );
+              const overlay = card.querySelector(
+                ':scope > [data-slimming-member-card-part="pendingOverlay"]'
+              );
+              const frame = {
+                card,
+                main,
+                image: main.querySelector(
+                  ':scope > [data-slimming-member-main-part="image"]'
+                ),
+                footer,
+                name: footer.querySelector(
+                  ':scope > [data-slimming-member-footer-part="name"]'
+                ),
+                source,
+                favorite: card.querySelector(':scope > .slimming-member-favorite'),
+                overlay,
+                spinner: overlay.querySelector(
+                  ':scope > [data-slimming-member-overlay-part="spinner"]'
+                ),
+                copy: overlay.querySelector(
+                  ':scope > [data-slimming-member-overlay-part="copy"]'
+                ),
+                activeElement: document.activeElement,
+                elementMutations: 0,
+              };
+              frame.observer = new MutationObserver((records) => {
+                frame.elementMutations += records
+                  .flatMap((record) => [...record.addedNodes, ...record.removedNodes])
+                  .filter((node) => node.nodeType === Node.ELEMENT_NODE).length;
+              });
+              frame.observer.observe(card, { childList: true, subtree: true });
+              window.__imageAllSlimmingRemovalMemberFrame = frame;
+            }""",
+            SLIMMING_ASSET_IDS[1],
+        )
+        active_slimming_removal["phase"] = "running"
+        active_slimming_removal["message"] = "正在安全处理回收"
+        active_slimming_removal["updatedAtMs"] += 1
+        page.evaluate("loadSlimmingRemovals({ quiet: true })")
+        page.wait_for_function(
+            "() => document.querySelector("
+            "'[data-slimming-member-card-part=\"pendingOverlay\"]')"
+            "?.textContent.includes('正在移动')"
+        )
+        slimming_removal_member_after = page.evaluate(
+            """() => {
+              const frame = window.__imageAllSlimmingRemovalMemberFrame;
+              const card = document.querySelector(
+                `[data-slimming-member-id="${CSS.escape(frame.card.dataset.slimmingMemberId)}"]`
+              );
+              frame.observer.disconnect();
+              return {
+                cardStable: card === frame.card,
+                mainStable: card.querySelector(':scope > .slimming-member-main') === frame.main,
+                imageStable: frame.main.querySelector(
+                  ':scope > [data-slimming-member-main-part="image"]'
+                ) === frame.image,
+                footerStable: frame.main.querySelector(
+                  ':scope > [data-slimming-member-main-part="footer"]'
+                ) === frame.footer,
+                footerPartsStable: frame.footer.querySelector(
+                  ':scope > [data-slimming-member-footer-part="name"]'
+                ) === frame.name && frame.footer.querySelector(
+                  ':scope > [data-slimming-member-footer-part="source"]'
+                ) === frame.source,
+                favoriteStable: card.querySelector(
+                  ':scope > .slimming-member-favorite'
+                ) === frame.favorite,
+                overlayStable: card.querySelector(
+                  ':scope > [data-slimming-member-card-part="pendingOverlay"]'
+                ) === frame.overlay,
+                overlayPartsStable: frame.overlay.querySelector(
+                  ':scope > [data-slimming-member-overlay-part="spinner"]'
+                ) === frame.spinner && frame.overlay.querySelector(
+                  ':scope > [data-slimming-member-overlay-part="copy"]'
+                ) === frame.copy,
+                overlayText: frame.copy.textContent,
+                focusStable: document.activeElement === frame.activeElement,
+                elementMutations: frame.elementMutations,
+                mainDisabled: frame.main.disabled,
+                favoriteDisabled: frame.favorite.disabled,
+              };
+            }"""
+        )
+        assert slimming_removal_member_after == {
+            "cardStable": True,
+            "mainStable": True,
+            "imageStable": True,
+            "footerStable": True,
+            "footerPartsStable": True,
+            "favoriteStable": True,
+            "overlayStable": True,
+            "overlayPartsStable": True,
+            "overlayText": "正在移动",
+            "focusStable": True,
+            "elementMutations": 0,
+            "mainDisabled": True,
+            "favoriteDisabled": True,
+        }, slimming_removal_member_after
         hidden_slimming_asset_ids.add(SLIMMING_ASSET_IDS[1])
         active_slimming_removal["phase"] = "completed"
         active_slimming_removal["audit"] = {

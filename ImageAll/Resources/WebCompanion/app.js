@@ -29281,15 +29281,7 @@ function syncSlimmingMemberCard(card, member, rovingAssetID) {
     removalPhase,
   });
   if (card.dataset.slimmingFingerprint === fingerprint) return card;
-  const existingMain = slimmingMemberMainButton(card);
-  const existingImage = existingMain?.querySelector(":scope > img") || null;
-  const existingFavorite = card.querySelector(":scope > .slimming-member-favorite");
-  existingImage?.remove();
-  for (const child of [...card.children]) {
-    if (child !== existingMain && child !== existingFavorite) child.remove();
-  }
-  if (existingMain) clearElement(existingMain);
-  card.className = "slimming-member-card";
+  card.classList.add("slimming-member-card");
   card.dataset.slimmingMemberId = member.id;
   if (Number(member.width) > 0 && Number(member.height) > 0) {
     card.style.setProperty(
@@ -29299,8 +29291,9 @@ function syncSlimmingMemberCard(card, member, rovingAssetID) {
   } else {
     card.style.removeProperty("--slimming-member-aspect");
   }
-  const main = existingMain || slimmingMemberMainButton(card, { create: true });
+  const main = slimmingMemberMainButton(card, { create: true });
   main.dataset.slimmingMemberMain = "true";
+  main.disabled = Boolean(removalPhase);
   main.setAttribute(
     "aria-label",
     `${member.fileName || "未命名项目"}，${member.sourceName || "来源未知"}`
@@ -29310,7 +29303,13 @@ function syncSlimmingMemberCard(card, member, rovingAssetID) {
     "ArrowLeft ArrowRight ArrowUp ArrowDown Home End PageUp PageDown Space"
   );
   main.title = "方向键移动，Shift 扩展选择，Space 打开单图";
-  const image = existingImage || document.createElement("img");
+  let image = main.querySelector(
+    ':scope > [data-slimming-member-main-part="image"]'
+  );
+  if (!image) {
+    image = document.createElement("img");
+    image.dataset.slimmingMemberMainPart = "image";
+  }
   image.loading = "lazy";
   image.alt = "";
   image.setAttribute("aria-hidden", "true");
@@ -29318,39 +29317,92 @@ function syncSlimmingMemberCard(card, member, rovingAssetID) {
     width: 360,
     revision: member.contentRevision || 0,
   });
-  const footer = document.createElement("span");
+  let footer = main.querySelector(
+    ':scope > [data-slimming-member-main-part="footer"]'
+  );
+  if (!footer) {
+    footer = document.createElement("span");
+    footer.dataset.slimmingMemberMainPart = "footer";
+  }
   footer.className = "slimming-member-footer";
-  const name = document.createElement("strong");
-  name.textContent = member.fileName || "未命名项目";
-  const source = document.createElement("span");
-  source.textContent = member.sourceName || availabilityText(member.availability);
-  footer.append(name, source);
-  main.append(image, footer);
+  let name = footer.querySelector(
+    ':scope > [data-slimming-member-footer-part="name"]'
+  );
+  if (!name) {
+    name = document.createElement("strong");
+    name.dataset.slimmingMemberFooterPart = "name";
+  }
+  const nameText = member.fileName || "未命名项目";
+  if (name.textContent !== nameText) name.textContent = nameText;
+  let source = footer.querySelector(
+    ':scope > [data-slimming-member-footer-part="source"]'
+  );
+  if (!source) {
+    source = document.createElement("span");
+    source.dataset.slimmingMemberFooterPart = "source";
+  }
+  const sourceText = member.sourceName || availabilityText(member.availability);
+  if (source.textContent !== sourceText) source.textContent = sourceText;
+  reconcileStableChildren(footer, [name, source]);
+  let video = main.querySelector(
+    ':scope > [data-slimming-member-main-part="video"]'
+  );
   if (state.slimming.mediaKind === "video") {
-    const video = document.createElement("span");
+    if (!video) {
+      video = document.createElement("span");
+      video.dataset.slimmingMemberMainPart = "video";
+    }
     video.className = "slimming-member-video-badge";
     video.setAttribute("aria-hidden", "true");
-    video.textContent = `▶${member.durationMs == null ? "" : ` ${formatDuration(member.durationMs)}`}`;
-    main.append(video);
+    const videoText = `▶${member.durationMs == null ? "" : ` ${formatDuration(member.durationMs)}`}`;
+    if (video.textContent !== videoText) video.textContent = videoText;
   }
+  reconcileStableChildren(main, [
+    image,
+    footer,
+    ...(state.slimming.mediaKind === "video" && video ? [video] : []),
+  ]);
   syncSlimmingMemberFavoriteButton(card, member);
   card.classList.toggle("pending-removal", Boolean(removalPhase));
+  let overlay = card.querySelector(
+    ':scope > [data-slimming-member-card-part="pendingOverlay"]'
+  );
   if (removalPhase) {
-    main.disabled = true;
-    const overlay = document.createElement("span");
+    if (!overlay) {
+      overlay = document.createElement("span");
+      overlay.dataset.slimmingMemberCardPart = "pendingOverlay";
+    }
     overlay.className = "slimming-member-pending-overlay";
     overlay.setAttribute("role", "status");
     overlay.setAttribute("aria-label", removalPhase === "awaitingMac"
       ? "等待 Mac 确认安全回收"
       : "正在安全处理回收");
-    const spinner = document.createElement("span");
+    let spinner = overlay.querySelector(
+      ':scope > [data-slimming-member-overlay-part="spinner"]'
+    );
+    if (!spinner) {
+      spinner = document.createElement("span");
+      spinner.dataset.slimmingMemberOverlayPart = "spinner";
+    }
     spinner.className = "spinner";
     spinner.setAttribute("aria-hidden", "true");
-    const copy = document.createElement("strong");
-    copy.textContent = removalPhase === "awaitingMac" ? "等待 Mac 确认" : "正在移动";
-    overlay.append(spinner, copy);
-    card.append(overlay);
+    let copy = overlay.querySelector(
+      ':scope > [data-slimming-member-overlay-part="copy"]'
+    );
+    if (!copy) {
+      copy = document.createElement("strong");
+      copy.dataset.slimmingMemberOverlayPart = "copy";
+    }
+    const overlayText = removalPhase === "awaitingMac" ? "等待 Mac 确认" : "正在移动";
+    if (copy.textContent !== overlayText) copy.textContent = overlayText;
+    reconcileStableChildren(overlay, [spinner, copy]);
   }
+  const favorite = card.querySelector(":scope > .slimming-member-favorite");
+  reconcileStableChildren(card, [
+    main,
+    ...(favorite ? [favorite] : []),
+    ...(removalPhase && overlay ? [overlay] : []),
+  ]);
   syncSlimmingMemberCardKeyboardAccess(card, rovingAssetID);
   card.dataset.slimmingFingerprint = fingerprint;
   return card;

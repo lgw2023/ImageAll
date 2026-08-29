@@ -3276,7 +3276,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("renderedCollectionFingerprint"))
         XCTAssertTrue(script.contains("row.dataset.slimmingFingerprint = fingerprint"))
         XCTAssertTrue(script.contains("card.dataset.slimmingFingerprint = fingerprint"))
-        XCTAssertTrue(script.contains("const existingImage = existingMain?.querySelector"))
+        XCTAssertTrue(script.contains("data-slimming-member-main-part=\"image\""))
         XCTAssertTrue(script.contains("function slimmingRecycleGridRovingEntryID"))
         XCTAssertTrue(script.contains("function syncSlimmingRecycleGridTabStops"))
         XCTAssertTrue(script.contains("function slimmingRecycleCountdown"))
@@ -4029,6 +4029,26 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertFalse(
             script.contains("clearElement(elements.slimmingCurrentJobProgress);")
         )
+        let slimmingMemberCardSyncStart = try XCTUnwrap(
+            script.range(of: "function syncSlimmingMemberCard(")
+        )
+        let slimmingMemberCardSyncEnd = try XCTUnwrap(
+            script.range(
+                of: "function appendSlimmingMemberCards(",
+                range: slimmingMemberCardSyncStart.upperBound..<script.endIndex
+            )
+        )
+        let slimmingMemberCardSyncScript = String(
+            script[
+                slimmingMemberCardSyncStart.lowerBound..<slimmingMemberCardSyncEnd.lowerBound
+            ]
+        )
+        XCTAssertTrue(slimmingMemberCardSyncScript.contains("data-slimming-member-main-part"))
+        XCTAssertTrue(slimmingMemberCardSyncScript.contains("data-slimming-member-footer-part"))
+        XCTAssertTrue(slimmingMemberCardSyncScript.contains("data-slimming-member-card-part"))
+        XCTAssertTrue(slimmingMemberCardSyncScript.contains("data-slimming-member-overlay-part"))
+        XCTAssertFalse(slimmingMemberCardSyncScript.contains("existingImage?.remove()"))
+        XCTAssertFalse(slimmingMemberCardSyncScript.contains("clearElement(existingMain)"))
         XCTAssertTrue(script.contains("function trainingDetailFingerprint("))
         XCTAssertTrue(script.contains("renderTrainingWorkspace({ preserveContent:"))
         XCTAssertTrue(script.contains("function syncTrainingBatchCard("))
