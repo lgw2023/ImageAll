@@ -25857,6 +25857,32 @@ function cycleTrainingRunScope() {
   setTrainingRunScope(scopes[(index + 1) % scopes.length], { focus: true });
 }
 
+function syncTrainingBatchTags(container, tagActivities) {
+  const visibleTags = (tagActivities || []).slice(0, 8);
+  const existing = new Map(
+    [...container.querySelectorAll(":scope > [data-training-batch-tag-id]")]
+      .map((chip) => [chip.dataset.trainingBatchTagId, chip])
+  );
+  const wanted = visibleTags.map((tag) => {
+    const chip = existing.get(tag.tagID) || document.createElement("span");
+    chip.dataset.trainingBatchTagId = tag.tagID;
+    chip.className = tag.phase;
+    const name = tag.displayName || tag.tagID.slice(0, 8);
+    if (chip.textContent !== name) chip.textContent = name;
+    chip.title = `${name} · ${tag.phase}`;
+    return chip;
+  });
+  if ((tagActivities || []).length > 8) {
+    const more = container.querySelector(":scope > [data-training-batch-tag-overflow]")
+      || document.createElement("span");
+    more.dataset.trainingBatchTagOverflow = "true";
+    const label = `＋${tagActivities.length - 8}`;
+    if (more.textContent !== label) more.textContent = label;
+    wanted.push(more);
+  }
+  reconcileStableChildren(container, wanted);
+}
+
 function syncTrainingBatchCard(card, activity) {
   const presentation = trainingBatchPresentation(activity);
   const method = trainingMethodPresentation(activity.method, activity.mediaKind);
@@ -25902,19 +25928,7 @@ function syncTrainingBatchCard(card, activity) {
   summary.textContent = countParts.join(" · ") || `${activity.totalUnitCount || 0} 个标签`;
 
   const tags = card.querySelector(":scope > .training-batch-tags");
-  clearElement(tags);
-  for (const tag of (activity.tagActivities || []).slice(0, 8)) {
-    const chip = document.createElement("span");
-    chip.className = tag.phase;
-    chip.textContent = tag.displayName || tag.tagID.slice(0, 8);
-    chip.title = `${chip.textContent} · ${tag.phase}`;
-    tags.append(chip);
-  }
-  if ((activity.tagActivities || []).length > 8) {
-    const more = document.createElement("span");
-    more.textContent = `＋${activity.tagActivities.length - 8}`;
-    tags.append(more);
-  }
+  syncTrainingBatchTags(tags, activity.tagActivities || []);
 
   const actions = card.querySelector(":scope > footer");
   const retainedActions = new Set();
@@ -25979,6 +25993,46 @@ function renderTrainingBatchHistory() {
     if (currentCard !== card) elements.trainingBatchList.insertBefore(card, currentCard);
   }
   for (const card of existingCards.values()) card.remove();
+}
+
+function syncTrainingTagActivityList(list, tagActivities) {
+  const phaseCopy = {
+    pending: "等待",
+    preparingSamples: "准备样本",
+    preparingEmbeddings: "准备特征",
+    trainingAndPublishing: "训练发布",
+    succeeded: "已完成",
+    skipped: "已跳过",
+    failed: "失败",
+    cancelled: "已取消",
+  };
+  const existing = new Map(
+    [...list.querySelectorAll(":scope > [data-training-tag-activity-id]")]
+      .map((item) => [item.dataset.trainingTagActivityId, item])
+  );
+  const wanted = tagActivities.map((tag) => {
+    const item = existing.get(tag.tagID) || document.createElement("li");
+    item.dataset.trainingTagActivityId = tag.tagID;
+    item.className = `training-tag-activity ${tag.phase}`;
+    let mark = item.querySelector(":scope > .training-tag-activity-mark");
+    if (!mark) {
+      mark = document.createElement("span");
+      mark.className = "training-tag-activity-mark";
+      mark.setAttribute("aria-hidden", "true");
+    }
+    const name = item.querySelector(":scope > strong") || document.createElement("strong");
+    const displayName = tag.displayName || tag.tagID.slice(0, 8);
+    if (name.textContent !== displayName) name.textContent = displayName;
+    const status = item.querySelector(":scope > span:not(.training-tag-activity-mark)")
+      || document.createElement("span");
+    const statusText = `${phaseCopy[tag.phase] || tag.phase}`
+      + (tag.sampleCount ? ` · ${tag.sampleCount} 个样本` : "")
+      + (tag.errorCode ? ` · ${tag.errorCode}` : "");
+    if (status.textContent !== statusText) status.textContent = statusText;
+    reconcileStableChildren(item, [mark, name, status]);
+    return item;
+  });
+  reconcileStableChildren(list, wanted);
 }
 
 function renderTrainingActivities() {
@@ -26092,32 +26146,7 @@ function renderTrainingActivities() {
       list.className = "training-tag-activity-list";
       elements.trainingActivityStrip.append(list);
     }
-    clearElement(list);
-    const phaseCopy = {
-      pending: "等待",
-      preparingSamples: "准备样本",
-      preparingEmbeddings: "准备特征",
-      trainingAndPublishing: "训练发布",
-      succeeded: "已完成",
-      skipped: "已跳过",
-      failed: "失败",
-      cancelled: "已取消",
-    };
-    for (const tag of tagActivities) {
-      const item = document.createElement("li");
-      item.className = `training-tag-activity ${tag.phase}`;
-      const mark = document.createElement("span");
-      mark.className = "training-tag-activity-mark";
-      mark.setAttribute("aria-hidden", "true");
-      const name = document.createElement("strong");
-      name.textContent = tag.displayName || tag.tagID.slice(0, 8);
-      const status = document.createElement("span");
-      status.textContent = `${phaseCopy[tag.phase] || tag.phase}`
-        + (tag.sampleCount ? ` · ${tag.sampleCount} 个样本` : "")
-        + (tag.errorCode ? ` · ${tag.errorCode}` : "");
-      item.append(mark, name, status);
-      list.append(item);
-    }
+    syncTrainingTagActivityList(list, tagActivities);
   } else {
     elements.trainingActivityStrip.querySelector(
       ":scope > .training-tag-activity-list"

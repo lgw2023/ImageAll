@@ -1147,26 +1147,78 @@ def main():
             }""",
             BATCH_ID,
         )
+        page.evaluate(
+            """secondTagID => {
+              const list = document.querySelector('.training-tag-activity-list');
+              const items = Object.fromEntries([...list.children].map(
+                (item) => [item.dataset.trainingTagActivityId, item]
+              ));
+              const selectedStatus = items[secondTagID].querySelector(
+                ':scope > span:not(.training-tag-activity-mark)'
+              );
+              const range = document.createRange();
+              range.selectNodeContents(selectedStatus);
+              const selection = getSelection();
+              selection.removeAllRanges();
+              selection.addRange(range);
+              const frame = {
+                list,
+                items,
+                selectedStatus,
+                selectedText: selection.toString(),
+                mutations: 0,
+              };
+              frame.observer = new MutationObserver((records) => {
+                frame.mutations += records.filter(
+                  (record) => record.type === 'childList'
+                ).length;
+              });
+              frame.observer.observe(list, { childList: true, subtree: true });
+              window.__imageAllTrainingTagActivityFrame = frame;
+              window.__imageAllTrainingActivityAction.focus({ preventScroll: true });
+            }""",
+            SECOND_TAG_ID,
+        )
+        page.locator(
+            f'[data-training-tag-activity-id="{SECOND_TAG_ID}"]'
+        ).hover()
         activity_completed_unit_count[0] = 2
         page.evaluate("loadTrainingWorkspace({ quiet: true })")
         assert "2 / 3 个标签" in page.locator(".training-activity-summary").inner_text()
         training_activity_refresh_after = page.evaluate(
-            """operationID => {
+            """({ operationID, secondTagID }) => {
               const action = document.querySelector(
                 `[data-training-activity-id="${CSS.escape(operationID)}"][data-action="cancel"]`
               );
+              const frame = window.__imageAllTrainingTagActivityFrame;
+              frame.observer.disconnect();
               return {
                 actionStable: action === window.__imageAllTrainingActivityAction,
                 focusedOperationID: document.activeElement?.dataset.trainingActivityId || null,
                 focusedAction: document.activeElement?.dataset.action || null,
+                listStable: document.querySelector('.training-tag-activity-list') === frame.list,
+                itemsStable: Object.entries(frame.items).every(
+                  ([tagID, item]) => frame.list.querySelector(
+                    `[data-training-tag-activity-id="${CSS.escape(tagID)}"]`
+                  ) === item
+                ),
+                hovered: frame.items[secondTagID].matches(':hover'),
+                selectionStable: getSelection().toString() === frame.selectedText
+                  && getSelection().containsNode(frame.selectedStatus, true),
+                childListMutations: frame.mutations,
               };
             }""",
-            BATCH_ID,
+            {"operationID": BATCH_ID, "secondTagID": SECOND_TAG_ID},
         )
         assert training_activity_refresh_after == {
             "actionStable": True,
             "focusedOperationID": BATCH_ID,
             "focusedAction": "cancel",
+            "listStable": True,
+            "itemsStable": True,
+            "hovered": True,
+            "selectionStable": True,
+            "childListMutations": 0,
         }, training_activity_refresh_after
         activity_completed_unit_count[0] = 3
         activity_phase[0] = "completed"
@@ -1230,39 +1282,86 @@ def main():
         batch_view = page.locator(f'[data-training-batch-view-id="{BATCH_ID}"]')
         batch_view.focus()
         page.evaluate(
-            """operationID => {
+            """({ operationID, secondTagID }) => {
               window.__imageAllTrainingBatchCard = document.querySelector(
                 `[data-training-batch-id="${CSS.escape(operationID)}"]`
               );
               window.__imageAllTrainingBatchAction = document.querySelector(
                 `[data-training-batch-view-id="${CSS.escape(operationID)}"]`
               );
+              const tags = window.__imageAllTrainingBatchCard.querySelector(
+                '.training-batch-tags'
+              );
+              const chips = Object.fromEntries([...tags.querySelectorAll(
+                ':scope > [data-training-batch-tag-id]'
+              )].map((chip) => [chip.dataset.trainingBatchTagId, chip]));
+              const range = document.createRange();
+              range.selectNodeContents(chips[secondTagID]);
+              const selection = getSelection();
+              selection.removeAllRanges();
+              selection.addRange(range);
+              const frame = {
+                tags,
+                chips,
+                selectedText: selection.toString(),
+                mutations: 0,
+              };
+              frame.observer = new MutationObserver((records) => {
+                frame.mutations += records.filter(
+                  (record) => record.type === 'childList'
+                ).length;
+              });
+              frame.observer.observe(tags, { childList: true, subtree: true });
+              window.__imageAllTrainingBatchTagFrame = frame;
+              window.__imageAllTrainingBatchAction.focus({ preventScroll: true });
             }""",
-            BATCH_ID,
+            {"operationID": BATCH_ID, "secondTagID": SECOND_TAG_ID},
         )
+        page.locator(
+            f'[data-training-batch-tag-id="{SECOND_TAG_ID}"]'
+        ).hover()
         activity_second_tag_phase[0] = "succeeded"
         page.evaluate("loadTrainingWorkspace({ quiet: true })")
         assert "完成 2" in page.locator(".training-batch-card").inner_text()
         training_batch_refresh_after = page.evaluate(
-            """operationID => {
+            """({ operationID, secondTagID }) => {
               const card = document.querySelector(
                 `[data-training-batch-id="${CSS.escape(operationID)}"]`
               );
               const action = document.querySelector(
                 `[data-training-batch-view-id="${CSS.escape(operationID)}"]`
               );
+              const frame = window.__imageAllTrainingBatchTagFrame;
+              frame.observer.disconnect();
               return {
                 cardStable: card === window.__imageAllTrainingBatchCard,
                 actionStable: action === window.__imageAllTrainingBatchAction,
                 focusedBatchViewID: document.activeElement?.dataset.trainingBatchViewId || null,
+                tagsStable: card.querySelector('.training-batch-tags') === frame.tags,
+                chipsStable: Object.entries(frame.chips).every(
+                  ([tagID, chip]) => frame.tags.querySelector(
+                    `[data-training-batch-tag-id="${CSS.escape(tagID)}"]`
+                  ) === chip
+                ),
+                changedPhase: frame.chips[secondTagID].classList.contains('succeeded'),
+                hovered: frame.chips[secondTagID].matches(':hover'),
+                selectionStable: getSelection().toString() === frame.selectedText
+                  && getSelection().containsNode(frame.chips[secondTagID], true),
+                childListMutations: frame.mutations,
               };
             }""",
-            BATCH_ID,
+            {"operationID": BATCH_ID, "secondTagID": SECOND_TAG_ID},
         )
         assert training_batch_refresh_after == {
             "cardStable": True,
             "actionStable": True,
             "focusedBatchViewID": BATCH_ID,
+            "tagsStable": True,
+            "chipsStable": True,
+            "changedPhase": True,
+            "hovered": True,
+            "selectionStable": True,
+            "childListMutations": 0,
         }, training_batch_refresh_after
         activity_second_tag_phase[0] = "failed"
         page.evaluate("loadTrainingWorkspace({ quiet: true })")
