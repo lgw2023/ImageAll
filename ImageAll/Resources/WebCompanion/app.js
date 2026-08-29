@@ -27684,6 +27684,70 @@ function reconcileSlimmingInspectorFields(target, fields) {
   reconcileStableChildren(target, wanted);
 }
 
+function slimmingInspectorScopeTitle() {
+  const noun = state.slimming.mediaKind === "video" ? "视频" : "照片";
+  if (state.libraryScope === "worldMapGallery" && state.worldMapGalleryScope) {
+    return `${state.worldMapGalleryScope.displayName} · 照片世界`;
+  }
+  if (state.folderScope) {
+    const source = state.sources.find(
+      (candidate) => candidate.id === state.folderScope.sourceID
+    );
+    if (source) {
+      return [source.displayName, ...state.folderScope.relativePath.split("/").filter(Boolean)]
+        .join(" › ");
+    }
+  }
+  const source = state.sources.find((candidate) => candidate.id === state.selectedSourceID);
+  if (source) return source.displayName;
+  if (state.filters.tagPresence === "untagged") return `无标签${noun}`;
+  if (state.libraryScope === "favorites") return `红心${noun}`;
+  return `全部${noun}`;
+}
+
+function slimmingInspectorTagFilterSummary() {
+  const included = state.filters.tagConditions
+    .filter((condition) => condition.decision !== "excluded")
+    .map((condition) => tagByID(condition.tagID)?.displayName)
+    .filter(Boolean)
+    .sort((left, right) => left.localeCompare(right, "zh-CN"));
+  const excluded = state.filters.tagConditions
+    .filter((condition) => condition.decision === "excluded")
+    .map((condition) => tagByID(condition.tagID)?.displayName)
+    .filter(Boolean)
+    .sort((left, right) => left.localeCompare(right, "zh-CN"));
+  const parts = [];
+  if (included.length) {
+    parts.push(included.join(state.filters.tagMatchMode === "all" ? " 且 " : " 或 "));
+  }
+  if (excluded.length) parts.push(`排除 ${excluded.join("、")}`);
+  return parts.join(" · ");
+}
+
+function slimmingInspectorFilterScopeSummary() {
+  const parts = [slimmingInspectorScopeTitle()];
+  const tagSummary = slimmingInspectorTagFilterSummary();
+  if (tagSummary) parts.push(tagSummary);
+  const searchText = state.searchText.trim();
+  if (searchText) parts.push(`搜索「${searchText}」`);
+  if (state.filters.availabilities.length) {
+    parts.push(`可用性：${state.filters.availabilities.map(availabilityText).join("、")}`);
+  }
+  if (state.filters.mediaTypes.length) parts.push("格式筛选");
+  return parts.join(" · ");
+}
+
+function slimmingInspectorSourceIndexValue() {
+  const snapshot = currentSlimmingCatalogSnapshot();
+  if (snapshot?.sourceSimilarityIndexAvailable !== true) return null;
+  if (!state.selectedSourceID) return "请选择单个来源";
+  const source = snapshot.sources?.find(
+    (candidate) => candidate.id === state.selectedSourceID
+  );
+  if (!source) return "未初始化";
+  return slimmingSourceIndexCaption(source, true).replace(/^来源索引：/, "");
+}
+
 function renderSlimmingInspector() {
   const job = selectedSlimmingJob();
   const cluster = state.slimming.clusters.find(
@@ -27731,7 +27795,24 @@ function renderSlimmingInspector() {
       label: "种子",
       value: `${job.seedCount} ${job.mediaKind === "video" ? "个" : "张"}`,
     });
+  } else if (!job && currentSlimmingSeedIDs().length > 0) {
+    fields.push({
+      key: "pendingSeeds",
+      label: "待用种子",
+      value: `${currentSlimmingSeedIDs().length} ${
+        state.slimming.mediaKind === "video" ? "个" : "张"
+      }`,
+    });
   }
+  const activeMode = job?.mode || state.slimming.quickLaunchMode;
+  if (["currentFilter", "seeds"].includes(activeMode)) {
+    fields.push({
+      key: "filter",
+      label: "筛选",
+      value: slimmingInspectorFilterScopeSummary(),
+    });
+  }
+  const sourceIndexValue = slimmingInspectorSourceIndexValue();
   fields.push(
     { key: "analyzed", label: "已分析", value: `${state.slimming.analyzedAssetCount} 项` },
     { key: "pending", label: "待分析", value: `${state.slimming.pendingAnalysisCount} 项` },
@@ -27742,7 +27823,12 @@ function renderSlimmingInspector() {
         state.slimming.recycle.totalCount || state.slimming.recycle.entries.length
       )} 项`,
     },
-    { key: "policy", label: "策略版本", value: state.slimming.policyVersion || "—" }
+    { key: "policy", label: "策略版本", value: state.slimming.policyVersion || "—" },
+    ...(sourceIndexValue == null ? [] : [{
+      key: "sourceIndex",
+      label: "来源索引",
+      value: sourceIndexValue,
+    }])
   );
 
   if (cluster) {
@@ -31769,6 +31855,7 @@ async function loadSlimmingCatalogSources({ force = false } = {}) {
     if (generation === picker.requestGeneration) {
       picker.loading = false;
       renderSlimmingCatalogSourcePicker();
+      renderSlimmingInspector();
     }
   }
 }
@@ -32011,6 +32098,7 @@ function renderSlimmingSourceMaintenance() {
   if (!elements.slimmingCatalogSourcePopover.classList.contains("hidden")) {
     renderSlimmingCatalogSourcePicker();
   }
+  renderSlimmingInspector();
   syncWriteActionControls();
 }
 

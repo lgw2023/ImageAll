@@ -2425,7 +2425,76 @@ def main(*, inspector_actions_only=False):
         assert "已完成" in slimming_workspace_inspector.inner_text()
         assert "3 张" in slimming_workspace_inspector.inner_text()
         assert "2 张" in slimming_workspace_inspector.inner_text()
+        assert "筛选" in slimming_workspace_inspector.inner_text()
+        assert "来源索引" in slimming_workspace_inspector.inner_text()
+        assert "请选择单个来源" in slimming_workspace_inspector.inner_text()
         assert page.locator("#slimmingInspector").is_hidden()
+        slimming_inspector_mac_fields = page.evaluate(
+            """sourceID => {
+              const targets = [
+                document.querySelector("#slimmingInspectorContent"),
+                document.querySelector("#inspectorSlimmingWorkspaceContent"),
+              ];
+              const read = (target, key) => target.querySelector(
+                `[data-slimming-inspector-field-key="${key}"] dd`
+              )?.textContent;
+              const initial = targets.map((target) => ({
+                filter: read(target, "filter"),
+                sourceIndex: read(target, "sourceIndex"),
+              }));
+              const selectedSourceID = state.selectedSourceID;
+              state.selectedSourceID = sourceID;
+              renderSlimmingInspector();
+              const selectedSource = targets.map((target) => ({
+                filter: read(target, "filter"),
+                sourceIndex: read(target, "sourceIndex"),
+              }));
+              state.selectedSourceID = selectedSourceID;
+              renderSlimmingInspector();
+              const jobs = state.slimming.jobs;
+              const selectedJobID = state.slimming.selectedJobID;
+              state.slimming.jobs = [];
+              state.slimming.selectedJobID = null;
+              renderSlimmingInspector();
+              const pendingSeeds = targets.map(
+                (target) => read(target, "pendingSeeds")
+              );
+              state.slimming.jobs = jobs;
+              state.slimming.selectedJobID = selectedJobID;
+              renderSlimmingInspector();
+              return {
+                initial,
+                selectedSource,
+                pendingSeeds,
+                currentSeedCount: currentSlimmingSeedIDs().length,
+              };
+            }""",
+            SOURCE_ID,
+        )
+        assert slimming_inspector_mac_fields == {
+            "initial": [
+                {
+                    "filter": "全部照片",
+                    "sourceIndex": "请选择单个来源",
+                },
+                {
+                    "filter": "全部照片",
+                    "sourceIndex": "请选择单个来源",
+                },
+            ],
+            "selectedSource": [
+                {
+                    "filter": "Apple Photos",
+                    "sourceIndex": "就绪 120/120 · 18 簇",
+                },
+                {
+                    "filter": "Apple Photos",
+                    "sourceIndex": "就绪 120/120 · 18 簇",
+                },
+            ],
+            "pendingSeeds": ["2 张", "2 张"],
+            "currentSeedCount": 2,
+        }, slimming_inspector_mac_fields
         stable_slimming_inspector = page.evaluate(
             """() => {
               const targets = {
@@ -4129,6 +4198,27 @@ def main(*, inspector_actions_only=False):
             timeout=6_000,
         )
         assert page.locator("#initializeSlimmingSourceIndexButton").inner_text() == "重新构建来源索引"
+        slimming_inspector_polled_source_index = page.evaluate(
+            """sourceID => {
+              const previousSourceID = state.selectedSourceID;
+              state.selectedSourceID = sourceID;
+              renderSlimmingInspector();
+              const values = [
+                document.querySelector("#slimmingInspectorContent"),
+                document.querySelector("#inspectorSlimmingWorkspaceContent"),
+              ].map((target) => target.querySelector(
+                '[data-slimming-inspector-field-key="sourceIndex"] dd'
+              )?.textContent);
+              state.selectedSourceID = previousSourceID;
+              renderSlimmingInspector();
+              return values;
+            }""",
+            SECOND_SOURCE_ID,
+        )
+        assert slimming_inspector_polled_source_index == [
+            "就绪 80/80 · 12 簇",
+            "就绪 80/80 · 12 簇",
+        ], slimming_inspector_polled_source_index
         slimming_source_polling_continuity = page.evaluate(
             """sourceIDs => {
               const sourceFrame = window.__slimmingMaintenanceSourceContinuityFrame;
