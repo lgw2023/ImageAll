@@ -26304,45 +26304,70 @@ function syncTrainingSlot(item, slot) {
     mediaKind: state.training.mediaKind,
   });
   if (item.dataset.trainingFingerprint === fingerprint) return;
-  clearElement(item);
   item.type = "button";
-    item.className = `training-slot${slot.isPublished ? " published" : ""}${selectedRun?.method === slot.method ? " selected" : ""}`;
-    item.dataset.trainingSlotMethod = slot.method;
-    item.setAttribute("aria-pressed", String(selectedRun?.method === slot.method));
-    const mark = document.createElement("span");
+  item.className = `training-slot${slot.isPublished ? " published" : ""}${selectedRun?.method === slot.method ? " selected" : ""}`;
+  item.dataset.trainingSlotMethod = slot.method;
+  item.setAttribute("aria-pressed", String(selectedRun?.method === slot.method));
+  let mark = item.querySelector(':scope > [data-training-slot-part="mark"]');
+  if (!mark) {
+    mark = document.createElement("span");
+    mark.dataset.trainingSlotPart = "mark";
     mark.className = "training-slot-mark";
     mark.setAttribute("aria-hidden", "true");
-    const copy = document.createElement("span");
+  }
+  let copy = item.querySelector(':scope > [data-training-slot-part="copy"]');
+  if (!copy) {
+    copy = document.createElement("span");
+    copy.dataset.trainingSlotPart = "copy";
     copy.className = "training-slot-copy";
-    const title = document.createElement("strong");
-    title.textContent = presentation.title;
-    const status = document.createElement("span");
-    status.textContent = slot.isPublished
-      ? `模型已就绪${run?.sampleCount != null ? ` · ${run.sampleCount} 个样本` : ""}`
-      : "尚未训练 · 新建任务";
-    const meta = document.createElement("small");
-    meta.textContent = slot.isPublished
-      ? `${slot.publishedRunID ? `Run ${slot.publishedRunID.slice(0, 8)}` : "已发布"}${run?.finishedAtMs != null ? ` · ${trainingDate(run.finishedAtMs)}` : ""}`
-      : "选择标签、来源与训练范围";
-    const disclosure = document.createElement("span");
+  }
+  let title = copy.querySelector(':scope > [data-training-slot-copy-part="title"]');
+  if (!title) {
+    title = document.createElement("strong");
+    title.dataset.trainingSlotCopyPart = "title";
+  }
+  if (title.textContent !== presentation.title) title.textContent = presentation.title;
+  let status = copy.querySelector(':scope > [data-training-slot-copy-part="status"]');
+  if (!status) {
+    status = document.createElement("span");
+    status.dataset.trainingSlotCopyPart = "status";
+  }
+  const statusText = slot.isPublished
+    ? `模型已就绪${run?.sampleCount != null ? ` · ${run.sampleCount} 个样本` : ""}`
+    : "尚未训练 · 新建任务";
+  if (status.textContent !== statusText) status.textContent = statusText;
+  let meta = copy.querySelector(':scope > [data-training-slot-copy-part="meta"]');
+  if (!meta) {
+    meta = document.createElement("small");
+    meta.dataset.trainingSlotCopyPart = "meta";
+  }
+  const metaText = slot.isPublished
+    ? `${slot.publishedRunID ? `Run ${slot.publishedRunID.slice(0, 8)}` : "已发布"}${run?.finishedAtMs != null ? ` · ${trainingDate(run.finishedAtMs)}` : ""}`
+    : "选择标签、来源与训练范围";
+  if (meta.textContent !== metaText) meta.textContent = metaText;
+  reconcileStableChildren(copy, [title, status, meta]);
+  let disclosure = item.querySelector(':scope > [data-training-slot-part="disclosure"]');
+  if (!disclosure) {
+    disclosure = document.createElement("span");
+    disclosure.dataset.trainingSlotPart = "disclosure";
     disclosure.className = "training-slot-disclosure";
     disclosure.setAttribute("aria-hidden", "true");
     disclosure.textContent = "›";
-    copy.append(title, status, meta);
-    item.append(mark, copy, disclosure);
-    item.setAttribute(
-      "aria-label",
-      `${presentation.title}，${status.textContent}，${slot.isPublished ? "打开已发布训练记录" : "新建训练任务"}`
-    );
-    configurePersistentHelp(item, {
-      title: presentation.title,
-      detail: slot.isPublished
-        ? `${status.textContent}。点击定位到当前发布的 Run；不会重新训练。\n左/右或 Home/End 可在三个模型槽之间移动。`
-        : `当前尚未发布模型。点击打开预设为“${presentation.title}”的新建任务。\n左/右或 Home/End 可在三个模型槽之间移动。`,
-      kind: "training",
-      keyShortcuts: "ArrowLeft ArrowRight Home End",
-    });
-    item.dataset.trainingFingerprint = fingerprint;
+  }
+  reconcileStableChildren(item, [mark, copy, disclosure]);
+  item.setAttribute(
+    "aria-label",
+    `${presentation.title}，${statusText}，${slot.isPublished ? "打开已发布训练记录" : "新建训练任务"}`
+  );
+  configurePersistentHelp(item, {
+    title: presentation.title,
+    detail: slot.isPublished
+      ? `${statusText}。点击定位到当前发布的 Run；不会重新训练。\n左/右或 Home/End 可在三个模型槽之间移动。`
+      : `当前尚未发布模型。点击打开预设为“${presentation.title}”的新建任务。\n左/右或 Home/End 可在三个模型槽之间移动。`,
+    kind: "training",
+    keyShortcuts: "ArrowLeft ArrowRight Home End",
+  });
+  item.dataset.trainingFingerprint = fingerprint;
 }
 
 function renderTrainingSlots() {
@@ -26374,69 +26399,104 @@ function syncTrainingRunRow(row, run) {
     tagName: trainingRunTagName(run),
   });
   if (row.dataset.trainingFingerprint === fingerprint) return;
-  clearElement(row);
   row.type = "button";
-    row.className = "training-run-row";
-    row.classList.toggle("selected", run.id === state.training.selectedRunID);
-    row.dataset.trainingRunId = run.id;
-    row.id = `training-run-${run.id}`;
-    row.tabIndex = run.id === state.training.selectedRunID ? 0 : -1;
-    row.setAttribute("role", "option");
-    row.setAttribute("aria-selected", String(run.id === state.training.selectedRunID));
-    row.setAttribute(
-      "aria-label",
-      `${presentation.title}，标签 ${trainingRunTagName(run)}，${trainingRunBatchPosition(run) ? `批次 ${trainingRunBatchPosition(run)}` : "单项"}，${trainingStateText(run.state)}`
-    );
-    configurePersistentHelp(row, {
-      title: `${presentation.title} · ${trainingRunTagName(run)}`,
-      detail: [
-        `${trainingStateText(run.state)} · ${trainingRunBatchPosition(run) ? `批次 ${trainingRunBatchPosition(run)}` : "单项记录"}${run.sampleCount != null ? ` · ${run.sampleCount} 个样本` : ""}。`,
-        "点击查看数据、配置、过程、产物和失败恢复；不会启动或停止任务。",
-        "上/下或 Home/End 在训练记录之间移动；⌘K 可打开当前工作区命令。",
-      ].join("\n"),
-      kind: "training",
-      keyShortcuts: "ArrowUp ArrowDown Home End Meta+K",
-    });
-    const heading = document.createElement("span");
+  row.className = "training-run-row";
+  row.classList.toggle("selected", run.id === state.training.selectedRunID);
+  row.dataset.trainingRunId = run.id;
+  row.id = `training-run-${run.id}`;
+  row.tabIndex = run.id === state.training.selectedRunID ? 0 : -1;
+  row.setAttribute("role", "option");
+  row.setAttribute("aria-selected", String(run.id === state.training.selectedRunID));
+  const tagName = trainingRunTagName(run);
+  const position = trainingRunBatchPosition(run);
+  const stateText = trainingStateText(run.state);
+  row.setAttribute(
+    "aria-label",
+    `${presentation.title}，标签 ${tagName}，${position ? `批次 ${position}` : "单项"}，${stateText}`
+  );
+  configurePersistentHelp(row, {
+    title: `${presentation.title} · ${tagName}`,
+    detail: [
+      `${stateText} · ${position ? `批次 ${position}` : "单项记录"}${run.sampleCount != null ? ` · ${run.sampleCount} 个样本` : ""}。`,
+      "点击查看数据、配置、过程、产物和失败恢复；不会启动或停止任务。",
+      "上/下或 Home/End 在训练记录之间移动；⌘K 可打开当前工作区命令。",
+    ].join("\n"),
+    kind: "training",
+    keyShortcuts: "ArrowUp ArrowDown Home End Meta+K",
+  });
+  let heading = row.querySelector(':scope > [data-training-run-part="heading"]');
+  if (!heading) {
+    heading = document.createElement("span");
+    heading.dataset.trainingRunPart = "heading";
     heading.className = "training-run-row-heading";
-    const title = document.createElement("strong");
-    title.textContent = presentation.title;
-    const dot = document.createElement("span");
-    dot.className = `training-run-state-dot ${run.state}`;
+  }
+  let title = heading.querySelector(':scope > [data-training-run-heading-part="title"]');
+  if (!title) {
+    title = document.createElement("strong");
+    title.dataset.trainingRunHeadingPart = "title";
+  }
+  if (title.textContent !== presentation.title) title.textContent = presentation.title;
+  let dot = heading.querySelector(':scope > [data-training-run-heading-part="state-mark"]');
+  if (!dot) {
+    dot = document.createElement("span");
+    dot.dataset.trainingRunHeadingPart = "state-mark";
     dot.setAttribute("aria-hidden", "true");
-    const stateLabel = document.createElement("span");
+  }
+  dot.className = `training-run-state-dot ${run.state}`;
+  let stateLabel = heading.querySelector(':scope > [data-training-run-heading-part="state"]');
+  if (!stateLabel) {
+    stateLabel = document.createElement("span");
+    stateLabel.dataset.trainingRunHeadingPart = "state";
     stateLabel.className = "secondary";
-    stateLabel.textContent = trainingStateText(run.state);
-    heading.append(title, dot, stateLabel);
-    const context = document.createElement("span");
+  }
+  if (stateLabel.textContent !== stateText) stateLabel.textContent = stateText;
+  reconcileStableChildren(heading, [title, dot, stateLabel]);
+  let context = row.querySelector(':scope > [data-training-run-part="context"]');
+  if (!context) {
+    context = document.createElement("span");
+    context.dataset.trainingRunPart = "context";
     context.className = "training-run-row-context";
-    const tag = document.createElement("span");
+  }
+  let tag = context.querySelector(':scope > [data-training-run-context-part="tag"]');
+  if (!tag) {
+    tag = document.createElement("span");
+    tag.dataset.trainingRunContextPart = "tag";
     tag.className = "training-run-tag";
-    tag.textContent = trainingRunTagName(run);
-    context.append(tag);
-    const position = trainingRunBatchPosition(run);
-    if (position) {
-      const batch = document.createElement("span");
-      batch.className = "training-run-kind batch";
-      batch.textContent = position === "批次成员" ? "批次" : `批次 ${position}`;
-      context.append(batch);
-    } else {
-      const single = document.createElement("span");
-      single.className = "training-run-kind";
-      single.textContent = "单项";
-      context.append(single);
-    }
-    if (run.sampleCount != null) {
-      const samples = document.createElement("span");
+  }
+  if (tag.textContent !== tagName) tag.textContent = tagName;
+  let kind = context.querySelector(':scope > [data-training-run-context-part="kind"]');
+  if (!kind) {
+    kind = document.createElement("span");
+    kind.dataset.trainingRunContextPart = "kind";
+  }
+  kind.className = `training-run-kind${position ? " batch" : ""}`;
+  const kindText = position
+    ? (position === "批次成员" ? "批次" : `批次 ${position}`)
+    : "单项";
+  if (kind.textContent !== kindText) kind.textContent = kindText;
+  const contextParts = [tag, kind];
+  let samples = context.querySelector(':scope > [data-training-run-context-part="samples"]');
+  if (run.sampleCount != null) {
+    if (!samples) {
+      samples = document.createElement("span");
+      samples.dataset.trainingRunContextPart = "samples";
       samples.className = "secondary";
-      samples.textContent = `${run.sampleCount} 个样本`;
-      context.append(samples);
     }
-    const subtitle = document.createElement("span");
+    const sampleText = `${run.sampleCount} 个样本`;
+    if (samples.textContent !== sampleText) samples.textContent = sampleText;
+    contextParts.push(samples);
+  }
+  reconcileStableChildren(context, contextParts);
+  let subtitle = row.querySelector(':scope > [data-training-run-part="subtitle"]');
+  if (!subtitle) {
+    subtitle = document.createElement("span");
+    subtitle.dataset.trainingRunPart = "subtitle";
     subtitle.className = "training-run-row-subtitle";
-    subtitle.textContent = `${presentation.technical} · ${trainingDate(run.createdAtMs)}`;
-    row.append(heading, context, subtitle);
-    row.dataset.trainingFingerprint = fingerprint;
+  }
+  const subtitleText = `${presentation.technical} · ${trainingDate(run.createdAtMs)}`;
+  if (subtitle.textContent !== subtitleText) subtitle.textContent = subtitleText;
+  reconcileStableChildren(row, [heading, context, subtitle]);
+  row.dataset.trainingFingerprint = fingerprint;
 }
 
 function renderTrainingRunList() {

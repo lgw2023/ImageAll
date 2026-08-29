@@ -1182,6 +1182,9 @@ def main():
         page.locator(
             f'[data-training-tag-activity-id="{SECOND_TAG_ID}"]'
         ).hover()
+        page.evaluate(
+            "() => window.__imageAllTrainingActivityAction.focus({ preventScroll: true })"
+        )
         activity_completed_unit_count[0] = 2
         page.evaluate("loadTrainingWorkspace({ quiet: true })")
         assert "2 / 3 个标签" in page.locator(".training-activity-summary").inner_text()
@@ -1320,6 +1323,9 @@ def main():
         page.locator(
             f'[data-training-batch-tag-id="{SECOND_TAG_ID}"]'
         ).hover()
+        page.evaluate(
+            "() => window.__imageAllTrainingBatchAction.focus({ preventScroll: true })"
+        )
         activity_second_tag_phase[0] = "succeeded"
         page.evaluate("loadTrainingWorkspace({ quiet: true })")
         assert "完成 2" in page.locator(".training-batch-card").inner_text()
@@ -1670,6 +1676,220 @@ def main():
         assert detail_scroll_after_refresh == detail_scroll_before_refresh, (
             detail_scroll_before_refresh,
             detail_scroll_after_refresh,
+        )
+
+        selected_run_index = next(
+            index for index, run in enumerate(runs)
+            if run["id"] == scroll_run_ids[32]
+        )
+        original_selected_run = runs[selected_run_index]
+        page.evaluate(
+            """runID => {
+              const row = document.querySelector(
+                `[data-training-run-id="${CSS.escape(runID)}"]`
+              );
+              const context = row.querySelector('[data-training-run-part="context"]');
+              const tag = context.querySelector('[data-training-run-context-part="tag"]');
+              const range = document.createRange();
+              range.selectNodeContents(tag);
+              const selection = getSelection();
+              selection.removeAllRanges();
+              selection.addRange(range);
+              const frame = {
+                row,
+                parts: {
+                  heading: row.querySelector('[data-training-run-part="heading"]'),
+                  title: row.querySelector('[data-training-run-heading-part="title"]'),
+                  stateMark: row.querySelector('[data-training-run-heading-part="state-mark"]'),
+                  state: row.querySelector('[data-training-run-heading-part="state"]'),
+                  context,
+                  tag,
+                  kind: context.querySelector('[data-training-run-context-part="kind"]'),
+                  samples: context.querySelector('[data-training-run-context-part="samples"]'),
+                  subtitle: row.querySelector('[data-training-run-part="subtitle"]'),
+                },
+                selectedText: selection.toString(),
+                elementMutations: 0,
+              };
+              frame.observer = new MutationObserver((records) => {
+                frame.elementMutations += records.filter((record) => (
+                  record.type === 'childList'
+                  && [...record.addedNodes, ...record.removedNodes].some(
+                    (node) => node.nodeType === Node.ELEMENT_NODE
+                  )
+                )).length;
+              });
+              frame.observer.observe(row, { childList: true, subtree: true });
+              window.__imageAllTrainingRunInnerFrame = frame;
+              row.focus({ preventScroll: true });
+            }""",
+            scroll_run_ids[32],
+        )
+        page.locator(
+            f'[data-training-run-id="{scroll_run_ids[32]}"] '
+            '[data-training-run-context-part="tag"]'
+        ).hover()
+        runs[selected_run_index] = {
+            **original_selected_run,
+            "state": "running",
+            "finishedAtMs": None,
+            "sampleCount": original_selected_run["sampleCount"] + 1,
+        }
+        page.evaluate("loadTrainingWorkspace({ quiet: true })")
+        page.wait_for_function(
+            "runID => document.querySelector(`[data-training-run-id='${runID}']`)"
+            "?.innerText.includes('训练中')",
+            arg=scroll_run_ids[32],
+        )
+        training_run_inner_after = page.evaluate(
+            """runID => {
+              const frame = window.__imageAllTrainingRunInnerFrame;
+              const row = document.querySelector(
+                `[data-training-run-id="${CSS.escape(runID)}"]`
+              );
+              const context = row.querySelector('[data-training-run-part="context"]');
+              frame.observer.disconnect();
+              return {
+                rowStable: row === frame.row,
+                partsStable: frame.parts.heading === row.querySelector('[data-training-run-part="heading"]')
+                  && frame.parts.title === row.querySelector('[data-training-run-heading-part="title"]')
+                  && frame.parts.stateMark === row.querySelector('[data-training-run-heading-part="state-mark"]')
+                  && frame.parts.state === row.querySelector('[data-training-run-heading-part="state"]')
+                  && frame.parts.context === context
+                  && frame.parts.tag === context.querySelector('[data-training-run-context-part="tag"]')
+                  && frame.parts.kind === context.querySelector('[data-training-run-context-part="kind"]')
+                  && frame.parts.samples === context.querySelector('[data-training-run-context-part="samples"]')
+                  && frame.parts.subtitle === row.querySelector('[data-training-run-part="subtitle"]'),
+                stateText: frame.parts.state.textContent,
+                sampleText: frame.parts.samples.textContent,
+                selectionStable: getSelection().toString() === frame.selectedText
+                  && getSelection().containsNode(frame.parts.tag, true),
+                hovered: frame.parts.tag.matches(':hover'),
+                focusedRunID: document.activeElement?.dataset.trainingRunId || null,
+                elementMutations: frame.elementMutations,
+              };
+            }""",
+            scroll_run_ids[32],
+        )
+        assert training_run_inner_after == {
+            "rowStable": True,
+            "partsStable": True,
+            "stateText": "训练中",
+            "sampleText": f'{original_selected_run["sampleCount"] + 1} 个样本',
+            "selectionStable": True,
+            "hovered": True,
+            "focusedRunID": scroll_run_ids[32],
+            "elementMutations": 0,
+        }, training_run_inner_after
+        runs[selected_run_index] = original_selected_run
+        page.evaluate("loadTrainingWorkspace({ quiet: true })")
+        page.wait_for_function(
+            "runID => document.querySelector(`[data-training-run-id='${runID}']`)"
+            "?.innerText.includes('已完成')",
+            arg=scroll_run_ids[32],
+        )
+
+        original_personal_run = runs[1]
+        page.evaluate(
+            """focusedRunID => {
+              const slot = document.querySelector(
+                '[data-training-slot-method="personalCentroid"]'
+              );
+              const copy = slot.querySelector('[data-training-slot-part="copy"]');
+              const title = copy.querySelector('[data-training-slot-copy-part="title"]');
+              const range = document.createRange();
+              range.selectNodeContents(title);
+              const selection = getSelection();
+              selection.removeAllRanges();
+              selection.addRange(range);
+              const frame = {
+                slot,
+                parts: {
+                  mark: slot.querySelector('[data-training-slot-part="mark"]'),
+                  copy,
+                  title,
+                  status: copy.querySelector('[data-training-slot-copy-part="status"]'),
+                  meta: copy.querySelector('[data-training-slot-copy-part="meta"]'),
+                  disclosure: slot.querySelector('[data-training-slot-part="disclosure"]'),
+                },
+                selectedText: selection.toString(),
+                elementMutations: 0,
+              };
+              frame.observer = new MutationObserver((records) => {
+                frame.elementMutations += records.filter((record) => (
+                  record.type === 'childList'
+                  && [...record.addedNodes, ...record.removedNodes].some(
+                    (node) => node.nodeType === Node.ELEMENT_NODE
+                  )
+                )).length;
+              });
+              frame.observer.observe(slot, { childList: true, subtree: true });
+              window.__imageAllTrainingSlotInnerFrame = frame;
+              document.querySelector(
+                `[data-training-run-id="${CSS.escape(focusedRunID)}"]`
+              ).focus({ preventScroll: true });
+            }""",
+            scroll_run_ids[32],
+        )
+        page.locator(
+            '[data-training-slot-method="personalCentroid"] '
+            '[data-training-slot-copy-part="title"]'
+        ).hover()
+        runs[1] = {
+            **original_personal_run,
+            "sampleCount": original_personal_run["sampleCount"] + 1,
+        }
+        page.evaluate("loadTrainingWorkspace({ quiet: true })")
+        page.wait_for_function(
+            """count => document.querySelector(
+              '[data-training-slot-method="personalCentroid"] [data-training-slot-copy-part="status"]'
+            ).textContent.includes(`${count} 个样本`)""",
+            arg=original_personal_run["sampleCount"] + 1,
+        )
+        training_slot_inner_after = page.evaluate(
+            """focusedRunID => {
+              const frame = window.__imageAllTrainingSlotInnerFrame;
+              const slot = document.querySelector(
+                '[data-training-slot-method="personalCentroid"]'
+              );
+              const copy = slot.querySelector('[data-training-slot-part="copy"]');
+              frame.observer.disconnect();
+              return {
+                slotStable: slot === frame.slot,
+                partsStable: frame.parts.mark === slot.querySelector('[data-training-slot-part="mark"]')
+                  && frame.parts.copy === copy
+                  && frame.parts.title === copy.querySelector('[data-training-slot-copy-part="title"]')
+                  && frame.parts.status === copy.querySelector('[data-training-slot-copy-part="status"]')
+                  && frame.parts.meta === copy.querySelector('[data-training-slot-copy-part="meta"]')
+                  && frame.parts.disclosure === slot.querySelector('[data-training-slot-part="disclosure"]'),
+                statusText: frame.parts.status.textContent,
+                selectionStable: getSelection().toString() === frame.selectedText
+                  && getSelection().containsNode(frame.parts.title, true),
+                hovered: frame.parts.title.matches(':hover'),
+                focusedRunID: document.activeElement?.dataset.trainingRunId || null,
+                elementMutations: frame.elementMutations,
+              };
+            }""",
+            scroll_run_ids[32],
+        )
+        assert training_slot_inner_after == {
+            "slotStable": True,
+            "partsStable": True,
+            "statusText": (
+                f'模型已就绪 · {original_personal_run["sampleCount"] + 1} 个样本'
+            ),
+            "selectionStable": True,
+            "hovered": True,
+            "focusedRunID": scroll_run_ids[32],
+            "elementMutations": 0,
+        }, training_slot_inner_after
+        runs[1] = original_personal_run
+        page.evaluate("loadTrainingWorkspace({ quiet: true })")
+        page.wait_for_function(
+            """count => document.querySelector(
+              '[data-training-slot-method="personalCentroid"] [data-training-slot-copy-part="status"]'
+            ).textContent.includes(`${count} 个样本`)""",
+            arg=original_personal_run["sampleCount"],
         )
 
         original_failed_run = runs[0]

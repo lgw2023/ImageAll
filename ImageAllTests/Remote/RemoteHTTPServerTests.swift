@@ -3977,8 +3977,36 @@ final class RemoteHTTPServerTests: XCTestCase {
         )
         XCTAssertTrue(reviewButtonRefreshScript.contains("preserveLoadedWindow: true"))
         XCTAssertTrue(reviewButtonRefreshScript.contains("preserveUnchangedGrid: true"))
-        XCTAssertTrue(script.contains("function syncTrainingRunRow("))
-        XCTAssertTrue(script.contains("function syncTrainingSlot("))
+        let trainingSlotSyncStart = try XCTUnwrap(
+            script.range(of: "function syncTrainingSlot(")
+        )
+        let trainingSlotSyncEnd = try XCTUnwrap(
+            script.range(
+                of: "function renderTrainingSlots(",
+                range: trainingSlotSyncStart.upperBound..<script.endIndex
+            )
+        )
+        let trainingSlotSyncScript = String(
+            script[trainingSlotSyncStart.lowerBound..<trainingSlotSyncEnd.lowerBound]
+        )
+        XCTAssertTrue(trainingSlotSyncScript.contains("data-training-slot-part"))
+        XCTAssertTrue(trainingSlotSyncScript.contains("data-training-slot-copy-part"))
+        XCTAssertFalse(trainingSlotSyncScript.contains("clearElement(item);"))
+        let trainingRunSyncStart = try XCTUnwrap(
+            script.range(of: "function syncTrainingRunRow(")
+        )
+        let trainingRunSyncEnd = try XCTUnwrap(
+            script.range(
+                of: "function renderTrainingRunList(",
+                range: trainingRunSyncStart.upperBound..<script.endIndex
+            )
+        )
+        let trainingRunSyncScript = String(
+            script[trainingRunSyncStart.lowerBound..<trainingRunSyncEnd.lowerBound]
+        )
+        XCTAssertTrue(trainingRunSyncScript.contains("data-training-run-part"))
+        XCTAssertTrue(trainingRunSyncScript.contains("data-training-run-context-part"))
+        XCTAssertFalse(trainingRunSyncScript.contains("clearElement(row);"))
         XCTAssertTrue(script.contains("function trainingDetailFingerprint("))
         XCTAssertTrue(script.contains("renderTrainingWorkspace({ preserveContent:"))
         XCTAssertTrue(script.contains("function syncTrainingBatchCard("))
