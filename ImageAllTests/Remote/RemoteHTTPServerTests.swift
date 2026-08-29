@@ -3980,9 +3980,51 @@ final class RemoteHTTPServerTests: XCTestCase {
         )
         XCTAssertTrue(script.contains("function reviewOverviewContentFingerprint()"))
         XCTAssertTrue(script.contains("function reviewOverviewCanPreserveContent()"))
+        XCTAssertTrue(script.contains("function reviewOverviewPartKey("))
+        XCTAssertTrue(script.contains("function syncReviewOverviewAttributes("))
+        XCTAssertTrue(script.contains("function syncReviewOverviewNode("))
         XCTAssertTrue(script.contains("function syncReviewOverviewStableNode("))
         XCTAssertTrue(script.contains("function reconcileReviewOverviewCard("))
         XCTAssertTrue(script.contains("function syncReviewOverviewGroupToggle("))
+        XCTAssertTrue(script.contains("data-review-overview-part=\"group-title\""))
+        XCTAssertTrue(script.contains("card-origin-${key}"))
+        let reviewStableSyncStart = try XCTUnwrap(
+            script.range(of: "function syncReviewOverviewStableNode(")
+        )
+        let reviewStableSyncEnd = try XCTUnwrap(
+            script.range(
+                of: "function reconcileReviewOverviewCard(",
+                range: reviewStableSyncStart.upperBound..<script.endIndex
+            )
+        )
+        XCTAssertFalse(
+            script[reviewStableSyncStart.lowerBound..<reviewStableSyncEnd.lowerBound]
+                .contains("replaceChildren")
+        )
+        let reviewGroupToggleStart = try XCTUnwrap(
+            script.range(of: "function syncReviewOverviewGroupToggle(")
+        )
+        let reviewGroupToggleEnd = try XCTUnwrap(
+            script.range(
+                of: "function organizeReviewOverviewGroups(",
+                range: reviewGroupToggleStart.upperBound..<script.endIndex
+            )
+        )
+        XCTAssertFalse(
+            script[reviewGroupToggleStart.lowerBound..<reviewGroupToggleEnd.lowerBound]
+                .contains("replaceChildren")
+        )
+        let reviewGroupOrganizerEnd = try XCTUnwrap(
+            script.range(
+                of: "function reviewOverviewContentFingerprint(",
+                range: reviewGroupToggleEnd.upperBound..<script.endIndex
+            )
+        )
+        let reviewGroupOrganizerScript = script[
+            reviewGroupToggleEnd.lowerBound..<reviewGroupOrganizerEnd.lowerBound
+        ]
+        XCTAssertFalse(reviewGroupOrganizerScript.contains("grid.replaceChildren"))
+        XCTAssertFalse(reviewGroupOrganizerScript.contains("group.replaceChildren"))
         XCTAssertTrue(script.contains("function reviewCardFingerprint("))
         XCTAssertTrue(script.contains("function reviewPageStructureMatches("))
         XCTAssertTrue(script.contains("function renderReviewCardsForKeys("))

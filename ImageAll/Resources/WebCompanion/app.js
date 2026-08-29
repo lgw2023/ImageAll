@@ -22997,45 +22997,89 @@ function reviewOverviewStableNodeKey(node) {
   return null;
 }
 
-function syncReviewOverviewStableNode(target, source) {
+function reviewOverviewPartKey(node, index) {
+  if (node.nodeType === Node.TEXT_NODE) return `text:${index}`;
+  if (!(node instanceof Element)) return `node:${node.nodeType}:${index}`;
+  const stableKey = reviewOverviewStableNodeKey(node);
+  if (stableKey) return `stable:${stableKey}`;
+  if (node.dataset.reviewOverviewPart) {
+    return `part:${node.dataset.reviewOverviewPart}`;
+  }
+  return `element:${node.tagName}:${node.className}:${index}`;
+}
+
+function syncReviewOverviewAttributes(target, source) {
   for (const attribute of [...target.attributes]) {
     if (!source.hasAttribute(attribute.name)) target.removeAttribute(attribute.name);
   }
   for (const attribute of source.attributes) {
-    target.setAttribute(attribute.name, attribute.value);
+    if (target.getAttribute(attribute.name) !== attribute.value) {
+      target.setAttribute(attribute.name, attribute.value);
+    }
   }
-  if ("disabled" in target && "disabled" in source) target.disabled = source.disabled;
-  if (target instanceof HTMLInputElement && source instanceof HTMLInputElement) {
+  if ("disabled" in target && "disabled" in source && target.disabled !== source.disabled) {
+    target.disabled = source.disabled;
+  }
+  if (
+    target instanceof HTMLInputElement
+    && source instanceof HTMLInputElement
+    && target.value !== source.value
+  ) {
     target.value = source.value;
   }
-  if (target instanceof HTMLDetailsElement && source instanceof HTMLDetailsElement) {
+  if (
+    target instanceof HTMLDetailsElement
+    && source instanceof HTMLDetailsElement
+    && target.open !== source.open
+  ) {
     target.open = source.open;
   }
-  target.replaceChildren(...source.childNodes);
+}
+
+function syncReviewOverviewText(element, text) {
+  if (
+    element.childNodes.length === 1
+    && element.firstChild?.nodeType === Node.TEXT_NODE
+  ) {
+    if (element.firstChild.data !== text) element.firstChild.data = text;
+    return;
+  }
+  if (!element.childNodes.length) {
+    element.append(document.createTextNode(text));
+    return;
+  }
+  if (element.textContent !== text) element.textContent = text;
+}
+
+function syncReviewOverviewNode(target, source) {
+  if (target === source) return target;
+  if (target.nodeType === Node.TEXT_NODE && source.nodeType === Node.TEXT_NODE) {
+    if (target.data !== source.data) target.data = source.data;
+    return target;
+  }
+  if (!(target instanceof Element) || !(source instanceof Element)) return source;
+  if (target.tagName !== source.tagName) return source;
+  syncReviewOverviewAttributes(target, source);
+  const existingByKey = new Map(
+    [...target.childNodes].map((child, index) => [reviewOverviewPartKey(child, index), child])
+  );
+  const wanted = [...source.childNodes].map((child, index) => {
+    if (target.contains(child)) return child;
+    const existing = existingByKey.get(reviewOverviewPartKey(child, index));
+    if (!existing) return child;
+    return syncReviewOverviewNode(existing, child);
+  });
+  reconcileStableChildren(target, wanted);
+  return target;
+}
+
+function syncReviewOverviewStableNode(target, source) {
+  syncReviewOverviewNode(target, source);
 }
 
 function reconcileReviewOverviewCard(existingCard, renderedCard) {
-  const existingNodes = new Map(
-    [existingCard, ...existingCard.querySelectorAll("*")]
-      .map((node) => [reviewOverviewStableNodeKey(node), node])
-      .filter(([key]) => Boolean(key))
-  );
-  const renderedNodes = [renderedCard, ...renderedCard.querySelectorAll("*")]
-    .map((node) => ({ node, key: reviewOverviewStableNodeKey(node) }))
-    .filter((entry) => Boolean(entry.key))
-    .reverse();
-  let result = renderedCard;
-  for (const { node, key } of renderedNodes) {
-    const existing = existingNodes.get(key);
-    if (!existing || existing.tagName !== node.tagName) continue;
-    syncReviewOverviewStableNode(existing, node);
-    if (node === renderedCard) {
-      result = existing;
-    } else {
-      node.replaceWith(existing);
-    }
-  }
-  return result;
+  syncReviewOverviewStableNode(existingCard, renderedCard);
+  return existingCard;
 }
 
 function syncReviewOverviewGroupToggle(toggle, section, collapsed) {
@@ -23044,26 +23088,34 @@ function syncReviewOverviewGroupToggle(toggle, section, collapsed) {
   toggle.dataset.reviewOverviewGroupToggle = section.id;
   toggle.setAttribute("aria-expanded", String(!collapsed));
   toggle.setAttribute("aria-keyshortcuts", "ArrowUp ArrowDown Home End");
-  const chevron = document.createElement("span");
+  const chevron = toggle.querySelector(':scope > [data-review-overview-part="group-chevron"]')
+    || document.createElement("span");
+  chevron.dataset.reviewOverviewPart = "group-chevron";
   chevron.setAttribute("aria-hidden", "true");
-  chevron.textContent = collapsed ? "›" : "⌄";
-  const title = document.createElement("strong");
-  title.textContent = section.displayName;
-  const count = document.createElement("span");
-  count.textContent = `${section.overviews.length} 个标签`;
-  const pending = document.createElement("span");
+  syncReviewOverviewText(chevron, collapsed ? "›" : "⌄");
+  const title = toggle.querySelector(':scope > [data-review-overview-part="group-title"]')
+    || document.createElement("strong");
+  title.dataset.reviewOverviewPart = "group-title";
+  syncReviewOverviewText(title, section.displayName);
+  const count = toggle.querySelector(':scope > [data-review-overview-part="group-count"]')
+    || document.createElement("span");
+  count.dataset.reviewOverviewPart = "group-count";
+  syncReviewOverviewText(count, `${section.overviews.length} 个标签`);
+  const pending = toggle.querySelector(':scope > [data-review-overview-part="group-pending"]')
+    || document.createElement("span");
+  pending.dataset.reviewOverviewPart = "group-pending";
   pending.className = "review-overview-group-pending";
-  pending.textContent = `${section.overviews.reduce(
+  syncReviewOverviewText(pending, `${section.overviews.reduce(
     (total, overview) => total + (overview.pendingSuggestionCount || 0),
     0
-  )} 条待审`;
+  )} 条待审`);
   configurePersistentHelp(toggle, {
     title: `${collapsed ? "展开" : "折叠"}“${section.displayName}”分组`,
     detail: `只改变审核总览中“${section.displayName}”的显示；不会改变侧栏或检查器的标签分组状态。方向键可在分组间移动。`,
     kind: "review",
     keyShortcuts: "ArrowUp ArrowDown Home End",
   });
-  toggle.replaceChildren(chevron, title, count, pending);
+  reconcileStableChildren(toggle, [chevron, title, count, pending]);
 }
 
 function organizeReviewOverviewGroups() {
@@ -23091,9 +23143,11 @@ function organizeReviewOverviewGroups() {
       || document.createElement("div");
     grid.className = "review-overview-group-grid";
     grid.hidden = collapsed;
-    grid.replaceChildren(...section.overviews.map((overview) => cardsByTagID.get(overview.id))
-      .filter(Boolean));
-    group.replaceChildren(toggle, grid);
+    reconcileStableChildren(
+      grid,
+      section.overviews.map((overview) => cardsByTagID.get(overview.id)).filter(Boolean)
+    );
+    reconcileStableChildren(group, [toggle, grid]);
     const currentGroup = elements.reviewOverviewGrid.children[index] || null;
     if (currentGroup !== group) elements.reviewOverviewGrid.insertBefore(group, currentGroup);
   }
@@ -23191,19 +23245,24 @@ function renderReviewOverview({ preserveContent = false, reconcileContent = fals
 
     const heading = document.createElement("div");
     heading.className = "review-overview-card-heading";
+    heading.dataset.reviewOverviewPart = "card-heading";
     const name = document.createElement("strong");
+    name.dataset.reviewOverviewPart = "card-name";
     name.textContent = overview.displayName;
     const pending = document.createElement("span");
     pending.className = "review-pending-count";
+    pending.dataset.reviewOverviewPart = "card-pending";
     pending.textContent = String(overview.pendingSuggestionCount);
     heading.append(name, pending);
 
     const stats = document.createElement("div");
     stats.className = "review-overview-stats";
+    stats.dataset.reviewOverviewPart = "card-stats";
     stats.textContent = `已确认 ${overview.acceptedSampleCount} · 已拒绝 ${overview.rejectedSampleCount}`;
 
     const origins = document.createElement("div");
     origins.className = "review-origin-counts";
+    origins.dataset.reviewOverviewPart = "card-origins";
     const originLabels = [
       ["personalAdamW", "超级个人"],
       ["personalModel", "个人模型"],
@@ -23214,12 +23273,14 @@ function renderReviewOverview({ preserveContent = false, reconcileContent = fals
       const count = overview.pendingSuggestionCounts?.[key] || 0;
       if (!count) continue;
       const badge = document.createElement("span");
+      badge.dataset.reviewOverviewPart = `card-origin-${key}`;
       badge.textContent = `${label} ${count}`;
       origins.append(badge);
     }
 
     const status = document.createElement("div");
     status.className = "review-overview-status";
+    status.dataset.reviewOverviewPart = "card-status";
     status.textContent = reviewTaskStatusText(overview.taskStatus, overview);
     openButton.append(heading, stats);
     if (origins.childElementCount) openButton.append(origins);
@@ -23228,6 +23289,7 @@ function renderReviewOverview({ preserveContent = false, reconcileContent = fals
 
     const controlBody = document.createElement("div");
     controlBody.className = "review-card-control-body";
+    controlBody.dataset.reviewOverviewPart = "control-body";
     const thresholdControls = renderReviewThresholdControls(overview);
     if (thresholdControls) controlBody.append(thresholdControls);
 
@@ -23236,13 +23298,16 @@ function renderReviewOverview({ preserveContent = false, reconcileContent = fals
     if (hasFeatureAction || hasFeatureJob) {
       const feature = document.createElement("div");
       feature.className = "review-overview-generate review-overview-feature";
+      feature.dataset.reviewOverviewPart = "feature-section";
       const label = document.createElement("span");
+      label.dataset.reviewOverviewPart = "feature-label";
       label.textContent = "FEATURE PRINT 建议";
       feature.append(label);
 
       if (hasFeatureAction) {
         const actions = document.createElement("div");
         actions.className = "review-overview-generate-actions";
+        actions.dataset.reviewOverviewPart = "feature-actions";
         const generate = document.createElement("button");
         generate.type = "button";
         generate.className = "button button-plain";
@@ -23262,7 +23327,9 @@ function renderReviewOverview({ preserveContent = false, reconcileContent = fals
       if (hasFeatureJob) {
         const jobRow = document.createElement("div");
         jobRow.className = "review-tag-activity review-feature-job";
+        jobRow.dataset.reviewOverviewPart = "feature-job";
         const jobStatus = document.createElement("span");
+        jobStatus.dataset.reviewOverviewPart = "feature-job-status";
         jobStatus.textContent = reviewTaskStatusText(overview.taskStatus, overview);
         jobRow.append(jobStatus);
 
@@ -23322,13 +23389,17 @@ function renderReviewOverview({ preserveContent = false, reconcileContent = fals
     if (canGeneratePersonal || activeActivity) {
       const generation = document.createElement("div");
       generation.className = "review-overview-generate";
+      generation.dataset.reviewOverviewPart = "personal-section";
       const label = document.createElement("span");
+      label.dataset.reviewOverviewPart = "personal-label";
       label.textContent = "全库个人建议";
       generation.append(label);
       if (activeActivity) {
         const activityRow = document.createElement("div");
         activityRow.className = "review-tag-activity";
+        activityRow.dataset.reviewOverviewPart = "personal-activity";
         const activityText = document.createElement("span");
+        activityText.dataset.reviewOverviewPart = "personal-activity-status";
         activityText.textContent = `${tagLibrarySuggestionMethodText(activeActivity.method)} · ${tagLibrarySuggestionPhaseText(activeActivity)}`;
         activityRow.append(activityText);
         if (activeActivity.availableActions?.includes("cancel")) {
@@ -23352,6 +23423,7 @@ function renderReviewOverview({ preserveContent = false, reconcileContent = fals
       } else {
         const actions = document.createElement("div");
         actions.className = "review-overview-generate-actions";
+        actions.dataset.reviewOverviewPart = "personal-actions";
         const methods = [
           ["personalCentroid", "个人模型"],
           ["personalAdamW", "超级个人"],
@@ -23390,11 +23462,14 @@ function renderReviewOverview({ preserveContent = false, reconcileContent = fals
       const summary = document.createElement("summary");
       const disclosure = document.createElement("span");
       disclosure.className = "review-card-controls-chevron";
+      disclosure.dataset.reviewOverviewPart = "summary-chevron";
       disclosure.setAttribute("aria-hidden", "true");
       disclosure.textContent = "›";
       const summaryLabel = document.createElement("span");
+      summaryLabel.dataset.reviewOverviewPart = "summary-label";
       summaryLabel.textContent = "门槛与生成";
       const summaryHint = document.createElement("span");
+      summaryHint.dataset.reviewOverviewPart = "summary-hint";
       summaryHint.textContent = thresholdControls ? "3 条建议轨道" : "生成选项";
       configurePersistentHelp(summary, {
         title: `${details.open ? "收起" : "展开"}“${overview.displayName}”门槛与生成`,
@@ -23407,9 +23482,11 @@ function renderReviewOverview({ preserveContent = false, reconcileContent = fals
     }
     const existingCard = existingCards.get(overview.id);
     existingCards.delete(overview.id);
-    elements.reviewOverviewGrid.append(
-      existingCard ? reconcileReviewOverviewCard(existingCard, card) : card
-    );
+    if (existingCard) {
+      reconcileReviewOverviewCard(existingCard, card);
+    } else {
+      elements.reviewOverviewGrid.append(card);
+    }
   }
   for (const card of existingCards.values()) card.remove();
   organizeReviewOverviewGroups();

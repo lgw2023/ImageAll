@@ -91,6 +91,7 @@ def main():
     tag_snapshot_reads = 0
     suggestion_completed = False
     review_overview_checked_count = 0
+    review_overview_pending_count = 0
     review_queue_reads = 0
     review_queue_score_adjustment = 0.0
     page_errors = []
@@ -186,6 +187,13 @@ def main():
         def route_review_overview(route):
             payload = overview(suggestion_completed)
             payload["tags"][0]["checkedCount"] = review_overview_checked_count
+            if review_overview_pending_count:
+                payload["totalPendingSuggestionCount"] = review_overview_pending_count
+                payload["tags"][0]["pendingSuggestionCount"] = review_overview_pending_count
+                payload["tags"][0]["pendingSuggestionCounts"][
+                    "personalModel"
+                ] = review_overview_pending_count
+                payload["tags"][0]["canReview"] = True
             fulfill_json(route, payload)
 
         page.route("**/v1/review/overview?**", route_review_overview)
@@ -425,15 +433,57 @@ def main():
               );
               const action = details.querySelector('[data-tag-suggestion-method="personalCentroid"]');
               const content = document.querySelector(".review-overview-content");
+              content.scrollTop = 10;
+              const groupToggle = openButton.closest(".review-overview-group")
+                .querySelector("[data-review-overview-group-toggle]");
+              const groupTitle = groupToggle.querySelector(
+                '[data-review-overview-part="group-title"]'
+              );
               action.focus({{ preventScroll: true }});
+              const range = document.createRange();
+              range.setStart(groupTitle.firstChild, 0);
+              range.setEnd(groupTitle.firstChild, groupTitle.firstChild.data.length);
+              const selection = getSelection();
+              selection.removeAllRanges();
+              selection.addRange(range);
+              const mutations = {{ added: 0, removed: 0 }};
+              const observer = new MutationObserver((records) => {{
+                for (const record of records) {{
+                  mutations.added += [...record.addedNodes]
+                    .filter((node) => node.nodeType === Node.ELEMENT_NODE).length;
+                  mutations.removed += [...record.removedNodes]
+                    .filter((node) => node.nodeType === Node.ELEMENT_NODE).length;
+                }}
+              }});
+              observer.observe(groupToggle, {{ childList: true, subtree: true }});
+              observer.observe(details, {{ childList: true, subtree: true }});
               window.__reviewOverviewChangedFrame = {{
                 card: openButton.closest(".review-overview-card"),
                 openButton,
+                heading: openButton.querySelector('[data-review-overview-part="card-heading"]'),
+                name: openButton.querySelector('[data-review-overview-part="card-name"]'),
+                pending: openButton.querySelector('[data-review-overview-part="card-pending"]'),
+                stats: openButton.querySelector('[data-review-overview-part="card-stats"]'),
+                status: openButton.querySelector('[data-review-overview-part="card-status"]'),
+                statusText: openButton.querySelector('[data-review-overview-part="card-status"]').firstChild,
                 details,
+                summary: details.querySelector(":scope > summary"),
+                summaryParts: [...details.querySelector(":scope > summary").children],
                 action,
+                actionText: action.firstChild,
                 group: openButton.closest(".review-overview-group"),
-                groupToggle: openButton.closest(".review-overview-group")
-                  .querySelector("[data-review-overview-group-toggle]"),
+                groupToggle,
+                groupParts: [...groupToggle.children],
+                groupTitle,
+                groupTitleText: groupTitle.firstChild,
+                groupPending: groupToggle.querySelector(
+                  '[data-review-overview-part="group-pending"]'
+                ),
+                groupPendingText: groupToggle.querySelector(
+                  '[data-review-overview-part="group-pending"]'
+                ).firstChild,
+                mutations,
+                observer,
                 scrollTop: content.scrollTop,
               }};
               void loadReviewOverview();
@@ -441,10 +491,21 @@ def main():
             """
         )
         page.wait_for_function("() => Boolean(window.__reviewOverviewRefreshRelease)")
+        group_title = page.locator(
+            '[data-review-overview-part="group-title"]'
+        )
+        group_title_bounds = group_title.bounding_box()
+        assert group_title_bounds is not None
+        page.mouse.move(
+            group_title_bounds["x"] + group_title_bounds["width"] / 2,
+            group_title_bounds["y"] + group_title_bounds["height"] / 2,
+        )
+        assert group_title.evaluate("element => element.matches(':hover')")
         review_overview_checked_count = 1
+        review_overview_pending_count = 1
         page.evaluate("() => window.__reviewOverviewRefreshRelease()")
         page.wait_for_function("() => !state.review.overviewLoading")
-        assert page.evaluate(
+        changed_overview_frame = page.evaluate(
             f"""
             () => {{
               const frame = window.__reviewOverviewChangedFrame;
@@ -454,24 +515,68 @@ def main():
               const details = document.querySelector(
                 '[data-review-control-tag-id="{TAG_ID}"]'
               );
-              return frame.card === openButton.closest(".review-overview-card")
-                && frame.openButton === openButton
-                && frame.details === details
-                && frame.action === details.querySelector(
+              const groupToggle = openButton.closest(".review-overview-group")
+                .querySelector("[data-review-overview-group-toggle]");
+              const selection = getSelection();
+              frame.observer.disconnect();
+              return {{
+                card: frame.card === openButton.closest(".review-overview-card"),
+                openButton: frame.openButton === openButton,
+                heading: frame.heading === openButton.querySelector(
+                  '[data-review-overview-part="card-heading"]'
+                ),
+                name: frame.name === openButton.querySelector(
+                  '[data-review-overview-part="card-name"]'
+                ),
+                pending: frame.pending === openButton.querySelector(
+                  '[data-review-overview-part="card-pending"]'
+                ),
+                stats: frame.stats === openButton.querySelector(
+                  '[data-review-overview-part="card-stats"]'
+                ),
+                status: frame.status === openButton.querySelector(
+                  '[data-review-overview-part="card-status"]'
+                ),
+                statusText: frame.statusText === frame.status.firstChild,
+                details: frame.details === details,
+                summary: frame.summary === details.querySelector(":scope > summary"),
+                summaryParts: frame.summaryParts.every(
+                  (node, index) => node === frame.summary.children[index]
+                ),
+                action: frame.action === details.querySelector(
                   '[data-tag-suggestion-method="personalCentroid"]'
-                )
-                && frame.group === openButton.closest(".review-overview-group")
-                && frame.groupToggle === openButton.closest(".review-overview-group")
-                  .querySelector("[data-review-overview-group-toggle]")
-                && openButton.querySelector(".review-overview-status")
-                  .textContent.includes("1 项已检查")
-                && details.open
-                && document.activeElement === frame.action
-                && document.querySelector(".review-overview-content").scrollTop
-                  === frame.scrollTop;
+                ),
+                actionText: frame.actionText === frame.action.firstChild,
+                group: frame.group === openButton.closest(".review-overview-group"),
+                groupToggle: frame.groupToggle === groupToggle,
+                groupParts: frame.groupParts.every(
+                  (node, index) => node === groupToggle.children[index]
+                ),
+                groupTitle: frame.groupTitle === groupToggle.querySelector(
+                  '[data-review-overview-part="group-title"]'
+                ),
+                groupTitleText: frame.groupTitleText === frame.groupTitle.firstChild,
+                groupPending: frame.groupPending === groupToggle.querySelector(
+                  '[data-review-overview-part="group-pending"]'
+                ),
+                groupPendingText: frame.groupPendingText === frame.groupPending.firstChild,
+                updatedStatus: frame.status.textContent.includes("1 项已检查"),
+                updatedPending: frame.pending.textContent === "1"
+                  && frame.groupPending.textContent === "1 条待审",
+                expanded: details.open,
+                focused: document.activeElement === frame.action,
+                selected: selection.anchorNode === frame.groupTitleText
+                  && selection.toString() === frame.groupTitle.textContent,
+                hovered: frame.groupTitle.matches(":hover"),
+                scroll: document.querySelector(".review-overview-content").scrollTop
+                  === frame.scrollTop,
+                zeroStableElementMutations: frame.mutations.added === 0
+                  && frame.mutations.removed === 0,
+              }};
             }}
             """
-        ), "changed review overview did not update the existing card in place"
+        )
+        assert all(changed_overview_frame.values()), changed_overview_frame
         page.evaluate(
             f"""
             () => {{
