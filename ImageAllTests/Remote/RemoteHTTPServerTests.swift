@@ -4007,6 +4007,22 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(trainingRunSyncScript.contains("data-training-run-part"))
         XCTAssertTrue(trainingRunSyncScript.contains("data-training-run-context-part"))
         XCTAssertFalse(trainingRunSyncScript.contains("clearElement(row);"))
+        let slimmingJobRowSyncStart = try XCTUnwrap(
+            script.range(of: "function syncSlimmingJobRow(")
+        )
+        let slimmingJobRowSyncEnd = try XCTUnwrap(
+            script.range(
+                of: "function appendSlimmingJobRows(",
+                range: slimmingJobRowSyncStart.upperBound..<script.endIndex
+            )
+        )
+        let slimmingJobRowSyncScript = String(
+            script[slimmingJobRowSyncStart.lowerBound..<slimmingJobRowSyncEnd.lowerBound]
+        )
+        XCTAssertTrue(script.contains("function syncSlimmingJobRowProgress("))
+        XCTAssertTrue(slimmingJobRowSyncScript.contains("data-slimming-job-row-part"))
+        XCTAssertTrue(slimmingJobRowSyncScript.contains("syncSlimmingJobRowProgress"))
+        XCTAssertFalse(slimmingJobRowSyncScript.contains("clearElement(row);"))
         XCTAssertTrue(script.contains("function trainingDetailFingerprint("))
         XCTAssertTrue(script.contains("renderTrainingWorkspace({ preserveContent:"))
         XCTAssertTrue(script.contains("function syncTrainingBatchCard("))

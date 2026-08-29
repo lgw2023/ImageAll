@@ -27679,13 +27679,54 @@ function renderSlimmingJobSummary() {
   elements.slimmingNavigationCount.textContent = activeCount ? String(activeCount) : "";
 }
 
+function syncSlimmingJobRowProgress(row, job) {
+  let progress = row.querySelector(
+    ':scope > [data-slimming-job-row-part="progress"]'
+  );
+  if (!job.scanProgress) {
+    progress?.remove();
+    return null;
+  }
+  if (!progress) {
+    progress = document.createElement("span");
+    progress.dataset.slimmingJobRowPart = "progress";
+  }
+  progress.className = "slimming-scan-progress compact";
+  let track = progress.querySelector(":scope > .slimming-scan-progress-track");
+  if (!track) {
+    track = document.createElement("span");
+    track.className = "slimming-scan-progress-track";
+  }
+  let fill = track.querySelector(":scope > span");
+  if (!fill) {
+    fill = document.createElement("span");
+    track.append(fill);
+  }
+  let copy = progress.querySelector(
+    ':scope > [data-slimming-job-row-progress-part="copy"]'
+  );
+  if (!copy) {
+    copy = document.createElement("span");
+    copy.dataset.slimmingJobRowProgressPart = "copy";
+  }
+  const completed = Math.max(
+    0,
+    Number(job.scanProgress.completedUnitCount || 0)
+  );
+  const total = Math.max(1, Number(job.scanProgress.totalUnitCount || 1));
+  fill.style.width = `${Math.min(100, Math.max(0, completed / total * 100))}%`;
+  const progressText = `${slimmingScanPhaseText(job.scanProgress)} ${completed}/${total}`;
+  if (copy.textContent !== progressText) copy.textContent = progressText;
+  reconcileStableChildren(progress, [track, copy]);
+  return progress;
+}
+
 function syncSlimmingJobRow(row, job) {
   const fingerprint = JSON.stringify({
     job,
     selected: job.id === state.slimming.selectedJobID,
   });
   if (row.dataset.slimmingFingerprint === fingerprint) return row;
-  clearElement(row);
   row.type = "button";
   row.className = "slimming-job-row";
   row.dataset.slimmingJobId = job.id;
@@ -27693,31 +27734,76 @@ function syncSlimmingJobRow(row, job) {
   row.setAttribute("role", "option");
   row.setAttribute("aria-selected", String(job.id === state.slimming.selectedJobID));
   row.tabIndex = job.id === state.slimming.selectedJobID ? 0 : -1;
-  const heading = document.createElement("span");
-  heading.className = "slimming-row-heading";
-  const title = document.createElement("strong");
-  title.textContent = slimmingModeText(job.mode);
-  const status = document.createElement("span");
+  let heading = row.querySelector(
+    ':scope > [data-slimming-job-row-part="heading"]'
+  );
+  if (!heading) {
+    heading = document.createElement("span");
+    heading.dataset.slimmingJobRowPart = "heading";
+    heading.className = "slimming-row-heading";
+  }
+  let title = heading.querySelector(
+    ':scope > [data-slimming-job-row-heading-part="title"]'
+  );
+  if (!title) {
+    title = document.createElement("strong");
+    title.dataset.slimmingJobRowHeadingPart = "title";
+  }
+  const titleText = slimmingModeText(job.mode);
+  if (title.textContent !== titleText) title.textContent = titleText;
+  let status = heading.querySelector(
+    ':scope > [data-slimming-job-row-heading-part="status"]'
+  );
+  if (!status) {
+    status = document.createElement("span");
+    status.dataset.slimmingJobRowHeadingPart = "status";
+  }
   status.className = `slimming-state ${job.state}`;
-  status.textContent = slimmingJobStateText(job);
-  heading.append(title, status);
-  const counts = document.createElement("span");
-  counts.className = "slimming-row-detail";
+  const statusText = slimmingJobStateText(job);
+  if (status.textContent !== statusText) status.textContent = statusText;
+  reconcileStableChildren(heading, [title, status]);
+  let counts = row.querySelector(
+    ':scope > [data-slimming-job-row-part="counts"]'
+  );
+  if (!counts) {
+    counts = document.createElement("span");
+    counts.dataset.slimmingJobRowPart = "counts";
+    counts.className = "slimming-row-detail";
+  }
   const unit = job.mediaKind === "video" ? "个视频" : "张照片";
   const countParts = [`${job.memberCount} ${unit}`];
   if (job.seedCount > 0) countParts.push(`种子 ${job.seedCount}`);
   if (job.hasResult) countParts.push(`${job.clusterCount} 个簇`);
   countParts.push(`尝试 ${job.attempts}/${job.maxAttempts}`);
-  counts.textContent = countParts.join(" · ");
-  const source = document.createElement("span");
-  source.className = "slimming-row-detail";
-  source.textContent = job.sourceNames?.length ? job.sourceNames.join(" · ") : "全部可用来源";
-  const date = document.createElement("span");
-  date.className = "slimming-row-date";
-  date.textContent = formatDate(job.updatedAtMs);
-  row.append(heading, counts);
-  appendSlimmingScanProgress(row, job, true);
-  row.append(source, date);
+  const countText = countParts.join(" · ");
+  if (counts.textContent !== countText) counts.textContent = countText;
+  const progress = syncSlimmingJobRowProgress(row, job);
+  let source = row.querySelector(
+    ':scope > [data-slimming-job-row-part="source"]'
+  );
+  if (!source) {
+    source = document.createElement("span");
+    source.dataset.slimmingJobRowPart = "source";
+    source.className = "slimming-row-detail";
+  }
+  const sourceText = job.sourceNames?.length
+    ? job.sourceNames.join(" · ")
+    : "全部可用来源";
+  if (source.textContent !== sourceText) source.textContent = sourceText;
+  let date = row.querySelector(
+    ':scope > [data-slimming-job-row-part="date"]'
+  );
+  if (!date) {
+    date = document.createElement("span");
+    date.dataset.slimmingJobRowPart = "date";
+    date.className = "slimming-row-date";
+  }
+  const dateText = formatDate(job.updatedAtMs);
+  if (date.textContent !== dateText) date.textContent = dateText;
+  reconcileStableChildren(
+    row,
+    [heading, counts, progress, source, date].filter(Boolean)
+  );
   row.dataset.slimmingFingerprint = fingerprint;
   return row;
 }

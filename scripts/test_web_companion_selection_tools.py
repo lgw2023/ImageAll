@@ -2705,14 +2705,68 @@ def main(*, inspector_actions_only=False):
         )
         assert slimming_refresh_after == slimming_refresh_inflight, slimming_refresh_after
         page.evaluate(
-            """jobID => {
-              window.__imageAllSlimmingChangedJob = document.querySelector(
+            """({ jobID, focusedMemberID }) => {
+              const row = document.querySelector(
                 `[data-slimming-job-id="${CSS.escape(jobID)}"]`
               );
+              const source = row.querySelector(
+                '[data-slimming-job-row-part="source"]'
+              );
+              const range = document.createRange();
+              range.selectNodeContents(source);
+              const selection = getSelection();
+              selection.removeAllRanges();
+              selection.addRange(range);
+              const frame = {
+                row,
+                parts: {
+                  heading: row.querySelector('[data-slimming-job-row-part="heading"]'),
+                  title: row.querySelector('[data-slimming-job-row-heading-part="title"]'),
+                  status: row.querySelector('[data-slimming-job-row-heading-part="status"]'),
+                  counts: row.querySelector('[data-slimming-job-row-part="counts"]'),
+                  source,
+                  date: row.querySelector('[data-slimming-job-row-part="date"]'),
+                },
+                selectedText: selection.toString(),
+                elementMutations: 0,
+              };
+              frame.observer = new MutationObserver((records) => {
+                frame.elementMutations += records.filter((record) => (
+                  record.type === 'childList'
+                  && [...record.addedNodes, ...record.removedNodes].some(
+                    (node) => node.nodeType === Node.ELEMENT_NODE
+                  )
+                )).length;
+              });
+              frame.observer.observe(row, { childList: true, subtree: true });
+              window.__imageAllSlimmingChangedJob = row;
+              window.__imageAllSlimmingJobInnerFrame = frame;
+              document.querySelector(
+                `[data-slimming-member-id="${CSS.escape(focusedMemberID)}"] .slimming-member-main`
+              )?.focus({ preventScroll: true });
             }""",
-            SLIMMING_SECOND_JOB_ID,
+            {
+                "jobID": SLIMMING_SECOND_JOB_ID,
+                "focusedMemberID": slimming_refresh_before["memberID"],
+            },
+        )
+        page.locator(
+            f'[data-slimming-job-id="{SLIMMING_SECOND_JOB_ID}"] '
+            '[data-slimming-job-row-part="source"]'
+        ).hover()
+        page.evaluate(
+            """memberID => document.querySelector(
+              `[data-slimming-member-id="${CSS.escape(memberID)}"] .slimming-member-main`
+            )?.focus({ preventScroll: true })""",
+            slimming_refresh_before["memberID"],
         )
         slimming_job_states[SLIMMING_SECOND_JOB_ID] = "running"
+        slimming_job_attempts[SLIMMING_SECOND_JOB_ID] = 2
+        slimming_job_scan_progress[SLIMMING_SECOND_JOB_ID] = {
+            "phase": "clustering",
+            "completedUnitCount": 1,
+            "totalUnitCount": 10,
+        }
         page.evaluate("loadSlimmingWorkspace({ quiet: true })")
         page.wait_for_function(
             "jobID => document.querySelector(`[data-slimming-job-id=\"${jobID}\"]`)"
@@ -2724,10 +2778,38 @@ def main(*, inspector_actions_only=False):
               const member = document.querySelector(
                 `[data-slimming-member-id="${CSS.escape(expected.memberID)}"]`
               );
+              const frame = window.__imageAllSlimmingJobInnerFrame;
+              const row = document.querySelector(
+                `[data-slimming-job-id="${CSS.escape(expected.changedJobID)}"]`
+              );
+              const heading = row.querySelector('[data-slimming-job-row-part="heading"]');
+              const progress = row.querySelector('[data-slimming-job-row-part="progress"]');
+              frame.observer.disconnect();
               return {
-                changedJobStable: document.querySelector(
-                  `[data-slimming-job-id="${CSS.escape(expected.changedJobID)}"]`
-                ) === window.__imageAllSlimmingChangedJob,
+                changedJobStable: row === window.__imageAllSlimmingChangedJob,
+                partsStable: frame.parts.heading === heading
+                  && frame.parts.title === heading.querySelector(
+                    '[data-slimming-job-row-heading-part="title"]'
+                  )
+                  && frame.parts.status === heading.querySelector(
+                    '[data-slimming-job-row-heading-part="status"]'
+                  )
+                  && frame.parts.counts === row.querySelector(
+                    '[data-slimming-job-row-part="counts"]'
+                  )
+                  && frame.parts.source === row.querySelector(
+                    '[data-slimming-job-row-part="source"]'
+                  )
+                  && frame.parts.date === row.querySelector(
+                    '[data-slimming-job-row-part="date"]'
+                  ),
+                progressAdded: Boolean(progress),
+                statusText: frame.parts.status.textContent,
+                countsText: frame.parts.counts.textContent,
+                selectionStable: getSelection().toString() === frame.selectedText
+                  && getSelection().containsNode(frame.parts.source, true),
+                hovered: frame.parts.source.matches(':hover'),
+                elementMutations: frame.elementMutations,
                 selectedJobStable: document.querySelector(
                   `[data-slimming-job-id="${CSS.escape(expected.jobID)}"]`
                 ) === window.__imageAllSlimmingRefreshJob,
@@ -2746,13 +2828,113 @@ def main(*, inspector_actions_only=False):
         )
         assert slimming_changed_refresh_after == {
             "changedJobStable": True,
+            "partsStable": True,
+            "progressAdded": True,
+            "statusText": "进行中",
+            "countsText": "3 张照片 · 尝试 2/10",
+            "selectionStable": True,
+            "hovered": True,
+            "elementMutations": 1,
             "selectedJobStable": True,
             "clusterStable": True,
             "memberStable": True,
             "imageStable": True,
             "focusedMemberID": slimming_refresh_before["memberID"],
         }, slimming_changed_refresh_after
+        page.evaluate(
+            """() => {
+              const frame = window.__imageAllSlimmingJobInnerFrame;
+              const row = frame.row;
+              const progress = row.querySelector(
+                '[data-slimming-job-row-part="progress"]'
+              );
+              frame.progress = {
+                wrapper: progress,
+                track: progress.querySelector('.slimming-scan-progress-track'),
+                fill: progress.querySelector('.slimming-scan-progress-track > span'),
+                copy: progress.querySelector(
+                  '[data-slimming-job-row-progress-part="copy"]'
+                ),
+              };
+              frame.elementMutations = 0;
+              frame.observer.observe(row, { childList: true, subtree: true });
+            }"""
+        )
+        slimming_job_attempts[SLIMMING_SECOND_JOB_ID] = 3
+        slimming_job_scan_progress[SLIMMING_SECOND_JOB_ID] = {
+            "phase": "clustering",
+            "completedUnitCount": 4,
+            "totalUnitCount": 10,
+        }
+        page.evaluate("loadSlimmingWorkspace({ quiet: true })")
+        page.wait_for_function(
+            "jobID => document.querySelector(`[data-slimming-job-id=\"${jobID}\"]`)"
+            "?.innerText.includes('聚类分析 4/10')",
+            arg=SLIMMING_SECOND_JOB_ID,
+        )
+        slimming_progress_refresh_after = page.evaluate(
+            """expected => {
+              const frame = window.__imageAllSlimmingJobInnerFrame;
+              const row = document.querySelector(
+                `[data-slimming-job-id="${CSS.escape(expected.jobID)}"]`
+              );
+              const progress = row.querySelector(
+                '[data-slimming-job-row-part="progress"]'
+              );
+              frame.observer.disconnect();
+              return {
+                rowStable: row === frame.row,
+                basePartsStable: frame.parts.heading === row.querySelector(
+                  '[data-slimming-job-row-part="heading"]'
+                ) && frame.parts.counts === row.querySelector(
+                  '[data-slimming-job-row-part="counts"]'
+                ) && frame.parts.source === row.querySelector(
+                  '[data-slimming-job-row-part="source"]'
+                ) && frame.parts.date === row.querySelector(
+                  '[data-slimming-job-row-part="date"]'
+                ),
+                progressPartsStable: frame.progress.wrapper === progress
+                  && frame.progress.track === progress.querySelector(
+                    '.slimming-scan-progress-track'
+                  )
+                  && frame.progress.fill === progress.querySelector(
+                    '.slimming-scan-progress-track > span'
+                  )
+                  && frame.progress.copy === progress.querySelector(
+                    '[data-slimming-job-row-progress-part="copy"]'
+                  ),
+                countsText: frame.parts.counts.textContent,
+                progressText: frame.progress.copy.textContent,
+                progressWidth: frame.progress.fill.style.width,
+                selectionStable: getSelection().toString() === frame.selectedText
+                  && getSelection().containsNode(frame.parts.source, true),
+                hovered: frame.parts.source.matches(':hover'),
+                focusedMemberID: document.activeElement?.closest(
+                  '[data-slimming-member-id]'
+                )?.dataset.slimmingMemberId || null,
+                elementMutations: frame.elementMutations,
+              };
+            }""",
+            {
+                "jobID": SLIMMING_SECOND_JOB_ID,
+                "memberID": slimming_refresh_before["memberID"],
+            },
+        )
+        assert slimming_progress_refresh_after == {
+            "rowStable": True,
+            "basePartsStable": True,
+            "progressPartsStable": True,
+            "countsText": "3 张照片 · 尝试 3/10",
+            "progressText": "聚类分析 4/10",
+            "progressWidth": "40%",
+            "selectionStable": True,
+            "hovered": True,
+            "focusedMemberID": slimming_refresh_before["memberID"],
+            "elementMutations": 0,
+        }, slimming_progress_refresh_after
         slimming_job_states[SLIMMING_SECOND_JOB_ID] = "completed"
+        slimming_job_attempts[SLIMMING_SECOND_JOB_ID] = 1
+        slimming_job_scan_progress[SLIMMING_SECOND_JOB_ID] = None
         page.evaluate("loadSlimmingWorkspace({ quiet: true })")
         page.wait_for_function(
             "jobID => document.querySelector(`[data-slimming-job-id=\"${jobID}\"]`)"
