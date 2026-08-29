@@ -221,6 +221,49 @@ def main():
         assert "4032 × 3024" in primary_metadata
         assert "2.5 MB" in primary_metadata
         assert detail_requests[-1] == ASSET_IDS[1]
+        stable_primary_metadata = page.evaluate(
+            """() => {
+              const container = document.querySelector("#selectionInspectorPrimaryMetadata");
+              const source = container.querySelector('dd[data-metadata-key="来源"]');
+              const range = document.createRange();
+              range.selectNodeContents(source);
+              const selection = getSelection();
+              selection.removeAllRanges();
+              selection.addRange(range);
+              const frame = {
+                children: [...container.children],
+                source,
+                selection: selection.toString(),
+                mutations: 0,
+              };
+              frame.observer = new MutationObserver((records) => {
+                frame.mutations += records.filter(
+                  (record) => record.type === "childList"
+                ).length;
+              });
+              frame.observer.observe(container, { childList: true, subtree: true });
+              state.loadingAggregate = true;
+              renderSelectionInspector();
+              state.loadingAggregate = false;
+              renderSelectionInspector();
+              frame.observer.disconnect();
+              const currentChildren = [...container.children];
+              return {
+                children: currentChildren.length === frame.children.length
+                  && currentChildren.every((child, index) => child === frame.children[index]),
+                source: source === container.querySelector('dd[data-metadata-key="来源"]'),
+                selection: selection.toString() === frame.selection
+                  && selection.toString() === "Apple Photos",
+                mutations: frame.mutations,
+              };
+            }"""
+        )
+        assert stable_primary_metadata == {
+            "children": True,
+            "source": True,
+            "selection": True,
+            "mutations": 0,
+        }, stable_primary_metadata
 
         # Mac-style split view resizing is layout-only: loaded assets, selection,
         # primary inspector context and scroll position must remain intact.

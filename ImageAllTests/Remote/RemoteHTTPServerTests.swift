@@ -4015,6 +4015,8 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function renderCompactToolbarMenu()"))
         XCTAssertTrue(script.contains("function reconcileCompactToolbarMenuContent()"))
         XCTAssertTrue(script.contains("data-compact-toolbar-section"))
+        XCTAssertTrue(script.contains("function reconcileMetadataRows(container, rows)"))
+        XCTAssertTrue(script.contains("data-metadata-key"))
         XCTAssertTrue(script.contains("function closeCompactToolbarMenu({ restoreFocus = true, checkpoint = true } = {})"))
         XCTAssertTrue(script.contains("function syncCompactToolbarMenu()"))
         XCTAssertTrue(script.contains("function fullToolbarRequiredWidth()"))

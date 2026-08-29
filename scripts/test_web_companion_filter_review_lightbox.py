@@ -2007,11 +2007,34 @@ def main():
         page.evaluate(
             """() => {
               const container = document.querySelector("#inspectorSuggestions");
+              const metadata = document.querySelector("#assetMetadata");
+              const source = metadata.querySelector('dd[data-metadata-key="来源"]');
+              const range = document.createRange();
+              range.selectNodeContents(source);
+              const selection = getSelection();
+              selection.removeAllRanges();
+              selection.addRange(range);
+              const metadataFrame = {
+                children: [...metadata.children],
+                source,
+                selection: selection.toString(),
+                mutations: 0,
+              };
+              metadataFrame.observer = new MutationObserver((records) => {
+                metadataFrame.mutations += records.filter(
+                  (record) => record.type === "childList"
+                ).length;
+              });
+              metadataFrame.observer.observe(metadata, { childList: true, subtree: true });
+              renderInspector(state.selectedDetail);
               window.__stableInspectorSuggestionFrame = {
                 container,
                 rows: [...container.querySelectorAll(".inspector-suggestion-row")],
                 actions: [...container.querySelectorAll("[data-inspector-suggestion-key][data-action]")],
                 scrollTop: container.scrollTop,
+                metadataFrame,
+                metadataSelectionPreserved: selection.toString() === metadataFrame.selection
+                  && selection.toString() === "Apple Photos",
               };
             }"""
         )
@@ -2043,6 +2066,28 @@ def main():
             }"""
         )
         assert all(stable_inspector_suggestions.values()), stable_inspector_suggestions
+        stable_inspector_metadata = page.evaluate(
+            """() => {
+              const frame = window.__stableInspectorSuggestionFrame.metadataFrame;
+              const metadata = document.querySelector("#assetMetadata");
+              frame.observer.disconnect();
+              const children = [...metadata.children];
+              return {
+                children: children.length === frame.children.length
+                  && children.every((child, index) => child === frame.children[index]),
+                source: metadata.querySelector('dd[data-metadata-key="来源"]')
+                  === frame.source,
+                selection: window.__stableInspectorSuggestionFrame.metadataSelectionPreserved,
+                mutations: frame.mutations,
+              };
+            }"""
+        )
+        assert stable_inspector_metadata == {
+            "children": True,
+            "source": True,
+            "selection": True,
+            "mutations": 0,
+        }, stable_inspector_metadata
 
         page.evaluate(
             """() => {
@@ -2979,6 +3024,34 @@ def main():
               const travel = container.querySelector(
                 '[data-tag-chip-action][data-tag-id="{TRAVEL_TAG_ID}"]'
               );
+              const metadata = document.querySelector("#reviewAssetMetadata");
+              const metadataSource = metadata.querySelector(
+                'dd[data-metadata-key="来源"]'
+              );
+              const metadataRange = document.createRange();
+              metadataRange.selectNodeContents(metadataSource);
+              const metadataSelection = getSelection();
+              metadataSelection.removeAllRanges();
+              metadataSelection.addRange(metadataRange);
+              const metadataFrame = {{
+                children: [...metadata.children],
+                source: metadataSource,
+                selection: metadataSelection.toString(),
+                selectionPreserved: false,
+                mutations: 0,
+              }};
+              metadataFrame.observer = new MutationObserver((records) => {{
+                metadataFrame.mutations += records.filter(
+                  (record) => record.type === "childList"
+                ).length;
+              }});
+              metadataFrame.observer.observe(metadata, {{ childList: true, subtree: true }});
+              renderReviewInspectorMetadata(
+                state.review.items[state.review.selectedIndex],
+                state.review.detail
+              );
+              metadataFrame.selectionPreserved = metadataSelection.toString()
+                === metadataFrame.selection && metadataSelection.toString() === "Apple Photos";
               window.__stableReviewInspectorTagFrame = {{
                 container,
                 subject,
@@ -2994,6 +3067,7 @@ def main():
                   '[data-action][data-tag-id]'
                 )],
                 accept: travel.closest(".tag-row").querySelector('[data-action="accept"]'),
+                metadataFrame,
               }};
             }}"""
         )
@@ -3023,6 +3097,9 @@ def main():
               const accept = travel.closest(".tag-row").querySelector(
                 '[data-action="accept"]'
               );
+              const metadata = document.querySelector("#reviewAssetMetadata");
+              frame.metadataFrame.observer.disconnect();
+              const metadataChildren = [...metadata.children];
               return {{
                 container: container === frame.container,
                 subject: subject === frame.subject,
@@ -3035,6 +3112,14 @@ def main():
                 travelActions: frame.travelActions.every((button) => button.isConnected),
                 accept: accept === frame.accept,
                 focus: document.activeElement === accept,
+                metadataChildren: metadataChildren.length === frame.metadataFrame.children.length
+                  && metadataChildren.every(
+                    (child, index) => child === frame.metadataFrame.children[index]
+                  ),
+                metadataSource: metadata.querySelector('dd[data-metadata-key="来源"]')
+                  === frame.metadataFrame.source,
+                metadataSelection: frame.metadataFrame.selectionPreserved,
+                metadataMutations: frame.metadataFrame.mutations === 0,
               }};
             }}"""
         )

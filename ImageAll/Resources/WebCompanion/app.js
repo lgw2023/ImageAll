@@ -14946,11 +14946,37 @@ function renderAssetCardsForIDs(assetIDs) {
 }
 
 function metadataRow(label, value) {
-  const term = document.createElement("dt");
-  term.textContent = label;
-  const detail = document.createElement("dd");
-  detail.textContent = value || "—";
-  return [term, detail];
+  return { key: label, label, value: value || "—" };
+}
+
+function reconcileMetadataRows(container, rows) {
+  const existing = new Map(
+    [...container.querySelectorAll(":scope > dt[data-metadata-key]")]
+      .map((term) => {
+        const detail = term.nextElementSibling;
+        return detail?.matches("dd[data-metadata-key]")
+          && detail.dataset.metadataKey === term.dataset.metadataKey
+          ? [term.dataset.metadataKey, { term, detail }]
+          : null;
+      })
+      .filter(Boolean)
+  );
+  const wanted = [];
+  for (const row of rows) {
+    let pair = existing.get(row.key) || null;
+    existing.delete(row.key);
+    if (!pair) {
+      const term = document.createElement("dt");
+      const detail = document.createElement("dd");
+      term.dataset.metadataKey = row.key;
+      detail.dataset.metadataKey = row.key;
+      pair = { term, detail };
+    }
+    if (pair.term.textContent !== row.label) pair.term.textContent = row.label;
+    if (pair.detail.textContent !== row.value) pair.detail.textContent = row.value;
+    wanted.push(pair.term, pair.detail);
+  }
+  reconcileStableChildren(container, wanted);
 }
 
 function assetThumbnailPlaceholder(assetID) {
@@ -16541,7 +16567,6 @@ function renderInspector(detail) {
     }
   }
 
-  clearElement(elements.assetMetadata);
   const isVideo = state.mediaKind === "video";
   const rows = [
     metadataRow("来源", detail.sourceName),
@@ -16555,7 +16580,7 @@ function renderInspector(detail) {
     metadataRow("格式", detail.mediaType),
     metadataRow("状态", availabilityText(detail.availability)),
   ];
-  for (const pair of rows) elements.assetMetadata.append(...pair);
+  reconcileMetadataRows(elements.assetMetadata, rows);
   syncInspectorViewOriginalControl(detail);
   syncInspectorOpenOriginalControl(detail);
   renderFavoriteControls();
@@ -16686,7 +16711,7 @@ function renderSelectionPrimary() {
   elements.selectionInspectorPrimary.classList.toggle("hidden", !visible);
   if (!visible) {
     clearProtectedImageSource(elements.selectionInspectorPrimaryImage);
-    clearElement(elements.selectionInspectorPrimaryMetadata);
+    reconcileMetadataRows(elements.selectionInspectorPrimaryMetadata, []);
     return;
   }
 
@@ -16710,7 +16735,6 @@ function renderSelectionPrimary() {
     revision: detail?.contentRevision ?? asset.contentRevision,
   });
 
-  clearElement(elements.selectionInspectorPrimaryMetadata);
   const width = detail?.width ?? asset.width;
   const height = detail?.height ?? asset.height;
   const rows = [
@@ -16729,7 +16753,7 @@ function renderSelectionPrimary() {
       metadataRow("状态", availabilityText(detail.availability)),
     ] : []),
   ];
-  for (const pair of rows) elements.selectionInspectorPrimaryMetadata.append(...pair);
+  reconcileMetadataRows(elements.selectionInspectorPrimaryMetadata, rows);
 }
 
 async function loadSelectionPrimaryDetail() {
@@ -23713,12 +23737,15 @@ function syncReviewOpenOriginalControl(detail, item) {
 }
 
 function renderReviewInspectorMetadata(item, detail) {
-  clearElement(elements.reviewAssetMetadata);
   const loading = state.review.detailLoadingAssetID === item?.assetID
     && state.review.detailLoadingSelectionKey === reviewInspectorSelectionKey();
+  const preservesExisting = elements.reviewAssetMetadata.dataset.assetId === item?.assetID
+    && elements.reviewAssetMetadata.childElementCount > 0;
   elements.reviewMetadataState.textContent = loading
     ? "正在读取…"
-    : (detail ? "Mac 资产详情" : "详情暂不可用");
+    : (detail
+      ? "Mac 资产详情"
+      : (preservesExisting ? "详情暂不可用 · 显示上次成功读取" : "详情暂不可用"));
   if (detail) {
     const isVideo = state.mediaKind === "video";
     const rows = [
@@ -23737,7 +23764,11 @@ function renderReviewInspectorMetadata(item, detail) {
       metadataRow("格式", detail.mediaType),
       metadataRow("状态", availabilityText(detail.availability)),
     ];
-    for (const pair of rows) elements.reviewAssetMetadata.append(...pair);
+    reconcileMetadataRows(elements.reviewAssetMetadata, rows);
+    elements.reviewAssetMetadata.dataset.assetId = detail.assetID;
+  } else if (!preservesExisting) {
+    reconcileMetadataRows(elements.reviewAssetMetadata, []);
+    delete elements.reviewAssetMetadata.dataset.assetId;
   }
   syncReviewViewOriginalControl(detail, item);
   syncReviewOpenOriginalControl(detail, item);
