@@ -28048,10 +28048,15 @@ function renderSlimmingClusterScopes() {
   }
 }
 
-function appendSlimmingClusterReviewButton(container, cluster, disposition, label, symbol) {
+function syncSlimmingClusterReviewButton(
+  button,
+  cluster,
+  disposition,
+  label,
+  symbol
+) {
   const active = cluster.reviewDisposition === disposition;
   const pending = state.slimming.clusterReviewPendingIDs.has(cluster.id);
-  const button = document.createElement("button");
   button.type = "button";
   button.className = "slimming-cluster-review-button write-action";
   button.dataset.slimmingClusterReview = disposition;
@@ -28060,13 +28065,37 @@ function appendSlimmingClusterReviewButton(container, cluster, disposition, labe
   button.setAttribute("aria-label", active ? `当前为${label}` : `设为${label}`);
   button.title = active ? `当前为${label}` : `将分组移入${label}队列`;
   button.disabled = !state.online || pending || active;
-  const icon = document.createElement("span");
+  let icon = button.querySelector(":scope > [data-slimming-cluster-review-part=icon]");
+  if (!icon) {
+    icon = document.createElement("span");
+    icon.dataset.slimmingClusterReviewPart = "icon";
+  }
   icon.setAttribute("aria-hidden", "true");
   icon.textContent = pending ? "…" : symbol;
-  const copy = document.createElement("span");
+  let copy = button.querySelector(":scope > [data-slimming-cluster-review-part=label]");
+  if (!copy) {
+    copy = document.createElement("span");
+    copy.dataset.slimmingClusterReviewPart = "label";
+  }
   copy.textContent = label;
-  button.append(icon, copy);
-  container.append(button);
+  reconcileStableChildren(button, [icon, copy]);
+}
+
+function reconcileSlimmingClusterReviewButtons(container, cluster) {
+  const descriptors = [
+    { disposition: "confirmed", label: "已确认", symbol: "✓" },
+    { disposition: "ignored", label: "忽略", symbol: "⊘" },
+  ];
+  const existing = new Map(
+    [...container.querySelectorAll(":scope > [data-slimming-cluster-review]")]
+      .map((button) => [button.dataset.slimmingClusterReview, button])
+  );
+  const buttons = descriptors.map(({ disposition, label, symbol }) => {
+    const button = existing.get(disposition) || document.createElement("button");
+    syncSlimmingClusterReviewButton(button, cluster, disposition, label, symbol);
+    return button;
+  });
+  reconcileStableChildren(container, buttons);
 }
 
 function renderSlimmingSelectedClusterReview(cluster) {
@@ -28142,54 +28171,69 @@ function syncSlimmingClusterRow(row, cluster) {
     online: state.online,
   });
   if (row.dataset.slimmingFingerprint === fingerprint) return row;
-  clearElement(row);
   const copy = slimmingClusterPresentation(cluster);
   row.className = "slimming-cluster-row";
   row.dataset.slimmingClusterRowId = cluster.id;
   row.classList.toggle("selected", cluster.id === state.slimming.selectedClusterID);
   row.setAttribute("role", "listitem");
-  const main = document.createElement("button");
+  const main = row.querySelector(":scope > .slimming-cluster-main")
+    || document.createElement("button");
   main.type = "button";
   main.className = "slimming-cluster-main";
   main.dataset.slimmingClusterId = cluster.id;
   main.setAttribute("aria-pressed", String(cluster.id === state.slimming.selectedClusterID));
   main.setAttribute("aria-label", `${copy.title}，${cluster.memberCount} 项，${copy.detail}`);
-  const image = cluster.isHistoricalProcessedRecord && Number(cluster.memberCount || 0) === 0
-    ? document.createElement("span")
-    : document.createElement("img");
+  const historical = cluster.isHistoricalProcessedRecord
+    && Number(cluster.memberCount || 0) === 0;
+  const existingVisual = main.querySelector(
+    ":scope > img, :scope > .slimming-cluster-history-mark"
+  );
+  const reusesVisual = historical
+    ? existingVisual instanceof HTMLSpanElement
+    : existingVisual instanceof HTMLImageElement;
+  const image = reusesVisual
+    ? existingVisual
+    : historical
+      ? document.createElement("span")
+      : document.createElement("img");
+  if (!reusesVisual && existingVisual instanceof HTMLImageElement) {
+    clearProtectedImageSource(existingVisual);
+  }
   if (image instanceof HTMLImageElement) {
     image.loading = "lazy";
     image.alt = "";
     image.setAttribute("aria-hidden", "true");
-    setProtectedImageSource(
-      image,
-      `/v1/assets/${cluster.representativeAssetID}/thumbnail?w=180&rev=0`
-    );
+    syncProtectedThumbnailSource(image, cluster.representativeAssetID, {
+      width: 180,
+      revision: 0,
+    });
   } else {
     image.className = "slimming-cluster-history-mark";
     image.setAttribute("aria-hidden", "true");
     image.textContent = "✓";
   }
-  const text = document.createElement("span");
+  const text = main.querySelector(":scope > .slimming-cluster-copy")
+    || document.createElement("span");
   text.className = "slimming-cluster-copy";
-  const title = document.createElement("strong");
+  const title = text.querySelector(":scope > strong") || document.createElement("strong");
   title.textContent = cluster.isHistoricalProcessedRecord
     ? `${copy.title} · ${copy.historicalDetail}`
     : `${copy.title} · ${cluster.memberCount} 项`;
-  const detail = document.createElement("span");
+  const detail = text.querySelector(":scope > span") || document.createElement("span");
   detail.textContent = cluster.isHistoricalProcessedRecord
     ? `历史处理记录 · ${copy.detail}`
     : copy.detail;
-  text.append(title, detail);
-  main.append(image, text);
-  row.append(main);
+  reconcileStableChildren(text, [title, detail]);
+  reconcileStableChildren(main, [image, text]);
+  const children = [main];
   if (state.slimming.clusterScopeSupported === true) {
-    const actions = document.createElement("span");
+    const actions = row.querySelector(":scope > .slimming-cluster-review-actions")
+      || document.createElement("span");
     actions.className = "slimming-cluster-review-actions";
-    appendSlimmingClusterReviewButton(actions, cluster, "confirmed", "已确认", "✓");
-    appendSlimmingClusterReviewButton(actions, cluster, "ignored", "忽略", "⊘");
-    row.append(actions);
+    reconcileSlimmingClusterReviewButtons(actions, cluster);
+    children.push(actions);
   }
+  reconcileStableChildren(row, children);
   row.dataset.slimmingFingerprint = fingerprint;
   return row;
 }
@@ -31536,6 +31580,11 @@ async function setSlimmingClusterReviewDisposition(clusterID, disposition) {
     || state.slimming.clusterReviewPendingIDs.has(clusterID)) return;
   const cluster = state.slimming.clusters.find((candidate) => candidate.id === clusterID);
   if (!cluster) return;
+  const focusedReview = document.activeElement?.closest?.(
+    `[data-slimming-cluster-review-id="${CSS.escape(clusterID)}"]`
+  );
+  const focusedDisposition = focusedReview?.dataset.slimmingClusterReview || null;
+  let succeeded = false;
   state.slimming.clusterReviewPendingIDs.add(clusterID);
   renderSlimmingClusters();
   renderSlimmingSelectedClusterReview(cluster);
@@ -31549,6 +31598,7 @@ async function setSlimmingClusterReviewDisposition(clusterID, disposition) {
         disposition,
       }),
     });
+    succeeded = true;
     const removesResolvedHistoricalRecord = disposition == null
       && cluster.isHistoricalProcessedRecord
       && Number(cluster.memberCount || 0) < 2;
@@ -31569,6 +31619,15 @@ async function setSlimmingClusterReviewDisposition(clusterID, disposition) {
   } finally {
     state.slimming.clusterReviewPendingIDs.delete(clusterID);
     renderSlimmingWorkspace();
+    if (!succeeded && focusedDisposition) {
+      requestAnimationFrame(() => {
+        elements.slimmingClusterList.querySelector(
+          `[data-slimming-cluster-review-id="${CSS.escape(clusterID)}"]`
+          + `[data-slimming-cluster-review="${CSS.escape(focusedDisposition)}"]`
+          + ":not(:disabled)"
+        )?.focus({ preventScroll: true });
+      });
+    }
   }
 }
 

@@ -119,6 +119,7 @@ def main(*, inspector_actions_only=False):
     submitted_preparations = []
     submitted_slimming = []
     submitted_slimming_cluster_reviews = []
+    slimming_cluster_review_fail_next = [False]
     submitted_slimming_job_actions = []
     slimming_job_action_fail_next = [False]
     submitted_slimming_source_maintenance = []
@@ -937,6 +938,10 @@ def main(*, inspector_actions_only=False):
 
         def handle_slimming_cluster_review(route):
             payload = route.request.post_data_json
+            if slimming_cluster_review_fail_next[0]:
+                slimming_cluster_review_fail_next[0] = False
+                fulfill_json(route, {"message": "合成候选分组审阅失败"}, status=409)
+                return
             submitted_slimming_cluster_reviews.append(payload)
             slimming_cluster_dispositions[payload["clusterID"]] = payload.get("disposition")
             fulfill_json(route, {
@@ -4592,10 +4597,90 @@ def main(*, inspector_actions_only=False):
         assert pending_scope.locator(".slimming-cluster-scope-count").inner_text() == "1"
         assert confirmed_scope.locator(".slimming-cluster-scope-count").inner_text() == "1"
         assert ignored_scope.locator(".slimming-cluster-scope-count").inner_text() == "1"
-        page.locator(
+        pending_cluster_confirm = page.locator(
             f'[data-slimming-cluster-review-id="{SLIMMING_CLUSTER_ID}"]'
             '[data-slimming-cluster-review="confirmed"]'
-        ).click()
+        )
+        page.evaluate(
+            f"""() => {{
+              const row = document.querySelector(
+                '[data-slimming-cluster-row-id="{SLIMMING_CLUSTER_ID}"]'
+              );
+              globalThis.__stableSlimmingClusterFrame = {{
+                row,
+                main: row.querySelector('[data-slimming-cluster-id]'),
+                image: row.querySelector('.slimming-cluster-main > img'),
+                confirmed: row.querySelector('[data-slimming-cluster-review="confirmed"]'),
+                ignored: row.querySelector('[data-slimming-cluster-review="ignored"]'),
+              }};
+              globalThis.__stableSlimmingClusterFrame.main.focus({{ preventScroll: true }});
+              state.slimming.clusters[0] = {{ ...state.slimming.clusters[0], score: 0.91 }};
+              renderSlimmingClusters();
+            }}"""
+        )
+        stable_cluster_refresh = page.evaluate(
+            f"""() => {{
+              const frame = globalThis.__stableSlimmingClusterFrame;
+              const row = document.querySelector(
+                '[data-slimming-cluster-row-id="{SLIMMING_CLUSTER_ID}"]'
+              );
+              return {{
+                row: row === frame.row,
+                main: row.querySelector('[data-slimming-cluster-id]') === frame.main,
+                image: row.querySelector('.slimming-cluster-main > img') === frame.image,
+                confirmed: row.querySelector(
+                  '[data-slimming-cluster-review="confirmed"]'
+                ) === frame.confirmed,
+                ignored: row.querySelector(
+                  '[data-slimming-cluster-review="ignored"]'
+                ) === frame.ignored,
+                focus: document.activeElement === frame.main,
+              }};
+            }}"""
+        )
+        assert all(stable_cluster_refresh.values()), stable_cluster_refresh
+
+        pending_cluster_confirm.focus()
+        slimming_cluster_review_fail_next[0] = True
+        pending_cluster_confirm.click()
+        page.wait_for_function(
+            "() => document.querySelector('#toastMessage').textContent"
+            ".includes('合成候选分组审阅失败')"
+        )
+        page.wait_for_function(
+            f"() => document.activeElement === document.querySelector("
+            f"'[data-slimming-cluster-review-id=\"{SLIMMING_CLUSTER_ID}\"]'"
+            " + '[data-slimming-cluster-review=\"confirmed\"]')"
+        )
+        failed_cluster_review = page.evaluate(
+            f"""() => {{
+              const frame = globalThis.__stableSlimmingClusterFrame;
+              const row = document.querySelector(
+                '[data-slimming-cluster-row-id="{SLIMMING_CLUSTER_ID}"]'
+              );
+              return {{
+                row: row === frame.row,
+                main: row.querySelector('[data-slimming-cluster-id]') === frame.main,
+                image: row.querySelector('.slimming-cluster-main > img') === frame.image,
+                confirmed: row.querySelector(
+                  '[data-slimming-cluster-review="confirmed"]'
+                ) === frame.confirmed,
+                ignored: row.querySelector(
+                  '[data-slimming-cluster-review="ignored"]'
+                ) === frame.ignored,
+                enabled: !frame.confirmed.disabled,
+                focus: document.activeElement === frame.confirmed,
+              }};
+            }}"""
+        )
+        assert all(failed_cluster_review.values()), failed_cluster_review
+        assert len(submitted_slimming_cluster_reviews) == 0
+        page.screenshot(
+            path="/tmp/imageall-slimming-cluster-action-continuity.png",
+            full_page=True,
+        )
+
+        pending_cluster_confirm.click()
         page.wait_for_function(
             "() => document.querySelector('[data-slimming-cluster-scope=\"pending\"]')"
             ".querySelector('.slimming-cluster-scope-count').textContent === '0'"
@@ -8000,9 +8085,10 @@ def main(*, inspector_actions_only=False):
             for message in console_errors
             if message not in expected_conflict_console
         ]
-        assert len(expected_conflict_console) == 4, console_errors
+        assert len(expected_conflict_console) == 5, console_errors
         assert failed_resources == [
             (409, f"{BASE_URL}/v1/tags/create-and-apply"),
+            (409, f"{BASE_URL}/v1/library-slimming/cluster-review"),
             (409, f"{BASE_URL}/v1/library-slimming/recycle?mediaKind=image&scope=all&limit=60&search=RECYCLE"),
             (409, f"{BASE_URL}/v1/library-slimming/recycle?mediaKind=video&scope=all&limit=60&sourceID={SOURCE_ID}&search=RECYCLE"),
             (409, f"{BASE_URL}/v1/library-slimming/recycle/requests"),
