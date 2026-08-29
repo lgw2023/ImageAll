@@ -780,6 +780,170 @@ def main():
             "() => document.activeElement?.dataset.compactToolbarTarget "
             "=== 'catalogProgressStatusButton'"
         )
+        compact_settings = page.locator(
+            '[data-compact-toolbar-target="settingsButton"]'
+        )
+        compact_settings.hover()
+        compact_settings.focus()
+        compact_continuity = page.evaluate(
+            """() => {
+              const content = document.querySelector("#compactToolbarMenuContent");
+              content.scrollTop = Math.min(
+                Math.max(1, content.scrollHeight - content.clientHeight),
+                140
+              );
+              const settings = content.querySelector(
+                '[data-compact-toolbar-target="settingsButton"]'
+              );
+              const connect = content.querySelector(
+                '[data-compact-toolbar-target="toolbarConnectFolderButton"]'
+              );
+              const refresh = content.querySelector(
+                '[data-compact-toolbar-target="currentSourceRefreshButton"]'
+              );
+              const observerState = { childList: 0 };
+              const observer = new MutationObserver((records) => {
+                observerState.childList += records.filter(
+                  (record) => record.type === "childList"
+                ).length;
+              });
+              observer.observe(content, { childList: true, subtree: true });
+              globalThis.__compactToolbarContinuity = {
+                content,
+                statusSection: content.querySelector(
+                  '[data-compact-toolbar-section="status"]'
+                ),
+                settingsSection: content.querySelector(
+                  '[data-compact-toolbar-section="settings"]'
+                ),
+                settings,
+                settingsIcon: settings.querySelector(
+                  '[data-compact-toolbar-part="icon"]'
+                ),
+                settingsLabel: settings.querySelector(
+                  '[data-compact-toolbar-part="label"]'
+                ),
+                settingsDetail: settings.querySelector(
+                  '[data-compact-toolbar-part="detail"]'
+                ),
+                connect,
+                refresh,
+                scrollTop: content.scrollTop,
+                observer,
+                observerState,
+              };
+              return {
+                scrollTop: content.scrollTop,
+                settingsHovered: settings.matches(":hover"),
+              };
+            }"""
+        )
+        assert compact_continuity["scrollTop"] > 0, compact_continuity
+        assert compact_continuity["settingsHovered"]
+        page.evaluate("() => setConnection(false, 'Mac 离线')")
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.compactToolbarTarget === 'settingsButton'"
+        )
+        compact_offline = page.evaluate(
+            """() => {
+              const saved = globalThis.__compactToolbarContinuity;
+              const content = document.querySelector("#compactToolbarMenuContent");
+              const settings = content.querySelector(
+                '[data-compact-toolbar-target="settingsButton"]'
+              );
+              const connect = content.querySelector(
+                '[data-compact-toolbar-target="toolbarConnectFolderButton"]'
+              );
+              const refresh = content.querySelector(
+                '[data-compact-toolbar-target="currentSourceRefreshButton"]'
+              );
+              return {
+                content: saved.content === content,
+                statusSection: saved.statusSection === content.querySelector(
+                  '[data-compact-toolbar-section="status"]'
+                ),
+                settingsSection: saved.settingsSection === content.querySelector(
+                  '[data-compact-toolbar-section="settings"]'
+                ),
+                settings: saved.settings === settings,
+                settingsIcon: saved.settingsIcon === settings.querySelector(
+                  '[data-compact-toolbar-part="icon"]'
+                ),
+                settingsLabel: saved.settingsLabel === settings.querySelector(
+                  '[data-compact-toolbar-part="label"]'
+                ),
+                settingsDetail: saved.settingsDetail === settings.querySelector(
+                  '[data-compact-toolbar-part="detail"]'
+                ),
+                connect: saved.connect === connect,
+                refresh: saved.refresh === refresh,
+                connectDisabled: connect.disabled,
+                refreshDisabled: refresh.disabled,
+                settingsHovered: settings.matches(":hover"),
+                scrollTop: content.scrollTop,
+                childList: saved.observerState.childList,
+              };
+            }"""
+        )
+        assert compact_offline == {
+            "content": True,
+            "statusSection": True,
+            "settingsSection": True,
+            "settings": True,
+            "settingsIcon": True,
+            "settingsLabel": True,
+            "settingsDetail": True,
+            "connect": True,
+            "refresh": True,
+            "connectDisabled": True,
+            "refreshDisabled": True,
+            "settingsHovered": True,
+            "scrollTop": compact_continuity["scrollTop"],
+            "childList": 0,
+        }, compact_offline
+        page.evaluate("() => setConnection(true, '已连接 Mac')")
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.compactToolbarTarget === 'settingsButton'"
+        )
+        compact_online = page.evaluate(
+            """() => {
+              const saved = globalThis.__compactToolbarContinuity;
+              const content = document.querySelector("#compactToolbarMenuContent");
+              const settings = content.querySelector(
+                '[data-compact-toolbar-target="settingsButton"]'
+              );
+              const connect = content.querySelector(
+                '[data-compact-toolbar-target="toolbarConnectFolderButton"]'
+              );
+              const refresh = content.querySelector(
+                '[data-compact-toolbar-target="currentSourceRefreshButton"]'
+              );
+              saved.observer.disconnect();
+              return {
+                settings: saved.settings === settings,
+                connect: saved.connect === connect,
+                refresh: saved.refresh === refresh,
+                connectDisabled: connect.disabled,
+                refreshDisabled: refresh.disabled,
+                settingsHovered: settings.matches(":hover"),
+                scrollTop: content.scrollTop,
+                childList: saved.observerState.childList,
+              };
+            }"""
+        )
+        assert compact_online == {
+            "settings": True,
+            "connect": True,
+            "refresh": True,
+            "connectDisabled": False,
+            "refreshDisabled": False,
+            "settingsHovered": True,
+            "scrollTop": compact_continuity["scrollTop"],
+            "childList": 0,
+        }, compact_online
+        page.locator(
+            '[data-compact-toolbar-target="catalogProgressStatusButton"]'
+        ).focus()
         page.keyboard.press("Meta+f")
         assert page.locator("#compactToolbarMenu").is_visible()
         assert page.evaluate(

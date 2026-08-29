@@ -12938,6 +12938,7 @@ function syncCurrentSourceRefreshControl() {
     busy ? "来源更新进行中" : descriptor.label
   );
   elements.currentSourceRefreshButton.title = activeRequest?.message || descriptor.detail;
+  syncCompactToolbarMenu();
   scheduleAdaptiveToolbarSync();
 }
 
@@ -35958,11 +35959,11 @@ function compactToolbarSections() {
     }),
   ].filter(Boolean);
   return [
-    { label: "状态与撤销", actions: [...progressActions, ...undoActions] },
-    { label: "工作区", actions: workspaceActions },
-    { label: "布局", actions: layoutActions },
-    { label: "Mac 与数据", actions: maintenanceActions },
-    { label: "设置", actions: utilityActions },
+    { key: "status", label: "状态与撤销", actions: [...progressActions, ...undoActions] },
+    { key: "workspaces", label: "工作区", actions: workspaceActions },
+    { key: "layout", label: "布局", actions: layoutActions },
+    { key: "maintenance", label: "Mac 与数据", actions: maintenanceActions },
+    { key: "settings", label: "设置", actions: utilityActions },
   ].filter((section) => section.actions.length);
 }
 
@@ -35982,48 +35983,86 @@ function syncCompactToolbarMenuButton() {
   elements.compactToolbarMenuButton.title = `更多工具栏操作${activityLabel}`;
 }
 
+function compactToolbarSectionNode(section) {
+  let group = elements.compactToolbarMenuContent.querySelector(
+    `:scope > [data-compact-toolbar-section="${CSS.escape(section.key)}"]`
+  );
+  if (!group) {
+    group = document.createElement("section");
+    group.className = "compact-toolbar-menu-section";
+    group.dataset.compactToolbarSection = section.key;
+  }
+  group.setAttribute("aria-label", section.label);
+  let heading = group.querySelector(":scope > [data-compact-toolbar-part=heading]");
+  if (!heading) {
+    heading = document.createElement("h3");
+    heading.dataset.compactToolbarPart = "heading";
+  }
+  if (heading.textContent !== section.label) heading.textContent = section.label;
+  return { group, heading };
+}
+
+function compactToolbarActionNode(action) {
+  const targetID = action.element.id;
+  let button = elements.compactToolbarMenuContent.querySelector(
+    `[data-compact-toolbar-target="${CSS.escape(targetID)}"]`
+  );
+  if (!button) {
+    button = document.createElement("button");
+    button.type = "button";
+    button.className = "compact-toolbar-menu-item";
+    button.setAttribute("role", "menuitem");
+    button.dataset.compactToolbarTarget = targetID;
+
+    const icon = document.createElement("span");
+    icon.className = "compact-toolbar-menu-icon";
+    icon.dataset.compactToolbarPart = "icon";
+    icon.setAttribute("aria-hidden", "true");
+    const copy = document.createElement("span");
+    copy.className = "compact-toolbar-menu-copy";
+    const label = document.createElement("strong");
+    label.dataset.compactToolbarPart = "label";
+    const detail = document.createElement("small");
+    detail.dataset.compactToolbarPart = "detail";
+    copy.append(label, detail);
+    button.append(icon, copy);
+  }
+  button.classList.toggle("destructive", action.destructive);
+  if (button.disabled !== action.disabled) button.disabled = action.disabled;
+  const icon = button.querySelector("[data-compact-toolbar-part=icon]");
+  const label = button.querySelector("[data-compact-toolbar-part=label]");
+  const detail = button.querySelector("[data-compact-toolbar-part=detail]");
+  if (icon.textContent !== action.icon) icon.textContent = action.icon;
+  if (label.textContent !== action.label) label.textContent = action.label;
+  if (detail.textContent !== action.detail) detail.textContent = action.detail;
+  return button;
+}
+
+function reconcileCompactToolbarMenuContent() {
+  const groups = [];
+  for (const section of compactToolbarSections()) {
+    const { group, heading } = compactToolbarSectionNode(section);
+    const actions = section.actions.map(compactToolbarActionNode);
+    reconcileStableChildren(group, [heading, ...actions]);
+    groups.push(group);
+  }
+  reconcileStableChildren(elements.compactToolbarMenuContent, groups);
+}
+
 function renderCompactToolbarMenu() {
   syncCompactToolbarMenuButton();
   const connection = elements.connectionLabel.textContent.trim()
     || (state.online ? "已连接" : "Mac 离线");
-  elements.compactToolbarConnectionSummary.textContent = connection;
+  if (elements.compactToolbarConnectionSummary.textContent !== connection) {
+    elements.compactToolbarConnectionSummary.textContent = connection;
+  }
   const hostName = state.capabilities?.hostDisplayName || "这台 Mac";
   const hostVersion = state.capabilities?.hostAppVersion || "";
-  elements.compactToolbarHostSummary.textContent = [hostName, hostVersion]
-    .filter(Boolean)
-    .join(" · ");
-  clearElement(elements.compactToolbarMenuContent);
-  for (const section of compactToolbarSections()) {
-    const group = document.createElement("section");
-    group.className = "compact-toolbar-menu-section";
-    group.setAttribute("aria-label", section.label);
-    const heading = document.createElement("h3");
-    heading.textContent = section.label;
-    group.append(heading);
-    for (const action of section.actions) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "compact-toolbar-menu-item";
-      button.classList.toggle("destructive", action.destructive);
-      button.setAttribute("role", "menuitem");
-      button.disabled = action.disabled;
-      button.dataset.compactToolbarTarget = action.element.id;
-      const icon = document.createElement("span");
-      icon.className = "compact-toolbar-menu-icon";
-      icon.setAttribute("aria-hidden", "true");
-      icon.textContent = action.icon;
-      const copy = document.createElement("span");
-      copy.className = "compact-toolbar-menu-copy";
-      const label = document.createElement("strong");
-      label.textContent = action.label;
-      const detail = document.createElement("small");
-      detail.textContent = action.detail;
-      copy.append(label, detail);
-      button.append(icon, copy);
-      group.append(button);
-    }
-    elements.compactToolbarMenuContent.append(group);
+  const hostSummary = [hostName, hostVersion].filter(Boolean).join(" · ");
+  if (elements.compactToolbarHostSummary.textContent !== hostSummary) {
+    elements.compactToolbarHostSummary.textContent = hostSummary;
   }
+  reconcileCompactToolbarMenuContent();
 }
 
 function compactToolbarMenuIsOpen() {
@@ -36186,16 +36225,31 @@ function syncCompactToolbarMenu() {
   syncCompactToolbarMenuButton();
   scheduleAdaptiveToolbarSync();
   if (!elements.compactToolbarMenu.classList.contains("hidden")) {
-    const focusedTarget = document.activeElement?.dataset?.compactToolbarTarget || null;
+    const previousItems = [...elements.compactToolbarMenu.querySelectorAll(
+      ".compact-toolbar-menu-item"
+    )];
+    const focusedItem = document.activeElement?.closest?.(".compact-toolbar-menu-item");
+    const menuHadFocus = focusedItem != null
+      && elements.compactToolbarMenu.contains(focusedItem);
+    const focusedTarget = focusedItem?.dataset?.compactToolbarTarget || null;
+    const focusedIndex = focusedItem ? previousItems.indexOf(focusedItem) : -1;
+    const scrollTop = elements.compactToolbarMenuContent.scrollTop;
     renderCompactToolbarMenu();
-    const target = focusedTarget
+    const enabledItems = [...elements.compactToolbarMenu.querySelectorAll(
+      ".compact-toolbar-menu-item:not(:disabled)"
+    )];
+    const preserved = focusedTarget
       ? elements.compactToolbarMenu.querySelector(
         `[data-compact-toolbar-target="${CSS.escape(focusedTarget)}"]:not(:disabled)`
       )
       : null;
-    (target || elements.compactToolbarMenu.querySelector(
-      '.compact-toolbar-menu-item:not(:disabled)'
-    ))?.focus({ preventScroll: true });
+    if (menuHadFocus) {
+      const fallback = enabledItems[Math.min(Math.max(focusedIndex, 0), enabledItems.length - 1)]
+        || enabledItems[enabledItems.length - 1]
+        || null;
+      (preserved || fallback)?.focus({ preventScroll: true });
+    }
+    elements.compactToolbarMenuContent.scrollTop = scrollTop;
   }
 }
 
