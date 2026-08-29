@@ -2853,7 +2853,7 @@ def main(*, inspector_actions_only=False):
                 track: progress.querySelector('.slimming-scan-progress-track'),
                 fill: progress.querySelector('.slimming-scan-progress-track > span'),
                 copy: progress.querySelector(
-                  '[data-slimming-job-row-progress-part="copy"]'
+                  '[data-slimming-scan-progress-part="copy"]'
                 ),
               };
               frame.elementMutations = 0;
@@ -2901,7 +2901,7 @@ def main(*, inspector_actions_only=False):
                     '.slimming-scan-progress-track > span'
                   )
                   && frame.progress.copy === progress.querySelector(
-                    '[data-slimming-job-row-progress-part="copy"]'
+                    '[data-slimming-scan-progress-part="copy"]'
                   ),
                 countsText: frame.parts.counts.textContent,
                 progressText: frame.progress.copy.textContent,
@@ -4306,6 +4306,114 @@ def main(*, inspector_actions_only=False):
         )
         assert all(stable_slimming_job_status_progress.values()), (
             stable_slimming_job_status_progress
+        )
+        page.evaluate("() => openSlimmingAnalysisOptions()")
+        page.locator("#slimmingAnalysisOptionsContent:not(.hidden)").wait_for()
+        page.wait_for_function(
+            "() => document.querySelector('#slimmingCurrentJobProgress')"
+            "?.textContent.includes('聚类分析 7/10')"
+        )
+        page.evaluate(
+            """() => {
+              const container = document.querySelector('#slimmingCurrentJobProgress');
+              const progress = container.querySelector(':scope > .slimming-scan-progress');
+              const summary = document.querySelector('#slimmingCurrentJobSummary');
+              const range = document.createRange();
+              range.selectNodeContents(summary);
+              const selection = getSelection();
+              selection.removeAllRanges();
+              selection.addRange(range);
+              const frame = {
+                container,
+                progress,
+                track: progress.querySelector('.slimming-scan-progress-track'),
+                fill: progress.querySelector('.slimming-scan-progress-track > span'),
+                copy: progress.querySelector('[data-slimming-scan-progress-part="copy"]'),
+                summary,
+                state: document.querySelector('#slimmingCurrentJobState'),
+                actions: document.querySelector('#slimmingCurrentJobActions'),
+                pause: document.querySelector('#slimmingCurrentJobActions [data-action="pause"]'),
+                selectedText: selection.toString(),
+                scrollTop: document.querySelector('#slimmingAnalysisOptionsContent').scrollTop,
+                elementMutations: 0,
+              };
+              frame.observer = new MutationObserver((records) => {
+                frame.elementMutations += records.filter((record) => (
+                  record.type === 'childList'
+                  && [...record.addedNodes, ...record.removedNodes].some(
+                    (node) => node.nodeType === Node.ELEMENT_NODE
+                  )
+                )).length;
+              });
+              frame.observer.observe(container, { childList: true, subtree: true });
+              window.__stableSlimmingCurrentJobProgress = frame;
+              frame.pause.focus({ preventScroll: true });
+            }"""
+        )
+        page.locator(
+            "#slimmingCurrentJobProgress [data-slimming-scan-progress-part='copy']"
+        ).hover()
+        page.evaluate(
+            "() => window.__stableSlimmingCurrentJobProgress.pause.focus({ preventScroll: true })"
+        )
+        slimming_job_scan_progress[SLIMMING_JOB_ID] = {
+            "phase": "clustering",
+            "completedUnitCount": 8,
+            "totalUnitCount": 10,
+        }
+        page.evaluate("async () => { await loadSlimmingWorkspace({ quiet: true }); }")
+        stable_current_job_progress = page.evaluate(
+            """() => {
+              const frame = window.__stableSlimmingCurrentJobProgress;
+              const container = document.querySelector('#slimmingCurrentJobProgress');
+              const progress = container.querySelector(':scope > .slimming-scan-progress');
+              frame.observer.disconnect();
+              return {
+                container: container === frame.container,
+                progress: progress === frame.progress,
+                track: progress.querySelector('.slimming-scan-progress-track') === frame.track,
+                fill: progress.querySelector('.slimming-scan-progress-track > span') === frame.fill,
+                copy: progress.querySelector('[data-slimming-scan-progress-part="copy"]')
+                  === frame.copy,
+                summary: document.querySelector('#slimmingCurrentJobSummary') === frame.summary,
+                state: document.querySelector('#slimmingCurrentJobState') === frame.state,
+                actions: document.querySelector('#slimmingCurrentJobActions') === frame.actions,
+                pause: document.querySelector('#slimmingCurrentJobActions [data-action="pause"]')
+                  === frame.pause,
+                focus: document.activeElement === frame.pause,
+                selection: getSelection().toString() === frame.selectedText
+                  && getSelection().containsNode(frame.summary, true),
+                hovered: frame.copy.matches(':hover'),
+                scroll: document.querySelector('#slimmingAnalysisOptionsContent').scrollTop
+                  === frame.scrollTop,
+                textUpdated: frame.copy.textContent === '聚类分析 8/10',
+                widthUpdated: frame.fill.style.width === '80%',
+                elementMutations: frame.elementMutations,
+              };
+            }"""
+        )
+        assert stable_current_job_progress == {
+            "container": True,
+            "progress": True,
+            "track": True,
+            "fill": True,
+            "copy": True,
+            "summary": True,
+            "state": True,
+            "actions": True,
+            "pause": True,
+            "focus": True,
+            "selection": True,
+            "hovered": True,
+            "scroll": True,
+            "textUpdated": True,
+            "widthUpdated": True,
+            "elementMutations": 0,
+        }, stable_current_job_progress
+        page.keyboard.press("Escape")
+        page.locator("#slimmingAnalysisOptionsPopover").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'slimmingAnalysisOptionsButton'"
         )
         slimming_job_states[SLIMMING_JOB_ID] = "completed"
         slimming_job_attempts[SLIMMING_JOB_ID] = 1

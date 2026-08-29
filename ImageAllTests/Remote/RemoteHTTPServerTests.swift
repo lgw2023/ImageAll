@@ -4020,9 +4020,15 @@ final class RemoteHTTPServerTests: XCTestCase {
             script[slimmingJobRowSyncStart.lowerBound..<slimmingJobRowSyncEnd.lowerBound]
         )
         XCTAssertTrue(script.contains("function syncSlimmingJobRowProgress("))
+        XCTAssertTrue(script.contains("function syncSlimmingScanProgressElement("))
+        XCTAssertTrue(script.contains("function syncSlimmingCurrentJobProgress("))
+        XCTAssertTrue(script.contains("data-slimming-scan-progress-part"))
         XCTAssertTrue(slimmingJobRowSyncScript.contains("data-slimming-job-row-part"))
         XCTAssertTrue(slimmingJobRowSyncScript.contains("syncSlimmingJobRowProgress"))
         XCTAssertFalse(slimmingJobRowSyncScript.contains("clearElement(row);"))
+        XCTAssertFalse(
+            script.contains("clearElement(elements.slimmingCurrentJobProgress);")
+        )
         XCTAssertTrue(script.contains("function trainingDetailFingerprint("))
         XCTAssertTrue(script.contains("renderTrainingWorkspace({ preserveContent:"))
         XCTAssertTrue(script.contains("function syncTrainingBatchCard("))

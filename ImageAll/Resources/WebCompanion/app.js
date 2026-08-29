@@ -27428,22 +27428,35 @@ async function navigateSlimmingJob(target) {
   focusSelectedSlimmingJob();
 }
 
-function appendSlimmingScanProgress(container, job, compact = false) {
+function syncSlimmingScanProgressElement(progress, job, compact = false) {
   const scan = job?.scanProgress;
-  if (!scan) return;
+  if (!scan) return null;
   const completed = Math.max(0, Number(scan.completedUnitCount || 0));
   const total = Math.max(1, Number(scan.totalUnitCount || 1));
-  const wrapper = document.createElement("span");
+  const wrapper = progress || document.createElement("span");
   wrapper.className = `slimming-scan-progress${compact ? " compact" : ""}`;
-  const track = document.createElement("span");
-  track.className = "slimming-scan-progress-track";
-  const fill = document.createElement("span");
+  let track = wrapper.querySelector(":scope > .slimming-scan-progress-track");
+  if (!track) {
+    track = document.createElement("span");
+    track.className = "slimming-scan-progress-track";
+  }
+  let fill = track.querySelector(":scope > span");
+  if (!fill) {
+    fill = document.createElement("span");
+    track.append(fill);
+  }
   fill.style.width = `${Math.min(100, Math.max(0, completed / total * 100))}%`;
-  track.append(fill);
-  const copy = document.createElement("span");
-  copy.textContent = `${slimmingScanPhaseText(scan)} ${completed}/${total}`;
-  wrapper.append(track, copy);
-  container.append(wrapper);
+  let copy = wrapper.querySelector(
+    ':scope > [data-slimming-scan-progress-part="copy"]'
+  );
+  if (!copy) {
+    copy = document.createElement("span");
+    copy.dataset.slimmingScanProgressPart = "copy";
+  }
+  const text = `${slimmingScanPhaseText(scan)} ${completed}/${total}`;
+  if (copy.textContent !== text) copy.textContent = text;
+  reconcileStableChildren(wrapper, [track, copy]);
+  return wrapper;
 }
 
 function slimmingClusterPresentation(cluster) {
@@ -27583,31 +27596,49 @@ function renderSlimmingCurrentJobControls() {
       ?.focus({ preventScroll: true });
   };
   const job = selectedSlimmingJob();
-  clearElement(elements.slimmingCurrentJobProgress);
-  elements.slimmingCurrentJobProgress.classList.add("hidden");
+  syncSlimmingCurrentJobProgress(job);
   elements.slimmingCurrentJobState.className = "slimming-current-job-state";
   if (!job) {
-    elements.slimmingCurrentJobSummary.textContent = "尚未选择分析记录。";
-    elements.slimmingCurrentJobState.textContent = "—";
+    if (elements.slimmingCurrentJobSummary.textContent !== "尚未选择分析记录。") {
+      elements.slimmingCurrentJobSummary.textContent = "尚未选择分析记录。";
+    }
+    if (elements.slimmingCurrentJobState.textContent !== "—") {
+      elements.slimmingCurrentJobState.textContent = "—";
+    }
     reconcileSlimmingJobActionButtons(elements.slimmingCurrentJobActions, []);
     restoreFocusedAction();
     return;
   }
 
   const sources = job.sourceNames?.length ? job.sourceNames.join("、") : "任务来源不可用";
-  elements.slimmingCurrentJobSummary.textContent = `${slimmingModeText(job.mode)} · ${sources}`;
-  elements.slimmingCurrentJobState.textContent = slimmingJobStateText(job);
-  elements.slimmingCurrentJobState.classList.add(job.state || "unknown");
-  if (job.scanProgress) {
-    elements.slimmingCurrentJobProgress.classList.remove("hidden");
-    appendSlimmingScanProgress(elements.slimmingCurrentJobProgress, job);
+  const summaryText = `${slimmingModeText(job.mode)} · ${sources}`;
+  if (elements.slimmingCurrentJobSummary.textContent !== summaryText) {
+    elements.slimmingCurrentJobSummary.textContent = summaryText;
   }
+  const stateText = slimmingJobStateText(job);
+  if (elements.slimmingCurrentJobState.textContent !== stateText) {
+    elements.slimmingCurrentJobState.textContent = stateText;
+  }
+  elements.slimmingCurrentJobState.classList.add(job.state || "unknown");
 
   reconcileSlimmingJobActionButtons(
     elements.slimmingCurrentJobActions,
     slimmingJobActionDescriptors(job, { surface: "options" })
   );
   restoreFocusedAction();
+}
+
+function syncSlimmingCurrentJobProgress(job) {
+  const container = elements.slimmingCurrentJobProgress;
+  let progress = container.querySelector(":scope > .slimming-scan-progress");
+  if (!job?.scanProgress) {
+    progress?.remove();
+    container.classList.add("hidden");
+    return;
+  }
+  progress = syncSlimmingScanProgressElement(progress, job);
+  reconcileStableChildren(container, [progress]);
+  container.classList.remove("hidden");
 }
 
 function focusSlimmingCurrentJobAction(jobID, preferredAction = null) {
@@ -27687,37 +27718,8 @@ function syncSlimmingJobRowProgress(row, job) {
     progress?.remove();
     return null;
   }
-  if (!progress) {
-    progress = document.createElement("span");
-    progress.dataset.slimmingJobRowPart = "progress";
-  }
-  progress.className = "slimming-scan-progress compact";
-  let track = progress.querySelector(":scope > .slimming-scan-progress-track");
-  if (!track) {
-    track = document.createElement("span");
-    track.className = "slimming-scan-progress-track";
-  }
-  let fill = track.querySelector(":scope > span");
-  if (!fill) {
-    fill = document.createElement("span");
-    track.append(fill);
-  }
-  let copy = progress.querySelector(
-    ':scope > [data-slimming-job-row-progress-part="copy"]'
-  );
-  if (!copy) {
-    copy = document.createElement("span");
-    copy.dataset.slimmingJobRowProgressPart = "copy";
-  }
-  const completed = Math.max(
-    0,
-    Number(job.scanProgress.completedUnitCount || 0)
-  );
-  const total = Math.max(1, Number(job.scanProgress.totalUnitCount || 1));
-  fill.style.width = `${Math.min(100, Math.max(0, completed / total * 100))}%`;
-  const progressText = `${slimmingScanPhaseText(job.scanProgress)} ${completed}/${total}`;
-  if (copy.textContent !== progressText) copy.textContent = progressText;
-  reconcileStableChildren(progress, [track, copy]);
+  progress = syncSlimmingScanProgressElement(progress, job, true);
+  progress.dataset.slimmingJobRowPart = "progress";
   return progress;
 }
 
