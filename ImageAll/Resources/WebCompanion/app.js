@@ -29096,15 +29096,56 @@ function renderSlimmingRemovalStatus() {
   reconcileSlimmingRemovalStatusParts(parts);
 }
 
-function appendSlimmingVerificationMetric(label, value, tone) {
-  const card = document.createElement("div");
-  card.className = `identical-cleanup-metric ${tone || ""}`;
-  const title = document.createElement("span");
-  title.textContent = label;
-  const count = document.createElement("strong");
-  count.textContent = Number(value || 0).toLocaleString();
-  card.append(title, count);
-  elements.slimmingVerificationMetrics.append(card);
+function syncSlimmingVerificationText(element, text) {
+  if (element.textContent !== text) element.textContent = text;
+}
+
+function syncSlimmingVerificationMetrics(metrics) {
+  const existing = new Map(
+    [...elements.slimmingVerificationMetrics.querySelectorAll(
+      ":scope > [data-slimming-verification-metric-key]"
+    )].map((card) => [card.dataset.slimmingVerificationMetricKey, card])
+  );
+  const wanted = metrics.map((metric) => {
+    const card = existing.get(metric.key) || document.createElement("div");
+    card.dataset.slimmingVerificationMetricKey = metric.key;
+    card.className = `identical-cleanup-metric ${metric.tone || ""}`;
+    let title = card.querySelector(":scope > [data-slimming-verification-metric-part='title']");
+    if (!title) {
+      title = document.createElement("span");
+      title.dataset.slimmingVerificationMetricPart = "title";
+    }
+    let count = card.querySelector(":scope > [data-slimming-verification-metric-part='count']");
+    if (!count) {
+      count = document.createElement("strong");
+      count.dataset.slimmingVerificationMetricPart = "count";
+    }
+    syncSlimmingVerificationText(title, metric.label);
+    syncSlimmingVerificationText(count, Number(metric.value || 0).toLocaleString());
+    reconcileStableChildren(card, [title, count]);
+    return card;
+  });
+  reconcileStableChildren(elements.slimmingVerificationMetrics, wanted);
+}
+
+function slimmingVerificationResultPart(key, tagName) {
+  let part = elements.slimmingVerificationResult.querySelector(
+    `:scope > [data-slimming-verification-result-key="${key}"]`
+  );
+  if (!part) {
+    part = document.createElement(tagName);
+    part.dataset.slimmingVerificationResultKey = key;
+  }
+  return part;
+}
+
+function syncSlimmingVerificationResult(parts) {
+  const wanted = parts.map(({ key, tagName, text }) => {
+    const part = slimmingVerificationResultPart(key, tagName);
+    syncSlimmingVerificationText(part, text);
+    return part;
+  });
+  reconcileStableChildren(elements.slimmingVerificationResult, wanted);
 }
 
 function slimmingVerificationUnavailableMessage(request) {
@@ -29125,51 +29166,96 @@ function renderSlimmingVerificationReport(request) {
   elements.slimmingVerificationDialog.classList.toggle("unavailable", unavailable);
   elements.slimmingVerificationScoreSection.classList.toggle("hidden", unavailable);
   elements.slimmingVerificationMetrics.classList.toggle("hidden", unavailable);
-  clearElement(elements.slimmingVerificationMetrics);
-  clearElement(elements.slimmingVerificationResult);
   if (unavailable) {
     elements.slimmingVerificationDialog.classList.add("incomplete");
-    elements.slimmingVerificationIcon.textContent = "!";
-    elements.slimmingVerificationTitle.textContent = "删除后核验未完成";
-    elements.slimmingVerificationSubtitle.textContent =
-      "删除动作已经结束，但无法取得可信的实际统计。";
-    const heading = document.createElement("strong");
-    heading.textContent = "未显示未经证实的保留数量";
-    const detail = document.createElement("p");
-    detail.textContent = unavailableMessage;
-    const guidance = document.createElement("p");
-    guidance.textContent =
-      "请保留当前回收记录并重新进入图库瘦身后再核验；在成功读取真实状态前，ImageAll 不会用删除前计划值代替结果。";
-    elements.slimmingVerificationResult.append(heading, detail, guidance);
-    elements.slimmingVerificationFootnote.textContent =
-      "此处只呈现删除动作已经结束和核验不可用这两个已证实事实。";
+    syncSlimmingVerificationText(elements.slimmingVerificationIcon, "!");
+    syncSlimmingVerificationText(elements.slimmingVerificationTitle, "删除后核验未完成");
+    syncSlimmingVerificationText(
+      elements.slimmingVerificationSubtitle,
+      "删除动作已经结束，但无法取得可信的实际统计。"
+    );
+    syncSlimmingVerificationMetrics([]);
+    syncSlimmingVerificationResult([
+      {
+        key: "heading",
+        tagName: "strong",
+        text: "未显示未经证实的保留数量",
+      },
+      { key: "detail", tagName: "p", text: unavailableMessage },
+      {
+        key: "guidance",
+        tagName: "p",
+        text: "请保留当前回收记录并重新进入图库瘦身后再核验；在成功读取真实状态前，ImageAll 不会用删除前计划值代替结果。",
+      },
+    ]);
+    syncSlimmingVerificationText(
+      elements.slimmingVerificationFootnote,
+      "此处只呈现删除动作已经结束和核验不可用这两个已证实事实。"
+    );
     return true;
   }
   const complete = Boolean(verification.isComplete);
   elements.slimmingVerificationDialog.classList.toggle("incomplete", !complete);
-  elements.slimmingVerificationIcon.textContent = complete ? "✓" : "!";
-  elements.slimmingVerificationTitle.textContent = complete
+  syncSlimmingVerificationText(elements.slimmingVerificationIcon, complete ? "✓" : "!");
+  syncSlimmingVerificationText(elements.slimmingVerificationTitle, complete
     ? "删除后核验完成"
-    : "删除后核验存在未完成项";
-  elements.slimmingVerificationSubtitle.textContent =
-    "已重新读取本次处理资产的实时可用与回收状态。";
-  elements.slimmingVerificationScore.textContent =
-    `${verification.verifiedGroupCount} / ${verification.targetGroupCount}`;
-  elements.slimmingVerificationGoal.textContent =
-    `目标是保留全部红心资产；没有红心时每组保留 1 项，共 ${verification.targetRetainedAssetCount} 项。`;
-  appendSlimmingVerificationMetric("目标保留", verification.targetRetainedAssetCount, "blue");
-  appendSlimmingVerificationMetric("当前实际可用", verification.currentAvailableAssetCount, "green");
-  appendSlimmingVerificationMetric("完成去重", verification.verifiedGroupCount, "indigo");
-  appendSlimmingVerificationMetric("尚未完成", verification.unresolvedGroupCount, complete ? "neutral" : "orange");
-  const heading = document.createElement("strong");
-  heading.textContent = complete ? "核验完成" : "核验发现未完成项";
-  const detail = document.createElement("p");
-  detail.textContent = complete
-    ? `实际读取 ${verification.observedAssetCount} 项，确认已清理 ${verification.recycledRedundantAssetCount} 项；处理范围内没有仍处于可用状态的计划删除项。`
-    : `实际读取 ${verification.observedAssetCount} 项；确认已清理 ${verification.recycledRedundantAssetCount} 项；当前实际可用 ${verification.currentAvailableAssetCount} 项；仍可用冗余 ${verification.remainingRedundantAssetCount} 项；状态无法确认 ${verification.unresolvedAssetCount} 项。`;
-  elements.slimmingVerificationResult.append(heading, detail);
-  elements.slimmingVerificationFootnote.textContent =
-    "“完成去重”“确认已清理”和“当前实际可用”均来自删除后的再次读取；“目标保留”来自本次运行时逐组清理计划，不代表所有分组均已完成。";
+    : "删除后核验存在未完成项");
+  syncSlimmingVerificationText(
+    elements.slimmingVerificationSubtitle,
+    "已重新读取本次处理资产的实时可用与回收状态。"
+  );
+  syncSlimmingVerificationText(
+    elements.slimmingVerificationScore,
+    `${verification.verifiedGroupCount} / ${verification.targetGroupCount}`
+  );
+  syncSlimmingVerificationText(
+    elements.slimmingVerificationGoal,
+    `目标是保留全部红心资产；没有红心时每组保留 1 项，共 ${verification.targetRetainedAssetCount} 项。`
+  );
+  syncSlimmingVerificationMetrics([
+    {
+      key: "target",
+      label: "目标保留",
+      value: verification.targetRetainedAssetCount,
+      tone: "blue",
+    },
+    {
+      key: "available",
+      label: "当前实际可用",
+      value: verification.currentAvailableAssetCount,
+      tone: "green",
+    },
+    {
+      key: "verified",
+      label: "完成去重",
+      value: verification.verifiedGroupCount,
+      tone: "indigo",
+    },
+    {
+      key: "unresolved",
+      label: "尚未完成",
+      value: verification.unresolvedGroupCount,
+      tone: complete ? "neutral" : "orange",
+    },
+  ]);
+  syncSlimmingVerificationResult([
+    {
+      key: "heading",
+      tagName: "strong",
+      text: complete ? "核验完成" : "核验发现未完成项",
+    },
+    {
+      key: "detail",
+      tagName: "p",
+      text: complete
+        ? `实际读取 ${verification.observedAssetCount} 项，确认已清理 ${verification.recycledRedundantAssetCount} 项；处理范围内没有仍处于可用状态的计划删除项。`
+        : `实际读取 ${verification.observedAssetCount} 项；确认已清理 ${verification.recycledRedundantAssetCount} 项；当前实际可用 ${verification.currentAvailableAssetCount} 项；仍可用冗余 ${verification.remainingRedundantAssetCount} 项；状态无法确认 ${verification.unresolvedAssetCount} 项。`,
+    },
+  ]);
+  syncSlimmingVerificationText(
+    elements.slimmingVerificationFootnote,
+    "“完成去重”“确认已清理”和“当前实际可用”均来自删除后的再次读取；“目标保留”来自本次运行时逐组清理计划，不代表所有分组均已完成。"
+  );
   return true;
 }
 
@@ -31036,62 +31122,119 @@ function identicalCleanupPlanCount(plan, key) {
   return Math.trunc(value);
 }
 
-function appendIdenticalCleanupMetric(label, value, tone, symbol) {
-  const card = document.createElement("div");
-  card.className = `identical-cleanup-metric ${tone || ""}`;
-  const title = document.createElement("span");
-  title.className = "identical-cleanup-metric-label";
-  if (symbol) {
-    const icon = document.createElement("span");
-    icon.className = "identical-cleanup-metric-symbol";
-    icon.setAttribute("aria-hidden", "true");
-    icon.textContent = symbol;
-    title.append(icon);
+function syncIdenticalCleanupText(element, text) {
+  if (element.textContent !== text) element.textContent = text;
+}
+
+function syncIdenticalCleanupMetrics(metrics) {
+  const container = elements.slimmingIdenticalCleanupMetrics;
+  const existing = new Map(
+    [...container.querySelectorAll(":scope > [data-identical-cleanup-metric-key]")]
+      .map((card) => [card.dataset.identicalCleanupMetricKey, card])
+  );
+  const wanted = metrics.map((metric) => {
+    const card = existing.get(metric.key) || document.createElement("div");
+    card.dataset.identicalCleanupMetricKey = metric.key;
+    card.className = `identical-cleanup-metric ${metric.tone || ""}`;
+    let title = card.querySelector(":scope > .identical-cleanup-metric-label");
+    if (!title) {
+      title = document.createElement("span");
+      title.className = "identical-cleanup-metric-label";
+    }
+    let icon = title.querySelector(":scope > [data-identical-cleanup-metric-part='icon']");
+    if (!icon) {
+      icon = document.createElement("span");
+      icon.dataset.identicalCleanupMetricPart = "icon";
+      icon.className = "identical-cleanup-metric-symbol";
+      icon.setAttribute("aria-hidden", "true");
+    }
+    let label = title.querySelector(":scope > [data-identical-cleanup-metric-part='label']");
+    if (!label) {
+      label = document.createElement("span");
+      label.dataset.identicalCleanupMetricPart = "label";
+    }
+    let count = card.querySelector(":scope > [data-identical-cleanup-metric-part='count']");
+    if (!count) {
+      count = document.createElement("strong");
+      count.dataset.identicalCleanupMetricPart = "count";
+    }
+    syncIdenticalCleanupText(icon, metric.symbol || "");
+    syncIdenticalCleanupText(label, metric.label);
+    syncIdenticalCleanupText(
+      count,
+      metric.value === null ? "—" : metric.value.toLocaleString()
+    );
+    reconcileStableChildren(title, metric.symbol ? [icon, label] : [label]);
+    reconcileStableChildren(card, [title, count]);
+    return card;
+  });
+  reconcileStableChildren(container, wanted);
+}
+
+function identicalCleanupPart(container, key, tagName, className) {
+  let part = container.querySelector(`:scope > [data-identical-cleanup-part="${key}"]`);
+  if (!part) {
+    part = document.createElement(tagName);
+    part.dataset.identicalCleanupPart = key;
   }
-  title.append(document.createTextNode(label));
-  const count = document.createElement("strong");
-  count.textContent = value === null ? "—" : value.toLocaleString();
-  card.append(title, count);
-  elements.slimmingIdenticalCleanupMetrics.append(card);
+  if (className !== undefined) part.className = className;
+  return part;
 }
 
 function renderIdenticalCleanupDispositionChart(plan) {
   const container = elements.slimmingIdenticalCleanupDispositionChart;
-  clearElement(container);
   const retained = identicalCleanupPlanCount(plan, "retainedAssetCount") || 0;
   const removal = identicalCleanupPlanCount(plan, "removalAssetCount") || 0;
   const verified = identicalCleanupPlanCount(plan, "verifiedAssetCount") || 0;
   const dispositionTotal = retained + removal;
   const retainedAngle = dispositionTotal > 0 ? (retained / dispositionTotal) * 360 : 360;
 
-  const chart = document.createElement("div");
-  chart.className = "identical-cleanup-donut";
+  const chart = identicalCleanupPart(
+    container, "donut", "div", "identical-cleanup-donut"
+  );
   chart.style.setProperty("--retained-angle", `${retainedAngle}deg`);
-  const center = document.createElement("span");
-  center.className = "identical-cleanup-donut-center";
-  const total = document.createElement("strong");
-  total.textContent = verified.toLocaleString();
-  const caption = document.createElement("span");
-  caption.textContent = "张已核验";
-  center.append(total, caption);
-  chart.append(center);
+  const center = identicalCleanupPart(
+    chart, "center", "span", "identical-cleanup-donut-center"
+  );
+  const total = identicalCleanupPart(center, "total", "strong", "");
+  const caption = identicalCleanupPart(center, "caption", "span", "");
+  syncIdenticalCleanupText(total, verified.toLocaleString());
+  syncIdenticalCleanupText(caption, "张已核验");
+  reconcileStableChildren(center, [total, caption]);
+  reconcileStableChildren(chart, [center]);
 
-  const legend = document.createElement("div");
-  legend.className = "identical-cleanup-chart-legend";
-  for (const [label, value, tone] of [
+  const legend = identicalCleanupPart(
+    container, "legend", "div", "identical-cleanup-chart-legend"
+  );
+  const legendItems = [
     ["保留", retained, "retained"],
     ["清理", removal, "removal"],
-  ]) {
-    const item = document.createElement("span");
+  ].map(([label, value, tone]) => {
+    let item = legend.querySelector(
+      `:scope > [data-identical-cleanup-legend-key="${tone}"]`
+    );
+    if (!item) {
+      item = document.createElement("span");
+      item.dataset.identicalCleanupLegendKey = tone;
+    }
     item.className = tone;
-    const dot = document.createElement("i");
+    let dot = item.querySelector(":scope > [data-identical-cleanup-legend-part='dot']");
+    if (!dot) {
+      dot = document.createElement("i");
+      dot.dataset.identicalCleanupLegendPart = "dot";
+    }
     dot.setAttribute("aria-hidden", "true");
-    const text = document.createElement("span");
-    text.textContent = `${label} ${value.toLocaleString()}`;
-    item.append(dot, text);
-    legend.append(item);
-  }
-  container.append(chart, legend);
+    let text = item.querySelector(":scope > [data-identical-cleanup-legend-part='text']");
+    if (!text) {
+      text = document.createElement("span");
+      text.dataset.identicalCleanupLegendPart = "text";
+    }
+    syncIdenticalCleanupText(text, `${label} ${value.toLocaleString()}`);
+    reconcileStableChildren(item, [dot, text]);
+    return item;
+  });
+  reconcileStableChildren(legend, legendItems);
+  reconcileStableChildren(container, [chart, legend]);
   container.setAttribute(
     "aria-label",
     `去留比例：已核验 ${verified.toLocaleString()} 张，保留 ${retained.toLocaleString()} 张，清理 ${removal.toLocaleString()} 张`
@@ -31100,7 +31243,6 @@ function renderIdenticalCleanupDispositionChart(plan) {
 
 function renderIdenticalCleanupGroupHistogram(plan) {
   const container = elements.slimmingIdenticalCleanupGroupHistogram;
-  clearElement(container);
   const buckets = new Map([["2", 0], ["3", 0], ["4", 0], ["5+", 0]]);
   for (const [rawMemberCount, rawGroupCount] of Object.entries(plan.groupSizeHistogram || {})) {
     const memberCount = Number(rawMemberCount);
@@ -31111,77 +31253,113 @@ function renderIdenticalCleanupGroupHistogram(plan) {
   }
   const visibleBuckets = [...buckets.entries()].filter(([, count]) => count > 0);
   const maxCount = Math.max(1, ...visibleBuckets.map(([, count]) => count));
+  const wanted = [];
   if (!visibleBuckets.length) {
-    const empty = document.createElement("p");
-    empty.className = "identical-cleanup-chart-empty";
-    empty.textContent = "当前 Host 未提供分组规模分布。";
-    container.append(empty);
+    const empty = identicalCleanupPart(
+      container, "histogram-empty", "p", "identical-cleanup-chart-empty"
+    );
+    syncIdenticalCleanupText(empty, "当前 Host 未提供分组规模分布。");
+    wanted.push(empty);
   } else {
     for (const [label, count] of visibleBuckets) {
-      const column = document.createElement("div");
+      let column = container.querySelector(
+        `:scope > [data-identical-cleanup-histogram-key="${label}"]`
+      );
+      if (!column) {
+        column = document.createElement("div");
+        column.dataset.identicalCleanupHistogramKey = label;
+      }
       column.className = "identical-cleanup-histogram-column";
-      const value = document.createElement("strong");
-      value.textContent = count.toLocaleString();
-      const track = document.createElement("span");
-      track.className = "identical-cleanup-histogram-track";
-      const bar = document.createElement("span");
-      bar.className = "identical-cleanup-histogram-bar";
+      const value = identicalCleanupPart(column, "value", "strong", "");
+      const track = identicalCleanupPart(
+        column, "track", "span", "identical-cleanup-histogram-track"
+      );
+      const bar = identicalCleanupPart(
+        track, "bar", "span", "identical-cleanup-histogram-bar"
+      );
       bar.style.setProperty("--bar-ratio", String(count / maxCount));
-      track.append(bar);
-      const bucket = document.createElement("span");
-      bucket.className = "identical-cleanup-histogram-label";
-      bucket.textContent = label;
-      column.append(value, track, bucket);
-      container.append(column);
+      const bucket = identicalCleanupPart(
+        column, "label", "span", "identical-cleanup-histogram-label"
+      );
+      syncIdenticalCleanupText(value, count.toLocaleString());
+      syncIdenticalCleanupText(bucket, label);
+      reconcileStableChildren(track, [bar]);
+      reconcileStableChildren(column, [value, track, bucket]);
+      wanted.push(column);
     }
   }
+  reconcileStableChildren(container, wanted);
   const summary = visibleBuckets.map(([label, count]) => `每组 ${label} 项有 ${count} 组`).join("，");
   container.setAttribute("aria-label", `重复组规模分布${summary ? `：${summary}` : "不可用"}`);
 }
 
 function renderIdenticalCleanupSourceChart(plan) {
   const container = elements.slimmingIdenticalCleanupSources;
-  clearElement(container);
   const sources = [
     ["Apple Photos", identicalCleanupPlanCount(plan, "photosAssetCount") || 0, "photos"],
     ["文件夹来源", identicalCleanupPlanCount(plan, "fileAssetCount") || 0, "files"],
   ];
   const maxCount = Math.max(1, ...sources.map(([, count]) => count));
-  for (const [label, count, tone] of sources) {
-    const row = document.createElement("div");
+  const wanted = sources.map(([label, count, tone]) => {
+    let row = container.querySelector(
+      `:scope > [data-identical-cleanup-source-key="${tone}"]`
+    );
+    if (!row) {
+      row = document.createElement("div");
+      row.dataset.identicalCleanupSourceKey = tone;
+    }
     row.className = `identical-cleanup-source-row ${tone}`;
-    const term = document.createElement("dt");
-    term.textContent = label;
-    const description = document.createElement("dd");
-    const track = document.createElement("span");
-    track.className = "identical-cleanup-source-track";
-    const bar = document.createElement("span");
-    bar.className = "identical-cleanup-source-bar";
+    const term = identicalCleanupPart(row, "term", "dt", "");
+    const description = identicalCleanupPart(row, "description", "dd", "");
+    const track = identicalCleanupPart(
+      description, "track", "span", "identical-cleanup-source-track"
+    );
+    const bar = identicalCleanupPart(
+      track, "bar", "span", "identical-cleanup-source-bar"
+    );
     bar.style.setProperty("--source-ratio", String(count / maxCount));
-    track.append(bar);
-    const value = document.createElement("strong");
-    value.textContent = `${count.toLocaleString()} 张`;
-    description.append(track, value);
-    row.append(term, description);
-    container.append(row);
-  }
+    const value = identicalCleanupPart(description, "value", "strong", "");
+    syncIdenticalCleanupText(term, label);
+    syncIdenticalCleanupText(value, `${count.toLocaleString()} 张`);
+    reconcileStableChildren(track, [bar]);
+    reconcileStableChildren(description, [track, value]);
+    reconcileStableChildren(row, [term, description]);
+    return row;
+  });
+  reconcileStableChildren(container, wanted);
   container.setAttribute(
     "aria-label",
     `待清理媒体来源：Apple Photos ${sources[0][1].toLocaleString()} 张，文件夹来源 ${sources[1][1].toLocaleString()} 张`
   );
 }
 
-function appendIdenticalCleanupNotice(message, tone, symbol) {
-  const notice = document.createElement("p");
-  notice.className = tone || "";
-  if (symbol) {
-    const icon = document.createElement("span");
-    icon.setAttribute("aria-hidden", "true");
-    icon.textContent = symbol;
-    notice.append(icon);
-  }
-  notice.append(document.createTextNode(message));
-  elements.slimmingIdenticalCleanupNotice.append(notice);
+function syncIdenticalCleanupNotices(notices) {
+  const container = elements.slimmingIdenticalCleanupNotice;
+  const existing = new Map(
+    [...container.querySelectorAll(":scope > [data-identical-cleanup-notice-key]")]
+      .map((notice) => [notice.dataset.identicalCleanupNoticeKey, notice])
+  );
+  const wanted = notices.map((descriptor) => {
+    const notice = existing.get(descriptor.key) || document.createElement("p");
+    notice.dataset.identicalCleanupNoticeKey = descriptor.key;
+    notice.className = descriptor.tone || "";
+    let icon = notice.querySelector(":scope > [data-identical-cleanup-notice-part='icon']");
+    if (!icon) {
+      icon = document.createElement("span");
+      icon.dataset.identicalCleanupNoticePart = "icon";
+      icon.setAttribute("aria-hidden", "true");
+    }
+    let copy = notice.querySelector(":scope > [data-identical-cleanup-notice-part='copy']");
+    if (!copy) {
+      copy = document.createElement("span");
+      copy.dataset.identicalCleanupNoticePart = "copy";
+    }
+    syncIdenticalCleanupText(icon, descriptor.symbol || "");
+    syncIdenticalCleanupText(copy, descriptor.message);
+    reconcileStableChildren(notice, descriptor.symbol ? [icon, copy] : [copy]);
+    return notice;
+  });
+  reconcileStableChildren(container, wanted);
 }
 
 function renderSlimmingIdenticalCleanupDialog() {
@@ -31191,36 +31369,40 @@ function renderSlimmingIdenticalCleanupDialog() {
     "hidden",
     cleanup.preparing || !cleanup.plan
   );
-  elements.slimmingIdenticalCleanupError.textContent = cleanup.error || "";
-  clearElement(elements.slimmingIdenticalCleanupMetrics);
-  elements.slimmingIdenticalCleanupRetentionSummary.textContent = "";
-  clearElement(elements.slimmingIdenticalCleanupDispositionChart);
-  clearElement(elements.slimmingIdenticalCleanupGroupHistogram);
-  clearElement(elements.slimmingIdenticalCleanupSources);
-  clearElement(elements.slimmingIdenticalCleanupNotice);
+  syncIdenticalCleanupText(elements.slimmingIdenticalCleanupError, cleanup.error || "");
   const plan = cleanup.plan;
   if (plan) {
     const favoriteRetained = identicalCleanupPlanCount(plan, "favoriteRetainedAssetCount");
     const ordinaryRetained = identicalCleanupPlanCount(plan, "ordinaryRetainedAssetCount");
     const protectedSkipped = identicalCleanupPlanCount(plan, "protectedSkippedAssetCount");
-    appendIdenticalCleanupMetric(
-      "已核验媒体", identicalCleanupPlanCount(plan, "verifiedAssetCount"), "blue", "✓"
-    );
-    appendIdenticalCleanupMetric(
-      "会保留", identicalCleanupPlanCount(plan, "retainedAssetCount"), "green", "▣"
-    );
-    appendIdenticalCleanupMetric("红心保留", favoriteRetained, "red", "♥");
-    appendIdenticalCleanupMetric(
-      "将清理", identicalCleanupPlanCount(plan, "removalAssetCount"), "orange", "⌫"
-    );
-    appendIdenticalCleanupMetric(
-      "处理分组", identicalCleanupPlanCount(plan, "groupCount"), "indigo", "▤"
-    );
+    syncIdenticalCleanupMetrics([
+      {
+        key: "verified", label: "已核验媒体",
+        value: identicalCleanupPlanCount(plan, "verifiedAssetCount"), tone: "blue", symbol: "✓",
+      },
+      {
+        key: "retained", label: "会保留",
+        value: identicalCleanupPlanCount(plan, "retainedAssetCount"), tone: "green", symbol: "▣",
+      },
+      {
+        key: "favorite", label: "红心保留",
+        value: favoriteRetained, tone: "red", symbol: "♥",
+      },
+      {
+        key: "removal", label: "将清理",
+        value: identicalCleanupPlanCount(plan, "removalAssetCount"), tone: "orange", symbol: "⌫",
+      },
+      {
+        key: "groups", label: "处理分组",
+        value: identicalCleanupPlanCount(plan, "groupCount"), tone: "indigo", symbol: "▤",
+      },
+    ]);
+    let retentionSummary;
     if (favoriteRetained !== null && ordinaryRetained !== null && protectedSkipped !== null) {
-      elements.slimmingIdenticalCleanupRetentionSummary.textContent =
+      retentionSummary =
         `普通保留 ${ordinaryRetained.toLocaleString()} 项；全组红心而安全跳过 ${protectedSkipped.toLocaleString()} 项。红心资产不会进入自动删除计划。`;
     } else {
-      elements.slimmingIdenticalCleanupRetentionSummary.textContent =
+      retentionSummary =
         "当前 Mac Host 未提供红心保护拆分；执行计划仍由 Mac 按红心保护规则逐项核验。";
     }
     renderIdenticalCleanupDispositionChart(plan);
@@ -31237,54 +31419,69 @@ function renderSlimmingIdenticalCleanupDialog() {
       plan, "perfectVisualGroupCount"
     );
     if (byteIdenticalGroupCount !== null && perfectVisualGroupCount !== null) {
-      elements.slimmingIdenticalCleanupRetentionSummary.textContent +=
+      retentionSummary +=
         ` 原文件完全相同 ${byteIdenticalGroupCount.toLocaleString()} 组；视觉匹配 100% ${perfectVisualGroupCount.toLocaleString()} 组。`;
     }
+    syncIdenticalCleanupText(elements.slimmingIdenticalCleanupRetentionSummary, retentionSummary);
+    const notices = [];
     if ((perfectVisualGroupCount || 0) > 0) {
-      appendIdenticalCleanupNotice(
-        `其中 ${perfectVisualGroupCount.toLocaleString()} 组是视觉特征匹配 100%，原文件字节并不完全相同；请在确认后再清理。`,
-        "warning",
-        "△"
-      );
+      notices.push({
+        key: "visual-match",
+        message: `其中 ${perfectVisualGroupCount.toLocaleString()} 组是视觉特征匹配 100%，原文件字节并不完全相同；请在确认后再清理。`,
+        tone: "warning",
+        symbol: "△",
+      });
     }
     if (fileAssetCount > 0) {
-      appendIdenticalCleanupNotice(
-        `“快速清理”会永久删除 ${fileAssetCount.toLocaleString()} 个文件夹媒体，ImageAll 无法恢复。`,
-        "danger",
-        "!"
-      );
+      notices.push({
+        key: "permanent-files",
+        message: `“快速清理”会永久删除 ${fileAssetCount.toLocaleString()} 个文件夹媒体，ImageAll 无法恢复。`,
+        tone: "danger",
+        symbol: "!",
+      });
     }
     if (photosAssetCount > 0) {
-      appendIdenticalCleanupNotice(
-        "macOS 仍会对全部 Apple Photos 待删项集中显示一次系统确认。",
-        "warning",
-        "△"
-      );
+      notices.push({
+        key: "photos-confirmation",
+        message: "macOS 仍会对全部 Apple Photos 待删项集中显示一次系统确认。",
+        tone: "warning",
+        symbol: "△",
+      });
     }
     if (skippedGroupCount > 0) {
-      appendIdenticalCleanupNotice(
-        `另有 ${skippedGroupCount.toLocaleString()} 组因成员或来源状态变化已安全跳过，不会删除。`,
-        "warning",
-        "◇"
-      );
+      notices.push({
+        key: "skipped-groups",
+        message: `另有 ${skippedGroupCount.toLocaleString()} 组因成员或来源状态变化已安全跳过，不会删除。`,
+        tone: "warning",
+        symbol: "◇",
+      });
     }
-    if (!elements.slimmingIdenticalCleanupNotice.childElementCount) {
-      appendIdenticalCleanupNotice(
-        "执行前 Mac 还会再次核验冻结方案，变化的项目不会被删除。",
-        "safe",
-        "✓"
-      );
+    if (!notices.length) {
+      notices.push({
+        key: "safe",
+        message: "执行前 Mac 还会再次核验冻结方案，变化的项目不会被删除。",
+        tone: "safe",
+        symbol: "✓",
+      });
     }
+    syncIdenticalCleanupNotices(notices);
+  } else {
+    syncIdenticalCleanupMetrics([]);
+    syncIdenticalCleanupText(elements.slimmingIdenticalCleanupRetentionSummary, "");
+    reconcileStableChildren(elements.slimmingIdenticalCleanupDispositionChart, []);
+    reconcileStableChildren(elements.slimmingIdenticalCleanupGroupHistogram, []);
+    reconcileStableChildren(elements.slimmingIdenticalCleanupSources, []);
+    syncIdenticalCleanupNotices([]);
   }
   const disabled = cleanup.preparing || cleanup.submitting || !plan;
   elements.recoverableSlimmingIdenticalCleanupButton.disabled = disabled;
   elements.fastSlimmingIdenticalCleanupButton.disabled = disabled;
-  elements.recoverableSlimmingIdenticalCleanupButton.textContent = plan
+  syncIdenticalCleanupText(elements.recoverableSlimmingIdenticalCleanupButton, plan
     ? `可恢复回收 ${plan.removalAssetCount} 项`
-    : "可恢复回收";
-  elements.fastSlimmingIdenticalCleanupButton.textContent = plan
+    : "可恢复回收");
+  syncIdenticalCleanupText(elements.fastSlimmingIdenticalCleanupButton, plan
     ? `快速清理 ${plan.removalAssetCount} 项`
-    : "快速清理";
+    : "快速清理");
 }
 
 function slimmingIdenticalCleanupBaseLevelFromHistory(context = {}) {

@@ -241,6 +241,79 @@ async def main():
             path="/tmp/imageall-identical-cleanup-mac-parity.png",
             full_page=True,
         )
+        await metrics.nth(0).hover()
+        await page.locator("#cancelSlimmingIdenticalCleanupButton").focus()
+        await page.evaluate(
+            """() => {
+              const dialog = document.querySelector("#slimmingIdenticalCleanupDialog");
+              const label = dialog.querySelector(
+                "[data-identical-cleanup-metric-key='verified'] "
+                  + "[data-identical-cleanup-metric-part='label']"
+              );
+              const range = document.createRange();
+              range.selectNodeContents(label);
+              const selection = window.getSelection();
+              selection.removeAllRanges();
+              selection.addRange(range);
+              const selectors = [
+                "#slimmingIdenticalCleanupMetrics > *",
+                "#slimmingIdenticalCleanupMetrics > * > *",
+                "#slimmingIdenticalCleanupDispositionChart *",
+                "#slimmingIdenticalCleanupGroupHistogram > *",
+                "#slimmingIdenticalCleanupGroupHistogram > * > *",
+                "#slimmingIdenticalCleanupSources > *",
+                "#slimmingIdenticalCleanupSources > * > *",
+                "#slimmingIdenticalCleanupNotice > *",
+                "#slimmingIdenticalCleanupNotice > * > *",
+              ];
+              const nodes = selectors.map((selector) => [
+                selector,
+                [...dialog.querySelectorAll(selector)],
+              ]);
+              const structuralChanges = [];
+              const observer = new MutationObserver((mutations) => {
+                for (const mutation of mutations) {
+                  const changed = [...mutation.addedNodes, ...mutation.removedNodes]
+                    .some((node) => node.nodeType === Node.ELEMENT_NODE);
+                  if (changed) structuralChanges.push(mutation.target);
+                }
+              });
+              observer.observe(dialog, { childList: true, subtree: true });
+              window.__identicalCleanupContinuity = {
+                dialog,
+                label,
+                nodes,
+                observer,
+                structuralChanges,
+                scrollTop: dialog.scrollTop,
+              };
+              state.slimming.identicalCleanup.submitting = true;
+              renderSlimmingIdenticalCleanupDialog();
+              state.slimming.identicalCleanup.submitting = false;
+              renderSlimmingIdenticalCleanupDialog();
+            }"""
+        )
+        stable_cleanup_plan = await page.evaluate(
+            """() => {
+              const frame = window.__identicalCleanupContinuity;
+              frame.observer.disconnect();
+              return {
+                nodes: frame.nodes.every(([selector, nodes]) => {
+                  const current = [...frame.dialog.querySelectorAll(selector)];
+                  return current.length === nodes.length
+                    && current.every((node, index) => node === nodes[index]);
+                }),
+                zeroStructuralChanges: frame.structuralChanges.length === 0,
+                selection: window.getSelection()?.toString() === "已核验媒体",
+                hover: frame.dialog.querySelector(
+                  "[data-identical-cleanup-metric-key='verified']"
+                )?.matches(":hover") === true,
+                focus: document.activeElement?.id === "cancelSlimmingIdenticalCleanupButton",
+                scroll: frame.dialog.scrollTop === frame.scrollTop,
+              };
+            }"""
+        )
+        assert all(stable_cleanup_plan.values()), stable_cleanup_plan
         await page.locator("#fastSlimmingIdenticalCleanupButton").focus()
         await page.go_back()
         await page.wait_for_function(
@@ -477,6 +550,92 @@ async def main():
         assert "只把删除后确实仅剩 1 项" not in await page.locator(
             "#slimmingVerificationDialog"
         ).inner_text()
+        await page.locator(
+            "#slimmingVerificationMetrics "
+            "[data-slimming-verification-metric-key='target']"
+        ).hover()
+        await page.locator("#closeSlimmingVerificationButton").focus()
+        stable_verification = await page.evaluate(
+            """() => {
+              const dialog = document.querySelector("#slimmingVerificationDialog");
+              const label = dialog.querySelector(
+                "[data-slimming-verification-metric-key='target'] "
+                  + "[data-slimming-verification-metric-part='title']"
+              );
+              const range = document.createRange();
+              range.selectNodeContents(label);
+              const selection = window.getSelection();
+              selection.removeAllRanges();
+              selection.addRange(range);
+              const selectors = [
+                "#slimmingVerificationMetrics > *",
+                "#slimmingVerificationMetrics > * > *",
+                "#slimmingVerificationResult > *",
+              ];
+              const nodes = selectors.map((selector) => [
+                selector,
+                [...dialog.querySelectorAll(selector)],
+              ]);
+              const structuralChanges = [];
+              const observer = new MutationObserver((mutations) => {
+                for (const mutation of mutations) {
+                  const changed = [...mutation.addedNodes, ...mutation.removedNodes]
+                    .some((node) => node.nodeType === Node.ELEMENT_NODE);
+                  if (changed) structuralChanges.push(mutation.target);
+                }
+              });
+              observer.observe(dialog, { childList: true, subtree: true });
+              const request = state.slimming.identicalCleanup.verificationRequest;
+              Object.assign(request.verification, {
+                isComplete: true,
+                verifiedGroupCount: 4,
+                currentAvailableAssetCount: 4,
+                unresolvedGroupCount: 0,
+                recycledRedundantAssetCount: 8,
+                remainingRedundantAssetCount: 0,
+              });
+              renderSlimmingVerificationReport(request);
+              const completeRendered = {
+                score: document.querySelector("#slimmingVerificationScore").textContent,
+                unresolved: dialog.querySelector(
+                  "[data-slimming-verification-metric-key='unresolved'] strong"
+                )?.textContent,
+                heading: dialog.querySelector(
+                  "[data-slimming-verification-result-key='heading']"
+                )?.textContent,
+              };
+              Object.assign(request.verification, {
+                isComplete: false,
+                verifiedGroupCount: 3,
+                currentAvailableAssetCount: 5,
+                unresolvedGroupCount: 1,
+                recycledRedundantAssetCount: 7,
+                remainingRedundantAssetCount: 1,
+              });
+              renderSlimmingVerificationReport(request);
+              observer.disconnect();
+              return {
+                nodes: nodes.every(([selector, stableNodes]) => {
+                  const current = [...dialog.querySelectorAll(selector)];
+                  return current.length === stableNodes.length
+                    && current.every((node, index) => node === stableNodes[index]);
+                }),
+                zeroStructuralChanges: structuralChanges.length === 0,
+                selection: window.getSelection()?.toString() === "目标保留",
+                hover: dialog.querySelector(
+                  "[data-slimming-verification-metric-key='target']"
+                )?.matches(":hover") === true,
+                focus: document.activeElement?.id === "closeSlimmingVerificationButton",
+                completeScore: completeRendered.score.trim() === "4 / 4",
+                completeUnresolved: completeRendered.unresolved === "0",
+                completeHeading: completeRendered.heading === "核验完成",
+                restoredScore: document.querySelector(
+                  "#slimmingVerificationScore"
+                ).textContent.trim() === "3 / 4",
+              };
+            }"""
+        )
+        assert all(stable_verification.values()), stable_verification
         await page.go_back()
         await page.wait_for_function(
             "() => !document.querySelector('#slimmingVerificationDialog').open"
