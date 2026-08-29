@@ -593,6 +593,70 @@ def main():
         assert page.locator(
             '[data-training-setup-method="personalCentroid"]'
         ).get_attribute("aria-checked") == "true"
+        page.evaluate(
+            """() => {
+              const summary = document.querySelector("#trainingLaunchSummary");
+              const task = summary.querySelector(
+                'dd[data-training-summary-key="task"]'
+              );
+              const range = document.createRange();
+              range.selectNodeContents(task);
+              const selection = getSelection();
+              selection.removeAllRanges();
+              selection.addRange(range);
+              window.__stableTrainingLaunchSummary = {
+                children: [...summary.children],
+                task,
+                selectedText: selection.toString(),
+                mutations: 0,
+              };
+              window.__stableTrainingLaunchSummary.observer = new MutationObserver(
+                (records) => {
+                  window.__stableTrainingLaunchSummary.mutations += records.filter(
+                    (record) => record.type === "childList"
+                  ).length;
+                }
+              );
+              window.__stableTrainingLaunchSummary.observer.observe(
+                summary,
+                { childList: true }
+              );
+            }"""
+        )
+        page.locator(f'[data-training-tag-id="{TAG_ID}"]').click()
+        assert not page.locator(f'[data-training-tag-id="{TAG_ID}"]').is_checked()
+        stable_training_launch_summary = page.evaluate(
+            """() => {
+              const frame = window.__stableTrainingLaunchSummary;
+              const summary = document.querySelector("#trainingLaunchSummary");
+              const children = [...summary.children];
+              frame.observer.disconnect();
+              return {
+                children: children.length === frame.children.length
+                  && children.every(
+                    (child, index) => child === frame.children[index]
+                  ),
+                task: summary.querySelector(
+                  'dd[data-training-summary-key="task"]'
+                ) === frame.task,
+                selection: getSelection().toString() === frame.selectedText
+                  && getSelection().toString().includes("快速个人模型"),
+                tags: summary.querySelector(
+                  'dd[data-training-summary-key="tags"]'
+                ).textContent === "尚未选择",
+                mutations: frame.mutations,
+              };
+            }"""
+        )
+        assert stable_training_launch_summary == {
+            "children": True,
+            "task": True,
+            "selection": True,
+            "tags": True,
+            "mutations": 0,
+        }, stable_training_launch_summary
+        page.locator(f'[data-training-tag-id="{TAG_ID}"]').click()
+        assert page.locator(f'[data-training-tag-id="{TAG_ID}"]').is_checked()
         page.keyboard.press("Escape")
         page.wait_for_function(
             "() => document.activeElement?.id === 'toolbarRebuildPersonalModelButton'"
@@ -1225,6 +1289,100 @@ def main():
         assert page.locator(
             '#trainingLossChart [data-metric-epoch="3"][data-best="true"]'
         ).count() == 1
+        stable_training_metrics = page.evaluate(
+            """() => {
+              const highlights = document.querySelector("#trainingMetricHighlights");
+              const chart = document.querySelector("#trainingLossChart");
+              const bestValue = highlights.querySelectorAll(
+                ".training-metric-highlight strong"
+              )[1];
+              const range = document.createRange();
+              range.selectNodeContents(bestValue);
+              const selection = getSelection();
+              selection.removeAllRanges();
+              selection.addRange(range);
+              const frame = {
+                highlightCards: [...highlights.children],
+                svg: chart.querySelector("svg"),
+                bestValue,
+                selectedText: selection.toString(),
+                highlightMutations: 0,
+                chartMutations: 0,
+              };
+              const highlightObserver = new MutationObserver((records) => {
+                frame.highlightMutations += records.filter(
+                  (record) => record.type === "childList"
+                ).length;
+              });
+              const chartObserver = new MutationObserver((records) => {
+                frame.chartMutations += records.filter(
+                  (record) => record.type === "childList"
+                ).length;
+              });
+              highlightObserver.observe(highlights, { childList: true, subtree: true });
+              chartObserver.observe(chart, { childList: true, subtree: true });
+              state.online = false;
+              renderTrainingDetail();
+              state.online = true;
+              renderTrainingDetail();
+              highlightObserver.disconnect();
+              chartObserver.disconnect();
+              const cards = [...highlights.children];
+              return {
+                cards: cards.length === frame.highlightCards.length
+                  && cards.every(
+                    (card, index) => card === frame.highlightCards[index]
+                  ),
+                svg: chart.querySelector("svg") === frame.svg,
+                bestValue: highlights.querySelectorAll(
+                  ".training-metric-highlight strong"
+                )[1] === frame.bestValue,
+                selection: selection.toString() === frame.selectedText
+                  && selection.toString() === "0.240",
+                highlightMutations: frame.highlightMutations,
+                chartMutations: frame.chartMutations,
+              };
+            }"""
+        )
+        assert stable_training_metrics == {
+            "cards": True,
+            "svg": True,
+            "bestValue": True,
+            "selection": True,
+            "highlightMutations": 0,
+            "chartMutations": 0,
+        }, stable_training_metrics
+        changed_training_metrics = page.evaluate(
+            """runID => {
+              const run = state.training.runs.find((item) => item.id === runID);
+              window.__originalTrainingMetricsJSON = run.metricsJSON;
+              const metrics = JSON.parse(run.metricsJSON);
+              metrics.epochs.push({ epoch: 5, evaluationLoss: 0.22 });
+              run.metricsJSON = JSON.stringify(metrics);
+              renderTrainingDetail();
+              return {
+                points: document.querySelectorAll(
+                  "#trainingLossChart [data-metric-epoch]"
+                ).length,
+                label: document.querySelector("#trainingLossChart")
+                  .getAttribute("aria-label"),
+              };
+            }""",
+            PERSONAL_RUN_ID,
+        )
+        assert changed_training_metrics == {
+            "points": 5,
+            "label": "训练损失曲线：5 轮，最佳损失 0.220（第 5 轮），最终损失 0.220",
+        }, changed_training_metrics
+        page.evaluate(
+            """runID => {
+              const run = state.training.runs.find((item) => item.id === runID);
+              run.metricsJSON = window.__originalTrainingMetricsJSON;
+              renderTrainingDetail();
+            }""",
+            PERSONAL_RUN_ID,
+        )
+        assert page.locator("#trainingLossChart [data-metric-epoch]").count() == 4
         page.screenshot(path="/tmp/imageall-training-loss-chart.png", full_page=True)
         page.set_viewport_size({"width": 390, "height": 844})
         page.wait_for_timeout(100)

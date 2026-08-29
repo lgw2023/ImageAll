@@ -24598,12 +24598,34 @@ function resetTrainingSetupSelection(method) {
   }
 }
 
-function appendTrainingSetupSummary(label, value) {
-  const term = document.createElement("dt");
-  term.textContent = label;
-  const description = document.createElement("dd");
-  description.textContent = value;
-  elements.trainingLaunchSummary.append(term, description);
+function reconcileTrainingSetupSummary(rows) {
+  const existing = new Map(
+    [...elements.trainingLaunchSummary.querySelectorAll(
+      ":scope > dt[data-training-summary-key]"
+    )].map((term) => {
+      const description = term.nextElementSibling;
+      return description?.matches("dd[data-training-summary-key]")
+        && description.dataset.trainingSummaryKey === term.dataset.trainingSummaryKey
+        ? [term.dataset.trainingSummaryKey, { term, description }]
+        : null;
+    }).filter(Boolean)
+  );
+  const wanted = [];
+  for (const row of rows) {
+    let pair = existing.get(row.key) || null;
+    existing.delete(row.key);
+    if (!pair) {
+      const term = document.createElement("dt");
+      const description = document.createElement("dd");
+      term.dataset.trainingSummaryKey = row.key;
+      description.dataset.trainingSummaryKey = row.key;
+      pair = { term, description };
+    }
+    if (pair.term.textContent !== row.label) pair.term.textContent = row.label;
+    if (pair.description.textContent !== row.value) pair.description.textContent = row.value;
+    wanted.push(pair.term, pair.description);
+  }
+  reconcileStableChildren(elements.trainingLaunchSummary, wanted);
 }
 
 function createTrainingSetupMethodOption() {
@@ -24862,25 +24884,29 @@ function canLaunchTrainingSetup() {
 }
 
 function renderTrainingSetupSummary() {
-  clearElement(elements.trainingLaunchSummary);
   const setup = state.training.setup;
   const copy = trainingSetupMethodCopy(setup.method);
   const selectedTags = (setup.snapshot?.tags || [])
     .filter((tag) => setup.selectedTagIDs.has(tag.id))
     .map((tag) => tag.displayName);
-  appendTrainingSetupSummary("任务", `${copy.title}（${copy.technical}）`);
-  appendTrainingSetupSummary("标签", selectedTags.length ? selectedTags.join("、") : "尚未选择");
-  if (setup.method === "featureKnn") {
-    appendTrainingSetupSummary("来源", `${setup.selectedSourceIDs.size} 个来源`);
-  } else {
-    appendTrainingSetupSummary(
-      state.training.mediaKind === "video" ? "视频范围" : "照片范围",
-      setup.scope === "currentSelection"
-        ? `图库当前选择 ${state.selectedAssetIDs.size} 项`
-        : "所有来源中的已确认样本"
-    );
-  }
-  appendTrainingSetupSummary("最低要求", copy.requirement);
+  reconcileTrainingSetupSummary([
+    { key: "task", label: "任务", value: `${copy.title}（${copy.technical}）` },
+    {
+      key: "tags",
+      label: "标签",
+      value: selectedTags.length ? selectedTags.join("、") : "尚未选择",
+    },
+    setup.method === "featureKnn"
+      ? { key: "scope", label: "来源", value: `${setup.selectedSourceIDs.size} 个来源` }
+      : {
+        key: "scope",
+        label: state.training.mediaKind === "video" ? "视频范围" : "照片范围",
+        value: setup.scope === "currentSelection"
+          ? `图库当前选择 ${state.selectedAssetIDs.size} 项`
+          : "所有来源中的已确认样本",
+      },
+    { key: "requirement", label: "最低要求", value: copy.requirement },
+  ]);
 }
 
 function renderTrainingSetup() {
@@ -25434,6 +25460,9 @@ function renderTrainingLossChart(points, bestMetric, latestMetric) {
 }
 
 function renderTrainingMetrics(value) {
+  const fingerprint = value || "";
+  if (elements.trainingLossChart.dataset.trainingMetricsFingerprint === fingerprint) return;
+  elements.trainingLossChart.dataset.trainingMetricsFingerprint = fingerprint;
   elements.trainingMetricsSummary.textContent = trainingMetricsSummary(value);
   elements.trainingMetricsJSON.textContent = prettyTrainingJSON(value, "没有过程指标");
   const points = trainingMetricCurve(value);
