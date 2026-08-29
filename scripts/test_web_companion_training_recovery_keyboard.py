@@ -1457,7 +1457,68 @@ def main():
             "highlightMutations": 0,
             "chartMutations": 0,
         }, stable_training_metrics
-        changed_training_metrics = page.evaluate(
+        page.evaluate(
+            """() => {
+              const highlights = document.querySelector("#trainingMetricHighlights");
+              const chart = document.querySelector("#trainingLossChart");
+              const cards = [...highlights.children];
+              const bestTitle = cards[1].querySelector(
+                '[data-training-metric-copy-part="title"]'
+              );
+              const selection = getSelection();
+              const range = document.createRange();
+              range.selectNodeContents(bestTitle);
+              selection.removeAllRanges();
+              selection.addRange(range);
+              const frame = {
+                cards,
+                cardTitles: cards.map((card) => card.querySelector(
+                  '[data-training-metric-copy-part="title"]'
+                )),
+                cardValues: cards.map((card) => card.querySelector(
+                  '[data-training-metric-copy-part="value"]'
+                )),
+                bestTitle,
+                selectedText: selection.toString(),
+                svg: chart.querySelector('[data-training-chart-part="svg"]'),
+                points: new Map([...chart.querySelectorAll('[data-metric-epoch]')]
+                  .map((point) => [point.dataset.metricEpoch, point])),
+                lossLine: chart.querySelector('[data-training-chart-part="loss-line"]'),
+                bestRule: chart.querySelector('[data-training-chart-part="best-rule"]'),
+                xAxisTitle: chart.querySelector('[data-training-chart-part="x-axis-title"]'),
+                yAxisTitle: chart.querySelector('[data-training-chart-part="y-axis-title"]'),
+                activeElement: document.activeElement,
+                highlightElementMutations: 0,
+                chartRootElementMutations: 0,
+                svgAddedElements: 0,
+                svgRemovedElements: 0,
+              };
+              frame.highlightObserver = new MutationObserver((records) => {
+                frame.highlightElementMutations += records
+                  .flatMap((record) => [...record.addedNodes, ...record.removedNodes])
+                  .filter((node) => node.nodeType === Node.ELEMENT_NODE).length;
+              });
+              frame.chartRootObserver = new MutationObserver((records) => {
+                frame.chartRootElementMutations += records
+                  .flatMap((record) => [...record.addedNodes, ...record.removedNodes])
+                  .filter((node) => node.nodeType === Node.ELEMENT_NODE).length;
+              });
+              frame.svgObserver = new MutationObserver((records) => {
+                frame.svgAddedElements += records.flatMap((record) => [...record.addedNodes])
+                  .filter((node) => node.nodeType === Node.ELEMENT_NODE).length;
+                frame.svgRemovedElements += records.flatMap((record) => [...record.removedNodes])
+                  .filter((node) => node.nodeType === Node.ELEMENT_NODE).length;
+              });
+              frame.highlightObserver.observe(highlights, { childList: true, subtree: true });
+              frame.chartRootObserver.observe(chart, { childList: true });
+              frame.svgObserver.observe(frame.svg, { childList: true, subtree: true });
+              window.__trainingDynamicMetricFrame = frame;
+            }"""
+        )
+        page.locator(
+            '#trainingMetricHighlights [data-training-metric-key="best"]'
+        ).hover()
+        page.evaluate(
             """runID => {
               const run = state.training.runs.find((item) => item.id === runID);
               window.__originalTrainingMetricsJSON = run.metricsJSON;
@@ -1465,19 +1526,79 @@ def main():
               metrics.epochs.push({ epoch: 5, evaluationLoss: 0.22 });
               run.metricsJSON = JSON.stringify(metrics);
               renderTrainingDetail();
-              return {
-                points: document.querySelectorAll(
-                  "#trainingLossChart [data-metric-epoch]"
-                ).length,
-                label: document.querySelector("#trainingLossChart")
-                  .getAttribute("aria-label"),
-              };
             }""",
             PERSONAL_RUN_ID,
         )
+        changed_training_metrics = page.evaluate(
+            """() => {
+              const frame = window.__trainingDynamicMetricFrame;
+              const highlights = document.querySelector("#trainingMetricHighlights");
+              const chart = document.querySelector("#trainingLossChart");
+              const cards = [...highlights.children];
+              frame.highlightObserver.disconnect();
+              frame.chartRootObserver.disconnect();
+              frame.svgObserver.disconnect();
+              return {
+                cardsStable: cards.length === frame.cards.length
+                  && cards.every((card, index) => card === frame.cards[index]),
+                cardPartsStable: cards.every((card, index) => card.querySelector(
+                  '[data-training-metric-copy-part="title"]'
+                ) === frame.cardTitles[index] && card.querySelector(
+                  '[data-training-metric-copy-part="value"]'
+                ) === frame.cardValues[index]),
+                metricValues: frame.cardValues.map((value) => value.textContent),
+                svgStable: chart.querySelector(
+                  '[data-training-chart-part="svg"]'
+                ) === frame.svg,
+                existingPointsStable: [...frame.points].every(([epoch, point]) => (
+                  chart.querySelector(`[data-metric-epoch="${epoch}"]`) === point
+                )),
+                lineStable: chart.querySelector(
+                  '[data-training-chart-part="loss-line"]'
+                ) === frame.lossLine,
+                ruleStable: chart.querySelector(
+                  '[data-training-chart-part="best-rule"]'
+                ) === frame.bestRule,
+                axisTitlesStable: chart.querySelector(
+                  '[data-training-chart-part="x-axis-title"]'
+                ) === frame.xAxisTitle && chart.querySelector(
+                  '[data-training-chart-part="y-axis-title"]'
+                ) === frame.yAxisTitle,
+                points: chart.querySelectorAll("[data-metric-epoch]").length,
+                newPoint: Boolean(chart.querySelector(
+                  '[data-metric-epoch="5"][data-best="true"]'
+                )),
+                label: chart.getAttribute("aria-label"),
+                selectionStable: getSelection().toString() === frame.selectedText
+                  && getSelection().containsNode(frame.bestTitle, true),
+                hovered: frame.cards[1].matches(':hover'),
+                focusStable: document.activeElement === frame.activeElement,
+                highlightElementMutations: frame.highlightElementMutations,
+                chartRootElementMutations: frame.chartRootElementMutations,
+                svgAddedElements: frame.svgAddedElements,
+                svgRemovedElements: frame.svgRemovedElements,
+              };
+            }"""
+        )
         assert changed_training_metrics == {
+            "cardsStable": True,
+            "cardPartsStable": True,
+            "metricValues": ["5", "0.220", "0.220"],
+            "svgStable": True,
+            "existingPointsStable": True,
+            "lineStable": True,
+            "ruleStable": True,
+            "axisTitlesStable": True,
             "points": 5,
+            "newPoint": True,
             "label": "训练损失曲线：5 轮，最佳损失 0.220（第 5 轮），最终损失 0.220",
+            "selectionStable": True,
+            "hovered": True,
+            "focusStable": True,
+            "highlightElementMutations": 0,
+            "chartRootElementMutations": 0,
+            "svgAddedElements": 3,
+            "svgRemovedElements": 0,
         }, changed_training_metrics
         page.evaluate(
             """runID => {

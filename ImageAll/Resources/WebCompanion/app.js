@@ -25502,8 +25502,26 @@ function createTrainingChartElement(name, attributes = {}) {
   return element;
 }
 
+function syncTrainingChartElement(container, key, name, attributes = {}) {
+  let element = container.querySelector(
+    `:scope > [data-training-chart-part="${CSS.escape(key)}"]`
+  );
+  if (element && element.localName !== name) {
+    element.remove();
+    element = null;
+  }
+  if (!element) {
+    element = createTrainingChartElement(name);
+    element.dataset.trainingChartPart = key;
+  }
+  for (const [attribute, value] of Object.entries(attributes)) {
+    const text = String(value);
+    if (element.getAttribute(attribute) !== text) element.setAttribute(attribute, text);
+  }
+  return element;
+}
+
 function renderTrainingLossChart(points, bestMetric, latestMetric) {
-  clearElement(elements.trainingLossChart);
   const width = 720;
   const height = 230;
   const margin = { top: 18, right: 22, bottom: 42, left: 58 };
@@ -25525,31 +25543,33 @@ function renderTrainingLossChart(points, bestMetric, latestMetric) {
   const y = (loss) => margin.top
     + ((domainMaximum - loss) / domainRange) * plotHeight;
 
-  const svg = createTrainingChartElement("svg", {
+  const svg = syncTrainingChartElement(elements.trainingLossChart, "svg", "svg", {
     viewBox: `0 0 ${width} ${height}`,
     preserveAspectRatio: "xMidYMid meet",
     "aria-hidden": "true",
   });
+  const chartParts = [];
   const yTicks = 5;
   for (let index = 0; index < yTicks; index += 1) {
     const ratio = index / (yTicks - 1);
     const loss = domainMaximum - ratio * domainRange;
     const position = margin.top + ratio * plotHeight;
-    svg.append(createTrainingChartElement("line", {
+    chartParts.push(syncTrainingChartElement(svg, `y-grid-${index}`, "line", {
       class: "training-chart-grid-line",
       x1: margin.left,
       x2: width - margin.right,
       y1: position,
       y2: position,
     }));
-    const label = createTrainingChartElement("text", {
+    const label = syncTrainingChartElement(svg, `y-label-${index}`, "text", {
       class: "training-chart-axis-value",
       x: margin.left - 9,
       y: position + 3,
       "text-anchor": "end",
     });
-    label.textContent = formatTrainingLoss(loss);
-    svg.append(label);
+    const labelText = formatTrainingLoss(loss);
+    if (label.textContent !== labelText) label.textContent = labelText;
+    chartParts.push(label);
   }
 
   const desiredXTicks = Math.min(6, points.length);
@@ -25560,37 +25580,38 @@ function renderTrainingLossChart(points, bestMetric, latestMetric) {
   }
   for (const epoch of [...tickEpochs].sort((left, right) => left - right)) {
     const position = x(epoch);
-    svg.append(createTrainingChartElement("line", {
+    chartParts.push(syncTrainingChartElement(svg, `x-tick-${epoch}`, "line", {
       class: "training-chart-axis-tick",
       x1: position,
       x2: position,
       y1: height - margin.bottom,
       y2: height - margin.bottom + 5,
     }));
-    const label = createTrainingChartElement("text", {
+    const label = syncTrainingChartElement(svg, `x-label-${epoch}`, "text", {
       class: "training-chart-axis-value",
       x: position,
       y: height - margin.bottom + 18,
       "text-anchor": "middle",
     });
-    label.textContent = String(epoch);
-    svg.append(label);
+    const labelText = String(epoch);
+    if (label.textContent !== labelText) label.textContent = labelText;
+    chartParts.push(label);
   }
 
-  svg.append(createTrainingChartElement("line", {
+  chartParts.push(syncTrainingChartElement(svg, "best-rule", "line", {
     class: "training-chart-best-rule",
     x1: margin.left,
     x2: width - margin.right,
     y1: y(bestMetric.loss),
     y2: y(bestMetric.loss),
   }));
-  svg.append(createTrainingChartElement("polyline", {
+  chartParts.push(syncTrainingChartElement(svg, "loss-line", "polyline", {
     class: "training-chart-loss-line",
     points: points.map((point) => `${x(point.epoch)},${y(point.loss)}`).join(" "),
   }));
   for (const point of points) {
     const best = point.epoch === bestMetric.epoch && point.loss === bestMetric.loss;
-    const mark = createTrainingChartElement("circle", {
+    const mark = syncTrainingChartElement(svg, `point-${point.epoch}`, "circle", {
       class: best ? "training-chart-point best" : "training-chart-point",
       cx: x(point.epoch),
       cy: y(point.loss),
@@ -25598,30 +25619,33 @@ function renderTrainingLossChart(points, bestMetric, latestMetric) {
       "data-metric-epoch": point.epoch,
       "data-best": String(best),
     });
-    const title = createTrainingChartElement("title");
-    title.textContent = `第 ${point.epoch} 轮 · ${formatTrainingLoss(point.loss)}${best ? " · 最佳" : ""}`;
-    mark.append(title);
-    svg.append(mark);
+    let title = mark.querySelector(":scope > title");
+    if (!title) title = createTrainingChartElement("title");
+    const titleText = `第 ${point.epoch} 轮 · ${formatTrainingLoss(point.loss)}${best ? " · 最佳" : ""}`;
+    if (title.textContent !== titleText) title.textContent = titleText;
+    reconcileStableChildren(mark, [title]);
+    chartParts.push(mark);
   }
 
-  const xAxisTitle = createTrainingChartElement("text", {
+  const xAxisTitle = syncTrainingChartElement(svg, "x-axis-title", "text", {
     class: "training-chart-axis-title",
     x: margin.left + plotWidth / 2,
     y: height - 4,
     "text-anchor": "middle",
   });
-  xAxisTitle.textContent = "训练轮次";
-  svg.append(xAxisTitle);
-  const yAxisTitle = createTrainingChartElement("text", {
+  if (xAxisTitle.textContent !== "训练轮次") xAxisTitle.textContent = "训练轮次";
+  chartParts.push(xAxisTitle);
+  const yAxisTitle = syncTrainingChartElement(svg, "y-axis-title", "text", {
     class: "training-chart-axis-title",
     x: 13,
     y: margin.top + plotHeight / 2,
     transform: `rotate(-90 13 ${margin.top + plotHeight / 2})`,
     "text-anchor": "middle",
   });
-  yAxisTitle.textContent = "评估损失";
-  svg.append(yAxisTitle);
-  elements.trainingLossChart.append(svg);
+  if (yAxisTitle.textContent !== "评估损失") yAxisTitle.textContent = "评估损失";
+  chartParts.push(yAxisTitle);
+  reconcileStableChildren(svg, chartParts);
+  reconcileStableChildren(elements.trainingLossChart, [svg]);
   elements.trainingLossChart.setAttribute(
     "aria-label",
     `训练损失曲线：${points.length} 轮，最佳损失 ${formatTrainingLoss(bestMetric.loss)}`
@@ -25633,16 +25657,22 @@ function renderTrainingMetrics(value) {
   const fingerprint = value || "";
   if (elements.trainingLossChart.dataset.trainingMetricsFingerprint === fingerprint) return;
   elements.trainingLossChart.dataset.trainingMetricsFingerprint = fingerprint;
-  elements.trainingMetricsSummary.textContent = trainingMetricsSummary(value);
-  elements.trainingMetricsJSON.textContent = prettyTrainingJSON(value, "没有过程指标");
+  const summary = trainingMetricsSummary(value);
+  if (elements.trainingMetricsSummary.textContent !== summary) {
+    elements.trainingMetricsSummary.textContent = summary;
+  }
+  const metricsJSON = prettyTrainingJSON(value, "没有过程指标");
+  if (elements.trainingMetricsJSON.textContent !== metricsJSON) {
+    elements.trainingMetricsJSON.textContent = metricsJSON;
+  }
   const points = trainingMetricCurve(value);
   const hasCurve = points.length > 0;
   elements.trainingMetricHighlights.classList.toggle("hidden", !hasCurve);
   elements.trainingLossChart.classList.toggle("hidden", !hasCurve);
   elements.trainingMetricEmpty.classList.toggle("hidden", hasCurve);
-  clearElement(elements.trainingMetricHighlights);
-  clearElement(elements.trainingLossChart);
   if (!hasCurve) {
+    reconcileStableChildren(elements.trainingMetricHighlights, []);
+    reconcileStableChildren(elements.trainingLossChart, []);
     elements.trainingLossChart.setAttribute("aria-label", "训练损失曲线：没有可绘制的数据");
     return;
   }
@@ -25653,26 +25683,51 @@ function renderTrainingMetrics(value) {
   ));
   const latestMetric = points.at(-1);
   const highlights = [
-    { icon: "↻", title: "训练轮次", value: String(points.length) },
-    { icon: "↓", title: "最佳损失", value: formatTrainingLoss(bestMetric.loss) },
-    { icon: "⚑", title: "最终损失", value: formatTrainingLoss(latestMetric.loss) },
+    { key: "epochs", icon: "↻", title: "训练轮次", value: String(points.length) },
+    { key: "best", icon: "↓", title: "最佳损失", value: formatTrainingLoss(bestMetric.loss) },
+    { key: "latest", icon: "⚑", title: "最终损失", value: formatTrainingLoss(latestMetric.loss) },
   ];
+  const existingHighlights = new Map(
+    [...elements.trainingMetricHighlights.querySelectorAll(
+      ":scope > [data-training-metric-key]"
+    )].map((card) => [card.dataset.trainingMetricKey, card])
+  );
+  const highlightCards = [];
   for (const metric of highlights) {
-    const card = document.createElement("div");
+    const card = existingHighlights.get(metric.key) || document.createElement("div");
+    existingHighlights.delete(metric.key);
+    card.dataset.trainingMetricKey = metric.key;
     card.className = "training-metric-highlight";
-    const icon = document.createElement("span");
+    let icon = card.querySelector(':scope > [data-training-metric-part="icon"]');
+    if (!icon) {
+      icon = document.createElement("span");
+      icon.dataset.trainingMetricPart = "icon";
+    }
     icon.className = "training-metric-highlight-icon";
     icon.setAttribute("aria-hidden", "true");
-    icon.textContent = metric.icon;
-    const copy = document.createElement("span");
-    const title = document.createElement("small");
-    title.textContent = metric.title;
-    const valueText = document.createElement("strong");
-    valueText.textContent = metric.value;
-    copy.append(title, valueText);
-    card.append(icon, copy);
-    elements.trainingMetricHighlights.append(card);
+    if (icon.textContent !== metric.icon) icon.textContent = metric.icon;
+    let copy = card.querySelector(':scope > [data-training-metric-part="copy"]');
+    if (!copy) {
+      copy = document.createElement("span");
+      copy.dataset.trainingMetricPart = "copy";
+    }
+    let title = copy.querySelector(':scope > [data-training-metric-copy-part="title"]');
+    if (!title) {
+      title = document.createElement("small");
+      title.dataset.trainingMetricCopyPart = "title";
+    }
+    if (title.textContent !== metric.title) title.textContent = metric.title;
+    let valueText = copy.querySelector(':scope > [data-training-metric-copy-part="value"]');
+    if (!valueText) {
+      valueText = document.createElement("strong");
+      valueText.dataset.trainingMetricCopyPart = "value";
+    }
+    if (valueText.textContent !== metric.value) valueText.textContent = metric.value;
+    reconcileStableChildren(copy, [title, valueText]);
+    reconcileStableChildren(card, [icon, copy]);
+    highlightCards.push(card);
   }
+  reconcileStableChildren(elements.trainingMetricHighlights, highlightCards);
   renderTrainingLossChart(points, bestMetric, latestMetric);
 }
 

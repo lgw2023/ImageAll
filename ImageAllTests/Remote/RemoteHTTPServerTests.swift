@@ -4147,6 +4147,27 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function reconcileTrainingSetupSummary(rows)"))
         XCTAssertTrue(script.contains("data-training-summary-key"))
         XCTAssertTrue(script.contains("trainingMetricsFingerprint"))
+        let trainingMetricsSyncStart = try XCTUnwrap(
+            script.range(of: "function syncTrainingChartElement(")
+        )
+        let trainingMetricsSyncEnd = try XCTUnwrap(
+            script.range(
+                of: "function reconcileTrainingFacts(",
+                range: trainingMetricsSyncStart.upperBound..<script.endIndex
+            )
+        )
+        let trainingMetricsSyncScript = String(
+            script[trainingMetricsSyncStart.lowerBound..<trainingMetricsSyncEnd.lowerBound]
+        )
+        XCTAssertTrue(trainingMetricsSyncScript.contains("data-training-chart-part"))
+        XCTAssertTrue(trainingMetricsSyncScript.contains("data-training-metric-key"))
+        XCTAssertTrue(trainingMetricsSyncScript.contains("data-training-metric-copy-part"))
+        XCTAssertFalse(
+            trainingMetricsSyncScript.contains("clearElement(elements.trainingMetricHighlights)")
+        )
+        XCTAssertFalse(
+            trainingMetricsSyncScript.contains("clearElement(elements.trainingLossChart)")
+        )
         XCTAssertTrue(script.contains("function reconcileSlimmingInspectorFields(target, fields)"))
         XCTAssertTrue(script.contains("data-slimming-inspector-field-key"))
         XCTAssertTrue(script.contains("function syncSlimmingClusterReviewButton("))
