@@ -11,6 +11,7 @@ SOURCE_ID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 TAG_ID = "88888888-8888-8888-8888-888888888888"
 ASSET_IDS = [f"71000000-0000-0000-0000-{index:012d}" for index in range(1, 89)]
 TAG_DECISIONS = {asset_id: "unknown" for asset_id in ASSET_IDS}
+BASE_ACCEPTED_TAG_COUNTS = {ASSET_IDS[2]: 1, ASSET_IDS[55]: 1}
 FAVORITE_VALUES = {asset_id: asset_id == ASSET_IDS[2] for asset_id in ASSET_IDS}
 PIXEL = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
@@ -48,7 +49,8 @@ def asset_item(asset_id):
         "mediaType": "public.jpeg",
         "availability": "available",
         "contentRevision": index,
-        "acceptedTagCount": 1 if decision == "accepted" else 0,
+        "acceptedTagCount": BASE_ACCEPTED_TAG_COUNTS.get(asset_id, 0)
+        + (1 if decision == "accepted" else 0),
         "rejectedTagCount": 1 if decision == "rejected" else 0,
         "favorite": favorite_state(asset_id),
     }
@@ -489,17 +491,138 @@ def main():
             f'#selectionInspectorTags [data-tag-chip-action][data-tag-id="{TAG_ID}"]'
         )
         page.evaluate(
-            "() => { globalThis.__gallerySyncAssetCardCalls = 0; "
-            "globalThis.__gallerySyncAssetCardStacks = []; }"
+            f"""
+            () => {{
+              globalThis.__gallerySyncAssetCardCalls = 0;
+              globalThis.__gallerySyncAssetCardStacks = [];
+              const originalFetch = window.fetch.bind(window);
+              window.__assetTagRefreshRelease = null;
+              window.fetch = (input, init) => {{
+                const url = new URL(typeof input === "string" ? input : input.url, location.href);
+                if (url.pathname !== "/v1/assets") return originalFetch(input, init);
+                return new Promise((resolve, reject) => {{
+                  window.__assetTagRefreshRelease = () => {{
+                    window.fetch = originalFetch;
+                    originalFetch(input, init).then(resolve, reject);
+                  }};
+                }});
+              }};
+              const card = document.querySelector('[data-asset-id="{ASSET_IDS[55]}"]');
+              const main = card.querySelector(":scope > .asset-card-main");
+              const meta = card.querySelector(":scope > .asset-card-meta");
+              const accepted = meta.querySelector('[data-asset-tag-count="accepted"]');
+              const acceptedSymbol = accepted.querySelector(
+                '[data-asset-tag-count-part="symbol"]'
+              );
+              const acceptedValue = accepted.querySelector(
+                '[data-asset-tag-count-part="value"]'
+              );
+              const action = document.querySelector(
+                '#selectionInspectorTags [data-tag-chip-action][data-tag-id="{TAG_ID}"]'
+              );
+              const observer = new MutationObserver((records) => {{
+                for (const record of records) {{
+                  window.__assetTagContinuityFrame.added += [...record.addedNodes]
+                    .filter((node) => node.nodeType === Node.ELEMENT_NODE).length;
+                  window.__assetTagContinuityFrame.removed += [...record.removedNodes]
+                    .filter((node) => node.nodeType === Node.ELEMENT_NODE).length;
+                }}
+              }});
+              window.__assetTagContinuityFrame = {{
+                card,
+                main,
+                image: main.querySelector(":scope > img"),
+                meta,
+                accepted,
+                acceptedSymbol,
+                acceptedSymbolText: acceptedSymbol.firstChild,
+                acceptedValue,
+                acceptedValueText: acceptedValue.firstChild,
+                favorite: card.querySelector(":scope > .asset-card-favorite"),
+                action,
+                scrollTop: document.querySelector("#libraryScroll").scrollTop,
+                added: 0,
+                removed: 0,
+                observer,
+              }};
+              observer.observe(meta, {{ childList: true, subtree: true }});
+            }}
+            """
         )
-        page.locator(
+        tag_chip = page.locator(
             f'#selectionInspectorTags [data-tag-chip-action][data-tag-id="{TAG_ID}"]'
-        ).click()
+        )
+        tag_chip.click()
+        page.wait_for_function("() => Boolean(window.__assetTagRefreshRelease)")
+        continuity_card = page.locator(f'[data-asset-id="{ASSET_IDS[55]}"]')
+        continuity_card.scroll_into_view_if_needed()
+        continuity_badge = continuity_card.locator(
+            '[data-asset-tag-count="accepted"]'
+        )
+        badge_bounds = continuity_badge.bounding_box()
+        assert badge_bounds is not None
+        page.mouse.move(
+            badge_bounds["x"] + badge_bounds["width"] / 2,
+            badge_bounds["y"] + badge_bounds["height"] / 2,
+        )
+        page.evaluate(
+            """() => {
+              const frame = window.__assetTagContinuityFrame;
+              frame.scrollTop = document.querySelector("#libraryScroll").scrollTop;
+              frame.action.focus({ preventScroll: true });
+              const range = document.createRange();
+              range.setStart(frame.acceptedSymbolText, 0);
+              range.setEnd(frame.acceptedSymbolText, frame.acceptedSymbolText.data.length);
+              const selection = getSelection();
+              selection.removeAllRanges();
+              selection.addRange(range);
+              window.__assetTagRefreshRelease();
+            }"""
+        )
         page.wait_for_function(
             "ids => ids.every(id => state.assets.find(asset => asset.id === id)"
-            "?.acceptedTagCount === 1)",
+            "?.acceptedTagCount === 2)",
             arg=[ASSET_IDS[2], ASSET_IDS[55]],
         )
+        asset_tag_continuity = page.evaluate(
+            """() => {
+              const frame = window.__assetTagContinuityFrame;
+              const card = document.querySelector(
+                `[data-asset-id="${frame.card.dataset.assetId}"]`
+              );
+              const meta = card.querySelector(":scope > .asset-card-meta");
+              const accepted = meta.querySelector('[data-asset-tag-count="accepted"]');
+              const selection = getSelection();
+              frame.observer.disconnect();
+              return {
+                card: frame.card === card,
+                main: frame.main === card.querySelector(":scope > .asset-card-main"),
+                image: frame.image === frame.main.querySelector(":scope > img"),
+                meta: frame.meta === meta,
+                accepted: frame.accepted === accepted,
+                acceptedSymbol: frame.acceptedSymbol === accepted.querySelector(
+                  '[data-asset-tag-count-part="symbol"]'
+                ),
+                acceptedSymbolText: frame.acceptedSymbolText === frame.acceptedSymbol.firstChild,
+                acceptedValue: frame.acceptedValue === accepted.querySelector(
+                  '[data-asset-tag-count-part="value"]'
+                ),
+                acceptedValueText: frame.acceptedValueText === frame.acceptedValue.firstChild,
+                favorite: frame.favorite === card.querySelector(
+                  ":scope > .asset-card-favorite"
+                ),
+                count: accepted.textContent === "✓2",
+                accessibleCount: accepted.getAttribute("aria-label") === "已确认 2 个标签",
+                selected: selection.anchorNode === frame.acceptedSymbolText
+                  && selection.toString() === "✓",
+                hovered: card.matches(":hover"),
+                focused: document.activeElement === frame.action,
+                scroll: document.querySelector("#libraryScroll").scrollTop === frame.scrollTop,
+                zeroElementMutations: frame.added === 0 && frame.removed === 0,
+              };
+            }"""
+        )
+        assert all(asset_tag_continuity.values()), asset_tag_continuity
         tag_sync = page.evaluate(
             "() => ({ count: globalThis.__gallerySyncAssetCardCalls, "
             "stacks: globalThis.__gallerySyncAssetCardStacks })"

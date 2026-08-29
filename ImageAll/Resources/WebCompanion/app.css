@@ -2916,6 +2916,9 @@ html.split-resizing * {
   height: 19px;
   padding: 2px 6px;
   border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   background: rgba(0, 0, 0, 0.66);
   color: white;
   font-size: 10px;

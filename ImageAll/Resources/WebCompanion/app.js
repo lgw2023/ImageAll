@@ -14824,6 +14824,51 @@ function syncAssetCardSelectionMark(button) {
   mark.textContent = state.selectedAssetIDs.has(button.dataset.assetId) ? "✓" : "";
 }
 
+function syncAssetTagCountText(element, text) {
+  if (
+    element.childNodes.length === 1
+    && element.firstChild?.nodeType === Node.TEXT_NODE
+  ) {
+    if (element.firstChild.data !== text) element.firstChild.data = text;
+  } else if (!element.childNodes.length) {
+    element.append(document.createTextNode(text));
+  } else if (element.textContent !== text) {
+    element.textContent = text;
+  }
+}
+
+function syncAssetTagCountBadge(meta, decision, count, symbol) {
+  let badge = meta.querySelector(
+    `:scope > [data-asset-tag-count="${decision}"]`
+  );
+  if (!count) {
+    badge?.remove();
+    return null;
+  }
+  if (!badge) {
+    badge = document.createElement("span");
+    badge.className = "asset-tag-count";
+    badge.dataset.assetTagCount = decision;
+  }
+  const symbolPart = badge.querySelector(
+    ':scope > [data-asset-tag-count-part="symbol"]'
+  ) || document.createElement("span");
+  symbolPart.dataset.assetTagCountPart = "symbol";
+  symbolPart.setAttribute("aria-hidden", "true");
+  syncAssetTagCountText(symbolPart, symbol);
+  const valuePart = badge.querySelector(
+    ':scope > [data-asset-tag-count-part="value"]'
+  ) || document.createElement("span");
+  valuePart.dataset.assetTagCountPart = "value";
+  syncAssetTagCountText(valuePart, String(count));
+  badge.setAttribute(
+    "aria-label",
+    `${decision === "accepted" ? "已确认" : "已拒绝"} ${count} 个标签`
+  );
+  reconcileStableChildren(badge, [symbolPart, valuePart]);
+  return badge;
+}
+
 function syncAssetCardMeta(button, asset) {
   let meta = button.querySelector(".asset-card-meta");
   if (!asset.acceptedTagCount && !asset.rejectedTagCount) {
@@ -14835,19 +14880,11 @@ function syncAssetCardMeta(button, asset) {
     meta.className = "asset-card-meta";
     button.append(meta);
   }
-  clearElement(meta);
-  if (asset.acceptedTagCount) {
-    const accepted = document.createElement("span");
-    accepted.className = "asset-tag-count";
-    accepted.textContent = `✓ ${asset.acceptedTagCount}`;
-    meta.append(accepted);
-  }
-  if (asset.rejectedTagCount) {
-    const rejected = document.createElement("span");
-    rejected.className = "asset-tag-count";
-    rejected.textContent = `× ${asset.rejectedTagCount}`;
-    meta.append(rejected);
-  }
+  const wanted = [
+    syncAssetTagCountBadge(meta, "accepted", asset.acceptedTagCount, "✓"),
+    syncAssetTagCountBadge(meta, "rejected", asset.rejectedTagCount, "×"),
+  ].filter(Boolean);
+  reconcileStableChildren(meta, wanted);
 }
 
 function syncAssetCardMediaBadge(button, asset) {
@@ -14993,7 +15030,7 @@ function syncAssetCard(card, asset) {
         ? `时长 ${formatDuration(asset.durationMs)}，`
         : "")
       + `${asset.favorite?.isFavorite ? "已加入红心，" : ""}`
-      + `已确认 ${asset.acceptedTagCount} 个标签`
+      + `标签：已确认 ${asset.acceptedTagCount}，已拒绝 ${asset.rejectedTagCount}`
   );
   mainButton.setAttribute(
     "aria-pressed",

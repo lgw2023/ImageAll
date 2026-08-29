@@ -4025,6 +4025,29 @@ final class RemoteHTTPServerTests: XCTestCase {
         ]
         XCTAssertFalse(reviewGroupOrganizerScript.contains("grid.replaceChildren"))
         XCTAssertFalse(reviewGroupOrganizerScript.contains("group.replaceChildren"))
+        XCTAssertTrue(script.contains("function syncAssetTagCountText("))
+        XCTAssertTrue(script.contains("function syncAssetTagCountBadge("))
+        XCTAssertTrue(script.contains("data-asset-tag-count-part=\"symbol\""))
+        XCTAssertTrue(script.contains("data-asset-tag-count-part=\"value\""))
+        XCTAssertTrue(
+            script.contains(
+                "标签：已确认 ${asset.acceptedTagCount}，已拒绝 ${asset.rejectedTagCount}"
+            )
+        )
+        let assetMetaStart = try XCTUnwrap(
+            script.range(of: "function syncAssetCardMeta(")
+        )
+        let assetMetaEnd = try XCTUnwrap(
+            script.range(
+                of: "function syncAssetCardMediaBadge(",
+                range: assetMetaStart.upperBound..<script.endIndex
+            )
+        )
+        let assetMetaScript = script[assetMetaStart.lowerBound..<assetMetaEnd.lowerBound]
+        XCTAssertFalse(assetMetaScript.contains("clearElement"))
+        XCTAssertFalse(assetMetaScript.contains("replaceChildren"))
+        XCTAssertTrue(stylesheet.contains(".asset-tag-count {"))
+        XCTAssertTrue(stylesheet.contains("display: inline-flex;"))
         XCTAssertTrue(script.contains("function reviewCardFingerprint("))
         XCTAssertTrue(script.contains("function reviewPageStructureMatches("))
         XCTAssertTrue(script.contains("function renderReviewCardsForKeys("))
