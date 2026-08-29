@@ -27660,25 +27660,31 @@ function focusSlimmingJobStatusAction(jobID, preferredAction = null) {
   });
 }
 
-function appendSlimmingInspectorField(label, value, className = "") {
-  for (const target of [
-    elements.slimmingInspectorContent,
-    elements.inspectorSlimmingWorkspaceContent,
-  ]) {
-    const wrapper = document.createElement("div");
-    wrapper.className = `slimming-inspector-field${className ? ` ${className}` : ""}`;
-    const term = document.createElement("dt");
-    term.textContent = label;
-    const detail = document.createElement("dd");
-    detail.textContent = value || "—";
-    wrapper.append(term, detail);
-    target.append(wrapper);
-  }
+function reconcileSlimmingInspectorFields(target, fields) {
+  const existing = new Map(
+    [...target.querySelectorAll(":scope > [data-slimming-inspector-field-key]")]
+      .map((wrapper) => [wrapper.dataset.slimmingInspectorFieldKey, wrapper])
+  );
+  const wanted = fields.map((field) => {
+    const wrapper = existing.get(field.key) || document.createElement("div");
+    existing.delete(field.key);
+    if (!wrapper.hasAttribute("data-slimming-inspector-field-key")) {
+      wrapper.append(document.createElement("dt"), document.createElement("dd"));
+    }
+    wrapper.dataset.slimmingInspectorFieldKey = field.key;
+    const className = `slimming-inspector-field${field.className ? ` ${field.className}` : ""}`;
+    if (wrapper.className !== className) wrapper.className = className;
+    const term = wrapper.querySelector(":scope > dt");
+    const detail = wrapper.querySelector(":scope > dd");
+    if (term.textContent !== field.label) term.textContent = field.label;
+    const value = field.value || "—";
+    if (detail.textContent !== value) detail.textContent = value;
+    return wrapper;
+  });
+  reconcileStableChildren(target, wanted);
 }
 
 function renderSlimmingInspector() {
-  clearElement(elements.slimmingInspectorContent);
-  clearElement(elements.inspectorSlimmingWorkspaceContent);
   const job = selectedSlimmingJob();
   const cluster = state.slimming.clusters.find(
     (item) => item.id === state.slimming.selectedClusterID
@@ -27694,50 +27700,75 @@ function renderSlimmingInspector() {
     ? "按代表缩略图查找视觉重复或相似的视频；分析和清理均由这台 Mac 执行。"
     : "查找相同与相似照片；分析和清理均由这台 Mac 执行。";
 
-  appendSlimmingInspectorField("分析记录", `${totalSlimmingJobCount()} 条`);
-  appendSlimmingInspectorField("当前任务", job ? slimmingModeText(job.mode) : "未选择");
-  appendSlimmingInspectorField("状态", job ? slimmingJobStateText(job) : "—");
-  appendSlimmingInspectorField(
-    "尝试次数",
-    job ? `${job.attempts}/${job.maxAttempts}` : "—"
-  );
-  appendSlimmingInspectorField(
-    "任务来源",
-    job?.sourceNames?.length ? job.sourceNames.join("、") : "任务来源不可用",
-    "technical"
-  );
-  appendSlimmingInspectorField(
-    "分析范围",
-    job ? `${job.memberCount} ${job.mediaKind === "video" ? "个" : "张"}` : "—"
-  );
+  const fields = [
+    { key: "jobs", label: "分析记录", value: `${totalSlimmingJobCount()} 条` },
+    {
+      key: "job",
+      label: "当前任务",
+      value: job ? slimmingModeText(job.mode) : "未选择",
+    },
+    { key: "state", label: "状态", value: job ? slimmingJobStateText(job) : "—" },
+    {
+      key: "attempts",
+      label: "尝试次数",
+      value: job ? `${job.attempts}/${job.maxAttempts}` : "—",
+    },
+    {
+      key: "jobSources",
+      label: "任务来源",
+      value: job?.sourceNames?.length ? job.sourceNames.join("、") : "任务来源不可用",
+      className: "technical",
+    },
+    {
+      key: "scope",
+      label: "分析范围",
+      value: job ? `${job.memberCount} ${job.mediaKind === "video" ? "个" : "张"}` : "—",
+    },
+  ];
   if (Number(job?.seedCount || 0) > 0) {
-    appendSlimmingInspectorField(
-      "种子",
-      `${job.seedCount} ${job.mediaKind === "video" ? "个" : "张"}`
-    );
+    fields.push({
+      key: "seeds",
+      label: "种子",
+      value: `${job.seedCount} ${job.mediaKind === "video" ? "个" : "张"}`,
+    });
   }
-  appendSlimmingInspectorField("已分析", `${state.slimming.analyzedAssetCount} 项`);
-  appendSlimmingInspectorField("待分析", `${state.slimming.pendingAnalysisCount} 项`);
-  appendSlimmingInspectorField(
-    "回收站",
-    `${Number(state.slimming.recycle.totalCount || state.slimming.recycle.entries.length)} 项`
+  fields.push(
+    { key: "analyzed", label: "已分析", value: `${state.slimming.analyzedAssetCount} 项` },
+    { key: "pending", label: "待分析", value: `${state.slimming.pendingAnalysisCount} 项` },
+    {
+      key: "recycle",
+      label: "回收站",
+      value: `${Number(
+        state.slimming.recycle.totalCount || state.slimming.recycle.entries.length
+      )} 项`,
+    },
+    { key: "policy", label: "策略版本", value: state.slimming.policyVersion || "—" }
   );
-  appendSlimmingInspectorField("策略版本", state.slimming.policyVersion || "—");
 
   if (cluster) {
-    appendSlimmingInspectorField("类型", clusterCopy.title);
-    appendSlimmingInspectorField(
-      "成员",
-      clusterCopy.historicalDetail || `${cluster.memberCount} 项`
+    fields.push(
+      { key: "clusterType", label: "类型", value: clusterCopy.title },
+      {
+        key: "members",
+        label: "成员",
+        value: clusterCopy.historicalDetail || `${cluster.memberCount} 项`,
+      },
+      { key: "selected", label: "已选", value: `${state.slimming.selectedMemberIDs.size} 项` },
+      { key: "sources", label: "来源", value: sourceNames.join("、") || "正在读取…" },
+      { key: "result", label: "结果", value: clusterCopy.detail, className: "technical" },
+      {
+        key: "technical",
+        label: "技术详情",
+        value: cluster.technicalSummary || "技术摘要不可用",
+        className: "technical",
+      }
     );
-    appendSlimmingInspectorField("已选", `${state.slimming.selectedMemberIDs.size} 项`);
-    appendSlimmingInspectorField("来源", sourceNames.join("、") || "正在读取…");
-    appendSlimmingInspectorField("结果", clusterCopy.detail, "technical");
-    appendSlimmingInspectorField(
-      "技术详情",
-      cluster.technicalSummary || "技术摘要不可用",
-      "technical"
-    );
+  }
+  for (const target of [
+    elements.slimmingInspectorContent,
+    elements.inspectorSlimmingWorkspaceContent,
+  ]) {
+    reconcileSlimmingInspectorFields(target, fields);
   }
   const pendingCount = Number(state.slimming.pendingAnalysisCount || 0);
   elements.inspectorSlimmingWorkspacePending.classList.toggle("hidden", pendingCount === 0);

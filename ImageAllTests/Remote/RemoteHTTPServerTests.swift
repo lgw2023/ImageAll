@@ -4023,6 +4023,8 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function reconcileTrainingSetupSummary(rows)"))
         XCTAssertTrue(script.contains("data-training-summary-key"))
         XCTAssertTrue(script.contains("trainingMetricsFingerprint"))
+        XCTAssertTrue(script.contains("function reconcileSlimmingInspectorFields(target, fields)"))
+        XCTAssertTrue(script.contains("data-slimming-inspector-field-key"))
         XCTAssertTrue(script.contains("function closeCompactToolbarMenu({ restoreFocus = true, checkpoint = true } = {})"))
         XCTAssertTrue(script.contains("function syncCompactToolbarMenu()"))
         XCTAssertTrue(script.contains("function fullToolbarRequiredWidth()"))

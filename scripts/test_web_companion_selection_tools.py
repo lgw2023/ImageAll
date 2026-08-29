@@ -2426,6 +2426,114 @@ def main(*, inspector_actions_only=False):
         assert "3 张" in slimming_workspace_inspector.inner_text()
         assert "2 张" in slimming_workspace_inspector.inner_text()
         assert page.locator("#slimmingInspector").is_hidden()
+        stable_slimming_inspector = page.evaluate(
+            """() => {
+              const targets = {
+                compact: document.querySelector("#slimmingInspectorContent"),
+                integrated: document.querySelector(
+                  "#inspectorSlimmingWorkspaceContent"
+                ),
+              };
+              const job = targets.integrated.querySelector(
+                '[data-slimming-inspector-field-key="job"] dd'
+              );
+              const selection = getSelection();
+              const range = document.createRange();
+              range.selectNodeContents(job);
+              selection.removeAllRanges();
+              selection.addRange(range);
+              const frame = {
+                children: Object.fromEntries(
+                  Object.entries(targets).map(([key, target]) => [
+                    key,
+                    [...target.children],
+                  ])
+                ),
+                jobs: Object.fromEntries(
+                  Object.entries(targets).map(([key, target]) => [
+                    key,
+                    target.querySelector(
+                      '[data-slimming-inspector-field-key="job"] dd'
+                    ),
+                  ])
+                ),
+                selectedFields: Object.fromEntries(
+                  Object.entries(targets).map(([key, target]) => [
+                    key,
+                    target.querySelector(
+                      '[data-slimming-inspector-field-key="selected"]'
+                    ),
+                  ])
+                ),
+                selectedText: selection.toString(),
+                mutations: Object.fromEntries(
+                  Object.keys(targets).map((key) => [key, 0])
+                ),
+                observers: [],
+                selectedMemberIDs: [...state.slimming.selectedMemberIDs],
+              };
+              for (const [key, target] of Object.entries(targets)) {
+                const observer = new MutationObserver((records) => {
+                  frame.mutations[key] += records.filter(
+                    (record) => record.type === "childList"
+                  ).length;
+                });
+                observer.observe(target, { childList: true, subtree: true });
+                frame.observers.push(observer);
+              }
+              state.online = false;
+              renderSlimmingInspector();
+              state.online = true;
+              renderSlimmingInspector();
+              frame.observers.forEach((observer) => observer.disconnect());
+              const stable = Object.fromEntries(
+                Object.entries(targets).map(([key, target]) => {
+                  const children = [...target.children];
+                  return [
+                    key,
+                    children.length === frame.children[key].length
+                      && children.every(
+                        (child, index) => child === frame.children[key][index]
+                      )
+                      && target.querySelector(
+                        '[data-slimming-inspector-field-key="job"] dd'
+                      ) === frame.jobs[key],
+                  ];
+                })
+              );
+              state.slimming.selectedMemberIDs = new Set([
+                state.slimming.members[0]?.id,
+              ].filter(Boolean));
+              renderSlimmingInspector();
+              const selectedUpdate = Object.fromEntries(
+                Object.entries(targets).map(([key, target]) => [
+                  key,
+                  target.querySelector(
+                    '[data-slimming-inspector-field-key="selected"]'
+                  ) === frame.selectedFields[key]
+                    && frame.selectedFields[key].querySelector("dd").textContent === "1 项",
+                ])
+              );
+              state.slimming.selectedMemberIDs = new Set(frame.selectedMemberIDs);
+              renderSlimmingInspector();
+              return {
+                ...stable,
+                compactSelectionUpdate: selectedUpdate.compact,
+                integratedSelectionUpdate: selectedUpdate.integrated,
+                selection: selection.toString() === frame.selectedText
+                  && selection.toString() === "从所选项目查找",
+                mutations: frame.mutations,
+              };
+            }"""
+        )
+        assert stable_slimming_inspector == {
+            "compact": True,
+            "integrated": True,
+            "compactSelectionUpdate": True,
+            "integratedSelectionUpdate": True,
+            "selection": True,
+            "mutations": {"compact": 0, "integrated": 0},
+        }, stable_slimming_inspector
         page.screenshot(path="/tmp/imageall-slimming-integrated.png", full_page=False)
         slimming_refresh_before = page.evaluate(
             """() => {
