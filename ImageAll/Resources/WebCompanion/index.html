@@ -10,8 +10,8 @@
   <meta name="apple-mobile-web-app-title" content="ImageAll">
   <title>ImageAll 网页版</title>
   <link rel="manifest" href="/manifest.webmanifest">
-    <link rel="stylesheet" href="/app.css?v=20260829-196">
-    <script src="/app.js?v=20260829-196" defer></script>
+    <link rel="stylesheet" href="/app.css?v=20260829-197">
+    <script src="/app.js?v=20260829-197" defer></script>
 </head>
 <body>
   <div id="bootView" class="centered-state">
@@ -367,11 +367,14 @@
           </div>
         </div>
         <div class="sidebar-section tag-navigation-section">
-          <div class="sidebar-section-heading">
+          <div id="tagSectionHeading" class="sidebar-section-heading">
             <h2>标签</h2>
             <div class="sidebar-heading-actions">
-              <button id="tagManagerButton" class="sidebar-add-button write-action" type="button"
-                aria-label="管理标签和分组" title="管理标签和分组">•••</button>
+              <button id="tagManagerButton" class="sidebar-add-button" type="button"
+                aria-label="标签操作" aria-expanded="false" aria-controls="tagActionsPopover"
+                aria-haspopup="menu" aria-keyshortcuts="Shift+F10 ContextMenu"
+                data-help-detail="像 Mac 标签分区一样，原位新建分组、添加常用标签、新建标签或进入完整管理。"
+                title="新建或管理标签和分组">•••</button>
               <button id="sidebarNewTagButton" class="sidebar-add-button write-action" type="button"
                 aria-label="新增标签" title="为所选照片新增标签">＋</button>
             </div>
@@ -650,6 +653,32 @@
             <span aria-hidden="true">⚙</span><span>打开来源管理…</span><span aria-hidden="true">›</span>
           </button>
           <p>网页只发起请求；系统授权与文件夹选择仍在 Mac 上完成。</p>
+        </section>
+
+        <section id="tagActionsPopover"
+          class="popover source-actions-popover tag-actions-popover hidden"
+          aria-label="标签操作" role="menu">
+          <header class="source-actions-popover-heading">
+            <span class="source-actions-popover-icon" aria-hidden="true">⌁</span>
+            <span>
+              <strong>标签操作</strong>
+              <small id="tagActionsSummary">与这台 Mac 共用标签</small>
+            </span>
+          </header>
+          <button id="tagActionsNewGroupButton" type="button" role="menuitem">
+            <span aria-hidden="true">＋</span><span>新建分组…</span>
+          </button>
+          <button id="tagActionsInstallPresetsButton" type="button" role="menuitem">
+            <span aria-hidden="true">◆</span><span>添加常用标签</span>
+          </button>
+          <button id="tagActionsNewTagButton" type="button" role="menuitem">
+            <span aria-hidden="true">＋</span><span>新建标签…</span>
+          </button>
+          <button id="tagActionsOpenManagerButton" class="source-actions-open-manager"
+            type="button" role="menuitem">
+            <span aria-hidden="true">⚙</span><span>管理标签和分组…</span><span aria-hidden="true">›</span>
+          </button>
+          <p>新标签会确认给当前选区；分组与常用标签可随时整理，不会自动分析照片。</p>
         </section>
 
         <section id="sortPopover" class="popover sort-popover hidden" role="menu"

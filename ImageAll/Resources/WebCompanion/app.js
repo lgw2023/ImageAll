@@ -269,7 +269,14 @@ const elements = {
   tagNavigationEmptyText: $("#tagNavigationEmptyText"),
   sidebarInstallPresetTagsButton: $("#sidebarInstallPresetTagsButton"),
   sidebarNewTagButton: $("#sidebarNewTagButton"),
+  tagSectionHeading: $("#tagSectionHeading"),
   tagManagerButton: $("#tagManagerButton"),
+  tagActionsPopover: $("#tagActionsPopover"),
+  tagActionsSummary: $("#tagActionsSummary"),
+  tagActionsNewGroupButton: $("#tagActionsNewGroupButton"),
+  tagActionsInstallPresetsButton: $("#tagActionsInstallPresetsButton"),
+  tagActionsNewTagButton: $("#tagActionsNewTagButton"),
+  tagActionsOpenManagerButton: $("#tagActionsOpenManagerButton"),
   hostVersion: $("#hostVersion"),
   mediaKindTabs: $("#mediaKindTabs"),
   libraryPane: $("#libraryPane"),
@@ -2723,6 +2730,9 @@ function mobileSidebarOverlayIsOpen() {
 function mountWorkspaceOverlayPortals() {
   if (elements.sourceActionsPopover.parentElement !== elements.workspace) {
     elements.workspace.append(elements.sourceActionsPopover);
+  }
+  if (elements.tagActionsPopover.parentElement !== elements.workspace) {
+    elements.workspace.append(elements.tagActionsPopover);
   }
 }
 
@@ -7430,6 +7440,7 @@ function syncWriteActionControls() {
     || state.storageMaintenance.submitting
     || storageMaintenanceHasActiveRequest();
   renderSourceActionsMenu();
+  renderTagActionsMenu();
   if (elements.sourceManagerDialog.open) renderSourceManagement();
   if (elements.storageDialog.open) renderStorageMaintenance();
   renderFavoriteControls();
@@ -8855,6 +8866,7 @@ function renderTagSelects() {
   renderPlaceholderTagEditor();
   renderActiveFilterBar();
   renderTagManager();
+  renderTagActionsMenu();
   renderCommandItems();
 }
 
@@ -9401,11 +9413,24 @@ function presentTagManager({
   if (focus) restoreOverlayFocus(target);
 }
 
-function openTagManager() {
+function openTagManagerForNewGroup(returnFocus = elements.tagManagerButton) {
+  state.tagManagerReturnFocus = { element: returnFocus };
+  elements.tagManagerError.textContent = "";
+  renderTagManager();
+  elements.tagManagerGroupName.value = "";
+  presentTagManager({
+    returnFocus: state.tagManagerReturnFocus,
+    focusTarget: elements.tagManagerGroupName,
+    render: false,
+  });
+}
+
+function openTagManagerFromTagActions(returnFocus = elements.tagManagerButton) {
+  state.tagManagerReturnFocus = { element: returnFocus };
   elements.tagManagerError.textContent = "";
   renderTagManager();
   presentTagManager({
-    returnFocus: { element: document.activeElement },
+    returnFocus: state.tagManagerReturnFocus,
     focusTarget: elements.tagManagerTagSelect,
     render: false,
   });
@@ -11709,6 +11734,38 @@ function sourceActionsFocusableButtons() {
       && button.getClientRects().length > 0);
 }
 
+function tagActionsFocusableButtons() {
+  return [...elements.tagActionsPopover.querySelectorAll("button:not(:disabled)")]
+    .filter((button) => !button.classList.contains("hidden")
+      && button.getClientRects().length > 0);
+}
+
+function renderTagActionsMenu() {
+  const targetCount = currentTagTargetAssetIDs().length;
+  const unavailable = !state.online || state.tagManagementMutating;
+  elements.tagManagerButton.disabled = false;
+  elements.tagActionsSummary.textContent = `${activeTags().length} 个标签 · ${state.tagGroups.length} 个分组`;
+  elements.tagActionsNewGroupButton.disabled = unavailable;
+  elements.tagActionsNewGroupButton.title = unavailable
+    ? "等待 Mac 重新连接或当前标签操作完成"
+    : "打开分组名称输入框；创建后立即出现在侧栏与检查器";
+  elements.tagActionsInstallPresetsButton.disabled = unavailable || state.installingPresetTags;
+  elements.tagActionsInstallPresetsButton.querySelector("span:last-child").textContent = state.installingPresetTags
+    ? "正在添加常用标签…"
+    : "添加常用标签";
+  elements.tagActionsInstallPresetsButton.title = state.installingPresetTags
+    ? "Mac 正在安装尚未存在的常用标签"
+    : "只补充尚未存在的常用标签；不会分析照片或写入标签决定";
+  elements.tagActionsNewTagButton.disabled = unavailable || targetCount === 0;
+  elements.tagActionsNewTagButton.title = targetCount
+    ? `为当前 ${mediaItemCountText(targetCount)}新建并确认标签`
+    : `请先选择至少${mediaItemCountText(1)}`;
+  elements.tagActionsOpenManagerButton.disabled = false;
+  elements.tagActionsOpenManagerButton.title = state.online
+    ? "查看、重命名、移动或归档标签，并管理分组"
+    : "离线时仍可查看当前标签；写操作需等待 Mac 重新连接";
+}
+
 async function viewAllSourcesFromActionMenu() {
   await returnFromActionMenu({ restoreFocus: false });
   const alreadyShowingAll = visibleWorkspaceRoute() === "gallery"
@@ -11731,6 +11788,12 @@ function openSourceActionsContextMenu(clientX, clientY) {
   openActionMenu("sourceActions");
   if (elements.sourceActionsPopover.classList.contains("hidden")) return;
   positionContextMenu(elements.sourceActionsPopover, clientX, clientY);
+}
+
+function openTagActionsContextMenu(clientX, clientY) {
+  openActionMenu("tagActions");
+  if (elements.tagActionsPopover.classList.contains("hidden")) return;
+  positionContextMenu(elements.tagActionsPopover, clientX, clientY);
 }
 
 function renderSourceActionsMenu() {
@@ -17584,6 +17647,12 @@ function actionMenuDescriptor(kind) {
       button: elements.sourceAllActionsButton,
       popover: elements.sourceActionsPopover,
     },
+    tagActions: {
+      kind,
+      route: "gallery",
+      button: elements.tagManagerButton,
+      popover: elements.tagActionsPopover,
+    },
     personalModel: {
       kind,
       route: "gallery",
@@ -17614,6 +17683,7 @@ function actionMenuDescriptor(kind) {
 function activeActionMenuDescriptor() {
   for (const kind of [
     "sourceActions",
+    "tagActions",
     "personalModel",
     "reviewSources",
     "slimmingSources",
@@ -17658,6 +17728,9 @@ function actionMenuFallbackFocusTarget(descriptor) {
   if (descriptor.kind === "sourceActions") {
     return sourceActionsFocusableButtons()[0] || elements.sourceActionsOpenManagerButton;
   }
+  if (descriptor.kind === "tagActions") {
+    return tagActionsFocusableButtons()[0] || elements.tagActionsOpenManagerButton;
+  }
   if (descriptor.kind === "reviewSources") {
     return elements.reviewSourceFilterPopover.querySelector("button:not(:disabled)");
   }
@@ -17686,7 +17759,7 @@ function actionMenuRestorableFocusTarget(descriptor) {
 }
 
 function actionMenuIsAvailable(descriptor, route = visibleWorkspaceRoute()) {
-  const routeMatches = descriptor?.kind === "sourceActions"
+  const routeMatches = ["sourceActions", "tagActions"].includes(descriptor?.kind)
     ? ["gallery", "galleryOverview", "worldMap", "review", "training", "slimming"]
       .includes(route)
     : descriptor?.route === route;
@@ -17808,7 +17881,8 @@ function openActionMenu(kind, {
       "sidebar",
       "commandPalette",
     ].includes(current?.navigationLevel)
-    && !(kind === "sourceActions" && current?.navigationLevel === "sidebar");
+    && !(["sourceActions", "tagActions"].includes(kind)
+      && current?.navigationLevel === "sidebar");
   if (active) closeActionMenu({ restoreFocus: false, checkpoint: !replacesOverlay });
   state.actionMenuReturnFocus = descriptor.button;
   state.actionMenuBaseLevel = baseLevel
@@ -17831,6 +17905,8 @@ function openActionMenu(kind, {
     renderPersonalModelControls();
   } else if (kind === "sourceActions") {
     renderSourceActionsMenu();
+  } else if (kind === "tagActions") {
+    renderTagActionsMenu();
   } else if (kind === "reviewSources") {
     renderReviewSourceFilter();
   } else if (kind === "slimmingSources") {
@@ -17842,6 +17918,8 @@ function openActionMenu(kind, {
   descriptor.button.setAttribute("aria-expanded", "true");
   if (kind === "sourceActions") {
     positionSourceActionsMenu();
+  } else if (kind === "tagActions") {
+    positionTagActionsMenu();
   } else if (kind === "slimmingSources") {
     positionSlimmingCatalogSourcePicker();
     if (!restoring || !state.slimming.catalogSources.snapshot) {
@@ -17919,9 +17997,38 @@ function positionSourceActionsMenu() {
   menu.style.top = `${Math.min(Math.max(anchor.bottom + gap, margin), maxTop)}px`;
 }
 
+function positionTagActionsMenu() {
+  if (elements.tagActionsPopover.classList.contains("hidden")) return;
+  const anchor = elements.tagManagerButton.getBoundingClientRect();
+  const menu = elements.tagActionsPopover;
+  const gap = 5;
+  const margin = 8;
+  const maxLeft = Math.max(margin, window.innerWidth - menu.offsetWidth - margin);
+  const maxTop = Math.max(margin, window.innerHeight - menu.offsetHeight - margin);
+  menu.style.left = `${Math.min(Math.max(anchor.left, margin), maxLeft)}px`;
+  menu.style.top = `${Math.min(Math.max(anchor.bottom + gap, margin), maxTop)}px`;
+}
+
 function moveSourceActionsFocus(event) {
   if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return false;
   const buttons = sourceActionsFocusableButtons();
+  if (!buttons.length) return false;
+  event.preventDefault();
+  const index = buttons.indexOf(document.activeElement);
+  const targetIndex = event.key === "Home"
+    ? 0
+    : event.key === "End"
+      ? buttons.length - 1
+      : event.key === "ArrowDown"
+        ? (index + 1 + buttons.length) % buttons.length
+        : (index - 1 + buttons.length) % buttons.length;
+  buttons[targetIndex].focus({ preventScroll: true });
+  return true;
+}
+
+function moveTagActionsFocus(event) {
+  if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return false;
+  const buttons = tagActionsFocusableButtons();
   if (!buttons.length) return false;
   event.preventDefault();
   const index = buttons.indexOf(document.activeElement);
@@ -38267,6 +38374,14 @@ function contextLongPressDescriptor(target) {
     };
   }
 
+  const tagHeading = target.closest("#tagSectionHeading");
+  if (tagHeading) {
+    return {
+      target: tagHeading,
+      open: openTagActionsContextMenu,
+    };
+  }
+
   const source = target.closest("#sourceList [data-source-id]");
   if (source) {
     return {
@@ -40007,7 +40122,43 @@ function bindEvents() {
   elements.emptyInstallPresetTagsButton.addEventListener("click", () => {
     installPresetTags(elements.emptyInstallPresetTagsButton);
   });
-  elements.tagManagerButton.addEventListener("click", openTagManager);
+  elements.tagManagerButton.addEventListener("click", () => {
+    toggleActionMenu("tagActions");
+  });
+  elements.tagSectionHeading.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    openTagActionsContextMenu(event.clientX, event.clientY);
+  });
+  elements.tagManagerButton.addEventListener("keydown", (event) => {
+    if (!(event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))) return;
+    event.preventDefault();
+    const rect = elements.tagManagerButton.getBoundingClientRect();
+    openTagActionsContextMenu(rect.left + 12, rect.bottom + 4);
+  });
+  elements.tagActionsPopover.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      void returnFromActionMenu();
+      return;
+    }
+    moveTagActionsFocus(event);
+  });
+  elements.tagActionsNewGroupButton.addEventListener("click", async () => {
+    await returnFromActionMenu({ restoreFocus: false });
+    openTagManagerForNewGroup(elements.tagManagerButton);
+  });
+  elements.tagActionsInstallPresetsButton.addEventListener("click", async () => {
+    await returnFromActionMenu({ restoreFocus: false });
+    await installPresetTags(elements.tagManagerButton);
+  });
+  elements.tagActionsNewTagButton.addEventListener("click", async () => {
+    await returnFromActionMenu({ restoreFocus: false });
+    presentNewTagDialog({ returnFocus: elements.tagManagerButton });
+  });
+  elements.tagActionsOpenManagerButton.addEventListener("click", async () => {
+    await returnFromActionMenu({ restoreFocus: false });
+    openTagManagerFromTagActions(elements.tagManagerButton);
+  });
   elements.closeTagManagerButton.addEventListener("click", () => {
     void returnFromTagManager();
   });
@@ -42102,6 +42253,9 @@ function bindEvents() {
     }
     if (!elements.sourceActionsPopover.classList.contains("hidden")) {
       positionSourceActionsMenu();
+    }
+    if (!elements.tagActionsPopover.classList.contains("hidden")) {
+      positionTagActionsMenu();
     }
     if (!elements.sortPopover.classList.contains("hidden")) positionSortPopover();
     for (const control of gridDensityControls()) positionGridDensityPopover(control);

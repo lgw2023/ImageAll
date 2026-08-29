@@ -2543,6 +2543,12 @@ final class RemoteHTTPServerTests: XCTestCase {
             "reviewQueueResizeHandle",
             "tagManagerDialog",
             "tagManagerButton",
+            "tagActionsPopover",
+            "tagActionsSummary",
+            "tagActionsNewGroupButton",
+            "tagActionsInstallPresetsButton",
+            "tagActionsNewTagButton",
+            "tagActionsOpenManagerButton",
             "installPresetTagsButton",
             "reviewOverview",
             "reviewOverviewLayout",
@@ -3215,6 +3221,12 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("await selectSource(\"\")"))
         XCTAssertTrue(script.contains("closeMobileSidebar({ restoreFocus: false })"))
         XCTAssertTrue(script.contains("elements.workspace.append(elements.sourceActionsPopover)"))
+        XCTAssertTrue(script.contains("elements.workspace.append(elements.tagActionsPopover)"))
+        XCTAssertTrue(script.contains("function renderTagActionsMenu"))
+        XCTAssertTrue(script.contains("openActionMenu(\"tagActions\")"))
+        XCTAssertTrue(script.contains("target.closest(\"#tagSectionHeading\")"))
+        XCTAssertTrue(script.contains("openTagManagerForNewGroup"))
+        XCTAssertTrue(script.contains("presentNewTagDialog({ returnFocus: elements.tagManagerButton })"))
         XCTAssertTrue(script.contains("submitSourceManagementAction(\"prewarmAllThumbnails\")"))
         XCTAssertTrue(script.contains("submitSourceManagementAction(\"prewarmAllOriginalAspect\")"))
         XCTAssertTrue(script.contains("submitSourceManagementAction(\"reauthorizeAll\")"))

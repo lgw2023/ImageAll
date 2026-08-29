@@ -325,11 +325,47 @@ def main():
         assert page.evaluate("() => document.activeElement?.dataset.quickTagId")
 
         page.locator("#tagManagerButton").click()
-        page.locator("#installPresetTagsButton").click()
+        page.locator("#tagActionsPopover:not(.hidden)").wait_for()
+        assert page.locator("#tagManagerButton").get_attribute("aria-expanded") == "true"
+        assert page.locator("#tagActionsSummary").inner_text() == "9 个标签 · 4 个分组"
+        assert page.locator("#tagActionsNewTagButton").is_disabled()
+        page.screenshot(path="/tmp/imageall-tag-actions-wide.png", full_page=True)
+        page.locator("#tagActionsNewGroupButton").focus()
+        page.keyboard.press("End")
+        assert page.evaluate("document.activeElement?.id") == "tagActionsOpenManagerButton"
+        page.keyboard.press("Escape")
+        page.locator("#tagActionsPopover").wait_for(state="hidden")
+        assert page.evaluate("document.activeElement?.id") == "tagManagerButton"
+        page.go_forward()
+        page.locator("#tagActionsPopover:not(.hidden)").wait_for()
+        assert page.evaluate("document.activeElement?.id") == "tagActionsOpenManagerButton"
+        page.go_back()
+        page.locator("#tagActionsPopover").wait_for(state="hidden")
+        assert page.evaluate("document.activeElement?.id") == "tagManagerButton"
+
+        page.locator("#tagManagerButton").click()
+        page.locator("#tagActionsInstallPresetsButton").click()
         page.wait_for_function(
             "() => document.querySelector('#toastMessage').textContent.includes('已全部存在')"
         )
         assert len(preset_requests) == 2
+        assert page.evaluate("document.activeElement?.id") == "tagManagerButton"
+
+        page.locator("#tagManagerButton").click()
+        page.locator("#tagActionsNewGroupButton").click()
+        page.locator("#tagManagerDialog[open]").wait_for()
+        assert page.locator("#tagManagerGroupName").input_value() == ""
+        assert page.evaluate("document.activeElement?.id") == "tagManagerGroupName"
+        page.locator("#closeTagManagerButton").click()
+        assert page.evaluate("document.activeElement?.id") == "tagManagerButton"
+
+        page.locator("#tagManagerButton").click()
+        page.locator("#tagActionsOpenManagerButton").click()
+        page.locator("#tagManagerDialog[open]").wait_for()
+        assert page.evaluate("document.activeElement?.id") == "tagManagerTagSelect"
+        page.locator("#installPresetTagsButton").click()
+        page.wait_for_function("() => document.activeElement?.id === 'installPresetTagsButton'")
+        assert len(preset_requests) == 3
         assert page.locator("#installPresetTagsButton").evaluate(
             "element => element === document.activeElement"
         )
@@ -392,6 +428,17 @@ def main():
             "() => ({ viewport: innerWidth, scroll: document.documentElement.scrollWidth })"
         )
         assert dimensions["scroll"] <= dimensions["viewport"], dimensions
+        page.locator("#tagManagerButton").scroll_into_view_if_needed()
+        page.locator("#tagManagerButton").click()
+        page.locator("#tagActionsPopover:not(.hidden)").wait_for()
+        tag_actions_bounds = page.locator("#tagActionsPopover").bounding_box()
+        assert tag_actions_bounds is not None
+        assert tag_actions_bounds["x"] >= 0
+        assert tag_actions_bounds["x"] + tag_actions_bounds["width"] <= 390
+        assert tag_actions_bounds["y"] >= 0
+        assert tag_actions_bounds["y"] + tag_actions_bounds["height"] <= 844
+        page.screenshot(path="/tmp/imageall-tag-actions-390.png", full_page=True)
+        page.keyboard.press("Escape")
         page.screenshot(path="/tmp/imageall-onboarding-presets-synthetic.png", full_page=True)
 
         assert not page_errors, page_errors
