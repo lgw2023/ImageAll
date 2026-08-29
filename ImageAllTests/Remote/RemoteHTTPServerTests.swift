@@ -4025,7 +4025,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         ]
         XCTAssertFalse(reviewGroupOrganizerScript.contains("grid.replaceChildren"))
         XCTAssertFalse(reviewGroupOrganizerScript.contains("group.replaceChildren"))
-        XCTAssertTrue(script.contains("function syncAssetTagCountText("))
+        XCTAssertTrue(script.contains("function syncAssetCardOverlayText("))
         XCTAssertTrue(script.contains("function syncAssetTagCountBadge("))
         XCTAssertTrue(script.contains("data-asset-tag-count-part=\"symbol\""))
         XCTAssertTrue(script.contains("data-asset-tag-count-part=\"value\""))
@@ -4046,6 +4046,22 @@ final class RemoteHTTPServerTests: XCTestCase {
         let assetMetaScript = script[assetMetaStart.lowerBound..<assetMetaEnd.lowerBound]
         XCTAssertFalse(assetMetaScript.contains("clearElement"))
         XCTAssertFalse(assetMetaScript.contains("replaceChildren"))
+        XCTAssertTrue(script.contains("data-asset-video-badge-part=\"icon\""))
+        XCTAssertTrue(script.contains("data-asset-video-badge-part=\"duration\""))
+        let assetVideoBadgeStart = try XCTUnwrap(
+            script.range(of: "function syncAssetCardMediaBadge(")
+        )
+        let assetVideoBadgeEnd = try XCTUnwrap(
+            script.range(
+                of: "function favoriteSyncText(",
+                range: assetVideoBadgeStart.upperBound..<script.endIndex
+            )
+        )
+        let assetVideoBadgeScript = script[
+            assetVideoBadgeStart.lowerBound..<assetVideoBadgeEnd.lowerBound
+        ]
+        XCTAssertFalse(assetVideoBadgeScript.contains("badge.textContent"))
+        XCTAssertFalse(assetVideoBadgeScript.contains("replaceChildren"))
         XCTAssertTrue(stylesheet.contains(".asset-tag-count {"))
         XCTAssertTrue(stylesheet.contains("display: inline-flex;"))
         XCTAssertTrue(script.contains("function reviewCardFingerprint("))

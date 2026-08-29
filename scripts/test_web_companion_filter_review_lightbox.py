@@ -4528,6 +4528,113 @@ def main():
             "video => ({ muted: video.muted, loop: video.loop, controls: video.controls })"
         )
         assert hover_state == {"muted": True, "loop": True, "controls": False}, hover_state
+        page.evaluate(
+            f"""() => {{
+              const originalFetch = window.fetch.bind(window);
+              window.__videoFavoriteRelease = null;
+              window.fetch = (input, init) => {{
+                const url = new URL(typeof input === "string" ? input : input.url, location.href);
+                if (url.pathname !== "/v1/favorites") return originalFetch(input, init);
+                return new Promise((resolve, reject) => {{
+                  window.__videoFavoriteRelease = () => {{
+                    window.fetch = originalFetch;
+                    originalFetch(input, init).then(resolve, reject);
+                  }};
+                }});
+              }};
+              const card = document.querySelector('[data-asset-id="{VIDEO_ID}"]');
+              const badge = card.querySelector(":scope > .asset-video-badge");
+              const icon = badge.querySelector('[data-asset-video-badge-part="icon"]');
+              const duration = badge.querySelector(
+                '[data-asset-video-badge-part="duration"]'
+              );
+              const frame = {{
+                card,
+                main: card.querySelector(":scope > .asset-card-main"),
+                image: card.querySelector(":scope > .asset-card-main > img"),
+                video: card.querySelector(":scope > .asset-hover-video"),
+                badge,
+                icon,
+                iconText: icon.firstChild,
+                duration,
+                durationText: duration.firstChild,
+                favorite: card.querySelector(":scope > .asset-card-favorite"),
+                scrollTop: document.querySelector("#libraryScroll").scrollTop,
+                added: 0,
+                removed: 0,
+              }};
+              frame.observer = new MutationObserver((records) => {{
+                for (const record of records) {{
+                  frame.added += record.addedNodes.length;
+                  frame.removed += record.removedNodes.length;
+                }}
+              }});
+              frame.observer.observe(badge, {{ childList: true, subtree: true }});
+              window.__videoBadgeContinuityFrame = frame;
+            }}"""
+        )
+        video_favorite = video_card.locator(":scope > .asset-card-favorite")
+        video_favorite.click()
+        page.wait_for_function("() => Boolean(window.__videoFavoriteRelease)")
+        page.evaluate(
+            """() => {
+              const frame = window.__videoBadgeContinuityFrame;
+              frame.playbackTime = frame.video.currentTime;
+              frame.favorite.focus({ preventScroll: true });
+              const range = document.createRange();
+              range.setStart(frame.durationText, 1);
+              range.setEnd(frame.durationText, frame.durationText.data.length);
+              const selection = getSelection();
+              selection.removeAllRanges();
+              selection.addRange(range);
+              window.__videoFavoriteRelease();
+            }"""
+        )
+        page.wait_for_function(
+            "id => state.assets.find(asset => asset.id === id)?.favorite?.isFavorite === true",
+            arg=VIDEO_ID,
+        )
+        video_badge_continuity = page.evaluate(
+            """() => {
+              const frame = window.__videoBadgeContinuityFrame;
+              const card = document.querySelector(
+                `[data-asset-id="${frame.card.dataset.assetId}"]`
+              );
+              const badge = card.querySelector(":scope > .asset-video-badge");
+              const icon = badge.querySelector('[data-asset-video-badge-part="icon"]');
+              const duration = badge.querySelector(
+                '[data-asset-video-badge-part="duration"]'
+              );
+              const selection = getSelection();
+              frame.observer.disconnect();
+              return {
+                card: frame.card === card,
+                main: frame.main === card.querySelector(":scope > .asset-card-main"),
+                image: frame.image === frame.main.querySelector(":scope > img"),
+                video: frame.video === card.querySelector(":scope > .asset-hover-video"),
+                playing: !frame.video.paused && frame.video.currentTime >= frame.playbackTime,
+                badge: frame.badge === badge,
+                icon: frame.icon === icon,
+                iconText: frame.iconText === icon.firstChild,
+                duration: frame.duration === duration,
+                durationText: frame.durationText === duration.firstChild,
+                favorite: frame.favorite === card.querySelector(
+                  ":scope > .asset-card-favorite"
+                ),
+                updatedFavorite: frame.favorite.getAttribute("aria-pressed") === "true",
+                text: badge.textContent === "▶ 0:12",
+                selected: selection.anchorNode === frame.durationText
+                  && selection.toString() === "0:12",
+                hovered: card.matches(":hover"),
+                focused: document.activeElement === frame.favorite,
+                scroll: document.querySelector("#libraryScroll").scrollTop === frame.scrollTop,
+                zeroChildMutations: frame.added === 0 && frame.removed === 0,
+              };
+            }"""
+        )
+        assert all(video_badge_continuity.values()), video_badge_continuity
+        assert favorite_mutations[-1]["assetIDs"] == [VIDEO_ID]
+        assert favorite_mutations[-1]["isFavorite"] is True
         page.wait_for_timeout(700)
         assert page.locator("#persistentHelp").get_attribute("class").find("hidden") >= 0
         assert video_card_main.get_attribute("aria-pressed") == "false"

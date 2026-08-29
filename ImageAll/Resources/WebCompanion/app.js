@@ -14824,7 +14824,7 @@ function syncAssetCardSelectionMark(button) {
   mark.textContent = state.selectedAssetIDs.has(button.dataset.assetId) ? "✓" : "";
 }
 
-function syncAssetTagCountText(element, text) {
+function syncAssetCardOverlayText(element, text) {
   if (
     element.childNodes.length === 1
     && element.firstChild?.nodeType === Node.TEXT_NODE
@@ -14855,12 +14855,12 @@ function syncAssetTagCountBadge(meta, decision, count, symbol) {
   ) || document.createElement("span");
   symbolPart.dataset.assetTagCountPart = "symbol";
   symbolPart.setAttribute("aria-hidden", "true");
-  syncAssetTagCountText(symbolPart, symbol);
+  syncAssetCardOverlayText(symbolPart, symbol);
   const valuePart = badge.querySelector(
     ':scope > [data-asset-tag-count-part="value"]'
   ) || document.createElement("span");
   valuePart.dataset.assetTagCountPart = "value";
-  syncAssetTagCountText(valuePart, String(count));
+  syncAssetCardOverlayText(valuePart, String(count));
   badge.setAttribute(
     "aria-label",
     `${decision === "accepted" ? "已确认" : "已拒绝"} ${count} 个标签`
@@ -14900,7 +14900,25 @@ function syncAssetCardMediaBadge(button, asset) {
     badge.setAttribute("aria-hidden", "true");
     button.append(badge);
   }
-  badge.textContent = `▶${asset.durationMs == null ? "" : ` ${formatDuration(asset.durationMs)}`}`;
+  const icon = badge.querySelector(
+    ':scope > [data-asset-video-badge-part="icon"]'
+  ) || document.createElement("span");
+  icon.dataset.assetVideoBadgePart = "icon";
+  syncAssetCardOverlayText(icon, "▶");
+  let duration = badge.querySelector(
+    ':scope > [data-asset-video-badge-part="duration"]'
+  );
+  if (asset.durationMs == null) {
+    duration?.remove();
+    duration = null;
+  } else {
+    if (!duration) {
+      duration = document.createElement("span");
+      duration.dataset.assetVideoBadgePart = "duration";
+    }
+    syncAssetCardOverlayText(duration, ` ${formatDuration(asset.durationMs)}`);
+  }
+  reconcileStableChildren(badge, [icon, duration].filter(Boolean));
 }
 
 function favoriteSyncText(favorite) {
