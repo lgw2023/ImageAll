@@ -438,19 +438,59 @@ def main():
               };
               const scroll = document.querySelector("#galleryOverviewScroll");
               const source = document.querySelector("[data-gallery-overview-source-id]");
+              const tag = document.querySelector("[data-gallery-overview-tag-id]");
+              const tagLabel = tag.querySelector(".gallery-overview-bar-label");
+              const video = document.querySelector('[data-gallery-overview-media-kind="video"]');
+              const year = document.querySelector(".gallery-overview-year");
+              const missing = document.querySelector(
+                '[data-gallery-overview-availability="missing"]'
+              );
+              const selection = getSelection();
+              const range = document.createRange();
+              range.selectNodeContents(tagLabel);
+              selection.removeAllRanges();
+              selection.addRange(range);
               scroll.scrollTop = 180;
               source.focus({ preventScroll: true });
-              window.__galleryOverviewChangedFrame = {
+              const frame = {
                 photo: document.querySelector('[data-gallery-overview-media-kind="image"]'),
+                photoParts: [...document.querySelectorAll(
+                  '[data-gallery-overview-media-kind="image"] strong, '
+                    + '[data-gallery-overview-media-kind="image"] span'
+                )],
+                video,
+                videoParts: [...video.querySelectorAll("strong, span")],
                 source,
-                tag: document.querySelector("[data-gallery-overview-tag-id]"),
-                year: document.querySelector(".gallery-overview-year"),
+                sourceParts: [
+                  source.querySelector(".gallery-overview-bar-label"),
+                  source.querySelector(".gallery-overview-bar-count"),
+                ],
+                tag,
+                tagParts: [tagLabel, tag.querySelector(".gallery-overview-bar-count")],
+                year,
+                yearLabel: year.querySelector(":scope > span"),
+                missing,
+                missingParts: [missing.querySelector("span"), missing.querySelector("strong")],
+                selectedText: selection.toString(),
+                unchangedMutations: 0,
                 scrollTop: scroll.scrollTop,
               };
+              frame.observer = new MutationObserver((records) => {
+                frame.unchangedMutations += records.filter(
+                  (record) => record.type === "childList"
+                ).length;
+              });
+              for (const target of [video, tag, year, missing]) {
+                frame.observer.observe(target, { childList: true, subtree: true });
+              }
+              window.__galleryOverviewChangedFrame = frame;
               document.querySelector("#refreshGalleryOverviewButton").click();
             }
             """
         )
+        page.locator(
+            '[data-gallery-overview-tag-id] .gallery-overview-bar-label'
+        ).hover()
         page.wait_for_function("() => Boolean(window.__galleryOverviewRefreshRelease)")
         overview["sources"][0]["imageCount"] = 121
         overview["media"][0]["totalCount"] = 121
@@ -465,17 +505,63 @@ def main():
             """
             () => {
               const frame = window.__galleryOverviewChangedFrame;
+              frame.observer.disconnect();
               const source = document.querySelector("[data-gallery-overview-source-id]");
-              return frame.photo === document.querySelector('[data-gallery-overview-media-kind="image"]')
-                && frame.source === source
-                && frame.tag === document.querySelector("[data-gallery-overview-tag-id]")
-                && frame.year === document.querySelector(".gallery-overview-year")
-                && source.querySelector(".gallery-overview-bar-count").textContent === "151"
-                && document.activeElement === frame.source
-                && document.querySelector("#galleryOverviewScroll").scrollTop === frame.scrollTop;
+              const photo = document.querySelector('[data-gallery-overview-media-kind="image"]');
+              const video = document.querySelector('[data-gallery-overview-media-kind="video"]');
+              const tag = document.querySelector("[data-gallery-overview-tag-id]");
+              const year = document.querySelector(".gallery-overview-year");
+              const missing = document.querySelector(
+                '[data-gallery-overview-availability="missing"]'
+              );
+              return {
+                framesStable: frame.photo === photo
+                  && frame.video === video
+                  && frame.source === source
+                  && frame.tag === tag
+                  && frame.year === year
+                  && frame.missing === missing,
+                changedPartsStable: frame.photoParts.every(
+                  (part, index) => part === photo.querySelectorAll("strong, span")[index]
+                ) && frame.sourceParts[0] === source.querySelector(
+                  ".gallery-overview-bar-label"
+                ) && frame.sourceParts[1] === source.querySelector(
+                  ".gallery-overview-bar-count"
+                ),
+                unchangedPartsStable: frame.videoParts.every(
+                  (part, index) => part === video.querySelectorAll("strong, span")[index]
+                ) && frame.tagParts[0] === tag.querySelector(
+                  ".gallery-overview-bar-label"
+                ) && frame.tagParts[1] === tag.querySelector(
+                  ".gallery-overview-bar-count"
+                ) && frame.yearLabel === year.querySelector(":scope > span")
+                  && frame.missingParts[0] === missing.querySelector("span")
+                  && frame.missingParts[1] === missing.querySelector("strong"),
+                sourceCount: source.querySelector(
+                  ".gallery-overview-bar-count"
+                ).textContent,
+                selectionStable: getSelection().toString() === frame.selectedText
+                  && getSelection().containsNode(frame.tagParts[0], true),
+                hovered: frame.tagParts[0].matches(":hover"),
+                focused: document.activeElement === frame.source,
+                scrollStable: document.querySelector(
+                  "#galleryOverviewScroll"
+                ).scrollTop === frame.scrollTop,
+                unchangedMutations: frame.unchangedMutations,
+              };
             }
             """
-        ), "changed refresh did not update the existing overview frame in place"
+        ) == {
+            "framesStable": True,
+            "changedPartsStable": True,
+            "unchangedPartsStable": True,
+            "sourceCount": "151",
+            "selectionStable": True,
+            "hovered": True,
+            "focused": True,
+            "scrollStable": True,
+            "unchangedMutations": 0,
+        }, "changed refresh did not preserve the overview field frame"
         page.evaluate(
             """
             () => {

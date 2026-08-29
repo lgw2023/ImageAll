@@ -4653,6 +4653,10 @@ function galleryOverviewCount(value) {
   return Number(value || 0).toLocaleString("zh-CN");
 }
 
+function syncGalleryOverviewText(element, text) {
+  if (element.textContent !== text) element.textContent = text;
+}
+
 function galleryOverviewTotal(item) {
   return Number(item?.imageCount || 0) + Number(item?.videoCount || 0);
 }
@@ -4715,15 +4719,21 @@ function syncGalleryOverviewMediaCard(card, summary) {
   const kind = summary.mediaKind === "video" ? "video" : "image";
   card.dataset.galleryOverviewMediaKind = kind;
   card.style.setProperty("--media-tint", kind === "video" ? "#f07d30" : "#2e8cd1");
-  card.querySelector(".gallery-overview-media-heading span").textContent =
-    kind === "video" ? "▶ 视频" : "▧ 照片";
-  card.querySelector(".gallery-overview-media-heading strong").textContent =
-    galleryOverviewCount(summary.totalCount);
+  syncGalleryOverviewText(
+    card.querySelector(".gallery-overview-media-heading span"),
+    kind === "video" ? "▶ 视频" : "▧ 照片"
+  );
+  syncGalleryOverviewText(
+    card.querySelector(".gallery-overview-media-heading strong"),
+    galleryOverviewCount(summary.totalCount)
+  );
   const factValues = card.querySelectorAll(".gallery-overview-media-facts strong");
-  factValues[0].textContent = galleryOverviewCount(summary.exactUniqueCount);
-  factValues[1].textContent = galleryOverviewCount(summary.exactRedundantCount);
-  card.querySelector(".gallery-overview-coverage-label span:last-child").textContent =
-    `${galleryOverviewCount(summary.exactFingerprintCount)} / ${galleryOverviewCount(summary.totalCount)}`;
+  syncGalleryOverviewText(factValues[0], galleryOverviewCount(summary.exactUniqueCount));
+  syncGalleryOverviewText(factValues[1], galleryOverviewCount(summary.exactRedundantCount));
+  syncGalleryOverviewText(
+    card.querySelector(".gallery-overview-coverage-label span:last-child"),
+    `${galleryOverviewCount(summary.exactFingerprintCount)} / ${galleryOverviewCount(summary.totalCount)}`
+  );
   const coverage = summary.totalCount > 0
     ? Math.min(100, Math.max(0, summary.exactFingerprintCount / summary.totalCount * 100))
     : 0;
@@ -4775,7 +4785,10 @@ function syncGalleryOverviewBarRow(button, item, kind, maximum) {
     delete button.dataset.galleryOverviewSourceId;
   }
   button.title = kind === "source" ? `打开来源：${item.displayName}` : `筛选标签：${item.displayName}`;
-  button.querySelector(".gallery-overview-bar-label").textContent = item.displayName;
+  syncGalleryOverviewText(
+    button.querySelector(".gallery-overview-bar-label"),
+    item.displayName
+  );
   button.querySelector(".photo").style.setProperty(
     "--photo-width",
     `${Math.max(0, Number(item.imageCount || 0)) / maximum * 100}%`
@@ -4784,8 +4797,10 @@ function syncGalleryOverviewBarRow(button, item, kind, maximum) {
     "--video-width",
     `${Math.max(0, Number(item.videoCount || 0)) / maximum * 100}%`
   );
-  button.querySelector(".gallery-overview-bar-count").textContent =
-    galleryOverviewCount(galleryOverviewTotal(item));
+  syncGalleryOverviewText(
+    button.querySelector(".gallery-overview-bar-count"),
+    galleryOverviewCount(galleryOverviewTotal(item))
+  );
 }
 
 function renderGalleryOverviewBars(container, items, kind) {
@@ -4853,7 +4868,7 @@ function renderGalleryOverviewAvailability(items, totalCount) {
     elements.galleryOverviewAvailability.prepend(donut);
   }
   donut.style.setProperty("--donut", `conic-gradient(${stops.join(", ")})`);
-  donut.querySelector("strong").textContent = galleryOverviewCount(totalCount);
+  syncGalleryOverviewText(donut.querySelector("strong"), galleryOverviewCount(totalCount));
 
   let list = elements.galleryOverviewAvailability.querySelector(
     ":scope > .gallery-overview-availability-list"
@@ -4877,8 +4892,11 @@ function renderGalleryOverviewAvailability(items, totalCount) {
     }
     row.dataset.galleryOverviewAvailability = item.availability;
     row.style.setProperty("--status-color", color);
-    row.querySelector("span").textContent = title;
-    row.querySelector("strong").textContent = galleryOverviewCount(galleryOverviewTotal(item));
+    syncGalleryOverviewText(row.querySelector("span"), title);
+    syncGalleryOverviewText(
+      row.querySelector("strong"),
+      galleryOverviewCount(galleryOverviewTotal(item))
+    );
     const currentRow = list.children[index] || null;
     if (currentRow !== row) list.insertBefore(row, currentRow);
   }
@@ -4922,7 +4940,7 @@ function renderGalleryOverviewTimeline(years) {
       "--video-height",
       `${Math.max(2, Number(item.videoCount || 0) / maximum * 100)}%`
     );
-    year.querySelector(":scope > span").textContent = key;
+    syncGalleryOverviewText(year.querySelector(":scope > span"), key);
     const currentYear = elements.galleryOverviewTimeline.children[index] || null;
     if (currentYear !== year) elements.galleryOverviewTimeline.insertBefore(year, currentYear);
   }
@@ -4958,12 +4976,16 @@ function renderGalleryOverview({ preserveContent = false } = {}) {
   elements.galleryOverviewBody.classList.toggle("hidden", !snapshot || isEmpty);
   elements.retryGalleryOverviewButton.classList.toggle("hidden", !overview.error);
   elements.galleryOverviewStatus.dataset.state = overview.error ? "error" : "loading";
-  elements.galleryOverviewStatus.querySelector("strong").textContent = overview.error
-    ? "无法读取图库统计"
-    : "正在汇总图库…";
-  elements.galleryOverviewStatus.querySelector("span").textContent = overview.error
-    ? "目录库没有被修改。请稍后重试。"
-    : "只读取 ImageAll 目录库，不访问原照片。";
+  syncGalleryOverviewText(
+    elements.galleryOverviewStatus.querySelector("strong"),
+    overview.error ? "无法读取图库统计" : "正在汇总图库…"
+  );
+  syncGalleryOverviewText(
+    elements.galleryOverviewStatus.querySelector("span"),
+    overview.error
+      ? "目录库没有被修改。请稍后重试。"
+      : "只读取 ImageAll 目录库，不访问原照片。"
+  );
   if (!snapshot) {
     state.galleryOverview.renderedContentFingerprint = null;
     return;
@@ -4972,16 +4994,28 @@ function renderGalleryOverview({ preserveContent = false } = {}) {
   const exactUniqueCount = (snapshot.media || []).reduce((sum, item) => sum + Number(item.exactUniqueCount || 0), 0);
   const exactRedundantCount = (snapshot.media || []).reduce((sum, item) => sum + Number(item.exactRedundantCount || 0), 0);
   const exactFingerprintCount = (snapshot.media || []).reduce((sum, item) => sum + Number(item.exactFingerprintCount || 0), 0);
-  elements.galleryOverviewNavigationCount.textContent = galleryOverviewCount(totalCount);
-  elements.galleryOverviewSummary.textContent = `${galleryOverviewCount(totalCount)} 个媒体 · 保守去重后 ${galleryOverviewCount(exactUniqueCount)}`;
-  elements.galleryOverviewRefreshedAt.textContent = overview.refreshedAt
-    ? `更新于 ${overview.refreshedAt.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`
-    : "";
-  elements.galleryOverviewTotalMetric.textContent = galleryOverviewCount(totalCount);
-  elements.galleryOverviewUniqueMetric.textContent = galleryOverviewCount(exactUniqueCount);
-  elements.galleryOverviewRedundantMetric.textContent = galleryOverviewCount(exactRedundantCount);
-  elements.galleryOverviewPositiveMetric.textContent = galleryOverviewCount(snapshot.positiveLabeledAssetCount);
-  elements.galleryOverviewAcceptedMetric.textContent = `${galleryOverviewCount(snapshot.acceptedDecisionCount)} 条人工接受标签`;
+  syncGalleryOverviewText(elements.galleryOverviewNavigationCount, galleryOverviewCount(totalCount));
+  syncGalleryOverviewText(
+    elements.galleryOverviewSummary,
+    `${galleryOverviewCount(totalCount)} 个媒体 · 保守去重后 ${galleryOverviewCount(exactUniqueCount)}`
+  );
+  syncGalleryOverviewText(
+    elements.galleryOverviewRefreshedAt,
+    overview.refreshedAt
+      ? `更新于 ${overview.refreshedAt.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`
+      : ""
+  );
+  syncGalleryOverviewText(elements.galleryOverviewTotalMetric, galleryOverviewCount(totalCount));
+  syncGalleryOverviewText(elements.galleryOverviewUniqueMetric, galleryOverviewCount(exactUniqueCount));
+  syncGalleryOverviewText(elements.galleryOverviewRedundantMetric, galleryOverviewCount(exactRedundantCount));
+  syncGalleryOverviewText(
+    elements.galleryOverviewPositiveMetric,
+    galleryOverviewCount(snapshot.positiveLabeledAssetCount)
+  );
+  syncGalleryOverviewText(
+    elements.galleryOverviewAcceptedMetric,
+    `${galleryOverviewCount(snapshot.acceptedDecisionCount)} 条人工接受标签`
+  );
   const favoriteSummaries = snapshot.favorites || [];
   const favoriteImageCount = Number(
     favoriteSummaries.find((item) => item.mediaKind === "image")?.count || 0
@@ -4990,11 +5024,18 @@ function renderGalleryOverview({ preserveContent = false } = {}) {
     favoriteSummaries.find((item) => item.mediaKind === "video")?.count || 0
   );
   elements.galleryOverviewFavoritesMetric.classList.toggle("hidden", !supportsFavorites());
-  elements.galleryOverviewFavoriteMetric.textContent = galleryOverviewCount(
-    favoriteImageCount + favoriteVideoCount
+  syncGalleryOverviewText(
+    elements.galleryOverviewFavoriteMetric,
+    galleryOverviewCount(favoriteImageCount + favoriteVideoCount)
   );
-  elements.galleryOverviewFavoriteImageMetric.textContent = galleryOverviewCount(favoriteImageCount);
-  elements.galleryOverviewFavoriteVideoMetric.textContent = galleryOverviewCount(favoriteVideoCount);
+  syncGalleryOverviewText(
+    elements.galleryOverviewFavoriteImageMetric,
+    galleryOverviewCount(favoriteImageCount)
+  );
+  syncGalleryOverviewText(
+    elements.galleryOverviewFavoriteVideoMetric,
+    galleryOverviewCount(favoriteVideoCount)
+  );
 
   if (preserveContent && galleryOverviewCanPreserveContent()) return;
 
@@ -5003,21 +5044,33 @@ function renderGalleryOverview({ preserveContent = false } = {}) {
     galleryOverviewMediaSummary("video"),
   ]);
   const displayedSources = (snapshot.sources || []).slice(0, 8);
-  elements.galleryOverviewSourceSubtitle.textContent = (snapshot.sources || []).length > displayedSources.length
-    ? `按媒体数最多的前 ${displayedSources.length} 个来源`
-    : "每个来源中的照片与视频";
+  syncGalleryOverviewText(
+    elements.galleryOverviewSourceSubtitle,
+    (snapshot.sources || []).length > displayedSources.length
+      ? `按媒体数最多的前 ${displayedSources.length} 个来源`
+      : "每个来源中的照片与视频"
+  );
   renderGalleryOverviewBars(elements.galleryOverviewSources, displayedSources, "source");
   renderGalleryOverviewAvailability(snapshot.availability || [], totalCount);
   renderGalleryOverviewBars(elements.galleryOverviewTags, snapshot.positiveTags || [], "tag");
   const years = (snapshot.years || []).slice(-16);
-  elements.galleryOverviewTimelineSubtitle.textContent = (snapshot.years || []).length > years.length
-    ? `最近 ${years.length} 个有媒体记录的年份`
-    : "按拍摄时间优先、修改时间补充";
+  syncGalleryOverviewText(
+    elements.galleryOverviewTimelineSubtitle,
+    (snapshot.years || []).length > years.length
+      ? `最近 ${years.length} 个有媒体记录的年份`
+      : "按拍摄时间优先、修改时间补充"
+  );
   renderGalleryOverviewTimeline(years);
-  elements.galleryOverviewUndated.textContent = snapshot.undatedCount > 0
-    ? `另有 ${galleryOverviewCount(snapshot.undatedCount)} 个无日期媒体`
-    : "";
-  elements.galleryOverviewCoverage.textContent = `当前精确摘要覆盖 ${galleryOverviewCount(exactFingerprintCount)} / ${galleryOverviewCount(totalCount)}。刷新只读取 ImageAll 目录库，不访问原照片。`;
+  syncGalleryOverviewText(
+    elements.galleryOverviewUndated,
+    snapshot.undatedCount > 0
+      ? `另有 ${galleryOverviewCount(snapshot.undatedCount)} 个无日期媒体`
+      : ""
+  );
+  syncGalleryOverviewText(
+    elements.galleryOverviewCoverage,
+    `当前精确摘要覆盖 ${galleryOverviewCount(exactFingerprintCount)} / ${galleryOverviewCount(totalCount)}。刷新只读取 ImageAll 目录库，不访问原照片。`
+  );
   state.galleryOverview.renderedContentFingerprint = galleryOverviewContentFingerprint();
 }
 

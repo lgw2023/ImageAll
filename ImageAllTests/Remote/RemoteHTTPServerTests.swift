@@ -3931,9 +3931,30 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function trainingWorkspaceCanPreserveContent()"))
         XCTAssertTrue(script.contains("function galleryOverviewContentFingerprint()"))
         XCTAssertTrue(script.contains("function galleryOverviewCanPreserveContent()"))
+        XCTAssertTrue(script.contains("function syncGalleryOverviewText("))
         XCTAssertTrue(script.contains("function syncGalleryOverviewMediaCard("))
         XCTAssertTrue(script.contains("function syncGalleryOverviewBarRow("))
         XCTAssertTrue(script.contains("function reconcileGalleryOverviewMediaCards("))
+        XCTAssertTrue(
+            script.contains(
+                "syncGalleryOverviewText(elements.galleryOverviewTotalMetric"
+            )
+        )
+        XCTAssertTrue(
+            script.contains(
+                "syncGalleryOverviewText(year.querySelector(\":scope > span\"), key)"
+            )
+        )
+        XCTAssertFalse(
+            script.contains(
+                "button.querySelector(\".gallery-overview-bar-label\").textContent ="
+            )
+        )
+        XCTAssertFalse(
+            script.contains(
+                "row.querySelector(\"strong\").textContent = galleryOverviewCount"
+            )
+        )
         XCTAssertTrue(script.contains("function reviewOverviewContentFingerprint()"))
         XCTAssertTrue(script.contains("function reviewOverviewCanPreserveContent()"))
         XCTAssertTrue(script.contains("function syncReviewOverviewStableNode("))
