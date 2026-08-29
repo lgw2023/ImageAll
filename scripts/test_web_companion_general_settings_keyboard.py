@@ -1379,6 +1379,24 @@ def main():
         assert updates[-1]["idleThumbnailPrewarmEnabled"] is False
 
         default_input = page.locator('[data-suggestion-default="featureKnn"]')
+        page.evaluate(
+            """
+            () => {
+              const input = document.querySelector('[data-suggestion-default="featureKnn"]');
+              window.__suggestionDefaultFrame = {
+                input,
+                decrease: document.querySelector(
+                  '[data-suggestion-default-step="-0.05"]'
+                    + '[data-suggestion-default-method="featureKnn"]'
+                ),
+                increase: document.querySelector(
+                  '[data-suggestion-default-step="0.05"]'
+                    + '[data-suggestion-default-method="featureKnn"]'
+                ),
+              };
+            }
+            """
+        )
         default_input.fill("0.15")
         default_input.press("Enter")
         page.wait_for_function(
@@ -1390,6 +1408,48 @@ def main():
             "minScore": 0.15,
         }
         assert page.evaluate("() => document.activeElement?.dataset.suggestionDefault") == "featureKnn"
+
+        page.locator(
+            '[data-suggestion-default-step="0.05"]'
+            '[data-suggestion-default-method="featureKnn"]'
+        ).click()
+        page.wait_for_function(
+            "() => document.querySelector('[data-suggestion-default=\"featureKnn\"]').value === '0.20'"
+        )
+        assert updates[-1]["suggestionThresholdMutation"] == {
+            "action": "setDefault",
+            "method": "featureKnn",
+            "minScore": 0.2,
+        }
+        assert page.evaluate(
+            """
+            () => {
+              const frame = window.__suggestionDefaultFrame;
+              return frame.input?.isConnected
+                && frame.decrease?.isConnected
+                && frame.increase?.isConnected
+                && document.activeElement === frame.increase;
+            }
+            """
+        ), "default increase rebuilt the stepper or lost its focus"
+
+        page.locator(
+            '[data-suggestion-default-step="-0.05"]'
+            '[data-suggestion-default-method="featureKnn"]'
+        ).click()
+        page.wait_for_function(
+            "() => document.querySelector('[data-suggestion-default=\"featureKnn\"]').value === '0.15'"
+        )
+        assert updates[-1]["suggestionThresholdMutation"] == {
+            "action": "setDefault",
+            "method": "featureKnn",
+            "minScore": 0.15,
+        }
+        assert page.evaluate(
+            """
+            () => document.activeElement === window.__suggestionDefaultFrame.decrease
+            """
+        ), "default decrease did not restore the same button focus"
 
         page.locator("#suggestionOverridesButton").click()
         page.wait_for_function("() => document.activeElement?.id === 'suggestionThresholdSearch'")
@@ -1462,6 +1522,8 @@ def main():
               window.__thresholdConnectionFrame = {
                 input,
                 value: input.value,
+                decrease: input.parentElement.querySelector('[data-threshold-step="-0.05"]'),
+                increase: input.parentElement.querySelector('[data-threshold-step="0.05"]'),
               };
             }
             """
@@ -1473,6 +1535,10 @@ def main():
               const frame = window.__thresholdConnectionFrame;
               return frame.input?.isConnected
                 && frame.input.disabled
+                && frame.decrease?.isConnected
+                && frame.decrease.disabled
+                && frame.increase?.isConnected
+                && frame.increase.disabled
                 && frame.input.value === frame.value;
             }
             """
@@ -1487,6 +1553,10 @@ def main():
               const frame = window.__thresholdConnectionFrame;
               return frame.input?.isConnected
                 && !frame.input.disabled
+                && frame.decrease?.isConnected
+                && !frame.decrease.disabled
+                && frame.increase?.isConnected
+                && !frame.increase.disabled
                 && frame.input.value === frame.value
                 && document.activeElement === frame.input;
             }
@@ -1510,6 +1580,8 @@ def main():
                 input,
                 personalMethod: personal.closest(".suggestion-threshold-method"),
                 personal,
+                decrease: method.querySelector('[data-threshold-step="-0.05"]'),
+                increase: method.querySelector('[data-threshold-step="0.05"]'),
                 inherit: method.querySelector('[data-threshold-action="clearOverride"]'),
                 adopt: method.querySelector('[data-threshold-action="setOverride"]'),
               }};
@@ -1529,6 +1601,8 @@ def main():
               return frame.card?.isConnected
                 && frame.method?.isConnected
                 && frame.input?.isConnected
+                && frame.decrease?.isConnected
+                && frame.increase?.isConnected
                 && frame.personalMethod?.isConnected
                 && frame.personal?.isConnected
                 && frame.inherit?.isConnected
@@ -1538,6 +1612,57 @@ def main():
             }
             """
         ), "threshold submit rebuilt the edited or untouched method controls"
+
+        page.locator(
+            f'[data-threshold-step="0.05"][data-threshold-tag-id="{CAT_TAG_ID}"]'
+            '[data-threshold-method="featureKnn"]'
+        ).click()
+        page.wait_for_function(
+            f"() => document.querySelector('[data-threshold-focus=\"input\"]'"
+            f" + '[data-threshold-tag-id=\"{CAT_TAG_ID}\"]'"
+            " + '[data-threshold-method=\"featureKnn\"]')?.value === '0.52'"
+        )
+        assert updates[-1]["suggestionThresholdMutation"] == {
+            "action": "setOverride",
+            "tagID": CAT_TAG_ID,
+            "method": "featureKnn",
+            "minScore": 0.52,
+        }
+        page.wait_for_function(
+            "() => document.activeElement === window.__thresholdMutationFrame.increase"
+        )
+        assert page.evaluate(
+            """
+            () => {
+              const frame = window.__thresholdMutationFrame;
+              return frame.decrease?.isConnected
+                && frame.increase?.isConnected
+                && document.activeElement === frame.increase;
+            }
+            """
+        ), "override increase rebuilt the stepper or lost its focus"
+
+        page.locator(
+            f'[data-threshold-step="-0.05"][data-threshold-tag-id="{CAT_TAG_ID}"]'
+            '[data-threshold-method="featureKnn"]'
+        ).click()
+        page.wait_for_function(
+            f"() => document.querySelector('[data-threshold-focus=\"input\"]'"
+            f" + '[data-threshold-tag-id=\"{CAT_TAG_ID}\"]'"
+            " + '[data-threshold-method=\"featureKnn\"]')?.value === '0.47'"
+        )
+        assert updates[-1]["suggestionThresholdMutation"] == {
+            "action": "setOverride",
+            "tagID": CAT_TAG_ID,
+            "method": "featureKnn",
+            "minScore": 0.47,
+        }
+        page.wait_for_function(
+            "() => document.activeElement === window.__thresholdMutationFrame.decrease"
+        )
+        assert page.evaluate(
+            "() => document.activeElement === window.__thresholdMutationFrame.decrease"
+        ), "override decrease did not restore the same button focus"
 
         page.locator(
             f'[data-threshold-action="clearOverride"][data-threshold-tag-id="{CAT_TAG_ID}"]'
@@ -2321,7 +2446,9 @@ def main():
         page.keyboard.press("Escape")
         page.locator("#sourceManagerDialog").wait_for(state="hidden")
         assert page.evaluate("() => document.activeElement?.id") == "sourceManagerButton"
-        assert len(asset_requests) == source_manager_asset_request_count
+        assert len(asset_requests) == source_manager_asset_request_count, asset_requests[
+            source_manager_asset_request_count:
+        ]
 
         click_toolbar_action(page, "storageButton")
         page.locator("#storageContent:not(.hidden)").wait_for()
@@ -2406,7 +2533,7 @@ def main():
         assert not failed_resources, failed_resources
         browser.close()
 
-    assert len(updates) == 12, updates
+    assert len(updates) == 16, updates
     print(f"general-settings-keyboard-browser: ok; updates={len(updates)}")
 
 

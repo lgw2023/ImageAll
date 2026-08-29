@@ -4296,6 +4296,48 @@ html.split-resizing * {
   font-size: 10px;
 }
 
+.suggestion-threshold-stepper {
+  display: grid;
+  grid-template-columns: 26px minmax(54px, 1fr) 26px;
+  align-items: center;
+  gap: 4px;
+}
+
+.threshold-step-button {
+  width: 26px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--separator);
+  border-radius: 6px;
+  background: var(--control);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.threshold-step-button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--separator));
+  background: color-mix(in srgb, var(--accent) 9%, var(--control));
+}
+
+.threshold-step-button:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--selection);
+  outline: none;
+}
+
+.threshold-step-button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.threshold-step-button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
 .suggestion-default-row input,
 .suggestion-threshold-method-row input {
   width: 100%;
@@ -4425,9 +4467,9 @@ html.split-resizing * {
   gap: 8px;
 }
 
-.suggestion-threshold-method-row label {
+.suggestion-threshold-method-editor-group {
   display: grid;
-  grid-template-columns: minmax(92px, 1fr) 72px;
+  grid-template-columns: minmax(92px, 1fr) minmax(118px, 146px);
   align-items: center;
   gap: 8px;
   color: var(--text);
@@ -14917,7 +14959,7 @@ button.world-map-place-candidate:focus-visible {
     grid-template-columns: 1fr auto;
   }
 
-  .suggestion-threshold-method-row label {
+  .suggestion-threshold-method-editor-group {
     grid-column: 1 / -1;
   }
 

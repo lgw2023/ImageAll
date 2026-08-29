@@ -10,8 +10,8 @@
   <meta name="apple-mobile-web-app-title" content="ImageAll">
   <title>ImageAll 网页版</title>
   <link rel="manifest" href="/manifest.webmanifest">
-    <link rel="stylesheet" href="/app.css?v=20260829-194">
-    <script src="/app.js?v=20260829-194" defer></script>
+    <link rel="stylesheet" href="/app.css?v=20260829-195">
+    <script src="/app.js?v=20260829-195" defer></script>
 </head>
 <body>
   <div id="bootView" class="centered-state">
@@ -2530,21 +2530,48 @@
             <h3 id="generalSuggestionTitle">建议阈值</h3>
             <p>三种建议轨道的分数含义不同。默认 0 表示只要正分即可进入待审核队列。</p>
             <div id="generalSuggestionDefaults" class="suggestion-defaults" aria-label="建议默认阈值">
-              <label class="suggestion-default-row">
+              <div class="suggestion-default-row">
                 <span>特征向量</span>
-                <input type="number" inputmode="decimal" step="0.05"
-                  data-suggestion-default="featureKnn" aria-label="特征向量默认门槛">
-              </label>
-              <label class="suggestion-default-row">
+                <div class="suggestion-threshold-stepper">
+                  <button class="threshold-step-button" type="button"
+                    data-suggestion-default-step="-0.05" data-suggestion-default-method="featureKnn"
+                    data-suggestion-default-focus="decrease" aria-label="特征向量默认门槛减少 0.05">−</button>
+                  <input type="number" inputmode="decimal" step="0.05"
+                    data-suggestion-default="featureKnn" data-suggestion-default-method="featureKnn"
+                    data-suggestion-default-focus="input" aria-label="特征向量默认门槛">
+                  <button class="threshold-step-button" type="button"
+                    data-suggestion-default-step="0.05" data-suggestion-default-method="featureKnn"
+                    data-suggestion-default-focus="increase" aria-label="特征向量默认门槛增加 0.05">+</button>
+                </div>
+              </div>
+              <div class="suggestion-default-row">
                 <span>个人模型</span>
-                <input type="number" inputmode="decimal" step="0.05"
-                  data-suggestion-default="personalCentroid" aria-label="个人模型默认门槛">
-              </label>
-              <label class="suggestion-default-row">
+                <div class="suggestion-threshold-stepper">
+                  <button class="threshold-step-button" type="button"
+                    data-suggestion-default-step="-0.05" data-suggestion-default-method="personalCentroid"
+                    data-suggestion-default-focus="decrease" aria-label="个人模型默认门槛减少 0.05">−</button>
+                  <input type="number" inputmode="decimal" step="0.05"
+                    data-suggestion-default="personalCentroid" data-suggestion-default-method="personalCentroid"
+                    data-suggestion-default-focus="input" aria-label="个人模型默认门槛">
+                  <button class="threshold-step-button" type="button"
+                    data-suggestion-default-step="0.05" data-suggestion-default-method="personalCentroid"
+                    data-suggestion-default-focus="increase" aria-label="个人模型默认门槛增加 0.05">+</button>
+                </div>
+              </div>
+              <div class="suggestion-default-row">
                 <span>超级个人模型</span>
-                <input type="number" inputmode="decimal" step="0.05"
-                  data-suggestion-default="personalAdamW" aria-label="超级个人模型默认门槛">
-              </label>
+                <div class="suggestion-threshold-stepper">
+                  <button class="threshold-step-button" type="button"
+                    data-suggestion-default-step="-0.05" data-suggestion-default-method="personalAdamW"
+                    data-suggestion-default-focus="decrease" aria-label="超级个人模型默认门槛减少 0.05">−</button>
+                  <input type="number" inputmode="decimal" step="0.05"
+                    data-suggestion-default="personalAdamW" data-suggestion-default-method="personalAdamW"
+                    data-suggestion-default-focus="input" aria-label="超级个人模型默认门槛">
+                  <button class="threshold-step-button" type="button"
+                    data-suggestion-default-step="0.05" data-suggestion-default-method="personalAdamW"
+                    data-suggestion-default-focus="increase" aria-label="超级个人模型默认门槛增加 0.05">+</button>
+                </div>
+              </div>
             </div>
           </div>
           <button id="suggestionOverridesButton" class="button" type="button">

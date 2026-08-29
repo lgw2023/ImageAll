@@ -11864,12 +11864,37 @@ function renderSuggestionThresholdDefaults(unavailable) {
       defaults.get(input.dataset.suggestionDefault)
     );
   }
+  for (const button of elements.generalSuggestionDefaults.querySelectorAll(
+    "[data-suggestion-default-step]"
+  )) {
+    button.disabled = unavailable;
+  }
   const overrideCount = thresholds.tags.reduce(
     (count, tag) => count + tag.methods.filter((method) => method.overrideMinScore != null).length,
     0
   );
   elements.suggestionOverrideCount.textContent = String(overrideCount);
   elements.suggestionOverridesButton.disabled = unavailable;
+}
+
+function suggestionDefaultFocusKey(target) {
+  const control = target instanceof Element
+    ? target.closest("[data-suggestion-default-focus][data-suggestion-default-method]")
+    : null;
+  if (!control) return null;
+  return [
+    control.dataset.suggestionDefaultFocus,
+    control.dataset.suggestionDefaultMethod,
+  ];
+}
+
+function suggestionDefaultFocusTarget(key) {
+  if (!key) return null;
+  const [kind, method] = key;
+  return elements.generalSuggestionDefaults.querySelector(
+    `[data-suggestion-default-focus="${CSS.escape(kind)}"]`
+      + `[data-suggestion-default-method="${CSS.escape(method)}"]`
+  );
 }
 
 function suggestionReferenceText(reference) {
@@ -12111,18 +12136,32 @@ function createSuggestionThresholdMethod() {
   block.className = "suggestion-threshold-method";
   const row = document.createElement("div");
   row.className = "suggestion-threshold-method-row";
-  const label = document.createElement("label");
+  const editorGroup = document.createElement("div");
+  editorGroup.className = "suggestion-threshold-method-editor-group";
   const labelText = document.createElement("span");
   labelText.className = "suggestion-threshold-method-label";
+  const stepper = document.createElement("div");
+  stepper.className = "suggestion-threshold-stepper";
+  const decrease = document.createElement("button");
+  decrease.type = "button";
+  decrease.className = "threshold-step-button";
+  decrease.dataset.thresholdStep = "-0.05";
+  decrease.textContent = "−";
   const input = document.createElement("input");
   input.type = "number";
   input.inputMode = "decimal";
   input.step = "0.05";
   configureSuggestionThresholdControl(input, "input", "", "");
-  label.append(labelText, input);
+  const increase = document.createElement("button");
+  increase.type = "button";
+  increase.className = "threshold-step-button";
+  increase.dataset.thresholdStep = "0.05";
+  increase.textContent = "+";
+  stepper.append(decrease, input, increase);
+  editorGroup.append(labelText, stepper);
   const badge = document.createElement("span");
   badge.className = "threshold-source-badge";
-  row.append(label, badge);
+  row.append(editorGroup, badge);
   const reference = document.createElement("div");
   reference.className = "suggestion-threshold-reference";
   reference.append(document.createElement("span"));
@@ -12146,9 +12185,10 @@ function syncSuggestionThresholdMethod(block, tag, method, unavailable) {
   const methodName = suggestionThresholdMethodLabels[method.method] || method.method;
   block.dataset.thresholdMethod = method.method;
   const row = block.querySelector(":scope > .suggestion-threshold-method-row");
-  const label = row.querySelector(":scope > label");
-  const labelText = label.querySelector(":scope > .suggestion-threshold-method-label");
-  const input = label.querySelector(":scope > input");
+  const editorGroup = row.querySelector(":scope > .suggestion-threshold-method-editor-group");
+  const labelText = editorGroup.querySelector(":scope > .suggestion-threshold-method-label");
+  const stepper = editorGroup.querySelector(":scope > .suggestion-threshold-stepper");
+  const input = stepper.querySelector(":scope > input");
   const badge = row.querySelector(":scope > .threshold-source-badge");
   setSuggestionThresholdText(labelText, methodName);
   configureSuggestionThresholdControl(input, "input", tag.tagID, method.method);
@@ -12159,6 +12199,17 @@ function syncSuggestionThresholdMethod(block, tag, method, unavailable) {
   input.dataset.persistedValue = persistedValue;
   input.disabled = unavailable;
   input.setAttribute("aria-label", `${tag.displayName} ${methodName}最低门槛`);
+  for (const [button, kind, direction] of [
+    [stepper.querySelector('[data-threshold-step="-0.05"]'), "decrease", "减少"],
+    [stepper.querySelector('[data-threshold-step="0.05"]'), "increase", "增加"],
+  ]) {
+    configureSuggestionThresholdControl(button, kind, tag.tagID, method.method);
+    button.disabled = unavailable;
+    button.setAttribute(
+      "aria-label",
+      `${tag.displayName} ${methodName}门槛${direction} 0.05`
+    );
+  }
   const inherited = method.overrideMinScore == null;
   const badgeClass = `threshold-source-badge${inherited ? " inherited" : ""}`;
   if (badge.className !== badgeClass) badge.className = badgeClass;
@@ -12170,7 +12221,7 @@ function syncSuggestionThresholdMethod(block, tag, method, unavailable) {
     inherit.disabled = unavailable;
     configureSuggestionThresholdControl(inherit, "inherit", tag.tagID, method.method);
   }
-  reconcileStableChildren(row, [label, badge, inherit].filter(Boolean));
+  reconcileStableChildren(row, [editorGroup, badge, inherit].filter(Boolean));
 
   const referenceRow = block.querySelector(":scope > .suggestion-threshold-reference");
   const referenceText = referenceRow.querySelector(":scope > span");
@@ -12332,8 +12383,7 @@ async function loadGeneralSettings({ quiet = false } = {}) {
 async function submitGeneralSettingsPatch(patch) {
   const manager = state.generalSettings;
   if (!state.online || manager.loading || manager.submitting || !manager.snapshot) return false;
-  const activeDefault = document.activeElement?.closest?.("[data-suggestion-default]");
-  manager.pendingDefaultFocus = activeDefault?.dataset.suggestionDefault || null;
+  manager.pendingDefaultFocus = suggestionDefaultFocusKey(document.activeElement);
   manager.pendingThresholdFocus = thresholdFocusSelector(document.activeElement);
   if (elements.reviewOverviewGrid.contains(document.activeElement)) {
     state.review.pendingThresholdFocus = manager.pendingThresholdFocus;
@@ -12363,9 +12413,7 @@ async function submitGeneralSettingsPatch(patch) {
     manager.submitting = false;
     renderGeneralSettings();
     if (manager.pendingDefaultFocus) {
-      restoreOverlayFocus(elements.generalSuggestionDefaults.querySelector(
-        `[data-suggestion-default="${CSS.escape(manager.pendingDefaultFocus)}"]`
-      ));
+      restoreOverlayFocus(suggestionDefaultFocusTarget(manager.pendingDefaultFocus));
     }
     manager.pendingDefaultFocus = null;
     manager.pendingThresholdFocus = null;
@@ -12406,6 +12454,15 @@ function commitSuggestionOverride(input) {
       minScore,
     },
   });
+}
+
+function stepSuggestionThresholdInput(input, step) {
+  if (!input || input.disabled || !Number.isFinite(step)) return false;
+  const current = Number(input.value);
+  const baseline = Number.isFinite(current) ? current : Number(input.dataset.persistedValue);
+  if (!Number.isFinite(baseline)) return false;
+  input.value = formatSuggestionThreshold(baseline + step);
+  return true;
 }
 
 async function submitReviewThresholdMutation(mutation, successMessage) {
@@ -39686,6 +39743,18 @@ function bindEvents() {
     const input = event.target.closest("[data-suggestion-default]");
     if (input) commitSuggestionDefault(input);
   });
+  elements.generalSuggestionDefaults.addEventListener("click", (event) => {
+    const button = event.target.closest(
+      "[data-suggestion-default-step][data-suggestion-default-method]"
+    );
+    if (!button) return;
+    const input = elements.generalSuggestionDefaults.querySelector(
+      `[data-suggestion-default="${CSS.escape(button.dataset.suggestionDefaultMethod)}"]`
+    );
+    if (stepSuggestionThresholdInput(input, Number(button.dataset.suggestionDefaultStep))) {
+      commitSuggestionDefault(input);
+    }
+  });
   elements.generalSuggestionDefaults.addEventListener("keydown", (event) => {
     const input = event.target.closest("[data-suggestion-default]");
     if (input && event.key === "Enter") {
@@ -39713,6 +39782,16 @@ function bindEvents() {
     }
   });
   elements.suggestionThresholdList.addEventListener("click", (event) => {
+    const stepButton = event.target.closest("[data-threshold-step]");
+    if (stepButton) {
+      const input = stepButton.closest(".suggestion-threshold-method")?.querySelector(
+        '[data-threshold-focus="input"]'
+      );
+      if (stepSuggestionThresholdInput(input, Number(stepButton.dataset.thresholdStep))) {
+        commitSuggestionOverride(input);
+      }
+      return;
+    }
     const button = event.target.closest("[data-threshold-action]");
     if (!button) return;
     const mutation = {
