@@ -921,6 +921,87 @@ def main():
         assert "单项记录" in page.locator("#trainingDetailContext").inner_text()
         assert "12 个样本" in page.locator("#trainingDetailContext").inner_text()
         assert "2 个选定来源" in page.locator("#trainingFactLedger").inner_text()
+        stable_training_detail = page.evaluate(
+            """() => {
+              const containers = {
+                context: document.querySelector("#trainingDetailContext"),
+                facts: document.querySelector("#trainingFactLedger"),
+                artifacts: document.querySelector("#trainingArtifactLedger"),
+                technical: document.querySelector("#trainingTechnicalBlocks"),
+              };
+              const scope = containers.facts.querySelector(
+                '[data-training-fact-key="scope"] dd'
+              );
+              const selection = getSelection();
+              const range = document.createRange();
+              range.selectNodeContents(scope);
+              selection.removeAllRanges();
+              selection.addRange(range);
+              const frame = {
+                children: Object.fromEntries(
+                  Object.entries(containers).map(([key, container]) => [
+                    key,
+                    [...container.children],
+                  ])
+                ),
+                scope,
+                selectedText: selection.toString(),
+                mutations: Object.fromEntries(
+                  Object.keys(containers).map((key) => [key, 0])
+                ),
+                observers: [],
+              };
+              for (const [key, container] of Object.entries(containers)) {
+                const observer = new MutationObserver((records) => {
+                  frame.mutations[key] += records.filter(
+                    (record) => record.type === "childList"
+                  ).length;
+                });
+                observer.observe(container, { childList: true, subtree: true });
+                frame.observers.push(observer);
+              }
+              state.online = false;
+              renderTrainingDetail();
+              state.online = true;
+              renderTrainingDetail();
+              frame.observers.forEach((observer) => observer.disconnect());
+              const stable = Object.fromEntries(
+                Object.entries(containers).map(([key, container]) => {
+                  const children = [...container.children];
+                  return [
+                    key,
+                    children.length === frame.children[key].length
+                      && children.every(
+                        (child, index) => child === frame.children[key][index]
+                      ),
+                  ];
+                })
+              );
+              return {
+                ...stable,
+                scope: containers.facts.querySelector(
+                  '[data-training-fact-key="scope"] dd'
+                ) === frame.scope,
+                selection: selection.toString() === frame.selectedText
+                  && selection.toString() === "2 个选定来源",
+                mutations: frame.mutations,
+              };
+            }"""
+        )
+        assert stable_training_detail == {
+            "context": True,
+            "facts": True,
+            "artifacts": True,
+            "technical": True,
+            "scope": True,
+            "selection": True,
+            "mutations": {
+                "context": 0,
+                "facts": 0,
+                "artifacts": 0,
+                "technical": 0,
+            },
+        }, stable_training_detail
         assert page.locator("#trainingMetricHighlights").is_hidden()
         assert page.locator("#trainingLossChart").is_hidden()
         assert page.locator("#trainingMetricEmpty").is_visible()

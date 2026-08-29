@@ -25477,15 +25477,27 @@ function renderTrainingMetrics(value) {
   renderTrainingLossChart(points, bestMetric, latestMetric);
 }
 
-function appendTrainingFact(container, label, value, className = "training-fact") {
-  const wrapper = document.createElement("div");
-  wrapper.className = className;
-  const term = document.createElement("dt");
-  term.textContent = label;
-  const description = document.createElement("dd");
-  description.textContent = value || "—";
-  wrapper.append(term, description);
-  container.append(wrapper);
+function reconcileTrainingFacts(container, facts) {
+  const existing = new Map(
+    [...container.querySelectorAll(":scope > [data-training-fact-key]")]
+      .map((wrapper) => [wrapper.dataset.trainingFactKey, wrapper])
+  );
+  const wanted = facts.map((fact) => {
+    const wrapper = existing.get(fact.key) || document.createElement("div");
+    existing.delete(fact.key);
+    if (!wrapper.hasAttribute("data-training-fact-key")) {
+      wrapper.append(document.createElement("dt"), document.createElement("dd"));
+    }
+    wrapper.dataset.trainingFactKey = fact.key;
+    wrapper.className = fact.className || "training-fact";
+    const term = wrapper.querySelector(":scope > dt");
+    const description = wrapper.querySelector(":scope > dd");
+    if (term.textContent !== fact.label) term.textContent = fact.label;
+    const value = fact.value || "—";
+    if (description.textContent !== value) description.textContent = value;
+    return wrapper;
+  });
+  reconcileStableChildren(container, wanted);
 }
 
 function isActiveTrainingActivity(activity) {
@@ -26295,31 +26307,53 @@ function moveTrainingRunSelection(key) {
   selectTrainingRun(runs[nextIndex].id, { focus: true, reveal: true });
 }
 
-function appendTrainingIdentifierBlock(run) {
-  const block = document.createElement("section");
-  block.className = "training-technical-block";
-  const heading = document.createElement("h4");
-  heading.textContent = "运行标识";
-  const pre = document.createElement("pre");
-  pre.textContent = [
+function trainingRunIdentifierText(run) {
+  return [
     `training_run: ${run.id}`,
     run.jobID ? `job: ${run.jobID}` : "",
     run.batchID ? `batch: ${run.batchID}` : "",
     run.tagID ? `tag: ${run.tagID}` : "",
   ].filter(Boolean).join("\n");
-  block.append(heading, pre);
-  elements.trainingTechnicalBlocks.append(block);
 }
 
-function appendTrainingTechnicalBlock(title, value, fallback) {
-  const block = document.createElement("section");
-  block.className = "training-technical-block";
-  const heading = document.createElement("h4");
-  heading.textContent = title;
-  const pre = document.createElement("pre");
-  pre.textContent = prettyTrainingJSON(value, fallback);
-  block.append(heading, pre);
-  elements.trainingTechnicalBlocks.append(block);
+function reconcileTrainingTechnicalBlocks(blocks) {
+  const existing = new Map(
+    [...elements.trainingTechnicalBlocks.querySelectorAll(
+      ":scope > [data-training-technical-key]"
+    )].map((block) => [block.dataset.trainingTechnicalKey, block])
+  );
+  const wanted = blocks.map((descriptor) => {
+    const block = existing.get(descriptor.key) || document.createElement("section");
+    existing.delete(descriptor.key);
+    if (!block.hasAttribute("data-training-technical-key")) {
+      block.className = "training-technical-block";
+      block.append(document.createElement("h4"), document.createElement("pre"));
+    }
+    block.dataset.trainingTechnicalKey = descriptor.key;
+    const heading = block.querySelector(":scope > h4");
+    const pre = block.querySelector(":scope > pre");
+    if (heading.textContent !== descriptor.title) heading.textContent = descriptor.title;
+    if (pre.textContent !== descriptor.value) pre.textContent = descriptor.value;
+    return block;
+  });
+  reconcileStableChildren(elements.trainingTechnicalBlocks, wanted);
+}
+
+function reconcileTrainingDetailContext(items) {
+  const existing = new Map(
+    [...elements.trainingDetailContext.querySelectorAll(
+      ":scope > [data-training-context-key]"
+    )].map((chip) => [chip.dataset.trainingContextKey, chip])
+  );
+  const wanted = items.map((item) => {
+    const chip = existing.get(item.key) || document.createElement("span");
+    existing.delete(item.key);
+    chip.dataset.trainingContextKey = item.key;
+    if (chip.className !== item.className) chip.className = item.className;
+    if (chip.textContent !== item.text) chip.textContent = item.text;
+    return chip;
+  });
+  reconcileStableChildren(elements.trainingDetailContext, wanted);
 }
 
 function trainingDetailJobActionKey(jobID, action) {
@@ -26538,61 +26572,63 @@ function renderTrainingDetail() {
   const presentation = trainingMethodPresentation(run.method, run.mediaKind);
   elements.trainingDetailTitle.textContent = presentation.title;
   elements.trainingDetailSubtitle.textContent = `${presentation.technical} · Run ${run.id.slice(0, 8)}`;
-  clearElement(elements.trainingDetailContext);
   const detailContexts = [
-    { text: trainingRunTagName(run), className: "tag" },
+    { key: "tag", text: trainingRunTagName(run), className: "tag" },
     {
+      key: "recordType",
       text: trainingRunBatchPosition(run)
         ? `批次 ${trainingRunBatchPosition(run)}`
         : "单项记录",
       className: isBatchTrainingRun(run) ? "batch" : "single",
     },
-    run.sampleCount != null ? { text: `${run.sampleCount} 个样本`, className: "samples" } : null,
+    run.sampleCount != null
+      ? { key: "samples", text: `${run.sampleCount} 个样本`, className: "samples" }
+      : null,
   ].filter(Boolean);
-  for (const item of detailContexts) {
-    const chip = document.createElement("span");
-    chip.className = item.className;
-    chip.textContent = item.text;
-    elements.trainingDetailContext.append(chip);
-  }
+  reconcileTrainingDetailContext(detailContexts);
   elements.trainingDetailState.textContent = trainingStateText(run.state);
   elements.trainingDetailState.className = `training-state-pill ${run.state}`;
   reconcileTrainingDetailActions(run);
 
-  clearElement(elements.trainingFactLedger);
-  appendTrainingFact(elements.trainingFactLedger, "标签", trainingRunTagName(run));
-  appendTrainingFact(
-    elements.trainingFactLedger,
-    "记录类型",
-    isBatchTrainingRun(run) ? "个人模型批次成员" : "单项训练"
-  );
   const batchPosition = trainingRunBatchPosition(run);
-  if (batchPosition) appendTrainingFact(elements.trainingFactLedger, "批次位置", batchPosition);
-  if (run.sampleCount != null) {
-    appendTrainingFact(elements.trainingFactLedger, "样本", `${run.sampleCount} 个`);
-  }
-  if (run.positiveSampleCount != null || run.negativeSampleCount != null) {
-    appendTrainingFact(
-      elements.trainingFactLedger,
-      "标签样本",
-      `属于 ${run.positiveSampleCount || 0} · 不属于 ${run.negativeSampleCount || 0}`
-    );
-  }
-  appendTrainingFact(elements.trainingFactLedger, "媒体", run.mediaKind === "video" ? "视频" : "照片");
-  appendTrainingFact(elements.trainingFactLedger, "创建", trainingDate(run.createdAtMs));
-  if (run.startedAtMs != null) {
-    appendTrainingFact(elements.trainingFactLedger, "开始", trainingDate(run.startedAtMs));
-  }
-  if (run.finishedAtMs != null) {
-    appendTrainingFact(elements.trainingFactLedger, "结束", trainingDate(run.finishedAtMs));
-  }
   const duration = trainingRunDuration(run);
-  if (duration) appendTrainingFact(elements.trainingFactLedger, "耗时", duration);
-  appendTrainingFact(elements.trainingFactLedger, "数据范围", trainingRunScopeText(run));
-  if (run.mediaKind === "video") {
-    appendTrainingFact(elements.trainingFactLedger, "AI 输入", "代表缩略图 videoPoster.v1");
-  }
-  if (run.jobID) appendTrainingFact(elements.trainingFactLedger, "关联任务", run.jobID.slice(0, 8));
+  reconcileTrainingFacts(elements.trainingFactLedger, [
+    { key: "tag", label: "标签", value: trainingRunTagName(run) },
+    {
+      key: "recordType",
+      label: "记录类型",
+      value: isBatchTrainingRun(run) ? "个人模型批次成员" : "单项训练",
+    },
+    batchPosition
+      ? { key: "batchPosition", label: "批次位置", value: batchPosition }
+      : null,
+    run.sampleCount != null
+      ? { key: "samples", label: "样本", value: `${run.sampleCount} 个` }
+      : null,
+    run.positiveSampleCount != null || run.negativeSampleCount != null
+      ? {
+        key: "tagSamples",
+        label: "标签样本",
+        value: `属于 ${run.positiveSampleCount || 0} · 不属于 ${run.negativeSampleCount || 0}`,
+      }
+      : null,
+    { key: "media", label: "媒体", value: run.mediaKind === "video" ? "视频" : "照片" },
+    { key: "created", label: "创建", value: trainingDate(run.createdAtMs) },
+    run.startedAtMs != null
+      ? { key: "started", label: "开始", value: trainingDate(run.startedAtMs) }
+      : null,
+    run.finishedAtMs != null
+      ? { key: "finished", label: "结束", value: trainingDate(run.finishedAtMs) }
+      : null,
+    duration ? { key: "duration", label: "耗时", value: duration } : null,
+    { key: "scope", label: "数据范围", value: trainingRunScopeText(run) },
+    run.mediaKind === "video"
+      ? { key: "aiInput", label: "AI 输入", value: "代表缩略图 videoPoster.v1" }
+      : null,
+    run.jobID
+      ? { key: "job", label: "关联任务", value: run.jobID.slice(0, 8) }
+      : null,
+  ].filter(Boolean));
 
   const guidance = run.failureGuidance;
   elements.trainingErrorSection.classList.toggle("hidden", !run.errorCode);
@@ -26602,33 +26638,57 @@ function renderTrainingDetail() {
   elements.trainingErrorCode.textContent = run.errorCode || "";
   renderTrainingMetrics(run.metricsJSON);
 
-  clearElement(elements.trainingArtifactLedger);
-  appendTrainingFact(
-    elements.trainingArtifactLedger,
-    "类型",
-    run.artifactKind || "未发布",
-    "training-compact-fact"
-  );
-  if (run.artifactRef) {
-    appendTrainingFact(elements.trainingArtifactLedger, "引用", run.artifactRef, "training-compact-fact");
-  }
-  if (run.artifactSHA256) {
-    appendTrainingFact(elements.trainingArtifactLedger, "SHA-256", run.artifactSHA256, "training-compact-fact");
-  }
-  if (run.sampleManifestSHA256) {
-    appendTrainingFact(
-      elements.trainingArtifactLedger,
-      "样本清单 SHA-256",
-      run.sampleManifestSHA256,
-      "training-compact-fact"
-    );
-  }
+  reconcileTrainingFacts(elements.trainingArtifactLedger, [
+    {
+      key: "type",
+      label: "类型",
+      value: run.artifactKind || "未发布",
+      className: "training-compact-fact",
+    },
+    run.artifactRef
+      ? {
+        key: "reference",
+        label: "引用",
+        value: run.artifactRef,
+        className: "training-compact-fact",
+      }
+      : null,
+    run.artifactSHA256
+      ? {
+        key: "sha256",
+        label: "SHA-256",
+        value: run.artifactSHA256,
+        className: "training-compact-fact",
+      }
+      : null,
+    run.sampleManifestSHA256
+      ? {
+        key: "manifestSHA256",
+        label: "样本清单 SHA-256",
+        value: run.sampleManifestSHA256,
+        className: "training-compact-fact",
+      }
+      : null,
+  ].filter(Boolean));
 
-  clearElement(elements.trainingTechnicalBlocks);
-  appendTrainingIdentifierBlock(run);
-  appendTrainingTechnicalBlock("数据", run.sampleSummaryJSON, "没有样本摘要");
-  appendTrainingTechnicalBlock("配置", run.configJSON, "没有配置摘要");
-  appendTrainingTechnicalBlock("结果", run.resultSummaryJSON, "没有结果摘要");
+  reconcileTrainingTechnicalBlocks([
+    { key: "identifiers", title: "运行标识", value: trainingRunIdentifierText(run) },
+    {
+      key: "samples",
+      title: "数据",
+      value: prettyTrainingJSON(run.sampleSummaryJSON, "没有样本摘要"),
+    },
+    {
+      key: "config",
+      title: "配置",
+      value: prettyTrainingJSON(run.configJSON, "没有配置摘要"),
+    },
+    {
+      key: "result",
+      title: "结果",
+      value: prettyTrainingJSON(run.resultSummaryJSON, "没有结果摘要"),
+    },
+  ]);
   elements.trainingDetailPane.scrollTop = renderedRunID === run.id ? detailScrollTop : 0;
   state.training.renderedDetailRunID = run.id;
   state.training.renderedDetailFingerprint = detailFingerprint;
