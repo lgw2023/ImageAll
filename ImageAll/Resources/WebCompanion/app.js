@@ -14809,19 +14809,19 @@ function beginAssetHoverVideo(card) {
   }, 180);
 }
 
-function syncAssetCardSelectionMark(button) {
-  let mark = button.querySelector(".asset-selection-mark");
-  if (!state.selectionMode) {
-    mark?.remove();
-    return;
-  }
+function syncAssetCardSelectionMark(card) {
+  let mark = card.querySelector(":scope > .asset-selection-mark");
   if (!mark) {
     mark = document.createElement("span");
     mark.className = "asset-selection-mark";
     mark.setAttribute("aria-hidden", "true");
-    button.append(mark);
+    card.append(mark);
   }
-  mark.textContent = state.selectedAssetIDs.has(button.dataset.assetId) ? "✓" : "";
+  mark.classList.toggle("hidden", !state.selectionMode);
+  syncAssetCardOverlayText(
+    mark,
+    state.selectedAssetIDs.has(card.dataset.assetId) ? "✓" : ""
+  );
 }
 
 function syncAssetCardOverlayText(element, text) {
@@ -23818,18 +23818,14 @@ function syncReviewCardSelection(card, item, index) {
   } else {
     mainButton.removeAttribute("aria-current");
   }
-  let mark = card.querySelector(".review-selection-mark");
-  if (selected) {
-    if (!mark) {
-      mark = document.createElement("span");
-      mark.className = "review-selection-mark";
-      mark.setAttribute("aria-hidden", "true");
-      mark.textContent = "✓";
-      card.append(mark);
-    }
-  } else {
-    mark?.remove();
+  let mark = card.querySelector(":scope > .review-selection-mark");
+  if (!mark) {
+    mark = document.createElement("span");
+    mark.className = "review-selection-mark";
+    mark.setAttribute("aria-hidden", "true");
+    card.append(mark);
   }
+  syncAssetCardOverlayText(mark, "✓");
 }
 
 function syncReviewSelectionModeControls({ controlsLocked = false } = {}) {

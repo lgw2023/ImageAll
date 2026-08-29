@@ -4081,6 +4081,47 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("syncReviewCardFavoriteButton(card, item)"))
         XCTAssertTrue(script.contains("syncSlimmingMemberFavoriteButton(card, member)"))
         XCTAssertTrue(script.contains("syncSlimmingRecycleFavoriteButton(card, entry)"))
+        let assetSelectionMarkStart = try XCTUnwrap(
+            script.range(of: "function syncAssetCardSelectionMark(")
+        )
+        let assetSelectionMarkEnd = try XCTUnwrap(
+            script.range(
+                of: "function syncAssetCardOverlayText(",
+                range: assetSelectionMarkStart.upperBound..<script.endIndex
+            )
+        )
+        let assetSelectionMarkScript = script[
+            assetSelectionMarkStart.lowerBound..<assetSelectionMarkEnd.lowerBound
+        ]
+        XCTAssertTrue(assetSelectionMarkScript.contains("classList.toggle(\"hidden\""))
+        XCTAssertTrue(assetSelectionMarkScript.contains("syncAssetCardOverlayText("))
+        XCTAssertFalse(assetSelectionMarkScript.contains(".remove()"))
+        XCTAssertFalse(assetSelectionMarkScript.contains(".textContent ="))
+        let reviewSelectionMarkStart = try XCTUnwrap(
+            script.range(of: "function syncReviewCardSelection(")
+        )
+        let reviewSelectionMarkEnd = try XCTUnwrap(
+            script.range(
+                of: "function syncReviewSelectionModeControls(",
+                range: reviewSelectionMarkStart.upperBound..<script.endIndex
+            )
+        )
+        let reviewSelectionMarkScript = script[
+            reviewSelectionMarkStart.lowerBound..<reviewSelectionMarkEnd.lowerBound
+        ]
+        XCTAssertTrue(reviewSelectionMarkScript.contains("syncAssetCardOverlayText(mark, \"✓\")"))
+        XCTAssertFalse(reviewSelectionMarkScript.contains("mark?.remove()"))
+        XCTAssertTrue(stylesheet.contains(".review-card.selected .review-selection-mark,"))
+        XCTAssertTrue(
+            stylesheet.contains(
+                ".review-workspace.touch-selection-mode .review-card:not(.selected) .review-selection-mark {"
+            )
+        )
+        XCTAssertFalse(
+            stylesheet.contains(
+                ".review-workspace.touch-selection-mode .review-card:not(.selected)::before {"
+            )
+        )
         XCTAssertTrue(stylesheet.contains(".asset-tag-count {"))
         XCTAssertTrue(stylesheet.contains("display: inline-flex;"))
         XCTAssertTrue(script.contains("function reviewCardFingerprint("))

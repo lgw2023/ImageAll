@@ -2738,6 +2738,7 @@ html.split-resizing * {
   box-shadow: 0 1px 5px rgba(0, 0, 0, 0.22);
   -webkit-backdrop-filter: blur(6px);
   backdrop-filter: blur(6px);
+  transition: background 120ms ease, border-color 120ms ease;
 }
 
 .asset-card.batch-selected .asset-selection-mark {
@@ -7055,22 +7056,26 @@ html.split-resizing * {
   color: white;
   font-size: 12px;
   font-weight: 750;
+  opacity: 0;
   pointer-events: none;
+  visibility: hidden;
+  transition:
+    opacity 120ms ease,
+    background 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease;
 }
 
-.review-workspace.touch-selection-mode .review-card:not(.selected)::before {
-  position: absolute;
-  z-index: 5;
-  top: 6px;
-  left: 6px;
-  width: 20px;
-  height: 20px;
+.review-card.selected .review-selection-mark,
+.review-workspace.touch-selection-mode .review-selection-mark {
+  opacity: 1;
+  visibility: visible;
+}
+
+.review-workspace.touch-selection-mode .review-card:not(.selected) .review-selection-mark {
   border: 1px solid rgba(255, 255, 255, 0.88);
-  border-radius: 50%;
   background: rgba(20, 20, 22, 0.28);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
-  content: "";
-  pointer-events: none;
+  color: transparent;
   -webkit-backdrop-filter: blur(4px);
   backdrop-filter: blur(4px);
 }

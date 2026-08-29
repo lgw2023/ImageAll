@@ -1827,7 +1827,37 @@ def main(*, inspector_actions_only=False):
         assert cards.count() == 2
         cards.nth(0).click()
         first_main = cards.nth(0).locator(":scope > .asset-card-main")
-        first_main.focus()
+        cards.nth(0).hover()
+        page.evaluate(
+            """() => {
+              const card = document.querySelector('#assetGrid > .asset-card');
+              const mark = card.querySelector(':scope > .asset-selection-mark');
+              const frame = {
+                card,
+                main: card.querySelector(':scope > .asset-card-main'),
+                image: card.querySelector(':scope > .asset-card-main > img'),
+                mark,
+                markText: mark.firstChild,
+                scrollTop: document.querySelector('#libraryScroll').scrollTop,
+                added: 0,
+                removed: 0,
+              };
+              frame.observer = new MutationObserver((records) => {
+                for (const record of records) {
+                  frame.added += record.addedNodes.length;
+                  frame.removed += record.removedNodes.length;
+                }
+              });
+              frame.observer.observe(mark, { childList: true, subtree: true });
+              frame.main.focus({ preventScroll: true });
+              const range = document.createRange();
+              range.selectNodeContents(frame.markText);
+              const selection = getSelection();
+              selection.removeAllRanges();
+              selection.addRange(range);
+              window.__gallerySelectionMarkFrame = frame;
+            }"""
+        )
         assert "Home End" in first_main.get_attribute("aria-keyshortcuts")
         assert "Shift 扩展选择" in first_main.get_attribute("data-help-detail")
         page.keyboard.press("End")
@@ -1844,6 +1874,36 @@ def main(*, inspector_actions_only=False):
             "&& document.querySelectorAll('#assetGrid .asset-card-favorite[tabindex=\"0\"]')"
             ".length === 1",
             ASSET_IDS[1],
+        )
+        gallery_selection_mark_continuity = page.evaluate(
+            """() => {
+              const frame = window.__gallerySelectionMarkFrame;
+              const card = document.querySelector('#assetGrid > .asset-card');
+              const mark = card.querySelector(':scope > .asset-selection-mark');
+              const nextCard = document.querySelectorAll('#assetGrid > .asset-card')[1];
+              const nextMark = nextCard.querySelector(':scope > .asset-selection-mark');
+              const selection = getSelection();
+              frame.observer.disconnect();
+              return {
+                card: card === frame.card,
+                main: frame.main === card.querySelector(':scope > .asset-card-main'),
+                image: frame.image === frame.main.querySelector(':scope > img'),
+                mark: mark === frame.mark,
+                markText: frame.markText === mark.firstChild,
+                deselectedValue: mark.textContent === '',
+                nextSelectedValue: nextMark.textContent === '✓',
+                selectionNode: selection.anchorNode === frame.markText,
+                hovered: card.matches(':hover'),
+                focused: document.activeElement === nextCard.querySelector(
+                  ':scope > .asset-card-main'
+                ),
+                scroll: document.querySelector('#libraryScroll').scrollTop === frame.scrollTop,
+                zeroChildMutations: frame.added === 0 && frame.removed === 0,
+              };
+            }"""
+        )
+        assert all(gallery_selection_mark_continuity.values()), (
+            gallery_selection_mark_continuity
         )
         page.keyboard.down("Shift")
         page.keyboard.press("Home")

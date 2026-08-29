@@ -3833,8 +3833,72 @@ def main():
         assert review_selection_mode.get_attribute("aria-pressed") == "true"
         assert review_selection_mode.inner_text() == "完成"
         assert review_select_all.is_visible()
-        page.locator('[data-review-index="1"] > .review-card-main').click()
+        second_review_card = page.locator('[data-review-index="1"]')
+        second_review_card.hover()
+        page.evaluate(
+            """() => {
+              const card = document.querySelector('[data-review-index="1"]');
+              const mark = card.querySelector(':scope > .review-selection-mark');
+              const frame = {
+                card,
+                main: card.querySelector(':scope > .review-card-main'),
+                image: card.querySelector(':scope > .review-card-main > img'),
+                mark,
+                markText: mark.firstChild,
+                scrollTop: document.querySelector('#reviewQueuePane').scrollTop,
+                added: 0,
+                removed: 0,
+              };
+              frame.observer = new MutationObserver((records) => {
+                for (const record of records) {
+                  frame.added += record.addedNodes.length;
+                  frame.removed += record.removedNodes.length;
+                }
+              });
+              frame.observer.observe(mark, { childList: true, subtree: true });
+              frame.main.focus({ preventScroll: true });
+              const range = document.createRange();
+              range.selectNodeContents(frame.markText);
+              const selection = getSelection();
+              selection.removeAllRanges();
+              selection.addRange(range);
+              window.__reviewSelectionMarkFrame = frame;
+              selectReviewIndex(1, { additive: true });
+            }"""
+        )
         page.wait_for_function("() => state.review.selectedAssetIDs.size === 2")
+        page.wait_for_function(
+            "() => getComputedStyle(document.querySelector("
+            "'[data-review-index=\"1\"] > .review-selection-mark'"
+            ")).opacity === '1'"
+        )
+        review_selection_mark_continuity = page.evaluate(
+            """() => {
+              const frame = window.__reviewSelectionMarkFrame;
+              const card = document.querySelector('[data-review-index="1"]');
+              const mark = card.querySelector(':scope > .review-selection-mark');
+              const selection = getSelection();
+              frame.observer.disconnect();
+              return {
+                card: card === frame.card,
+                main: frame.main === card.querySelector(':scope > .review-card-main'),
+                image: frame.image === frame.main.querySelector(':scope > img'),
+                mark: mark === frame.mark,
+                markText: frame.markText === mark.firstChild,
+                selected: card.classList.contains('selected') && mark.textContent === '✓',
+                visible: getComputedStyle(mark).visibility === 'visible'
+                  && getComputedStyle(mark).opacity === '1',
+                selectionNode: selection.anchorNode === frame.markText,
+                hovered: card.matches(':hover'),
+                focused: document.activeElement === frame.main,
+                scroll: document.querySelector('#reviewQueuePane').scrollTop === frame.scrollTop,
+                zeroChildMutations: frame.added === 0 && frame.removed === 0,
+              };
+            }"""
+        )
+        assert all(review_selection_mark_continuity.values()), (
+            review_selection_mark_continuity
+        )
         page.locator('[data-review-index="2"] > .review-card-main').click()
         page.wait_for_function("() => state.review.selectedAssetIDs.size === 3")
         assert review_select_all.is_disabled()
