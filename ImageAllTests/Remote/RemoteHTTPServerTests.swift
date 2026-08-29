@@ -2630,12 +2630,16 @@ final class RemoteHTTPServerTests: XCTestCase {
             "slimmingThresholdDialogContent",
             "slimmingThresholdRecallMode",
             "slimmingThresholdRecallTopK",
+            "slimmingThresholdRecallTopKSlider",
             "slimmingThresholdL2Mode",
             "slimmingThresholdL2Distance",
+            "slimmingThresholdL2DistanceSlider",
             "slimmingThresholdDINOMode",
             "slimmingThresholdDINOSimilarity",
+            "slimmingThresholdDINOSimilaritySlider",
             "slimmingThresholdBucketingMode",
             "slimmingThresholdBucketActivationCount",
+            "slimmingThresholdBucketActivationCountSlider",
             "resetSlimmingThresholdDialogButton",
             "applySlimmingThresholdDialogButton",
             "slimmingSelectionSummary",
@@ -2670,9 +2674,13 @@ final class RemoteHTTPServerTests: XCTestCase {
             "slimmingModeOptions",
             "slimmingSourceOptions",
             "slimmingRecallMode",
+            "slimmingRecallTopKSlider",
             "slimmingL2Mode",
+            "slimmingL2DistanceSlider",
             "slimmingDINOMode",
+            "slimmingDINOSimilaritySlider",
             "slimmingBucketingMode",
+            "slimmingBucketActivationCountSlider",
             "resetSlimmingThresholdsButton",
             "launchSlimmingButton",
             "slimmingRecycleBody",
@@ -3456,6 +3464,13 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("data-threshold-step"))
         XCTAssertTrue(stylesheet.contains(".suggestion-threshold-stepper"))
         XCTAssertTrue(stylesheet.contains(".threshold-step-button"))
+        XCTAssertTrue(script.contains("function syncSlimmingThresholdInteractionSurface(surface)"))
+        XCTAssertTrue(script.contains("function bindSlimmingThresholdInteractionSurface(surface)"))
+        XCTAssertTrue(html.contains("data-threshold-number-target=\"slimmingRecallTopK\""))
+        XCTAssertTrue(html.contains("data-threshold-mode-target=\"slimmingThresholdRecallMode\""))
+        XCTAssertTrue(html.contains("data-threshold-select-target=\"slimmingBucketingMode\""))
+        XCTAssertTrue(stylesheet.contains(".slimming-threshold-value-editor"))
+        XCTAssertTrue(stylesheet.contains(".slimming-threshold-segmented"))
         XCTAssertTrue(script.contains("manager.pendingThresholdFocus = activeFocusKey"))
         XCTAssertTrue(script.contains("const hasLocalDraft = input.dataset.persistedValue !== undefined"))
         XCTAssertFalse(script.contains("elements.suggestionThresholdList.replaceChildren()"))

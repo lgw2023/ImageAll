@@ -10,8 +10,8 @@
   <meta name="apple-mobile-web-app-title" content="ImageAll">
   <title>ImageAll 网页版</title>
   <link rel="manifest" href="/manifest.webmanifest">
-    <link rel="stylesheet" href="/app.css?v=20260829-195">
-    <script src="/app.js?v=20260829-195" defer></script>
+    <link rel="stylesheet" href="/app.css?v=20260829-196">
+    <script src="/app.js?v=20260829-196" defer></script>
 </head>
 <body>
   <div id="bootView" class="centered-state">
@@ -2759,10 +2759,74 @@
             完全相同与视觉重复不受影响。极限模式会扩大场景相似候选范围，可能显著增加分析时间。
           </p>
           <div class="slimming-threshold-grid">
-            <label><span>Feature Print 候选</span><select id="slimmingThresholdRecallMode"><option value="topK">Top-K</option><option value="allCandidates">全部候选</option></select><input id="slimmingThresholdRecallTopK" type="number" min="1" max="128" step="1"></label>
-            <label><span>Feature Print L2</span><select id="slimmingThresholdL2Mode"><option value="radius">半径</option><option value="unlimited">不限</option></select><input id="slimmingThresholdL2Distance" type="number" min="0" max="200" step="any"></label>
-            <label><span>DINOv2 余弦下限</span><select id="slimmingThresholdDINOMode"><option value="minimum">最低值</option><option value="unlimited">不限</option></select><input id="slimmingThresholdDINOSimilarity" type="number" min="0" max="1" step="0.01"></label>
-            <label><span>按拍摄日分桶</span><select id="slimmingThresholdBucketingMode"><option value="automatic">自动</option><option value="always">始终</option><option value="never">从不</option></select><input id="slimmingThresholdBucketActivationCount" type="number" min="2" max="10000" step="1"></label>
+            <div class="slimming-threshold-control">
+              <div class="slimming-threshold-control-heading">
+                <label for="slimmingThresholdRecallTopK">Feature Print Top-K</label>
+                <label class="slimming-threshold-mode-toggle">
+                  <input type="checkbox" data-threshold-mode-target="slimmingThresholdRecallMode"
+                    data-checked-value="allCandidates" data-unchecked-value="topK">
+                  <span>召回全部候选</span>
+                </label>
+              </div>
+              <select id="slimmingThresholdRecallMode" class="slimming-threshold-mode-state" tabindex="-1" aria-hidden="true"><option value="topK">Top-K</option><option value="allCandidates">全部候选</option></select>
+              <div class="slimming-threshold-value-editor">
+                <input id="slimmingThresholdRecallTopKSlider" type="range" min="1" max="128" step="1"
+                  data-threshold-number-target="slimmingThresholdRecallTopK" aria-label="Feature Print Top-K 滑杆">
+                <input id="slimmingThresholdRecallTopK" type="number" min="1" max="128" step="1"
+                  aria-label="Feature Print Top-K 数值">
+              </div>
+            </div>
+            <div class="slimming-threshold-control">
+              <div class="slimming-threshold-control-heading">
+                <label for="slimmingThresholdL2Distance">Feature Print L2 半径</label>
+                <label class="slimming-threshold-mode-toggle">
+                  <input type="checkbox" data-threshold-mode-target="slimmingThresholdL2Mode"
+                    data-checked-value="unlimited" data-unchecked-value="radius">
+                  <span>半径不限</span>
+                </label>
+              </div>
+              <select id="slimmingThresholdL2Mode" class="slimming-threshold-mode-state" tabindex="-1" aria-hidden="true"><option value="radius">半径</option><option value="unlimited">不限</option></select>
+              <div class="slimming-threshold-value-editor">
+                <input id="slimmingThresholdL2DistanceSlider" type="range" min="0" max="200" step="0.1"
+                  data-threshold-number-target="slimmingThresholdL2Distance" aria-label="Feature Print L2 半径滑杆">
+                <input id="slimmingThresholdL2Distance" type="number" min="0" max="200" step="any"
+                  aria-label="Feature Print L2 半径数值">
+              </div>
+            </div>
+            <div class="slimming-threshold-control">
+              <div class="slimming-threshold-control-heading">
+                <label for="slimmingThresholdDINOSimilarity">DINOv2 余弦下限</label>
+                <label class="slimming-threshold-mode-toggle">
+                  <input type="checkbox" data-threshold-mode-target="slimmingThresholdDINOMode"
+                    data-checked-value="unlimited" data-unchecked-value="minimum">
+                  <span>精排不设下限</span>
+                </label>
+              </div>
+              <select id="slimmingThresholdDINOMode" class="slimming-threshold-mode-state" tabindex="-1" aria-hidden="true"><option value="minimum">最低值</option><option value="unlimited">不限</option></select>
+              <div class="slimming-threshold-value-editor">
+                <input id="slimmingThresholdDINOSimilaritySlider" type="range" min="0" max="1" step="0.01"
+                  data-threshold-number-target="slimmingThresholdDINOSimilarity" aria-label="DINOv2 余弦下限滑杆">
+                <input id="slimmingThresholdDINOSimilarity" type="number" min="0" max="1" step="0.01"
+                  aria-label="DINOv2 余弦下限数值">
+              </div>
+            </div>
+            <div class="slimming-threshold-control">
+              <div class="slimming-threshold-control-heading">
+                <label for="slimmingThresholdBucketActivationCount">按拍摄日分桶</label>
+                <div class="slimming-threshold-segmented" role="radiogroup" aria-label="按拍摄日分桶模式">
+                  <button type="button" role="radio" data-threshold-select-target="slimmingThresholdBucketingMode" data-threshold-select-value="always">始终</button>
+                  <button type="button" role="radio" data-threshold-select-target="slimmingThresholdBucketingMode" data-threshold-select-value="automatic">自动</button>
+                  <button type="button" role="radio" data-threshold-select-target="slimmingThresholdBucketingMode" data-threshold-select-value="never">从不</button>
+                </div>
+              </div>
+              <select id="slimmingThresholdBucketingMode" class="slimming-threshold-mode-state" tabindex="-1" aria-hidden="true"><option value="automatic">自动</option><option value="always">始终</option><option value="never">从不</option></select>
+              <div class="slimming-threshold-value-editor" data-threshold-automatic-for="slimmingThresholdBucketingMode">
+                <input id="slimmingThresholdBucketActivationCountSlider" type="range" min="2" max="10000" step="1"
+                  data-threshold-number-target="slimmingThresholdBucketActivationCount" aria-label="分桶激活资产数滑杆">
+                <input id="slimmingThresholdBucketActivationCount" type="number" min="2" max="10000" step="1"
+                  aria-label="分桶激活资产数">
+              </div>
+            </div>
           </div>
           <p id="slimmingThresholdDialogExtremeWarning"
             class="slimming-extreme-warning hidden" role="status">
@@ -2825,10 +2889,64 @@
               <button id="resetSlimmingThresholdsButton" class="button button-compact" type="button">恢复默认</button>
             </div>
             <div class="slimming-threshold-grid">
-              <label><span>Feature Print 候选</span><select id="slimmingRecallMode"><option value="topK">Top-K</option><option value="allCandidates">全部候选</option></select><input id="slimmingRecallTopK" type="number" min="1" max="128" step="1"></label>
-              <label><span>Feature Print L2</span><select id="slimmingL2Mode"><option value="radius">半径</option><option value="unlimited">不限</option></select><input id="slimmingL2Distance" type="number" min="0" max="200" step="any"></label>
-              <label><span>DINO 余弦相似度</span><select id="slimmingDINOMode"><option value="minimum">最低值</option><option value="unlimited">不限</option></select><input id="slimmingDINOSimilarity" type="number" min="0" max="1" step="0.01"></label>
-              <label><span>拍摄日分桶</span><select id="slimmingBucketingMode"><option value="automatic">自动</option><option value="always">始终</option><option value="never">从不</option></select><input id="slimmingBucketActivationCount" type="number" min="2" max="10000" step="1"></label>
+              <div class="slimming-threshold-control">
+                <div class="slimming-threshold-control-heading">
+                  <label for="slimmingRecallTopK">Feature Print Top-K</label>
+                  <label class="slimming-threshold-mode-toggle"><input type="checkbox"
+                    data-threshold-mode-target="slimmingRecallMode" data-checked-value="allCandidates"
+                    data-unchecked-value="topK"><span>召回全部候选</span></label>
+                </div>
+                <select id="slimmingRecallMode" class="slimming-threshold-mode-state" tabindex="-1" aria-hidden="true"><option value="topK">Top-K</option><option value="allCandidates">全部候选</option></select>
+                <div class="slimming-threshold-value-editor">
+                  <input id="slimmingRecallTopKSlider" type="range" min="1" max="128" step="1"
+                    data-threshold-number-target="slimmingRecallTopK" aria-label="Feature Print Top-K 滑杆">
+                  <input id="slimmingRecallTopK" type="number" min="1" max="128" step="1" aria-label="Feature Print Top-K 数值">
+                </div>
+              </div>
+              <div class="slimming-threshold-control">
+                <div class="slimming-threshold-control-heading">
+                  <label for="slimmingL2Distance">Feature Print L2 半径</label>
+                  <label class="slimming-threshold-mode-toggle"><input type="checkbox"
+                    data-threshold-mode-target="slimmingL2Mode" data-checked-value="unlimited"
+                    data-unchecked-value="radius"><span>半径不限</span></label>
+                </div>
+                <select id="slimmingL2Mode" class="slimming-threshold-mode-state" tabindex="-1" aria-hidden="true"><option value="radius">半径</option><option value="unlimited">不限</option></select>
+                <div class="slimming-threshold-value-editor">
+                  <input id="slimmingL2DistanceSlider" type="range" min="0" max="200" step="0.1"
+                    data-threshold-number-target="slimmingL2Distance" aria-label="Feature Print L2 半径滑杆">
+                  <input id="slimmingL2Distance" type="number" min="0" max="200" step="any" aria-label="Feature Print L2 半径数值">
+                </div>
+              </div>
+              <div class="slimming-threshold-control">
+                <div class="slimming-threshold-control-heading">
+                  <label for="slimmingDINOSimilarity">DINOv2 余弦下限</label>
+                  <label class="slimming-threshold-mode-toggle"><input type="checkbox"
+                    data-threshold-mode-target="slimmingDINOMode" data-checked-value="unlimited"
+                    data-unchecked-value="minimum"><span>精排不设下限</span></label>
+                </div>
+                <select id="slimmingDINOMode" class="slimming-threshold-mode-state" tabindex="-1" aria-hidden="true"><option value="minimum">最低值</option><option value="unlimited">不限</option></select>
+                <div class="slimming-threshold-value-editor">
+                  <input id="slimmingDINOSimilaritySlider" type="range" min="0" max="1" step="0.01"
+                    data-threshold-number-target="slimmingDINOSimilarity" aria-label="DINOv2 余弦下限滑杆">
+                  <input id="slimmingDINOSimilarity" type="number" min="0" max="1" step="0.01" aria-label="DINOv2 余弦下限数值">
+                </div>
+              </div>
+              <div class="slimming-threshold-control">
+                <div class="slimming-threshold-control-heading">
+                  <label for="slimmingBucketActivationCount">按拍摄日分桶</label>
+                  <div class="slimming-threshold-segmented" role="radiogroup" aria-label="按拍摄日分桶模式">
+                    <button type="button" role="radio" data-threshold-select-target="slimmingBucketingMode" data-threshold-select-value="always">始终</button>
+                    <button type="button" role="radio" data-threshold-select-target="slimmingBucketingMode" data-threshold-select-value="automatic">自动</button>
+                    <button type="button" role="radio" data-threshold-select-target="slimmingBucketingMode" data-threshold-select-value="never">从不</button>
+                  </div>
+                </div>
+                <select id="slimmingBucketingMode" class="slimming-threshold-mode-state" tabindex="-1" aria-hidden="true"><option value="automatic">自动</option><option value="always">始终</option><option value="never">从不</option></select>
+                <div class="slimming-threshold-value-editor" data-threshold-automatic-for="slimmingBucketingMode">
+                  <input id="slimmingBucketActivationCountSlider" type="range" min="2" max="10000" step="1"
+                    data-threshold-number-target="slimmingBucketActivationCount" aria-label="分桶激活资产数滑杆">
+                  <input id="slimmingBucketActivationCount" type="number" min="2" max="10000" step="1" aria-label="分桶激活资产数">
+                </div>
+              </div>
             </div>
             <p id="slimmingExtremeWarning" class="slimming-extreme-warning hidden">⚠ 极限设置可能显著增加分析时间和相似结果数量。</p>
           </details>

@@ -3244,8 +3244,66 @@ def main(*, inspector_actions_only=False):
             "hovered": True,
             "selected": True,
         }, slimming_setup_mode_continuity
-        page.locator("#slimmingRecallMode").select_option("allCandidates")
+        page.evaluate(
+            """() => {
+              window.__slimmingSetupThresholdFrame = {
+                topKSlider: document.querySelector('#slimmingRecallTopKSlider'),
+                topKNumber: document.querySelector('#slimmingRecallTopK'),
+                recallToggle: document.querySelector(
+                  '[data-threshold-mode-target="slimmingRecallMode"]'
+                ),
+                bucketAlways: document.querySelector(
+                  '[data-threshold-select-target="slimmingBucketingMode"]'
+                    + '[data-threshold-select-value="always"]'
+                ),
+                bucketAutomatic: document.querySelector(
+                  '[data-threshold-select-target="slimmingBucketingMode"]'
+                    + '[data-threshold-select-value="automatic"]'
+                ),
+                bucketEditor: document.querySelector(
+                  '[data-threshold-automatic-for="slimmingBucketingMode"]'
+                ),
+              };
+            }"""
+        )
+        page.locator("#slimmingRecallTopKSlider").evaluate(
+            """slider => {
+              slider.focus();
+              slider.value = '48';
+              slider.dispatchEvent(new Event('input', { bubbles: true }));
+              slider.dispatchEvent(new Event('change', { bubbles: true }));
+            }"""
+        )
+        assert page.locator("#slimmingRecallTopK").input_value() == "48"
+        assert page.evaluate(
+            "() => state.slimming.setup.thresholds.featurePrintRecallTopK"
+        ) == 48
+        assert page.evaluate(
+            "() => document.activeElement === window.__slimmingSetupThresholdFrame.topKSlider"
+        )
+        page.locator(
+            '[data-threshold-mode-target="slimmingRecallMode"]'
+        ).check()
+        assert page.locator("#slimmingRecallMode").input_value() == "allCandidates"
         assert page.locator("#slimmingRecallTopK").is_disabled()
+        assert page.locator("#slimmingRecallTopKSlider").is_disabled()
+        page.locator(
+            '[data-threshold-select-target="slimmingBucketingMode"]'
+            '[data-threshold-select-value="automatic"]'
+        ).focus()
+        page.keyboard.press("ArrowLeft")
+        assert page.locator("#slimmingBucketingMode").input_value() == "always"
+        assert page.locator(
+            '[data-threshold-automatic-for="slimmingBucketingMode"]'
+        ).is_hidden()
+        page.keyboard.press("ArrowRight")
+        assert page.locator("#slimmingBucketingMode").input_value() == "automatic"
+        assert page.locator(
+            '[data-threshold-automatic-for="slimmingBucketingMode"]'
+        ).is_visible()
+        assert page.evaluate(
+            "() => document.activeElement === window.__slimmingSetupThresholdFrame.bucketAutomatic"
+        )
         assert page.locator(
             f'[data-slimming-source-id="{SOURCE_ID}"]'
         ).is_checked()
@@ -3367,6 +3425,22 @@ def main(*, inspector_actions_only=False):
             '[data-slimming-mode="catalog"]'
         ).get_attribute("aria-checked") == "true"
         assert page.locator("#slimmingRecallMode").input_value() == "allCandidates"
+        assert page.locator("#slimmingRecallTopK").input_value() == "48"
+        assert page.locator("#slimmingRecallTopKSlider").input_value() == "48"
+        assert page.evaluate(
+            """() => {
+              const frame = window.__slimmingSetupThresholdFrame;
+              return frame.topKSlider?.isConnected
+                && frame.topKSlider === document.querySelector('#slimmingRecallTopKSlider')
+                && frame.topKNumber === document.querySelector('#slimmingRecallTopK')
+                && frame.recallToggle === document.querySelector(
+                  '[data-threshold-mode-target="slimmingRecallMode"]'
+                )
+                && frame.bucketAlways?.isConnected
+                && frame.bucketAutomatic?.isConnected
+                && frame.bucketEditor?.isConnected;
+            }"""
+        ), "slimming setup history rebuilt the threshold interaction scene"
         assert page.locator(
             f'[data-slimming-source-id="{SOURCE_ID}"]'
         ).is_checked()
@@ -3461,6 +3535,12 @@ def main(*, inspector_actions_only=False):
         ) != "slimmingSetup"
         assert submitted_slimming[-1]["mode"] == "catalog"
         assert submitted_slimming[-1]["sourceIDs"] == [SOURCE_ID]
+        assert submitted_slimming_thresholds[-1]["thresholds"][
+            "featurePrintRecallTopK"
+        ] == 48
+        assert submitted_slimming_thresholds[-1]["thresholds"][
+            "featurePrintRecallMode"
+        ] == "allCandidates"
 
         page.locator("#slimmingAnalysisOptionsButton").click()
         page.locator("#slimmingAnalysisOptionsPopover:not(.hidden)").wait_for()
@@ -3476,14 +3556,65 @@ def main(*, inspector_actions_only=False):
         page.locator("#slimmingThresholdDialog[open]").wait_for()
         page.locator("#slimmingThresholdDialogContent:not(.hidden)").wait_for()
         assert page.locator("#slimmingAnalysisOptionsPopover").is_hidden()
-        assert page.locator("#slimmingThresholdRecallTopK").input_value() == "32"
+        assert page.locator("#slimmingThresholdRecallTopK").input_value() == "48"
         assert page.locator("#slimmingThresholdL2Distance").input_value() == "0.4"
+        page.evaluate(
+            """() => {
+              window.__slimmingThresholdEditorFrame = {
+                dinoSlider: document.querySelector('#slimmingThresholdDINOSimilaritySlider'),
+                dinoNumber: document.querySelector('#slimmingThresholdDINOSimilarity'),
+                recallToggle: document.querySelector(
+                  '[data-threshold-mode-target="slimmingThresholdRecallMode"]'
+                ),
+                l2Toggle: document.querySelector(
+                  '[data-threshold-mode-target="slimmingThresholdL2Mode"]'
+                ),
+                bucketAlways: document.querySelector(
+                  '[data-threshold-select-target="slimmingThresholdBucketingMode"]'
+                    + '[data-threshold-select-value="always"]'
+                ),
+                bucketAutomatic: document.querySelector(
+                  '[data-threshold-select-target="slimmingThresholdBucketingMode"]'
+                    + '[data-threshold-select-value="automatic"]'
+                ),
+              };
+            }"""
+        )
+        page.locator("#slimmingThresholdDINOSimilaritySlider").evaluate(
+            """slider => {
+              slider.focus();
+              slider.value = '0.72';
+              slider.dispatchEvent(new Event('input', { bubbles: true }));
+              slider.dispatchEvent(new Event('change', { bubbles: true }));
+            }"""
+        )
+        assert page.locator("#slimmingThresholdDINOSimilarity").input_value() == "0.72"
+        assert page.evaluate(
+            "() => state.slimming.thresholdEditor.thresholds.dinoCosineMinSimilarity"
+        ) == 0.72
+        assert page.evaluate(
+            "() => document.activeElement === window.__slimmingThresholdEditorFrame.dinoSlider"
+        )
         assert page.evaluate(
             "() => history.state?.imageAllWorkspace?.navigationLevel"
         ) == "slimmingThreshold"
         slimming_threshold_reads_after_open = slimming_setup_reads[0]
-        page.locator("#slimmingThresholdRecallMode").select_option("allCandidates")
-        page.locator("#slimmingThresholdL2Mode").select_option("unlimited")
+        page.locator(
+            '[data-threshold-mode-target="slimmingThresholdRecallMode"]'
+        ).check()
+        page.locator(
+            '[data-threshold-mode-target="slimmingThresholdL2Mode"]'
+        ).check()
+        page.locator(
+            '[data-threshold-select-target="slimmingThresholdBucketingMode"]'
+            '[data-threshold-select-value="always"]'
+        ).click()
+        assert page.locator("#slimmingThresholdBucketingMode").input_value() == "always"
+        page.keyboard.press("ArrowRight")
+        assert page.locator("#slimmingThresholdBucketingMode").input_value() == "automatic"
+        assert page.evaluate(
+            "() => document.activeElement === window.__slimmingThresholdEditorFrame.bucketAutomatic"
+        )
         assert page.locator("#slimmingThresholdRecallTopK").is_disabled()
         assert page.locator("#slimmingThresholdDialogExtremeWarning").is_visible()
         slimming_threshold_history_payload = page.evaluate(
@@ -3501,6 +3632,23 @@ def main(*, inspector_actions_only=False):
         assert slimming_setup_reads[0] == slimming_threshold_reads_after_open
         assert page.locator("#slimmingThresholdRecallMode").input_value() == "allCandidates"
         assert page.locator("#slimmingThresholdL2Mode").input_value() == "unlimited"
+        assert page.locator("#slimmingThresholdDINOSimilarity").input_value() == "0.72"
+        assert page.locator("#slimmingThresholdDINOSimilaritySlider").input_value() == "0.72"
+        assert page.evaluate(
+            """() => {
+              const frame = window.__slimmingThresholdEditorFrame;
+              return frame.dinoSlider === document.querySelector(
+                  '#slimmingThresholdDINOSimilaritySlider'
+                )
+                && frame.dinoNumber === document.querySelector(
+                  '#slimmingThresholdDINOSimilarity'
+                )
+                && frame.recallToggle?.isConnected
+                && frame.l2Toggle?.isConnected
+                && frame.bucketAlways?.isConnected
+                && frame.bucketAutomatic?.isConnected;
+            }"""
+        ), "threshold editor history rebuilt the Mac-style controls"
         assert page.locator("#applySlimmingThresholdDialogButton").is_enabled(), page.evaluate(
             "() => ({ online: state.online, editor: state.slimming.thresholdEditor })"
         )
@@ -3517,6 +3665,9 @@ def main(*, inspector_actions_only=False):
         assert submitted_slimming_thresholds[-1]["thresholds"][
             "featurePrintRecallMode"
         ] == "allCandidates"
+        assert submitted_slimming_thresholds[-1]["thresholds"][
+            "dinoCosineMinSimilarity"
+        ] == 0.72
         assert page.locator("#slimmingThresholdDialog").get_attribute("open") == ""
         page.locator("#resetSlimmingThresholdDialogButton").click()
         page.wait_for_function(

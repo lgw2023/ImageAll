@@ -31654,6 +31654,96 @@ function normalizeSlimmingThresholdDraft(value) {
   };
 }
 
+function syncSlimmingThresholdInteractionSurface(surface) {
+  if (!surface) return;
+  for (const range of surface.querySelectorAll("[data-threshold-number-target]")) {
+    const numberInput = document.getElementById(range.dataset.thresholdNumberTarget);
+    if (!numberInput) continue;
+    range.value = numberInput.value;
+    range.disabled = numberInput.disabled;
+    range.setAttribute("aria-valuetext", numberInput.value);
+  }
+  for (const toggle of surface.querySelectorAll("[data-threshold-mode-target]")) {
+    const select = document.getElementById(toggle.dataset.thresholdModeTarget);
+    if (!select) continue;
+    toggle.checked = select.value === toggle.dataset.checkedValue;
+    toggle.disabled = select.disabled;
+  }
+  for (const button of surface.querySelectorAll(
+    "[data-threshold-select-target][data-threshold-select-value]"
+  )) {
+    const select = document.getElementById(button.dataset.thresholdSelectTarget);
+    if (!select) continue;
+    const selected = select.value === button.dataset.thresholdSelectValue;
+    button.setAttribute("aria-checked", String(selected));
+    button.tabIndex = selected ? 0 : -1;
+    button.disabled = select.disabled;
+  }
+  for (const editor of surface.querySelectorAll("[data-threshold-automatic-for]")) {
+    const select = document.getElementById(editor.dataset.thresholdAutomaticFor);
+    editor.hidden = select?.value !== "automatic";
+  }
+}
+
+function bindSlimmingThresholdInteractionSurface(surface) {
+  if (!surface) return;
+  surface.addEventListener("input", (event) => {
+    const range = event.target.closest("[data-threshold-number-target]");
+    if (!range) return;
+    const numberInput = document.getElementById(range.dataset.thresholdNumberTarget);
+    if (numberInput) numberInput.value = range.value;
+  });
+  surface.addEventListener("change", (event) => {
+    const range = event.target.closest("[data-threshold-number-target]");
+    if (range) {
+      const numberInput = document.getElementById(range.dataset.thresholdNumberTarget);
+      if (numberInput) {
+        numberInput.value = range.value;
+        numberInput.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      return;
+    }
+    const toggle = event.target.closest("[data-threshold-mode-target]");
+    if (!toggle) return;
+    const select = document.getElementById(toggle.dataset.thresholdModeTarget);
+    if (!select) return;
+    select.value = toggle.checked
+      ? toggle.dataset.checkedValue
+      : toggle.dataset.uncheckedValue;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  surface.addEventListener("click", (event) => {
+    const button = event.target.closest(
+      "[data-threshold-select-target][data-threshold-select-value]"
+    );
+    if (!button || button.disabled) return;
+    const select = document.getElementById(button.dataset.thresholdSelectTarget);
+    if (!select || select.value === button.dataset.thresholdSelectValue) return;
+    select.value = button.dataset.thresholdSelectValue;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  surface.addEventListener("keydown", (event) => {
+    const button = event.target.closest(
+      "[data-threshold-select-target][data-threshold-select-value]"
+    );
+    if (!button || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
+      return;
+    }
+    const buttons = [...surface.querySelectorAll(
+      `[data-threshold-select-target="${CSS.escape(button.dataset.thresholdSelectTarget)}"]`
+    )].filter((candidate) => !candidate.disabled);
+    if (!buttons.length) return;
+    event.preventDefault();
+    const current = Math.max(0, buttons.indexOf(button));
+    const backwards = event.key === "ArrowLeft" || event.key === "ArrowUp";
+    const next = event.key === "Home" ? 0
+      : event.key === "End" ? buttons.length - 1
+        : (current + (backwards ? -1 : 1) + buttons.length) % buttons.length;
+    buttons[next].focus({ preventScroll: true });
+    buttons[next].click();
+  });
+}
+
 function slimmingThresholdsValid(value = state.slimming.setup.thresholds) {
   return Boolean(value)
     && Number.isInteger(value.featurePrintRecallTopK)
@@ -32310,6 +32400,7 @@ function syncSlimmingThresholdEditorControls() {
       && thresholds.dinoCosineMode !== "unlimited"
       && thresholds.sceneBucketingMode === "automatic"
   );
+  syncSlimmingThresholdInteractionSurface(elements.slimmingThresholdDialogContent);
 }
 
 function renderSlimmingThresholdEditor() {
@@ -32718,6 +32809,7 @@ function syncSlimmingThresholdControls() {
       && thresholds.dinoCosineMode !== "unlimited"
       && thresholds.sceneBucketingMode === "automatic"
   );
+  syncSlimmingThresholdInteractionSurface(elements.slimmingSetupConfiguration);
 }
 
 function renderSlimmingSetupSummary() {
@@ -40843,6 +40935,7 @@ function bindEvents() {
   elements.resetSlimmingThresholdDialogButton.addEventListener("click", () => {
     void saveSlimmingThresholdEditor({ restoreFactory: true });
   });
+  bindSlimmingThresholdInteractionSurface(elements.slimmingThresholdDialogContent);
   for (const control of [
     elements.slimmingThresholdRecallMode,
     elements.slimmingThresholdRecallTopK,
@@ -40939,6 +41032,7 @@ function bindEvents() {
     state.slimming.setup.error = "";
     renderSlimmingSetup();
   });
+  bindSlimmingThresholdInteractionSurface(elements.slimmingSetupConfiguration);
   for (const control of [
     elements.slimmingRecallMode,
     elements.slimmingRecallTopK,
