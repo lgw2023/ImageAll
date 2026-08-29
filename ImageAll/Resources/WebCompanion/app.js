@@ -8,6 +8,7 @@ const SLIMMING_MEMBER_LIMIT_MAX = 5_000;
 const LIGHTBOX_MIN_SCALE = 1;
 const LIGHTBOX_MAX_SCALE = 8;
 const GRID_DOUBLE_CLICK_MAX_DELAY_MS = 900;
+const PROJECTION_POLL_INTERACTION_SETTLE_MS = 4_000;
 const WORKSPACE_HISTORY_KEY = "imageAllWorkspace";
 const WORKSPACE_HISTORY_ROUTES = new Set([
   "gallery",
@@ -1600,6 +1601,7 @@ const state = {
   galleryAssetsRefreshFrame: null,
   refreshingWorkspace: false,
   accountPollTimer: null,
+  lastWorkspaceInteractionAt: 0,
   aggregateTimer: null,
   assetLoadPromise: null,
   queuedAssetLoadOptions: null,
@@ -36062,13 +36064,46 @@ function disconnectEvents() {
   }
 }
 
-function scheduleProjectionPoll(generation) {
+function markWorkspaceInteraction() {
+  state.lastWorkspaceInteractionAt = Date.now();
+  if (state.authMode === "pairedDevice" && state.accountPollTimer != null) {
+    scheduleProjectionPoll(state.socketGeneration);
+  }
+}
+
+function bindWorkspaceInteractionDeferral() {
+  document.addEventListener("pointerdown", markWorkspaceInteraction, {
+    capture: true,
+    passive: true,
+  });
+  document.addEventListener("keydown", markWorkspaceInteraction, {
+    capture: true,
+  });
+  document.addEventListener("wheel", markWorkspaceInteraction, {
+    capture: true,
+    passive: true,
+  });
+  document.addEventListener("input", markWorkspaceInteraction, {
+    capture: true,
+  });
+}
+
+function scheduleProjectionPoll(generation, delayOverride = null) {
   clearTimeout(state.accountPollTimer);
   const interval = state.authMode === "account" ? 10_000 : 15_000;
   state.accountPollTimer = setTimeout(async () => {
     if (generation !== state.socketGeneration
       || !["account", "pairedDevice"].includes(state.authMode)
       || elements.appView.classList.contains("hidden")) return;
+    if (state.authMode === "pairedDevice") {
+      const settleRemaining = state.lastWorkspaceInteractionAt
+        + PROJECTION_POLL_INTERACTION_SETTLE_MS
+        - Date.now();
+      if (settleRemaining > 0) {
+        scheduleProjectionPoll(generation, Math.ceil(settleRemaining));
+        return;
+      }
+    }
     try {
       await api("/web/session", {}, false);
       await refreshWorkspace({ quiet: true });
@@ -36088,7 +36123,7 @@ function scheduleProjectionPoll(generation) {
         scheduleProjectionPoll(generation);
       }
     }
-  }, interval);
+  }, delayOverride ?? interval);
 }
 
 function scheduleEventReconnect(generation) {
@@ -40533,6 +40568,7 @@ function setupSidebarReordering() {
 }
 
 function bindEvents() {
+  bindWorkspaceInteractionDeferral();
   bindPersistentHelp();
   setupSidebarReordering();
   bindGridDensityControls();

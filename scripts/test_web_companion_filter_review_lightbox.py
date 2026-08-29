@@ -1086,6 +1086,27 @@ def main():
 
         page.goto(BASE_URL, wait_until="networkidle")
 
+        interaction_poll_asset_queries = len(asset_queries)
+        interaction_poll_probe = page.evaluate(
+            """() => {
+              const before = state.lastWorkspaceInteractionAt;
+              document.body.dispatchEvent(new PointerEvent("pointerdown", {
+                bubbles: true,
+                cancelable: true,
+              }));
+              scheduleProjectionPoll(state.socketGeneration, 20);
+              return {
+                before,
+                after: state.lastWorkspaceInteractionAt,
+              };
+            }"""
+        )
+        assert interaction_poll_probe["after"] > interaction_poll_probe["before"]
+        page.wait_for_timeout(100)
+        assert len(asset_queries) == interaction_poll_asset_queries
+        assert page.evaluate("() => state.accountPollTimer != null")
+        page.evaluate("() => scheduleProjectionPoll(state.socketGeneration)")
+
         stable_notice_requests = len(workspace_notice_requests)
         page.evaluate(
             """() => {
