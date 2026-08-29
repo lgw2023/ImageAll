@@ -4,8 +4,14 @@ import AppKit
 import CryptoKit
 import Foundation
 import ImageIO
+import OSLog
 import SwiftUI
 import UniformTypeIdentifiers
+
+private let thumbnailRecoveryLogger = Logger(
+    subsystem: "com.gwlee.ImageAll",
+    category: "ThumbnailRecovery"
+)
 
 extension MediaKind {
     var displayName: String {
@@ -1393,6 +1399,8 @@ struct LibrarySlimmingIdenticalCleanupExecutionProgress: Equatable, Sendable {
 @MainActor
 final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var phase: LibraryWorkspacePhase = .loading
+    @Published private(set) var isRecoveringThumbnails = false
+    @Published private(set) var thumbnailRecoveryGeneration = 0
     @Published private(set) var sources: [LibrarySourceSummary] = []
     @Published private(set) var sourceFolderBranches: [
         LibrarySourceFolderBranchID: LibrarySourceFolderChildrenState
@@ -1603,6 +1611,13 @@ final class LibraryWorkspaceModel: ObservableObject {
     private let thumbnailLoadGate: LibraryThumbnailLoadScheduler
     private let thumbnailLoadInFlight = LibraryThumbnailLoadInFlightCoordinator()
     private var thumbnailLoadEpoch = 0
+    private var thumbnailSystemicFailureAssetIDs: Set<UUID> = []
+    private var thumbnailSystemicFailureWindowStartedAtNanoseconds: UInt64?
+    private var thumbnailRecoveryTask: Task<Void, Never>?
+    private let thumbnailRecoveryFailureThreshold: Int
+    private let thumbnailRecoveryFailureWindowNanoseconds: UInt64
+    private let thumbnailRecoveryInitialDelayNanoseconds: UInt64
+    private let thumbnailRecoveryMaximumDelayNanoseconds: UInt64
     private let idleThumbnailPrewarmPreferenceStore: any IdleThumbnailPrewarmPreferenceStore
     private let pendingSuggestionCountPreferences: any PendingSuggestionCountPreferenceStore
     private let idlePrewarmClock: any IdlePrewarmClock
@@ -1685,6 +1700,10 @@ final class LibraryWorkspaceModel: ObservableObject {
         searchDebounceInterval: Duration = .milliseconds(300),
         videoHoverDelay: Duration = .milliseconds(350),
         thumbnailLoadConcurrencyLimit: Int? = nil,
+        thumbnailRecoveryFailureThreshold: Int = 3,
+        thumbnailRecoveryFailureWindowNanoseconds: UInt64 = 2_000_000_000,
+        thumbnailRecoveryInitialDelayNanoseconds: UInt64 = 250_000_000,
+        thumbnailRecoveryMaximumDelayNanoseconds: UInt64 = 5_000_000_000,
         idleThumbnailPrewarmPreferenceStore: any IdleThumbnailPrewarmPreferenceStore =
             UserDefaultsIdleThumbnailPrewarmPreferenceStore(),
         idlePrewarmClock: any IdlePrewarmClock = SystemIdlePrewarmClock(),
@@ -1732,6 +1751,16 @@ final class LibraryWorkspaceModel: ObservableObject {
         self.searchDebounceInterval = searchDebounceInterval
         self.videoHoverDelay = videoHoverDelay
         self.thumbnailLoadGate = LibraryThumbnailLoadScheduler(limit: thumbnailLoadConcurrencyLimit)
+        self.thumbnailRecoveryFailureThreshold = max(2, thumbnailRecoveryFailureThreshold)
+        self.thumbnailRecoveryFailureWindowNanoseconds = max(
+            1,
+            thumbnailRecoveryFailureWindowNanoseconds
+        )
+        self.thumbnailRecoveryInitialDelayNanoseconds = thumbnailRecoveryInitialDelayNanoseconds
+        self.thumbnailRecoveryMaximumDelayNanoseconds = max(
+            thumbnailRecoveryInitialDelayNanoseconds,
+            thumbnailRecoveryMaximumDelayNanoseconds
+        )
     }
 
     var suggestionThresholdPortForSettings: (any SuggestionThresholdPort)? {
@@ -4829,6 +4858,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     deinit {
         searchDebounceTask?.cancel()
         videoHoverTask?.cancel()
+        thumbnailRecoveryTask?.cancel()
         librarySlimmingSourceLoadTask?.cancel()
         catalogSourceMonitoringTask?.cancel()
         service.stopCatalogSourceMonitoring()
@@ -6464,6 +6494,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             assetPageRequestID = UUID()
             reviewPageRequestID = UUID()
             thumbnailLoadEpoch &+= 1
+            resetThumbnailRecoveryForContextChange()
             thumbnailMemoryCache.removeAll()
             decodedThumbnailCache.removeAll()
             selectedAssetIDs = []
@@ -6739,6 +6770,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         // before the newest navigation task gets scheduled on the main actor.
         assetPageRequestID = UUID()
         thumbnailLoadEpoch &+= 1
+        resetThumbnailRecoveryForContextChange()
         return requestID
     }
 
@@ -6898,6 +6930,13 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     func loadThumbnailResult(assetID: UUID) async -> AssetThumbnailLoadResult {
+        await loadThumbnailResult(assetID: assetID, recordsSystemicFailure: true)
+    }
+
+    private func loadThumbnailResult(
+        assetID: UUID,
+        recordsSystemicFailure: Bool
+    ) async -> AssetThumbnailLoadResult {
         if let cached = cachedThumbnailData(for: assetID) {
             return .loaded(cached)
         }
@@ -6918,6 +6957,9 @@ final class LibraryWorkspaceModel: ObservableObject {
                 return .cancelled
             }
             rememberThumbnailData(data, for: assetID)
+            if recordsSystemicFailure {
+                noteThumbnailLoadSucceeded(assetID: assetID)
+            }
             return .loaded(data)
         } catch is CancellationError {
             return .cancelled
@@ -6933,8 +6975,106 @@ final class LibraryWorkspaceModel: ObservableObject {
         {
             return .unavailable
         } catch {
+            if recordsSystemicFailure {
+                noteThumbnailLoadFailed(assetID: assetID)
+            }
             return .failed
         }
+    }
+
+    private func noteThumbnailLoadFailed(assetID: UUID) {
+        let nowNanoseconds = DispatchTime.now().uptimeNanoseconds
+        if let windowStartedAt = thumbnailSystemicFailureWindowStartedAtNanoseconds,
+           nowNanoseconds &- windowStartedAt > thumbnailRecoveryFailureWindowNanoseconds
+        {
+            thumbnailSystemicFailureAssetIDs.removeAll()
+            thumbnailSystemicFailureWindowStartedAtNanoseconds = nowNanoseconds
+        } else if thumbnailSystemicFailureWindowStartedAtNanoseconds == nil {
+            thumbnailSystemicFailureWindowStartedAtNanoseconds = nowNanoseconds
+        }
+        thumbnailSystemicFailureAssetIDs.insert(assetID)
+        guard thumbnailSystemicFailureAssetIDs.count >= thumbnailRecoveryFailureThreshold,
+              thumbnailRecoveryTask == nil
+        else {
+            return
+        }
+
+        isRecoveringThumbnails = true
+        thumbnailRecoveryLogger.warning(
+            "Starting shared recovery after \(self.thumbnailSystemicFailureAssetIDs.count, privacy: .public) distinct thumbnail failures"
+        )
+        let initialDelay = thumbnailRecoveryInitialDelayNanoseconds
+        let maximumDelay = thumbnailRecoveryMaximumDelayNanoseconds
+        thumbnailRecoveryTask = Task { [weak self] in
+            var probeAssetID = assetID
+            var delayNanoseconds = initialDelay
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: delayNanoseconds)
+                } catch {
+                    return
+                }
+                guard let self else { return }
+                let result = await self.loadThumbnailResult(
+                    assetID: probeAssetID,
+                    recordsSystemicFailure: false
+                )
+                switch result {
+                case .loaded:
+                    self.finishThumbnailRecovery()
+                    return
+                case .cloudOnly, .unavailable:
+                    self.thumbnailSystemicFailureAssetIDs.remove(probeAssetID)
+                    guard let nextProbeAssetID = self.thumbnailSystemicFailureAssetIDs.first else {
+                        self.stopThumbnailRecoveryWithoutReload()
+                        return
+                    }
+                    probeAssetID = nextProbeAssetID
+                case .cancelled, .failed:
+                    break
+                }
+                if delayNanoseconds < maximumDelay {
+                    let doubled = delayNanoseconds.multipliedReportingOverflow(by: 2)
+                    delayNanoseconds = doubled.overflow
+                        ? maximumDelay
+                        : min(doubled.partialValue, maximumDelay)
+                }
+            }
+        }
+    }
+
+    private func noteThumbnailLoadSucceeded(assetID: UUID) {
+        thumbnailSystemicFailureAssetIDs.remove(assetID)
+        guard isRecoveringThumbnails else { return }
+        thumbnailRecoveryTask?.cancel()
+        finishThumbnailRecovery()
+    }
+
+    private func finishThumbnailRecovery() {
+        thumbnailRecoveryTask = nil
+        thumbnailSystemicFailureAssetIDs.removeAll()
+        thumbnailSystemicFailureWindowStartedAtNanoseconds = nil
+        isRecoveringThumbnails = false
+        thumbnailRecoveryGeneration &+= 1
+        thumbnailRecoveryLogger.notice(
+            "Thumbnail recovery succeeded; reload generation \(self.thumbnailRecoveryGeneration, privacy: .public)"
+        )
+    }
+
+    private func stopThumbnailRecoveryWithoutReload() {
+        thumbnailRecoveryTask = nil
+        thumbnailSystemicFailureAssetIDs.removeAll()
+        thumbnailSystemicFailureWindowStartedAtNanoseconds = nil
+        isRecoveringThumbnails = false
+        thumbnailRecoveryLogger.notice("Thumbnail recovery stopped without a viable probe asset")
+    }
+
+    private func resetThumbnailRecoveryForContextChange() {
+        thumbnailRecoveryTask?.cancel()
+        thumbnailRecoveryTask = nil
+        thumbnailSystemicFailureAssetIDs.removeAll()
+        thumbnailSystemicFailureWindowStartedAtNanoseconds = nil
+        isRecoveringThumbnails = false
     }
 
     private func loadOriginalAspectThumbnailResult(assetID: UUID) async -> AssetThumbnailLoadResult {
@@ -7000,6 +7140,9 @@ final class LibraryWorkspaceModel: ObservableObject {
                 return result
             case .failed:
                 attempt += 1
+                if isRecoveringThumbnails {
+                    return .failed
+                }
                 if attempt >= maxAttempts {
                     // Stay retryable for the visible-cell loop; only definitive
                     // eligibility/auth failures settle as `.unavailable`.
@@ -14005,6 +14148,7 @@ struct LibraryWorkspaceView: View {
                                         originalAspectGeneration: model.thumbnailAspectMode == .original
                                             ? model.originalAspectThumbnailCacheGeneration
                                             : 0,
+                                        recoveryGeneration: model.thumbnailRecoveryGeneration,
                                         hoverPlaybackIdentity: hoverPlayback.map(ObjectIdentifier.init)
                                     ),
                                     model: model,
@@ -14049,6 +14193,24 @@ struct LibraryWorkspaceView: View {
                     onPageKey: handleGridPageNavigation
                 )
                 .background(Color(nsColor: .windowBackgroundColor))
+                .overlay(alignment: .top) {
+                    if model.isRecoveringThumbnails {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("正在恢复缩略图…")
+                                .font(.callout.weight(.medium))
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(.regularMaterial, in: Capsule())
+                        .shadow(radius: 4, y: 1)
+                        .padding(.top, 12)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel("正在恢复缩略图")
+                        .allowsHitTesting(false)
+                    }
+                }
                 .accessibilityLabel("\(model.selectedMediaKind.displayName)网格")
                 .onAppear {
                     updateGridMetrics(containerSize: proxy.size)
@@ -15945,6 +16107,7 @@ struct AssetThumbnailPresentationState: Equatable {
     let usesDownloadedCloudPreview: Bool
     let cacheVersion: Int
     let originalAspectGeneration: Int
+    let recoveryGeneration: Int
     let hoverPlaybackIdentity: ObjectIdentifier?
 }
 
@@ -16160,7 +16323,8 @@ private struct AssetThumbnailView: View, @MainActor Equatable {
             usesDownloadedCloudPreview: state.usesDownloadedCloudPreview,
             cacheVersion: state.cacheVersion,
             aspectMode: state.aspectMode,
-            originalAspectCacheGeneration: state.originalAspectGeneration
+            originalAspectCacheGeneration: state.originalAspectGeneration,
+            recoveryGeneration: state.recoveryGeneration
         )
     }
 
@@ -16259,6 +16423,7 @@ private struct AssetThumbnailLoadID: Hashable {
     let cacheVersion: Int
     let aspectMode: LibraryThumbnailAspectMode
     let originalAspectCacheGeneration: Int
+    let recoveryGeneration: Int
 }
 
 enum LibraryGridThumbnailImageFactory {

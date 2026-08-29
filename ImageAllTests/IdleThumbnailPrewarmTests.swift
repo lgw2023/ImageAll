@@ -14,6 +14,7 @@ final class IdleThumbnailPrewarmTests: XCTestCase {
             usesDownloadedCloudPreview: false,
             cacheVersion: 1,
             originalAspectGeneration: 0,
+            recoveryGeneration: 0,
             hoverPlaybackIdentity: nil
         )
 
@@ -28,6 +29,7 @@ final class IdleThumbnailPrewarmTests: XCTestCase {
                 usesDownloadedCloudPreview: false,
                 cacheVersion: 1,
                 originalAspectGeneration: 0,
+                recoveryGeneration: 0,
                 hoverPlaybackIdentity: nil
             )
         )
@@ -41,6 +43,21 @@ final class IdleThumbnailPrewarmTests: XCTestCase {
                 usesDownloadedCloudPreview: false,
                 cacheVersion: 2,
                 originalAspectGeneration: 0,
+                recoveryGeneration: 0,
+                hoverPlaybackIdentity: nil
+            )
+        )
+        XCTAssertNotEqual(
+            base,
+            AssetThumbnailPresentationState(
+                item: item,
+                isSelected: false,
+                favoriteState: .none(assetID: item.assetID),
+                aspectMode: .square,
+                usesDownloadedCloudPreview: false,
+                cacheVersion: 1,
+                originalAspectGeneration: 0,
+                recoveryGeneration: 1,
                 hoverPlaybackIdentity: nil
             )
         )

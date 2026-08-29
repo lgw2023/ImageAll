@@ -76,8 +76,36 @@ struct AppOwnedAssetPixelCachePurger: Sendable {
     let derivedCachesDirectory: URL
     let photosOriginalCache: PhotosOriginalCacheService
 
+    func openBatchSession() throws -> DerivedImageAnchoredCacheSession {
+        try DerivedImageCacheStore(cachesDirectory: derivedCachesDirectory).ensureLayout()
+    }
+
     func purge(assetID: UUID) throws {
-        let entries: [(id: UUID, format: DerivedImageStorageFormat)] = try database.pool.read { db in
+        let entries = try derivedEntries(assetID: assetID)
+        guard !entries.isEmpty else {
+            try photosOriginalCache.removePixelObject(assetID: assetID)
+            return
+        }
+        let session = try openBatchSession()
+        defer { session.closeHandles() }
+        try purge(assetID: assetID, entries: entries, session: session)
+    }
+
+    func purge(
+        assetID: UUID,
+        session: DerivedImageAnchoredCacheSession
+    ) throws {
+        try purge(
+            assetID: assetID,
+            entries: derivedEntries(assetID: assetID),
+            session: session
+        )
+    }
+
+    private func derivedEntries(
+        assetID: UUID
+    ) throws -> [(id: UUID, format: DerivedImageStorageFormat)] {
+        try database.pool.read { db in
             try Row.fetchAll(
                 db,
                 sql: """
@@ -94,10 +122,15 @@ struct AppOwnedAssetPixelCachePurger: Sendable {
                 return (id, format)
             }
         }
+    }
 
+    private func purge(
+        assetID: UUID,
+        entries: [(id: UUID, format: DerivedImageStorageFormat)],
+        session: DerivedImageAnchoredCacheSession
+    ) throws {
         if !entries.isEmpty {
             let store = DerivedImageCacheStore(cachesDirectory: derivedCachesDirectory)
-            let session = try store.ensureLayout()
             for entry in entries {
                 try store.deleteObject(
                     entryID: entry.id,
@@ -157,6 +190,29 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         self.interactiveIOGate = interactiveIOGate
         self.quarantineIO = quarantineIO
         self.idGenerator = idGenerator
+    }
+
+    private func withPixelCacheBatch<T>(
+        _ operation: (DerivedImageAnchoredCacheSession?) throws -> T
+    ) rethrows -> T {
+        guard let pixelCachePurger else {
+            return try operation(nil)
+        }
+        let session = try? pixelCachePurger.openBatchSession()
+        defer { session?.closeHandles() }
+        return try operation(session)
+    }
+
+    private func purgePixelCache(
+        assetID: UUID,
+        session: DerivedImageAnchoredCacheSession?
+    ) throws {
+        guard let pixelCachePurger else { return }
+        if let session {
+            try pixelCachePurger.purge(assetID: assetID, session: session)
+        } else {
+            try pixelCachePurger.purge(assetID: assetID)
+        }
     }
 
     func makeIdenticalCleanupPlan(
@@ -1003,27 +1059,45 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
     }
 
     func purgeNow(entryID: UUID) throws {
+        try withPixelCacheBatch { session in
+            try purgeNow(entryID: entryID, pixelCacheSession: session)
+        }
+    }
+
+    private func purgeNow(
+        entryID: UUID,
+        pixelCacheSession: DerivedImageAnchoredCacheSession?
+    ) throws {
         let snapshot = try loadActiveEntry(entryID: entryID)
         guard snapshot.state == .recycled else {
             throw LibrarySlimmingRecycleError.invalidState
         }
         switch snapshot.sourceKind {
         case .file:
-            try purgeFileEntry(snapshot)
+            try purgeFileEntry(snapshot, pixelCacheSession: pixelCacheSession)
         case .photos:
             try purgePhotosEntry(snapshot)
         }
     }
 
     func purgeExpired(nowMs: Int64) throws -> Int {
-        _ = try? reconcilePhotosRecycleEntries()
+        try withPixelCacheBatch { session in
+            try purgeExpired(nowMs: nowMs, pixelCacheSession: session)
+        }
+    }
+
+    private func purgeExpired(
+        nowMs: Int64,
+        pixelCacheSession: DerivedImageAnchoredCacheSession?
+    ) throws -> Int {
+        _ = try? reconcilePhotosRecycleEntries(pixelCacheSession: pixelCacheSession)
         let interruptedPurges = try loadInterruptedEntries().filter {
             $0.state == .purging
         }
         var purged = 0
         for entry in interruptedPurges {
             do {
-                try recoverPurging(entry)
+                try recoverPurging(entry, pixelCacheSession: pixelCacheSession)
                 purged += 1
             } catch {
                 continue
@@ -1063,7 +1137,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         }
         for id in dueIDs {
             do {
-                try purgeNow(entryID: id)
+                try purgeNow(entryID: id, pixelCacheSession: pixelCacheSession)
                 purged += 1
             } catch {
                 continue
@@ -1155,6 +1229,14 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
 
     @discardableResult
     func reconcilePhotosRecycleEntries() throws -> Int {
+        try withPixelCacheBatch { session in
+            try reconcilePhotosRecycleEntries(pixelCacheSession: session)
+        }
+    }
+
+    private func reconcilePhotosRecycleEntries(
+        pixelCacheSession: DerivedImageAnchoredCacheSession?
+    ) throws -> Int {
         guard let photosMutation else { return 0 }
         let entries = try loadPhotosRecycledEntries()
         let indexedEntries = entries.compactMap { entry -> (EntrySnapshot, String)? in
@@ -1196,7 +1278,10 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                         to: .purging,
                         errorCode: nil
                     )
-                    try pixelCachePurger?.purge(assetID: entry.assetID)
+                    try purgePixelCache(
+                        assetID: entry.assetID,
+                        session: pixelCacheSession
+                    )
                     try finalizePurged(entry)
                     converged += 1
                 }
@@ -1208,7 +1293,10 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                         to: .purging,
                         errorCode: nil
                     )
-                    try pixelCachePurger?.purge(assetID: entry.assetID)
+                    try purgePixelCache(
+                        assetID: entry.assetID,
+                        session: pixelCacheSession
+                    )
                     try finalizePurged(entry)
                     converged += 1
                 }
@@ -2001,7 +2089,10 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         }
     }
 
-    private func purgeFileEntry(_ snapshot: EntrySnapshot) throws {
+    private func purgeFileEntry(
+        _ snapshot: EntrySnapshot,
+        pixelCacheSession: DerivedImageAnchoredCacheSession? = nil
+    ) throws {
         guard let quarantinePath = snapshot.quarantineRelativePath else {
             throw LibrarySlimmingRecycleError.invalidState
         }
@@ -2012,7 +2103,10 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             errorCode: nil
         )
         do {
-            try pixelCachePurger?.purge(assetID: snapshot.assetID)
+            try purgePixelCache(
+                assetID: snapshot.assetID,
+                session: pixelCacheSession
+            )
             try quarantineIO.deleteQuarantineObject(
                 quarantineRootURL: quarantineRootURL,
                 quarantineRelativePath: quarantinePath
@@ -2393,7 +2487,10 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         }
     }
 
-    private func recoverPurging(_ entry: EntrySnapshot) throws {
+    private func recoverPurging(
+        _ entry: EntrySnapshot,
+        pixelCacheSession: DerivedImageAnchoredCacheSession? = nil
+    ) throws {
         if entry.sourceKind == .photos {
             try transitionEntry(
                 entryID: entry.id,
@@ -2403,7 +2500,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             )
             return
         }
-        try pixelCachePurger?.purge(assetID: entry.assetID)
+        try purgePixelCache(assetID: entry.assetID, session: pixelCacheSession)
         if let quarantinePath = entry.quarantineRelativePath {
             let quarantineExists = try quarantineIO.objectExists(
                 rootURL: quarantineRootURL,

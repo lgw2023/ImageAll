@@ -1456,6 +1456,62 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(service.thumbnailLoadCallCount, 3)
     }
 
+    func testSystemicThumbnailFailuresUseOneRecoveryLoopAndPublishReloadGeneration() async {
+        let sourceID = UUID()
+        let assets = (0..<6).map { index in
+            Self.makeAsset(sourceID: sourceID, fileName: "recover-\(index).jpg")
+        }
+        let payload = Data("recovered-systemic-thumbnail".utf8)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                kind: .folder,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: assets,
+            initialItems: assets,
+            startsConnected: true,
+            thumbnailData: payload,
+            thumbnailFailureCount: 8,
+            thumbnailFailureError: PhotosLibraryError.libraryUnavailable
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            thumbnailRecoveryInitialDelayNanoseconds: 1_000_000,
+            thumbnailRecoveryMaximumDelayNanoseconds: 2_000_000
+        )
+        await model.start()
+
+        await withTaskGroup(of: AssetThumbnailLoadResult.self) { group in
+            for asset in assets {
+                group.addTask {
+                    await model.loadThumbnailResultWithRetry(
+                        assetID: asset.assetID,
+                        maxAttempts: 1
+                    )
+                }
+            }
+            var results: [AssetThumbnailLoadResult] = []
+            for await result in group {
+                results.append(result)
+            }
+            XCTAssertEqual(results.filter { $0 == .failed }.count, assets.count)
+        }
+
+        for _ in 0..<100 where model.thumbnailRecoveryGeneration == 0 {
+            try? await Task.sleep(nanoseconds: 2_000_000)
+        }
+
+        XCTAssertEqual(model.thumbnailRecoveryGeneration, 1)
+        XCTAssertFalse(model.isRecoveringThumbnails)
+        XCTAssertEqual(
+            service.thumbnailLoadCallCount,
+            9,
+            "six initial failures plus one shared probe loop should exhaust eight failures once"
+        )
+    }
+
     func testRecycleThumbnailCacheMissNeverReadsOrGeneratesSourcePreview() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "recycled.jpg")

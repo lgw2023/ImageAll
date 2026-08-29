@@ -361,14 +361,73 @@ enum DerivedImageSecureIO {
     }
 }
 
-struct DerivedImageAnchoredCacheSession {
+struct DerivedImageCacheSessionDiagnosticsSnapshot: Equatable, Sendable {
+    let openedCount: UInt64
+    let closedCount: UInt64
+    let activeCount: Int
+    let highWaterActiveCount: Int
+}
+
+enum DerivedImageCacheSessionDiagnostics {
+    private static let lock = NSLock()
+    private nonisolated(unsafe) static var openedCount: UInt64 = 0
+    private nonisolated(unsafe) static var closedCount: UInt64 = 0
+    private nonisolated(unsafe) static var activeCount = 0
+    private nonisolated(unsafe) static var highWaterActiveCount = 0
+
+    static func snapshot() -> DerivedImageCacheSessionDiagnosticsSnapshot {
+        lock.withLock {
+            DerivedImageCacheSessionDiagnosticsSnapshot(
+                openedCount: openedCount,
+                closedCount: closedCount,
+                activeCount: activeCount,
+                highWaterActiveCount: highWaterActiveCount
+            )
+        }
+    }
+
+    static func recordOpen() {
+        lock.withLock {
+            openedCount &+= 1
+            activeCount += 1
+            highWaterActiveCount = max(highWaterActiveCount, activeCount)
+        }
+    }
+
+    static func recordClose() {
+        lock.withLock {
+            closedCount &+= 1
+            activeCount = max(0, activeCount - 1)
+        }
+    }
+}
+
+final class DerivedImageAnchoredCacheSession: @unchecked Sendable {
     let versionRootURL: URL
-    private let versionRootFD: Int32
-    private let stagingFD: Int32
-    private let objectsFD: Int32
+    private let closeLock = NSLock()
+    private var versionRootFD: Int32
+    private var stagingFD: Int32
+    private var objectsFD: Int32
 
     var stagingDirectoryFD: Int32 { stagingFD }
     var objectsDirectoryFD: Int32 { objectsFD }
+
+    private init(
+        versionRootURL: URL,
+        versionRootFD: Int32,
+        stagingFD: Int32,
+        objectsFD: Int32
+    ) {
+        self.versionRootURL = versionRootURL
+        self.versionRootFD = versionRootFD
+        self.stagingFD = stagingFD
+        self.objectsFD = objectsFD
+        DerivedImageCacheSessionDiagnostics.recordOpen()
+    }
+
+    deinit {
+        closeHandles()
+    }
 
     static func open(cachesDirectory: URL) throws -> DerivedImageAnchoredCacheSession {
         guard cachesDirectory.lastPathComponent == DerivedImageCachePathLayout.cachesLeafComponent,
@@ -444,9 +503,25 @@ struct DerivedImageAnchoredCacheSession {
     }
 
     func closeHandles() {
-        Darwin.close(stagingFD)
-        Darwin.close(objectsFD)
-        Darwin.close(versionRootFD)
+        let handles: (versionRoot: Int32, staging: Int32, objects: Int32)? = closeLock.withLock {
+            guard versionRootFD >= 0 || stagingFD >= 0 || objectsFD >= 0 else {
+                return nil
+            }
+            let captured = (
+                versionRoot: versionRootFD,
+                staging: stagingFD,
+                objects: objectsFD
+            )
+            versionRootFD = -1
+            stagingFD = -1
+            objectsFD = -1
+            return captured
+        }
+        guard let handles else { return }
+        if handles.staging >= 0 { Darwin.close(handles.staging) }
+        if handles.objects >= 0 { Darwin.close(handles.objects) }
+        if handles.versionRoot >= 0 { Darwin.close(handles.versionRoot) }
+        DerivedImageCacheSessionDiagnostics.recordClose()
     }
 
     func preflightForClear() throws {

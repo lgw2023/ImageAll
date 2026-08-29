@@ -2917,6 +2917,128 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         XCTAssertTrue(try service.listRecycledEntries().isEmpty)
     }
 
+    func testPurgeExpiredReleasesDerivedCacheHandlesAfterBatch() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let clock = FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs)
+        let service = env.makeRecycleService(clock: clock)
+        let assetCount = 12
+
+        for index in 0..<assetCount {
+            let seeded = try env.seedAsset(
+                relativePath: "fd-release/\(index).jpg",
+                contents: Data("pixels-\(index)".utf8)
+            )
+            _ = try env.seedDerivedImageCache(assetID: seeded.assetID)
+            _ = try service.moveFolderAssetsToRecycle(assetIDs: [seeded.assetID])
+        }
+        try env.database.pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE recycle_entry
+                SET trashed_at_ms = ?, purge_after_ms = ?
+                """,
+                arguments: [clock.nowMs - 2, clock.nowMs - 1]
+            )
+        }
+
+        // Warm the same read path before taking the process-wide descriptor baseline.
+        _ = try service.listRecycledEntries()
+        _ = try FileManager.default.contentsOfDirectory(atPath: "/dev/fd")
+        let descriptorsBeforePurge = try Self.openFileDescriptorCount()
+        let sessionsBeforePurge = DerivedImageCacheSessionDiagnostics.snapshot()
+
+        XCTAssertEqual(try service.purgeExpired(nowMs: clock.nowMs), assetCount)
+
+        let descriptorsAfterPurge = try Self.openFileDescriptorCount()
+        let sessionsAfterPurge = DerivedImageCacheSessionDiagnostics.snapshot()
+        XCTAssertLessThanOrEqual(
+            descriptorsAfterPurge,
+            descriptorsBeforePurge + 2,
+            "derived-cache purge must not retain one anchored session per asset"
+        )
+        XCTAssertEqual(
+            sessionsAfterPurge.openedCount - sessionsBeforePurge.openedCount,
+            1,
+            "one background purge pass must reuse one anchored cache session"
+        )
+        XCTAssertEqual(
+            sessionsAfterPurge.closedCount - sessionsBeforePurge.closedCount,
+            1
+        )
+        XCTAssertEqual(sessionsAfterPurge.activeCount, sessionsBeforePurge.activeCount)
+    }
+
+    func testPixelCachePurgeFailureStillClosesAnchoredSession() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let seeded = try env.seedAsset(
+            relativePath: "fd-release/failure.jpg",
+            contents: Data("failure-pixels".utf8)
+        )
+        let objectURL = try env.seedDerivedImageCache(assetID: seeded.assetID)
+        let shardURL = objectURL.deletingLastPathComponent()
+        let symlinkTarget = env.root.appendingPathComponent("unsafe-shard-target", isDirectory: true)
+        try FileManager.default.removeItem(at: shardURL)
+        try FileManager.default.createDirectory(
+            at: symlinkTarget,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createSymbolicLink(
+            at: shardURL,
+            withDestinationURL: symlinkTarget
+        )
+        let purger = env.makePixelCachePurger()
+        let sessionsBeforePurge = DerivedImageCacheSessionDiagnostics.snapshot()
+
+        XCTAssertThrowsError(try purger.purge(assetID: seeded.assetID))
+
+        let sessionsAfterPurge = DerivedImageCacheSessionDiagnostics.snapshot()
+        XCTAssertEqual(
+            sessionsAfterPurge.openedCount - sessionsBeforePurge.openedCount,
+            1
+        )
+        XCTAssertEqual(
+            sessionsAfterPurge.closedCount - sessionsBeforePurge.closedCount,
+            1
+        )
+        XCTAssertEqual(sessionsAfterPurge.activeCount, sessionsBeforePurge.activeCount)
+    }
+
+    func testPixelCachePurgeWithoutDerivedEntriesIgnoresUnavailableDerivedLayout() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let clock = FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs)
+        let assetID = try env.seedPhotosAsset(localIdentifier: "photos-original-only")
+        let cachedOriginalURL = try env.seedPhotosOriginalCache(
+            assetID: assetID,
+            localIdentifier: "photos-original-only",
+            clock: clock
+        )
+        let versionRoot = DerivedImageCachePathLayout.versionRoot(
+            under: env.derivedCachesDirectory
+        )
+        try FileManager.default.createDirectory(
+            at: versionRoot,
+            withIntermediateDirectories: true
+        )
+        try Data("not-a-directory".utf8).write(
+            to: DerivedImageCachePathLayout.objectsDirectory(under: versionRoot)
+        )
+
+        try env.makePixelCachePurger(clock: clock).purge(assetID: assetID)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cachedOriginalURL.path))
+        let retainedOriginalEntries = try env.database.pool.read { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM photos_original_cache_entry WHERE asset_id = ?",
+                arguments: [assetID.uuidString.lowercased()]
+            ) ?? 0
+        }
+        XCTAssertEqual(retainedOriginalEntries, 0)
+    }
+
     func testPurgeExpiredSkipsImageAllOrPhotosFavoriteProtection() throws {
         let env = try RecycleTestEnv(label: #function)
         defer { env.cleanup() }
@@ -3000,6 +3122,10 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
             )
         }
         XCTAssertEqual(scheduledAt, entry.purgeAfterMs)
+    }
+
+    private static func openFileDescriptorCount() throws -> Int {
+        try FileManager.default.contentsOfDirectory(atPath: "/dev/fd").count
     }
 }
 
@@ -3140,14 +3266,20 @@ private final class RecycleTestEnv {
             clock: clock,
             jobQueue: jobQueue,
             photosMutation: photosMutation,
-            pixelCachePurger: AppOwnedAssetPixelCachePurger(
+            pixelCachePurger: makePixelCachePurger(clock: clock)
+        )
+    }
+
+    func makePixelCachePurger(
+        clock: any JobClock = FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs)
+    ) -> AppOwnedAssetPixelCachePurger {
+        AppOwnedAssetPixelCachePurger(
+            database: database,
+            derivedCachesDirectory: derivedCachesDirectory,
+            photosOriginalCache: PhotosOriginalCacheService(
                 database: database,
-                derivedCachesDirectory: derivedCachesDirectory,
-                photosOriginalCache: PhotosOriginalCacheService(
-                    database: database,
-                    rootURL: photosOriginalRoot,
-                    clock: clock
-                )
+                rootURL: photosOriginalRoot,
+                clock: clock
             )
         )
     }

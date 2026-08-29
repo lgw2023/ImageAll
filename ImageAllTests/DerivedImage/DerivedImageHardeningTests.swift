@@ -396,6 +396,28 @@ final class DerivedImageHardeningTests: XCTestCase {
         XCTAssertEqual(openFileDescriptorCount(), descriptorsBefore)
     }
 
+    func testSuccessfulLayoutSessionClosesWhenCallerReleasesIt() throws {
+        let env = try DerivedImageTestSupport.TempEnvironment(label: "layout-session-lifetime")
+        defer { env.cleanup() }
+        let store = DerivedImageCacheStore(cachesDirectory: env.cachesDirectory)
+
+        // Establish the layout before the baseline so the assertion covers
+        // retained handles rather than first-use directory creation.
+        let warmSession = try store.ensureLayout()
+        warmSession.closeHandles()
+        let descriptorsBefore = openFileDescriptorCount()
+
+        for _ in 0..<20 {
+            _ = try store.ensureLayout()
+        }
+
+        XCTAssertEqual(
+            openFileDescriptorCount(),
+            descriptorsBefore,
+            "released cache sessions must own and close their anchored descriptors"
+        )
+    }
+
     // MARK: - Existing hardening retained from prior slices
 
     func testPublishDoesNotReplaceExistingObject() async throws {
