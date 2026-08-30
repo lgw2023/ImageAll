@@ -36,6 +36,7 @@ def main():
     source_actions = []
     source_requests = []
     source_management_reads = [0]
+    settings_reads = [0]
     catalog_jobs = []
     catalog_job_fetches = [0]
     asset_requests = []
@@ -249,6 +250,7 @@ def main():
         def route_settings(route):
             nonlocal settings, review_pending_count
             if route.request.method == "GET":
+                settings_reads[0] += 1
                 fulfill_json(route, settings)
                 return
             payload = route.request.post_data_json
@@ -486,6 +488,26 @@ def main():
             page.locator("#commandButton").get_attribute("aria-describedby") or ""
         )
 
+        settings["suggestionThresholds"]["tags"].extend([
+            {
+                "tagID": f"eeeeeeee-1111-2222-3333-{index:012d}",
+                "displayName": f"合成长标签 {index + 1}",
+                "methods": [
+                    {
+                        "method": method,
+                        "effectiveMinScore": score,
+                        "overrideMinScore": None,
+                        "reference": None,
+                    }
+                    for method, score in [
+                        ("featureKnn", 0.1),
+                        ("personalCentroid", 0.2),
+                        ("personalAdamW", 0.3),
+                    ]
+                ],
+            }
+            for index in range(10)
+        ])
         page.set_viewport_size({"width": 390, "height": 844})
         page.wait_for_function(
             "() => document.querySelector('#appView').classList.contains('compact-toolbar-active')"
@@ -1594,11 +1616,17 @@ def main():
                 && frame.method === input?.closest(".suggestion-threshold-method")
                 && frame.input === input
                 && !frame.scenery?.isConnected
-                && card.matches(":hover")
                 && document.activeElement === search
                 && search.selectionStart === search.value.length
                 && document.querySelector("#suggestionThresholdList").scrollTop
-                  === frame.scrollTop;
+                  === Math.min(
+                    frame.scrollTop,
+                    Math.max(
+                      0,
+                      document.querySelector("#suggestionThresholdList").scrollHeight
+                        - document.querySelector("#suggestionThresholdList").clientHeight
+                    )
+                  );
             }
             """
         ), "threshold search replaced a matching tag card or its input scene"
@@ -2598,6 +2626,167 @@ def main():
         assert threshold_dimensions["scroll"] <= threshold_dimensions["viewport"], threshold_dimensions
         assert page.locator("#suggestionThresholdSearch").is_visible()
         page.screenshot(path="/tmp/imageall-suggestion-thresholds-synthetic.png", full_page=True)
+
+        threshold_focus_tag_id = "eeeeeeee-1111-2222-3333-000000000009"
+        threshold_focus_selector = (
+            f'[data-threshold-focus="input"]'
+            f'[data-threshold-tag-id="{threshold_focus_tag_id}"]'
+            f'[data-threshold-method="personalAdamW"]'
+        )
+        page.locator(threshold_focus_selector).wait_for()
+        page.evaluate(
+            """({ selector }) => {
+              const settingsContent = document.querySelector("#generalSettingsContent");
+              const thresholdList = document.querySelector("#suggestionThresholdList");
+              settingsContent.scrollTop = settingsContent.scrollHeight;
+              thresholdList.scrollTop = thresholdList.scrollHeight;
+              document.querySelector(selector).focus({ preventScroll: true });
+            }""",
+            {"selector": threshold_focus_selector},
+        )
+        page.wait_for_timeout(150)
+        settings_history_context = page.evaluate(
+            "() => history.state?.imageAllWorkspace?.context"
+        )
+        threshold_scroll_metrics = page.evaluate(
+            """
+            () => {
+              const list = document.querySelector("#suggestionThresholdList");
+              const shell = document.querySelector(".suggestion-threshold-shell");
+              return {
+                top: list.scrollTop,
+                height: list.clientHeight,
+                scrollHeight: list.scrollHeight,
+                shellHeight: shell.clientHeight,
+                cardCount: list.children.length,
+              };
+            }
+            """
+        )
+        assert settings_history_context["generalSettingsScrollTop"] > 0
+        assert settings_history_context["suggestionThresholdScrollTop"] > 0, (
+            settings_history_context,
+            threshold_scroll_metrics,
+        )
+        assert settings_history_context["generalSettingsReturnControlID"] in {
+            "settingsButton",
+            "compactToolbarMenuButton",
+        }
+        assert settings_history_context["suggestionThresholdFocus"] == {
+            "kind": "threshold",
+            "focusKind": "input",
+            "tagID": threshold_focus_tag_id,
+            "method": "personalAdamW",
+        }
+        serialized_settings_context = json.dumps(
+            settings_history_context,
+            ensure_ascii=False,
+        )
+        assert "合成长标签" not in serialized_settings_context
+        assert "私密标签" not in serialized_settings_context
+
+        saved_settings_scroll = settings_history_context["generalSettingsScrollTop"]
+        saved_threshold_scroll = settings_history_context["suggestionThresholdScrollTop"]
+        settings_reads_before_reload = settings_reads[0]
+        assets_before_settings_reload = len(asset_requests)
+        updates_before_reload = len(updates)
+        page.reload(wait_until="networkidle")
+        page.locator("#generalSettingsDialog[open]").wait_for()
+        page.locator("#suggestionThresholdDialog[open]").wait_for()
+        page.wait_for_function(
+            "selector => document.activeElement?.matches(selector)",
+            arg=threshold_focus_selector,
+        )
+        assert settings_reads[0] == settings_reads_before_reload + 1
+        assert len(asset_requests) == assets_before_settings_reload + 1
+        assert len(updates) == updates_before_reload
+        restored_settings_scroll = page.evaluate(
+            """
+            () => {
+              const settingsContent = document.querySelector("#generalSettingsContent");
+              const thresholdList = document.querySelector("#suggestionThresholdList");
+              return {
+                settings: settingsContent.scrollTop,
+                settingsMaximum: Math.max(
+                  0,
+                  settingsContent.scrollHeight - settingsContent.clientHeight
+                ),
+                threshold: thresholdList.scrollTop,
+                thresholdMaximum: Math.max(
+                  0,
+                  thresholdList.scrollHeight - thresholdList.clientHeight
+                ),
+              };
+            }
+            """
+        )
+        assert restored_settings_scroll["settings"] == min(
+            saved_settings_scroll,
+            restored_settings_scroll["settingsMaximum"],
+        )
+        assert restored_settings_scroll["threshold"] == min(
+            saved_threshold_scroll,
+            restored_settings_scroll["thresholdMaximum"],
+        )
+        page.screenshot(
+            path="/tmp/imageall-general-settings-history-restored.png",
+            full_page=True,
+        )
+
+        page.evaluate(
+            """
+            () => {
+              const workspace = structuredClone(history.state.imageAllWorkspace);
+              workspace.context.generalSettingsFocus = {
+                kind: "control",
+                id: "generalSettingsModelName",
+              };
+              workspace.context.generalSettingsScrollTop = -11;
+              workspace.context.generalSettingsReturnControlID = "accountPassword";
+              workspace.context.suggestionThresholdFocus = {
+                kind: "threshold",
+                focusKind: "input",
+                tagID: "ffffffff-ffff-ffff-ffff-ffffffffffff",
+                method: "privateModel",
+              };
+              workspace.context.suggestionThresholdScrollTop = -17;
+              history.replaceState({
+                ...history.state,
+                imageAllWorkspace: workspace,
+              }, "", location.href);
+            }
+            """
+        )
+        invalid_settings_reads_before_reload = settings_reads[0]
+        assets_before_invalid_settings_reload = len(asset_requests)
+        page.reload(wait_until="networkidle")
+        page.locator("#suggestionThresholdDialog[open]").wait_for()
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'suggestionThresholdSearch'"
+        )
+        assert settings_reads[0] == invalid_settings_reads_before_reload + 1
+        assert len(asset_requests) == assets_before_invalid_settings_reload + 1
+        normalized_settings_context = page.evaluate(
+            "() => history.state?.imageAllWorkspace?.context"
+        )
+        assert normalized_settings_context["generalSettingsFocus"] == {
+            "kind": "control",
+            "id": "generalSettingsCloseButton",
+        }
+        assert normalized_settings_context["generalSettingsScrollTop"] == 0
+        assert normalized_settings_context["generalSettingsReturnControlID"] is None
+        assert normalized_settings_context["suggestionThresholdFocus"] == {
+            "kind": "control",
+            "id": "suggestionThresholdSearch",
+        }
+        assert normalized_settings_context["suggestionThresholdScrollTop"] == 0
+        normalized_settings_json = json.dumps(normalized_settings_context)
+        assert "generalSettingsModelName" not in normalized_settings_json
+        assert "accountPassword" not in normalized_settings_json
+        assert "ffffffff-ffff-ffff-ffff-ffffffffffff" not in normalized_settings_json
+        assert "privateModel" not in normalized_settings_json
+        settings_asset_request_count = len(asset_requests)
+
         private_threshold_search = "私密标签 /Users/example/Photos"
         page.locator("#suggestionThresholdSearch").fill(private_threshold_search)
         assert private_threshold_search not in page.evaluate("() => JSON.stringify(history.state)")
@@ -2609,12 +2798,8 @@ def main():
         page.locator("#suggestionThresholdDialog[open]").wait_for()
         assert page.locator("#suggestionThresholdSearch").input_value() == ""
         page.keyboard.press("Escape")
-        page.locator("#suggestionThresholdDialog").wait_for(state="hidden")
-        assert page.locator("#generalSettingsDialog").is_visible()
-        assert page.evaluate(
-            "() => history.state?.imageAllWorkspace?.navigationLevel"
-        ) == "generalSettings"
         page.keyboard.press("Escape")
+        page.locator("#suggestionThresholdDialog").wait_for(state="hidden")
         page.locator("#generalSettingsDialog").wait_for(state="hidden")
         assert page.evaluate(
             "() => history.state?.imageAllWorkspace?.navigationLevel"

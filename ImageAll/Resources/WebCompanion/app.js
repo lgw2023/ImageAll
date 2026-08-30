@@ -1089,6 +1089,12 @@ const state = {
     opening: false,
     pendingDefaultFocus: null,
     pendingThresholdFocus: null,
+    restorable: false,
+    focus: { kind: "control", id: "generalSettingsCloseButton" },
+    scrollTop: 0,
+    returnControlID: null,
+    thresholdFocus: { kind: "control", id: "suggestionThresholdSearch" },
+    thresholdScrollTop: 0,
   },
   storageMaintenance: {
     snapshot: null,
@@ -2312,6 +2318,15 @@ function closeOverlays() {
   state.generalSettings.thresholdReturnFocus = null;
   state.generalSettings.pendingDefaultFocus = null;
   state.generalSettings.pendingThresholdFocus = null;
+  state.generalSettings.restorable = false;
+  state.generalSettings.focus = { kind: "control", id: "generalSettingsCloseButton" };
+  state.generalSettings.scrollTop = 0;
+  state.generalSettings.returnControlID = null;
+  state.generalSettings.thresholdFocus = {
+    kind: "control",
+    id: "suggestionThresholdSearch",
+  };
+  state.generalSettings.thresholdScrollTop = 0;
   state.sourceManagerReturnFocus = null;
   state.sourceManagerBaseLevel = "workspace";
   state.sourceManagerHistoryRestoreFocus = true;
@@ -3313,6 +3328,7 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
     ? {
         ...(context || {}),
         generalSettingsBaseLevel: state.generalSettings.baseLevel,
+        ...currentGeneralSettingsHistoryContext(),
       }
     : hasKeyboardShortcuts
     ? {
@@ -3917,11 +3933,12 @@ async function applyWorkspaceHistoryEntry(entry, { restoringReload = false } = {
         navigationLevel,
         context
       );
-      await reconcileGeneralSettingsFromWorkspaceHistory(
-        target,
-        navigationLevel,
-        context
-      );
+      checkpointWorkspaceHistoryAfterApply =
+        await reconcileGeneralSettingsFromWorkspaceHistory(
+          target,
+          navigationLevel,
+          context
+        ) || checkpointWorkspaceHistoryAfterApply;
       checkpointWorkspaceHistoryAfterApply = await reconcileWorldMapLocationBackfillFromWorkspaceHistory(
         target,
         navigationLevel,
@@ -4011,11 +4028,12 @@ async function applyWorkspaceHistoryEntry(entry, { restoringReload = false } = {
         navigationLevel,
         context
       );
-      await reconcileGeneralSettingsFromWorkspaceHistory(
-        "gallery",
-        navigationLevel,
-        context
-      );
+      checkpointWorkspaceHistoryAfterApply =
+        await reconcileGeneralSettingsFromWorkspaceHistory(
+          "gallery",
+          navigationLevel,
+          context
+        ) || checkpointWorkspaceHistoryAfterApply;
       checkpointWorkspaceHistoryAfterApply = await reconcileWorldMapLocationBackfillFromWorkspaceHistory(
         "gallery",
         navigationLevel,
@@ -4238,11 +4256,12 @@ async function applyWorkspaceHistoryEntry(entry, { restoringReload = false } = {
       activeEntry?.navigationLevel || "workspace",
       context
     );
-    await reconcileGeneralSettingsFromWorkspaceHistory(
-      target,
-      activeEntry?.navigationLevel || "workspace",
-      context
-    );
+    checkpointWorkspaceHistoryAfterApply =
+      await reconcileGeneralSettingsFromWorkspaceHistory(
+        target,
+        activeEntry?.navigationLevel || "workspace",
+        context
+      ) || checkpointWorkspaceHistoryAfterApply;
     checkpointWorkspaceHistoryAfterApply = await reconcileWorldMapLocationBackfillFromWorkspaceHistory(
       target,
       activeEntry?.navigationLevel || "workspace",
@@ -10454,6 +10473,7 @@ function replaceConfirmationHistoryWithBase(baseLevel, historyContext = {}) {
   } else if (baseLevel === "generalSettings" && elements.generalSettingsDialog.open) {
     navigationLevel = "generalSettings";
     context.generalSettingsBaseLevel = state.generalSettings.baseLevel;
+    Object.assign(context, currentGeneralSettingsHistoryContext());
   } else if (baseLevel === "actionMenu" && activeActionMenuDescriptor()) {
     navigationLevel = "actionMenu";
     context.actionMenuBaseLevel = state.actionMenuBaseLevel;
@@ -13406,6 +13426,300 @@ function generalSettingsBaseLevelFromHistory(context = {}) {
     : "workspace";
 }
 
+const GENERAL_SETTINGS_HISTORY_CONTROL_IDS = new Set([
+  "generalSettingsCloseButton",
+  "generalSettingsModelToggle",
+  "generalSettingsPrewarmToggle",
+  "suggestionOverridesButton",
+]);
+const GENERAL_SETTINGS_HISTORY_RETURN_IDS = new Set([
+  "settingsButton",
+  "compactToolbarMenuButton",
+  "commandButton",
+]);
+const GENERAL_SETTINGS_HISTORY_DISPLAY_MODES = new Set([
+  "iconOnly",
+  "iconAndTitle",
+]);
+const SUGGESTION_THRESHOLD_HISTORY_METHODS = new Set([
+  "featureKnn",
+  "personalCentroid",
+  "personalAdamW",
+]);
+const SUGGESTION_DEFAULT_HISTORY_FOCUS_KINDS = new Set([
+  "input",
+  "decrease",
+  "increase",
+]);
+const SUGGESTION_THRESHOLD_HISTORY_FOCUS_KINDS = new Set([
+  "input",
+  "decrease",
+  "increase",
+  "inherit",
+  "adopt",
+]);
+const SUGGESTION_THRESHOLD_HISTORY_CONTROL_IDS = new Set([
+  "suggestionThresholdCloseButton",
+  "suggestionThresholdSearch",
+]);
+
+function defaultGeneralSettingsHistoryFocus() {
+  return { kind: "control", id: "generalSettingsCloseButton" };
+}
+
+function normalizedGeneralSettingsHistoryFocus(raw) {
+  if (!raw || typeof raw !== "object") return defaultGeneralSettingsHistoryFocus();
+  if (raw.kind === "control" && GENERAL_SETTINGS_HISTORY_CONTROL_IDS.has(raw.id)) {
+    return { kind: "control", id: raw.id };
+  }
+  if (raw.kind === "toolbarDisplayMode"
+    && GENERAL_SETTINGS_HISTORY_DISPLAY_MODES.has(raw.value)) {
+    return { kind: "toolbarDisplayMode", value: raw.value };
+  }
+  if (raw.kind === "suggestionDefault"
+    && SUGGESTION_DEFAULT_HISTORY_FOCUS_KINDS.has(raw.focusKind)
+    && SUGGESTION_THRESHOLD_HISTORY_METHODS.has(raw.method)) {
+    return {
+      kind: "suggestionDefault",
+      focusKind: raw.focusKind,
+      method: raw.method,
+    };
+  }
+  return defaultGeneralSettingsHistoryFocus();
+}
+
+function generalSettingsHistoryFocusForElement(target) {
+  if (!(target instanceof Element)) return null;
+  const control = target.closest("button, input");
+  if (!(control instanceof HTMLElement) || !elements.generalSettingsDialog.contains(control)) {
+    return null;
+  }
+  if (GENERAL_SETTINGS_HISTORY_CONTROL_IDS.has(control.id)) {
+    return { kind: "control", id: control.id };
+  }
+  if (GENERAL_SETTINGS_HISTORY_DISPLAY_MODES.has(control.dataset.toolbarDisplayMode)) {
+    return { kind: "toolbarDisplayMode", value: control.dataset.toolbarDisplayMode };
+  }
+  const focusKey = suggestionDefaultFocusKey(control);
+  if (focusKey
+    && SUGGESTION_DEFAULT_HISTORY_FOCUS_KINDS.has(focusKey[0])
+    && SUGGESTION_THRESHOLD_HISTORY_METHODS.has(focusKey[1])) {
+    return { kind: "suggestionDefault", focusKind: focusKey[0], method: focusKey[1] };
+  }
+  return null;
+}
+
+function captureGeneralSettingsHistoryFocus() {
+  const descriptor = generalSettingsHistoryFocusForElement(document.activeElement);
+  if (descriptor) state.generalSettings.focus = descriptor;
+}
+
+function defaultSuggestionThresholdHistoryFocus() {
+  return { kind: "control", id: "suggestionThresholdSearch" };
+}
+
+function normalizedSuggestionThresholdHistoryFocus(raw) {
+  if (!raw || typeof raw !== "object") return defaultSuggestionThresholdHistoryFocus();
+  if (raw.kind === "control" && SUGGESTION_THRESHOLD_HISTORY_CONTROL_IDS.has(raw.id)) {
+    return { kind: "control", id: raw.id };
+  }
+  const tagID = galleryHistoryIdentifier(raw.tagID);
+  if (raw.kind === "threshold"
+    && tagID
+    && SUGGESTION_THRESHOLD_HISTORY_FOCUS_KINDS.has(raw.focusKind)
+    && SUGGESTION_THRESHOLD_HISTORY_METHODS.has(raw.method)) {
+    return {
+      kind: "threshold",
+      focusKind: raw.focusKind,
+      tagID,
+      method: raw.method,
+    };
+  }
+  return defaultSuggestionThresholdHistoryFocus();
+}
+
+function suggestionThresholdHistoryFocusForElement(target) {
+  if (!(target instanceof Element)) return null;
+  const control = target.closest("button, input");
+  if (!(control instanceof HTMLElement)
+    || !elements.suggestionThresholdDialog.contains(control)) return null;
+  if (SUGGESTION_THRESHOLD_HISTORY_CONTROL_IDS.has(control.id)) {
+    return { kind: "control", id: control.id };
+  }
+  const focusKey = thresholdFocusSelector(control);
+  const tagID = galleryHistoryIdentifier(focusKey?.[1]);
+  if (focusKey
+    && tagID
+    && SUGGESTION_THRESHOLD_HISTORY_FOCUS_KINDS.has(focusKey[0])
+    && SUGGESTION_THRESHOLD_HISTORY_METHODS.has(focusKey[2])) {
+    return {
+      kind: "threshold",
+      focusKind: focusKey[0],
+      tagID,
+      method: focusKey[2],
+    };
+  }
+  return null;
+}
+
+function captureSuggestionThresholdHistoryFocus() {
+  const descriptor = suggestionThresholdHistoryFocusForElement(document.activeElement);
+  if (descriptor) state.generalSettings.thresholdFocus = descriptor;
+}
+
+function currentGeneralSettingsHistoryContext() {
+  const manager = state.generalSettings;
+  if (elements.generalSettingsDialog.open) {
+    captureGeneralSettingsHistoryFocus();
+    manager.scrollTop = elements.generalSettingsContent.scrollTop;
+  }
+  if (elements.suggestionThresholdDialog.open) {
+    captureSuggestionThresholdHistoryFocus();
+    manager.thresholdScrollTop = elements.suggestionThresholdList.scrollTop;
+  }
+  return {
+    generalSettingsFocus: normalizedGeneralSettingsHistoryFocus(manager.focus),
+    generalSettingsScrollTop: Math.max(
+      0,
+      workspaceHistoryFiniteNumber(manager.scrollTop)
+    ),
+    generalSettingsReturnControlID: GENERAL_SETTINGS_HISTORY_RETURN_IDS.has(
+      manager.returnControlID
+    ) ? manager.returnControlID : null,
+    suggestionThresholdFocus: normalizedSuggestionThresholdHistoryFocus(
+      manager.thresholdFocus
+    ),
+    suggestionThresholdScrollTop: Math.max(
+      0,
+      workspaceHistoryFiniteNumber(manager.thresholdScrollTop)
+    ),
+  };
+}
+
+function applyGeneralSettingsHistoryContext(context = {}) {
+  const manager = state.generalSettings;
+  manager.focus = normalizedGeneralSettingsHistoryFocus(context.generalSettingsFocus);
+  manager.scrollTop = Math.max(
+    0,
+    workspaceHistoryFiniteNumber(context.generalSettingsScrollTop)
+  );
+  manager.returnControlID = GENERAL_SETTINGS_HISTORY_RETURN_IDS.has(
+    context.generalSettingsReturnControlID
+  ) ? context.generalSettingsReturnControlID : null;
+  manager.thresholdFocus = normalizedSuggestionThresholdHistoryFocus(
+    context.suggestionThresholdFocus
+  );
+  manager.thresholdScrollTop = Math.max(
+    0,
+    workspaceHistoryFiniteNumber(context.suggestionThresholdScrollTop)
+  );
+}
+
+function generalSettingsReturnControlID(target) {
+  return target instanceof HTMLElement && GENERAL_SETTINGS_HISTORY_RETURN_IDS.has(target.id)
+    ? target.id
+    : null;
+}
+
+function resolveGeneralSettingsReturnFocus() {
+  const manager = state.generalSettings;
+  if (manager.returnFocus?.isConnected) return manager.returnFocus;
+  if (manager.returnControlID) {
+    const target = document.getElementById(manager.returnControlID);
+    if (target instanceof HTMLElement && !target.disabled && target.getClientRects().length) {
+      return target;
+    }
+  }
+  return stableReturnFocusTarget(
+    elements.settingsButton,
+    stableReturnFocusTarget(elements.compactToolbarMenuButton, elements.commandButton)
+  );
+}
+
+function generalSettingsHistoryFocusTarget(descriptor = state.generalSettings.focus) {
+  const normalized = normalizedGeneralSettingsHistoryFocus(descriptor);
+  if (normalized.kind === "control") return document.getElementById(normalized.id);
+  if (normalized.kind === "toolbarDisplayMode") {
+    return elements.toolbarDisplayModeControl.querySelector(
+      `[data-toolbar-display-mode="${CSS.escape(normalized.value)}"]`
+    );
+  }
+  if (normalized.kind === "suggestionDefault") {
+    return suggestionDefaultFocusTarget([normalized.focusKind, normalized.method]);
+  }
+  return null;
+}
+
+async function restoreGeneralSettingsLayoutFromHistory({ focus = true } = {}) {
+  await waitForWorkspaceLayout();
+  const manager = state.generalSettings;
+  const scrollTop = Math.min(
+    manager.scrollTop,
+    Math.max(
+      0,
+      elements.generalSettingsContent.scrollHeight - elements.generalSettingsContent.clientHeight
+    )
+  );
+  elements.generalSettingsContent.scrollTop = scrollTop;
+  let target = generalSettingsHistoryFocusTarget();
+  if (!(target instanceof HTMLElement)
+    || target.disabled
+    || !elements.generalSettingsDialog.contains(target)
+    || target.offsetParent === null) {
+    target = elements.toolbarDisplayModeControl.querySelector('[aria-checked="true"]')
+      || elements.generalSettingsCloseButton;
+  }
+  manager.focus = generalSettingsHistoryFocusForElement(target)
+    || defaultGeneralSettingsHistoryFocus();
+  if (focus) target.focus({ preventScroll: true });
+  manager.scrollTop = scrollTop;
+  elements.generalSettingsContent.scrollTop = scrollTop;
+}
+
+function suggestionThresholdHistoryFocusTarget(
+  descriptor = state.generalSettings.thresholdFocus
+) {
+  const normalized = normalizedSuggestionThresholdHistoryFocus(descriptor);
+  if (normalized.kind === "control") return document.getElementById(normalized.id);
+  const selector = `[data-threshold-focus="${CSS.escape(normalized.focusKind)}"]`
+    + `[data-threshold-tag-id="${CSS.escape(normalized.tagID)}"]`
+    + `[data-threshold-method="${CSS.escape(normalized.method)}"]`;
+  return elements.suggestionThresholdList.querySelector(selector)
+    || elements.suggestionThresholdList.querySelector(
+      `[data-threshold-focus="input"]`
+        + `[data-threshold-tag-id="${CSS.escape(normalized.tagID)}"]`
+        + `[data-threshold-method="${CSS.escape(normalized.method)}"]`
+    );
+}
+
+async function restoreSuggestionThresholdLayoutFromHistory() {
+  await waitForWorkspaceLayout();
+  const manager = state.generalSettings;
+  const scrollTop = Math.min(
+    manager.thresholdScrollTop,
+    Math.max(
+      0,
+      elements.suggestionThresholdList.scrollHeight
+        - elements.suggestionThresholdList.clientHeight
+    )
+  );
+  elements.suggestionThresholdList.scrollTop = scrollTop;
+  let target = suggestionThresholdHistoryFocusTarget();
+  if (!(target instanceof HTMLElement)
+    || target.disabled
+    || !elements.suggestionThresholdDialog.contains(target)
+    || target.offsetParent === null) {
+    target = elements.suggestionThresholdSearch.disabled
+      ? elements.suggestionThresholdCloseButton
+      : elements.suggestionThresholdSearch;
+  }
+  target.focus({ preventScroll: true });
+  manager.thresholdFocus = suggestionThresholdHistoryFocusForElement(target)
+    || defaultSuggestionThresholdHistoryFocus();
+  manager.thresholdScrollTop = scrollTop;
+  elements.suggestionThresholdList.scrollTop = scrollTop;
+}
+
 function replaceGeneralSettingsHistoryWithBase(baseLevel) {
   if (!state.workspaceNavigation.initialized
     || elements.appView.classList.contains("hidden")) return;
@@ -13431,6 +13745,7 @@ function replaceSuggestionThresholdHistoryWithSettings() {
   const context = {
     ...(currentWorkspaceHistoryContext(route) || {}),
     generalSettingsBaseLevel: state.generalSettings.baseLevel,
+    ...currentGeneralSettingsHistoryContext(),
   };
   history.replaceState({
     ...(history.state || {}),
@@ -13441,6 +13756,7 @@ function replaceSuggestionThresholdHistoryWithSettings() {
 function openSuggestionThresholdDialog({
   focus = true,
   historyMode = "pushSuggestionThreshold",
+  preserveState = false,
 } = {}) {
   if (!elements.generalSettingsDialog.open
     || !suggestionThresholdSnapshot()
@@ -13449,7 +13765,11 @@ function openSuggestionThresholdDialog({
     if (focus) restoreOverlayFocus(elements.suggestionThresholdSearch);
     return;
   }
-  state.generalSettings.thresholdReturnFocus = document.activeElement;
+  if (!preserveState) {
+    state.generalSettings.thresholdReturnFocus = document.activeElement;
+    state.generalSettings.thresholdFocus = defaultSuggestionThresholdHistoryFocus();
+    state.generalSettings.thresholdScrollTop = 0;
+  }
   elements.suggestionThresholdSearch.value = "";
   elements.suggestionThresholdError.classList.add("hidden");
   elements.suggestionThresholdDialog.showModal();
@@ -13459,22 +13779,45 @@ function openSuggestionThresholdDialog({
     recordWorkspaceHistory(route, currentWorkspaceHistoryContext(route), historyMode);
   }
   if (focus) restoreOverlayFocus(elements.suggestionThresholdSearch);
+  scheduleWorkspaceHistoryCheckpoint();
 }
 
-function closeSuggestionThresholdDialog({ restoreFocus = true, checkpoint = true } = {}) {
+function closeSuggestionThresholdDialog({
+  restoreFocus = true,
+  checkpoint = true,
+  preserveState = false,
+} = {}) {
   if (!elements.suggestionThresholdDialog.open) return;
+  captureSuggestionThresholdHistoryFocus();
+  state.generalSettings.thresholdScrollTop = elements.suggestionThresholdList.scrollTop;
   const returnFocus = state.generalSettings.thresholdReturnFocus;
-  state.generalSettings.thresholdReturnFocus = null;
+  if (!preserveState) state.generalSettings.thresholdReturnFocus = null;
   elements.suggestionThresholdDialog.close();
-  if (restoreFocus) restoreOverlayFocus(returnFocus || elements.suggestionOverridesButton);
+  if (restoreFocus) {
+    const target = returnFocus || elements.suggestionOverridesButton;
+    state.generalSettings.focus = generalSettingsHistoryFocusForElement(target)
+      || { kind: "control", id: "suggestionOverridesButton" };
+    restoreOverlayFocus(target);
+  }
   if (checkpoint) replaceSuggestionThresholdHistoryWithSettings();
+  if (!preserveState) {
+    state.generalSettings.thresholdFocus = defaultSuggestionThresholdHistoryFocus();
+    state.generalSettings.thresholdScrollTop = 0;
+  }
 }
 
 function returnFromSuggestionThreshold({ restoreFocus = true } = {}) {
   if (!elements.suggestionThresholdDialog.open) return Promise.resolve();
   state.generalSettings.thresholdHistoryRestoreFocus = restoreFocus;
   if (state.workspaceNavigation.pendingReturnPromise) {
-    return state.workspaceNavigation.pendingReturnPromise;
+    return state.workspaceNavigation.pendingReturnPromise.then(() => {
+      if (elements.suggestionThresholdDialog.open) {
+        return returnFromSuggestionThreshold({ restoreFocus });
+      }
+      return elements.generalSettingsDialog.open
+        ? returnFromGeneralSettings({ restoreFocus })
+        : undefined;
+    });
   }
   const current = activeWorkspaceHistoryEntry();
   if (state.workspaceNavigation.initialized
@@ -13497,23 +13840,33 @@ async function openGeneralSettings({
   historyMode = "pushGeneralSettings",
   baseLevel = null,
   refresh = true,
+  preserveState = false,
 } = {}) {
   if (!state.online || !supportsGeneralSettings()
     || elements.generalSettingsDialog.open
     || state.generalSettings.opening) return;
   state.generalSettings.opening = true;
-  const returnFocus = document.activeElement instanceof HTMLElement
-    ? document.activeElement
-    : null;
   try {
-    state.generalSettings.returnFocus = returnFocus;
+    if (!preserveState) {
+      state.generalSettings.returnFocus = document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+      state.generalSettings.returnControlID = generalSettingsReturnControlID(
+        state.generalSettings.returnFocus
+      );
+      state.generalSettings.focus = defaultGeneralSettingsHistoryFocus();
+      state.generalSettings.scrollTop = 0;
+      state.generalSettings.thresholdFocus = defaultSuggestionThresholdHistoryFocus();
+      state.generalSettings.thresholdScrollTop = 0;
+    }
     const current = activeWorkspaceHistoryEntry();
     state.generalSettings.baseLevel = baseLevel
       || workspaceNavigationBaseLevel(
         current?.navigationLevel || "workspace",
         current?.context || {}
-      );
+    );
     elements.generalSettingsDialog.showModal();
+    state.generalSettings.restorable = true;
     elements.generalSettingsError.classList.add("hidden");
     if (historyMode !== "none") {
       const route = visibleWorkspaceRoute();
@@ -13526,22 +13879,36 @@ async function openGeneralSettings({
       const selected = elements.toolbarDisplayModeControl.querySelector('[aria-checked="true"]');
       restoreOverlayFocus(selected || elements.generalSettingsCloseButton);
     }
+    scheduleWorkspaceHistoryCheckpoint();
   } finally {
     state.generalSettings.opening = false;
   }
 }
 
-function closeGeneralSettings({ restoreFocus = true, checkpoint = true } = {}) {
+function closeGeneralSettings({
+  restoreFocus = true,
+  checkpoint = true,
+  preserveState = false,
+} = {}) {
   if (!elements.generalSettingsDialog.open) return;
   if (elements.suggestionThresholdDialog.open) {
-    closeSuggestionThresholdDialog({ restoreFocus: false, checkpoint: false });
+    closeSuggestionThresholdDialog({
+      restoreFocus: false,
+      checkpoint: false,
+      preserveState,
+    });
   }
   state.generalSettings.requestGeneration += 1;
   state.generalSettings.loading = false;
+  captureGeneralSettingsHistoryFocus();
+  state.generalSettings.scrollTop = elements.generalSettingsContent.scrollTop;
   const baseLevel = state.generalSettings.baseLevel;
-  const returnFocus = state.generalSettings.returnFocus;
-  state.generalSettings.returnFocus = null;
-  state.generalSettings.baseLevel = "workspace";
+  const returnFocus = resolveGeneralSettingsReturnFocus();
+  if (!preserveState) {
+    state.generalSettings.returnFocus = null;
+    state.generalSettings.returnControlID = null;
+  }
+  state.generalSettings.baseLevel = preserveState ? baseLevel : "workspace";
   elements.generalSettingsDialog.close();
   if (restoreFocus) {
     const toolbarFallback = stableReturnFocusTarget(
@@ -13554,6 +13921,11 @@ function closeGeneralSettings({ restoreFocus = true, checkpoint = true } = {}) {
     ));
   }
   if (checkpoint) replaceGeneralSettingsHistoryWithBase(baseLevel);
+  if (!preserveState) {
+    state.generalSettings.restorable = false;
+    state.generalSettings.focus = defaultGeneralSettingsHistoryFocus();
+    state.generalSettings.scrollTop = 0;
+  }
 }
 
 function returnFromGeneralSettings({ restoreFocus = true } = {}) {
@@ -13563,7 +13935,11 @@ function returnFromGeneralSettings({ restoreFocus = true } = {}) {
   if (!elements.generalSettingsDialog.open) return Promise.resolve();
   state.generalSettings.historyRestoreFocus = restoreFocus;
   if (state.workspaceNavigation.pendingReturnPromise) {
-    return state.workspaceNavigation.pendingReturnPromise;
+    return state.workspaceNavigation.pendingReturnPromise.then(() => (
+      elements.generalSettingsDialog.open
+        ? returnFromGeneralSettings({ restoreFocus })
+        : undefined
+    ));
   }
   const current = activeWorkspaceHistoryEntry();
   if (state.workspaceNavigation.initialized
@@ -13593,26 +13969,43 @@ async function reconcileGeneralSettingsFromWorkspaceHistory(
     replaceGeneralSettingsHistoryWithBase(generalSettingsBaseLevelFromHistory(context));
     return;
   }
+  const restoringFreshState = shouldOpenSettings && !state.generalSettings.restorable;
+  if (shouldOpenSettings) applyGeneralSettingsHistoryContext(context);
   if (shouldOpenSettings && !elements.generalSettingsDialog.open) {
     await openGeneralSettings({
-      focus: navigationLevel === "generalSettings",
+      focus: false,
       historyMode: "none",
       baseLevel: generalSettingsBaseLevelFromHistory(context),
       refresh: false,
+      preserveState: true,
     });
   }
   if (navigationLevel === "suggestionThreshold" && elements.generalSettingsDialog.open) {
-    openSuggestionThresholdDialog({ historyMode: "none" });
+    await restoreGeneralSettingsLayoutFromHistory({ focus: false });
+    openSuggestionThresholdDialog({
+      focus: false,
+      historyMode: "none",
+      preserveState: true,
+    });
+    await restoreSuggestionThresholdLayoutFromHistory();
   } else if (elements.suggestionThresholdDialog.open) {
     const restoreFocus = state.generalSettings.thresholdHistoryRestoreFocus;
-    closeSuggestionThresholdDialog({ restoreFocus, checkpoint: false });
+    closeSuggestionThresholdDialog({
+      restoreFocus,
+      checkpoint: false,
+      preserveState: true,
+    });
     state.generalSettings.thresholdHistoryRestoreFocus = true;
+  }
+  if (navigationLevel === "generalSettings" && elements.generalSettingsDialog.open) {
+    await restoreGeneralSettingsLayoutFromHistory();
   }
   if (!shouldOpenSettings && elements.generalSettingsDialog.open) {
     const restoreFocus = state.generalSettings.historyRestoreFocus;
-    closeGeneralSettings({ restoreFocus, checkpoint: false });
+    closeGeneralSettings({ restoreFocus, checkpoint: false, preserveState: true });
     state.generalSettings.historyRestoreFocus = true;
   }
+  return restoringFreshState;
 }
 
 function moveDialogButtonFocus(event, dialog) {
@@ -39082,6 +39475,12 @@ function resetWorkspaceSessionState() {
   state.generalSettings.opening = false;
   state.generalSettings.pendingDefaultFocus = null;
   state.generalSettings.pendingThresholdFocus = null;
+  state.generalSettings.restorable = false;
+  state.generalSettings.focus = defaultGeneralSettingsHistoryFocus();
+  state.generalSettings.scrollTop = 0;
+  state.generalSettings.returnControlID = null;
+  state.generalSettings.thresholdFocus = defaultSuggestionThresholdHistoryFocus();
+  state.generalSettings.thresholdScrollTop = 0;
   closeCompactToolbarMenu({ restoreFocus: false, checkpoint: false });
   state.compactToolbarReturnFocus = null;
   state.compactToolbarBaseLevel = "workspace";
@@ -44218,6 +44617,18 @@ function bindEvents() {
     event.preventDefault();
     void returnFromSuggestionThreshold();
   });
+  elements.suggestionThresholdDialog.addEventListener("focusin", () => {
+    if (state.workspaceNavigation.applyingHistory
+      || state.workspaceNavigation.pendingRestoreEntry) return;
+    captureSuggestionThresholdHistoryFocus();
+    scheduleWorkspaceHistoryCheckpoint();
+  });
+  elements.suggestionThresholdList.addEventListener("scroll", () => {
+    if (state.workspaceNavigation.applyingHistory
+      || state.workspaceNavigation.pendingRestoreEntry) return;
+    state.generalSettings.thresholdScrollTop = elements.suggestionThresholdList.scrollTop;
+    scheduleWorkspaceHistoryCheckpoint();
+  }, { passive: true });
   elements.suggestionThresholdDialog.addEventListener("keydown", (event) => {
     moveDialogButtonFocus(event, elements.suggestionThresholdDialog);
   });
@@ -44225,6 +44636,18 @@ function bindEvents() {
     event.preventDefault();
     void returnFromGeneralSettings();
   });
+  elements.generalSettingsDialog.addEventListener("focusin", () => {
+    if (state.workspaceNavigation.applyingHistory
+      || state.workspaceNavigation.pendingRestoreEntry) return;
+    captureGeneralSettingsHistoryFocus();
+    scheduleWorkspaceHistoryCheckpoint();
+  });
+  elements.generalSettingsContent.addEventListener("scroll", () => {
+    if (state.workspaceNavigation.applyingHistory
+      || state.workspaceNavigation.pendingRestoreEntry) return;
+    state.generalSettings.scrollTop = elements.generalSettingsContent.scrollTop;
+    scheduleWorkspaceHistoryCheckpoint();
+  }, { passive: true });
   elements.generalSettingsDialog.addEventListener("keydown", (event) => {
     moveDialogButtonFocus(event, elements.generalSettingsDialog);
   });

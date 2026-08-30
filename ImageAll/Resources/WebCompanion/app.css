@@ -4400,6 +4400,7 @@ html.split-resizing * {
 .suggestion-threshold-shell {
   display: flex;
   flex-direction: column;
+  height: min(820px, calc(100vh - 32px));
   max-height: min(820px, calc(100vh - 32px));
 }
 
@@ -4435,6 +4436,9 @@ html.split-resizing * {
 
 .suggestion-threshold-list {
   display: grid;
+  flex: 1 1 auto;
+  align-content: start;
+  grid-auto-rows: max-content;
   gap: 10px;
   min-height: 0;
   padding: 0 22px 20px;
