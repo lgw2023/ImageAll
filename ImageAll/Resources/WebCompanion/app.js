@@ -22132,6 +22132,29 @@ function inlineTagSurfaceAvailable(surface) {
     : !state.selectionMode && Boolean(state.selectedAssetID);
 }
 
+function focusInlineTagCreationFromCommand(returnFocus = null) {
+  const surface = state.selectionMode && state.selectedAssetIDs.size > 0
+    ? "selection"
+    : "single";
+  if (!inlineTagSurfaceAvailable(surface)) return false;
+
+  if (!galleryOverviewLayoutQuery.matches) {
+    openGalleryInspectorOverlay({ returnFocus, focus: false });
+  } else if (!state.layout.inspectorVisible) {
+    setInspectorVisible(true);
+  }
+
+  const { form, input } = inlineTagSurfaceElements(surface);
+  requestAnimationFrame(() => {
+    if (!inlineTagSurfaceAvailable(surface)
+      || form.classList.contains("hidden")
+      || input.disabled) return;
+    form.scrollIntoView({ block: "nearest" });
+    input.focus({ preventScroll: true });
+  });
+  return true;
+}
+
 function setInlineTagError(surface, message = "") {
   const { error } = inlineTagSurfaceElements(surface);
   error.textContent = message;
@@ -42538,7 +42561,9 @@ async function executeCommand(commandID) {
     await submitSlimmingRemoval("releaseSourceSpace");
     break;
   case "newTag":
-    openNewTagDialog();
+    if (!focusInlineTagCreationFromCommand(commandReturnFocus)) {
+      presentNewTagDialog({ returnFocus: commandReturnFocus });
+    }
     break;
   case "prepareSelectedFeatures":
     await prepareSelectedFeatures();

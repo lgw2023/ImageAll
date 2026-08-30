@@ -2153,6 +2153,24 @@ def main(*, inspector_actions_only=False):
             return
         assert single_inline_input.is_visible()
         assert not page.locator("#newTagDialog").evaluate("element => element.open")
+        command_inline_asset_requests = len(asset_request_urls)
+        command_inline_submissions = len(submitted_created_tags)
+        single_inline_input.fill("命令面板保留的草稿")
+        page.locator("#commandButton").click()
+        page.locator('[data-command-id="toggleInspector"]').click()
+        page.wait_for_function(
+            "() => document.querySelector('#workspace').classList.contains('inspector-hidden')"
+        )
+        page.locator("#commandButton").click()
+        page.locator('[data-command-id="newTag"]').click()
+        page.wait_for_function(
+            "() => !document.querySelector('#workspace').classList.contains('inspector-hidden') "
+            "&& document.activeElement?.id === 'inspectorInlineTagName'"
+        )
+        assert single_inline_input.input_value() == "命令面板保留的草稿"
+        assert not page.locator("#newTagDialog").evaluate("element => element.open")
+        assert len(submitted_created_tags) == command_inline_submissions
+        assert len(asset_request_urls) == command_inline_asset_requests
         single_inline_snapshot = page.evaluate(
             """() => ({
               selectedAssetID: state.selectedAssetID,
@@ -2567,6 +2585,29 @@ def main(*, inspector_actions_only=False):
             inline_dimensions["button"],
         ):
             assert bounds["left"] >= 0 and bounds["right"] <= 390, inline_dimensions
+        command_inline_asset_requests = len(asset_request_urls)
+        command_inline_submissions = len(submitted_created_tags)
+        selection_inline_input.fill("多选命令草稿")
+        page.locator("#closeInspectorButton").click()
+        page.wait_for_function(
+            "() => !document.querySelector('#inspector').classList.contains('open')"
+        )
+        page.keyboard.press("Meta+K")
+        page.locator('[data-command-id="newTag"]').click()
+        page.wait_for_function(
+            "() => document.querySelector('#inspector').classList.contains('open') "
+            "&& history.state?.imageAllWorkspace?.navigationLevel === 'inspector' "
+            "&& document.activeElement?.id === 'selectionInspectorInlineTagName'"
+        )
+        assert selection_inline_input.input_value() == "多选命令草稿"
+        assert not page.locator("#newTagDialog").evaluate("element => element.open")
+        assert len(submitted_created_tags) == command_inline_submissions
+        assert len(asset_request_urls) == command_inline_asset_requests
+        page.screenshot(
+            path="/tmp/imageall-command-inline-tag-390.png",
+            full_page=True,
+        )
+        selection_inline_input.press("Escape")
         family_chip = page.locator(
             f'#selectionInspectorTags [data-tag-chip-action][data-tag-id="{SELECTION_CREATED_TAG_ID}"]'
         )
