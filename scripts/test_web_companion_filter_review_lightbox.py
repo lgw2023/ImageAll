@@ -4180,14 +4180,10 @@ def main():
         ])
         page.evaluate(
             """async () => {
-              await loadReviewQueue({ schedulePagination: false });
-              while (state.review.nextCursor) {
-                await loadReviewQueue({
-                  append: true,
-                  preserveUnchangedGrid: true,
-                  schedulePagination: false,
-                });
-              }
+              await loadReviewQueue({
+                preserveLoadedWindow: true,
+                schedulePagination: false,
+              });
             }"""
         )
         page.wait_for_function(
@@ -4270,14 +4266,10 @@ def main():
         review_items[:] = review_items[:len(REVIEW_IDS)]
         page.evaluate(
             """async () => {
-              await loadReviewQueue({ schedulePagination: false });
-              while (state.review.nextCursor) {
-                await loadReviewQueue({
-                  append: true,
-                  preserveUnchangedGrid: true,
-                  schedulePagination: false,
-                });
-              }
+              await loadReviewQueue({
+                preserveLoadedWindow: true,
+                schedulePagination: false,
+              });
             }"""
         )
         page.wait_for_function(
@@ -4380,6 +4372,58 @@ def main():
         )
         review_select_all.click()
         page.wait_for_function("() => state.review.selectedAssetIDs.size === 3")
+
+        review_items.extend([
+            {
+                **review_items[0],
+                "assetID": asset_id,
+                "fileName": f"MULTISELECT_{index:02d}.JPG",
+                "contentRevision": 200 + index,
+                "score": 0.64 - index * 0.005,
+            }
+            for index, asset_id in enumerate(REVIEW_HISTORY_IDS[:6], start=1)
+        ])
+        page.evaluate(
+            """async () => {
+              await loadReviewQueue({ schedulePagination: false });
+              while (state.review.nextCursor) {
+                await loadReviewQueue({
+                  append: true,
+                  preserveUnchangedGrid: true,
+                  schedulePagination: false,
+                });
+              }
+            }"""
+        )
+        page.wait_for_function(
+            "count => !state.review.loading && state.review.items.length === count",
+            arg=len(REVIEW_IDS) + 6,
+        )
+        page.evaluate(
+            """selectedAssetIDs => {
+              state.review.selectedAssetIDs = new Set(selectedAssetIDs);
+              state.review.selectedIndex = 2;
+              state.review.selectionAnchorIndex = 2;
+              renderReviewSelectionState();
+              checkpointActiveWorkspaceHistory();
+            }""",
+            REVIEW_IDS,
+        )
+        assert page.evaluate("() => state.review.selectedAssetIDs.size") == 3
+        review_select_all.click()
+        page.wait_for_function(
+            "count => state.review.selectedAssetIDs.size === count",
+            arg=len(REVIEW_IDS) + 6,
+        )
+        page.evaluate(
+            """() => {
+              selectReviewIndex(6, { additive: true, extendRange: true });
+              const grid = document.querySelector('#reviewGrid');
+              grid.scrollLeft = Math.min(320, grid.scrollWidth - grid.clientWidth);
+              checkpointActiveWorkspaceHistory();
+            }"""
+        )
+        assert review_select_all.is_disabled()
         page.screenshot(
             path="/tmp/imageall-review-touch-selection-active-390.png",
             full_page=True,
@@ -4390,23 +4434,140 @@ def main():
               selectedIndex: state.review.selectedIndex,
               selectionAnchorIndex: state.review.selectionAnchorIndex,
               scrollTop: document.querySelector('#reviewQueuePane').scrollTop,
+              scrollLeft: document.querySelector('#reviewGrid').scrollLeft,
             })"""
         )
-        page.locator('[data-review-index="1"] > .review-card-main').dblclick()
+        review_multiselection_history_snapshot = page.evaluate(
+            """() => ({
+              selectionMode: history.state.imageAllWorkspace.context.reviewSelectionMode,
+              selectedAssetIDs:
+                [...history.state.imageAllWorkspace.context.reviewSelectedAssetIDs].sort(),
+              primaryKey: history.state.imageAllWorkspace.context.reviewItemKey,
+              anchorKey: history.state.imageAllWorkspace.context.reviewSelectionAnchorKey,
+            })"""
+        )
+        assert page.evaluate("() => state.review.selectionMode") is True
+        assert review_multiselection_history_snapshot["selectionMode"] is True
+        assert review_multiselection_history_snapshot["selectedAssetIDs"] == (
+            review_double_click_snapshot["selectedAssetIDs"]
+        )
+        assert review_double_click_snapshot["selectedIndex"] == 6
+        assert review_double_click_snapshot["selectionAnchorIndex"] == 2
+        assert review_multiselection_history_snapshot["primaryKey"].startswith(
+            REVIEW_HISTORY_IDS[3]
+        )
+        assert review_multiselection_history_snapshot["anchorKey"].startswith(
+            REVIEW_IDS[2]
+        )
+        assert review_double_click_snapshot["scrollLeft"] > 0
+        page.locator("#reviewOpenLightboxButton").click()
         page.locator("#lightbox:not(.hidden)").wait_for()
-        assert "REVIEW_2.JPG" in page.locator("#lightboxTitle").inner_text()
+        assert "MULTISELECT_04.JPG" in page.locator("#lightboxTitle").inner_text()
+        page.evaluate(
+            """() => {
+              const entry = history.state.imageAllWorkspace;
+              history.replaceState({
+                ...history.state,
+                imageAllWorkspace: {
+                  ...entry,
+                  context: {
+                    ...entry.context,
+                    reviewSelectedAssetIDs: [
+                      ...entry.context.reviewSelectedAssetIDs,
+                      'missing-review-asset',
+                    ],
+                  },
+                },
+              }, '', location.href);
+            }"""
+        )
+        page.reload(wait_until="domcontentloaded")
+        page.locator("#reviewWorkspace:not(.hidden)").wait_for()
+        page.locator("#reviewQueueLayout:not(.hidden)").wait_for()
+        page.locator("#lightbox:not(.hidden)").wait_for()
+        page.wait_for_function(
+            "([selectedCount, selectedIndex, anchorIndex, lightboxAssetID]) => "
+            "!state.workspaceNavigation.applyingHistory "
+            "&& !state.workspaceNavigation.pendingReturnPromise "
+            "&& !state.review.loading "
+            "&& state.review.selectionMode "
+            "&& state.review.selectedAssetIDs.size === selectedCount "
+            "&& state.review.selectedIndex === selectedIndex "
+            "&& state.review.selectionAnchorIndex === anchorIndex "
+            "&& state.lightboxAssetID === lightboxAssetID "
+            "&& history.state.imageAllWorkspace.context.reviewSelectedAssetIDs.length "
+            "=== selectedCount "
+            "&& !history.state.imageAllWorkspace.context.reviewSelectedAssetIDs"
+            ".includes('missing-review-asset')",
+            arg=[
+                len(REVIEW_IDS) + 6,
+                review_double_click_snapshot["selectedIndex"],
+                review_double_click_snapshot["selectionAnchorIndex"],
+                REVIEW_HISTORY_IDS[3],
+            ],
+        )
+        assert review_selection_mode.get_attribute("aria-pressed") == "true"
+        assert review_selection_mode.inner_text() == "完成"
+        assert review_select_all.is_disabled()
+        assert page.locator("#reviewGrid > .review-card.selected").count() == (
+            len(REVIEW_IDS) + 6
+        )
+        assert page.locator("#reviewQueuePane").evaluate(
+            "element => element.scrollTop"
+        ) == review_double_click_snapshot["scrollTop"]
+        assert page.locator("#reviewGrid").evaluate(
+            "element => element.scrollLeft"
+        ) == review_double_click_snapshot["scrollLeft"]
+        assert "MULTISELECT_04.JPG" in page.locator("#lightboxTitle").inner_text()
+        assert page.evaluate("() => state.lightboxPreservesSelection") is True
+        restored_review_multiselection_history = page.evaluate(
+            """() => ({
+              selectedAssetIDs: [...state.review.selectedAssetIDs].sort(),
+              selectedIndex: state.review.selectedIndex,
+              selectionAnchorIndex: state.review.selectionAnchorIndex,
+              storedSelectedAssetIDs:
+                [...history.state.imageAllWorkspace.context.reviewSelectedAssetIDs].sort(),
+              storedSelectionMode:
+                history.state.imageAllWorkspace.context.reviewSelectionMode,
+              storedAnchorKey:
+                history.state.imageAllWorkspace.context.reviewSelectionAnchorKey,
+              serialized: JSON.stringify(history.state.imageAllWorkspace),
+            })"""
+        )
+        assert restored_review_multiselection_history["selectedAssetIDs"] == (
+            review_double_click_snapshot["selectedAssetIDs"]
+        )
+        assert restored_review_multiselection_history["storedSelectedAssetIDs"] == (
+            review_double_click_snapshot["selectedAssetIDs"]
+        )
+        assert restored_review_multiselection_history["storedSelectionMode"] is True
+        assert restored_review_multiselection_history["storedAnchorKey"] == (
+            review_multiselection_history_snapshot["anchorKey"]
+        )
+        assert "missing-review-asset" not in (
+            restored_review_multiselection_history["serialized"]
+        )
+        assert "selectionAnchorIndex" not in (
+            restored_review_multiselection_history["serialized"]
+        )
+        page.screenshot(
+            path="/tmp/imageall-review-multiselection-history-restored.png",
+            full_page=True,
+        )
         assert page.evaluate(
             """() => ({
               selectedAssetIDs: [...state.review.selectedAssetIDs].sort(),
               selectedIndex: state.review.selectedIndex,
               selectionAnchorIndex: state.review.selectionAnchorIndex,
               scrollTop: document.querySelector('#reviewQueuePane').scrollTop,
+              scrollLeft: document.querySelector('#reviewGrid').scrollLeft,
             })"""
         ) == review_double_click_snapshot
         assert page.evaluate("() => state.lightboxPreservesSelection") is True
         page.locator("#lightboxNextButton").click()
         page.wait_for_function(
-            "() => document.querySelector('#lightboxTitle').textContent.includes('REVIEW_3.JPG')"
+            "() => document.querySelector('#lightboxTitle').textContent"
+            ".includes('MULTISELECT_05.JPG')"
         )
         assert page.evaluate(
             """() => ({
@@ -4414,6 +4575,7 @@ def main():
               selectedIndex: state.review.selectedIndex,
               selectionAnchorIndex: state.review.selectionAnchorIndex,
               scrollTop: document.querySelector('#reviewQueuePane').scrollTop,
+              scrollLeft: document.querySelector('#reviewGrid').scrollLeft,
             })"""
         ) == review_double_click_snapshot
         page.keyboard.press("Escape")
@@ -4424,6 +4586,7 @@ def main():
               selectedIndex: state.review.selectedIndex,
               selectionAnchorIndex: state.review.selectionAnchorIndex,
               scrollTop: document.querySelector('#reviewQueuePane').scrollTop,
+              scrollLeft: document.querySelector('#reviewGrid').scrollLeft,
             })"""
         ) == review_double_click_snapshot
         page.wait_for_function(
@@ -4434,6 +4597,23 @@ def main():
         assert review_selection_mode.inner_text() == "选择"
         assert review_select_all.is_hidden()
         assert page.evaluate("() => state.review.selectedAssetIDs.size") == 1
+        review_items[:] = review_items[:len(REVIEW_IDS)]
+        page.evaluate(
+            """async () => {
+              await loadReviewQueue({ schedulePagination: false });
+              while (state.review.nextCursor) {
+                await loadReviewQueue({
+                  append: true,
+                  preserveUnchangedGrid: true,
+                  schedulePagination: false,
+                });
+              }
+            }"""
+        )
+        page.wait_for_function(
+            "count => !state.review.loading && state.review.items.length === count",
+            arg=len(REVIEW_IDS),
+        )
         review_selection_mode.click()
         page.locator('[data-review-index="1"] > .review-card-main').click()
         assert page.evaluate("() => state.review.selectedAssetIDs.size") == 2

@@ -3953,7 +3953,17 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("reviewSourceIDs: resolvedReviewSourceFilter()"))
         XCTAssertTrue(script.contains("function applyReviewSourceFilterHistoryContext(context = {})"))
         XCTAssertTrue(script.contains("applyReviewSourceFilterHistoryContext(context)"))
-        XCTAssertTrue(script.contains("checkpointReviewSourceScopeAfterApply"))
+        XCTAssertTrue(script.contains("reviewSelectionMode: state.review.mode === \"queue\""))
+        XCTAssertTrue(script.contains("reviewSelectedAssetIDs: state.review.mode === \"queue\""))
+        XCTAssertTrue(script.contains("reviewSelectionAnchorKey: state.review.mode === \"queue\""))
+        XCTAssertTrue(script.contains("reviewGridScrollLeft: elements.reviewGrid.scrollLeft"))
+        XCTAssertTrue(script.contains("function applyReviewSelectionHistoryContext(context = {})"))
+        XCTAssertTrue(script.contains("checkpointReviewHistoryAfterApply"))
+        XCTAssertTrue(
+            script.contains(
+                "preserveSelection: state.review.selectedAssetIDs.size > 1"
+            )
+        )
         XCTAssertTrue(script.contains("reviewQueueMissingSamplesDescription(overview)"))
         XCTAssertTrue(script.contains("title: \"样本不足\""))
         XCTAssertTrue(script.contains("title: \"正在生成建议\""))

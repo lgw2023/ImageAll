@@ -3475,8 +3475,16 @@ function currentWorkspaceHistoryContext(route = visibleWorkspaceRoute()) {
       reviewSourceIDs: resolvedReviewSourceFilter(),
       reviewAssetID: state.review.items[state.review.selectedIndex]?.assetID || null,
       reviewItemKey: reviewItemKey(state.review.items[state.review.selectedIndex]),
+      reviewSelectionMode: state.review.mode === "queue" && state.review.selectionMode,
+      reviewSelectedAssetIDs: state.review.mode === "queue"
+        ? [...state.review.selectedAssetIDs].slice(0, GALLERY_HISTORY_LOADED_LIMIT)
+        : [],
+      reviewSelectionAnchorKey: state.review.mode === "queue"
+        ? reviewItemKey(state.review.items[state.review.selectionAnchorIndex])
+        : null,
       reviewLoadedCount: Math.min(GALLERY_HISTORY_LOADED_LIMIT, state.review.items.length),
       reviewQueueScrollTop: elements.reviewQueuePane.scrollTop,
+      reviewGridScrollLeft: elements.reviewGrid.scrollLeft,
       reviewLightbox: currentLightboxHistoryContext("review"),
     };
   case "training":
@@ -3807,7 +3815,7 @@ async function applyWorkspaceHistoryEntry(entry) {
   const activeEntry = entry?.workspaceGeneration === state.workspaceGeneration ? entry : null;
   const target = activeEntry?.route || "gallery";
   const context = activeEntry?.context || {};
-  let checkpointReviewSourceScopeAfterApply = false;
+  let checkpointReviewHistoryAfterApply = false;
   state.workspaceNavigation.applyingHistory = true;
   try {
     const current = visibleWorkspaceRoute();
@@ -3833,7 +3841,7 @@ async function applyWorkspaceHistoryEntry(entry) {
       reconcileFilterPopoverFromWorkspaceHistory(target, navigationLevel, context);
       reconcileLayoutMenuFromWorkspaceHistory(target, navigationLevel, context);
       reconcileActionMenuFromWorkspaceHistory(target, navigationLevel, context);
-      checkpointReviewSourceScopeAfterApply = closingReviewSourceMenu;
+      checkpointReviewHistoryAfterApply = closingReviewSourceMenu;
       reconcileContextMenuFromWorkspaceHistory(target, navigationLevel, context);
       await reconcileCommandPaletteFromWorkspaceHistory(
         target,
@@ -3981,25 +3989,16 @@ async function applyWorkspaceHistoryEntry(entry) {
         if (state.review.items.length <= previousCount
           || state.review.nextCursor === previousCursor) break;
       }
-      if (state.review.mode === "queue" && context.reviewAssetID) {
-        const requestedReviewKey = galleryHistoryIdentifier(context.reviewItemKey);
-        let reviewIndex = requestedReviewKey
-          ? state.review.items.findIndex(
-            (item) => reviewItemKey(item) === requestedReviewKey
-          )
-          : -1;
-        if (reviewIndex < 0) {
-          reviewIndex = state.review.items.findIndex(
-            (item) => item.assetID === context.reviewAssetID
-          );
-        }
-        if (reviewIndex >= 0) selectReviewIndex(reviewIndex);
-      }
+      if (state.review.mode === "queue") applyReviewSelectionHistoryContext(context);
       await waitForWorkspaceLayout();
       elements.reviewQueuePane.scrollTop = workspaceHistoryScrollTop(
         context.reviewQueueScrollTop
       );
+      elements.reviewGrid.scrollLeft = workspaceHistoryScrollTop(
+        context.reviewGridScrollLeft
+      );
       restoreLightboxFromHistory(context.reviewLightbox, "review");
+      checkpointReviewHistoryAfterApply = true;
     } else if (target === "training") {
       if (["image", "video"].includes(context.trainingMediaKind)) {
         state.training.mediaKind = context.trainingMediaKind;
@@ -4193,7 +4192,7 @@ async function applyWorkspaceHistoryEntry(entry) {
     }
   } finally {
     state.workspaceNavigation.applyingHistory = false;
-    if (checkpointReviewSourceScopeAfterApply) checkpointActiveWorkspaceHistory();
+    if (checkpointReviewHistoryAfterApply) checkpointActiveWorkspaceHistory();
     const resolve = state.workspaceNavigation.pendingReturnResolve;
     state.workspaceNavigation.pendingReturnResolve = null;
     state.workspaceNavigation.pendingReturnPromise = null;
@@ -21865,6 +21864,71 @@ function applyReviewSourceFilterHistoryContext(context = {}) {
   state.review.sourceFilterIDs = selected.size === activeIDs.length ? null : selected;
 }
 
+function applyReviewSelectionHistoryContext(context = {}) {
+  if (state.review.mode !== "queue" || !state.review.items.length) {
+    state.review.selectionMode = false;
+    state.review.selectedIndex = -1;
+    state.review.selectedAssetIDs.clear();
+    state.review.selectionAnchorIndex = -1;
+    return false;
+  }
+
+  const validAssetIDs = new Set(state.review.items.map((item) => item.assetID));
+  const selectedAssetIDs = new Set(
+    [...new Set(
+      (Array.isArray(context.reviewSelectedAssetIDs)
+        ? context.reviewSelectedAssetIDs
+        : [])
+        .map(galleryHistoryIdentifier)
+        .filter((assetID) => assetID && validAssetIDs.has(assetID))
+    )].slice(0, GALLERY_HISTORY_LOADED_LIMIT)
+  );
+  const requestedPrimaryKey = galleryHistoryIdentifier(context.reviewItemKey);
+  const requestedPrimaryAssetID = galleryHistoryIdentifier(context.reviewAssetID);
+  let primaryIndex = requestedPrimaryKey
+    ? state.review.items.findIndex(
+      (item) => reviewItemKey(item) === requestedPrimaryKey
+    )
+    : -1;
+  if (primaryIndex < 0 && requestedPrimaryAssetID) {
+    primaryIndex = state.review.items.findIndex(
+      (item) => item.assetID === requestedPrimaryAssetID
+    );
+  }
+  if (!selectedAssetIDs.size && primaryIndex >= 0) {
+    selectedAssetIDs.add(state.review.items[primaryIndex].assetID);
+  }
+  if (selectedAssetIDs.size
+    && (primaryIndex < 0
+      || !selectedAssetIDs.has(state.review.items[primaryIndex].assetID))) {
+    primaryIndex = state.review.items.findIndex(
+      (item) => selectedAssetIDs.has(item.assetID)
+    );
+  }
+  if (primaryIndex < 0) {
+    primaryIndex = 0;
+    selectedAssetIDs.add(state.review.items[primaryIndex].assetID);
+  }
+
+  const requestedAnchorKey = galleryHistoryIdentifier(context.reviewSelectionAnchorKey);
+  let anchorIndex = requestedAnchorKey
+    ? state.review.items.findIndex(
+      (item) => reviewItemKey(item) === requestedAnchorKey
+        && selectedAssetIDs.has(item.assetID)
+    )
+    : -1;
+  if (anchorIndex < 0) anchorIndex = primaryIndex;
+
+  state.review.selectedAssetIDs = selectedAssetIDs;
+  state.review.selectedIndex = primaryIndex;
+  state.review.selectionAnchorIndex = anchorIndex;
+  state.review.selectionMode = Boolean(
+    context.reviewSelectionMode && selectedAssetIDs.size
+  );
+  renderReviewSelectionState();
+  return true;
+}
+
 function resolvedReviewSourceFilter() {
   sanitizeReviewSourceFilter();
   if (state.review.sourceFilterIDs === null) return null;
@@ -24748,6 +24812,7 @@ function setReviewSelectionMode(enabled, { restoreFocus = true } = {}) {
     state.review.selectionAnchorIndex = index;
   }
   renderReviewSelectionState();
+  checkpointActiveWorkspaceHistory();
   if (restoreFocus) {
     elements.reviewSelectionModeButton.focus({ preventScroll: true });
   }
@@ -24918,6 +24983,7 @@ function selectAllReviewItems() {
   if (state.review.selectedIndex < 0) state.review.selectedIndex = 0;
   state.review.selectionAnchorIndex = state.review.selectedIndex;
   renderReviewSelectionState();
+  checkpointActiveWorkspaceHistory();
   reviewCardMainButton(
     elements.reviewGrid.querySelector(`[data-review-index="${state.review.selectedIndex}"]`)
   )?.focus({ preventScroll: true });
@@ -44902,17 +44968,15 @@ function bindEvents() {
   elements.reviewViewOriginalButton.addEventListener("click", viewReviewOriginalInWeb);
   elements.reviewOpenLightboxButton.addEventListener("click", () => {
     const item = state.review.items[state.review.selectedIndex];
-    if (item && state.review.selectedAssetIDs.size > 1) {
-      selectReviewIndex(state.review.selectedIndex);
-    }
-    openReviewLightbox(item);
+    openReviewLightbox(item, {
+      preserveSelection: state.review.selectedAssetIDs.size > 1,
+    });
   });
   elements.reviewPreviewImage.addEventListener("dblclick", () => {
     const item = state.review.items[state.review.selectedIndex];
-    if (item && state.review.selectedAssetIDs.size > 1) {
-      selectReviewIndex(state.review.selectedIndex);
-    }
-    openReviewLightbox(item);
+    openReviewLightbox(item, {
+      preserveSelection: state.review.selectedAssetIDs.size > 1,
+    });
   });
 
   elements.lightboxBackButton.addEventListener("click", () => void returnFromLightbox());
