@@ -2991,9 +2991,12 @@ final class RemoteHTTPServerTests: XCTestCase {
         )
         XCTAssertTrue(
             script.contains(
-                "openLightboxFromContextMenu(\"review\", assetID, reviewCardFocusTarget(assetID))"
+                "openLightboxFromContextMenu(\"review\", assetID, returnFocus, { reviewKey })"
             )
         )
+        XCTAssertTrue(script.contains("contextReviewKey"))
+        XCTAssertTrue(script.contains("targetID: reviewKey"))
+        XCTAssertTrue(script.contains("reviewCardFocusTarget(reviewKey)"))
         XCTAssertTrue(
             script.contains("openLightboxFromContextMenu(\"slimming\", memberID, returnFocus)")
         )
@@ -3945,8 +3948,12 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertFalse(script.contains("refreshWorkspace({ quiet: true, kinds: [\"sourcesChanged\"] })"))
         XCTAssertTrue(script.contains("function showReviewContextMenu"))
         XCTAssertTrue(script.contains("function toggleReviewItemFavorite"))
-        XCTAssertTrue(script.contains("showReviewContextMenu(event.clientX, event.clientY"))
-        XCTAssertTrue(script.contains("reviewCard.dataset.reviewAssetId"))
+        XCTAssertTrue(
+            script.contains(
+                "showReviewContextMenu(event.clientX, event.clientY, card.dataset.reviewKey)"
+            )
+        )
+        XCTAssertTrue(script.contains("reviewCard.dataset.reviewKey"))
         XCTAssertTrue(script.contains("visibleWorkspaceRoute() !== \"gallery\""))
         XCTAssertTrue(script.contains("visibleWorkspaceRoute() === \"gallery\""))
         XCTAssertTrue(script.contains("galleryAssetsRefreshPending"))

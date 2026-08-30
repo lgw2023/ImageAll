@@ -3761,7 +3761,9 @@ def main():
         first_review_main.click(button="right")
         review_context_menu = page.locator("#reviewContextMenu:not(.hidden)")
         review_context_menu.wait_for()
-        assert page.locator("#reviewContextMenuTitle").inner_text() == "REVIEW_1.JPG"
+        assert page.locator("#reviewContextMenuTitle").inner_text() == (
+            "REVIEW_1.JPG · 相似特征建议"
+        )
         review_context_preview = page.locator("#reviewPreviewContextAction")
         review_context_favorite = page.locator("#reviewFavoriteContextAction")
         assert "单图查看" in review_context_preview.inner_text()
@@ -4712,8 +4714,103 @@ def main():
             f'[data-review-asset-id="{REVIEW_IDS[1]}"] .review-card-main[tabindex="0"]'
         ).count() == 1
         page.screenshot(path="/tmp/imageall-review-origin-row-defer.png", full_page=True)
+        second_origin_key = f"{REVIEW_IDS[1]}:personalModel"
+        second_origin_main = page.locator(
+            f'[data-review-key="{second_origin_key}"] .review-card-main'
+        )
+        context_asset_query_count = len(asset_queries)
+        context_decision_count = len(review_decisions)
         page.locator("#lightboxBackButton").click()
         page.locator("#lightbox").wait_for(state="hidden")
+        page.wait_for_function(
+            "reviewKey => document.activeElement?.closest('[data-review-key]')"
+            "?.dataset.reviewKey === reviewKey",
+            arg=second_origin_key,
+        )
+        second_origin_main.click(button="right")
+        review_context_menu.wait_for()
+        assert page.locator("#reviewContextMenuTitle").inner_text() == (
+            "REVIEW_2.JPG · 个性化模型建议"
+        )
+        assert page.evaluate(
+            "reviewKey => state.contextReviewKey === reviewKey "
+            "&& state.contextMenuSession?.targetID === reviewKey",
+            second_origin_key,
+        )
+        assert "个性化模型建议" in review_context_menu.get_attribute("aria-label")
+        page.screenshot(
+            path="/tmp/imageall-review-origin-context-menu.png",
+            full_page=True,
+        )
+        page.evaluate("() => history.back()")
+        review_context_menu.wait_for(state="hidden")
+        page.wait_for_function(
+            "reviewKey => document.activeElement?.closest('[data-review-key]')"
+            "?.dataset.reviewKey === reviewKey",
+            arg=second_origin_key,
+        )
+        page.evaluate("() => history.forward()")
+        review_context_menu.wait_for()
+        assert page.evaluate(
+            "reviewKey => state.contextReviewKey === reviewKey "
+            "&& state.contextMenuSession?.targetID === reviewKey",
+            second_origin_key,
+        )
+        page.keyboard.press("Escape")
+        page.wait_for_function(
+            "reviewKey => document.activeElement?.closest('[data-review-key]')"
+            "?.dataset.reviewKey === reviewKey",
+            arg=second_origin_key,
+        )
+        second_origin_main.press("Shift+F10")
+        review_context_menu.wait_for()
+        assert page.evaluate(
+            "reviewKey => state.contextReviewKey === reviewKey",
+            second_origin_key,
+        )
+        with page.expect_response("**/v1/favorites"):
+            review_context_favorite.click()
+        page.wait_for_function(
+            f"reviewKey => state.review.items.filter(item => item.assetID === '{REVIEW_IDS[1]}')"
+            ".every(item => item.favorite?.isFavorite === true) "
+            "&& document.activeElement?.closest('[data-review-key]')"
+            "?.dataset.reviewKey === reviewKey",
+            arg=second_origin_key,
+        )
+        assert favorite_mutations[-1]["assetIDs"] == [REVIEW_IDS[1]]
+        assert favorite_mutations[-1]["isFavorite"] is True
+        second_origin_main.press("Shift+F10")
+        review_context_menu.wait_for()
+        assert review_context_favorite.inner_text() == "取消红心"
+        with page.expect_response("**/v1/favorites"):
+            review_context_favorite.click()
+        page.wait_for_function(
+            f"reviewKey => state.review.items.filter(item => item.assetID === '{REVIEW_IDS[1]}')"
+            ".every(item => item.favorite?.isFavorite === false) "
+            "&& document.activeElement?.closest('[data-review-key]')"
+            "?.dataset.reviewKey === reviewKey",
+            arg=second_origin_key,
+        )
+        assert favorite_mutations[-1]["assetIDs"] == [REVIEW_IDS[1]]
+        assert favorite_mutations[-1]["isFavorite"] is False
+        second_origin_main.press("Shift+F10")
+        review_context_menu.wait_for()
+        review_context_preview.click()
+        page.locator("#lightbox:not(.hidden)").wait_for()
+        assert page.evaluate(
+            "reviewKey => state.lightboxReviewKey === reviewKey "
+            "&& document.querySelector('#lightboxPosition').textContent === '2 / 3'",
+            second_origin_key,
+        )
+        assert len(asset_queries) == context_asset_query_count
+        assert len(review_decisions) == context_decision_count
+        page.locator("#lightboxBackButton").click()
+        page.locator("#lightbox").wait_for(state="hidden")
+        page.wait_for_function(
+            "reviewKey => document.activeElement?.closest('[data-review-key]')"
+            "?.dataset.reviewKey === reviewKey",
+            arg=second_origin_key,
+        )
         page.evaluate("() => history.forward()")
         page.wait_for_function(
             f"() => !document.querySelector('#lightbox').classList.contains('hidden') "

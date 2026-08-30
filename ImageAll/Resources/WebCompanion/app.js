@@ -1645,7 +1645,7 @@ const state = {
   contextMenuBaseLevel: "workspace",
   contextMenuHistoryRestoreFocus: true,
   contextAssetID: null,
-  contextReviewAssetID: null,
+  contextReviewKey: null,
   contextSourceID: null,
   contextTagID: null,
   contextTagGroupID: null,
@@ -19868,12 +19868,14 @@ function restoreGridSelectionForDoubleClick(surface, itemID) {
   return false;
 }
 
-function openLightboxFromContextMenu(context, assetID, returnFocus) {
+function openLightboxFromContextMenu(context, assetID, returnFocus, {
+  reviewKey = null,
+} = {}) {
   const resolvedReturnFocus = returnFocus instanceof HTMLElement
     && document.contains(returnFocus)
     ? returnFocus
     : null;
-  openLightbox(context, assetID, { preserveSelection: true });
+  openLightbox(context, assetID, { preserveSelection: true, reviewKey });
   if (resolvedReturnFocus) state.lightboxReturnFocus = resolvedReturnFocus;
 }
 
@@ -36305,7 +36307,11 @@ function renderLightbox() {
     return;
   }
   const item = items[index];
-  if (state.lightboxContext === "review") state.lightboxReviewKey = item.reviewKey;
+  if (state.lightboxContext === "review") {
+    state.lightboxReviewKey = item.reviewKey;
+    state.lightboxReturnFocus = reviewCardFocusTarget(item.reviewKey)
+      || state.lightboxReturnFocus;
+  }
   if (state.lightboxViewportAssetID !== item.id) resetLightboxViewport(item.id);
   const noun = lightboxMediaKind() === "video" ? "视频" : "照片";
   const hasMore = lightboxHasMoreItems();
@@ -40507,7 +40513,7 @@ function hideContextMenu() {
   elements.assetContextMenu.classList.add("hidden");
   state.contextAssetID = null;
   elements.reviewContextMenu.classList.add("hidden");
-  state.contextReviewAssetID = null;
+  state.contextReviewKey = null;
   elements.sourceContextMenu.classList.add("hidden");
   state.contextSourceID = null;
   elements.tagContextMenu.classList.add("hidden");
@@ -40893,7 +40899,7 @@ function contextLongPressDescriptor(target) {
       open: (x, y) => showReviewContextMenu(
         x,
         y,
-        reviewCard.dataset.reviewAssetId
+        reviewCard.dataset.reviewKey
       ),
     };
   }
@@ -41054,10 +41060,12 @@ function showAssetContextMenu(clientX, clientY, assetID, {
   });
 }
 
-function reviewCardFocusTarget(assetID) {
-  const requested = assetID
+function reviewCardFocusTarget(reviewKeyOrAssetID) {
+  const requested = reviewKeyOrAssetID
     ? elements.reviewGrid.querySelector(
-      `[data-review-asset-id="${CSS.escape(assetID)}"]`
+      `[data-review-key="${CSS.escape(reviewKeyOrAssetID)}"]`
+    ) || elements.reviewGrid.querySelector(
+      `[data-review-asset-id="${CSS.escape(reviewKeyOrAssetID)}"]`
     )
     : null;
   return reviewCardMainButton(requested)
@@ -41065,19 +41073,28 @@ function reviewCardFocusTarget(assetID) {
     || elements.reviewSelectionModeButton;
 }
 
-function showReviewContextMenu(clientX, clientY, assetID, {
+function showReviewContextMenu(clientX, clientY, reviewKeyOrAssetID, {
   historyMode = null,
   returnFocus = null,
 } = {}) {
-  const item = state.review.items.find((candidate) => candidate.assetID === assetID);
+  const item = state.review.items.find(
+    (candidate) => reviewItemKey(candidate) === reviewKeyOrAssetID
+  ) || state.review.items.find(
+    (candidate) => candidate.assetID === reviewKeyOrAssetID
+  );
   if (!item) return;
+  const reviewKey = reviewItemKey(item);
+  const assetID = item.assetID;
   hideContextMenus();
-  state.contextReviewAssetID = assetID;
+  state.contextReviewKey = reviewKey;
   elements.reviewContextMenu.setAttribute(
     "aria-label",
-    `${item.fileName || "当前审核项目"} 审核项目操作`
+    `${item.fileName || "当前审核项目"}，${reviewOriginText(item.suggestionOrigin)}，审核项目操作`
   );
-  elements.reviewContextMenuTitle.textContent = item.fileName || "当前审核项目";
+  elements.reviewContextMenuTitle.textContent = [
+    item.fileName || "当前审核项目",
+    reviewOriginText(item.suggestionOrigin),
+  ].join(" · ");
   const favorite = favoriteStateForAssetID(assetID);
   elements.reviewFavoriteContextAction.textContent = favorite?.isFavorite
     ? "取消红心"
@@ -41093,10 +41110,10 @@ function showReviewContextMenu(clientX, clientY, assetID, {
   restoreOverlayFocus(elements.reviewPreviewContextAction);
   registerContextMenuSession({
     kind: "review",
-    targetID: assetID,
+    targetID: reviewKey,
     clientX,
     clientY,
-    returnFocus: returnFocus || reviewCardFocusTarget(assetID),
+    returnFocus: returnFocus || reviewCardFocusTarget(reviewKey),
     historyMode,
   });
 }
@@ -44570,7 +44587,7 @@ function bindEvents() {
     const card = event.target.closest("[data-review-asset-id]");
     if (!card) return;
     event.preventDefault();
-    showReviewContextMenu(event.clientX, event.clientY, card.dataset.reviewAssetId);
+    showReviewContextMenu(event.clientX, event.clientY, card.dataset.reviewKey);
   });
   elements.reviewGrid.addEventListener("keydown", (event) => {
     const card = event.target.closest("[data-review-asset-id]");
@@ -44584,7 +44601,7 @@ function bindEvents() {
     showReviewContextMenu(
       rect.left + Math.min(28, rect.width / 2),
       rect.top + Math.min(28, rect.height / 2),
-      card.dataset.reviewAssetId
+      card.dataset.reviewKey
     );
   });
   elements.reviewGrid.addEventListener("click", (event) => {
@@ -44919,16 +44936,25 @@ function bindEvents() {
   });
   elements.reviewContextMenu.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-review-context-action]");
-    const assetID = state.contextReviewAssetID;
-    if (!button || !assetID || button.disabled) return;
+    const reviewKey = state.contextReviewKey;
+    const item = state.review.items.find(
+      (candidate) => reviewItemKey(candidate) === reviewKey
+    );
+    if (!button || !item || button.disabled) return;
+    const assetID = item.assetID;
+    const returnFocus = reviewCardFocusTarget(reviewKey);
     const action = button.dataset.reviewContextAction;
     await returnFromContextMenu({ restoreFocus: false });
     if (action === "preview") {
-      openLightboxFromContextMenu("review", assetID, reviewCardFocusTarget(assetID));
+      openLightboxFromContextMenu("review", assetID, returnFocus, { reviewKey });
       return;
     }
-    if (action === "favorite") await toggleReviewItemFavorite(assetID);
-    restoreOverlayFocus(reviewCardFocusTarget(assetID));
+    if (action === "favorite") {
+      await toggleReviewItemFavorite(assetID, { returnFocus });
+    }
+    restoreOverlayFocus(
+      returnFocus?.isConnected ? returnFocus : reviewCardFocusTarget(reviewKey)
+    );
   });
   elements.slimmingMemberContextMenu.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-slimming-member-context-action]");
