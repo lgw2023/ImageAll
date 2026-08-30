@@ -1468,6 +1468,39 @@ def main(*, inspector_actions_only=False):
             for key in source_context_history["contextKeys"]
             if key.startswith("contextMenu")
         )
+        page.evaluate(
+            """() => {
+              window.__captureContextMenuActions = (menuID) => {
+                const buttons = [...document.querySelectorAll(`#${menuID}Actions > button`)];
+                window.__contextMenuActionSnapshots ||= {};
+                window.__contextMenuActionSnapshots[menuID] = {
+                  buttons,
+                  labels: buttons.map((button) => button.querySelector(
+                    ':scope > [data-context-action-part="label"]'
+                  )),
+                  shortcuts: buttons.map((button) => button.querySelector(
+                    ':scope > [data-context-action-part="shortcut"]'
+                  )),
+                };
+              };
+              window.__contextMenuActionsAreContinuous = (menuID) => {
+                const snapshot = window.__contextMenuActionSnapshots?.[menuID];
+                const buttons = [...document.querySelectorAll(`#${menuID}Actions > button`)];
+                return Boolean(snapshot)
+                  && buttons.length === snapshot.buttons.length
+                  && buttons.every((button, index) => (
+                    button === snapshot.buttons[index]
+                    && button.querySelector(
+                      ':scope > [data-context-action-part="label"]'
+                    ) === snapshot.labels[index]
+                    && button.querySelector(
+                      ':scope > [data-context-action-part="shortcut"]'
+                    ) === snapshot.shortcuts[index]
+                  ));
+              };
+              window.__captureContextMenuActions('sourceContextMenu');
+            }"""
+        )
         page.evaluate("() => history.back()")
         page.locator("#sourceContextMenu").wait_for(state="hidden")
         page.wait_for_function(
@@ -1478,6 +1511,9 @@ def main(*, inspector_actions_only=False):
         page.locator("#sourceContextMenu:not(.hidden)").wait_for()
         page.wait_for_function(
             "() => document.querySelector('#sourceContextMenu').contains(document.activeElement)"
+        )
+        assert page.evaluate(
+            "() => window.__contextMenuActionsAreContinuous('sourceContextMenu')"
         )
         assert page.evaluate(
             "() => ({ selectedSourceID: state.selectedSourceID, "
@@ -1541,6 +1577,7 @@ def main(*, inspector_actions_only=False):
         assert page.evaluate(
             "() => history.state?.imageAllWorkspace?.context?.contextMenuKind"
         ) == "tag"
+        page.evaluate("() => window.__captureContextMenuActions('tagContextMenu')")
         page.evaluate("() => history.back()")
         page.locator("#tagContextMenu").wait_for(state="hidden")
         page.wait_for_function(
@@ -1551,6 +1588,9 @@ def main(*, inspector_actions_only=False):
         page.locator("#tagContextMenu:not(.hidden)").wait_for()
         page.wait_for_function(
             "() => document.querySelector('#tagContextMenu').contains(document.activeElement)"
+        )
+        assert page.evaluate(
+            "() => window.__contextMenuActionsAreContinuous('tagContextMenu')"
         )
         page.keyboard.press("Escape")
         page.locator("#tagContextMenu").wait_for(state="hidden")
@@ -5198,6 +5238,7 @@ def main(*, inspector_actions_only=False):
         assert page.evaluate(
             "() => history.state?.imageAllWorkspace?.context?.contextMenuKind"
         ) == "slimmingJob"
+        page.evaluate("() => window.__captureContextMenuActions('slimmingJobContextMenu')")
         page.evaluate("() => history.back()")
         job_context_menu.wait_for(state="hidden")
         page.wait_for_function(
@@ -5208,6 +5249,9 @@ def main(*, inspector_actions_only=False):
         job_context_menu.wait_for()
         page.wait_for_function(
             "() => document.querySelector('#slimmingJobContextMenu').contains(document.activeElement)"
+        )
+        assert page.evaluate(
+            "() => window.__contextMenuActionsAreContinuous('slimmingJobContextMenu')"
         )
         page.keyboard.press("Escape")
         assert job_context_menu.is_hidden()
@@ -5854,6 +5898,7 @@ def main(*, inspector_actions_only=False):
         assert page.evaluate(
             "() => history.state?.imageAllWorkspace?.context?.contextMenuKind"
         ) == "slimmingMember"
+        page.evaluate("() => window.__captureContextMenuActions('slimmingMemberContextMenu')")
         page.evaluate("() => history.back()")
         slimming_context_menu.wait_for(state="hidden")
         page.wait_for_function(
@@ -5863,6 +5908,9 @@ def main(*, inspector_actions_only=False):
         slimming_context_menu.wait_for()
         page.wait_for_function(
             "() => document.activeElement?.dataset.slimmingMemberContextAction === 'preview'"
+        )
+        assert page.evaluate(
+            "() => window.__contextMenuActionsAreContinuous('slimmingMemberContextMenu')"
         )
         page.screenshot(path="/tmp/imageall-slimming-context-menu.png", full_page=True)
         page.keyboard.press("End")

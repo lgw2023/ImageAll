@@ -13808,6 +13808,28 @@ async function reconcileSlimmingRecycleSourceProjection() {
   elements.slimmingRecycleBody.scrollTop = scrollTop;
 }
 
+function applySourceManagementSourcesToWorkspace(sources) {
+  if (projectionFingerprint(sources) === projectionFingerprint(state.sources)) return;
+  state.sources = sources;
+  state.folderNavigation.branches.clear();
+  state.folderNavigation.branchRequestGenerations.clear();
+  state.folderNavigation.searches.clear();
+  state.folderNavigation.searchRequestGenerations.clear();
+  state.folderNavigation.requestGeneration += 1;
+  if (state.selectedSourceID
+    && !state.sources.some((source) => source.id === state.selectedSourceID)) {
+    state.selectedSourceID = "";
+    state.selectedAssetID = null;
+    state.selectedDetail = null;
+  }
+  renderSources();
+  sanitizeReviewSourceFilter();
+  renderReviewSourceFilter();
+  renderReviewLocalModelStatus();
+  updateLibraryTitle();
+  renderLibraryEmptyState();
+}
+
 async function loadSourceManagement({ quiet = false, notifyTerminal = false } = {}) {
   const manager = state.sourceManagement;
   if (manager.loading) return;
@@ -13825,20 +13847,7 @@ async function loadSourceManagement({ quiet = false, notifyTerminal = false } = 
       === sourceManagementSnapshotFingerprint(snapshot);
     reconcileLoadedContent = hadSnapshot && !preserveLoadedContent;
     manager.snapshot = snapshot;
-    const sourceProjectionChanged = projectionFingerprint(snapshot.sources)
-      !== projectionFingerprint(state.sources);
-    if (sourceProjectionChanged) {
-      state.sources = snapshot.sources;
-      if (state.selectedSourceID
-        && !state.sources.some((source) => source.id === state.selectedSourceID)) {
-        state.selectedSourceID = "";
-        state.selectedAssetID = null;
-        state.selectedDetail = null;
-      }
-      renderSources();
-      updateLibraryTitle();
-      refreshWorkspace({ quiet: true, kinds: ["sourcesChanged"] });
-    }
+    applySourceManagementSourcesToWorkspace(snapshot.sources);
     let shouldRefreshWorkspaceNotice = false;
     for (const request of snapshot.requests || []) {
       if (!["completed", "cancelled", "failed"].includes(request.phase)) continue;
@@ -39588,6 +39597,47 @@ function showReviewContextMenu(clientX, clientY, assetID, {
   });
 }
 
+function reconcileContextMenuActionButtons(container, actions, datasetKey) {
+  const existing = new Map(
+    [...container.querySelectorAll(":scope > button")].map((button) => [
+      button.dataset[datasetKey],
+      button,
+    ])
+  );
+  const wanted = actions.map((item) => {
+    const button = existing.get(item.action) || document.createElement("button");
+    button.type = "button";
+    button.setAttribute("role", "menuitem");
+    button.dataset[datasetKey] = item.action;
+    button.disabled = Boolean(item.disabled);
+    button.classList.toggle("danger", Boolean(item.destructive));
+    if (item.title) button.title = item.title;
+    else button.removeAttribute("title");
+
+    let label = button.querySelector(':scope > [data-context-action-part="label"]');
+    if (!label) {
+      label = document.createElement("span");
+      label.dataset.contextActionPart = "label";
+    }
+    if (label.textContent !== item.label) label.textContent = item.label;
+
+    let shortcut = button.querySelector(':scope > [data-context-action-part="shortcut"]');
+    if (item.shortcut) {
+      if (!shortcut) {
+        shortcut = document.createElement("kbd");
+        shortcut.dataset.contextActionPart = "shortcut";
+      }
+      if (shortcut.textContent !== item.shortcut) shortcut.textContent = item.shortcut;
+    } else {
+      shortcut = null;
+    }
+    reconcileStableChildren(button, [label, shortcut].filter(Boolean));
+    return button;
+  });
+  reconcileStableChildren(container, wanted);
+  return wanted;
+}
+
 function showSlimmingMemberContextMenu(clientX, clientY, memberID, {
   historyMode = null,
   returnFocus = null,
@@ -39608,7 +39658,6 @@ function showSlimmingMemberContextMenu(clientX, clientY, memberID, {
     || ["awaitingMac", "running"].includes(identicalPhase);
 
   elements.slimmingMemberContextMenuTitle.textContent = member.fileName || "未命名项目";
-  elements.slimmingMemberContextMenuActions.replaceChildren();
   const actions = [
     {
       action: "preview",
@@ -39636,22 +39685,15 @@ function showSlimmingMemberContextMenu(clientX, clientY, memberID, {
         || actionCount === 0,
       destructive: true,
     },
-  ];
-  for (const item of actions) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.setAttribute("role", "menuitem");
-    button.dataset.slimmingMemberContextAction = item.action;
-    button.append(document.createTextNode(item.label));
-    if (item.shortcut) {
-      const shortcut = document.createElement("kbd");
-      shortcut.textContent = item.shortcut;
-      button.append(" ", shortcut);
-    }
-    button.disabled = (item.requiresOnline !== false && !state.online) || item.disabled;
-    button.classList.toggle("danger", Boolean(item.destructive));
-    elements.slimmingMemberContextMenuActions.append(button);
-  }
+  ].map((item) => ({
+    ...item,
+    disabled: (item.requiresOnline !== false && !state.online) || item.disabled,
+  }));
+  reconcileContextMenuActionButtons(
+    elements.slimmingMemberContextMenuActions,
+    actions,
+    "slimmingMemberContextAction"
+  );
   elements.slimmingMemberContextMenu.classList.remove("hidden");
   positionContextMenu(elements.slimmingMemberContextMenu, clientX, clientY);
   restoreOverlayFocus(
@@ -39742,16 +39784,17 @@ function showSlimmingJobContextMenu(clientX, clientY, jobID, {
   state.slimming.contextJobID = jobID;
   elements.slimmingJobContextMenuTitle.textContent =
     `${slimmingModeText(job.mode)} · ${slimmingJobStateText(job)}`;
-  elements.slimmingJobContextMenuActions.replaceChildren();
-  const remove = document.createElement("button");
-  remove.type = "button";
-  remove.setAttribute("role", "menuitem");
-  remove.className = "danger";
-  remove.dataset.slimmingJobContextAction = "deleteRecord";
-  remove.textContent = "删除记录";
-  remove.title = "永久删除这条分析任务记录和结果；不会删除任何原始媒体";
-  remove.disabled = !state.online || state.slimming.jobMutatingIDs.has(jobID);
-  elements.slimmingJobContextMenuActions.append(remove);
+  const [remove] = reconcileContextMenuActionButtons(
+    elements.slimmingJobContextMenuActions,
+    [{
+      action: "deleteRecord",
+      label: "删除记录",
+      title: "永久删除这条分析任务记录和结果；不会删除任何原始媒体",
+      destructive: true,
+      disabled: !state.online || state.slimming.jobMutatingIDs.has(jobID),
+    }],
+    "slimmingJobContextAction"
+  );
   elements.slimmingJobContextMenu.classList.remove("hidden");
   positionContextMenu(elements.slimmingJobContextMenu, clientX, clientY);
   restoreOverlayFocus(remove);
@@ -39776,7 +39819,6 @@ function showSourceContextMenu(clientX, clientY, sourceID, {
   hideContextMenus();
   state.contextSourceID = sourceID;
   elements.sourceContextMenuTitle.textContent = source.displayName;
-  elements.sourceContextMenuActions.replaceChildren();
   const activeRequest = sourceManagementActiveRequest();
   const orderedSourceIDs = orderedSources().map((item) => item.id);
   const sourceOrderIndex = orderedSourceIDs.indexOf(sourceID);
@@ -39801,26 +39843,27 @@ function showSourceContextMenu(clientX, clientY, sourceID, {
     })),
     { action: "manage", label: "打开来源管理…" },
   ];
-  for (const item of actions) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.setAttribute("role", "menuitem");
-    button.dataset.sourceContextAction = item.action;
-    button.textContent = item.label;
+  const resolvedActions = actions.map((item) => {
     const canCancelPrewarm = item.action === "cancelPrewarm"
       && activeRequest?.sourceID === source.id
       && sourceManagementIsPrewarmAction(activeRequest.action);
     const localOrderingAction = ["moveEarlier", "moveLater"].includes(item.action);
-    button.disabled = Boolean(item.disabled)
-      || (!state.online && item.action !== "view" && !localOrderingAction)
-      || (Boolean(activeRequest)
-        && item.action !== "view"
-        && item.action !== "manage"
-        && !localOrderingAction
-        && !canCancelPrewarm);
-    button.classList.toggle("danger", Boolean(item.destructive));
-    elements.sourceContextMenuActions.append(button);
-  }
+    return {
+      ...item,
+      disabled: Boolean(item.disabled)
+        || (!state.online && item.action !== "view" && !localOrderingAction)
+        || (Boolean(activeRequest)
+          && item.action !== "view"
+          && item.action !== "manage"
+          && !localOrderingAction
+          && !canCancelPrewarm),
+    };
+  });
+  reconcileContextMenuActionButtons(
+    elements.sourceContextMenuActions,
+    resolvedActions,
+    "sourceContextAction"
+  );
   elements.sourceContextMenu.classList.remove("hidden");
   positionContextMenu(elements.sourceContextMenu, clientX, clientY);
   restoreOverlayFocus(elements.sourceContextMenuActions.querySelector("button:not(:disabled)"));
@@ -39834,17 +39877,6 @@ function showSourceContextMenu(clientX, clientY, sourceID, {
     ),
     historyMode,
   });
-}
-
-function appendTagContextAction({ action, label, destructive = false, disabled = false }) {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.setAttribute("role", "menuitem");
-  button.dataset.tagContextAction = action;
-  button.textContent = label;
-  button.disabled = disabled;
-  button.classList.toggle("danger", destructive);
-  elements.tagContextMenuActions.append(button);
 }
 
 function showTagContextMenu(
@@ -39861,7 +39893,6 @@ function showTagContextMenu(
   state.contextTagReturnFocus = returnFocus;
   elements.tagContextMenu.setAttribute("aria-label", `${tag.displayName} 标签操作`);
   elements.tagContextMenuTitle.textContent = `标签 · ${tag.displayName}`;
-  elements.tagContextMenuActions.replaceChildren();
   const excluded = state.filters.tagConditions.some(
     (condition) => condition.tagID === tagID && condition.decision === "excluded"
   );
@@ -39872,48 +39903,50 @@ function showTagContextMenu(
   const groupIndex = groups.findIndex((group) => group.id === groupID);
   const orderingDisabled = tagReorderSearchActive("sidebar")
     || state.tagManagementMutating;
-  appendTagContextAction({
-    action: "filterOnly",
-    label: "仅筛选此标签",
-    disabled: !state.online,
-  });
-  appendTagContextAction({
-    action: "toggleExcluded",
-    label: excluded ? "取消排除此标签" : "排除此标签",
-    disabled: !state.online,
-  });
-  appendTagContextAction({
-    action: "moveEarlier",
-    label: "在分组内前移",
-    disabled: orderingDisabled || tagOrderIndex <= 0,
-  });
-  appendTagContextAction({
-    action: "moveLater",
-    label: "在分组内后移",
-    disabled: orderingDisabled
-      || tagOrderIndex < 0
-      || tagOrderIndex >= groupTagIDs.length - 1,
-  });
-  appendTagContextAction({
-    action: "movePreviousGroup",
-    label: "移到上一分组",
-    disabled: orderingDisabled || !state.online || groupIndex <= 0,
-  });
-  appendTagContextAction({
-    action: "moveNextGroup",
-    label: "移到下一分组",
-    disabled: orderingDisabled
-      || !state.online
-      || groupIndex < 0
-      || groupIndex >= groups.length - 1,
-  });
-  appendTagContextAction({ action: "renameTag", label: "重命名…" });
-  appendTagContextAction({
-    action: "archiveTag",
-    label: "归档标签",
-    destructive: true,
-    disabled: !state.online || state.tagManagementMutating,
-  });
+  reconcileContextMenuActionButtons(elements.tagContextMenuActions, [
+    {
+      action: "filterOnly",
+      label: "仅筛选此标签",
+      disabled: !state.online,
+    },
+    {
+      action: "toggleExcluded",
+      label: excluded ? "取消排除此标签" : "排除此标签",
+      disabled: !state.online,
+    },
+    {
+      action: "moveEarlier",
+      label: "在分组内前移",
+      disabled: orderingDisabled || tagOrderIndex <= 0,
+    },
+    {
+      action: "moveLater",
+      label: "在分组内后移",
+      disabled: orderingDisabled
+        || tagOrderIndex < 0
+        || tagOrderIndex >= groupTagIDs.length - 1,
+    },
+    {
+      action: "movePreviousGroup",
+      label: "移到上一分组",
+      disabled: orderingDisabled || !state.online || groupIndex <= 0,
+    },
+    {
+      action: "moveNextGroup",
+      label: "移到下一分组",
+      disabled: orderingDisabled
+        || !state.online
+        || groupIndex < 0
+        || groupIndex >= groups.length - 1,
+    },
+    { action: "renameTag", label: "重命名…" },
+    {
+      action: "archiveTag",
+      label: "归档标签",
+      destructive: true,
+      disabled: !state.online || state.tagManagementMutating,
+    },
+  ], "tagContextAction");
   elements.tagContextMenu.classList.remove("hidden");
   positionContextMenu(elements.tagContextMenu, clientX, clientY);
   restoreOverlayFocus(elements.tagContextMenuActions.querySelector("button:not(:disabled)"));
@@ -39942,14 +39975,15 @@ function showTagGroupContextMenu(
   state.contextTagReturnFocus = returnFocus;
   elements.tagContextMenu.setAttribute("aria-label", `${group.displayName} 标签分组操作`);
   elements.tagContextMenuTitle.textContent = `标签分组 · ${group.displayName}`;
-  elements.tagContextMenuActions.replaceChildren();
-  appendTagContextAction({ action: "renameGroup", label: "重命名分组…" });
-  appendTagContextAction({
-    action: "deleteGroup",
-    label: "删除分组",
-    destructive: true,
-    disabled: !state.online || state.tagManagementMutating,
-  });
+  reconcileContextMenuActionButtons(elements.tagContextMenuActions, [
+    { action: "renameGroup", label: "重命名分组…" },
+    {
+      action: "deleteGroup",
+      label: "删除分组",
+      destructive: true,
+      disabled: !state.online || state.tagManagementMutating,
+    },
+  ], "tagContextAction");
   elements.tagContextMenu.classList.remove("hidden");
   positionContextMenu(elements.tagContextMenu, clientX, clientY);
   restoreOverlayFocus(elements.tagContextMenuActions.querySelector("button:not(:disabled)"));

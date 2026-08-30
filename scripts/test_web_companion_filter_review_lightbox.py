@@ -2448,8 +2448,27 @@ def main():
         page.wait_for_function(
             "() => !document.querySelector('#sourcePrewarmStatusButton').classList.contains('hidden')"
         )
+        source_management_projection_asset_queries = len(asset_queries)
         page.locator("#sourcePrewarmStatusButton").click()
         page.locator("#sourceManagerDialog").wait_for(state="visible")
+        assert page.evaluate(
+            """() => ({
+              gallerySourceIDs: state.sources.map(source => source.id),
+              managerSourceIDs: state.sourceManagement.snapshot.sources.map(source => source.id),
+            })"""
+        ) == {
+            "gallerySourceIDs": [
+                SOURCE_ID,
+                "55555555-aaaa-bbbb-cccc-555555555555",
+                "66666666-aaaa-bbbb-cccc-666666666666",
+            ],
+            "managerSourceIDs": [
+                SOURCE_ID,
+                "55555555-aaaa-bbbb-cccc-555555555555",
+                "66666666-aaaa-bbbb-cccc-666666666666",
+            ],
+        }
+        assert len(asset_queries) == source_management_projection_asset_queries
         page.wait_for_function(
             "() => document.querySelector('#sourceManagerPending').textContent.includes('/ 3')"
         )
