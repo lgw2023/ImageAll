@@ -3941,6 +3941,24 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("assetLoadPromise"))
         XCTAssertTrue(script.contains("assetQuerySignature"))
         XCTAssertTrue(script.contains("renderReviewOverview"))
+        XCTAssertTrue(script.contains("function currentReviewQueueOverview()"))
+        XCTAssertTrue(script.contains("function currentReviewOverviewScopeKey()"))
+        XCTAssertTrue(script.contains("function reviewQueueSummaryText({ selectedCount = 0 } = {})"))
+        XCTAssertTrue(
+            script.contains(
+                "state.review.overviewLoadedScopeKey !== currentReviewOverviewScopeKey()"
+            )
+        )
+        XCTAssertTrue(script.contains("state.review.loadedScopeKey === currentReviewScopeKey()"))
+        XCTAssertTrue(script.contains("loadedCount <= pendingCount"))
+        XCTAssertTrue(script.contains("!hasMore || loadedCount < pendingCount"))
+        XCTAssertTrue(script.contains("正在分析 · 已检查 ${checkedText} · 跳过 ${skipped}"))
+        XCTAssertTrue(
+            script.contains(
+                "if (state.review.mode === \"queue\") renderReviewCollectionSummary();"
+            )
+        )
+        XCTAssertFalse(script.contains("`待审核 ${state.review.items.length} 项"))
         XCTAssertTrue(script.contains("renderTagManager"))
         XCTAssertTrue(script.contains("installPresetTags"))
         XCTAssertTrue(script.contains("/v1/tags/install-presets"))

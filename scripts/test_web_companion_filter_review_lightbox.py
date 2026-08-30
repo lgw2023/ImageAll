@@ -299,6 +299,13 @@ def main():
     console_errors = []
     http_errors = []
     review_items = [review_item(asset_id, index + 1) for index, asset_id in enumerate(REVIEW_IDS)]
+    review_pending_override = [None]
+    review_task = {
+        "taskStatus": "completed",
+        "checkedCount": 12,
+        "totalCount": 12,
+        "skippedCount": 0,
+    }
 
     def projected_review_items():
         return [{
@@ -1030,35 +1037,32 @@ def main():
             })
 
         page.route("**/v1/tags/create-and-apply", route_create_tag_and_apply)
-        page.route(
-            "**/v1/review/overview?**",
-            lambda route: fulfill_json(
-                route,
-                {
-                    "totalPendingSuggestionCount": len(review_items),
-                    "tags": [{
-                        "id": CAT_TAG_ID,
-                        "displayName": "猫",
-                        "acceptedSampleCount": 8,
-                        "rejectedSampleCount": 4,
-                        "pendingSuggestionCount": len(review_items),
-                        "pendingSuggestionCounts": {
-                            "featurePrint": len(review_items),
-                            "standardModel": 0,
-                            "personalModel": 0,
-                            "personalAdamW": 0,
-                        },
-                        "taskStatus": "completed",
-                        "checkedCount": 12,
-                        "totalCount": 12,
-                        "skippedCount": 0,
-                        "missingPositiveCount": 0,
-                        "missingNegativeCount": 0,
-                        "canReview": True,
-                    }],
-                },
-            ),
-        )
+        def route_review_overview(route):
+            pending_count = review_pending_override[0]
+            if pending_count is None:
+                pending_count = len(review_items)
+            fulfill_json(route, {
+                "totalPendingSuggestionCount": pending_count,
+                "tags": [{
+                    "id": CAT_TAG_ID,
+                    "displayName": "猫",
+                    "acceptedSampleCount": 8,
+                    "rejectedSampleCount": 4,
+                    "pendingSuggestionCount": pending_count,
+                    "pendingSuggestionCounts": {
+                        "featurePrint": pending_count,
+                        "standardModel": 0,
+                        "personalModel": 0,
+                        "personalAdamW": 0,
+                    },
+                    **review_task,
+                    "missingPositiveCount": 0,
+                    "missingNegativeCount": 0,
+                    "canReview": pending_count > 0,
+                }],
+            })
+
+        page.route("**/v1/review/overview?**", route_review_overview)
         def route_review_queue(route):
             query = parse_qs(urlparse(route.request.url).query)
             review_queue_queries.append(query)
@@ -3314,6 +3318,71 @@ def main():
             "&& !state.review.detailLoadingAssetID"
         )
         assert any(query.get("cursor") == ["review-page-2"] for query in review_queue_queries)
+        review_pending_override[0] = 73
+        review_task.update({
+            "taskStatus": "running",
+            "checkedCount": 41,
+            "totalCount": 120,
+            "skippedCount": 6,
+        })
+        page.evaluate("() => loadReviewOverview()")
+        page.wait_for_function(
+            "() => document.querySelector('#reviewSummary').textContent === "
+            "'正在分析 · 已检查 41/120 · 跳过 6 · 待审核 73 条 · 已载入 3 条'"
+        )
+        page.screenshot(
+            path="/tmp/imageall-review-authoritative-summary.png",
+            full_page=True,
+        )
+
+        # A stale overview must never claim a smaller pending total while the
+        # queue still exposes a continuation beyond its loaded window.
+        review_pending_override[0] = 2
+        page.evaluate(
+            """() => {
+              const overview = currentReviewQueueOverview();
+              overview.pendingSuggestionCount = 2;
+              state.review.nextCursor = 'stale-overview-page';
+              renderReviewCollectionSummary();
+            }"""
+        )
+        stale_summary = page.locator("#reviewSummary").inner_text()
+        assert stale_summary == (
+            "正在分析 · 已检查 41/120 · 跳过 6 · 已载入 3 条 · 还有更多"
+        )
+        assert "待审核 2 条" not in stale_summary
+        page.evaluate(
+            """() => {
+              state.review.overviewLoadedScopeKey = 'previous-source-scope';
+              renderReviewCollectionSummary();
+            }"""
+        )
+        assert page.locator("#reviewSummary").inner_text() == "已载入 3 条 · 还有更多"
+
+        # Overview refreshes while the queue is open must immediately redraw
+        # the header rather than leaving the previous running state behind.
+        review_pending_override[0] = None
+        review_task.update({
+            "taskStatus": "waiting",
+            "checkedCount": 0,
+            "totalCount": None,
+            "skippedCount": 0,
+        })
+        page.evaluate("() => { state.review.nextCursor = null; return loadReviewOverview(); }")
+        page.wait_for_function(
+            "() => document.querySelector('#reviewSummary').textContent === "
+            "'等待运行 · 待审核 3 条'"
+        )
+        review_task.update({
+            "taskStatus": "completed",
+            "checkedCount": 12,
+            "totalCount": 12,
+            "skippedCount": 0,
+        })
+        page.evaluate("() => loadReviewOverview()")
+        page.wait_for_function(
+            "() => document.querySelector('#reviewSummary').textContent === '待审核 3 条'"
+        )
         first_review_card = page.locator(f'[data-review-index="0"]')
         first_review_main = first_review_card.locator(":scope > .review-card-main")
         first_review_favorite = first_review_card.locator(":scope > .review-card-favorite")

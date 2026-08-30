@@ -1270,6 +1270,7 @@ const state = {
     sourceFilterFocusSelector: null,
     overview: [],
     overviewTotal: 0,
+    overviewLoadedScopeKey: null,
     overviewLoading: false,
     overviewGeneration: 0,
     overviewRenderedFingerprint: null,
@@ -24396,6 +24397,7 @@ function renderReviewMode() {
 async function loadReviewOverview({ throwOnError = false } = {}) {
   const generation = ++state.review.overviewGeneration;
   const workspaceGeneration = state.workspaceGeneration;
+  const scopeKey = currentReviewOverviewScopeKey();
   state.review.overviewLoading = true;
   renderReviewOverview({
     preserveContent: reviewOverviewCanPreserveContent(),
@@ -24406,6 +24408,7 @@ async function loadReviewOverview({ throwOnError = false } = {}) {
   if (sourceIDs?.length === 0) {
     state.review.overview = [];
     state.review.overviewTotal = 0;
+    state.review.overviewLoadedScopeKey = scopeKey;
     state.review.overviewLoading = false;
     renderReviewOverview({ reconcileContent: true });
     return true;
@@ -24417,6 +24420,7 @@ async function loadReviewOverview({ throwOnError = false } = {}) {
       || workspaceGeneration !== state.workspaceGeneration) return false;
     state.review.overview = overview.tags || [];
     state.review.overviewTotal = overview.totalPendingSuggestionCount || 0;
+    state.review.overviewLoadedScopeKey = scopeKey;
     return true;
   } catch (error) {
     if (generation === state.review.overviewGeneration && !throwOnError) {
@@ -24431,6 +24435,7 @@ async function loadReviewOverview({ throwOnError = false } = {}) {
         preserveContent: reviewOverviewCanPreserveContent(),
         reconcileContent: true,
       });
+      if (state.review.mode === "queue") renderReviewCollectionSummary();
     }
   }
 }
@@ -24703,15 +24708,68 @@ function renderReviewSelectionState({ renderDetail = true } = {}) {
   });
   syncReviewGridTabStops();
   const count = state.review.selectedAssetIDs.size;
-  elements.reviewSummary.textContent = state.review.loading && !state.review.appending
-    ? "正在载入…"
-    : `待审核 ${state.review.items.length} 项${state.review.nextCursor ? " · 还有更多" : ""}`
-      + (count > 1 ? ` · 已选择 ${count} 项` : "")
-      + (state.review.appending ? " · 正在载入更多…" : "");
+  elements.reviewSummary.textContent = reviewQueueSummaryText({ selectedCount: count });
   syncReviewSelectionModeControls({
     controlsLocked: state.review.overviewLoading || state.review.mutating,
   });
   if (renderDetail) renderReviewDetail();
+}
+
+function currentReviewQueueOverview() {
+  if (state.review.overviewLoadedScopeKey !== currentReviewOverviewScopeKey()) return null;
+  const tagID = elements.reviewTagSelect.value;
+  return state.review.overview.find((overview) => String(overview.id) === tagID) || null;
+}
+
+function normalizedReviewCount(value) {
+  if (value == null) return null;
+  const count = Number(value);
+  return Number.isInteger(count) && count >= 0 ? count : null;
+}
+
+function reviewQueueRunningProgress(overview) {
+  const checked = normalizedReviewCount(overview?.checkedCount) ?? 0;
+  const total = normalizedReviewCount(overview?.totalCount);
+  const skipped = normalizedReviewCount(overview?.skippedCount) ?? 0;
+  const checkedText = total != null && total > 0 && checked <= total
+    ? `${checked}/${total}`
+    : String(checked);
+  return `正在分析 · 已检查 ${checkedText} · 跳过 ${skipped}`;
+}
+
+function reviewQueueSummaryText({ selectedCount = 0 } = {}) {
+  if (state.review.loading && !state.review.appending) return "正在载入…";
+  const overview = currentReviewQueueOverview();
+  const loadedCount = state.review.loadedScopeKey === currentReviewScopeKey()
+    ? state.review.items.length
+    : 0;
+  const pendingCount = normalizedReviewCount(overview?.pendingSuggestionCount);
+  const hasMore = Boolean(state.review.nextCursor);
+  const hasConsistentPendingCount = pendingCount != null
+    && loadedCount <= pendingCount
+    && (!hasMore || loadedCount < pendingCount);
+  const parts = [];
+
+  if (overview?.taskStatus === "running") {
+    parts.push(reviewQueueRunningProgress(overview));
+  } else if (overview?.taskStatus === "paused") {
+    parts.push("已暂停");
+  } else if (overview?.taskStatus === "waiting") {
+    parts.push("等待运行");
+  }
+  if (hasConsistentPendingCount) parts.push(`待审核 ${pendingCount} 条`);
+
+  const shouldShowLoadedWindow = !hasConsistentPendingCount
+    || loadedCount < pendingCount
+    || hasMore
+    || state.review.appending;
+  if (shouldShowLoadedWindow) {
+    parts.push(loadedCount > 0 ? `已载入 ${loadedCount} 条` : "当前未载入");
+  }
+  if (hasMore) parts.push("还有更多");
+  if (selectedCount > 1) parts.push(`已选择 ${selectedCount} 项`);
+  if (state.review.appending) parts.push("正在载入更多…");
+  return parts.join(" · ") || "审核队列尚未载入";
 }
 
 function selectAllReviewItems() {
@@ -24753,10 +24811,7 @@ function slimmingSelectionPrimaryID() {
 function renderReviewCollectionSummary() {
   elements.reviewEmpty.classList.toggle("hidden", state.review.items.length > 0);
   elements.loadMoreReviewButton.classList.toggle("hidden", !state.review.nextCursor);
-  elements.reviewSummary.textContent = state.review.loading && !state.review.appending
-    ? "正在载入…"
-    : `待审核 ${state.review.items.length} 项${state.review.nextCursor ? " · 还有更多" : ""}`
-      + (state.review.appending ? " · 正在载入更多…" : "");
+  elements.reviewSummary.textContent = reviewQueueSummaryText();
   elements.reviewNavigationCount.textContent = state.review.overviewTotal
     ? String(state.review.overviewTotal)
     : "";
@@ -25355,6 +25410,11 @@ function currentReviewScopeKey() {
     mediaKind: state.mediaKind,
     sourceIDs,
   });
+}
+
+function currentReviewOverviewScopeKey() {
+  const sourceIDs = resolvedReviewSourceFilter();
+  return JSON.stringify({ mediaKind: state.mediaKind, sourceIDs });
 }
 
 function reviewQueueNearEnd() {
@@ -37646,6 +37706,7 @@ function resetWorkspaceSessionState() {
   state.review.sourceFilterFocusSelector = null;
   state.review.overview = [];
   state.review.overviewTotal = 0;
+  state.review.overviewLoadedScopeKey = null;
   state.review.overviewLoading = false;
   state.review.overviewRenderedFingerprint = null;
   state.review.overviewGeneration += 1;
