@@ -8634,7 +8634,7 @@ function syncInspectorTagGroup(group, section) {
   setInspectorTagAttribute(
     toggle,
     "aria-keyshortcuts",
-    "ArrowUp ArrowDown Home End Shift+F10 ContextMenu"
+    "ArrowLeft ArrowRight ArrowUp ArrowDown PageUp PageDown Home End Shift+F10 ContextMenu"
   );
   const title = collapsed
     ? `展开“${section.displayName}”`
@@ -8646,7 +8646,7 @@ function syncInspectorTagGroup(group, section) {
     collapsed
       ? `当前已折叠，点击展开 ${section.tags.length} 个标签。`
       : `当前已展开，点击暂时隐藏 ${section.tags.length} 个标签。`,
-    "上/下或 Home/End 在分组之间移动。",
+    "左/右折叠或展开；上/下、Page Up/Page Down 或 Home/End 在分组之间移动。",
     groupByID(section.id)?.isSystem === false
       ? "右键或 Shift-F10 可重命名或删除分组；删除只移动组内标签，不会归档标签。"
       : "这是系统分组，不能重命名或删除。",
@@ -8830,19 +8830,15 @@ function setupInspectorTagInteractions(
       }
       return;
     }
-    if (groupToggle && ["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
-      const toggles = [...container.querySelectorAll("[data-inspector-tag-group-toggle]")];
-      const currentIndex = toggles.indexOf(groupToggle);
-      const nextIndex = event.key === "Home"
-        ? 0
-        : event.key === "End"
-          ? toggles.length - 1
-          : Math.max(0, Math.min(
-            toggles.length - 1,
-            currentIndex + (event.key === "ArrowDown" ? 1 : -1)
-          ));
-      event.preventDefault();
-      toggles[nextIndex]?.focus({ preventScroll: true });
+    if (handleTagGroupNavigationKeydown(event, {
+      container,
+      selector: "[data-inspector-tag-group-toggle]",
+      toggleGroup: (toggle) => {
+        const groupID = toggle.dataset.inspectorTagGroupToggle;
+        rememberInspectorTagFocus(surface, "group", groupID);
+        toggleInspectorTagGroup(groupID);
+      },
+    })) {
       return;
     }
     const chip = event.target.closest("[data-tag-chip-action][data-tag-id]");
@@ -9168,7 +9164,7 @@ function syncSidebarTagNavigationSection(section, descriptor, query) {
   setSidebarTagAttribute(
     title,
     "aria-keyshortcuts",
-    "ArrowUp ArrowDown Home End Shift+F10 ContextMenu"
+    "ArrowLeft ArrowRight ArrowUp ArrowDown PageUp PageDown Home End Shift+F10 ContextMenu"
   );
   const titleText = collapsed
     ? `展开“${descriptor.displayName}”`
@@ -9182,7 +9178,7 @@ function syncSidebarTagNavigationSection(section, descriptor, query) {
       : collapsed
         ? `当前已折叠，点击展开 ${descriptor.tags.length} 个标签。`
         : `当前已展开，点击暂时隐藏 ${descriptor.tags.length} 个标签。`,
-    "上/下或 Home/End 在分组之间移动。",
+    "左/右折叠或展开；上/下、Page Up/Page Down 或 Home/End 在分组之间移动。",
     descriptor.isSystem
       ? "这是系统分组，不能重命名或删除。"
       : "右键、Context Menu 或 Shift-F10 可重命名或删除分组；删除只移动组内标签。",
@@ -22345,6 +22341,51 @@ function longListNavigationTarget(rows, currentIndex, key, viewport) {
     ? visibleListPageStep(rows, viewport)
     : 1;
   return Math.max(0, Math.min(rows.length - 1, currentIndex + direction * step));
+}
+
+function tagGroupNavigationViewport(toggle, fallback) {
+  for (let candidate = toggle?.parentElement; candidate; candidate = candidate.parentElement) {
+    const overflowY = getComputedStyle(candidate).overflowY;
+    if (["auto", "scroll", "overlay"].includes(overflowY)) return candidate;
+    if (candidate === document.body) break;
+  }
+  return fallback;
+}
+
+function handleTagGroupNavigationKeydown(
+  event,
+  { container, selector, toggleGroup }
+) {
+  const toggle = event.target.closest(selector);
+  if (!toggle || event.altKey || event.ctrlKey || event.metaKey) return false;
+  const disclosureKeys = ["ArrowLeft", "ArrowRight"];
+  const movementKeys = ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"];
+  if (![...disclosureKeys, ...movementKeys].includes(event.key)) return false;
+
+  event.preventDefault();
+  event.stopPropagation();
+  if (disclosureKeys.includes(event.key)) {
+    const expanded = toggle.getAttribute("aria-expanded") === "true";
+    const wantsExpanded = event.key === "ArrowRight";
+    if (expanded !== wantsExpanded) toggleGroup(toggle);
+    return true;
+  }
+
+  const toggles = [...container.querySelectorAll(selector)]
+    .filter((candidate) => !candidate.closest(".hidden"));
+  const currentIndex = toggles.indexOf(toggle);
+  if (currentIndex < 0) return true;
+  const viewport = tagGroupNavigationViewport(toggle, container);
+  const targetIndex = longListNavigationTarget(
+    toggles,
+    currentIndex,
+    event.key,
+    viewport
+  );
+  const target = toggles[targetIndex];
+  target?.focus({ preventScroll: true });
+  target?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  return true;
 }
 
 function selectJobRow(jobID, { focus = false } = {}) {
@@ -40877,21 +40918,13 @@ function setupSidebarReordering() {
       }
       return;
     }
-    if (groupToggle && ["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
-      const toggles = [...elements.tagNavigation.querySelectorAll(
-        "[data-sidebar-tag-group-toggle]"
-      )];
-      const currentIndex = toggles.indexOf(groupToggle);
-      const nextIndex = event.key === "Home"
-        ? 0
-        : event.key === "End"
-          ? toggles.length - 1
-          : Math.max(0, Math.min(
-            toggles.length - 1,
-            currentIndex + (event.key === "ArrowDown" ? 1 : -1)
-          ));
-      event.preventDefault();
-      toggles[nextIndex]?.focus({ preventScroll: true });
+    if (handleTagGroupNavigationKeydown(event, {
+      container: elements.tagNavigation,
+      selector: "[data-sidebar-tag-group-toggle]",
+      toggleGroup: (toggle) => {
+        toggleSidebarTagGroup(toggle.dataset.sidebarTagGroupToggle);
+      },
+    })) {
       return;
     }
     const chip = event.target.closest("[data-quick-tag-id]");

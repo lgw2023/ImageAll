@@ -1622,11 +1622,35 @@ def main():
         subject_toggle = sidebar_group_toggle(page, GROUP_SUBJECT)
         assert subject_toggle.get_attribute("aria-expanded") == "false"
         subject_toggle.focus()
+        subject_toggle.press("ArrowRight")
+        assert subject_toggle.get_attribute("aria-expanded") == "true"
+        assert inspector_group_toggle(
+            page, "inspectorPlaceholderTags", GROUP_SUBJECT
+        ).get_attribute("aria-expanded") == "true"
+        assert page.evaluate(
+            "groupID => document.activeElement?.dataset.sidebarTagGroupToggle === groupID",
+            GROUP_SUBJECT,
+        )
+        subject_toggle.press("ArrowRight")
+        assert subject_toggle.get_attribute("aria-expanded") == "true"
+        subject_toggle.press("ArrowLeft")
+        assert subject_toggle.get_attribute("aria-expanded") == "false"
+        assert inspector_group_toggle(
+            page, "inspectorPlaceholderTags", GROUP_SUBJECT
+        ).get_attribute("aria-expanded") == "false"
+        assert page.evaluate(
+            "groupID => document.activeElement?.dataset.sidebarTagGroupToggle === groupID",
+            GROUP_SUBJECT,
+        )
+        page.evaluate(
+            "() => new Promise(resolve => requestAnimationFrame("
+            "() => requestAnimationFrame(resolve)))"
+        )
         subject_toggle.press("ArrowDown")
         assert page.evaluate(
             "() => document.activeElement?.dataset.sidebarTagGroupToggle"
         ) == GROUP_SCENE
-        subject_toggle.click()
+        subject_toggle.press("ArrowRight")
         assert subject_toggle.get_attribute("aria-expanded") == "true"
 
         test_phase[0] = "sidebar-tag-reorder"
@@ -1689,11 +1713,22 @@ def main():
             page, "inspectorTags", GROUP_SUBJECT
         )
         assert single_subject_toggle.get_attribute("aria-expanded") == "false"
-        single_subject_toggle.click()
+        single_subject_toggle.focus()
+        single_subject_toggle.press("ArrowRight")
         assert single_subject_toggle.get_attribute("aria-expanded") == "true"
         assert sidebar_group_toggle(page, GROUP_SUBJECT).get_attribute(
             "aria-expanded"
         ) == "true"
+        assert page.evaluate(
+            "groupID => document.activeElement?.dataset.inspectorTagGroupToggle === groupID",
+            GROUP_SUBJECT,
+        )
+        single_subject_toggle.press("ArrowLeft")
+        assert single_subject_toggle.get_attribute("aria-expanded") == "false"
+        assert sidebar_group_toggle(page, GROUP_SUBJECT).get_attribute(
+            "aria-expanded"
+        ) == "false"
+        single_subject_toggle.press("ArrowRight")
         assert inspector_group_names(page, "inspectorTags", GROUP_SUBJECT) == ["狗", "猫"]
 
         page.evaluate(
@@ -2416,6 +2451,70 @@ def main():
             "() => ({ viewport: innerWidth, scroll: document.documentElement.scrollWidth })"
         )
         assert dimensions["scroll"] <= dimensions["viewport"], dimensions
+
+        navigation_group_ids = []
+        for index in range(12):
+            group_id = f"20000000-0000-4000-8000-0000000001{index:02d}"
+            tag_id = f"30000000-0000-4000-8000-0000000001{index:02d}"
+            navigation_group_ids.append(group_id)
+            groups.append({
+                "id": group_id,
+                "displayName": f"键盘分组 {index + 1:02d}",
+                "sortOrder": 100 + index,
+                "isSystem": True,
+            })
+            tags.append({
+                "id": tag_id,
+                "displayName": f"键盘标签 {index + 1:02d}",
+                "state": "active",
+                "groupID": group_id,
+            })
+        page.evaluate(
+            "async () => refreshWorkspace({ quiet: true, kinds: ['tagsChanged'] })"
+        )
+        page.wait_for_function(
+            "expected => document.querySelectorAll("
+            "'#tagNavigation [data-sidebar-tag-group-toggle]'"
+            ").length === expected",
+            arg=1 + len(navigation_group_ids),
+        )
+        navigation_asset_request_count = len(asset_queries)
+        scene_toggle = sidebar_group_toggle(page, GROUP_SCENE)
+        scene_toggle.focus()
+        scene_toggle.press("PageDown")
+        paged_group_id = page.evaluate(
+            "() => document.activeElement?.dataset.sidebarTagGroupToggle"
+        )
+        assert paged_group_id in navigation_group_ids[1:], paged_group_id
+        paged_visibility = page.evaluate(
+            """() => {
+              const viewport = document.querySelector('#sourceSidebar').getBoundingClientRect();
+              const target = document.activeElement.getBoundingClientRect();
+              return {
+                top: target.top >= viewport.top,
+                bottom: target.bottom <= viewport.bottom,
+              };
+            }"""
+        )
+        assert all(paged_visibility.values()), paged_visibility
+        paged_group_index = navigation_group_ids.index(paged_group_id)
+        page.keyboard.press("PageUp")
+        paged_up_group_id = page.evaluate(
+            "() => document.activeElement?.dataset.sidebarTagGroupToggle"
+        )
+        assert paged_up_group_id == GROUP_SCENE or (
+            paged_up_group_id in navigation_group_ids
+            and navigation_group_ids.index(paged_up_group_id) < paged_group_index
+        ), paged_up_group_id
+        page.keyboard.press("End")
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.sidebarTagGroupToggle"
+        ) == navigation_group_ids[-1]
+        page.keyboard.press("Home")
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.sidebarTagGroupToggle"
+        ) == GROUP_SCENE
+        assert len(asset_queries) == navigation_asset_request_count
         page.screenshot(path="/tmp/imageall-sidebar-reordering-synthetic.png", full_page=True)
 
         assert not page_errors, page_errors
