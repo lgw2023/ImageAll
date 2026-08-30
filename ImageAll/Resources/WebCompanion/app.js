@@ -515,6 +515,7 @@ const elements = {
   newTagForm: $("#newTagForm"),
   newTagName: $("#newTagName"),
   newTagTargetSummary: $("#newTagTargetSummary"),
+  newTagRestoreNotice: $("#newTagRestoreNotice"),
   newTagError: $("#newTagError"),
   createTagButton: $("#createTagButton"),
   cancelNewTagButton: $("#cancelNewTagButton"),
@@ -1661,6 +1662,10 @@ const state = {
   newTagBaseLevel: "workspace",
   newTagHistoryRestoreFocus: true,
   newTagOpening: false,
+  newTagRestorable: false,
+  newTagFocusID: "newTagName",
+  newTagReturnControlID: null,
+  newTagReloadNotice: false,
   autoLoadObserver: null,
   searchTimer: null,
   commandItems: [],
@@ -2355,6 +2360,10 @@ function closeOverlays() {
   state.newTagBaseLevel = "workspace";
   state.newTagHistoryRestoreFocus = true;
   state.newTagOpening = false;
+  state.newTagRestorable = false;
+  state.newTagFocusID = "newTagName";
+  state.newTagReturnControlID = null;
+  state.newTagReloadNotice = false;
   state.tagManagerReturnFocus = null;
   state.tagManagerBaseLevel = "workspace";
   state.tagManagerHistoryRestoreFocus = true;
@@ -3305,6 +3314,7 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
     ? {
         ...(context || {}),
         newTagBaseLevel: state.newTagBaseLevel,
+        ...currentNewTagHistoryContext(),
       }
     : hasTagManager
     ? {
@@ -3976,7 +3986,11 @@ async function applyWorkspaceHistoryEntry(entry, { restoringReload = false } = {
         navigationLevel,
         context
       ) || checkpointWorkspaceHistoryAfterApply;
-      reconcileNewTagFromWorkspaceHistory(target, navigationLevel, context);
+      checkpointWorkspaceHistoryAfterApply = await reconcileNewTagFromWorkspaceHistory(
+        target,
+        navigationLevel,
+        context
+      ) || checkpointWorkspaceHistoryAfterApply;
       checkpointWorkspaceHistoryAfterApply = await reconcileTagManagerFromWorkspaceHistory(
         target,
         navigationLevel,
@@ -4071,7 +4085,11 @@ async function applyWorkspaceHistoryEntry(entry, { restoringReload = false } = {
         navigationLevel,
         context
       ) || checkpointWorkspaceHistoryAfterApply;
-      reconcileNewTagFromWorkspaceHistory("gallery", navigationLevel, context);
+      checkpointWorkspaceHistoryAfterApply = await reconcileNewTagFromWorkspaceHistory(
+        "gallery",
+        navigationLevel,
+        context
+      ) || checkpointWorkspaceHistoryAfterApply;
       checkpointWorkspaceHistoryAfterApply = await reconcileTagManagerFromWorkspaceHistory(
         "gallery",
         navigationLevel,
@@ -4307,11 +4325,11 @@ async function applyWorkspaceHistoryEntry(entry, { restoringReload = false } = {
       activeEntry?.navigationLevel || "workspace",
       context
     ) || checkpointWorkspaceHistoryAfterApply;
-    reconcileNewTagFromWorkspaceHistory(
+    checkpointWorkspaceHistoryAfterApply = await reconcileNewTagFromWorkspaceHistory(
       target,
       activeEntry?.navigationLevel || "workspace",
       context
-    );
+    ) || checkpointWorkspaceHistoryAfterApply;
     checkpointWorkspaceHistoryAfterApply = await reconcileTagManagerFromWorkspaceHistory(
       target,
       activeEntry?.navigationLevel || "workspace",
@@ -21826,6 +21844,84 @@ async function loadGalleryRemovals({ quiet = false } = {}) {
   }
 }
 
+const NEW_TAG_HISTORY_CONTROL_IDS = new Set([
+  "newTagName",
+  "cancelNewTagButton",
+  "cancelNewTagFooterButton",
+  "createTagButton",
+]);
+const NEW_TAG_HISTORY_RETURN_IDS = new Set([
+  "sidebarNewTagButton",
+  "batchNewTagButton",
+  "tagManagerButton",
+  "commandButton",
+]);
+
+function normalizedNewTagHistoryFocusID(value) {
+  return NEW_TAG_HISTORY_CONTROL_IDS.has(value) ? value : "newTagName";
+}
+
+function captureNewTagHistoryFocus() {
+  const control = document.activeElement instanceof Element
+    ? document.activeElement.closest("button, input")
+    : null;
+  if (control instanceof HTMLElement
+    && elements.newTagDialog.contains(control)
+    && NEW_TAG_HISTORY_CONTROL_IDS.has(control.id)) {
+    state.newTagFocusID = control.id;
+  }
+}
+
+function newTagReturnControlID(target) {
+  return target instanceof HTMLElement && NEW_TAG_HISTORY_RETURN_IDS.has(target.id)
+    ? target.id
+    : null;
+}
+
+function currentNewTagHistoryContext() {
+  if (elements.newTagDialog.open) captureNewTagHistoryFocus();
+  return {
+    newTagFocusID: normalizedNewTagHistoryFocusID(state.newTagFocusID),
+    newTagReturnControlID: NEW_TAG_HISTORY_RETURN_IDS.has(state.newTagReturnControlID)
+      ? state.newTagReturnControlID
+      : null,
+  };
+}
+
+function applyNewTagHistoryContext(context = {}) {
+  state.newTagFocusID = normalizedNewTagHistoryFocusID(context.newTagFocusID);
+  state.newTagReturnControlID = NEW_TAG_HISTORY_RETURN_IDS.has(
+    context.newTagReturnControlID
+  ) ? context.newTagReturnControlID : null;
+}
+
+function resolveNewTagReturnFocus() {
+  if (state.newTagReturnFocus?.isConnected) return state.newTagReturnFocus;
+  if (state.newTagReturnControlID) {
+    const target = document.getElementById(state.newTagReturnControlID);
+    if (target instanceof HTMLElement && !target.disabled && target.getClientRects().length) {
+      return target;
+    }
+  }
+  return stableReturnFocusTarget(
+    elements.sidebarNewTagButton,
+    stableReturnFocusTarget(elements.batchNewTagButton, elements.commandButton)
+  );
+}
+
+async function restoreNewTagLayoutFromHistory() {
+  await waitForWorkspaceLayout();
+  let target = document.getElementById(normalizedNewTagHistoryFocusID(state.newTagFocusID));
+  if (!(target instanceof HTMLElement)
+    || target.disabled
+    || !elements.newTagDialog.contains(target)
+    || target.offsetParent === null) {
+    target = elements.newTagName;
+  }
+  state.newTagFocusID = target.id;
+  target.focus({ preventScroll: true });
+}
+
 function newTagBaseLevelFromHistory(context = {}) {
   return ["sidebar", "inspector", "lightbox"].includes(context.newTagBaseLevel)
     ? context.newTagBaseLevel
@@ -21839,7 +21935,11 @@ function replaceNewTagHistoryWithBase(baseLevel) {
   const route = visibleWorkspaceRoute();
   if (current?.route !== route || current.navigationLevel !== "newTag") return;
   const context = currentWorkspaceHistoryContext(route);
-  if (context && typeof context === "object") delete context.newTagBaseLevel;
+  if (context && typeof context === "object") {
+    delete context.newTagBaseLevel;
+    delete context.newTagFocusID;
+    delete context.newTagReturnControlID;
+  }
   const navigationLevel = visibleWorkspaceNavigationBaseLevel(route, baseLevel);
   history.replaceState({
     ...(history.state || {}),
@@ -21850,11 +21950,16 @@ function replaceNewTagHistoryWithBase(baseLevel) {
 function clearNewTagState() {
   elements.newTagError.textContent = "";
   elements.newTagName.value = "";
+  elements.newTagRestoreNotice.classList.add("hidden");
   state.newTagOperationID = null;
   state.newTagReturnFocus = null;
   state.newTagBaseLevel = "workspace";
   state.newTagHistoryRestoreFocus = true;
   state.newTagOpening = false;
+  state.newTagRestorable = false;
+  state.newTagFocusID = "newTagName";
+  state.newTagReturnControlID = null;
+  state.newTagReloadNotice = false;
 }
 
 function closeNewTagDialog({
@@ -21863,8 +21968,9 @@ function closeNewTagDialog({
   preserveState = false,
 } = {}) {
   if (!elements.newTagDialog.open) return;
+  captureNewTagHistoryFocus();
   const baseLevel = state.newTagBaseLevel;
-  const returnFocus = state.newTagReturnFocus;
+  const returnFocus = resolveNewTagReturnFocus();
   elements.newTagDialog.close();
   if (restoreFocus) {
     restoreOverlayFocus(stableReturnFocusTarget(returnFocus, elements.sidebarNewTagButton));
@@ -21894,6 +22000,8 @@ function presentNewTagDialog({
     state.newTagReturnFocus = returnFocus
       || state.newTagReturnFocus
       || (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    state.newTagReturnControlID = newTagReturnControlID(state.newTagReturnFocus)
+      || state.newTagReturnControlID;
     const current = activeWorkspaceHistoryEntry();
     state.newTagBaseLevel = baseLevel
       || workspaceNavigationBaseLevel(
@@ -21904,9 +22012,13 @@ function presentNewTagDialog({
       state.newTagOperationID = crypto.randomUUID();
       elements.newTagError.textContent = "";
       elements.newTagName.value = "";
+      state.newTagFocusID = "newTagName";
+      state.newTagReloadNotice = false;
     }
+    elements.newTagRestoreNotice.classList.toggle("hidden", !state.newTagReloadNotice);
     elements.newTagTargetSummary.textContent = `创建后将为 ${mediaItemCountText(assetIDs.length)}确认此标签`;
     elements.newTagDialog.showModal();
+    state.newTagRestorable = true;
     if (historyMode !== "none") {
       const route = visibleWorkspaceRoute();
       recordWorkspaceHistory(route, currentWorkspaceHistoryContext(route), historyMode);
@@ -21914,7 +22026,11 @@ function presentNewTagDialog({
   } finally {
     state.newTagOpening = false;
   }
-  if (focus) restoreOverlayFocus(elements.newTagName);
+  if (focus) {
+    const target = document.getElementById(normalizedNewTagHistoryFocusID(state.newTagFocusID));
+    restoreOverlayFocus(target instanceof HTMLElement ? target : elements.newTagName);
+  }
+  scheduleWorkspaceHistoryCheckpoint();
   return true;
 }
 
@@ -21944,20 +22060,31 @@ function returnFromNewTag({ restoreFocus = true } = {}) {
   return Promise.resolve();
 }
 
-function reconcileNewTagFromWorkspaceHistory(route, navigationLevel, context = {}) {
+async function reconcileNewTagFromWorkspaceHistory(route, navigationLevel, context = {}) {
   const shouldOpen = navigationLevel === "newTag"
     && route === visibleWorkspaceRoute();
-  if (shouldOpen && (!state.newTagOperationID || !currentTagTargetAssetIDs().length)) {
+  if (shouldOpen && !currentTagTargetAssetIDs().length) {
     clearNewTagState();
     replaceNewTagHistoryWithBase(newTagBaseLevelFromHistory(context));
-    return;
+    return false;
+  }
+  const restoringFreshState = shouldOpen && !state.newTagRestorable;
+  if (shouldOpen) applyNewTagHistoryContext(context);
+  if (restoringFreshState) {
+    state.newTagOperationID = crypto.randomUUID();
+    state.newTagReloadNotice = true;
+    state.newTagFocusID = "newTagName";
+    elements.newTagName.value = "";
+    elements.newTagError.textContent = "";
   }
   if (shouldOpen && !elements.newTagDialog.open) {
     presentNewTagDialog({
       historyMode: "none",
       baseLevel: newTagBaseLevelFromHistory(context),
+      focus: false,
       reset: false,
     });
+    await restoreNewTagLayoutFromHistory();
   } else if (!shouldOpen && elements.newTagDialog.open) {
     const restoreFocus = state.newTagHistoryRestoreFocus;
     closeNewTagDialog({
@@ -21967,6 +22094,7 @@ function reconcileNewTagFromWorkspaceHistory(route, navigationLevel, context = {
     });
     state.newTagHistoryRestoreFocus = true;
   }
+  return restoringFreshState;
 }
 
 function inlineTagSurfaceElements(surface) {
@@ -22128,7 +22256,7 @@ async function createTagAndApply(event) {
   try {
     const outcome = await performCreateTagAndApply({ name, assetIDs, operationID });
     if (!outcome) return;
-    const returnFocus = state.newTagReturnFocus;
+    const returnFocus = resolveNewTagReturnFocus();
     await returnFromNewTag({ restoreFocus: false });
     clearNewTagState();
     announceCreatedTag(outcome);
@@ -38909,7 +39037,7 @@ async function loadWorkspace({ restoreHistory = false } = {}) {
       restoreGalleryNavigationLevel,
       restoreEntry?.context || {}
     );
-    reconcileNewTagFromWorkspaceHistory(
+    await reconcileNewTagFromWorkspaceHistory(
       "gallery",
       restoreGalleryNavigationLevel,
       restoreEntry?.context || {}
@@ -39501,6 +39629,10 @@ function resetWorkspaceSessionState() {
   state.newTagBaseLevel = "workspace";
   state.newTagHistoryRestoreFocus = true;
   state.newTagOpening = false;
+  state.newTagRestorable = false;
+  state.newTagFocusID = "newTagName";
+  state.newTagReturnControlID = null;
+  state.newTagReloadNotice = false;
   state.tagManagerReturnFocus = null;
   state.tagManagerBaseLevel = "workspace";
   state.tagManagerHistoryRestoreFocus = true;
@@ -45479,6 +45611,12 @@ function bindEvents() {
   elements.newTagDialog.addEventListener("cancel", (event) => {
     event.preventDefault();
     void returnFromNewTag();
+  });
+  elements.newTagDialog.addEventListener("focusin", () => {
+    if (state.workspaceNavigation.applyingHistory
+      || state.workspaceNavigation.pendingRestoreEntry) return;
+    captureNewTagHistoryFocus();
+    scheduleWorkspaceHistoryCheckpoint();
   });
   elements.batchBar.addEventListener("click", (event) => {
     const button = event.target.closest(".batch-action");

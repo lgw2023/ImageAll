@@ -4084,6 +4084,17 @@ html.split-resizing * {
   box-shadow: 0 0 0 3px var(--selection);
 }
 
+.sheet-dialog-restore-note {
+  margin: -2px 0 0;
+  padding: 9px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--separator));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 7%, var(--control));
+  color: var(--secondary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .button-danger {
   color: var(--red);
 }

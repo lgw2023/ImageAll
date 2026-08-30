@@ -63,6 +63,7 @@ def main():
     console_errors = []
     unsupported_requests = []
     unexpected_tag_decisions = []
+    create_tag_requests = []
     test_phase = ["setup"]
 
     def source_names(page):
@@ -125,6 +126,11 @@ def main():
                     "payload": request.post_data_json,
                 }
             ) if request.url.endswith("/v1/tag-decisions/batch") else None,
+        )
+        page.on(
+            "request",
+            lambda request: create_tag_requests.append(request.post_data)
+            if request.url.endswith("/v1/tags/create-and-apply") else None,
         )
         page.route("**/favicon.ico", lambda route: route.fulfill(status=204, body=""))
         page.route(
@@ -2177,12 +2183,90 @@ def main():
         page.evaluate("() => history.forward()")
         page.locator("#newTagDialog[open]").wait_for()
         assert page.locator("#newTagName").input_value() == "浏览器历史草稿"
+
+        private_new_tag_draft = "私密人物 /Users/example/Photos"
+        page.locator("#newTagName").fill(private_new_tag_draft)
+        page.locator("#cancelNewTagFooterButton").focus()
+        page.wait_for_timeout(150)
+        pre_reload_new_tag_context = page.evaluate(
+            "() => history.state?.imageAllWorkspace?.context"
+        )
+        assert pre_reload_new_tag_context["newTagFocusID"] == "cancelNewTagFooterButton", (
+            pre_reload_new_tag_context
+        )
+        assert pre_reload_new_tag_context["newTagReturnControlID"] == "sidebarNewTagButton"
+        assert private_new_tag_draft not in json.dumps(
+            pre_reload_new_tag_context,
+            ensure_ascii=False,
+        )
+
+        assets_before_new_tag_reload = len(asset_queries)
+        page.reload(wait_until="networkidle")
+        page.locator("#newTagDialog[open]").wait_for()
+        page.wait_for_function("() => document.activeElement?.id === 'newTagName'")
+        assert page.locator("#newTagName").input_value() == ""
+        assert page.locator("#newTagRestoreNotice").is_visible()
+        assert "已恢复所选项目" in page.locator("#newTagRestoreNotice").inner_text()
+        assert "1 张照片" in page.locator("#newTagTargetSummary").inner_text()
+        assert len(asset_queries) == assets_before_new_tag_reload + 1
+        assert create_tag_requests == []
+        restored_new_tag_context = page.evaluate(
+            "() => history.state?.imageAllWorkspace?.context"
+        )
+        assert restored_new_tag_context["newTagFocusID"] == "newTagName"
+        assert restored_new_tag_context["newTagReturnControlID"] == "sidebarNewTagButton"
+        restored_new_tag_history = json.dumps(restored_new_tag_context, ensure_ascii=False)
+        assert private_new_tag_draft not in restored_new_tag_history
+        assert "newTagOperationID" not in restored_new_tag_history
+        assert "newTagReloadNotice" not in restored_new_tag_history
+        page.screenshot(path="/tmp/imageall-new-tag-history-restored.png", full_page=True)
+
+        restored_new_tag_asset_query_count = len(asset_queries)
+        page.evaluate("() => history.back()")
+        page.locator("#newTagDialog").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'sidebarNewTagButton'"
+        )
+        page.evaluate("() => history.forward()")
+        page.locator("#newTagDialog[open]").wait_for()
+        assert page.locator("#newTagName").input_value() == ""
+        assert page.locator("#newTagRestoreNotice").is_visible()
+        assert len(asset_queries) == restored_new_tag_asset_query_count
+
+        page.evaluate(
+            """
+            () => {
+              const workspace = structuredClone(history.state.imageAllWorkspace);
+              workspace.context.newTagFocusID = "accountPassword";
+              workspace.context.newTagReturnControlID = "newTagError";
+              history.replaceState({
+                ...history.state,
+                imageAllWorkspace: workspace,
+              }, "", location.href);
+            }
+            """
+        )
+        assets_before_invalid_new_tag_reload = len(asset_queries)
+        page.reload(wait_until="networkidle")
+        page.locator("#newTagDialog[open]").wait_for()
+        page.wait_for_function("() => document.activeElement?.id === 'newTagName'")
+        assert len(asset_queries) == assets_before_invalid_new_tag_reload + 1
+        normalized_new_tag_context = page.evaluate(
+            "() => history.state?.imageAllWorkspace?.context"
+        )
+        assert normalized_new_tag_context["newTagFocusID"] == "newTagName"
+        assert normalized_new_tag_context["newTagReturnControlID"] is None
+        normalized_new_tag_history = json.dumps(normalized_new_tag_context)
+        assert "accountPassword" not in normalized_new_tag_history
+        assert "newTagError" not in normalized_new_tag_history
+        assert create_tag_requests == []
+
         page.locator("#cancelNewTagFooterButton").click()
         page.locator("#newTagDialog").wait_for(state="hidden")
         page.wait_for_function(
             "() => document.activeElement?.id === 'sidebarNewTagButton'"
         )
-        assert len(asset_queries) == new_tag_asset_query_count
+        assert len(asset_queries) == new_tag_asset_query_count + 2
 
         dog_chip.click(button="right")
         tag_menu = page.locator("#tagContextMenu:not(.hidden)")

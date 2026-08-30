@@ -2451,6 +2451,7 @@ final class RemoteHTTPServerTests: XCTestCase {
             "newTagDialog",
             "newTagForm",
             "newTagName",
+            "newTagRestoreNotice",
             "batchNewTagButton",
             "personalModelToolbarActions",
             "toolbarRebuildPersonalModelButton",
@@ -3384,6 +3385,15 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("未提交的标签或分组名称不会保存到浏览器历史。"))
         XCTAssertTrue(stylesheet.contains(".tag-manager-notice"))
         XCTAssertTrue(script.contains("presentNewTagDialog({ returnFocus: elements.tagManagerButton })"))
+        XCTAssertTrue(script.contains("const NEW_TAG_HISTORY_CONTROL_IDS"))
+        XCTAssertTrue(script.contains("const NEW_TAG_HISTORY_RETURN_IDS"))
+        XCTAssertTrue(script.contains("function currentNewTagHistoryContext()"))
+        XCTAssertTrue(script.contains("function applyNewTagHistoryContext(context = {})"))
+        XCTAssertTrue(script.contains("async function restoreNewTagLayoutFromHistory()"))
+        XCTAssertTrue(script.contains("...currentNewTagHistoryContext()"))
+        XCTAssertTrue(script.contains("state.newTagRestorable = true"))
+        XCTAssertTrue(html.contains("为保护标签隐私"))
+        XCTAssertTrue(stylesheet.contains(".sheet-dialog-restore-note"))
         XCTAssertTrue(script.contains("submitSourceManagementAction(\"prewarmAllThumbnails\")"))
         XCTAssertTrue(script.contains("submitSourceManagementAction(\"prewarmAllOriginalAspect\")"))
         XCTAssertTrue(script.contains("submitSourceManagementAction(\"reauthorizeAll\")"))
