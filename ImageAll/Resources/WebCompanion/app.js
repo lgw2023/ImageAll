@@ -3472,6 +3472,7 @@ function currentWorkspaceHistoryContext(route = visibleWorkspaceRoute()) {
       reviewMode: state.review.mode,
       reviewTagID: elements.reviewTagSelect.value || null,
       reviewMediaKind: state.mediaKind,
+      reviewSourceIDs: resolvedReviewSourceFilter(),
       reviewAssetID: state.review.items[state.review.selectedIndex]?.assetID || null,
       reviewItemKey: reviewItemKey(state.review.items[state.review.selectedIndex]),
       reviewLoadedCount: Math.min(GALLERY_HISTORY_LOADED_LIMIT, state.review.items.length),
@@ -3806,11 +3807,15 @@ async function applyWorkspaceHistoryEntry(entry) {
   const activeEntry = entry?.workspaceGeneration === state.workspaceGeneration ? entry : null;
   const target = activeEntry?.route || "gallery";
   const context = activeEntry?.context || {};
+  let checkpointReviewSourceScopeAfterApply = false;
   state.workspaceNavigation.applyingHistory = true;
   try {
     const current = visibleWorkspaceRoute();
     if (target === current) {
       const navigationLevel = activeEntry?.navigationLevel || "workspace";
+      const closingReviewSourceMenu = target === "review"
+        && activeActionMenuDescriptor()?.kind === "reviewSources"
+        && navigationLevel !== "actionMenu";
       const baseLevel = workspaceNavigationBaseLevel(navigationLevel, context);
       const inspectorLevel = galleryInspectorHistoryLevel(navigationLevel, context);
       reconcileGalleryInspectorFromWorkspaceHistory(
@@ -3828,6 +3833,7 @@ async function applyWorkspaceHistoryEntry(entry) {
       reconcileFilterPopoverFromWorkspaceHistory(target, navigationLevel, context);
       reconcileLayoutMenuFromWorkspaceHistory(target, navigationLevel, context);
       reconcileActionMenuFromWorkspaceHistory(target, navigationLevel, context);
+      checkpointReviewSourceScopeAfterApply = closingReviewSourceMenu;
       reconcileContextMenuFromWorkspaceHistory(target, navigationLevel, context);
       await reconcileCommandPaletteFromWorkspaceHistory(
         target,
@@ -3953,6 +3959,7 @@ async function applyWorkspaceHistoryEntry(entry) {
         && context.reviewMediaKind !== state.mediaKind) {
         await switchMediaKind(context.reviewMediaKind);
       }
+      applyReviewSourceFilterHistoryContext(context);
       await openReviewWorkspace({
         returnToTrainingRunID: context.returnToTrainingRunID || null,
         initialMode: context.reviewMode || "overview",
@@ -4186,6 +4193,7 @@ async function applyWorkspaceHistoryEntry(entry) {
     }
   } finally {
     state.workspaceNavigation.applyingHistory = false;
+    if (checkpointReviewSourceScopeAfterApply) checkpointActiveWorkspaceHistory();
     const resolve = state.workspaceNavigation.pendingReturnResolve;
     state.workspaceNavigation.pendingReturnResolve = null;
     state.workspaceNavigation.pendingReturnPromise = null;
@@ -21841,6 +21849,22 @@ function sanitizeReviewSourceFilter() {
     : selected;
 }
 
+function applyReviewSourceFilterHistoryContext(context = {}) {
+  const rawSourceIDs = context.reviewSourceIDs;
+  if (!Array.isArray(rawSourceIDs)) {
+    state.review.sourceFilterIDs = null;
+    return;
+  }
+  const requested = new Set(
+    rawSourceIDs
+      .filter((sourceID) => typeof sourceID === "string")
+      .slice(0, 10_000)
+  );
+  const activeIDs = activeReviewSources().map((source) => source.id);
+  const selected = new Set(activeIDs.filter((sourceID) => requested.has(sourceID)));
+  state.review.sourceFilterIDs = selected.size === activeIDs.length ? null : selected;
+}
+
 function resolvedReviewSourceFilter() {
   sanitizeReviewSourceFilter();
   if (state.review.sourceFilterIDs === null) return null;
@@ -22043,6 +22067,7 @@ async function reloadReviewSourceScope(focusSelector) {
         ?.focus({ preventScroll: true });
     });
   }
+  recordWorkspaceHistory("review", currentWorkspaceHistoryContext("review"), "replace");
 }
 
 async function setReviewSourceIncluded(sourceID, included) {
@@ -22057,6 +22082,7 @@ async function setReviewSourceIncluded(sourceID, included) {
     if (!activeIDs.has(selectedID)) selected.delete(selectedID);
   }
   state.review.sourceFilterIDs = selected.size === activeIDs.size ? null : selected;
+  recordWorkspaceHistory("review", currentWorkspaceHistoryContext("review"), "replace");
   await reloadReviewSourceScope(
     `[data-review-source-id="${CSS.escape(sourceID)}"]`
   );
@@ -22064,6 +22090,7 @@ async function setReviewSourceIncluded(sourceID, included) {
 
 async function selectAllReviewSources() {
   state.review.sourceFilterIDs = null;
+  recordWorkspaceHistory("review", currentWorkspaceHistoryContext("review"), "replace");
   const firstSourceID = activeReviewSources()[0]?.id;
   await reloadReviewSourceScope(
     firstSourceID

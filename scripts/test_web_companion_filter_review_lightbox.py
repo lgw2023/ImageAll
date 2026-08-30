@@ -9,6 +9,8 @@ from playwright.sync_api import sync_playwright
 
 BASE_URL = "http://127.0.0.1:8800"
 SOURCE_ID = "aaaaaaaa-1111-2222-3333-aaaaaaaaaaaa"
+NEEDS_ACCESS_SOURCE_ID = "55555555-aaaa-bbbb-cccc-555555555555"
+ACTIVE_FOLDER_SOURCE_ID = "66666666-aaaa-bbbb-cccc-666666666666"
 CAT_TAG_ID = "bbbbbbbb-1111-2222-3333-bbbbbbbbbbbb"
 TRAVEL_TAG_ID = "cccccccc-1111-2222-3333-cccccccccccc"
 NEW_REVIEW_TAG_ID = "dddddddd-2222-3333-4444-dddddddddddd"
@@ -25,6 +27,9 @@ REVIEW_IDS = [
     "33333333-3333-3333-3333-333333333333",
     "44444444-4444-4444-4444-444444444444",
     "55555555-5555-5555-5555-555555555555",
+]
+REVIEW_HISTORY_IDS = [
+    f"30000000-0000-4000-8000-{index:012d}" for index in range(1, 22)
 ]
 VIDEO_ID = "66666666-6666-6666-6666-666666666666"
 VIDEO_PAGE_2_IDS = [
@@ -290,7 +295,7 @@ def main():
     catalog_job_fetches = [0]
     favorite_states = {
         asset_id: False
-        for asset_id in IMAGE_IDS + IMAGE_PAGE_2_IDS + REVIEW_IDS
+        for asset_id in IMAGE_IDS + IMAGE_PAGE_2_IDS + REVIEW_IDS + REVIEW_HISTORY_IDS
         + [VIDEO_ID] + VIDEO_PAGE_2_IDS
     }
     prewarm_poll_count = [0]
@@ -386,26 +391,27 @@ def main():
                 },
             ),
         )
-        sources = [{
-            "id": SOURCE_ID,
-            "kind": "photos",
-            "displayName": "Apple Photos",
-            "state": "active",
-        }]
-        source_management_sources = sources + [
+        sources = [
             {
-                "id": "55555555-aaaa-bbbb-cccc-555555555555",
+                "id": SOURCE_ID,
+                "kind": "photos",
+                "displayName": "Apple Photos",
+                "state": "active",
+            },
+            {
+                "id": NEEDS_ACCESS_SOURCE_ID,
                 "kind": "folder",
                 "displayName": "Needs Access",
                 "state": "authorizationRequired",
             },
             {
-                "id": "66666666-aaaa-bbbb-cccc-666666666666",
+                "id": ACTIVE_FOLDER_SOURCE_ID,
                 "kind": "folder",
                 "displayName": "Active Folder",
                 "state": "active",
             },
         ]
+        source_management_sources = sources
         tags = [
             {"id": CAT_TAG_ID, "displayName": "猫", "state": "active", "groupID": SUBJECT_GROUP_ID},
             {"id": TRAVEL_TAG_ID, "displayName": "旅行", "state": "active", "groupID": SCENE_GROUP_ID},
@@ -4094,6 +4100,200 @@ def main():
             "&& state.review.selectedAssetIDs.has(assetID)",
             arg=REVIEW_IDS[0],
         )
+
+        review_source_history_sanitization = page.evaluate(
+            """([photosID, activeFolderID, inactiveFolderID]) => {
+              const previous = state.review.sourceFilterIDs;
+              applyReviewSourceFilterHistoryContext({
+                reviewSourceIDs: [photosID, inactiveFolderID, 'missing-source'],
+              });
+              const validIntersection = [...state.review.sourceFilterIDs];
+              applyReviewSourceFilterHistoryContext({
+                reviewSourceIDs: [photosID, activeFolderID],
+              });
+              const allSourcesCanonical = state.review.sourceFilterIDs;
+              applyReviewSourceFilterHistoryContext({ reviewSourceIDs: 'invalid' });
+              const malformedCanonical = state.review.sourceFilterIDs;
+              state.review.sourceFilterIDs = previous;
+              return {
+                validIntersection,
+                allSourcesCanonical,
+                malformedCanonical,
+              };
+            }""",
+            [SOURCE_ID, ACTIVE_FOLDER_SOURCE_ID, NEEDS_ACCESS_SOURCE_ID],
+        )
+        assert review_source_history_sanitization == {
+            "validIntersection": [SOURCE_ID],
+            "allSourcesCanonical": None,
+            "malformedCanonical": None,
+        }
+
+        # Review source scope is part of the queue's identity. Persist the
+        # canonical UUID set before reloading so the Host query, loaded window,
+        # primary selection, and scroll position are restored in one scope.
+        review_source_filter_button = page.locator("#reviewSourceFilterButton")
+        review_source_filter_button.click()
+        review_source_filter = page.locator("#reviewSourceFilterPopover:not(.hidden)")
+        review_source_filter.wait_for()
+        assert review_source_filter.locator(
+            "[data-review-source-id]"
+        ).count() == 2
+        assert "显示全部 2 个来源" in review_source_filter_button.inner_text()
+        active_folder_review_source = review_source_filter.locator(
+            f'[data-review-source-id="{ACTIVE_FOLDER_SOURCE_ID}"]'
+        )
+        active_folder_review_source.click()
+        page.wait_for_function(
+            "sourceID => !state.review.loading && !state.review.overviewLoading "
+            "&& state.review.sourceFilterIDs instanceof Set "
+            "&& state.review.sourceFilterIDs.size === 1 "
+            "&& state.review.sourceFilterIDs.has(sourceID) "
+            "&& history.state?.imageAllWorkspace?.navigationLevel === 'actionMenu' "
+            "&& history.state?.imageAllWorkspace?.context?.reviewSourceIDs?.length === 1 "
+            "&& history.state.imageAllWorkspace.context.reviewSourceIDs[0] === sourceID",
+            arg=SOURCE_ID,
+        )
+        assert "仅显示：Apple Photos" in review_source_filter_button.inner_text()
+        assert review_queue_queries[-1].get("sourceIDs") == [SOURCE_ID]
+        assert active_folder_review_source.get_attribute("aria-checked") == "false"
+        page.keyboard.press("Escape")
+        review_source_filter.wait_for(state="hidden")
+        page.wait_for_function(
+            "sourceID => !state.workspaceNavigation.applyingHistory "
+            "&& !state.workspaceNavigation.pendingReturnPromise "
+            "&& history.state?.imageAllWorkspace?.navigationLevel === 'workspace' "
+            "&& history.state?.imageAllWorkspace?.context?.reviewSourceIDs?.length === 1 "
+            "&& history.state.imageAllWorkspace.context.reviewSourceIDs[0] === sourceID",
+            arg=SOURCE_ID,
+        )
+
+        review_items.extend([
+            {
+                **review_items[0],
+                "assetID": asset_id,
+                "fileName": f"HISTORY_{index:02d}.JPG",
+                "contentRevision": 100 + index,
+                "score": 0.70 - index * 0.005,
+            }
+            for index, asset_id in enumerate(REVIEW_HISTORY_IDS, start=1)
+        ])
+        page.evaluate(
+            """async () => {
+              await loadReviewQueue({ schedulePagination: false });
+              while (state.review.nextCursor) {
+                await loadReviewQueue({
+                  append: true,
+                  preserveUnchangedGrid: true,
+                  schedulePagination: false,
+                });
+              }
+            }"""
+        )
+        page.wait_for_function(
+            "count => !state.review.loading && state.review.items.length === count",
+            arg=len(REVIEW_IDS) + len(REVIEW_HISTORY_IDS),
+        )
+        page.locator('[data-review-index="1"] > .review-card-main').click()
+        page.wait_for_function(
+            "assetID => state.review.selectedAssetIDs.size === 1 "
+            "&& state.review.selectedAssetIDs.has(assetID)",
+            arg=REVIEW_IDS[1],
+        )
+        review_source_history_snapshot = page.evaluate(
+            """() => {
+              const pane = document.querySelector('#reviewQueuePane');
+              pane.scrollTop = Math.min(320, pane.scrollHeight - pane.clientHeight);
+              checkpointActiveWorkspaceHistory();
+              const context = history.state.imageAllWorkspace.context;
+              return {
+                filter: [...state.review.sourceFilterIDs],
+                historyFilter: context.reviewSourceIDs,
+                selectedAssetID: state.review.items[state.review.selectedIndex].assetID,
+                loadedCount: state.review.items.length,
+                scrollTop: pane.scrollTop,
+              };
+            }"""
+        )
+        assert review_source_history_snapshot["filter"] == [SOURCE_ID]
+        assert review_source_history_snapshot["historyFilter"] == [SOURCE_ID]
+        assert review_source_history_snapshot["selectedAssetID"] == REVIEW_IDS[1]
+        assert review_source_history_snapshot["scrollTop"] > 0
+
+        page.reload(wait_until="domcontentloaded")
+        page.locator("#reviewWorkspace:not(.hidden)").wait_for()
+        page.locator("#reviewQueueLayout:not(.hidden)").wait_for()
+        page.wait_for_function(
+            "([sourceID, assetID, loadedCount]) => "
+            "!state.workspaceNavigation.applyingHistory "
+            "&& !state.workspaceNavigation.pendingReturnPromise "
+            "&& !state.review.loading "
+            "&& state.review.loadedScopeKey === currentReviewScopeKey() "
+            "&& state.review.sourceFilterIDs instanceof Set "
+            "&& state.review.sourceFilterIDs.size === 1 "
+            "&& state.review.sourceFilterIDs.has(sourceID) "
+            "&& state.review.items.length === loadedCount "
+            "&& state.review.selectedAssetIDs.size === 1 "
+            "&& state.review.selectedAssetIDs.has(assetID)",
+            arg=[
+                SOURCE_ID,
+                REVIEW_IDS[1],
+                review_source_history_snapshot["loadedCount"],
+            ],
+        )
+        assert page.locator("#reviewSourceFilterSummary").inner_text() == (
+            "仅显示：Apple Photos"
+        )
+        assert page.locator("#reviewWorkspaceTitle").inner_text() == "审核“猫”建议"
+        assert page.locator("#reviewTagSelect").input_value() == CAT_TAG_ID
+        assert page.locator("#reviewQueuePane").evaluate(
+            "element => element.scrollTop"
+        ) == review_source_history_snapshot["scrollTop"]
+        assert review_queue_queries[-1].get("sourceIDs") == [SOURCE_ID]
+        restored_review_history = page.evaluate(
+            """() => ({
+              route: history.state?.imageAllWorkspace?.route,
+              navigationLevel: history.state?.imageAllWorkspace?.navigationLevel,
+              sourceIDs: history.state?.imageAllWorkspace?.context?.reviewSourceIDs,
+              serialized: JSON.stringify(history.state?.imageAllWorkspace),
+            })"""
+        )
+        assert restored_review_history["route"] == "review"
+        assert restored_review_history["navigationLevel"] == "workspace"
+        assert restored_review_history["sourceIDs"] == [SOURCE_ID]
+        assert "sourceFilterFocusSelector" not in restored_review_history["serialized"]
+        page.screenshot(
+            path="/tmp/imageall-review-source-history-restored.png",
+            full_page=True,
+        )
+
+        review_items[:] = review_items[:len(REVIEW_IDS)]
+        page.evaluate(
+            """async () => {
+              await loadReviewQueue({ schedulePagination: false });
+              while (state.review.nextCursor) {
+                await loadReviewQueue({
+                  append: true,
+                  preserveUnchangedGrid: true,
+                  schedulePagination: false,
+                });
+              }
+            }"""
+        )
+        page.wait_for_function(
+            "count => !state.review.loading && state.review.items.length === count",
+            arg=len(REVIEW_IDS),
+        )
+        review_source_filter_button.click()
+        review_source_filter.wait_for()
+        review_source_filter.locator("#selectAllReviewSourcesButton").click()
+        page.wait_for_function(
+            "() => !state.review.loading && !state.review.overviewLoading "
+            "&& state.review.sourceFilterIDs === null "
+            "&& history.state?.imageAllWorkspace?.context?.reviewSourceIDs === null"
+        )
+        page.keyboard.press("Escape")
+        review_source_filter.wait_for(state="hidden")
 
         page.set_viewport_size({"width": 390, "height": 844})
         assert first_review_favorite.is_visible()
