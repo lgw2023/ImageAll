@@ -2797,6 +2797,7 @@ final class RemoteHTTPServerTests: XCTestCase {
             "worldMapPhotoStrip",
             "openWorldMapLocationBackfillButton",
             "worldMapLocationBackfillDialog",
+            "worldMapLocationBackfillBody",
             "worldMapLocationBackfillSources",
             "openWorldMapPlaceTagsButton",
             "worldMapPlaceTagDialog",
@@ -3218,6 +3219,17 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function reconcileWorldMapPlaceCards("))
         XCTAssertTrue(script.contains("function syncWorldMapPlaceCandidateRow("))
         XCTAssertFalse(script.contains("clearElement(elements.worldMapPlaceTagItems)"))
+        XCTAssertTrue(script.contains("function currentWorldMapLocationBackfillHistoryContext("))
+        XCTAssertTrue(script.contains("function applyWorldMapLocationBackfillHistoryContext("))
+        XCTAssertTrue(script.contains("async function restoreWorldMapLocationBackfillLayoutFromHistory("))
+        XCTAssertTrue(script.contains("function currentWorldMapPlaceTagsHistoryContext("))
+        XCTAssertTrue(script.contains("function applyWorldMapPlaceTagsHistoryContext("))
+        XCTAssertTrue(script.contains("async function restoreWorldMapPlaceTagsLayoutFromHistory("))
+        XCTAssertTrue(script.contains("...currentWorldMapLocationBackfillHistoryContext()"))
+        XCTAssertTrue(script.contains("...currentWorldMapPlaceTagsHistoryContext()"))
+        XCTAssertTrue(script.contains("await loadWorldMapLocationBackfill()"))
+        XCTAssertTrue(script.contains("await loadWorldMapPlaceTags()"))
+        XCTAssertTrue(html.contains("未提交的地点描述也不会写入浏览器历史"))
         XCTAssertTrue(script.contains("function syncFilterChip("))
         XCTAssertFalse(script.contains("clearElement(elements.filterTagChips)"))
         XCTAssertTrue(script.contains("!eventPath.includes(elements.filterPopover)"))

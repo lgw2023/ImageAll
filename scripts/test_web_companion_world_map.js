@@ -841,8 +841,10 @@ let browser;
   const locationHistoryPayload = await page.evaluate(
     () => JSON.stringify(history.state?.imageAllWorkspace || null)
   );
-  assert.doesNotMatch(locationHistoryPayload, /Synthetic Folder|Apple Photos|cccccccc|dddddddd/,
-    "location history must not contain source names or IDs");
+  assert.doesNotMatch(locationHistoryPayload, /Synthetic Folder|Apple Photos/,
+    "location history must not contain source names");
+  assert.match(locationHistoryPayload, new RegExp(folderSourceID),
+    "location history should retain only the focused stable source ID");
   assert.match(
     await page.locator(`.world-map-location-source-card[data-source-id="${folderSourceID}"]`).textContent(),
     /40 \/ 120.*已检查.*27.*已定位.*13.*无坐标/s
@@ -905,8 +907,10 @@ let browser;
   const placeHistoryPayload = await page.evaluate(
     () => JSON.stringify(history.state?.imageAllWorkspace || null)
   );
-  assert.doesNotMatch(placeHistoryPayload, /Paris France draft|巴黎|abababab/,
-    "place history must not contain tag names, queries, or IDs");
+  assert.doesNotMatch(placeHistoryPayload, /Paris France draft|巴黎/,
+    "place history must not contain tag names or query drafts");
+  assert.match(placeHistoryPayload, new RegExp(placeTagID),
+    "place history should retain the focused stable tag ID");
   await page.evaluate(() => history.back());
   await page.locator("#worldMapPlaceTagDialog").waitFor({ state: "hidden" });
   await page.waitForFunction(
@@ -1105,6 +1109,17 @@ let browser;
 
   await page.locator("#openWorldMapPlaceTagsButton").click();
   await page.locator("#worldMapPlaceTagDialog[open]").waitFor();
+  await placeCard.scrollIntoViewIfNeeded();
+  await placeInput.fill("private refresh-only place draft");
+  await placeInput.focus();
+  await page.waitForFunction(
+    (tagID) => history.state?.imageAllWorkspace?.context?.worldMapPlaceTagsFocus?.tagID
+      === tagID,
+    placeTagID
+  );
+  const placeScrollBeforeReload = await placeBody.evaluate((element) => element.scrollTop);
+  assert.ok(placeScrollBeforeReload > 0,
+    "place refresh fixture should retain a scrolled long-list position");
   const restoredViewport = {
     west: 119.5, south: 30.4, east: 122.2, north: 32.1,
     centerLongitude: 120.85, centerLatitude: 31.25,
@@ -1117,13 +1132,59 @@ let browser;
   await page.waitForFunction(
     () => history.state?.imageAllWorkspace?.context?.worldMapViewport?.zoom === 8.4
   );
+  await page.evaluate((tagID) => {
+    const entry = history.state.imageAllWorkspace;
+    history.replaceState({
+      ...history.state,
+      imageAllWorkspace: {
+        ...entry,
+        context: {
+          ...entry.context,
+          worldMapPlaceTagsFocus: {
+            kind: "candidate",
+            tagID,
+            placeID: "missing-place-candidate",
+            viewportOffset: 120,
+          },
+        },
+      },
+    }, "", location.href);
+  }, placeTagID);
+  const snapshotRequestsBeforePlaceReload = snapshotRequestCount;
+  const placeTagReadsBeforeReload = placeTagSnapshotRequestCount;
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.locator("#worldMapWorkspace:not(.hidden)").waitFor();
-  await page.waitForFunction(
-    () => history.state?.imageAllWorkspace?.navigationLevel === "workspace"
+  await page.locator("#worldMapPlaceTagDialog[open]").waitFor();
+  await page.locator(`[data-place-tag-card="${placeTagID}"]`).waitFor();
+  assert.equal(
+    await page.evaluate(() => history.state?.imageAllWorkspace?.navigationLevel),
+    "worldMapPlaceTags"
   );
-  assert.equal(await page.locator("#worldMapPlaceTagDialog").getAttribute("open"), null,
-    "a stale Sheet history entry must degrade to the restored map workspace after reload");
+  assert.equal(placeTagSnapshotRequestCount, placeTagReadsBeforeReload + 1,
+    "place-tag refresh recovery must read one fresh Host snapshot");
+  assert.notEqual(await placeInput.inputValue(), "private refresh-only place draft",
+    "unsubmitted place text must not survive through browser history");
+  await page.waitForFunction(
+    (tagID) => document.activeElement?.dataset.placeTagQuery === tagID,
+    placeTagID
+  );
+  await page.waitForFunction(
+    () => history.state?.imageAllWorkspace?.context?.worldMapPlaceTagsFocus?.kind
+      === "query"
+  );
+  assert.ok(await placeBody.evaluate((element) => element.scrollTop) > 0,
+    "place-tag refresh recovery must restore the long-list position");
+  const restoredPlaceHistoryPayload = await page.evaluate(
+    () => JSON.stringify(history.state?.imageAllWorkspace || null)
+  );
+  assert.doesNotMatch(
+    restoredPlaceHistoryPayload,
+    /private refresh-only place draft|巴黎|Paris Texas USA/,
+    "place refresh history must exclude tag names and location query text"
+  );
+  assert.match(restoredPlaceHistoryPayload, new RegExp(placeTagID));
+  assert.doesNotMatch(restoredPlaceHistoryPayload, /missing-place-candidate/,
+    "a missing Host candidate must be removed from canonical history");
   await page.waitForFunction(
     () => document.querySelector("#worldMapViewportReadout")?.textContent
       === "ZOOM 8.4 · PITCH 36° · BEARING 17°"
@@ -1132,9 +1193,70 @@ let browser;
     JSON.parse(await page.frameLocator("#worldMapFrame").locator("body").getAttribute("data-viewport")),
     restoredViewport
   );
+  await page.screenshot({ path: "/tmp/imageall-world-map-place-tags-history-restored.png" });
+
+  await page.locator("#closeWorldMapPlaceTagButton").click();
+  await page.locator("#worldMapPlaceTagDialog").waitFor({ state: "hidden" });
+  await page.locator("#openWorldMapLocationBackfillButton").click();
+  const reloadLocationSourceID = locationBackfillPreviewSourceIDs[6];
+  const reloadLocationCard = page.locator(
+    `.world-map-location-source-card[data-source-id="${reloadLocationSourceID}"]`
+  );
+  await reloadLocationCard.waitFor();
+  const reloadLocationButton = reloadLocationCard.locator(
+    '[data-location-backfill-action="start"]'
+  );
+  await reloadLocationCard.scrollIntoViewIfNeeded();
+  await page.locator("#worldMapLocationBackfillBody").evaluate((element) => {
+    element.scrollTop += 28;
+  });
+  await reloadLocationButton.focus();
+  await page.waitForFunction(
+    (sourceID) => history.state?.imageAllWorkspace?.context
+      ?.worldMapLocationBackfillFocus?.sourceID === sourceID,
+    reloadLocationSourceID
+  );
+  assert.ok(
+    await page.locator("#worldMapLocationBackfillBody").evaluate(
+      (element) => element.scrollTop
+    ) > 0,
+    "location refresh fixture should retain a scrolled long-list position"
+  );
+  const locationReadsBeforeReload = locationBackfillRequestCount;
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.locator("#worldMapWorkspace:not(.hidden)").waitFor();
+  await page.locator("#worldMapLocationBackfillDialog[open]").waitFor();
+  await reloadLocationCard.waitFor();
+  assert.equal(
+    await page.evaluate(() => history.state?.imageAllWorkspace?.navigationLevel),
+    "worldMapLocationBackfill"
+  );
+  assert.equal(locationBackfillRequestCount, locationReadsBeforeReload + 1,
+    "location refresh recovery must read one fresh Host snapshot");
+  await page.waitForFunction(
+    (sourceID) => document.activeElement?.closest("[data-source-id]")?.dataset.sourceId
+      === sourceID,
+    reloadLocationSourceID
+  );
+  assert.ok(
+    await page.locator("#worldMapLocationBackfillBody").evaluate(
+      (element) => element.scrollTop
+    ) > 0,
+    "location refresh recovery must restore the long-list position"
+  );
+  const restoredLocationHistoryPayload = await page.evaluate(
+    () => JSON.stringify(history.state?.imageAllWorkspace || null)
+  );
+  assert.doesNotMatch(restoredLocationHistoryPayload, /Synthetic Folder|Apple Photos/);
+  assert.match(restoredLocationHistoryPayload, new RegExp(reloadLocationSourceID));
+  await page.screenshot({ path: "/tmp/imageall-world-map-location-history-restored.png" });
+  await page.keyboard.press("Escape");
+  await page.locator("#worldMapLocationBackfillDialog").waitFor({ state: "hidden" });
 
   await page.waitForTimeout(700);
-  assert.ok(snapshotRequestCount >= 7 && snapshotRequestCount <= 9,
+  assert.ok(
+    snapshotRequestCount >= snapshotRequestsBeforePlaceReload + 2
+      && snapshotRequestCount <= snapshotRequestsBeforePlaceReload + 4,
     `unexpected repeated world-map refresh count: ${snapshotRequestCount}`);
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(consoleErrors, []);

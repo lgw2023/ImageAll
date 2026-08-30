@@ -857,6 +857,7 @@ const elements = {
   worldMapPlaceTagItems: $("#worldMapPlaceTagItems"),
   openWorldMapLocationBackfillButton: $("#openWorldMapLocationBackfillButton"),
   worldMapLocationBackfillDialog: $("#worldMapLocationBackfillDialog"),
+  worldMapLocationBackfillBody: $("#worldMapLocationBackfillBody"),
   closeWorldMapLocationBackfillButton: $("#closeWorldMapLocationBackfillButton"),
   worldMapLocationBackfillError: $("#worldMapLocationBackfillError"),
   worldMapLocationBackfillLoading: $("#worldMapLocationBackfillLoading"),
@@ -1537,6 +1538,7 @@ const state = {
       baseLevel: "workspace",
       historyRestoreFocus: true,
       focusTarget: null,
+      scrollTop: 0,
       restorable: false,
       opening: false,
     },
@@ -2257,6 +2259,7 @@ function closeOverlays() {
   state.worldMap.locationBackfill.baseLevel = "workspace";
   state.worldMap.locationBackfill.historyRestoreFocus = true;
   state.worldMap.locationBackfill.focusTarget = null;
+  state.worldMap.locationBackfill.scrollTop = 0;
   state.worldMap.locationBackfill.restorable = false;
   state.worldMap.locationBackfill.opening = false;
   state.worldMap.placeTags.returnFocus = null;
@@ -3188,11 +3191,13 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
     ? {
         ...(context || {}),
         worldMapLocationBackfillBaseLevel: state.worldMap.locationBackfill.baseLevel,
+        ...currentWorldMapLocationBackfillHistoryContext(),
       }
     : hasWorldMapPlaceTags
     ? {
         ...(context || {}),
         worldMapPlaceTagsBaseLevel: state.worldMap.placeTags.baseLevel,
+        ...currentWorldMapPlaceTagsHistoryContext(),
       }
     : hasSlimmingIdenticalCleanup
     ? {
@@ -3866,12 +3871,16 @@ async function applyWorkspaceHistoryEntry(entry, { restoringReload = false } = {
         navigationLevel,
         context
       );
-      reconcileWorldMapLocationBackfillFromWorkspaceHistory(
+      checkpointWorkspaceHistoryAfterApply = await reconcileWorldMapLocationBackfillFromWorkspaceHistory(
         target,
         navigationLevel,
         context
-      );
-      reconcileWorldMapPlaceTagsFromWorkspaceHistory(target, navigationLevel, context);
+      ) || checkpointWorkspaceHistoryAfterApply;
+      checkpointWorkspaceHistoryAfterApply = await reconcileWorldMapPlaceTagsFromWorkspaceHistory(
+        target,
+        navigationLevel,
+        context
+      ) || checkpointWorkspaceHistoryAfterApply;
       reconcileSlimmingIdenticalCleanupFromWorkspaceHistory(
         target,
         navigationLevel,
@@ -3943,12 +3952,16 @@ async function applyWorkspaceHistoryEntry(entry, { restoringReload = false } = {
         navigationLevel,
         context
       );
-      reconcileWorldMapLocationBackfillFromWorkspaceHistory(
+      checkpointWorkspaceHistoryAfterApply = await reconcileWorldMapLocationBackfillFromWorkspaceHistory(
         "gallery",
         navigationLevel,
         context
-      );
-      reconcileWorldMapPlaceTagsFromWorkspaceHistory("gallery", navigationLevel, context);
+      ) || checkpointWorkspaceHistoryAfterApply;
+      checkpointWorkspaceHistoryAfterApply = await reconcileWorldMapPlaceTagsFromWorkspaceHistory(
+        "gallery",
+        navigationLevel,
+        context
+      ) || checkpointWorkspaceHistoryAfterApply;
       reconcileSlimmingIdenticalCleanupFromWorkspaceHistory(
         "gallery",
         navigationLevel,
@@ -4153,16 +4166,16 @@ async function applyWorkspaceHistoryEntry(entry, { restoringReload = false } = {
       activeEntry?.navigationLevel || "workspace",
       context
     );
-    reconcileWorldMapLocationBackfillFromWorkspaceHistory(
+    checkpointWorkspaceHistoryAfterApply = await reconcileWorldMapLocationBackfillFromWorkspaceHistory(
       target,
       activeEntry?.navigationLevel || "workspace",
       context
-    );
-    reconcileWorldMapPlaceTagsFromWorkspaceHistory(
+    ) || checkpointWorkspaceHistoryAfterApply;
+    checkpointWorkspaceHistoryAfterApply = await reconcileWorldMapPlaceTagsFromWorkspaceHistory(
       target,
       activeEntry?.navigationLevel || "workspace",
       context
-    );
+    ) || checkpointWorkspaceHistoryAfterApply;
     reconcileSlimmingIdenticalCleanupFromWorkspaceHistory(
       target,
       activeEntry?.navigationLevel || "workspace",
@@ -6200,6 +6213,62 @@ async function submitWorldMapLocationBackfill(sourceID, action) {
   }
 }
 
+function normalizedWorldMapLocationBackfillHistoryFocus(raw) {
+  if (raw?.kind === "action"
+    && ["start", "cancel"].includes(raw.action)) {
+    const sourceID = galleryHistoryIdentifier(raw.sourceID);
+    if (sourceID) return { kind: "action", sourceID, action: raw.action };
+  }
+  return { kind: "close" };
+}
+
+function currentWorldMapLocationBackfillHistoryContext() {
+  const backfill = state.worldMap.locationBackfill;
+  const focus = elements.worldMapLocationBackfillDialog.open
+    ? (captureWorldMapLocationBackfillFocus() || backfill.focusTarget)
+    : backfill.focusTarget;
+  return {
+    worldMapLocationBackfillScrollTop: workspaceHistoryScrollTop(
+      elements.worldMapLocationBackfillDialog.open
+        ? elements.worldMapLocationBackfillBody.scrollTop
+        : backfill.scrollTop
+    ),
+    worldMapLocationBackfillFocus:
+      normalizedWorldMapLocationBackfillHistoryFocus(focus),
+  };
+}
+
+function applyWorldMapLocationBackfillHistoryContext(context = {}) {
+  const backfill = state.worldMap.locationBackfill;
+  backfill.scrollTop = workspaceHistoryScrollTop(
+    context.worldMapLocationBackfillScrollTop
+  );
+  backfill.focusTarget = normalizedWorldMapLocationBackfillHistoryFocus(
+    context.worldMapLocationBackfillFocus
+  );
+}
+
+function reconcileWorldMapLocationBackfillHistoryFocus() {
+  const backfill = state.worldMap.locationBackfill;
+  const focus = normalizedWorldMapLocationBackfillHistoryFocus(backfill.focusTarget);
+  if (focus.kind !== "action") {
+    backfill.focusTarget = focus;
+    return;
+  }
+  const snapshot = backfill.snapshots.find((item) => item.sourceID === focus.sourceID);
+  const available = focus.action === "start" ? snapshot?.canStart : snapshot?.canCancel;
+  backfill.focusTarget = available ? focus : { kind: "close" };
+}
+
+async function restoreWorldMapLocationBackfillLayoutFromHistory() {
+  const backfill = state.worldMap.locationBackfill;
+  if (!elements.worldMapLocationBackfillDialog.open) return;
+  reconcileWorldMapLocationBackfillHistoryFocus();
+  await waitForWorkspaceLayout();
+  elements.worldMapLocationBackfillBody.scrollTop = backfill.scrollTop;
+  restoreWorldMapLocationBackfillFocus(backfill.focusTarget);
+}
+
 function worldMapLocationBackfillBaseLevelFromHistory(context = {}) {
   return ["sidebar", "inspector", "lightbox"].includes(
     context.worldMapLocationBackfillBaseLevel
@@ -6264,6 +6333,7 @@ function clearWorldMapLocationBackfillDialogState({ cancelRequest = true } = {})
   backfill.baseLevel = "workspace";
   backfill.historyRestoreFocus = true;
   backfill.focusTarget = null;
+  backfill.scrollTop = 0;
   backfill.restorable = false;
   backfill.opening = false;
 }
@@ -6291,6 +6361,7 @@ function presentWorldMapLocationBackfill({
   }
   backfill.restorable = true;
   renderWorldMapLocationBackfill();
+  elements.worldMapLocationBackfillBody.scrollTop = backfill.scrollTop;
   if (focus) {
     requestAnimationFrame(() => restoreWorldMapLocationBackfillFocus(backfill.focusTarget));
   }
@@ -6319,6 +6390,7 @@ function closeWorldMapLocationBackfill({
   if (!elements.worldMapLocationBackfillDialog.open) return;
   const backfill = state.worldMap.locationBackfill;
   backfill.focusTarget = captureWorldMapLocationBackfillFocus() || backfill.focusTarget;
+  backfill.scrollTop = elements.worldMapLocationBackfillBody.scrollTop;
   clearTimeout(backfill.pollTimer);
   backfill.pollTimer = null;
   backfill.requestGeneration += 1;
@@ -6363,7 +6435,7 @@ function returnFromWorldMapLocationBackfill({ restoreFocus = true } = {}) {
   return Promise.resolve();
 }
 
-function reconcileWorldMapLocationBackfillFromWorkspaceHistory(
+async function reconcileWorldMapLocationBackfillFromWorkspaceHistory(
   route,
   navigationLevel,
   context = {}
@@ -6374,29 +6446,30 @@ function reconcileWorldMapLocationBackfillFromWorkspaceHistory(
   const backfill = state.worldMap.locationBackfill;
   if (shouldOpen && !backfill.restorable) {
     clearWorldMapLocationBackfillDialogState();
-    if (history.length > 1 && Object.prototype.hasOwnProperty.call(
-      context,
-      "worldMapLocationBackfillBaseLevel"
-    )) {
-      history.back();
-    } else {
-      replaceWorldMapLocationBackfillHistoryWithBase(
-        worldMapLocationBackfillBaseLevelFromHistory(context)
-      );
-    }
-    return;
+    applyWorldMapLocationBackfillHistoryContext(context);
+    backfill.returnFocus = elements.openWorldMapLocationBackfillButton;
+    presentWorldMapLocationBackfill({
+      historyMode: "none",
+      baseLevel: worldMapLocationBackfillBaseLevelFromHistory(context),
+      focus: false,
+    });
+    await loadWorldMapLocationBackfill();
+    await restoreWorldMapLocationBackfillLayoutFromHistory();
+    return true;
   }
   if (shouldOpen && !elements.worldMapLocationBackfillDialog.open) {
     backfill.returnFocus = elements.openWorldMapLocationBackfillButton;
     presentWorldMapLocationBackfill({
       historyMode: "none",
       baseLevel: worldMapLocationBackfillBaseLevelFromHistory(context),
+      focus: false,
     });
     if (backfill.loading) {
-      void loadWorldMapLocationBackfill();
+      await loadWorldMapLocationBackfill();
     } else {
       scheduleWorldMapLocationBackfillPoll();
     }
+    await restoreWorldMapLocationBackfillLayoutFromHistory();
   } else if (!shouldOpen && elements.worldMapLocationBackfillDialog.open) {
     const restoreFocus = backfill.historyRestoreFocus;
     closeWorldMapLocationBackfill({
@@ -6406,6 +6479,7 @@ function reconcileWorldMapLocationBackfillFromWorkspaceHistory(
     });
     backfill.historyRestoreFocus = true;
   }
+  return false;
 }
 
 function worldMapPlaceStatusPresentation(status) {
@@ -6552,6 +6626,86 @@ function captureWorldMapPlaceFocus() {
     tagID: search.dataset.tagId,
     viewportOffset,
   } : null;
+}
+
+function normalizedWorldMapPlaceHistoryFocus(raw) {
+  if (!["query", "search", "candidate"].includes(raw?.kind)) return null;
+  const tagID = galleryHistoryIdentifier(raw.tagID);
+  if (!tagID) return null;
+  const focus = {
+    kind: raw.kind,
+    tagID,
+    viewportOffset: workspaceHistoryFiniteNumber(raw.viewportOffset, 0, 100_000),
+  };
+  if (raw.kind === "candidate") {
+    const placeID = galleryHistoryIdentifier(raw.placeID);
+    return placeID ? { ...focus, placeID } : null;
+  }
+  if (raw.kind === "query") {
+    focus.selectionStart = Math.max(0, Math.min(10_000, Number(raw.selectionStart) || 0));
+    focus.selectionEnd = Math.max(
+      focus.selectionStart,
+      Math.min(10_000, Number(raw.selectionEnd) || focus.selectionStart)
+    );
+  }
+  return focus;
+}
+
+function currentWorldMapPlaceTagsHistoryContext() {
+  const placeTags = state.worldMap.placeTags;
+  const focus = elements.worldMapPlaceTagDialog.open
+    ? (captureWorldMapPlaceFocus() || placeTags.focusSnapshot)
+    : placeTags.focusSnapshot;
+  return {
+    worldMapPlaceTagsScrollTop: workspaceHistoryScrollTop(
+      elements.worldMapPlaceTagDialog.open
+        ? elements.worldMapPlaceTagBody.scrollTop
+        : placeTags.scrollTop
+    ),
+    worldMapPlaceTagsFocus: normalizedWorldMapPlaceHistoryFocus(focus),
+  };
+}
+
+function applyWorldMapPlaceTagsHistoryContext(context = {}) {
+  const placeTags = state.worldMap.placeTags;
+  placeTags.scrollTop = workspaceHistoryScrollTop(context.worldMapPlaceTagsScrollTop);
+  placeTags.focusSnapshot = normalizedWorldMapPlaceHistoryFocus(
+    context.worldMapPlaceTagsFocus
+  );
+}
+
+function reconcileWorldMapPlaceTagsHistoryFocus() {
+  const placeTags = state.worldMap.placeTags;
+  const focus = normalizedWorldMapPlaceHistoryFocus(placeTags.focusSnapshot);
+  if (!focus) {
+    placeTags.focusSnapshot = null;
+    return;
+  }
+  const item = placeTags.items.find((candidate) => candidate.tagID === focus.tagID);
+  if (!item) {
+    placeTags.focusSnapshot = null;
+    return;
+  }
+  if (focus.kind === "candidate"
+    && !(item.candidates || []).some((candidate) => candidate.placeID === focus.placeID)) {
+    placeTags.focusSnapshot = { ...focus, kind: "query" };
+    delete placeTags.focusSnapshot.placeID;
+    return;
+  }
+  placeTags.focusSnapshot = focus;
+}
+
+async function restoreWorldMapPlaceTagsLayoutFromHistory() {
+  const placeTags = state.worldMap.placeTags;
+  if (!elements.worldMapPlaceTagDialog.open) return;
+  reconcileWorldMapPlaceTagsHistoryFocus();
+  await waitForWorkspaceLayout();
+  elements.worldMapPlaceTagBody.scrollTop = placeTags.scrollTop;
+  if (placeTags.focusSnapshot) {
+    restoreWorldMapPlaceFocus(placeTags.focusSnapshot, placeTags.scrollTop);
+  } else {
+    restoreOverlayFocus(elements.closeWorldMapPlaceTagButton);
+  }
 }
 
 function restoreWorldMapPlaceFocus(snapshot, preservedScrollTop) {
@@ -7020,7 +7174,7 @@ function returnFromWorldMapPlaceTags({ restoreFocus = true } = {}) {
   return Promise.resolve();
 }
 
-function reconcileWorldMapPlaceTagsFromWorkspaceHistory(
+async function reconcileWorldMapPlaceTagsFromWorkspaceHistory(
   route,
   navigationLevel,
   context = {}
@@ -7031,25 +7185,28 @@ function reconcileWorldMapPlaceTagsFromWorkspaceHistory(
   const placeTags = state.worldMap.placeTags;
   if (shouldOpen && !placeTags.restorable) {
     clearWorldMapPlaceTagsDialogState();
-    if (history.length > 1 && Object.prototype.hasOwnProperty.call(
-      context,
-      "worldMapPlaceTagsBaseLevel"
-    )) {
-      history.back();
-    } else {
-      replaceWorldMapPlaceTagsHistoryWithBase(worldMapPlaceTagsBaseLevelFromHistory(context));
-    }
-    return;
+    applyWorldMapPlaceTagsHistoryContext(context);
+    placeTags.returnFocus = elements.openWorldMapPlaceTagsButton;
+    presentWorldMapPlaceTags({
+      historyMode: "none",
+      baseLevel: worldMapPlaceTagsBaseLevelFromHistory(context),
+      focus: false,
+    });
+    await loadWorldMapPlaceTags();
+    await restoreWorldMapPlaceTagsLayoutFromHistory();
+    return true;
   }
   if (shouldOpen && !elements.worldMapPlaceTagDialog.open) {
     placeTags.returnFocus = elements.openWorldMapPlaceTagsButton;
     presentWorldMapPlaceTags({
       historyMode: "none",
       baseLevel: worldMapPlaceTagsBaseLevelFromHistory(context),
+      focus: false,
     });
     if (placeTags.loading) {
-      void loadWorldMapPlaceTags();
+      await loadWorldMapPlaceTags();
     }
+    await restoreWorldMapPlaceTagsLayoutFromHistory();
   } else if (!shouldOpen && elements.worldMapPlaceTagDialog.open) {
     const restoreFocus = placeTags.historyRestoreFocus;
     closeWorldMapPlaceTags({
@@ -7059,6 +7216,7 @@ function reconcileWorldMapPlaceTagsFromWorkspaceHistory(
     });
     placeTags.historyRestoreFocus = true;
   }
+  return false;
 }
 
 function returnFromLightbox() {
@@ -37531,12 +37689,12 @@ async function loadWorkspace({ restoreHistory = false } = {}) {
       restoreGalleryNavigationLevel,
       restoreEntry?.context || {}
     );
-    reconcileWorldMapLocationBackfillFromWorkspaceHistory(
+    await reconcileWorldMapLocationBackfillFromWorkspaceHistory(
       "gallery",
       restoreGalleryNavigationLevel,
       restoreEntry?.context || {}
     );
-    reconcileWorldMapPlaceTagsFromWorkspaceHistory(
+    await reconcileWorldMapPlaceTagsFromWorkspaceHistory(
       "gallery",
       restoreGalleryNavigationLevel,
       restoreEntry?.context || {}
@@ -44109,6 +44267,16 @@ function bindEvents() {
     event.preventDefault();
     void returnFromWorldMapPlaceTags();
   });
+  elements.worldMapPlaceTagBody.addEventListener("scroll", () => {
+    if (!elements.worldMapPlaceTagDialog.open) return;
+    state.worldMap.placeTags.scrollTop = elements.worldMapPlaceTagBody.scrollTop;
+    checkpointActiveWorkspaceHistory();
+  }, { passive: true });
+  elements.worldMapPlaceTagItems.addEventListener("focusin", () => {
+    if (!elements.worldMapPlaceTagDialog.open) return;
+    state.worldMap.placeTags.focusSnapshot = captureWorldMapPlaceFocus();
+    checkpointActiveWorkspaceHistory();
+  });
   elements.worldMapPlaceTagItems.addEventListener("input", (event) => {
     const input = event.target.closest("[data-place-tag-query]");
     if (!input) return;
@@ -44177,6 +44345,18 @@ function bindEvents() {
   elements.worldMapLocationBackfillDialog.addEventListener("cancel", (event) => {
     event.preventDefault();
     void returnFromWorldMapLocationBackfill();
+  });
+  elements.worldMapLocationBackfillBody.addEventListener("scroll", () => {
+    if (!elements.worldMapLocationBackfillDialog.open) return;
+    state.worldMap.locationBackfill.scrollTop =
+      elements.worldMapLocationBackfillBody.scrollTop;
+    checkpointActiveWorkspaceHistory();
+  }, { passive: true });
+  elements.worldMapLocationBackfillSources.addEventListener("focusin", () => {
+    if (!elements.worldMapLocationBackfillDialog.open) return;
+    state.worldMap.locationBackfill.focusTarget =
+      captureWorldMapLocationBackfillFocus();
+    checkpointActiveWorkspaceHistory();
   });
   elements.worldMapLocationBackfillSources.addEventListener("click", (event) => {
     const button = event.target.closest("[data-location-backfill-action]");

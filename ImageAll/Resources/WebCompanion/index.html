@@ -1466,7 +1466,7 @@
       </div>
       <button id="closeWorldMapLocationBackfillButton" class="button button-primary" type="button">完成</button>
     </header>
-    <div class="world-map-location-body">
+    <div id="worldMapLocationBackfillBody" class="world-map-location-body">
       <aside class="world-map-location-safety">
         <span aria-hidden="true">☝</span>
         <p>开始后只读取所选来源的图片元数据：文件夹检查内嵌 GPS，Apple Photos 通过正常授权读取位置。不会移动、重命名、覆盖或写回原照片。</p>
@@ -1499,7 +1499,7 @@
     <div id="worldMapPlaceTagBody" class="world-map-place-body">
       <aside class="world-map-place-privacy">
         <span aria-hidden="true">☝</span>
-        <p>打开面板只读取本地缓存。点击搜索时只把输入的地点描述发送给 Apple 地图；若没有有效国际结果，再使用 OpenStreetMap。照片、路径和资产标识不会发送。</p>
+        <p>打开面板只读取本地缓存。点击搜索时只把输入的地点描述发送给 Apple 地图；若没有有效国际结果，再使用 OpenStreetMap。照片、路径和资产标识不会发送；未提交的地点描述也不会写入浏览器历史。</p>
       </aside>
       <div id="worldMapPlaceTagError" class="world-map-place-error hidden" role="alert"></div>
       <div id="worldMapPlaceTagLoading" class="world-map-place-loading" role="status">
