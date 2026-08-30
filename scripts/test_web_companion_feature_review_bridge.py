@@ -669,23 +669,110 @@ def main():
         assert page.locator("#personalLibrarySuggestionPath").inner_text() == "全库建议"
 
         standard_card.get_by_role("button", name="扫描全库").click()
-        standard_card.get_by_role("button", name="暂停").wait_for(state="visible")
+        standard_pause = standard_card.get_by_role("button", name="暂停")
+        standard_pause.wait_for(state="visible")
         assert library_launches[-1]["track"] == "standard"
         assert library_launches[-1]["sourceIDs"] == [SOURCE_IDS[0]]
         assert "已检 36 / 120" in page.locator("#standardLibrarySuggestionStatus").inner_text()
-        standard_card.get_by_role("button", name="暂停").click()
-        standard_card.get_by_role("button", name="继续").wait_for(state="visible")
-        standard_card.get_by_role("button", name="继续").click()
-        standard_card.get_by_role("button", name="取消").wait_for(state="visible")
-        standard_card.get_by_role("button", name="取消").click()
-        standard_card.get_by_role("button", name="扫描全库").wait_for(state="visible")
+        page.evaluate(
+            """() => {
+              const container = document.querySelector('#standardLibrarySuggestionActions');
+              const primary = container.querySelector(
+                '[data-library-suggestion-action-key$=":primary"]'
+              );
+              const cancel = container.querySelector(
+                '[data-library-suggestion-action-key$=":cancel"]'
+              );
+              window.__librarySuggestionActionFrame = {
+                container,
+                primary,
+                primaryLabel: primary.querySelector(
+                  '[data-library-suggestion-action-part="label"]'
+                ),
+                cancel,
+                cancelLabel: cancel.querySelector(
+                  '[data-library-suggestion-action-part="label"]'
+                ),
+                childMutations: 0,
+              };
+              new MutationObserver((records) => {
+                window.__librarySuggestionActionFrame.childMutations += records.filter(
+                  (record) => record.type === 'childList' && record.target === container
+                ).length;
+              }).observe(container, { childList: true, subtree: true });
+              renderReviewLocalModelStatus();
+            }"""
+        )
+        assert page.evaluate(
+            """() => {
+              const frame = window.__librarySuggestionActionFrame;
+              return frame.container === document.querySelector(
+                  '#standardLibrarySuggestionActions'
+                )
+                && frame.primary === frame.container.querySelector(
+                  '[data-library-suggestion-action-key$=":primary"]'
+                )
+                && frame.primaryLabel === frame.primary.querySelector(
+                  '[data-library-suggestion-action-part="label"]'
+                )
+                && frame.cancel === frame.container.querySelector(
+                  '[data-library-suggestion-action-key$=":cancel"]'
+                )
+                && frame.cancelLabel === frame.cancel.querySelector(
+                  '[data-library-suggestion-action-part="label"]'
+                )
+                && frame.childMutations === 0;
+            }"""
+        )
+        standard_pause.click()
+        standard_continue = standard_card.get_by_role("button", name="继续")
+        standard_continue.wait_for(state="visible")
+        page.wait_for_function(
+            """() => {
+              const frame = window.__librarySuggestionActionFrame;
+              return frame.primary === document.activeElement
+                && frame.primary === frame.container.querySelector(
+                  '[data-library-suggestion-action-key$=":primary"][data-action="resume"]'
+                )
+                && frame.cancel === frame.container.querySelector(
+                  '[data-library-suggestion-action-key$=":cancel"]'
+                )
+                && frame.primaryLabel === frame.primary.querySelector(
+                  '[data-library-suggestion-action-part="label"]'
+                )
+                && frame.cancelLabel === frame.cancel.querySelector(
+                  '[data-library-suggestion-action-part="label"]'
+                )
+                && frame.childMutations === 0;
+            }"""
+        )
+        standard_continue.click()
+        standard_card.get_by_role("button", name="暂停").wait_for(state="visible")
+        page.wait_for_function(
+            """() => {
+              const frame = window.__librarySuggestionActionFrame;
+              return frame.primary === document.activeElement
+                && frame.primary.dataset.action === 'pause'
+                && frame.childMutations === 0;
+            }"""
+        )
+        standard_cancel = standard_card.get_by_role("button", name="取消")
+        standard_cancel.click()
+        page.wait_for_function(
+            """() => document.activeElement?.id
+              === 'generateStandardLibrarySuggestionsButton'
+              && !document.activeElement.disabled"""
+        )
 
         page.locator("#generateLibrarySuggestionsButton").click()
         personal_card.get_by_role("button", name="取消").wait_for(state="visible")
         assert library_launches[-1]["track"] == "personal"
         assert library_launches[-1]["sourceIDs"] == [SOURCE_IDS[0]]
         personal_card.get_by_role("button", name="取消").click()
-        page.locator("#generateLibrarySuggestionsButton").wait_for(state="visible")
+        page.wait_for_function(
+            """() => document.activeElement?.id === 'generateLibrarySuggestionsButton'
+              && !document.activeElement.disabled"""
+        )
         assert actions[:4] == [
             "standard:pause",
             "standard:resume",

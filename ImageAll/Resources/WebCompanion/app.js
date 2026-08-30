@@ -20821,31 +20821,89 @@ function renderLibrarySuggestionProgress(progress, bar, job) {
   bar.style.width = `${percent}%`;
 }
 
-function renderLibrarySuggestionJobActions(container, job) {
-  for (const button of container.querySelectorAll(".review-local-model-job-action")) {
-    button.remove();
+function librarySuggestionJobActionKey(jobID, action) {
+  return `${jobID}:${["pause", "resume"].includes(action) ? "primary" : action}`;
+}
+
+function syncLibrarySuggestionJobAction(button, job, action) {
+  const text = jobActionText(action);
+  button.type = "button";
+  button.className = "button button-plain review-local-model-job-action job-action write-action";
+  button.dataset.librarySuggestionActionKey = librarySuggestionJobActionKey(job.jobID, action);
+  button.dataset.librarySuggestionJobId = job.jobID;
+  button.dataset.jobId = job.jobID;
+  button.dataset.action = action;
+  button.disabled = !state.online || state.jobMutatingIDs.has(job.jobID);
+  let label = button.querySelector(":scope > [data-library-suggestion-action-part=label]");
+  if (!label) {
+    label = document.createElement("span");
+    label.dataset.librarySuggestionActionPart = "label";
+    button.append(label);
   }
-  if (!job?.availableActions?.length) return;
-  for (const action of job.availableActions) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "button button-plain review-local-model-job-action job-action write-action";
-    button.dataset.librarySuggestionJobId = job.jobID;
-    button.dataset.jobId = job.jobID;
-    button.dataset.action = action;
-    button.disabled = !state.online || state.jobMutatingIDs.has(job.jobID);
-    button.textContent = jobActionText(action);
-    configurePersistentHelp(button, {
-      title: `${jobActionText(action)}建议任务`,
-      detail: {
-        pause: "暂停当前全库建议任务并保存已完成进度；已经写入审核队列的建议会保留。",
-        resume: "从保存的进度继续当前全库建议任务；范围仍使用任务创建时冻结的来源。",
-        cancel: "取消当前全库建议任务；已经写入审核队列的建议不会被删除。",
-      }[action] || "控制当前全库建议任务；任务状态以 Mac 为准。",
-      kind: "review",
-    });
-    container.append(button);
+  if (label.textContent !== text) label.textContent = text;
+  configurePersistentHelp(button, {
+    title: `${text}建议任务`,
+    detail: {
+      pause: "暂停当前全库建议任务并保存已完成进度；已经写入审核队列的建议会保留。",
+      resume: "从保存的进度继续当前全库建议任务；范围仍使用任务创建时冻结的来源。",
+      cancel: "取消当前全库建议任务；已经写入审核队列的建议不会被删除。",
+    }[action] || "控制当前全库建议任务；任务状态以 Mac 为准。",
+    kind: "review",
+  });
+}
+
+function renderLibrarySuggestionJobActions(container, job, fallbackFocus) {
+  const active = container.contains(document.activeElement) ? document.activeElement : null;
+  const activeKey = active?.dataset.librarySuggestionActionKey || null;
+  const existing = new Map(
+    [...container.querySelectorAll(":scope > [data-library-suggestion-action-key]")]
+      .map((button) => [button.dataset.librarySuggestionActionKey, button])
+  );
+  const staticControls = [...container.children].filter(
+    (control) => !control.matches("[data-library-suggestion-action-key]")
+  );
+  const wanted = [];
+  for (const action of job?.availableActions || []) {
+    const key = librarySuggestionJobActionKey(job.jobID, action);
+    const button = existing.get(key) || document.createElement("button");
+    syncLibrarySuggestionJobAction(button, job, action);
+    wanted.push(button);
   }
+  reconcileStableChildren(container, [...staticControls, ...wanted]);
+  if (!activeKey || active.isConnected) return;
+  requestAnimationFrame(() => {
+    if (document.activeElement !== document.body
+      && document.activeElement !== document.documentElement) return;
+    const sameAction = container.querySelector(
+      `[data-library-suggestion-action-key="${CSS.escape(activeKey)}"]:not(:disabled)`
+    );
+    const target = sameAction
+      || container.querySelector("[data-library-suggestion-action-key]:not(:disabled)")
+      || (!fallbackFocus?.disabled && fallbackFocus.offsetParent !== null ? fallbackFocus : null)
+      || elements.refreshReviewModelStatusButton;
+    target?.focus({ preventScroll: true });
+  });
+}
+
+function restoreLibrarySuggestionJobActionFocus(
+  container,
+  actionKey,
+  originalButton,
+  fallbackFocus
+) {
+  requestAnimationFrame(() => {
+    if (elements.reviewWorkspace.classList.contains("hidden")) return;
+    const active = document.activeElement;
+    if (active !== originalButton
+      && active !== document.body
+      && active !== document.documentElement) return;
+    const target = container.querySelector(
+      `[data-library-suggestion-action-key="${CSS.escape(actionKey)}"]:not(:disabled)`
+    ) || (!fallbackFocus?.disabled && fallbackFocus.offsetParent !== null
+      ? fallbackFocus
+      : null);
+    target?.focus({ preventScroll: true });
+  });
 }
 
 function renderLibrarySuggestionCards() {
@@ -20891,12 +20949,20 @@ function renderLibrarySuggestionCards() {
       : "先在顶部选择至少一个审核来源；未选择来源时不会创建任务。",
     kind: "review",
   });
-  renderLibrarySuggestionJobActions(elements.standardLibrarySuggestionActions, standardJob);
+  renderLibrarySuggestionJobActions(
+    elements.standardLibrarySuggestionActions,
+    standardJob,
+    elements.generateStandardLibrarySuggestionsButton
+  );
 
   const personalMode = snapshot?.personalMode || "unavailable";
   if (personalMode === "sample") {
     elements.personalLibrarySuggestionPath.textContent = "App 内抽检";
-    renderLibrarySuggestionJobActions(elements.personalLibrarySuggestionActions, null);
+    renderLibrarySuggestionJobActions(
+      elements.personalLibrarySuggestionActions,
+      null,
+      elements.generateLibrarySuggestionsButton
+    );
     return;
   }
 
@@ -20937,7 +21003,11 @@ function renderLibrarySuggestionCards() {
       : "先在顶部选择至少一个审核来源；未选择来源时不会创建任务。",
     kind: "review",
   });
-  renderLibrarySuggestionJobActions(elements.personalLibrarySuggestionActions, personalJob);
+  renderLibrarySuggestionJobActions(
+    elements.personalLibrarySuggestionActions,
+    personalJob,
+    elements.generateLibrarySuggestionsButton
+  );
 }
 
 function renderSampleSuggestions() {
@@ -43282,7 +43352,18 @@ function bindEvents() {
   const handleLibrarySuggestionJobAction = (event) => {
     const button = event.target.closest("[data-library-suggestion-job-id]");
     if (!button) return;
-    void applyJobAction(button.dataset.librarySuggestionJobId, button.dataset.action);
+    const container = button.parentElement;
+    const actionKey = button.dataset.librarySuggestionActionKey;
+    const fallbackFocus = container === elements.standardLibrarySuggestionActions
+      ? elements.generateStandardLibrarySuggestionsButton
+      : elements.generateLibrarySuggestionsButton;
+    void applyJobAction(button.dataset.librarySuggestionJobId, button.dataset.action)
+      .finally(() => restoreLibrarySuggestionJobActionFocus(
+        container,
+        actionKey,
+        button,
+        fallbackFocus
+      ));
   };
   elements.standardLibrarySuggestionActions.addEventListener(
     "click",
