@@ -1111,6 +1111,89 @@ def main():
         assert all(command_keyboard_accessibility.values()), (
             command_keyboard_accessibility
         )
+        command_navigation_asset_count = len(asset_requests)
+        page.keyboard.press("End")
+        command_end_navigation = page.evaluate(
+            """() => {
+              const list = document.querySelector("#commandList");
+              const enabled = [...list.querySelectorAll(
+                ":scope > .command-item:not(:disabled)"
+              )];
+              const active = list.querySelector(":scope > .command-item.active");
+              const listRect = list.getBoundingClientRect();
+              const activeRect = active?.getBoundingClientRect();
+              return {
+                longList: list.scrollHeight > list.clientHeight,
+                lastEnabled: active === enabled.at(-1),
+                enabled: Boolean(active) && !active.disabled,
+                visible: Boolean(activeRect)
+                  && activeRect.top >= listRect.top - 1
+                  && activeRect.bottom <= listRect.bottom + 1,
+                scrolled: list.scrollTop > 0,
+                focus: document.activeElement?.id === "commandSearchInput",
+                activeID: document.querySelector("#commandSearchInput")
+                  .getAttribute("aria-activedescendant") === active?.id,
+              };
+            }"""
+        )
+        assert all(command_end_navigation.values()), command_end_navigation
+        page.keyboard.press("Home")
+        command_home_navigation = page.evaluate(
+            """() => {
+              const list = document.querySelector("#commandList");
+              const enabled = [...list.querySelectorAll(
+                ":scope > .command-item:not(:disabled)"
+              )];
+              const active = list.querySelector(":scope > .command-item.active");
+              const listRect = list.getBoundingClientRect();
+              const activeRect = active?.getBoundingClientRect();
+              return {
+                firstEnabled: active === enabled[0],
+                enabled: Boolean(active) && !active.disabled,
+                visible: Boolean(activeRect)
+                  && activeRect.top >= listRect.top - 1
+                  && activeRect.bottom <= listRect.bottom + 1,
+                top: list.scrollTop <= 8,
+                focus: document.activeElement?.id === "commandSearchInput",
+              };
+            }"""
+        )
+        assert all(command_home_navigation.values()), command_home_navigation
+        page.keyboard.press("PageDown")
+        command_page_down_navigation = page.evaluate(
+            """() => {
+              const list = document.querySelector("#commandList");
+              const items = [...list.querySelectorAll(":scope > .command-item")];
+              const active = list.querySelector(":scope > .command-item.active");
+              const listRect = list.getBoundingClientRect();
+              const activeRect = active?.getBoundingClientRect();
+              return {
+                advanced: items.indexOf(active) > 0,
+                enabled: Boolean(active) && !active.disabled,
+                visible: Boolean(activeRect)
+                  && activeRect.top >= listRect.top - 1
+                  && activeRect.bottom <= listRect.bottom + 1,
+                focus: document.activeElement?.id === "commandSearchInput",
+                activeID: document.querySelector("#commandSearchInput")
+                  .getAttribute("aria-activedescendant") === active?.id,
+              };
+            }"""
+        )
+        assert all(command_page_down_navigation.values()), (
+            command_page_down_navigation
+        )
+        page.keyboard.press("PageUp")
+        assert page.evaluate(
+            """() => {
+              const list = document.querySelector("#commandList");
+              const firstEnabled = list.querySelector(
+                ":scope > .command-item:not(:disabled)"
+              );
+              return list.querySelector(":scope > .command-item.active") === firstEnabled
+                && document.activeElement?.id === "commandSearchInput";
+            }"""
+        )
+        assert len(asset_requests) == command_navigation_asset_count
         page.locator("#commandSearchInput").fill("连接文件夹")
         command_filter_frame = page.evaluate(
             """() => {

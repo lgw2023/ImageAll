@@ -38887,6 +38887,53 @@ function moveCommandSelection(direction) {
   }
 }
 
+function moveCommandSelectionToBoundary(boundary) {
+  const direction = boundary === "end" ? -1 : 1;
+  let next = boundary === "end" ? state.commandItems.length - 1 : 0;
+  while (next >= 0 && next < state.commandItems.length) {
+    if (!state.commandItems[next].disabled) {
+      state.commandIndex = next;
+      return;
+    }
+    next += direction;
+  }
+}
+
+function commandPageStep() {
+  const item = elements.commandList.querySelector(":scope > .command-item");
+  const itemHeight = item?.getBoundingClientRect().height || 0;
+  if (!itemHeight || !elements.commandList.clientHeight) return 1;
+  return Math.max(1, Math.floor(elements.commandList.clientHeight / itemHeight) - 1);
+}
+
+function moveCommandSelectionByPage(direction) {
+  if (!state.commandItems.length) return;
+  const lastIndex = state.commandItems.length - 1;
+  const target = Math.max(0, Math.min(
+    state.commandIndex + direction * commandPageStep(),
+    lastIndex
+  ));
+  for (let next = target; next >= 0 && next <= lastIndex; next += direction) {
+    if (!state.commandItems[next].disabled) {
+      state.commandIndex = next;
+      return;
+    }
+  }
+  for (let next = target - direction; next >= 0 && next <= lastIndex; next -= direction) {
+    if (!state.commandItems[next].disabled) {
+      state.commandIndex = next;
+      return;
+    }
+  }
+}
+
+function revealActiveCommandItem() {
+  elements.commandList.querySelector(":scope > .command-item.active")?.scrollIntoView({
+    block: "nearest",
+    inline: "nearest",
+  });
+}
+
 async function executeSourceCommandAction(action, sourceID, returnFocus) {
   await submitSourceManagementAction(action, sourceID || null);
   const source = sourceID
@@ -43530,14 +43577,17 @@ function bindEvents() {
   });
   elements.commandSearchInput.addEventListener("keydown", (event) => {
     if (!state.commandItems.length) return;
-    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    if (["ArrowDown", "ArrowUp", "Home", "End", "PageUp", "PageDown"].includes(event.key)) {
       event.preventDefault();
-      const direction = event.key === "ArrowDown" ? 1 : -1;
-      moveCommandSelection(direction);
+      if (event.key === "Home" || event.key === "End") {
+        moveCommandSelectionToBoundary(event.key === "Home" ? "start" : "end");
+      } else if (event.key === "PageUp" || event.key === "PageDown") {
+        moveCommandSelectionByPage(event.key === "PageDown" ? 1 : -1);
+      } else {
+        moveCommandSelection(event.key === "ArrowDown" ? 1 : -1);
+      }
       renderCommandItems();
-      elements.commandList.querySelector(".command-item.active")?.scrollIntoView({
-        block: "nearest",
-      });
+      revealActiveCommandItem();
     } else if (event.key === "Enter") {
       event.preventDefault();
       executeCommand(state.commandItems[state.commandIndex].id);
