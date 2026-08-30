@@ -89,7 +89,11 @@ def asset_detail(asset_id):
 
 def main():
     visible_ids = list(ASSET_IDS[:80])
-    thumbnail_recovery_targets = set(ASSET_IDS[:6])
+    thumbnail_recovery_visible_targets = set(ASSET_IDS[:6])
+    thumbnail_recovery_viewport_target = ASSET_IDS[41]
+    thumbnail_recovery_targets = (
+        thumbnail_recovery_visible_targets | {thumbnail_recovery_viewport_target}
+    )
     thumbnail_recovery = {"enabled": False}
     thumbnail_failures_issued = set()
     thumbnail_recovery_requests = {asset_id: 0 for asset_id in thumbnail_recovery_targets}
@@ -383,7 +387,34 @@ def main():
             arg=sorted(thumbnail_recovery_targets),
         )
         thumbnail_recovery["enabled"] = True
-        page.evaluate("() => setThumbnailAspectMode('original')")
+        assert page.evaluate(
+            """
+            assetID => document.querySelector(`[data-asset-id="${assetID}"]`)
+              .getBoundingClientRect().top > innerHeight
+            """,
+            thumbnail_recovery_viewport_target,
+        )
+        with page.expect_response(
+            lambda response: thumbnail_recovery_viewport_target in response.url
+            and "/thumbnail?" in response.url
+            and response.status == 503
+        ):
+            page.evaluate(
+                """
+                assetID => requestProtectedThumbnailReload(
+                  document.querySelector(`[data-asset-id="${assetID}"] img`)
+                )
+                """,
+                thumbnail_recovery_viewport_target,
+            )
+        page.evaluate(
+            """
+            assetIDs => assetIDs.forEach((assetID) => requestProtectedThumbnailReload(
+              document.querySelector(`[data-asset-id="${assetID}"] img`)
+            ))
+            """,
+            sorted(thumbnail_recovery_visible_targets),
+        )
         page.locator("#thumbnailRecoveryStatus:not(.hidden)").wait_for()
         page.screenshot(path="/tmp/imageall-thumbnail-auto-recovery.png", full_page=True)
         page.wait_for_function(
@@ -397,9 +428,9 @@ def main():
                   && !card.querySelector("[data-thumbnail-error-placeholder]");
               })
             """,
-            arg=sorted(thumbnail_recovery_targets),
+            arg=sorted(thumbnail_recovery_visible_targets),
         )
-        thumbnail_recovery_result = page.evaluate(
+        thumbnail_recovery_visible_result = page.evaluate(
             """
             targetIDs => ({
               retainedCards: targetIDs.every((assetID, index) =>
@@ -413,19 +444,66 @@ def main():
               generation: thumbnailRecovery.generation,
             })
             """,
-            sorted(thumbnail_recovery_targets),
+            sorted(thumbnail_recovery_visible_targets),
         )
         assert thumbnail_failures_issued == thumbnail_recovery_targets
-        assert all(count == 2 for count in thumbnail_recovery_requests.values()), (
+        assert all(
+            thumbnail_recovery_requests[asset_id] == 2
+            for asset_id in thumbnail_recovery_visible_targets
+        ), thumbnail_recovery_requests
+        assert thumbnail_recovery_requests[thumbnail_recovery_viewport_target] == 1, (
             thumbnail_recovery_requests
         )
-        assert thumbnail_recovery_result == {
+        assert thumbnail_recovery_visible_result == {
             "retainedCards": True,
             "scrollTop": thumbnail_recovery_baseline["scrollTop"],
             "selectedIDs": thumbnail_recovery_baseline["selectedIDs"],
             "focusedAssetID": thumbnail_recovery_baseline["focusedAssetID"],
             "generation": 1,
-        }, thumbnail_recovery_result
+        }, thumbnail_recovery_visible_result
+        viewport_card = page.locator(
+            f'[data-asset-id="{thumbnail_recovery_viewport_target}"]'
+        )
+        viewport_card.scroll_into_view_if_needed()
+        page.wait_for_function(
+            """
+            assetID => {
+              const card = document.querySelector(`[data-asset-id="${assetID}"]`);
+              const image = card?.querySelector(":scope > img");
+              return image?.naturalWidth > 0
+                && !card.querySelector("[data-thumbnail-error-placeholder]");
+            }
+            """,
+            arg=thumbnail_recovery_viewport_target,
+        )
+        thumbnail_recovery_viewport_result = page.evaluate(
+            """
+            targetIDs => ({
+              retainedCards: targetIDs.every((assetID, index) =>
+                document.querySelector(`[data-asset-id="${assetID}"]`)
+                  === globalThis.__thumbnailRecoveryCards[index]
+              ),
+              selectedIDs: [...state.selectedAssetIDs],
+              focusedAssetID: document.activeElement
+                ?.closest("[data-asset-id]")?.dataset.assetId || null,
+              generation: thumbnailRecovery.generation,
+            })
+            """,
+            sorted(thumbnail_recovery_targets),
+        )
+        assert thumbnail_recovery_requests[thumbnail_recovery_viewport_target] == 2, (
+            thumbnail_recovery_requests
+        )
+        assert thumbnail_recovery_viewport_result == {
+            "retainedCards": True,
+            "selectedIDs": thumbnail_recovery_baseline["selectedIDs"],
+            "focusedAssetID": thumbnail_recovery_baseline["focusedAssetID"],
+            "generation": 1,
+        }, thumbnail_recovery_viewport_result
+        page.screenshot(
+            path="/tmp/imageall-thumbnail-viewport-recovery.png",
+            full_page=True,
+        )
         page.locator("#cancelSelectionButton").click()
         page.wait_for_function("() => !state.selectionMode")
         page.evaluate(

@@ -1827,6 +1827,26 @@ const protectedImageIntersectionObserver = "IntersectionObserver" in globalThis
     rootMargin: "600px",
   })
   : null;
+const thumbnailRecoveryVisibilityObserver = "IntersectionObserver" in globalThis
+  ? new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      const image = entry.target;
+      const descriptor = protectedThumbnailDescriptors.get(image);
+      if (!descriptor || !thumbnailRecovery.failedImages.has(image)) {
+        thumbnailRecoveryVisibilityObserver.unobserve(image);
+        continue;
+      }
+      if (!state.online
+        || descriptor.failedGeneration >= thumbnailRecovery.generation) continue;
+      thumbnailRecoveryVisibilityObserver.unobserve(image);
+      requestProtectedThumbnailReload(image);
+    }
+  }, {
+    root: null,
+    rootMargin: "160px",
+  })
+  : null;
 
 class APIError extends Error {
   constructor(status, payload) {
@@ -2058,7 +2078,7 @@ function setProtectedImageSource(
   path,
   { priority = "auto", forceFetch = false, preserveCurrent = false } = {}
 ) {
-  if (image.dataset.protectedPath === path) return;
+  if (image.dataset.protectedPath === path && !forceFetch) return;
   protectedImageIntersectionObserver?.unobserve(image);
   protectedImageAbortControllers.get(image)?.abort();
   protectedImageAbortControllers.delete(image);
@@ -2089,6 +2109,7 @@ function setProtectedImageSource(
 
 function clearProtectedImageSource(image) {
   protectedImageIntersectionObserver?.unobserve(image);
+  thumbnailRecoveryVisibilityObserver?.unobserve(image);
   protectedImageAbortControllers.get(image)?.abort();
   protectedImageAbortControllers.delete(image);
   const requestID = ++protectedImageRequestSequence;
@@ -2160,7 +2181,12 @@ function stopThumbnailRecovery({ preserveFailures = true } = {}) {
   thumbnailRecovery.active = false;
   thumbnailRecovery.delayMs = THUMBNAIL_RECOVERY_INITIAL_DELAY_MS;
   thumbnailRecovery.failures.clear();
-  if (!preserveFailures) thumbnailRecovery.failedImages.clear();
+  if (!preserveFailures) {
+    for (const image of thumbnailRecovery.failedImages) {
+      thumbnailRecoveryVisibilityObserver?.unobserve(image);
+    }
+    thumbnailRecovery.failedImages.clear();
+  }
   renderThumbnailRecoveryStatus();
 }
 
@@ -2174,12 +2200,18 @@ function requestProtectedThumbnailReload(image, priority = "high") {
 
 function finishThumbnailRecovery(probeImage) {
   if (!thumbnailRecovery.active || thumbnailRecovery.probeImage !== probeImage) return;
-  const failed = visibleFailedProtectedThumbnails().filter((image) => image !== probeImage);
   stopThumbnailRecovery();
   thumbnailRecovery.generation += 1;
   renderThumbnailRecoveryStatus();
   requestAnimationFrame(() => {
-    for (const image of failed) requestProtectedThumbnailReload(image);
+    pruneThumbnailRecoveryFailures();
+    for (const image of thumbnailRecovery.failedImages) {
+      if (protectedThumbnailIsVisible(image)) {
+        requestProtectedThumbnailReload(image);
+      } else {
+        thumbnailRecoveryVisibilityObserver?.observe(image);
+      }
+    }
   });
 }
 
@@ -2222,6 +2254,8 @@ function handleProtectedThumbnailFailure(image, event) {
   if (!descriptor) return;
   const status = Number(event.detail?.status || 0);
   if (!transientThumbnailFailureStatus(status)) return;
+  descriptor.failedGeneration = thumbnailRecovery.generation;
+  thumbnailRecoveryVisibilityObserver?.unobserve(image);
   thumbnailRecovery.failedImages.add(image);
   if (!state.online || !protectedThumbnailIsVisible(image)) return;
   const now = performance.now();
@@ -2245,6 +2279,7 @@ function handleProtectedThumbnailFailure(image, event) {
 function handleProtectedThumbnailLoad(image) {
   const descriptor = protectedThumbnailDescriptors.get(image);
   if (!descriptor) return;
+  thumbnailRecoveryVisibilityObserver?.unobserve(image);
   thumbnailRecovery.failedImages.delete(image);
   const failure = thumbnailRecovery.failures.get(descriptor.assetID);
   if (failure?.image === image) thumbnailRecovery.failures.delete(descriptor.assetID);
