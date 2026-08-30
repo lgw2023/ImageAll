@@ -3068,6 +3068,16 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("点击查看数据、配置、过程、产物和失败恢复"))
         XCTAssertTrue(script.contains("function visibleListPageStep"))
         XCTAssertTrue(script.contains("function longListNavigationTarget"))
+        XCTAssertTrue(script.contains("function moveSidebarTagNavigation(event)"))
+        XCTAssertTrue(script.contains("function sidebarTagDirectionalTarget"))
+        XCTAssertTrue(script.contains("function sidebarTagPageTarget"))
+        XCTAssertTrue(script.contains("function syncSidebarTagRovingTabStop"))
+        XCTAssertTrue(script.contains("sidebarTagNavigationID"))
+        XCTAssertTrue(
+            html.contains(
+                "侧栏标签：换行移动 / 翻页 / 首尾"
+            )
+        )
         XCTAssertTrue(script.contains("elements.jobsList"))
         XCTAssertTrue(script.contains("elements.trainingRunPane"))
         XCTAssertTrue(script.contains("function navigateSlimmingJobByKey(key, originJobID = null)"))

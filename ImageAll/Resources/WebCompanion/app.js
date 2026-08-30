@@ -1660,6 +1660,7 @@ const state = {
     dropTarget: null,
     suppressClickUntil: 0,
   },
+  sidebarTagNavigationID: null,
   marquee: null,
   pendingInspectorTagFocus: null,
   inspectorSuggestionsExpanded: false,
@@ -9081,6 +9082,7 @@ function configureSidebarTagFilterState(button, tag, query) {
           ? "点击取消；Command-点击或 Command-Return 保持交集，Command-Option-点击改为排除。"
           : "点击取消；Command-点击或 Command-Return 改为交集，Command-Option-点击改为排除。")
         : "点击加入并集；Command-点击或 Command-Return 加入交集，Command-Option-点击改为排除。",
+    "方向键按当前换行位置移动，Page Up/Page Down 按侧栏可见页幅移动，Home/End 直达首尾。",
     "右键、触控长按、Context Menu 或 Shift-F10 可排序、移动分组、筛选、重命名或归档。",
     query
       ? "正在搜索标签；清除搜索后可拖动或用 Option + 方向键调整分组与顺序。"
@@ -9231,12 +9233,146 @@ function syncSidebarTagNavigationChip(button, tag, query, allowsVerticalMove) {
     button,
     "aria-keyshortcuts",
     allowsVerticalMove
-      ? "Meta+Enter Meta+Alt+Enter Shift+F10 Alt+ArrowLeft Alt+ArrowRight Alt+ArrowUp Alt+ArrowDown"
-      : "Meta+Enter Meta+Alt+Enter Shift+F10 Alt+ArrowLeft Alt+ArrowRight"
+      ? "ArrowLeft ArrowRight ArrowUp ArrowDown PageUp PageDown Home End Meta+Enter Meta+Alt+Enter Shift+F10 Alt+ArrowLeft Alt+ArrowRight Alt+ArrowUp Alt+ArrowDown"
+      : "ArrowLeft ArrowRight ArrowUp ArrowDown PageUp PageDown Home End Meta+Enter Meta+Alt+Enter Shift+F10 Alt+ArrowLeft Alt+ArrowRight"
   );
   setSidebarTagText(button, tag.displayName);
   configureSidebarTagFilterState(button, tag, query);
   return button;
+}
+
+function visibleSidebarTagNavigationChips() {
+  return [...elements.tagNavigation.querySelectorAll("[data-quick-tag-id]")]
+    .filter((button) => !button.closest(".tag-navigation-group-tags.hidden"));
+}
+
+function syncSidebarTagRovingTabStop() {
+  const chips = visibleSidebarTagNavigationChips();
+  const chipIDs = new Set(chips.map((button) => button.dataset.quickTagId));
+  const focusedID = document.activeElement?.closest?.("[data-quick-tag-id]")
+    ?.dataset.quickTagId || null;
+  const filteredID = state.filters.tagConditions.find(
+    (condition) => chipIDs.has(condition.tagID)
+  )?.tagID || null;
+  const rovingID = chipIDs.has(state.sidebarTagNavigationID)
+    ? state.sidebarTagNavigationID
+    : chipIDs.has(focusedID)
+      ? focusedID
+      : filteredID || chips[0]?.dataset.quickTagId || null;
+  state.sidebarTagNavigationID = rovingID;
+  for (const button of elements.tagNavigation.querySelectorAll("[data-quick-tag-id]")) {
+    button.tabIndex = button.dataset.quickTagId === rovingID ? 0 : -1;
+  }
+}
+
+function setSidebarTagNavigationID(tagID, { focus = false } = {}) {
+  const chips = visibleSidebarTagNavigationChips();
+  const target = chips.find((button) => button.dataset.quickTagId === tagID);
+  if (!target) return false;
+  state.sidebarTagNavigationID = tagID;
+  for (const button of elements.tagNavigation.querySelectorAll("[data-quick-tag-id]")) {
+    button.tabIndex = button === target ? 0 : -1;
+  }
+  if (focus) {
+    target.focus({ preventScroll: true });
+    target.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
+  return true;
+}
+
+function sidebarTagDirectionalTarget(chips, currentIndex, direction) {
+  const current = chips[currentIndex]?.getBoundingClientRect();
+  if (!current) return currentIndex;
+  const currentCenterX = current.left + current.width / 2;
+  const candidates = chips.map((button, index) => ({
+    index,
+    rect: button.getBoundingClientRect(),
+  })).filter(({ index, rect }) => index !== currentIndex && (
+    direction < 0
+      ? rect.bottom <= current.top + 1
+      : rect.top >= current.bottom - 1
+  ));
+  if (!candidates.length) return currentIndex;
+  candidates.sort((left, right) => {
+    const leftGap = direction < 0
+      ? current.top - left.rect.bottom
+      : left.rect.top - current.bottom;
+    const rightGap = direction < 0
+      ? current.top - right.rect.bottom
+      : right.rect.top - current.bottom;
+    if (Math.abs(leftGap - rightGap) > 1) return leftGap - rightGap;
+    const leftCenterX = left.rect.left + left.rect.width / 2;
+    const rightCenterX = right.rect.left + right.rect.width / 2;
+    return Math.abs(leftCenterX - currentCenterX)
+      - Math.abs(rightCenterX - currentCenterX);
+  });
+  return candidates[0].index;
+}
+
+function sidebarTagPageTarget(chips, currentIndex, direction) {
+  const current = chips[currentIndex]?.getBoundingClientRect();
+  if (!current) return currentIndex;
+  const currentCenterX = current.left + current.width / 2;
+  const currentCenterY = current.top + current.height / 2;
+  const pageDistance = Math.max(1, elements.sourceSidebar.clientHeight - current.height);
+  const targetCenterY = currentCenterY + direction * pageDistance;
+  const candidates = chips.map((button, index) => {
+    const rect = button.getBoundingClientRect();
+    return {
+      index,
+      centerX: rect.left + rect.width / 2,
+      centerY: rect.top + rect.height / 2,
+    };
+  }).filter(({ index, centerY }) => index !== currentIndex && (
+    direction < 0 ? centerY < currentCenterY : centerY > currentCenterY
+  ));
+  if (!candidates.length) return direction < 0 ? 0 : chips.length - 1;
+  candidates.sort((left, right) => {
+    const leftScore = Math.abs(left.centerY - targetCenterY) * 1000
+      + Math.abs(left.centerX - currentCenterX);
+    const rightScore = Math.abs(right.centerY - targetCenterY) * 1000
+      + Math.abs(right.centerX - currentCenterX);
+    return leftScore - rightScore;
+  });
+  return candidates[0].index;
+}
+
+function moveSidebarTagNavigation(event) {
+  if (event.altKey || event.ctrlKey || event.metaKey) return false;
+  const chip = event.target.closest("[data-quick-tag-id]");
+  const navigationKeys = [
+    "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown",
+    "PageUp", "PageDown", "Home", "End",
+  ];
+  if (!chip || !navigationKeys.includes(event.key)) return false;
+  const chips = visibleSidebarTagNavigationChips();
+  const currentIndex = chips.indexOf(chip);
+  if (currentIndex < 0 || !chips.length) return false;
+  let targetIndex;
+  if (event.key === "Home") targetIndex = 0;
+  else if (event.key === "End") targetIndex = chips.length - 1;
+  else if (event.key === "ArrowLeft") targetIndex = Math.max(0, currentIndex - 1);
+  else if (event.key === "ArrowRight") {
+    targetIndex = Math.min(chips.length - 1, currentIndex + 1);
+  } else if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+    targetIndex = sidebarTagDirectionalTarget(
+      chips,
+      currentIndex,
+      event.key === "ArrowUp" ? -1 : 1
+    );
+  } else {
+    targetIndex = sidebarTagPageTarget(
+      chips,
+      currentIndex,
+      event.key === "PageUp" ? -1 : 1
+    );
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  return setSidebarTagNavigationID(
+    chips[targetIndex]?.dataset.quickTagId,
+    { focus: true }
+  );
 }
 
 function renderTagNavigation() {
@@ -9303,6 +9439,7 @@ function renderTagNavigation() {
   for (const section of [...elements.tagNavigation.children]) {
     if (!wantedSections.includes(section)) section.remove();
   }
+  syncSidebarTagRovingTabStop();
   elements.untaggedNavigationButton.classList.toggle(
     "selected",
     state.libraryScope === "all" && state.filters.tagPresence === "untagged"
@@ -41304,6 +41441,7 @@ function setupSidebarReordering() {
       });
       return;
     }
+    if (moveSidebarTagNavigation(event)) return;
     if (!event.altKey) return;
     if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
       event.preventDefault();
@@ -41318,6 +41456,10 @@ function setupSidebarReordering() {
         event.key === "ArrowDown" ? 1 : -1
       );
     }
+  });
+  elements.tagNavigation.addEventListener("focusin", (event) => {
+    const chip = event.target.closest("[data-quick-tag-id]");
+    if (chip) setSidebarTagNavigationID(chip.dataset.quickTagId);
   });
 }
 

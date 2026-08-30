@@ -1775,6 +1775,141 @@ def main(*, inspector_actions_only=False):
         assert page.evaluate("() => document.activeElement?.id") == "tagNavigationSearch"
         assert len(asset_request_urls) == tag_search_asset_requests
 
+        sidebar_tag_navigation_frame = page.evaluate(
+            """({ subjectGroupID, sceneGroupID }) => {
+              globalThis.__sidebarTagOriginalTags = structuredClone(state.tags);
+              globalThis.__sidebarTagOriginalCollapsedGroups = [
+                ...state.layout.collapsedTagGroupIDs
+              ];
+              state.layout.collapsedTagGroupIDs.clear();
+              const extras = Array.from({ length: 96 }, (_, index) => ({
+                id: `bbbbbbbb-cccc-4ddd-8eee-${String(index + 1).padStart(12, '0')}`,
+                displayName: index % 4 === 0
+                  ? `长标签 ${String(index + 1).padStart(2, '0')}`
+                  : `标签 ${String(index + 1).padStart(2, '0')}`,
+                state: 'active',
+                groupID: index < 64 ? subjectGroupID : sceneGroupID,
+              }));
+              state.tags = [...state.tags, ...extras];
+              state.sidebarTagNavigationID = null;
+              renderTagNavigation();
+              const chips = visibleSidebarTagNavigationChips();
+              setSidebarTagNavigationID(chips[0].dataset.quickTagId, { focus: true });
+              return {
+                count: chips.length,
+                firstID: chips[0].dataset.quickTagId,
+                secondID: chips[1].dataset.quickTagId,
+                filters: structuredClone(state.filters.tagConditions),
+                sidebarScrollTop: document.querySelector('#sourceSidebar').scrollTop,
+                documentScrollTop: document.scrollingElement.scrollTop,
+                historyPayload: JSON.stringify(history.state?.imageAllWorkspace || null),
+                tagOrderPayload: JSON.stringify(state.layout.tagOrderIDsByGroup),
+                tagsPayload: JSON.stringify(state.tags),
+              };
+            }""",
+            {
+                "subjectGroupID": SUBJECT_GROUP_ID,
+                "sceneGroupID": SCENE_GROUP_ID,
+            },
+        )
+        assert sidebar_tag_navigation_frame["count"] == 98
+        sidebar_tag_navigation_asset_requests = len(asset_request_urls)
+        first_long_tag_chip = page.locator(
+            f'[data-quick-tag-id="{sidebar_tag_navigation_frame["firstID"]}"]'
+        )
+        assert first_long_tag_chip.get_attribute("aria-keyshortcuts").startswith(
+            "ArrowLeft ArrowRight ArrowUp ArrowDown PageUp PageDown Home End"
+        )
+        assert page.locator(
+            '#tagNavigation [data-quick-tag-id][tabindex="0"]'
+        ).count() == 1
+
+        def sidebar_tag_navigation_snapshot():
+            return page.evaluate(
+                """() => {
+                  const sidebar = document.querySelector('#sourceSidebar');
+                  const chips = visibleSidebarTagNavigationChips();
+                  const active = document.activeElement?.closest?.('[data-quick-tag-id]');
+                  const index = chips.indexOf(active);
+                  const sidebarRect = sidebar.getBoundingClientRect();
+                  const activeRect = active?.getBoundingClientRect();
+                  return {
+                    index,
+                    activeID: active?.dataset.quickTagId || null,
+                    visible: Boolean(activeRect)
+                      && activeRect.top >= sidebarRect.top - 1
+                      && activeRect.bottom <= sidebarRect.bottom + 1,
+                    tabStops: chips.filter((chip) => chip.tabIndex === 0).length,
+                    scrollTop: sidebar.scrollTop,
+                  };
+                }"""
+            )
+
+        first_long_tag_chip.press("ArrowRight")
+        tag_right = sidebar_tag_navigation_snapshot()
+        assert tag_right["index"] == 1
+        assert tag_right["activeID"] == sidebar_tag_navigation_frame["secondID"]
+        assert tag_right["visible"] and tag_right["tabStops"] == 1
+        page.keyboard.press("ArrowDown")
+        tag_down = sidebar_tag_navigation_snapshot()
+        assert tag_down["index"] > tag_right["index"]
+        assert tag_down["visible"] and tag_down["tabStops"] == 1
+        page.keyboard.press("PageDown")
+        tag_page_down = sidebar_tag_navigation_snapshot()
+        assert tag_page_down["index"] > tag_down["index"]
+        assert tag_page_down["visible"] and tag_page_down["tabStops"] == 1
+        page.keyboard.press("PageUp")
+        tag_page_up = sidebar_tag_navigation_snapshot()
+        assert tag_page_up["index"] < tag_page_down["index"]
+        assert tag_page_up["visible"] and tag_page_up["tabStops"] == 1
+        page.keyboard.press("End")
+        tag_end = sidebar_tag_navigation_snapshot()
+        assert tag_end["index"] == sidebar_tag_navigation_frame["count"] - 1
+        assert tag_end["visible"] and tag_end["tabStops"] == 1
+        assert tag_end["scrollTop"] > sidebar_tag_navigation_frame["sidebarScrollTop"]
+        page.screenshot(
+            path="/tmp/imageall-sidebar-tag-keyboard-navigation.png",
+            full_page=False,
+        )
+        page.keyboard.press("Home")
+        tag_home = sidebar_tag_navigation_snapshot()
+        assert tag_home["index"] == 0
+        assert tag_home["activeID"] == sidebar_tag_navigation_frame["firstID"]
+        assert tag_home["visible"] and tag_home["tabStops"] == 1
+        assert len(asset_request_urls) == sidebar_tag_navigation_asset_requests
+        assert page.evaluate(
+            "() => structuredClone(state.filters.tagConditions)"
+        ) == sidebar_tag_navigation_frame["filters"]
+        assert page.evaluate(
+            "() => document.scrollingElement.scrollTop"
+        ) == sidebar_tag_navigation_frame["documentScrollTop"]
+        assert page.evaluate(
+            "() => JSON.stringify(history.state?.imageAllWorkspace || null)"
+        ) == sidebar_tag_navigation_frame["historyPayload"]
+        assert page.evaluate(
+            "() => JSON.stringify(state.layout.tagOrderIDsByGroup)"
+        ) == sidebar_tag_navigation_frame["tagOrderPayload"]
+        assert page.evaluate(
+            "() => JSON.stringify(state.tags)"
+        ) == sidebar_tag_navigation_frame["tagsPayload"]
+
+        page.evaluate(
+            """tagID => {
+              state.tags = globalThis.__sidebarTagOriginalTags;
+              state.layout.collapsedTagGroupIDs.clear();
+              for (const groupID of globalThis.__sidebarTagOriginalCollapsedGroups) {
+                state.layout.collapsedTagGroupIDs.add(groupID);
+              }
+              state.sidebarTagNavigationID = tagID;
+              renderTagNavigation();
+              document.querySelector('#sourceSidebar').scrollTop = 0;
+            }""",
+            CAT_TAG_ID,
+        )
+        assert page.locator(
+            '#tagNavigation [data-quick-tag-id][tabindex="0"]'
+        ).count() == 1
+
         page.set_viewport_size({"width": 390, "height": 844})
         page.locator("#sidebarToggle").click()
         page.locator("#sourceSidebar.open").wait_for()
@@ -4896,6 +5031,11 @@ def main(*, inspector_actions_only=False):
             "'#slimmingCurrentJobActions [data-action=\"resume\"]'"
             ").disabled"
         )
+        page.wait_for_function(
+            "jobID => document.activeElement?.dataset.slimmingJobActionId === jobID "
+            "&& document.activeElement?.dataset.action === 'resume'",
+            arg=SLIMMING_JOB_ID,
+        )
         failed_slimming_job_action = page.evaluate(
             f"""() => {{
               const frame = window.__failedSlimmingJobActionFrame;
@@ -5875,6 +6015,10 @@ def main(*, inspector_actions_only=False):
         assert page.locator(
             f'[data-slimming-job-id="{SLIMMING_JOB_ID}"]'
         ).get_attribute("aria-selected") == "true"
+        page.wait_for_function(
+            "jobID => document.activeElement?.dataset.slimmingJobId === jobID",
+            arg=SLIMMING_JOB_ID,
+        )
 
         pending_scope = page.locator('[data-slimming-cluster-scope="pending"]')
         confirmed_scope = page.locator('[data-slimming-cluster-scope="confirmed"]')
