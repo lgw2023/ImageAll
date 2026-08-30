@@ -9449,6 +9449,10 @@ html.split-resizing * {
   z-index: 160;
   display: grid;
   min-width: 210px;
+  max-width: calc(100dvw - 12px);
+  max-height: calc(100dvh - 12px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 5px;
   border: 1px solid var(--separator);
   border-radius: 9px;

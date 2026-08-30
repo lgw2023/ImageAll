@@ -1501,6 +1501,93 @@ def main(*, inspector_actions_only=False):
               window.__captureContextMenuActions('sourceContextMenu');
             }"""
         )
+        source_context_viewport = page.viewport_size
+        page.evaluate(
+            """scrollTop => {
+              const grid = document.querySelector('#assetGrid');
+              const library = document.querySelector('#libraryScroll');
+              grid.style.minHeight = '1800px';
+              library.scrollTop = scrollTop;
+            }""",
+            120,
+        )
+        library_box = page.locator("#libraryScroll").bounding_box()
+        assert library_box is not None
+        page.mouse.move(
+            library_box["x"] + library_box["width"] - 24,
+            library_box["y"] + min(90, library_box["height"] - 24),
+        )
+        background_scroll_before = page.locator("#libraryScroll").evaluate(
+            "element => element.scrollTop"
+        )
+        page.mouse.wheel(0, 480)
+        page.wait_for_timeout(100)
+        assert page.locator("#libraryScroll").evaluate(
+            "element => element.scrollTop"
+        ) == background_scroll_before
+        assert page.locator("#sourceContextMenu").is_visible()
+        assert page.evaluate(
+            "() => window.__contextMenuActionsAreContinuous('sourceContextMenu')"
+        )
+        page.evaluate(
+            """scrollTop => {
+              document.querySelector('#assetGrid').style.removeProperty('min-height');
+              document.querySelector('#libraryScroll').scrollTop = scrollTop;
+            }""",
+            sidebar_help_snapshot["scrollTop"],
+        )
+        page.set_viewport_size({"width": 620, "height": 260})
+        page.wait_for_timeout(100)
+        source_context_bounds = page.locator("#sourceContextMenu").evaluate(
+            """menu => {
+              const rect = menu.getBoundingClientRect();
+              const viewport = globalThis.visualViewport;
+              return {
+                left: rect.left,
+                top: rect.top,
+                right: rect.right,
+                bottom: rect.bottom,
+                viewportLeft: viewport?.offsetLeft || 0,
+                viewportTop: viewport?.offsetTop || 0,
+                viewportRight: (viewport?.offsetLeft || 0)
+                  + (viewport?.width || globalThis.innerWidth),
+                viewportBottom: (viewport?.offsetTop || 0)
+                  + (viewport?.height || globalThis.innerHeight),
+                clientHeight: menu.clientHeight,
+                scrollHeight: menu.scrollHeight,
+              };
+            }"""
+        )
+        assert source_context_bounds["left"] >= source_context_bounds["viewportLeft"] + 5
+        assert source_context_bounds["top"] >= source_context_bounds["viewportTop"] + 5
+        assert source_context_bounds["right"] <= source_context_bounds["viewportRight"] - 5
+        assert source_context_bounds["bottom"] <= source_context_bounds["viewportBottom"] - 5
+        assert source_context_bounds["scrollHeight"] > source_context_bounds["clientHeight"]
+        assert page.evaluate(
+            "() => window.__contextMenuActionsAreContinuous('sourceContextMenu')"
+        )
+        page.screenshot(
+            path="/tmp/imageall-source-context-menu-620x260.png",
+            full_page=False,
+        )
+        page.locator("#sourceContextMenu").evaluate("menu => { menu.scrollTop = 0; }")
+        source_context_box = page.locator("#sourceContextMenu").bounding_box()
+        assert source_context_box is not None
+        page.mouse.move(
+            source_context_box["x"] + source_context_box["width"] / 2,
+            source_context_box["y"] + source_context_box["height"] / 2,
+        )
+        page.mouse.wheel(0, 300)
+        page.wait_for_timeout(100)
+        assert page.locator("#sourceContextMenu").evaluate(
+            "menu => menu.scrollTop"
+        ) > 0
+        assert page.locator("#sourceContextMenu").is_visible()
+        page.set_viewport_size(source_context_viewport)
+        page.wait_for_timeout(100)
+        assert page.evaluate(
+            "() => window.__contextMenuActionsAreContinuous('sourceContextMenu')"
+        )
         page.evaluate("() => history.back()")
         page.locator("#sourceContextMenu").wait_for(state="hidden")
         page.wait_for_function(

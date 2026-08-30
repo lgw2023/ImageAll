@@ -39112,6 +39112,34 @@ function activeContextMenuDescriptor() {
   return descriptors.find(({ menu }) => !menu.classList.contains("hidden")) || null;
 }
 
+function contextMenuVisualViewportBounds() {
+  const viewport = globalThis.visualViewport;
+  const left = viewport?.offsetLeft || 0;
+  const top = viewport?.offsetTop || 0;
+  const width = viewport?.width || globalThis.innerWidth;
+  const height = viewport?.height || globalThis.innerHeight;
+  return {
+    left,
+    top,
+    right: left + width,
+    bottom: top + height,
+  };
+}
+
+function repositionActiveContextMenu() {
+  const descriptor = activeContextMenuDescriptor();
+  const session = state.contextMenuSession;
+  if (!descriptor || !session) return;
+  positionContextMenu(descriptor.menu, session.clientX, session.clientY);
+}
+
+function containContextMenuBackgroundScroll(event) {
+  const descriptor = activeContextMenuDescriptor();
+  if (!descriptor || event.composedPath().includes(descriptor.menu)) return;
+  if (event.cancelable) event.preventDefault();
+  event.stopImmediatePropagation();
+}
+
 let contextMenuOutsideClickSuppression = null;
 
 function beginContextMenuOutsideDismissal(event) {
@@ -39307,9 +39335,14 @@ function reconcileContextMenuFromWorkspaceHistory(route, navigationLevel, contex
 }
 
 function positionContextMenu(menu, clientX, clientY) {
+  const bounds = contextMenuVisualViewportBounds();
   const rect = menu.getBoundingClientRect();
-  const left = Math.max(6, Math.min(clientX, globalThis.innerWidth - rect.width - 6));
-  const top = Math.max(6, Math.min(clientY, globalThis.innerHeight - rect.height - 6));
+  const minLeft = bounds.left + 6;
+  const minTop = bounds.top + 6;
+  const maxLeft = Math.max(minLeft, bounds.right - rect.width - 6);
+  const maxTop = Math.max(minTop, bounds.bottom - rect.height - 6);
+  const left = Math.max(minLeft, Math.min(clientX, maxLeft));
+  const top = Math.max(minTop, Math.min(clientY, maxTop));
   menu.style.left = `${left}px`;
   menu.style.top = `${top}px`;
 }
@@ -43242,10 +43275,17 @@ function bindEvents() {
     }
     if (!elements.sortPopover.classList.contains("hidden")) positionSortPopover();
     for (const control of gridDensityControls()) positionGridDensityPopover(control);
+    repositionActiveContextMenu();
     requestAnimationFrame(() => {
       syncPersonalModelToolbarPresentation();
       syncSelectionFavoriteToolbarPresentation();
     });
+  });
+  globalThis.visualViewport?.addEventListener("resize", repositionActiveContextMenu, {
+    passive: true,
+  });
+  globalThis.visualViewport?.addEventListener("scroll", repositionActiveContextMenu, {
+    passive: true,
   });
   elements.closeLightboxButton.addEventListener("click", () => void returnFromLightbox());
   elements.lightboxPreviousButton.addEventListener("click", () => void navigateLightbox(-1));
@@ -43663,6 +43703,14 @@ function bindEvents() {
   document.addEventListener("click", suppressContextLongPressFollowUp, true);
   document.addEventListener("contextmenu", suppressContextLongPressFollowUp, true);
   document.addEventListener("click", dismissContextMenuFromOutside, true);
+  document.addEventListener("wheel", containContextMenuBackgroundScroll, {
+    capture: true,
+    passive: false,
+  });
+  document.addEventListener("touchmove", containContextMenuBackgroundScroll, {
+    capture: true,
+    passive: false,
+  });
   document.addEventListener("click", (event) => {
     const eventPath = event.composedPath();
     if (!elements.compactToolbarMenu.classList.contains("hidden")
