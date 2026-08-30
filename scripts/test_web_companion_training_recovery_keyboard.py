@@ -916,6 +916,23 @@ def main():
         assert page.locator("#commandContextLabel").inner_text() == "当前：训练工程"
         assert page.locator('[data-command-id="selectAll"]').count() == 0
         assert page.locator('[data-command-id="media:video"]').count() == 1
+        assert page.locator('[data-command-id="newTrainingTask"]').count() == 1
+        assert page.locator('[data-command-id="toggleTrainingNavigator"]').count() == 1
+        page.locator('[data-command-id="toggleTrainingNavigator"]').click()
+        page.wait_for_function(
+            "() => document.querySelector('#trainingWorkspace').classList.contains('navigator-hidden')"
+        )
+        assert page.evaluate("() => document.activeElement?.id") == "toggleTrainingNavigatorButton"
+        page.keyboard.press("Meta+K")
+        assert "显示训练记录" in page.locator(
+            '[data-command-id="toggleTrainingNavigator"]'
+        ).inner_text()
+        page.locator('[data-command-id="toggleTrainingNavigator"]').click()
+        page.wait_for_function(
+            "() => !document.querySelector('#trainingWorkspace').classList.contains('navigator-hidden')"
+        )
+        failed_run_row.focus()
+        page.keyboard.press("Meta+K")
         command_jobs_workspace_requests = len(workspace_requests)
         command_jobs_requests = len(jobs_requests)
         with page.expect_response("**/v1/jobs"):

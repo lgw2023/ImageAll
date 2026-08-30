@@ -739,7 +739,14 @@ let browser;
   assert.equal(await page.locator(".world-map-photo-error").count(), 0);
   assert.equal(await page.locator("#worldMapBrowseClusterButton").isVisible(), true);
 
-  await page.locator("#openWorldMapLocationBackfillButton").click();
+  await page.locator("#closeWorldMapButton").focus();
+  await page.keyboard.press("Meta+K");
+  await page.locator("#commandPalette[open]").waitFor();
+  assert.equal(await page.locator("#commandContextLabel").textContent(), "当前：照片世界");
+  assert.equal(await page.locator('[data-command-id="openWorldMapPlaceTags"]').count(), 1);
+  assert.equal(await page.locator('[data-command-id="openWorldMapLocationBackfill"]').count(), 1);
+  assert.equal(await page.locator('[data-command-id="browseWorldMapCluster"]').count(), 1);
+  await page.locator('[data-command-id="openWorldMapLocationBackfill"]').click();
   await page.locator("#worldMapLocationBackfillDialog[open]").waitFor();
   await page.locator(`[data-source-id="${folderSourceID}"][data-phase="ready"]`).waitFor();
   assert.equal(
@@ -871,7 +878,11 @@ let browser;
     await page.evaluate(() => history.state?.imageAllWorkspace?.navigationLevel),
     "worldMapLocationBackfill"
   );
-  await page.locator("#openWorldMapPlaceTagsButton").click();
+  await page.waitForFunction(
+    () => document.activeElement?.id === "openWorldMapLocationBackfillButton"
+  );
+  await page.keyboard.press("Meta+K");
+  await page.locator('[data-command-id="openWorldMapPlaceTags"]').click();
   await page.locator("#worldMapPlaceTagDialog[open]").waitFor();
   assert.equal(
     await page.evaluate(() => history.state?.imageAllWorkspace?.navigationLevel),

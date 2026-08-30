@@ -3650,6 +3650,10 @@ def main(*, inspector_actions_only=False):
         assert page.locator("#commandContextLabel").inner_text() == "当前：图库瘦身"
         assert page.locator('[data-command-id="selectAll"]').count() == 1
         assert page.locator('[data-command-id="media:video"]').count() == 1
+        assert page.locator('[data-command-id="openSlimmingSetup"]').count() == 1
+        assert page.locator('[data-command-id="openSlimmingThresholdEditor"]').count() == 1
+        assert page.locator('[data-command-id="toggleSlimmingNavigator"]').count() == 1
+        assert page.locator('[data-command-id="showSlimmingRecycle"]').count() == 1
         page.keyboard.press("Escape")
         page.wait_for_function(
             "() => document.activeElement?.id === 'closeSlimmingButton'"

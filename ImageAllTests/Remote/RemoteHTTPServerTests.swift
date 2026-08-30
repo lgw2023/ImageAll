@@ -3710,6 +3710,22 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function scheduleReviewAutoPagination"))
         XCTAssertTrue(script.contains("renderAssetSelectionState"))
         XCTAssertTrue(script.contains("openCommandPalette"))
+        for commandID in [
+            "openReviewSources",
+            "newTrainingTask",
+            "toggleTrainingNavigator",
+            "openSlimmingSetup",
+            "openSlimmingThresholdEditor",
+            "toggleSlimmingNavigator",
+            "showSlimmingRecycle",
+            "showSlimmingAnalysis",
+            "openWorldMapPlaceTags",
+            "openWorldMapLocationBackfill",
+            "browseWorldMapCluster",
+        ] {
+            XCTAssertTrue(script.contains("id: \"\(commandID)\""))
+            XCTAssertTrue(script.contains("case \"\(commandID)\":"))
+        }
         XCTAssertTrue(script.contains("persistWorkspacePreferences"))
         XCTAssertTrue(script.contains("new IntersectionObserver"))
         XCTAssertTrue(script.contains("expandedRefreshKinds"))

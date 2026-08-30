@@ -6231,11 +6231,11 @@ function presentWorldMapLocationBackfill({
   }
 }
 
-function openWorldMapLocationBackfill() {
+function openWorldMapLocationBackfill(returnFocus = document.activeElement) {
   const backfill = state.worldMap.locationBackfill;
   if (elements.worldMapLocationBackfillDialog.open || backfill.opening) return;
   backfill.opening = true;
-  backfill.returnFocus = document.activeElement;
+  backfill.returnFocus = returnFocus;
   backfill.focusTarget = { kind: "close" };
   try {
     presentWorldMapLocationBackfill();
@@ -6322,6 +6322,7 @@ function reconcileWorldMapLocationBackfillFromWorkspaceHistory(
     return;
   }
   if (shouldOpen && !elements.worldMapLocationBackfillDialog.open) {
+    backfill.returnFocus = elements.openWorldMapLocationBackfillButton;
     presentWorldMapLocationBackfill({
       historyMode: "none",
       baseLevel: worldMapLocationBackfillBaseLevelFromHistory(context),
@@ -6894,11 +6895,11 @@ function presentWorldMapPlaceTags({
   }
 }
 
-function openWorldMapPlaceTags() {
+function openWorldMapPlaceTags(returnFocus = document.activeElement) {
   const placeTags = state.worldMap.placeTags;
   if (elements.worldMapPlaceTagDialog.open || placeTags.opening) return;
   placeTags.opening = true;
-  placeTags.returnFocus = document.activeElement;
+  placeTags.returnFocus = returnFocus;
   placeTags.focusSnapshot = null;
   try {
     presentWorldMapPlaceTags();
@@ -6976,6 +6977,7 @@ function reconcileWorldMapPlaceTagsFromWorkspaceHistory(
     return;
   }
   if (shouldOpen && !elements.worldMapPlaceTagDialog.open) {
+    placeTags.returnFocus = elements.openWorldMapPlaceTagsButton;
     presentWorldMapPlaceTags({
       historyMode: "none",
       baseLevel: worldMapPlaceTagsBaseLevelFromHistory(context),
@@ -38999,6 +39001,93 @@ function availableCommands() {
       : state.mediaKind;
   const supportsContextualMediaSwitch = !lightboxOpen
     && ["gallery", "review", "training", "slimming"].includes(route);
+  const workspaceCommands = lightboxOpen ? [] : [
+    ...(route === "review" ? [{
+      id: "openReviewSources",
+      icon: "⌑",
+      title: "选择审核来源",
+      hint: reviewSourceFilterSummaryText(),
+      disabled: state.review.loading
+        || state.review.overviewLoading
+        || state.review.mutating
+        || activeReviewSources().length === 0,
+    }] : []),
+    ...(route === "training" ? [
+      {
+        id: "newTrainingTask",
+        icon: "＋",
+        title: "新建训练任务…",
+        hint: "N",
+        disabled: state.training.loading || Boolean(currentActiveTrainingActivity()),
+      },
+      {
+        id: "toggleTrainingNavigator",
+        icon: "☷",
+        title: state.layout.trainingNavigatorVisible ? "隐藏训练记录" : "显示训练记录",
+        hint: "L",
+      },
+    ] : []),
+    ...(route === "slimming" ? [
+      ...(state.slimming.view === "analysis" ? [
+        {
+          id: "openSlimmingSetup",
+          icon: "＋",
+          title: "新建图库瘦身分析…",
+          hint: "范围与阈值",
+          disabled: !state.online || Boolean(state.slimming.quickLaunchMode),
+        },
+        {
+          id: "openSlimmingThresholdEditor",
+          icon: "≋",
+          title: "调整相似阈值…",
+          hint: "不启动分析",
+          disabled: !state.online || Boolean(state.slimming.quickLaunchMode),
+        },
+        {
+          id: "toggleSlimmingNavigator",
+          icon: "☷",
+          title: state.slimming.navigatorVisible ? "隐藏分析记录" : "显示分析记录",
+          hint: "",
+        },
+        {
+          id: "showSlimmingRecycle",
+          icon: "♲",
+          title: "打开可恢复回收站",
+          hint: "",
+          disabled: state.slimming.loading,
+        },
+      ] : [{
+        id: "showSlimmingAnalysis",
+        icon: "▦",
+        title: "返回分析结果",
+        hint: "",
+        disabled: state.slimming.recycle.loading,
+      }]),
+    ] : []),
+    ...(route === "worldMap" ? [
+      {
+        id: "openWorldMapPlaceTags",
+        icon: "⌖",
+        title: "补全地点标签",
+        hint: "地点与场景",
+        disabled: !state.online,
+      },
+      {
+        id: "openWorldMapLocationBackfill",
+        icon: "◎",
+        title: "更新照片位置",
+        hint: "显式选择来源",
+        disabled: !state.online,
+      },
+      ...(state.worldMap.selectedClusterID
+        && Number(state.worldMap.selection?.totalPhotoCount || 0) > 0 ? [{
+        id: "browseWorldMapCluster",
+        icon: "▧",
+        title: "在图库中查看当前地点",
+        hint: selectedWorldMapCluster()?.displayName || "",
+      }] : []),
+    ] : []),
+  ];
   const commands = [
     ...((lightboxOpen || route !== "gallery") ? [{
       id: "returnWorkspace",
@@ -39012,6 +39101,7 @@ function availableCommands() {
       { id: "media:image", icon: "▧", title: "切换到照片", hint: mediaKind === "image" ? "当前" : "" },
       { id: "media:video", icon: "▶", title: "切换到视频", hint: mediaKind === "video" ? "当前" : "" },
     ] : []),
+    ...workspaceCommands,
     { id: "showUntagged", icon: "⊘", title: "显示无标签项目", hint: "" },
     { id: "focusSearch", icon: "⌕", title: "搜索文件名、路径、标签或来源", hint: "⌘F" },
     { id: "openFilter", icon: "≡", title: "打开高级筛选", hint: "" },
@@ -39646,6 +39736,45 @@ async function executeCommand(commandID) {
   case "openFilter":
     await navigateCommandToGallery();
     toggleFilterPopover();
+    break;
+  case "openReviewSources":
+    openActionMenu("reviewSources");
+    break;
+  case "newTrainingTask":
+    await openTrainingSetupDialog({
+      returnFocus: commandReturnFocus || elements.newTrainingButton,
+    });
+    break;
+  case "toggleTrainingNavigator":
+    toggleTrainingNavigator();
+    break;
+  case "openSlimmingSetup":
+    await openSlimmingSetupDialog(
+      commandReturnFocus || elements.slimmingAnalysisOptionsButton
+    );
+    break;
+  case "openSlimmingThresholdEditor":
+    await openSlimmingThresholdEditor(
+      commandReturnFocus || elements.slimmingAnalysisOptionsButton
+    );
+    break;
+  case "toggleSlimmingNavigator":
+    toggleSlimmingNavigator();
+    break;
+  case "showSlimmingRecycle":
+    await setSlimmingView("recycle");
+    break;
+  case "showSlimmingAnalysis":
+    await setSlimmingView("analysis");
+    break;
+  case "openWorldMapPlaceTags":
+    openWorldMapPlaceTags(elements.openWorldMapPlaceTagsButton);
+    break;
+  case "openWorldMapLocationBackfill":
+    openWorldMapLocationBackfill(elements.openWorldMapLocationBackfillButton);
+    break;
+  case "browseWorldMapCluster":
+    await openWorldMapClusterInGallery();
     break;
   case "selectAll":
     selectAllCommandContext(contextRoute);
@@ -42734,7 +42863,9 @@ function bindEvents() {
     state.worldMap.rendererError = false;
     void loadWorldMapSnapshot({ bounds: state.worldMap.viewport });
   });
-  elements.openWorldMapPlaceTagsButton.addEventListener("click", openWorldMapPlaceTags);
+  elements.openWorldMapPlaceTagsButton.addEventListener("click", () => {
+    openWorldMapPlaceTags(elements.openWorldMapPlaceTagsButton);
+  });
   elements.closeWorldMapPlaceTagButton.addEventListener("click", () => {
     void returnFromWorldMapPlaceTags();
   });
@@ -42801,7 +42932,7 @@ function bindEvents() {
   });
   elements.openWorldMapLocationBackfillButton.addEventListener(
     "click",
-    openWorldMapLocationBackfill
+    () => openWorldMapLocationBackfill(elements.openWorldMapLocationBackfillButton)
   );
   elements.closeWorldMapLocationBackfillButton.addEventListener(
     "click",

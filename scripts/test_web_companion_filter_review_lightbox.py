@@ -3391,6 +3391,7 @@ def main():
         assert page.locator("#commandContextLabel").inner_text() == "当前：建议审核队列"
         assert page.locator('[data-command-id="selectAll"]').count() == 1
         assert page.locator('[data-command-id="media:video"]').count() == 1
+        assert page.locator('[data-command-id="openReviewSources"]').count() == 1
         page.keyboard.press("Escape")
         page.wait_for_function(
             "() => document.activeElement?.classList.contains('review-card-main')"
