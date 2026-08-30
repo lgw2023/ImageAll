@@ -19548,12 +19548,10 @@ async function applyFavoriteMutation(assetIDs, isFavorite) {
         }
         if (generation !== state.workspaceGeneration) return;
       }
-      const continuationAssetIDs = [
-        ...previousAssetIDs,
-        ...state.assets
-          .map((asset) => asset.id)
-          .filter((assetID) => !previousAssetIDs.includes(assetID)),
-      ];
+      const continuationAssetIDs = continuedAssetIDs(
+        previousAssetIDs,
+        state.assets.map((asset) => asset.id)
+      );
       reconcileLibrarySelectionAfterFavoriteRemoval(
         continuationAssetIDs,
         removed,
@@ -20069,8 +20067,9 @@ async function reconcileLibraryPreviewAfterGalleryRemoval(context, hiddenAssetID
     || elements.lightbox.classList.contains("hidden")) return;
 
   const remainingIDs = state.assets.map((asset) => asset.id);
+  const continuationIDs = continuedAssetIDs(context.assetIDs || [], remainingIDs);
   const replacementID = replacementPreviewAssetID(
-    context.assetIDs || [],
+    continuationIDs,
     remainingIDs,
     previewAssetID
   );
@@ -20101,7 +20100,7 @@ async function reconcileLibraryPreviewAfterGalleryRemoval(context, hiddenAssetID
     } else {
       if (!remainingSelectedIDs.includes(state.selectedAssetID)) {
         state.selectedAssetID = replacementPreviewAssetID(
-          context.assetIDs || [],
+          continuationIDs,
           remainingSelectedIDs,
           context.selectedAssetID || previewAssetID
         ) || remainingSelectedIDs[0];
@@ -32058,6 +32057,14 @@ function replacementPreviewAssetID(previousIDs, remainingIDs, previewAssetID) {
     if (remaining.has(previousIDs[index])) return previousIDs[index];
   }
   return null;
+}
+
+function continuedAssetIDs(previousIDs, currentIDs) {
+  const previous = new Set(previousIDs);
+  return [
+    ...previousIDs,
+    ...currentIDs.filter((assetID) => !previous.has(assetID)),
+  ];
 }
 
 function replacementSlimmingPreviewAssetID(previousIDs, remainingIDs, previewAssetID) {

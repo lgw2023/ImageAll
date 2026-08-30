@@ -3054,9 +3054,20 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function reconcileLibraryLightboxAfterFavoriteRemoval"))
         XCTAssertTrue(script.contains("function reconcileLibrarySelectionAfterFavoriteRemoval"))
         XCTAssertTrue(script.contains("function replacementPreviewAssetID"))
+        XCTAssertTrue(script.contains("function continuedAssetIDs"))
         XCTAssertTrue(
             script.contains(
                 "await reconcileLibraryPreviewAfterGalleryRemoval(context, hidden);"
+            )
+        )
+        XCTAssertTrue(
+            script.contains(
+                "const continuationIDs = continuedAssetIDs(context.assetIDs || [], remainingIDs);"
+            )
+        )
+        XCTAssertTrue(
+            script.contains(
+                "const continuationAssetIDs = continuedAssetIDs("
             )
         )
         XCTAssertTrue(

@@ -5471,23 +5471,32 @@ def main():
         assert private_search not in gallery_after_refresh["history"]
         assert "CAT_0001.JPG" not in gallery_after_refresh["history"]
 
-        # Deleting the photo currently shown in the main-gallery lightbox must
-        # continue with its next visible neighbor, matching the Mac single-photo
-        # flow instead of dropping the user back into the grid. The replacement
+        # Deleting the loaded page tail in the main-gallery lightbox must keep
+        # moving forward into the next keyset page, matching the Mac single-photo
+        # flow instead of falling back to the old previous item. The replacement
         # also has to replace the lightbox history payload so Forward cannot
         # revive the now-hidden asset.
         page.set_viewport_size({"width": 1440, "height": 960})
-        page.evaluate("() => setSelectionMode(false)")
-        first_gallery_main = page.locator(
-            f'[data-asset-id="{IMAGE_IDS[0]}"] > .asset-card-main'
+        page.evaluate(
+            """() => {
+              setSelectionMode(false);
+              globalThis.__galleryDeleteAutoPaginate = autoPaginateIfNeeded;
+              autoPaginateIfNeeded = () => {};
+              state.assets = state.assets.slice(0, 2);
+              state.nextCursor = "image-page-2";
+              renderAssets();
+            }"""
         )
-        first_gallery_main.click()
+        page_tail_gallery_main = page.locator(
+            f'[data-asset-id="{IMAGE_IDS[1]}"] > .asset-card-main'
+        )
+        page_tail_gallery_main.click()
         page.wait_for_function(
-            f"() => state.selectedDetail?.assetID === '{IMAGE_IDS[0]}'"
+            f"() => state.selectedDetail?.assetID === '{IMAGE_IDS[1]}'"
         )
         page.locator("#openLightboxButton").click()
         page.locator("#lightbox:not(.hidden)").wait_for()
-        assert "CAT_0001.JPG" in page.locator("#lightboxTitle").inner_text()
+        assert "TRIP_0002.JPG" in page.locator("#lightboxTitle").inner_text()
         gallery_delete = page.locator("#lightboxDeleteButton")
         assert gallery_delete.is_enabled()
         gallery_delete.click()
@@ -5497,94 +5506,12 @@ def main():
             "() => state.galleryRemoval.contexts.size === 1 "
             "&& document.querySelector('#lightboxDeleteButton').disabled"
         )
-        assert submitted_review_removals[-1]["assetIDs"] == [IMAGE_IDS[0]]
+        assert page.evaluate(
+            "() => [...state.galleryRemoval.contexts.values()][0].assetIDs"
+        ) == IMAGE_IDS
+        assert submitted_review_removals[-1]["assetIDs"] == [IMAGE_IDS[1]]
         assert submitted_review_removals[-1]["scope"] == "gallerySelection"
 
-        hidden_gallery_asset_ids.add(IMAGE_IDS[0])
-        review_removal["request"].update({
-            "phase": "completed",
-            "progress": {
-                "phase": "completedAsset",
-                "completedAssetCount": 1,
-                "totalAssetCount": 1,
-                "copiedBytes": 0,
-                "totalFileBytes": 0,
-            },
-            "audit": {
-                "hiddenAssetIDs": [IMAGE_IDS[0]],
-                "recycledEntryIDs": [],
-                "permanentlyDeletedAssetIDs": [IMAGE_IDS[0]],
-                "durabilityPendingAssetIDs": [],
-                "failedAssetIDs": [],
-                "authorizationRequiredSourceIDs": [],
-                "authorizationRequiredAssetIDs": [],
-                "authorizationDeniedPhotosAssetIDs": [],
-                "mutationAuthorizationInvalidAssetIDs": [],
-                "photosMutationFailedAssetIDs": [],
-                "photosMutationFailureCategories": [],
-                "photosMutationFailureCodes": [],
-                "sourceChangedAssetIDs": [],
-            },
-            "message": "已删除当前照片并继续浏览下一张",
-            "updatedAtMs": 1_700_000_022_000,
-        })
-        page.wait_for_function(
-            f"() => state.galleryRemoval.contexts.size === 0 "
-            f"&& state.assets.every(asset => asset.id !== '{IMAGE_IDS[0]}') "
-            f"&& state.lightboxAssetID === '{IMAGE_IDS[1]}' "
-            f"&& state.selectedAssetID === '{IMAGE_IDS[1]}' "
-            f"&& state.selectedDetail?.assetID === '{IMAGE_IDS[1]}' "
-            "&& document.querySelector('#lightboxTitle').textContent.includes('TRIP_0002.JPG') "
-            f"&& history.state?.imageAllWorkspace?.context?.galleryLightbox?.assetID === '{IMAGE_IDS[1]}'",
-            timeout=5_000,
-        )
-        assert page.locator("#lightboxPosition").inner_text().startswith("1 / ")
-        assert page.evaluate("() => state.lightboxPreservesSelection") is False
-        page.screenshot(
-            path="/tmp/imageall-gallery-lightbox-delete-continuity.png",
-            full_page=True,
-        )
-        page.locator("#lightboxBackButton").click()
-        page.locator("#lightbox").wait_for(state="hidden")
-        page.evaluate("() => history.forward()")
-        page.wait_for_function(
-            f"() => !document.querySelector('#lightbox').classList.contains('hidden') "
-            f"&& state.lightboxAssetID === '{IMAGE_IDS[1]}' "
-            "&& document.querySelector('#lightboxTitle').textContent.includes('TRIP_0002.JPG')"
-        )
-        assert IMAGE_IDS[0] not in page.evaluate(
-            "() => JSON.stringify(history.state.imageAllWorkspace.context)"
-        )
-
-        # The same continuation must not collapse a deliberate multi-selection.
-        # Make the previewed item the selection primary, remove it, and require
-        # the surviving neighbor to become the repaired primary and anchor.
-        page.locator("#lightboxBackButton").click()
-        page.locator("#lightbox").wait_for(state="hidden")
-        page.locator("#selectionModeButton").click()
-        next_gallery_main = page.locator(
-            f'[data-asset-id="{IMAGE_PAGE_2_IDS[0]}"] > .asset-card-main'
-        )
-        current_gallery_main = page.locator(
-            f'[data-asset-id="{IMAGE_IDS[1]}"] > .asset-card-main'
-        )
-        next_gallery_main.click()
-        current_gallery_main.click(modifiers=["Meta"])
-        page.wait_for_function(
-            f"() => state.selectedAssetIDs.size === 2 "
-            f"&& state.selectedAssetID === '{IMAGE_IDS[1]}' "
-            f"&& state.selectionAnchorID === '{IMAGE_IDS[1]}'"
-        )
-        current_gallery_main.dblclick()
-        page.wait_for_function(
-            f"() => state.lightboxAssetID === '{IMAGE_IDS[1]}' "
-            "&& state.lightboxPreservesSelection "
-            "&& state.selectedAssetIDs.size === 2"
-        )
-        page.locator("#lightboxDeleteButton").click()
-        page.locator("#confirmDialog[open]").wait_for()
-        page.locator("#confirmActionButton").click()
-        page.wait_for_function("() => state.galleryRemoval.contexts.size === 1")
         hidden_gallery_asset_ids.add(IMAGE_IDS[1])
         review_removal["request"].update({
             "phase": "completed",
@@ -5610,18 +5537,106 @@ def main():
                 "photosMutationFailureCodes": [],
                 "sourceChangedAssetIDs": [],
             },
+            "message": "已删除当前照片并继续浏览下一张",
+            "updatedAtMs": 1_700_000_022_000,
+        })
+        page.wait_for_function(
+            f"() => state.galleryRemoval.contexts.size === 0 "
+            f"&& state.assets.every(asset => asset.id !== '{IMAGE_IDS[1]}') "
+            f"&& state.lightboxAssetID === '{IMAGE_PAGE_2_IDS[0]}' "
+            f"&& state.selectedAssetID === '{IMAGE_PAGE_2_IDS[0]}' "
+            f"&& state.selectedDetail?.assetID === '{IMAGE_PAGE_2_IDS[0]}' "
+            "&& document.querySelector('#lightboxTitle').textContent.includes('PHOTO_0003.JPG') "
+            f"&& history.state?.imageAllWorkspace?.context?.galleryLightbox?.assetID === '{IMAGE_PAGE_2_IDS[0]}'",
+            timeout=5_000,
+        )
+        assert page.locator("#lightboxPosition").inner_text().startswith("2 / ")
+        assert page.evaluate("() => state.lightboxPreservesSelection") is False
+        page.evaluate(
+            "() => { autoPaginateIfNeeded = globalThis.__galleryDeleteAutoPaginate; }"
+        )
+        page.screenshot(
+            path="/tmp/imageall-gallery-lightbox-delete-continuity.png",
+            full_page=True,
+        )
+        page.locator("#lightboxBackButton").click()
+        page.locator("#lightbox").wait_for(state="hidden")
+        page.evaluate("() => history.forward()")
+        page.wait_for_function(
+            f"() => !document.querySelector('#lightbox').classList.contains('hidden') "
+            f"&& state.lightboxAssetID === '{IMAGE_PAGE_2_IDS[0]}' "
+            "&& document.querySelector('#lightboxTitle').textContent.includes('PHOTO_0003.JPG')"
+        )
+        assert IMAGE_IDS[1] not in page.evaluate(
+            "() => JSON.stringify(history.state.imageAllWorkspace.context)"
+        )
+
+        # The same continuation must not collapse a deliberate multi-selection.
+        # Make the previewed item the selection primary, remove it, and require
+        # the surviving neighbor to become the repaired primary and anchor.
+        page.locator("#lightboxBackButton").click()
+        page.locator("#lightbox").wait_for(state="hidden")
+        page.locator("#selectionModeButton").click()
+        next_gallery_main = page.locator(
+            f'[data-asset-id="{IMAGE_PAGE_2_IDS[1]}"] > .asset-card-main'
+        )
+        current_gallery_main = page.locator(
+            f'[data-asset-id="{IMAGE_PAGE_2_IDS[0]}"] > .asset-card-main'
+        )
+        next_gallery_main.click()
+        current_gallery_main.click(modifiers=["Meta"])
+        page.wait_for_function(
+            f"() => state.selectedAssetIDs.size === 2 "
+            f"&& state.selectedAssetID === '{IMAGE_PAGE_2_IDS[0]}' "
+            f"&& state.selectionAnchorID === '{IMAGE_PAGE_2_IDS[0]}'"
+        )
+        current_gallery_main.dblclick()
+        page.wait_for_function(
+            f"() => state.lightboxAssetID === '{IMAGE_PAGE_2_IDS[0]}' "
+            "&& state.lightboxPreservesSelection "
+            "&& state.selectedAssetIDs.size === 2"
+        )
+        page.locator("#lightboxDeleteButton").click()
+        page.locator("#confirmDialog[open]").wait_for()
+        page.locator("#confirmActionButton").click()
+        page.wait_for_function("() => state.galleryRemoval.contexts.size === 1")
+        hidden_gallery_asset_ids.add(IMAGE_PAGE_2_IDS[0])
+        review_removal["request"].update({
+            "phase": "completed",
+            "progress": {
+                "phase": "completedAsset",
+                "completedAssetCount": 1,
+                "totalAssetCount": 1,
+                "copiedBytes": 0,
+                "totalFileBytes": 0,
+            },
+            "audit": {
+                "hiddenAssetIDs": [IMAGE_PAGE_2_IDS[0]],
+                "recycledEntryIDs": [],
+                "permanentlyDeletedAssetIDs": [IMAGE_PAGE_2_IDS[0]],
+                "durabilityPendingAssetIDs": [],
+                "failedAssetIDs": [],
+                "authorizationRequiredSourceIDs": [],
+                "authorizationRequiredAssetIDs": [],
+                "authorizationDeniedPhotosAssetIDs": [],
+                "mutationAuthorizationInvalidAssetIDs": [],
+                "photosMutationFailedAssetIDs": [],
+                "photosMutationFailureCategories": [],
+                "photosMutationFailureCodes": [],
+                "sourceChangedAssetIDs": [],
+            },
             "message": "已删除多选预览并保留剩余选择",
             "updatedAtMs": 1_700_000_023_000,
         })
         page.wait_for_function(
             f"() => state.galleryRemoval.contexts.size === 0 "
-            f"&& state.lightboxAssetID === '{IMAGE_PAGE_2_IDS[0]}' "
+            f"&& state.lightboxAssetID === '{IMAGE_PAGE_2_IDS[1]}' "
             "&& state.lightboxPreservesSelection "
             "&& state.selectedAssetIDs.size === 1 "
-            f"&& state.selectedAssetIDs.has('{IMAGE_PAGE_2_IDS[0]}') "
-            f"&& state.selectedAssetID === '{IMAGE_PAGE_2_IDS[0]}' "
-            f"&& state.selectionAnchorID === '{IMAGE_PAGE_2_IDS[0]}' "
-            "&& document.querySelector('#lightboxTitle').textContent.includes('PHOTO_0003.JPG')"
+            f"&& state.selectedAssetIDs.has('{IMAGE_PAGE_2_IDS[1]}') "
+            f"&& state.selectedAssetID === '{IMAGE_PAGE_2_IDS[1]}' "
+            f"&& state.selectionAnchorID === '{IMAGE_PAGE_2_IDS[1]}' "
+            "&& document.querySelector('#lightboxTitle').textContent.includes('PHOTO_0004.JPG')"
         )
         assert page.locator("#lightboxDeleteButton").is_enabled()
 
