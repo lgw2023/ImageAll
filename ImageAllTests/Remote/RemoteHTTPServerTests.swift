@@ -3703,6 +3703,16 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function commandSelectionContext"))
         XCTAssertTrue(script.contains("function selectAllCommandContext"))
         XCTAssertTrue(script.contains("function previewCommandContext"))
+        XCTAssertTrue(script.contains("function openReviewLightbox"))
+        XCTAssertTrue(script.contains("reviewKey: reviewItemKey(item)"))
+        XCTAssertTrue(script.contains("primaryReviewKey: reviewItemKey(primaryItem)"))
+        XCTAssertTrue(script.contains("openReviewLightbox(item, options)"))
+        XCTAssertTrue(script.contains("const selectionContext = commandSelectionContext(contextRoute)"))
+        XCTAssertTrue(script.contains("previewCommandContext(contextRoute, selectionContext)"))
+        XCTAssertEqual(
+            script.components(separatedBy: "openLightbox(\"review\"").count - 1,
+            1
+        )
         XCTAssertTrue(script.contains("id: \"reviewAcceptSelection\""))
         XCTAssertTrue(script.contains("id: \"reviewRejectSelection\""))
         XCTAssertTrue(script.contains("id: \"reviewDeferSelection\""))

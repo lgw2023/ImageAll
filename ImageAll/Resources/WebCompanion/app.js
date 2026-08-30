@@ -19868,6 +19868,14 @@ function restoreGridSelectionForDoubleClick(surface, itemID) {
   return false;
 }
 
+function openReviewLightbox(item, options = {}) {
+  if (!item?.assetID) return;
+  openLightbox("review", item.assetID, {
+    ...options,
+    reviewKey: reviewItemKey(item),
+  });
+}
+
 function openLightboxFromContextMenu(context, assetID, returnFocus, {
   reviewKey = null,
 } = {}) {
@@ -39463,14 +39471,16 @@ function commandSelectionContext(route = commandContextRoute()) {
   }
   if (route === "review" && state.review.mode === "queue") {
     const selectedIDs = [...state.review.selectedAssetIDs];
+    const primaryItem = state.review.items[state.review.selectedIndex];
     return {
       route,
       noun: "审核项",
       allIDs: state.review.items.map((item) => item.assetID),
       selectedIDs,
-      primaryID: state.review.items[state.review.selectedIndex]?.assetID
+      primaryID: primaryItem?.assetID
         || selectedIDs[0]
         || null,
+      primaryReviewKey: reviewItemKey(primaryItem),
     };
   }
   if (route === "slimming" && state.slimming.view === "analysis") {
@@ -39496,12 +39506,17 @@ function selectAllCommandContext(route) {
   }
 }
 
-function previewCommandContext(route) {
-  const context = commandSelectionContext(route);
+function previewCommandContext(route, context = commandSelectionContext(route)) {
   if (!context?.primaryID) return;
-  openLightbox(route === "review" ? "review" : route === "slimming" ? "slimming" : "library",
-    context.primaryID,
-    { preserveSelection: context.selectedIDs.length > 1 });
+  const options = { preserveSelection: context.selectedIDs.length > 1 };
+  if (route === "review") {
+    const item = state.review.items.find(
+      (candidate) => reviewItemKey(candidate) === context.primaryReviewKey
+    );
+    openReviewLightbox(item, options);
+    return;
+  }
+  openLightbox(route === "slimming" ? "slimming" : "library", context.primaryID, options);
 }
 
 function availableCommands() {
@@ -40192,6 +40207,7 @@ async function executeCommand(commandID) {
   const command = availableCommands().find((item) => item.id === commandID);
   if (!command || command.disabled) return;
   const contextRoute = commandContextRoute();
+  const selectionContext = commandSelectionContext(contextRoute);
   const commandReturnFocus = state.commandReturnFocus;
   await returnFromCommandPalette({ restoreFocus: false });
   if (commandID.startsWith("media:")) {
@@ -40314,7 +40330,7 @@ async function executeCommand(commandID) {
     await undoLatestDecision("review");
     break;
   case "previewSelection": {
-    previewCommandContext(contextRoute);
+    previewCommandContext(contextRoute, selectionContext);
     break;
   }
   case "reviewAcceptSelection":
@@ -44639,9 +44655,8 @@ function bindEvents() {
     if (!item) return;
     const restoredSelection = restoreGridSelectionForDoubleClick("review", item.assetID);
     if (!state.review.selectionMode && !restoredSelection) selectReviewIndex(index);
-    openLightbox("review", item.assetID, {
+    openReviewLightbox(item, {
       preserveSelection: restoredSelection,
-      reviewKey: reviewItemKey(item),
     });
   });
   elements.previousReviewButton.addEventListener("click", () => {
@@ -44684,14 +44699,14 @@ function bindEvents() {
     if (item && state.review.selectedAssetIDs.size > 1) {
       selectReviewIndex(state.review.selectedIndex);
     }
-    openLightbox("review", item?.assetID);
+    openReviewLightbox(item);
   });
   elements.reviewPreviewImage.addEventListener("dblclick", () => {
     const item = state.review.items[state.review.selectedIndex];
     if (item && state.review.selectedAssetIDs.size > 1) {
       selectReviewIndex(state.review.selectedIndex);
     }
-    openLightbox("review", item?.assetID);
+    openReviewLightbox(item);
   });
 
   elements.lightboxBackButton.addEventListener("click", () => void returnFromLightbox());
@@ -45617,7 +45632,7 @@ function bindEvents() {
         const item = state.review.items[state.review.selectedIndex];
         if (item) {
           event.preventDefault();
-          openLightbox("review", item.assetID, {
+          openReviewLightbox(item, {
             preserveSelection: state.review.selectedAssetIDs.size > 1,
           });
         }

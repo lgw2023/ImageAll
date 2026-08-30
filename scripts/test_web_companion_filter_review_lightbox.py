@@ -4727,6 +4727,64 @@ def main():
             "?.dataset.reviewKey === reviewKey",
             arg=second_origin_key,
         )
+        page.locator("#reviewOpenLightboxButton").click()
+        page.wait_for_function(
+            "reviewKey => state.lightboxReviewKey === reviewKey "
+            "&& document.querySelector('#lightboxPosition').textContent === '2 / 3'",
+            arg=second_origin_key,
+        )
+        page.locator("#lightboxBackButton").click()
+        page.locator("#lightbox").wait_for(state="hidden")
+        page.wait_for_function(
+            "reviewKey => document.activeElement?.closest('[data-review-key]')"
+            "?.dataset.reviewKey === reviewKey",
+            arg=second_origin_key,
+        )
+        page.locator("#reviewPreviewImage").dblclick()
+        page.wait_for_function(
+            "reviewKey => state.lightboxReviewKey === reviewKey "
+            "&& document.querySelector('#lightboxPosition').textContent === '2 / 3'",
+            arg=second_origin_key,
+        )
+        page.locator("#lightboxBackButton").click()
+        page.locator("#lightbox").wait_for(state="hidden")
+        page.wait_for_function(
+            "reviewKey => document.activeElement?.closest('[data-review-key]')"
+            "?.dataset.reviewKey === reviewKey",
+            arg=second_origin_key,
+        )
+        second_origin_main.focus()
+        page.keyboard.press("Space")
+        page.wait_for_function(
+            "reviewKey => state.lightboxReviewKey === reviewKey "
+            "&& document.querySelector('#lightboxPosition').textContent === '2 / 3'",
+            arg=second_origin_key,
+        )
+        page.locator("#lightboxBackButton").click()
+        page.locator("#lightbox").wait_for(state="hidden")
+        page.wait_for_function(
+            "reviewKey => document.activeElement?.closest('[data-review-key]')"
+            "?.dataset.reviewKey === reviewKey",
+            arg=second_origin_key,
+        )
+        second_origin_main.focus()
+        page.keyboard.press("Meta+K")
+        page.locator("#commandPalette[open]").wait_for()
+        page.locator('[data-command-id="previewSelection"]').click()
+        page.wait_for_function(
+            "reviewKey => state.lightboxReviewKey === reviewKey "
+            "&& document.querySelector('#lightboxPosition').textContent === '2 / 3'",
+            arg=second_origin_key,
+        )
+        page.locator("#lightboxBackButton").click()
+        page.locator("#lightbox").wait_for(state="hidden")
+        page.wait_for_function(
+            "reviewKey => document.activeElement?.closest('[data-review-key]')"
+            "?.dataset.reviewKey === reviewKey",
+            arg=second_origin_key,
+        )
+        assert len(asset_queries) == context_asset_query_count
+        assert len(review_decisions) == context_decision_count
         second_origin_main.click(button="right")
         review_context_menu.wait_for()
         assert page.locator("#reviewContextMenuTitle").inner_text() == (
