@@ -3476,6 +3476,22 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function sourceManagementSnapshotFingerprint("))
         XCTAssertTrue(script.contains("function sourceManagerRowFingerprint("))
         XCTAssertTrue(script.contains("function syncSourceManagerRow("))
+        XCTAssertTrue(
+            script.contains(
+                "ArrowUp ArrowDown PageUp PageDown Home End ArrowLeft ArrowRight"
+            )
+        )
+        XCTAssertTrue(script.contains("row.tabIndex = selected ? 0 : -1"))
+        XCTAssertTrue(
+            script.contains(
+                "longListNavigationTarget(rows, index, event.key, navigation)"
+            )
+        )
+        XCTAssertTrue(
+            script.contains(
+                "row?.scrollIntoView({ block: \"nearest\", inline: \"nearest\" })"
+            )
+        )
         XCTAssertTrue(script.contains("function sourceManagerActionDisabled("))
         XCTAssertTrue(script.contains("function syncSourceManagerActionButton("))
         XCTAssertTrue(script.contains("function syncSourceManagerActionGroup("))

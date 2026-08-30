@@ -1045,6 +1045,127 @@ def main():
             }}"""
         )
         assert all(restored_state_frame.values()), restored_state_frame
+
+        long_source_ids = [
+            f"10000000-0000-0000-0000-{index:012d}"
+            for index in range(1, 19)
+        ]
+        sources.extend({
+            "id": source_id,
+            "kind": "folder",
+            "displayName": f"Synthetic Archive {index:02d}",
+            "state": "active",
+        } for index, source_id in enumerate(long_source_ids, start=1))
+        reads_before_long_list = source_management_reads
+        page.locator("#sourceManagerRefreshButton").click()
+        page.wait_for_function(
+            "() => document.querySelectorAll("
+            "'#sourceManagerList [data-source-manager-select]').length === 21"
+        )
+        assert source_management_reads == reads_before_long_list + 1
+        page.evaluate(
+            f"""() => {{
+              const navigation = document.querySelector('.source-manager-source-list');
+              const rows = [...navigation.querySelectorAll('[data-source-manager-select]')];
+              rows[0].focus({{ preventScroll: true }});
+              navigation.scrollTop = 0;
+              window.__sourceManagerLongListFrame = {{
+                navigation,
+                rows,
+              }};
+            }}"""
+        )
+        first_page = page.evaluate(
+            """() => {
+              const frame = window.__sourceManagerLongListFrame;
+              const viewportRect = frame.navigation.getBoundingClientRect();
+              const style = getComputedStyle(frame.navigation);
+              const top = viewportRect.top + (parseFloat(style.scrollPaddingTop) || 0);
+              const bottom = viewportRect.bottom - (parseFloat(style.scrollPaddingBottom) || 0);
+              const visible = frame.rows.filter((row) => {
+                const rect = row.getBoundingClientRect();
+                return rect.bottom > top && rect.top < bottom;
+              }).length;
+              return {
+                visible,
+                scrollable: frame.navigation.scrollHeight > frame.navigation.clientHeight,
+              };
+            }"""
+        )
+        assert first_page["scrollable"]
+        assert first_page["visible"] > 2
+        page.keyboard.press("PageDown")
+        first_page_index = page.evaluate(
+            """() => {
+              const frame = window.__sourceManagerLongListFrame;
+              return frame.rows.indexOf(document.activeElement);
+            }"""
+        )
+        assert first_page_index == first_page["visible"] - 1
+        page.keyboard.press("PageDown")
+        second_page_index = page.evaluate(
+            """() => window.__sourceManagerLongListFrame.rows.indexOf(document.activeElement)"""
+        )
+        assert second_page_index > first_page_index
+        page.keyboard.press("PageUp")
+        page_up_index = page.evaluate(
+            """() => window.__sourceManagerLongListFrame.rows.indexOf(document.activeElement)"""
+        )
+        assert page_up_index < second_page_index
+        page.keyboard.press("End")
+        end_state = page.evaluate(
+            f"""() => {{
+              const frame = window.__sourceManagerLongListFrame;
+              const active = document.activeElement;
+              const rect = active.getBoundingClientRect();
+              const viewport = frame.navigation.getBoundingClientRect();
+              const tabStops = frame.rows.filter((row) => row.tabIndex === 0);
+              return {{
+                sameRows: frame.rows.every((row, index) =>
+                  row === frame.navigation.querySelectorAll('[data-source-manager-select]')[index]
+                ),
+                activeID: active.dataset.sourceManagerSelect,
+                selected: active.getAttribute('aria-selected'),
+                shortcut: active.getAttribute('aria-keyshortcuts'),
+                visible: rect.top >= viewport.top && rect.bottom <= viewport.bottom,
+                tabStops: tabStops.length,
+                tabStopIsActive: tabStops[0] === active,
+                scrolled: frame.navigation.scrollTop > 0,
+              }};
+            }}"""
+        )
+        assert end_state == {
+            "sameRows": True,
+            "activeID": long_source_ids[-1],
+            "selected": "true",
+            "shortcut": "ArrowUp ArrowDown PageUp PageDown Home End ArrowLeft ArrowRight",
+            "visible": True,
+            "tabStops": 1,
+            "tabStopIsActive": True,
+            "scrolled": True,
+        }, end_state
+        page.keyboard.press("Home")
+        home_state = page.evaluate(
+            f"""() => {{
+              const frame = window.__sourceManagerLongListFrame;
+              const active = document.activeElement;
+              const rect = active.getBoundingClientRect();
+              const viewport = frame.navigation.getBoundingClientRect();
+              return {{
+                activeID: active.dataset.sourceManagerSelect,
+                selected: active.getAttribute('aria-selected'),
+                visible: rect.top >= viewport.top && rect.bottom <= viewport.bottom,
+                tabStops: frame.rows.filter((row) => row.tabIndex === 0).length,
+              }};
+            }}"""
+        )
+        assert home_state == {
+            "activeID": PHOTOS_SOURCE_ID,
+            "selected": "true",
+            "visible": True,
+            "tabStops": 1,
+        }, home_state
+        assert source_management_reads == reads_before_long_list + 1
         page.screenshot(
             path="/tmp/imageall-source-manager-state-continuity.png",
             full_page=True,

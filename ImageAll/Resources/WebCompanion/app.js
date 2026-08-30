@@ -13059,15 +13059,17 @@ function sourceManagerSelectedSource() {
   return sources.find((source) => source.id === state.sourceManagement.selectedSourceID) || null;
 }
 
-function selectSourceManagerSource(sourceID, { focus = false } = {}) {
+function selectSourceManagerSource(sourceID, { focus = false, reveal = false } = {}) {
   const sources = state.sourceManagement.snapshot?.sources || [];
   if (!sources.some((source) => source.id === sourceID)) return false;
   state.sourceManagement.selectedSourceID = sourceID;
   renderSourceManagement({ reconcileContent: true });
   if (focus) {
-    elements.sourceManagerList.querySelector(
+    const row = elements.sourceManagerList.querySelector(
       `[data-source-manager-select="${CSS.escape(sourceID)}"]`
-    )?.focus({ preventScroll: true });
+    );
+    if (reveal) row?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    row?.focus({ preventScroll: true });
   }
   return true;
 }
@@ -13080,15 +13082,17 @@ function handleSourceManagerKeyboardNavigation(event) {
       "[data-source-manager-select]"
     )];
     const index = rows.indexOf(sourceRow);
-    if (["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
-      const nextIndex = event.key === "Home" ? 0
-        : event.key === "End" ? rows.length - 1
-          : Math.max(0, Math.min(
-            rows.length - 1,
-            index + (event.key === "ArrowDown" ? 1 : -1)
-          ));
+    if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(
+      event.key
+    )) {
+      const navigation = sourceRow.closest(".source-manager-source-list");
+      const nextIndex = longListNavigationTarget(rows, index, event.key, navigation);
       event.preventDefault();
-      selectSourceManagerSource(rows[nextIndex].dataset.sourceManagerSelect, { focus: true });
+      event.stopPropagation();
+      selectSourceManagerSource(rows[nextIndex].dataset.sourceManagerSelect, {
+        focus: true,
+        reveal: true,
+      });
       return true;
     }
     if (event.key === "ArrowRight") {
@@ -13348,6 +13352,11 @@ function syncSourceManagerRow(row, source, selectedSourceID) {
   row.setAttribute("role", "option");
   const selected = source.id === selectedSourceID;
   row.setAttribute("aria-selected", String(selected));
+  row.setAttribute(
+    "aria-keyshortcuts",
+    "ArrowUp ArrowDown PageUp PageDown Home End ArrowLeft ArrowRight"
+  );
+  row.tabIndex = selected ? 0 : -1;
   row.classList.toggle("selected", selected);
 
   let icon = row.querySelector(":scope > .source-manager-icon");
