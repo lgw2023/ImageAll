@@ -19924,6 +19924,67 @@ function galleryRemovalReturnFocus(previewAssetID = null) {
   return { element: document.activeElement };
 }
 
+async function reconcileLibraryPreviewAfterGalleryRemoval(context, hiddenAssetIDs) {
+  const previewAssetID = context?.surface !== "review" ? context?.previewAssetID : null;
+  if (!previewAssetID || !hiddenAssetIDs.has(previewAssetID)) return;
+  if (state.lightboxContext !== "library"
+    || state.lightboxAssetID !== previewAssetID
+    || elements.lightbox.classList.contains("hidden")) return;
+
+  const remainingIDs = state.assets.map((asset) => asset.id);
+  const replacementID = replacementPreviewAssetID(
+    context.assetIDs || [],
+    remainingIDs,
+    previewAssetID
+  );
+  if (!replacementID) {
+    closeLightbox();
+    return;
+  }
+
+  if (state.cloudPreview.assetID === previewAssetID
+    && state.cloudPreview.status !== "hidden") resetCloudPreviewRecovery();
+  state.lightboxAssetID = replacementID;
+  state.lightboxOriginalAssetID = null;
+  state.lightboxOriginalLoading = false;
+  const replacementCard = elements.assetGrid.querySelector(
+    `[data-asset-id="${CSS.escape(replacementID)}"]`
+  );
+  state.lightboxReturnFocus = assetCardMainButton(replacementCard)
+    || state.lightboxReturnFocus;
+
+  if (state.lightboxPreservesSelection && state.selectionMode) {
+    const remainingSelectedIDs = state.assets
+      .map((asset) => asset.id)
+      .filter((assetID) => state.selectedAssetIDs.has(assetID));
+    if (!remainingSelectedIDs.length) {
+      state.selectedAssetIDs = new Set([replacementID]);
+      state.selectedAssetID = replacementID;
+      state.selectionAnchorID = replacementID;
+    } else {
+      if (!remainingSelectedIDs.includes(state.selectedAssetID)) {
+        state.selectedAssetID = replacementPreviewAssetID(
+          context.assetIDs || [],
+          remainingSelectedIDs,
+          context.selectedAssetID || previewAssetID
+        ) || remainingSelectedIDs[0];
+      }
+      if (!remainingSelectedIDs.includes(state.selectionAnchorID)) {
+        state.selectionAnchorID = state.selectedAssetID;
+      }
+    }
+    renderAssetSelectionState();
+    renderSelectionMutation();
+    scheduleSelectionAggregate();
+  }
+
+  renderLightbox();
+  checkpointActiveWorkspaceHistory();
+  if (!state.lightboxPreservesSelection) {
+    await syncLibraryLightboxSelection(replacementID);
+  }
+}
+
 async function submitGalleryRemoval({
   assetIDs: requestedAssetIDs = null,
   previewAssetID = null,
@@ -20114,17 +20175,16 @@ async function applyGalleryRemovalTerminal(request) {
       state.inspectorRequestGeneration += 1;
     }
     for (const assetID of hidden) state.lightboxFavoriteStates.delete(assetID);
-    if (state.lightboxContext === "library" && hidden.has(state.lightboxAssetID)) {
-      closeLightbox();
-    }
     await loadAssets({
       preserveSelection: true,
       preserveUnchangedGrid: true,
       preserveLoadedWindow: true,
     });
+    await reconcileLibraryPreviewAfterGalleryRemoval(context, hidden);
     elements.libraryScroll.scrollTop = scrollTop;
     if (state.selectionMode && state.selectedAssetIDs.size) scheduleSelectionAggregate();
     else renderInspectorSurface();
+    checkpointActiveWorkspaceHistory();
   } else if (hidden.size) {
     const session = state.mediaSessions[request.mediaKind];
     if (session) {

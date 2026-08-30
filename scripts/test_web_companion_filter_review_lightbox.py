@@ -263,6 +263,7 @@ def main():
     favorite_mutations = []
     submitted_review_removals = []
     review_removal = {"request": None}
+    hidden_gallery_asset_ids = set()
     thumbnail_queries = []
     workspace_notice_requests = []
     workspace_notice_fail_next = [False]
@@ -695,6 +696,10 @@ def main():
                     "syncStatus": "synced",
                     "lastErrorCode": None,
                 }
+            items = [
+                item for item in items
+                if item["id"] not in hidden_gallery_asset_ids
+            ]
             fulfill_json(route, {"items": items, "nextCursor": next_cursor})
 
         page.route("**/v1/assets?**", route_assets)
@@ -813,7 +818,10 @@ def main():
                 submitted_review_removals.append(payload)
                 canonical_ids = sorted(set(payload["assetIDs"]))
                 review_removal["request"] = {
-                    "id": "aaaaaaaa-4444-5555-6666-aaaaaaaaaaaa",
+                    "id": (
+                        "aaaaaaaa-4444-5555-6666-"
+                        f"{len(submitted_review_removals):012d}"
+                    ),
                     "operationID": payload["operationID"],
                     "scope": payload.get("scope"),
                     "jobID": payload.get("jobID"),
@@ -5462,6 +5470,160 @@ def main():
         assert gallery_after_refresh["searchInput"] == ""
         assert private_search not in gallery_after_refresh["history"]
         assert "CAT_0001.JPG" not in gallery_after_refresh["history"]
+
+        # Deleting the photo currently shown in the main-gallery lightbox must
+        # continue with its next visible neighbor, matching the Mac single-photo
+        # flow instead of dropping the user back into the grid. The replacement
+        # also has to replace the lightbox history payload so Forward cannot
+        # revive the now-hidden asset.
+        page.set_viewport_size({"width": 1440, "height": 960})
+        page.evaluate("() => setSelectionMode(false)")
+        first_gallery_main = page.locator(
+            f'[data-asset-id="{IMAGE_IDS[0]}"] > .asset-card-main'
+        )
+        first_gallery_main.click()
+        page.wait_for_function(
+            f"() => state.selectedDetail?.assetID === '{IMAGE_IDS[0]}'"
+        )
+        page.locator("#openLightboxButton").click()
+        page.locator("#lightbox:not(.hidden)").wait_for()
+        assert "CAT_0001.JPG" in page.locator("#lightboxTitle").inner_text()
+        gallery_delete = page.locator("#lightboxDeleteButton")
+        assert gallery_delete.is_enabled()
+        gallery_delete.click()
+        page.locator("#confirmDialog[open]").wait_for()
+        page.locator("#confirmActionButton").click()
+        page.wait_for_function(
+            "() => state.galleryRemoval.contexts.size === 1 "
+            "&& document.querySelector('#lightboxDeleteButton').disabled"
+        )
+        assert submitted_review_removals[-1]["assetIDs"] == [IMAGE_IDS[0]]
+        assert submitted_review_removals[-1]["scope"] == "gallerySelection"
+
+        hidden_gallery_asset_ids.add(IMAGE_IDS[0])
+        review_removal["request"].update({
+            "phase": "completed",
+            "progress": {
+                "phase": "completedAsset",
+                "completedAssetCount": 1,
+                "totalAssetCount": 1,
+                "copiedBytes": 0,
+                "totalFileBytes": 0,
+            },
+            "audit": {
+                "hiddenAssetIDs": [IMAGE_IDS[0]],
+                "recycledEntryIDs": [],
+                "permanentlyDeletedAssetIDs": [IMAGE_IDS[0]],
+                "durabilityPendingAssetIDs": [],
+                "failedAssetIDs": [],
+                "authorizationRequiredSourceIDs": [],
+                "authorizationRequiredAssetIDs": [],
+                "authorizationDeniedPhotosAssetIDs": [],
+                "mutationAuthorizationInvalidAssetIDs": [],
+                "photosMutationFailedAssetIDs": [],
+                "photosMutationFailureCategories": [],
+                "photosMutationFailureCodes": [],
+                "sourceChangedAssetIDs": [],
+            },
+            "message": "已删除当前照片并继续浏览下一张",
+            "updatedAtMs": 1_700_000_022_000,
+        })
+        page.wait_for_function(
+            f"() => state.galleryRemoval.contexts.size === 0 "
+            f"&& state.assets.every(asset => asset.id !== '{IMAGE_IDS[0]}') "
+            f"&& state.lightboxAssetID === '{IMAGE_IDS[1]}' "
+            f"&& state.selectedAssetID === '{IMAGE_IDS[1]}' "
+            f"&& state.selectedDetail?.assetID === '{IMAGE_IDS[1]}' "
+            "&& document.querySelector('#lightboxTitle').textContent.includes('TRIP_0002.JPG') "
+            f"&& history.state?.imageAllWorkspace?.context?.galleryLightbox?.assetID === '{IMAGE_IDS[1]}'",
+            timeout=5_000,
+        )
+        assert page.locator("#lightboxPosition").inner_text().startswith("1 / ")
+        assert page.evaluate("() => state.lightboxPreservesSelection") is False
+        page.screenshot(
+            path="/tmp/imageall-gallery-lightbox-delete-continuity.png",
+            full_page=True,
+        )
+        page.locator("#lightboxBackButton").click()
+        page.locator("#lightbox").wait_for(state="hidden")
+        page.evaluate("() => history.forward()")
+        page.wait_for_function(
+            f"() => !document.querySelector('#lightbox').classList.contains('hidden') "
+            f"&& state.lightboxAssetID === '{IMAGE_IDS[1]}' "
+            "&& document.querySelector('#lightboxTitle').textContent.includes('TRIP_0002.JPG')"
+        )
+        assert IMAGE_IDS[0] not in page.evaluate(
+            "() => JSON.stringify(history.state.imageAllWorkspace.context)"
+        )
+
+        # The same continuation must not collapse a deliberate multi-selection.
+        # Make the previewed item the selection primary, remove it, and require
+        # the surviving neighbor to become the repaired primary and anchor.
+        page.locator("#lightboxBackButton").click()
+        page.locator("#lightbox").wait_for(state="hidden")
+        page.locator("#selectionModeButton").click()
+        next_gallery_main = page.locator(
+            f'[data-asset-id="{IMAGE_PAGE_2_IDS[0]}"] > .asset-card-main'
+        )
+        current_gallery_main = page.locator(
+            f'[data-asset-id="{IMAGE_IDS[1]}"] > .asset-card-main'
+        )
+        next_gallery_main.click()
+        current_gallery_main.click(modifiers=["Meta"])
+        page.wait_for_function(
+            f"() => state.selectedAssetIDs.size === 2 "
+            f"&& state.selectedAssetID === '{IMAGE_IDS[1]}' "
+            f"&& state.selectionAnchorID === '{IMAGE_IDS[1]}'"
+        )
+        current_gallery_main.dblclick()
+        page.wait_for_function(
+            f"() => state.lightboxAssetID === '{IMAGE_IDS[1]}' "
+            "&& state.lightboxPreservesSelection "
+            "&& state.selectedAssetIDs.size === 2"
+        )
+        page.locator("#lightboxDeleteButton").click()
+        page.locator("#confirmDialog[open]").wait_for()
+        page.locator("#confirmActionButton").click()
+        page.wait_for_function("() => state.galleryRemoval.contexts.size === 1")
+        hidden_gallery_asset_ids.add(IMAGE_IDS[1])
+        review_removal["request"].update({
+            "phase": "completed",
+            "progress": {
+                "phase": "completedAsset",
+                "completedAssetCount": 1,
+                "totalAssetCount": 1,
+                "copiedBytes": 0,
+                "totalFileBytes": 0,
+            },
+            "audit": {
+                "hiddenAssetIDs": [IMAGE_IDS[1]],
+                "recycledEntryIDs": [],
+                "permanentlyDeletedAssetIDs": [IMAGE_IDS[1]],
+                "durabilityPendingAssetIDs": [],
+                "failedAssetIDs": [],
+                "authorizationRequiredSourceIDs": [],
+                "authorizationRequiredAssetIDs": [],
+                "authorizationDeniedPhotosAssetIDs": [],
+                "mutationAuthorizationInvalidAssetIDs": [],
+                "photosMutationFailedAssetIDs": [],
+                "photosMutationFailureCategories": [],
+                "photosMutationFailureCodes": [],
+                "sourceChangedAssetIDs": [],
+            },
+            "message": "已删除多选预览并保留剩余选择",
+            "updatedAtMs": 1_700_000_023_000,
+        })
+        page.wait_for_function(
+            f"() => state.galleryRemoval.contexts.size === 0 "
+            f"&& state.lightboxAssetID === '{IMAGE_PAGE_2_IDS[0]}' "
+            "&& state.lightboxPreservesSelection "
+            "&& state.selectedAssetIDs.size === 1 "
+            f"&& state.selectedAssetIDs.has('{IMAGE_PAGE_2_IDS[0]}') "
+            f"&& state.selectedAssetID === '{IMAGE_PAGE_2_IDS[0]}' "
+            f"&& state.selectionAnchorID === '{IMAGE_PAGE_2_IDS[0]}' "
+            "&& document.querySelector('#lightboxTitle').textContent.includes('PHOTO_0003.JPG')"
+        )
+        assert page.locator("#lightboxDeleteButton").is_enabled()
 
         assert not page_errors, page_errors
         unexpected_console_errors = [

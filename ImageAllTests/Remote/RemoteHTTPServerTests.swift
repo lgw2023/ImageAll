@@ -3049,7 +3049,18 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function trapLibraryLightboxFocus"))
         XCTAssertTrue(script.contains("elements.lightbox.classList.add(\"review-docked\")"))
         XCTAssertTrue(script.contains("function reconcileReviewPreviewAfterGalleryRemoval"))
+        XCTAssertTrue(script.contains("function reconcileLibraryPreviewAfterGalleryRemoval"))
         XCTAssertTrue(script.contains("function replacementPreviewAssetID"))
+        XCTAssertTrue(
+            script.contains(
+                "await reconcileLibraryPreviewAfterGalleryRemoval(context, hidden);"
+            )
+        )
+        XCTAssertFalse(
+            script.contains(
+                "state.lightboxContext === \"library\" && hidden.has(state.lightboxAssetID)"
+            )
+        )
         XCTAssertTrue(script.contains("function bindPersistentHelp"))
         XCTAssertTrue(script.contains("function schedulePersistentHelp"))
         XCTAssertTrue(script.contains("function persistentHelpOwnerKey"))
