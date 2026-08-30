@@ -2032,7 +2032,9 @@ def main():
                   === frame.sceneList,
                 focus: document.activeElement === dog,
                 selected: dog.dataset.tagFilterState === "included",
-                unrelatedMutations: frame.mutations.length === 0,
+                unrelatedMutations: frame.mutations.every(record =>
+                  record.type === "attributes" && record.attributeName === "tabindex"
+                ),
               }};
             }}"""
         )
@@ -2260,6 +2262,107 @@ def main():
         ) == "tagManager"
         assert page.locator("#tagManagerTagSelect").input_value() == TAG_DOG
         assert page.evaluate("() => document.activeElement?.id") == "tagManagerTagName"
+        page.set_viewport_size({"width": 720, "height": 420})
+        page.locator("#tagManagerTagGroupSelect").select_option(GROUP_SCENE)
+        page.locator("#tagManagerTagName").fill("只存在于输入框的私密草稿")
+        page.locator("#tagManagerTagName").evaluate(
+            "input => input.setSelectionRange(1, 3)"
+        )
+        page.locator("#tagManagerShell").evaluate(
+            "shell => { shell.scrollTop = Math.min(120, shell.scrollHeight - shell.clientHeight); }"
+        )
+        page.wait_for_timeout(100)
+        saved_manager_scroll = page.locator("#tagManagerShell").evaluate(
+            "shell => shell.scrollTop"
+        )
+        assert saved_manager_scroll > 0
+        manager_history = page.evaluate(
+            "() => history.state?.imageAllWorkspace?.context || {}"
+        )
+        assert manager_history["tagManagerTagID"] == TAG_DOG
+        assert manager_history["tagManagerTargetGroupID"] == GROUP_SCENE
+        assert manager_history["tagManagerGroupID"] == GROUP_SUBJECT
+        assert manager_history["tagManagerReturnTagID"] == TAG_DOG
+        assert manager_history["tagManagerReturnSurface"] == "sidebar"
+        assert manager_history["tagManagerMode"] == "manage"
+        assert manager_history["tagManagerFocusID"] == "tagManagerTagName"
+        manager_history_payload = json.dumps(manager_history, ensure_ascii=False)
+        assert "只存在于输入框的私密草稿" not in manager_history_payload
+        assert "狗" not in manager_history_payload
+        assert "主体" not in manager_history_payload
+
+        page.reload(wait_until="domcontentloaded")
+        page.locator("#tagManagerDialog[open]").wait_for()
+        assert page.locator("#tagManagerTagSelect").input_value() == TAG_DOG
+        assert page.locator("#tagManagerTagGroupSelect").input_value() == GROUP_SCENE
+        assert page.locator("#tagManagerGroupSelect").input_value() == GROUP_SUBJECT
+        assert page.locator("#tagManagerTagName").input_value() == "狗"
+        assert page.evaluate("() => document.activeElement?.id") == "tagManagerTagName"
+        restored_selection = page.locator("#tagManagerTagName").evaluate(
+            "input => [input.selectionStart, input.selectionEnd]"
+        )
+        assert restored_selection == [1, 1]
+        assert abs(
+            page.locator("#tagManagerShell").evaluate("shell => shell.scrollTop")
+            - saved_manager_scroll
+        ) <= 2
+        assert "不会保存到浏览器历史" in page.locator("#tagManagerNotice").inner_text()
+
+        missing_group_id = "20000000-0000-4000-8000-ffffffffffff"
+        page.evaluate(
+            """missingID => {
+              const state = structuredClone(history.state);
+              state.imageAllWorkspace.context.tagManagerTargetGroupID = missingID;
+              history.replaceState(state, '', location.href);
+            }""",
+            missing_group_id,
+        )
+        page.reload(wait_until="domcontentloaded")
+        page.locator("#tagManagerDialog[open]").wait_for()
+        assert page.locator("#tagManagerTagSelect").input_value() == TAG_DOG
+        assert page.locator("#tagManagerTagGroupSelect").input_value() == GROUP_SUBJECT
+        assert "移动目标当前不可用" in page.locator("#tagManagerNotice").inner_text()
+        converged_manager_history = page.evaluate(
+            "() => history.state?.imageAllWorkspace?.context || {}"
+        )
+        assert converged_manager_history["tagManagerTargetGroupID"] == GROUP_SUBJECT
+        assert missing_group_id not in json.dumps(converged_manager_history)
+        page.evaluate(
+            """() => {
+              const tagSelectIDs = [
+                'filterTagSelect',
+                'batchTagSelect',
+                'reviewTagSelect',
+                'tagManagerTagSelect',
+              ];
+              const groupSelectIDs = [
+                'tagManagerTagGroupSelect',
+                'tagManagerGroupSelect',
+              ];
+              window.__imageAllTagSelectFrame = {
+                tags: Object.fromEntries(tagSelectIDs.map((id) => {
+                  const select = document.getElementById(id);
+                  return [id, {
+                    select,
+                    options: Object.fromEntries([...select.options]
+                      .filter((option) => option.value)
+                      .map((option) => [option.value, option])),
+                  }];
+                })),
+                groups: Object.fromEntries(groupSelectIDs.map((id) => {
+                  const select = document.getElementById(id);
+                  return [id, {
+                    select,
+                    options: Object.fromEntries([...select.options]
+                      .filter((option) => option.value)
+                      .map((option) => [option.value, option])),
+                  }];
+                })),
+              };
+            }"""
+        )
+        page.screenshot(path="/tmp/imageall-tag-manager-history-restored.png")
+        page.set_viewport_size({"width": 1440, "height": 960})
         manager_asset_query_count = len(asset_queries)
         page.evaluate("() => history.back()")
         page.locator("#tagManagerDialog").wait_for(state="hidden")
@@ -2270,7 +2373,7 @@ def main():
         page.evaluate("() => history.forward()")
         page.locator("#tagManagerDialog[open]").wait_for()
         assert page.locator("#tagManagerTagSelect").input_value() == TAG_DOG
-        assert page.evaluate("() => document.activeElement?.id") == "tagManagerTagName"
+        page.wait_for_function("() => document.activeElement?.id === 'tagManagerTagName'")
         assert len(asset_queries) == manager_asset_query_count
         page.locator("#tagManagerTagName").fill("狗狗")
         page.locator("#renameManagedTagButton").click()
@@ -2394,6 +2497,29 @@ def main():
             "id => document.activeElement?.dataset.sidebarTagGroupToggle === id",
             arg=GROUP_SUBJECT,
         )
+
+        page.locator("#tagManagerButton").click()
+        page.locator("#tagActionsNewGroupButton").click()
+        page.locator("#tagManagerDialog[open]").wait_for()
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.context?.tagManagerMode"
+        ) == "newGroup"
+        assert page.evaluate("() => document.activeElement?.id") == "tagManagerGroupName"
+        page.locator("#tagManagerGroupName").fill("不应跨刷新保留的新分组草稿")
+        page.wait_for_timeout(100)
+        new_group_history_payload = page.evaluate(
+            "() => JSON.stringify(history.state?.imageAllWorkspace || null)"
+        )
+        assert "不应跨刷新保留的新分组草稿" not in new_group_history_payload
+        page.reload(wait_until="domcontentloaded")
+        page.locator("#tagManagerDialog[open]").wait_for()
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.context?.tagManagerMode"
+        ) == "newGroup"
+        assert page.locator("#tagManagerGroupName").input_value() == ""
+        page.wait_for_function("() => document.activeElement?.id === 'tagManagerGroupName'")
+        page.locator("#closeTagManagerButton").click()
+        page.locator("#tagManagerDialog").wait_for(state="hidden")
 
         page.set_viewport_size({"width": 390, "height": 844})
         page.wait_for_timeout(100)

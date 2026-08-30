@@ -2544,6 +2544,8 @@ final class RemoteHTTPServerTests: XCTestCase {
             "reviewOverviewResizeHandle",
             "reviewQueueResizeHandle",
             "tagManagerDialog",
+            "tagManagerShell",
+            "tagManagerNotice",
             "tagManagerButton",
             "tagActionsPopover",
             "tagActionsSummary",
@@ -3367,6 +3369,18 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("openActionMenu(\"tagActions\")"))
         XCTAssertTrue(script.contains("target.closest(\"#tagSectionHeading\")"))
         XCTAssertTrue(script.contains("openTagManagerForNewGroup"))
+        XCTAssertTrue(script.contains("function currentTagManagerHistoryContext()"))
+        XCTAssertTrue(script.contains("function applyTagManagerHistoryContext(context = {})"))
+        XCTAssertTrue(script.contains("async function restoreTagManagerLayoutFromHistory()"))
+        XCTAssertTrue(script.contains("async function reconcileTagManagerFromWorkspaceHistory("))
+        XCTAssertTrue(script.contains("...currentTagManagerHistoryContext()"))
+        XCTAssertTrue(script.contains("TAG_MANAGER_HISTORY_FOCUS_IDS"))
+        XCTAssertTrue(script.contains("TAG_MANAGER_HISTORY_RETURN_SURFACES"))
+        XCTAssertTrue(script.contains("tagManagerTargetGroupID"))
+        XCTAssertTrue(script.contains("tagManagerReturnSurface"))
+        XCTAssertTrue(html.contains("id=\"tagManagerNotice\""))
+        XCTAssertTrue(script.contains("未提交的标签或分组名称不会保存到浏览器历史。"))
+        XCTAssertTrue(stylesheet.contains(".tag-manager-notice"))
         XCTAssertTrue(script.contains("presentNewTagDialog({ returnFocus: elements.tagManagerButton })"))
         XCTAssertTrue(script.contains("submitSourceManagementAction(\"prewarmAllThumbnails\")"))
         XCTAssertTrue(script.contains("submitSourceManagementAction(\"prewarmAllOriginalAspect\")"))

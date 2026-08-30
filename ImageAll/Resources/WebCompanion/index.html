@@ -3158,7 +3158,7 @@
   </dialog>
 
   <dialog id="tagManagerDialog" class="tag-manager-dialog" aria-labelledby="tagManagerDialogTitle">
-    <form method="dialog" class="tag-manager-shell">
+    <form id="tagManagerShell" method="dialog" class="tag-manager-shell">
       <header class="sheet-dialog-heading">
         <div>
           <h2 id="tagManagerDialogTitle">管理标签</h2>
@@ -3166,6 +3166,7 @@
         </div>
         <button id="closeTagManagerButton" class="icon-button" type="button" aria-label="关闭标签管理">×</button>
       </header>
+      <p id="tagManagerNotice" class="tag-manager-notice hidden" role="status"></p>
       <section class="tag-manager-section">
         <div class="tag-manager-section-heading">
           <h3>标签</h3>

@@ -999,6 +999,8 @@ const elements = {
   persistentHelpTitle: $("#persistentHelpTitle"),
   persistentHelpDetail: $("#persistentHelpDetail"),
   tagManagerDialog: $("#tagManagerDialog"),
+  tagManagerShell: $("#tagManagerShell"),
+  tagManagerNotice: $("#tagManagerNotice"),
   closeTagManagerButton: $("#closeTagManagerButton"),
   tagManagerTagSelect: $("#tagManagerTagSelect"),
   tagManagerTagName: $("#tagManagerTagName"),
@@ -1665,6 +1667,11 @@ const state = {
   tagManagerBaseLevel: "workspace",
   tagManagerHistoryRestoreFocus: true,
   tagManagerFocusID: "tagManagerTagSelect",
+  tagManagerMode: "manage",
+  tagManagerScrollTop: 0,
+  tagManagerSelectionStart: 0,
+  tagManagerSelectionEnd: 0,
+  tagManagerNotice: "",
   tagManagerRestorable: false,
   confirmationReturnFocus: null,
   sidebarDrag: {
@@ -2310,6 +2317,11 @@ function closeOverlays() {
   state.tagManagerBaseLevel = "workspace";
   state.tagManagerHistoryRestoreFocus = true;
   state.tagManagerFocusID = "tagManagerTagSelect";
+  state.tagManagerMode = "manage";
+  state.tagManagerScrollTop = 0;
+  state.tagManagerSelectionStart = 0;
+  state.tagManagerSelectionEnd = 0;
+  state.tagManagerNotice = "";
   state.tagManagerRestorable = false;
   state.worldMapReturnFocus = null;
   state.galleryOverviewReturnFocus = null;
@@ -3172,7 +3184,10 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
         ...(context || {}),
         confirmationBaseLevel: state.confirmationBaseLevel,
         ...(hasTagManager
-          ? { tagManagerBaseLevel: state.tagManagerBaseLevel }
+          ? {
+              tagManagerBaseLevel: state.tagManagerBaseLevel,
+              ...currentTagManagerHistoryContext(),
+            }
           : {}),
         ...(hasSourceManager
           ? { sourceManagerBaseLevel: state.sourceManagerBaseLevel }
@@ -3247,6 +3262,7 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
     ? {
         ...(context || {}),
         tagManagerBaseLevel: state.tagManagerBaseLevel,
+        ...currentTagManagerHistoryContext(),
       }
     : hasSourceManager
     ? {
@@ -3909,7 +3925,11 @@ async function applyWorkspaceHistoryEntry(entry, { restoringReload = false } = {
         context
       ) || checkpointWorkspaceHistoryAfterApply;
       reconcileNewTagFromWorkspaceHistory(target, navigationLevel, context);
-      reconcileTagManagerFromWorkspaceHistory(target, navigationLevel, context);
+      checkpointWorkspaceHistoryAfterApply = await reconcileTagManagerFromWorkspaceHistory(
+        target,
+        navigationLevel,
+        context
+      ) || checkpointWorkspaceHistoryAfterApply;
       await reconcileSourceManagerFromWorkspaceHistory(target, navigationLevel, context);
       await reconcileStorageMaintenanceFromWorkspaceHistory(target, navigationLevel, context);
       reconcileConfirmationFromWorkspaceHistory(target, navigationLevel, context);
@@ -3990,7 +4010,11 @@ async function applyWorkspaceHistoryEntry(entry, { restoringReload = false } = {
         context
       ) || checkpointWorkspaceHistoryAfterApply;
       reconcileNewTagFromWorkspaceHistory("gallery", navigationLevel, context);
-      reconcileTagManagerFromWorkspaceHistory("gallery", navigationLevel, context);
+      checkpointWorkspaceHistoryAfterApply = await reconcileTagManagerFromWorkspaceHistory(
+        "gallery",
+        navigationLevel,
+        context
+      ) || checkpointWorkspaceHistoryAfterApply;
       await reconcileSourceManagerFromWorkspaceHistory("gallery", navigationLevel, context);
       await reconcileStorageMaintenanceFromWorkspaceHistory("gallery", navigationLevel, context);
       reconcileConfirmationFromWorkspaceHistory("gallery", navigationLevel, context);
@@ -4216,11 +4240,11 @@ async function applyWorkspaceHistoryEntry(entry, { restoringReload = false } = {
       activeEntry?.navigationLevel || "workspace",
       context
     );
-    reconcileTagManagerFromWorkspaceHistory(
+    checkpointWorkspaceHistoryAfterApply = await reconcileTagManagerFromWorkspaceHistory(
       target,
       activeEntry?.navigationLevel || "workspace",
       context
-    );
+    ) || checkpointWorkspaceHistoryAfterApply;
     await reconcileSourceManagerFromWorkspaceHistory(
       target,
       activeEntry?.navigationLevel || "workspace",
@@ -9828,6 +9852,7 @@ function renderTagManager() {
   elements.installPresetTagsButton.textContent = state.installingPresetTags
     ? "正在添加…"
     : "添加常用标签";
+  renderTagManagerNotice();
 }
 
 function syncManagedTagFields({ updateValues = true } = {}) {
@@ -9855,6 +9880,189 @@ function syncManagedGroupFields({ updateValues = true } = {}) {
     || state.tagManagementMutating
     || !state.online;
   elements.createTagGroupButton.disabled = state.tagManagementMutating || !state.online;
+}
+
+const TAG_MANAGER_HISTORY_FOCUS_IDS = new Set([
+  "closeTagManagerButton",
+  "tagManagerTagSelect",
+  "tagManagerTagName",
+  "tagManagerTagGroupSelect",
+  "renameManagedTagButton",
+  "moveManagedTagButton",
+  "archiveManagedTagButton",
+  "installPresetTagsButton",
+  "tagManagerGroupSelect",
+  "tagManagerGroupName",
+  "createTagGroupButton",
+  "renameTagGroupButton",
+  "deleteTagGroupButton",
+]);
+const TAG_MANAGER_HISTORY_RETURN_SURFACES = new Set([
+  "selection",
+  "single",
+  "review",
+  "placeholder",
+  "sidebar",
+]);
+
+function normalizedTagManagerHistoryFocusID(value, mode = state.tagManagerMode) {
+  if (typeof value === "string" && TAG_MANAGER_HISTORY_FOCUS_IDS.has(value)) return value;
+  return mode === "newGroup" ? "tagManagerGroupName" : "tagManagerTagSelect";
+}
+
+function captureTagManagerHistoryFocus() {
+  if (!elements.tagManagerDialog.open) return;
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement)
+    || !elements.tagManagerDialog.contains(active)
+    || !TAG_MANAGER_HISTORY_FOCUS_IDS.has(active.id)) return;
+  state.tagManagerFocusID = active.id;
+  if (active instanceof HTMLInputElement) {
+    state.tagManagerSelectionStart = Math.max(0, active.selectionStart || 0);
+    state.tagManagerSelectionEnd = Math.max(
+      state.tagManagerSelectionStart,
+      active.selectionEnd || state.tagManagerSelectionStart
+    );
+  } else {
+    state.tagManagerSelectionStart = 0;
+    state.tagManagerSelectionEnd = 0;
+  }
+}
+
+function currentTagManagerHistoryContext() {
+  captureTagManagerHistoryFocus();
+  if (elements.tagManagerDialog.open) {
+    state.tagManagerScrollTop = elements.tagManagerShell.scrollTop;
+  }
+  return {
+    tagManagerTagID: galleryHistoryIdentifier(elements.tagManagerTagSelect.value),
+    tagManagerTargetGroupID:
+      galleryHistoryIdentifier(elements.tagManagerTagGroupSelect.value),
+    tagManagerGroupID: galleryHistoryIdentifier(elements.tagManagerGroupSelect.value),
+    tagManagerReturnTagID:
+      galleryHistoryIdentifier(state.tagManagerReturnFocus?.tagID),
+    tagManagerReturnGroupID:
+      galleryHistoryIdentifier(state.tagManagerReturnFocus?.groupID),
+    tagManagerReturnSurface: TAG_MANAGER_HISTORY_RETURN_SURFACES.has(
+      state.tagManagerReturnFocus?.surface
+    )
+      ? state.tagManagerReturnFocus.surface
+      : null,
+    tagManagerMode: state.tagManagerMode === "newGroup" ? "newGroup" : "manage",
+    tagManagerFocusID: normalizedTagManagerHistoryFocusID(state.tagManagerFocusID),
+    tagManagerSelectionStart: workspaceHistoryFiniteNumber(
+      state.tagManagerSelectionStart,
+      0,
+      80
+    ),
+    tagManagerSelectionEnd: workspaceHistoryFiniteNumber(
+      state.tagManagerSelectionEnd,
+      0,
+      80
+    ),
+    tagManagerScrollTop: workspaceHistoryScrollTop(state.tagManagerScrollTop),
+  };
+}
+
+function renderTagManagerNotice() {
+  const privacy = "未提交的标签或分组名称不会保存到浏览器历史。";
+  elements.tagManagerNotice.textContent = state.tagManagerNotice
+    ? `${state.tagManagerNotice} ${privacy}`
+    : privacy;
+  elements.tagManagerNotice.classList.remove("hidden");
+}
+
+function applyTagManagerHistoryContext(context = {}) {
+  const activeTagIDs = new Set(activeTags().map((tag) => tag.id));
+  const activeGroupIDs = new Set(orderedTagGroups().map((group) => group.id));
+  const savedTagID = galleryHistoryIdentifier(context.tagManagerTagID);
+  const savedTargetGroupID = galleryHistoryIdentifier(context.tagManagerTargetGroupID);
+  const savedGroupID = galleryHistoryIdentifier(context.tagManagerGroupID);
+  const returnTagID = galleryHistoryIdentifier(context.tagManagerReturnTagID);
+  const returnGroupID = galleryHistoryIdentifier(context.tagManagerReturnGroupID);
+  const returnSurface = TAG_MANAGER_HISTORY_RETURN_SURFACES.has(
+    context.tagManagerReturnSurface
+  )
+    ? context.tagManagerReturnSurface
+    : null;
+  const notes = [];
+
+  if (savedTagID && activeTagIDs.has(savedTagID)) {
+    elements.tagManagerTagSelect.value = savedTagID;
+  } else if (savedTagID) {
+    notes.push("刷新前选择的标签当前不可用，已切换到可用标签。");
+  }
+  syncManagedTagFields();
+  if (savedTargetGroupID && activeGroupIDs.has(savedTargetGroupID)) {
+    elements.tagManagerTagGroupSelect.value = savedTargetGroupID;
+  } else if (savedTargetGroupID) {
+    notes.push("刷新前的移动目标当前不可用，已恢复为标签所在分组。");
+  }
+  if (savedGroupID && activeGroupIDs.has(savedGroupID)) {
+    elements.tagManagerGroupSelect.value = savedGroupID;
+  } else if (savedGroupID) {
+    notes.push("刷新前选择的分组当前不可用，已切换到可用分组。");
+  }
+  if (returnTagID && !activeTagIDs.has(returnTagID)) {
+    notes.push("刷新前的返回标签当前不可用，关闭后将回到标签入口。");
+  }
+  if (returnGroupID && !activeGroupIDs.has(returnGroupID)) {
+    notes.push("刷新前的返回分组当前不可用，关闭后将回到标签入口。");
+  }
+
+  state.tagManagerMode = context.tagManagerMode === "newGroup" ? "newGroup" : "manage";
+  state.tagManagerReturnFocus = {
+    element: null,
+    tagID: returnTagID && activeTagIDs.has(returnTagID) ? returnTagID : null,
+    groupID: returnGroupID && activeGroupIDs.has(returnGroupID) ? returnGroupID : null,
+    surface: returnSurface,
+  };
+  syncManagedGroupFields();
+  if (state.tagManagerMode === "newGroup") elements.tagManagerGroupName.value = "";
+  state.tagManagerFocusID = normalizedTagManagerHistoryFocusID(
+    context.tagManagerFocusID,
+    state.tagManagerMode
+  );
+  state.tagManagerSelectionStart = workspaceHistoryFiniteNumber(
+    Math.floor(workspaceHistoryFiniteNumber(context.tagManagerSelectionStart, 0, 80)),
+    0,
+    80
+  );
+  state.tagManagerSelectionEnd = Math.max(
+    state.tagManagerSelectionStart,
+    Math.floor(workspaceHistoryFiniteNumber(context.tagManagerSelectionEnd, 0, 80))
+  );
+  state.tagManagerScrollTop = workspaceHistoryScrollTop(context.tagManagerScrollTop);
+  state.tagManagerNotice = notes.join(" ");
+  renderTagManagerNotice();
+}
+
+async function restoreTagManagerLayoutFromHistory() {
+  await waitForWorkspaceLayout();
+  elements.tagManagerShell.scrollTop = Math.min(
+    state.tagManagerScrollTop,
+    Math.max(0, elements.tagManagerShell.scrollHeight - elements.tagManagerShell.clientHeight)
+  );
+  let target = document.getElementById(
+    normalizedTagManagerHistoryFocusID(state.tagManagerFocusID, state.tagManagerMode)
+  );
+  if (!(target instanceof HTMLElement)
+    || target.disabled
+    || !elements.tagManagerDialog.contains(target)) {
+    target = state.tagManagerMode === "newGroup"
+      ? elements.tagManagerGroupName
+      : (elements.tagManagerTagSelect.disabled
+        ? elements.closeTagManagerButton
+        : elements.tagManagerTagSelect);
+  }
+  target.focus({ preventScroll: true });
+  state.tagManagerFocusID = target.id;
+  if (target instanceof HTMLInputElement) {
+    const length = target.value.length;
+    const start = Math.min(length, Math.max(0, state.tagManagerSelectionStart));
+    const end = Math.min(length, Math.max(start, state.tagManagerSelectionEnd));
+    target.setSelectionRange(start, end);
+  }
 }
 
 function tagManagerBaseLevelFromHistory(context = {}) {
@@ -9885,6 +10093,7 @@ function presentTagManager({
   focusTarget = null,
   focus = true,
   render = true,
+  historyContext = null,
 } = {}) {
   if (elements.tagManagerDialog.open) {
     if (focus) restoreOverlayFocus(focusTarget || elements.tagManagerTagSelect);
@@ -9900,22 +10109,29 @@ function presentTagManager({
   if (render) {
     elements.tagManagerError.textContent = "";
     renderTagManager();
+    if (historyContext) applyTagManagerHistoryContext(historyContext);
   }
+  const target = focusTarget
+    || document.getElementById(state.tagManagerFocusID)
+    || elements.tagManagerTagSelect;
+  const intendedSelectionStart = state.tagManagerSelectionStart;
+  const intendedSelectionEnd = state.tagManagerSelectionEnd;
   elements.tagManagerDialog.showModal();
   if (historyMode !== "none") {
     const route = visibleWorkspaceRoute();
     recordWorkspaceHistory(route, currentWorkspaceHistoryContext(route), historyMode);
   }
-  const target = focusTarget
-    || document.getElementById(state.tagManagerFocusID)
-    || elements.tagManagerTagSelect;
   state.tagManagerFocusID = target?.id || "tagManagerTagSelect";
+  state.tagManagerSelectionStart = intendedSelectionStart;
+  state.tagManagerSelectionEnd = intendedSelectionEnd;
   state.tagManagerRestorable = true;
   if (focus) restoreOverlayFocus(target);
 }
 
 function openTagManagerForNewGroup(returnFocus = elements.tagManagerButton) {
   state.tagManagerReturnFocus = { element: returnFocus };
+  state.tagManagerMode = "newGroup";
+  state.tagManagerNotice = "";
   elements.tagManagerError.textContent = "";
   renderTagManager();
   elements.tagManagerGroupName.value = "";
@@ -9928,6 +10144,8 @@ function openTagManagerForNewGroup(returnFocus = elements.tagManagerButton) {
 
 function openTagManagerFromTagActions(returnFocus = elements.tagManagerButton) {
   state.tagManagerReturnFocus = { element: returnFocus };
+  state.tagManagerMode = "manage";
+  state.tagManagerNotice = "";
   elements.tagManagerError.textContent = "";
   renderTagManager();
   presentTagManager({
@@ -9995,6 +10213,8 @@ function openTagManagerForTag(tagID, returnFocus = null) {
     tagID,
     groupID: tag.groupID,
   });
+  state.tagManagerMode = "manage";
+  state.tagManagerNotice = "";
   elements.tagManagerError.textContent = "";
   renderTagManager();
   elements.tagManagerTagSelect.value = tagID;
@@ -10011,6 +10231,8 @@ function openTagManagerForGroup(groupID, returnFocus = null) {
   const group = groupByID(groupID);
   if (!group) return;
   state.tagManagerReturnFocus = tagReturnFocusDescriptor(returnFocus, { groupID });
+  state.tagManagerMode = "manage";
+  state.tagManagerNotice = "";
   elements.tagManagerError.textContent = "";
   renderTagManager();
   elements.tagManagerGroupSelect.value = groupID;
@@ -10043,10 +10265,8 @@ function closeTagManager({
   if (elements.confirmDialog.open && state.confirmationBaseLevel === "tagManager") {
     closeConfirmation({ restoreFocus: false, checkpoint: false, preserveState: false });
   }
-  const active = document.activeElement;
-  if (active instanceof HTMLElement && elements.tagManagerDialog.contains(active) && active.id) {
-    state.tagManagerFocusID = active.id;
-  }
+  captureTagManagerHistoryFocus();
+  state.tagManagerScrollTop = elements.tagManagerShell.scrollTop;
   const baseLevel = state.tagManagerBaseLevel;
   const pendingFocus = state.tagManagerReturnFocus;
   elements.tagManagerDialog.close();
@@ -10060,6 +10280,11 @@ function closeTagManager({
   if (!preserveState) {
     state.tagManagerRestorable = false;
     state.tagManagerFocusID = "tagManagerTagSelect";
+    state.tagManagerMode = "manage";
+    state.tagManagerScrollTop = 0;
+    state.tagManagerSelectionStart = 0;
+    state.tagManagerSelectionEnd = 0;
+    state.tagManagerNotice = "";
     elements.tagManagerError.textContent = "";
   }
 }
@@ -10089,7 +10314,7 @@ function returnFromTagManager({ restoreFocus = true } = {}) {
   return Promise.resolve();
 }
 
-function reconcileTagManagerFromWorkspaceHistory(
+async function reconcileTagManagerFromWorkspaceHistory(
   route,
   navigationLevel,
   context = {}
@@ -10099,13 +10324,28 @@ function reconcileTagManagerFromWorkspaceHistory(
     || (navigationLevel === "confirmation"
       && context.confirmationBaseLevel === "tagManager")
   ) && route === visibleWorkspaceRoute();
+  if (shouldOpen && !state.tagManagerRestorable) {
+    state.tagManagerReturnFocus = null;
+    state.tagManagerMode = "manage";
+    state.tagManagerNotice = "";
+    presentTagManager({
+      historyMode: "none",
+      baseLevel: tagManagerBaseLevelFromHistory(context),
+      focus: false,
+      render: true,
+      historyContext: context,
+    });
+    if (navigationLevel === "tagManager") await restoreTagManagerLayoutFromHistory();
+    return true;
+  }
   if (shouldOpen && !elements.tagManagerDialog.open) {
     presentTagManager({
       historyMode: "none",
       baseLevel: tagManagerBaseLevelFromHistory(context),
-      focus: navigationLevel === "tagManager",
-      render: !state.tagManagerRestorable,
+      focus: false,
+      render: false,
     });
+    if (navigationLevel === "tagManager") await restoreTagManagerLayoutFromHistory();
   } else if (!shouldOpen && elements.tagManagerDialog.open) {
     const restoreFocus = state.tagManagerHistoryRestoreFocus;
     closeTagManager({
@@ -10115,6 +10355,7 @@ function reconcileTagManagerFromWorkspaceHistory(
     });
     state.tagManagerHistoryRestoreFocus = true;
   }
+  return false;
 }
 
 function confirmationBaseLevelFromHistory(context = {}) {
@@ -10147,6 +10388,7 @@ function replaceConfirmationHistoryWithBase(baseLevel, historyContext = {}) {
   if (baseLevel === "tagManager" && elements.tagManagerDialog.open) {
     navigationLevel = "tagManager";
     context.tagManagerBaseLevel = state.tagManagerBaseLevel;
+    Object.assign(context, currentTagManagerHistoryContext());
   } else if (baseLevel === "sourceManager" && elements.sourceManagerDialog.open) {
     navigationLevel = "sourceManager";
     context.sourceManagerBaseLevel = state.sourceManagerBaseLevel;
@@ -10578,11 +10820,12 @@ function confirmArchiveManagedTag(tagOverride = null, returnFocus = null) {
 async function createManagedTagGroup() {
   const name = elements.tagManagerGroupName.value.trim();
   if (!name) return;
-  await performTagCatalogMutation(
+  const created = await performTagCatalogMutation(
     "/v1/tag-groups",
     { operationID: crypto.randomUUID(), name },
     `已新建分组“${name}”`
   );
+  if (created) state.tagManagerMode = "manage";
 }
 
 async function renameManagedTagGroup() {
@@ -37739,7 +37982,7 @@ async function loadWorkspace({ restoreHistory = false } = {}) {
       restoreGalleryNavigationLevel,
       restoreEntry?.context || {}
     );
-    reconcileTagManagerFromWorkspaceHistory(
+    await reconcileTagManagerFromWorkspaceHistory(
       "gallery",
       restoreGalleryNavigationLevel,
       restoreEntry?.context || {}
@@ -38323,6 +38566,11 @@ function resetWorkspaceSessionState() {
   state.tagManagerBaseLevel = "workspace";
   state.tagManagerHistoryRestoreFocus = true;
   state.tagManagerFocusID = "tagManagerTagSelect";
+  state.tagManagerMode = "manage";
+  state.tagManagerScrollTop = 0;
+  state.tagManagerSelectionStart = 0;
+  state.tagManagerSelectionEnd = 0;
+  state.tagManagerNotice = "";
   state.tagManagerRestorable = false;
   state.sourceManagerReturnFocus = null;
   state.sourceManagerBaseLevel = "workspace";
@@ -43541,8 +43789,33 @@ function bindEvents() {
     event.preventDefault();
     void returnFromTagManager();
   });
-  elements.tagManagerTagSelect.addEventListener("change", syncManagedTagFields);
-  elements.tagManagerGroupSelect.addEventListener("change", syncManagedGroupFields);
+  elements.tagManagerTagSelect.addEventListener("change", () => {
+    syncManagedTagFields();
+    scheduleWorkspaceHistoryCheckpoint();
+  });
+  elements.tagManagerTagGroupSelect.addEventListener(
+    "change",
+    scheduleWorkspaceHistoryCheckpoint
+  );
+  elements.tagManagerGroupSelect.addEventListener("change", () => {
+    state.tagManagerMode = "manage";
+    syncManagedGroupFields();
+    scheduleWorkspaceHistoryCheckpoint();
+  });
+  elements.tagManagerDialog.addEventListener("focusin", () => {
+    captureTagManagerHistoryFocus();
+    scheduleWorkspaceHistoryCheckpoint();
+  });
+  for (const input of [elements.tagManagerTagName, elements.tagManagerGroupName]) {
+    input.addEventListener("input", () => {
+      captureTagManagerHistoryFocus();
+      scheduleWorkspaceHistoryCheckpoint();
+    });
+    input.addEventListener("select", () => {
+      captureTagManagerHistoryFocus();
+      scheduleWorkspaceHistoryCheckpoint();
+    });
+  }
   elements.renameManagedTagButton.addEventListener("click", renameManagedTag);
   elements.moveManagedTagButton.addEventListener("click", moveManagedTag);
   elements.archiveManagedTagButton.addEventListener("click", confirmArchiveManagedTag);
@@ -46688,6 +46961,7 @@ function bindEvents() {
     ...Object.values(trainingSetupScrollSurfaces()),
     elements.tagSuggestionDialog,
     elements.tagSuggestionSourceOptions,
+    elements.tagManagerShell,
   ]) {
     scrollSurface.addEventListener("scroll", scheduleWorkspaceHistoryCheckpoint, {
       passive: true,
