@@ -6260,6 +6260,41 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
     }
 
+    func testSinglePhotoDeleteContinuesWithTheNextVisiblePhoto() async {
+        let sourceID = UUID()
+        let assets = (0 ..< 3).map {
+            Self.makeAsset(sourceID: sourceID, fileName: "single-photo-\($0).jpg")
+        }
+        let recycle = FakeLibrarySlimmingRecyclePort()
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: assets,
+                initialItems: assets,
+                startsConnected: true,
+                hasPendingCatalogReconcileJobs: false
+            ),
+            librarySlimmingRecycle: recycle,
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.start()
+        await model.openSinglePhotoView(assetID: assets[1].assetID)
+
+        await model.deleteSelectedAssetsImmediately()
+
+        XCTAssertEqual(recycle.fastDeleteAssetIDCalls, [[assets[1].assetID]])
+        XCTAssertEqual(model.items.map(\.assetID), [assets[0].assetID, assets[2].assetID])
+        XCTAssertTrue(model.isSinglePhotoPresented)
+        XCTAssertEqual(model.primarySelectedAssetID, assets[2].assetID)
+        XCTAssertEqual(model.singlePhotoNavigation?.fileName, "single-photo-2.jpg")
+        XCTAssertEqual(model.singlePhotoNavigation?.position, 2)
+        XCTAssertEqual(model.singlePhotoNavigation?.loadedCount, 2)
+    }
+
     func testInspectorDeleteAvailabilityAndFavoriteWarningFollowCurrentSelection() async {
         let sourceID = UUID()
         let assets = (0 ..< 2).map {

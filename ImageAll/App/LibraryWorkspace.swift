@@ -2744,11 +2744,42 @@ final class LibraryWorkspaceModel: ObservableObject {
         let assetIDs = selectedAssetIDs.sorted {
             $0.uuidString.lowercased() < $1.uuidString.lowercased()
         }
+        let singlePhotoAssetID = isSinglePhotoPresented ? primarySelectedAssetID : nil
+        let singlePhotoReplacementAssetID = singlePhotoAssetID.flatMap {
+            replacementSinglePhotoAssetID(afterRemoving: $0)
+        }
         await moveLibrarySlimmingAssetsToRecycle(
             assetIDs,
             identicalCleanupPlan: nil,
             removalMode: .releaseSourceSpace
         )
+        guard let singlePhotoAssetID,
+              !displayedAssetIDsInGridOrder.contains(singlePhotoAssetID),
+              let singlePhotoReplacementAssetID,
+              displayedAssetIDsInGridOrder.contains(singlePhotoReplacementAssetID)
+        else { return }
+        if reviewMode != nil,
+           let reviewItem = reviewQueueItems.first(where: {
+               $0.assetID == singlePhotoReplacementAssetID
+           })
+        {
+            await selectReviewItem(reviewItem.id)
+        } else {
+            await selectAsset(singlePhotoReplacementAssetID)
+        }
+        isSinglePhotoPresented = true
+    }
+
+    private func replacementSinglePhotoAssetID(afterRemoving assetID: UUID) -> UUID? {
+        let orderedAssetIDs = displayedAssetIDsInGridOrder
+        guard let removedIndex = orderedAssetIDs.firstIndex(of: assetID) else {
+            return nil
+        }
+        if removedIndex + 1 < orderedAssetIDs.count {
+            return orderedAssetIDs[removedIndex + 1]
+        }
+        guard removedIndex > 0 else { return nil }
+        return orderedAssetIDs[removedIndex - 1]
     }
 
     func prepareLibrarySlimmingIdenticalCleanup()
@@ -12078,7 +12109,7 @@ struct LibraryWorkspaceView: View {
             Button("取消", role: .cancel) {}
                 .persistentHelp("关闭说明窗口，不请求照片访问权限。")
         } message: {
-            Text("ImageAll 平时只读访问静态照片和元数据，在自身容器保存索引、标签和缓存；只有你在“图库瘦身”中明确确认时，才会经系统 Photos 将所选照片移入“最近删除”。普通浏览不会自动下载 iCloud 原图；“相同”检测需要时会下载并长期保留 App 自有副本。")
+            Text("ImageAll 平时只读访问静态照片和元数据，在自身容器保存索引、标签和缓存；只有你在“图库瘦身”、普通图库检查器或单图查看中明确确认删除时，才会经系统 Photos 将所选照片移入“最近删除”。普通浏览不会自动下载 iCloud 原图；“相同”检测需要时会下载并长期保留 App 自有副本。")
         }
         .confirmationDialog(
             photosSourcePendingFullRepair.map { "对“\($0.displayName)”执行完整修复扫描？" } ?? "完整修复扫描？",
@@ -12197,6 +12228,12 @@ struct LibraryWorkspaceView: View {
                 guard model.isSinglePhotoPresented else { return .ignored }
                 model.closeSinglePhotoView()
                 return .handled
+            }
+            .onDeleteCommand {
+                guard model.isSinglePhotoPresented,
+                      model.canDeleteSelectedAssetsImmediately
+                else { return }
+                showSelectedAssetDeleteConfirmation = true
             }
             .reviewKeyboardShortcutHandling(
                 isEnabled: reviewKeyboardShortcutsEnabled,
@@ -13952,7 +13989,11 @@ struct LibraryWorkspaceView: View {
                        return $0.assetID == assetID
                    })
                 {
-                    SinglePhotoReviewView(item: item, model: model)
+                    SinglePhotoReviewView(
+                        item: item,
+                        model: model,
+                        onDelete: { showSelectedAssetDeleteConfirmation = true }
+                    )
                         .onAppear { contentFocused = true }
                 } else {
                     ReviewQueueContentView(
@@ -14072,7 +14113,11 @@ struct LibraryWorkspaceView: View {
                    let assetID = model.primarySelectedAssetID,
                    let item = model.items.first(where: { $0.assetID == assetID })
                 {
-                    SinglePhotoView(item: item, model: model)
+                    SinglePhotoView(
+                        item: item,
+                        model: model,
+                        onDelete: { showSelectedAssetDeleteConfirmation = true }
+                    )
                         .onAppear { contentFocused = true }
                 } else {
                     VStack(spacing: 0) {
@@ -15863,11 +15908,12 @@ struct LibraryWorkspaceView: View {
 private struct SinglePhotoReviewView: View {
     let item: ReviewQueueItemProjection
     @ObservedObject var model: LibraryWorkspaceModel
+    let onDelete: () -> Void
     @State private var image: NSImage?
 
     var body: some View {
         VStack(spacing: 0) {
-            SinglePhotoNavigationBar(model: model)
+            SinglePhotoNavigationBar(model: model, onDelete: onDelete)
             Divider()
             HStack(spacing: 12) {
                 Button("属于 (P)", systemImage: "checkmark.circle") {
@@ -15919,11 +15965,12 @@ private struct SinglePhotoReviewView: View {
 private struct SinglePhotoView: View {
     let item: AssetGridItemProjection
     @ObservedObject var model: LibraryWorkspaceModel
+    let onDelete: () -> Void
     @State private var image: NSImage?
 
     var body: some View {
         VStack(spacing: 0) {
-            SinglePhotoNavigationBar(model: model)
+            SinglePhotoNavigationBar(model: model, onDelete: onDelete)
             Divider()
             ZStack {
                 Color(nsColor: .windowBackgroundColor)
@@ -15994,6 +16041,7 @@ private struct SinglePhotoView: View {
 
 private struct SinglePhotoNavigationBar: View {
     @ObservedObject var model: LibraryWorkspaceModel
+    let onDelete: () -> Void
 
     var body: some View {
         if let navigation = model.singlePhotoNavigation {
@@ -16028,6 +16076,21 @@ private struct SinglePhotoNavigationBar: View {
                         Task { await model.toggleFavorite(assetID: assetID) }
                     }
                 }
+
+                Button(
+                    model.selectedMediaKind == .video ? "删除当前视频" : "删除当前照片",
+                    systemImage: "trash",
+                    role: .destructive
+                ) {
+                    onDelete()
+                }
+                .disabled(!model.canDeleteSelectedAssetsImmediately)
+                .tint(.red)
+                .accessibilityIdentifier("singlePhotoDeleteButton")
+                .persistentHelp(
+                    model.selectedAssetDeleteDisabledReason
+                        ?? "打开删除确认；文件夹原始媒体将永久删除，Apple Photos 资产将由系统移入“最近删除”。也可按 Delete。"
+                )
 
                 Button("上一张", systemImage: "chevron.left") {
                     Task { await model.moveSinglePhotoSelection(by: -1) }
