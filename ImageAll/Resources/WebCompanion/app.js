@@ -28071,6 +28071,107 @@ function focusSelectedSlimmingCluster({ fallbackToScope = true } = {}) {
   });
 }
 
+async function selectSlimmingJob(jobID, { focus = false } = {}) {
+  if (state.slimming.loading
+    || !state.slimming.jobs.some((job) => job.id === jobID)) return;
+  if (jobID === state.slimming.selectedJobID) {
+    if (focus) focusSelectedSlimmingJob();
+    return;
+  }
+  state.slimming.selectedJobID = jobID;
+  state.slimming.selectedClusterID = null;
+  state.slimming.selectedMemberIDs.clear();
+  state.slimming.selectionAnchorID = null;
+  state.slimming.clusterLimit = 48;
+  state.slimming.memberLimit = 96;
+  await loadSlimmingWorkspace({ jobID });
+  checkpointActiveWorkspaceHistory();
+  if (focus) focusSelectedSlimmingJob();
+}
+
+function hasMoreSlimmingClusters() {
+  return state.slimming.clusters.length < totalSlimmingClusterCount()
+    && state.slimming.clusterLimit < SLIMMING_CLUSTER_LIMIT_MAX;
+}
+
+async function expandSlimmingClusterWindow({ all = false } = {}) {
+  if (state.slimming.loading || !hasMoreSlimmingClusters()) return false;
+  const previousLimit = state.slimming.clusterLimit;
+  const target = all
+    ? totalSlimmingClusterCount()
+    : previousLimit + 48;
+  state.slimming.clusterLimit = Math.min(SLIMMING_CLUSTER_LIMIT_MAX, target);
+  const loaded = await loadSlimmingWorkspace({ quiet: true, appendKind: "clusters" });
+  if (!loaded) {
+    state.slimming.clusterLimit = previousLimit;
+    renderSlimmingWorkspace({
+      preserveJobs: true,
+      preserveClusters: true,
+      preserveMembers: true,
+    });
+    return false;
+  }
+  return state.slimming.clusterLimit > previousLimit;
+}
+
+async function selectSlimmingCluster(clusterID, { focus = false } = {}) {
+  if (state.slimming.loading
+    || !state.slimming.clusters.some((cluster) => cluster.id === clusterID)) return;
+  if (clusterID === state.slimming.selectedClusterID) {
+    if (focus) focusSelectedSlimmingCluster({ fallbackToScope: false });
+    return;
+  }
+  state.slimming.selectedClusterID = clusterID;
+  state.slimming.memberLimit = 96;
+  checkpointActiveWorkspaceHistory();
+  await loadSlimmingWorkspace({ clusterID });
+  if (focus) focusSelectedSlimmingCluster({ fallbackToScope: false });
+}
+
+async function navigateSlimmingClusterByKey(key) {
+  if (state.slimming.loading || !state.slimming.clusters.length) return;
+  if (key === "End" && hasMoreSlimmingClusters()) {
+    await expandSlimmingClusterWindow({ all: true });
+  }
+  let buttons = [...elements.slimmingClusterList.querySelectorAll(
+    "[data-slimming-cluster-id]"
+  )];
+  let currentIndex = Math.max(
+    0,
+    state.slimming.clusters.findIndex(
+      (cluster) => cluster.id === state.slimming.selectedClusterID
+    )
+  );
+  let targetIndex = longListNavigationTarget(
+    buttons,
+    currentIndex,
+    key,
+    elements.slimmingNavigatorPane
+  );
+  if (key === "PageDown" && targetIndex === currentIndex && hasMoreSlimmingClusters()) {
+    await expandSlimmingClusterWindow();
+    buttons = [...elements.slimmingClusterList.querySelectorAll(
+      "[data-slimming-cluster-id]"
+    )];
+    currentIndex = Math.max(
+      0,
+      state.slimming.clusters.findIndex(
+        (cluster) => cluster.id === state.slimming.selectedClusterID
+      )
+    );
+    targetIndex = longListNavigationTarget(
+      buttons,
+      currentIndex,
+      key,
+      elements.slimmingNavigatorPane
+    );
+  }
+  await selectSlimmingCluster(
+    state.slimming.clusters[targetIndex]?.id,
+    { focus: true }
+  );
+}
+
 function slimmingClusterScopeText(scope) {
   return { pending: "待处理", confirmed: "已确认", ignored: "已忽略" }[scope] || "待处理";
 }
@@ -28089,15 +28190,45 @@ async function navigateSlimmingJob(target) {
       ? state.slimming.jobs.length - 1
       : Math.max(0, Math.min(state.slimming.jobs.length - 1, current + Number(target)));
   const job = state.slimming.jobs[index];
-  if (!job || job.id === state.slimming.selectedJobID) return;
-  state.slimming.selectedJobID = job.id;
-  state.slimming.selectedClusterID = null;
-  state.slimming.selectedMemberIDs.clear();
-  state.slimming.selectionAnchorID = null;
-  state.slimming.clusterLimit = 48;
-  state.slimming.memberLimit = 96;
-  await loadSlimmingWorkspace({ jobID: job.id });
-  focusSelectedSlimmingJob();
+  await selectSlimmingJob(job?.id, { focus: true });
+}
+
+async function navigateSlimmingJobByKey(key, originJobID = null) {
+  if (state.slimming.loading || !state.slimming.jobs.length) return;
+  const normalizedKey = key === "ArrowLeft"
+    ? "ArrowUp"
+    : key === "ArrowRight"
+      ? "ArrowDown"
+      : key;
+  if (normalizedKey === "Home") {
+    await navigateSlimmingJob("first");
+    return;
+  }
+  if (normalizedKey === "End") {
+    await navigateSlimmingJob("last");
+    return;
+  }
+  let rows = [...elements.slimmingJobList.querySelectorAll("[data-slimming-job-id]")];
+  let currentIndex = state.slimming.jobs.findIndex((job) => job.id === originJobID);
+  if (currentIndex < 0) currentIndex = Math.max(0, selectedSlimmingJobIndex());
+  let targetIndex = longListNavigationTarget(
+    rows,
+    currentIndex,
+    normalizedKey,
+    elements.slimmingNavigatorPane
+  );
+  if (normalizedKey === "PageDown" && targetIndex === currentIndex && hasMoreSlimmingJobs()) {
+    await expandSlimmingJobWindow();
+    rows = [...elements.slimmingJobList.querySelectorAll("[data-slimming-job-id]")];
+    currentIndex = Math.max(0, selectedSlimmingJobIndex());
+    targetIndex = longListNavigationTarget(
+      rows,
+      currentIndex,
+      normalizedKey,
+      elements.slimmingNavigatorPane
+    );
+  }
+  await selectSlimmingJob(state.slimming.jobs[targetIndex]?.id, { focus: true });
 }
 
 function syncSlimmingScanProgressElement(progress, job, compact = false) {
@@ -28404,10 +28535,17 @@ function syncSlimmingJobRow(row, job) {
   row.type = "button";
   row.className = "slimming-job-row";
   row.dataset.slimmingJobId = job.id;
+  row.id = `slimming-job-${job.id}`;
   row.classList.toggle("selected", job.id === state.slimming.selectedJobID);
   row.setAttribute("role", "option");
   row.setAttribute("aria-selected", String(job.id === state.slimming.selectedJobID));
   row.tabIndex = job.id === state.slimming.selectedJobID ? 0 : -1;
+  configurePersistentHelp(row, {
+    title: `${slimmingModeText(job.mode)} · ${slimmingJobStateText(job)}`,
+    detail: "上/下或左/右逐条移动，Page Up/Down 按当前可见页幅移动，Home/End 直达首尾；选择后读取该分析结果。",
+    kind: "slimming",
+    keyShortcuts: "ArrowLeft ArrowRight ArrowUp ArrowDown PageUp PageDown Home End Shift+F10",
+  });
   let heading = row.querySelector(
     ':scope > [data-slimming-job-row-part="heading"]'
   );
@@ -29019,10 +29157,20 @@ function renderSlimmingClusterSummary() {
   }
 }
 
+function slimmingClusterRovingID() {
+  return state.slimming.clusters.some(
+    (cluster) => cluster.id === state.slimming.selectedClusterID
+  )
+    ? state.slimming.selectedClusterID
+    : state.slimming.clusters[0]?.id || null;
+}
+
 function syncSlimmingClusterRow(row, cluster) {
+  const isTabStop = cluster.id === slimmingClusterRovingID();
   const fingerprint = JSON.stringify({
     cluster,
     selected: cluster.id === state.slimming.selectedClusterID,
+    isTabStop,
     reviewSupported: state.slimming.clusterScopeSupported === true,
     reviewPending: state.slimming.clusterReviewPendingIDs.has(cluster.id),
     online: state.online,
@@ -29040,6 +29188,13 @@ function syncSlimmingClusterRow(row, cluster) {
   main.dataset.slimmingClusterId = cluster.id;
   main.setAttribute("aria-pressed", String(cluster.id === state.slimming.selectedClusterID));
   main.setAttribute("aria-label", `${copy.title}，${cluster.memberCount} 项，${copy.detail}`);
+  main.tabIndex = isTabStop ? 0 : -1;
+  configurePersistentHelp(main, {
+    title: `${copy.title} · ${cluster.memberCount} 项`,
+    detail: "上/下逐组移动，Page Up/Down 按当前可见页幅移动，Home/End 直达首尾；选择后读取该组成员。",
+    kind: "slimming",
+    keyShortcuts: "ArrowUp ArrowDown PageUp PageDown Home End",
+  });
   const historical = cluster.isHistoricalProcessedRecord
     && Number(cluster.memberCount || 0) === 0;
   const existingVisual = main.querySelector(
@@ -42864,12 +43019,7 @@ function bindEvents() {
   });
   elements.slimmingNavigatorButton.addEventListener("click", toggleSlimmingNavigator);
   elements.slimmingLoadMoreClustersButton.addEventListener("click", async () => {
-    if (state.slimming.loading) return;
-    state.slimming.clusterLimit = Math.min(
-      SLIMMING_CLUSTER_LIMIT_MAX,
-      state.slimming.clusterLimit + 48
-    );
-    await loadSlimmingWorkspace({ quiet: true, appendKind: "clusters" });
+    await expandSlimmingClusterWindow();
   });
   elements.slimmingLoadMoreJobsButton.addEventListener("click", async () => {
     const scrollTop = elements.slimmingNavigatorPane.scrollTop;
@@ -43088,14 +43238,7 @@ function bindEvents() {
   });
   elements.slimmingJobList.addEventListener("click", async (event) => {
     const row = event.target.closest("[data-slimming-job-id]");
-    if (!row || row.dataset.slimmingJobId === state.slimming.selectedJobID) return;
-    state.slimming.selectedJobID = row.dataset.slimmingJobId;
-    state.slimming.selectedClusterID = null;
-    state.slimming.clusterLimit = 48;
-    state.slimming.memberLimit = 96;
-    await loadSlimmingWorkspace({ jobID: row.dataset.slimmingJobId });
-    checkpointActiveWorkspaceHistory();
-    focusSelectedSlimmingJob();
+    if (row) await selectSlimmingJob(row.dataset.slimmingJobId, { focus: true });
   });
   elements.slimmingJobList.addEventListener("contextmenu", (event) => {
     const row = event.target.closest("[data-slimming-job-id]");
@@ -43117,17 +43260,10 @@ function bindEvents() {
       );
       return;
     }
-    const navigation = {
-      ArrowUp: -1,
-      ArrowLeft: -1,
-      ArrowDown: 1,
-      ArrowRight: 1,
-      Home: "first",
-      End: "last",
-    }[event.key];
-    if (navigation === undefined) return;
+    if (!["ArrowUp", "ArrowLeft", "ArrowDown", "ArrowRight", "PageUp", "PageDown", "Home", "End"]
+      .includes(event.key)) return;
     event.preventDefault();
-    navigateSlimmingJob(navigation);
+    void navigateSlimmingJobByKey(event.key, row?.dataset.slimmingJobId || null);
   });
   elements.slimmingClusterScopes.addEventListener("click", (event) => {
     const button = event.target.closest("[data-slimming-cluster-scope]");
@@ -43152,11 +43288,14 @@ function bindEvents() {
       return;
     }
     const row = event.target.closest("[data-slimming-cluster-id]");
-    if (!row || row.dataset.slimmingClusterId === state.slimming.selectedClusterID) return;
-    state.slimming.selectedClusterID = row.dataset.slimmingClusterId;
-    state.slimming.memberLimit = 96;
-    checkpointActiveWorkspaceHistory();
-    loadSlimmingWorkspace({ clusterID: row.dataset.slimmingClusterId });
+    if (row) void selectSlimmingCluster(row.dataset.slimmingClusterId);
+  });
+  elements.slimmingClusterList.addEventListener("keydown", (event) => {
+    if (!event.target.closest("[data-slimming-cluster-id]")
+      || !["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"]
+        .includes(event.key)) return;
+    event.preventDefault();
+    void navigateSlimmingClusterByKey(event.key);
   });
   elements.slimmingReprocessClusterButton.addEventListener("click", () => {
     const clusterID = elements.slimmingReprocessClusterButton.dataset.slimmingClusterReviewId;

@@ -137,6 +137,7 @@ def main(*, inspector_actions_only=False):
     submitted_favorite_retries = []
     asset_request_urls = []
     recycle_request_urls = []
+    slimming_workspace_request_urls = []
     source_catalog = [
         {
             "id": SOURCE_ID,
@@ -795,6 +796,7 @@ def main(*, inspector_actions_only=False):
             }
 
         def handle_slimming_workspace(route):
+            slimming_workspace_request_urls.append(route.request.url)
             query = parse_qs(urlparse(route.request.url).query)
             media_kind = query.get("mediaKind", ["image"])[0]
             cluster_scope = query.get("clusterScope", ["pending"])[0]
@@ -877,7 +879,7 @@ def main(*, inspector_actions_only=False):
                     if cluster_members[cluster_id]
                     else SLIMMING_ASSET_IDS[0]
                 ),
-                "score": 0.94 - index * 0.02,
+                "score": max(0.5, 0.94 - index * 0.004),
                 "isSeedOnlyResult": False,
                 "reviewDisposition": cluster_dispositions[cluster_id],
                 "originalMemberCount": len(cluster_members[cluster_id]),
@@ -8876,7 +8878,8 @@ def main(*, inspector_actions_only=False):
         assert navigator_scroll_before_final_page == 120
         load_more_jobs.evaluate("button => button.click()")
         page.wait_for_function(
-            "() => document.querySelectorAll('#slimmingJobList [data-slimming-job-id]').length === 121"
+            "() => !state.slimming.loading "
+            "&& document.querySelectorAll('#slimmingJobList [data-slimming-job-id]').length === 121"
         )
         job_fallback = page.evaluate(
             """() => ({
@@ -8898,17 +8901,128 @@ def main(*, inspector_actions_only=False):
         main_job_row = page.locator(
             f'[data-slimming-job-id="{SLIMMING_JOB_ID}"]'
         )
+        next_visible_job_id = page.locator(
+            "#slimmingJobList [data-slimming-job-id]"
+        ).nth(1).get_attribute("data-slimming-job-id")
+        assert next_visible_job_id is not None
         main_job_row.focus()
-        main_job_row.press("End")
+        slimming_job_navigation_counters = {
+            "workspace_reads": len(slimming_workspace_request_urls),
+            "job_actions": len(submitted_slimming_job_actions),
+            "cluster_reviews": len(submitted_slimming_cluster_reviews),
+            "removals": len(submitted_slimming_removals),
+        }
+        slimming_job_navigation_document_scroll = page.evaluate(
+            "() => document.scrollingElement.scrollTop"
+        )
+        assert main_job_row.get_attribute("aria-keyshortcuts") == (
+            "ArrowLeft ArrowRight ArrowUp ArrowDown PageUp PageDown Home End Shift+F10"
+        )
+        assert page.locator(
+            '#slimmingJobList [data-slimming-job-id][tabindex="0"]'
+        ).count() == 1
+
+        def slimming_job_navigation_snapshot():
+            return page.evaluate(
+                """() => {
+                  const pane = document.querySelector('#slimmingNavigatorPane');
+                  const rows = [...document.querySelectorAll(
+                    '#slimmingJobList [data-slimming-job-id]'
+                  )];
+                  const index = rows.findIndex((row) => row.getAttribute('aria-selected') === 'true');
+                  const rowRect = rows[index]?.getBoundingClientRect();
+                  const paneRect = pane.getBoundingClientRect();
+                  const style = getComputedStyle(pane);
+                  const visibleTop = paneRect.top
+                    + (Number.parseFloat(style.scrollPaddingTop) || 0);
+                  const visibleBottom = paneRect.bottom
+                    - (Number.parseFloat(style.scrollPaddingBottom) || 0);
+                  return {
+                    index,
+                    focused: document.activeElement === rows[index],
+                    visible: Boolean(rowRect)
+                      && rowRect.top >= visibleTop - 1
+                      && rowRect.bottom <= visibleBottom + 1,
+                    tabStops: rows.filter((row) => row.tabIndex === 0).length,
+                    scrollTop: pane.scrollTop,
+                    selectedJobID: state.slimming.selectedJobID,
+                  };
+                }"""
+            )
+
+        main_job_row.press("ArrowDown")
+        page.wait_for_function(
+            "jobID => state.slimming.selectedJobID === jobID "
+            "&& document.activeElement?.dataset.slimmingJobId === jobID",
+            arg=next_visible_job_id,
+        )
+        assert slimming_job_navigation_snapshot()["index"] == 1
+        page.keyboard.press("PageDown")
+        page.wait_for_function(
+            "jobID => state.slimming.selectedJobID !== jobID && !state.slimming.loading",
+            arg=next_visible_job_id,
+        )
+        job_page_down = slimming_job_navigation_snapshot()
+        assert job_page_down["index"] > 1
+        assert job_page_down["focused"] and job_page_down["visible"]
+        assert job_page_down["tabStops"] == 1
+        page.keyboard.press("PageUp")
+        page.wait_for_function(
+            "index => !state.slimming.loading && [...document.querySelectorAll("
+            "'#slimmingJobList [data-slimming-job-id]')].findIndex("
+            "row => row.getAttribute('aria-selected') === 'true') < index",
+            arg=job_page_down["index"],
+        )
+        job_page_up = slimming_job_navigation_snapshot()
+        assert job_page_up["focused"] and job_page_up["visible"]
+        page.keyboard.press("Home")
+        page.wait_for_function(
+            "jobID => state.slimming.selectedJobID === jobID "
+            "&& document.activeElement?.dataset.slimmingJobId === jobID",
+            arg=SLIMMING_JOB_ID,
+        )
+        job_home = slimming_job_navigation_snapshot()
+        assert job_home["index"] == 0
+        assert job_home["visible"]
+        page.keyboard.press("End")
         page.wait_for_function(
             "jobID => document.querySelectorAll('#slimmingJobList [data-slimming-job-id]').length === 121 "
             "&& document.querySelector(`[data-slimming-job-id=\"${jobID}\"]`)"
-            ".getAttribute('aria-selected') === 'true'",
+            ".getAttribute('aria-selected') === 'true' "
+            "&& document.activeElement?.dataset.slimmingJobId === jobID",
             arg=SLIMMING_HISTORY_JOB_IDS[-1],
         )
+        job_end = slimming_job_navigation_snapshot()
+        assert job_end["index"] == 120
+        assert job_end["focused"] and job_end["visible"]
+        assert job_end["tabStops"] == 1
         assert load_more_jobs.is_hidden()
         assert page.locator("#slimmingJobPosition").inner_text() == "121 / 121"
         page.screenshot(path="/tmp/imageall-slimming-complete-history.png", full_page=True)
+        page.keyboard.press("Home")
+        page.wait_for_function(
+            "jobID => state.slimming.selectedJobID === jobID "
+            "&& document.activeElement?.dataset.slimmingJobId === jobID",
+            arg=SLIMMING_JOB_ID,
+        )
+        assert len(slimming_workspace_request_urls) - (
+            slimming_job_navigation_counters["workspace_reads"]
+        ) in {5, 6}
+        assert len(submitted_slimming_job_actions) == (
+            slimming_job_navigation_counters["job_actions"]
+        )
+        assert len(submitted_slimming_cluster_reviews) == (
+            slimming_job_navigation_counters["cluster_reviews"]
+        )
+        assert len(submitted_slimming_removals) == (
+            slimming_job_navigation_counters["removals"]
+        )
+        assert page.evaluate("() => document.scrollingElement.scrollTop") == (
+            slimming_job_navigation_document_scroll
+        )
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.context?.slimmingJobID"
+        ) == SLIMMING_JOB_ID
 
         expanded_slimming_history_enabled = False
         page.evaluate(
@@ -9071,6 +9185,136 @@ def main(*, inspector_actions_only=False):
         )
         assert cluster_fallback["syncCalls"] == 105, cluster_fallback
         assert cluster_fallback["staleCount"] == 0, cluster_fallback
+
+        cluster_main_buttons = page.locator(
+            "#slimmingClusterList [data-slimming-cluster-id]"
+        )
+        assert cluster_main_buttons.count() == 105
+        assert cluster_main_buttons.nth(0).get_attribute("aria-keyshortcuts") == (
+            "ArrowUp ArrowDown PageUp PageDown Home End"
+        )
+        assert page.locator(
+            '#slimmingClusterList [data-slimming-cluster-id][tabindex="0"]'
+        ).count() == 1
+        cluster_main_buttons.nth(0).focus()
+        slimming_cluster_navigation_counters = {
+            "workspace_reads": len(slimming_workspace_request_urls),
+            "job_actions": len(submitted_slimming_job_actions),
+            "cluster_reviews": len(submitted_slimming_cluster_reviews),
+            "removals": len(submitted_slimming_removals),
+        }
+        slimming_cluster_navigation_document_scroll = page.evaluate(
+            "() => document.scrollingElement.scrollTop"
+        )
+
+        def slimming_cluster_navigation_snapshot():
+            return page.evaluate(
+                """() => {
+                  const pane = document.querySelector('#slimmingNavigatorPane');
+                  const buttons = [...document.querySelectorAll(
+                    '#slimmingClusterList [data-slimming-cluster-id]'
+                  )];
+                  const index = buttons.findIndex(
+                    (button) => button.dataset.slimmingClusterId
+                      === state.slimming.selectedClusterID
+                  );
+                  const buttonRect = buttons[index]?.getBoundingClientRect();
+                  const paneRect = pane.getBoundingClientRect();
+                  const style = getComputedStyle(pane);
+                  const visibleTop = paneRect.top
+                    + (Number.parseFloat(style.scrollPaddingTop) || 0);
+                  const visibleBottom = paneRect.bottom
+                    - (Number.parseFloat(style.scrollPaddingBottom) || 0);
+                  return {
+                    index,
+                    focused: document.activeElement === buttons[index],
+                    visible: Boolean(buttonRect)
+                      && buttonRect.top >= visibleTop - 1
+                      && buttonRect.bottom <= visibleBottom + 1,
+                    tabStops: buttons.filter((button) => button.tabIndex === 0).length,
+                    scrollTop: pane.scrollTop,
+                    selectedClusterID: state.slimming.selectedClusterID,
+                  };
+                }"""
+            )
+
+        cluster_main_buttons.nth(0).press("ArrowDown")
+        page.wait_for_function(
+            "clusterID => state.slimming.selectedClusterID === clusterID "
+            "&& document.activeElement?.dataset.slimmingClusterId === clusterID",
+            arg=SLIMMING_PAGINATION_CLUSTER_IDS[1],
+        )
+        assert slimming_cluster_navigation_snapshot()["index"] == 1
+        page.keyboard.press("PageDown")
+        page.wait_for_function(
+            "clusterID => state.slimming.selectedClusterID !== clusterID "
+            "&& !state.slimming.loading",
+            arg=SLIMMING_PAGINATION_CLUSTER_IDS[1],
+        )
+        cluster_page_down = slimming_cluster_navigation_snapshot()
+        assert cluster_page_down["index"] > 1
+        assert cluster_page_down["focused"] and cluster_page_down["visible"]
+        assert cluster_page_down["tabStops"] == 1
+        page.keyboard.press("PageUp")
+        page.wait_for_function(
+            "index => !state.slimming.loading && state.slimming.clusters.findIndex("
+            "cluster => cluster.id === state.slimming.selectedClusterID) < index",
+            arg=cluster_page_down["index"],
+        )
+        cluster_page_up = slimming_cluster_navigation_snapshot()
+        assert cluster_page_up["focused"] and cluster_page_up["visible"]
+        page.keyboard.press("End")
+        page.wait_for_function(
+            "clusterID => state.slimming.selectedClusterID === clusterID "
+            "&& document.activeElement?.dataset.slimmingClusterId === clusterID",
+            arg=SLIMMING_PAGINATION_CLUSTER_IDS[-1],
+        )
+        cluster_end = slimming_cluster_navigation_snapshot()
+        assert cluster_end["index"] == 104
+        assert cluster_end["focused"] and cluster_end["visible"]
+        assert cluster_end["tabStops"] == 1
+        page.screenshot(
+            path="/tmp/imageall-slimming-navigator-keyboard.png",
+            full_page=True,
+        )
+        page.keyboard.press("Home")
+        page.wait_for_function(
+            "clusterID => state.slimming.selectedClusterID === clusterID "
+            "&& document.activeElement?.dataset.slimmingClusterId === clusterID",
+            arg=SLIMMING_PAGINATION_CLUSTER_IDS[0],
+        )
+        cluster_home = slimming_cluster_navigation_snapshot()
+        assert cluster_home["index"] == 0
+        assert cluster_home["focused"] and cluster_home["visible"]
+        assert len(slimming_workspace_request_urls) - (
+            slimming_cluster_navigation_counters["workspace_reads"]
+        ) in {4, 5}
+        assert len(submitted_slimming_job_actions) == (
+            slimming_cluster_navigation_counters["job_actions"]
+        )
+        assert len(submitted_slimming_cluster_reviews) == (
+            slimming_cluster_navigation_counters["cluster_reviews"]
+        )
+        assert len(submitted_slimming_removals) == (
+            slimming_cluster_navigation_counters["removals"]
+        )
+        assert page.evaluate("() => document.scrollingElement.scrollTop") == (
+            slimming_cluster_navigation_document_scroll
+        )
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.context?.slimmingClusterID"
+        ) == SLIMMING_PAGINATION_CLUSTER_IDS[0]
+
+        page.evaluate(
+            """baseline => {
+              selectSlimmingMember(baseline.memberID, {}, { forceReplace: true });
+              document.querySelector(
+                `[data-slimming-member-id="${baseline.memberID}"] .slimming-member-main`
+              )?.focus({ preventScroll: true });
+              slimmingMemberScrollContainer().scrollTop = baseline.memberScrollTop;
+            }""",
+            pagination_baseline,
+        )
 
         page.evaluate(
             """() => {

@@ -11248,6 +11248,7 @@ button.world-map-place-candidate:focus-visible {
 
 .slimming-navigator-pane {
   overflow: auto;
+  scroll-padding-block: 44px 8px;
   border-right: 1px solid var(--separator);
   background: var(--sidebar);
   scrollbar-gutter: stable;

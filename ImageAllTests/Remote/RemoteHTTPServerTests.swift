@@ -3070,6 +3070,25 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function longListNavigationTarget"))
         XCTAssertTrue(script.contains("elements.jobsList"))
         XCTAssertTrue(script.contains("elements.trainingRunPane"))
+        XCTAssertTrue(script.contains("function navigateSlimmingJobByKey(key, originJobID = null)"))
+        XCTAssertTrue(script.contains("async function selectSlimmingJob(jobID, { focus = false } = {})"))
+        XCTAssertTrue(script.contains("function navigateSlimmingClusterByKey(key)"))
+        XCTAssertTrue(script.contains("function expandSlimmingClusterWindow({ all = false } = {})"))
+        XCTAssertTrue(
+            script.contains(
+                "elements.slimmingClusterList.addEventListener(\"keydown\""
+            )
+        )
+        XCTAssertTrue(
+            script.contains(
+                "keyShortcuts: \"ArrowLeft ArrowRight ArrowUp ArrowDown PageUp PageDown Home End Shift+F10\""
+            )
+        )
+        XCTAssertTrue(
+            script.contains(
+                "keyShortcuts: \"ArrowUp ArrowDown PageUp PageDown Home End\""
+            )
+        )
         XCTAssertTrue(html.contains("ArrowUp ArrowDown PageUp PageDown Home End"))
         XCTAssertTrue(stylesheet.contains("scroll-padding-block: 44px 8px"))
         XCTAssertTrue(script.contains("function assetCardHelpDetail"))
