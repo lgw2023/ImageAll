@@ -1506,38 +1506,41 @@ def main(*, inspector_actions_only=False):
             for key in source_context_history["contextKeys"]
             if key.startswith("contextMenu")
         )
+        context_menu_helper_script = """
+          window.__captureContextMenuActions = (menuID) => {
+            const buttons = [...document.querySelectorAll(`#${menuID}Actions > button`)];
+            window.__contextMenuActionSnapshots ||= {};
+            window.__contextMenuActionSnapshots[menuID] = {
+              buttons,
+              labels: buttons.map((button) => button.querySelector(
+                ':scope > [data-context-action-part="label"]'
+              )),
+              shortcuts: buttons.map((button) => button.querySelector(
+                ':scope > [data-context-action-part="shortcut"]'
+              )),
+            };
+          };
+          window.__contextMenuActionsAreContinuous = (menuID) => {
+            const snapshot = window.__contextMenuActionSnapshots?.[menuID];
+            const buttons = [...document.querySelectorAll(`#${menuID}Actions > button`)];
+            return Boolean(snapshot)
+              && buttons.length === snapshot.buttons.length
+              && buttons.every((button, index) => (
+                button === snapshot.buttons[index]
+                && button.querySelector(
+                  ':scope > [data-context-action-part="label"]'
+                ) === snapshot.labels[index]
+                && button.querySelector(
+                  ':scope > [data-context-action-part="shortcut"]'
+                ) === snapshot.shortcuts[index]
+              ));
+          };
+        """
+        page.add_init_script(context_menu_helper_script)
         page.evaluate(
-            """() => {
-              window.__captureContextMenuActions = (menuID) => {
-                const buttons = [...document.querySelectorAll(`#${menuID}Actions > button`)];
-                window.__contextMenuActionSnapshots ||= {};
-                window.__contextMenuActionSnapshots[menuID] = {
-                  buttons,
-                  labels: buttons.map((button) => button.querySelector(
-                    ':scope > [data-context-action-part="label"]'
-                  )),
-                  shortcuts: buttons.map((button) => button.querySelector(
-                    ':scope > [data-context-action-part="shortcut"]'
-                  )),
-                };
-              };
-              window.__contextMenuActionsAreContinuous = (menuID) => {
-                const snapshot = window.__contextMenuActionSnapshots?.[menuID];
-                const buttons = [...document.querySelectorAll(`#${menuID}Actions > button`)];
-                return Boolean(snapshot)
-                  && buttons.length === snapshot.buttons.length
-                  && buttons.every((button, index) => (
-                    button === snapshot.buttons[index]
-                    && button.querySelector(
-                      ':scope > [data-context-action-part="label"]'
-                    ) === snapshot.labels[index]
-                    && button.querySelector(
-                      ':scope > [data-context-action-part="shortcut"]'
-                    ) === snapshot.shortcuts[index]
-                  ));
-              };
-              window.__captureContextMenuActions('sourceContextMenu');
-            }"""
+            "() => {"
+            + context_menu_helper_script
+            + "window.__captureContextMenuActions('sourceContextMenu');}"
         )
         source_context_viewport = page.viewport_size
         page.evaluate(
@@ -4504,7 +4507,7 @@ def main(*, inspector_actions_only=False):
         )
         assert "Apple Photos" not in slimming_setup_history_payload
         assert "旅行归档" not in slimming_setup_history_payload
-        assert "allCandidates" not in slimming_setup_history_payload
+        assert '"featurePrintRecallMode":"allCandidates"' in slimming_setup_history_payload
         slimming_setup_history_frame = page.evaluate(
             """sourceID => {
               const options = document.querySelector('#slimmingSourceOptions');
@@ -4601,6 +4604,239 @@ def main(*, inspector_actions_only=False):
             "scroll": True,
             "checked": False,
         }, slimming_setup_history_continuity
+
+        # A full browser refresh must rebuild the setup sheet from the current
+        # Host capability snapshot while retaining the user's validated draft,
+        # disclosure state, and independent form/source scrolling.
+        page.add_init_script(
+            """document.addEventListener('DOMContentLoaded', () => {
+              if (sessionStorage.getItem('imageallTestSlimmingSetupScroll') !== '1') return;
+              const body = document.querySelector('#slimmingSetupDialog .slimming-setup-body');
+              const sources = document.querySelector('#slimmingSourceOptions');
+              if (body) body.style.maxHeight = '250px';
+              if (sources) sources.style.maxHeight = '46px';
+            });"""
+        )
+        slimming_refresh_history = page.evaluate(
+            """() => {
+              sessionStorage.setItem('imageallTestSlimmingSetupScroll', '1');
+              const body = document.querySelector(
+                '#slimmingSetupDialog .slimming-setup-body'
+              );
+              const sources = document.querySelector('#slimmingSourceOptions');
+              const thresholds = document.querySelector(
+                '#slimmingSetupConfiguration .slimming-thresholds'
+              );
+              body.style.maxHeight = '250px';
+              sources.style.maxHeight = '46px';
+              thresholds.open = false;
+              body.scrollTop = Math.min(180, body.scrollHeight - body.clientHeight);
+              sources.scrollTop = sources.scrollHeight;
+              checkpointActiveWorkspaceHistory();
+              const entry = history.state.imageAllWorkspace;
+              history.replaceState({
+                ...history.state,
+                imageAllWorkspace: {
+                  ...entry,
+                  context: {
+                    ...entry.context,
+                    slimmingSetupSourceIDs: [
+                      ...entry.context.slimmingSetupSourceIDs,
+                      'missing-slimming-source',
+                    ],
+                  },
+                },
+              }, '', location.href);
+              return {
+                bodyScrollTop: body.scrollTop,
+                bodyScrollMax: body.scrollHeight - body.clientHeight,
+                sourcesScrollTop: sources.scrollTop,
+                sourcesScrollMax: sources.scrollHeight - sources.clientHeight,
+                thresholdsOpen: thresholds.open,
+                mode: entry.context.slimmingSetupMode,
+                sourceIDs: entry.context.slimmingSetupSourceIDs,
+                thresholds: entry.context.slimmingSetupThresholds,
+              };
+            }"""
+        )
+        assert slimming_refresh_history["bodyScrollTop"] > 0, slimming_refresh_history
+        assert slimming_refresh_history["sourcesScrollTop"] > 0, slimming_refresh_history
+        assert slimming_refresh_history["thresholdsOpen"] is False
+        assert slimming_refresh_history["mode"] == "catalog"
+        assert slimming_refresh_history["sourceIDs"] == [SOURCE_ID]
+        assert slimming_refresh_history["thresholds"][
+            "featurePrintRecallMode"
+        ] == "allCandidates"
+        page.wait_for_timeout(50)
+        page.evaluate(
+            """() => {
+              const entry = history.state.imageAllWorkspace;
+              history.replaceState({
+                ...history.state,
+                imageAllWorkspace: {
+                  ...entry,
+                  context: {
+                    ...entry.context,
+                    slimmingSetupSourceIDs: [
+                      ...entry.context.slimmingSetupSourceIDs,
+                      'missing-slimming-source',
+                    ],
+                  },
+                },
+              }, '', location.href);
+            }"""
+        )
+        setup_reads_before_slimming_refresh = slimming_setup_reads[0]
+        page.reload(wait_until="domcontentloaded")
+        page.locator("#slimmingWorkspace:not(.hidden)").wait_for(state="visible")
+        page.locator("#slimmingSetupDialog[open]").wait_for()
+        page.locator("#slimmingSetupConfiguration:not(.hidden)").wait_for()
+        page.wait_for_function(
+            "() => !state.workspaceNavigation.applyingHistory "
+            "&& !state.slimming.setup.loading "
+            "&& state.slimming.setup.mode === 'catalog' "
+            "&& state.slimming.setup.selectedSourceIDs.size === 1 "
+            f"&& state.slimming.setup.selectedSourceIDs.has('{SOURCE_ID}') "
+            "&& !JSON.stringify(history.state.imageAllWorkspace)"
+            ".includes('missing-slimming-source')"
+        )
+        assert slimming_setup_reads[0] == setup_reads_before_slimming_refresh + 1, {
+            "before": setup_reads_before_slimming_refresh,
+            "after": slimming_setup_reads[0],
+        }
+        slimming_refresh_result = page.evaluate(
+            """() => {
+              const body = document.querySelector(
+                '#slimmingSetupDialog .slimming-setup-body'
+              );
+              const sources = document.querySelector('#slimmingSourceOptions');
+              const thresholds = document.querySelector(
+                '#slimmingSetupConfiguration .slimming-thresholds'
+              );
+              return {
+                bodyScrollTop: body.scrollTop,
+                bodyScrollMax: body.scrollHeight - body.clientHeight,
+                sourcesScrollTop: sources.scrollTop,
+                sourcesScrollMax: sources.scrollHeight - sources.clientHeight,
+                thresholdsOpen: thresholds.open,
+                serialized: JSON.stringify(history.state.imageAllWorkspace),
+              };
+            }"""
+        )
+        assert abs(
+            slimming_refresh_result["bodyScrollTop"]
+            - slimming_refresh_history["bodyScrollTop"]
+        ) <= 1, {
+            "before": slimming_refresh_history,
+            "after": slimming_refresh_result,
+        }
+        assert abs(
+            slimming_refresh_result["sourcesScrollTop"]
+            - slimming_refresh_history["sourcesScrollTop"]
+        ) <= 1, {
+            "before": slimming_refresh_history,
+            "after": slimming_refresh_result,
+        }
+        assert slimming_refresh_result["thresholdsOpen"] is False
+        assert "missing-slimming-source" not in slimming_refresh_result["serialized"]
+        assert page.locator("#slimmingRecallMode").input_value() == "allCandidates"
+        assert page.locator("#slimmingRecallTopK").input_value() == "48"
+        assert page.locator(
+            f'[data-slimming-source-id="{SOURCE_ID}"]'
+        ).is_checked()
+        assert not page.locator(
+            f'[data-slimming-source-id="{SECOND_SOURCE_ID}"]'
+        ).is_checked()
+        assert page.locator("#launchSlimmingButton").is_enabled()
+        assert "1 个历史来源当前不可用" in page.locator(
+            "#slimmingSetupNotice"
+        ).inner_text()
+        page.evaluate(
+            """() => {
+              sessionStorage.removeItem('imageallTestSlimmingSetupScroll');
+              const body = document.querySelector(
+                '#slimmingSetupDialog .slimming-setup-body'
+              );
+              const sources = document.querySelector('#slimmingSourceOptions');
+              const thresholds = document.querySelector(
+                '#slimmingSetupConfiguration .slimming-thresholds'
+              );
+              body.style.removeProperty('max-height');
+              sources.style.removeProperty('max-height');
+              thresholds.open = true;
+              document.querySelector('#slimmingSetupDialog').scrollTop = 0;
+              body.scrollTop = 0;
+              sources.scrollTop = 0;
+              checkpointActiveWorkspaceHistory();
+            }"""
+        )
+        page.screenshot(
+            path="/tmp/imageall-slimming-setup-history-restored.png",
+            full_page=True,
+        )
+
+        # A seed-based draft whose gallery selection disappeared stays visible
+        # but cannot silently broaden to the full catalog or launch a task.
+        invalid_seed_reads = slimming_setup_reads[0]
+        page.evaluate(
+            """() => {
+              const entry = history.state.imageAllWorkspace;
+              history.replaceState({
+                ...history.state,
+                imageAllWorkspace: {
+                  ...entry,
+                  context: {
+                    ...entry.context,
+                    slimmingSetupMode: 'seeds',
+                    galleryContext: {
+                      ...entry.context.galleryContext,
+                      gallerySelectedAssetID: null,
+                      gallerySelectionMode: false,
+                      gallerySelectedAssetIDs: [],
+                      gallerySelectionAnchorID: null,
+                    },
+                  },
+                },
+              }, '', location.href);
+            }"""
+        )
+        page.reload(wait_until="domcontentloaded")
+        page.locator("#slimmingSetupDialog[open]").wait_for()
+        page.wait_for_function(
+            "() => !state.workspaceNavigation.applyingHistory "
+            "&& !state.slimming.setup.loading "
+            "&& state.slimming.setup.mode === 'seeds'"
+        )
+        assert slimming_setup_reads[0] == invalid_seed_reads + 1, {
+            "before": invalid_seed_reads,
+            "after": slimming_setup_reads[0],
+        }
+        assert page.locator(
+            '[data-slimming-mode="seeds"]'
+        ).get_attribute("aria-checked") == "true"
+        assert page.locator("#launchSlimmingButton").is_disabled()
+        assert "种子选区当前不可用" in page.locator(
+            "#slimmingSetupNotice"
+        ).inner_text()
+        page.locator('[data-slimming-mode="catalog"]').click()
+        assert page.locator("#launchSlimmingButton").is_enabled()
+        page.evaluate(
+            """assetIDs => {
+              sessionStorage.removeItem('imageallTestSlimmingSetupScroll');
+              document.querySelector('#slimmingSetupDialog .slimming-setup-body')
+                .style.removeProperty('max-height');
+              document.querySelector('#slimmingSourceOptions').style.removeProperty('max-height');
+              document.querySelector('#slimmingSetupConfiguration .slimming-thresholds').open = true;
+              state.selectionMode = true;
+              state.selectedAssetIDs = new Set(assetIDs);
+              state.selectedAssetID = assetIDs.at(-1);
+              state.selectionAnchorID = assetIDs.at(-1);
+              syncSelectionModeControls();
+              renderAssets();
+              checkpointActiveWorkspaceHistory();
+            }""",
+            ASSET_IDS,
+        )
         page.evaluate(
             "document.querySelector('#slimmingSourceOptions').style.removeProperty('max-height')"
         )

@@ -839,6 +839,7 @@ const elements = {
   resetSlimmingThresholdsButton: $("#resetSlimmingThresholdsButton"),
   slimmingExtremeWarning: $("#slimmingExtremeWarning"),
   slimmingLaunchSummary: $("#slimmingLaunchSummary"),
+  slimmingSetupNotice: $("#slimmingSetupNotice"),
   slimmingSetupError: $("#slimmingSetupError"),
   saveSlimmingThresholdsButton: $("#saveSlimmingThresholdsButton"),
   launchSlimmingButton: $("#launchSlimmingButton"),
@@ -1467,6 +1468,7 @@ const state = {
       mode: "catalog",
       selectedSourceIDs: new Set(),
       thresholds: null,
+      notice: "",
       error: "",
       requestGeneration: 0,
       thresholdOperationID: null,
@@ -3210,6 +3212,7 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
     ? {
         ...(context || {}),
         slimmingSetupBaseLevel: state.slimming.setup.baseLevel,
+        ...currentSlimmingSetupHistoryContext(),
       }
     : hasSlimmingThreshold
     ? {
@@ -3877,7 +3880,11 @@ async function applyWorkspaceHistoryEntry(entry) {
         navigationLevel,
         context
       );
-      reconcileSlimmingSetupFromWorkspaceHistory(target, navigationLevel, context);
+      checkpointWorkspaceHistoryAfterApply ||= await reconcileSlimmingSetupFromWorkspaceHistory(
+        target,
+        navigationLevel,
+        context
+      );
       reconcileSlimmingThresholdFromWorkspaceHistory(target, navigationLevel, context);
       checkpointWorkspaceHistoryAfterApply ||= await reconcileTrainingSetupFromWorkspaceHistory(
         target,
@@ -3946,7 +3953,11 @@ async function applyWorkspaceHistoryEntry(entry) {
         navigationLevel,
         context
       );
-      reconcileSlimmingSetupFromWorkspaceHistory("gallery", navigationLevel, context);
+      checkpointWorkspaceHistoryAfterApply ||= await reconcileSlimmingSetupFromWorkspaceHistory(
+        "gallery",
+        navigationLevel,
+        context
+      );
       reconcileSlimmingThresholdFromWorkspaceHistory("gallery", navigationLevel, context);
       checkpointWorkspaceHistoryAfterApply ||= await reconcileTrainingSetupFromWorkspaceHistory(
         "gallery",
@@ -4057,7 +4068,10 @@ async function applyWorkspaceHistoryEntry(entry) {
       if (Object.prototype.hasOwnProperty.call(context, "slimmingClusterID")) {
         state.slimming.selectedClusterID = context.slimmingClusterID || null;
       }
-      await openSlimmingWorkspace({ historyMode: "none" });
+      await openSlimmingWorkspace({
+        historyMode: "none",
+        awaitCatalogSources: (activeEntry?.navigationLevel || "workspace") === "slimmingSetup",
+      });
       await waitForWorkspaceLayout();
       elements.slimmingNavigatorPane.scrollTop = workspaceHistoryScrollTop(
         context.slimmingNavigatorScrollTop
@@ -4152,7 +4166,7 @@ async function applyWorkspaceHistoryEntry(entry) {
       activeEntry?.navigationLevel || "workspace",
       context
     );
-    reconcileSlimmingSetupFromWorkspaceHistory(
+    checkpointWorkspaceHistoryAfterApply ||= await reconcileSlimmingSetupFromWorkspaceHistory(
       target,
       activeEntry?.navigationLevel || "workspace",
       context
@@ -33721,7 +33735,11 @@ async function setSlimmingClusterReviewDisposition(clusterID, disposition) {
   }
 }
 
-async function openSlimmingWorkspace({ historyMode = "push", returnTarget = null } = {}) {
+async function openSlimmingWorkspace({
+  historyMode = "push",
+  returnTarget = null,
+  awaitCatalogSources = false,
+} = {}) {
   leaveIntegratedGalleryOverviewForLibrary({ historyMode: "none" });
   leaveIntegratedWorldMapForLibrary({ historyMode: "none" });
   elements.reviewWorkspace.classList.add("hidden");
@@ -33750,7 +33768,9 @@ async function openSlimmingWorkspace({ historyMode = "push", returnTarget = null
   syncSlimmingPresentation({ focus: true });
   if (state.slimming.view === "recycle") await loadSlimmingRecycle();
   else {
-    void loadSlimmingCatalogSources();
+    const catalogSourcesPromise = loadSlimmingCatalogSources();
+    if (awaitCatalogSources) await catalogSourcesPromise;
+    else void catalogSourcesPromise;
     await loadSlimmingWorkspace();
     await loadSlimmingRemovals({ quiet: true });
     await loadSlimmingIdenticalCleanupRequests({ quiet: true });
@@ -34042,6 +34062,10 @@ function bindSlimmingThresholdInteractionSurface(surface) {
 
 function slimmingThresholdsValid(value = state.slimming.setup.thresholds) {
   return Boolean(value)
+    && ["topK", "allCandidates"].includes(value.featurePrintRecallMode)
+    && ["radius", "unlimited"].includes(value.featurePrintL2Mode)
+    && ["minimum", "unlimited"].includes(value.dinoCosineMode)
+    && ["automatic", "always", "never"].includes(value.sceneBucketingMode)
     && Number.isInteger(value.featurePrintRecallTopK)
     && value.featurePrintRecallTopK > 0
     && value.featurePrintRecallTopK <= 128
@@ -35266,6 +35290,8 @@ function renderSlimmingSetup() {
   const setup = state.slimming.setup;
   elements.slimmingSetupLoading.classList.toggle("hidden", !setup.loading);
   elements.slimmingSetupConfiguration.classList.toggle("hidden", setup.loading || !setup.snapshot);
+  syncSlimmingSetupText(elements.slimmingSetupNotice, setup.notice);
+  elements.slimmingSetupNotice.classList.toggle("hidden", !setup.notice);
   syncSlimmingSetupText(elements.slimmingSetupError, setup.error);
   const launchPresentation = slimmingSetupLaunchPresentation();
   syncSlimmingSetupText(
@@ -35288,6 +35314,94 @@ function renderSlimmingSetup() {
   }
   renderSlimmingCatalogCommands();
   syncWriteActionControls();
+}
+
+function slimmingSetupScrollSurfaces() {
+  return {
+    body: elements.slimmingSetupDialog.querySelector(".slimming-setup-body"),
+    sources: elements.slimmingSourceOptions,
+    thresholds: elements.slimmingSetupConfiguration.querySelector(".slimming-thresholds"),
+  };
+}
+
+function currentSlimmingSetupHistoryContext() {
+  const setup = state.slimming.setup;
+  const scroll = slimmingSetupScrollSurfaces();
+  const thresholds = normalizeSlimmingThresholdDraft(setup.thresholds);
+  return {
+    slimmingSetupMode: setup.mode,
+    slimmingSetupSourceIDs: [...setup.selectedSourceIDs]
+      .slice(0, GALLERY_HISTORY_LOADED_LIMIT),
+    slimmingSetupThresholds: slimmingThresholdsValid(thresholds) ? thresholds : null,
+    slimmingSetupBodyScrollTop: scroll.body?.scrollTop || 0,
+    slimmingSetupSourcesScrollTop: scroll.sources?.scrollTop || 0,
+    slimmingSetupThresholdsOpen: scroll.thresholds?.open !== false,
+  };
+}
+
+function applySlimmingSetupHistoryContext(context = {}) {
+  const setup = state.slimming.setup;
+  if (!setup.snapshot) return false;
+  const modes = new Set(["catalog", "currentFilter", "seeds"]);
+  const requestedMode = modes.has(context.slimmingSetupMode)
+    ? context.slimmingSetupMode
+    : (slimmingModeAvailable("currentFilter") ? "currentFilter" : "catalog");
+  setup.mode = requestedMode;
+
+  const activeSourceIDs = new Set((setup.snapshot.sources || []).map((source) => source.id));
+  const savedSourceIDs = Array.isArray(context.slimmingSetupSourceIDs)
+    ? context.slimmingSetupSourceIDs
+      .map(galleryHistoryIdentifier)
+      .filter(Boolean)
+      .slice(0, GALLERY_HISTORY_LOADED_LIMIT)
+    : null;
+  const selectedSourceIDs = savedSourceIDs
+    ? [...new Set(savedSourceIDs)].filter((sourceID) => activeSourceIDs.has(sourceID))
+    : [...resolvedSlimmingCatalogSourceIDs(setup.snapshot)];
+  setSlimmingCatalogSourceIDs(new Set(selectedSourceIDs), setup.snapshot);
+
+  const savedThresholds = normalizeSlimmingThresholdDraft(context.slimmingSetupThresholds);
+  setup.thresholds = slimmingThresholdsValid(savedThresholds)
+    ? savedThresholds
+    : normalizeSlimmingThresholdDraft(setup.snapshot.thresholds);
+
+  const missingSourceCount = savedSourceIDs
+    ? new Set(savedSourceIDs.filter((sourceID) => !activeSourceIDs.has(sourceID))).size
+    : 0;
+  const notes = [];
+  if (context.slimmingSetupMode && !modes.has(context.slimmingSetupMode)) {
+    notes.push("刷新前的分析范围无效，已切换到可用范围。");
+  } else if (!slimmingModeAvailable(requestedMode)) {
+    notes.push(requestedMode === "seeds"
+      ? "刷新前的种子选区当前不可用，请重新选择照片后再开始分析。"
+      : "刷新前的当前筛选与分析媒体类型不再一致，请重新确认范围。");
+  }
+  if (missingSourceCount) {
+    notes.push(`${missingSourceCount} 个历史来源当前不可用，已从本次配置中移除。`);
+  }
+  if (context.slimmingSetupThresholds && !slimmingThresholdsValid(savedThresholds)) {
+    notes.push("刷新前的相似阈值无效，已恢复为 Mac 当前设置。");
+  }
+  setup.notice = notes.join(" ");
+  return true;
+}
+
+async function restoreSlimmingSetupLayoutFromHistory(context = {}) {
+  await waitForWorkspaceLayout();
+  const scroll = slimmingSetupScrollSurfaces();
+  if (scroll.thresholds) {
+    scroll.thresholds.open = context.slimmingSetupThresholdsOpen !== false;
+  }
+  for (const [surface, value] of [
+    [scroll.body, context.slimmingSetupBodyScrollTop],
+    [scroll.sources, context.slimmingSetupSourcesScrollTop],
+  ]) {
+    if (!surface) continue;
+    surface.scrollTop = Math.min(
+      workspaceHistoryScrollTop(value),
+      Math.max(0, surface.scrollHeight - surface.clientHeight)
+    );
+  }
 }
 
 function slimmingSetupBaseLevelFromHistory(context = {}) {
@@ -35319,6 +35433,7 @@ function clearSlimmingSetupDialogState({ cancelRequest = true } = {}) {
   setup.launching = false;
   setup.thresholdOperationID = null;
   setup.launchOperationID = null;
+  setup.notice = "";
   setup.returnFocus = null;
   setup.baseLevel = "workspace";
   setup.historyRestoreFocus = true;
@@ -35358,35 +35473,51 @@ function presentSlimmingSetupDialog({
 }
 
 async function openSlimmingSetupDialog(
-  returnFocus = elements.slimmingAnalysisOptionsButton
+  returnFocus = elements.slimmingAnalysisOptionsButton,
+  {
+    historyMode = "pushSlimmingSetup",
+    baseLevel = null,
+    focus = true,
+    historyContext = null,
+  } = {}
 ) {
   const setup = state.slimming.setup;
   if (elements.slimmingSetupDialog.open || setup.opening) return;
   await returnFromActionMenu({ restoreFocus: false });
   setup.opening = true;
-  setup.returnFocus = returnFocus;
+  setup.returnFocus = returnFocus || elements.slimmingAnalysisOptionsButton;
   setup.loading = true;
   setup.saving = false;
   setup.launching = false;
   setup.snapshot = null;
+  setup.notice = "";
   setup.error = "";
   setup.thresholdOperationID = null;
   setup.launchOperationID = null;
   const generation = ++setup.requestGeneration;
   try {
-    presentSlimmingSetupDialog();
+    presentSlimmingSetupDialog({ historyMode, baseLevel, focus });
   } finally {
     setup.opening = false;
   }
   try {
+    const workspaceSnapshot = historyContext
+      && state.slimming.catalogSources.snapshot?.mediaKind === state.slimming.mediaKind
+      ? state.slimming.catalogSources.snapshot
+      : null;
     const query = new URLSearchParams({ mediaKind: state.slimming.mediaKind });
-    const snapshot = await api(`/v1/library-slimming/setup?${query}`);
+    const snapshot = workspaceSnapshot
+      || await api(`/v1/library-slimming/setup?${query}`);
     if (generation !== setup.requestGeneration) return;
     setup.snapshot = snapshot;
     state.slimming.catalogSources.snapshot = snapshot;
-    setup.mode = slimmingModeAvailable("currentFilter") ? "currentFilter" : "catalog";
-    setSlimmingCatalogSourceIDs(resolvedSlimmingCatalogSourceIDs(snapshot), snapshot);
-    setup.thresholds = normalizeSlimmingThresholdDraft(snapshot.thresholds);
+    if (historyContext) {
+      applySlimmingSetupHistoryContext(historyContext);
+    } else {
+      setup.mode = slimmingModeAvailable("currentFilter") ? "currentFilter" : "catalog";
+      setSlimmingCatalogSourceIDs(resolvedSlimmingCatalogSourceIDs(snapshot), snapshot);
+      setup.thresholds = normalizeSlimmingThresholdDraft(snapshot.thresholds);
+    }
   } catch (error) {
     if (generation === setup.requestGeneration) {
       setup.error = error.message || "图库瘦身设置载入失败";
@@ -35394,7 +35525,13 @@ async function openSlimmingSetupDialog(
   } finally {
     if (generation === setup.requestGeneration) {
       setup.loading = false;
-      if (elements.slimmingSetupDialog.open) renderSlimmingSetup();
+      if (elements.slimmingSetupDialog.open) {
+        renderSlimmingSetup();
+        if (historyContext && setup.snapshot) {
+          await restoreSlimmingSetupLayoutFromHistory(historyContext);
+        }
+        if (!historyContext) checkpointActiveWorkspaceHistory();
+      }
     }
   }
 }
@@ -35446,15 +35583,20 @@ function returnFromSlimmingSetup({ restoreFocus = true } = {}) {
   return Promise.resolve();
 }
 
-function reconcileSlimmingSetupFromWorkspaceHistory(route, navigationLevel, context = {}) {
+async function reconcileSlimmingSetupFromWorkspaceHistory(route, navigationLevel, context = {}) {
   const shouldOpen = navigationLevel === "slimmingSetup"
     && route === "slimming"
     && route === visibleWorkspaceRoute();
   const setup = state.slimming.setup;
   if (shouldOpen && !setup.restorable) {
     clearSlimmingSetupDialogState();
-    replaceSlimmingSetupHistoryWithBase(slimmingSetupBaseLevelFromHistory(context));
-    return;
+    await openSlimmingSetupDialog(elements.slimmingAnalysisOptionsButton, {
+      historyMode: "none",
+      baseLevel: slimmingSetupBaseLevelFromHistory(context),
+      focus: false,
+      historyContext: context,
+    });
+    return Boolean(setup.snapshot);
   }
   if (shouldOpen && !elements.slimmingSetupDialog.open) {
     presentSlimmingSetupDialog({
@@ -35470,6 +35612,7 @@ function reconcileSlimmingSetupFromWorkspaceHistory(route, navigationLevel, cont
     });
     setup.historyRestoreFocus = true;
   }
+  return false;
 }
 
 function readSlimmingThresholdControls() {
@@ -35487,6 +35630,7 @@ function readSlimmingThresholdControls() {
   setup.thresholdOperationID = null;
   setup.error = slimmingThresholdsValid() ? "" : "请检查相似阈值；数值必须在允许范围内。";
   renderSlimmingSetup();
+  checkpointActiveWorkspaceHistory();
 }
 
 async function saveSlimmingThresholds({ forLaunch = false } = {}) {
@@ -37282,7 +37426,7 @@ async function loadWorkspace({ restoreHistory = false } = {}) {
       restoreGalleryNavigationLevel,
       restoreEntry?.context || {}
     );
-    reconcileSlimmingSetupFromWorkspaceHistory(
+    await reconcileSlimmingSetupFromWorkspaceHistory(
       "gallery",
       restoreGalleryNavigationLevel,
       restoreEntry?.context || {}
@@ -38100,6 +38244,7 @@ function resetWorkspaceSessionState() {
   state.slimming.setup.loading = false;
   state.slimming.setup.saving = false;
   state.slimming.setup.launching = false;
+  state.slimming.setup.notice = "";
   state.slimming.setup.requestGeneration += 1;
   state.slimming.setup.returnFocus = null;
   state.slimming.setup.baseLevel = "workspace";
@@ -44120,6 +44265,7 @@ function bindEvents() {
     state.slimming.setup.launchOperationID = null;
     state.slimming.setup.error = "";
     renderSlimmingSetup();
+    checkpointActiveWorkspaceHistory();
   });
   elements.slimmingModeOptions.addEventListener("keydown", moveSlimmingSetupModeSelection);
   elements.slimmingSourceOptions.addEventListener("keydown", (event) => {
@@ -44138,6 +44284,7 @@ function bindEvents() {
     setSlimmingCatalogSourceIDs(selected, state.slimming.setup.snapshot);
     state.slimming.setup.launchOperationID = null;
     renderSlimmingSetup();
+    checkpointActiveWorkspaceHistory();
   });
   elements.toggleAllSlimmingSourcesButton.addEventListener("click", () => {
     const sources = state.slimming.setup.snapshot?.sources || [];
@@ -44149,6 +44296,7 @@ function bindEvents() {
     );
     state.slimming.setup.launchOperationID = null;
     renderSlimmingSetup();
+    checkpointActiveWorkspaceHistory();
   });
   elements.resetSlimmingThresholdsButton.addEventListener("click", () => {
     state.slimming.setup.thresholds = normalizeSlimmingThresholdDraft(
@@ -44157,7 +44305,10 @@ function bindEvents() {
     state.slimming.setup.thresholdOperationID = null;
     state.slimming.setup.error = "";
     renderSlimmingSetup();
+    checkpointActiveWorkspaceHistory();
   });
+  elements.slimmingSetupConfiguration.querySelector(".slimming-thresholds")
+    ?.addEventListener("toggle", checkpointActiveWorkspaceHistory);
   bindSlimmingThresholdInteractionSurface(elements.slimmingSetupConfiguration);
   for (const control of [
     elements.slimmingRecallMode,
@@ -46217,6 +46368,9 @@ function bindEvents() {
     elements.trainingRunPane,
     elements.trainingDetailPane,
     elements.slimmingNavigatorPane,
+    ...Object.values(slimmingSetupScrollSurfaces()).filter(
+      (surface) => surface && !surface.matches("details")
+    ),
     ...Object.values(trainingSetupScrollSurfaces()),
   ]) {
     scrollSurface.addEventListener("scroll", scheduleWorkspaceHistoryCheckpoint, {
