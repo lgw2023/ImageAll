@@ -216,6 +216,102 @@ def main():
         page.evaluate(
             """
             () => {
+              const content = document.querySelector("#storageContent");
+              content.scrollTop = content.scrollHeight;
+              document.querySelector("#chooseExternalStorageButton")
+                .focus({ preventScroll: true });
+            }
+            """
+        )
+        page.wait_for_timeout(150)
+        storage_history_context = page.evaluate(
+            "() => history.state?.imageAllWorkspace?.context"
+        )
+        assert storage_history_context["storageFocusID"] == "chooseExternalStorageButton"
+        assert storage_history_context["storageScrollTop"] > 0
+        assert storage_history_context["storageReturnControlID"] == "storageButton"
+        serialized_storage_context = json.dumps(
+            storage_history_context,
+            ensure_ascii=False,
+        )
+        assert "ImageAll-External" not in serialized_storage_context
+        assert "合成存储操作" not in serialized_storage_context
+        assert "dddddddd" not in serialized_storage_context
+
+        saved_storage_scroll = storage_history_context["storageScrollTop"]
+        storage_reads_before_reload = storage_reads
+        page.reload(wait_until="networkidle")
+        page.locator("#storageDialog[open]").wait_for()
+        page.locator("#storageContent:not(.hidden)").wait_for()
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'chooseExternalStorageButton'"
+        )
+        assert storage_reads == storage_reads_before_reload + 1
+        restored_storage_scroll = page.evaluate(
+            """
+            () => {
+              const content = document.querySelector("#storageContent");
+              return {
+                actual: content.scrollTop,
+                maximum: Math.max(0, content.scrollHeight - content.clientHeight),
+              };
+            }
+            """
+        )
+        assert restored_storage_scroll["actual"] == min(
+            saved_storage_scroll,
+            restored_storage_scroll["maximum"],
+        )
+        page.screenshot(
+            path="/tmp/imageall-storage-history-restored.png",
+            full_page=True,
+        )
+
+        page.evaluate(
+            """
+            () => {
+              const workspace = structuredClone(history.state.imageAllWorkspace);
+              workspace.context.storageFocusID = "appStorageDetail";
+              workspace.context.storageScrollTop = -42;
+              workspace.context.storageReturnControlID = "appStorageKind";
+              history.replaceState({
+                ...history.state,
+                imageAllWorkspace: workspace,
+              }, "", location.href);
+            }
+            """
+        )
+        storage_reads_before_invalid_reload = storage_reads
+        page.reload(wait_until="networkidle")
+        page.locator("#storageDialog[open]").wait_for()
+        page.locator("#storageContent:not(.hidden)").wait_for()
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'storageRefreshButton'"
+        )
+        assert storage_reads == storage_reads_before_invalid_reload + 1
+        normalized_storage_context = page.evaluate(
+            "() => history.state?.imageAllWorkspace?.context"
+        )
+        assert normalized_storage_context["storageFocusID"] == "storageRefreshButton"
+        assert normalized_storage_context["storageScrollTop"] == 0
+        assert normalized_storage_context["storageReturnControlID"] is None
+        assert "appStorageDetail" not in json.dumps(normalized_storage_context)
+        assert "appStorageKind" not in json.dumps(normalized_storage_context)
+
+        storage_reads_before_history_round_trip = storage_reads
+        page.evaluate("() => history.back()")
+        page.locator("#storageDialog").wait_for(state="hidden")
+        page.wait_for_function("() => document.activeElement?.id === 'storageButton'")
+        page.evaluate("() => history.forward()")
+        page.locator("#storageDialog[open]").wait_for()
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'storageRefreshButton'"
+        )
+        assert storage_reads == storage_reads_before_history_round_trip
+
+        page.evaluate(
+            """
+            () => {
               const originalFetch = window.fetch.bind(window);
               window.__storageRefreshRelease = null;
               window.fetch = (input, init) => {

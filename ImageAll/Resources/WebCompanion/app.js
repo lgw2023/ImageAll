@@ -1115,6 +1115,10 @@ const state = {
   storageBaseLevel: "workspace",
   storageHistoryRestoreFocus: true,
   storageOpening: false,
+  storageRestorable: false,
+  storageFocusID: "storageRefreshButton",
+  storageScrollTop: 0,
+  storageReturnControlID: null,
   assets: [],
   nextCursor: null,
   selectedSourceID: "",
@@ -2324,6 +2328,10 @@ function closeOverlays() {
   state.storageBaseLevel = "workspace";
   state.storageHistoryRestoreFocus = true;
   state.storageOpening = false;
+  state.storageRestorable = false;
+  state.storageFocusID = "storageRefreshButton";
+  state.storageScrollTop = 0;
+  state.storageReturnControlID = null;
   state.confirmationReturnFocus = null;
   state.confirmationBaseLevel = "workspace";
   state.confirmationHistoryRestoreFocus = true;
@@ -3215,7 +3223,10 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
             }
           : {}),
         ...(hasStorageMaintenance
-          ? { storageBaseLevel: state.storageBaseLevel }
+          ? {
+              storageBaseLevel: state.storageBaseLevel,
+              ...currentStorageMaintenanceHistoryContext(),
+            }
           : {}),
         ...(hasActionMenu
           ? {
@@ -3296,6 +3307,7 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
     ? {
         ...(context || {}),
         storageBaseLevel: state.storageBaseLevel,
+        ...currentStorageMaintenanceHistoryContext(),
       }
     : hasSuggestionThreshold || hasGeneralSettings
     ? {
@@ -3958,7 +3970,12 @@ async function applyWorkspaceHistoryEntry(entry, { restoringReload = false } = {
         navigationLevel,
         context
       ) || checkpointWorkspaceHistoryAfterApply;
-      await reconcileStorageMaintenanceFromWorkspaceHistory(target, navigationLevel, context);
+      checkpointWorkspaceHistoryAfterApply =
+        await reconcileStorageMaintenanceFromWorkspaceHistory(
+          target,
+          navigationLevel,
+          context
+        ) || checkpointWorkspaceHistoryAfterApply;
       reconcileConfirmationFromWorkspaceHistory(target, navigationLevel, context);
       return;
     }
@@ -4047,7 +4064,12 @@ async function applyWorkspaceHistoryEntry(entry, { restoringReload = false } = {
         navigationLevel,
         context
       ) || checkpointWorkspaceHistoryAfterApply;
-      await reconcileStorageMaintenanceFromWorkspaceHistory("gallery", navigationLevel, context);
+      checkpointWorkspaceHistoryAfterApply =
+        await reconcileStorageMaintenanceFromWorkspaceHistory(
+          "gallery",
+          navigationLevel,
+          context
+        ) || checkpointWorkspaceHistoryAfterApply;
       reconcileConfirmationFromWorkspaceHistory("gallery", navigationLevel, context);
       return;
     }
@@ -4281,11 +4303,12 @@ async function applyWorkspaceHistoryEntry(entry, { restoringReload = false } = {
       activeEntry?.navigationLevel || "workspace",
       context
     ) || checkpointWorkspaceHistoryAfterApply;
-    await reconcileStorageMaintenanceFromWorkspaceHistory(
-      target,
-      activeEntry?.navigationLevel || "workspace",
-      context
-    );
+    checkpointWorkspaceHistoryAfterApply =
+      await reconcileStorageMaintenanceFromWorkspaceHistory(
+        target,
+        activeEntry?.navigationLevel || "workspace",
+        context
+      ) || checkpointWorkspaceHistoryAfterApply;
     reconcileConfirmationFromWorkspaceHistory(
       target,
       activeEntry?.navigationLevel || "workspace",
@@ -10427,6 +10450,7 @@ function replaceConfirmationHistoryWithBase(baseLevel, historyContext = {}) {
   } else if (baseLevel === "storageMaintenance" && elements.storageDialog.open) {
     navigationLevel = "storageMaintenance";
     context.storageBaseLevel = state.storageBaseLevel;
+    Object.assign(context, currentStorageMaintenanceHistoryContext());
   } else if (baseLevel === "generalSettings" && elements.generalSettingsDialog.open) {
     navigationLevel = "generalSettings";
     context.generalSettingsBaseLevel = state.generalSettings.baseLevel;
@@ -15181,6 +15205,112 @@ function storageMaintenanceHasActiveRequest() {
   return Boolean(storageMaintenanceActiveRequest());
 }
 
+const STORAGE_MAINTENANCE_HISTORY_FOCUS_IDS = new Set([
+  "storageCloseButton",
+  "clearPreviewCacheButton",
+  "clearPhotosOriginalsButton",
+  "chooseExternalStorageButton",
+  "exportPortableDataButton",
+  "storageRefreshButton",
+]);
+const STORAGE_MAINTENANCE_HISTORY_RETURN_IDS = new Set([
+  "storageButton",
+  "toolbarExportPortableDataButton",
+  "compactToolbarMenuButton",
+  "commandButton",
+]);
+
+function normalizedStorageMaintenanceHistoryFocusID(value) {
+  return STORAGE_MAINTENANCE_HISTORY_FOCUS_IDS.has(value)
+    ? value
+    : "storageRefreshButton";
+}
+
+function captureStorageMaintenanceHistoryFocus() {
+  if (!elements.storageDialog.open) return;
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement)
+    || !elements.storageDialog.contains(active)
+    || !STORAGE_MAINTENANCE_HISTORY_FOCUS_IDS.has(active.id)) return;
+  state.storageFocusID = active.id;
+}
+
+function currentStorageMaintenanceHistoryContext() {
+  if (elements.storageDialog.open) {
+    captureStorageMaintenanceHistoryFocus();
+    state.storageScrollTop = elements.storageContent.scrollTop;
+  }
+  return {
+    storageFocusID: normalizedStorageMaintenanceHistoryFocusID(state.storageFocusID),
+    storageScrollTop: Math.max(
+      0,
+      workspaceHistoryFiniteNumber(state.storageScrollTop)
+    ),
+    storageReturnControlID: STORAGE_MAINTENANCE_HISTORY_RETURN_IDS.has(
+      state.storageReturnControlID
+    ) ? state.storageReturnControlID : null,
+  };
+}
+
+function applyStorageMaintenanceHistoryContext(context = {}) {
+  state.storageFocusID = normalizedStorageMaintenanceHistoryFocusID(
+    context.storageFocusID
+  );
+  state.storageScrollTop = Math.max(
+    0,
+    workspaceHistoryFiniteNumber(context.storageScrollTop)
+  );
+  state.storageReturnControlID = STORAGE_MAINTENANCE_HISTORY_RETURN_IDS.has(
+    context.storageReturnControlID
+  ) ? context.storageReturnControlID : null;
+  state.storageReturnFocus = null;
+}
+
+function storageMaintenanceReturnControlID(element) {
+  return element instanceof HTMLElement
+    && STORAGE_MAINTENANCE_HISTORY_RETURN_IDS.has(element.id)
+    ? element.id
+    : null;
+}
+
+function resolveStorageMaintenanceReturnFocus() {
+  if (state.storageReturnFocus?.isConnected) return state.storageReturnFocus;
+  if (state.storageReturnControlID) {
+    const target = document.getElementById(state.storageReturnControlID);
+    if (target instanceof HTMLElement && !target.disabled && target.getClientRects().length) {
+      return target;
+    }
+  }
+  return stableReturnFocusTarget(
+    elements.storageButton,
+    stableReturnFocusTarget(elements.compactToolbarMenuButton, elements.commandButton)
+  );
+}
+
+async function restoreStorageMaintenanceLayoutFromHistory() {
+  await waitForWorkspaceLayout();
+  const scrollTop = Math.min(
+    state.storageScrollTop,
+    Math.max(0, elements.storageContent.scrollHeight - elements.storageContent.clientHeight)
+  );
+  elements.storageContent.scrollTop = scrollTop;
+  let target = document.getElementById(
+    normalizedStorageMaintenanceHistoryFocusID(state.storageFocusID)
+  );
+  if (!(target instanceof HTMLElement)
+    || target.disabled
+    || !elements.storageDialog.contains(target)
+    || target.offsetParent === null) {
+    target = elements.storageRefreshButton.disabled
+      ? elements.storageCloseButton
+      : elements.storageRefreshButton;
+  }
+  target.focus({ preventScroll: true });
+  state.storageFocusID = target.id;
+  state.storageScrollTop = scrollTop;
+  elements.storageContent.scrollTop = scrollTop;
+}
+
 function storageMaintenanceNeedsPoll() {
   if (storageMaintenanceHasActiveRequest()) return true;
   if (!elements.storageDialog.open) return false;
@@ -15463,12 +15593,20 @@ async function openStorageMaintenance({
   baseLevel = null,
   refresh = true,
   returnFocus = null,
+  preserveState = false,
 } = {}) {
   if (!state.online || elements.storageDialog.open || state.storageOpening) return;
   state.storageOpening = true;
   try {
-    state.storageReturnFocus = returnFocus
-      || (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    if (!preserveState) {
+      state.storageReturnFocus = returnFocus
+        || (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+      state.storageReturnControlID = storageMaintenanceReturnControlID(
+        state.storageReturnFocus
+      );
+      state.storageFocusID = "storageRefreshButton";
+      state.storageScrollTop = 0;
+    }
     const current = activeWorkspaceHistoryEntry();
     state.storageBaseLevel = baseLevel
       || workspaceNavigationBaseLevel(
@@ -15476,6 +15614,7 @@ async function openStorageMaintenance({
         current?.context || {}
       );
     elements.storageDialog.showModal();
+    state.storageRestorable = true;
     if (historyMode !== "none") {
       const route = visibleWorkspaceRoute();
       recordWorkspaceHistory(route, currentWorkspaceHistoryContext(route), historyMode);
@@ -15488,12 +15627,17 @@ async function openStorageMaintenance({
     if (focus && elements.storageDialog.open) {
       restoreOverlayFocus(elements.storageRefreshButton);
     }
+    scheduleWorkspaceHistoryCheckpoint();
   } finally {
     state.storageOpening = false;
   }
 }
 
-function closeStorageMaintenance({ restoreFocus = true, checkpoint = true } = {}) {
+function closeStorageMaintenance({
+  restoreFocus = true,
+  checkpoint = true,
+  preserveState = false,
+} = {}) {
   if (!elements.storageDialog.open) return;
   if (elements.confirmDialog.open && state.confirmationBaseLevel === "storageMaintenance") {
     closeConfirmation({ restoreFocus: false, checkpoint: false, preserveState: false });
@@ -15506,10 +15650,15 @@ function closeStorageMaintenance({ restoreFocus = true, checkpoint = true } = {}
   }
   state.storageMaintenance.loading = false;
   state.storageMaintenance.pendingReturnAction = null;
+  captureStorageMaintenanceHistoryFocus();
+  state.storageScrollTop = elements.storageContent.scrollTop;
   const baseLevel = state.storageBaseLevel;
-  const returnFocus = state.storageReturnFocus;
-  state.storageReturnFocus = null;
-  state.storageBaseLevel = "workspace";
+  const returnFocus = resolveStorageMaintenanceReturnFocus();
+  if (!preserveState) {
+    state.storageReturnFocus = null;
+    state.storageReturnControlID = null;
+  }
+  state.storageBaseLevel = preserveState ? baseLevel : "workspace";
   elements.storageDialog.close();
   if (restoreFocus) {
     const toolbarFallback = stableReturnFocusTarget(
@@ -15527,6 +15676,11 @@ function closeStorageMaintenance({ restoreFocus = true, checkpoint = true } = {}
   }
   if (checkpoint) replaceStorageHistoryWithBase(baseLevel);
   if (keepsTracking) scheduleStorageMaintenancePoll();
+  if (!preserveState) {
+    state.storageRestorable = false;
+    state.storageFocusID = "storageRefreshButton";
+    state.storageScrollTop = 0;
+  }
 }
 
 function returnFromStorageMaintenance({ restoreFocus = true } = {}) {
@@ -15565,18 +15719,37 @@ async function reconcileStorageMaintenanceFromWorkspaceHistory(
       && context.confirmationBaseLevel === "storageMaintenance")
   ) && route === visibleWorkspaceRoute();
   if (shouldOpen && !state.online) return;
-  if (shouldOpen && !elements.storageDialog.open) {
+  if (shouldOpen && !state.storageRestorable) {
+    applyStorageMaintenanceHistoryContext(context);
     await openStorageMaintenance({
-      focus: navigationLevel === "storageMaintenance",
+      focus: false,
       historyMode: "none",
       baseLevel: storageBaseLevelFromHistory(context),
       refresh: false,
+      preserveState: true,
     });
+    if (navigationLevel === "storageMaintenance") {
+      await restoreStorageMaintenanceLayoutFromHistory();
+    }
+    return true;
+  }
+  if (shouldOpen && !elements.storageDialog.open) {
+    await openStorageMaintenance({
+      focus: false,
+      historyMode: "none",
+      baseLevel: storageBaseLevelFromHistory(context),
+      refresh: false,
+      preserveState: true,
+    });
+    if (navigationLevel === "storageMaintenance") {
+      await restoreStorageMaintenanceLayoutFromHistory();
+    }
   } else if (!shouldOpen && elements.storageDialog.open) {
     const restoreFocus = state.storageHistoryRestoreFocus;
-    closeStorageMaintenance({ restoreFocus, checkpoint: false });
+    closeStorageMaintenance({ restoreFocus, checkpoint: false, preserveState: true });
     state.storageHistoryRestoreFocus = true;
   }
+  return false;
 }
 
 async function submitStorageMaintenanceAction(action) {
@@ -38955,6 +39128,10 @@ function resetWorkspaceSessionState() {
   state.storageBaseLevel = "workspace";
   state.storageHistoryRestoreFocus = true;
   state.storageOpening = false;
+  state.storageRestorable = false;
+  state.storageFocusID = "storageRefreshButton";
+  state.storageScrollTop = 0;
+  state.storageReturnControlID = null;
   clearConfirmationState();
   clearTimeout(state.storageMaintenance.pollTimer);
   state.storageMaintenance.pollTimer = null;
@@ -44062,6 +44239,18 @@ function bindEvents() {
   elements.storageRefreshButton.addEventListener("click", () => loadStorageMaintenance({
     returnFocus: elements.storageRefreshButton,
   }));
+  elements.storageDialog.addEventListener("focusin", () => {
+    if (state.workspaceNavigation.applyingHistory
+      || state.workspaceNavigation.pendingRestoreEntry) return;
+    captureStorageMaintenanceHistoryFocus();
+    scheduleWorkspaceHistoryCheckpoint();
+  });
+  elements.storageContent.addEventListener("scroll", () => {
+    if (state.workspaceNavigation.applyingHistory
+      || state.workspaceNavigation.pendingRestoreEntry) return;
+    state.storageScrollTop = elements.storageContent.scrollTop;
+    scheduleWorkspaceHistoryCheckpoint();
+  }, { passive: true });
   elements.exportPortableDataButton.addEventListener("click", () => {
     submitStorageMaintenanceAction("exportPortableData");
   });
