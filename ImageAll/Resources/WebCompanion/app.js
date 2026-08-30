@@ -517,6 +517,7 @@ const elements = {
   cancelNewTagButton: $("#cancelNewTagButton"),
   cancelNewTagFooterButton: $("#cancelNewTagFooterButton"),
   reviewWorkspace: $("#reviewWorkspace"),
+  reviewWorkspaceTitle: $("#reviewWorkspaceTitle"),
   closeReviewButton: $("#closeReviewButton"),
   reviewBackButton: $("#reviewBackButton"),
   reviewSummary: $("#reviewSummary"),
@@ -4313,6 +4314,7 @@ function syncReviewPresentation({ focus = false, renderSurfaces = true } = {}) {
     && state.lightboxContext === "review";
   const dockedLightbox = lightboxOpen
     && elements.lightbox.classList.contains("review-docked");
+  renderReviewWorkspaceTitle();
 
   if (integrated) {
     elements.appView.inert = lightboxOpen && !dockedLightbox;
@@ -9023,6 +9025,7 @@ function renderTagSelects() {
   elements.reviewTagSelect.disabled = tags.length === 0
     || state.review.loading
     || state.review.mutating;
+  renderReviewWorkspaceTitle();
   renderTagNavigation();
   renderPlaceholderTagEditor();
   renderActiveFilterBar();
@@ -24385,6 +24388,7 @@ function renderReviewOverview({ preserveContent = false, reconcileContent = fals
 }
 
 function renderReviewMode() {
+  renderReviewWorkspaceTitle();
   const overviewMode = state.review.mode === "overview";
   elements.reviewOverview.classList.toggle("hidden", !overviewMode);
   elements.reviewQueueLayout.classList.toggle("hidden", overviewMode);
@@ -24394,6 +24398,24 @@ function renderReviewMode() {
     renderReviewOverview();
   } else {
     renderReview();
+  }
+}
+
+function reviewWorkspaceTitleText() {
+  if (state.review.mode !== "queue") return "待审核建议";
+  const tagID = elements.reviewTagSelect.value;
+  const displayName = activeTags().find((tag) => tag.id === tagID)?.displayName?.trim();
+  return displayName ? `审核“${displayName}”建议` : "审核建议";
+}
+
+function renderReviewWorkspaceTitle() {
+  const title = reviewWorkspaceTitleText();
+  if (elements.reviewWorkspaceTitle.textContent !== title) {
+    elements.reviewWorkspaceTitle.textContent = title;
+  }
+  const accessibilityTitle = `${title}工作区`;
+  if (elements.reviewWorkspace.getAttribute("aria-label") !== accessibilityTitle) {
+    elements.reviewWorkspace.setAttribute("aria-label", accessibilityTitle);
   }
 }
 
@@ -44652,6 +44674,7 @@ function bindEvents() {
     generateTagLibrarySuggestions();
   });
   elements.reviewTagSelect.addEventListener("change", () => {
+    renderReviewWorkspaceTitle();
     recordWorkspaceHistory("review", currentWorkspaceHistoryContext("review"), "replace");
     loadReviewQueue();
   });

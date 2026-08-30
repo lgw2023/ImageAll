@@ -2756,6 +2756,8 @@ def main():
                 reviewCurrent: document.querySelector('#reviewNavigationButton')
                   .getAttribute('aria-current'),
                 title: document.querySelector('#libraryTitle').textContent,
+                reviewTitle: document.querySelector('#reviewWorkspaceTitle').textContent,
+                reviewLabel: document.querySelector('#reviewWorkspace').getAttribute('aria-label'),
                 galleryToolbarIsolated: document.querySelector('#libraryPane > .toolbar')
                   .dataset.integratedWorkspaceIsolated || null,
               };
@@ -2776,6 +2778,8 @@ def main():
             "reviewSelected": True,
             "reviewCurrent": "page",
             "title": "待审核建议",
+            "reviewTitle": "待审核建议",
+            "reviewLabel": "待审核建议工作区",
             "galleryToolbarIsolated": "true",
         }, review_desktop_presentation
         review_cat_card = page.locator(f'[data-review-overview-tag-id="{CAT_TAG_ID}"]')
@@ -3042,6 +3046,90 @@ def main():
             f"() => state.review.detail?.assetID === '{REVIEW_IDS[0]}' "
             "&& !state.review.detailLoadingAssetID"
         )
+        assert page.locator("#reviewWorkspaceTitle").inner_text() == "审核“猫”建议"
+        assert page.locator("#reviewWorkspace").get_attribute("aria-label") == (
+            "审核“猫”建议工作区"
+        )
+        assert page.evaluate(
+            """() => {
+              const heading = document.querySelector('#reviewWorkspaceTitle');
+              return heading.scrollWidth <= heading.clientWidth
+                && heading.getBoundingClientRect().height <= 20;
+            }"""
+        ) is True
+        page.evaluate(
+            "() => { window.__stableReviewWorkspaceTitle = "
+            "document.querySelector('#reviewWorkspaceTitle'); }"
+        )
+
+        # Tag switching must update the visible and accessible context before
+        # the replacement queue request completes, then preserve the title node.
+        page.locator("#reviewTagSelect").select_option(TRAVEL_TAG_ID)
+        page.wait_for_function(
+            "() => document.querySelector('#reviewWorkspaceTitle').textContent === "
+            "'审核“旅行”建议' && !state.review.loading"
+        )
+        assert page.locator("#reviewWorkspace").get_attribute("aria-label") == (
+            "审核“旅行”建议工作区"
+        )
+        page.locator("#reviewTagSelect").select_option(CAT_TAG_ID)
+        page.wait_for_function(
+            "() => document.querySelector('#reviewWorkspaceTitle').textContent === "
+            "'审核“猫”建议' && !state.review.loading"
+        )
+
+        # A renamed tag projection should update the same heading without a
+        # queue read, DOM replacement, or stale accessible name.
+        title_projection = page.evaluate(
+            f"""() => {{
+              const originalAPI = api;
+              let apiCalls = 0;
+              api = (...args) => {{
+                apiCalls += 1;
+                return originalAPI(...args);
+              }};
+              const tag = state.tags.find(item => item.id === '{CAT_TAG_ID}');
+              tag.displayName = '猫咪';
+              renderTagSelects();
+              const sameNode = document.querySelector('#reviewWorkspaceTitle')
+                === window.__stableReviewWorkspaceTitle;
+              const result = {{
+                sameNode,
+                title: document.querySelector('#reviewWorkspaceTitle').textContent,
+                label: document.querySelector('#reviewWorkspace').getAttribute('aria-label'),
+                apiCalls,
+              }};
+              tag.displayName = '这是一个用于验证单行省略而不会挤压审核工具栏的超长标签名称';
+              renderTagSelects();
+              const heading = document.querySelector('#reviewWorkspaceTitle');
+              const style = getComputedStyle(heading);
+              result.longTitleLayout = {{
+                whiteSpace: style.whiteSpace,
+                overflow: style.overflow,
+                textOverflow: style.textOverflow,
+                overflowsInline: heading.scrollWidth > heading.clientWidth,
+                singleLine: heading.getBoundingClientRect().height <= 20,
+              }};
+              tag.displayName = '猫';
+              renderTagSelects();
+              api = originalAPI;
+              return result;
+            }}"""
+        )
+        assert title_projection == {
+            "sameNode": True,
+            "title": "审核“猫咪”建议",
+            "label": "审核“猫咪”建议工作区",
+            "apiCalls": 0,
+            "longTitleLayout": {
+                "whiteSpace": "nowrap",
+                "overflow": "hidden",
+                "textOverflow": "ellipsis",
+                "overflowsInline": True,
+                "singleLine": True,
+            },
+        }
+        assert page.locator("#reviewWorkspaceTitle").inner_text() == "审核“猫”建议"
         review_cards = page.locator("#reviewGrid > .review-card")
         first_review_main = review_cards.nth(0).locator(":scope > .review-card-main")
         second_review_main = review_cards.nth(1).locator(":scope > .review-card-main")
@@ -3986,6 +4074,14 @@ def main():
         page.locator("#reviewWorkspace:not(.hidden)").wait_for()
         page.locator("#reviewQueueLayout:not(.hidden)").wait_for()
         assert page.locator("#reviewTagSelect").input_value() == CAT_TAG_ID
+        assert page.locator("#reviewWorkspaceTitle").inner_text() == "审核“猫”建议"
+        assert page.locator("#reviewWorkspace").get_attribute("aria-label") == (
+            "审核“猫”建议工作区"
+        )
+        assert page.evaluate(
+            "() => document.querySelector('#reviewWorkspaceTitle') "
+            "=== window.__stableReviewWorkspaceTitle"
+        ) is True
         assert page.evaluate(
             "() => history.state?.imageAllWorkspace?.route === 'review'"
         )

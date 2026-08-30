@@ -5855,23 +5855,37 @@ html.split-resizing * {
 }
 
 .review-title-copy {
+  flex: 1 1 auto;
   gap: 9px;
+  min-width: 0;
 }
 
 .review-title-copy > div {
+  flex: 1 1 auto;
   align-items: baseline;
   gap: 9px;
+  min-width: 0;
 }
 
 .review-title-copy strong {
+  flex: 0 0 auto;
+  max-width: min(28vw, 240px);
+  overflow: hidden;
   font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .review-title-copy .secondary {
+  min-width: 0;
+  overflow: hidden;
   font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .review-controls {
+  flex: 0 0 auto;
   gap: 8px;
 }
 
