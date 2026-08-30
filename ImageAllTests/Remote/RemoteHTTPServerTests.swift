@@ -4066,6 +4066,18 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function syncReviewOverviewStableNode("))
         XCTAssertTrue(script.contains("function reconcileReviewOverviewCard("))
         XCTAssertTrue(script.contains("function syncReviewOverviewGroupToggle("))
+        XCTAssertTrue(script.contains("function toggleReviewOverviewGroup("))
+        XCTAssertTrue(
+            script.contains(
+                "ArrowLeft ArrowRight ArrowUp ArrowDown PageUp PageDown Home End"
+            )
+        )
+        XCTAssertTrue(script.contains("renderReviewOverview({ reconcileContent: true });"))
+        XCTAssertTrue(
+            script.contains(
+                "toggleReviewOverviewGroup(groupToggle.dataset.reviewOverviewGroupToggle)"
+            )
+        )
         XCTAssertTrue(script.contains("data-review-overview-part=\"group-title\""))
         XCTAssertTrue(script.contains("card-origin-${key}"))
         let reviewStableSyncStart = try XCTUnwrap(

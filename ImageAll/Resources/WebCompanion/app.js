@@ -23385,7 +23385,10 @@ function syncReviewOverviewGroupToggle(toggle, section, collapsed) {
   toggle.className = "review-overview-group-toggle";
   toggle.dataset.reviewOverviewGroupToggle = section.id;
   toggle.setAttribute("aria-expanded", String(!collapsed));
-  toggle.setAttribute("aria-keyshortcuts", "ArrowUp ArrowDown Home End");
+  toggle.setAttribute(
+    "aria-keyshortcuts",
+    "ArrowLeft ArrowRight ArrowUp ArrowDown PageUp PageDown Home End"
+  );
   const chevron = toggle.querySelector(':scope > [data-review-overview-part="group-chevron"]')
     || document.createElement("span");
   chevron.dataset.reviewOverviewPart = "group-chevron";
@@ -23409,11 +23412,21 @@ function syncReviewOverviewGroupToggle(toggle, section, collapsed) {
   )} 条待审`);
   configurePersistentHelp(toggle, {
     title: `${collapsed ? "展开" : "折叠"}“${section.displayName}”分组`,
-    detail: `只改变审核总览中“${section.displayName}”的显示；不会改变侧栏或检查器的标签分组状态。方向键可在分组间移动。`,
+    detail: `只改变审核总览中“${section.displayName}”的显示；不会改变侧栏或检查器的标签分组状态。左/右折叠或展开；上/下、Page Up/Page Down 或 Home/End 在分组间移动。`,
     kind: "review",
-    keyShortcuts: "ArrowUp ArrowDown Home End",
+    keyShortcuts: "ArrowLeft ArrowRight ArrowUp ArrowDown PageUp PageDown Home End",
   });
   reconcileStableChildren(toggle, [chevron, title, count, pending]);
+}
+
+function toggleReviewOverviewGroup(groupID) {
+  if (state.layout.collapsedReviewTagGroupIDs.has(groupID)) {
+    state.layout.collapsedReviewTagGroupIDs.delete(groupID);
+  } else {
+    state.layout.collapsedReviewTagGroupIDs.add(groupID);
+  }
+  persistWorkspacePreferences();
+  renderReviewOverview({ reconcileContent: true });
 }
 
 function organizeReviewOverviewGroups() {
@@ -43187,14 +43200,7 @@ function bindEvents() {
   elements.reviewOverviewGrid.addEventListener("click", (event) => {
     const groupToggle = event.target.closest("[data-review-overview-group-toggle]");
     if (groupToggle) {
-      const groupID = groupToggle.dataset.reviewOverviewGroupToggle;
-      if (state.layout.collapsedReviewTagGroupIDs.has(groupID)) {
-        state.layout.collapsedReviewTagGroupIDs.delete(groupID);
-      } else {
-        state.layout.collapsedReviewTagGroupIDs.add(groupID);
-      }
-      persistWorkspacePreferences();
-      renderReviewOverview();
+      toggleReviewOverviewGroup(groupToggle.dataset.reviewOverviewGroupToggle);
       return;
     }
     const thresholdControl = event.target.closest(
@@ -43258,24 +43264,13 @@ function bindEvents() {
       void commitReviewThresholdInput(thresholdInput);
       return;
     }
-    const groupToggle = event.target.closest("[data-review-overview-group-toggle]");
-    if (!groupToggle || !["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
-    const toggles = [...elements.reviewOverviewGrid.querySelectorAll(
-      "[data-review-overview-group-toggle]"
-    )];
-    const currentIndex = toggles.indexOf(groupToggle);
-    if (currentIndex < 0) return;
-    event.preventDefault();
-    const nextIndex = event.key === "Home"
-      ? 0
-      : event.key === "End"
-        ? toggles.length - 1
-        : Math.max(0, Math.min(
-          toggles.length - 1,
-          currentIndex + (event.key === "ArrowDown" ? 1 : -1)
-        ));
-    toggles[nextIndex].focus({ preventScroll: true });
-    toggles[nextIndex].scrollIntoView({ block: "nearest" });
+    if (handleTagGroupNavigationKeydown(event, {
+      container: elements.reviewOverviewGrid,
+      selector: "[data-review-overview-group-toggle]",
+      toggleGroup: (toggle) => {
+        toggleReviewOverviewGroup(toggle.dataset.reviewOverviewGroupToggle);
+      },
+    })) return;
   });
   elements.closeTagSuggestionDialogButton.addEventListener("click", () => {
     void returnFromTagSuggestion();

@@ -36,6 +36,9 @@ def fulfill_json(route, payload, status=200):
 def main():
     task_state = {"value": "paused"}
     library_task_state = {"standard": None, "personal": None}
+    navigation_groups = []
+    navigation_tags = []
+    navigation_overviews = []
     actions = []
     launches = []
     library_launches = []
@@ -78,7 +81,7 @@ def main():
                 "canResume": value == "paused",
                 "canCancel": active,
                 "activeJobID": JOB_ID if active else None,
-            }],
+            }, *navigation_overviews],
         }
 
     def jobs():
@@ -219,7 +222,8 @@ def main():
             "**/v1/tags",
             lambda route: fulfill_json(
                 route,
-                [{"id": TAG_ID, "displayName": "猫", "state": "active", "groupID": GROUP_ID}],
+                [{"id": TAG_ID, "displayName": "猫", "state": "active", "groupID": GROUP_ID},
+                 *navigation_tags],
             ),
         )
         page.route(
@@ -231,7 +235,7 @@ def main():
                     "displayName": "动物",
                     "sortOrder": 0,
                     "isSystem": False,
-                }],
+                }, *navigation_groups],
             ),
         )
         page.route("**/v1/jobs", lambda route: fulfill_json(route, jobs()))
@@ -784,15 +788,166 @@ def main():
         assert "动物" in group_toggle.inner_text()
         assert "1 个标签" in group_toggle.inner_text()
         assert "1 条待审" in group_toggle.inner_text()
-        group_toggle.click()
+        group_toggle.focus()
+        page.evaluate(
+            f"""() => {{
+              const toggle = document.querySelector(
+                '[data-review-overview-group-toggle="{GROUP_ID}"]'
+              );
+              const group = toggle.closest('[data-review-overview-group-id]');
+              const card = group.querySelector('[data-review-overview-card-id="{TAG_ID}"]');
+              const mutations = [];
+              const observer = new MutationObserver(records => mutations.push(...records));
+              observer.observe(group, {{ childList: true, subtree: true }});
+              window.__reviewGroupDisclosureFrame = {{ toggle, group, card, mutations, observer }};
+            }}"""
+        )
+        group_toggle.press("ArrowLeft")
         assert group_toggle.get_attribute("aria-expanded") == "false"
         assert not card.is_visible()
-        group_toggle.press("Enter")
+        assert page.evaluate(
+            f"""() => {{
+              const frame = window.__reviewGroupDisclosureFrame;
+              const toggle = document.querySelector(
+                '[data-review-overview-group-toggle="{GROUP_ID}"]'
+              );
+              return frame.toggle === toggle
+                && frame.group === toggle.closest('[data-review-overview-group-id]')
+                && frame.card === frame.group.querySelector(
+                  '[data-review-overview-card-id="{TAG_ID}"]'
+                )
+                && document.activeElement === toggle
+                && frame.mutations.length === 0;
+            }}"""
+        )
+        group_toggle.press("ArrowLeft")
+        assert group_toggle.get_attribute("aria-expanded") == "false"
+        group_toggle.press("ArrowRight")
         assert group_toggle.get_attribute("aria-expanded") == "true"
         card.wait_for(state="visible")
         assert page.evaluate(
             "document.activeElement?.dataset.reviewOverviewGroupToggle"
         ) == GROUP_ID
+        assert page.evaluate(
+            "() => { const frame = window.__reviewGroupDisclosureFrame; "
+            "frame.observer.disconnect(); return frame.mutations.length === 0; }"
+        )
+
+        for index in range(12):
+            group_id = f"11111111-aaaa-bbbb-cccc-800000000{index:03d}"
+            tag_id = f"11111111-aaaa-bbbb-cccc-700000000{index:03d}"
+            navigation_groups.append({
+                "id": group_id,
+                "displayName": f"审核键盘分组 {index + 1:02d}",
+                "sortOrder": 100 + index,
+                "isSystem": True,
+            })
+            navigation_tags.append({
+                "id": tag_id,
+                "displayName": f"审核键盘标签 {index + 1:02d}",
+                "state": "active",
+                "groupID": group_id,
+            })
+            navigation_overviews.append({
+                "id": tag_id,
+                "displayName": f"审核键盘标签 {index + 1:02d}",
+                "acceptedSampleCount": 0,
+                "rejectedSampleCount": 0,
+                "pendingSuggestionCount": 0,
+                "pendingSuggestionCounts": {
+                    "featurePrint": 0,
+                    "standardModel": 0,
+                    "personalModel": 0,
+                    "personalAdamW": 0,
+                },
+                "taskStatus": "notReady",
+                "checkedCount": 0,
+                "totalCount": 0,
+                "skippedCount": 0,
+                "missingPositiveCount": 1,
+                "missingNegativeCount": 1,
+                "canGenerate": False,
+                "canUpdate": False,
+                "canGeneratePersonalModel": False,
+                "canReview": False,
+                "canPause": False,
+                "canResume": False,
+                "canCancel": False,
+                "activeJobID": None,
+            })
+        page.evaluate(
+            "async () => { await refreshWorkspace({ quiet: true, kinds: ['tagsChanged'] }); "
+            "await loadReviewOverview(); }"
+        )
+        page.wait_for_function(
+            "expected => document.querySelectorAll("
+            "'[data-review-overview-group-toggle]'"
+            ").length === expected",
+            arg=1 + len(navigation_groups),
+        )
+        navigation_group_ids = [group["id"] for group in navigation_groups]
+        page.evaluate(
+            "groupIDs => { state.layout.collapsedReviewTagGroupIDs = new Set(groupIDs); "
+            "const content = document.querySelector('.review-overview-content'); "
+            "content.style.height = '220px'; content.style.maxHeight = '220px'; "
+            "renderReviewOverview({ reconcileContent: true }); }",
+            [GROUP_ID, *navigation_group_ids],
+        )
+        overview_query_count = len(overview_source_queries)
+        job_action_count = len(actions)
+        group_toggle = page.locator(f'[data-review-overview-group-toggle="{GROUP_ID}"]')
+        group_toggle.focus()
+        group_toggle.press("PageDown")
+        paged_group_id = page.evaluate(
+            "() => document.activeElement?.dataset.reviewOverviewGroupToggle"
+        )
+        assert paged_group_id in navigation_group_ids[1:], paged_group_id
+        paged_visibility = page.evaluate(
+            """() => {
+              const viewport = document.querySelector('.review-overview-content')
+                .getBoundingClientRect();
+              const target = document.activeElement.getBoundingClientRect();
+              return { top: target.top >= viewport.top, bottom: target.bottom <= viewport.bottom };
+            }"""
+        )
+        assert all(paged_visibility.values()), paged_visibility
+        paged_group_index = navigation_group_ids.index(paged_group_id)
+        page.keyboard.press("PageUp")
+        paged_up_group_id = page.evaluate(
+            "() => document.activeElement?.dataset.reviewOverviewGroupToggle"
+        )
+        assert paged_up_group_id == GROUP_ID or (
+            paged_up_group_id in navigation_group_ids
+            and navigation_group_ids.index(paged_up_group_id) < paged_group_index
+        ), paged_up_group_id
+        page.keyboard.press("End")
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.reviewOverviewGroupToggle"
+        ) == navigation_group_ids[-1]
+        page.keyboard.press("Home")
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.reviewOverviewGroupToggle"
+        ) == GROUP_ID
+        assert len(overview_source_queries) == overview_query_count
+        assert len(actions) == job_action_count
+
+        navigation_groups.clear()
+        navigation_tags.clear()
+        navigation_overviews.clear()
+        page.evaluate(
+            "async groupID => { await refreshWorkspace({ quiet: true, kinds: ['tagsChanged'] }); "
+            "await loadReviewOverview(); "
+            "state.layout.collapsedReviewTagGroupIDs.delete(groupID); "
+            "const content = document.querySelector('.review-overview-content'); "
+            "content.style.height = ''; content.style.maxHeight = ''; "
+            "renderReviewOverview({ reconcileContent: true }); }",
+            GROUP_ID,
+        )
+        page.wait_for_function(
+            "() => document.querySelectorAll('[data-review-overview-group-toggle]').length === 1"
+        )
+        group_toggle = page.locator(f'[data-review-overview-group-toggle="{GROUP_ID}"]')
+        card = page.locator(f'[data-review-overview-card-id="{TAG_ID}"]')
         card.locator("summary", has_text="门槛与生成").click()
         assert card.locator("details.review-card-controls").get_attribute("open") is not None
         page.screenshot(path="/tmp/imageall-review-overview-groups.png", full_page=True)
