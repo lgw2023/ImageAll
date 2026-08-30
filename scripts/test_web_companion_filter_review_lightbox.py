@@ -4654,6 +4654,11 @@ def main():
             "() => JSON.stringify(history.state.imageAllWorkspace.context)"
         )
 
+        review_items.insert(1, {
+            **review_items[0],
+            "suggestionOrigin": "personalModel",
+            "score": 0.84,
+        })
         page.evaluate(
             """assetID => {
               if (state.review.autoLoadFrame != null) {
@@ -4678,16 +4683,21 @@ def main():
         defer_decision_count = len(review_decisions)
         page.keyboard.press("u")
         page.wait_for_function(
-            f"() => state.review.items.length === 2 "
-            f"&& state.review.items[1].assetID === '{REVIEW_IDS[2]}' "
+            f"() => state.review.items.length === 3 "
+            f"&& state.review.items[1].assetID === '{REVIEW_IDS[1]}' "
+            "&& state.review.items[1].suggestionOrigin === 'personalModel' "
             f"&& state.review.selectedIndex === 1 "
             f"&& state.review.selectedAssetIDs.size === 1 "
-            f"&& state.review.selectedAssetIDs.has('{REVIEW_IDS[2]}') "
+            f"&& state.review.selectedAssetIDs.has('{REVIEW_IDS[1]}') "
             f"&& state.review.selectionAnchorIndex === 1 "
-            f"&& state.lightboxAssetID === '{REVIEW_IDS[2]}' "
-            "&& document.querySelector('#lightboxTitle').textContent.includes('REVIEW_3.JPG') "
-            "&& document.querySelector('#reviewFileName').textContent === 'REVIEW_3.JPG' "
-            f"&& history.state?.imageAllWorkspace?.context?.reviewLightbox?.assetID === '{REVIEW_IDS[2]}'"
+            f"&& state.lightboxAssetID === '{REVIEW_IDS[1]}' "
+            f"&& state.lightboxReviewKey === '{REVIEW_IDS[1]}:personalModel' "
+            "&& document.querySelector('#lightboxTitle').textContent.includes('REVIEW_2.JPG') "
+            "&& document.querySelector('#lightboxPosition').textContent === '2 / 3' "
+            "&& document.querySelector('#reviewFileName').textContent === 'REVIEW_2.JPG' "
+            "&& document.querySelector('#reviewOrigin').textContent.includes('个性化模型建议') "
+            f"&& history.state?.imageAllWorkspace?.context?.reviewItemKey === '{REVIEW_IDS[1]}:personalModel' "
+            f"&& history.state?.imageAllWorkspace?.context?.reviewLightbox?.reviewKey === '{REVIEW_IDS[1]}:personalModel'"
         )
         assert sum(
             query.get("cursor") == ["review-page-2"]
@@ -4695,13 +4705,39 @@ def main():
         ) == defer_cursor_query_count + 1
         assert len(review_decisions) == defer_decision_count
         assert "没有修改标签决定" in page.locator("#toast").inner_text()
-        page.screenshot(path="/tmp/imageall-review-defer-pagination.png", full_page=True)
+        assert page.locator(
+            f'[data-review-key="{REVIEW_IDS[1]}:personalModel"] .review-card-main'
+        ).get_attribute("aria-current") == "true"
+        assert page.locator(
+            f'[data-review-asset-id="{REVIEW_IDS[1]}"] .review-card-main[tabindex="0"]'
+        ).count() == 1
+        page.screenshot(path="/tmp/imageall-review-origin-row-defer.png", full_page=True)
+        page.locator("#lightboxBackButton").click()
+        page.locator("#lightbox").wait_for(state="hidden")
+        page.evaluate("() => history.forward()")
+        page.wait_for_function(
+            f"() => !document.querySelector('#lightbox').classList.contains('hidden') "
+            f"&& state.lightboxReviewKey === '{REVIEW_IDS[1]}:personalModel' "
+            "&& document.querySelector('#lightboxPosition').textContent === '2 / 3' "
+            "&& document.querySelector('#reviewOrigin').textContent.includes('个性化模型建议')"
+        )
+        page.keyboard.press("u")
+        page.wait_for_function(
+            f"() => state.review.selectedIndex === 2 "
+            f"&& state.review.selectedAssetIDs.has('{REVIEW_IDS[2]}') "
+            f"&& state.lightboxAssetID === '{REVIEW_IDS[2]}' "
+            f"&& state.lightboxReviewKey === '{REVIEW_IDS[2]}:featurePrint' "
+            "&& document.querySelector('#lightboxTitle').textContent.includes('REVIEW_3.JPG') "
+            "&& document.querySelector('#lightboxPosition').textContent === '3 / 3'"
+        )
+        assert len(review_decisions) == defer_decision_count
         page.evaluate(
             "() => { scheduleReviewAutoPagination = globalThis.__reviewDeleteSchedulePagination; }"
         )
         page.locator("#lightboxPreviousButton").click()
         page.wait_for_function(
-            "() => document.querySelector('#lightboxTitle').textContent.includes('REVIEW_2.JPG')"
+            f"() => state.lightboxReviewKey === '{REVIEW_IDS[1]}:personalModel' "
+            "&& document.querySelector('#lightboxTitle').textContent.includes('REVIEW_2.JPG')"
         )
 
         accept_review_action = page.locator(

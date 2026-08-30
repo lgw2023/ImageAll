@@ -3387,9 +3387,9 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("mainButton.tabIndex = isTabStop ? 0 : -1"))
         XCTAssertTrue(script.contains("favoriteButton.tabIndex = isTabStop ? 0 : -1"))
         XCTAssertTrue(script.contains("elements.assetGrid.addEventListener(\"focusin\""))
-        XCTAssertTrue(script.contains("function reviewGridRovingAssetID"))
+        XCTAssertTrue(script.contains("function reviewGridRovingKey"))
         XCTAssertTrue(script.contains("function syncReviewGridTabStops"))
-        XCTAssertTrue(script.contains("state.review.gridFocusAssetID"))
+        XCTAssertTrue(script.contains("state.review.gridFocusReviewKey"))
         XCTAssertTrue(script.contains("elements.reviewGrid.addEventListener(\"focusin\""))
         XCTAssertTrue(script.contains("function slimmingMemberGridRovingAssetID"))
         XCTAssertTrue(script.contains("function syncSlimmingMemberGridTabStops"))
@@ -4708,7 +4708,19 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(deferReviewScript.contains("schedulePagination: false"))
         XCTAssertTrue(deferReviewScript.contains("continuationRequestGeneration"))
         XCTAssertTrue(deferReviewScript.contains("selectionUnchanged"))
+        XCTAssertTrue(deferReviewScript.contains("advancesByReviewRow"))
+        XCTAssertTrue(deferReviewScript.contains("selectedReviewKey"))
         XCTAssertTrue(deferReviewScript.contains("已到审核队列末尾，没有修改标签决定"))
+        XCTAssertTrue(script.contains("function reviewGridRovingKey"))
+        XCTAssertTrue(script.contains("gridFocusReviewKey"))
+        XCTAssertTrue(script.contains("function lightboxItemIndex"))
+        XCTAssertTrue(script.contains("lightboxReviewKey"))
+        XCTAssertTrue(script.contains("reviewKey: reviewItemKey(item)"))
+        XCTAssertTrue(
+            script.contains(
+                "reviewItemKey: reviewItemKey(state.review.items[state.review.selectedIndex])"
+            )
+        )
         XCTAssertTrue(
             script.contains(
                 "if (await deferReviewSelection()) syncReviewLightboxSelection();"

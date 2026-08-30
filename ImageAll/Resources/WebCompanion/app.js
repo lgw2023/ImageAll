@@ -1276,7 +1276,7 @@ const state = {
     items: [],
     nextCursor: null,
     selectedIndex: -1,
-    gridFocusAssetID: null,
+    gridFocusReviewKey: null,
     selectedAssetIDs: new Set(),
     selectionAnchorIndex: -1,
     selectionMode: false,
@@ -1562,6 +1562,7 @@ const state = {
   },
   lightboxContext: null,
   lightboxAssetID: null,
+  lightboxReviewKey: null,
   lightboxPreservesSelection: false,
   lightboxRequestGeneration: 0,
   lightboxOriginalAssetID: null,
@@ -2195,6 +2196,7 @@ function closeOverlays() {
   elements.lightbox.setAttribute("aria-modal", "true");
   state.lightboxContext = null;
   state.lightboxAssetID = null;
+  state.lightboxReviewKey = null;
   state.lightboxPreservesSelection = false;
   state.lightboxOriginalAssetID = null;
   state.lightboxOriginalLoading = false;
@@ -3466,6 +3468,7 @@ function currentWorkspaceHistoryContext(route = visibleWorkspaceRoute()) {
       reviewTagID: elements.reviewTagSelect.value || null,
       reviewMediaKind: state.mediaKind,
       reviewAssetID: state.review.items[state.review.selectedIndex]?.assetID || null,
+      reviewItemKey: reviewItemKey(state.review.items[state.review.selectedIndex]),
       reviewLoadedCount: Math.min(GALLERY_HISTORY_LOADED_LIMIT, state.review.items.length),
       reviewQueueScrollTop: elements.reviewQueuePane.scrollTop,
       reviewLightbox: currentLightboxHistoryContext("review"),
@@ -3524,6 +3527,7 @@ function normalizedLightboxHistoryContext(raw) {
   if (!assetID) return null;
   return {
     assetID,
+    reviewKey: galleryHistoryIdentifier(context?.reviewKey),
     scale: Math.min(
       LIGHTBOX_MAX_SCALE,
       Math.max(LIGHTBOX_MIN_SCALE, workspaceHistoryFiniteNumber(context.scale, 1, 8))
@@ -3542,6 +3546,7 @@ function currentLightboxHistoryContext(expectedContext) {
     || !state.lightboxAssetID) return null;
   return normalizedLightboxHistoryContext({
     assetID: state.lightboxAssetID,
+    reviewKey: expectedContext === "review" ? state.lightboxReviewKey : null,
     scale: state.lightboxViewportScale,
     offsetX: state.lightboxViewportOffsetX,
     offsetY: state.lightboxViewportOffsetY,
@@ -3965,9 +3970,17 @@ async function applyWorkspaceHistoryEntry(entry) {
           || state.review.nextCursor === previousCursor) break;
       }
       if (state.review.mode === "queue" && context.reviewAssetID) {
-        const reviewIndex = state.review.items.findIndex(
-          (item) => item.assetID === context.reviewAssetID
-        );
+        const requestedReviewKey = galleryHistoryIdentifier(context.reviewItemKey);
+        let reviewIndex = requestedReviewKey
+          ? state.review.items.findIndex(
+            (item) => reviewItemKey(item) === requestedReviewKey
+          )
+          : -1;
+        if (reviewIndex < 0) {
+          reviewIndex = state.review.items.findIndex(
+            (item) => item.assetID === context.reviewAssetID
+          );
+        }
         if (reviewIndex >= 0) selectReviewIndex(reviewIndex);
       }
       await waitForWorkspaceLayout();
@@ -7102,6 +7115,7 @@ function closeLightbox({ restoreFocus = true } = {}) {
   elements.lightbox.setAttribute("aria-modal", "true");
   state.lightboxContext = null;
   state.lightboxAssetID = null;
+  state.lightboxReviewKey = null;
   state.lightboxPreservesSelection = false;
   state.lightboxOriginalAssetID = null;
   state.lightboxOriginalLoading = false;
@@ -17092,7 +17106,7 @@ async function openOriginalAssetOnMac(assetID, mediaKind, availability) {
       reviewItem
     );
   }
-  const lightboxItem = lightboxItems().find((item) => item.id === state.lightboxAssetID);
+  const lightboxItem = currentLightboxItem();
   if (lightboxItem) syncLightboxOpenOriginalControl(lightboxItem);
   try {
     await api(`/v1/assets/${assetID}/open-original`, { method: "POST" });
@@ -17109,10 +17123,8 @@ async function openOriginalAssetOnMac(assetID, mediaKind, availability) {
         currentReviewItem
       );
     }
-    const currentLightboxItem = lightboxItems().find(
-      (item) => item.id === state.lightboxAssetID
-    );
-    if (currentLightboxItem) syncLightboxOpenOriginalControl(currentLightboxItem);
+    const lightboxItemAfterOpen = currentLightboxItem();
+    if (lightboxItemAfterOpen) syncLightboxOpenOriginalControl(lightboxItemAfterOpen);
   }
 }
 
@@ -17123,7 +17135,7 @@ async function openSelectedOriginalOnMac() {
 }
 
 async function openLightboxOriginalOnMac() {
-  const item = lightboxItems().find((candidate) => candidate.id === state.lightboxAssetID);
+  const item = currentLightboxItem();
   if (!item) return;
   await openOriginalAssetOnMac(item.id, lightboxMediaKind(), item.availability);
 }
@@ -20274,6 +20286,7 @@ function reconcileReviewPreviewAfterGalleryRemoval(context, hiddenAssetIDs) {
   state.review.selectedAssetIDs = new Set([replacementID]);
   state.review.selectionAnchorIndex = replacementIndex;
   state.lightboxAssetID = replacementID;
+  state.lightboxReviewKey = reviewItemKey(state.review.items[replacementIndex]);
   state.lightboxOriginalAssetID = null;
   state.lightboxOriginalLoading = false;
   const replacementCard = elements.reviewGrid.querySelector(
@@ -24452,7 +24465,17 @@ async function returnToReviewOverview() {
 }
 
 function selectedReviewItems() {
-  return state.review.items.filter((item) => state.review.selectedAssetIDs.has(item.assetID));
+  const primary = state.review.items[state.review.selectedIndex];
+  if (state.review.selectedAssetIDs.size === 1
+    && primary
+    && state.review.selectedAssetIDs.has(primary.assetID)) return [primary];
+  const seenAssetIDs = new Set();
+  return state.review.items.filter((item) => {
+    if (!state.review.selectedAssetIDs.has(item.assetID)
+      || seenAssetIDs.has(item.assetID)) return false;
+    seenAssetIDs.add(item.assetID);
+    return true;
+  });
 }
 
 function reviewCardMainButton(card, { create = false } = {}) {
@@ -24466,33 +24489,33 @@ function reviewCardMainButton(card, { create = false } = {}) {
   return button;
 }
 
-function reviewGridRovingAssetID() {
-  const visibleIDs = new Set(state.review.items.map((item) => item.assetID));
+function reviewGridRovingKey() {
+  const visibleKeys = new Set(state.review.items.map(reviewItemKey));
   const focusedCard = document.activeElement?.closest?.("#reviewGrid > .review-card");
-  if (visibleIDs.has(focusedCard?.dataset.reviewAssetId)) {
-    return focusedCard.dataset.reviewAssetId;
+  if (visibleKeys.has(focusedCard?.dataset.reviewKey)) {
+    return focusedCard.dataset.reviewKey;
   }
-  const selectedAssetID = state.review.items[state.review.selectedIndex]?.assetID || null;
-  if (visibleIDs.has(selectedAssetID)) return selectedAssetID;
-  if (visibleIDs.has(state.review.gridFocusAssetID)) return state.review.gridFocusAssetID;
-  return state.review.items[0]?.assetID || null;
+  const selectedKey = reviewItemKey(state.review.items[state.review.selectedIndex]);
+  if (visibleKeys.has(selectedKey)) return selectedKey;
+  if (visibleKeys.has(state.review.gridFocusReviewKey)) return state.review.gridFocusReviewKey;
+  return reviewItemKey(state.review.items[0]);
 }
 
-function syncReviewCardKeyboardAccess(card, rovingAssetID = reviewGridRovingAssetID()) {
-  const isTabStop = card?.dataset.reviewAssetId === rovingAssetID;
+function syncReviewCardKeyboardAccess(card, rovingKey = reviewGridRovingKey()) {
+  const isTabStop = card?.dataset.reviewKey === rovingKey;
   const mainButton = reviewCardMainButton(card);
   if (mainButton) mainButton.tabIndex = isTabStop ? 0 : -1;
   const favoriteButton = card?.querySelector(":scope > .review-card-favorite");
   if (favoriteButton) favoriteButton.tabIndex = isTabStop ? 0 : -1;
 }
 
-function syncReviewGridTabStops(assetID = null) {
-  const visibleIDs = new Set(state.review.items.map((item) => item.assetID));
-  if (assetID && visibleIDs.has(assetID)) state.review.gridFocusAssetID = assetID;
-  const rovingAssetID = reviewGridRovingAssetID();
-  state.review.gridFocusAssetID = rovingAssetID;
+function syncReviewGridTabStops(reviewKey = null) {
+  const visibleKeys = new Set(state.review.items.map(reviewItemKey));
+  if (reviewKey && visibleKeys.has(reviewKey)) state.review.gridFocusReviewKey = reviewKey;
+  const rovingKey = reviewGridRovingKey();
+  state.review.gridFocusReviewKey = rovingKey;
   for (const card of elements.reviewGrid.querySelectorAll(":scope > .review-card")) {
-    syncReviewCardKeyboardAccess(card, rovingAssetID);
+    syncReviewCardKeyboardAccess(card, rovingKey);
   }
 }
 
@@ -24568,7 +24591,9 @@ async function applyReviewInspectorFavorite(button, isFavorite) {
 }
 
 function syncReviewCardSelection(card, item, index) {
-  const selected = state.review.selectedAssetIDs.has(item.assetID);
+  const selected = state.review.selectedAssetIDs.size === 1
+    ? index === state.review.selectedIndex
+    : state.review.selectedAssetIDs.has(item.assetID);
   const primary = selected && index === state.review.selectedIndex;
   card.classList.toggle("selected", selected);
   card.classList.toggle("primary", primary);
@@ -24620,7 +24645,7 @@ function syncReviewSelectionModeControls({ controlsLocked = false } = {}) {
   );
   elements.reviewSelectAllButton.classList.toggle("hidden", !active);
   elements.reviewSelectAllButton.disabled = controlsLocked
-    || selectedCount === state.review.items.length;
+    || selectedCount === new Set(state.review.items.map((item) => item.assetID)).size;
 }
 
 function setReviewSelectionMode(enabled, { restoreFocus = true } = {}) {
@@ -24728,7 +24753,7 @@ function renderReviewCollectionSummary() {
   syncReviewControls();
 }
 
-function syncReviewCard(card, item, index, rovingAssetID) {
+function syncReviewCard(card, item, index, rovingKey) {
   card.className = "review-card";
   card.dataset.reviewKey = reviewItemKey(item);
   card.dataset.reviewIndex = String(index);
@@ -24746,7 +24771,7 @@ function syncReviewCard(card, item, index, rovingAssetID) {
   syncAssetCardImage(card, item);
   syncReviewCardSelection(card, item, index);
   syncReviewCardFavoriteButton(card, item);
-  syncReviewCardKeyboardAccess(card, rovingAssetID);
+  syncReviewCardKeyboardAccess(card, rovingKey);
   let origin = card.querySelector(".review-origin-badge");
   if (!origin) {
     origin = document.createElement("span");
@@ -24769,8 +24794,8 @@ function syncReviewCard(card, item, index, rovingAssetID) {
 
 function renderReview() {
   renderReviewCollectionSummary();
-  state.review.gridFocusAssetID = reviewGridRovingAssetID();
-  const rovingAssetID = state.review.gridFocusAssetID;
+  state.review.gridFocusReviewKey = reviewGridRovingKey();
+  const rovingKey = state.review.gridFocusReviewKey;
   const existing = new Map(
     [...elements.reviewGrid.querySelectorAll(":scope > .review-card")]
       .map((button) => [button.dataset.reviewKey, button])
@@ -24779,7 +24804,7 @@ function renderReview() {
     const key = reviewItemKey(item);
     const card = existing.get(key) || document.createElement("div");
     existing.delete(key);
-    syncReviewCard(card, item, index, rovingAssetID);
+    syncReviewCard(card, item, index, rovingKey);
     elements.reviewGrid.append(card);
   });
   for (const card of existing.values()) {
@@ -24791,10 +24816,10 @@ function renderReview() {
 
 function appendReviewCards(items, startIndex) {
   const fragment = document.createDocumentFragment();
-  const rovingAssetID = reviewGridRovingAssetID();
+  const rovingKey = reviewGridRovingKey();
   items.forEach((item, offset) => {
     const card = document.createElement("div");
-    syncReviewCard(card, item, startIndex + offset, rovingAssetID);
+    syncReviewCard(card, item, startIndex + offset, rovingKey);
     fragment.append(card);
   });
   elements.reviewGrid.append(fragment);
@@ -24809,10 +24834,10 @@ function renderReviewCardsForKeys(reviewKeys) {
       .map((item, index) => [reviewItemKey(item), { item, index }])
       .filter(([key]) => requestedKeys.has(key))
   );
-  const rovingAssetID = reviewGridRovingAssetID();
+  const rovingKey = reviewGridRovingKey();
   for (const card of elements.reviewGrid.querySelectorAll(":scope > .review-card")) {
     const entry = itemsByKey.get(card.dataset.reviewKey);
-    if (entry) syncReviewCard(card, entry.item, entry.index, rovingAssetID);
+    if (entry) syncReviewCard(card, entry.item, entry.index, rovingKey);
   }
 }
 
@@ -35353,12 +35378,19 @@ async function deferReviewSelection() {
   const workspaceGeneration = state.workspaceGeneration;
   const scopeKey = currentReviewScopeKey();
   const selectedAssetID = state.review.items[state.review.selectedIndex]?.assetID || null;
+  const selectedReviewKey = reviewItemKey(state.review.items[state.review.selectedIndex]);
+  const advancesByReviewRow = selectedIDs.size === 1
+    && selectedAssetID
+    && selectedIDs.has(selectedAssetID);
   const selectedIndexes = state.review.items
     .map((item, index) => selectedIDs.has(item.assetID) ? index : -1)
     .filter((index) => index >= 0);
-  const lastSelectedIndex = selectedIndexes.length ? Math.max(...selectedIndexes) : -1;
+  const lastSelectedIndex = advancesByReviewRow
+    ? state.review.selectedIndex
+    : (selectedIndexes.length ? Math.max(...selectedIndexes) : -1);
   let nextIndex = state.review.items.findIndex((item, index) => (
-    index > lastSelectedIndex && !selectedIDs.has(item.assetID)
+    index > lastSelectedIndex
+      && (advancesByReviewRow || !selectedIDs.has(item.assetID))
   ));
   let continuationFailed = false;
   if (nextIndex < 0 && state.review.nextCursor) {
@@ -35376,19 +35408,27 @@ async function deferReviewSelection() {
     }
     const selectionUnchanged = state.review.selectedAssetIDs.size === selectedIDs.size
       && [...selectedIDs].every((assetID) => state.review.selectedAssetIDs.has(assetID))
-      && state.review.items[state.review.selectedIndex]?.assetID === selectedAssetID;
+      && reviewItemKey(state.review.items[state.review.selectedIndex]) === selectedReviewKey;
     if (workspaceGeneration !== state.workspaceGeneration
       || scopeKey !== currentReviewScopeKey()
       || continuationRequestGeneration !== state.review.requestGeneration
       || !selectionUnchanged) return false;
     nextIndex = state.review.items.findIndex((item, index) => (
-      index > lastSelectedIndex && !selectedIDs.has(item.assetID)
+      index > lastSelectedIndex
+        && (advancesByReviewRow || !selectedIDs.has(item.assetID))
     ));
   }
   if (nextIndex < 0) {
-    nextIndex = state.review.items.findIndex(
-      (item) => !selectedIDs.has(item.assetID)
-    );
+    if (advancesByReviewRow
+      && !continuationFailed
+      && !state.review.nextCursor
+      && state.review.items.length > 1) {
+      nextIndex = 0;
+    } else if (!advancesByReviewRow) {
+      nextIndex = state.review.items.findIndex(
+        (item) => !selectedIDs.has(item.assetID)
+      );
+    }
   }
   if (nextIndex < 0) {
     if (continuationFailed) {
@@ -35418,6 +35458,7 @@ function lightboxItemsForContext(context = state.lightboxContext) {
         : null;
       return {
         id: item.assetID,
+        reviewKey: reviewItemKey(item),
         fileName: item.fileName,
         contentRevision: detail?.contentRevision ?? item.contentRevision,
         availability: detail?.availability ?? item.availability,
@@ -35437,6 +35478,24 @@ function lightboxItemsForContext(context = state.lightboxContext) {
 
 function lightboxItems() {
   return lightboxItemsForContext();
+}
+
+function lightboxItemIndex(
+  items,
+  context = state.lightboxContext,
+  assetID = state.lightboxAssetID,
+  reviewKey = state.lightboxReviewKey
+) {
+  if (context === "review" && reviewKey) {
+    const reviewIndex = items.findIndex((item) => item.reviewKey === reviewKey);
+    if (reviewIndex >= 0) return reviewIndex;
+  }
+  return items.findIndex((item) => item.id === assetID);
+}
+
+function currentLightboxItem(items = lightboxItems()) {
+  const index = lightboxItemIndex(items);
+  return index >= 0 ? items[index] : null;
 }
 
 function lightboxStandardPreviewPath(item) {
@@ -35487,7 +35546,7 @@ function prefetchAdjacentLightboxPreviews() {
     return;
   }
   const items = lightboxItems();
-  const index = items.findIndex((item) => item.id === state.lightboxAssetID);
+  const index = lightboxItemIndex(items);
   if (index < 0) {
     clearLightboxPreviewPrefetches();
     return;
@@ -35963,6 +36022,7 @@ function openLightbox(context, assetID, {
   original = false,
   preserveSelection = false,
   returnFocus = null,
+  reviewKey = null,
 } = {}) {
   if (!assetID) return;
   stopAssetHoverVideo();
@@ -35974,8 +36034,15 @@ function openLightbox(context, assetID, {
       ? returnFocus
       : document.activeElement;
   }
+  const currentReviewItem = state.review.items[state.review.selectedIndex];
+  const reviewItem = context === "review"
+    ? (state.review.items.find((item) => reviewItemKey(item) === reviewKey)
+      || (currentReviewItem?.assetID === assetID ? currentReviewItem : null)
+      || state.review.items.find((item) => item.assetID === assetID))
+    : null;
   state.lightboxContext = context;
-  state.lightboxAssetID = assetID;
+  state.lightboxAssetID = reviewItem?.assetID || assetID;
+  state.lightboxReviewKey = reviewItem ? reviewItemKey(reviewItem) : null;
   state.lightboxPreservesSelection = Boolean(preserveSelection);
   state.lightboxOriginalAssetID = original ? assetID : null;
   state.lightboxOriginalLoading = original;
@@ -36015,24 +36082,31 @@ function openLightbox(context, assetID, {
 
 function restoreLightboxFromHistory(raw, expectedContext) {
   const context = normalizedLightboxHistoryContext(raw);
-  if (!context || !lightboxItemsForContext(expectedContext).some(
-    (item) => item.id === context.assetID
-  )) return false;
+  const items = lightboxItemsForContext(expectedContext);
+  const historyIndex = context
+    ? lightboxItemIndex(
+      items,
+      expectedContext,
+      context.assetID,
+      context.reviewKey
+    )
+    : -1;
+  if (!context || historyIndex < 0) return false;
 
   openLightbox(expectedContext, context.assetID, {
     original: context.original,
     preserveSelection: context.preserveSelection,
+    reviewKey: expectedContext === "review"
+      ? items[historyIndex].reviewKey
+      : null,
   });
   if (expectedContext === "library") {
     state.lightboxReturnFocus = assetCardMainButton(elements.assetGrid.querySelector(
       `[data-asset-id="${CSS.escape(context.assetID)}"]`
     ));
   } else if (expectedContext === "review") {
-    const reviewIndex = state.review.items.findIndex(
-      (item) => item.assetID === context.assetID
-    );
     state.lightboxReturnFocus = reviewCardMainButton(elements.reviewGrid.querySelector(
-      `[data-review-index="${reviewIndex}"]`
+      `[data-review-index="${historyIndex}"]`
     ));
   } else if (expectedContext === "slimming") {
     state.lightboxReturnFocus = slimmingMemberMainButton(
@@ -36047,6 +36121,9 @@ function restoreLightboxFromHistory(raw, expectedContext) {
   }
   const remainsCurrent = () => state.lightboxContext === expectedContext
     && state.lightboxAssetID === context.assetID
+    && (expectedContext !== "review"
+      || !context.reviewKey
+      || state.lightboxReviewKey === context.reviewKey)
     && !elements.lightbox.classList.contains("hidden");
   if (lightboxMediaKind() === "video") {
     const restoreVideoTime = () => {
@@ -36108,9 +36185,12 @@ function reconcileLightboxFromWorkspaceHistory(route, context) {
   const expectedContext = workspaceLightboxContext(route);
   const raw = workspaceLightboxHistoryContext(route, context);
   const desired = normalizedLightboxHistoryContext(raw);
-  const valid = expectedContext && desired && lightboxItemsForContext(expectedContext).some(
-    (item) => item.id === desired.assetID
-  );
+  const valid = expectedContext && desired && lightboxItemIndex(
+    lightboxItemsForContext(expectedContext),
+    expectedContext,
+    desired.assetID,
+    desired.reviewKey
+  ) >= 0;
   if (!valid) {
     if (!elements.lightbox.classList.contains("hidden")) closeLightbox();
     return;
@@ -36119,6 +36199,9 @@ function reconcileLightboxFromWorkspaceHistory(route, context) {
   const alreadyOpen = !elements.lightbox.classList.contains("hidden")
     && state.lightboxContext === expectedContext
     && state.lightboxAssetID === desired.assetID
+    && (expectedContext !== "review"
+      || !desired.reviewKey
+      || state.lightboxReviewKey === desired.reviewKey)
     && Boolean(state.lightboxOriginalAssetID === desired.assetID) === desired.original;
   if (alreadyOpen) return;
   if (!elements.lightbox.classList.contains("hidden")) {
@@ -36204,7 +36287,7 @@ function syncLightboxViewOriginalControl(item) {
 }
 
 function toggleLightboxOriginalView() {
-  const item = lightboxItems().find((candidate) => candidate.id === state.lightboxAssetID);
+  const item = currentLightboxItem();
   if (!item || lightboxMediaKind() === "video" || item.availability !== "available") return;
   const isOriginal = state.lightboxOriginalAssetID === item.id;
   state.lightboxOriginalAssetID = isOriginal ? null : item.id;
@@ -36216,12 +36299,13 @@ function toggleLightboxOriginalView() {
 
 function renderLightbox() {
   const items = lightboxItems();
-  const index = items.findIndex((item) => item.id === state.lightboxAssetID);
+  const index = lightboxItemIndex(items);
   if (index < 0) {
     closeLightbox();
     return;
   }
   const item = items[index];
+  if (state.lightboxContext === "review") state.lightboxReviewKey = item.reviewKey;
   if (state.lightboxViewportAssetID !== item.id) resetLightboxViewport(item.id);
   const noun = lightboxMediaKind() === "video" ? "视频" : "照片";
   const hasMore = lightboxHasMoreItems();
@@ -36280,6 +36364,7 @@ function syncReviewLightboxSelection() {
     state.lightboxOriginalLoading = false;
   }
   state.lightboxAssetID = item.assetID;
+  state.lightboxReviewKey = reviewItemKey(item);
   renderLightbox();
   scheduleWorkspaceHistoryCheckpoint();
 }
@@ -36287,9 +36372,16 @@ function syncReviewLightboxSelection() {
 async function applyLightboxReviewDecision(action) {
   if (state.lightboxContext !== "review") return;
   state.lightboxPreservesSelection = false;
-  const currentIndex = state.review.items.findIndex(
-    (item) => item.assetID === state.lightboxAssetID
-  );
+  let currentIndex = state.lightboxReviewKey
+    ? state.review.items.findIndex(
+      (item) => reviewItemKey(item) === state.lightboxReviewKey
+    )
+    : -1;
+  if (currentIndex < 0) {
+    currentIndex = state.review.items.findIndex(
+      (item) => item.assetID === state.lightboxAssetID
+    );
+  }
   if (currentIndex >= 0 && currentIndex !== state.review.selectedIndex) {
     selectReviewIndex(currentIndex);
   }
@@ -36357,8 +36449,9 @@ async function navigateLightbox(direction) {
     ? document.activeElement
     : null;
   const currentAssetID = state.lightboxAssetID;
+  const currentReviewKey = state.lightboxReviewKey;
   let items = lightboxItems();
-  let index = items.findIndex((item) => item.id === currentAssetID);
+  let index = lightboxItemIndex(items);
   if (index < 0) return;
   let next = index + direction;
   state.lightboxNavigating = true;
@@ -36366,19 +36459,29 @@ async function navigateLightbox(direction) {
   try {
     if (direction > 0 && next >= items.length && lightboxHasMoreItems()) {
       await loadMoreLightboxItems();
-      if (state.lightboxAssetID !== currentAssetID) return;
+      if (state.lightboxAssetID !== currentAssetID
+        || state.lightboxReviewKey !== currentReviewKey) return;
       items = lightboxItems();
-      index = items.findIndex((item) => item.id === currentAssetID);
+      index = lightboxItemIndex(
+        items,
+        state.lightboxContext,
+        currentAssetID,
+        currentReviewKey
+      );
       next = index + direction;
     }
     if (next < 0 || next >= items.length) return;
-    const nextAssetID = items[next].id;
+    const nextItem = items[next];
+    const nextAssetID = nextItem.id;
     if (state.lightboxContext !== "review"
       && state.cloudPreview.status !== "hidden"
       && state.cloudPreview.assetID === currentAssetID) {
       resetCloudPreviewRecovery();
     }
     state.lightboxAssetID = nextAssetID;
+    state.lightboxReviewKey = state.lightboxContext === "review"
+      ? nextItem.reviewKey
+      : null;
     state.lightboxOriginalAssetID = null;
     state.lightboxOriginalLoading = false;
     renderLightbox();
@@ -37534,7 +37637,7 @@ function resetWorkspaceSessionState() {
   state.review.overviewGeneration += 1;
   state.review.nextCursor = null;
   state.review.selectedIndex = -1;
-  state.review.gridFocusAssetID = null;
+  state.review.gridFocusReviewKey = null;
   state.review.selectedAssetIDs.clear();
   state.review.selectionAnchorIndex = -1;
   state.review.selectionMode = false;
@@ -37636,6 +37739,7 @@ function resetWorkspaceSessionState() {
   state.lightboxReturnFocus = null;
   state.lightboxContext = null;
   state.lightboxAssetID = null;
+  state.lightboxReviewKey = null;
   state.lightboxOriginalAssetID = null;
   state.lightboxOriginalLoading = false;
   state.lightboxFavoriteRequestGeneration += 1;
@@ -44508,7 +44612,7 @@ function bindEvents() {
   });
   elements.reviewGrid.addEventListener("focusin", (event) => {
     const card = event.target.closest?.(".review-card[data-review-asset-id]");
-    if (card) syncReviewGridTabStops(card.dataset.reviewAssetId);
+    if (card) syncReviewGridTabStops(card.dataset.reviewKey);
   });
   elements.reviewGrid.addEventListener("dblclick", (event) => {
     if (event.target.closest("[data-review-card-favorite]")) return;
@@ -44518,7 +44622,10 @@ function bindEvents() {
     if (!item) return;
     const restoredSelection = restoreGridSelectionForDoubleClick("review", item.assetID);
     if (!state.review.selectionMode && !restoredSelection) selectReviewIndex(index);
-    openLightbox("review", item.assetID, { preserveSelection: restoredSelection });
+    openLightbox("review", item.assetID, {
+      preserveSelection: restoredSelection,
+      reviewKey: reviewItemKey(item),
+    });
   });
   elements.previousReviewButton.addEventListener("click", () => {
     selectReviewIndex(state.review.selectedIndex - 1);
@@ -44612,7 +44719,7 @@ function bindEvents() {
     if (state.lightboxOriginalAssetID === state.lightboxAssetID
       && elements.lightboxImage.dataset.protectedPath?.includes("/original")) {
       state.lightboxOriginalLoading = false;
-      const item = lightboxItems().find((candidate) => candidate.id === state.lightboxAssetID);
+      const item = currentLightboxItem();
       if (item) syncLightboxViewOriginalControl(item);
     }
     scheduleAdjacentLightboxPreviewPrefetch();
