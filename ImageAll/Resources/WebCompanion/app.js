@@ -1194,6 +1194,7 @@ const state = {
     requestGeneration: 0,
     pollTimer: null,
     terminalJobIDs: new Set(),
+    pendingTerminalFocus: null,
   },
   tagLibrarySuggestions: {
     snapshot: null,
@@ -20857,6 +20858,40 @@ function syncLibrarySuggestionJobAction(button, job, action) {
   });
 }
 
+function librarySuggestionTrackForActionContainer(container) {
+  if (container === elements.standardLibrarySuggestionActions) return "standard";
+  if (container === elements.personalLibrarySuggestionActions) return "personal";
+  return null;
+}
+
+function restorePendingLibrarySuggestionTerminalFocus() {
+  const pending = state.librarySuggestions.pendingTerminalFocus;
+  if (!pending) return false;
+  if (elements.reviewWorkspace.classList.contains("hidden")) {
+    state.librarySuggestions.pendingTerminalFocus = null;
+    return false;
+  }
+  const active = document.activeElement;
+  if (active !== pending.origin
+    && active !== document.body
+    && active !== document.documentElement) {
+    state.librarySuggestions.pendingTerminalFocus = null;
+    return false;
+  }
+  const snapshot = state.librarySuggestions.snapshot;
+  const job = pending.track === "standard"
+    ? snapshot?.standardJob
+    : snapshot?.personalJob;
+  if (state.librarySuggestions.loading || activeLibrarySuggestionJob(job)) return false;
+  const target = pending.track === "standard"
+    ? elements.generateStandardLibrarySuggestionsButton
+    : elements.generateLibrarySuggestionsButton;
+  if (target.disabled || target.offsetParent === null) return false;
+  state.librarySuggestions.pendingTerminalFocus = null;
+  target.focus({ preventScroll: true });
+  return true;
+}
+
 function renderLibrarySuggestionJobActions(container, job, fallbackFocus) {
   const active = container.contains(document.activeElement) ? document.activeElement : null;
   const activeKey = active?.dataset.librarySuggestionActionKey || null;
@@ -20885,7 +20920,10 @@ function renderLibrarySuggestionJobActions(container, job, fallbackFocus) {
     const target = sameAction
       || container.querySelector("[data-library-suggestion-action-key]:not(:disabled)")
       || (!fallbackFocus?.disabled && fallbackFocus.offsetParent !== null ? fallbackFocus : null)
-      || elements.refreshReviewModelStatusButton;
+      || (state.librarySuggestions.pendingTerminalFocus?.track
+        !== librarySuggestionTrackForActionContainer(container)
+        ? elements.refreshReviewModelStatusButton
+        : null);
     target?.focus({ preventScroll: true });
   });
 }
@@ -20902,6 +20940,19 @@ function restoreLibrarySuggestionJobActionFocus(
     if (active !== originalButton
       && active !== document.body
       && active !== document.documentElement) return;
+    const pendingTerminal = state.librarySuggestions.pendingTerminalFocus;
+    const projectedJob = pendingTerminal?.jobID === originalButton.dataset.librarySuggestionJobId
+      ? state.jobs.find((job) => job.id === pendingTerminal.jobID)
+      : null;
+    const projectedTerminal = projectedJob
+      && !["pending", "running", "paused", "retryableFailed"].includes(projectedJob.state);
+    if (pendingTerminal?.origin === originalButton && projectedTerminal) {
+      restorePendingLibrarySuggestionTerminalFocus();
+      return;
+    }
+    if (pendingTerminal?.origin === originalButton) {
+      state.librarySuggestions.pendingTerminalFocus = null;
+    }
     const target = container.querySelector(
       `[data-library-suggestion-action-key="${CSS.escape(actionKey)}"]:not(:disabled)`
     ) || (!fallbackFocus?.disabled && fallbackFocus.offsetParent !== null
@@ -20968,6 +21019,7 @@ function renderLibrarySuggestionCards() {
       null,
       elements.generateLibrarySuggestionsButton
     );
+    restorePendingLibrarySuggestionTerminalFocus();
     return;
   }
 
@@ -21013,6 +21065,7 @@ function renderLibrarySuggestionCards() {
     personalJob,
     elements.generateLibrarySuggestionsButton
   );
+  restorePendingLibrarySuggestionTerminalFocus();
 }
 
 function renderSampleSuggestions() {
@@ -21460,10 +21513,57 @@ function syncReviewSourceFilterOption(button, source, included, locked) {
     title: `${included ? "已包含" : "未包含"} · ${source.displayName}`,
     detail: `切换“${source.displayName}”是否参与建议生成和待审列表；其他来源、图库位置和当前媒体类型保持不变。`,
     kind: "review",
-    keyShortcuts: "ArrowUp ArrowDown Home End",
+    keyShortcuts: "ArrowUp ArrowDown PageUp PageDown Home End",
   });
   const name = button.querySelector("span:last-child");
   if (name.textContent !== source.displayName) name.textContent = source.displayName;
+}
+
+function focusReviewSourceFilterButton(button) {
+  if (!button) return;
+  button.focus({ preventScroll: true });
+  if (!elements.reviewSourceFilterOptions.contains(button)) return;
+  const viewport = elements.reviewSourceFilterOptions.getBoundingClientRect();
+  const target = button.getBoundingClientRect();
+  if (target.top < viewport.top) {
+    elements.reviewSourceFilterOptions.scrollTop += target.top - viewport.top;
+  } else if (target.bottom > viewport.bottom) {
+    elements.reviewSourceFilterOptions.scrollTop += target.bottom - viewport.bottom;
+  }
+}
+
+function moveReviewSourceFilterFocus(event) {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    void returnFromActionMenu();
+    return true;
+  }
+  const movementKeys = ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"];
+  if (!movementKeys.includes(event.key)) return false;
+  const buttons = [...elements.reviewSourceFilterPopover.querySelectorAll(
+    "button:not(:disabled)"
+  )];
+  if (!buttons.length) return false;
+  event.preventDefault();
+  const current = Math.max(0, buttons.indexOf(document.activeElement));
+  let next;
+  if (["PageUp", "PageDown"].includes(event.key)) {
+    next = longListNavigationTarget(
+      buttons,
+      current,
+      event.key,
+      elements.reviewSourceFilterOptions
+    );
+  } else if (event.key === "Home") {
+    next = 0;
+  } else if (event.key === "End") {
+    next = buttons.length - 1;
+  } else {
+    next = (current + (event.key === "ArrowUp" ? -1 : 1) + buttons.length)
+      % buttons.length;
+  }
+  focusReviewSourceFilterButton(buttons[next]);
+  return true;
 }
 
 function reviewSourceFilterEmptyState() {
@@ -21506,8 +21606,9 @@ function renderReviewSourceFilter() {
   });
   configurePersistentHelp(elements.selectAllReviewSourcesButton, {
     title: "全选审核来源",
-    detail: "恢复使用全部已启用来源生成建议并显示待审媒体；不会切换图库侧栏范围。",
+    detail: "恢复使用全部已启用来源生成建议并显示待审媒体；不会切换图库侧栏范围。Page Up/Page Down 可按当前可见来源页幅移动。",
     kind: "review",
+    keyShortcuts: "ArrowUp ArrowDown PageUp PageDown Home End",
   });
 
   if (!sources.length) {
@@ -36732,6 +36833,7 @@ function resetWorkspaceSessionState() {
   state.librarySuggestions.snapshot = null;
   state.librarySuggestions.loading = false;
   state.librarySuggestions.launchingTrack = null;
+  state.librarySuggestions.pendingTerminalFocus = null;
   state.librarySuggestions.requestGeneration += 1;
   state.librarySuggestions.terminalJobIDs.clear();
   clearTimeout(state.tagLibrarySuggestions.pollTimer);
@@ -43342,24 +43444,7 @@ function bindEvents() {
     }
   });
   elements.reviewSourceFilterPopover.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      void returnFromActionMenu();
-      return;
-    }
-    if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
-    const buttons = [...elements.reviewSourceFilterPopover.querySelectorAll(
-      "button:not(:disabled)"
-    )];
-    if (!buttons.length) return;
-    event.preventDefault();
-    const current = Math.max(0, buttons.indexOf(document.activeElement));
-    const next = event.key === "Home"
-      ? 0
-      : event.key === "End"
-        ? buttons.length - 1
-        : (current + (event.key === "ArrowUp" ? -1 : 1) + buttons.length) % buttons.length;
-    buttons[next].focus({ preventScroll: true });
+    moveReviewSourceFilterFocus(event);
   });
   elements.refreshReviewButton.addEventListener("click", async () => {
     await Promise.all([
@@ -43394,6 +43479,13 @@ function bindEvents() {
     const fallbackFocus = container === elements.standardLibrarySuggestionActions
       ? elements.generateStandardLibrarySuggestionsButton
       : elements.generateLibrarySuggestionsButton;
+    if (button.dataset.action === "cancel") {
+      state.librarySuggestions.pendingTerminalFocus = {
+        track: librarySuggestionTrackForActionContainer(container),
+        jobID: button.dataset.librarySuggestionJobId,
+        origin: button,
+      };
+    }
     void applyJobAction(button.dataset.librarySuggestionJobId, button.dataset.action)
       .finally(() => restoreLibrarySuggestionJobActionFocus(
         container,

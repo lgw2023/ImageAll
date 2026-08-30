@@ -3470,6 +3470,8 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function librarySuggestionJobActionKey("))
         XCTAssertTrue(script.contains("function syncLibrarySuggestionJobAction("))
         XCTAssertTrue(script.contains("function restoreLibrarySuggestionJobActionFocus("))
+        XCTAssertTrue(script.contains("function restorePendingLibrarySuggestionTerminalFocus("))
+        XCTAssertTrue(script.contains("state.librarySuggestions.pendingTerminalFocus = {"))
         XCTAssertTrue(script.contains("data-library-suggestion-action-part=label"))
         XCTAssertTrue(script.contains("reconcileStableChildren(container, [...staticControls, ...wanted])"))
         XCTAssertTrue(script.contains("scheduleSourceManagementPoll"))
@@ -4067,6 +4069,14 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function reconcileReviewOverviewCard("))
         XCTAssertTrue(script.contains("function syncReviewOverviewGroupToggle("))
         XCTAssertTrue(script.contains("function toggleReviewOverviewGroup("))
+        XCTAssertTrue(script.contains("function focusReviewSourceFilterButton("))
+        XCTAssertTrue(script.contains("function moveReviewSourceFilterFocus(event)"))
+        XCTAssertTrue(
+            script.contains(
+                "longListNavigationTarget(\n      buttons,\n      current,\n      event.key,\n      elements.reviewSourceFilterOptions"
+            )
+        )
+        XCTAssertTrue(script.contains("focusReviewSourceFilterButton(buttons[next])"))
         XCTAssertTrue(
             script.contains(
                 "ArrowLeft ArrowRight ArrowUp ArrowDown PageUp PageDown Home End"

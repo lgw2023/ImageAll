@@ -39,6 +39,7 @@ def main():
     navigation_groups = []
     navigation_tags = []
     navigation_overviews = []
+    navigation_sources = []
     actions = []
     launches = []
     library_launches = []
@@ -217,7 +218,10 @@ def main():
             {"id": SOURCE_IDS[0], "kind": "photos", "displayName": "Apple Photos", "state": "active"},
             {"id": SOURCE_IDS[1], "kind": "folder", "displayName": "旅行归档", "state": "active"},
         ]
-        page.route("**/v1/sources", lambda route: fulfill_json(route, sources))
+        page.route(
+            "**/v1/sources",
+            lambda route: fulfill_json(route, [*sources, *navigation_sources]),
+        )
         page.route(
             "**/v1/tags",
             lambda route: fulfill_json(
@@ -664,6 +668,126 @@ def main():
         ).get_attribute("aria-checked") == "false"
         page.keyboard.press("Escape")
         source_popover.wait_for(state="hidden")
+        source_popover.evaluate(
+            "element => { element.style.maxHeight = ''; "
+            "element.style.overflowY = ''; element.scrollTop = 0; }"
+        )
+
+        for index in range(15):
+            navigation_sources.append({
+                "id": f"22222222-aaaa-bbbb-cccc-800000000{index:03d}",
+                "kind": "folder",
+                "displayName": f"审核键盘来源 {index + 1:02d}",
+                "state": "active",
+            })
+        page.evaluate(
+            "async () => { await refreshWorkspace({ quiet: true, kinds: ['sourcesChanged'] }); }"
+        )
+        page.wait_for_function(
+            "expected => document.querySelectorAll('[data-review-source-id]').length === expected",
+            arg=len(SOURCE_IDS) + len(navigation_sources),
+        )
+        source_button.click()
+        source_popover.wait_for(state="visible")
+        review_source_options = page.locator("#reviewSourceFilterOptions")
+        review_source_options.evaluate(
+            "element => { element.style.height = '124px'; element.style.maxHeight = '124px'; }"
+        )
+        first_source = page.locator(f'[data-review-source-id="{SOURCE_IDS[0]}"]')
+        first_source.focus()
+        navigation_source_ids = [source["id"] for source in navigation_sources]
+        navigation_read_snapshot = {
+            "overview": len(overview_source_queries),
+            "queue": len(queue_source_queries),
+            "actions": len(actions),
+            "launches": len(library_launches),
+        }
+        navigation_selection_snapshot = page.evaluate(
+            "() => [...document.querySelectorAll('[data-review-source-id]')]"
+            ".map(button => [button.dataset.reviewSourceId, button.getAttribute('aria-checked')])"
+        )
+        navigation_scroll_snapshot = page.evaluate(
+            """() => ({
+              document: document.scrollingElement?.scrollTop || 0,
+              workspace: document.querySelector('#reviewWorkspace')?.scrollTop || 0,
+              overview: document.querySelector('.review-overview-content')?.scrollTop || 0,
+            })"""
+        )
+        first_source.press("PageDown")
+        first_page_target = page.evaluate(
+            "() => document.activeElement?.dataset.reviewSourceId"
+        )
+        assert first_page_target in [SOURCE_IDS[1], *navigation_source_ids], first_page_target
+        first_page_index = [SOURCE_IDS[0], SOURCE_IDS[1], *navigation_source_ids].index(
+            first_page_target
+        )
+        page.keyboard.press("PageDown")
+        second_page_target = page.evaluate(
+            "() => document.activeElement?.dataset.reviewSourceId"
+        )
+        second_page_index = [SOURCE_IDS[0], SOURCE_IDS[1], *navigation_source_ids].index(
+            second_page_target
+        )
+        assert second_page_index > first_page_index, second_page_target
+        target_visibility = page.evaluate(
+            """() => {
+              const viewport = document.querySelector('#reviewSourceFilterOptions')
+                .getBoundingClientRect();
+              const target = document.activeElement.getBoundingClientRect();
+              return { top: target.top >= viewport.top, bottom: target.bottom <= viewport.bottom };
+            }"""
+        )
+        assert all(target_visibility.values()), target_visibility
+        page.screenshot(
+            path="/tmp/imageall-review-source-long-menu.png",
+            full_page=True,
+        )
+        page.keyboard.press("PageUp")
+        assert [SOURCE_IDS[0], SOURCE_IDS[1], *navigation_source_ids].index(
+            page.evaluate("() => document.activeElement?.dataset.reviewSourceId")
+        ) < second_page_index
+        page.keyboard.press("End")
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.reviewSourceId"
+        ) == navigation_source_ids[-1]
+        page.keyboard.press("Home")
+        assert page.evaluate("() => document.activeElement?.id") == "selectAllReviewSourcesButton"
+        assert page.evaluate(
+            """() => ({
+              document: document.scrollingElement?.scrollTop || 0,
+              workspace: document.querySelector('#reviewWorkspace')?.scrollTop || 0,
+              overview: document.querySelector('.review-overview-content')?.scrollTop || 0,
+            })"""
+        ) == navigation_scroll_snapshot
+        assert navigation_read_snapshot == {
+            "overview": len(overview_source_queries),
+            "queue": len(queue_source_queries),
+            "actions": len(actions),
+            "launches": len(library_launches),
+        }
+        assert page.evaluate(
+            "() => [...document.querySelectorAll('[data-review-source-id]')]"
+            ".map(button => [button.dataset.reviewSourceId, button.getAttribute('aria-checked')])"
+        ) == navigation_selection_snapshot
+        assert first_source.get_attribute("aria-keyshortcuts") == (
+            "ArrowUp ArrowDown PageUp PageDown Home End"
+        )
+        assert page.locator("#selectAllReviewSourcesButton").get_attribute(
+            "aria-keyshortcuts"
+        ) == "ArrowUp ArrowDown PageUp PageDown Home End"
+        page.keyboard.press("Escape")
+        source_popover.wait_for(state="hidden")
+        navigation_sources.clear()
+        page.evaluate(
+            "async () => { await refreshWorkspace({ quiet: true, kinds: ['sourcesChanged'] }); }"
+        )
+        page.wait_for_function(
+            "expected => document.querySelectorAll('[data-review-source-id]').length === expected",
+            arg=len(SOURCE_IDS),
+        )
+        review_source_options.evaluate(
+            "element => { element.style.height = ''; element.style.maxHeight = ''; }"
+        )
 
         assert page.locator("#reviewLocalModelStateBadge").inner_text() == "服务已就绪"
         assert "coreml / scene-personal-v1" in page.locator("#reviewLocalModelStatus").inner_text()
@@ -765,7 +889,8 @@ def main():
         page.wait_for_function(
             """() => document.activeElement?.id
               === 'generateStandardLibrarySuggestionsButton'
-              && !document.activeElement.disabled"""
+              && !document.activeElement.disabled
+              && state.librarySuggestions.pendingTerminalFocus === null"""
         )
 
         page.locator("#generateLibrarySuggestionsButton").click()
@@ -775,7 +900,8 @@ def main():
         personal_card.get_by_role("button", name="取消").click()
         page.wait_for_function(
             """() => document.activeElement?.id === 'generateLibrarySuggestionsButton'
-              && !document.activeElement.disabled"""
+              && !document.activeElement.disabled
+              && state.librarySuggestions.pendingTerminalFocus === null"""
         )
         assert actions[:4] == [
             "standard:pause",
