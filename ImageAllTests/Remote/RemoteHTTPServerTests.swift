@@ -4089,9 +4089,21 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("container: elements.tagSuggestionSourceOptions"))
         XCTAssertTrue(script.contains("container: elements.trainingScopeOptions"))
         XCTAssertTrue(script.contains("container: elements.slimmingSourceOptions"))
+        XCTAssertTrue(script.contains("container: elements.slimmingCatalogSourceOptions"))
+        XCTAssertTrue(script.contains("container: elements.slimmingMaintenanceSourceOptions"))
         XCTAssertTrue(script.contains("inputSelector: 'input[type=\"checkbox\"]'"))
         XCTAssertTrue(script.contains("inputSelector: \"input[data-training-source-id]\""))
         XCTAssertTrue(script.contains("inputSelector: \"input[data-slimming-source-id]\""))
+        XCTAssertTrue(
+            script.contains(
+                "inputSelector: \"input[data-slimming-catalog-source-id]\""
+            )
+        )
+        XCTAssertTrue(
+            script.contains(
+                "inputSelector: \"input[data-slimming-maintenance-source-id]\""
+            )
+        )
         XCTAssertTrue(script.contains("revealCheckboxGridRow(container, targetRow)"))
         XCTAssertTrue(script.contains("renderReviewOverview({ reconcileContent: true });"))
         XCTAssertTrue(

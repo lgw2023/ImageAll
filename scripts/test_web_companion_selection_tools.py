@@ -3737,6 +3737,137 @@ def main(*, inspector_actions_only=False):
         assert all(slimming_catalog_history_continuity.values()), (
             slimming_catalog_history_continuity
         )
+        slimming_catalog_navigation_counters = {
+            "setup_reads": slimming_setup_reads[0],
+            "launches": len(submitted_slimming),
+            "maintenance": len(submitted_slimming_source_maintenance),
+            "assets": len(asset_request_urls),
+        }
+        slimming_catalog_navigation_history = page.evaluate(
+            "() => JSON.stringify(history.state?.imageAllWorkspace || null)"
+        )
+        slimming_catalog_navigation_frame = page.evaluate(
+            """() => {
+              const picker = state.slimming.catalogSources;
+              const options = document.querySelector('#slimmingCatalogSourceOptions');
+              const popover = document.querySelector('#slimmingCatalogSourcePopover');
+              const workspace = document.querySelector('#slimmingWorkspace');
+              window.__slimmingCatalogNavigationSources = picker.snapshot.sources;
+              picker.snapshot.sources = [
+                ...picker.snapshot.sources,
+                ...Array.from({ length: 12 }, (_, index) => ({
+                  id: `synthetic-catalog-source-${index + 1}`,
+                  displayName: `合成分析来源 ${String(index + 1).padStart(2, '0')}`,
+                  kind: 'folder',
+                  similarityIndex: null,
+                })),
+              ];
+              renderSlimmingCatalogSourcePicker();
+              options.style.maxHeight = '124px';
+              options.style.overflowY = 'auto';
+              options.scrollTop = 0;
+              const inputs = [...options.querySelectorAll(
+                '[data-slimming-catalog-source-id]'
+              )];
+              inputs[0].focus({ preventScroll: true });
+              const firstRect = inputs[0].closest('label').getBoundingClientRect();
+              const secondRect = inputs[1].closest('label').getBoundingClientRect();
+              return {
+                count: inputs.length,
+                columns: Math.max(1, Math.round(
+                  Math.abs(secondRect.top - firstRect.top) < 2
+                    ? options.clientWidth / firstRect.width
+                    : 1
+                )),
+                checked: inputs.map((input) => input.checked),
+                shortcuts: inputs.map((input) => input.getAttribute('aria-keyshortcuts')),
+                popoverScrollTop: popover.scrollTop,
+                workspaceScrollTop: workspace.scrollTop,
+              };
+            }"""
+        )
+        assert slimming_catalog_navigation_frame["count"] == 14
+        assert slimming_catalog_navigation_frame["columns"] == 1
+        assert set(slimming_catalog_navigation_frame["shortcuts"]) == {
+            "ArrowLeft ArrowRight ArrowUp ArrowDown PageUp PageDown Home End"
+        }
+
+        def slimming_catalog_navigation_snapshot():
+            return page.evaluate(
+                """() => {
+                  const options = document.querySelector('#slimmingCatalogSourceOptions');
+                  const inputs = [...options.querySelectorAll(
+                    '[data-slimming-catalog-source-id]'
+                  )];
+                  const index = inputs.indexOf(document.activeElement);
+                  const rowRect = inputs[index]?.closest('label').getBoundingClientRect();
+                  const optionsRect = options.getBoundingClientRect();
+                  return {
+                    index,
+                    visible: Boolean(rowRect)
+                      && rowRect.top >= optionsRect.top - 1
+                      && rowRect.bottom <= optionsRect.bottom + 1,
+                    checked: inputs.map((input) => input.checked),
+                    optionsScrollTop: options.scrollTop,
+                    popoverScrollTop: document.querySelector(
+                      '#slimmingCatalogSourcePopover'
+                    ).scrollTop,
+                    workspaceScrollTop: document.querySelector(
+                      '#slimmingWorkspace'
+                    ).scrollTop,
+                  };
+                }"""
+            )
+
+        page.keyboard.press("ArrowDown")
+        assert slimming_catalog_navigation_snapshot()["index"] == 1
+        page.keyboard.press("PageDown")
+        catalog_page_down = slimming_catalog_navigation_snapshot()
+        assert catalog_page_down["index"] > 1
+        assert catalog_page_down["visible"]
+        assert catalog_page_down["optionsScrollTop"] > 0
+        page.keyboard.press("PageUp")
+        catalog_page_up = slimming_catalog_navigation_snapshot()
+        assert catalog_page_up["index"] < catalog_page_down["index"]
+        assert catalog_page_up["visible"]
+        page.keyboard.press("End")
+        catalog_end = slimming_catalog_navigation_snapshot()
+        assert catalog_end["index"] == 13
+        assert catalog_end["visible"]
+        page.keyboard.press("Home")
+        catalog_home = slimming_catalog_navigation_snapshot()
+        assert catalog_home["index"] == 0
+        assert catalog_home["visible"]
+        assert catalog_home["checked"] == slimming_catalog_navigation_frame["checked"]
+        assert catalog_home["popoverScrollTop"] == (
+            slimming_catalog_navigation_frame["popoverScrollTop"]
+        )
+        assert catalog_home["workspaceScrollTop"] == (
+            slimming_catalog_navigation_frame["workspaceScrollTop"]
+        )
+        assert slimming_setup_reads[0] == slimming_catalog_navigation_counters["setup_reads"]
+        assert len(submitted_slimming) == slimming_catalog_navigation_counters["launches"]
+        assert len(submitted_slimming_source_maintenance) == (
+            slimming_catalog_navigation_counters["maintenance"]
+        )
+        assert len(asset_request_urls) == slimming_catalog_navigation_counters["assets"]
+        assert page.evaluate(
+            "() => JSON.stringify(history.state?.imageAllWorkspace || null)"
+        ) == slimming_catalog_navigation_history
+        page.screenshot(path="/tmp/imageall-slimming-catalog-source-keyboard.png")
+        page.evaluate(
+            """() => {
+              const picker = state.slimming.catalogSources;
+              picker.snapshot.sources = window.__slimmingCatalogNavigationSources;
+              delete window.__slimmingCatalogNavigationSources;
+              renderSlimmingCatalogSourcePicker();
+              const options = document.querySelector('#slimmingCatalogSourceOptions');
+              options.style.removeProperty('max-height');
+              options.style.removeProperty('overflow-y');
+              options.scrollTop = 0;
+            }"""
+        )
+        assert catalog_sources.count() == 2
         source_popover.evaluate(
             "element => { element.style.removeProperty('max-height'); "
             "element.style.removeProperty('overflow-y'); element.scrollTop = 0; }"
@@ -5517,6 +5648,141 @@ def main(*, inspector_actions_only=False):
         assert all(slimming_maintenance_history_continuity.values()), (
             slimming_maintenance_history_continuity
         )
+        slimming_maintenance_navigation_counters = {
+            "setup_reads": slimming_setup_reads[0],
+            "launches": len(submitted_slimming),
+            "maintenance": len(submitted_slimming_source_maintenance),
+            "assets": len(asset_request_urls),
+        }
+        slimming_maintenance_navigation_history = page.evaluate(
+            "() => JSON.stringify(history.state?.imageAllWorkspace || null)"
+        )
+        slimming_maintenance_navigation_frame = page.evaluate(
+            """() => {
+              const maintenance = state.slimming.sourceMaintenance;
+              const options = document.querySelector('#slimmingMaintenanceSourceOptions');
+              const popover = document.querySelector('#slimmingAnalysisOptionsPopover');
+              const content = document.querySelector('#slimmingAnalysisOptionsContent');
+              const workspace = document.querySelector('#slimmingWorkspace');
+              window.__slimmingMaintenanceNavigationSources = maintenance.snapshot.sources;
+              maintenance.snapshot.sources = [
+                ...maintenance.snapshot.sources,
+                ...Array.from({ length: 12 }, (_, index) => ({
+                  id: `synthetic-maintenance-source-${index + 1}`,
+                  displayName: `合成维护来源 ${String(index + 1).padStart(2, '0')}`,
+                  kind: 'folder',
+                  similarityIndex: null,
+                })),
+              ];
+              renderSlimmingSourceMaintenance();
+              options.style.maxHeight = '124px';
+              options.style.overflowY = 'auto';
+              options.scrollTop = 0;
+              const inputs = [...options.querySelectorAll(
+                '[data-slimming-maintenance-source-id]'
+              )];
+              inputs[0].focus({ preventScroll: true });
+              return {
+                count: inputs.length,
+                checked: inputs.map((input) => input.checked),
+                shortcuts: inputs.map((input) => input.getAttribute('aria-keyshortcuts')),
+                popoverScrollTop: popover.scrollTop,
+                contentScrollTop: content.scrollTop,
+                workspaceScrollTop: workspace.scrollTop,
+              };
+            }"""
+        )
+        assert slimming_maintenance_navigation_frame["count"] == 14
+        assert set(slimming_maintenance_navigation_frame["shortcuts"]) == {
+            "ArrowLeft ArrowRight ArrowUp ArrowDown PageUp PageDown Home End"
+        }
+
+        def slimming_maintenance_navigation_snapshot():
+            return page.evaluate(
+                """() => {
+                  const options = document.querySelector('#slimmingMaintenanceSourceOptions');
+                  const inputs = [...options.querySelectorAll(
+                    '[data-slimming-maintenance-source-id]'
+                  )];
+                  const index = inputs.indexOf(document.activeElement);
+                  const rowRect = inputs[index]?.closest('label').getBoundingClientRect();
+                  const optionsRect = options.getBoundingClientRect();
+                  return {
+                    index,
+                    visible: Boolean(rowRect)
+                      && rowRect.top >= optionsRect.top - 1
+                      && rowRect.bottom <= optionsRect.bottom + 1,
+                    checked: inputs.map((input) => input.checked),
+                    optionsScrollTop: options.scrollTop,
+                    popoverScrollTop: document.querySelector(
+                      '#slimmingAnalysisOptionsPopover'
+                    ).scrollTop,
+                    contentScrollTop: document.querySelector(
+                      '#slimmingAnalysisOptionsContent'
+                    ).scrollTop,
+                    workspaceScrollTop: document.querySelector(
+                      '#slimmingWorkspace'
+                    ).scrollTop,
+                  };
+                }"""
+            )
+
+        page.keyboard.press("ArrowDown")
+        assert slimming_maintenance_navigation_snapshot()["index"] == 1
+        page.keyboard.press("PageDown")
+        maintenance_page_down = slimming_maintenance_navigation_snapshot()
+        assert maintenance_page_down["index"] > 1
+        assert maintenance_page_down["visible"]
+        assert maintenance_page_down["optionsScrollTop"] > 0
+        page.keyboard.press("PageUp")
+        maintenance_page_up = slimming_maintenance_navigation_snapshot()
+        assert maintenance_page_up["index"] < maintenance_page_down["index"]
+        assert maintenance_page_up["visible"]
+        page.keyboard.press("End")
+        maintenance_end = slimming_maintenance_navigation_snapshot()
+        assert maintenance_end["index"] == 13
+        assert maintenance_end["visible"]
+        page.keyboard.press("Home")
+        maintenance_home = slimming_maintenance_navigation_snapshot()
+        assert maintenance_home["index"] == 0
+        assert maintenance_home["visible"]
+        assert maintenance_home["checked"] == (
+            slimming_maintenance_navigation_frame["checked"]
+        )
+        assert maintenance_home["popoverScrollTop"] == (
+            slimming_maintenance_navigation_frame["popoverScrollTop"]
+        )
+        assert maintenance_home["contentScrollTop"] == (
+            slimming_maintenance_navigation_frame["contentScrollTop"]
+        )
+        assert maintenance_home["workspaceScrollTop"] == (
+            slimming_maintenance_navigation_frame["workspaceScrollTop"]
+        )
+        assert slimming_setup_reads[0] == (
+            slimming_maintenance_navigation_counters["setup_reads"]
+        )
+        assert len(submitted_slimming) == slimming_maintenance_navigation_counters["launches"]
+        assert len(submitted_slimming_source_maintenance) == (
+            slimming_maintenance_navigation_counters["maintenance"]
+        )
+        assert len(asset_request_urls) == slimming_maintenance_navigation_counters["assets"]
+        assert page.evaluate(
+            "() => JSON.stringify(history.state?.imageAllWorkspace || null)"
+        ) == slimming_maintenance_navigation_history
+        page.screenshot(path="/tmp/imageall-slimming-maintenance-source-keyboard.png")
+        page.evaluate(
+            """() => {
+              const maintenance = state.slimming.sourceMaintenance;
+              maintenance.snapshot.sources = window.__slimmingMaintenanceNavigationSources;
+              delete window.__slimmingMaintenanceNavigationSources;
+              renderSlimmingSourceMaintenance();
+              const options = document.querySelector('#slimmingMaintenanceSourceOptions');
+              options.style.removeProperty('max-height');
+              options.style.removeProperty('overflow-y');
+              options.scrollTop = 0;
+            }"""
+        )
+        assert maintenance_sources.count() == 2
         page.evaluate(
             """() => {
               const popover = document.querySelector('#slimmingAnalysisOptionsPopover');

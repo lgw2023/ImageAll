@@ -33252,6 +33252,7 @@ function syncSlimmingCatalogSourceOption(row, source, selected, disabled) {
   input.checked = selected;
   input.disabled = disabled;
   input.dataset.slimmingCatalogSourceId = source.id;
+  input.setAttribute("aria-keyshortcuts", choiceGridNavigationShortcuts);
   const icon = row.querySelector(":scope > .slimming-catalog-source-icon");
   const iconText = source.kind === "photos" ? "▣" : "▱";
   if (icon.textContent !== iconText) icon.textContent = iconText;
@@ -33263,8 +33264,9 @@ function syncSlimmingCatalogSourceOption(row, source, selected, disabled) {
   if (kind.textContent !== kindText) kind.textContent = kindText;
   configurePersistentHelp(row, {
     title: `分析来源 · ${source.displayName}`,
-    detail: "勾选后纳入下一次全部来源分析；只读取这台 Mac 当前提供的可用来源。",
+    detail: "方向键、Page Up/Down 与 Home/End 移动焦点，空格切换；勾选后才纳入下一次全部来源分析。",
     kind: "slimming",
+    keyShortcuts: choiceGridNavigationShortcuts,
   });
 }
 
@@ -33472,11 +33474,18 @@ function syncSlimmingMaintenanceSourceOption(row, source, selected, disabled) {
   input.checked = selected;
   input.disabled = disabled;
   input.dataset.slimmingMaintenanceSourceId = source.id;
+  input.setAttribute("aria-keyshortcuts", choiceGridNavigationShortcuts);
   const name = row.querySelector(":scope > strong");
   if (name.textContent !== source.displayName) name.textContent = source.displayName;
   const kind = row.querySelector(":scope > span");
   const kindText = `${source.kind === "photos" ? "照片图库" : "文件夹"} · ${slimmingSourceIndexShortStatus(source)}`;
   if (kind.textContent !== kindText) kind.textContent = kindText;
+  configurePersistentHelp(row, {
+    title: `来源维护 · ${source.displayName}`,
+    detail: "方向键、Page Up/Down 与 Home/End 移动焦点，空格切换；只有明确执行操作后才刷新来源。",
+    kind: "slimming",
+    keyShortcuts: choiceGridNavigationShortcuts,
+  });
 }
 
 function syncSlimmingIndexSourceOptions(sources) {
@@ -42578,6 +42587,13 @@ function bindEvents() {
     setSlimmingCatalogSourceIDs(selected, snapshot);
     renderSlimmingCatalogSourcePicker();
   });
+  elements.slimmingCatalogSourceOptions.addEventListener("keydown", (event) => {
+    handleChoiceGridNavigation(event, {
+      container: elements.slimmingCatalogSourceOptions,
+      inputSelector: "input[data-slimming-catalog-source-id]",
+      rowSelector: ".slimming-catalog-source-option",
+    });
+  });
   elements.selectAllSlimmingCatalogSourcesButton.addEventListener("click", () => {
     const snapshot = currentSlimmingCatalogSnapshot();
     setSlimmingCatalogSourceIDs(
@@ -42662,6 +42678,13 @@ function bindEvents() {
     setSlimmingCatalogSourceIDs(selected, state.slimming.sourceMaintenance.snapshot);
     state.slimming.sourceMaintenance.operationID = null;
     renderSlimmingSourceMaintenance();
+  });
+  elements.slimmingMaintenanceSourceOptions.addEventListener("keydown", (event) => {
+    handleChoiceGridNavigation(event, {
+      container: elements.slimmingMaintenanceSourceOptions,
+      inputSelector: "input[data-slimming-maintenance-source-id]",
+      rowSelector: ".slimming-maintenance-source-option",
+    });
   });
   elements.toggleAllSlimmingMaintenanceSourcesButton.addEventListener("click", () => {
     const snapshot = state.slimming.sourceMaintenance.snapshot;
