@@ -7218,6 +7218,23 @@ html.split-resizing * {
   font-size: 38px;
 }
 
+.review-empty[data-state="progress"] > span,
+.review-empty[data-state="ready"] > span {
+  color: var(--accent);
+}
+
+.review-empty[data-state="warning"] > span {
+  color: var(--orange);
+}
+
+.review-empty[data-state="failure"] > span {
+  color: var(--red);
+}
+
+.review-empty[data-state="complete"] > span {
+  color: var(--green);
+}
+
 .review-empty strong {
   margin-top: 9px;
   color: var(--text);

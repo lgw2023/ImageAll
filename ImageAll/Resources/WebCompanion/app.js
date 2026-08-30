@@ -584,6 +584,9 @@ const elements = {
   reviewGridDensityButtonLabel: $("#reviewGridDensityButtonLabel"),
   reviewGridDensityPopover: $("#reviewGridDensityPopover"),
   reviewEmpty: $("#reviewEmpty"),
+  reviewEmptyIcon: $("#reviewEmptyIcon"),
+  reviewEmptyTitle: $("#reviewEmptyTitle"),
+  reviewEmptyDescription: $("#reviewEmptyDescription"),
   loadMoreReviewButton: $("#loadMoreReviewButton"),
   reviewPlaceholder: $("#reviewPlaceholder"),
   reviewDetail: $("#reviewDetail"),
@@ -24772,6 +24775,94 @@ function reviewQueueSummaryText({ selectedCount = 0 } = {}) {
   return parts.join(" · ") || "审核队列尚未载入";
 }
 
+function reviewQueueMissingSamplesDescription(overview) {
+  const missingPositive = normalizedReviewCount(overview?.missingPositiveCount);
+  const missingNegative = normalizedReviewCount(overview?.missingNegativeCount);
+  const missing = [];
+  if (missingPositive > 0) missing.push(`${missingPositive} 个“属于”样本`);
+  if (missingNegative > 0) missing.push(`${missingNegative} 个“不属于”样本`);
+  if (!missing.length) {
+    return "当前标签还缺少可用的确认或拒绝样本；补充样本后即可生成建议。";
+  }
+  return `还需确认 ${missing.join("、")}；样本就绪后即可生成建议。`;
+}
+
+function reviewQueueEmptyState() {
+  const overview = currentReviewQueueOverview();
+  const states = {
+    notReady: {
+      state: "warning",
+      icon: "◌",
+      title: "样本不足",
+      description: reviewQueueMissingSamplesDescription(overview),
+    },
+    ready: {
+      state: "ready",
+      icon: "✦",
+      title: "可以生成建议",
+      description: "返回审核总览，为当前标签开始生成建议。",
+    },
+    waiting: {
+      state: "progress",
+      icon: "◷",
+      title: "正在等待生成",
+      description: "Mac 已接收任务；开始处理后，进度会显示在上方。",
+    },
+    running: {
+      state: "progress",
+      icon: "↻",
+      title: "正在生成建议",
+      description: "新建议生成后会进入当前队列；也可返回总览查看或控制任务。",
+    },
+    paused: {
+      state: "warning",
+      icon: "Ⅱ",
+      title: "建议生成已暂停",
+      description: "返回审核总览继续或取消当前生成任务。",
+    },
+    retryableFailure: {
+      state: "failure",
+      icon: "!",
+      title: "生成遇到问题",
+      description: "返回审核总览查看任务状态；必要时在 Mac 端重试。",
+    },
+    completed: {
+      state: "complete",
+      icon: "✓",
+      title: "已全部审核",
+      description: "当前标签没有剩余建议；可返回总览生成新一轮。",
+    },
+    terminalFailure: {
+      state: "failure",
+      icon: "!",
+      title: "任务失败",
+      description: "请在 Mac 端检查任务后，再返回总览重新生成建议。",
+    },
+    cancelled: {
+      state: "neutral",
+      icon: "×",
+      title: "生成已取消",
+      description: "返回审核总览可重新生成当前标签的建议。",
+    },
+  };
+  return states[overview?.taskStatus] || {
+    state: overview ? "neutral" : "unavailable",
+    icon: overview ? "✦" : "▧",
+    title: overview ? "暂无建议" : "队列状态尚未载入",
+    description: overview
+      ? "选择其他标签，或返回总览生成新建议。"
+      : "刷新审核队列，或返回总览选择其他标签。",
+  };
+}
+
+function renderReviewEmptyState() {
+  const empty = reviewQueueEmptyState();
+  elements.reviewEmpty.dataset.state = empty.state;
+  elements.reviewEmptyIcon.textContent = empty.icon;
+  elements.reviewEmptyTitle.textContent = empty.title;
+  elements.reviewEmptyDescription.textContent = empty.description;
+}
+
 function selectAllReviewItems() {
   if (!state.review.items.length) return;
   state.review.selectedAssetIDs = new Set(state.review.items.map((item) => item.assetID));
@@ -24809,7 +24900,11 @@ function slimmingSelectionPrimaryID() {
 }
 
 function renderReviewCollectionSummary() {
-  elements.reviewEmpty.classList.toggle("hidden", state.review.items.length > 0);
+  renderReviewEmptyState();
+  elements.reviewEmpty.classList.toggle(
+    "hidden",
+    (state.review.loading && !state.review.appending) || state.review.items.length > 0
+  );
   elements.loadMoreReviewButton.classList.toggle("hidden", !state.review.nextCursor);
   elements.reviewSummary.textContent = reviewQueueSummaryText();
   elements.reviewNavigationCount.textContent = state.review.overviewTotal

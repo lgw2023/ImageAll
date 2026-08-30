@@ -3944,6 +3944,13 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function currentReviewQueueOverview()"))
         XCTAssertTrue(script.contains("function currentReviewOverviewScopeKey()"))
         XCTAssertTrue(script.contains("function reviewQueueSummaryText({ selectedCount = 0 } = {})"))
+        XCTAssertTrue(script.contains("function reviewQueueEmptyState()"))
+        XCTAssertTrue(script.contains("function renderReviewEmptyState()"))
+        XCTAssertTrue(script.contains("reviewQueueMissingSamplesDescription(overview)"))
+        XCTAssertTrue(script.contains("title: \"样本不足\""))
+        XCTAssertTrue(script.contains("title: \"正在生成建议\""))
+        XCTAssertTrue(script.contains("title: \"已全部审核\""))
+        XCTAssertTrue(script.contains("title: \"任务失败\""))
         XCTAssertTrue(
             script.contains(
                 "state.review.overviewLoadedScopeKey !== currentReviewOverviewScopeKey()"
@@ -3959,6 +3966,11 @@ final class RemoteHTTPServerTests: XCTestCase {
             )
         )
         XCTAssertFalse(script.contains("`待审核 ${state.review.items.length} 项"))
+        XCTAssertTrue(html.contains("id=\"reviewEmptyTitle\""))
+        XCTAssertTrue(html.contains("id=\"reviewEmptyDescription\""))
+        XCTAssertTrue(html.contains("id=\"reviewEmpty\" class=\"review-empty\" role=\"status\""))
+        XCTAssertTrue(stylesheet.contains(".review-empty[data-state=\"failure\"] > span"))
+        XCTAssertTrue(stylesheet.contains(".review-empty[data-state=\"complete\"] > span"))
         XCTAssertTrue(script.contains("renderTagManager"))
         XCTAssertTrue(script.contains("installPresetTags"))
         XCTAssertTrue(script.contains("/v1/tags/install-presets"))

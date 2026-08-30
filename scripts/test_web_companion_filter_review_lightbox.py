@@ -305,6 +305,8 @@ def main():
         "checkedCount": 12,
         "totalCount": 12,
         "skippedCount": 0,
+        "missingPositiveCount": 0,
+        "missingNegativeCount": 0,
     }
 
     def projected_review_items():
@@ -1056,8 +1058,6 @@ def main():
                         "personalAdamW": 0,
                     },
                     **review_task,
-                    "missingPositiveCount": 0,
-                    "missingNegativeCount": 0,
                     "canReview": pending_count > 0,
                 }],
             })
@@ -4993,6 +4993,85 @@ def main():
             "() => state.review.items.length === 0 "
             "&& state.review.selectedAssetIDs.size === 0 "
             "&& document.querySelector('#reviewEmpty')?.offsetParent !== null"
+        )
+        assert page.locator("#reviewEmptyTitle").inner_text() == "已全部审核"
+        assert "没有剩余建议" in page.locator("#reviewEmptyDescription").inner_text()
+        assert page.locator("#reviewEmpty").get_attribute("data-state") == "complete"
+
+        review_task.update({
+            "taskStatus": "notReady",
+            "checkedCount": 0,
+            "totalCount": None,
+            "skippedCount": 0,
+            "missingPositiveCount": 1,
+            "missingNegativeCount": 2,
+        })
+        page.evaluate("() => loadReviewOverview()")
+        page.wait_for_function(
+            "() => document.querySelector('#reviewEmptyTitle').textContent === '样本不足'"
+        )
+        missing_samples = page.locator("#reviewEmptyDescription").inner_text()
+        assert "1 个“属于”样本" in missing_samples
+        assert "2 个“不属于”样本" in missing_samples
+        assert page.locator("#reviewEmpty").get_attribute("data-state") == "warning"
+
+        review_task.update({
+            "taskStatus": "running",
+            "checkedCount": 41,
+            "totalCount": 120,
+            "skippedCount": 6,
+            "missingPositiveCount": 0,
+            "missingNegativeCount": 0,
+        })
+        page.evaluate("() => loadReviewOverview()")
+        page.wait_for_function(
+            "() => document.querySelector('#reviewEmptyTitle').textContent === '正在生成建议'"
+        )
+        assert page.locator("#reviewEmpty").get_attribute("data-state") == "progress"
+        assert "查看或控制任务" in page.locator("#reviewEmptyDescription").inner_text()
+        page.screenshot(path="/tmp/imageall-review-empty-running.png", full_page=True)
+
+        review_task["taskStatus"] = "paused"
+        page.evaluate("() => loadReviewOverview()")
+        page.wait_for_function(
+            "() => document.querySelector('#reviewEmptyTitle').textContent === '建议生成已暂停'"
+        )
+        review_task["taskStatus"] = "terminalFailure"
+        page.evaluate("() => loadReviewOverview()")
+        page.wait_for_function(
+            "() => document.querySelector('#reviewEmptyTitle').textContent === '任务失败'"
+        )
+        assert page.locator("#reviewEmpty").get_attribute("data-state") == "failure"
+
+        page.evaluate(
+            """() => {
+              state.review.overviewLoadedScopeKey = 'previous-source-scope';
+              renderReviewCollectionSummary();
+            }"""
+        )
+        assert page.locator("#reviewEmptyTitle").inner_text() == "队列状态尚未载入"
+        assert page.locator("#reviewEmpty").get_attribute("data-state") == "unavailable"
+        page.evaluate(
+            """() => {
+              state.review.loading = true;
+              renderReviewCollectionSummary();
+            }"""
+        )
+        assert page.locator("#reviewEmpty").is_hidden()
+        review_task.update({
+            "taskStatus": "completed",
+            "checkedCount": 12,
+            "totalCount": 12,
+            "skippedCount": 0,
+        })
+        page.evaluate(
+            """() => {
+              state.review.loading = false;
+              return loadReviewOverview();
+            }"""
+        )
+        page.wait_for_function(
+            "() => document.querySelector('#reviewEmptyTitle').textContent === '已全部审核'"
         )
         assert page.locator("#reviewDetail").is_hidden()
         page.locator("#closeReviewButton").click()

@@ -1695,10 +1695,10 @@
     <div id="reviewQueueLayout" class="review-body hidden">
       <aside id="reviewQueuePane" class="review-queue-pane">
         <div id="reviewMarqueeSelection" class="marquee-selection hidden" aria-hidden="true"></div>
-        <div id="reviewEmpty" class="review-empty">
-          <span aria-hidden="true">✓</span>
-          <strong>没有待审核建议</strong>
-          <p>选择其他标签，或等待 Mac 生成新建议。</p>
+        <div id="reviewEmpty" class="review-empty" role="status" aria-live="polite">
+          <span id="reviewEmptyIcon" aria-hidden="true">✦</span>
+          <strong id="reviewEmptyTitle">队列状态尚未载入</strong>
+          <p id="reviewEmptyDescription">刷新审核队列，或返回总览选择其他标签。</p>
         </div>
         <div id="reviewGrid" class="review-grid" role="grid" aria-multiselectable="true"></div>
         <button id="loadMoreReviewButton" class="button review-load-more hidden" type="button">载入更多</button>
