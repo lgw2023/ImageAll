@@ -156,6 +156,8 @@ const elements = {
   sourceConnectPhotosButton: $("#sourceConnectPhotosButton"),
   sourceAllActionsPanel: $("#sourceAllActionsPanel"),
   sourceAllActionsSummary: $("#sourceAllActionsSummary"),
+  sourceBatchAuthorizationPanel: $("#sourceBatchAuthorizationPanel"),
+  sourceBatchAuthorizationSummary: $("#sourceBatchAuthorizationSummary"),
   sourceRefreshAllButton: $("#sourceRefreshAllButton"),
   sourcePrewarmAllButton: $("#sourcePrewarmAllButton"),
   sourcePrewarmAllOriginalButton: $("#sourcePrewarmAllOriginalButton"),
@@ -163,6 +165,7 @@ const elements = {
   sourceRefreshAllMutationAuthorizationButton: $("#sourceRefreshAllMutationAuthorizationButton"),
   sourceRequestPhotosWriteAuthorizationButton: $("#sourceRequestPhotosWriteAuthorizationButton"),
   sourceManagerPending: $("#sourceManagerPending"),
+  sourceManagerHistoryNotice: $("#sourceManagerHistoryNotice"),
   sourceManagerRefreshButton: $("#sourceManagerRefreshButton"),
   sourceManagerListSummary: $("#sourceManagerListSummary"),
   sourceManagerList: $("#sourceManagerList"),
@@ -1100,6 +1103,14 @@ const state = {
   sourceManagerBaseLevel: "workspace",
   sourceManagerHistoryRestoreFocus: true,
   sourceManagerOpening: false,
+  sourceManagerRestorable: false,
+  sourceManagerFocus: { kind: "control", id: "sourceConnectFolderButton" },
+  sourceManagerNavigationScrollTop: 0,
+  sourceManagerDetailScrollTop: 0,
+  sourceManagerAllActionsOpen: false,
+  sourceManagerBatchAuthorizationOpen: false,
+  sourceManagerHistoryNotice: "",
+  sourceManagerReturnDescriptor: null,
   storageReturnFocus: null,
   storageBaseLevel: "workspace",
   storageHistoryRestoreFocus: true,
@@ -2301,6 +2312,14 @@ function closeOverlays() {
   state.sourceManagerBaseLevel = "workspace";
   state.sourceManagerHistoryRestoreFocus = true;
   state.sourceManagerOpening = false;
+  state.sourceManagerRestorable = false;
+  state.sourceManagerFocus = { kind: "control", id: "sourceConnectFolderButton" };
+  state.sourceManagerNavigationScrollTop = 0;
+  state.sourceManagerDetailScrollTop = 0;
+  state.sourceManagerAllActionsOpen = false;
+  state.sourceManagerBatchAuthorizationOpen = false;
+  state.sourceManagerHistoryNotice = "";
+  state.sourceManagerReturnDescriptor = null;
   state.storageReturnFocus = null;
   state.storageBaseLevel = "workspace";
   state.storageHistoryRestoreFocus = true;
@@ -3190,7 +3209,10 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
             }
           : {}),
         ...(hasSourceManager
-          ? { sourceManagerBaseLevel: state.sourceManagerBaseLevel }
+          ? {
+              sourceManagerBaseLevel: state.sourceManagerBaseLevel,
+              ...currentSourceManagerHistoryContext(),
+            }
           : {}),
         ...(hasStorageMaintenance
           ? { storageBaseLevel: state.storageBaseLevel }
@@ -3268,6 +3290,7 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
     ? {
         ...(context || {}),
         sourceManagerBaseLevel: state.sourceManagerBaseLevel,
+        ...currentSourceManagerHistoryContext(),
       }
     : hasStorageMaintenance
     ? {
@@ -3930,7 +3953,11 @@ async function applyWorkspaceHistoryEntry(entry, { restoringReload = false } = {
         navigationLevel,
         context
       ) || checkpointWorkspaceHistoryAfterApply;
-      await reconcileSourceManagerFromWorkspaceHistory(target, navigationLevel, context);
+      checkpointWorkspaceHistoryAfterApply = await reconcileSourceManagerFromWorkspaceHistory(
+        target,
+        navigationLevel,
+        context
+      ) || checkpointWorkspaceHistoryAfterApply;
       await reconcileStorageMaintenanceFromWorkspaceHistory(target, navigationLevel, context);
       reconcileConfirmationFromWorkspaceHistory(target, navigationLevel, context);
       return;
@@ -4015,7 +4042,11 @@ async function applyWorkspaceHistoryEntry(entry, { restoringReload = false } = {
         navigationLevel,
         context
       ) || checkpointWorkspaceHistoryAfterApply;
-      await reconcileSourceManagerFromWorkspaceHistory("gallery", navigationLevel, context);
+      checkpointWorkspaceHistoryAfterApply = await reconcileSourceManagerFromWorkspaceHistory(
+        "gallery",
+        navigationLevel,
+        context
+      ) || checkpointWorkspaceHistoryAfterApply;
       await reconcileStorageMaintenanceFromWorkspaceHistory("gallery", navigationLevel, context);
       reconcileConfirmationFromWorkspaceHistory("gallery", navigationLevel, context);
       return;
@@ -4245,11 +4276,11 @@ async function applyWorkspaceHistoryEntry(entry, { restoringReload = false } = {
       activeEntry?.navigationLevel || "workspace",
       context
     ) || checkpointWorkspaceHistoryAfterApply;
-    await reconcileSourceManagerFromWorkspaceHistory(
+    checkpointWorkspaceHistoryAfterApply = await reconcileSourceManagerFromWorkspaceHistory(
       target,
       activeEntry?.navigationLevel || "workspace",
       context
-    );
+    ) || checkpointWorkspaceHistoryAfterApply;
     await reconcileStorageMaintenanceFromWorkspaceHistory(
       target,
       activeEntry?.navigationLevel || "workspace",
@@ -10392,6 +10423,7 @@ function replaceConfirmationHistoryWithBase(baseLevel, historyContext = {}) {
   } else if (baseLevel === "sourceManager" && elements.sourceManagerDialog.open) {
     navigationLevel = "sourceManager";
     context.sourceManagerBaseLevel = state.sourceManagerBaseLevel;
+    Object.assign(context, currentSourceManagerHistoryContext());
   } else if (baseLevel === "storageMaintenance" && elements.storageDialog.open) {
     navigationLevel = "storageMaintenance";
     context.storageBaseLevel = state.storageBaseLevel;
@@ -13663,6 +13695,287 @@ function sourceManagerSelectedSource() {
   return sources.find((source) => source.id === state.sourceManagement.selectedSourceID) || null;
 }
 
+const SOURCE_MANAGER_HISTORY_CONTROL_IDS = new Set([
+  "sourceManagerCloseButton",
+  "sourceConnectFolderButton",
+  "sourceConnectPhotosButton",
+  "sourceAllActionsSummary",
+  "sourceRefreshAllButton",
+  "sourcePrewarmAllButton",
+  "sourcePrewarmAllOriginalButton",
+  "sourceBatchAuthorizationSummary",
+  "sourceReauthorizeAllButton",
+  "sourceRefreshAllMutationAuthorizationButton",
+  "sourceRequestPhotosWriteAuthorizationButton",
+  "sourceManagerRefreshButton",
+]);
+const SOURCE_MANAGER_HISTORY_RETURN_CONTROL_IDS = new Set([
+  "sourceManagerButton",
+  "sourcePrewarmStatusButton",
+  "emptyOpenSourceManagerButton",
+  "emptySourceRecoveryButton",
+  "sourceAllActionsButton",
+  "sourceActionsOpenManagerButton",
+  "sidebarConnectFolderButton",
+  "toolbarConnectFolderButton",
+  "sidebarConnectPhotosButton",
+  "emptyConnectFolderButton",
+  "emptyConnectPhotosButton",
+  "commandButton",
+]);
+const SOURCE_MANAGER_HISTORY_ACTIONS = new Set([
+  "syncPhotos",
+  "prewarmThumbnails",
+  "prewarmOriginalAspect",
+  "fullRepair",
+  "requestPhotosWriteAuthorization",
+  "delete",
+  "rebindPhotos",
+  "reauthorize",
+  "openPhotosPrivacySettings",
+  "rescan",
+  "refreshFolderMutationAuthorization",
+  "cancelPrewarm",
+]);
+
+function normalizedSourceManagerHistoryFocus(value) {
+  if (!value || typeof value !== "object") {
+    return { kind: "control", id: "sourceConnectFolderButton" };
+  }
+  if (value.kind === "control" && SOURCE_MANAGER_HISTORY_CONTROL_IDS.has(value.id)) {
+    return { kind: "control", id: value.id };
+  }
+  const sourceID = galleryHistoryIdentifier(value.sourceID);
+  if (value.kind === "source" && sourceID) return { kind: "source", sourceID };
+  if (value.kind === "view" && sourceID) return { kind: "view", sourceID };
+  if (["action", "pending"].includes(value.kind)
+    && sourceID
+    && SOURCE_MANAGER_HISTORY_ACTIONS.has(value.action)) {
+    return { kind: value.kind, sourceID, action: value.action };
+  }
+  return { kind: "control", id: "sourceConnectFolderButton" };
+}
+
+function captureSourceManagerHistoryFocus() {
+  if (!elements.sourceManagerDialog.open) return;
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement) || !elements.sourceManagerDialog.contains(active)) return;
+  if (SOURCE_MANAGER_HISTORY_CONTROL_IDS.has(active.id)) {
+    state.sourceManagerFocus = { kind: "control", id: active.id };
+    return;
+  }
+  const sourceRow = active.closest("[data-source-manager-select]");
+  if (sourceRow) {
+    state.sourceManagerFocus = {
+      kind: "source",
+      sourceID: galleryHistoryIdentifier(sourceRow.dataset.sourceManagerSelect),
+    };
+    return;
+  }
+  const view = active.closest("[data-source-manager-view]");
+  if (view) {
+    state.sourceManagerFocus = {
+      kind: "view",
+      sourceID: galleryHistoryIdentifier(view.dataset.sourceManagerView),
+    };
+    return;
+  }
+  const action = active.closest("[data-source-action][data-source-id]");
+  if (action && SOURCE_MANAGER_HISTORY_ACTIONS.has(action.dataset.sourceAction)) {
+    state.sourceManagerFocus = {
+      kind: "action",
+      sourceID: galleryHistoryIdentifier(action.dataset.sourceId),
+      action: action.dataset.sourceAction,
+    };
+    return;
+  }
+  const pending = active.closest("[data-source-pending-action][data-source-id]");
+  if (pending && SOURCE_MANAGER_HISTORY_ACTIONS.has(pending.dataset.sourcePendingAction)) {
+    state.sourceManagerFocus = {
+      kind: "pending",
+      sourceID: galleryHistoryIdentifier(pending.dataset.sourceId),
+      action: pending.dataset.sourcePendingAction,
+    };
+  }
+}
+
+function captureSourceManagerLayout() {
+  captureSourceManagerHistoryFocus();
+  const navigation = elements.sourceManagerList.querySelector(".source-manager-source-list");
+  const detail = elements.sourceManagerList.querySelector(".source-manager-detail");
+  if (navigation) state.sourceManagerNavigationScrollTop = navigation.scrollTop;
+  if (detail) state.sourceManagerDetailScrollTop = detail.scrollTop;
+  state.sourceManagerAllActionsOpen = elements.sourceAllActionsPanel.open;
+  state.sourceManagerBatchAuthorizationOpen = elements.sourceBatchAuthorizationPanel.open;
+}
+
+function sourceManagerReturnFocusDescriptor(element) {
+  if (!(element instanceof HTMLElement)) return null;
+  if (SOURCE_MANAGER_HISTORY_RETURN_CONTROL_IDS.has(element.id)) {
+    return { element, controlID: element.id, sourceID: null };
+  }
+  const source = element.closest("[data-source-id]");
+  const sourceID = galleryHistoryIdentifier(source?.dataset.sourceId);
+  return sourceID ? { element, controlID: null, sourceID } : null;
+}
+
+function resolveSourceManagerReturnFocus() {
+  const descriptor = state.sourceManagerReturnDescriptor;
+  if (descriptor?.element?.isConnected) return descriptor.element;
+  if (descriptor?.sourceID) {
+    const source = elements.sourceList.querySelector(
+      `[data-source-id="${CSS.escape(descriptor.sourceID)}"]`
+    );
+    if (source) return source;
+  }
+  if (descriptor?.controlID && SOURCE_MANAGER_HISTORY_RETURN_CONTROL_IDS.has(
+    descriptor.controlID
+  )) {
+    const control = document.getElementById(descriptor.controlID);
+    if (control instanceof HTMLElement && control.offsetParent !== null && !control.disabled) {
+      return control;
+    }
+  }
+  return elements.sourceManagerButton;
+}
+
+function currentSourceManagerHistoryContext() {
+  if (elements.sourceManagerDialog.open) captureSourceManagerLayout();
+  const descriptor = state.sourceManagerReturnDescriptor;
+  return {
+    sourceManagerSelectedSourceID: galleryHistoryIdentifier(
+      state.sourceManagement.selectedSourceID
+    ),
+    sourceManagerAllActionsOpen: state.sourceManagerAllActionsOpen === true,
+    sourceManagerBatchAuthorizationOpen:
+      state.sourceManagerAllActionsOpen === true
+      && state.sourceManagerBatchAuthorizationOpen === true,
+    sourceManagerNavigationScrollTop: workspaceHistoryFiniteNumber(
+      state.sourceManagerNavigationScrollTop
+    ),
+    sourceManagerDetailScrollTop: workspaceHistoryFiniteNumber(
+      state.sourceManagerDetailScrollTop
+    ),
+    sourceManagerFocus: normalizedSourceManagerHistoryFocus(state.sourceManagerFocus),
+    sourceManagerReturnControlID: SOURCE_MANAGER_HISTORY_RETURN_CONTROL_IDS.has(
+      descriptor?.controlID
+    ) ? descriptor.controlID : null,
+    sourceManagerReturnSourceID: galleryHistoryIdentifier(descriptor?.sourceID),
+  };
+}
+
+function renderSourceManagerHistoryNotice() {
+  elements.sourceManagerHistoryNotice.textContent = state.sourceManagerHistoryNotice;
+  elements.sourceManagerHistoryNotice.classList.toggle(
+    "hidden",
+    !state.sourceManagerHistoryNotice
+  );
+}
+
+function applySourceManagerHistoryContext(context = {}) {
+  const sources = state.sourceManagement.snapshot?.sources || [];
+  const sourceIDs = new Set(sources.map((source) => source.id));
+  const savedSourceID = galleryHistoryIdentifier(context.sourceManagerSelectedSourceID);
+  const returnSourceID = galleryHistoryIdentifier(context.sourceManagerReturnSourceID);
+  const returnControlID = SOURCE_MANAGER_HISTORY_RETURN_CONTROL_IDS.has(
+    context.sourceManagerReturnControlID
+  ) ? context.sourceManagerReturnControlID : null;
+  const notes = [];
+  if (savedSourceID && sourceIDs.has(savedSourceID)) {
+    state.sourceManagement.selectedSourceID = savedSourceID;
+  } else if (savedSourceID) {
+    state.sourceManagement.selectedSourceID = sources[0]?.id || null;
+    notes.push("刷新前选择的来源当前不可用，已切换到可用来源。");
+  }
+  if (returnSourceID && !sourceIDs.has(returnSourceID)) {
+    notes.push("刷新前的返回来源当前不可用，关闭后将回到来源管理入口。");
+  }
+  let focus = normalizedSourceManagerHistoryFocus(context.sourceManagerFocus);
+  if (focus.sourceID && !sourceIDs.has(focus.sourceID)) {
+    focus = { kind: "control", id: "sourceConnectFolderButton" };
+    notes.push("刷新前的焦点来源当前不可用，已恢复到安全入口。");
+  }
+  state.sourceManagerFocus = focus;
+  state.sourceManagerAllActionsOpen = context.sourceManagerAllActionsOpen === true;
+  state.sourceManagerBatchAuthorizationOpen = state.sourceManagerAllActionsOpen
+    && context.sourceManagerBatchAuthorizationOpen === true;
+  state.sourceManagerNavigationScrollTop = workspaceHistoryFiniteNumber(
+    context.sourceManagerNavigationScrollTop
+  );
+  state.sourceManagerDetailScrollTop = workspaceHistoryFiniteNumber(
+    context.sourceManagerDetailScrollTop
+  );
+  state.sourceManagerReturnDescriptor = {
+    element: null,
+    controlID: returnControlID,
+    sourceID: returnSourceID && sourceIDs.has(returnSourceID) ? returnSourceID : null,
+  };
+  state.sourceManagerHistoryNotice = notes.join(" ");
+  renderSourceManagerHistoryNotice();
+}
+
+function sourceManagerHistoryFocusTarget() {
+  const focus = normalizedSourceManagerHistoryFocus(state.sourceManagerFocus);
+  if (focus.kind === "control") return document.getElementById(focus.id);
+  if (focus.kind === "source") {
+    return elements.sourceManagerList.querySelector(
+      `[data-source-manager-select="${CSS.escape(focus.sourceID)}"]`
+    );
+  }
+  if (focus.kind === "view") {
+    return elements.sourceManagerList.querySelector(
+      `[data-source-manager-view="${CSS.escape(focus.sourceID)}"]`
+    );
+  }
+  if (focus.kind === "action") {
+    return elements.sourceManagerList.querySelector(
+      `[data-source-id="${CSS.escape(focus.sourceID)}"]`
+      + `[data-source-action="${CSS.escape(focus.action)}"]`
+    );
+  }
+  return elements.sourceManagerPending.querySelector(
+    `[data-source-id="${CSS.escape(focus.sourceID)}"]`
+    + `[data-source-pending-action="${CSS.escape(focus.action)}"]`
+  );
+}
+
+async function restoreSourceManagerLayoutFromHistory() {
+  await waitForWorkspaceLayout();
+  elements.sourceAllActionsPanel.open = state.sourceManagerAllActionsOpen;
+  elements.sourceBatchAuthorizationPanel.open = state.sourceManagerBatchAuthorizationOpen;
+  const navigation = elements.sourceManagerList.querySelector(".source-manager-source-list");
+  const detail = elements.sourceManagerList.querySelector(".source-manager-detail");
+  if (navigation) {
+    navigation.scrollTop = Math.min(
+      state.sourceManagerNavigationScrollTop,
+      Math.max(0, navigation.scrollHeight - navigation.clientHeight)
+    );
+  }
+  if (detail) {
+    detail.scrollTop = Math.min(
+      state.sourceManagerDetailScrollTop,
+      Math.max(0, detail.scrollHeight - detail.clientHeight)
+    );
+  }
+  let target = sourceManagerHistoryFocusTarget();
+  if (!(target instanceof HTMLElement)
+    || target.disabled
+    || !elements.sourceManagerDialog.contains(target)
+    || target.offsetParent === null) {
+    target = elements.sourceManagerList.querySelector(
+      `[data-source-manager-select="${CSS.escape(
+        state.sourceManagement.selectedSourceID || ""
+      )}"]`
+    ) || (elements.sourceConnectFolderButton.disabled
+      ? elements.sourceManagerCloseButton
+      : elements.sourceConnectFolderButton);
+  }
+  target.focus({ preventScroll: true });
+  captureSourceManagerHistoryFocus();
+  if (navigation) navigation.scrollTop = state.sourceManagerNavigationScrollTop;
+  if (detail) detail.scrollTop = state.sourceManagerDetailScrollTop;
+}
+
 function selectSourceManagerSource(sourceID, { focus = false, reveal = false } = {}) {
   const sources = state.sourceManagement.snapshot?.sources || [];
   if (!sources.some((source) => source.id === sourceID)) return false;
@@ -13675,6 +13988,7 @@ function selectSourceManagerSource(sourceID, { focus = false, reveal = false } =
     if (reveal) row?.scrollIntoView({ block: "nearest", inline: "nearest" });
     row?.focus({ preventScroll: true });
   }
+  scheduleWorkspaceHistoryCheckpoint();
   return true;
 }
 
@@ -14421,6 +14735,7 @@ function renderSourceManagement({ preserveContent = false, reconcileContent = tr
     : "已有 Apple Photos 来源；请在对应来源上恢复或重新绑定";
   elements.sourceManagerRefreshButton.disabled = manager.loading;
   syncSourceManagerPending(activeRequest);
+  renderSourceManagerHistoryNotice();
   renderSourcePrewarmStatus();
 
   const preservedSelectedSource = sourceManagerSelectedSource();
@@ -14598,6 +14913,7 @@ async function openSourceManager({
   baseLevel = null,
   refresh = true,
   returnFocus = null,
+  preserveState = false,
 } = {}) {
   if (!state.online || state.sourceManagerOpening) return;
   if (elements.sourceManagerDialog.open) {
@@ -14612,6 +14928,17 @@ async function openSourceManager({
   try {
     state.sourceManagerReturnFocus = returnFocus
       || (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    if (!preserveState) {
+      state.sourceManagerReturnDescriptor = sourceManagerReturnFocusDescriptor(
+        state.sourceManagerReturnFocus
+      );
+      state.sourceManagerFocus = { kind: "control", id: "sourceConnectFolderButton" };
+      state.sourceManagerNavigationScrollTop = 0;
+      state.sourceManagerDetailScrollTop = 0;
+      state.sourceManagerAllActionsOpen = false;
+      state.sourceManagerBatchAuthorizationOpen = false;
+      state.sourceManagerHistoryNotice = "";
+    }
     const current = activeWorkspaceHistoryEntry();
     state.sourceManagerBaseLevel = baseLevel
       || workspaceNavigationBaseLevel(
@@ -14619,7 +14946,7 @@ async function openSourceManager({
         current?.context || {}
       );
     if (selectedSourceID) state.sourceManagement.selectedSourceID = selectedSourceID;
-    closeSourceManagerAllActions();
+    if (!preserveState) closeSourceManagerAllActions();
     elements.sourceManagerDialog.showModal();
     if (historyMode !== "none") {
       const route = visibleWorkspaceRoute();
@@ -14637,6 +14964,8 @@ async function openSourceManager({
         ? elements.sourceManagerCloseButton
         : elements.sourceConnectFolderButton);
     }
+    state.sourceManagerRestorable = true;
+    scheduleWorkspaceHistoryCheckpoint();
   } finally {
     state.sourceManagerOpening = false;
   }
@@ -14648,7 +14977,11 @@ async function openSourceManagerForAction(action) {
   requestSourceManagementAction(action, null);
 }
 
-function closeSourceManager({ restoreFocus = true, checkpoint = true } = {}) {
+function closeSourceManager({
+  restoreFocus = true,
+  checkpoint = true,
+  preserveState = false,
+} = {}) {
   if (!elements.sourceManagerDialog.open) return;
   if (elements.confirmDialog.open && state.confirmationBaseLevel === "sourceManager") {
     closeConfirmation({ restoreFocus: false, checkpoint: false, preserveState: false });
@@ -14657,11 +14990,15 @@ function closeSourceManager({ restoreFocus = true, checkpoint = true } = {}) {
   state.sourceManagement.pollTimer = null;
   state.sourceManagement.requestGeneration += 1;
   state.sourceManagement.loading = false;
+  captureSourceManagerLayout();
   const baseLevel = state.sourceManagerBaseLevel;
-  const returnFocus = state.sourceManagerReturnFocus;
-  state.sourceManagerReturnFocus = null;
-  state.sourceManagerBaseLevel = "workspace";
-  closeSourceManagerAllActions();
+  const returnFocus = resolveSourceManagerReturnFocus();
+  if (!preserveState) {
+    state.sourceManagerReturnFocus = null;
+    state.sourceManagerReturnDescriptor = null;
+  }
+  state.sourceManagerBaseLevel = preserveState ? baseLevel : "workspace";
+  if (!preserveState) closeSourceManagerAllActions();
   if (elements.sourceManagerDialog.open) elements.sourceManagerDialog.close();
   if (restoreFocus) {
     restoreOverlayFocus(stableReturnFocusTarget(returnFocus, elements.sourceManagerButton));
@@ -14669,6 +15006,16 @@ function closeSourceManager({ restoreFocus = true, checkpoint = true } = {}) {
   if (checkpoint) replaceSourceManagerHistoryWithBase(baseLevel);
   renderSourcePrewarmStatus();
   scheduleSourceManagementPoll();
+  if (!preserveState) {
+    state.sourceManagerRestorable = false;
+    state.sourceManagerFocus = { kind: "control", id: "sourceConnectFolderButton" };
+    state.sourceManagerNavigationScrollTop = 0;
+    state.sourceManagerDetailScrollTop = 0;
+    state.sourceManagerAllActionsOpen = false;
+    state.sourceManagerBatchAuthorizationOpen = false;
+    state.sourceManagerHistoryNotice = "";
+    renderSourceManagerHistoryNotice();
+  }
 }
 
 function returnFromSourceManager({ restoreFocus = true } = {}) {
@@ -14707,18 +15054,37 @@ async function reconcileSourceManagerFromWorkspaceHistory(
       && context.confirmationBaseLevel === "sourceManager")
   ) && route === visibleWorkspaceRoute();
   if (shouldOpen && !state.online) return;
-  if (shouldOpen && !elements.sourceManagerDialog.open) {
+  if (shouldOpen && !state.sourceManagerRestorable) {
+    applySourceManagerHistoryContext(context);
     await openSourceManager({
-      focus: navigationLevel === "sourceManager",
+      focus: false,
       historyMode: "none",
       baseLevel: sourceManagerBaseLevelFromHistory(context),
       refresh: false,
+      preserveState: true,
     });
+    if (navigationLevel === "sourceManager") {
+      await restoreSourceManagerLayoutFromHistory();
+    }
+    return true;
+  }
+  if (shouldOpen && !elements.sourceManagerDialog.open) {
+    await openSourceManager({
+      focus: false,
+      historyMode: "none",
+      baseLevel: sourceManagerBaseLevelFromHistory(context),
+      refresh: false,
+      preserveState: true,
+    });
+    if (navigationLevel === "sourceManager") {
+      await restoreSourceManagerLayoutFromHistory();
+    }
   } else if (!shouldOpen && elements.sourceManagerDialog.open) {
     const restoreFocus = state.sourceManagerHistoryRestoreFocus;
-    closeSourceManager({ restoreFocus, checkpoint: false });
+    closeSourceManager({ restoreFocus, checkpoint: false, preserveState: true });
     state.sourceManagerHistoryRestoreFocus = true;
   }
+  return false;
 }
 
 async function submitSourceManagementAction(action, sourceID = null) {
@@ -38525,6 +38891,7 @@ function resetWorkspaceSessionState() {
   clearTimeout(state.sourceManagement.pollTimer);
   state.sourceManagement.pollTimer = null;
   state.sourceManagement.snapshot = null;
+  state.sourceManagement.selectedSourceID = null;
   state.sourceManagement.loading = false;
   state.sourceManagement.submitting = false;
   state.sourceManagement.requestGeneration += 1;
@@ -38576,6 +38943,14 @@ function resetWorkspaceSessionState() {
   state.sourceManagerBaseLevel = "workspace";
   state.sourceManagerHistoryRestoreFocus = true;
   state.sourceManagerOpening = false;
+  state.sourceManagerRestorable = false;
+  state.sourceManagerFocus = { kind: "control", id: "sourceConnectFolderButton" };
+  state.sourceManagerNavigationScrollTop = 0;
+  state.sourceManagerDetailScrollTop = 0;
+  state.sourceManagerAllActionsOpen = false;
+  state.sourceManagerBatchAuthorizationOpen = false;
+  state.sourceManagerHistoryNotice = "";
+  state.sourceManagerReturnDescriptor = null;
   state.storageReturnFocus = null;
   state.storageBaseLevel = "workspace";
   state.storageHistoryRestoreFocus = true;
@@ -43528,6 +43903,34 @@ function bindEvents() {
     }
     const button = event.target.closest("[data-source-action][data-source-id]");
     if (button) requestSourceManagementAction(button.dataset.sourceAction, button.dataset.sourceId);
+  });
+  elements.sourceManagerDialog.addEventListener("focusin", () => {
+    if (state.workspaceNavigation.applyingHistory
+      || state.workspaceNavigation.pendingRestoreEntry) return;
+    captureSourceManagerHistoryFocus();
+    scheduleWorkspaceHistoryCheckpoint();
+  });
+  elements.sourceManagerList.addEventListener("scroll", (event) => {
+    if (event.target.classList?.contains("source-manager-source-list")) {
+      state.sourceManagerNavigationScrollTop = event.target.scrollTop;
+    } else if (event.target.classList?.contains("source-manager-detail")) {
+      state.sourceManagerDetailScrollTop = event.target.scrollTop;
+    } else {
+      return;
+    }
+    scheduleWorkspaceHistoryCheckpoint();
+  }, true);
+  elements.sourceAllActionsPanel.addEventListener("toggle", () => {
+    state.sourceManagerAllActionsOpen = elements.sourceAllActionsPanel.open;
+    if (!state.sourceManagerAllActionsOpen) {
+      state.sourceManagerBatchAuthorizationOpen = false;
+    }
+    scheduleWorkspaceHistoryCheckpoint();
+  });
+  elements.sourceBatchAuthorizationPanel.addEventListener("toggle", () => {
+    state.sourceManagerBatchAuthorizationOpen = elements.sourceAllActionsPanel.open
+      && elements.sourceBatchAuthorizationPanel.open;
+    scheduleWorkspaceHistoryCheckpoint();
   });
   elements.sourceManagerDialog.addEventListener("cancel", (event) => {
     event.preventDefault();

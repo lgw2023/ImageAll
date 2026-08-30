@@ -1166,6 +1166,143 @@ def main():
             "tabStops": 1,
         }, home_state
         assert source_management_reads == reads_before_long_list + 1
+
+        page.keyboard.press("End")
+        page.locator("#sourceAllActionsSummary").click()
+        page.locator("#sourceBatchAuthorizationSummary").click()
+        page.evaluate(
+            f"""() => {{
+              const navigation = document.querySelector('.source-manager-source-list');
+              const detail = document.querySelector('.source-manager-detail');
+              navigation.scrollTop = navigation.scrollHeight;
+              detail.scrollTop = Math.min(
+                120,
+                Math.max(0, detail.scrollHeight - detail.clientHeight)
+              );
+              detail.querySelector(
+                '[data-source-action="rescan"][data-source-id="{long_source_ids[-1]}"]'
+              ).focus({{ preventScroll: true }});
+            }}"""
+        )
+        page.wait_for_timeout(120)
+        saved_manager_context = page.evaluate(
+            """() => history.state.imageAllWorkspace.context"""
+        )
+        assert saved_manager_context["sourceManagerSelectedSourceID"] == long_source_ids[-1]
+        assert saved_manager_context["sourceManagerAllActionsOpen"] is True
+        assert saved_manager_context["sourceManagerBatchAuthorizationOpen"] is True
+        assert saved_manager_context["sourceManagerNavigationScrollTop"] > 0
+        assert saved_manager_context["sourceManagerDetailScrollTop"] > 0
+        assert saved_manager_context["sourceManagerFocus"] == {
+            "kind": "action",
+            "sourceID": long_source_ids[-1],
+            "action": "rescan",
+        }
+        serialized_manager_context = json.dumps(saved_manager_context, ensure_ascii=False)
+        assert "Synthetic Photos" not in serialized_manager_context
+        assert "Synthetic Archive" not in serialized_manager_context
+
+        reads_before_reload = source_management_reads
+        page.reload(wait_until="networkidle")
+        page.locator("#sourceManagerDialog[open]").wait_for()
+        page.wait_for_function(
+            f"""() => document.querySelector(
+              '[data-source-manager-select="{long_source_ids[-1]}"]'
+            )?.getAttribute('aria-selected') === 'true'"""
+        )
+        restored_history_context = page.evaluate(
+            f"""() => {{
+              const navigation = document.querySelector('.source-manager-source-list');
+              const detail = document.querySelector('.source-manager-detail');
+              return {{
+                selectedID: state.sourceManagement.selectedSourceID,
+                allActionsOpen: document.querySelector('#sourceAllActionsPanel').open,
+                batchAuthorizationOpen:
+                  document.querySelector('#sourceBatchAuthorizationPanel').open,
+                navigationScrollTop: navigation.scrollTop,
+                detailScrollTop: detail.scrollTop,
+                restoredDetailScrollHeight: detail.scrollHeight,
+                restoredDetailClientHeight: detail.clientHeight,
+                focusAction: document.activeElement?.dataset.sourceAction || null,
+                focusSourceID: document.activeElement?.dataset.sourceId || null,
+                noticeHidden:
+                  document.querySelector('#sourceManagerHistoryNotice').classList.contains('hidden'),
+              }};
+            }}"""
+        )
+        assert restored_history_context["selectedID"] == long_source_ids[-1]
+        assert restored_history_context["allActionsOpen"] is True
+        assert restored_history_context["batchAuthorizationOpen"] is True
+        assert restored_history_context["navigationScrollTop"] == saved_manager_context[
+            "sourceManagerNavigationScrollTop"
+        ]
+        assert restored_history_context["detailScrollTop"] == min(
+            saved_manager_context["sourceManagerDetailScrollTop"],
+            max(
+                0,
+                restored_history_context["restoredDetailScrollHeight"]
+                - restored_history_context["restoredDetailClientHeight"],
+            ),
+        ), restored_history_context
+        assert restored_history_context["focusAction"] == "rescan"
+        assert restored_history_context["focusSourceID"] == long_source_ids[-1]
+        assert restored_history_context["noticeHidden"] is True
+        assert source_management_reads == reads_before_reload + 1
+        page.screenshot(
+            path="/tmp/imageall-source-manager-history-restored.png",
+            full_page=True,
+        )
+
+        invalid_source_id = "99999999-9999-4999-8999-999999999999"
+        page.evaluate(
+            f"""() => {{
+              const next = structuredClone(history.state);
+              const context = next.imageAllWorkspace.context;
+              context.sourceManagerSelectedSourceID = '{invalid_source_id}';
+              context.sourceManagerReturnSourceID = '{invalid_source_id}';
+              context.sourceManagerReturnControlID = 'sourceManagerButton';
+              context.sourceManagerFocus = {{
+                kind: 'action',
+                sourceID: '{invalid_source_id}',
+                action: 'delete',
+              }};
+              history.replaceState(next, '', location.href);
+            }}"""
+        )
+        reads_before_invalid_reload = source_management_reads
+        page.reload(wait_until="networkidle")
+        page.locator("#sourceManagerDialog[open]").wait_for()
+        page.wait_for_function(
+            """() => !document.querySelector('#sourceManagerHistoryNotice')
+              .classList.contains('hidden')"""
+        )
+        invalid_history_state = page.evaluate(
+            f"""() => {{
+              const context = history.state.imageAllWorkspace.context;
+              return {{
+                selectedID: state.sourceManagement.selectedSourceID,
+                notice: document.querySelector('#sourceManagerHistoryNotice').textContent,
+                canonical: JSON.stringify(context),
+              }};
+            }}"""
+        )
+        assert invalid_history_state["selectedID"] == PHOTOS_SOURCE_ID
+        assert "当前不可用" in invalid_history_state["notice"]
+        assert invalid_source_id not in invalid_history_state["canonical"]
+        assert source_management_reads == reads_before_invalid_reload + 1
+
+        reads_before_history_navigation = source_management_reads
+        page.go_back(wait_until="networkidle")
+        page.wait_for_function(
+            """() => !document.querySelector('#sourceManagerDialog').open
+              && document.activeElement?.id === 'sourceManagerButton'"""
+        )
+        page.go_forward(wait_until="networkidle")
+        page.locator("#sourceManagerDialog[open]").wait_for()
+        page.wait_for_function(
+            f"""() => state.sourceManagement.selectedSourceID === '{PHOTOS_SOURCE_ID}'"""
+        )
+        assert source_management_reads == reads_before_history_navigation
         page.screenshot(
             path="/tmp/imageall-source-manager-state-continuity.png",
             full_page=True,

@@ -2747,7 +2747,9 @@ final class RemoteHTTPServerTests: XCTestCase {
             "sourceConnectPhotosButton",
             "sourceAllActionsPanel",
             "sourceAllActionsSummary",
+            "sourceBatchAuthorizationSummary",
             "sourceManagerPending",
+            "sourceManagerHistoryNotice",
             "sourceManagerListSummary",
             "sourceManagerList",
             "emptySourceRecoveryButton",
@@ -3639,9 +3641,16 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function closeSourceManagerAllActions"))
         XCTAssertTrue(script.contains("viewButton.dataset.sourceManagerView = source.id"))
         XCTAssertTrue(script.contains("source-manager-action-group-${group}"))
+        XCTAssertTrue(script.contains("function currentSourceManagerHistoryContext("))
+        XCTAssertTrue(script.contains("function applySourceManagerHistoryContext("))
+        XCTAssertTrue(script.contains("async function restoreSourceManagerLayoutFromHistory("))
+        XCTAssertTrue(script.contains("SOURCE_MANAGER_HISTORY_CONTROL_IDS"))
+        XCTAssertTrue(script.contains("SOURCE_MANAGER_HISTORY_RETURN_CONTROL_IDS"))
+        XCTAssertTrue(script.contains("...currentSourceManagerHistoryContext()"))
         XCTAssertTrue(stylesheet.contains(".source-manager-source-list"))
         XCTAssertTrue(stylesheet.contains(".source-manager-detail"))
         XCTAssertTrue(stylesheet.contains(".source-manager-all-actions-menu"))
+        XCTAssertTrue(stylesheet.contains(".source-manager-history-notice"))
         XCTAssertTrue(script.contains("function syncCommandItem("))
         XCTAssertTrue(script.contains("function commandItemFingerprint("))
         XCTAssertTrue(script.contains("function syncCommandPaletteAccessibility("))

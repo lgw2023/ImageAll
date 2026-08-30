@@ -2674,7 +2674,7 @@
               <button id="sourcePrewarmAllOriginalButton" class="write-action" type="button">缓存所有来源的原比例缩略图</button>
             </div>
             <details id="sourceBatchAuthorizationPanel" class="source-manager-batch-permissions">
-              <summary>批量处理权限</summary>
+              <summary id="sourceBatchAuthorizationSummary">批量处理权限</summary>
               <div class="source-manager-batch-permission-actions">
                 <button id="sourceReauthorizeAllButton" class="write-action" type="button">依次重新授权需要访问权限的来源（0）…</button>
                 <button id="sourceRefreshAllMutationAuthorizationButton" class="write-action" type="button">依次更新全部文件夹回收权限（0）…</button>
@@ -2687,6 +2687,7 @@
         </details>
       </div>
       <div id="sourceManagerPending" class="source-manager-pending hidden" role="status"></div>
+      <p id="sourceManagerHistoryNotice" class="source-manager-history-notice hidden" role="status"></p>
       <section class="source-manager-section" aria-labelledby="sourceManagerListTitle">
         <div class="source-manager-section-heading">
           <div>

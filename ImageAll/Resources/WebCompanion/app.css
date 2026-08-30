@@ -4535,7 +4535,7 @@ html.split-resizing * {
 
 .source-manager-shell {
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
   max-height: min(780px, calc(100vh - 32px));
 }
 
@@ -4726,6 +4726,17 @@ html.split-resizing * {
 .source-manager-pending > small {
   color: var(--secondary);
   font-variant-numeric: tabular-nums;
+}
+
+.source-manager-history-notice {
+  margin: 10px 22px 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--orange) 24%, var(--separator));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--orange) 7%, var(--window));
+  color: var(--secondary);
+  font-size: 10px;
+  line-height: 1.45;
 }
 
 .source-prewarm-progress {
