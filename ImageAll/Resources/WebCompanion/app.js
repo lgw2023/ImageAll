@@ -3220,6 +3220,7 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
     ? {
         ...(context || {}),
         trainingSetupBaseLevel: state.training.setup.baseLevel,
+        ...currentTrainingSetupHistoryContext(),
       }
     : hasTagSuggestion
     ? {
@@ -3490,6 +3491,7 @@ function currentWorkspaceHistoryContext(route = visibleWorkspaceRoute()) {
   case "training":
     captureTrainingRunListScroll();
     return {
+      galleryContext: currentGalleryHistoryContext(),
       ...(state.training.returnTarget?.workspace === "review"
         ? { returnToReview: { ...state.training.returnTarget } }
         : {}),
@@ -3815,7 +3817,7 @@ async function applyWorkspaceHistoryEntry(entry) {
   const activeEntry = entry?.workspaceGeneration === state.workspaceGeneration ? entry : null;
   const target = activeEntry?.route || "gallery";
   const context = activeEntry?.context || {};
-  let checkpointReviewHistoryAfterApply = false;
+  let checkpointWorkspaceHistoryAfterApply = false;
   state.workspaceNavigation.applyingHistory = true;
   try {
     const current = visibleWorkspaceRoute();
@@ -3841,7 +3843,7 @@ async function applyWorkspaceHistoryEntry(entry) {
       reconcileFilterPopoverFromWorkspaceHistory(target, navigationLevel, context);
       reconcileLayoutMenuFromWorkspaceHistory(target, navigationLevel, context);
       reconcileActionMenuFromWorkspaceHistory(target, navigationLevel, context);
-      checkpointReviewHistoryAfterApply = closingReviewSourceMenu;
+      checkpointWorkspaceHistoryAfterApply = closingReviewSourceMenu;
       reconcileContextMenuFromWorkspaceHistory(target, navigationLevel, context);
       await reconcileCommandPaletteFromWorkspaceHistory(
         target,
@@ -3877,7 +3879,11 @@ async function applyWorkspaceHistoryEntry(entry) {
       );
       reconcileSlimmingSetupFromWorkspaceHistory(target, navigationLevel, context);
       reconcileSlimmingThresholdFromWorkspaceHistory(target, navigationLevel, context);
-      reconcileTrainingSetupFromWorkspaceHistory(target, navigationLevel, context);
+      checkpointWorkspaceHistoryAfterApply ||= await reconcileTrainingSetupFromWorkspaceHistory(
+        target,
+        navigationLevel,
+        context
+      );
       reconcileTagSuggestionFromWorkspaceHistory(target, navigationLevel, context);
       reconcileNewTagFromWorkspaceHistory(target, navigationLevel, context);
       reconcileTagManagerFromWorkspaceHistory(target, navigationLevel, context);
@@ -3942,7 +3948,11 @@ async function applyWorkspaceHistoryEntry(entry) {
       );
       reconcileSlimmingSetupFromWorkspaceHistory("gallery", navigationLevel, context);
       reconcileSlimmingThresholdFromWorkspaceHistory("gallery", navigationLevel, context);
-      reconcileTrainingSetupFromWorkspaceHistory("gallery", navigationLevel, context);
+      checkpointWorkspaceHistoryAfterApply ||= await reconcileTrainingSetupFromWorkspaceHistory(
+        "gallery",
+        navigationLevel,
+        context
+      );
       reconcileTagSuggestionFromWorkspaceHistory("gallery", navigationLevel, context);
       reconcileNewTagFromWorkspaceHistory("gallery", navigationLevel, context);
       reconcileTagManagerFromWorkspaceHistory("gallery", navigationLevel, context);
@@ -3998,7 +4008,7 @@ async function applyWorkspaceHistoryEntry(entry) {
         context.reviewGridScrollLeft
       );
       restoreLightboxFromHistory(context.reviewLightbox, "review");
-      checkpointReviewHistoryAfterApply = true;
+      checkpointWorkspaceHistoryAfterApply = true;
     } else if (target === "training") {
       if (["image", "video"].includes(context.trainingMediaKind)) {
         state.training.mediaKind = context.trainingMediaKind;
@@ -4152,7 +4162,7 @@ async function applyWorkspaceHistoryEntry(entry) {
       activeEntry?.navigationLevel || "workspace",
       context
     );
-    reconcileTrainingSetupFromWorkspaceHistory(
+    checkpointWorkspaceHistoryAfterApply ||= await reconcileTrainingSetupFromWorkspaceHistory(
       target,
       activeEntry?.navigationLevel || "workspace",
       context
@@ -4192,7 +4202,7 @@ async function applyWorkspaceHistoryEntry(entry) {
     }
   } finally {
     state.workspaceNavigation.applyingHistory = false;
-    if (checkpointReviewHistoryAfterApply) checkpointActiveWorkspaceHistory();
+    if (checkpointWorkspaceHistoryAfterApply) checkpointActiveWorkspaceHistory();
     const resolve = state.workspaceNavigation.pendingReturnResolve;
     state.workspaceNavigation.pendingReturnResolve = null;
     state.workspaceNavigation.pendingReturnPromise = null;
@@ -26446,6 +26456,116 @@ function trainingSetupBaseLevelFromHistory(context = {}) {
     : "workspace";
 }
 
+function trainingSetupScrollSurfaces() {
+  return {
+    methods: elements.trainingSetupDialog.querySelector(".training-setup-body > aside"),
+    configuration: elements.trainingSetupDialog.querySelector(".training-setup-body > main"),
+    tags: elements.trainingTagOptions,
+    scope: elements.trainingScopeOptions,
+  };
+}
+
+function currentTrainingSetupHistoryContext() {
+  const setup = state.training.setup;
+  const scroll = trainingSetupScrollSurfaces();
+  return {
+    trainingSetupMethod: setup.method,
+    trainingSetupTagIDs: [...setup.selectedTagIDs].slice(0, GALLERY_HISTORY_LOADED_LIMIT),
+    trainingSetupSourceIDs: [...setup.selectedSourceIDs]
+      .slice(0, GALLERY_HISTORY_LOADED_LIMIT),
+    trainingSetupScope: setup.scope,
+    trainingSetupMethodsScrollTop: scroll.methods?.scrollTop || 0,
+    trainingSetupConfigurationScrollTop: scroll.configuration?.scrollTop || 0,
+    trainingSetupTagsScrollTop: scroll.tags?.scrollTop || 0,
+    trainingSetupScopeScrollTop: scroll.scope?.scrollTop || 0,
+  };
+}
+
+function applyTrainingSetupHistoryContext(context = {}) {
+  const setup = state.training.setup;
+  if (!setup.snapshot) return false;
+  const methods = new Set(["featureKnn", "personalCentroid", "personalAdamW"]);
+  const requestedMethod = methods.has(context.trainingSetupMethod)
+    && setup.snapshot.methods?.some((item) => item.method === context.trainingSetupMethod)
+    ? context.trainingSetupMethod
+    : chooseInitialTrainingSetupMethod();
+  resetTrainingSetupSelection(requestedMethod);
+
+  const eligibleTagIDs = new Set(trainingSetupEligibleTags().map((tag) => tag.id));
+  const savedTagIDs = Array.isArray(context.trainingSetupTagIDs)
+    ? context.trainingSetupTagIDs
+      .map(galleryHistoryIdentifier)
+      .filter(Boolean)
+      .slice(0, GALLERY_HISTORY_LOADED_LIMIT)
+    : null;
+  if (savedTagIDs) {
+    const selectedTagIDs = [...new Set(savedTagIDs)]
+      .filter((tagID) => eligibleTagIDs.has(tagID));
+    setup.selectedTagIDs = new Set(
+      setup.method === "featureKnn" ? selectedTagIDs.slice(0, 1) : selectedTagIDs
+    );
+  }
+
+  if (setup.method === "featureKnn") {
+    const activeSourceIDs = new Set((setup.snapshot.sources || []).map((source) => source.id));
+    const savedSourceIDs = Array.isArray(context.trainingSetupSourceIDs)
+      ? context.trainingSetupSourceIDs
+        .map(galleryHistoryIdentifier)
+        .filter(Boolean)
+        .slice(0, GALLERY_HISTORY_LOADED_LIMIT)
+      : null;
+    if (savedSourceIDs) {
+      setup.selectedSourceIDs = new Set(
+        [...new Set(savedSourceIDs)].filter((sourceID) => activeSourceIDs.has(sourceID))
+      );
+    }
+  } else if (["allSources", "currentSelection"].includes(context.trainingSetupScope)) {
+    setup.scope = context.trainingSetupScope;
+  }
+
+  const missingTagCount = savedTagIDs
+    ? new Set(savedTagIDs.filter((tagID) => !eligibleTagIDs.has(tagID))).size
+    : 0;
+  const activeSourceIDs = new Set((setup.snapshot.sources || []).map((source) => source.id));
+  const savedSourceIDs = Array.isArray(context.trainingSetupSourceIDs)
+    ? context.trainingSetupSourceIDs.map(galleryHistoryIdentifier).filter(Boolean)
+    : [];
+  const missingSourceCount = setup.method === "featureKnn"
+    ? new Set(savedSourceIDs.filter((sourceID) => !activeSourceIDs.has(sourceID))).size
+    : 0;
+  const notes = [];
+  if (context.trainingSetupMethod && requestedMethod !== context.trainingSetupMethod) {
+    notes.push("刷新前的训练方法当前不可用，已切换到可用方法。");
+  }
+  if (missingTagCount) notes.push(`${missingTagCount} 个历史标签当前不可用，已移除。`);
+  if (missingSourceCount) notes.push(`${missingSourceCount} 个历史来源当前不可用，已移除。`);
+  if (setup.scope === "currentSelection" && !state.selectedAssetIDs.size) {
+    notes.push("刷新前的图库选区当前不可用，请重新确认照片范围。");
+  }
+  setup.notice = notes.join(" ");
+  setup.tagSearchText = "";
+  elements.trainingTagSearch.value = "";
+  return true;
+}
+
+async function restoreTrainingSetupScrollFromHistory(context = {}) {
+  await waitForWorkspaceLayout();
+  const scroll = trainingSetupScrollSurfaces();
+  const targets = [
+    [scroll.methods, context.trainingSetupMethodsScrollTop],
+    [scroll.configuration, context.trainingSetupConfigurationScrollTop],
+    [scroll.tags, context.trainingSetupTagsScrollTop],
+    [scroll.scope, context.trainingSetupScopeScrollTop],
+  ];
+  for (const [surface, value] of targets) {
+    if (!surface) continue;
+    surface.scrollTop = Math.min(
+      workspaceHistoryScrollTop(value),
+      Math.max(0, surface.scrollHeight - surface.clientHeight)
+    );
+  }
+}
+
 function replaceTrainingSetupHistoryWithBase(baseLevel) {
   if (!state.workspaceNavigation.initialized
     || elements.appView.classList.contains("hidden")) return;
@@ -26505,7 +26625,12 @@ function presentTrainingSetupDialog({
   }
 }
 
-async function openTrainingSetupDialog(prefill = null) {
+async function openTrainingSetupDialog(prefill = null, {
+  historyMode = "pushTrainingSetup",
+  baseLevel = null,
+  focus = true,
+  historyContext = null,
+} = {}) {
   if (currentActiveTrainingActivity()) {
     toast("当前已有个人模型训练正在运行；完成或取消后再新建任务");
     return;
@@ -26519,10 +26644,11 @@ async function openTrainingSetupDialog(prefill = null) {
   setup.error = "";
   setup.notice = "";
   setup.operationID = null;
-  setup.returnFocus = prefill?.returnFocus || document.activeElement;
+  setup.returnFocus = prefill?.returnFocus
+    || (historyContext ? elements.newTrainingButton : document.activeElement);
   const generation = ++setup.requestGeneration;
   try {
-    presentTrainingSetupDialog();
+    presentTrainingSetupDialog({ historyMode, baseLevel, focus });
   } finally {
     setup.opening = false;
   }
@@ -26531,8 +26657,12 @@ async function openTrainingSetupDialog(prefill = null) {
     const snapshot = await api(`/v1/training/setup?${query}`);
     if (generation !== setup.requestGeneration) return;
     setup.snapshot = snapshot;
-    resetTrainingSetupSelection(chooseInitialTrainingSetupMethod());
-    applyTrainingSetupPrefill(prefill);
+    if (historyContext) {
+      applyTrainingSetupHistoryContext(historyContext);
+    } else {
+      resetTrainingSetupSelection(chooseInitialTrainingSetupMethod());
+      applyTrainingSetupPrefill(prefill);
+    }
   } catch (error) {
     if (generation === setup.requestGeneration) {
       setup.error = error.message || "训练设置载入失败";
@@ -26540,7 +26670,13 @@ async function openTrainingSetupDialog(prefill = null) {
   } finally {
     if (generation === setup.requestGeneration) {
       setup.loading = false;
-      if (elements.trainingSetupDialog.open) renderTrainingSetup();
+      if (elements.trainingSetupDialog.open) {
+        renderTrainingSetup();
+        if (historyContext && setup.snapshot) {
+          await restoreTrainingSetupScrollFromHistory(historyContext);
+        }
+        if (!historyContext) checkpointActiveWorkspaceHistory();
+      }
     }
   }
 }
@@ -26606,15 +26742,24 @@ function returnFromTrainingSetup({ restoreFocus = true } = {}) {
   return Promise.resolve();
 }
 
-function reconcileTrainingSetupFromWorkspaceHistory(route, navigationLevel, context = {}) {
+async function reconcileTrainingSetupFromWorkspaceHistory(route, navigationLevel, context = {}) {
   const shouldOpen = navigationLevel === "trainingSetup"
     && route === visibleWorkspaceRoute();
   const setup = state.training.setup;
-  if (shouldOpen && (!setup.restorable
-    || (Boolean(currentActiveTrainingActivity()) && !setup.launching))) {
+  if (shouldOpen && Boolean(currentActiveTrainingActivity()) && !setup.launching) {
     clearTrainingSetupDialogState();
     replaceTrainingSetupHistoryWithBase(trainingSetupBaseLevelFromHistory(context));
-    return;
+    return false;
+  }
+  if (shouldOpen && !setup.restorable) {
+    clearTrainingSetupDialogState();
+    await openTrainingSetupDialog(null, {
+      historyMode: "none",
+      baseLevel: trainingSetupBaseLevelFromHistory(context),
+      focus: false,
+      historyContext: context,
+    });
+    return Boolean(setup.snapshot);
   }
   if (shouldOpen && !elements.trainingSetupDialog.open) {
     presentTrainingSetupDialog({
@@ -26630,6 +26775,7 @@ function reconcileTrainingSetupFromWorkspaceHistory(route, navigationLevel, cont
     });
     setup.historyRestoreFocus = true;
   }
+  return false;
 }
 
 async function submitTrainingSetup() {
@@ -37146,7 +37292,7 @@ async function loadWorkspace({ restoreHistory = false } = {}) {
       restoreGalleryNavigationLevel,
       restoreEntry?.context || {}
     );
-    reconcileTrainingSetupFromWorkspaceHistory(
+    await reconcileTrainingSetupFromWorkspaceHistory(
       "gallery",
       restoreGalleryNavigationLevel,
       restoreEntry?.context || {}
@@ -44493,6 +44639,7 @@ function bindEvents() {
     }
     resetTrainingSetupSelection(button.dataset.trainingSetupMethod);
     renderTrainingSetup();
+    checkpointActiveWorkspaceHistory();
   });
   elements.trainingSetupMethods.addEventListener("keydown", (event) => {
     moveRovingSegmentedSelection(
@@ -44504,6 +44651,7 @@ function bindEvents() {
   elements.trainingTagSearch.addEventListener("input", () => {
     state.training.setup.tagSearchText = elements.trainingTagSearch.value;
     renderTrainingTagOptions();
+    scheduleWorkspaceHistoryCheckpoint();
   });
   elements.trainingTagOptions.addEventListener("keydown", (event) => {
     handleChoiceGridNavigation(event, {
@@ -44525,6 +44673,7 @@ function bindEvents() {
       state.training.setup.selectedTagIDs.delete(tagID);
     }
     renderTrainingSetup();
+    checkpointActiveWorkspaceHistory();
   });
   elements.trainingScopeOptions.addEventListener("keydown", (event) => {
     handleChoiceGridNavigation(event, {
@@ -44539,12 +44688,14 @@ function bindEvents() {
       if (source.checked) state.training.setup.selectedSourceIDs.add(source.dataset.trainingSourceId);
       else state.training.setup.selectedSourceIDs.delete(source.dataset.trainingSourceId);
       renderTrainingSetup();
+      checkpointActiveWorkspaceHistory();
       return;
     }
     const scope = event.target.closest("[data-training-scope]");
     if (scope?.checked) {
       state.training.setup.scope = scope.dataset.trainingScope;
       renderTrainingSetup();
+      checkpointActiveWorkspaceHistory();
     }
   });
   elements.refreshTrainingButton.addEventListener("click", () => loadTrainingWorkspace());
@@ -46066,6 +46217,7 @@ function bindEvents() {
     elements.trainingRunPane,
     elements.trainingDetailPane,
     elements.slimmingNavigatorPane,
+    ...Object.values(trainingSetupScrollSurfaces()),
   ]) {
     scrollSurface.addEventListener("scroll", scheduleWorkspaceHistoryCheckpoint, {
       passive: true,

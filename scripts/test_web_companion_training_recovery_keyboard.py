@@ -3260,6 +3260,159 @@ def main():
             restored_training_detail,
         )
 
+        # A refresh inside the new-training sheet must preserve the validated
+        # task configuration and its independent scroll surfaces. Free-form
+        # tag search text remains deliberately outside browser history.
+        setup_reads_before_refresh = len(training_setup_requests)
+        page.keyboard.press("n")
+        page.locator("#trainingSetupDialog").wait_for(state="visible")
+        page.wait_for_function("() => !state.training.setup.loading")
+        restored_source_ids = [
+            training_sources[-2]["id"],
+            training_sources[-1]["id"],
+        ]
+        page.evaluate(
+            """sourceIDs => {
+              state.training.setup.selectedSourceIDs = new Set(sourceIDs);
+              renderTrainingSetup();
+              document.querySelector('#trainingTagSearch').value = '不写入历史的搜索词';
+              state.training.setup.tagSearchText = '不写入历史的搜索词';
+              renderTrainingTagOptions();
+              const main = document.querySelector(
+                '#trainingSetupDialog .training-setup-body > main'
+              );
+              const scope = document.querySelector('#trainingScopeOptions');
+              main.scrollTop = Math.min(180, main.scrollHeight - main.clientHeight);
+              scope.scrollTop = Math.min(150, scope.scrollHeight - scope.clientHeight);
+              checkpointActiveWorkspaceHistory();
+            }""",
+            restored_source_ids,
+        )
+        training_setup_history_before = page.evaluate(
+            """() => ({
+              route: history.state.imageAllWorkspace.route,
+              level: history.state.imageAllWorkspace.navigationLevel,
+              method: history.state.imageAllWorkspace.context.trainingSetupMethod,
+              tagIDs: history.state.imageAllWorkspace.context.trainingSetupTagIDs,
+              sourceIDs: history.state.imageAllWorkspace.context.trainingSetupSourceIDs,
+              configurationScrollTop:
+                history.state.imageAllWorkspace.context.trainingSetupConfigurationScrollTop,
+              scopeScrollTop:
+                history.state.imageAllWorkspace.context.trainingSetupScopeScrollTop,
+              serialized: JSON.stringify(history.state.imageAllWorkspace),
+            })"""
+        )
+        assert training_setup_history_before["route"] == "training"
+        assert training_setup_history_before["level"] == "trainingSetup"
+        assert training_setup_history_before["method"] == "featureKnn"
+        assert training_setup_history_before["tagIDs"] == [TAG_ID]
+        assert training_setup_history_before["sourceIDs"] == restored_source_ids
+        assert training_setup_history_before["configurationScrollTop"] > 0
+        assert training_setup_history_before["scopeScrollTop"] > 0
+        assert "不写入历史的搜索词" not in training_setup_history_before["serialized"]
+        page.evaluate(
+            """() => {
+              const entry = history.state.imageAllWorkspace;
+              history.replaceState({
+                ...history.state,
+                imageAllWorkspace: {
+                  ...entry,
+                  context: {
+                    ...entry.context,
+                    trainingSetupTagIDs: [
+                      ...entry.context.trainingSetupTagIDs,
+                      'missing-training-tag',
+                    ],
+                    trainingSetupSourceIDs: [
+                      ...entry.context.trainingSetupSourceIDs,
+                      'missing-training-source',
+                    ],
+                  },
+                },
+              }, '', location.href);
+            }"""
+        )
+        page.reload(wait_until="domcontentloaded")
+        page.locator("#trainingWorkspace:not(.hidden)").wait_for(state="visible")
+        page.locator("#trainingSetupDialog").wait_for(state="visible")
+        page.wait_for_function(
+            "([tagID, sourceIDs]) => !state.workspaceNavigation.applyingHistory "
+            "&& !state.training.setup.loading "
+            "&& state.training.setup.method === 'featureKnn' "
+            "&& state.training.setup.selectedTagIDs.size === 1 "
+            "&& state.training.setup.selectedTagIDs.has(tagID) "
+            "&& sourceIDs.every(id => state.training.setup.selectedSourceIDs.has(id)) "
+            "&& state.training.setup.selectedSourceIDs.size === sourceIDs.length "
+            "&& !JSON.stringify(history.state.imageAllWorkspace)"
+            ".includes('missing-training')",
+            arg=[TAG_ID, restored_source_ids],
+        )
+        assert len(training_setup_requests) == setup_reads_before_refresh + 2
+        assert page.locator("#trainingTagSearch").input_value() == ""
+        assert page.locator(f'[data-training-tag-id="{TAG_ID}"]').is_checked()
+        assert page.locator("[data-training-source-id]:checked").count() == 2
+        restored_training_setup_scroll = page.evaluate(
+            """() => ({
+              configuration: document.querySelector(
+                '#trainingSetupDialog .training-setup-body > main'
+              ).scrollTop,
+              scope: document.querySelector('#trainingScopeOptions').scrollTop,
+              serialized: JSON.stringify(history.state.imageAllWorkspace),
+            })"""
+        )
+        assert abs(
+            restored_training_setup_scroll["configuration"]
+            - training_setup_history_before["configurationScrollTop"]
+        ) <= 1
+        assert abs(
+            restored_training_setup_scroll["scope"]
+            - training_setup_history_before["scopeScrollTop"]
+        ) <= 1
+        assert "missing-training" not in restored_training_setup_scroll["serialized"]
+        assert "不写入历史的搜索词" not in restored_training_setup_scroll["serialized"]
+        assert page.locator("#launchTrainingButton").is_enabled()
+        page.screenshot(
+            path="/tmp/imageall-training-setup-history-restored.png",
+            full_page=True,
+        )
+        invalid_selection_reads = len(training_setup_requests)
+        page.evaluate(
+            """tagID => {
+              const entry = history.state.imageAllWorkspace;
+              history.replaceState({
+                ...history.state,
+                imageAllWorkspace: {
+                  ...entry,
+                  context: {
+                    ...entry.context,
+                    trainingSetupMethod: 'personalCentroid',
+                    trainingSetupTagIDs: [tagID],
+                    trainingSetupSourceIDs: [],
+                    trainingSetupScope: 'currentSelection',
+                  },
+                },
+              }, '', location.href);
+            }""",
+            TAG_ID,
+        )
+        page.reload(wait_until="domcontentloaded")
+        page.locator("#trainingSetupDialog").wait_for(state="visible")
+        page.wait_for_function(
+            "() => !state.workspaceNavigation.applyingHistory "
+            "&& !state.training.setup.loading "
+            "&& state.training.setup.method === 'personalCentroid' "
+            "&& state.training.setup.scope === 'currentSelection'"
+        )
+        assert len(training_setup_requests) == invalid_selection_reads + 1
+        assert page.locator("#launchTrainingButton").is_disabled()
+        assert "刷新前的图库选区当前不可用" in page.locator(
+            "#trainingSetupNotice"
+        ).inner_text()
+        page.locator('[data-training-scope="allSources"]').click()
+        assert page.locator("#launchTrainingButton").is_enabled()
+        page.keyboard.press("Escape")
+        page.locator("#trainingSetupDialog").wait_for(state="hidden")
+
         # Nested workflow context survives too: review still knows it should
         # return to the originating training run after a refresh.
         page.locator(f'[data-training-run-id="{FAILED_RUN_ID}"]').focus()

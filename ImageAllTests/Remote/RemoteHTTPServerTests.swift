@@ -3958,7 +3958,13 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("reviewSelectionAnchorKey: state.review.mode === \"queue\""))
         XCTAssertTrue(script.contains("reviewGridScrollLeft: elements.reviewGrid.scrollLeft"))
         XCTAssertTrue(script.contains("function applyReviewSelectionHistoryContext(context = {})"))
-        XCTAssertTrue(script.contains("checkpointReviewHistoryAfterApply"))
+        XCTAssertTrue(script.contains("checkpointWorkspaceHistoryAfterApply"))
+        XCTAssertTrue(script.contains("galleryContext: currentGalleryHistoryContext()"))
+        XCTAssertTrue(script.contains("function currentTrainingSetupHistoryContext()"))
+        XCTAssertTrue(script.contains("function applyTrainingSetupHistoryContext(context = {})"))
+        XCTAssertTrue(script.contains("async function restoreTrainingSetupScrollFromHistory"))
+        XCTAssertTrue(script.contains("historyMode: \"none\""))
+        XCTAssertTrue(script.contains("historyContext: context"))
         XCTAssertTrue(
             script.contains(
                 "preserveSelection: state.review.selectedAssetIDs.size > 1"
