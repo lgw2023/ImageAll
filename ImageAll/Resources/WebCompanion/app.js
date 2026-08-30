@@ -35342,13 +35342,17 @@ async function applyReviewDecision(action) {
   }
 }
 
-function deferReviewSelection() {
+async function deferReviewSelection() {
   const selectedIDs = new Set(state.review.selectedAssetIDs);
   if (state.review.loading
     || state.review.mutating
+    || state.review.marquee
     || state.review.loadedScopeKey !== currentReviewScopeKey()
     || !selectedIDs.size
-    || !state.review.items.length) return;
+    || !state.review.items.length) return false;
+  const workspaceGeneration = state.workspaceGeneration;
+  const scopeKey = currentReviewScopeKey();
+  const selectedAssetID = state.review.items[state.review.selectedIndex]?.assetID || null;
   const selectedIndexes = state.review.items
     .map((item, index) => selectedIDs.has(item.assetID) ? index : -1)
     .filter((index) => index >= 0);
@@ -35356,10 +35360,46 @@ function deferReviewSelection() {
   let nextIndex = state.review.items.findIndex((item, index) => (
     index > lastSelectedIndex && !selectedIDs.has(item.assetID)
   ));
-  if (nextIndex < 0) {
-    nextIndex = state.review.items.findIndex((item) => !selectedIDs.has(item.assetID));
+  let continuationFailed = false;
+  if (nextIndex < 0 && state.review.nextCursor) {
+    const continuation = loadReviewQueue({
+      append: true,
+      preserveUnchangedGrid: true,
+      throwOnError: true,
+      schedulePagination: false,
+    });
+    const continuationRequestGeneration = state.review.requestGeneration;
+    try {
+      await continuation;
+    } catch {
+      continuationFailed = true;
+    }
+    const selectionUnchanged = state.review.selectedAssetIDs.size === selectedIDs.size
+      && [...selectedIDs].every((assetID) => state.review.selectedAssetIDs.has(assetID))
+      && state.review.items[state.review.selectedIndex]?.assetID === selectedAssetID;
+    if (workspaceGeneration !== state.workspaceGeneration
+      || scopeKey !== currentReviewScopeKey()
+      || continuationRequestGeneration !== state.review.requestGeneration
+      || !selectionUnchanged) return false;
+    nextIndex = state.review.items.findIndex((item, index) => (
+      index > lastSelectedIndex && !selectedIDs.has(item.assetID)
+    ));
   }
-  if (nextIndex < 0) nextIndex = 0;
+  if (nextIndex < 0) {
+    nextIndex = state.review.items.findIndex(
+      (item) => !selectedIDs.has(item.assetID)
+    );
+  }
+  if (nextIndex < 0) {
+    if (continuationFailed) {
+      toast("下一页载入失败，没有修改标签决定");
+    } else if (state.review.nextCursor) {
+      toast("下一页暂无新项目，没有修改标签决定");
+    } else {
+      toast("已到审核队列末尾，没有修改标签决定");
+    }
+    return false;
+  }
   selectReviewIndex(nextIndex);
   reviewCardMainButton(
     elements.reviewGrid.querySelector(`[data-review-index="${nextIndex}"]`)
@@ -35367,6 +35407,7 @@ function deferReviewSelection() {
   toast(selectedIDs.size > 1
     ? `已跳过 ${mediaItemCountText(selectedIDs.size)}，没有修改标签决定`
     : "已跳到下一项，没有修改标签决定");
+  return true;
 }
 
 function lightboxItemsForContext(context = state.lightboxContext) {
@@ -36253,8 +36294,7 @@ async function applyLightboxReviewDecision(action) {
     selectReviewIndex(currentIndex);
   }
   if (action === "defer") {
-    deferReviewSelection();
-    syncReviewLightboxSelection();
+    if (await deferReviewSelection()) syncReviewLightboxSelection();
     return;
   }
   await applyReviewDecision(action);
@@ -44503,7 +44543,7 @@ function bindEvents() {
     const button = event.target.closest(".review-action");
     if (!button) return;
     if (button.dataset.action === "defer") {
-      deferReviewSelection();
+      void deferReviewSelection();
     } else {
       applyReviewDecision(button.dataset.action);
     }
@@ -45460,7 +45500,7 @@ function bindEvents() {
       }
       if (!event.repeat && event.key.toLowerCase() === "u") {
         event.preventDefault();
-        deferReviewSelection();
+        void deferReviewSelection();
       }
       return;
     }

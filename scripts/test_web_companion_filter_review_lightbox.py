@@ -4654,6 +4654,56 @@ def main():
             "() => JSON.stringify(history.state.imageAllWorkspace.context)"
         )
 
+        page.evaluate(
+            """assetID => {
+              if (state.review.autoLoadFrame != null) {
+                cancelAnimationFrame(state.review.autoLoadFrame);
+                state.review.autoLoadFrame = null;
+              }
+              scheduleReviewAutoPagination = () => {};
+              state.review.items = state.review.items.slice(0, 1);
+              state.review.nextCursor = "review-page-2";
+              state.review.selectedIndex = 0;
+              state.review.selectedAssetIDs = new Set([assetID]);
+              state.review.selectionAnchorIndex = 0;
+              renderReview();
+              renderLightbox();
+            }""",
+            REVIEW_IDS[1],
+        )
+        defer_cursor_query_count = sum(
+            query.get("cursor") == ["review-page-2"]
+            for query in review_queue_queries
+        )
+        defer_decision_count = len(review_decisions)
+        page.keyboard.press("u")
+        page.wait_for_function(
+            f"() => state.review.items.length === 2 "
+            f"&& state.review.items[1].assetID === '{REVIEW_IDS[2]}' "
+            f"&& state.review.selectedIndex === 1 "
+            f"&& state.review.selectedAssetIDs.size === 1 "
+            f"&& state.review.selectedAssetIDs.has('{REVIEW_IDS[2]}') "
+            f"&& state.review.selectionAnchorIndex === 1 "
+            f"&& state.lightboxAssetID === '{REVIEW_IDS[2]}' "
+            "&& document.querySelector('#lightboxTitle').textContent.includes('REVIEW_3.JPG') "
+            "&& document.querySelector('#reviewFileName').textContent === 'REVIEW_3.JPG' "
+            f"&& history.state?.imageAllWorkspace?.context?.reviewLightbox?.assetID === '{REVIEW_IDS[2]}'"
+        )
+        assert sum(
+            query.get("cursor") == ["review-page-2"]
+            for query in review_queue_queries
+        ) == defer_cursor_query_count + 1
+        assert len(review_decisions) == defer_decision_count
+        assert "没有修改标签决定" in page.locator("#toast").inner_text()
+        page.screenshot(path="/tmp/imageall-review-defer-pagination.png", full_page=True)
+        page.evaluate(
+            "() => { scheduleReviewAutoPagination = globalThis.__reviewDeleteSchedulePagination; }"
+        )
+        page.locator("#lightboxPreviousButton").click()
+        page.wait_for_function(
+            "() => document.querySelector('#lightboxTitle').textContent.includes('REVIEW_2.JPG')"
+        )
+
         accept_review_action = page.locator(
             '#lightboxReviewActions [data-action="accept"]'
         )
@@ -4667,9 +4717,13 @@ def main():
             accept_review_action.click()
         page.wait_for_function("() => document.querySelector('#lightboxTitle').textContent.includes('REVIEW_3.JPG')")
         assert review_decisions[-1]["action"] == "accept"
+        terminal_defer_decision_count = len(review_decisions)
         page.keyboard.press("u")
-        page.wait_for_function("() => document.querySelector('#lightboxTitle').textContent.includes('REVIEW_3.JPG')")
-        assert len(review_decisions) == 1, review_decisions
+        page.wait_for_function(
+            "() => document.querySelector('#lightboxTitle').textContent.includes('REVIEW_3.JPG') "
+            "&& document.querySelector('#toast').textContent.includes('已到审核队列末尾')"
+        )
+        assert len(review_decisions) == terminal_defer_decision_count
         page.keyboard.press("x")
         page.locator("#lightbox").wait_for(state="hidden")
         assert page.evaluate("() => state.lightboxPreviewPrefetches.size") == 0

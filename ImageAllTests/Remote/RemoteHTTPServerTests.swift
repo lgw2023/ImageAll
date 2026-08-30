@@ -4692,6 +4692,28 @@ final class RemoteHTTPServerTests: XCTestCase {
         )
         XCTAssertTrue(reviewDecisionScript.contains("preserveLoadedWindow: true"))
         XCTAssertTrue(reviewDecisionScript.contains("preserveUnchangedGrid: true"))
+        let deferReviewEnd = try XCTUnwrap(
+            script.range(
+                of: "function lightboxItemsForContext",
+                range: deferReviewStart.upperBound..<script.endIndex
+            )
+        )
+        let deferReviewScript = String(
+            script[deferReviewStart.lowerBound..<deferReviewEnd.lowerBound]
+        )
+        XCTAssertTrue(script.contains("async function deferReviewSelection"))
+        XCTAssertTrue(deferReviewScript.contains("append: true"))
+        XCTAssertTrue(deferReviewScript.contains("preserveUnchangedGrid: true"))
+        XCTAssertTrue(deferReviewScript.contains("throwOnError: true"))
+        XCTAssertTrue(deferReviewScript.contains("schedulePagination: false"))
+        XCTAssertTrue(deferReviewScript.contains("continuationRequestGeneration"))
+        XCTAssertTrue(deferReviewScript.contains("selectionUnchanged"))
+        XCTAssertTrue(deferReviewScript.contains("已到审核队列末尾，没有修改标签决定"))
+        XCTAssertTrue(
+            script.contains(
+                "if (await deferReviewSelection()) syncReviewLightboxSelection();"
+            )
+        )
         XCTAssertTrue(script.contains("sort: \"fileNameAscending\""))
         XCTAssertTrue(
             html.contains(
