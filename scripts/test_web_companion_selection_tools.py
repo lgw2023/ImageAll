@@ -9870,15 +9870,64 @@ def main(*, inspector_actions_only=False):
             "() => document.querySelectorAll('#assetGrid > .asset-card').length === 2"
         )
         assert page.locator("#favoritesNavigationButton").get_attribute("aria-current") == "page"
+        if page.evaluate("() => state.selectionMode"):
+            page.locator("#selectionModeButton").click()
         page.locator("#selectionModeButton").click()
+        assert page.evaluate("() => state.selectionMode") is True
         page.locator("#assetGrid > .asset-card").first.click()
-        page.locator("#commandButton").click()
-        page.locator('[data-command-id="unfavoriteSelection"]').click()
+        favorite_preview = page.evaluate(
+            """() => ({
+              removedID: state.selectedAssetID,
+              replacementID: state.assets.find(asset => asset.id !== state.selectedAssetID)?.id,
+            })"""
+        )
+        page.set_viewport_size({"width": 1440, "height": 960})
+        page.locator("#selectionInspectorPrimary:not(.hidden)").wait_for()
+        page.locator("#selectionInspectorPrimaryPreview").click()
+        page.locator("#lightbox:not(.hidden)").wait_for()
+        assert page.evaluate("() => state.lightboxPreservesSelection") is True
+        page.locator("#lightboxFavoriteButton").click()
         page.wait_for_function(
             "() => document.querySelectorAll('#assetGrid > .asset-card').length === 1"
         )
+        assert submitted_favorites[-1]["assetIDs"] == [favorite_preview["removedID"]]
         assert submitted_favorites[-1]["isFavorite"] is False
-        page.set_viewport_size({"width": 1440, "height": 960})
+        page.wait_for_function(
+            "expected => state.lightboxAssetID === expected"
+            " && history.state?.imageAllWorkspace?.context?.galleryLightbox?.assetID === expected",
+            arg=favorite_preview["replacementID"],
+        )
+        assert page.evaluate(
+            """() => ({
+              lightboxOpen: !document.querySelector('#lightbox').classList.contains('hidden'),
+              selectedAssetIDs: [...state.selectedAssetIDs],
+              selectedAssetID: state.selectedAssetID,
+              selectionAnchorID: state.selectionAnchorID,
+              preservesSelection: state.lightboxPreservesSelection,
+              primaryPosition: document.querySelector('#selectionInspectorPrimaryPosition').textContent,
+              lightboxPosition: document.querySelector('#lightboxPosition').textContent,
+            })"""
+        ) == {
+            "lightboxOpen": True,
+            "selectedAssetIDs": [favorite_preview["replacementID"]],
+            "selectedAssetID": favorite_preview["replacementID"],
+            "selectionAnchorID": favorite_preview["replacementID"],
+            "preservesSelection": True,
+            "primaryPosition": "当前主项 · 选区 1 / 1",
+            "lightboxPosition": "1 / 1",
+        }
+        page.screenshot(
+            path="/tmp/imageall-favorites-unfavorite-continuity.png",
+            full_page=True,
+        )
+        page.keyboard.press("Escape")
+        page.locator("#lightbox").wait_for(state="hidden")
+        page.wait_for_function(
+            "expected => state.selectedAssetID === expected"
+            " && state.selectedAssetIDs.has(expected)"
+            " && state.selectionAnchorID === expected",
+            arg=favorite_preview["replacementID"],
+        )
         remaining = page.locator("#assetGrid > .asset-card").first
         remaining.click(button="right")
         page.locator("#assetFavoriteContextAction").click()

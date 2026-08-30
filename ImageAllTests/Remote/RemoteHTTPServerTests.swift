@@ -3051,6 +3051,8 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function reconcileReviewPreviewAfterGalleryRemoval"))
         XCTAssertTrue(script.contains("function reconcileLibraryPreviewAfterGalleryRemoval"))
         XCTAssertTrue(script.contains("function reconcileLibrarySelectionAfterGalleryRemoval"))
+        XCTAssertTrue(script.contains("function reconcileLibraryLightboxAfterFavoriteRemoval"))
+        XCTAssertTrue(script.contains("function reconcileLibrarySelectionAfterFavoriteRemoval"))
         XCTAssertTrue(script.contains("function replacementPreviewAssetID"))
         XCTAssertTrue(
             script.contains(
@@ -3062,6 +3064,17 @@ final class RemoteHTTPServerTests: XCTestCase {
                 "reconcileLibrarySelectionAfterGalleryRemoval(context, hidden);"
             )
         )
+        XCTAssertTrue(
+            script.contains(
+                "reconcileLibrarySelectionAfterFavoriteRemoval(previousAssetIDs, removed);"
+            )
+        )
+        XCTAssertTrue(
+            script.contains(
+                "favoriteRemovalReconciledLightbox = reconcileLibraryLightboxAfterFavoriteRemoval("
+            )
+        )
+        XCTAssertFalse(script.contains("const previousSelectedIndex = previousAssets.findIndex("))
         XCTAssertFalse(
             script.contains(
                 "state.lightboxContext === \"library\" && hidden.has(state.lightboxAssetID)"

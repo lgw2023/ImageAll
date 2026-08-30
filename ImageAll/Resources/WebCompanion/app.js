@@ -19390,14 +19390,86 @@ async function retryFavoriteSync() {
   }
 }
 
+function reconcileLibrarySelectionAfterFavoriteRemoval(previousIDs, removedAssetIDs) {
+  const primaryAssetID = state.selectedAssetID;
+  const primaryWasRemoved = Boolean(
+    primaryAssetID && removedAssetIDs.has(primaryAssetID)
+  );
+  const anchorWasRemoved = Boolean(
+    state.selectionAnchorID && removedAssetIDs.has(state.selectionAnchorID)
+  );
+  if (!primaryWasRemoved && !anchorWasRemoved) return;
+
+  const remainingIDs = state.assets.map((asset) => asset.id);
+  const remainingSelectedIDs = remainingIDs.filter((assetID) => (
+    state.selectedAssetIDs.has(assetID)
+  ));
+  if (primaryWasRemoved) {
+    const replacementCandidates = remainingSelectedIDs.length
+      ? remainingSelectedIDs
+      : remainingIDs;
+    const replacementID = replacementPreviewAssetID(
+      previousIDs,
+      replacementCandidates,
+      primaryAssetID
+    ) || replacementCandidates[0] || null;
+    state.selectedAssetID = replacementID;
+    state.selectedDetail = null;
+    if (state.selectionMode && !remainingSelectedIDs.length && replacementID) {
+      state.selectedAssetIDs = new Set([replacementID]);
+    }
+    state.selectionPrimaryDetail = null;
+    state.selectionPrimaryLoadingAssetID = null;
+    state.selectionPrimaryRequestGeneration += 1;
+  }
+  if (state.selectionMode && (anchorWasRemoved
+    || (state.selectionAnchorID && !state.selectedAssetIDs.has(state.selectionAnchorID)))) {
+    state.selectionAnchorID = state.selectedAssetID
+      && state.selectedAssetIDs.has(state.selectedAssetID)
+      ? state.selectedAssetID
+      : ([...state.selectedAssetIDs][0] || null);
+  } else if (anchorWasRemoved) {
+    state.selectionAnchorID = null;
+  }
+}
+
+function reconcileLibraryLightboxAfterFavoriteRemoval(previousIDs, removedAssetIDs) {
+  const previewAssetID = state.lightboxAssetID;
+  if (!previewAssetID
+    || !removedAssetIDs.has(previewAssetID)
+    || state.lightboxContext !== "library"
+    || elements.lightbox.classList.contains("hidden")) return false;
+
+  const remainingIDs = state.assets.map((asset) => asset.id);
+  const replacementID = replacementPreviewAssetID(
+    previousIDs,
+    remainingIDs,
+    previewAssetID
+  );
+  if (!replacementID) {
+    closeLightbox();
+    return true;
+  }
+
+  if (state.cloudPreview.assetID === previewAssetID
+    && state.cloudPreview.status !== "hidden") resetCloudPreviewRecovery();
+  state.lightboxAssetID = replacementID;
+  state.lightboxOriginalAssetID = null;
+  state.lightboxOriginalLoading = false;
+  const replacementCard = elements.assetGrid.querySelector(
+    `[data-asset-id="${CSS.escape(replacementID)}"]`
+  );
+  state.lightboxReturnFocus = assetCardMainButton(replacementCard)
+    || state.lightboxReturnFocus;
+  return true;
+}
+
 async function applyFavoriteMutation(assetIDs, isFavorite) {
   const uniqueIDs = [...new Set(assetIDs)].filter(Boolean);
   if (!supportsFavorites() || !state.online || state.favoriteMutating || !uniqueIDs.length) return;
   const generation = state.workspaceGeneration;
   const previousAssets = state.assets;
-  const previousSelectedIndex = previousAssets.findIndex(
-    (asset) => asset.id === state.selectedAssetID
-  );
+  const previousAssetIDs = previousAssets.map((asset) => asset.id);
   state.favoriteMutating = true;
   renderFavoriteControls();
   syncWriteActionControls();
@@ -19450,24 +19522,21 @@ async function applyFavoriteMutation(assetIDs, isFavorite) {
       };
     }
 
-    let nextSelectedAssetID = state.selectedAssetID;
+    let favoriteRemovalReconciledLightbox = false;
     if (state.libraryScope === "favorites" && !isFavorite) {
       const removed = new Set(uniqueIDs);
       state.assets = state.assets.filter((asset) => !removed.has(asset.id));
       state.selectedAssetIDs = new Set(
         [...state.selectedAssetIDs].filter((assetID) => !removed.has(assetID))
       );
-      if (state.selectionAnchorID && removed.has(state.selectionAnchorID)) {
-        state.selectionAnchorID = null;
-      }
-      if (nextSelectedAssetID && removed.has(nextSelectedAssetID)) {
-        nextSelectedAssetID = state.assets.length
-          ? state.assets[Math.max(0, Math.min(previousSelectedIndex, state.assets.length - 1))].id
-          : null;
-        state.selectedAssetID = nextSelectedAssetID;
-        state.selectedDetail = null;
-      }
+      reconcileLibrarySelectionAfterFavoriteRemoval(previousAssetIDs, removed);
+      favoriteRemovalReconciledLightbox = reconcileLibraryLightboxAfterFavoriteRemoval(
+        previousAssetIDs,
+        removed
+      );
     }
+
+    const nextSelectedAssetID = state.selectedAssetID;
 
     if (state.libraryScope === "favorites" && !isFavorite) {
       renderAssets();
@@ -19483,6 +19552,7 @@ async function applyFavoriteMutation(assetIDs, isFavorite) {
     if (["library", "slimming"].includes(state.lightboxContext)
       && !elements.lightbox.classList.contains("hidden")) {
       renderLightbox();
+      if (favoriteRemovalReconciledLightbox) checkpointActiveWorkspaceHistory();
     }
     if (!state.selectionMode && nextSelectedAssetID && !state.selectedDetail) {
       await loadInspector(nextSelectedAssetID, { reveal: true, quiet: true });
@@ -19490,6 +19560,11 @@ async function applyFavoriteMutation(assetIDs, isFavorite) {
       renderInspectorSurface();
     } else if (state.selectedDetail) {
       renderInspector(state.selectedDetail);
+    }
+    if (state.selectionMode && favoriteRemovalReconciledLightbox) {
+      renderAssetSelectionState();
+      renderSelectionMutation();
+      scheduleSelectionAggregate();
     }
     const syncParts = [
       result.pendingCount ? `${result.pendingCount} 项等待 Photos 同步` : "",
