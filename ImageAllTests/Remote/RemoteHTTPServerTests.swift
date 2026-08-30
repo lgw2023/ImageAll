@@ -3067,6 +3067,16 @@ final class RemoteHTTPServerTests: XCTestCase {
         )
         XCTAssertTrue(
             script.contains(
+                "context.reviewItemIDs || [],\n    remainingIDs"
+            )
+        )
+        XCTAssertTrue(
+            script.contains(
+                "renderReviewSelectionState();\n  renderLightbox();\n  checkpointActiveWorkspaceHistory();"
+            )
+        )
+        XCTAssertTrue(
+            script.contains(
                 "const continuationAssetIDs = continuedAssetIDs("
             )
         )

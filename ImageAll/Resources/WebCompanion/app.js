@@ -20253,8 +20253,12 @@ function reconcileReviewPreviewAfterGalleryRemoval(context, hiddenAssetIDs) {
     || elements.lightbox.classList.contains("hidden")) return;
 
   const remainingIDs = state.review.items.map((item) => item.assetID);
-  const replacementID = replacementPreviewAssetID(
+  const continuationIDs = continuedAssetIDs(
     context.reviewItemIDs || [],
+    remainingIDs
+  );
+  const replacementID = replacementPreviewAssetID(
+    continuationIDs,
     remainingIDs,
     previewAssetID
   );
@@ -20279,6 +20283,7 @@ function reconcileReviewPreviewAfterGalleryRemoval(context, hiddenAssetIDs) {
     || state.lightboxReturnFocus;
   renderReviewSelectionState();
   renderLightbox();
+  checkpointActiveWorkspaceHistory();
 }
 
 function scheduleGalleryRemovalPoll() {

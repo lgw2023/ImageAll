@@ -1064,11 +1064,11 @@ def main():
             review_queue_queries.append(query)
             items = projected_review_items()
             if query.get("cursor") == ["review-page-2"]:
-                fulfill_json(route, {"items": items[2:], "nextCursor": None})
-            elif len(items) > 2:
+                fulfill_json(route, {"items": items[1:], "nextCursor": None})
+            elif len(items) > 1:
                 fulfill_json(
                     route,
-                    {"items": items[:2], "nextCursor": "review-page-2"},
+                    {"items": items[:1], "nextCursor": "review-page-2"},
                 )
             else:
                 fulfill_json(route, {"items": items, "nextCursor": None})
@@ -4545,6 +4545,26 @@ def main():
         )
         assert favorite_mutations[-1]["assetIDs"] == [REVIEW_IDS[0]]
         assert favorite_mutations[-1]["isFavorite"] is False
+        page.evaluate(
+            """assetID => {
+              globalThis.__reviewDeleteSchedulePagination = scheduleReviewAutoPagination;
+              if (state.review.autoLoadFrame != null) {
+                cancelAnimationFrame(state.review.autoLoadFrame);
+                state.review.autoLoadFrame = null;
+              }
+              scheduleReviewAutoPagination = () => {};
+              state.review.items = state.review.items.slice(0, 1);
+              state.review.nextCursor = "review-page-2";
+              state.review.selectedIndex = 0;
+              state.review.selectedAssetIDs = new Set([assetID]);
+              state.review.selectionAnchorIndex = 0;
+              renderReview();
+              renderLightbox();
+            }""",
+            REVIEW_IDS[0],
+        )
+        assert page.evaluate("() => state.review.items.length") == 1
+        assert page.evaluate("() => state.review.nextCursor") == "review-page-2"
         page.keyboard.press("Delete")
         page.locator("#confirmDialog[open]").wait_for()
         page.keyboard.press("Escape")
@@ -4564,6 +4584,9 @@ def main():
             "() => document.querySelector('#reviewInspectorActionStatus')"
             ".textContent.includes('等待 Mac')"
         )
+        assert page.evaluate(
+            "() => [...state.galleryRemoval.contexts.values()][0].reviewItemIDs"
+        ) == [REVIEW_IDS[0]]
         assert len(submitted_review_removals) == 1
         review_removal_payload = submitted_review_removals[0]
         assert review_removal_payload["scope"] == "gallerySelection"
@@ -4608,13 +4631,28 @@ def main():
             f"&& state.lightboxAssetID === '{REVIEW_IDS[1]}' "
             "&& state.galleryRemoval.contexts.size === 0 "
             "&& document.querySelector('#lightboxTitle').textContent.includes('REVIEW_2.JPG') "
-            "&& document.querySelector('#reviewFileName').textContent === 'REVIEW_2.JPG'"
+            "&& document.querySelector('#reviewFileName').textContent === 'REVIEW_2.JPG' "
+            f"&& history.state?.imageAllWorkspace?.context?.reviewLightbox?.assetID === '{REVIEW_IDS[1]}'"
         )
         assert page.locator("#lightboxDeleteButton").is_visible()
         assert page.locator("#lightboxDeleteButton").is_enabled()
+        page.evaluate(
+            "() => { scheduleReviewAutoPagination = globalThis.__reviewDeleteSchedulePagination; }"
+        )
         page.screenshot(path="/tmp/imageall-review-lightbox-delete.png", full_page=True)
         assert page.locator("#lightbox").get_attribute("aria-modal") == "false"
         assert page.locator("#reviewQueuePane").evaluate("element => element.inert")
+        page.locator("#lightboxBackButton").click()
+        page.locator("#lightbox").wait_for(state="hidden")
+        page.evaluate("() => history.forward()")
+        page.wait_for_function(
+            f"() => !document.querySelector('#lightbox').classList.contains('hidden') "
+            f"&& state.lightboxAssetID === '{REVIEW_IDS[1]}' "
+            "&& document.querySelector('#lightboxTitle').textContent.includes('REVIEW_2.JPG')"
+        )
+        assert REVIEW_IDS[0] not in page.evaluate(
+            "() => JSON.stringify(history.state.imageAllWorkspace.context)"
+        )
 
         accept_review_action = page.locator(
             '#lightboxReviewActions [data-action="accept"]'
