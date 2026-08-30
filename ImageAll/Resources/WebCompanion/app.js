@@ -22236,6 +22236,32 @@ function jobRows() {
   return [...elements.jobsList.querySelectorAll("[data-job-row-id]")];
 }
 
+function visibleListPageStep(rows, viewport) {
+  if (!rows.length || !viewport) return 1;
+  const viewportRect = viewport.getBoundingClientRect();
+  const viewportStyle = getComputedStyle(viewport);
+  const insetTop = Number.parseFloat(viewportStyle.scrollPaddingTop) || 0;
+  const insetBottom = Number.parseFloat(viewportStyle.scrollPaddingBottom) || 0;
+  const visibleTop = viewportRect.top + insetTop;
+  const visibleBottom = viewportRect.bottom - insetBottom;
+  const visibleCount = rows.reduce((count, row) => {
+    const rowRect = row.getBoundingClientRect();
+    return count + (rowRect.bottom > visibleTop && rowRect.top < visibleBottom ? 1 : 0);
+  }, 0);
+  return Math.max(1, visibleCount - 1);
+}
+
+function longListNavigationTarget(rows, currentIndex, key, viewport) {
+  if (!rows.length) return 0;
+  if (key === "Home") return 0;
+  if (key === "End") return rows.length - 1;
+  const direction = ["ArrowUp", "PageUp"].includes(key) ? -1 : 1;
+  const step = ["PageUp", "PageDown"].includes(key)
+    ? visibleListPageStep(rows, viewport)
+    : 1;
+  return Math.max(0, Math.min(rows.length - 1, currentIndex + direction * step));
+}
+
 function selectJobRow(jobID, { focus = false } = {}) {
   if (!state.jobs.some((job) => job.id === jobID)) return;
   state.focusedActivityJobID = jobID;
@@ -22274,11 +22300,7 @@ function moveJobSelection(key) {
     0,
     rows.findIndex((row) => row.dataset.jobRowId === state.focusedActivityJobID)
   );
-  const next = key === "Home"
-    ? 0
-    : key === "End"
-      ? rows.length - 1
-      : Math.max(0, Math.min(rows.length - 1, current + (key === "ArrowUp" ? -1 : 1)));
+  const next = longListNavigationTarget(rows, current, key, elements.jobsList);
   selectJobRow(rows[next].dataset.jobRowId, { focus: true });
   rows[next].scrollIntoView({ block: "nearest" });
 }
@@ -26754,10 +26776,10 @@ function syncTrainingRunRow(row, run) {
     detail: [
       `${stateText} · ${position ? `批次 ${position}` : "单项记录"}${run.sampleCount != null ? ` · ${run.sampleCount} 个样本` : ""}。`,
       "点击查看数据、配置、过程、产物和失败恢复；不会启动或停止任务。",
-      "上/下或 Home/End 在训练记录之间移动；⌘K 可打开当前工作区命令。",
+      "上/下逐条移动，Page Up/Down 按当前可见页幅移动，Home/End 直达首尾；⌘K 可打开当前工作区命令。",
     ].join("\n"),
     kind: "training",
-    keyShortcuts: "ArrowUp ArrowDown Home End Meta+K",
+    keyShortcuts: "ArrowUp ArrowDown PageUp PageDown Home End Meta+K",
   });
   let heading = row.querySelector(':scope > [data-training-run-part="heading"]');
   if (!heading) {
@@ -26912,21 +26934,17 @@ function selectTrainingRun(runID, { focus = false, reveal = false } = {}) {
 function moveTrainingRunSelection(key) {
   const runs = visibleTrainingRuns();
   if (!runs.length) return;
+  const rows = [...elements.trainingRunList.querySelectorAll("[data-training-run-id]")];
   const currentIndex = Math.max(
     0,
     runs.findIndex((run) => run.id === state.training.selectedRunID)
   );
-  const nextIndex = key === "Home"
-    ? 0
-    : key === "End"
-      ? runs.length - 1
-      : Math.max(
-        0,
-        Math.min(
-          runs.length - 1,
-          currentIndex + (key === "ArrowUp" ? -1 : 1)
-        )
-      );
+  const nextIndex = longListNavigationTarget(
+    rows,
+    currentIndex,
+    key,
+    elements.trainingRunPane
+  );
   selectTrainingRun(runs[nextIndex].id, { focus: true, reveal: true });
 }
 
@@ -42076,7 +42094,7 @@ function bindEvents() {
     if (row) selectJobRow(row.dataset.jobRowId);
   });
   elements.jobsList.addEventListener("keydown", (event) => {
-    if (["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
+    if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(event.key)) {
       event.preventDefault();
       event.stopPropagation();
       moveJobSelection(event.key);
@@ -42985,7 +43003,7 @@ function bindEvents() {
     selectTrainingRun(row.dataset.trainingRunId, { focus: true });
   });
   elements.trainingRunList.addEventListener("keydown", (event) => {
-    if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+    if (!["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
     moveTrainingRunSelection(event.key);
   });

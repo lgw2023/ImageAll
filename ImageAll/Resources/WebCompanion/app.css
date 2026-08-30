@@ -7888,6 +7888,7 @@ html.split-resizing * {
 .training-run-pane {
   min-height: 0;
   overflow: auto;
+  scroll-padding-block: 44px 8px;
   border-right: 1px solid var(--separator);
   background: var(--sidebar);
 }

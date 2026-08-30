@@ -884,14 +884,16 @@ def main():
         )
         assert failed_run_row.get_attribute(
             "aria-keyshortcuts"
-        ) == "ArrowUp ArrowDown Home End Meta+K"
+        ) == "ArrowUp ArrowDown PageUp PageDown Home End Meta+K"
         assert "点击查看数据、配置、过程、产物和失败恢复" in failed_run_row.get_attribute(
             "data-help-detail"
         )
         failed_run_row.hover()
         page.locator("#persistentHelp:not(.hidden)").wait_for(timeout=1_500)
         assert "相似照片 · 猫" in page.locator("#persistentHelpTitle").inner_text()
-        assert "上/下或 Home/End" in page.locator("#persistentHelpDetail").inner_text()
+        assert "Page Up/Down 按当前可见页幅移动" in page.locator(
+            "#persistentHelpDetail"
+        ).inner_text()
         page.screenshot(
             path="/tmp/imageall-training-persistent-help.png",
             full_page=True,
@@ -1661,6 +1663,94 @@ def main():
             "() => document.querySelectorAll('[data-training-run-id]').length === 39"
         )
 
+        training_page_navigation_requests = len(workspace_requests)
+        page.locator(f'[data-training-run-id="{FAILED_RUN_ID}"]').focus()
+        page.keyboard.press("Home")
+        page.keyboard.press("PageDown")
+        page.wait_for_function(
+            "runID => document.activeElement?.dataset.trainingRunId !== runID",
+            arg=FAILED_RUN_ID,
+        )
+        training_page_down = page.evaluate(
+            """() => {
+              const pane = document.querySelector("#trainingRunPane");
+              const heading = pane.querySelector(".training-run-heading");
+              const rows = [...pane.querySelectorAll("[data-training-run-id]")];
+              const active = document.activeElement;
+              const paneRect = pane.getBoundingClientRect();
+              const headingRect = heading.getBoundingClientRect();
+              const activeRect = active?.getBoundingClientRect();
+              return {
+                advanced: rows.indexOf(active) > 0,
+                selected: active?.getAttribute("aria-selected") === "true",
+                visible: Boolean(activeRect)
+                  && activeRect.top >= headingRect.bottom - 1
+                  && activeRect.bottom <= paneRect.bottom + 1,
+                scrolled: pane.scrollTop > 0,
+                activeID: document.querySelector("#trainingRunList")
+                  .getAttribute("aria-activedescendant") === active?.id,
+                index: rows.indexOf(active),
+              };
+            }"""
+        )
+        training_page_down_index = training_page_down.pop("index")
+        assert all(training_page_down.values()), training_page_down
+        page.keyboard.press("PageUp")
+        page.wait_for_function(
+            """previousIndex => {
+              const rows = [...document.querySelectorAll("[data-training-run-id]")];
+              return rows.indexOf(document.activeElement) < previousIndex;
+            }""",
+            arg=training_page_down_index,
+        )
+        training_page_up = page.evaluate(
+            """previousIndex => {
+              const pane = document.querySelector("#trainingRunPane");
+              const heading = pane.querySelector(".training-run-heading");
+              const rows = [...pane.querySelectorAll("[data-training-run-id]")];
+              const active = document.activeElement;
+              const paneRect = pane.getBoundingClientRect();
+              const headingRect = heading.getBoundingClientRect();
+              const activeRect = active?.getBoundingClientRect();
+              return {
+                movedBack: rows.indexOf(active) < previousIndex,
+                selected: active?.getAttribute("aria-selected") === "true",
+                visible: Boolean(activeRect)
+                  && activeRect.top >= headingRect.bottom - 1
+                  && activeRect.bottom <= paneRect.bottom + 1,
+              };
+            }""",
+            training_page_down_index,
+        )
+        assert all(training_page_up.values()), training_page_up
+        page.keyboard.press("End")
+        page.wait_for_function(
+            """() => {
+              const rows = [...document.querySelectorAll("[data-training-run-id]")];
+              return document.activeElement === rows.at(-1);
+            }"""
+        )
+        assert page.evaluate(
+            """() => {
+              const rows = [...document.querySelectorAll("[data-training-run-id]")];
+              return document.activeElement === rows.at(-1);
+            }"""
+        )
+        page.keyboard.press("Home")
+        page.wait_for_function(
+            """() => {
+              const rows = [...document.querySelectorAll("[data-training-run-id]")];
+              return document.activeElement === rows[0];
+            }"""
+        )
+        assert page.evaluate(
+            """() => {
+              const rows = [...document.querySelectorAll("[data-training-run-id]")];
+              return document.activeElement === rows[0];
+            }"""
+        )
+        assert len(workspace_requests) == training_page_navigation_requests
+
         long_detail_run = page.locator(
             f'[data-training-run-id="{scroll_run_ids[18]}"]'
         )
@@ -2270,6 +2360,9 @@ def main():
         assert page.locator("#jobsPopover").get_attribute("aria-label") == "活动"
         assert page.locator("#refreshJobsButton").is_visible()
         assert page.locator("#refreshJobsButton").get_attribute("aria-keyshortcuts") == "R"
+        assert page.locator("#jobsList").get_attribute(
+            "aria-keyshortcuts"
+        ) == "ArrowUp ArrowDown PageUp PageDown Home End"
         page.wait_for_function(
             "jobID => document.activeElement?.dataset.jobRowId === jobID",
             arg=JOB_ID,
@@ -2279,6 +2372,90 @@ def main():
             "jobID => document.activeElement?.dataset.jobRowId === jobID",
             arg=SECOND_JOB_ID,
         )
+        jobs_page_navigation_requests = len(jobs_requests)
+        page.keyboard.press("PageDown")
+        page.wait_for_function(
+            "jobID => document.activeElement?.dataset.jobRowId !== jobID",
+            arg=SECOND_JOB_ID,
+        )
+        jobs_page_down = page.evaluate(
+            """() => {
+              const list = document.querySelector("#jobsList");
+              const rows = [...list.querySelectorAll("[data-job-row-id]")];
+              const active = document.activeElement;
+              const listRect = list.getBoundingClientRect();
+              const activeRect = active?.getBoundingClientRect();
+              return {
+                advanced: rows.indexOf(active) > 1,
+                selected: active?.getAttribute("aria-current") === "true",
+                visible: Boolean(activeRect)
+                  && activeRect.top >= listRect.top - 1
+                  && activeRect.bottom <= listRect.bottom + 1,
+                scrolled: list.scrollTop > 0,
+                index: rows.indexOf(active),
+              };
+            }"""
+        )
+        jobs_page_down_index = jobs_page_down.pop("index")
+        assert all(jobs_page_down.values()), jobs_page_down
+        page.keyboard.press("PageUp")
+        page.wait_for_function(
+            """previousIndex => {
+              const rows = [...document.querySelectorAll("[data-job-row-id]")];
+              return rows.indexOf(document.activeElement) < previousIndex;
+            }""",
+            arg=jobs_page_down_index,
+        )
+        jobs_page_up = page.evaluate(
+            """previousIndex => {
+              const list = document.querySelector("#jobsList");
+              const rows = [...list.querySelectorAll("[data-job-row-id]")];
+              const active = document.activeElement;
+              const listRect = list.getBoundingClientRect();
+              const activeRect = active?.getBoundingClientRect();
+              return {
+                movedBack: rows.indexOf(active) < previousIndex,
+                selected: active?.getAttribute("aria-current") === "true",
+                visible: Boolean(activeRect)
+                  && activeRect.top >= listRect.top - 1
+                  && activeRect.bottom <= listRect.bottom + 1,
+              };
+            }""",
+            jobs_page_down_index,
+        )
+        assert all(jobs_page_up.values()), jobs_page_up
+        page.keyboard.press("End")
+        page.wait_for_function(
+            """() => {
+              const rows = [...document.querySelectorAll("[data-job-row-id]")];
+              return document.activeElement === rows.at(-1);
+            }"""
+        )
+        assert page.evaluate(
+            """() => {
+              const rows = [...document.querySelectorAll("[data-job-row-id]")];
+              return document.activeElement === rows.at(-1);
+            }"""
+        )
+        page.keyboard.press("Home")
+        page.wait_for_function(
+            """() => {
+              const rows = [...document.querySelectorAll("[data-job-row-id]")];
+              return document.activeElement === rows[0];
+            }"""
+        )
+        assert page.evaluate(
+            """() => {
+              const rows = [...document.querySelectorAll("[data-job-row-id]")];
+              return document.activeElement === rows[0];
+            }"""
+        )
+        page.keyboard.press("ArrowDown")
+        page.wait_for_function(
+            "jobID => document.activeElement?.dataset.jobRowId === jobID",
+            arg=SECOND_JOB_ID,
+        )
+        assert len(jobs_requests) == jobs_page_navigation_requests
         page.locator("#jobsList").evaluate("element => { element.scrollTop = 120; }")
         preserved_scroll_top = page.locator("#jobsList").evaluate("element => element.scrollTop")
         assert preserved_scroll_top > 0
