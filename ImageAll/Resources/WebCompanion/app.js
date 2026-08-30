@@ -10338,6 +10338,7 @@ function sourceSidebarHelpDetail(source) {
     ...(folderSourceSupportsHierarchy(source)
       ? ["左右方向键可展开、进入子目录、折叠或返回父目录；上下键继续沿可见层级移动。"]
       : []),
+    "上/下逐项移动，Page Up/Down 按当前可见页幅移动，Home/End 直达侧栏首尾。",
     "右键、触控长按、Context Menu 或 Shift-F10 可排序，并查看同步、缓存、授权、管理和移除动作。",
     "拖动可直接调整来源顺序；Option + 上/下可用键盘移动。",
   ].join("\n");
@@ -10757,7 +10758,10 @@ function appendFolderRows(
         sourceID,
         folder.relativePath
       )));
-      row.setAttribute("aria-keyshortcuts", "ArrowLeft ArrowRight");
+      row.setAttribute(
+        "aria-keyshortcuts",
+        "ArrowLeft ArrowRight ArrowUp ArrowDown PageUp PageDown Home End"
+      );
     }
     row.style.setProperty("--folder-depth", String(depth));
     row.classList.toggle("selected", selectedFolderMatches(sourceID, folder.relativePath));
@@ -10767,7 +10771,7 @@ function appendFolderRows(
       title: search ? folder.relativePath : folder.name,
       detail: search
         ? `打开“${folder.relativePath}”，并在普通目录树中展开其上级；只显示这个目录及其所有子目录中的媒体。`
-        : `只显示“${folder.relativePath}”目录及其所有子目录中的媒体。点击打开；右方向键展开，左方向键折叠或返回上级。`,
+        : `只显示“${folder.relativePath}”目录及其所有子目录中的媒体。点击打开；右方向键展开，左方向键折叠或返回上级；Page Up/Down 按侧栏当前可见页幅移动。`,
       kind: "source",
       owner: `folder:${sourceID}:${search ? "search" : "tree"}:${folder.relativePath}`,
     });
@@ -11096,7 +11100,8 @@ function renderSources() {
     button.setAttribute("aria-level", "1");
     button.setAttribute(
       "aria-keyshortcuts",
-      "Alt+ArrowUp Alt+ArrowDown Shift+F10 ContextMenu"
+      "ArrowUp ArrowDown PageUp PageDown Home End "
+        + "Alt+ArrowUp Alt+ArrowDown Shift+F10 ContextMenu"
     );
     button.setAttribute("aria-haspopup", "menu");
     button.title = "拖动可调整顺序；右键、触控长按或 Shift-F10 查看来源操作";
@@ -11131,7 +11136,8 @@ function renderSources() {
       button.setAttribute("aria-expanded", String(expanded));
       button.setAttribute(
         "aria-keyshortcuts",
-        "ArrowLeft ArrowRight Alt+ArrowUp Alt+ArrowDown Shift+F10 ContextMenu"
+        "ArrowLeft ArrowRight ArrowUp ArrowDown PageUp PageDown Home End "
+          + "Alt+ArrowUp Alt+ArrowDown Shift+F10 ContextMenu"
       );
       if (expanded) {
         button.setAttribute("aria-controls", `source-folder-tree-${source.id}`);
@@ -11225,7 +11231,9 @@ function sidebarPrimaryNavigationItems() {
 
 function moveSidebarPrimaryNavigation(event) {
   if (event.altKey || event.metaKey || event.ctrlKey) return false;
-  if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return false;
+  if (!["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(
+    event.key
+  )) return false;
   const current = event.target.closest(
     "#libraryNavigation .sidebar-row, #sourceList .sidebar-row, "
       + "#sourceList .source-folder-row, #sourceList .source-folder-more, "
@@ -11236,14 +11244,12 @@ function moveSidebarPrimaryNavigation(event) {
   const items = sidebarPrimaryNavigationItems();
   const currentIndex = items.indexOf(current);
   if (currentIndex < 0 || !items.length) return false;
-  const nextIndex = event.key === "Home"
-    ? 0
-    : event.key === "End"
-      ? items.length - 1
-      : Math.max(0, Math.min(
-        items.length - 1,
-        currentIndex + (event.key === "ArrowDown" ? 1 : -1)
-      ));
+  const nextIndex = longListNavigationTarget(
+    items,
+    currentIndex,
+    event.key,
+    elements.sourceSidebar
+  );
   event.preventDefault();
   event.stopPropagation();
   items[nextIndex].focus({ preventScroll: true });

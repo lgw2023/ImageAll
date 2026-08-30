@@ -542,13 +542,20 @@ def main():
         assert folder_source.get_attribute("aria-owns") == (
             f"source-folder-tree-{SOURCE_FOLDER}"
         )
+        assert "PageUp PageDown" in page.locator(
+            "#libraryNavigation"
+        ).get_attribute("aria-keyshortcuts")
+        assert "PageUp PageDown" in page.locator(
+            "#sourceList"
+        ).get_attribute("aria-keyshortcuts")
+        assert "PageUp PageDown" in folder_source.get_attribute(
+            "aria-keyshortcuts"
+        )
         folder_capacity = page.locator(".source-folder-capacity")
         assert folder_capacity.inner_text() == "共 501 个子文件夹，按需显示"
         assert "每次读取最多 100 个" in folder_capacity.get_attribute(
             "data-help-detail"
         )
-        tree_navigation_asset_query_count = len(asset_queries)
-
         trips = page.locator(
             f'[data-folder-source-id="{SOURCE_FOLDER}"][data-folder-path="Trips"]'
         )
@@ -557,6 +564,97 @@ def main():
         assert trips.get_attribute("data-help-owner") == (
             f"folder:{SOURCE_FOLDER}:tree:Trips"
         )
+        assert "PageUp PageDown" in trips.get_attribute("aria-keyshortcuts")
+        sidebar_page_asset_query_count = len(asset_queries)
+        page.set_viewport_size({"width": 1440, "height": 420})
+        page.evaluate(
+            """() => {
+              const sidebar = document.querySelector('#sourceSidebar');
+              sidebar.scrollTop = 0;
+              sidebarPrimaryNavigationItems()[0].focus({ preventScroll: true });
+            }"""
+        )
+        first_sidebar_page = page.evaluate(
+            """() => {
+              const sidebar = document.querySelector('#sourceSidebar');
+              const viewport = sidebar.getBoundingClientRect();
+              const items = sidebarPrimaryNavigationItems();
+              const visibleCount = items.filter((item) => {
+                const rect = item.getBoundingClientRect();
+                return rect.bottom > viewport.top && rect.top < viewport.bottom;
+              }).length;
+              return { itemCount: items.length, visibleCount };
+            }"""
+        )
+        assert 2 < first_sidebar_page["visibleCount"] < first_sidebar_page["itemCount"]
+        page.keyboard.press("PageDown")
+        first_page_target = page.evaluate(
+            """() => {
+              const sidebar = document.querySelector('#sourceSidebar');
+              const viewport = sidebar.getBoundingClientRect();
+              const items = sidebarPrimaryNavigationItems();
+              const active = document.activeElement;
+              const rect = active.getBoundingClientRect();
+              return {
+                index: items.indexOf(active),
+                fullyVisible: rect.top >= viewport.top - 0.5
+                  && rect.bottom <= viewport.bottom + 0.5,
+                scrollTop: sidebar.scrollTop,
+              };
+            }"""
+        )
+        assert first_page_target["index"] == first_sidebar_page["visibleCount"] - 1
+        assert first_page_target["fullyVisible"]
+        second_sidebar_page = page.evaluate(
+            """() => {
+              const sidebar = document.querySelector('#sourceSidebar');
+              const viewport = sidebar.getBoundingClientRect();
+              const items = sidebarPrimaryNavigationItems();
+              const visibleCount = items.filter((item) => {
+                const rect = item.getBoundingClientRect();
+                return rect.bottom > viewport.top && rect.top < viewport.bottom;
+              }).length;
+              return {
+                currentIndex: items.indexOf(document.activeElement),
+                itemCount: items.length,
+                visibleCount,
+              };
+            }"""
+        )
+        page.keyboard.press("PageDown")
+        second_page_target = page.evaluate(
+            """() => {
+              const sidebar = document.querySelector('#sourceSidebar');
+              const viewport = sidebar.getBoundingClientRect();
+              const items = sidebarPrimaryNavigationItems();
+              const active = document.activeElement;
+              const rect = active.getBoundingClientRect();
+              return {
+                index: items.indexOf(active),
+                fullyVisible: rect.top >= viewport.top - 0.5
+                  && rect.bottom <= viewport.bottom + 0.5,
+                scrollTop: sidebar.scrollTop,
+              };
+            }"""
+        )
+        assert second_page_target["index"] == min(
+            second_sidebar_page["itemCount"] - 1,
+            second_sidebar_page["currentIndex"]
+            + second_sidebar_page["visibleCount"] - 1,
+        )
+        assert second_page_target["index"] > first_page_target["index"]
+        assert second_page_target["fullyVisible"]
+        assert second_page_target["scrollTop"] > first_page_target["scrollTop"]
+        page.keyboard.press("PageUp")
+        assert page.evaluate(
+            "() => sidebarPrimaryNavigationItems().indexOf(document.activeElement)"
+        ) < second_page_target["index"]
+        page.keyboard.press("Home")
+        assert page.evaluate(
+            "() => sidebarPrimaryNavigationItems().indexOf(document.activeElement)"
+        ) == 0
+        assert len(asset_queries) == sidebar_page_asset_query_count
+        page.set_viewport_size({"width": 1440, "height": 960})
         trips.hover()
         page.locator("#persistentHelp:not(.hidden)").wait_for(timeout=2_000)
         assert page.locator("#persistentHelpTitle").inner_text() == "Trips"
@@ -565,6 +663,7 @@ def main():
             "只显示“Trips”目录及其所有子目录中的媒体",
             "右方向键展开",
             "左方向键折叠或返回上级",
+            "Page Up/Down 按侧栏当前可见页幅移动",
         ]:
             assert expected in folder_help_detail, (expected, folder_help_detail)
         assert page.locator("#persistentHelp").get_attribute("data-kind") == "source"
@@ -676,6 +775,7 @@ def main():
         )
         page.mouse.move(720, 500)
         page.locator("#persistentHelp").wait_for(state="hidden")
+        tree_navigation_asset_query_count = len(asset_queries)
         folder_source.focus()
         folder_source.press("ArrowRight")
         page.wait_for_function(
