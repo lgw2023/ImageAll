@@ -19924,6 +19924,38 @@ function galleryRemovalReturnFocus(previewAssetID = null) {
   return { element: document.activeElement };
 }
 
+function reconcileLibrarySelectionAfterGalleryRemoval(context, hiddenAssetIDs) {
+  const primaryWasHidden = Boolean(
+    state.selectedAssetID && hiddenAssetIDs.has(state.selectedAssetID)
+  );
+  const anchorWasHidden = Boolean(
+    state.selectionAnchorID && hiddenAssetIDs.has(state.selectionAnchorID)
+  );
+  if (!primaryWasHidden && !anchorWasHidden) return;
+
+  const remainingSelectedIDs = state.assets
+    .map((asset) => asset.id)
+    .filter((assetID) => state.selectedAssetIDs.has(assetID));
+  const previousIDs = context?.assetIDs || state.assets.map((asset) => asset.id);
+  if (primaryWasHidden) {
+    state.selectedAssetID = replacementPreviewAssetID(
+      previousIDs,
+      remainingSelectedIDs,
+      state.selectedAssetID
+    ) || remainingSelectedIDs[0] || null;
+  }
+  if (anchorWasHidden) {
+    state.selectionAnchorID = state.selectedAssetID
+      || replacementPreviewAssetID(
+        previousIDs,
+        remainingSelectedIDs,
+        state.selectionAnchorID
+      )
+      || remainingSelectedIDs[0]
+      || null;
+  }
+}
+
 async function reconcileLibraryPreviewAfterGalleryRemoval(context, hiddenAssetIDs) {
   const previewAssetID = context?.surface !== "review" ? context?.previewAssetID : null;
   if (!previewAssetID || !hiddenAssetIDs.has(previewAssetID)) return;
@@ -20166,14 +20198,14 @@ async function applyGalleryRemovalTerminal(request) {
     state.selectedAssetIDs = new Set(
       [...state.selectedAssetIDs].filter((assetID) => !hidden.has(assetID))
     );
-    if (state.selectionAnchorID && hidden.has(state.selectionAnchorID)) {
-      state.selectionAnchorID = null;
-    }
-    if (state.selectedAssetID && hidden.has(state.selectedAssetID)) {
-      state.selectedAssetID = null;
+    const selectedAssetWasHidden = Boolean(
+      state.selectedAssetID && hidden.has(state.selectedAssetID)
+    );
+    if (selectedAssetWasHidden) {
       state.selectedDetail = null;
       state.inspectorRequestGeneration += 1;
     }
+    reconcileLibrarySelectionAfterGalleryRemoval(context, hidden);
     for (const assetID of hidden) state.lightboxFavoriteStates.delete(assetID);
     await loadAssets({
       preserveSelection: true,

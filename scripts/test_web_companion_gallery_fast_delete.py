@@ -701,7 +701,40 @@ def main():
         )
         assert page.locator("#assetGrid .asset-card-main").count() == 87
         assert page.evaluate("() => [...state.selectedAssetIDs]") == [ASSET_IDS[2]]
-        assert page.evaluate("() => state.selectedAssetID") is None
+        assert page.evaluate("() => state.selectedAssetID") == ASSET_IDS[2]
+        assert page.evaluate("() => state.selectionAnchorID") == ASSET_IDS[2]
+        assert page.locator("#selectionInspectorPrimaryPosition").inner_text() == (
+            "当前主项 · 选区 1 / 1"
+        )
+        history_selection = page.evaluate(
+            """() => ({
+              primaryID: history.state.imageAllWorkspace.context.gallerySelectedAssetID,
+              selectedIDs: history.state.imageAllWorkspace.context.gallerySelectedAssetIDs,
+              anchorID: history.state.imageAllWorkspace.context.gallerySelectionAnchorID,
+            })"""
+        )
+        assert history_selection == {
+            "primaryID": ASSET_IDS[2],
+            "selectedIDs": [ASSET_IDS[2]],
+            "anchorID": ASSET_IDS[2],
+        }
+        preserved_user_primary = page.evaluate(
+            """hiddenID => {
+              reconcileLibrarySelectionAfterGalleryRemoval(
+                { assetIDs: state.assets.map(asset => asset.id) },
+                new Set([hiddenID])
+              );
+              return {
+                primaryID: state.selectedAssetID,
+                anchorID: state.selectionAnchorID,
+              };
+            }""",
+            ASSET_IDS[55],
+        )
+        assert preserved_user_primary == {
+            "primaryID": ASSET_IDS[2],
+            "anchorID": ASSET_IDS[2],
+        }
         assert abs(page.locator("#libraryScroll").evaluate("element => element.scrollTop") - scroll_before) < 3
         assert page.locator("#selectionInspectorDeleteButton").is_disabled()
         assert "所选项目均有红心保护" in page.locator(

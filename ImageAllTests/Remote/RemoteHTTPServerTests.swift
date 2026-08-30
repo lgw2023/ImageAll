@@ -3050,10 +3050,16 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("elements.lightbox.classList.add(\"review-docked\")"))
         XCTAssertTrue(script.contains("function reconcileReviewPreviewAfterGalleryRemoval"))
         XCTAssertTrue(script.contains("function reconcileLibraryPreviewAfterGalleryRemoval"))
+        XCTAssertTrue(script.contains("function reconcileLibrarySelectionAfterGalleryRemoval"))
         XCTAssertTrue(script.contains("function replacementPreviewAssetID"))
         XCTAssertTrue(
             script.contains(
                 "await reconcileLibraryPreviewAfterGalleryRemoval(context, hidden);"
+            )
+        )
+        XCTAssertTrue(
+            script.contains(
+                "reconcileLibrarySelectionAfterGalleryRemoval(context, hidden);"
             )
         )
         XCTAssertFalse(
