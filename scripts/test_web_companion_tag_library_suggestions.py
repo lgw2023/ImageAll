@@ -796,6 +796,118 @@ def main():
               options.style.removeProperty('max-height');
             }"""
         )
+        navigation_reads = {
+            "tag": tag_snapshot_reads,
+            "review": review_queue_reads,
+            "suggestion": suggestion_reads,
+            "submitted": len(submitted),
+        }
+        navigation_state = page.evaluate(
+            """() => {
+              const originalSources = state.sources;
+              state.sources = [
+                ...originalSources,
+                ...Array.from({ length: 12 }, (_, index) => ({
+                  id: `f0000000-1111-2222-3333-${String(index + 1).padStart(12, '0')}`,
+                  kind: 'folder',
+                  displayName: `合成来源 ${index + 1}`,
+                  state: 'active',
+                })),
+              ];
+              renderTagSuggestionDialog();
+              const options = document.querySelector('#tagSuggestionSourceOptions');
+              options.style.maxHeight = '124px';
+              options.scrollTop = 0;
+              const inputs = [...options.querySelectorAll('input[type="checkbox"]')];
+              inputs[0].focus({ preventScroll: true });
+              window.__tagSuggestionNavigationOriginalSources = originalSources;
+              window.__tagSuggestionNavigationChecked = inputs.map((input) => input.checked);
+              return {
+                count: inputs.length,
+                shortcuts: inputs.every((input) => input.getAttribute('aria-keyshortcuts')
+                  === checkboxGridNavigationShortcuts),
+                columns: renderedGridColumnCount(
+                  options,
+                  ':scope > .tag-suggestion-source-option'
+                ),
+                dialogScrollTop: document.querySelector('#tagSuggestionDialog').scrollTop,
+                documentScrollTop: document.documentElement.scrollTop,
+              };
+            }"""
+        )
+        assert navigation_state == {
+            "count": 14,
+            "shortcuts": True,
+            "columns": 2,
+            "dialogScrollTop": 0,
+            "documentScrollTop": 0,
+        }, navigation_state
+        page.keyboard.press("ArrowRight")
+        assert page.evaluate(
+            "() => [...document.querySelectorAll('#tagSuggestionSourceOptions input')].indexOf(document.activeElement)"
+        ) == 1
+        page.keyboard.press("ArrowDown")
+        assert page.evaluate(
+            "() => [...document.querySelectorAll('#tagSuggestionSourceOptions input')].indexOf(document.activeElement)"
+        ) == 3
+        page.keyboard.press("PageDown")
+        first_page_target = page.evaluate(
+            "() => [...document.querySelectorAll('#tagSuggestionSourceOptions input')].indexOf(document.activeElement)"
+        )
+        assert first_page_target > 3, first_page_target
+        page.keyboard.press("PageDown")
+        page.keyboard.press("PageUp")
+        page.keyboard.press("End")
+        assert page.evaluate(
+            "() => [...document.querySelectorAll('#tagSuggestionSourceOptions input')].indexOf(document.activeElement)"
+        ) == 13
+        page.keyboard.press("Home")
+        tag_navigation_result = page.evaluate(
+            """() => {
+              const options = document.querySelector('#tagSuggestionSourceOptions');
+              const inputs = [...options.querySelectorAll('input[type="checkbox"]')];
+              const row = document.activeElement.closest('.tag-suggestion-source-option');
+              const optionsRect = options.getBoundingClientRect();
+              const rowRect = row.getBoundingClientRect();
+              return {
+                activeIndex: inputs.indexOf(document.activeElement),
+                checkedUnchanged: inputs.every(
+                  (input, index) => input.checked === window.__tagSuggestionNavigationChecked[index]
+                ),
+                fullyVisible: rowRect.top >= optionsRect.top + options.clientTop - 0.5
+                  && rowRect.bottom <= optionsRect.top + options.clientTop
+                    + options.clientHeight + 0.5,
+                dialogScrollTop: document.querySelector('#tagSuggestionDialog').scrollTop,
+                documentScrollTop: document.documentElement.scrollTop,
+              };
+            }"""
+        )
+        assert tag_navigation_result == {
+            "activeIndex": 0,
+            "checkedUnchanged": True,
+            "fullyVisible": True,
+            "dialogScrollTop": 0,
+            "documentScrollTop": 0,
+        }, tag_navigation_result
+        assert navigation_reads == {
+            "tag": tag_snapshot_reads,
+            "review": review_queue_reads,
+            "suggestion": suggestion_reads,
+            "submitted": len(submitted),
+        }
+        page.screenshot(
+            path="/tmp/imageall-tag-suggestion-source-grid-keyboard.png",
+            full_page=False,
+        )
+        page.evaluate(
+            """() => {
+              state.sources = window.__tagSuggestionNavigationOriginalSources;
+              renderTagSuggestionDialog();
+              document.querySelector('#tagSuggestionSourceOptions').style.removeProperty(
+                'max-height'
+              );
+            }"""
+        )
         page.locator(
             f'#tagSuggestionSourceOptions input[value="{SOURCE_IDS[1]}"]'
         ).uncheck()

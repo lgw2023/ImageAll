@@ -4296,6 +4296,119 @@ def main(*, inspector_actions_only=False):
         page.evaluate(
             "document.querySelector('#slimmingSourceOptions').style.removeProperty('max-height')"
         )
+        slimming_navigation_reads = {
+            "setup": slimming_setup_reads[0],
+            "launches": len(submitted_slimming),
+            "thresholds": len(submitted_slimming_thresholds),
+            "maintenance": len(submitted_slimming_source_maintenance),
+            "assets": len(asset_request_urls),
+        }
+        slimming_navigation_state = page.evaluate(
+            """() => {
+              const snapshot = state.slimming.setup.snapshot;
+              const originalSources = snapshot.sources;
+              snapshot.sources = [
+                ...originalSources,
+                ...Array.from({ length: 12 }, (_, index) => ({
+                  id: `aaaaaaaa-aaaa-bbbb-cccc-${String(index + 1).padStart(12, '0')}`,
+                  kind: 'folder',
+                  displayName: `合成瘦身来源 ${index + 1}`,
+                  similarityIndex: null,
+                })),
+              ];
+              window.__slimmingNavigationOriginalSources = originalSources;
+              renderSlimmingSetup();
+              const options = document.querySelector('#slimmingSourceOptions');
+              options.style.maxHeight = '124px';
+              options.scrollTop = 0;
+              const inputs = [...options.querySelectorAll(
+                'input[data-slimming-source-id]'
+              )];
+              inputs[0].focus({ preventScroll: true });
+              window.__slimmingSourceNavigationChecked = inputs.map(
+                (input) => input.checked
+              );
+              return {
+                count: inputs.length,
+                shortcuts: inputs.every((input) => input.getAttribute('aria-keyshortcuts')
+                  === checkboxGridNavigationShortcuts),
+                columns: renderedGridColumnCount(options, ':scope > .training-option-row'),
+                dialogScrollTop: document.querySelector('#slimmingSetupDialog').scrollTop,
+                documentScrollTop: document.documentElement.scrollTop,
+              };
+            }"""
+        )
+        assert slimming_navigation_state == {
+            "count": 14,
+            "shortcuts": True,
+            "columns": 1,
+            "dialogScrollTop": 0,
+            "documentScrollTop": 0,
+        }, slimming_navigation_state
+        page.keyboard.press("ArrowDown")
+        assert page.evaluate(
+            "() => [...document.querySelectorAll('#slimmingSourceOptions [data-slimming-source-id]')].indexOf(document.activeElement)"
+        ) == 1
+        page.keyboard.press("PageDown")
+        slimming_page_target = page.evaluate(
+            "() => [...document.querySelectorAll('#slimmingSourceOptions [data-slimming-source-id]')].indexOf(document.activeElement)"
+        )
+        assert slimming_page_target > 1, slimming_page_target
+        page.keyboard.press("PageDown")
+        page.keyboard.press("PageUp")
+        page.keyboard.press("End")
+        assert page.evaluate(
+            "() => [...document.querySelectorAll('#slimmingSourceOptions [data-slimming-source-id]')].indexOf(document.activeElement)"
+        ) == 13
+        page.keyboard.press("Home")
+        slimming_navigation_result = page.evaluate(
+            """() => {
+              const options = document.querySelector('#slimmingSourceOptions');
+              const inputs = [...options.querySelectorAll('[data-slimming-source-id]')];
+              const row = document.activeElement.closest('.training-option-row');
+              const optionsRect = options.getBoundingClientRect();
+              const rowRect = row.getBoundingClientRect();
+              return {
+                activeIndex: inputs.indexOf(document.activeElement),
+                checkedUnchanged: inputs.every(
+                  (input, index) => input.checked === window.__slimmingSourceNavigationChecked[index]
+                ),
+                fullyVisible: rowRect.top >= optionsRect.top + options.clientTop - 0.5
+                  && rowRect.bottom <= optionsRect.top + options.clientTop
+                    + options.clientHeight + 0.5,
+                dialogScrollTop: document.querySelector('#slimmingSetupDialog').scrollTop,
+                documentScrollTop: document.documentElement.scrollTop,
+              };
+            }"""
+        )
+        assert slimming_navigation_result == {
+            "activeIndex": 0,
+            "checkedUnchanged": True,
+            "fullyVisible": True,
+            "dialogScrollTop": 0,
+            "documentScrollTop": 0,
+        }, slimming_navigation_result
+        assert slimming_navigation_reads == {
+            "setup": slimming_setup_reads[0],
+            "launches": len(submitted_slimming),
+            "thresholds": len(submitted_slimming_thresholds),
+            "maintenance": len(submitted_slimming_source_maintenance),
+            "assets": len(asset_request_urls),
+        }
+        page.screenshot(
+            path="/tmp/imageall-slimming-source-grid-keyboard.png",
+            full_page=False,
+        )
+        page.evaluate(
+            """() => {
+              state.slimming.setup.snapshot.sources =
+                window.__slimmingNavigationOriginalSources;
+              renderSlimmingSetup();
+              document.querySelector('#slimmingSourceOptions').style.removeProperty(
+                'max-height'
+              );
+            }"""
+        )
         assert page.locator("#launchSlimmingButton").is_enabled(), page.evaluate(
             "() => ({ online: state.online, setup: { "
             "loading: state.slimming.setup.loading, saving: state.slimming.setup.saving, "

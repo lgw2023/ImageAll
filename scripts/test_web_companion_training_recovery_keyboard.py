@@ -46,6 +46,16 @@ def main():
     activity_completed_unit_count = [3]
     activity_second_tag_phase = ["failed"]
     toolbar_activity_phase = ["completed"]
+    training_sources = [
+        {"id": ACTIVE_SOURCE_ID, "displayName": "Apple Photos"},
+        *[
+            {
+                "id": f"22222223-aaaa-bbbb-cccc-{index:012d}",
+                "displayName": f"合成训练来源 {index}",
+            }
+            for index in range(1, 13)
+        ],
+    ]
 
     runs = [
         {
@@ -400,7 +410,7 @@ def main():
                             "personalEligible": True,
                         },
                     ],
-                    "sources": [{"id": ACTIVE_SOURCE_ID, "displayName": "Apple Photos"}],
+                    "sources": training_sources,
                     "methods": [
                         {"method": "featureKnn", "isAvailable": True},
                         {"method": "personalCentroid", "isAvailable": True},
@@ -2747,6 +2757,98 @@ def main():
 
         page.keyboard.press("n")
         page.locator("#trainingSetupDialog").wait_for(state="visible")
+        page.wait_for_function("() => !state.training.setup.loading")
+        training_navigation_reads = {
+            "setup": len(training_setup_requests),
+            "workspace": len(workspace_requests),
+            "jobs": len(jobs_requests),
+            "launches": len(launches),
+        }
+        training_navigation_state = page.evaluate(
+            """() => {
+              const options = document.querySelector('#trainingScopeOptions');
+              options.style.maxHeight = '124px';
+              options.scrollTop = 0;
+              const inputs = [...options.querySelectorAll(
+                'input[data-training-source-id]'
+              )];
+              inputs[0].focus({ preventScroll: true });
+              window.__trainingSourceNavigationChecked = inputs.map(
+                (input) => input.checked
+              );
+              return {
+                count: inputs.length,
+                shortcuts: inputs.every((input) => input.getAttribute('aria-keyshortcuts')
+                  === checkboxGridNavigationShortcuts),
+                columns: renderedGridColumnCount(options, ':scope > .training-option-row'),
+                dialogScrollTop: document.querySelector('#trainingSetupDialog').scrollTop,
+                workspaceScrollTop: document.querySelector('#trainingWorkspace').scrollTop,
+              };
+            }"""
+        )
+        assert training_navigation_state == {
+            "count": 13,
+            "shortcuts": True,
+            "columns": 1,
+            "dialogScrollTop": 0,
+            "workspaceScrollTop": 0,
+        }, training_navigation_state
+        page.keyboard.press("ArrowDown")
+        assert page.evaluate(
+            "() => [...document.querySelectorAll('#trainingScopeOptions [data-training-source-id]')].indexOf(document.activeElement)"
+        ) == 1
+        page.keyboard.press("PageDown")
+        training_page_target = page.evaluate(
+            "() => [...document.querySelectorAll('#trainingScopeOptions [data-training-source-id]')].indexOf(document.activeElement)"
+        )
+        assert training_page_target > 1, training_page_target
+        page.keyboard.press("PageDown")
+        page.keyboard.press("PageUp")
+        page.keyboard.press("End")
+        assert page.evaluate(
+            "() => [...document.querySelectorAll('#trainingScopeOptions [data-training-source-id]')].indexOf(document.activeElement)"
+        ) == 12
+        page.keyboard.press("Home")
+        training_navigation_result = page.evaluate(
+            """() => {
+              const options = document.querySelector('#trainingScopeOptions');
+              const inputs = [...options.querySelectorAll('[data-training-source-id]')];
+              const row = document.activeElement.closest('.training-option-row');
+              const optionsRect = options.getBoundingClientRect();
+              const rowRect = row.getBoundingClientRect();
+              return {
+                activeIndex: inputs.indexOf(document.activeElement),
+                checkedUnchanged: inputs.every(
+                  (input, index) => input.checked === window.__trainingSourceNavigationChecked[index]
+                ),
+                fullyVisible: rowRect.top >= optionsRect.top + options.clientTop - 0.5
+                  && rowRect.bottom <= optionsRect.top + options.clientTop
+                    + options.clientHeight + 0.5,
+                dialogScrollTop: document.querySelector('#trainingSetupDialog').scrollTop,
+                workspaceScrollTop: document.querySelector('#trainingWorkspace').scrollTop,
+              };
+            }"""
+        )
+        assert training_navigation_result == {
+            "activeIndex": 0,
+            "checkedUnchanged": True,
+            "fullyVisible": True,
+            "dialogScrollTop": 0,
+            "workspaceScrollTop": 0,
+        }, training_navigation_result
+        assert training_navigation_reads == {
+            "setup": len(training_setup_requests),
+            "workspace": len(workspace_requests),
+            "jobs": len(jobs_requests),
+            "launches": len(launches),
+        }
+        page.screenshot(
+            path="/tmp/imageall-training-source-grid-keyboard.png",
+            full_page=False,
+        )
+        page.evaluate(
+            "document.querySelector('#trainingScopeOptions').style.removeProperty('max-height')"
+        )
         page.keyboard.press("Escape")
 
         page.locator(f'[data-training-run-id="{FAILED_RUN_ID}"]').focus()

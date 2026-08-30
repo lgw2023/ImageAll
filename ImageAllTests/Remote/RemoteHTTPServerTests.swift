@@ -4082,6 +4082,14 @@ final class RemoteHTTPServerTests: XCTestCase {
                 "ArrowLeft ArrowRight ArrowUp ArrowDown PageUp PageDown Home End"
             )
         )
+        XCTAssertTrue(script.contains("function handleCheckboxGridNavigation(event, {"))
+        XCTAssertTrue(script.contains("container: elements.tagSuggestionSourceOptions"))
+        XCTAssertTrue(script.contains("container: elements.trainingScopeOptions"))
+        XCTAssertTrue(script.contains("container: elements.slimmingSourceOptions"))
+        XCTAssertTrue(script.contains("inputSelector: 'input[type=\"checkbox\"]'"))
+        XCTAssertTrue(script.contains("inputSelector: \"input[data-training-source-id]\""))
+        XCTAssertTrue(script.contains("inputSelector: \"input[data-slimming-source-id]\""))
+        XCTAssertTrue(script.contains("revealCheckboxGridRow(container, targetRow)"))
         XCTAssertTrue(script.contains("renderReviewOverview({ reconcileContent: true });"))
         XCTAssertTrue(
             script.contains(

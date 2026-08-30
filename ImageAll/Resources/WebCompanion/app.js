@@ -21779,8 +21779,15 @@ function syncTagSuggestionSourceOption(label, source, selected, disabled) {
   input.value = source.id;
   input.checked = selected;
   input.disabled = disabled;
+  input.setAttribute("aria-keyshortcuts", checkboxGridNavigationShortcuts);
   const name = label.querySelector(":scope > span");
   if (name.textContent !== source.displayName) name.textContent = source.displayName;
+  configurePersistentHelp(label, {
+    title: `建议来源 · ${source.displayName}`,
+    detail: "勾选后只扫描这个来源；方向键、Page Up/Page Down 或 Home/End 可在来源之间移动，空格键切换勾选。",
+    kind: "review",
+    keyShortcuts: checkboxGridNavigationShortcuts,
+  });
 }
 
 function renderTagSuggestionDialog() {
@@ -22442,6 +22449,66 @@ function longListNavigationTarget(rows, currentIndex, key, viewport) {
     ? visibleListPageStep(rows, viewport)
     : 1;
   return Math.max(0, Math.min(rows.length - 1, currentIndex + direction * step));
+}
+
+const checkboxGridNavigationShortcuts =
+  "ArrowLeft ArrowRight ArrowUp ArrowDown PageUp PageDown Home End";
+
+function revealCheckboxGridRow(container, row) {
+  const containerRect = container.getBoundingClientRect();
+  const rowRect = row.getBoundingClientRect();
+  const visibleTop = containerRect.top + container.clientTop;
+  const visibleBottom = visibleTop + container.clientHeight;
+  if (rowRect.top < visibleTop) {
+    container.scrollTop -= visibleTop - rowRect.top;
+  } else if (rowRect.bottom > visibleBottom) {
+    container.scrollTop += rowRect.bottom - visibleBottom;
+  }
+}
+
+function handleCheckboxGridNavigation(event, {
+  container,
+  inputSelector,
+  rowSelector,
+}) {
+  if (event.altKey || event.ctrlKey || event.metaKey) return false;
+  if (!checkboxGridNavigationShortcuts.split(" ").includes(event.key)) return false;
+  const input = event.target.closest(inputSelector);
+  if (!input || !container.contains(input)) return false;
+  const inputs = [...container.querySelectorAll(inputSelector)]
+    .filter((candidate) => !candidate.disabled);
+  const currentIndex = inputs.indexOf(input);
+  if (currentIndex < 0 || !inputs.length) return false;
+
+  const rows = inputs.map((candidate) => candidate.closest(rowSelector));
+  const cardSelector = `:scope > ${rowSelector}`;
+  const columns = renderedGridColumnCount(container, cardSelector);
+  const pageItems = renderedGridPageItemCount(
+    container,
+    container,
+    cardSelector
+  );
+  const pageStep = Math.max(columns, pageItems - columns);
+  const movement = {
+    ArrowLeft: -1,
+    ArrowRight: 1,
+    ArrowUp: -columns,
+    ArrowDown: columns,
+    PageUp: -pageStep,
+    PageDown: pageStep,
+  }[event.key];
+  const targetIndex = event.key === "Home" ? 0
+    : event.key === "End" ? inputs.length - 1
+      : Math.max(0, Math.min(inputs.length - 1, currentIndex + movement));
+  const target = inputs[targetIndex];
+  const targetRow = rows[targetIndex];
+  if (!target || !targetRow) return false;
+
+  event.preventDefault();
+  event.stopPropagation();
+  target.focus({ preventScroll: true });
+  revealCheckboxGridRow(container, targetRow);
+  return true;
 }
 
 function tagGroupNavigationViewport(toggle, fallback) {
@@ -25492,14 +25559,16 @@ function syncTrainingSourceOption(row, source) {
   input.checked = state.training.setup.selectedSourceIDs.has(source.id);
   input.disabled = state.training.setup.launching;
   input.dataset.trainingSourceId = source.id;
+  input.setAttribute("aria-keyshortcuts", checkboxGridNavigationShortcuts);
   const name = row.querySelector(":scope > strong");
   if (name.textContent !== source.displayName) name.textContent = source.displayName;
   const status = row.querySelector(":scope > span");
   if (status.textContent !== "可用") status.textContent = "可用";
   configurePersistentHelp(row, {
     title: `训练来源 · ${source.displayName}`,
-    detail: `决定相似${state.training.mediaKind === "video" ? "视频" : "照片"}任务扫描哪些来源。只读取勾选来源，Mac 会冻结本次目录范围；不会改变图库侧栏位置。`,
+    detail: `决定相似${state.training.mediaKind === "video" ? "视频" : "照片"}任务扫描哪些来源。方向键、Page Up/Page Down 或 Home/End 可移动，空格键切换勾选；Mac 会冻结本次目录范围。`,
     kind: "training",
+    keyShortcuts: checkboxGridNavigationShortcuts,
   });
 }
 
@@ -34106,6 +34175,7 @@ function syncSlimmingSetupSourceOption(row, source) {
   input.checked = state.slimming.setup.selectedSourceIDs.has(source.id);
   input.disabled = state.slimming.setup.launching;
   input.dataset.slimmingSourceId = source.id;
+  input.setAttribute("aria-keyshortcuts", checkboxGridNavigationShortcuts);
   const name = row.querySelector(":scope > strong");
   if (name.textContent !== source.displayName) name.textContent = source.displayName;
   const kind = row.querySelector(":scope > span");
@@ -34113,8 +34183,9 @@ function syncSlimmingSetupSourceOption(row, source) {
   if (kind.textContent !== kindText) kind.textContent = kindText;
   configurePersistentHelp(row, {
     title: `瘦身分析来源 · ${source.displayName}`,
-    detail: "选择后只在这台 Mac 上读取该来源并纳入本次分析；不会改变图库侧栏位置。",
+    detail: "选择后只在这台 Mac 上读取该来源并纳入本次分析；方向键、Page Up/Page Down 或 Home/End 可移动，空格键切换勾选。",
     kind: "slimming",
+    keyShortcuts: checkboxGridNavigationShortcuts,
   });
 }
 
@@ -42634,6 +42705,13 @@ function bindEvents() {
     renderSlimmingSetup();
   });
   elements.slimmingModeOptions.addEventListener("keydown", moveSlimmingSetupModeSelection);
+  elements.slimmingSourceOptions.addEventListener("keydown", (event) => {
+    handleCheckboxGridNavigation(event, {
+      container: elements.slimmingSourceOptions,
+      inputSelector: "input[data-slimming-source-id]",
+      rowSelector: ".training-option-row",
+    });
+  });
   elements.slimmingSourceOptions.addEventListener("change", (event) => {
     const input = event.target.closest("[data-slimming-source-id]");
     if (!input) return;
@@ -43185,6 +43263,13 @@ function bindEvents() {
     }
     renderTrainingSetup();
   });
+  elements.trainingScopeOptions.addEventListener("keydown", (event) => {
+    handleCheckboxGridNavigation(event, {
+      container: elements.trainingScopeOptions,
+      inputSelector: "input[data-training-source-id]",
+      rowSelector: ".training-option-row",
+    });
+  });
   elements.trainingScopeOptions.addEventListener("change", (event) => {
     const source = event.target.closest("[data-training-source-id]");
     if (source) {
@@ -43383,6 +43468,13 @@ function bindEvents() {
   elements.tagSuggestionDialog.addEventListener("cancel", (event) => {
     event.preventDefault();
     void returnFromTagSuggestion();
+  });
+  elements.tagSuggestionSourceOptions.addEventListener("keydown", (event) => {
+    handleCheckboxGridNavigation(event, {
+      container: elements.tagSuggestionSourceOptions,
+      inputSelector: 'input[type="checkbox"]',
+      rowSelector: ".tag-suggestion-source-option",
+    });
   });
   elements.tagSuggestionSourceOptions.addEventListener("change", (event) => {
     const input = event.target.closest('input[type="checkbox"]');
