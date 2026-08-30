@@ -89,6 +89,10 @@ def asset_detail(asset_id):
 
 def main():
     visible_ids = list(ASSET_IDS[:80])
+    thumbnail_recovery_targets = set(ASSET_IDS[:6])
+    thumbnail_recovery = {"enabled": False}
+    thumbnail_failures_issued = set()
+    thumbnail_recovery_requests = {asset_id: 0 for asset_id in thumbnail_recovery_targets}
     submitted_favorites = []
     submitted_removals = []
     removal = {"request": None}
@@ -222,10 +226,20 @@ def main():
             fulfill_json(route, asset_detail(asset_id))
 
         page.route("**/v1/assets/*", handle_asset_detail)
-        page.route(
-            "**/v1/assets/*/thumbnail?**",
-            lambda route: route.fulfill(status=200, content_type="image/png", body=PIXEL),
-        )
+        def handle_thumbnail(route):
+            asset_id = route.request.url.split("/v1/assets/", 1)[1].split("/", 1)[0]
+            if thumbnail_recovery["enabled"] and asset_id in thumbnail_recovery_targets:
+                thumbnail_recovery_requests[asset_id] += 1
+                if asset_id not in thumbnail_failures_issued:
+                    thumbnail_failures_issued.add(asset_id)
+                    fulfill_json(route, {
+                        "code": "thumbnailTemporarilyUnavailable",
+                        "message": "Synthetic transient thumbnail failure",
+                    }, status=503)
+                    return
+            route.fulfill(status=200, content_type="image/png", body=PIXEL)
+
+        page.route("**/v1/assets/*/thumbnail?**", handle_thumbnail)
         page.route(
             "**/v1/assets/*/preview?**",
             lambda route: route.fulfill(status=200, content_type="image/png", body=PIXEL),
@@ -341,6 +355,87 @@ def main():
             "assetCount": page.evaluate("() => state.assets.length"),
             "nextCursor": page.evaluate("() => state.nextCursor"),
         }
+        page.wait_for_function(
+            "() => [...document.querySelectorAll('#assetGrid .asset-card-main img')]"
+            ".every(image => image.naturalWidth > 0)"
+        )
+        cards.nth(10).click(modifiers=["Meta"])
+        page.wait_for_function(
+            "id => state.selectionMode && state.selectedAssetIDs.has(id)",
+            arg=ASSET_IDS[10],
+        )
+        thumbnail_recovery_baseline = page.evaluate(
+            """
+            targetIDs => {
+              const scroll = document.querySelector("#libraryScroll");
+              scroll.scrollTop = 48;
+              globalThis.__thumbnailRecoveryCards = targetIDs.map((assetID) =>
+                document.querySelector(`[data-asset-id="${assetID}"]`)
+              );
+              return {
+                scrollTop: scroll.scrollTop,
+                selectedIDs: [...state.selectedAssetIDs],
+                focusedAssetID: document.activeElement
+                  ?.closest("[data-asset-id]")?.dataset.assetId || null,
+              };
+            }
+            """,
+            arg=sorted(thumbnail_recovery_targets),
+        )
+        thumbnail_recovery["enabled"] = True
+        page.evaluate("() => setThumbnailAspectMode('original')")
+        page.locator("#thumbnailRecoveryStatus:not(.hidden)").wait_for()
+        page.screenshot(path="/tmp/imageall-thumbnail-auto-recovery.png", full_page=True)
+        page.wait_for_function(
+            """
+            targetIDs => thumbnailRecovery.generation === 1
+              && document.querySelector("#thumbnailRecoveryStatus").classList.contains("hidden")
+              && targetIDs.every((assetID) => {
+                const card = document.querySelector(`[data-asset-id="${assetID}"]`);
+                const image = card?.querySelector(":scope > img");
+                return image?.naturalWidth > 0
+                  && !card.querySelector("[data-thumbnail-error-placeholder]");
+              })
+            """,
+            arg=sorted(thumbnail_recovery_targets),
+        )
+        thumbnail_recovery_result = page.evaluate(
+            """
+            targetIDs => ({
+              retainedCards: targetIDs.every((assetID, index) =>
+                document.querySelector(`[data-asset-id="${assetID}"]`)
+                  === globalThis.__thumbnailRecoveryCards[index]
+              ),
+              scrollTop: document.querySelector("#libraryScroll").scrollTop,
+              selectedIDs: [...state.selectedAssetIDs],
+              focusedAssetID: document.activeElement
+                ?.closest("[data-asset-id]")?.dataset.assetId || null,
+              generation: thumbnailRecovery.generation,
+            })
+            """,
+            sorted(thumbnail_recovery_targets),
+        )
+        assert thumbnail_failures_issued == thumbnail_recovery_targets
+        assert all(count == 2 for count in thumbnail_recovery_requests.values()), (
+            thumbnail_recovery_requests
+        )
+        assert thumbnail_recovery_result == {
+            "retainedCards": True,
+            "scrollTop": thumbnail_recovery_baseline["scrollTop"],
+            "selectedIDs": thumbnail_recovery_baseline["selectedIDs"],
+            "focusedAssetID": thumbnail_recovery_baseline["focusedAssetID"],
+            "generation": 1,
+        }, thumbnail_recovery_result
+        page.locator("#cancelSelectionButton").click()
+        page.wait_for_function("() => !state.selectionMode")
+        page.evaluate(
+            """() => {
+              state.selectedAssetID = null;
+              state.selectionAnchorID = null;
+              renderAssetSelectionState();
+              document.querySelector("#libraryScroll").scrollTop = 0;
+            }"""
+        )
         cards.nth(10).click(modifiers=["Meta"])
         page.wait_for_function(
             "id => state.selectionMode && state.selectedAssetIDs.has(id)",
@@ -824,9 +919,23 @@ def main():
         )
         assert page.evaluate("() => state.selectedAssetIDs.size") == 3
 
-        assert not failed_resources, failed_resources
+        expected_thumbnail_failures = [
+            failure for failure in failed_resources
+            if failure[0] == 503 and "/thumbnail?" in failure[1]
+        ]
+        unexpected_failed_resources = [
+            failure for failure in failed_resources
+            if failure not in expected_thumbnail_failures
+        ]
+        assert len(expected_thumbnail_failures) == len(thumbnail_recovery_targets), (
+            expected_thumbnail_failures
+        )
+        assert not unexpected_failed_resources, unexpected_failed_resources
         assert not page_errors, page_errors
-        assert not console_errors, console_errors
+        unexpected_console_errors = [
+            message for message in console_errors if "status of 503" not in message
+        ]
+        assert not unexpected_console_errors, unexpected_console_errors
         browser.close()
 
 

@@ -283,6 +283,7 @@ const elements = {
   tagActionsOpenManagerButton: $("#tagActionsOpenManagerButton"),
   hostVersion: $("#hostVersion"),
   mediaKindTabs: $("#mediaKindTabs"),
+  thumbnailRecoveryStatus: $("#thumbnailRecoveryStatus"),
   libraryPane: $("#libraryPane"),
   filterTitle: $("#filterTitle"),
   tagPresenceAnyOption: $("#tagPresenceAnyOption"),
@@ -1780,6 +1781,20 @@ const GRID_DENSITY_OPTIONS = [
 const LEGACY_DENSITY_WIDTHS = [74, 86, 100, 116, 132, 156, 184, 220, 268];
 const protectedImageRequests = new WeakMap();
 const protectedImageAbortControllers = new WeakMap();
+const protectedThumbnailDescriptors = new WeakMap();
+const THUMBNAIL_RECOVERY_FAILURE_THRESHOLD = 3;
+const THUMBNAIL_RECOVERY_FAILURE_WINDOW_MS = 2_000;
+const THUMBNAIL_RECOVERY_INITIAL_DELAY_MS = 250;
+const THUMBNAIL_RECOVERY_MAXIMUM_DELAY_MS = 5_000;
+const thumbnailRecovery = {
+  failures: new Map(),
+  failedImages: new Set(),
+  timer: null,
+  probeImage: null,
+  delayMs: THUMBNAIL_RECOVERY_INITIAL_DELAY_MS,
+  active: false,
+  generation: 0,
+};
 let protectedImageRequestSequence = 0;
 let mediaWorkerRegistrationPromise = null;
 const mediaWorkerURL = "/service-worker.js?v=20260805-2";
@@ -2083,8 +2098,179 @@ function clearProtectedImageSource(image) {
   delete image.dataset.protectedVisiblePath;
   delete image.dataset.protectedAssignedRequestId;
   image.classList.remove("protected-image-transitioning");
+  protectedThumbnailDescriptors.delete(image);
+  thumbnailRecovery.failedImages.delete(image);
   image.setAttribute("aria-busy", "false");
   image.removeAttribute("src");
+}
+
+function protectedThumbnailIsVisible(image) {
+  if (!(image instanceof HTMLImageElement)
+    || !image.isConnected
+    || image.getClientRects().length === 0) return false;
+  const bounds = image.getBoundingClientRect();
+  return bounds.bottom > 0
+    && bounds.right > 0
+    && bounds.top < innerHeight
+    && bounds.left < innerWidth;
+}
+
+function transientThumbnailFailureStatus(status) {
+  return status === 0
+    || status === 408
+    || status === 425
+    || status === 429
+    || status === 500
+    || status === 502
+    || status === 503
+    || status === 504;
+}
+
+function renderThumbnailRecoveryStatus() {
+  elements.thumbnailRecoveryStatus.classList.toggle("hidden", !thumbnailRecovery.active);
+  elements.thumbnailRecoveryStatus.dataset.generation = String(thumbnailRecovery.generation);
+}
+
+function pruneThumbnailRecoveryFailures(now = performance.now()) {
+  for (const image of [...thumbnailRecovery.failedImages]) {
+    if (!image.isConnected || !protectedThumbnailDescriptors.has(image)) {
+      thumbnailRecovery.failedImages.delete(image);
+    }
+  }
+  for (const [assetID, failure] of thumbnailRecovery.failures) {
+    if (now - failure.at > THUMBNAIL_RECOVERY_FAILURE_WINDOW_MS
+      || !thumbnailRecovery.failedImages.has(failure.image)
+      || !protectedThumbnailIsVisible(failure.image)) {
+      thumbnailRecovery.failures.delete(assetID);
+    }
+  }
+}
+
+function visibleFailedProtectedThumbnails() {
+  pruneThumbnailRecoveryFailures();
+  return [...thumbnailRecovery.failedImages].filter((image) => (
+    protectedThumbnailDescriptors.has(image) && protectedThumbnailIsVisible(image)
+  ));
+}
+
+function stopThumbnailRecovery({ preserveFailures = true } = {}) {
+  clearTimeout(thumbnailRecovery.timer);
+  thumbnailRecovery.timer = null;
+  thumbnailRecovery.probeImage = null;
+  thumbnailRecovery.active = false;
+  thumbnailRecovery.delayMs = THUMBNAIL_RECOVERY_INITIAL_DELAY_MS;
+  thumbnailRecovery.failures.clear();
+  if (!preserveFailures) thumbnailRecovery.failedImages.clear();
+  renderThumbnailRecoveryStatus();
+}
+
+function requestProtectedThumbnailReload(image, priority = "high") {
+  const descriptor = protectedThumbnailDescriptors.get(image);
+  if (!descriptor || !image.isConnected) return false;
+  image.classList.add("loading");
+  setProtectedImageSource(image, descriptor.path, { priority, forceFetch: true });
+  return true;
+}
+
+function finishThumbnailRecovery(probeImage) {
+  if (!thumbnailRecovery.active || thumbnailRecovery.probeImage !== probeImage) return;
+  const failed = visibleFailedProtectedThumbnails().filter((image) => image !== probeImage);
+  stopThumbnailRecovery();
+  thumbnailRecovery.generation += 1;
+  renderThumbnailRecoveryStatus();
+  requestAnimationFrame(() => {
+    for (const image of failed) requestProtectedThumbnailReload(image);
+  });
+}
+
+function scheduleThumbnailRecoveryProbe(delayMs = thumbnailRecovery.delayMs) {
+  if (!thumbnailRecovery.active || thumbnailRecovery.timer != null) return;
+  thumbnailRecovery.timer = setTimeout(() => {
+    thumbnailRecovery.timer = null;
+    if (!thumbnailRecovery.active) return;
+    if (!state.online) {
+      stopThumbnailRecovery();
+      return;
+    }
+    const probe = visibleFailedProtectedThumbnails()[0] || null;
+    if (!probe) {
+      stopThumbnailRecovery();
+      return;
+    }
+    thumbnailRecovery.probeImage = probe;
+    if (!requestProtectedThumbnailReload(probe)) {
+      thumbnailRecovery.probeImage = null;
+      stopThumbnailRecovery();
+    }
+  }, delayMs);
+}
+
+function startThumbnailRecovery({ force = false } = {}) {
+  if (thumbnailRecovery.active || !state.online) return;
+  pruneThumbnailRecoveryFailures();
+  if (!force
+    && thumbnailRecovery.failures.size < THUMBNAIL_RECOVERY_FAILURE_THRESHOLD) return;
+  if (!visibleFailedProtectedThumbnails().length) return;
+  thumbnailRecovery.active = true;
+  thumbnailRecovery.delayMs = THUMBNAIL_RECOVERY_INITIAL_DELAY_MS;
+  renderThumbnailRecoveryStatus();
+  scheduleThumbnailRecoveryProbe();
+}
+
+function handleProtectedThumbnailFailure(image, event) {
+  const descriptor = protectedThumbnailDescriptors.get(image);
+  if (!descriptor) return;
+  const status = Number(event.detail?.status || 0);
+  if (!transientThumbnailFailureStatus(status)) return;
+  thumbnailRecovery.failedImages.add(image);
+  if (!state.online || !protectedThumbnailIsVisible(image)) return;
+  const now = performance.now();
+  thumbnailRecovery.failures.set(descriptor.assetID, { image, at: now });
+  pruneThumbnailRecoveryFailures(now);
+  if (thumbnailRecovery.active && thumbnailRecovery.probeImage === image) {
+    thumbnailRecovery.probeImage = null;
+    thumbnailRecovery.delayMs = Math.min(
+      THUMBNAIL_RECOVERY_MAXIMUM_DELAY_MS,
+      Math.max(
+        THUMBNAIL_RECOVERY_INITIAL_DELAY_MS,
+        thumbnailRecovery.delayMs * 2
+      )
+    );
+    scheduleThumbnailRecoveryProbe(thumbnailRecovery.delayMs);
+    return;
+  }
+  startThumbnailRecovery();
+}
+
+function handleProtectedThumbnailLoad(image) {
+  const descriptor = protectedThumbnailDescriptors.get(image);
+  if (!descriptor) return;
+  thumbnailRecovery.failedImages.delete(image);
+  const failure = thumbnailRecovery.failures.get(descriptor.assetID);
+  if (failure?.image === image) thumbnailRecovery.failures.delete(descriptor.assetID);
+  image.classList.remove("loading", "thumbnail-load-failed");
+  finishThumbnailRecovery(image);
+}
+
+function bindProtectedThumbnailRecovery(image) {
+  if (!(image instanceof HTMLImageElement)
+    || image.dataset.thumbnailRecoveryBound === "true") return;
+  image.dataset.thumbnailRecoveryBound = "true";
+  image.addEventListener("imageall-protected-error", (event) => {
+    image.classList.add("thumbnail-load-failed");
+    handleProtectedThumbnailFailure(image, event);
+  });
+  image.addEventListener("imageall-protected-load", () => {
+    handleProtectedThumbnailLoad(image);
+  });
+}
+
+function reconcileThumbnailRecoveryConnection(online) {
+  if (!online) {
+    stopThumbnailRecovery();
+    return;
+  }
+  if (visibleFailedProtectedThumbnails().length) startThumbnailRecovery({ force: true });
 }
 
 async function refreshSession() {
@@ -7686,6 +7872,7 @@ function setConnection(online, label) {
     if (nextLabel !== previousLabel) syncCompactToolbarMenu();
     return;
   }
+  reconcileThumbnailRecoveryConnection(online);
   syncWriteActionControls();
   if (elements.commandPalette.open) renderCommandItems();
   renderPersonalModelControls();
@@ -16292,7 +16479,9 @@ function bindThumbnailRenderedAspect(image) {
 function syncProtectedThumbnailSource(image, assetID, options = {}) {
   if (!(image instanceof HTMLImageElement) || !assetID) return;
   bindThumbnailRenderedAspect(image);
+  bindProtectedThumbnailRecovery(image);
   const path = thumbnailRequestPath(assetID, options);
+  protectedThumbnailDescriptors.set(image, { assetID, path });
   if (image.dataset.protectedPath === path) {
     syncThumbnailRenderedAspect(image);
     return;
@@ -16314,11 +16503,16 @@ function appendAssetImage(container, asset, variant = "thumbnail", before = null
   image.alt = "";
   image.loading = "lazy";
   image.decoding = "async";
-  image.addEventListener("load", () => image.classList.remove("loading"), { once: true });
-  image.addEventListener("error", () => {
-    image.remove();
-    insert(unavailableBadge("缩略图不可用"));
-  }, { once: true });
+  image.addEventListener("imageall-protected-load", () => {
+    image.classList.remove("loading", "thumbnail-load-failed");
+    container.querySelector(":scope > [data-thumbnail-error-placeholder]")?.remove();
+  });
+  image.addEventListener("imageall-protected-error", () => {
+    if (container.querySelector(":scope > [data-thumbnail-error-placeholder]")) return;
+    const placeholder = unavailableBadge("缩略图暂不可用");
+    placeholder.dataset.thumbnailErrorPlaceholder = "true";
+    insert(placeholder);
+  });
   if (variant === "thumbnail") {
     syncProtectedThumbnailSource(image, asset.id || asset.assetID, {
       width: 420,
@@ -16343,10 +16537,12 @@ function syncAssetCardImage(button, asset) {
     asset.contentRevision == null ? "" : asset.contentRevision,
     state.layout.aspectMode,
   ].join(":");
-  const current = button.querySelector("img, .asset-unavailable");
-  if (button.dataset.imageKey === imageKey && current) return;
-  if (current instanceof HTMLImageElement) clearProtectedImageSource(current);
-  current?.remove();
+  const currentImage = button.querySelector(":scope > img");
+  const currentPlaceholder = button.querySelector(":scope > .asset-unavailable");
+  if (button.dataset.imageKey === imageKey && (currentImage || currentPlaceholder)) return;
+  if (currentImage instanceof HTMLImageElement) clearProtectedImageSource(currentImage);
+  currentImage?.remove();
+  currentPlaceholder?.remove();
   button.dataset.imageKey = imageKey;
   appendAssetImage(button, asset, "thumbnail", button.firstChild);
 }
@@ -39575,6 +39771,7 @@ async function loginWithAccount(event) {
 function resetWorkspaceSessionState() {
   stopAssetHoverVideo();
   disconnectEvents();
+  stopThumbnailRecovery({ preserveFailures: false });
   cancelPendingFilterApply();
   setFilterLiveStatus("idle", "更改立即生效");
   state.workspaceGeneration += 1;

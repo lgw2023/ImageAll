@@ -2486,6 +2486,7 @@ final class RemoteHTTPServerTests: XCTestCase {
             "inspectorInlineTagError",
             "inspectorNewTagButton",
             "mediaKindTabs",
+            "thumbnailRecoveryStatus",
             "gridDensityButton",
             "gridDensityPopover",
             "thumbnailAspectButton",
@@ -4783,6 +4784,11 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(stylesheet.contains(".compact-toolbar-menu-item"))
         XCTAssertTrue(stylesheet.contains(".app-shell.compact-toolbar-active"))
         XCTAssertTrue(stylesheet.contains("#catalogProgressStatusButton"))
+        XCTAssertTrue(stylesheet.contains(".thumbnail-recovery-status"))
+        XCTAssertTrue(script.contains("THUMBNAIL_RECOVERY_FAILURE_THRESHOLD = 3"))
+        XCTAssertTrue(script.contains("function startThumbnailRecovery"))
+        XCTAssertTrue(script.contains("function scheduleThumbnailRecoveryProbe"))
+        XCTAssertTrue(script.contains("function reconcileThumbnailRecoveryConnection"))
         XCTAssertTrue(script.contains("function trapOverlayFocus"))
         XCTAssertTrue(script.contains("state.review.mutating"))
         XCTAssertTrue(script.contains("state.tagMutating"))
