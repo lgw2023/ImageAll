@@ -39140,6 +39140,50 @@ function containContextMenuBackgroundScroll(event) {
   event.stopImmediatePropagation();
 }
 
+function contextMenuActionButtons(menu) {
+  return [
+    ...menu.querySelectorAll(
+      "button:not([hidden]):not(.hidden):not(:disabled)"
+    ),
+  ];
+}
+
+function focusContextMenuAction(menu, button) {
+  button.focus({ preventScroll: true });
+  const menuRect = menu.getBoundingClientRect();
+  const buttonRect = button.getBoundingClientRect();
+  const visibleTop = menuRect.top + 5;
+  const visibleBottom = menuRect.bottom - 5;
+  if (buttonRect.top < visibleTop) {
+    menu.scrollTop += buttonRect.top - visibleTop;
+  } else if (buttonRect.bottom > visibleBottom) {
+    menu.scrollTop += buttonRect.bottom - visibleBottom;
+  }
+}
+
+function moveContextMenuFocus(event) {
+  const menu = event.currentTarget;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    void returnFromContextMenu();
+    return;
+  }
+  if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+  const buttons = contextMenuActionButtons(menu);
+  if (!buttons.length) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const current = buttons.indexOf(document.activeElement);
+  const next = event.key === "Home" ? 0
+    : event.key === "End" ? buttons.length - 1
+      : current < 0
+        ? (event.key === "ArrowUp" ? buttons.length - 1 : 0)
+        : (current + (event.key === "ArrowUp" ? -1 : 1) + buttons.length)
+          % buttons.length;
+  focusContextMenuAction(menu, buttons[next]);
+}
+
 let contextMenuOutsideClickSuppression = null;
 
 function beginContextMenuOutsideDismissal(event) {
@@ -43402,27 +43446,6 @@ function bindEvents() {
       }
     }
   });
-  elements.assetContextMenu.addEventListener("keydown", (event) => {
-    const buttons = [
-      ...elements.assetContextMenu.querySelectorAll(
-        "button:not(.hidden):not(:disabled)"
-      ),
-    ];
-    if (!buttons.length) return;
-    if (!["Escape", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
-    event.stopPropagation();
-    if (event.key === "Escape") {
-      event.preventDefault();
-      void returnFromContextMenu();
-      return;
-    }
-    event.preventDefault();
-    const current = Math.max(0, buttons.indexOf(document.activeElement));
-    const next = event.key === "Home" ? 0
-      : event.key === "End" ? buttons.length - 1
-        : (current + (event.key === "ArrowUp" ? -1 : 1) + buttons.length) % buttons.length;
-    buttons[next].focus({ preventScroll: true });
-  });
   elements.reviewContextMenu.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-review-context-action]");
     const assetID = state.contextReviewAssetID;
@@ -43435,25 +43458,6 @@ function bindEvents() {
     }
     if (action === "favorite") await toggleReviewItemFavorite(assetID);
     restoreOverlayFocus(reviewCardFocusTarget(assetID));
-  });
-  elements.reviewContextMenu.addEventListener("keydown", (event) => {
-    const buttons = [
-      ...elements.reviewContextMenu.querySelectorAll("button:not(:disabled)"),
-    ];
-    if (!buttons.length) return;
-    if (!["Escape", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
-    event.stopPropagation();
-    if (event.key === "Escape") {
-      event.preventDefault();
-      void returnFromContextMenu();
-      return;
-    }
-    event.preventDefault();
-    const current = Math.max(0, buttons.indexOf(document.activeElement));
-    const next = event.key === "Home" ? 0
-      : event.key === "End" ? buttons.length - 1
-        : (current + (event.key === "ArrowUp" ? -1 : 1) + buttons.length) % buttons.length;
-    buttons[next].focus({ preventScroll: true });
   });
   elements.slimmingMemberContextMenu.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-slimming-member-context-action]");
@@ -43511,25 +43515,6 @@ function bindEvents() {
       });
     });
   });
-  elements.slimmingMemberContextMenu.addEventListener("keydown", (event) => {
-    const buttons = [
-      ...elements.slimmingMemberContextMenu.querySelectorAll("button:not(:disabled)"),
-    ];
-    if (!buttons.length) return;
-    if (!["Escape", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
-    event.stopPropagation();
-    if (event.key === "Escape") {
-      event.preventDefault();
-      void returnFromContextMenu();
-      return;
-    }
-    event.preventDefault();
-    const current = Math.max(0, buttons.indexOf(document.activeElement));
-    const next = event.key === "Home" ? 0
-      : event.key === "End" ? buttons.length - 1
-        : (current + (event.key === "ArrowUp" ? -1 : 1) + buttons.length) % buttons.length;
-    buttons[next].focus({ preventScroll: true });
-  });
   elements.slimmingRecycleContextMenu.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-slimming-recycle-context-action]");
     const entryID = state.slimming.contextRecycleEntryID;
@@ -43541,27 +43526,6 @@ function bindEvents() {
     }
     restoreOverlayFocus(slimmingRecycleFocusTarget(entryID));
   });
-  elements.slimmingRecycleContextMenu.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      event.stopPropagation();
-      void returnFromContextMenu();
-      return;
-    }
-    const buttons = [
-      ...elements.slimmingRecycleContextMenu.querySelectorAll("button:not(:disabled)"),
-    ];
-    if (!buttons.length || !["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
-      return;
-    }
-    event.preventDefault();
-    event.stopPropagation();
-    const current = Math.max(0, buttons.indexOf(document.activeElement));
-    const next = event.key === "Home" ? 0
-      : event.key === "End" ? buttons.length - 1
-        : (current + (event.key === "ArrowUp" ? -1 : 1) + buttons.length) % buttons.length;
-    buttons[next].focus({ preventScroll: true });
-  });
   elements.slimmingJobContextMenu.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-slimming-job-context-action]");
     const jobID = state.slimming.contextJobID;
@@ -43569,25 +43533,6 @@ function bindEvents() {
     const action = button.dataset.slimmingJobContextAction;
     await returnFromContextMenu({ restoreFocus: false });
     await applySlimmingJobAction(jobID, action, { returnFocus: true });
-  });
-  elements.slimmingJobContextMenu.addEventListener("keydown", (event) => {
-    const buttons = [
-      ...elements.slimmingJobContextMenu.querySelectorAll("button:not(:disabled)"),
-    ];
-    if (!buttons.length) return;
-    if (!["Escape", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
-    event.stopPropagation();
-    if (event.key === "Escape") {
-      event.preventDefault();
-      void returnFromContextMenu();
-      return;
-    }
-    event.preventDefault();
-    const current = Math.max(0, buttons.indexOf(document.activeElement));
-    const next = event.key === "Home" ? 0
-      : event.key === "End" ? buttons.length - 1
-        : (current + (event.key === "ArrowUp" ? -1 : 1) + buttons.length) % buttons.length;
-    buttons[next].focus({ preventScroll: true });
   });
   elements.sourceContextMenu.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-source-context-action]");
@@ -43618,23 +43563,6 @@ function bindEvents() {
     }
     returnTarget?.focus({ preventScroll: true });
     requestSourceManagementAction(action, sourceID);
-  });
-  elements.sourceContextMenu.addEventListener("keydown", (event) => {
-    const buttons = [...elements.sourceContextMenu.querySelectorAll("button:not(:disabled)")];
-    if (!buttons.length) return;
-    if (!["Escape", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
-    event.stopPropagation();
-    if (event.key === "Escape") {
-      event.preventDefault();
-      void returnFromContextMenu();
-      return;
-    }
-    event.preventDefault();
-    const current = Math.max(0, buttons.indexOf(document.activeElement));
-    const next = event.key === "Home" ? 0
-      : event.key === "End" ? buttons.length - 1
-        : (current + (event.key === "ArrowUp" ? -1 : 1) + buttons.length) % buttons.length;
-    buttons[next].focus({ preventScroll: true });
   });
   elements.tagContextMenu.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-tag-context-action]");
@@ -43674,23 +43602,17 @@ function bindEvents() {
       );
     }
   });
-  elements.tagContextMenu.addEventListener("keydown", (event) => {
-    const buttons = [...elements.tagContextMenu.querySelectorAll("button:not(:disabled)")];
-    if (!buttons.length) return;
-    if (!["Escape", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
-    event.stopPropagation();
-    if (event.key === "Escape") {
-      event.preventDefault();
-      void returnFromContextMenu();
-      return;
-    }
-    event.preventDefault();
-    const current = Math.max(0, buttons.indexOf(document.activeElement));
-    const next = event.key === "Home" ? 0
-      : event.key === "End" ? buttons.length - 1
-        : (current + (event.key === "ArrowUp" ? -1 : 1) + buttons.length) % buttons.length;
-    buttons[next].focus({ preventScroll: true });
-  });
+  for (const menu of [
+    elements.assetContextMenu,
+    elements.reviewContextMenu,
+    elements.slimmingMemberContextMenu,
+    elements.slimmingRecycleContextMenu,
+    elements.slimmingJobContextMenu,
+    elements.sourceContextMenu,
+    elements.tagContextMenu,
+  ]) {
+    menu.addEventListener("keydown", moveContextMenuFocus);
+  }
 
   document.addEventListener("pointerdown", beginContextMenuOutsideDismissal, true);
   document.addEventListener("pointerdown", beginContextLongPress, true);

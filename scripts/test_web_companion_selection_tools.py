@@ -1583,6 +1583,83 @@ def main(*, inspector_actions_only=False):
             "menu => menu.scrollTop"
         ) > 0
         assert page.locator("#sourceContextMenu").is_visible()
+        page.set_viewport_size({"width": 620, "height": 180})
+        page.wait_for_timeout(100)
+        source_context_buttons = page.locator(
+            "#sourceContextMenuActions > button:not([hidden]):not(.hidden):not(:disabled)"
+        )
+        first_source_context_action = source_context_buttons.first.get_attribute(
+            "data-source-context-action"
+        )
+        last_source_context_action = source_context_buttons.last.get_attribute(
+            "data-source-context-action"
+        )
+        source_context_buttons.first.focus()
+        page.locator("#sourceContextMenu").evaluate("menu => { menu.scrollTop = 0; }")
+        context_keyboard_background_scroll = page.locator("#libraryScroll").evaluate(
+            "element => element.scrollTop"
+        )
+        page.keyboard.press("End")
+        end_focus_metrics = page.locator("#sourceContextMenu").evaluate(
+            """menu => {
+              const active = document.activeElement;
+              const menuRect = menu.getBoundingClientRect();
+              const activeRect = active.getBoundingClientRect();
+              return {
+                action: active.dataset.sourceContextAction,
+                scrollTop: menu.scrollTop,
+                visible: activeRect.top >= menuRect.top + 4
+                  && activeRect.bottom <= menuRect.bottom - 4,
+              };
+            }"""
+        )
+        assert end_focus_metrics["action"] == last_source_context_action
+        assert end_focus_metrics["scrollTop"] > 0
+        assert end_focus_metrics["visible"]
+        page.keyboard.press("Home")
+        home_focus_metrics = page.locator("#sourceContextMenu").evaluate(
+            """menu => {
+              const active = document.activeElement;
+              const menuRect = menu.getBoundingClientRect();
+              const activeRect = active.getBoundingClientRect();
+              return {
+                action: active.dataset.sourceContextAction,
+                visible: activeRect.top >= menuRect.top + 4
+                  && activeRect.bottom <= menuRect.bottom - 4,
+              };
+            }"""
+        )
+        assert home_focus_metrics == {
+            "action": first_source_context_action,
+            "visible": True,
+        }
+        page.keyboard.press("ArrowUp")
+        wrap_focus_metrics = page.locator("#sourceContextMenu").evaluate(
+            """menu => {
+              const active = document.activeElement;
+              const menuRect = menu.getBoundingClientRect();
+              const activeRect = active.getBoundingClientRect();
+              return {
+                action: active.dataset.sourceContextAction,
+                scrollTop: menu.scrollTop,
+                visible: activeRect.top >= menuRect.top + 4
+                  && activeRect.bottom <= menuRect.bottom - 4,
+              };
+            }"""
+        )
+        assert wrap_focus_metrics["action"] == last_source_context_action
+        assert wrap_focus_metrics["scrollTop"] > 0
+        assert wrap_focus_metrics["visible"]
+        assert page.locator("#libraryScroll").evaluate(
+            "element => element.scrollTop"
+        ) == context_keyboard_background_scroll
+        assert page.evaluate(
+            "() => window.__contextMenuActionsAreContinuous('sourceContextMenu')"
+        )
+        page.screenshot(
+            path="/tmp/imageall-source-context-menu-keyboard-620x180.png",
+            full_page=False,
+        )
         page.set_viewport_size(source_context_viewport)
         page.wait_for_timeout(100)
         assert page.evaluate(
