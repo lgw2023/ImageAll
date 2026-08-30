@@ -21779,14 +21779,14 @@ function syncTagSuggestionSourceOption(label, source, selected, disabled) {
   input.value = source.id;
   input.checked = selected;
   input.disabled = disabled;
-  input.setAttribute("aria-keyshortcuts", checkboxGridNavigationShortcuts);
+  input.setAttribute("aria-keyshortcuts", choiceGridNavigationShortcuts);
   const name = label.querySelector(":scope > span");
   if (name.textContent !== source.displayName) name.textContent = source.displayName;
   configurePersistentHelp(label, {
     title: `建议来源 · ${source.displayName}`,
     detail: "勾选后只扫描这个来源；方向键、Page Up/Page Down 或 Home/End 可在来源之间移动，空格键切换勾选。",
     kind: "review",
-    keyShortcuts: checkboxGridNavigationShortcuts,
+    keyShortcuts: choiceGridNavigationShortcuts,
   });
 }
 
@@ -22451,7 +22451,7 @@ function longListNavigationTarget(rows, currentIndex, key, viewport) {
   return Math.max(0, Math.min(rows.length - 1, currentIndex + direction * step));
 }
 
-const checkboxGridNavigationShortcuts =
+const choiceGridNavigationShortcuts =
   "ArrowLeft ArrowRight ArrowUp ArrowDown PageUp PageDown Home End";
 
 function revealCheckboxGridRow(container, row) {
@@ -22466,13 +22466,14 @@ function revealCheckboxGridRow(container, row) {
   }
 }
 
-function handleCheckboxGridNavigation(event, {
+function handleChoiceGridNavigation(event, {
   container,
   inputSelector,
   rowSelector,
+  selectRadioOnMove = false,
 }) {
   if (event.altKey || event.ctrlKey || event.metaKey) return false;
-  if (!checkboxGridNavigationShortcuts.split(" ").includes(event.key)) return false;
+  if (!choiceGridNavigationShortcuts.split(" ").includes(event.key)) return false;
   const input = event.target.closest(inputSelector);
   if (!input || !container.contains(input)) return false;
   const inputs = [...container.querySelectorAll(inputSelector)]
@@ -22507,6 +22508,9 @@ function handleCheckboxGridNavigation(event, {
   event.preventDefault();
   event.stopPropagation();
   target.focus({ preventScroll: true });
+  if (selectRadioOnMove && target.type === "radio" && !target.checked) {
+    target.click();
+  }
   revealCheckboxGridRow(container, targetRow);
   return true;
 }
@@ -25499,6 +25503,7 @@ function syncTrainingTagOption(row, tag, isFeature) {
   input.checked = state.training.setup.selectedTagIDs.has(tag.id);
   input.disabled = state.training.setup.launching;
   input.dataset.trainingTagId = tag.id;
+  input.setAttribute("aria-keyshortcuts", choiceGridNavigationShortcuts);
   const name = row.querySelector(":scope > strong");
   if (name.textContent !== tag.displayName) name.textContent = tag.displayName;
   const counts = row.querySelector(":scope > span");
@@ -25509,9 +25514,10 @@ function syncTrainingTagOption(row, tag, isFeature) {
   configurePersistentHelp(row, {
     title: `训练标签 · ${tag.displayName}`,
     detail: isFeature
-      ? `属于 ${tag.acceptedSampleCount} · 不属于 ${tag.rejectedSampleCount}。相似${state.training.mediaKind === "video" ? "视频" : "照片"}一次只选择一个标签，Mac 会再次检查 2 + 2 样本门槛。`
-      : `已确认 ${tag.acceptedSampleCount} 个样本。可与其他合格标签一起训练；每个标签独立发布，单项失败不会撤销其他标签。`,
+      ? `属于 ${tag.acceptedSampleCount} · 不属于 ${tag.rejectedSampleCount}。方向键、Page Up/Page Down 或 Home/End 会移动并选择标签；Mac 会再次检查 2 + 2 样本门槛。`
+      : `已确认 ${tag.acceptedSampleCount} 个样本。方向键、Page Up/Page Down 或 Home/End 可移动，空格键切换勾选；每个标签独立发布。`,
     kind: "training",
+    keyShortcuts: choiceGridNavigationShortcuts,
   });
 }
 
@@ -25559,7 +25565,7 @@ function syncTrainingSourceOption(row, source) {
   input.checked = state.training.setup.selectedSourceIDs.has(source.id);
   input.disabled = state.training.setup.launching;
   input.dataset.trainingSourceId = source.id;
-  input.setAttribute("aria-keyshortcuts", checkboxGridNavigationShortcuts);
+  input.setAttribute("aria-keyshortcuts", choiceGridNavigationShortcuts);
   const name = row.querySelector(":scope > strong");
   if (name.textContent !== source.displayName) name.textContent = source.displayName;
   const status = row.querySelector(":scope > span");
@@ -25568,7 +25574,7 @@ function syncTrainingSourceOption(row, source) {
     title: `训练来源 · ${source.displayName}`,
     detail: `决定相似${state.training.mediaKind === "video" ? "视频" : "照片"}任务扫描哪些来源。方向键、Page Up/Page Down 或 Home/End 可移动，空格键切换勾选；Mac 会冻结本次目录范围。`,
     kind: "training",
-    keyShortcuts: checkboxGridNavigationShortcuts,
+    keyShortcuts: choiceGridNavigationShortcuts,
   });
 }
 
@@ -34175,7 +34181,7 @@ function syncSlimmingSetupSourceOption(row, source) {
   input.checked = state.slimming.setup.selectedSourceIDs.has(source.id);
   input.disabled = state.slimming.setup.launching;
   input.dataset.slimmingSourceId = source.id;
-  input.setAttribute("aria-keyshortcuts", checkboxGridNavigationShortcuts);
+  input.setAttribute("aria-keyshortcuts", choiceGridNavigationShortcuts);
   const name = row.querySelector(":scope > strong");
   if (name.textContent !== source.displayName) name.textContent = source.displayName;
   const kind = row.querySelector(":scope > span");
@@ -34185,7 +34191,7 @@ function syncSlimmingSetupSourceOption(row, source) {
     title: `瘦身分析来源 · ${source.displayName}`,
     detail: "选择后只在这台 Mac 上读取该来源并纳入本次分析；方向键、Page Up/Page Down 或 Home/End 可移动，空格键切换勾选。",
     kind: "slimming",
-    keyShortcuts: checkboxGridNavigationShortcuts,
+    keyShortcuts: choiceGridNavigationShortcuts,
   });
 }
 
@@ -42706,7 +42712,7 @@ function bindEvents() {
   });
   elements.slimmingModeOptions.addEventListener("keydown", moveSlimmingSetupModeSelection);
   elements.slimmingSourceOptions.addEventListener("keydown", (event) => {
-    handleCheckboxGridNavigation(event, {
+    handleChoiceGridNavigation(event, {
       container: elements.slimmingSourceOptions,
       inputSelector: "input[data-slimming-source-id]",
       rowSelector: ".training-option-row",
@@ -43250,6 +43256,14 @@ function bindEvents() {
     state.training.setup.tagSearchText = elements.trainingTagSearch.value;
     renderTrainingTagOptions();
   });
+  elements.trainingTagOptions.addEventListener("keydown", (event) => {
+    handleChoiceGridNavigation(event, {
+      container: elements.trainingTagOptions,
+      inputSelector: "input[data-training-tag-id]",
+      rowSelector: ".training-option-row",
+      selectRadioOnMove: true,
+    });
+  });
   elements.trainingTagOptions.addEventListener("change", (event) => {
     const input = event.target.closest("[data-training-tag-id]");
     if (!input) return;
@@ -43264,7 +43278,7 @@ function bindEvents() {
     renderTrainingSetup();
   });
   elements.trainingScopeOptions.addEventListener("keydown", (event) => {
-    handleCheckboxGridNavigation(event, {
+    handleChoiceGridNavigation(event, {
       container: elements.trainingScopeOptions,
       inputSelector: "input[data-training-source-id]",
       rowSelector: ".training-option-row",
@@ -43470,7 +43484,7 @@ function bindEvents() {
     void returnFromTagSuggestion();
   });
   elements.tagSuggestionSourceOptions.addEventListener("keydown", (event) => {
-    handleCheckboxGridNavigation(event, {
+    handleChoiceGridNavigation(event, {
       container: elements.tagSuggestionSourceOptions,
       inputSelector: 'input[type="checkbox"]',
       rowSelector: ".tag-suggestion-source-option",

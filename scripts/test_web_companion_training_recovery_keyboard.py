@@ -2758,6 +2758,232 @@ def main():
         page.keyboard.press("n")
         page.locator("#trainingSetupDialog").wait_for(state="visible")
         page.wait_for_function("() => !state.training.setup.loading")
+        tag_navigation_reads = {
+            "setup": len(training_setup_requests),
+            "workspace": len(workspace_requests),
+            "jobs": len(jobs_requests),
+            "launches": len(launches),
+        }
+        feature_tag_navigation_state = page.evaluate(
+            """() => {
+              const snapshot = state.training.setup.snapshot;
+              const originalTags = snapshot.tags;
+              snapshot.tags = [
+                ...originalTags,
+                ...Array.from({ length: 14 }, (_, index) => ({
+                  id: `11111112-aaaa-bbbb-cccc-${String(index + 1).padStart(12, '0')}`,
+                  displayName: `合成训练标签 ${index + 1}`,
+                  acceptedSampleCount: index + 4,
+                  rejectedSampleCount: index + 3,
+                  featureMode: 'generate',
+                  personalEligible: true,
+                })),
+              ];
+              window.__trainingNavigationOriginalTags = originalTags;
+              renderTrainingSetup();
+              const options = document.querySelector('#trainingTagOptions');
+              options.style.maxHeight = '124px';
+              options.scrollTop = 0;
+              const inputs = [...options.querySelectorAll('input[data-training-tag-id]')];
+              inputs[0].focus({ preventScroll: true });
+              return {
+                count: inputs.length,
+                inputType: inputs[0].type,
+                selectedIndex: inputs.findIndex((input) => input.checked),
+                shortcuts: inputs.every((input) => input.getAttribute('aria-keyshortcuts')
+                  === choiceGridNavigationShortcuts),
+                columns: renderedGridColumnCount(options, ':scope > .training-option-row'),
+                dialogScrollTop: document.querySelector('#trainingSetupDialog').scrollTop,
+                workspaceScrollTop: document.querySelector('#trainingWorkspace').scrollTop,
+              };
+            }"""
+        )
+        assert feature_tag_navigation_state == {
+            "count": 15,
+            "inputType": "radio",
+            "selectedIndex": 0,
+            "shortcuts": True,
+            "columns": 1,
+            "dialogScrollTop": 0,
+            "workspaceScrollTop": 0,
+        }, feature_tag_navigation_state
+        page.keyboard.press("ArrowDown")
+        feature_selected = page.evaluate(
+            """() => {
+              const inputs = [...document.querySelectorAll(
+                '#trainingTagOptions [data-training-tag-id]'
+              )];
+              return {
+                activeIndex: inputs.indexOf(document.activeElement),
+                checkedIndex: inputs.findIndex((input) => input.checked),
+                selectedIDs: [...state.training.setup.selectedTagIDs],
+              };
+            }"""
+        )
+        assert feature_selected["activeIndex"] == 1, feature_selected
+        assert feature_selected["checkedIndex"] == 1, feature_selected
+        assert feature_selected["selectedIDs"] == [
+            "11111112-aaaa-bbbb-cccc-000000000001"
+        ], feature_selected
+        assert "合成训练标签 1" in page.locator("#trainingLaunchSummary").inner_text()
+        page.keyboard.press("PageDown")
+        feature_page_target = page.evaluate(
+            "() => [...document.querySelectorAll('#trainingTagOptions [data-training-tag-id]')].indexOf(document.activeElement)"
+        )
+        assert feature_page_target > 1, feature_page_target
+        page.keyboard.press("PageDown")
+        page.keyboard.press("PageUp")
+        page.keyboard.press("End")
+        feature_end_result = page.evaluate(
+            """() => {
+              const options = document.querySelector('#trainingTagOptions');
+              const inputs = [...options.querySelectorAll('[data-training-tag-id]')];
+              const row = document.activeElement.closest('.training-option-row');
+              const optionsRect = options.getBoundingClientRect();
+              const rowRect = row.getBoundingClientRect();
+              return {
+                activeIndex: inputs.indexOf(document.activeElement),
+                checkedIndex: inputs.findIndex((input) => input.checked),
+                fullyVisible: rowRect.top >= optionsRect.top + options.clientTop - 0.5
+                  && rowRect.bottom <= optionsRect.top + options.clientTop
+                    + options.clientHeight + 0.5,
+              };
+            }"""
+        )
+        assert feature_end_result == {
+            "activeIndex": 14,
+            "checkedIndex": 14,
+            "fullyVisible": True,
+        }, feature_end_result
+        page.keyboard.press("Home")
+        assert page.evaluate(
+            """() => {
+              const inputs = [...document.querySelectorAll(
+                '#trainingTagOptions [data-training-tag-id]'
+              )];
+              return inputs.indexOf(document.activeElement) === 0
+                && inputs.findIndex((input) => input.checked) === 0;
+            }"""
+        )
+
+        page.locator('[data-training-setup-method="personalCentroid"]').click()
+        personal_tag_navigation_state = page.evaluate(
+            """() => {
+              const options = document.querySelector('#trainingTagOptions');
+              options.style.maxHeight = '124px';
+              options.scrollTop = 0;
+              const inputs = [...options.querySelectorAll('input[data-training-tag-id]')];
+              inputs[0].focus({ preventScroll: true });
+              window.__trainingTagNavigationChecked = inputs.map((input) => input.checked);
+              return {
+                count: inputs.length,
+                inputType: inputs[0].type,
+                checkedCount: inputs.filter((input) => input.checked).length,
+                shortcuts: inputs.every((input) => input.getAttribute('aria-keyshortcuts')
+                  === choiceGridNavigationShortcuts),
+              };
+            }"""
+        )
+        assert personal_tag_navigation_state == {
+            "count": 17,
+            "inputType": "checkbox",
+            "checkedCount": 0,
+            "shortcuts": True,
+        }, personal_tag_navigation_state
+        page.keyboard.press("ArrowDown")
+        page.keyboard.press("PageDown")
+        personal_page_target = page.evaluate(
+            "() => [...document.querySelectorAll('#trainingTagOptions [data-training-tag-id]')].indexOf(document.activeElement)"
+        )
+        assert personal_page_target > 1, personal_page_target
+        page.keyboard.press("PageDown")
+        page.keyboard.press("PageUp")
+        page.keyboard.press("End")
+        assert page.evaluate(
+            "() => [...document.querySelectorAll('#trainingTagOptions [data-training-tag-id]')].indexOf(document.activeElement)"
+        ) == 16
+        page.keyboard.press("Home")
+        personal_navigation_result = page.evaluate(
+            """() => {
+              const options = document.querySelector('#trainingTagOptions');
+              const inputs = [...options.querySelectorAll('[data-training-tag-id]')];
+              const row = document.activeElement.closest('.training-option-row');
+              const optionsRect = options.getBoundingClientRect();
+              const rowRect = row.getBoundingClientRect();
+              return {
+                activeIndex: inputs.indexOf(document.activeElement),
+                checkedUnchanged: inputs.every(
+                  (input, index) => input.checked === window.__trainingTagNavigationChecked[index]
+                ),
+                fullyVisible: rowRect.top >= optionsRect.top + options.clientTop - 0.5
+                  && rowRect.bottom <= optionsRect.top + options.clientTop
+                    + options.clientHeight + 0.5,
+                dialogScrollTop: document.querySelector('#trainingSetupDialog').scrollTop,
+                workspaceScrollTop: document.querySelector('#trainingWorkspace').scrollTop,
+              };
+            }"""
+        )
+        assert personal_navigation_result == {
+            "activeIndex": 0,
+            "checkedUnchanged": True,
+            "fullyVisible": True,
+            "dialogScrollTop": 0,
+            "workspaceScrollTop": 0,
+        }, personal_navigation_result
+        page.keyboard.press("Space")
+        assert page.locator(f'[data-training-tag-id="{TAG_ID}"]').is_checked()
+        page.keyboard.press("Space")
+        assert not page.locator(f'[data-training-tag-id="{TAG_ID}"]').is_checked()
+        filtered_tag_identity = page.evaluate(
+            """() => {
+              const input = document.querySelector(
+                '[data-training-tag-id="11111112-aaaa-bbbb-cccc-000000000001"]'
+              );
+              window.__trainingFilteredTagInput = input;
+              return Boolean(input);
+            }"""
+        )
+        assert filtered_tag_identity
+        page.locator("#trainingTagSearch").fill("合成训练标签 1")
+        assert page.locator("#trainingTagOptions [data-training-tag-id]").count() == 6
+        assert page.evaluate(
+            """() => document.querySelector(
+              '[data-training-tag-id="11111112-aaaa-bbbb-cccc-000000000001"]'
+            ) === window.__trainingFilteredTagInput"""
+        )
+        page.locator(
+            '[data-training-tag-id="11111112-aaaa-bbbb-cccc-000000000001"]'
+        ).focus()
+        page.keyboard.press("End")
+        assert page.evaluate(
+            "() => [...document.querySelectorAll('#trainingTagOptions [data-training-tag-id]')].indexOf(document.activeElement)"
+        ) == 5
+        page.locator("#trainingTagSearch").fill("")
+        assert page.locator("#trainingTagOptions [data-training-tag-id]").count() == 17
+        assert page.evaluate(
+            """() => document.querySelector(
+              '[data-training-tag-id="11111112-aaaa-bbbb-cccc-000000000001"]'
+            ) === window.__trainingFilteredTagInput"""
+        )
+        page.locator(f'[data-training-tag-id="{TAG_ID}"]').focus()
+        assert tag_navigation_reads == {
+            "setup": len(training_setup_requests),
+            "workspace": len(workspace_requests),
+            "jobs": len(jobs_requests),
+            "launches": len(launches),
+        }
+        page.screenshot(
+            path="/tmp/imageall-training-tag-list-keyboard.png",
+            full_page=False,
+        )
+        page.evaluate(
+            """() => {
+              state.training.setup.snapshot.tags = window.__trainingNavigationOriginalTags;
+              resetTrainingSetupSelection('featureKnn');
+              renderTrainingSetup();
+              document.querySelector('#trainingTagOptions').style.removeProperty('max-height');
+            }"""
+        )
         training_navigation_reads = {
             "setup": len(training_setup_requests),
             "workspace": len(workspace_requests),
@@ -2779,7 +3005,7 @@ def main():
               return {
                 count: inputs.length,
                 shortcuts: inputs.every((input) => input.getAttribute('aria-keyshortcuts')
-                  === checkboxGridNavigationShortcuts),
+                  === choiceGridNavigationShortcuts),
                 columns: renderedGridColumnCount(options, ':scope > .training-option-row'),
                 dialogScrollTop: document.querySelector('#trainingSetupDialog').scrollTop,
                 workspaceScrollTop: document.querySelector('#trainingWorkspace').scrollTop,

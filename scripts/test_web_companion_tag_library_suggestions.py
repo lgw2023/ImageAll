@@ -825,7 +825,7 @@ def main():
               return {
                 count: inputs.length,
                 shortcuts: inputs.every((input) => input.getAttribute('aria-keyshortcuts')
-                  === checkboxGridNavigationShortcuts),
+                  === choiceGridNavigationShortcuts),
                 columns: renderedGridColumnCount(
                   options,
                   ':scope > .tag-suggestion-source-option'

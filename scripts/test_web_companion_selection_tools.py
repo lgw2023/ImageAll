@@ -4331,7 +4331,7 @@ def main(*, inspector_actions_only=False):
               return {
                 count: inputs.length,
                 shortcuts: inputs.every((input) => input.getAttribute('aria-keyshortcuts')
-                  === checkboxGridNavigationShortcuts),
+                  === choiceGridNavigationShortcuts),
                 columns: renderedGridColumnCount(options, ':scope > .training-option-row'),
                 dialogScrollTop: document.querySelector('#slimmingSetupDialog').scrollTop,
                 documentScrollTop: document.documentElement.scrollTop,

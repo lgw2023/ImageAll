@@ -4082,7 +4082,10 @@ final class RemoteHTTPServerTests: XCTestCase {
                 "ArrowLeft ArrowRight ArrowUp ArrowDown PageUp PageDown Home End"
             )
         )
-        XCTAssertTrue(script.contains("function handleCheckboxGridNavigation(event, {"))
+        XCTAssertTrue(script.contains("function handleChoiceGridNavigation(event, {"))
+        XCTAssertTrue(script.contains("container: elements.trainingTagOptions"))
+        XCTAssertTrue(script.contains("inputSelector: \"input[data-training-tag-id]\""))
+        XCTAssertTrue(script.contains("selectRadioOnMove: true"))
         XCTAssertTrue(script.contains("container: elements.tagSuggestionSourceOptions"))
         XCTAssertTrue(script.contains("container: elements.trainingScopeOptions"))
         XCTAssertTrue(script.contains("container: elements.slimmingSourceOptions"))
