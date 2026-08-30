@@ -19390,13 +19390,16 @@ async function retryFavoriteSync() {
   }
 }
 
-function reconcileLibrarySelectionAfterFavoriteRemoval(previousIDs, removedAssetIDs) {
-  const primaryAssetID = state.selectedAssetID;
+function reconcileLibrarySelectionAfterFavoriteRemoval(
+  previousIDs,
+  removedAssetIDs,
+  { primaryAssetID = state.selectedAssetID, anchorAssetID = state.selectionAnchorID } = {}
+) {
   const primaryWasRemoved = Boolean(
     primaryAssetID && removedAssetIDs.has(primaryAssetID)
   );
   const anchorWasRemoved = Boolean(
-    state.selectionAnchorID && removedAssetIDs.has(state.selectionAnchorID)
+    anchorAssetID && removedAssetIDs.has(anchorAssetID)
   );
   if (!primaryWasRemoved && !anchorWasRemoved) return;
 
@@ -19404,7 +19407,8 @@ function reconcileLibrarySelectionAfterFavoriteRemoval(previousIDs, removedAsset
   const remainingSelectedIDs = remainingIDs.filter((assetID) => (
     state.selectedAssetIDs.has(assetID)
   ));
-  if (primaryWasRemoved) {
+  if (primaryWasRemoved
+    && (!state.selectedAssetID || removedAssetIDs.has(state.selectedAssetID))) {
     const replacementCandidates = remainingSelectedIDs.length
       ? remainingSelectedIDs
       : remainingIDs;
@@ -19422,13 +19426,15 @@ function reconcileLibrarySelectionAfterFavoriteRemoval(previousIDs, removedAsset
     state.selectionPrimaryLoadingAssetID = null;
     state.selectionPrimaryRequestGeneration += 1;
   }
-  if (state.selectionMode && (anchorWasRemoved
+  if (state.selectionMode && ((anchorWasRemoved
+      && (!state.selectionAnchorID || removedAssetIDs.has(state.selectionAnchorID)))
     || (state.selectionAnchorID && !state.selectedAssetIDs.has(state.selectionAnchorID)))) {
     state.selectionAnchorID = state.selectedAssetID
       && state.selectedAssetIDs.has(state.selectedAssetID)
       ? state.selectedAssetID
       : ([...state.selectedAssetIDs][0] || null);
-  } else if (anchorWasRemoved) {
+  } else if (anchorWasRemoved
+    && (!state.selectionAnchorID || removedAssetIDs.has(state.selectionAnchorID))) {
     state.selectionAnchorID = null;
   }
 }
@@ -19470,6 +19476,10 @@ async function applyFavoriteMutation(assetIDs, isFavorite) {
   const generation = state.workspaceGeneration;
   const previousAssets = state.assets;
   const previousAssetIDs = previousAssets.map((asset) => asset.id);
+  const favoriteRemovalSelectionContext = {
+    primaryAssetID: state.selectedAssetID,
+    anchorAssetID: state.selectionAnchorID,
+  };
   state.favoriteMutating = true;
   renderFavoriteControls();
   syncWriteActionControls();
@@ -19523,15 +19533,34 @@ async function applyFavoriteMutation(assetIDs, isFavorite) {
     }
 
     let favoriteRemovalReconciledLightbox = false;
+    let favoriteRemovalContinuationPageFailed = false;
     if (state.libraryScope === "favorites" && !isFavorite) {
       const removed = new Set(uniqueIDs);
       state.assets = state.assets.filter((asset) => !removed.has(asset.id));
       state.selectedAssetIDs = new Set(
         [...state.selectedAssetIDs].filter((assetID) => !removed.has(assetID))
       );
-      reconcileLibrarySelectionAfterFavoriteRemoval(previousAssetIDs, removed);
+      if (state.nextCursor && removed.has(previousAssetIDs.at(-1))) {
+        try {
+          await loadAssets({ append: true, preserveSelection: true });
+        } catch {
+          favoriteRemovalContinuationPageFailed = true;
+        }
+        if (generation !== state.workspaceGeneration) return;
+      }
+      const continuationAssetIDs = [
+        ...previousAssetIDs,
+        ...state.assets
+          .map((asset) => asset.id)
+          .filter((assetID) => !previousAssetIDs.includes(assetID)),
+      ];
+      reconcileLibrarySelectionAfterFavoriteRemoval(
+        continuationAssetIDs,
+        removed,
+        favoriteRemovalSelectionContext
+      );
       favoriteRemovalReconciledLightbox = reconcileLibraryLightboxAfterFavoriteRemoval(
-        previousAssetIDs,
+        continuationAssetIDs,
         removed
       );
     }
@@ -19569,6 +19598,7 @@ async function applyFavoriteMutation(assetIDs, isFavorite) {
     const syncParts = [
       result.pendingCount ? `${result.pendingCount} 项等待 Photos 同步` : "",
       result.failedCount ? `${result.failedCount} 项 Photos 同步失败` : "",
+      favoriteRemovalContinuationPageFailed ? "下一页载入失败，可刷新重试" : "",
     ].filter(Boolean);
     toast(
       `${isFavorite ? "已加入" : "已取消"}红心 ${result.changedCount} 项`

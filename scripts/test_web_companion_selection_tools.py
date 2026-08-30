@@ -15,6 +15,7 @@ ASSET_IDS = [
     "11111111-1111-1111-1111-111111111111",
     "22222222-2222-2222-2222-222222222222",
 ]
+FAVORITE_PAGINATION_ASSET_ID = "22222222-2222-2222-2222-222222222223"
 SLIMMING_ASSET_IDS = [
     *ASSET_IDS,
     "33333333-1111-1111-1111-111111111111",
@@ -146,12 +147,18 @@ def main(*, inspector_actions_only=False):
             "state": "active",
         },
     ]
-    favorite_states = {asset_id: False for asset_id in SLIMMING_ASSET_IDS}
+    favorite_states = {
+        asset_id: False
+        for asset_id in [*SLIMMING_ASSET_IDS, FAVORITE_PAGINATION_ASSET_ID]
+    }
     favorite_sync_status = {
         ASSET_IDS[0]: "failed",
         ASSET_IDS[1]: "synced",
         SLIMMING_ASSET_IDS[2]: "synced",
+        FAVORITE_PAGINATION_ASSET_ID: "synced",
     }
+    favorite_pagination_enabled = [False]
+    favorite_continuation_unlocked = [False]
     preparation_reads = 0
     preparation_active = False
     active_preparation_id = None
@@ -407,15 +414,35 @@ def main(*, inspector_actions_only=False):
         def handle_assets(route):
             asset_request_urls.append(route.request.url)
             visible_ids = ASSET_IDS
+            next_cursor = None
             if "favorite=favorited" in route.request.url:
-                visible_ids = [asset_id for asset_id in ASSET_IDS if favorite_states[asset_id]]
+                query = parse_qs(urlparse(route.request.url).query)
+                if favorite_pagination_enabled[0] and query.get("cursor") == ["favorite-page-2"]:
+                    if favorite_continuation_unlocked[0]:
+                        visible_ids = [
+                            FAVORITE_PAGINATION_ASSET_ID
+                        ] if favorite_states[FAVORITE_PAGINATION_ASSET_ID] else []
+                    else:
+                        visible_ids = []
+                        next_cursor = "favorite-page-2"
+                else:
+                    visible_ids = [
+                        asset_id for asset_id in ASSET_IDS if favorite_states[asset_id]
+                    ]
+                    if (favorite_pagination_enabled[0]
+                            and favorite_states[FAVORITE_PAGINATION_ASSET_ID]):
+                        next_cursor = "favorite-page-2"
             fulfill_json(
                 route,
                 {
                     "items": [
                         {
                             "id": asset_id,
-                            "fileName": f"IMG_{ASSET_IDS.index(asset_id) + 1:04}.JPG",
+                            "fileName": (
+                                "IMG_0003.JPG"
+                                if asset_id == FAVORITE_PAGINATION_ASSET_ID
+                                else f"IMG_{ASSET_IDS.index(asset_id) + 1:04}.JPG"
+                            ),
                             "sourceID": SOURCE_ID,
                             "sourceName": "Apple Photos",
                             "availability": "available",
@@ -429,7 +456,7 @@ def main(*, inspector_actions_only=False):
                         }
                         for asset_id in visible_ids
                     ],
-                    "nextCursor": None,
+                    "nextCursor": next_cursor,
                 },
             )
 
@@ -445,6 +472,10 @@ def main(*, inspector_actions_only=False):
             for asset_id in payload["assetIDs"]:
                 favorite_states[asset_id] = payload["isFavorite"]
                 favorite_sync_status[asset_id] = "synced"
+            if (favorite_pagination_enabled[0]
+                    and not payload["isFavorite"]
+                    and ASSET_IDS[1] in payload["assetIDs"]):
+                favorite_continuation_unlocked[0] = True
             fulfill_json(
                 route,
                 {
@@ -482,6 +513,11 @@ def main(*, inspector_actions_only=False):
 
         def handle_asset_detail(route):
             asset_id = route.request.url.split("/v1/assets/", 1)[1].split("?", 1)[0]
+            asset_number = (
+                3
+                if asset_id == FAVORITE_PAGINATION_ASSET_ID
+                else ASSET_IDS.index(asset_id) + 1
+            )
             accepted_tag_count = sum(
                 asset_id in assignments
                 for assignments in created_tag_assignments.values()
@@ -493,8 +529,8 @@ def main(*, inspector_actions_only=False):
                     "sourceID": SOURCE_ID,
                     "sourceName": "Apple Photos",
                     "sourceState": "active",
-                    "fileName": f"IMG_{ASSET_IDS.index(asset_id) + 1:04}.JPG",
-                    "relativePath": f"精选/IMG_{ASSET_IDS.index(asset_id) + 1:04}.JPG",
+                    "fileName": f"IMG_{asset_number:04}.JPG",
+                    "relativePath": f"精选/IMG_{asset_number:04}.JPG",
                     "mediaType": "public.jpeg",
                     "availability": "available",
                     "contentRevision": 1,
@@ -9864,23 +9900,49 @@ def main(*, inspector_actions_only=False):
         )
         page.screenshot(path="/tmp/imageall-grid-favorite-390.png", full_page=True)
 
+        favorite_pagination_enabled[0] = True
+        favorite_states[FAVORITE_PAGINATION_ASSET_ID] = True
+        page.evaluate(
+            """() => {
+              window.__favoritePaginationAutoPaginate = autoPaginateIfNeeded;
+              autoPaginateIfNeeded = () => {};
+              state.autoLoadObserver?.disconnect();
+            }"""
+        )
         page.locator("#sidebarToggle").click()
         page.locator("#favoritesNavigationButton").click()
         page.wait_for_function(
-            "() => document.querySelectorAll('#assetGrid > .asset-card').length === 2"
+            "() => state.libraryScope === 'favorites' && !state.loadingAssets"
         )
+        favorite_first_page = page.evaluate(
+            """() => ({
+              renderedIDs: [...document.querySelectorAll('#assetGrid > .asset-card')]
+                .map(card => card.dataset.assetId),
+              stateIDs: state.assets.map(asset => asset.id),
+              nextCursor: state.nextCursor,
+            })"""
+        )
+        assert favorite_first_page == {
+            "renderedIDs": ASSET_IDS,
+            "stateIDs": ASSET_IDS,
+            "nextCursor": "favorite-page-2",
+        }, favorite_first_page
         assert page.locator("#favoritesNavigationButton").get_attribute("aria-current") == "page"
         if page.evaluate("() => state.selectionMode"):
             page.locator("#selectionModeButton").click()
         page.locator("#selectionModeButton").click()
         assert page.evaluate("() => state.selectionMode") is True
-        page.locator("#assetGrid > .asset-card").first.click()
+        page.locator("#assetGrid > .asset-card").last.click()
         favorite_preview = page.evaluate(
-            """() => ({
+            """replacementID => ({
               removedID: state.selectedAssetID,
-              replacementID: state.assets.find(asset => asset.id !== state.selectedAssetID)?.id,
-            })"""
+              replacementID,
+              continuationCursor: state.nextCursor,
+            })""",
+            FAVORITE_PAGINATION_ASSET_ID,
         )
+        assert favorite_preview["removedID"] == ASSET_IDS[1]
+        assert favorite_preview["continuationCursor"] == "favorite-page-2"
         page.set_viewport_size({"width": 1440, "height": 960})
         page.locator("#selectionInspectorPrimary:not(.hidden)").wait_for()
         page.locator("#selectionInspectorPrimaryPreview").click()
@@ -9888,7 +9950,10 @@ def main(*, inspector_actions_only=False):
         assert page.evaluate("() => state.lightboxPreservesSelection") is True
         page.locator("#lightboxFavoriteButton").click()
         page.wait_for_function(
-            "() => document.querySelectorAll('#assetGrid > .asset-card').length === 1"
+            "expected => document.querySelectorAll('#assetGrid > .asset-card').length === 2"
+            " && state.assets.at(-1)?.id === expected"
+            " && state.nextCursor === null",
+            arg=FAVORITE_PAGINATION_ASSET_ID,
         )
         assert submitted_favorites[-1]["assetIDs"] == [favorite_preview["removedID"]]
         assert submitted_favorites[-1]["isFavorite"] is False
@@ -9914,7 +9979,7 @@ def main(*, inspector_actions_only=False):
             "selectionAnchorID": favorite_preview["replacementID"],
             "preservesSelection": True,
             "primaryPosition": "当前主项 · 选区 1 / 1",
-            "lightboxPosition": "1 / 1",
+            "lightboxPosition": "2 / 2",
         }
         page.screenshot(
             path="/tmp/imageall-favorites-unfavorite-continuity.png",
@@ -9927,6 +9992,19 @@ def main(*, inspector_actions_only=False):
             " && state.selectedAssetIDs.has(expected)"
             " && state.selectionAnchorID === expected",
             arg=favorite_preview["replacementID"],
+        )
+        page.evaluate(
+            """() => {
+              autoPaginateIfNeeded = window.__favoritePaginationAutoPaginate;
+              delete window.__favoritePaginationAutoPaginate;
+              setupAutoPagination();
+            }"""
+        )
+        remaining = page.locator("#assetGrid > .asset-card").first
+        remaining.click(button="right")
+        page.locator("#assetFavoriteContextAction").click()
+        page.wait_for_function(
+            "() => document.querySelectorAll('#assetGrid > .asset-card').length === 1"
         )
         remaining = page.locator("#assetGrid > .asset-card").first
         remaining.click(button="right")

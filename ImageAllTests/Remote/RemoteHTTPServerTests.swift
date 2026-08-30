@@ -3066,7 +3066,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         )
         XCTAssertTrue(
             script.contains(
-                "reconcileLibrarySelectionAfterFavoriteRemoval(previousAssetIDs, removed);"
+                "continuationAssetIDs,\n        removed,\n        favoriteRemovalSelectionContext"
             )
         )
         XCTAssertTrue(
@@ -3074,6 +3074,18 @@ final class RemoteHTTPServerTests: XCTestCase {
                 "favoriteRemovalReconciledLightbox = reconcileLibraryLightboxAfterFavoriteRemoval("
             )
         )
+        XCTAssertTrue(
+            script.contains(
+                "state.nextCursor && removed.has(previousAssetIDs.at(-1))"
+            )
+        )
+        XCTAssertTrue(
+            script.contains(
+                "await loadAssets({ append: true, preserveSelection: true });"
+            )
+        )
+        XCTAssertTrue(script.contains("favoriteRemovalContinuationPageFailed"))
+        XCTAssertTrue(script.contains("下一页载入失败，可刷新重试"))
         XCTAssertFalse(script.contains("const previousSelectedIndex = previousAssets.findIndex("))
         XCTAssertFalse(
             script.contains(
