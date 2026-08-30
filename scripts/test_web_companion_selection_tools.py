@@ -2741,6 +2741,50 @@ def main(*, inspector_actions_only=False):
         page.locator("#reviewWorkspace").wait_for(state="hidden")
         page.locator("#findSimilarSelectionButton").click()
         page.locator("#slimmingWorkspace:not(.hidden)").wait_for()
+        slimming_image_tab = page.locator('[data-slimming-media-kind="image"]')
+        slimming_video_tab = page.locator('[data-slimming-media-kind="video"]')
+        assert slimming_image_tab.get_attribute("tabindex") == "0"
+        assert slimming_video_tab.get_attribute("tabindex") == "-1"
+        slimming_image_tab.focus()
+        page.keyboard.press("End")
+        page.wait_for_function(
+            "() => state.slimming.mediaKind === 'video' "
+            "&& !state.slimming.loading && !state.slimming.recycle.loading"
+        )
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.slimmingMediaKind"
+        ) == "video"
+        assert slimming_video_tab.get_attribute("aria-pressed") == "true"
+        page.keyboard.press("Home")
+        page.wait_for_function(
+            "() => state.slimming.mediaKind === 'image' "
+            "&& !state.slimming.loading && !state.slimming.recycle.loading"
+        )
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.slimmingMediaKind"
+        ) == "image"
+
+        slimming_analysis_tab = page.locator('[data-slimming-view="analysis"]')
+        slimming_recycle_tab = page.locator('[data-slimming-view="recycle"]')
+        assert slimming_analysis_tab.get_attribute("tabindex") == "0"
+        assert slimming_recycle_tab.get_attribute("tabindex") == "-1"
+        slimming_analysis_tab.focus()
+        page.keyboard.press("End")
+        page.wait_for_function(
+            "() => state.slimming.view === 'recycle' && !state.slimming.recycle.loading"
+        )
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.slimmingView"
+        ) == "recycle"
+        assert slimming_recycle_tab.get_attribute("aria-pressed") == "true"
+        page.keyboard.press("Home")
+        page.wait_for_function(
+            "() => state.slimming.view === 'analysis' && !state.slimming.loading"
+        )
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.slimmingView"
+        ) == "analysis"
+        assert slimming_analysis_tab.get_attribute("aria-pressed") == "true"
         slimming_desktop_presentation = page.evaluate(
             """() => {
               const workspace = document.querySelector('#slimmingWorkspace');

@@ -719,6 +719,27 @@ def main():
 
         page.get_by_role("button", name="训练记录").click()
         page.locator("#trainingWorkspace:not(.hidden)").wait_for(state="visible")
+        training_image_tab = page.locator('[data-training-media-kind="image"]')
+        training_video_tab = page.locator('[data-training-media-kind="video"]')
+        assert training_image_tab.get_attribute("tabindex") == "0"
+        assert training_video_tab.get_attribute("tabindex") == "-1"
+        training_image_tab.focus()
+        page.keyboard.press("End")
+        page.wait_for_function(
+            "() => state.training.mediaKind === 'video' && !state.training.loading"
+        )
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.trainingMediaKind"
+        ) == "video"
+        assert training_video_tab.get_attribute("aria-pressed") == "true"
+        page.keyboard.press("Home")
+        page.wait_for_function(
+            "() => state.training.mediaKind === 'image' && !state.training.loading"
+        )
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.trainingMediaKind"
+        ) == "image"
+        assert training_image_tab.get_attribute("aria-pressed") == "true"
         assert page.locator(f'[data-training-run-id="{RUN_ID}"]').get_attribute("aria-selected") == "true"
         page.evaluate(
             f"""() => {{
@@ -1038,17 +1059,33 @@ def main():
               const adamw = methods.querySelector(
                 '[data-training-setup-method="personalAdamW"]'
               );
-              personal.focus({ preventScroll: true });
+              feature.focus({ preventScroll: true });
               window.__trainingMethodContinuityFrame = { feature, personal, adamw };
             }"""
         )
+        assert page.locator(
+            '[data-training-setup-method="featureKnn"]'
+        ).get_attribute("tabindex") == "0"
+        assert personal_method.get_attribute("tabindex") == "-1"
+        assert page.locator(
+            '[data-training-setup-method="personalAdamW"]'
+        ).get_attribute("tabindex") == "-1"
+        page.keyboard.press("End")
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.trainingSetupMethod"
+        ) == "personalCentroid"
+        assert personal_method.get_attribute("aria-checked") == "true"
+        page.keyboard.press("Home")
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.trainingSetupMethod"
+        ) == "featureKnn"
+        page.keyboard.press("ArrowRight")
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.trainingSetupMethod"
+        ) == "personalCentroid"
         personal_method_bounds = personal_method.bounding_box()
         assert personal_method_bounds is not None
         page.mouse.move(
-            personal_method_bounds["x"] + personal_method_bounds["width"] / 2,
-            personal_method_bounds["y"] + personal_method_bounds["height"] / 2,
-        )
-        page.mouse.click(
             personal_method_bounds["x"] + personal_method_bounds["width"] / 2,
             personal_method_bounds["y"] + personal_method_bounds["height"] / 2,
         )

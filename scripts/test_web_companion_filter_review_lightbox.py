@@ -1086,6 +1086,26 @@ def main():
 
         page.goto(BASE_URL, wait_until="networkidle")
 
+        library_image_tab = page.locator('#mediaKindTabs [data-media-kind="image"]')
+        library_video_tab = page.locator('#mediaKindTabs [data-media-kind="video"]')
+        assert library_image_tab.get_attribute("tabindex") == "0"
+        assert library_video_tab.get_attribute("tabindex") == "-1"
+        library_image_tab.focus()
+        page.keyboard.press("End")
+        page.wait_for_function("() => state.mediaKind === 'video' && !state.loadingAssets")
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.mediaKind"
+        ) == "video"
+        assert library_video_tab.get_attribute("aria-pressed") == "true"
+        assert library_video_tab.get_attribute("tabindex") == "0"
+        assert library_image_tab.get_attribute("tabindex") == "-1"
+        page.keyboard.press("Home")
+        page.wait_for_function("() => state.mediaKind === 'image' && !state.loadingAssets")
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.mediaKind"
+        ) == "image"
+        assert library_image_tab.get_attribute("aria-pressed") == "true"
+
         interaction_poll_asset_queries = len(asset_queries)
         interaction_poll_probe = page.evaluate(
             """() => {
@@ -1547,6 +1567,27 @@ def main():
         page.wait_for_function(
             "() => document.querySelector('[data-active-filter-match=\"any\"]').getAttribute('aria-pressed') === 'true'"
         )
+        any_relation = page.locator('[data-active-filter-match="any"]')
+        all_relation = page.locator('[data-active-filter-match="all"]')
+        assert any_relation.get_attribute("tabindex") == "0"
+        assert all_relation.get_attribute("tabindex") == "-1"
+        any_relation.focus()
+        page.keyboard.press("End")
+        page.wait_for_function(
+            "() => state.filters.tagMatchMode === 'all' && !state.loadingAssets"
+        )
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.activeFilterMatch"
+        ) == "all"
+        assert all_relation.get_attribute("aria-pressed") == "true"
+        page.keyboard.press("Home")
+        page.wait_for_function(
+            "() => state.filters.tagMatchMode === 'any' && !state.loadingAssets"
+        )
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.activeFilterMatch"
+        ) == "any"
+        assert any_relation.get_attribute("aria-pressed") == "true"
         page.locator("#clearActiveFiltersButton").click()
         page.locator("#activeFilterBar").wait_for(state="hidden")
 

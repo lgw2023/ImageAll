@@ -8177,8 +8177,49 @@ function renderMediaKindTabs() {
       String(button.dataset.mediaKind === state.mediaKind)
     );
   }
+  syncRovingSegmentedControl(elements.mediaKindTabs, "[data-media-kind]");
   renderMediaKindLabels();
   renderWorldMapGalleryScope();
+}
+
+function segmentedControlButtons(container, selector) {
+  return [...container.querySelectorAll(selector)]
+    .filter((button) => !button.disabled && !button.hidden
+      && !button.classList.contains("hidden"));
+}
+
+function segmentedControlButtonIsSelected(button) {
+  return button.getAttribute("aria-checked") === "true"
+    || button.getAttribute("aria-pressed") === "true"
+    || button.getAttribute("aria-selected") === "true";
+}
+
+function syncRovingSegmentedControl(container, selector) {
+  const buttons = segmentedControlButtons(container, selector);
+  const selected = buttons.find(segmentedControlButtonIsSelected) || buttons[0] || null;
+  for (const button of container.querySelectorAll(selector)) {
+    button.tabIndex = button === selected ? 0 : -1;
+  }
+}
+
+function moveRovingSegmentedSelection(event, container, selector) {
+  if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(
+    event.key
+  )) return;
+  const currentButton = event.target.closest(selector);
+  if (!currentButton || !container.contains(currentButton)) return;
+  const buttons = segmentedControlButtons(container, selector);
+  if (!buttons.length) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const current = Math.max(0, buttons.indexOf(currentButton));
+  const backwards = event.key === "ArrowLeft" || event.key === "ArrowUp";
+  const next = event.key === "Home" ? 0
+    : event.key === "End" ? buttons.length - 1
+      : (current + (backwards ? -1 : 1) + buttons.length) % buttons.length;
+  for (const button of buttons) button.tabIndex = button === buttons[next] ? 0 : -1;
+  buttons[next].focus({ preventScroll: true });
+  buttons[next].click();
 }
 
 function syncSelectionModeControls() {
@@ -17427,6 +17468,10 @@ function renderActiveFilterBar() {
       String(button.dataset.activeFilterMatch === state.filters.tagMatchMode)
     );
   }
+  syncRovingSegmentedControl(
+    elements.activeFilterRelation,
+    "[data-active-filter-match]"
+  );
   renderPersonalModelControls();
 }
 
@@ -25061,6 +25106,10 @@ function renderTrainingSetupMethods() {
     return button;
   });
   reconcileStableChildren(elements.trainingSetupMethods, methodOptions);
+  syncRovingSegmentedControl(
+    elements.trainingSetupMethods,
+    "[data-training-setup-method]"
+  );
 }
 
 function createTrainingTagOption() {
@@ -27300,6 +27349,10 @@ function renderTrainingWorkspace({ preserveContent = false } = {}) {
       String(button.dataset.trainingMediaKind === state.training.mediaKind)
     );
   }
+  syncRovingSegmentedControl(
+    elements.trainingMediaKindTabs,
+    "[data-training-media-kind]"
+  );
   elements.trainingMethodFilter.value = state.training.method;
   elements.trainingRecordScopeFilter.value = state.training.runScope;
   elements.trainingFeatureMethodOption.textContent = state.training.mediaKind === "video"
@@ -30957,6 +31010,7 @@ function renderSlimmingWorkspace({
   for (const button of elements.slimmingWorkspaceTabs.querySelectorAll("[data-slimming-view]")) {
     button.setAttribute("aria-pressed", String(button.dataset.slimmingView === state.slimming.view));
   }
+  syncRovingSegmentedControl(elements.slimmingWorkspaceTabs, "[data-slimming-view]");
   for (const button of elements.slimmingMediaKindTabs.querySelectorAll(
     "[data-slimming-media-kind]"
   )) {
@@ -30965,6 +31019,10 @@ function renderSlimmingWorkspace({
       String(button.dataset.slimmingMediaKind === state.slimming.mediaKind)
     );
   }
+  syncRovingSegmentedControl(
+    elements.slimmingMediaKindTabs,
+    "[data-slimming-media-kind]"
+  );
   elements.slimmingAnalysisBody.classList.toggle("hidden", recycleView);
   elements.slimmingRecycleBody.classList.toggle("hidden", !recycleView);
   if (recycleView) {
@@ -41261,6 +41319,9 @@ function bindEvents() {
     const button = event.target.closest("[data-media-kind]");
     if (button) switchMediaKind(button.dataset.mediaKind);
   });
+  elements.mediaKindTabs.addEventListener("keydown", (event) => {
+    moveRovingSegmentedSelection(event, elements.mediaKindTabs, "[data-media-kind]");
+  });
   elements.assetGrid.addEventListener("click", (event) => {
     const favoriteButton = event.target.closest("[data-asset-card-favorite]");
     if (favoriteButton) {
@@ -41725,6 +41786,13 @@ function bindEvents() {
     state.filterDraft = null;
     syncFilterControlsFromState();
     await loadAssets();
+  });
+  elements.activeFilterRelation.addEventListener("keydown", (event) => {
+    moveRovingSegmentedSelection(
+      event,
+      elements.activeFilterRelation,
+      "[data-active-filter-match]"
+    );
   });
 
   elements.selectionModeButton.addEventListener("click", () => {
@@ -42286,6 +42354,13 @@ function bindEvents() {
     const button = event.target.closest("[data-slimming-view]");
     if (button) setSlimmingView(button.dataset.slimmingView);
   });
+  elements.slimmingWorkspaceTabs.addEventListener("keydown", (event) => {
+    moveRovingSegmentedSelection(
+      event,
+      elements.slimmingWorkspaceTabs,
+      "[data-slimming-view]"
+    );
+  });
   elements.refreshSlimmingButton.addEventListener("click", () => {
     if (state.slimming.view === "recycle") loadSlimmingRecycle();
     else {
@@ -42553,6 +42628,13 @@ function bindEvents() {
     const button = event.target.closest("[data-slimming-media-kind]");
     if (button) void switchSlimmingMediaKind(button.dataset.slimmingMediaKind);
   });
+  elements.slimmingMediaKindTabs.addEventListener("keydown", (event) => {
+    moveRovingSegmentedSelection(
+      event,
+      elements.slimmingMediaKindTabs,
+      "[data-slimming-media-kind]"
+    );
+  });
   elements.slimmingJobList.addEventListener("click", async (event) => {
     const row = event.target.closest("[data-slimming-job-id]");
     if (!row || row.dataset.slimmingJobId === state.slimming.selectedJobID) return;
@@ -42744,6 +42826,13 @@ function bindEvents() {
     resetTrainingSetupSelection(button.dataset.trainingSetupMethod);
     renderTrainingSetup();
   });
+  elements.trainingSetupMethods.addEventListener("keydown", (event) => {
+    moveRovingSegmentedSelection(
+      event,
+      elements.trainingSetupMethods,
+      "[data-training-setup-method]"
+    );
+  });
   elements.trainingTagSearch.addEventListener("input", () => {
     state.training.setup.tagSearchText = elements.trainingTagSearch.value;
     renderTrainingTagOptions();
@@ -42780,6 +42869,13 @@ function bindEvents() {
   elements.trainingMediaKindTabs.addEventListener("click", (event) => {
     const button = event.target.closest("[data-training-media-kind]");
     if (button) void switchTrainingMediaKind(button.dataset.trainingMediaKind);
+  });
+  elements.trainingMediaKindTabs.addEventListener("keydown", (event) => {
+    moveRovingSegmentedSelection(
+      event,
+      elements.trainingMediaKindTabs,
+      "[data-training-media-kind]"
+    );
   });
   elements.trainingSlotStrip.addEventListener("click", (event) => {
     const slot = event.target.closest("[data-training-slot-method]");
