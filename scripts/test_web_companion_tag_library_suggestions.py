@@ -94,6 +94,7 @@ def main():
     review_overview_pending_count = 0
     review_queue_reads = 0
     review_queue_score_adjustment = 0.0
+    adamw_available = True
     page_errors = []
     console_errors = []
     failed_resources = []
@@ -158,6 +159,7 @@ def main():
             {"id": SOURCE_IDS[0], "kind": "photos", "displayName": "Apple Photos", "state": "active"},
             {"id": SOURCE_IDS[1], "kind": "folder", "displayName": "旅行归档", "state": "active"},
         ]
+        base_sources = [dict(source) for source in sources]
         page.route("**/v1/sources", lambda route: fulfill_json(route, sources))
         page.route(
             "**/v1/tags",
@@ -280,7 +282,7 @@ def main():
                     "mediaKind": "image",
                     "maximumPendingCount": 25,
                     "personalCentroidAvailable": True,
-                    "personalAdamWAvailable": True,
+                    "personalAdamWAvailable": adamw_available,
                     "tags": [{
                         "tagID": TAG_ID,
                         "personalEligible": True,
@@ -748,6 +750,11 @@ def main():
         suggestion_history_payload = page.evaluate(
             "() => JSON.stringify(history.state?.imageAllWorkspace || null)"
         )
+        assert TAG_ID in suggestion_history_payload
+        assert "personalCentroid" in suggestion_history_payload
+        assert SOURCE_IDS[0] in suggestion_history_payload
+        assert SOURCE_IDS[1] in suggestion_history_payload
+        assert "tagSuggestionSourcesScrollTop" in suggestion_history_payload
         assert "猫" not in suggestion_history_payload
         assert "Apple Photos" not in suggestion_history_payload
         page.evaluate("() => history.back()")
@@ -789,6 +796,89 @@ def main():
         }, tag_source_history_continuity
         assert page.locator("#tagSuggestionSourceOptions input:checked").count() == 2
         assert tag_snapshot_reads == tag_reads_after_open
+
+        sources[:] = [
+            base_sources[0],
+            *[{
+                "id": f"f1000000-1111-2222-3333-{index + 1:012d}",
+                "kind": "folder",
+                "displayName": f"刷新来源 {index + 1}",
+                "state": "active",
+            } for index in range(12)],
+        ]
+        reads_before_refresh_restore = tag_snapshot_reads
+        page.reload(wait_until="networkidle")
+        dialog.wait_for(state="visible")
+        assert tag_snapshot_reads == reads_before_refresh_restore + 1
+        assert page.evaluate(
+            "() => history.state?.imageAllWorkspace?.navigationLevel"
+        ) == "tagSuggestion"
+        assert "猫" in page.locator("#tagSuggestionDialogTitle").inner_text()
+        assert page.locator("#tagSuggestionMethodSummary").inner_text() == "个人模型"
+        assert page.locator("#tagSuggestionThresholdSummary").inner_text() == "0.420"
+        assert page.locator("#tagSuggestionSourceOptions input:checked").count() == 1
+        assert page.locator(
+            f'#tagSuggestionSourceOptions input[value="{SOURCE_IDS[0]}"]'
+        ).is_checked()
+        assert page.locator(
+            f'#tagSuggestionSourceOptions input[value="{SOURCE_IDS[1]}"]'
+        ).count() == 0
+        assert "1 个历史来源当前不可用" in page.locator(
+            "#tagSuggestionNotice"
+        ).inner_text()
+        assert page.locator("#tagSuggestionSourceOptions").evaluate(
+            "element => element.scrollTop"
+        ) > 0
+        canonical_restore_context = page.evaluate(
+            "() => history.state?.imageAllWorkspace?.context"
+        )
+        assert canonical_restore_context["tagSuggestionTagID"] == TAG_ID
+        assert canonical_restore_context["tagSuggestionMethod"] == "personalCentroid"
+        assert canonical_restore_context["tagSuggestionSourceIDs"] == [SOURCE_IDS[0]]
+        assert "猫" not in json.dumps(canonical_restore_context, ensure_ascii=False)
+        assert "Apple Photos" not in json.dumps(canonical_restore_context, ensure_ascii=False)
+        assert page.locator("#launchTagSuggestionButton").is_enabled()
+        page.screenshot(
+            path="/tmp/imageall-tag-suggestion-history-restored.png",
+            full_page=False,
+        )
+
+        page.evaluate(
+            """() => {
+              const entry = structuredClone(history.state.imageAllWorkspace);
+              entry.context.tagSuggestionMethod = 'personalAdamW';
+              history.replaceState({ ...history.state, imageAllWorkspace: entry }, '', location.href);
+            }"""
+        )
+        adamw_available = False
+        reads_before_unavailable_method_restore = tag_snapshot_reads
+        page.reload(wait_until="networkidle")
+        dialog.wait_for(state="visible")
+        assert tag_snapshot_reads == reads_before_unavailable_method_restore + 1
+        assert page.locator("#tagSuggestionMethodSummary").inner_text() == "超级个人模型"
+        assert "个人模型方法当前不可用" in page.locator(
+            "#tagSuggestionNotice"
+        ).inner_text()
+        assert page.locator("#launchTagSuggestionButton").is_disabled()
+        page.evaluate("() => history.back()")
+        dialog.wait_for(state="hidden")
+
+        adamw_available = True
+        sources[:] = [dict(source) for source in base_sources]
+        page.evaluate(
+            """sources => {
+              state.sources = sources;
+              renderSources();
+              renderReviewSourceFilter();
+            }""",
+            base_sources,
+        )
+        review_control = page.locator(f'[data-review-control-tag-id="{TAG_ID}"]')
+        if not review_control.evaluate("element => element.open"):
+            review_control.locator(":scope > summary").click()
+        centroid_button.click()
+        dialog.wait_for(state="visible")
+        assert page.locator("#tagSuggestionSourceOptions input:checked").count() == 1
         page.evaluate(
             """() => {
               const options = document.querySelector('#tagSuggestionSourceOptions');

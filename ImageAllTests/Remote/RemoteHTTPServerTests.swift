@@ -2568,6 +2568,7 @@ final class RemoteHTTPServerTests: XCTestCase {
             "tagSuggestionForm",
             "tagSuggestionSourceOptions",
             "tagSuggestionThresholdSummary",
+            "tagSuggestionNotice",
             "launchTagSuggestionButton",
             "undoToastButton",
             "trainingWorkspace",
@@ -4192,6 +4193,18 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function reconcileTagManagerFromWorkspaceHistory"))
         XCTAssertTrue(script.contains("function reconcileTrainingSetupFromWorkspaceHistory"))
         XCTAssertTrue(script.contains("function reconcileTagSuggestionFromWorkspaceHistory"))
+        XCTAssertTrue(script.contains("function currentTagSuggestionHistoryContext"))
+        XCTAssertTrue(script.contains("function applyTagSuggestionHistoryContext"))
+        XCTAssertTrue(script.contains("function restoreTagSuggestionLayoutFromHistory"))
+        XCTAssertTrue(script.contains("tagSuggestionSourcesScrollTop"))
+        XCTAssertTrue(script.contains("function tagLibrarySuggestionMethodAvailable"))
+        XCTAssertTrue(script.contains(
+            "applyWorkspaceHistoryEntry(restoreEntry, { restoringReload: true })"
+        ))
+        XCTAssertTrue(script.contains("refreshTagSuggestions: !restoringReload"))
+        XCTAssertFalse(script.contains(
+            "checkpointWorkspaceHistoryAfterApply ||= await reconcileTagSuggestionFromWorkspaceHistory"
+        ))
         XCTAssertTrue(script.contains("function reconcileSlimmingSetupFromWorkspaceHistory"))
         XCTAssertTrue(script.contains("function reconcileSlimmingThresholdFromWorkspaceHistory"))
         XCTAssertTrue(script.contains("function reconcileSlimmingIdenticalCleanupFromWorkspaceHistory"))

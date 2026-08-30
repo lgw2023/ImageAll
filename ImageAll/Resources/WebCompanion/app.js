@@ -566,6 +566,7 @@ const elements = {
   tagSuggestionMethodSummary: $("#tagSuggestionMethodSummary"),
   tagSuggestionLimitSummary: $("#tagSuggestionLimitSummary"),
   tagSuggestionThresholdSummary: $("#tagSuggestionThresholdSummary"),
+  tagSuggestionNotice: $("#tagSuggestionNotice"),
   tagSuggestionSourceOptions: $("#tagSuggestionSourceOptions"),
   tagSuggestionError: $("#tagSuggestionError"),
   tagSuggestionSelectionSummary: $("#tagSuggestionSelectionSummary"),
@@ -1215,6 +1216,7 @@ const state = {
       tagID: null,
       method: "personalCentroid",
       selectedSourceIDs: new Set(),
+      notice: "",
       returnFocus: null,
       baseLevel: "workspace",
       historyRestoreFocus: true,
@@ -3229,6 +3231,7 @@ function recordWorkspaceHistory(route, context = null, mode = "push") {
     ? {
         ...(context || {}),
         tagSuggestionBaseLevel: state.tagLibrarySuggestions.dialog.baseLevel,
+        ...currentTagSuggestionHistoryContext(),
       }
     : hasNewTag
     ? {
@@ -3816,7 +3819,7 @@ function scheduleDeferredGalleryAssetsRefresh() {
   });
 }
 
-async function applyWorkspaceHistoryEntry(entry) {
+async function applyWorkspaceHistoryEntry(entry, { restoringReload = false } = {}) {
   const activeEntry = entry?.workspaceGeneration === state.workspaceGeneration ? entry : null;
   const target = activeEntry?.route || "gallery";
   const context = activeEntry?.context || {};
@@ -3880,18 +3883,22 @@ async function applyWorkspaceHistoryEntry(entry) {
         navigationLevel,
         context
       );
-      checkpointWorkspaceHistoryAfterApply ||= await reconcileSlimmingSetupFromWorkspaceHistory(
+      checkpointWorkspaceHistoryAfterApply = await reconcileSlimmingSetupFromWorkspaceHistory(
         target,
         navigationLevel,
         context
-      );
+      ) || checkpointWorkspaceHistoryAfterApply;
       reconcileSlimmingThresholdFromWorkspaceHistory(target, navigationLevel, context);
-      checkpointWorkspaceHistoryAfterApply ||= await reconcileTrainingSetupFromWorkspaceHistory(
+      checkpointWorkspaceHistoryAfterApply = await reconcileTrainingSetupFromWorkspaceHistory(
         target,
         navigationLevel,
         context
-      );
-      reconcileTagSuggestionFromWorkspaceHistory(target, navigationLevel, context);
+      ) || checkpointWorkspaceHistoryAfterApply;
+      checkpointWorkspaceHistoryAfterApply = await reconcileTagSuggestionFromWorkspaceHistory(
+        target,
+        navigationLevel,
+        context
+      ) || checkpointWorkspaceHistoryAfterApply;
       reconcileNewTagFromWorkspaceHistory(target, navigationLevel, context);
       reconcileTagManagerFromWorkspaceHistory(target, navigationLevel, context);
       await reconcileSourceManagerFromWorkspaceHistory(target, navigationLevel, context);
@@ -3953,18 +3960,22 @@ async function applyWorkspaceHistoryEntry(entry) {
         navigationLevel,
         context
       );
-      checkpointWorkspaceHistoryAfterApply ||= await reconcileSlimmingSetupFromWorkspaceHistory(
+      checkpointWorkspaceHistoryAfterApply = await reconcileSlimmingSetupFromWorkspaceHistory(
         "gallery",
         navigationLevel,
         context
-      );
+      ) || checkpointWorkspaceHistoryAfterApply;
       reconcileSlimmingThresholdFromWorkspaceHistory("gallery", navigationLevel, context);
-      checkpointWorkspaceHistoryAfterApply ||= await reconcileTrainingSetupFromWorkspaceHistory(
+      checkpointWorkspaceHistoryAfterApply = await reconcileTrainingSetupFromWorkspaceHistory(
         "gallery",
         navigationLevel,
         context
-      );
-      reconcileTagSuggestionFromWorkspaceHistory("gallery", navigationLevel, context);
+      ) || checkpointWorkspaceHistoryAfterApply;
+      checkpointWorkspaceHistoryAfterApply = await reconcileTagSuggestionFromWorkspaceHistory(
+        "gallery",
+        navigationLevel,
+        context
+      ) || checkpointWorkspaceHistoryAfterApply;
       reconcileNewTagFromWorkspaceHistory("gallery", navigationLevel, context);
       reconcileTagManagerFromWorkspaceHistory("gallery", navigationLevel, context);
       await reconcileSourceManagerFromWorkspaceHistory("gallery", navigationLevel, context);
@@ -3994,6 +4005,7 @@ async function applyWorkspaceHistoryEntry(entry) {
         initialMode: context.reviewMode || "overview",
         initialTagID: context.reviewTagID || null,
         historyMode: "none",
+        refreshTagSuggestions: !restoringReload,
       });
       const reviewLoadedTarget = Math.min(
         GALLERY_HISTORY_LOADED_LIMIT,
@@ -4166,26 +4178,26 @@ async function applyWorkspaceHistoryEntry(entry) {
       activeEntry?.navigationLevel || "workspace",
       context
     );
-    checkpointWorkspaceHistoryAfterApply ||= await reconcileSlimmingSetupFromWorkspaceHistory(
+    checkpointWorkspaceHistoryAfterApply = await reconcileSlimmingSetupFromWorkspaceHistory(
       target,
       activeEntry?.navigationLevel || "workspace",
       context
-    );
+    ) || checkpointWorkspaceHistoryAfterApply;
     reconcileSlimmingThresholdFromWorkspaceHistory(
       target,
       activeEntry?.navigationLevel || "workspace",
       context
     );
-    checkpointWorkspaceHistoryAfterApply ||= await reconcileTrainingSetupFromWorkspaceHistory(
+    checkpointWorkspaceHistoryAfterApply = await reconcileTrainingSetupFromWorkspaceHistory(
       target,
       activeEntry?.navigationLevel || "workspace",
       context
-    );
-    reconcileTagSuggestionFromWorkspaceHistory(
+    ) || checkpointWorkspaceHistoryAfterApply;
+    checkpointWorkspaceHistoryAfterApply = await reconcileTagSuggestionFromWorkspaceHistory(
       target,
       activeEntry?.navigationLevel || "workspace",
       context
-    );
+    ) || checkpointWorkspaceHistoryAfterApply;
     reconcileNewTagFromWorkspaceHistory(
       target,
       activeEntry?.navigationLevel || "workspace",
@@ -21804,7 +21816,19 @@ function activeTagLibrarySuggestion(tagID = null) {
 }
 
 function tagLibrarySuggestionMethodText(method) {
-  return method === "personalAdamW" ? "超级个人模型" : "个人模型";
+  if (method === "personalAdamW") return "超级个人模型";
+  if (method === "personalCentroid") return "个人模型";
+  return "方法当前不可用";
+}
+
+function tagLibrarySuggestionMethodAvailable(method) {
+  if (method === "personalAdamW") {
+    return Boolean(state.tagLibrarySuggestions.snapshot?.personalAdamWAvailable);
+  }
+  if (method === "personalCentroid") {
+    return Boolean(state.tagLibrarySuggestions.snapshot?.personalCentroidAvailable);
+  }
+  return false;
 }
 
 function tagLibrarySuggestionPhaseText(activity) {
@@ -22286,9 +22310,19 @@ function renderTagSuggestionDialog() {
   const threshold = tagLibrarySuggestionThreshold(option, dialog.method);
   const sources = activeTagSuggestionSources();
   const validSourceIDs = new Set(sources.map((source) => source.id));
+  const previousSourceIDs = [...dialog.selectedSourceIDs];
   dialog.selectedSourceIDs = new Set(
-    [...dialog.selectedSourceIDs].filter((sourceID) => validSourceIDs.has(sourceID))
+    previousSourceIDs.filter((sourceID) => validSourceIDs.has(sourceID))
   );
+  const removedSourceCount = new Set(
+    previousSourceIDs.filter((sourceID) => !validSourceIDs.has(sourceID))
+  ).size;
+  if (removedSourceCount) {
+    const sourceNotice = `${removedSourceCount} 个所选来源当前不可用，已从本次扫描中移除。`;
+    if (!dialog.notice.includes(sourceNotice)) {
+      dialog.notice = `${dialog.notice ? `${dialog.notice} ` : ""}${sourceNotice}`;
+    }
+  }
 
   elements.tagSuggestionDialogTitle.textContent = tag
     ? `为“${tag.displayName}”生成建议`
@@ -22301,6 +22335,8 @@ function renderTagSuggestionDialog() {
   elements.tagSuggestionThresholdSummary.textContent = Number.isFinite(threshold)
     ? threshold.toFixed(3)
     : "由 Mac 设置";
+  elements.tagSuggestionNotice.textContent = dialog.notice;
+  elements.tagSuggestionNotice.classList.toggle("hidden", !dialog.notice);
   elements.tagSuggestionSelectionSummary.textContent =
     `已选择 ${dialog.selectedSourceIDs.size} 个来源`;
 
@@ -22328,12 +22364,85 @@ function renderTagSuggestionDialog() {
     || locked
     || !tag
     || !option?.personalEligible
+    || !tagLibrarySuggestionMethodAvailable(dialog.method)
     || !Number.isFinite(threshold)
     || dialog.selectedSourceIDs.size === 0
     || Boolean(activeTagLibrarySuggestion());
   elements.launchTagSuggestionButton.textContent = suggestions.submitting
     ? "正在交给 Mac…"
     : "开始扫描";
+}
+
+function currentTagSuggestionHistoryContext() {
+  const dialog = state.tagLibrarySuggestions.dialog;
+  return {
+    tagSuggestionTagID: galleryHistoryIdentifier(dialog.tagID),
+    tagSuggestionMethod: ["personalCentroid", "personalAdamW"].includes(dialog.method)
+      ? dialog.method
+      : null,
+    tagSuggestionSourceIDs: [...dialog.selectedSourceIDs]
+      .slice(0, GALLERY_HISTORY_LOADED_LIMIT),
+    tagSuggestionDialogScrollTop: elements.tagSuggestionDialog.scrollTop || 0,
+    tagSuggestionSourcesScrollTop: elements.tagSuggestionSourceOptions.scrollTop || 0,
+  };
+}
+
+function applyTagSuggestionHistoryContext(context = {}) {
+  const dialog = state.tagLibrarySuggestions.dialog;
+  const tagID = galleryHistoryIdentifier(context.tagSuggestionTagID);
+  const allowedMethods = new Set(["personalCentroid", "personalAdamW"]);
+  const method = allowedMethods.has(context.tagSuggestionMethod)
+    ? context.tagSuggestionMethod
+    : null;
+  const savedSourceIDs = Array.isArray(context.tagSuggestionSourceIDs)
+    ? context.tagSuggestionSourceIDs
+      .map(galleryHistoryIdentifier)
+      .filter(Boolean)
+      .slice(0, GALLERY_HISTORY_LOADED_LIMIT)
+    : [];
+  const activeSourceIDs = new Set(activeTagSuggestionSources().map((source) => source.id));
+  const selectedSourceIDs = [...new Set(savedSourceIDs)]
+    .filter((sourceID) => activeSourceIDs.has(sourceID));
+
+  dialog.tagID = tagID;
+  dialog.method = method;
+  dialog.selectedSourceIDs = new Set(selectedSourceIDs);
+  const notes = [];
+  const tag = tagByID(tagID);
+  const option = tagLibrarySuggestionOption(tagID);
+  if (!tag || !option?.personalEligible) {
+    notes.push("刷新前的标签当前不可用于个人建议，请返回总览重新选择标签。");
+  }
+  if (!method || !tagLibrarySuggestionMethodAvailable(method)) {
+    notes.push("刷新前的个人模型方法当前不可用，请返回总览选择可用方法。");
+  }
+  const missingSourceCount = new Set(
+    savedSourceIDs.filter((sourceID) => !activeSourceIDs.has(sourceID))
+  ).size;
+  if (missingSourceCount) {
+    notes.push(`${missingSourceCount} 个历史来源当前不可用，已从本次扫描中移除。`);
+  }
+  if (!selectedSourceIDs.length) {
+    notes.push("刷新前的来源范围当前为空，请重新选择至少一个来源。");
+  }
+  if (activeTagLibrarySuggestion()) {
+    notes.push("已有个人模型扫描正在运行，当前配置暂不能提交。");
+  }
+  dialog.notice = notes.join(" ");
+  return Boolean(tagID);
+}
+
+async function restoreTagSuggestionLayoutFromHistory(context = {}) {
+  await waitForWorkspaceLayout();
+  for (const [surface, value] of [
+    [elements.tagSuggestionDialog, context.tagSuggestionDialogScrollTop],
+    [elements.tagSuggestionSourceOptions, context.tagSuggestionSourcesScrollTop],
+  ]) {
+    surface.scrollTop = Math.min(
+      workspaceHistoryScrollTop(value),
+      Math.max(0, surface.scrollHeight - surface.clientHeight)
+    );
+  }
 }
 
 function tagSuggestionBaseLevelFromHistory(context = {}) {
@@ -22362,6 +22471,7 @@ function clearTagSuggestionDialogState() {
   dialog.tagID = null;
   dialog.method = "personalCentroid";
   dialog.selectedSourceIDs.clear();
+  dialog.notice = "";
   dialog.returnFocus = null;
   dialog.baseLevel = "workspace";
   dialog.historyRestoreFocus = true;
@@ -22444,17 +22554,23 @@ function returnFromTagSuggestion({ restoreFocus = true } = {}) {
   return Promise.resolve();
 }
 
-function reconcileTagSuggestionFromWorkspaceHistory(route, navigationLevel, context = {}) {
+async function reconcileTagSuggestionFromWorkspaceHistory(route, navigationLevel, context = {}) {
   const shouldOpen = navigationLevel === "tagSuggestion"
     && route === visibleWorkspaceRoute();
   const suggestions = state.tagLibrarySuggestions;
   const dialog = suggestions.dialog;
-  if (shouldOpen && (!dialog.restorable
-    || !tagByID(dialog.tagID)
-    || Boolean(activeTagLibrarySuggestion()))) {
+  if (shouldOpen && !dialog.restorable) {
     clearTagSuggestionDialogState();
-    replaceTagSuggestionHistoryWithBase(tagSuggestionBaseLevelFromHistory(context));
-    return;
+    if (!applyTagSuggestionHistoryContext(context)) {
+      replaceTagSuggestionHistoryWithBase(tagSuggestionBaseLevelFromHistory(context));
+      return false;
+    }
+    presentTagSuggestionDialog({
+      historyMode: "none",
+      baseLevel: tagSuggestionBaseLevelFromHistory(context),
+    });
+    await restoreTagSuggestionLayoutFromHistory(context);
+    return true;
   }
   if (shouldOpen && !elements.tagSuggestionDialog.open) {
     presentTagSuggestionDialog({
@@ -22470,6 +22586,7 @@ function reconcileTagSuggestionFromWorkspaceHistory(route, navigationLevel, cont
     });
     dialog.historyRestoreFocus = true;
   }
+  return false;
 }
 
 function openTagSuggestionDialog(tagID, method, returnFocus = null) {
@@ -22486,6 +22603,7 @@ function openTagSuggestionDialog(tagID, method, returnFocus = null) {
   suggestions.dialog.tagID = tagID;
   suggestions.dialog.method = method;
   suggestions.dialog.selectedSourceIDs = selectedSourceIDs;
+  suggestions.dialog.notice = "";
   suggestions.dialog.returnFocus = returnFocus || document.activeElement;
   elements.tagSuggestionError.textContent = "";
   suggestions.dialog.focusID = "closeTagSuggestionDialogButton";
@@ -22546,7 +22664,16 @@ async function loadTagLibrarySuggestions({ quiet = false } = {}) {
 async function generateTagLibrarySuggestions() {
   const suggestions = state.tagLibrarySuggestions;
   const dialog = suggestions.dialog;
-  if (suggestions.submitting || !dialog.tagID || !dialog.selectedSourceIDs.size) return;
+  const option = tagLibrarySuggestionOption(dialog.tagID);
+  const threshold = tagLibrarySuggestionThreshold(option, dialog.method);
+  if (suggestions.submitting
+    || !dialog.tagID
+    || !tagByID(dialog.tagID)
+    || !option?.personalEligible
+    || !tagLibrarySuggestionMethodAvailable(dialog.method)
+    || !Number.isFinite(threshold)
+    || !dialog.selectedSourceIDs.size
+    || activeTagLibrarySuggestion()) return;
   suggestions.submitting = true;
   elements.tagSuggestionError.textContent = "";
   renderTagSuggestionDialog();
@@ -25931,6 +26058,7 @@ async function openReviewWorkspace({
   initialMode = "overview",
   initialTagID = null,
   historyMode = "push",
+  refreshTagSuggestions = true,
 } = {}) {
   leaveIntegratedGalleryOverviewForLibrary({ historyMode: "none" });
   leaveIntegratedWorldMapForLibrary({ historyMode: "none" });
@@ -25973,7 +26101,9 @@ async function openReviewWorkspace({
   renderReviewMode();
   await Promise.all([
     loadReviewOverview(),
-    loadTagLibrarySuggestions({ quiet: true }),
+    refreshTagSuggestions
+      ? loadTagLibrarySuggestions({ quiet: true })
+      : Promise.resolve(),
     loadSampleSuggestions({ quiet: true }),
     loadLibrarySuggestions({ quiet: true, refreshServiceHealth: true }),
     supportsGeneralSettings() ? loadGeneralSettings({ quiet: true }) : Promise.resolve(),
@@ -37441,7 +37571,7 @@ async function loadWorkspace({ restoreHistory = false } = {}) {
       restoreGalleryNavigationLevel,
       restoreEntry?.context || {}
     );
-    reconcileTagSuggestionFromWorkspaceHistory(
+    await reconcileTagSuggestionFromWorkspaceHistory(
       "gallery",
       restoreGalleryNavigationLevel,
       restoreEntry?.context || {}
@@ -37483,7 +37613,7 @@ async function loadWorkspace({ restoreHistory = false } = {}) {
   state.workspaceNavigation.pendingRestoreEntry = null;
   if (restoreEntry?.route && restoreEntry.route !== "gallery") {
     try {
-      await applyWorkspaceHistoryEntry(restoreEntry);
+      await applyWorkspaceHistoryEntry(restoreEntry, { restoringReload: true });
     } catch (error) {
       closeAllWorkspacesToGallery({ restoreFocus: false });
       recordWorkspaceHistory("gallery", null, "replace");
@@ -38156,6 +38286,7 @@ function resetWorkspaceSessionState() {
   state.tagLibrarySuggestions.dialog.tagID = null;
   state.tagLibrarySuggestions.dialog.method = "personalCentroid";
   state.tagLibrarySuggestions.dialog.selectedSourceIDs.clear();
+  state.tagLibrarySuggestions.dialog.notice = "";
   state.tagLibrarySuggestions.dialog.returnFocus = null;
   state.tagLibrarySuggestions.dialog.baseLevel = "workspace";
   state.tagLibrarySuggestions.dialog.historyRestoreFocus = true;
@@ -45051,6 +45182,7 @@ function bindEvents() {
     }
     elements.tagSuggestionError.textContent = "";
     renderTagSuggestionDialog();
+    checkpointActiveWorkspaceHistory();
   });
   elements.selectAllTagSuggestionSourcesButton.addEventListener("click", () => {
     state.tagLibrarySuggestions.dialog.selectedSourceIDs = new Set(
@@ -45058,11 +45190,13 @@ function bindEvents() {
     );
     elements.tagSuggestionError.textContent = "";
     renderTagSuggestionDialog();
+    checkpointActiveWorkspaceHistory();
   });
   elements.clearTagSuggestionSourcesButton.addEventListener("click", () => {
     state.tagLibrarySuggestions.dialog.selectedSourceIDs.clear();
     elements.tagSuggestionError.textContent = "";
     renderTagSuggestionDialog();
+    checkpointActiveWorkspaceHistory();
   });
   elements.tagSuggestionForm.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -46372,6 +46506,8 @@ function bindEvents() {
       (surface) => surface && !surface.matches("details")
     ),
     ...Object.values(trainingSetupScrollSurfaces()),
+    elements.tagSuggestionDialog,
+    elements.tagSuggestionSourceOptions,
   ]) {
     scrollSurface.addEventListener("scroll", scheduleWorkspaceHistoryCheckpoint, {
       passive: true,
