@@ -10,8 +10,8 @@
   <meta name="apple-mobile-web-app-title" content="ImageAll">
   <title>ImageAll 网页版</title>
   <link rel="manifest" href="/manifest.webmanifest">
-  <link rel="stylesheet" href="/app.css?v=20260829-198">
-  <script src="/app.js?v=20260829-198" defer></script>
+  <link rel="stylesheet" href="/app.css?v=20260830-199">
+  <script src="/app.js?v=20260830-199" defer></script>
 </head>
 <body>
   <div id="bootView" class="centered-state">
@@ -3244,34 +3244,13 @@
   <dialog id="shortcutDialog" class="shortcut-dialog" aria-labelledby="shortcutDialogTitle">
     <section>
       <header>
-        <h2 id="shortcutDialogTitle">快捷键</h2>
+        <div class="shortcut-dialog-heading">
+          <h2 id="shortcutDialogTitle">快捷键</h2>
+          <p id="shortcutContextLabel">当前：照片图库</p>
+        </div>
         <button id="closeShortcutButton" class="icon-button" type="button" aria-label="关闭快捷键">×</button>
       </header>
-      <dl>
-        <div><dt>打开命令面板</dt><dd><kbd>⌘K</kbd></dd></div>
-        <div><dt>命令面板选择 / 首尾 / 翻页</dt><dd><kbd>↑ ↓</kbd> / <kbd>Home End</kbd> / <kbd>Page Up Down</kbd></dd></div>
-        <div><dt>打开通用设置</dt><dd><kbd>⌘,</kbd></dd></div>
-        <div><dt>返回图库并搜索</dt><dd><kbd>⌘F</kbd></dd></div>
-        <div><dt>撤销最近标签或审核操作</dt><dd><kbd>⌘Z</kbd></dd></div>
-        <div><dt>全选当前项目</dt><dd><kbd>⌘A</kbd></dd></div>
-        <div><dt>切换单图查看</dt><dd><kbd>Space</kbd></dd></div>
-        <div><dt>返回媒体网格</dt><dd><kbd>Esc</kbd></dd></div>
-        <div><dt>打开或关闭活动（训练时定位关联任务）</dt><dd><kbd>J</kbd></dd></div>
-        <div><dt>侧栏图库与来源：逐项 / 翻页 / 首尾</dt><dd><kbd>↑ ↓</kbd> / <kbd>Page Up Down</kbd> / <kbd>Home End</kbd></dd></div>
-        <div><dt>侧栏标签：换行移动 / 翻页 / 首尾</dt><dd><kbd>← ↑ ↓ →</kbd> / <kbd>Page Up Down</kbd> / <kbd>Home End</kbd></dd></div>
-        <div><dt>预览缩放 / 适应</dt><dd><kbd>+</kbd> <kbd>−</kbd> / <kbd>0</kbd></dd></div>
-        <div><dt>图库、审核与瘦身预览删除当前项</dt><dd><kbd>Delete</kbd></dd></div>
-        <div><dt>移动项目选择</dt><dd><kbd>← ↑ ↓ → / Home / End</kbd></dd></div>
-        <div><dt>按当前页幅翻页</dt><dd><kbd>Page Up / Down</kbd></dd></div>
-        <div><dt>扩展连续选择</dt><dd><kbd>Shift + 移动键</kbd></dd></div>
-        <div><dt>审核：属于 / 不属于 / 稍后</dt><dd><kbd>P / X / U</kbd></dd></div>
-        <div><dt>训练：新建 / 刷新 / 记录栏</dt><dd><kbd>N / R / L</kbd></dd></div>
-        <div><dt>训练：全部 / 批次 / 单项</dt><dd><kbd>B</kbd></dd></div>
-        <div><dt>训练：打开审核 / 重新配置</dt><dd><kbd>V / E</kbd></dd></div>
-        <div><dt>训练：定位模型槽</dt><dd><kbd>M</kbd></dd></div>
-        <div><dt>活动与训练记录：逐条 / 翻页 / 首尾</dt><dd><kbd>↑ ↓</kbd> / <kbd>Page Up Down</kbd> / <kbd>Home End</kbd></dd></div>
-        <div><dt>任务：打开 / 返回</dt><dd><kbd>Enter / Esc</kbd></dd></div>
-      </dl>
+      <div id="shortcutList" class="shortcut-list" aria-label="当前工作区快捷键"></div>
     </section>
   </dialog>
 

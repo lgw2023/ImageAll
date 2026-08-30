@@ -674,8 +674,12 @@ def main():
         assert shortcut_bounds["x"] + shortcut_bounds["width"] <= 390
         assert shortcut_bounds["y"] >= 0
         assert shortcut_bounds["y"] + shortcut_bounds["height"] <= 844
-        assert page.locator("#shortcutDialog dl").evaluate(
-            "node => node.scrollHeight > node.clientHeight"
+        assert page.locator("#shortcutContextLabel").inner_text() == "当前：图库总览"
+        assert page.locator('[data-shortcut-id="galleryOverviewReturn"]').count() == 1
+        assert page.locator('[data-shortcut-id="trainingPrimary"]').count() == 0
+        assert page.locator('[data-shortcut-id="galleryNavigate"]').count() == 0
+        assert page.locator("#shortcutList").evaluate(
+            "node => node.scrollHeight <= node.clientHeight"
         )
         page.screenshot(
             path="/tmp/imageall-keyboard-shortcuts-overview-390.png",
@@ -688,6 +692,8 @@ def main():
         )
         page.evaluate("() => history.forward()")
         page.locator("#shortcutDialog[open]").wait_for()
+        assert page.locator("#shortcutContextLabel").inner_text() == "当前：图库总览"
+        assert page.locator('[data-shortcut-id="galleryOverviewReturn"]').count() == 1
         page.locator("#closeShortcutButton").click()
         page.locator("#shortcutDialog").wait_for(state="hidden")
         assert page.evaluate(
@@ -702,6 +708,7 @@ def main():
         page.locator("#commandSearchInput").fill("快捷键")
         page.locator('[data-command-id="shortcuts"]').click()
         page.locator("#shortcutDialog[open]").wait_for()
+        assert page.locator("#shortcutContextLabel").inner_text() == "当前：图库总览"
         assert page.locator("#commandPalette").is_hidden()
         assert page.evaluate(
             "() => history.state?.imageAllWorkspace?.navigationLevel"
@@ -722,6 +729,9 @@ def main():
             '[data-compact-toolbar-target="shortcutButton"]'
         ).click()
         page.locator("#shortcutDialog[open]").wait_for()
+        assert page.locator("#shortcutContextLabel").inner_text() == "当前：照片图库"
+        assert page.locator('[data-shortcut-id="galleryNavigate"]').count() == 1
+        assert page.locator('[data-shortcut-id="trainingPrimary"]').count() == 0
         assert page.locator("#compactToolbarMenu").is_hidden()
         assert page.evaluate(
             "() => history.state?.imageAllWorkspace?.navigationLevel"

@@ -959,6 +959,8 @@ const elements = {
   commandList: $("#commandList"),
   commandContextLabel: $("#commandContextLabel"),
   shortcutDialog: $("#shortcutDialog"),
+  shortcutContextLabel: $("#shortcutContextLabel"),
+  shortcutList: $("#shortcutList"),
   closeShortcutButton: $("#closeShortcutButton"),
   assetContextMenu: $("#assetContextMenu"),
   assetFavoriteContextAction: $("#assetFavoriteContextAction"),
@@ -1635,6 +1637,7 @@ const state = {
   commandPaletteOpening: false,
   keyboardShortcutsReturnFocus: null,
   keyboardShortcutsBaseLevel: "workspace",
+  keyboardShortcutsContext: null,
   keyboardShortcutsHistoryRestoreFocus: true,
   keyboardShortcutsOpening: false,
   contextMenuSession: null,
@@ -38713,6 +38716,155 @@ async function reconcileCommandPaletteFromWorkspaceHistory(
   }
 }
 
+function keyboardShortcutsContextSnapshot(baseLevel = "workspace") {
+  const route = visibleWorkspaceRoute();
+  const lightboxOpen = baseLevel === "lightbox"
+    && !elements.lightbox.classList.contains("hidden");
+  return {
+    route,
+    label: lightboxOpen
+      ? `全屏预览 · ${commandWorkspaceName(route)}`
+      : commandWorkspaceName(route),
+    lightboxOpen,
+    lightboxContext: lightboxOpen ? state.lightboxContext : null,
+    mediaKind: lightboxOpen ? lightboxMediaKind() : null,
+    reviewMode: route === "review" ? state.review.mode : null,
+    slimmingView: route === "slimming" ? state.slimming.view : null,
+    worldMapDetailOpen: route === "worldMap"
+      && !elements.worldMapDetail.classList.contains("hidden"),
+  };
+}
+
+function keyboardShortcutSections(context) {
+  const globalShortcuts = [
+    { id: "commandPalette", title: "打开命令面板", keys: ["⌘K"] },
+    { id: "commandNavigation", title: "命令选择、首尾与翻页", keys: ["↑ ↓", "Home End", "Page Up Down"] },
+    { id: "search", title: "返回图库并搜索", keys: ["⌘F"] },
+    { id: "settings", title: "打开通用设置", keys: ["⌘,"] },
+    { id: "activity", title: "打开或关闭活动", keys: ["J"] },
+    { id: "undo", title: "撤销最近标签或审核操作", keys: ["⌘Z"] },
+    { id: "shortcuts", title: "查看当前工作区快捷键", keys: ["?"] },
+  ];
+
+  let contextualShortcuts = [];
+  if (context.lightboxOpen) {
+    contextualShortcuts = [
+      { id: "previewNavigate", title: "上一项或下一项", keys: ["← →"] },
+      { id: "previewClose", title: "关闭预览并返回原位置", keys: ["Space", "Esc"] },
+      ...(context.mediaKind !== "video" ? [{
+        id: "previewZoom",
+        title: "放大、缩小或适应窗口",
+        keys: ["+", "−", "0"],
+      }] : []),
+      ...(["library", "review", "slimming"].includes(context.lightboxContext) ? [{
+        id: "previewDelete",
+        title: "删除当前项目并由 Mac 确认",
+        keys: ["Delete"],
+      }] : []),
+      ...(context.lightboxContext === "review" ? [{
+        id: "previewReviewDecision",
+        title: "审核属于、不属于或稍后",
+        keys: ["P", "X", "U"],
+      }] : []),
+    ];
+  } else if (context.route === "gallery") {
+    contextualShortcuts = [
+      { id: "gallerySelectAll", title: "全选当前已载入项目", keys: ["⌘A"] },
+      { id: "galleryNavigate", title: "移动主选择、翻页或扩展连续选择", keys: ["← ↑ ↓ →", "Page Up Down", "Shift"] },
+      { id: "galleryPreview", title: "切换单图查看", keys: ["Space"] },
+      { id: "galleryDelete", title: "删除所选项目并由 Mac 确认", keys: ["Delete"] },
+      { id: "sidebarNavigate", title: "侧栏逐项、翻页与首尾导航", keys: ["↑ ↓", "Page Up Down", "Home End"] },
+      { id: "tagNavigate", title: "标签按视觉位置、翻页与首尾导航", keys: ["← ↑ ↓ →", "Page Up Down", "Home End"] },
+    ];
+  } else if (context.route === "review") {
+    contextualShortcuts = context.reviewMode === "queue" ? [
+      { id: "reviewSelectAll", title: "全选当前已载入审核项", keys: ["⌘A"] },
+      { id: "reviewNavigate", title: "移动主审核项、翻页或扩展选择", keys: ["← ↑ ↓ →", "Page Up Down", "Shift"] },
+      { id: "reviewPreview", title: "预览当前审核项", keys: ["Space"] },
+      { id: "reviewDecision", title: "确认属于、不属于或稍后", keys: ["P", "X", "U"] },
+      { id: "reviewDelete", title: "删除所选审核项并由 Mac 确认", keys: ["Delete"] },
+      { id: "reviewReturn", title: "退出选择模式或返回图库", keys: ["Esc"] },
+    ] : [
+      { id: "reviewOpenQueue", title: "打开聚焦的审核队列", keys: ["Enter"] },
+      { id: "reviewReturn", title: "返回图库", keys: ["Esc"] },
+    ];
+  } else if (context.route === "training") {
+    contextualShortcuts = [
+      { id: "trainingPrimary", title: "新建任务、刷新或显示记录栏", keys: ["N", "R", "L"] },
+      { id: "trainingScope", title: "切换全部、批次或单项范围", keys: ["B"] },
+      { id: "trainingModel", title: "定位模型槽", keys: ["M"] },
+      { id: "trainingFollowup", title: "打开审核或重新配置失败任务", keys: ["V", "E"] },
+      { id: "trainingNavigate", title: "训练记录逐条、翻页与首尾导航", keys: ["↑ ↓", "Page Up Down", "Home End"] },
+      { id: "trainingOpenReturn", title: "打开任务或返回图库", keys: ["Enter", "Esc"] },
+    ];
+  } else if (context.route === "slimming") {
+    contextualShortcuts = context.slimmingView === "analysis" ? [
+      { id: "slimmingSelectAll", title: "全选当前候选组成员", keys: ["⌘A"] },
+      { id: "slimmingNavigate", title: "移动候选成员、翻页或扩展选择", keys: ["← ↑ ↓ →", "Page Up Down", "Shift"] },
+      { id: "slimmingPreview", title: "预览当前候选成员", keys: ["Space"] },
+      { id: "slimmingDelete", title: "快速删除所选成员并由 Mac 确认", keys: ["Delete"] },
+      { id: "slimmingNavigator", title: "分析记录与候选组逐条、翻页及首尾", keys: ["↑ ↓", "Page Up Down", "Home End"] },
+      { id: "slimmingContextMenu", title: "打开当前记录或成员菜单", keys: ["Shift F10"] },
+    ] : [
+      { id: "slimmingRecycleContextMenu", title: "打开当前回收项菜单", keys: ["Shift F10"] },
+      { id: "slimmingReturn", title: "返回图库", keys: ["Esc"] },
+    ];
+  } else if (context.route === "worldMap") {
+    contextualShortcuts = [{
+      id: "worldMapReturn",
+      title: context.worldMapDetailOpen ? "关闭地点详情或返回图库" : "返回图库",
+      keys: ["Esc"],
+    }];
+  } else if (context.route === "galleryOverview") {
+    contextualShortcuts = [{
+      id: "galleryOverviewReturn",
+      title: "返回图库",
+      keys: ["Esc"],
+    }];
+  }
+
+  return [
+    { id: "global", title: "全局", shortcuts: globalShortcuts },
+    { id: "context", title: context.label, shortcuts: contextualShortcuts },
+  ].filter((section) => section.shortcuts.length);
+}
+
+function renderKeyboardShortcuts(context) {
+  elements.shortcutContextLabel.textContent = `当前：${context.label}`;
+  elements.shortcutList.dataset.shortcutRoute = context.route;
+  elements.shortcutList.dataset.shortcutContext = context.lightboxOpen
+    ? "lightbox"
+    : context.route;
+  const fragment = document.createDocumentFragment();
+  for (const section of keyboardShortcutSections(context)) {
+    const group = document.createElement("div");
+    group.className = "shortcut-group";
+    group.dataset.shortcutGroup = section.id;
+    const title = document.createElement("h3");
+    title.textContent = section.title;
+    const list = document.createElement("dl");
+    for (const shortcut of section.shortcuts) {
+      const row = document.createElement("div");
+      row.dataset.shortcutId = shortcut.id;
+      const term = document.createElement("dt");
+      term.textContent = shortcut.title;
+      const definition = document.createElement("dd");
+      shortcut.keys.forEach((keyLabel, index) => {
+        if (index) definition.append(document.createTextNode(" / "));
+        const key = document.createElement("kbd");
+        key.textContent = keyLabel;
+        definition.append(key);
+      });
+      row.append(term, definition);
+      list.append(row);
+    }
+    group.append(title, list);
+    fragment.append(group);
+  }
+  elements.shortcutList.replaceChildren(fragment);
+  elements.shortcutList.scrollTop = 0;
+}
+
 function keyboardShortcutsBaseLevelFromHistory(context = {}) {
   return ["sidebar", "inspector", "lightbox"].includes(
     context.keyboardShortcutsBaseLevel
@@ -38754,6 +38906,10 @@ function openKeyboardShortcuts({
         current?.navigationLevel || "workspace",
         current?.context || {}
       );
+    state.keyboardShortcutsContext = keyboardShortcutsContextSnapshot(
+      state.keyboardShortcutsBaseLevel
+    );
+    renderKeyboardShortcuts(state.keyboardShortcutsContext);
     elements.shortcutDialog.showModal();
     if (historyMode !== "none") {
       const route = visibleWorkspaceRoute();
@@ -38771,6 +38927,7 @@ function closeKeyboardShortcuts({ restoreFocus = true, checkpoint = true } = {})
   const returnFocus = state.keyboardShortcutsReturnFocus;
   state.keyboardShortcutsReturnFocus = null;
   state.keyboardShortcutsBaseLevel = "workspace";
+  state.keyboardShortcutsContext = null;
   elements.shortcutDialog.close();
   if (restoreFocus) {
     const toolbarFallback = stableReturnFocusTarget(

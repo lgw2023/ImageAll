@@ -2511,6 +2511,8 @@ final class RemoteHTTPServerTests: XCTestCase {
             "commandPalette",
             "commandContextLabel",
             "shortcutDialog",
+            "shortcutContextLabel",
+            "shortcutList",
             "inspectorPreviousButton",
             "inspectorNextButton",
             "inspectorSelectionHeading",
@@ -3074,8 +3076,8 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function syncSidebarTagRovingTabStop"))
         XCTAssertTrue(script.contains("sidebarTagNavigationID"))
         XCTAssertTrue(
-            html.contains(
-                "侧栏标签：换行移动 / 翻页 / 首尾"
+            script.contains(
+                "标签按视觉位置、翻页与首尾导航"
             )
         )
         XCTAssertTrue(script.contains("elements.jobsList"))
@@ -3243,7 +3245,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(stylesheet.contains(".workspace-notice-actions"))
         XCTAssertTrue(script.contains("function generateGalleryPersonalSuggestions"))
         XCTAssertTrue(script.contains("搜索文件名、路径、标签或来源"))
-        XCTAssertTrue(html.contains("<dt>返回图库并搜索</dt><dd><kbd>⌘F</kbd>"))
+        XCTAssertTrue(script.contains("id: \"search\", title: \"返回图库并搜索\", keys: [\"⌘F\"]"))
         XCTAssertTrue(script.contains("async function focusLibrarySearch"))
         XCTAssertTrue(script.contains("void focusLibrarySearch()"))
         XCTAssertTrue(script.contains("function clearInlineSearchFromEscape"))
@@ -3305,7 +3307,8 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(stylesheet.contains(".lightbox-stage"))
         XCTAssertTrue(stylesheet.contains(".lightbox-gesture-hint"))
         XCTAssertTrue(stylesheet.contains(".lightbox-delete-button"))
-        XCTAssertTrue(html.contains("图库、审核与瘦身预览删除当前项"))
+        XCTAssertTrue(script.contains("id: \"previewDelete\""))
+        XCTAssertTrue(script.contains("删除当前项目并由 Mac 确认"))
         XCTAssertTrue(
             script.contains(
                 "[\"library\", \"review\", \"slimming\"].includes("
@@ -3691,7 +3694,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function moveLibrarySelection(key, { extendRange = false } = {})"))
         XCTAssertTrue(script.contains("selectLibraryAssetByIndex(nextIndex, { focusGrid: true, extendRange })"))
         XCTAssertTrue(script.contains("ArrowLeft ArrowRight ArrowUp ArrowDown Home End PageUp PageDown Space"))
-        XCTAssertTrue(html.contains("扩展连续选择"))
+        XCTAssertTrue(script.contains("扩展连续选择"))
         XCTAssertTrue(script.contains("startMarqueeSelection"))
         XCTAssertTrue(script.contains("function marqueeAutoScrollStep"))
         XCTAssertTrue(script.contains("function marqueeSelectionBounds"))
@@ -3710,6 +3713,21 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function scheduleReviewAutoPagination"))
         XCTAssertTrue(script.contains("renderAssetSelectionState"))
         XCTAssertTrue(script.contains("openCommandPalette"))
+        XCTAssertTrue(script.contains("function keyboardShortcutsContextSnapshot("))
+        XCTAssertTrue(script.contains("function keyboardShortcutSections("))
+        XCTAssertTrue(script.contains("function renderKeyboardShortcuts("))
+        for shortcutID in [
+            "galleryNavigate",
+            "reviewDecision",
+            "trainingPrimary",
+            "slimmingNavigate",
+            "worldMapReturn",
+            "galleryOverviewReturn",
+            "previewZoom",
+            "previewReviewDecision",
+        ] {
+            XCTAssertTrue(script.contains("id: \"\(shortcutID)\""))
+        }
         for commandID in [
             "openReviewSources",
             "newTrainingTask",
@@ -4417,7 +4435,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("restoreFocusedActivityAction"))
         XCTAssertTrue(script.contains("restoreFocusedBatchAction"))
         XCTAssertTrue(html.contains("aria-keyshortcuts=\"J\""))
-        XCTAssertTrue(html.contains("打开或关闭活动（训练时定位关联任务）"))
+        XCTAssertTrue(script.contains("id: \"activity\", title: \"打开或关闭活动\", keys: [\"J\"]"))
         XCTAssertTrue(stylesheet.contains("z-index: 150;"))
         XCTAssertTrue(html.contains("aria-keyshortcuts=\"Meta+, Control+,\""))
         XCTAssertTrue(script.contains("if (blockingDialogOpen || elements.commandPalette.open) return;"))

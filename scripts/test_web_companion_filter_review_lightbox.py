@@ -3426,6 +3426,20 @@ def main():
         page.keyboard.press("Space")
         page.locator("#lightbox:not(.hidden)").wait_for()
         assert "REVIEW_1.JPG" in page.locator("#lightboxTitle").inner_text()
+        review_shortcut_request_count = len(asset_queries)
+        page.keyboard.press("?")
+        page.locator("#shortcutDialog[open]").wait_for()
+        assert page.locator("#shortcutContextLabel").inner_text() == (
+            "当前：全屏预览 · 建议审核队列"
+        )
+        assert page.locator('[data-shortcut-id="previewZoom"]').count() == 1
+        assert page.locator('[data-shortcut-id="previewReviewDecision"]').count() == 1
+        assert page.locator('[data-shortcut-id="reviewDecision"]').count() == 0
+        assert page.locator('[data-shortcut-id="galleryNavigate"]').count() == 0
+        page.keyboard.press("Escape")
+        page.locator("#shortcutDialog").wait_for(state="hidden")
+        assert page.locator("#lightbox:not(.hidden)").is_visible()
+        assert len(asset_queries) == review_shortcut_request_count
         page.keyboard.press("Space")
         page.locator("#lightbox").wait_for(state="hidden")
         page.wait_for_function(

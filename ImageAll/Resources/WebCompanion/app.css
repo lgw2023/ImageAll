@@ -9323,6 +9323,7 @@ html.split-resizing * {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 16px;
 }
 
 .shortcut-dialog h2 {
@@ -9330,17 +9331,43 @@ html.split-resizing * {
   font-size: 17px;
 }
 
-.shortcut-dialog dl {
+.shortcut-dialog-heading {
+  min-width: 0;
+}
+
+.shortcut-dialog-heading p {
+  margin: 3px 0 0;
+  overflow: hidden;
+  color: var(--secondary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shortcut-list {
   display: grid;
   align-content: start;
   min-height: 0;
-  gap: 0;
+  gap: 17px;
   margin: 13px 0 0;
   overflow: auto;
   overscroll-behavior: contain;
 }
 
-.shortcut-dialog dl > div {
+.shortcut-group h3 {
+  margin: 0 0 5px;
+  color: var(--secondary);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.shortcut-group dl {
+  margin: 0;
+}
+
+.shortcut-group dl > div {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
@@ -9353,7 +9380,12 @@ html.split-resizing * {
 }
 
 .shortcut-dialog dd {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   margin: 0;
+  color: var(--secondary);
+  font-size: 10px;
 }
 
 @media (max-width: 520px) {

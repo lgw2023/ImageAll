@@ -824,6 +824,25 @@ def main():
             path="/tmp/imageall-training-integrated.png",
             full_page=True,
         )
+        training_shortcut_requests = len(workspace_requests)
+        page.locator("#closeTrainingButton").focus()
+        page.evaluate("openKeyboardShortcuts({ historyMode: 'none' })")
+        page.locator("#shortcutDialog[open]").wait_for()
+        assert page.locator("#shortcutContextLabel").inner_text() == "当前：训练工程"
+        assert page.locator('[data-shortcut-id="trainingPrimary"]').count() == 1
+        assert page.locator('[data-shortcut-id="trainingNavigate"]').count() == 1
+        assert page.locator('[data-shortcut-id="reviewDecision"]').count() == 0
+        assert page.locator('[data-shortcut-id="galleryNavigate"]').count() == 0
+        page.screenshot(
+            path="/tmp/imageall-training-context-shortcuts.png",
+            full_page=True,
+        )
+        page.keyboard.press("Escape")
+        page.locator("#shortcutDialog").wait_for(state="hidden")
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'closeTrainingButton'"
+        )
+        assert len(workspace_requests) == training_shortcut_requests
         training_search_history_length = page.evaluate("history.length")
         training_search_request_count = len(workspace_requests)
         selected_training_run = page.evaluate("state.training.selectedRunID")
