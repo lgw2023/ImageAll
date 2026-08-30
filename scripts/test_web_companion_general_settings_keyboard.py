@@ -1346,20 +1346,30 @@ def main():
             '#toolbarDisplayModeControl [data-toolbar-display-mode="iconOnly"]'
         )
         assert icon_only.get_attribute("aria-checked") == "true"
+        icon_and_title = page.locator(
+            '#toolbarDisplayModeControl [data-toolbar-display-mode="iconAndTitle"]'
+        )
+        assert icon_only.get_attribute("tabindex") == "0"
+        assert icon_and_title.get_attribute("tabindex") == "-1"
         page.wait_for_function(
             "() => document.activeElement?.dataset.toolbarDisplayMode === 'iconOnly'"
         )
 
+        display_mode_update_count = len(updates)
         page.keyboard.press("ArrowRight")
-        assert page.evaluate("() => document.activeElement?.dataset.toolbarDisplayMode") == "iconAndTitle"
-        page.keyboard.press("Enter")
         page.wait_for_function(
             "() => document.querySelector('#appView').dataset.toolbarDisplayMode === 'iconAndTitle'"
         )
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.toolbarDisplayMode"
+        ) == "iconAndTitle"
+        assert icon_only.get_attribute("tabindex") == "-1"
+        assert icon_and_title.get_attribute("tabindex") == "0"
+        assert len(updates) == display_mode_update_count + 1
         assert updates[-1]["toolbarDisplayMode"] == "iconAndTitle"
         assert "operationID" in updates[-1]
 
-        page.keyboard.press("ArrowDown")
+        page.keyboard.press("Tab")
         active = page.evaluate(
             "() => ({ id: document.activeElement?.id, text: document.activeElement?.textContent, mode: document.activeElement?.dataset?.toolbarDisplayMode })"
         )

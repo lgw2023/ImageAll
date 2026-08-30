@@ -441,6 +441,30 @@ def main():
         page.keyboard.press("Escape")
         page.screenshot(path="/tmp/imageall-onboarding-presets-synthetic.png", full_page=True)
 
+        page.evaluate("() => showPairing()")
+        account_tab = page.locator("#accountLoginTab")
+        pairing_tab = page.locator("#pairingLoginTab")
+        assert page.locator("#toast").is_hidden()
+        assert page.locator("#toastMessage").inner_text() == ""
+        assert account_tab.get_attribute("aria-selected") == "true"
+        assert account_tab.get_attribute("tabindex") == "0"
+        assert pairing_tab.get_attribute("tabindex") == "-1"
+        account_tab.focus()
+        account_tab.press("ArrowRight")
+        assert pairing_tab.get_attribute("aria-selected") == "true"
+        assert pairing_tab.get_attribute("tabindex") == "0"
+        assert account_tab.get_attribute("tabindex") == "-1"
+        assert page.evaluate("() => document.activeElement?.id") == "pairingLoginTab"
+        pairing_tab.press("ArrowDown")
+        assert account_tab.get_attribute("aria-selected") == "true"
+        assert page.evaluate("() => document.activeElement?.id") == "accountLoginTab"
+        account_tab.press("End")
+        assert pairing_tab.get_attribute("aria-selected") == "true"
+        pairing_tab.press("Home")
+        assert account_tab.get_attribute("aria-selected") == "true"
+        assert page.evaluate("() => document.activeElement?.id") == "accountLoginTab"
+        page.screenshot(path="/tmp/imageall-auth-tabs-keyboard-390.png", full_page=True)
+
         assert not page_errors, page_errors
         assert not console_errors, console_errors
         browser.close()

@@ -40,6 +40,7 @@
           role="tab"
           aria-selected="true"
           aria-controls="accountLoginForm"
+          tabindex="0"
         >账号登录</button>
         <button
           id="pairingLoginTab"
@@ -48,9 +49,11 @@
           role="tab"
           aria-selected="false"
           aria-controls="pairingForm"
+          tabindex="-1"
         >配对码</button>
       </div>
-      <form id="accountLoginForm" class="pairing-form" autocomplete="on">
+      <form id="accountLoginForm" class="pairing-form" autocomplete="on" role="tabpanel"
+        aria-labelledby="accountLoginTab">
         <label for="accountUsername">账号名</label>
         <input
           id="accountUsername"
@@ -75,7 +78,8 @@
         <button id="accountLoginButton" class="button button-primary" type="submit">登录图库</button>
         <p id="accountLoginError" class="form-error" role="alert"></p>
       </form>
-      <form id="pairingForm" class="pairing-form hidden">
+      <form id="pairingForm" class="pairing-form hidden" role="tabpanel"
+        aria-labelledby="pairingLoginTab">
         <label for="pairingToken">一次性配对码</label>
         <input
           id="pairingToken"

@@ -5499,6 +5499,9 @@ def main(*, inspector_actions_only=False):
         confirmed_scope = page.locator('[data-slimming-cluster-scope="confirmed"]')
         ignored_scope = page.locator('[data-slimming-cluster-scope="ignored"]')
         assert pending_scope.get_attribute("aria-pressed") == "true"
+        assert pending_scope.get_attribute("tabindex") == "0"
+        assert confirmed_scope.get_attribute("tabindex") == "-1"
+        assert ignored_scope.get_attribute("tabindex") == "-1"
         assert pending_scope.locator(".slimming-cluster-scope-count").inner_text() == "1"
         assert confirmed_scope.locator(".slimming-cluster-scope-count").inner_text() == "1"
         assert ignored_scope.locator(".slimming-cluster-scope-count").inner_text() == "1"
@@ -5633,6 +5636,10 @@ def main(*, inspector_actions_only=False):
             f"document.querySelector('[data-slimming-cluster-row-id=\"{SLIMMING_IGNORED_CLUSTER_ID}\"]')"
         )
         assert page.locator("#slimmingClusterList .slimming-cluster-row").count() == 1
+        assert ignored_scope.get_attribute("tabindex") == "0"
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.slimmingClusterScope"
+        ) == "ignored"
         ignored_scope.press("Home")
         page.wait_for_function(
             f"() => !state.slimming.loading && "
@@ -5640,6 +5647,10 @@ def main(*, inspector_actions_only=False):
             ".getAttribute('aria-pressed') === 'true' && "
             f"document.querySelector('[data-slimming-cluster-row-id=\"{SLIMMING_CLUSTER_ID}\"]')"
         )
+        assert pending_scope.get_attribute("tabindex") == "0"
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.slimmingClusterScope"
+        ) == "pending"
         page.screenshot(path="/tmp/imageall-slimming-cluster-review-queues.png", full_page=True)
 
         assert page.evaluate(
@@ -7313,21 +7324,31 @@ def main(*, inspector_actions_only=False):
             "() => document.querySelector('#slimmingRecycleList .slimming-recycle-row')"
             "?.innerText.includes('RECYCLE_0001')"
         )
+        assert photos_scope.get_attribute("tabindex") == "0"
         photos_scope.press("ArrowRight")
         page.wait_for_function(
             "() => document.querySelector('[data-slimming-recycle-scope="
             "\"files\"]')?.getAttribute('aria-pressed') === 'true'"
         )
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.slimmingRecycleScope"
+        ) == "files"
         page.keyboard.press("End")
         page.wait_for_function(
             "() => document.querySelector('[data-slimming-recycle-scope="
             "\"attention\"]')?.getAttribute('aria-pressed') === 'true'"
         )
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.slimmingRecycleScope"
+        ) == "attention"
         page.keyboard.press("Home")
         page.wait_for_function(
             "() => document.querySelector('[data-slimming-recycle-scope="
             "\"all\"]')?.getAttribute('aria-pressed') === 'true'"
         )
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.slimmingRecycleScope"
+        ) == "all"
         page.wait_for_function(
             "() => document.querySelectorAll('#slimmingRecycleList .slimming-recycle-row').length === 3"
         )

@@ -7261,7 +7261,7 @@ function syncLightboxWorkspaceFrame() {
   elements.lightbox.style.setProperty("--lightbox-left", `${previewBounds.left}px`);
 }
 
-function selectAuthMethod(method) {
+function selectAuthMethod(method, { focus = "form" } = {}) {
   const account = method === "account";
   elements.accountLoginTab.classList.toggle("active", account);
   elements.accountLoginTab.setAttribute("aria-selected", String(account));
@@ -7269,11 +7269,41 @@ function selectAuthMethod(method) {
   elements.pairingLoginTab.setAttribute("aria-selected", String(!account));
   elements.accountLoginForm.classList.toggle("hidden", !account);
   elements.pairingForm.classList.toggle("hidden", account);
+  syncRovingSegmentedControl(
+    elements.accountLoginTab.parentElement,
+    ".auth-method-tab"
+  );
+  if (focus === "tab") {
+    (account ? elements.accountLoginTab : elements.pairingLoginTab)
+      .focus({ preventScroll: true });
+    return;
+  }
   if (account) {
     elements.accountUsername.focus({ preventScroll: true });
   } else {
     elements.pairingToken.focus({ preventScroll: true });
   }
+}
+
+function moveAuthMethodSelection(event) {
+  if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(
+    event.key
+  )) return;
+  const container = elements.accountLoginTab.parentElement;
+  const currentTab = event.target.closest(".auth-method-tab");
+  if (!currentTab || !container.contains(currentTab)) return;
+  const tabs = segmentedControlButtons(container, ".auth-method-tab");
+  if (!tabs.length) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const current = Math.max(0, tabs.indexOf(currentTab));
+  const backwards = event.key === "ArrowLeft" || event.key === "ArrowUp";
+  const next = event.key === "Home" ? 0
+    : event.key === "End" ? tabs.length - 1
+      : (current + (backwards ? -1 : 1) + tabs.length) % tabs.length;
+  selectAuthMethod(tabs[next] === elements.accountLoginTab ? "account" : "pairing", {
+    focus: "tab",
+  });
 }
 
 function showPairing(message = "") {
@@ -7282,6 +7312,7 @@ function showPairing(message = "") {
   updateMediaWorkerAuthorization(null);
   resetWorkspaceSessionState();
   closeOverlays();
+  clearToast();
   showOnly(elements.pairingView);
   elements.accountLoginError.textContent = message;
   elements.pairingError.textContent = message;
@@ -7330,11 +7361,18 @@ function setConnection(online, label) {
   if (elements.tagSuggestionDialog.open) renderTagSuggestionDialog();
 }
 
-function toast(message) {
+function clearToast() {
   clearTimeout(state.toastTimer);
+  state.toastTimer = null;
   state.toastUndoKind = null;
-  elements.toastMessage.textContent = message;
+  elements.toastMessage.textContent = "";
   elements.undoToastButton.classList.add("hidden");
+  elements.toast.classList.add("hidden");
+}
+
+function toast(message) {
+  clearToast();
+  elements.toastMessage.textContent = message;
   elements.toast.classList.remove("hidden");
   state.toastTimer = setTimeout(() => elements.toast.classList.add("hidden"), 2600);
 }
@@ -28528,6 +28566,10 @@ function renderSlimmingClusterScopes() {
       : `${slimmingClusterScopeText(scope)}，${count} 组`;
     button.querySelector("[data-slimming-cluster-scope-count]").textContent = count;
   }
+  syncRovingSegmentedControl(
+    elements.slimmingClusterScopes,
+    "[data-slimming-cluster-scope]"
+  );
 }
 
 function syncSlimmingClusterReviewButton(
@@ -30200,6 +30242,10 @@ function renderSlimmingRecycleScopes() {
     const countLabel = button.querySelector("[data-slimming-recycle-scope-count]");
     if (countLabel) countLabel.textContent = count;
   }
+  syncRovingSegmentedControl(
+    elements.slimmingRecycleScopes,
+    "[data-slimming-recycle-scope]"
+  );
 }
 
 function renderSlimmingRecycleHeader() {
@@ -40767,6 +40813,7 @@ function bindEvents() {
   elements.sourceSidebar.addEventListener("keydown", moveSidebarPrimaryNavigation);
   elements.accountLoginTab.addEventListener("click", () => selectAuthMethod("account"));
   elements.pairingLoginTab.addEventListener("click", () => selectAuthMethod("pairing"));
+  elements.accountLoginTab.parentElement.addEventListener("keydown", moveAuthMethodSelection);
   elements.accountLoginForm.addEventListener("submit", loginWithAccount);
   elements.pairingForm.addEventListener("submit", pair);
   elements.sourceList.addEventListener("click", (event) => {
@@ -41051,6 +41098,13 @@ function bindEvents() {
     if (button && button.getAttribute("aria-checked") !== "true") {
       submitGeneralSettingsPatch({ toolbarDisplayMode: button.dataset.toolbarDisplayMode });
     }
+  });
+  elements.toolbarDisplayModeControl.addEventListener("keydown", (event) => {
+    moveRovingSegmentedSelection(
+      event,
+      elements.toolbarDisplayModeControl,
+      "[data-toolbar-display-mode]"
+    );
   });
   elements.generalSettingsModelToggle.addEventListener("click", () => {
     submitGeneralSettingsPatch({
@@ -42455,19 +42509,11 @@ function bindEvents() {
     button.focus({ preventScroll: true });
   });
   elements.slimmingRecycleScopes.addEventListener("keydown", (event) => {
-    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
-    const buttons = [
-      ...elements.slimmingRecycleScopes.querySelectorAll(
-        "[data-slimming-recycle-scope]:not(:disabled)"
-      ),
-    ];
-    if (!buttons.length) return;
-    event.preventDefault();
-    const current = Math.max(0, buttons.indexOf(document.activeElement));
-    const next = event.key === "Home" ? 0
-      : event.key === "End" ? buttons.length - 1
-        : (current + (event.key === "ArrowLeft" ? -1 : 1) + buttons.length) % buttons.length;
-    buttons[next].click();
+    moveRovingSegmentedSelection(
+      event,
+      elements.slimmingRecycleScopes,
+      "[data-slimming-recycle-scope]"
+    );
   });
   elements.slimmingRecycleSourceSelect.addEventListener("change", () => {
     cancelPendingSlimmingRecycleSearch();
@@ -42685,20 +42731,11 @@ function bindEvents() {
     }
   });
   elements.slimmingClusterScopes.addEventListener("keydown", (event) => {
-    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
-      return;
-    }
-    const buttons = [...elements.slimmingClusterScopes.querySelectorAll(
-      "[data-slimming-cluster-scope]:not(:disabled)"
-    )];
-    if (!buttons.length) return;
-    event.preventDefault();
-    const current = Math.max(0, buttons.indexOf(document.activeElement));
-    const backwards = event.key === "ArrowLeft" || event.key === "ArrowUp";
-    const next = event.key === "Home" ? 0
-      : event.key === "End" ? buttons.length - 1
-        : (current + (backwards ? -1 : 1) + buttons.length) % buttons.length;
-    void selectSlimmingClusterScope(buttons[next].dataset.slimmingClusterScope);
+    moveRovingSegmentedSelection(
+      event,
+      elements.slimmingClusterScopes,
+      "[data-slimming-cluster-scope]"
+    );
   });
   elements.slimmingClusterList.addEventListener("click", (event) => {
     const review = event.target.closest("[data-slimming-cluster-review]");
