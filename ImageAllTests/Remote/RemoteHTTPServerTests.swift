@@ -4792,6 +4792,22 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("const thumbnailRecoveryVisibilityObserver"))
         XCTAssertTrue(script.contains("descriptor.failedGeneration"))
         XCTAssertTrue(script.contains("image.dataset.protectedPath === path && !forceFetch"))
+        let protectedImageObserverStart = try XCTUnwrap(
+            script.range(of: "const protectedImageIntersectionObserver")
+        )
+        let protectedImageObserverEnd = try XCTUnwrap(
+            script.range(
+                of: "const thumbnailRecoveryVisibilityObserver",
+                range: protectedImageObserverStart.upperBound..<script.endIndex
+            )
+        )
+        let protectedImageObserverScript = String(
+            script[protectedImageObserverStart.lowerBound..<protectedImageObserverEnd.lowerBound]
+        )
+        XCTAssertTrue(protectedImageObserverScript.contains("root: null"))
+        XCTAssertTrue(protectedImageObserverScript.contains("scrollMargin: \"600px\""))
+        XCTAssertFalse(protectedImageObserverScript.contains("root: elements.libraryScroll"))
+        XCTAssertTrue(protectedImageObserverScript.contains("shared by the library, review"))
         XCTAssertTrue(script.contains("function trapOverlayFocus"))
         XCTAssertTrue(script.contains("state.review.mutating"))
         XCTAssertTrue(script.contains("state.tagMutating"))

@@ -116,7 +116,7 @@ def drag_marquee_to_bottom_edge(page, container_selector, grid_selector):
     return scrolled
 
 
-def main(*, inspector_actions_only=False):
+def main(*, inspector_actions_only=False, account_thumbnail_surfaces_only=False):
     submitted_preparations = []
     submitted_slimming = []
     submitted_slimming_cluster_reviews = []
@@ -219,6 +219,14 @@ def main(*, inspector_actions_only=False):
     console_errors = []
     failed_resources = []
     unexpected_dialogs = []
+    protected_thumbnail_requests = []
+    synthetic_account_authorization = "Basic " + base64.b64encode(
+        b"synthetic-account:synthetic-password"
+    ).decode("ascii")
+    session_state = {
+        "authenticated": not account_thumbnail_surfaces_only,
+        "authMode": "account" if account_thumbnail_surfaces_only else "pairedDevice",
+    }
     tags_catalog = [
         {"id": CAT_TAG_ID, "displayName": "猫", "state": "active", "groupID": SUBJECT_GROUP_ID},
         {"id": TRAVEL_TAG_ID, "displayName": "旅行", "state": "active", "groupID": SCENE_GROUP_ID},
@@ -295,13 +303,42 @@ def main(*, inspector_actions_only=False):
                 body="<!doctype html><title>Map shell</title>",
             ),
         )
+        def handle_session(route):
+            if not session_state["authenticated"]:
+                fulfill_json(
+                    route,
+                    {"code": "unauthorized", "message": "Synthetic login required"},
+                    status=401,
+                )
+                return
+            fulfill_json(route, {
+                "authenticated": True,
+                "authMode": session_state["authMode"],
+                "username": "synthetic-account",
+                "deviceName": "Synthetic",
+            })
+
+        def handle_account_login(route):
+            assert route.request.headers.get("authorization") == (
+                synthetic_account_authorization
+            )
+            session_state["authenticated"] = True
+            fulfill_json(route, {
+                "authenticated": True,
+                "authMode": "account",
+                "username": "synthetic-account",
+            })
+
+        page.route("**/web/session", handle_session)
         page.route(
-            "**/web/session",
+            "**/web/session/refresh",
             lambda route: fulfill_json(
                 route,
-                {"authenticated": True, "authMode": "pairedDevice", "deviceName": "Synthetic"},
+                {"code": "unauthorized", "message": "Synthetic login required"},
+                status=401,
             ),
         )
+        page.route("**/web/account/login", handle_account_login)
         page.route(
             "**/v1/capabilities",
             lambda route: fulfill_json(
@@ -559,10 +596,15 @@ def main(*, inspector_actions_only=False):
             )
 
         page.route("**/v1/assets/*", handle_asset_detail)
-        page.route(
-            "**/v1/assets/*/thumbnail?**",
-            lambda route: route.fulfill(status=200, content_type="image/png", body=PIXEL),
-        )
+        def handle_thumbnail(route):
+            asset_id = route.request.url.split("/v1/assets/", 1)[1].split("/", 1)[0]
+            protected_thumbnail_requests.append({
+                "assetID": asset_id,
+                "authorization": route.request.headers.get("authorization"),
+            })
+            route.fulfill(status=200, content_type="image/png", body=PIXEL)
+
+        page.route("**/v1/assets/*/thumbnail?**", handle_thumbnail)
         page.route(
             "**/v1/assets/*/preview?**",
             lambda route: route.fulfill(status=200, content_type="image/png", body=PIXEL),
@@ -615,6 +657,25 @@ def main(*, inspector_actions_only=False):
                     "sourceIDs": [],
                     "totalPendingSuggestionCount": 0,
                     "tags": [],
+                },
+            ),
+        )
+        page.route(
+            "**/v1/review/queue?**",
+            lambda route: fulfill_json(
+                route,
+                {
+                    "items": [{
+                        "assetID": asset_id,
+                        "fileName": f"IMG_{index + 1:04}.JPG",
+                        "availability": "available",
+                        "acceptedTagCount": 0,
+                        "rejectedTagCount": 0,
+                        "suggestionOrigin": "personalModel",
+                        "score": 0.92 - index * 0.04,
+                        "contentRevision": 1,
+                    } for index, asset_id in enumerate(ASSET_IDS)],
+                    "nextCursor": None,
                 },
             ),
         )
@@ -1291,7 +1352,32 @@ def main(*, inspector_actions_only=False):
             lambda route: fulfill_json(route, {"mediaKind": "image", "requests": []}),
         )
 
-        page.goto(BASE_URL, wait_until="networkidle")
+        if account_thumbnail_surfaces_only:
+            page.goto(BASE_URL, wait_until="domcontentloaded")
+            page.locator("#accountLoginTab").click()
+            page.locator("#accountUsername").fill("synthetic-account")
+            page.locator("#accountPassword").fill("synthetic-password")
+            with page.expect_response("**/web/account/login"):
+                page.locator("#accountLoginButton").click()
+            page.locator("#appView:not(.hidden)").wait_for()
+            page.wait_for_function(
+                """
+                () => {
+                  const images = [...document.querySelectorAll(
+                    "#assetGrid > .asset-card > img[data-protected-path]"
+                  )];
+                  return images.length > 0 && images.some((image) => image.naturalWidth > 0);
+                }
+                """
+            )
+            gallery_account_requests = list(protected_thumbnail_requests)
+            assert gallery_account_requests
+            assert all(
+                request["authorization"] == synthetic_account_authorization
+                for request in gallery_account_requests
+            ), gallery_account_requests
+        else:
+            page.goto(BASE_URL, wait_until="networkidle")
         assert page.locator("#inspectorPlaceholder").is_visible()
         assert page.locator("#inspectorPlaceholderTagEditor").is_visible()
         assert page.locator("#inspectorPlaceholderTitle").inner_text() == "未选择照片"
@@ -2887,8 +2973,28 @@ def main(*, inspector_actions_only=False):
         ) == direct_snapshot
 
         slimming_request_count = len(submitted_slimming)
+        slimming_protected_request_count = len(protected_thumbnail_requests)
         direct_find_similar.click()
         page.locator("#slimmingWorkspace:not(.hidden)").wait_for()
+        if account_thumbnail_surfaces_only:
+            page.wait_for_function(
+                """
+                () => {
+                  const images = [...document.querySelectorAll(
+                    "#slimmingWorkspace img[data-protected-path]"
+                  )];
+                  return images.length > 0 && images.every((image) => image.naturalWidth > 0);
+                }
+                """
+            )
+            slimming_account_requests = protected_thumbnail_requests[
+                slimming_protected_request_count:
+            ]
+            assert slimming_account_requests
+            assert all(
+                request["authorization"] == synthetic_account_authorization
+                for request in slimming_account_requests
+            ), slimming_account_requests
         assert len(submitted_slimming) == slimming_request_count + 1
         assert submitted_slimming[-1]["mode"] == "seeds"
         assert set(submitted_slimming[-1]["seedAssetIDs"]) == set(ASSET_IDS)
@@ -2944,8 +3050,57 @@ def main(*, inspector_actions_only=False):
         )
         assert page.locator("#embeddingPreparationStatus").is_hidden()
 
+        review_protected_request_count = len(protected_thumbnail_requests)
         page.locator("#generateSelectedSuggestionsButton").click()
         page.locator("#reviewWorkspace:not(.hidden)").wait_for()
+        if account_thumbnail_surfaces_only:
+            page.evaluate(
+                """async (tagID) => {
+                  await openReviewWorkspace({
+                    initialMode: "queue",
+                    initialTagID: tagID,
+                    historyMode: "none",
+                    refreshTagSuggestions: false,
+                  });
+                }""",
+                CAT_TAG_ID,
+            )
+            page.wait_for_function(
+                """
+                () => {
+                  const images = [...document.querySelectorAll(
+                    "#reviewGrid img[data-protected-path]"
+                  )];
+                  return images.length > 0 && images.some((image) => image.naturalWidth > 0);
+                }
+                """
+            )
+            review_account_requests = protected_thumbnail_requests[
+                review_protected_request_count:
+            ]
+            assert review_account_requests
+            assert all(
+                request["authorization"] == synthetic_account_authorization
+                for request in review_account_requests
+            ), review_account_requests
+            page.screenshot(
+                path="/tmp/imageall-account-thumbnail-surfaces.png",
+                full_page=True,
+            )
+            assert not page_errors, page_errors
+            assert not unexpected_dialogs, unexpected_dialogs
+            assert failed_resources == [
+                (401, f"{BASE_URL}/web/session"),
+                (401, f"{BASE_URL}/web/session/refresh"),
+                (409, f"{BASE_URL}/v1/tags/create-and-apply"),
+            ], failed_resources
+            context.close()
+            browser.close()
+            print(
+                "account thumbnail surfaces browser flow passed; "
+                f"authenticated thumbnails={len(protected_thumbnail_requests)}"
+            )
+            return
         assert submitted_sample_suggestions[-1]["assetIDs"] == ASSET_IDS
         page.wait_for_function(
             "() => document.querySelector('#toastMessage').textContent.includes('写入 3 条建议')",
@@ -10343,5 +10498,13 @@ if __name__ == "__main__":
         action="store_true",
         help="Stop after the focused single-inspector action-strip regression.",
     )
+    parser.add_argument(
+        "--account-thumbnail-surfaces-only",
+        action="store_true",
+        help="Stop after account-authenticated thumbnails load across workspaces.",
+    )
     arguments = parser.parse_args()
-    main(inspector_actions_only=arguments.inspector_actions_only)
+    main(
+        inspector_actions_only=arguments.inspector_actions_only,
+        account_thumbnail_surfaces_only=arguments.account_thumbnail_surfaces_only,
+    )

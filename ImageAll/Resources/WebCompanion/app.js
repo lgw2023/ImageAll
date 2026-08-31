@@ -1823,8 +1823,12 @@ const protectedImageIntersectionObserver = "IntersectionObserver" in globalThis
       startProtectedImageRequest(image, path, requestID, "low");
     }
   }, {
-    root: elements.libraryScroll,
+    // The protected thumbnail pipeline is shared by the library, review,
+    // slimming and recycle workspaces. A viewport root respects every scroll
+    // ancestor's clipping without tying lazy loading to the library pane.
+    root: null,
     rootMargin: "600px",
+    scrollMargin: "600px",
   })
   : null;
 const thumbnailRecoveryVisibilityObserver = "IntersectionObserver" in globalThis
