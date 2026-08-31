@@ -5765,12 +5765,63 @@ def main():
             "viewportWidth: 100, viewportHeight: 100, fittedWidth: 100, fittedHeight: 75 })"
         )
         assert constrained == {"x": 50, "y": -25}, constrained
+        review_preview_before_resize = page.evaluate(
+            """() => ({
+              assetID: state.lightboxAssetID,
+              reviewKey: state.lightboxReviewKey,
+              scale: state.lightboxViewportScale,
+              originalAssetID: state.lightboxOriginalAssetID,
+              historyState: JSON.stringify(history.state),
+            })"""
+        )
+        page.locator("#reviewTagSearch").focus()
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'reviewTagSearch'"
+        )
         page.set_viewport_size({"width": 390, "height": 844})
         page.wait_for_function(
             "() => !document.querySelector('#lightbox').classList.contains('review-docked')"
             " && document.querySelector('#lightbox').getAttribute('aria-modal') === 'true'"
             " && document.querySelector('#appView').inert"
             " && document.querySelector('#reviewWorkspace').inert"
+        )
+        page.wait_for_function(
+            "() => document.activeElement?.id === 'lightboxBackButton'"
+        )
+        assert page.evaluate(
+            """expected => ({
+              assetID: state.lightboxAssetID,
+              reviewKey: state.lightboxReviewKey,
+              scale: state.lightboxViewportScale,
+              originalAssetID: state.lightboxOriginalAssetID,
+              historyState: JSON.stringify(history.state),
+            })""",
+            review_preview_before_resize,
+        ) == review_preview_before_resize
+        page.screenshot(
+            path="/tmp/imageall-review-responsive-lightbox-focus.png",
+            full_page=True,
+        )
+        page.set_viewport_size({"width": 1440, "height": 960})
+        page.wait_for_function(
+            "() => document.querySelector('#lightbox').classList.contains('review-docked')"
+            " && document.querySelector('#lightbox').getAttribute('aria-modal') === 'false'"
+            " && document.activeElement?.id === 'lightboxBackButton'"
+        )
+        assert page.evaluate(
+            """expected => ({
+              assetID: state.lightboxAssetID,
+              reviewKey: state.lightboxReviewKey,
+              scale: state.lightboxViewportScale,
+              originalAssetID: state.lightboxOriginalAssetID,
+              historyState: JSON.stringify(history.state),
+            })""",
+            review_preview_before_resize,
+        ) == review_preview_before_resize
+        page.set_viewport_size({"width": 390, "height": 844})
+        page.wait_for_function(
+            "() => !document.querySelector('#lightbox').classList.contains('review-docked')"
+            " && document.querySelector('#lightbox').getAttribute('aria-modal') === 'true'"
         )
         zoom_dimensions = page.evaluate(
             "() => ({ viewport: innerWidth, scroll: document.documentElement.scrollWidth, "

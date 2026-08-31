@@ -8106,7 +8106,21 @@ function clearLibraryLightboxIsolation() {
   if (statusStack) statusStack.inert = false;
 }
 
+function dockedPreviewCompanionContainsFocus() {
+  const reviewDocked = elements.lightbox.classList.contains("review-docked");
+  const libraryDocked = elements.lightbox.classList.contains("library-docked");
+  if (!reviewDocked && !libraryDocked) return false;
+  const activeElement = document.activeElement;
+  if (!activeElement || elements.lightbox.contains(activeElement)) return false;
+  const adjacentInspector = reviewDocked
+    ? elements.reviewWorkspace.querySelector(".review-detail-pane")
+    : elements.inspector;
+  return adjacentInspector?.contains(activeElement)
+    || elements.toast.contains(activeElement);
+}
+
 function syncLightboxWorkspaceFrame() {
+  const returnFocusToModalPreview = dockedPreviewCompanionContainsFocus();
   clearLibraryLightboxIsolation();
   const libraryPreview = state.lightboxContext === "library";
   const reviewPreview = state.lightboxContext === "review"
@@ -8125,6 +8139,9 @@ function syncLightboxWorkspaceFrame() {
   if (!docked) {
     elements.appView.inert = true;
     if (reviewPreview) elements.reviewWorkspace.inert = true;
+    if (returnFocusToModalPreview) {
+      elements.lightboxBackButton.focus({ preventScroll: true });
+    }
     return;
   }
 

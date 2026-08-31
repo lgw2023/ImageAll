@@ -567,6 +567,47 @@ def main():
         assert page.locator("#lightboxBackButton").evaluate(
             "element => document.activeElement === element"
         )
+        library_preview_before_resize = page.evaluate(
+            """() => ({
+              assetID: state.lightboxAssetID,
+              scale: state.lightboxViewportScale,
+              originalAssetID: state.lightboxOriginalAssetID,
+              historyState: JSON.stringify(history.state),
+            })"""
+        )
+        page.locator("#inspectorTagSearch").focus()
+        page.set_viewport_size({"width": 390, "height": 844})
+        page.wait_for_function(
+            "() => !document.querySelector('#lightbox').classList.contains('library-docked')"
+            " && document.querySelector('#lightbox').getAttribute('aria-modal') === 'true'"
+            " && document.querySelector('#appView').inert"
+            " && document.activeElement?.id === 'lightboxBackButton'"
+        )
+        assert page.evaluate(
+            """expected => ({
+              assetID: state.lightboxAssetID,
+              scale: state.lightboxViewportScale,
+              originalAssetID: state.lightboxOriginalAssetID,
+              historyState: JSON.stringify(history.state),
+            })""",
+            library_preview_before_resize,
+        ) == library_preview_before_resize
+        page.set_viewport_size({"width": 1440, "height": 900})
+        page.wait_for_function(
+            "() => document.querySelector('#lightbox').classList.contains('library-docked')"
+            " && document.querySelector('#lightbox').getAttribute('aria-modal') === 'false'"
+            " && !document.querySelector('#appView').inert"
+            " && document.activeElement?.id === 'lightboxBackButton'"
+        )
+        assert page.evaluate(
+            """expected => ({
+              assetID: state.lightboxAssetID,
+              scale: state.lightboxViewportScale,
+              originalAssetID: state.lightboxOriginalAssetID,
+              historyState: JSON.stringify(history.state),
+            })""",
+            library_preview_before_resize,
+        ) == library_preview_before_resize
         assert page.locator("#lightboxTitle").inner_text() == "ITEM_072.JPG"
         assert page.locator("#lightboxPosition").inner_text() == "72 / 72 · 还有更多"
         assert page.locator("#lightboxBackLabel").inner_text() == "返回网格"

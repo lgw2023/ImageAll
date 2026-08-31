@@ -3126,6 +3126,33 @@ final class RemoteHTTPServerTests: XCTestCase {
         )
         XCTAssertTrue(dockedFocusTrapScript.contains("const currentIndex = focusable.indexOf"))
         XCTAssertTrue(dockedFocusTrapScript.contains("focusable[nextIndex].focus"))
+        XCTAssertTrue(script.contains("function dockedPreviewCompanionContainsFocus"))
+        let previewFrameStart = try XCTUnwrap(
+            script.range(of: "function dockedPreviewCompanionContainsFocus")
+        )
+        let previewFrameEnd = try XCTUnwrap(
+            script.range(
+                of: "function selectAuthMethod",
+                range: previewFrameStart.upperBound..<script.endIndex
+            )
+        )
+        let previewFrameScript = String(
+            script[previewFrameStart.lowerBound..<previewFrameEnd.lowerBound]
+        )
+        XCTAssertTrue(previewFrameScript.contains("elements.lightbox.contains(activeElement)"))
+        XCTAssertTrue(previewFrameScript.contains("adjacentInspector?.contains(activeElement)"))
+        XCTAssertTrue(previewFrameScript.contains("elements.toast.contains(activeElement)"))
+        XCTAssertTrue(
+            previewFrameScript.contains(
+                "const returnFocusToModalPreview = dockedPreviewCompanionContainsFocus();"
+            )
+        )
+        XCTAssertTrue(previewFrameScript.contains("if (returnFocusToModalPreview)"))
+        XCTAssertTrue(
+            previewFrameScript.contains(
+                "elements.lightboxBackButton.focus({ preventScroll: true });"
+            )
+        )
         XCTAssertTrue(script.contains("function reconcileReviewPreviewAfterGalleryRemoval"))
         XCTAssertTrue(script.contains("function reconcileLibraryPreviewAfterGalleryRemoval"))
         XCTAssertTrue(script.contains("function reconcileLibrarySelectionAfterGalleryRemoval"))
