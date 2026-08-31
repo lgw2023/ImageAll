@@ -31,7 +31,8 @@
 
 1. `SessionGate`：refresh 成功、refresh 失败进入登录、多个 401 只一个 refresh。
 2. `VirtualizedGallery`：空列表、首页、加载下页、query 更换、卡片数不等于 DOM 数。
-3. `SelectionBar`：单选、Shift 范围、已加载/全 query 范围文案和变更后剪枝。
+3. `SelectionBar`：单选、Shift 范围、已载入范围全选文案和变更后剪枝；在 Host 没有显式
+   query-selection 协议时不提供无界全 query 写操作。
 4. `AssetViewer`：进入/退出焦点、相邻预取上限、快速导航取消、object URL revoke。
 5. 写操作：Host 完全成功、部分成功、冲突、会话失效、无法撤销；界面不得仅显示假成功 toast。
 6. schema：最小有效、完整、未知字段、缺必需字段、未知枚举和协议错误。

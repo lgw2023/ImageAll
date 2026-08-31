@@ -4,6 +4,10 @@
 工程化应用迁移的可审计交付面。它不是一份一次性计划：功能矩阵、验收门、测试证据和截图必须
 随每个纵切片一起更新。
 
+> 2026-08-31：新版已处于 `default`，根入口跳转至 `/web-v2/gallery`；旧版按 ADR-064 明确保留在
+> `/legacy/` 至少一个稳定发布周期。工程自动化门已完成，人工 VoiceOver 与真实发布环境
+> MapLibre/Host 验收仍作为发布检查单列，不得用合成证据外推。
+
 ## 决策边界
 
 - [ADR-063](../ADR-063-WEB-COMPANION-REACT-ARCHITECTURE.md)：新应用技术架构、交付形式和非功能门。
@@ -24,6 +28,7 @@
 - [API-TYPE-MODEL.md](API-TYPE-MODEL.md)：协议 schema、解码、错误和事件一致性。
 - [TEST-STRATEGY.md](TEST-STRATEGY.md)：分层测试、fixture、视觉/性能/可访问性和 Swift 包装验证。
 - [ACCEPTANCE-GATES.md](ACCEPTANCE-GATES.md)：切换默认入口和删除旧实现前的硬门。
+- [DELIVERY-2026-08-31.md](DELIVERY-2026-08-31.md)：本轮中文交付、验证结果、限制、提交与回滚。
 
 ## 状态词汇
 

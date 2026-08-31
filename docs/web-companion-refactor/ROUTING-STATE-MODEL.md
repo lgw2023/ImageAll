@@ -17,7 +17,8 @@
 - 每个顶层工作区是独立 route module。路由级 `loader` 不直接修改 Host，写操作只经显式 mutation。
 - 单张资产查看是可定址 overlay route；背景 location 保留图库查询、选择和滚动锚点。
 - 未知 `/web-v2/*` 路由显示应用内 404；Swift 只为已知无扩展名路由回退到 shell。
-- 旧/新版跳转只传递允许列表中的 route、sort、view、source/folder 和筛选，不传凭据或 payload。
+- 新版内部路由只传递允许列表中的 route、sort、view、source/folder 和筛选，不传凭据或 payload。
+  旧版不解析新版 URL，`/legacy/` 因此明确从旧版默认状态开始，不伪造无损上下文桥。
 
 ## 图库状态机
 
