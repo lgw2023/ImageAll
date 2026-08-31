@@ -2908,6 +2908,24 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(stylesheet.contains(".inspector-inline-tag-form"))
         XCTAssertTrue(stylesheet.contains(".review-workspace.integrated"))
         XCTAssertTrue(script.contains("function syncReviewPresentation"))
+        XCTAssertTrue(script.contains("function syncTrainingPresentation"))
+        XCTAssertTrue(script.contains("function syncGalleryOverviewPresentation"))
+        XCTAssertTrue(script.contains("function syncWorldMapPresentation"))
+        XCTAssertTrue(script.contains("function workspacePresentationFocusIsUsable"))
+        XCTAssertTrue(script.contains("function reconcileWorkspacePresentationFocus"))
+        XCTAssertTrue(script.contains("workspace.contains(target)"))
+        XCTAssertTrue(script.contains("!target.matches(\":disabled\")"))
+        XCTAssertTrue(script.contains("!target.closest(\"[inert], [aria-hidden='true']\")"))
+        XCTAssertEqual(
+            script.components(
+                separatedBy: "const preferredFocus = focus ? document.activeElement : null;"
+            ).count - 1,
+            5
+        )
+        XCTAssertEqual(
+            script.components(separatedBy: "reconcileWorkspacePresentationFocus(").count - 1,
+            6
+        )
         XCTAssertTrue(script.contains("function syncIntegratedReviewFrame"))
         XCTAssertTrue(script.contains("function leaveIntegratedReviewForLibrary"))
         XCTAssertTrue(script.contains("function loadReviewInspectorDetail"))

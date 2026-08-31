@@ -4718,7 +4718,28 @@ function setIntegratedReviewSurfaceIsolation(isolated) {
   }
 }
 
+function workspacePresentationFocusIsUsable(workspace, target) {
+  return target instanceof HTMLElement
+    && workspace.contains(target)
+    && document.contains(target)
+    && !target.matches(":disabled")
+    && target.getClientRects().length > 0
+    && !target.closest("[inert], [aria-hidden='true']");
+}
+
+function reconcileWorkspacePresentationFocus(workspace, fallback, preferredFocus = null) {
+  requestAnimationFrame(() => {
+    const target = workspacePresentationFocusIsUsable(workspace, preferredFocus)
+      ? preferredFocus
+      : (workspacePresentationFocusIsUsable(workspace, document.activeElement)
+        ? document.activeElement
+        : fallback);
+    if (document.activeElement !== target) target.focus({ preventScroll: true });
+  });
+}
+
 function syncReviewPresentation({ focus = false, renderSurfaces = true } = {}) {
+  const preferredFocus = focus ? document.activeElement : null;
   const open = reviewWorkspaceIsOpen();
   const integrated = open && reviewWorkspaceUsesIntegratedLayout();
   const lightboxOpen = !elements.lightbox.classList.contains("hidden")
@@ -4752,7 +4773,11 @@ function syncReviewPresentation({ focus = false, renderSurfaces = true } = {}) {
     updateLibraryTitle();
   }
   if (focus && open && !lightboxOpen) {
-    requestAnimationFrame(() => elements.closeReviewButton.focus({ preventScroll: true }));
+    reconcileWorkspacePresentationFocus(
+      elements.reviewWorkspace,
+      elements.closeReviewButton,
+      preferredFocus
+    );
   }
 }
 
@@ -4912,6 +4937,7 @@ function syncIntegratedTrainingFrame() {
 }
 
 function syncTrainingPresentation({ focus = false, renderSurfaces = true } = {}) {
+  const preferredFocus = focus ? document.activeElement : null;
   const open = trainingWorkspaceIsOpen();
   const integrated = open && trainingWorkspaceUsesIntegratedLayout();
 
@@ -4938,7 +4964,11 @@ function syncTrainingPresentation({ focus = false, renderSurfaces = true } = {})
     updateLibraryTitle();
   }
   if (focus && open) {
-    requestAnimationFrame(() => elements.closeTrainingButton.focus({ preventScroll: true }));
+    reconcileWorkspacePresentationFocus(
+      elements.trainingWorkspace,
+      elements.closeTrainingButton,
+      preferredFocus
+    );
   }
 }
 
@@ -4986,6 +5016,7 @@ function syncIntegratedSlimmingFrame() {
 }
 
 function syncSlimmingPresentation({ focus = false, renderSurfaces = true } = {}) {
+  const preferredFocus = focus ? document.activeElement : null;
   const open = slimmingWorkspaceIsOpen();
   const integrated = open && slimmingWorkspaceUsesIntegratedLayout();
   const lightboxOpen = !elements.lightbox.classList.contains("hidden")
@@ -5014,7 +5045,11 @@ function syncSlimmingPresentation({ focus = false, renderSurfaces = true } = {})
     updateLibraryTitle();
   }
   if (focus && open && !lightboxOpen) {
-    requestAnimationFrame(() => elements.closeSlimmingButton.focus({ preventScroll: true }));
+    reconcileWorkspacePresentationFocus(
+      elements.slimmingWorkspace,
+      elements.closeSlimmingButton,
+      preferredFocus
+    );
   }
 }
 
@@ -5717,6 +5752,7 @@ function restoreWorkspacePortal(workspace, portal) {
 }
 
 function syncGalleryOverviewPresentation({ focus = false, renderSurfaces = true } = {}) {
+  const preferredFocus = focus ? document.activeElement : null;
   const open = galleryOverviewIsOpen();
   const integrated = open && galleryOverviewUsesIntegratedLayout();
 
@@ -5745,12 +5781,13 @@ function syncGalleryOverviewPresentation({ focus = false, renderSurfaces = true 
     updateLibraryTitle();
   }
   if (focus && open) {
-    requestAnimationFrame(() => {
-      const target = integrated
+    reconcileWorkspacePresentationFocus(
+      elements.galleryOverviewWorkspace,
+      integrated
         ? elements.refreshGalleryOverviewButton
-        : elements.closeGalleryOverviewButton;
-      target.focus({ preventScroll: true });
-    });
+        : elements.closeGalleryOverviewButton,
+      preferredFocus
+    );
   }
 }
 
@@ -6327,6 +6364,7 @@ function syncIntegratedWorldMapFrame() {
 }
 
 function syncWorldMapPresentation({ focus = false, renderSurfaces = true } = {}) {
+  const preferredFocus = focus ? document.activeElement : null;
   const open = worldMapIsOpen();
   const integrated = open && worldMapUsesIntegratedLayout();
   const lightboxOpen = !elements.lightbox.classList.contains("hidden")
@@ -6357,12 +6395,11 @@ function syncWorldMapPresentation({ focus = false, renderSurfaces = true } = {})
     updateLibraryTitle();
   }
   if (focus && open && !lightboxOpen) {
-    requestAnimationFrame(() => {
-      const target = integrated
-        ? elements.refreshWorldMapButton
-        : elements.closeWorldMapButton;
-      target.focus({ preventScroll: true });
-    });
+    reconcileWorkspacePresentationFocus(
+      elements.worldMapWorkspace,
+      integrated ? elements.refreshWorldMapButton : elements.closeWorldMapButton,
+      preferredFocus
+    );
   }
 }
 

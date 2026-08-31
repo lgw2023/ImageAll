@@ -3040,6 +3040,13 @@ def main():
         review_handle.dblclick()
         assert review_handle.get_attribute("aria-valuenow") == "288"
         page.screenshot(path="/tmp/imageall-review-overview-split.png", full_page=True)
+        responsive_review_focus = page.locator(
+            f'[data-review-overview-tag-id="{CAT_TAG_ID}"]'
+        )
+        responsive_review_focus.focus()
+        assert responsive_review_focus.evaluate(
+            "element => document.activeElement === element"
+        )
         page.set_viewport_size({"width": 390, "height": 844})
         page.wait_for_function(
             "() => !document.querySelector('#reviewWorkspace').classList.contains('integrated')"
@@ -3049,6 +3056,9 @@ def main():
             "role: document.querySelector('#reviewWorkspace').getAttribute('role'), "
             "ariaModal: document.querySelector('#reviewWorkspace').getAttribute('aria-modal') })"
         ) == {"appInert": True, "role": "dialog", "ariaModal": "true"}
+        assert responsive_review_focus.evaluate(
+            "element => document.activeElement === element"
+        )
         assert review_handle.is_hidden()
         assert page.evaluate("() => document.documentElement.scrollWidth <= 390")
         review_group_toggle = page.locator("[data-review-overview-group-toggle]").first
@@ -3077,6 +3087,9 @@ def main():
             "&& document.querySelector('#reviewWorkspace').getAttribute('role') === 'region' "
             "&& !document.querySelector('#reviewWorkspace').hasAttribute('aria-modal')"
         ) is True
+        assert responsive_review_focus.evaluate(
+            "element => document.activeElement === element"
+        )
         page.locator("#reviewOverviewGrid").evaluate(
             "element => { element.style.paddingBottom = ''; "
             "element.closest('.review-overview-content').scrollTop = 0; }"
@@ -5765,6 +5778,10 @@ def main():
             "viewportWidth: 100, viewportHeight: 100, fittedWidth: 100, fittedHeight: 75 })"
         )
         assert constrained == {"x": 50, "y": -25}, constrained
+        page.wait_for_function(
+            "() => history.state?.imageAllWorkspace?.context?.reviewLightbox?.scale "
+            "=== state.lightboxViewportScale"
+        )
         review_preview_before_resize = page.evaluate(
             """() => ({
               assetID: state.lightboxAssetID,
@@ -5788,7 +5805,7 @@ def main():
         page.wait_for_function(
             "() => document.activeElement?.id === 'lightboxBackButton'"
         )
-        assert page.evaluate(
+        review_preview_after_narrow_resize = page.evaluate(
             """expected => ({
               assetID: state.lightboxAssetID,
               reviewKey: state.lightboxReviewKey,
@@ -5797,7 +5814,11 @@ def main():
               historyState: JSON.stringify(history.state),
             })""",
             review_preview_before_resize,
-        ) == review_preview_before_resize
+        )
+        assert review_preview_after_narrow_resize == review_preview_before_resize, {
+            "before": review_preview_before_resize,
+            "after": review_preview_after_narrow_resize,
+        }
         page.screenshot(
             path="/tmp/imageall-review-responsive-lightbox-focus.png",
             full_page=True,

@@ -735,6 +735,22 @@ def main():
         page.wait_for_timeout(500)
         assert overview_requests == 3, f"unexpected repeated overview refreshes: {overview_requests}"
 
+        responsive_overview_requests = overview_requests
+        page.locator("#galleryOverviewNavigationButton").focus()
+        page.set_viewport_size({"width": 390, "height": 844})
+        page.wait_for_function(
+            "() => document.querySelector('#galleryOverviewWorkspace').getAttribute('aria-modal') === 'true'"
+            " && document.activeElement?.id === 'closeGalleryOverviewButton'"
+        )
+        page.set_viewport_size({"width": 1440, "height": 960})
+        page.wait_for_function(
+            "() => !document.querySelector('#galleryOverviewWorkspace').hasAttribute('aria-modal')"
+            " && document.activeElement?.id === 'refreshGalleryOverviewButton'"
+        )
+        responsive_overview_focus = page.locator(
+            "[data-gallery-overview-source-id]"
+        ).first
+        responsive_overview_focus.focus()
         page.set_viewport_size({"width": 390, "height": 844})
         page.wait_for_timeout(100)
         assert page.locator("#appView").get_attribute("inert") is not None
@@ -742,6 +758,14 @@ def main():
         assert page.locator("#galleryOverviewWorkspace").get_attribute("aria-modal") == "true"
         assert page.locator("#closeGalleryOverviewButton").is_visible()
         assert page.locator("#closeGalleryOverviewButton").get_attribute("aria-label") == "返回图库"
+        assert responsive_overview_focus.evaluate(
+            "element => document.activeElement === element"
+        )
+        assert overview_requests == responsive_overview_requests
+        page.screenshot(
+            path="/tmp/imageall-gallery-overview-responsive-focus.png",
+            full_page=True,
+        )
         dimensions = page.evaluate(
             "() => ({ viewport: innerWidth, scroll: document.documentElement.scrollWidth })"
         )
