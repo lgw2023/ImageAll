@@ -29,9 +29,9 @@
 | 审查概览 | Mac 工作区 | 有 | 空/错/加载、进入队列 | 已有 | 无 | in-progress | `curation.spec.ts`：概览→队列、503→重试 | `evidence/curation/` 审查 | 长任务操作仍由训练/活动切片补齐 |
 | 审查队列/决策/undo | Mac 工作区 | 有 | 键盘决策、安全撤销、队列刷新 | 已有 | 无 | in-progress | `curation.spec.ts`：单项/批量/A 键/undo | `evidence/curation/` 队列桌面+移动 | 冲突/过期 undo 与大队列性能待补 |
 | 库建议 | Mac 有 | 有 | 建议、申请、活动状态一致 | 已有 | 无 | baseline | Swift 端点测试 | 无 | 新 UI 未建 |
-| 世界地图查看 | Mac 地图 | 独立 route/资源 | 同源可访问地图、视口保留 | 已有 | 可能需构建资源整合 | baseline | 旧地图脚本 | 无 | 新地图方案未证明 |
-| 地图选择 | Mac 有 | 有 | 选择返回图库筛选并可后退 | 已有 | 无 | baseline | Swift/legacy 测试 | 无 | 新路由桥未建 |
-| 位置回填/地方标签 | Mac 有 | 有 | 明确范围、长任务进度、失败处理 | 已有 | 无 | baseline | Swift route 测试 | 无 | 未验证新 activity |
+| 世界地图查看 | Mac 地图 | 独立 route/资源 | 同源可访问地图、视口保留 | 已有 | 无 | in-progress | `map.spec.ts`：iframe 消息桥、视口宽度、503 重试、axe | `evidence/map/` 桌面+移动 | 合成渲染器；真实 MapLibre/WebGL 手工门待完成 |
+| 地图选择 | Mac 有 | 有 | 选择返回图库筛选并可后退 | 已有 | 无 | in-progress | `map.spec.ts`：聚合选择→Host selection→范围图库→后退 | `evidence/map/` 深圳选择 | 合成 3 个聚合；大规模聚合性能待验收 |
+| 位置回填/地方标签 | Mac 有 | 有 | 明确范围、长任务进度、失败处理 | 已有 | 无 | in-progress | `map.spec.ts`：回填开始/Host 回读、搜索/确认地点 | `evidence/map/` 页面下方工作区 | 不证明真实元数据扫描或地理编码正确性 |
 | 训练 setup | Mac 工作区 | 有 | 类型表单、前置条件、可访问错误 | 已有 | 无 | baseline | 旧训练脚本 | 无 | 新表单未建 |
 | 训练 launch/activity | Mac 任务 | 有 | 非乐观 launch、activity 可恢复 | 已有 | 无 | baseline | Swift + 旧脚本 | 无 | 未做新长任务 |
 | 嵌入准备 | Mac 有 | 有 | 发起/取消/重试与进度 | 已有 | 无 | baseline | Swift 端点测试 | 无 | 新 UI 未建 |

@@ -1,10 +1,11 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Archive, Map, WandSparkles } from 'lucide-react';
+import { Archive, WandSparkles } from 'lucide-react';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 
 import { SessionGate } from '@/features/session/SessionGate';
 import { SessionProvider } from '@/features/session/SessionContext';
 import { GalleryRoute } from '@/features/gallery/GalleryRoute';
+import { WorldMapRoute } from '@/features/map/WorldMapRoute';
 import { ActivityRoute } from '@/features/management/ActivityRoute';
 import { SettingsRoute } from '@/features/management/SettingsRoute';
 import { SourcesRoute } from '@/features/management/SourcesRoute';
@@ -31,13 +32,6 @@ const queryClient = new QueryClient({
 });
 
 const placeholders = [
-  {
-    path: 'map',
-    eyebrow: '工具',
-    title: '世界地图',
-    description: '按位置浏览图库，完成位置回填和地方标签。',
-    icon: Map,
-  },
   {
     path: 'training',
     eyebrow: '工具',
@@ -71,6 +65,7 @@ export function App() {
                     <Route path="assets/:assetId" element={<GalleryRoute />} />
                     <Route path="review" element={<ReviewRoute />} />
                     <Route path="review/queue" element={<ReviewRoute />} />
+                    <Route path="map" element={<WorldMapRoute />} />
                     <Route path="tags" element={<TagLibraryRoute />} />
                     <Route path="sources" element={<SourcesRoute />} />
                     <Route path="storage" element={<StorageRoute />} />

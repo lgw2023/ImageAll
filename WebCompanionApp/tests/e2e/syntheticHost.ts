@@ -122,6 +122,64 @@ const previewSVG = `
   <circle cx="510" cy="105" r="45" fill="#f4c86b"/>
 </svg>`;
 
+const syntheticWorldMapHTML = `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; font-family: system-ui, sans-serif; }
+    body { position: relative; background: #dfe8e5; }
+    svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+    .ocean { fill: #dfe8e5; }
+    .land { fill: #f5f3eb; stroke: #aeb8b2; stroke-width: 1.2; }
+    #clusters { position: absolute; inset: 0; }
+    button { position: absolute; display: grid; width: 44px; height: 44px; place-items: center; border: 2px solid white; border-radius: 50%; color: white; background: #156aa3; box-shadow: 0 2px 8px rgb(20 40 50 / 28%); font: 700 12px system-ui; transform: translate(-50%, -50%); }
+    button[aria-pressed="true"] { outline: 3px solid #101820; outline-offset: 2px; background: #101820; }
+    button span { position: absolute; top: 48px; width: max-content; max-width: 120px; padding: 3px 6px; border-radius: 4px; color: #101820; background: rgb(255 255 255 / 92%); font-size: 11px; }
+  </style>
+</head>
+<body>
+  <svg viewBox="0 0 900 440" aria-hidden="true">
+    <rect class="ocean" width="900" height="440"/>
+    <path class="land" d="M72 112l64-58 115 12 60 55-13 57-48 30-55-8-33 39-64-26-31-55z"/>
+    <path class="land" d="M240 234l50 21 24 54-29 98-35-53-20-78z"/>
+    <path class="land" d="M405 96l95-49 190 22 138 71-39 56-98-7-72 49-49-18-62 30-71-36-49-69z"/>
+    <path class="land" d="M493 245l76 5 48 65-37 98-61-31-29-76z"/>
+    <path class="land" d="M731 311l76-20 50 42-40 54-78-11z"/>
+  </svg>
+  <div id="clusters"></div>
+  <script>
+    const root = document.getElementById('clusters');
+    let selected = null;
+    let data = [];
+    function render() {
+      root.replaceChildren(...data.map((cluster) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.style.left = ((cluster.longitude + 180) / 360 * 100) + '%';
+        button.style.top = ((90 - cluster.latitude) / 180 * 100) + '%';
+        button.setAttribute('aria-label', cluster.displayName + '，' + cluster.photoCount + ' 张照片');
+        button.setAttribute('aria-pressed', String(cluster.id === selected));
+        button.textContent = String(cluster.photoCount);
+        const label = document.createElement('span');
+        label.textContent = cluster.displayName;
+        button.append(label);
+        button.addEventListener('click', () => parent.postMessage({ type: 'imageall-world-map-event', payload: { type: 'clusterClicked', clusterID: cluster.id } }, location.origin));
+        return button;
+      }));
+    }
+    window.ImageAllWorldMap = {
+      updateClusters(payload) { data = payload.clusters || []; render(); },
+      restoreSelection(clusterID) { selected = clusterID; render(); },
+      restoreViewport() {}
+    };
+    parent.postMessage({ type: 'imageall-world-map-event', payload: { type: 'ready' } }, location.origin);
+    parent.postMessage({ type: 'imageall-world-map-event', payload: { type: 'cameraChanged', viewport: { west: 70, south: 10, east: 140, north: 55, centerLongitude: 105, centerLatitude: 32, zoom: 2.2, bearing: 0, pitch: 20 } } }, location.origin);
+  </script>
+</body>
+</html>`;
+
 export async function installSyntheticAuthenticatedHost(page: Page) {
   let firstAssetFavorite = false;
   let syntheticTags = structuredClone(tags) as {
@@ -191,6 +249,109 @@ export async function installSyntheticAuthenticatedHost(page: Page) {
       lastSeenAtMs: 1_786_500_000_000,
     },
   ];
+  const mapClusters = [
+    {
+      id: 'shanghai',
+      longitude: 121.47,
+      latitude: 31.23,
+      photoCount: 18,
+      gpsCount: 12,
+      tagCount: 6,
+      displayName: '上海',
+      selectionQuery: {
+        cellDegrees: 0.25,
+        longitudeBucket: 485,
+        latitudeBucket: 124,
+        bounds: { west: 121.25, south: 31, east: 121.75, north: 31.5 },
+        maximumAssets: 36,
+      },
+    },
+    {
+      id: 'taiyuan',
+      longitude: 112.55,
+      latitude: 37.87,
+      photoCount: 12,
+      gpsCount: 9,
+      tagCount: 3,
+      displayName: '太原',
+      selectionQuery: {
+        cellDegrees: 0.25,
+        longitudeBucket: 450,
+        latitudeBucket: 151,
+        bounds: null,
+        maximumAssets: 36,
+      },
+    },
+    {
+      id: 'shenzhen',
+      longitude: 114.06,
+      latitude: 22.54,
+      photoCount: 9,
+      gpsCount: 7,
+      tagCount: 2,
+      displayName: '深圳',
+      selectionQuery: {
+        cellDegrees: 0.25,
+        longitudeBucket: 456,
+        latitudeBucket: 90,
+        bounds: null,
+        maximumAssets: 36,
+      },
+    },
+  ];
+  let backfills: {
+    sourceID: string;
+    sourceKind: 'folder' | 'photos';
+    sourceDisplayName: string;
+    sourceState: 'active' | 'disabled' | 'unavailable' | 'authorizationRequired';
+    phase: string;
+    totalPhotoCount: number;
+    inspectedPhotoCount: number;
+    locatedPhotoCount: number;
+    activeJobID: string | null;
+    scanProgress: { completedUnitCount: number; totalUnitCount: number | null } | null;
+    canStart: boolean;
+    canCancel: boolean;
+  }[] = [
+    {
+      sourceID,
+      sourceKind: 'folder',
+      sourceDisplayName: 'Synthetic Library',
+      sourceState: 'active',
+      phase: 'ready',
+      totalPhotoCount: 120,
+      inspectedPhotoCount: 42,
+      locatedPhotoCount: 30,
+      activeJobID: null,
+      scanProgress: null,
+      canStart: true,
+      canCancel: false,
+    },
+  ];
+  const placeCandidate = {
+    placeID: 'shanghai-cn',
+    displayName: '上海市',
+    subtitle: '中国上海市',
+    latitude: 31.23,
+    longitude: 121.47,
+    kind: 'city',
+  };
+  let placeResolution = {
+    tagID: tagIDs[0],
+    tagName: '上海',
+    groupName: '地点与场景',
+    acceptedPhotoCount: 8,
+    status: 'unresolved',
+    confirmedPlaceID: null as string | null,
+    candidates: [] as (typeof placeCandidate)[],
+  };
+  await page.route('**/world-map/index.html', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'text/html; charset=utf-8',
+      body: syntheticWorldMapHTML,
+    }),
+  );
   await page.route('**/web/session', (route) =>
     route.fulfill({ status: 200, contentType: 'application/json', json: session }),
   );
@@ -338,6 +499,94 @@ export async function installSyntheticAuthenticatedHost(page: Page) {
     const deviceID = new URL(route.request().url()).pathname.split('/').at(-1) ?? '';
     devices = devices.filter((device) => device.deviceID !== deviceID);
     return route.fulfill({ status: 204 });
+  });
+  await page.route('**/v1/world-map/snapshot?*', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        clusters: mapClusters,
+        eligiblePhotoCount: 80,
+        locatedPhotoCount: 62,
+        unlocatedPhotoCount: 18,
+      },
+    }),
+  );
+  await page.route('**/v1/world-map/selection', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        assets: assetIDs.slice(0, 6).map((id, index) => {
+          const item = asset(index);
+          return {
+            id,
+            fileName: item.fileName,
+            availability: item.availability,
+            contentRevision: item.contentRevision,
+            favorite: item.favorite,
+          };
+        }),
+        totalPhotoCount: 18,
+      },
+    }),
+  );
+  await page.route('**/v1/world-map/location-backfill', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', json: backfills }),
+  );
+  await page.route('**/v1/world-map/location-backfill/requests', (route) => {
+    const body = route.request().postDataJSON() as {
+      operationID: string;
+      sourceID: string;
+      action: 'start' | 'cancel';
+    };
+    backfills = backfills.map((row) =>
+      row.sourceID === body.sourceID
+        ? {
+            ...row,
+            phase: body.action === 'start' ? 'running' : 'cancelled',
+            activeJobID: body.action === 'start' ? '6cba0aa1-e0c3-4421-bb0f-4f7edab5c3b6' : null,
+            scanProgress:
+              body.action === 'start' ? { completedUnitCount: 42, totalUnitCount: 120 } : null,
+            canStart: body.action !== 'start',
+            canCancel: body.action === 'start',
+          }
+        : row,
+    );
+    return route.fulfill({
+      status: 202,
+      contentType: 'application/json',
+      json: {
+        operationID: body.operationID,
+        snapshot: backfills[0],
+        replayed: false,
+      },
+    });
+  });
+  await page.route('**/v1/world-map/place-tags', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: { items: [placeResolution], maximumQueryLength: 160 },
+    }),
+  );
+  await page.route('**/v1/world-map/place-tags/requests', (route) => {
+    const body = route.request().postDataJSON() as {
+      operationID: string;
+      action: 'search' | 'confirm';
+      placeID?: string;
+    };
+    placeResolution = {
+      ...placeResolution,
+      status: body.action === 'confirm' ? 'resolved' : 'ambiguous',
+      confirmedPlaceID: body.action === 'confirm' ? (body.placeID ?? null) : null,
+      candidates: [placeCandidate],
+    };
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: { operationID: body.operationID, resolution: placeResolution, replayed: false },
+    });
   });
   await page.route('**/v1/tags', (route) =>
     route.fulfill({ status: 200, contentType: 'application/json', json: syntheticTags }),
@@ -556,9 +805,11 @@ export async function installSyntheticAuthenticatedHost(page: Page) {
     });
   });
   await page.route(/\/v1\/assets\?.*/, (route) => {
-    const cursor = new URL(route.request().url()).searchParams.get('cursor');
+    const parameters = new URL(route.request().url()).searchParams;
+    const cursor = parameters.get('cursor');
+    const mapSelection = parameters.has('worldMapCellDegrees');
     const start = cursor === 'page-2' ? 72 : 0;
-    const end = cursor === 'page-2' ? 120 : 72;
+    const end = mapSelection ? 18 : cursor === 'page-2' ? 120 : 72;
     return route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -570,7 +821,7 @@ export async function installSyntheticAuthenticatedHost(page: Page) {
             ? { ...item, favorite: { ...item.favorite, isFavorite: firstAssetFavorite } }
             : item;
         }),
-        nextCursor: end < 120 ? 'page-2' : null,
+        nextCursor: !mapSelection && end < 120 ? 'page-2' : null,
       },
     });
   });

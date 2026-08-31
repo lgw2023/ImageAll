@@ -7,11 +7,12 @@ import {
   useQueryClient,
   type InfiniteData,
 } from '@tanstack/react-query';
-import { Images, RotateCcw } from 'lucide-react';
+import { Images, MapPin, RotateCcw } from 'lucide-react';
 import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
 import { fetchAssetPage, mutateFavorites } from '@/api/assets';
 import type { AssetDetail, AssetPage, AssetSort, AssetSummary } from '@/api/contracts/asset';
+import type { WorldMapSelectionQuery } from '@/api/contracts/map';
 import type { TagDecisionAction } from '@/api/contracts/tag';
 import { errorMessage } from '@/api/errors';
 import { applyTagDecision, fetchTags, fetchTagSelection, undoTagDecision } from '@/api/tags';
@@ -25,6 +26,8 @@ import { VirtualAssetGrid } from './VirtualAssetGrid';
 type GalleryLocationState = {
   fromGallery?: boolean;
   favoritesOnly?: boolean;
+  fromMap?: boolean;
+  mapLabel?: string;
 };
 
 let returnFocusAssetID: string | null = null;
@@ -33,6 +36,59 @@ const EMPTY_SELECTION = new Set<string>();
 function parseSort(value: string | null): AssetSort {
   if (value === 'oldest' || value === 'fileNameAscending') return value;
   return 'newest';
+}
+
+function parseWorldMapSelection(parameters: URLSearchParams): WorldMapSelectionQuery | null {
+  const cellDegrees = Number(parameters.get('worldMapCellDegrees'));
+  const longitudeBucket = Number(parameters.get('worldMapLongitudeBucket'));
+  const latitudeBucket = Number(parameters.get('worldMapLatitudeBucket'));
+  const maximumAssets = Number(parameters.get('worldMapMaximumAssets'));
+  if (
+    !Number.isFinite(cellDegrees) ||
+    cellDegrees <= 0 ||
+    !Number.isInteger(longitudeBucket) ||
+    !Number.isInteger(latitudeBucket) ||
+    !Number.isInteger(maximumAssets) ||
+    maximumAssets <= 0
+  )
+    return null;
+  const boundKeys = ['West', 'South', 'East', 'North'];
+  const boundValues = boundKeys.map((key) => Number(parameters.get(`worldMap${key}`)));
+  const hasBounds =
+    boundKeys.every((key) => parameters.has(`worldMap${key}`)) &&
+    boundValues.every(Number.isFinite);
+  const [west, south, east, north] = boundValues;
+  return {
+    cellDegrees,
+    longitudeBucket,
+    latitudeBucket,
+    maximumAssets,
+    bounds:
+      hasBounds &&
+      west !== undefined &&
+      south !== undefined &&
+      east !== undefined &&
+      north !== undefined
+        ? { west, south, east, north }
+        : null,
+  };
+}
+
+function appendWorldMapSelection(
+  parameters: URLSearchParams,
+  selection: WorldMapSelectionQuery | null,
+) {
+  if (!selection) return;
+  parameters.set('worldMapCellDegrees', String(selection.cellDegrees));
+  parameters.set('worldMapLongitudeBucket', String(selection.longitudeBucket));
+  parameters.set('worldMapLatitudeBucket', String(selection.latitudeBucket));
+  parameters.set('worldMapMaximumAssets', String(selection.maximumAssets));
+  if (selection.bounds) {
+    parameters.set('worldMapWest', String(selection.bounds.west));
+    parameters.set('worldMapSouth', String(selection.bounds.south));
+    parameters.set('worldMapEast', String(selection.bounds.east));
+    parameters.set('worldMapNorth', String(selection.bounds.north));
+  }
 }
 
 function updateFavoritePages(
@@ -61,6 +117,10 @@ export function GalleryRoute() {
   const favoritesOnly =
     location.pathname === '/gallery/favorites' ||
     (Boolean(assetId) && locationState.favoritesOnly === true);
+  const worldMapSelection = useMemo(
+    () => parseWorldMapSelection(searchParameters),
+    [searchParameters],
+  );
   const filters = useMemo<GalleryFilters>(
     () => ({
       searchText: searchParameters.get('q') ?? '',
@@ -77,8 +137,9 @@ export function GalleryRoute() {
     () => ({
       ...filters,
       favoritesOnly,
+      worldMapSelection,
     }),
-    [favoritesOnly, filters],
+    [favoritesOnly, filters, worldMapSelection],
   );
   const selectionSignature = JSON.stringify(assetQuery);
   const [selection, setSelection] = useState<{ signature: string; ids: Set<string> }>({
@@ -206,6 +267,7 @@ export function GalleryRoute() {
     if (next.sort !== 'newest') parameters.set('sort', next.sort);
     if (next.mediaKind) parameters.set('media', next.mediaKind);
     if (next.acceptedTagID) parameters.set('tag', next.acceptedTagID);
+    appendWorldMapSelection(parameters, worldMapSelection);
     setSelection({ signature: '', ids: new Set() });
     selectionAnchor.current = null;
     setSearchParameters(parameters);
@@ -279,6 +341,26 @@ export function GalleryRoute() {
           </span>
         ) : null}
       </div>
+
+      {worldMapSelection ? (
+        <div className="map-gallery-banner">
+          <MapPin aria-hidden="true" size={17} />
+          <div>
+            <strong>{locationState.mapLabel ?? '地图地点范围'}</strong>
+            <span>图库结果保持地图聚合边界，可继续叠加筛选。</span>
+          </div>
+          <button
+            className="button"
+            onClick={() => {
+              if (locationState.fromMap) void navigate(-1);
+              else void navigate('/map');
+            }}
+            type="button"
+          >
+            返回世界地图
+          </button>
+        </div>
+      ) : null}
 
       <GalleryToolbar
         key={filters.searchText}

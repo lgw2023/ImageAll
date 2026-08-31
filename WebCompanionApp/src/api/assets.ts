@@ -9,6 +9,7 @@ import {
   type AssetSummary,
   type FavoriteMutationResponse,
 } from './contracts/asset';
+import type { WorldMapSelectionQuery } from './contracts/map';
 
 export type AssetQuery = {
   searchText: string;
@@ -16,6 +17,7 @@ export type AssetQuery = {
   mediaKind: AssetMediaKind | null;
   acceptedTagID: string | null;
   favoritesOnly: boolean;
+  worldMapSelection: WorldMapSelectionQuery | null;
 };
 
 export async function fetchAssetPage(
@@ -29,6 +31,18 @@ export async function fetchAssetPage(
   if (query.mediaKind) parameters.set('mediaKinds', query.mediaKind);
   if (query.acceptedTagID) parameters.set('acceptedTagIDs', query.acceptedTagID);
   if (query.favoritesOnly) parameters.set('favorite', 'favorited');
+  if (query.worldMapSelection) {
+    parameters.set('worldMapCellDegrees', String(query.worldMapSelection.cellDegrees));
+    parameters.set('worldMapLongitudeBucket', String(query.worldMapSelection.longitudeBucket));
+    parameters.set('worldMapLatitudeBucket', String(query.worldMapSelection.latitudeBucket));
+    parameters.set('worldMapMaximumAssets', String(query.worldMapSelection.maximumAssets));
+    if (query.worldMapSelection.bounds) {
+      parameters.set('worldMapWest', String(query.worldMapSelection.bounds.west));
+      parameters.set('worldMapSouth', String(query.worldMapSelection.bounds.south));
+      parameters.set('worldMapEast', String(query.worldMapSelection.bounds.east));
+      parameters.set('worldMapNorth', String(query.worldMapSelection.bounds.north));
+    }
+  }
   if (cursor) parameters.set('cursor', cursor);
   return requestJSON(`/v1/assets?${parameters.toString()}`, assetPageSchema, {
     signal: signal ?? null,
