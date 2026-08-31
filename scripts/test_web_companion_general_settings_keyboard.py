@@ -1222,6 +1222,101 @@ def main():
             }"""
         )
         assert len(asset_requests) == command_navigation_asset_count
+        dynamic_command_continuity = page.evaluate(
+            """() => {
+              const list = document.querySelector("#commandList");
+              const input = document.querySelector("#commandSearchInput");
+              const previousReviewUndo = { ...state.undo.review };
+              state.undo.review = {
+                id: null,
+                operationID: null,
+                mutating: false,
+                sequence: 0,
+              };
+              renderCommandItems();
+              state.commandIndex = state.commandItems.findIndex(
+                command => command.id === "connectFolder"
+              );
+              renderCommandItems();
+              revealActiveCommandItem();
+              const target = list.querySelector('[data-command-id="connectFolder"]');
+              const stable = list.querySelector('[data-command-id="shortcuts"]');
+              const listRect = list.getBoundingClientRect();
+              const targetRect = target.getBoundingClientRect();
+              window.__dynamicCommandFrame = {
+                previousReviewUndo,
+                target,
+                stable,
+                visualTop: targetRect.top - listRect.top,
+              };
+              state.undo.review = {
+                id: "synthetic-review-undo",
+                operationID: "synthetic-review-operation",
+                mutating: false,
+                sequence: 9_999,
+              };
+              renderCommandItems();
+              const active = list.querySelector(":scope > .command-item.active");
+              const nextTarget = list.querySelector('[data-command-id="connectFolder"]');
+              const nextTargetRect = nextTarget.getBoundingClientRect();
+              return {
+                inserted: Boolean(list.querySelector('[data-command-id="undoReview"]')),
+                activeID: active?.dataset.commandId,
+                targetNode: nextTarget === target,
+                stableNode: list.querySelector('[data-command-id="shortcuts"]') === stable,
+                visualAnchor: Math.abs(
+                  nextTargetRect.top - list.getBoundingClientRect().top
+                    - window.__dynamicCommandFrame.visualTop
+                ) <= 1,
+                focus: document.activeElement === input,
+                activeDescendant: input.getAttribute("aria-activedescendant") === nextTarget.id,
+              };
+            }"""
+        )
+        assert dynamic_command_continuity == {
+            "inserted": True,
+            "activeID": "connectFolder",
+            "targetNode": True,
+            "stableNode": True,
+            "visualAnchor": True,
+            "focus": True,
+            "activeDescendant": True,
+        }, dynamic_command_continuity
+        page.screenshot(
+            path="/tmp/imageall-command-palette-dynamic-selection.png",
+            full_page=True,
+        )
+        dynamic_command_removal = page.evaluate(
+            """() => {
+              const frame = window.__dynamicCommandFrame;
+              const list = document.querySelector("#commandList");
+              state.undo.review = frame.previousReviewUndo;
+              renderCommandItems();
+              const target = list.querySelector('[data-command-id="connectFolder"]');
+              const targetRect = target.getBoundingClientRect();
+              const active = list.querySelector(":scope > .command-item.active");
+              return {
+                removed: !list.querySelector('[data-command-id="undoReview"]'),
+                activeID: active?.dataset.commandId,
+                targetNode: target === frame.target,
+                stableNode: list.querySelector('[data-command-id="shortcuts"]')
+                  === frame.stable,
+                visualAnchor: Math.abs(
+                  targetRect.top - list.getBoundingClientRect().top - frame.visualTop
+                ) <= 1,
+                focus: document.activeElement?.id === "commandSearchInput",
+              };
+            }"""
+        )
+        assert dynamic_command_removal == {
+            "removed": True,
+            "activeID": "connectFolder",
+            "targetNode": True,
+            "stableNode": True,
+            "visualAnchor": True,
+            "focus": True,
+        }, dynamic_command_removal
+        assert len(asset_requests) == command_navigation_asset_count
         page.locator("#commandSearchInput").fill("连接文件夹")
         command_filter_frame = page.evaluate(
             """() => {

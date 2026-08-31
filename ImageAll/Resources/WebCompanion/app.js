@@ -43298,14 +43298,29 @@ function syncCommandPaletteAccessibility() {
 function renderCommandItems() {
   if (!elements.commandList) return;
   const scrollTop = elements.commandList.scrollTop;
+  const previousCommandID = state.commandItems[state.commandIndex]?.id || null;
+  const previousActive = elements.commandList.querySelector(
+    ":scope > .command-item.active"
+  );
+  const preservesVisualAnchor = elements.commandPalette.open
+    && previousActive?.dataset.commandId === previousCommandID;
+  const previousVisualTop = preservesVisualAnchor
+    ? previousActive.getBoundingClientRect().top
+      - elements.commandList.getBoundingClientRect().top
+    : null;
   const query = elements.commandSearchInput.value.trim().toLocaleLowerCase("zh-CN");
   state.commandItems = availableCommands().filter(
     (command) => !query || command.title.toLocaleLowerCase("zh-CN").includes(query)
   );
-  state.commandIndex = Math.max(0, Math.min(
-    state.commandIndex,
-    Math.max(0, state.commandItems.length - 1)
-  ));
+  const preservedIndex = previousCommandID
+    ? state.commandItems.findIndex((command) => command.id === previousCommandID)
+    : -1;
+  state.commandIndex = preservedIndex >= 0
+    ? preservedIndex
+    : Math.max(0, Math.min(
+      state.commandIndex,
+      Math.max(0, state.commandItems.length - 1)
+    ));
   if (state.commandItems[state.commandIndex]?.disabled) {
     const firstEnabled = state.commandItems.findIndex((command) => !command.disabled);
     state.commandIndex = firstEnabled >= 0 ? firstEnabled : 0;
@@ -43334,6 +43349,15 @@ function renderCommandItems() {
   });
   reconcileStableChildren(elements.commandList, wantedItems);
   elements.commandList.scrollTop = scrollTop;
+  const active = elements.commandList.querySelector(":scope > .command-item.active");
+  if (previousVisualTop != null && active?.dataset.commandId === previousCommandID) {
+    const visualDelta = active.getBoundingClientRect().top
+      - elements.commandList.getBoundingClientRect().top
+      - previousVisualTop;
+    if (Math.abs(visualDelta) > 0.5) {
+      elements.commandList.scrollTop += visualDelta;
+    }
+  }
   syncCommandPaletteAccessibility();
 }
 
