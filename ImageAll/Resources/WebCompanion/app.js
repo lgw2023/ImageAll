@@ -5720,7 +5720,8 @@ function syncWorldMapPhotoCard(card, asset) {
   const button = card.querySelector(":scope > .world-map-photo-button");
   button.dataset.worldMapAssetId = asset.id;
   button.title = asset.fileName || "查看照片";
-  button.setAttribute("aria-label", `查看 ${asset.fileName || "地点照片"}`);
+  button.dataset.worldMapPhotoLabel = `查看 ${asset.fileName || "地点照片"}`;
+  button.setAttribute("aria-label", button.dataset.worldMapPhotoLabel);
   const image = button.querySelector("img");
   const imageKey = `${asset.id}:${asset.contentRevision ?? ""}`;
   if (image.dataset.worldMapImageKey !== imageKey) {
@@ -5755,8 +5756,57 @@ function reconcileWorldMapPhotoCards(assets) {
     syncWorldMapPhotoCard(card, asset);
     return card;
   });
+  cards.forEach((card, index) => {
+    const button = card.querySelector(":scope > .world-map-photo-button");
+    if (button) {
+      button.setAttribute(
+        "aria-label",
+        `${button.dataset.worldMapPhotoLabel}，第 ${index + 1} 张，共 ${cards.length} 张`
+      );
+    }
+  });
   clearWorldMapPhotoCardImages(existingCards.values());
   reconcileStableChildren(elements.worldMapPhotoStrip, cards);
+}
+
+function navigateWorldMapPhotoStrip(event) {
+  const keys = ["ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End"];
+  if (!keys.includes(event.key)) return false;
+  const origin = event.target.closest(".world-map-photo-card");
+  if (!origin) return false;
+  const cards = [...elements.worldMapPhotoStrip.querySelectorAll(
+    ":scope > .world-map-photo-card"
+  )];
+  const currentIndex = cards.indexOf(origin);
+  if (currentIndex < 0) return false;
+  event.preventDefault();
+  if (cards.length < 2) return true;
+
+  const first = cards[0];
+  const second = cards[1];
+  const stride = Math.max(1, second.offsetLeft - first.offsetLeft || first.offsetWidth);
+  const pageStep = Math.max(1, Math.floor(elements.worldMapPhotoStrip.clientWidth / stride));
+  const offset = {
+    ArrowLeft: -1,
+    ArrowRight: 1,
+    PageUp: -pageStep,
+    PageDown: pageStep,
+  }[event.key] || 0;
+  const nextIndex = event.key === "Home"
+    ? 0
+    : event.key === "End"
+      ? cards.length - 1
+      : Math.max(0, Math.min(cards.length - 1, currentIndex + offset));
+  if (nextIndex === currentIndex) return true;
+
+  const staysOnFavorite = event.target.closest(".world-map-photo-favorite");
+  const target = staysOnFavorite
+    ? cards[nextIndex].querySelector(":scope > .world-map-photo-favorite")
+    : cards[nextIndex].querySelector(":scope > .world-map-photo-button");
+  if (!(target instanceof HTMLElement) || target.disabled) return false;
+  target.focus({ preventScroll: true });
+  cards[nextIndex].scrollIntoView({ block: "nearest", inline: "nearest" });
+  return true;
 }
 
 function worldMapPhotoStripStatus(kind, className) {
@@ -41618,11 +41668,18 @@ function keyboardShortcutSections(context) {
       { id: "slimmingReturn", title: "返回图库", keys: ["Esc"] },
     ];
   } else if (context.route === "worldMap") {
-    contextualShortcuts = [{
-      id: "worldMapReturn",
-      title: context.worldMapDetailOpen ? "关闭地点详情或返回图库" : "返回图库",
-      keys: ["Esc"],
-    }];
+    contextualShortcuts = [
+      ...(context.worldMapDetailOpen ? [{
+        id: "worldMapPhotoNavigate",
+        title: "地点照片逐张、翻页或直达首尾",
+        keys: ["← →", "Page Up Down", "Home End"],
+      }] : []),
+      {
+        id: "worldMapReturn",
+        title: context.worldMapDetailOpen ? "关闭地点详情或返回图库" : "返回图库",
+        keys: ["Esc"],
+      },
+    ];
   } else if (context.route === "galleryOverview") {
     contextualShortcuts = [{
       id: "galleryOverviewReturn",
@@ -46081,6 +46138,9 @@ function bindEvents() {
     }
     const button = event.target.closest("[data-world-map-asset-id]");
     if (button) openLightbox("worldMap", button.dataset.worldMapAssetId);
+  });
+  elements.worldMapPhotoStrip.addEventListener("keydown", (event) => {
+    navigateWorldMapPhotoStrip(event);
   });
   globalThis.addEventListener("message", handleWorldMapMessage);
   const rendererStatus = worldMapRenderer()?.rendererStatus?.();

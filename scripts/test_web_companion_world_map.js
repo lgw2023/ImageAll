@@ -531,6 +531,63 @@ let browser;
 
   const worldMapCard = page.locator(`.world-map-photo-card[data-world-map-card-asset-id="${assetID}"]`);
   const worldMapFavorite = worldMapCard.locator(":scope > .world-map-photo-favorite");
+  const worldMapPhotoButtons = page.locator("#worldMapPhotoStrip .world-map-photo-button");
+  const worldMapFavoriteButtons = page.locator("#worldMapPhotoStrip .world-map-photo-favorite");
+  assert.match(await worldMapPhotoButtons.first().getAttribute("aria-label"), /第 1 张，共 24 张/);
+  assert.match(await worldMapPhotoButtons.last().getAttribute("aria-label"), /第 24 张，共 24 张/);
+  const mapRequestsBeforePhotoKeyboard = {
+    snapshot: snapshotRequestCount,
+    selection: selectionRequestCount,
+    thumbnail: thumbnailRequestCount,
+  };
+  await worldMapPhotoButtons.first().focus();
+  await page.keyboard.press("ArrowRight");
+  assert.equal(
+    await page.evaluate(() => document.activeElement?.dataset.worldMapAssetId),
+    worldMapAssetIDs[1],
+    "ArrowRight must move to the next place photo without opening it"
+  );
+  await page.keyboard.press("PageDown");
+  const pageDownIndex = await page.evaluate(
+    (assetIDs) => assetIDs.indexOf(document.activeElement?.dataset.worldMapAssetId),
+    worldMapAssetIDs
+  );
+  assert.ok(pageDownIndex > 1, `PageDown must advance by a visible strip page: ${pageDownIndex}`);
+  await page.keyboard.press("End");
+  assert.equal(
+    await page.evaluate(() => document.activeElement?.dataset.worldMapAssetId),
+    worldMapAssetIDs.at(-1)
+  );
+  await page.keyboard.press("Home");
+  assert.equal(
+    await page.evaluate(() => document.activeElement?.dataset.worldMapAssetId),
+    worldMapAssetIDs[0]
+  );
+  await page.keyboard.press("ArrowLeft");
+  assert.equal(
+    await page.evaluate(() => document.activeElement?.dataset.worldMapAssetId),
+    worldMapAssetIDs[0],
+    "the first photo must be a stable, non-wrapping boundary"
+  );
+  await worldMapFavoriteButtons.first().focus();
+  await page.keyboard.press("ArrowRight");
+  assert.equal(
+    await page.evaluate(() => (
+      document.activeElement?.closest(".world-map-photo-card")?.dataset.worldMapCardAssetId
+    )),
+    worldMapAssetIDs[1],
+    "favorite navigation must preserve the action lane on the next photo"
+  );
+  assert.equal(
+    await page.evaluate(() => document.activeElement?.matches(".world-map-photo-favorite")),
+    true
+  );
+  assert.deepEqual({
+    snapshot: snapshotRequestCount,
+    selection: selectionRequestCount,
+    thumbnail: thumbnailRequestCount,
+  }, mapRequestsBeforePhotoKeyboard, "photo-strip navigation must not read map or media data");
+  assert.equal(await page.locator("#lightbox").isHidden(), true);
   const previewContinuityAssetID = worldMapAssetIDs[5];
   const previewContinuityCard = page.locator(
     `.world-map-photo-card[data-world-map-card-asset-id="${previewContinuityAssetID}"]`
