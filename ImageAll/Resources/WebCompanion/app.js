@@ -265,6 +265,7 @@ const elements = {
   galleryOverviewTags: $("#galleryOverviewTags"),
   galleryOverviewTimelineSubtitle: $("#galleryOverviewTimelineSubtitle"),
   galleryOverviewTimeline: $("#galleryOverviewTimeline"),
+  galleryOverviewTimelineStatus: $("#galleryOverviewTimelineStatus"),
   galleryOverviewUndated: $("#galleryOverviewUndated"),
   galleryOverviewCoverage: $("#galleryOverviewCoverage"),
   tagNavigation: $("#tagNavigation"),
@@ -5083,6 +5084,68 @@ function galleryOverviewTotal(item) {
   return Number(item?.imageCount || 0) + Number(item?.videoCount || 0);
 }
 
+function syncGalleryOverviewRovingItems(container, selector, preferred = null) {
+  const items = [...container.querySelectorAll(selector)];
+  if (!items.length) return [];
+  const active = items.includes(document.activeElement) ? document.activeElement : null;
+  const current = items.find((item) => item.tabIndex === 0);
+  const target = active || (items.includes(preferred) ? preferred : null) || current || items[0];
+  for (const item of items) item.tabIndex = item === target ? 0 : -1;
+  return items;
+}
+
+function galleryOverviewVisiblePageStep(items, viewport, orientation) {
+  const viewportRect = viewport.getBoundingClientRect();
+  const visibleCount = items.filter((item) => {
+    const rect = item.getBoundingClientRect();
+    return orientation === "horizontal"
+      ? rect.right > viewportRect.left && rect.left < viewportRect.right
+      : rect.bottom > viewportRect.top && rect.top < viewportRect.bottom;
+  }).length;
+  return Math.max(1, visibleCount - 1);
+}
+
+function moveGalleryOverviewChartFocus(event, {
+  container,
+  selector,
+  orientation,
+}) {
+  if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+  const directionKeys = orientation === "horizontal"
+    ? new Map([["ArrowLeft", -1], ["ArrowRight", 1]])
+    : new Map([["ArrowUp", -1], ["ArrowDown", 1]]);
+  const isPageKey = event.key === "PageUp" || event.key === "PageDown";
+  if (!(directionKeys.has(event.key) || isPageKey || event.key === "Home" || event.key === "End")) {
+    return;
+  }
+  const items = syncGalleryOverviewRovingItems(container, selector, event.target.closest(selector));
+  const currentIndex = items.indexOf(document.activeElement);
+  if (currentIndex < 0) return;
+  let nextIndex = currentIndex;
+  if (event.key === "Home") nextIndex = 0;
+  else if (event.key === "End") nextIndex = items.length - 1;
+  else if (isPageKey) {
+    const pageStep = galleryOverviewVisiblePageStep(items, container, orientation);
+    nextIndex += event.key === "PageUp" ? -pageStep : pageStep;
+  } else {
+    nextIndex += directionKeys.get(event.key);
+  }
+  nextIndex = Math.max(0, Math.min(items.length - 1, nextIndex));
+  event.preventDefault();
+  const next = items[nextIndex];
+  syncGalleryOverviewRovingItems(container, selector, next);
+  next.focus({ preventScroll: true });
+  next.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+function updateGalleryOverviewTimelineStatus(year) {
+  if (!year || !elements.galleryOverviewTimelineStatus) return;
+  syncGalleryOverviewText(
+    elements.galleryOverviewTimelineStatus,
+    year.getAttribute("aria-label") || "聚焦年份后可查看精确照片与视频数量"
+  );
+}
+
 function galleryOverviewEmpty(message) {
   const empty = document.createElement("p");
   empty.className = "gallery-overview-empty";
@@ -5133,12 +5196,12 @@ function renderGalleryOverviewMediaCard(summary) {
   const fill = document.createElement("i");
   progress.append(fill);
   card.append(heading, facts, coverageLabel, progress);
-  syncGalleryOverviewMediaCard(card, summary);
   return card;
 }
 
-function syncGalleryOverviewMediaCard(card, summary) {
+function syncGalleryOverviewMediaCard(card, summary, index, count) {
   const kind = summary.mediaKind === "video" ? "video" : "image";
+  const title = kind === "video" ? "视频" : "照片";
   card.dataset.galleryOverviewMediaKind = kind;
   card.style.setProperty("--media-tint", kind === "video" ? "#f07d30" : "#2e8cd1");
   syncGalleryOverviewText(
@@ -5161,6 +5224,13 @@ function syncGalleryOverviewMediaCard(card, summary) {
     : 0;
   card.querySelector(".gallery-overview-progress i")
     .style.setProperty("--coverage", `${coverage}%`);
+  card.setAttribute(
+    "aria-label",
+    `${title}：共 ${galleryOverviewCount(summary.totalCount)} 个，保守去重后 ${galleryOverviewCount(summary.exactUniqueCount)} 个，确认冗余 ${galleryOverviewCount(summary.exactRedundantCount)} 个，精确摘要覆盖 ${galleryOverviewCount(summary.exactFingerprintCount)} 个；第 ${index + 1} 项，共 ${count} 项；按 Enter 打开`
+  );
+  card.setAttribute("aria-posinset", String(index + 1));
+  card.setAttribute("aria-setsize", String(count));
+  card.setAttribute("aria-keyshortcuts", "ArrowLeft ArrowRight Home End");
 }
 
 function reconcileGalleryOverviewMediaCards(summaries) {
@@ -5172,11 +5242,15 @@ function reconcileGalleryOverviewMediaCards(summaries) {
     const kind = summary.mediaKind === "video" ? "video" : "image";
     const card = existingCards.get(kind) || renderGalleryOverviewMediaCard(summary);
     existingCards.delete(kind);
-    syncGalleryOverviewMediaCard(card, summary);
+    syncGalleryOverviewMediaCard(card, summary, index, summaries.length);
     const currentCard = elements.galleryOverviewMediaLedger.children[index] || null;
     if (currentCard !== card) elements.galleryOverviewMediaLedger.insertBefore(card, currentCard);
   }
   for (const card of existingCards.values()) card.remove();
+  syncGalleryOverviewRovingItems(
+    elements.galleryOverviewMediaLedger,
+    "[data-gallery-overview-media-kind]"
+  );
 }
 
 function createGalleryOverviewBarRow() {
@@ -5198,7 +5272,7 @@ function createGalleryOverviewBarRow() {
   return button;
 }
 
-function syncGalleryOverviewBarRow(button, item, kind, maximum) {
+function syncGalleryOverviewBarRow(button, item, kind, maximum, index, count) {
   if (kind === "source") {
     button.dataset.galleryOverviewSourceId = item.id;
     delete button.dataset.galleryOverviewTagId;
@@ -5223,6 +5297,14 @@ function syncGalleryOverviewBarRow(button, item, kind, maximum) {
     button.querySelector(".gallery-overview-bar-count"),
     galleryOverviewCount(galleryOverviewTotal(item))
   );
+  const action = kind === "source" ? "打开来源" : "筛选标签";
+  button.setAttribute(
+    "aria-label",
+    `${kind === "source" ? "来源" : "标签"} ${item.displayName}：${galleryOverviewCount(item.imageCount)} 张照片，${galleryOverviewCount(item.videoCount)} 个视频，共 ${galleryOverviewCount(galleryOverviewTotal(item))} 个；第 ${index + 1} 项，共 ${count} 项；按 Enter ${action}`
+  );
+  button.setAttribute("aria-posinset", String(index + 1));
+  button.setAttribute("aria-setsize", String(count));
+  button.setAttribute("aria-keyshortcuts", "ArrowUp ArrowDown PageUp PageDown Home End");
 }
 
 function renderGalleryOverviewBars(container, items, kind) {
@@ -5243,11 +5325,17 @@ function renderGalleryOverviewBars(container, items, kind) {
   for (const [index, item] of items.entries()) {
     const button = existingRows.get(item.id) || createGalleryOverviewBarRow();
     existingRows.delete(item.id);
-    syncGalleryOverviewBarRow(button, item, kind, maximum);
+    syncGalleryOverviewBarRow(button, item, kind, maximum, index, items.length);
     const currentRow = container.children[index] || null;
     if (currentRow !== button) container.insertBefore(button, currentRow);
   }
   for (const row of existingRows.values()) row.remove();
+  syncGalleryOverviewRovingItems(
+    container,
+    kind === "source"
+      ? "[data-gallery-overview-source-id]"
+      : "[data-gallery-overview-tag-id]"
+  );
 }
 
 function galleryOverviewAvailabilityPresentation(availability) {
@@ -5329,6 +5417,10 @@ function renderGalleryOverviewTimeline(years) {
   if (!years.length) {
     clearElement(elements.galleryOverviewTimeline);
     elements.galleryOverviewTimeline.append(galleryOverviewEmpty("没有可用的媒体时间"));
+    syncGalleryOverviewText(
+      elements.galleryOverviewTimelineStatus,
+      "没有可用的媒体时间"
+    );
     return;
   }
   elements.galleryOverviewTimeline.querySelector(":scope > .gallery-overview-empty")?.remove();
@@ -5353,7 +5445,18 @@ function renderGalleryOverviewTimeline(years) {
       year.append(bars, document.createElement("span"));
     }
     year.dataset.galleryOverviewYear = key;
+    year.setAttribute("role", "img");
     year.title = `${item.year}：${galleryOverviewCount(item.imageCount)} 张照片，${galleryOverviewCount(item.videoCount)} 个视频`;
+    year.setAttribute(
+      "aria-label",
+      `${item.year} 年：${galleryOverviewCount(item.imageCount)} 张照片，${galleryOverviewCount(item.videoCount)} 个视频，共 ${galleryOverviewCount(galleryOverviewTotal(item))} 个；第 ${index + 1} 项，共 ${years.length} 项`
+    );
+    year.setAttribute("aria-posinset", String(index + 1));
+    year.setAttribute("aria-setsize", String(years.length));
+    year.setAttribute(
+      "aria-keyshortcuts",
+      "ArrowLeft ArrowRight PageUp PageDown Home End"
+    );
     year.querySelector(".photo").style.setProperty(
       "--photo-height",
       `${Math.max(2, Number(item.imageCount || 0) / maximum * 100)}%`
@@ -5367,6 +5470,13 @@ function renderGalleryOverviewTimeline(years) {
     if (currentYear !== year) elements.galleryOverviewTimeline.insertBefore(year, currentYear);
   }
   for (const year of existingYears.values()) year.remove();
+  const items = syncGalleryOverviewRovingItems(
+    elements.galleryOverviewTimeline,
+    "[data-gallery-overview-year]"
+  );
+  updateGalleryOverviewTimelineStatus(
+    items.includes(document.activeElement) ? document.activeElement : null
+  );
 }
 
 function galleryOverviewContentFingerprint() {
@@ -45302,13 +45412,75 @@ function bindEvents() {
     const button = event.target.closest("[data-gallery-overview-media-kind]");
     if (button) drillDownFromGalleryOverview({ mediaKind: button.dataset.galleryOverviewMediaKind });
   });
+  elements.galleryOverviewMediaLedger.addEventListener("focusin", (event) => {
+    syncGalleryOverviewRovingItems(
+      elements.galleryOverviewMediaLedger,
+      "[data-gallery-overview-media-kind]",
+      event.target.closest("[data-gallery-overview-media-kind]")
+    );
+  });
+  elements.galleryOverviewMediaLedger.addEventListener("keydown", (event) => {
+    moveGalleryOverviewChartFocus(event, {
+      container: elements.galleryOverviewMediaLedger,
+      selector: "[data-gallery-overview-media-kind]",
+      orientation: "horizontal",
+    });
+  });
   elements.galleryOverviewSources.addEventListener("click", (event) => {
     const button = event.target.closest("[data-gallery-overview-source-id]");
     if (button) drillDownFromGalleryOverview({ sourceID: button.dataset.galleryOverviewSourceId });
   });
+  elements.galleryOverviewSources.addEventListener("focusin", (event) => {
+    syncGalleryOverviewRovingItems(
+      elements.galleryOverviewSources,
+      "[data-gallery-overview-source-id]",
+      event.target.closest("[data-gallery-overview-source-id]")
+    );
+  });
+  elements.galleryOverviewSources.addEventListener("keydown", (event) => {
+    moveGalleryOverviewChartFocus(event, {
+      container: elements.galleryOverviewSources,
+      selector: "[data-gallery-overview-source-id]",
+      orientation: "vertical",
+    });
+  });
   elements.galleryOverviewTags.addEventListener("click", (event) => {
     const button = event.target.closest("[data-gallery-overview-tag-id]");
     if (button) drillDownFromGalleryOverview({ tagID: button.dataset.galleryOverviewTagId });
+  });
+  elements.galleryOverviewTags.addEventListener("focusin", (event) => {
+    syncGalleryOverviewRovingItems(
+      elements.galleryOverviewTags,
+      "[data-gallery-overview-tag-id]",
+      event.target.closest("[data-gallery-overview-tag-id]")
+    );
+  });
+  elements.galleryOverviewTags.addEventListener("keydown", (event) => {
+    moveGalleryOverviewChartFocus(event, {
+      container: elements.galleryOverviewTags,
+      selector: "[data-gallery-overview-tag-id]",
+      orientation: "vertical",
+    });
+  });
+  elements.galleryOverviewTimeline.addEventListener("focusin", (event) => {
+    const year = event.target.closest("[data-gallery-overview-year]");
+    syncGalleryOverviewRovingItems(
+      elements.galleryOverviewTimeline,
+      "[data-gallery-overview-year]",
+      year
+    );
+    updateGalleryOverviewTimelineStatus(year);
+  });
+  elements.galleryOverviewTimeline.addEventListener("click", (event) => {
+    const year = event.target.closest("[data-gallery-overview-year]");
+    if (year) year.focus({ preventScroll: true });
+  });
+  elements.galleryOverviewTimeline.addEventListener("keydown", (event) => {
+    moveGalleryOverviewChartFocus(event, {
+      container: elements.galleryOverviewTimeline,
+      selector: "[data-gallery-overview-year]",
+      orientation: "horizontal",
+    });
   });
   elements.galleryOverviewFavoritesMetric.addEventListener("click", async () => {
     await returnFromWorkspace("galleryOverview");

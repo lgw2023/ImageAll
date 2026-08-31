@@ -9,6 +9,14 @@ from playwright.sync_api import sync_playwright
 BASE_URL = "http://127.0.0.1:8799"
 SOURCE_ID = "aaaaaaaa-1111-2222-3333-aaaaaaaaaaaa"
 TAG_ID = "bbbbbbbb-1111-2222-3333-bbbbbbbbbbbb"
+OVERVIEW_SOURCE_IDS = [
+    SOURCE_ID,
+    *[f"aaaaaaaa-1111-2222-4444-{index:012d}" for index in range(1, 10)],
+]
+OVERVIEW_TAG_IDS = [
+    TAG_ID,
+    *[f"bbbbbbbb-1111-2222-4444-{index:012d}" for index in range(1, 12)],
+]
 
 
 def fulfill_json(route, payload, status=200):
@@ -42,29 +50,37 @@ def main():
                 "exactFingerprintCount": 30,
             },
         ],
-        "sources": [
-            {
+        "sources": [{
                 "id": SOURCE_ID,
                 "displayName": "Apple Photos",
                 "kind": "photos",
                 "state": "active",
                 "imageCount": 120,
                 "videoCount": 30,
-            }
-        ],
-        "positiveTags": [
-            {
+            }, *[{
+                "id": source_id,
+                "displayName": f"合成来源 {index}",
+                "kind": "folder",
+                "state": "active",
+                "imageCount": 90 - index * 3,
+                "videoCount": 18 - index,
+            } for index, source_id in enumerate(OVERVIEW_SOURCE_IDS[1:], start=1)]],
+        "positiveTags": [{
                 "id": TAG_ID,
                 "displayName": "猫",
                 "imageCount": 18,
                 "videoCount": 2,
-            }
-        ],
-        "years": [
-            {"year": 2024, "imageCount": 32, "videoCount": 5},
-            {"year": 2025, "imageCount": 41, "videoCount": 12},
-            {"year": 2026, "imageCount": 44, "videoCount": 13},
-        ],
+            }, *[{
+                "id": tag_id,
+                "displayName": f"合成标签 {index}",
+                "imageCount": 18 - index,
+                "videoCount": index % 4,
+            } for index, tag_id in enumerate(OVERVIEW_TAG_IDS[1:], start=1)]],
+        "years": [{
+            "year": year,
+            "imageCount": 18 + index * 2,
+            "videoCount": 2 + index % 7,
+        } for index, year in enumerate(range(2007, 2027))],
         "availability": [
             {"availability": "available", "imageCount": 118, "videoCount": 30},
             {"availability": "missing", "imageCount": 2, "videoCount": 0},
@@ -333,8 +349,80 @@ def main():
         assert page.locator("#galleryOverviewFavoriteMetric").inner_text() == "20"
         assert page.locator("#galleryOverviewFavoriteImageMetric").inner_text() == "17"
         assert page.locator("#galleryOverviewFavoriteVideoMetric").inner_text() == "3"
-        assert page.locator("[data-gallery-overview-source-id]").count() == 1
-        assert page.locator("[data-gallery-overview-tag-id]").inner_text().startswith("猫")
+        assert page.locator("[data-gallery-overview-source-id]").count() == 8
+        assert page.locator("[data-gallery-overview-tag-id]").first.inner_text().startswith("猫")
+
+        overview_reads_before_chart_navigation = overview_requests
+        asset_reads_before_chart_navigation = len(asset_queries)
+        media_cards = page.locator("[data-gallery-overview-media-kind]")
+        assert media_cards.evaluate_all(
+            "cards => cards.filter(card => card.tabIndex === 0).length"
+        ) == 1
+        media_cards.first.focus()
+        assert "ArrowLeft ArrowRight Home End" == \
+            media_cards.first.get_attribute("aria-keyshortcuts")
+        page.keyboard.press("ArrowRight")
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.galleryOverviewMediaKind"
+        ) == "video"
+        page.keyboard.press("Home")
+        assert "照片" in page.evaluate("() => document.activeElement?.getAttribute('aria-label')")
+
+        source_rows = page.locator("[data-gallery-overview-source-id]")
+        assert source_rows.evaluate_all(
+            "rows => rows.filter(row => row.tabIndex === 0).length"
+        ) == 1
+        source_rows.first.focus()
+        assert "Apple Photos" in source_rows.first.get_attribute("aria-label")
+        page.keyboard.press("End")
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.galleryOverviewSourceId"
+        ) == OVERVIEW_SOURCE_IDS[7]
+        page.keyboard.press("PageUp")
+        source_page_up_index = page.evaluate(
+            "() => [...document.querySelectorAll('[data-gallery-overview-source-id]')]"
+            ".indexOf(document.activeElement)"
+        )
+        assert source_page_up_index <= 5
+        page.keyboard.press("Home")
+
+        tag_rows = page.locator("[data-gallery-overview-tag-id]")
+        assert tag_rows.evaluate_all(
+            "rows => rows.filter(row => row.tabIndex === 0).length"
+        ) == 1
+        tag_rows.first.focus()
+        page.keyboard.press("End")
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.galleryOverviewTagId"
+        ) == OVERVIEW_TAG_IDS[-1]
+        page.keyboard.press("Home")
+        assert "猫" in page.evaluate("() => document.activeElement?.getAttribute('aria-label')")
+
+        timeline_years = page.locator("[data-gallery-overview-year]")
+        assert timeline_years.count() == 16
+        assert timeline_years.evaluate_all(
+            "years => years.filter(year => year.tabIndex === 0).length"
+        ) == 1
+        timeline_years.first.focus()
+        page.keyboard.press("ArrowRight")
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.galleryOverviewYear"
+        ) == "2012"
+        page.keyboard.press("End")
+        assert "2026" in page.locator("#galleryOverviewTimelineStatus").inner_text()
+        assert "照片" in page.evaluate("() => document.activeElement?.getAttribute('aria-label')")
+        page.keyboard.press("Home")
+        page.keyboard.press("PageDown")
+        assert page.evaluate(
+            "() => [...document.querySelectorAll('[data-gallery-overview-year]')]"
+            ".indexOf(document.activeElement)"
+        ) >= 2
+        page.screenshot(
+            path="/tmp/imageall-gallery-overview-chart-keyboard.png",
+            full_page=True,
+        )
+        assert overview_requests == overview_reads_before_chart_navigation
+        assert len(asset_queries) == asset_reads_before_chart_navigation
 
         page.locator("#galleryOverviewFavoritesMetric").click()
         page.locator("#galleryOverviewWorkspace").wait_for(state="hidden")
@@ -490,7 +578,7 @@ def main():
         )
         page.locator(
             '[data-gallery-overview-tag-id] .gallery-overview-bar-label'
-        ).hover()
+        ).first.hover()
         page.wait_for_function("() => Boolean(window.__galleryOverviewRefreshRelease)")
         overview["sources"][0]["imageCount"] = 121
         overview["media"][0]["totalCount"] = 121

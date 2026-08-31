@@ -15820,6 +15820,11 @@ button.world-map-place-candidate:focus-visible {
 }
 
 .gallery-overview-media-card:hover { background: color-mix(in srgb, var(--media-tint) 12%, transparent); }
+.gallery-overview-media-card:focus-visible {
+  outline: 2px solid var(--media-tint);
+  outline-offset: 2px;
+  background: color-mix(in srgb, var(--media-tint) 12%, transparent);
+}
 .gallery-overview-media-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .gallery-overview-media-heading span { color: var(--media-tint); font-size: 13px; font-weight: 700; }
 .gallery-overview-media-heading strong { font-size: 22px; font-variant-numeric: tabular-nums; }
@@ -15848,6 +15853,11 @@ button.world-map-place-candidate:focus-visible {
   cursor: pointer;
 }
 .gallery-overview-bar-row:hover { background: var(--selection); }
+.gallery-overview-bar-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  background: var(--selection);
+}
 .gallery-overview-bar-label { overflow: hidden; font-size: 10px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .gallery-overview-bar-track { display: flex; height: 9px; overflow: hidden; border-radius: 99px; background: var(--separator); }
 .gallery-overview-bar-track i.photo { width: var(--photo-width); background: var(--atlas-photo); }
@@ -15871,12 +15881,24 @@ button.world-map-place-candidate:focus-visible {
 .gallery-overview-availability-row strong { font-variant-numeric: tabular-nums; }
 
 .gallery-overview-timeline { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(34px, 1fr); align-items: end; gap: 8px; min-height: 210px; overflow-x: auto; padding-top: 8px; }
-.gallery-overview-year { display: grid; grid-template-rows: 168px auto; gap: 7px; min-width: 34px; text-align: center; }
+.gallery-overview-year { display: grid; grid-template-rows: 168px auto; gap: 7px; min-width: 34px; border-radius: 7px; text-align: center; cursor: default; }
+.gallery-overview-year:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
 .gallery-overview-year-bars { display: flex; align-items: end; justify-content: center; gap: 3px; border-bottom: 1px solid var(--separator); }
 .gallery-overview-year-bars i { width: min(13px, 38%); min-height: 2px; border-radius: 4px 4px 0 0; }
 .gallery-overview-year-bars i.photo { height: var(--photo-height); background: var(--atlas-photo); }
 .gallery-overview-year-bars i.video { height: var(--video-height); background: var(--atlas-video); }
 .gallery-overview-year span { color: var(--secondary); font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.gallery-overview-timeline-status {
+  min-height: 16px;
+  margin: 8px 0 0;
+  color: var(--secondary);
+  font: 9px ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-align: center;
+}
 .gallery-overview-undated { margin: 8px 0 0; color: var(--secondary); font-size: 9px; text-align: right; }
 
 .gallery-overview-method { padding: 16px; border: 1px solid var(--separator); border-radius: 14px; background: color-mix(in srgb, var(--control) 82%, transparent); }

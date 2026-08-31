@@ -10,8 +10,8 @@
   <meta name="apple-mobile-web-app-title" content="ImageAll">
   <title>ImageAll 网页版</title>
   <link rel="manifest" href="/manifest.webmanifest">
-  <link rel="stylesheet" href="/app.css?v=20260831-200">
-  <script src="/app.js?v=20260831-200" defer></script>
+  <link rel="stylesheet" href="/app.css?v=20260831-201">
+  <script src="/app.js?v=20260831-201" defer></script>
 </head>
 <body>
   <div id="bootView" class="centered-state">
@@ -1335,13 +1335,15 @@
 
           <section class="gallery-overview-panel">
             <header><div><h2>媒体账本</h2><p>原始总量与绝对相同去重后的保守数量</p></div><span aria-hidden="true">▤</span></header>
-            <div id="galleryOverviewMediaLedger" class="gallery-overview-media-ledger"></div>
+            <div id="galleryOverviewMediaLedger" class="gallery-overview-media-ledger"
+              role="group" aria-label="媒体账本；使用左右方向键浏览，按 Enter 打开对应媒体"></div>
           </section>
 
           <div class="gallery-overview-split">
             <section class="gallery-overview-panel">
               <header><div><h2>来源构成</h2><p id="galleryOverviewSourceSubtitle">每个来源中的照片与视频</p></div><span aria-hidden="true">⌁</span></header>
-              <div id="galleryOverviewSources" class="gallery-overview-bars"></div>
+              <div id="galleryOverviewSources" class="gallery-overview-bars"
+                role="group" aria-label="来源构成；使用上下方向键或 Page Up/Down 浏览，按 Enter 打开来源"></div>
               <div class="gallery-overview-legend"><span><i class="photo"></i>照片</span><span><i class="video"></i>视频</span></div>
             </section>
             <section class="gallery-overview-panel gallery-overview-availability-panel">
@@ -1352,13 +1354,17 @@
 
           <section class="gallery-overview-panel">
             <header><div><h2>正样本标签</h2><p>人工接受次数最多的活跃标签；同一媒体可属于多个标签</p></div><span aria-hidden="true">#</span></header>
-            <div id="galleryOverviewTags" class="gallery-overview-bars gallery-overview-tag-bars"></div>
+            <div id="galleryOverviewTags" class="gallery-overview-bars gallery-overview-tag-bars"
+              role="group" aria-label="正样本标签；使用上下方向键或 Page Up/Down 浏览，按 Enter 筛选标签"></div>
             <div class="gallery-overview-legend"><span><i class="photo"></i>照片</span><span><i class="video"></i>视频</span></div>
           </section>
 
           <section class="gallery-overview-panel">
             <header><div><h2>时间分布</h2><p id="galleryOverviewTimelineSubtitle">按拍摄时间优先、修改时间补充</p></div><span aria-hidden="true">▣</span></header>
-            <div id="galleryOverviewTimeline" class="gallery-overview-timeline"></div>
+            <div id="galleryOverviewTimeline" class="gallery-overview-timeline"
+              role="group" aria-label="时间分布；使用左右方向键或 Page Up/Down 浏览年份"></div>
+            <p id="galleryOverviewTimelineStatus" class="gallery-overview-timeline-status"
+              role="status" aria-live="polite">聚焦年份后可查看精确照片与视频数量</p>
             <p id="galleryOverviewUndated" class="gallery-overview-undated"></p>
           </section>
 
