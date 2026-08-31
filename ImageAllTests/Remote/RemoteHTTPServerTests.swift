@@ -4231,6 +4231,23 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("state.undo.tag"))
         XCTAssertTrue(script.contains("state.undo.review"))
         XCTAssertFalse(script.contains("operationID: crypto.randomUUID(), undoID"))
+        let undoDecisionStart = try XCTUnwrap(
+            script.range(of: "async function undoLatestDecision")
+        )
+        let latestUndoKindStart = try XCTUnwrap(
+            script.range(
+                of: "function latestUndoKind",
+                range: undoDecisionStart.upperBound..<script.endIndex
+            )
+        )
+        let undoDecisionScript = String(
+            script[undoDecisionStart.lowerBound..<latestUndoKindStart.lowerBound]
+        )
+        XCTAssertTrue(undoDecisionScript.contains("restoreReviewFocus"))
+        XCTAssertTrue(undoDecisionScript.contains("await refreshWorkspace"))
+        XCTAssertTrue(undoDecisionScript.contains(".lightbox-review-action:not(:disabled)"))
+        XCTAssertTrue(undoDecisionScript.contains("reviewCardMainButton"))
+        XCTAssertFalse(undoDecisionScript.contains("await loadReviewQueue"))
         XCTAssertTrue(script.contains("protectedImageRequests"))
         XCTAssertTrue(script.contains("protectedImageAbortControllers"))
         XCTAssertTrue(script.contains("protectedImageIntersectionObserver"))

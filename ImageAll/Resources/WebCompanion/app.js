@@ -11515,6 +11515,14 @@ async function undoLatestDecision(kind) {
   const channel = state.undo[kind];
   const undoID = channel?.id;
   if (!channel || !state.online || !undoID || channel.mutating) return;
+  const restoreReviewFocus = kind === "review"
+    && reviewWorkspaceIsOpen()
+    && state.review.mode === "queue"
+    && [
+      elements.reviewUndoButton,
+      elements.undoReviewButton,
+      elements.undoToastButton,
+    ].includes(document.activeElement);
   if (!channel.operationID) {
     channel.operationID = crypto.randomUUID();
   }
@@ -11539,8 +11547,20 @@ async function undoLatestDecision(kind) {
       quiet: true,
       kinds: ["assetsChanged", "tagsChanged", "reviewChanged"],
     });
-    if (kind === "review" && state.review.mode === "queue") {
-      await loadReviewQueue({ preserveLoadedWindow: true });
+    if (restoreReviewFocus) {
+      if (state.lightboxContext === "review"
+        && !elements.lightbox.classList.contains("hidden")) {
+        elements.lightboxReviewActions.querySelector(
+          ".lightbox-review-action:not(:disabled)"
+        )?.focus({ preventScroll: true });
+      } else {
+        const selectedKey = reviewItemKey(
+          state.review.items[state.review.selectedIndex]
+        );
+        reviewCardMainButton(elements.reviewGrid.querySelector(
+          `[data-review-key="${CSS.escape(selectedKey)}"]`
+        ))?.focus({ preventScroll: true });
+      }
     }
     toast(`已撤销 ${result.restoredAssetCount} 项${kind === "review" ? "审核" : "标签"}决定`);
   } catch (error) {

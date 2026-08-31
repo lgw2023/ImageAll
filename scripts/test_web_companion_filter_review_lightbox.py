@@ -259,6 +259,7 @@ def main():
     remove_review_items_for_next_tag_decision = [False]
     created_tag_applications = []
     review_decisions = []
+    review_undo_snapshots = []
     review_queue_queries = []
     source_actions = []
     source_requests = []
@@ -1096,6 +1097,7 @@ def main():
         def route_review_decision(route):
             payload = route.request.post_data_json
             review_decisions.append(payload)
+            review_undo_snapshots.append([dict(item) for item in review_items])
             decided_ids = set(payload["assetIDs"])
             review_items[:] = [item for item in review_items if item["assetID"] not in decided_ids]
             fulfill_json(
@@ -1109,6 +1111,20 @@ def main():
             )
 
         page.route("**/v1/review/decisions/batch", route_review_decision)
+
+        def route_review_undo(route):
+            payload = route.request.post_data_json
+            assert payload["undoID"] == "88888888-8888-8888-8888-888888888888"
+            restored_items = review_undo_snapshots.pop()
+            restored_count = len(restored_items) - len(review_items)
+            review_items[:] = restored_items
+            fulfill_json(route, {
+                "operationID": payload["operationID"],
+                "restoredAssetCount": restored_count,
+                "replayed": False,
+            })
+
+        page.route("**/v1/review/decisions/undo", route_review_undo)
 
         page.goto(BASE_URL, wait_until="networkidle")
 
@@ -4309,6 +4325,95 @@ def main():
             path="/tmp/imageall-review-batch-decision-continuation.png",
             full_page=True,
         )
+        review_undo_continuity_frame = page.evaluate(
+            """() => {
+              const pane = document.querySelector('#reviewQueuePane');
+              const item = state.review.items[state.review.selectedIndex];
+              pane.style.height = '180px';
+              pane.style.overflowY = 'auto';
+              pane.scrollTop = Math.min(80, pane.scrollHeight - pane.clientHeight);
+              openReviewLightbox(item, { preserveSelection: true });
+              return {
+                primaryKey: reviewItemKey(item),
+                scrollTop: pane.scrollTop,
+              };
+            }"""
+        )
+        assert review_undo_continuity_frame["scrollTop"] > 0
+        review_queue_query_count_before_undo = len(review_queue_queries)
+        review_undo_button = page.locator("#reviewUndoButton")
+        review_undo_button.focus()
+        assert review_undo_button.evaluate("element => document.activeElement === element")
+        with page.expect_response("**/v1/review/decisions/undo"):
+            review_undo_button.press("Enter")
+        page.wait_for_function(
+            "() => !state.undo.review.mutating && !state.undo.review.id "
+            "&& !state.review.loading && state.review.items.length === 5"
+        )
+        review_undo_continuity_result = page.evaluate(
+            """() => {
+              const item = state.review.items[state.review.selectedIndex];
+              return {
+                queueKeys: state.review.items.map(reviewItemKey),
+                selectedAssetIDs: [...state.review.selectedAssetIDs],
+                primaryKey: reviewItemKey(item),
+                anchorKey: reviewItemKey(
+                  state.review.items[state.review.selectionAnchorIndex]
+                ),
+                lightboxKey: state.lightboxReviewKey,
+                lightboxAssetID: state.lightboxAssetID,
+                scrollTop: document.querySelector('#reviewQueuePane').scrollTop,
+                focusedReviewKey: document.activeElement
+                  ?.closest('.review-card')?.dataset.reviewKey || null,
+                focusedLightboxAction: document.activeElement
+                  ?.closest('.lightbox-review-action')?.dataset.action || null,
+                undoHidden: document.querySelector('#reviewUndoButton')
+                  .classList.contains('hidden'),
+              };
+            }"""
+        )
+        assert len(review_queue_queries) - review_queue_query_count_before_undo == 2
+        assert review_undo_continuity_result["queueKeys"] == [
+            f"{REVIEW_IDS[0]}:featurePrint",
+            f"{REVIEW_IDS[1]}:featurePrint",
+            f"{REVIEW_IDS[2]}:featurePrint",
+            f"{REVIEW_HISTORY_IDS[0]}:featurePrint",
+            f"{REVIEW_HISTORY_IDS[1]}:featurePrint",
+        ]
+        assert review_undo_continuity_result["selectedAssetIDs"] == [
+            REVIEW_HISTORY_IDS[0]
+        ]
+        assert review_undo_continuity_result["primaryKey"] == (
+            review_undo_continuity_frame["primaryKey"]
+        )
+        assert review_undo_continuity_result["anchorKey"] == (
+            review_undo_continuity_frame["primaryKey"]
+        )
+        assert review_undo_continuity_result["lightboxKey"] == (
+            review_undo_continuity_frame["primaryKey"]
+        )
+        assert review_undo_continuity_result["lightboxAssetID"] == (
+            REVIEW_HISTORY_IDS[0]
+        )
+        assert review_undo_continuity_result["scrollTop"] == (
+            review_undo_continuity_frame["scrollTop"]
+        )
+        assert review_undo_continuity_result["focusedReviewKey"] is None
+        assert review_undo_continuity_result["focusedLightboxAction"] == "accept"
+        assert review_undo_continuity_result["undoHidden"] is True
+        page.screenshot(
+            path="/tmp/imageall-review-undo-reinsert-continuity.png",
+            full_page=True,
+        )
+        page.evaluate(
+            """() => {
+              const pane = document.querySelector('#reviewQueuePane');
+              pane.style.height = '';
+              pane.style.overflowY = '';
+              closeLightbox();
+            }"""
+        )
+        page.locator("#lightbox").wait_for(state="hidden")
         review_items[:] = [
             review_item(asset_id, index + 1)
             for index, asset_id in enumerate(REVIEW_IDS)
