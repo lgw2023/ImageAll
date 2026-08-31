@@ -3040,6 +3040,56 @@ def main():
         review_handle.dblclick()
         assert review_handle.get_attribute("aria-valuenow") == "288"
         page.screenshot(path="/tmp/imageall-review-overview-split.png", full_page=True)
+        pointer_scroll_request_count = len(asset_queries)
+        pointer_scroll_frame = page.evaluate(
+            """() => {
+              const scroll = document.querySelector('.review-overview-content');
+              scroll.scrollTop = 180;
+              const bounds = scroll.getBoundingClientRect();
+              const target = [...scroll.querySelectorAll('[data-review-overview-tag-id]')]
+                .find((candidate) => {
+                  const frame = candidate.getBoundingClientRect();
+                  return frame.bottom > bounds.top && frame.top < bounds.bottom;
+                });
+              document.querySelector('#closeReviewButton').focus({ preventScroll: true });
+              window.__pointerReviewScrollAnchor = target;
+              return {
+                offset: target.getBoundingClientRect().top - bounds.top,
+                tagID: target.dataset.reviewOverviewTagId,
+                scrollTop: scroll.scrollTop,
+              };
+            }"""
+        )
+        assert pointer_scroll_frame["scrollTop"] > 0
+        page.set_viewport_size({"width": 390, "height": 844})
+        page.wait_for_function(
+            "() => document.querySelector('#reviewWorkspace').getAttribute('aria-modal') === 'true'"
+        )
+        assert page.evaluate("() => document.activeElement?.id") == "closeReviewButton"
+        pointer_scroll_mobile_offset = page.evaluate(
+            """() => window.__pointerReviewScrollAnchor.getBoundingClientRect().top
+              - document.querySelector('.review-overview').getBoundingClientRect().top"""
+        )
+        assert abs(pointer_scroll_mobile_offset - pointer_scroll_frame["offset"]) <= 2, {
+            "wide": pointer_scroll_frame,
+            "narrow": pointer_scroll_mobile_offset,
+        }
+        assert len(asset_queries) == pointer_scroll_request_count
+        page.screenshot(
+            path="/tmp/imageall-review-responsive-pointer-scroll.png",
+            full_page=True,
+        )
+        page.set_viewport_size({"width": 1440, "height": 960})
+        page.wait_for_function(
+            "() => document.querySelector('#reviewWorkspace').classList.contains('integrated')"
+        )
+        assert page.evaluate("() => document.activeElement?.id") == "closeReviewButton"
+        page.wait_for_function(
+            "expected => Math.abs(window.__pointerReviewScrollAnchor.getBoundingClientRect().top "
+            "- document.querySelector('.review-overview-content').getBoundingClientRect().top "
+            "- expected) <= 2",
+            arg=pointer_scroll_frame["offset"],
+        )
         responsive_review_focus = page.locator(
             f'[data-review-overview-tag-id="{CAT_TAG_ID}"]'
         )

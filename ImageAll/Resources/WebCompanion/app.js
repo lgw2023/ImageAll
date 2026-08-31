@@ -4728,6 +4728,7 @@ function workspacePresentationFocusIsUsable(workspace, target) {
 }
 
 const workspacePresentationFocusSnapshots = new WeakMap();
+const workspacePresentationScrollSnapshots = new WeakMap();
 const workspacePresentationModes = new WeakMap();
 
 function workspacePresentationScrollOwner(workspace, target) {
@@ -4756,14 +4757,82 @@ function captureWorkspacePresentationFocus(workspace, target) {
   };
 }
 
+function workspacePresentationScrollAnchorSelector(workspace) {
+  const fallback = "button:not(:disabled), input:not(:disabled), select:not(:disabled), "
+    + "textarea:not(:disabled), [tabindex]:not([tabindex='-1'])";
+  if (workspace === elements.reviewWorkspace) {
+    return `[data-review-overview-tag-id], [data-review-overview-group-toggle], ${fallback}`;
+  }
+  if (workspace === elements.trainingWorkspace) {
+    return `[data-training-run-id], [data-training-activity-id], `
+      + `[data-training-batch-id], ${fallback}`;
+  }
+  if (workspace === elements.slimmingWorkspace) {
+    return `[data-slimming-job-id], [data-slimming-cluster-id], `
+      + `[data-slimming-member-id], [data-slimming-recycle-entry-id], ${fallback}`;
+  }
+  if (workspace === elements.galleryOverviewWorkspace) {
+    return `[data-gallery-overview-media-kind], [data-gallery-overview-source-id], `
+      + `[data-gallery-overview-tag-id], [data-gallery-overview-year], `
+      + `[data-gallery-overview-availability], ${fallback}`;
+  }
+  if (workspace === elements.worldMapWorkspace) {
+    return `[data-world-map-asset-id], [data-world-map-place-result-copy], ${fallback}`;
+  }
+  return fallback;
+}
+
+function workspacePresentationAnchorIsPinned(scrollOwner, target) {
+  let candidate = target;
+  while (candidate && candidate !== scrollOwner) {
+    const position = getComputedStyle(candidate).position;
+    if (position === "fixed" || position === "sticky") return true;
+    candidate = candidate.parentElement;
+  }
+  return false;
+}
+
+function captureWorkspacePresentationScroll(workspace, scrollOwner) {
+  if (!(scrollOwner instanceof HTMLElement) || !workspace.contains(scrollOwner)) return null;
+  const bounds = scrollOwner.getBoundingClientRect();
+  let anchor = null;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  for (const candidate of scrollOwner.querySelectorAll(
+    workspacePresentationScrollAnchorSelector(workspace)
+  )) {
+    if (!workspacePresentationFocusIsUsable(workspace, candidate)
+      || workspacePresentationAnchorIsPinned(scrollOwner, candidate)) continue;
+    const frame = candidate.getBoundingClientRect();
+    if (frame.bottom <= bounds.top + 1 || frame.top >= bounds.bottom - 1) continue;
+    const distance = Math.abs(frame.top - bounds.top);
+    if (distance < nearestDistance) {
+      anchor = candidate;
+      nearestDistance = distance;
+    }
+  }
+  if (!anchor) return null;
+  return {
+    target: anchor,
+    scrollOffset: anchor.getBoundingClientRect().top - bounds.top,
+    mode: workspacePresentationModes.get(workspace),
+  };
+}
+
 function preferredWorkspacePresentationFocus(workspace, target, mode) {
   const previousMode = workspacePresentationModes.get(workspace);
   const snapshot = workspacePresentationFocusSnapshots.get(workspace);
+  const scrollSnapshot = workspacePresentationScrollSnapshots.get(workspace);
   workspacePresentationModes.set(workspace, mode);
-  if (previousMode !== undefined && previousMode !== mode && snapshot?.target === target) {
-    return snapshot;
-  }
-  return captureWorkspacePresentationFocus(workspace, target);
+  const transition = previousMode !== undefined && previousMode !== mode;
+  const preferredFocus = transition && snapshot?.target === target
+    ? snapshot
+    : captureWorkspacePresentationFocus(workspace, target);
+  return {
+    ...preferredFocus,
+    scrollAnchor: transition && scrollSnapshot?.mode === previousMode
+      ? scrollSnapshot
+      : null,
+  };
 }
 
 function currentWorkspacePresentationMode(workspace) {
@@ -4797,13 +4866,42 @@ function rememberActiveWorkspacePresentationFocus() {
   );
 }
 
+function rememberWorkspacePresentationScroll(event) {
+  const scrollOwner = event.target;
+  if (!(scrollOwner instanceof HTMLElement)) return;
+  const workspace = [
+    elements.reviewWorkspace,
+    elements.trainingWorkspace,
+    elements.slimmingWorkspace,
+    elements.galleryOverviewWorkspace,
+    elements.worldMapWorkspace,
+  ].find((candidate) => candidate.contains(scrollOwner));
+  if (!workspace) return;
+  const synchronizedMode = workspacePresentationModes.get(workspace);
+  if (synchronizedMode === undefined
+    || currentWorkspacePresentationMode(workspace) !== synchronizedMode) return;
+  const snapshot = captureWorkspacePresentationScroll(workspace, scrollOwner);
+  if (snapshot) workspacePresentationScrollSnapshots.set(workspace, snapshot);
+  else workspacePresentationScrollSnapshots.delete(workspace);
+}
+
 function restoreWorkspacePresentationScroll(workspace, target, preferredFocus, settle = false) {
-  if (target === preferredFocus?.target && Number.isFinite(preferredFocus.scrollOffset)) {
-    const scrollOwner = workspacePresentationScrollOwner(workspace, target);
+  const focusAnchor = target === preferredFocus?.target
+    && Number.isFinite(preferredFocus.scrollOffset)
+    ? preferredFocus
+    : null;
+  const scrollAnchor = focusAnchor || preferredFocus?.scrollAnchor;
+  if (workspacePresentationFocusIsUsable(workspace, scrollAnchor?.target)
+    && Number.isFinite(scrollAnchor.scrollOffset)) {
+    const scrollOwner = workspacePresentationScrollOwner(workspace, scrollAnchor.target);
     if (scrollOwner) {
-      const currentOffset = target.getBoundingClientRect().top
+      const currentOffset = scrollAnchor.target.getBoundingClientRect().top
         - scrollOwner.getBoundingClientRect().top;
-      scrollOwner.scrollTop += currentOffset - preferredFocus.scrollOffset;
+      scrollOwner.scrollTop += currentOffset - scrollAnchor.scrollOffset;
+      if (settle) {
+        const snapshot = captureWorkspacePresentationScroll(workspace, scrollOwner);
+        if (snapshot) workspacePresentationScrollSnapshots.set(workspace, snapshot);
+      }
     }
   }
   if (!settle) {
@@ -45704,6 +45802,7 @@ function bindEvents() {
   bindPersistentHelp();
   document.addEventListener("focusin", rememberActiveWorkspacePresentationFocus);
   document.addEventListener("scroll", rememberActiveWorkspacePresentationFocus, true);
+  document.addEventListener("scroll", rememberWorkspacePresentationScroll, true);
   setupSidebarReordering();
   bindGridDensityControls();
   elements.personalModelToolbarActions.addEventListener("focusin", (event) => {

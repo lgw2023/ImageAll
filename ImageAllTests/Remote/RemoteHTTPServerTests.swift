@@ -2913,6 +2913,9 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function syncWorldMapPresentation"))
         XCTAssertTrue(script.contains("function workspacePresentationFocusIsUsable"))
         XCTAssertTrue(script.contains("function workspacePresentationScrollOwner"))
+        XCTAssertTrue(script.contains("function workspacePresentationScrollAnchorSelector"))
+        XCTAssertTrue(script.contains("function workspacePresentationAnchorIsPinned"))
+        XCTAssertTrue(script.contains("function captureWorkspacePresentationScroll"))
         XCTAssertTrue(script.contains("function captureWorkspacePresentationFocus"))
         XCTAssertTrue(script.contains("function preferredWorkspacePresentationFocus"))
         XCTAssertTrue(script.contains("function restoreWorkspacePresentationScroll"))
@@ -2931,11 +2934,13 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("candidate.scrollHeight > candidate.clientHeight + 1"))
         XCTAssertTrue(script.contains("Number.isFinite(preferredFocus.scrollOffset)"))
         XCTAssertTrue(script.contains("const workspacePresentationFocusSnapshots = new WeakMap()"))
+        XCTAssertTrue(script.contains("const workspacePresentationScrollSnapshots = new WeakMap()"))
         XCTAssertTrue(script.contains("const workspacePresentationModes = new WeakMap()"))
-        XCTAssertTrue(script.contains("previousMode !== mode && snapshot?.target === target"))
+        XCTAssertTrue(script.contains("transition && snapshot?.target === target"))
+        XCTAssertTrue(script.contains("transition && scrollSnapshot?.mode === previousMode"))
         XCTAssertTrue(script.contains("currentWorkspacePresentationMode(workspace) !== synchronizedMode"))
         XCTAssertTrue(
-            script.contains("scrollOwner.scrollTop += currentOffset - preferredFocus.scrollOffset;")
+            script.contains("scrollOwner.scrollTop += currentOffset - scrollAnchor.scrollOffset;")
         )
         XCTAssertTrue(
             script.contains(
@@ -2952,6 +2957,12 @@ final class RemoteHTTPServerTests: XCTestCase {
                 "document.addEventListener(\"scroll\", rememberActiveWorkspacePresentationFocus, true)"
             )
         )
+        XCTAssertTrue(
+            script.contains(
+                "document.addEventListener(\"scroll\", rememberWorkspacePresentationScroll, true)"
+            )
+        )
+        XCTAssertTrue(script.contains("const scrollAnchor = focusAnchor || preferredFocus?.scrollAnchor"))
         XCTAssertTrue(script.contains("function syncIntegratedReviewFrame"))
         XCTAssertTrue(script.contains("function leaveIntegratedReviewForLibrary"))
         XCTAssertTrue(script.contains("function loadReviewInspectorDetail"))
