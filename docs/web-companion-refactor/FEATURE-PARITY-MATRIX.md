@@ -24,10 +24,10 @@
 | 视频/媒体 Range | 原生 | 支持 GET/HEAD Range | 保持浏览器媒体语义和会话边界 | 已有 | 无 | baseline | Swift Range 测试 | 无 | 未验证新 viewer |
 | 打开原片 | Mac 直接打开 | Web 请求 Host | 显示 Host 实际结果，不泄露本地路径 | 已有 | 无 | in-progress | `gallery.spec.ts`：204 后可见确认 | `evidence/gallery/` detail | 合成 Host；不证明真实 Finder/Photos 打开 |
 | 标签应用 | 有 | 批量决策、undo | 预览范围、可撤销反馈、部分失败 | 已有 | 无 | in-progress | `gallery.spec.ts`：选择汇总、批量决定、undo | `evidence/gallery/` selection/detail | 冲突、过期 undo、部分失败待补齐 |
-| 标签创建/分组/归档 | 有 | 有 | 语义表单、冲突/验证错误就地呈现 | 已有 | 无 | baseline | Swift + 旧脚本 | 无 | 未做新表单 |
-| 图库概览 | Mac 统计 | 独立 history route | 可定址统计、进入已筛选图库 | 已有 | 无 | baseline | 旧 route 回归 | 无 | 新可视化未验证 |
-| 审查概览 | Mac 工作区 | 有 | 空/错/加载、进入队列 | 已有 | 无 | baseline | 旧 flow 通过 | 无 | 新 route 未建 |
-| 审查队列/决策/undo | Mac 工作区 | 有 | 键盘决策、安全撤销、队列刷新 | 已有 | 无 | baseline | 旧 flow 3 次决策 | 无 | 新焦点契约未证明 |
+| 标签创建/分组/归档 | 有 | 有 | 语义表单、冲突/验证错误就地呈现 | 已有 | 无 | in-progress | `curation.spec.ts`：创建分组、标签改名/移动 | `evidence/curation/` 标签库 | 归档/删除确认已实现；冲突专项 E2E 待补 |
+| 图库概览 | Mac 统计 | 独立 history route | 可定址统计、进入已筛选图库 | 已有 | 无 | in-progress | `curation.spec.ts`：Host 统计与筛选链接 | `evidence/curation/` 概览桌面+移动 | 合成 120 项；年份/来源深链仍待扩展 |
+| 审查概览 | Mac 工作区 | 有 | 空/错/加载、进入队列 | 已有 | 无 | in-progress | `curation.spec.ts`：概览→队列、503→重试 | `evidence/curation/` 审查 | 长任务操作仍由训练/活动切片补齐 |
+| 审查队列/决策/undo | Mac 工作区 | 有 | 键盘决策、安全撤销、队列刷新 | 已有 | 无 | in-progress | `curation.spec.ts`：单项/批量/A 键/undo | `evidence/curation/` 队列桌面+移动 | 冲突/过期 undo 与大队列性能待补 |
 | 库建议 | Mac 有 | 有 | 建议、申请、活动状态一致 | 已有 | 无 | baseline | Swift 端点测试 | 无 | 新 UI 未建 |
 | 世界地图查看 | Mac 地图 | 独立 route/资源 | 同源可访问地图、视口保留 | 已有 | 可能需构建资源整合 | baseline | 旧地图脚本 | 无 | 新地图方案未证明 |
 | 地图选择 | Mac 有 | 有 | 选择返回图库筛选并可后退 | 已有 | 无 | baseline | Swift/legacy 测试 | 无 | 新路由桥未建 |
@@ -46,7 +46,7 @@
 | 配对设备管理 | Mac 设置 | Web 有 | 撤销确认、当前设备保护 | 已有 | 无 | baseline | Swift route 测试 | 无 | 新 UI 未建 |
 | 长任务与操作 | Mac 任务 | Web jobs/activity | 跨路由可见、重连后恢复、操作可审计 | 已有 | 无 | baseline | Swift jobs 测试 | 无 | 新 activity center 未建 |
 | 深色/对比/减少动效 | Mac 系统主题 | CSS 已有多类 media | system/light/dark、forced-colors、reduced-motion | 不需 | 无 | baseline | 旧 CSS/脚本 | 基线仅 light | 无新 token 实现 |
-| 键盘/焦点/History | Mac 原生 | 已有大量回归 | 语义 route、焦点圈定/返回、虚拟网格 roving | 不需 | 无 | in-progress | `gallery.spec.ts`：overlay History 与焦点返回；axe | `evidence/gallery/` | roving 实现存在，完整键盘/VoiceOver 手工门未完成 |
+| 键盘/焦点/History | Mac 原生 | 已有大量回归 | 语义 route、焦点圈定/返回、虚拟网格 roving | 不需 | 无 | in-progress | `gallery.spec.ts` + `curation.spec.ts`：History、焦点返回、审查键盘、axe | `evidence/gallery/`、`evidence/curation/` | 完整键盘/VoiceOver 手工门未完成 |
 | PWA 外壳 | 不适用 | 有 manifest，SW 仅认证 | 可安装、公共 shell 离线，绝不缓存私有数据 | 不需 | SW header/scope | foundation | manifest 生成检查、E2E 在线外壳 | `evidence/foundation/` | 离线、升级、Cache Storage 专项门未完成 |
 | Swift 打包/静态资源 | App bundle folder | 固定资源表 | Vite manifest、哈希资源、受控 SPA fallback | 静态 | 已补 manifest delivery | in-progress | `WebCompanionV2StaticResourceTests` + App bundle hash | 无 | 全量服务器安全/Range 回归仍待最终门 |
 

@@ -117,6 +117,7 @@ export function GalleryToolbar({
           <NavLink className={favoritesOnly ? 'active' : ''} to="/gallery/favorites">
             收藏
           </NavLink>
+          <NavLink to="/gallery/overview">概览</NavLink>
         </div>
       </div>
 

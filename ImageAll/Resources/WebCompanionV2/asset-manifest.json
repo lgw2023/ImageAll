@@ -21,15 +21,15 @@
   ],
   "assets": [
     {
-      "path": "assets/index-DzygtFOp.css",
+      "path": "assets/index-BjxcjFze.css",
       "mimeType": "text/css; charset=utf-8",
-      "sha256": "8016c84bf42789bab221781b5377e6f23e78f52119b3da2f04f773be08d75236",
+      "sha256": "76d5b8399178edb3baad69ba8b41d5253640eee6fd8d2d5a86b1242f40d20547",
       "cachePolicy": "immutable"
     },
     {
-      "path": "assets/index-S3_xCp_A.js",
+      "path": "assets/index-itAoToH0.js",
       "mimeType": "text/javascript; charset=utf-8",
-      "sha256": "c83ee7aa3bf99be2614d372164a4836485ec5dd70f741c98f849afde7a7b33fb",
+      "sha256": "8df653ecada761af312af4e066aa56d745228a7a45abbf8a1b7e448d825d076b",
       "cachePolicy": "immutable"
     },
     {
@@ -41,7 +41,7 @@
     {
       "path": "index.html",
       "mimeType": "text/html; charset=utf-8",
-      "sha256": "86e16a30bc35195b7676790c72eb7eaabeb22eab79b9734bf44ab82647383140",
+      "sha256": "fcbbbeb57c7208b2e341785d82264967c7337ba8abac68314543145944f380cc",
       "cachePolicy": "no-store"
     },
     {
@@ -53,13 +53,13 @@
     {
       "path": "offline-assets.json",
       "mimeType": "application/json; charset=utf-8",
-      "sha256": "98a05af72909e21dc9d218841b4cc65eb3b24cc237eaf0ee36f47b5550d5590a",
+      "sha256": "7d508366af4fa80909a33035a8f7429c6f58ef8952ea53f249b52091f014b9a2",
       "cachePolicy": "no-store"
     },
     {
       "path": "service-worker.js",
       "mimeType": "text/javascript; charset=utf-8",
-      "sha256": "442e5ae1b7791d47ea664f35f026141ad8dcab62812159f9890213eafaae8644",
+      "sha256": "0381f64a45a9026db546717d3d1db613ebd54c4e97f48a171fe21e05478b2c33",
       "cachePolicy": "no-store"
     }
   ]

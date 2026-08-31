@@ -21,7 +21,18 @@ const capabilities = {
   protocolVersion: 1,
   hostAppVersion: 'Synthetic Host',
   minimumClientProtocolVersion: 1,
-  capabilities: ['assetPages', 'assetDetail', 'thumbnails', 'favorites', 'tagDecisions', 'pairing'],
+  capabilities: [
+    'assetPages',
+    'assetDetail',
+    'thumbnails',
+    'favorites',
+    'tagDecisions',
+    'tagSelection',
+    'reviewQueue',
+    'reviewDecisions',
+    'tags',
+    'pairing',
+  ],
   listenPort: 5173,
   usesTLS: false,
   hostID: 'a90e71ec-d641-488e-a2c4-c462c13b08ff',
@@ -110,6 +121,21 @@ const previewSVG = `
 
 export async function installSyntheticAuthenticatedHost(page: Page) {
   let firstAssetFavorite = false;
+  let syntheticTags = structuredClone(tags) as {
+    id: string;
+    displayName: string;
+    state: 'active' | 'archived';
+    groupID: string;
+  }[];
+  let syntheticGroups = [
+    {
+      id: '2cba0aa1-e0c3-4421-bb0f-4f7edab5c3b0',
+      displayName: '人物与地点',
+      sortOrder: 0,
+      isSystem: false,
+    },
+  ];
+  const reviewedAssets = new Set<string>();
   await page.route('**/web/session', (route) =>
     route.fulfill({ status: 200, contentType: 'application/json', json: session }),
   );
@@ -117,8 +143,221 @@ export async function installSyntheticAuthenticatedHost(page: Page) {
     route.fulfill({ status: 200, contentType: 'application/json', json: capabilities }),
   );
   await page.route('**/v1/tags', (route) =>
-    route.fulfill({ status: 200, contentType: 'application/json', json: tags }),
+    route.fulfill({ status: 200, contentType: 'application/json', json: syntheticTags }),
   );
+  await page.route('**/v1/tag-groups', async (route) => {
+    if (route.request().method() === 'GET') {
+      return route.fulfill({ status: 200, contentType: 'application/json', json: syntheticGroups });
+    }
+    const body = route.request().postDataJSON() as { operationID: string; name: string };
+    const group = {
+      id: '4cba0aa1-e0c3-4421-bb0f-4f7edab5c3b4',
+      displayName: body.name,
+      sortOrder: syntheticGroups.length,
+      isSystem: false,
+    };
+    syntheticGroups = [...syntheticGroups, group];
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: { operationID: body.operationID, group, replayed: false },
+    });
+  });
+  await page.route('**/v1/tags/install-presets', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        operationID: '2cba0aa1-e0c3-4421-bb0f-4f7edab5c3b0',
+        createdTags: [],
+        replayed: false,
+      },
+    }),
+  );
+  await page.route(/\/v1\/tags\/[0-9a-f-]+\/(rename|move|archive)$/i, (route) => {
+    const parts = new URL(route.request().url()).pathname.split('/');
+    const tagID = parts.at(-2) ?? '';
+    const action = parts.at(-1);
+    const body = route.request().postDataJSON() as {
+      operationID: string;
+      name?: string;
+      groupID?: string;
+    };
+    syntheticTags = syntheticTags.map((tag) => {
+      if (tag.id !== tagID) return tag;
+      if (action === 'rename' && body.name) return { ...tag, displayName: body.name };
+      if (action === 'move' && body.groupID) return { ...tag, groupID: body.groupID };
+      if (action === 'archive') return { ...tag, state: 'archived' as const };
+      return tag;
+    });
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        operationID: body.operationID,
+        tag: syntheticTags.find((tag) => tag.id === tagID) ?? null,
+        replayed: false,
+      },
+    });
+  });
+  await page.route(/\/v1\/tag-groups\/[0-9a-f-]+\/(rename|delete)$/i, (route) => {
+    const parts = new URL(route.request().url()).pathname.split('/');
+    const groupID = parts.at(-2) ?? '';
+    const action = parts.at(-1);
+    const body = route.request().postDataJSON() as { operationID: string; name?: string };
+    let group = syntheticGroups.find((item) => item.id === groupID) ?? null;
+    if (action === 'rename' && body.name) {
+      syntheticGroups = syntheticGroups.map((item) =>
+        item.id === groupID ? { ...item, displayName: body.name ?? item.displayName } : item,
+      );
+      group = syntheticGroups.find((item) => item.id === groupID) ?? null;
+    } else if (action === 'delete') {
+      syntheticGroups = syntheticGroups.filter((item) => item.id !== groupID);
+      group = null;
+    }
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: { operationID: body.operationID, group, replayed: false },
+    });
+  });
+  await page.route('**/v1/gallery-overview', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        media: [
+          {
+            mediaKind: 'image',
+            totalCount: 109,
+            exactUniqueCount: 100,
+            exactRedundantCount: 9,
+            exactFingerprintCount: 109,
+          },
+          {
+            mediaKind: 'video',
+            totalCount: 11,
+            exactUniqueCount: 11,
+            exactRedundantCount: 0,
+            exactFingerprintCount: 11,
+          },
+        ],
+        sources: [
+          {
+            id: sourceID,
+            displayName: 'Synthetic Library',
+            kind: 'folder',
+            state: 'active',
+            imageCount: 109,
+            videoCount: 11,
+          },
+        ],
+        positiveTags: syntheticTags.map((tag, index) => ({
+          id: tag.id,
+          displayName: tag.displayName,
+          imageCount: 20 - index * 4,
+          videoCount: index,
+        })),
+        years: [{ year: 2026, imageCount: 109, videoCount: 11 }],
+        availability: [{ availability: 'available', imageCount: 109, videoCount: 11 }],
+        undatedCount: 0,
+        positiveLabeledAssetCount: 38,
+        acceptedDecisionCount: 52,
+        favorites: [
+          { mediaKind: 'image', count: 4 },
+          { mediaKind: 'video', count: 1 },
+        ],
+      },
+    }),
+  );
+  await page.route('**/v1/review/overview?*', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        totalPendingSuggestionCount: Math.max(0, 8 - reviewedAssets.size),
+        tags: [
+          {
+            id: tagIDs[0],
+            displayName: '风景',
+            acceptedSampleCount: 12,
+            rejectedSampleCount: 5,
+            pendingSuggestionCount: Math.max(0, 8 - reviewedAssets.size),
+            pendingSuggestionCounts: {
+              featurePrint: 3,
+              standardModel: 5,
+              personalModel: 0,
+              personalAdamW: 0,
+            },
+            taskStatus: 'ready',
+            checkedCount: 120,
+            totalCount: 120,
+            skippedCount: 0,
+            missingPositiveCount: 0,
+            missingNegativeCount: 0,
+            canGenerate: true,
+            canUpdate: true,
+            canGeneratePersonalModel: false,
+            canReview: true,
+            canPause: false,
+            canResume: false,
+            canCancel: false,
+            activeJobID: null,
+          },
+        ],
+      },
+    }),
+  );
+  await page.route('**/v1/review/queue?*', (route) => {
+    const items = assetIDs.slice(0, 8).filter((id) => !reviewedAssets.has(id));
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        items: items.map((id, index) => ({
+          assetID: id,
+          fileName: `REVIEW_${String(index + 1).padStart(3, '0')}.jpg`,
+          availability: 'available',
+          contentRevision: 1,
+          acceptedTagCount: 0,
+          rejectedTagCount: 0,
+          suggestionOrigin: index % 2 ? 'standardModel' : 'featurePrint',
+          score: 0.91 - index * 0.02,
+          width: 1600,
+          height: 1200,
+          favorite: null,
+        })),
+        nextCursor: null,
+      },
+    });
+  });
+  await page.route('**/v1/review/decisions/batch', (route) => {
+    const body = route.request().postDataJSON() as { assetIDs: string[] };
+    for (const id of body.assetIDs) reviewedAssets.add(id);
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        operationID: '2cba0aa1-e0c3-4421-bb0f-4f7edab5c3b0',
+        appliedAssetCount: body.assetIDs.length,
+        replayed: false,
+        undoID: '9de47499-1ca0-4cc2-84bc-a881018e8b0c',
+      },
+    });
+  });
+  await page.route('**/v1/review/decisions/undo', (route) => {
+    const restoredAssetCount = reviewedAssets.size;
+    reviewedAssets.clear();
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        operationID: '2cba0aa1-e0c3-4421-bb0f-4f7edab5c3b0',
+        restoredAssetCount,
+        replayed: false,
+      },
+    });
+  });
   await page.route(/\/v1\/assets\?.*/, (route) => {
     const cursor = new URL(route.request().url()).searchParams.get('cursor');
     const start = cursor === 'page-2' ? 72 : 0;

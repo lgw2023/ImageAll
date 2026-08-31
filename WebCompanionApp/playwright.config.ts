@@ -28,7 +28,12 @@ export default defineConfig({
     },
     {
       name: 'chromium-mobile',
-      use: { ...devices['iPhone 13'], browserName: 'chromium', channel: 'chrome' },
+      use: {
+        ...devices['iPhone 13'],
+        browserName: 'chromium',
+        channel: 'chrome',
+        viewport: { width: 390, height: 844 },
+      },
     },
   ],
 });

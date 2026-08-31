@@ -5,9 +5,7 @@ import {
   Database,
   FolderKanban,
   Map,
-  ScanSearch,
   Settings,
-  Tags,
   WandSparkles,
 } from 'lucide-react';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
@@ -15,6 +13,9 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { SessionGate } from '@/features/session/SessionGate';
 import { SessionProvider } from '@/features/session/SessionContext';
 import { GalleryRoute } from '@/features/gallery/GalleryRoute';
+import { GalleryOverviewRoute } from '@/features/overview/GalleryOverviewRoute';
+import { ReviewRoute } from '@/features/review/ReviewRoute';
+import { TagLibraryRoute } from '@/features/tags/TagLibraryRoute';
 
 import { AppErrorBoundary } from './AppErrorBoundary';
 import { AppShell } from './AppShell';
@@ -34,13 +35,6 @@ const queryClient = new QueryClient({
 });
 
 const placeholders = [
-  {
-    path: 'review',
-    eyebrow: '照片',
-    title: '审查',
-    description: '处理标签建议和个人模型审查队列。',
-    icon: ScanSearch,
-  },
   {
     path: 'map',
     eyebrow: '工具',
@@ -77,13 +71,6 @@ const placeholders = [
     icon: Database,
   },
   {
-    path: 'tags',
-    eyebrow: '管理',
-    title: '标签库',
-    description: '创建、分组、重命名和归档标签。',
-    icon: Tags,
-  },
-  {
     path: 'activity',
     eyebrow: '管理',
     title: '活动',
@@ -112,7 +99,11 @@ export function App() {
                     <Route index element={<Navigate replace to="gallery" />} />
                     <Route path="gallery" element={<GalleryRoute />} />
                     <Route path="gallery/favorites" element={<GalleryRoute />} />
+                    <Route path="gallery/overview" element={<GalleryOverviewRoute />} />
                     <Route path="assets/:assetId" element={<GalleryRoute />} />
+                    <Route path="review" element={<ReviewRoute />} />
+                    <Route path="review/queue" element={<ReviewRoute />} />
+                    <Route path="tags" element={<TagLibraryRoute />} />
                     {placeholders.map((route) => (
                       <Route
                         key={route.path}
