@@ -545,6 +545,55 @@ export async function installSyntheticAuthenticatedHost(
       json: { performed: true, notice: null },
     });
   });
+  await page.route('**/v1/sources', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: [
+        {
+          id: sourceID,
+          kind: 'folder',
+          displayName: 'Synthetic Library',
+          state: 'active',
+        },
+      ],
+    }),
+  );
+  await page.route('**/v1/source-folders?*', (route) => {
+    const query = new URL(route.request().url()).searchParams;
+    const parent = query.get('parentRelativePath');
+    const folders =
+      parent === null
+        ? [
+            {
+              sourceID,
+              relativePath: 'Trips',
+              parentRelativePath: null,
+              name: 'Trips',
+            },
+            {
+              sourceID,
+              relativePath: 'Archive',
+              parentRelativePath: null,
+              name: 'Archive',
+            },
+          ]
+        : parent === 'Trips'
+          ? [
+              {
+                sourceID,
+                relativePath: 'Trips/2026',
+                parentRelativePath: 'Trips',
+                name: '2026',
+              },
+            ]
+          : [];
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: { folders, totalCount: folders.length, nextOffset: null },
+    });
+  });
   await page.route('**/v1/source-management', (route) =>
     route.fulfill({
       status: 200,
@@ -1857,7 +1906,9 @@ export async function installSyntheticAuthenticatedHost(
         }),
       );
     },
-    closeEvents: () => eventSocket?.close({ code: 1012, reason: 'synthetic restart' }),
+    closeEvents: () => {
+      void eventSocket?.close({ code: 1012, reason: 'synthetic restart' });
+    },
     showRecycleNotice: () => {
       workspaceNotice = {
         id: 'notice-1',

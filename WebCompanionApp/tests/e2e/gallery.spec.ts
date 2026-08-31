@@ -1,7 +1,7 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
 
-import { installSyntheticAuthenticatedHost } from './syntheticHost';
+import { installSyntheticAuthenticatedHost, sourceID } from './syntheticHost';
 
 test('gallery supports virtual browsing, range selection, mutations, undo, and detail', async ({
   page,
@@ -87,6 +87,63 @@ test('gallery filters are URL-addressable and sent to the Host', async ({ page }
   await expect(page.getByRole('heading', { name: '收藏图库', level: 2 })).toBeVisible();
 });
 
+test('gallery preserves source, folder, density, selection, and viewer return context', async ({
+  page,
+}, testInfo) => {
+  await installSyntheticAuthenticatedHost(page);
+  await page.goto('gallery');
+  await expect(page.getByRole('heading', { name: '图库', level: 2 })).toBeVisible();
+  if (testInfo.project.name === 'chromium-mobile') {
+    await page.getByRole('button', { name: '筛选', exact: true }).click();
+  }
+
+  const sourceRequest = page.waitForRequest((request) => {
+    const url = new URL(request.url());
+    return url.pathname === '/v1/assets' && url.searchParams.get('sourceIDs') === sourceID;
+  });
+  await page.getByLabel('来源').selectOption(sourceID);
+  await sourceRequest;
+  await expect.poll(() => new URL(page.url()).searchParams.get('source')).toBe(sourceID);
+
+  const tripsRequest = page.waitForRequest((request) => {
+    const url = new URL(request.url());
+    return (
+      url.pathname === '/v1/assets' &&
+      url.searchParams.get('folderSourceID') === sourceID &&
+      url.searchParams.get('folderRelativePath') === 'Trips'
+    );
+  });
+  await page.getByLabel('选择子文件夹').selectOption('Trips');
+  await tripsRequest;
+  await expect(page.getByRole('button', { name: 'Trips' })).toHaveAttribute('aria-current', 'page');
+
+  const nestedRequest = page.waitForRequest((request) => {
+    const url = new URL(request.url());
+    return (
+      url.pathname === '/v1/assets' && url.searchParams.get('folderRelativePath') === 'Trips/2026'
+    );
+  });
+  await page.getByLabel('选择子文件夹').selectOption('Trips/2026');
+  await nestedRequest;
+
+  const firstSelection = page.getByRole('button', { name: '选择 IMG_0001.jpg' });
+  await firstSelection.click();
+  await expect(page.getByText('已选择 1 项')).toBeVisible();
+  await page.getByLabel('视图').selectOption('compact');
+  await expect(page.getByText('已选择 1 项')).toBeVisible();
+  await expect.poll(() => new URL(page.url()).searchParams.get('view')).toBe('compact');
+
+  const firstAsset = page.getByRole('button', { name: '查看 IMG_0001.jpg' });
+  await firstAsset.click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await page.getByRole('button', { name: '关闭照片详情' }).click();
+  await expect(firstAsset).toBeFocused();
+  const restoredURL = new URL(page.url());
+  expect(restoredURL.searchParams.get('folder')).toBe('Trips/2026');
+  expect(restoredURL.searchParams.get('view')).toBe('compact');
+  await expect(page.getByText('已选择 1 项')).toBeVisible();
+});
+
 test('gallery explains a Host failure and recovers on retry', async ({ page }) => {
   await installSyntheticAuthenticatedHost(page);
   await page.route(
@@ -137,4 +194,58 @@ test('gallery reports Host partial favorite failures without false success', asy
   await page.goto('gallery');
   await page.getByRole('button', { name: '收藏 IMG_0001.jpg' }).click();
   await expect(page.getByText('已更新 1 项；1 项同步失败，可稍后重试。')).toBeVisible();
+});
+
+test('gallery supports select-all, modifier selection, context menus, and explicit box selection', async ({
+  page,
+}) => {
+  await installSyntheticAuthenticatedHost(page);
+  await page.goto('gallery');
+  const firstAsset = page.getByRole('button', { name: '查看 IMG_0001.jpg' });
+  await firstAsset.focus();
+
+  await page.keyboard.press('Meta+A');
+  await expect(page.getByText('已选择 72 项')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByText('已选择 72 项')).toBeHidden();
+
+  await firstAsset.click({ modifiers: ['Meta'] });
+  await expect(page.getByText('已选择 1 项')).toBeVisible();
+  await firstAsset.click({ button: 'right' });
+  await expect(page.getByRole('menu', { name: '照片操作' })).toBeVisible();
+  await page.getByRole('menuitem', { name: '收藏' }).click();
+  await expect(page.getByRole('button', { name: '取消收藏 IMG_0001.jpg' })).toBeVisible();
+
+  await page.getByRole('button', { name: '清除选择' }).click();
+  await page.getByRole('button', { name: '框选' }).click();
+  const firstBox = await firstAsset.boundingBox();
+  const secondBox = await page.getByRole('button', { name: '查看 IMG_0002.jpg' }).boundingBox();
+  expect(firstBox).not.toBeNull();
+  expect(secondBox).not.toBeNull();
+  if (!firstBox || !secondBox) return;
+  await page.mouse.move(firstBox.x + 4, firstBox.y + 4);
+  await page.mouse.down();
+  await page.mouse.move(secondBox.x + secondBox.width - 4, secondBox.y + secondBox.height - 4, {
+    steps: 5,
+  });
+  await page.mouse.up();
+  await expect(page.getByText('已选择 2 项')).toBeVisible();
+});
+
+test('viewer preloads adjacent items and supports keyboard navigation and image zoom', async ({
+  page,
+}) => {
+  await installSyntheticAuthenticatedHost(page);
+  await page.goto('gallery');
+  await page.getByRole('button', { name: '查看 IMG_0001.jpg' }).dblclick();
+  await expect(page.getByRole('heading', { name: 'IMG_0001.jpg' })).toBeVisible();
+  await expect(page.getByText('100%')).toBeVisible();
+  await expect(page.getByRole('button', { name: '进入全屏预览' })).toBeEnabled();
+
+  await page.keyboard.press('+');
+  await expect(page.getByText('125%')).toBeVisible();
+  await page.getByRole('button', { name: '下一张照片' }).click();
+  await expect(page.getByRole('heading', { name: 'IMG_0002.jpg' })).toBeVisible();
+  await page.keyboard.press('ArrowLeft');
+  await expect(page.getByRole('heading', { name: 'IMG_0001.jpg' })).toBeVisible();
 });

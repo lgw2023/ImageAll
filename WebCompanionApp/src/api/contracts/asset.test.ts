@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { assetDetailSchema, assetPageSchema, favoriteMutationResponseSchema } from './asset';
+import {
+  assetDetailSchema,
+  assetPageSchema,
+  favoriteMutationResponseSchema,
+  sourceFolderPageSchema,
+  sourceSummarySchema,
+} from './asset';
 import { batchTagDecisionResponseSchema, tagSelectionAggregateSchema } from './tag';
 
 const assetID = '88a75486-6dca-465a-8260-7e4587ea9446';
@@ -102,6 +108,37 @@ describe('gallery protocol contracts', () => {
             rejectedTagCount: 0,
           },
         ],
+      }),
+    ).toThrow();
+  });
+
+  it('decodes source and relative-folder projections without accepting absolute-path fields', () => {
+    const source = sourceSummarySchema.parse({
+      id: sourceID,
+      kind: 'folder',
+      displayName: 'Synthetic source',
+      state: 'active',
+    });
+    const folderPage = sourceFolderPageSchema.parse({
+      folders: [
+        {
+          sourceID,
+          relativePath: 'Trips/2026',
+          parentRelativePath: 'Trips',
+          name: '2026',
+        },
+      ],
+      totalCount: 1,
+      nextOffset: null,
+    });
+
+    expect(source.displayName).toBe('Synthetic source');
+    expect(folderPage.folders[0]?.relativePath).toBe('Trips/2026');
+    expect(() =>
+      sourceFolderPageSchema.parse({
+        folders: [{ sourceID, relativePath: '', parentRelativePath: null, name: 'Root' }],
+        totalCount: 1,
+        nextOffset: null,
       }),
     ).toThrow();
   });

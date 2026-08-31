@@ -282,8 +282,10 @@ export function SlimmingRoute() {
   function currentFilter() {
     const tagID = searchParameters.get('filterTag');
     const sort = searchParameters.get('filterSort');
+    const sourceID = searchParameters.get('filterSource');
+    const folderRelativePath = searchParameters.get('filterFolder');
     return {
-      sourceIDs: [],
+      sourceIDs: sourceID ? [sourceID] : [],
       searchText: searchParameters.get('filterQ'),
       sort: sort === 'oldest' || sort === 'fileNameAscending' ? sort : 'newest',
       limit: 200,
@@ -297,7 +299,8 @@ export function SlimmingRoute() {
       tagPresence: 'any',
       favorite: searchParameters.get('filterFavorite') === 'favorited' ? 'favorited' : null,
       worldMapSelection: null,
-      folderScope: null,
+      folderScope:
+        sourceID && folderRelativePath ? { sourceID, relativePath: folderRelativePath } : null,
     };
   }
 

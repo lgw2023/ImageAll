@@ -1,4 +1,4 @@
-import { useState, type ComponentType } from 'react';
+import { useEffect, useRef, useState, type ComponentType } from 'react';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -12,6 +12,7 @@ import {
   Menu,
   Moon,
   PanelRight,
+  Search,
   ScanSearch,
   Settings,
   SlidersHorizontal,
@@ -39,6 +40,81 @@ type NavigationItem = {
   label: string;
   icon: ComponentType<{ size?: number; 'aria-hidden'?: boolean }>;
 };
+
+type CommandPaletteProps = {
+  onClose: () => void;
+  onNavigate: (path: string) => void;
+  onTheme: (mode: 'system' | 'light' | 'dark') => void;
+};
+
+function CommandPalette({ onClose, onNavigate, onTheme }: CommandPaletteProps) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const firstCommandRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    if (!dialog.open) dialog.showModal();
+    const focusFrame = requestAnimationFrame(() => firstCommandRef.current?.focus());
+    return () => {
+      cancelAnimationFrame(focusFrame);
+      if (dialog.open) dialog.close();
+    };
+  }, []);
+
+  const commands = navigationGroups.flatMap((group) => group.items);
+  return (
+    <dialog
+      aria-labelledby="command-palette-title"
+      className="command-palette"
+      onCancel={(event) => {
+        event.preventDefault();
+        onClose();
+      }}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+      ref={dialogRef}
+    >
+      <div className="command-palette-panel">
+        <header>
+          <div>
+            <p className="eyebrow">快速操作</p>
+            <h2 id="command-palette-title">命令面板</h2>
+          </div>
+          <kbd>⌘ K</kbd>
+        </header>
+        <p className="command-palette-help">方向键移动，回车执行，Esc 返回原位置。</p>
+        <div className="command-list" role="list">
+          {commands.map((command, index) => {
+            const Icon = command.icon;
+            return (
+              <button
+                autoFocus={index === 0}
+                key={command.to}
+                onClick={() => onNavigate(command.to)}
+                ref={index === 0 ? firstCommandRef : undefined}
+                type="button"
+              >
+                <Icon aria-hidden={true} size={17} />
+                打开{command.label}
+              </button>
+            );
+          })}
+          <button onClick={() => onTheme('system')} type="button">
+            <Sun aria-hidden="true" size={17} /> 跟随系统主题
+          </button>
+          <button onClick={() => onTheme('light')} type="button">
+            <Sun aria-hidden="true" size={17} /> 使用浅色主题
+          </button>
+          <button onClick={() => onTheme('dark')} type="button">
+            <Moon aria-hidden="true" size={17} /> 使用深色主题
+          </button>
+        </div>
+      </div>
+    </dialog>
+  );
+}
 
 const navigationGroups: { label: string; items: NavigationItem[] }[] = [
   {
@@ -75,6 +151,8 @@ routeTitles.set('/assets', '照片详情');
 
 export function AppShell() {
   const [navigationOpen, setNavigationOpen] = useState(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const commandTriggerRef = useRef<HTMLButtonElement>(null);
   const [inspectorOpen, setInspectorOpen] = useState(
     () => window.matchMedia('(min-width: 900px)').matches,
   );
@@ -121,6 +199,32 @@ export function AppShell() {
   });
   const routePath = `/${location.pathname.split('/').find(Boolean) ?? 'gallery'}`;
   const title = routeTitles.get(routePath) ?? '工作区';
+  const activeNotice = notice.data;
+
+  function closeCommandPalette() {
+    setCommandPaletteOpen(false);
+    requestAnimationFrame(() => commandTriggerRef.current?.focus());
+  }
+
+  useEffect(() => {
+    const openFromKeyboard = (event: KeyboardEvent) => {
+      const target = event.target;
+      const editing =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement ||
+        (target instanceof HTMLElement && target.isContentEditable);
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setCommandPaletteOpen(true);
+      } else if (event.key === '?' && !editing) {
+        event.preventDefault();
+        setCommandPaletteOpen(true);
+      }
+    };
+    window.addEventListener('keydown', openFromKeyboard);
+    return () => window.removeEventListener('keydown', openFromKeyboard);
+  }, []);
 
   return (
     <div className="app-frame">
@@ -164,6 +268,16 @@ export function AppShell() {
                   ? '正在重连'
                   : '正在连接'}
           </span>
+          <button
+            aria-haspopup="dialog"
+            aria-label="打开命令面板"
+            className="icon-button"
+            onClick={() => setCommandPaletteOpen(true)}
+            ref={commandTriggerRef}
+            type="button"
+          >
+            <Search aria-hidden="true" size={18} />
+          </button>
           <button
             aria-label={theme.resolved === 'dark' ? '使用浅色主题' : '使用深色主题'}
             className="icon-button"
@@ -248,21 +362,21 @@ export function AppShell() {
             </button>
           </div>
         ) : null}
-        {notice.data ? (
+        {activeNotice ? (
           <section
-            aria-live={notice.data.severity === 'warning' ? 'assertive' : 'polite'}
+            aria-live={activeNotice.severity === 'warning' ? 'assertive' : 'polite'}
             className="workspace-notice"
-            data-severity={notice.data.severity}
+            data-severity={activeNotice.severity}
           >
-            <p>{notice.data.message}</p>
+            <p>{activeNotice.message}</p>
             <div className="workspace-notice-actions">
-              {notice.data.actions.map((action) => (
+              {activeNotice.actions.map((action) => (
                 <button
                   className="button"
                   disabled={runNoticeAction.isPending}
                   key={action.id}
                   onClick={() =>
-                    runNoticeAction.mutate({ noticeID: notice.data!.id, actionID: action.id })
+                    runNoticeAction.mutate({ noticeID: activeNotice.id, actionID: action.id })
                   }
                   type="button"
                 >
@@ -273,7 +387,7 @@ export function AppShell() {
                 aria-label="关闭工作区通知"
                 className="icon-button"
                 disabled={dismissNotice.isPending}
-                onClick={() => dismissNotice.mutate(notice.data!.id)}
+                onClick={() => dismissNotice.mutate(activeNotice.id)}
                 type="button"
               >
                 <X aria-hidden="true" size={16} />
@@ -338,6 +452,19 @@ export function AppShell() {
           退出当前会话
         </button>
       </aside>
+      {commandPaletteOpen ? (
+        <CommandPalette
+          onClose={closeCommandPalette}
+          onNavigate={(path) => {
+            setCommandPaletteOpen(false);
+            void navigate(path);
+          }}
+          onTheme={(mode) => {
+            theme.setMode(mode);
+            closeCommandPalette();
+          }}
+        />
+      ) : null}
     </div>
   );
 }

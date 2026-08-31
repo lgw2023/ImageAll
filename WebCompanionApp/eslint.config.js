@@ -42,6 +42,7 @@ export default tseslint.config(
       globals: {
         URL: 'readonly',
         Request: 'readonly',
+        Response: 'readonly',
         Headers: 'readonly',
         MessageChannel: 'readonly',
         caches: 'readonly',

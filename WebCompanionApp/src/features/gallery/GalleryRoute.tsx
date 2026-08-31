@@ -10,7 +10,7 @@ import {
 import { Images, MapPin, RotateCcw } from 'lucide-react';
 import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
-import { fetchAssetPage, mutateFavorites } from '@/api/assets';
+import { fetchAssetPage, fetchSourceFolders, fetchSources, mutateFavorites } from '@/api/assets';
 import type { AssetDetail, AssetPage, AssetSort, AssetSummary } from '@/api/contracts/asset';
 import type { WorldMapSelectionQuery } from '@/api/contracts/map';
 import type { TagDecisionAction } from '@/api/contracts/tag';
@@ -34,10 +34,22 @@ type GalleryLocationState = {
 
 let returnFocusAssetID: string | null = null;
 const EMPTY_SELECTION = new Set<string>();
+const galleryViewCache = new Map<string, { ids: Set<string>; scrollOffset: number }>();
 
 function parseSort(value: string | null): AssetSort {
   if (value === 'oldest' || value === 'fileNameAscending') return value;
   return 'newest';
+}
+
+function parseSourceID(value: string | null): string | null {
+  return value &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+    ? value
+    : null;
+}
+
+function parseFolderRelativePath(value: string | null): string | null {
+  return value === null || value.trim() === '' ? null : value;
 }
 
 function parseWorldMapSelection(parameters: URLSearchParams): WorldMapSelectionQuery | null {
@@ -132,33 +144,63 @@ export function GalleryRoute() {
           ? (searchParameters.get('media') as 'image' | 'video')
           : null,
       acceptedTagID: searchParameters.get('tag'),
+      sourceID: parseSourceID(searchParameters.get('source')),
+      folderRelativePath: parseFolderRelativePath(searchParameters.get('folder')),
+      density: searchParameters.get('view') === 'compact' ? 'compact' : 'comfortable',
     }),
     [searchParameters],
   );
   const assetQuery = useMemo(
     () => ({
-      ...filters,
+      searchText: filters.searchText,
+      sort: filters.sort,
+      mediaKind: filters.mediaKind,
+      acceptedTagID: filters.acceptedTagID,
+      sourceID: filters.sourceID,
+      folderRelativePath: filters.sourceID ? filters.folderRelativePath : null,
       favoritesOnly,
       worldMapSelection,
     }),
     [favoritesOnly, filters, worldMapSelection],
   );
   const selectionSignature = JSON.stringify(assetQuery);
+  const cachedView = galleryViewCache.get(selectionSignature);
   const [selection, setSelection] = useState<{ signature: string; ids: Set<string> }>({
     signature: selectionSignature,
-    ids: new Set(),
+    ids: new Set(cachedView?.ids ?? []),
   });
   const selectedIDs = selection.signature === selectionSignature ? selection.ids : EMPTY_SELECTION;
   const selectionAnchor = useRef<{ signature: string; index: number } | null>(null);
   const [selectedTagID, setSelectedTagID] = useState('');
   const [statusMessage, setStatusMessage] = useState('');
   const [undoID, setUndoID] = useState<string | null>(null);
+  const [boxSelectionMode, setBoxSelectionMode] = useState(false);
   const thumbnailRecovery = useThumbnailRecovery();
+
+  useEffect(() => {
+    if (selection.signature !== selectionSignature) return;
+    const cached = galleryViewCache.get(selectionSignature);
+    galleryViewCache.set(selectionSignature, {
+      ids: new Set(selection.ids),
+      scrollOffset: cached?.scrollOffset ?? 0,
+    });
+  }, [selection, selectionSignature]);
 
   const tags = useQuery({
     queryKey: ['tags'],
     queryFn: ({ signal }) => fetchTags(signal),
     select: (items) => items.filter((tag) => tag.state === 'active'),
+  });
+  const sources = useQuery({
+    queryKey: ['sources'],
+    queryFn: ({ signal }) => fetchSources(signal),
+  });
+  const selectedSource = sources.data?.find((source) => source.id === filters.sourceID) ?? null;
+  const sourceFolders = useQuery({
+    queryKey: ['source-folders', filters.sourceID, filters.folderRelativePath],
+    queryFn: ({ signal }) =>
+      fetchSourceFolders(filters.sourceID ?? '', filters.folderRelativePath, signal),
+    enabled: Boolean(filters.sourceID && selectedSource?.kind === 'folder'),
   });
   const assetsQuery = useInfiniteQuery({
     queryKey: ['assets', assetQuery],
@@ -174,6 +216,9 @@ export function GalleryRoute() {
       return true;
     });
   }, [assetsQuery.data]);
+  const viewerAssetIndex = assetId ? assets.findIndex((asset) => asset.id === assetId) : -1;
+  const previousViewerAsset = viewerAssetIndex > 0 ? (assets[viewerAssetIndex - 1] ?? null) : null;
+  const nextViewerAsset = viewerAssetIndex >= 0 ? (assets[viewerAssetIndex + 1] ?? null) : null;
   const activeTags = useMemo(() => tags.data ?? [], [tags.data]);
   const effectiveSelectedTagID = activeTags.some((tag) => tag.id === selectedTagID)
     ? selectedTagID
@@ -347,6 +392,10 @@ export function GalleryRoute() {
     });
     if (filters.searchText) parameters.set('filterQ', filters.searchText);
     if (filters.acceptedTagID) parameters.set('filterTag', filters.acceptedTagID);
+    if (filters.sourceID) parameters.set('filterSource', filters.sourceID);
+    if (filters.sourceID && filters.folderRelativePath) {
+      parameters.set('filterFolder', filters.folderRelativePath);
+    }
     if (favoritesOnly) parameters.set('filterFavorite', 'favorited');
     void navigate(`/slimming?${parameters}`);
   }
@@ -363,6 +412,10 @@ export function GalleryRoute() {
       });
       if (filters.searchText) parameters.set('filterQ', filters.searchText);
       if (filters.acceptedTagID) parameters.set('filterTag', filters.acceptedTagID);
+      if (filters.sourceID) parameters.set('filterSource', filters.sourceID);
+      if (filters.sourceID && filters.folderRelativePath) {
+        parameters.set('filterFolder', filters.folderRelativePath);
+      }
       if (favoritesOnly) parameters.set('filterFavorite', 'favorited');
       void navigate(`/slimming?${parameters}`);
     } catch (error) {
@@ -376,9 +429,24 @@ export function GalleryRoute() {
     if (next.sort !== 'newest') parameters.set('sort', next.sort);
     if (next.mediaKind) parameters.set('media', next.mediaKind);
     if (next.acceptedTagID) parameters.set('tag', next.acceptedTagID);
+    if (next.sourceID) parameters.set('source', next.sourceID);
+    if (next.sourceID && next.folderRelativePath) parameters.set('folder', next.folderRelativePath);
+    if (next.density === 'compact') parameters.set('view', 'compact');
     appendWorldMapSelection(parameters, worldMapSelection);
-    setSelection({ signature: '', ids: new Set() });
-    selectionAnchor.current = null;
+    const nextSignature = JSON.stringify({
+      searchText: next.searchText,
+      sort: next.sort,
+      mediaKind: next.mediaKind,
+      acceptedTagID: next.acceptedTagID,
+      sourceID: next.sourceID,
+      folderRelativePath: next.sourceID ? next.folderRelativePath : null,
+      favoritesOnly,
+      worldMapSelection,
+    });
+    if (nextSignature !== selectionSignature) {
+      setSelection({ signature: '', ids: new Set() });
+      selectionAnchor.current = null;
+    }
     setSearchParameters(parameters);
   }
 
@@ -405,6 +473,26 @@ export function GalleryRoute() {
     selectionAnchor.current = { signature: selectionSignature, index };
   }
 
+  function selectIndices(indices: number[], additive: boolean) {
+    setSelection((current) => {
+      const currentIDs = current.signature === selectionSignature ? current.ids : EMPTY_SELECTION;
+      const next = additive ? new Set(currentIDs) : new Set<string>();
+      for (const index of indices) {
+        const selectedAsset = assets[index];
+        if (selectedAsset) next.add(selectedAsset.id);
+      }
+      return { signature: selectionSignature, ids: next };
+    });
+    const last = indices.at(-1);
+    if (last !== undefined)
+      selectionAnchor.current = { signature: selectionSignature, index: last };
+  }
+
+  function clearSelection() {
+    setSelection({ signature: selectionSignature, ids: new Set() });
+    selectionAnchor.current = null;
+  }
+
   async function applyFavorite(assetIDs: string[], isFavorite: boolean) {
     setStatusMessage('');
     try {
@@ -428,6 +516,15 @@ export function GalleryRoute() {
     const query = searchParameters.toString();
     void navigate(`/assets/${encodeURIComponent(id)}${query ? `?${query}` : ''}`, {
       state: { fromGallery: true, favoritesOnly },
+    });
+  }
+
+  function navigateViewer(id: string) {
+    returnFocusAssetID = id;
+    const query = searchParameters.toString();
+    void navigate(`/assets/${encodeURIComponent(id)}${query ? `?${query}` : ''}`, {
+      replace: true,
+      state: { ...locationState, fromGallery: true, favoritesOnly },
     });
   }
 
@@ -472,6 +569,9 @@ export function GalleryRoute() {
       ) : null}
 
       <GalleryToolbar
+        boxSelectionMode={boxSelectionMode}
+        folders={sourceFolders.data?.folders ?? []}
+        foldersLoading={sourceFolders.isFetching}
         key={filters.searchText}
         favoritesOnly={favoritesOnly}
         filters={filters}
@@ -480,8 +580,17 @@ export function GalleryRoute() {
         onApply={applyFilters}
         onAnalyzeCurrentFilter={openCurrentFilterAnalysis}
         onRefresh={() => void assetsQuery.refetch()}
+        onToggleBoxSelection={() => setBoxSelectionMode((value) => !value)}
+        searchQuery={searchParameters.toString()}
+        sources={sources.data ?? []}
         tags={activeTags}
       />
+
+      {sources.isError || sourceFolders.isError ? (
+        <p className="gallery-scope-error" role="status">
+          {errorMessage(sources.error ?? sourceFolders.error)}；图库其余范围仍可使用。
+        </p>
+      ) : null}
 
       {assetsQuery.isPending ? (
         <div className="gallery-loading" role="status">
@@ -511,14 +620,31 @@ export function GalleryRoute() {
       {assets.length > 0 ? (
         <VirtualAssetGrid
           assets={assets}
+          boxSelectionMode={boxSelectionMode}
+          density={filters.density}
           favoritePending={favoriteMutation.isPending}
           hasNextPage={assetsQuery.hasNextPage}
           isFetchingNextPage={assetsQuery.isFetchingNextPage}
+          initialScrollOffset={cachedView?.scrollOffset ?? 0}
           onFavorite={(asset) =>
             void applyFavorite([asset.id], asset.favorite?.isFavorite !== true)
           }
           onFetchNextPage={() => void assetsQuery.fetchNextPage()}
           onOpen={openAsset}
+          onClearSelection={clearSelection}
+          onSelectAll={() =>
+            selectIndices(
+              assets.map((_, index) => index),
+              false,
+            )
+          }
+          onSelectIndices={selectIndices}
+          onScrollOffset={(scrollOffset) => {
+            galleryViewCache.set(selectionSignature, {
+              ids: new Set(selectedIDs),
+              scrollOffset,
+            });
+          }}
           onThumbnailFailure={thumbnailRecovery.reportFailure}
           onToggleSelection={toggleSelection}
           recoveryGeneration={thumbnailRecovery.generation}
@@ -530,8 +656,7 @@ export function GalleryRoute() {
         <SelectionBar
           aggregate={selectedAggregate}
           onClear={() => {
-            setSelection({ signature: selectionSignature, ids: new Set() });
-            selectionAnchor.current = null;
+            clearSelection();
           }}
           onFavorite={(isFavorite) => void applyFavorite(selectedAssetIDs, isFavorite)}
           onFindSimilar={openSeedAnalysis}
@@ -594,11 +719,14 @@ export function GalleryRoute() {
       {assetId ? (
         <AssetViewer
           assetID={assetId}
+          nextAsset={nextViewerAsset}
           key={assetId}
           mutationPending={mutationPending}
           onClose={closeViewer}
           onFavorite={(id, isFavorite) => applyFavorite([id], isFavorite)}
+          onNavigate={navigateViewer}
           onTagDecision={applyDecision}
+          previousAsset={previousViewerAsset}
         />
       ) : null}
     </section>

@@ -91,3 +91,32 @@ test('live Host events preserve context, refresh projections, and expose recover
   await expect(page.getByText('正在重连')).toBeVisible();
   await expect(page.getByText('正在恢复实时连接')).toBeVisible();
 });
+
+test('command palette supports keyboard discovery, focus return, navigation, and theme commands', async ({
+  page,
+}) => {
+  await installSyntheticAuthenticatedHost(page);
+  await page.goto('gallery');
+  await expect(page.getByRole('heading', { name: '图库', level: 2 })).toBeVisible();
+
+  await page.keyboard.press('Control+K');
+  await expect(page.getByRole('dialog', { name: '命令面板' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '打开图库', exact: true })).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('button', { name: '打开命令面板' })).toBeFocused();
+
+  await page.keyboard.press('?');
+  await page
+    .getByRole('dialog', { name: '命令面板' })
+    .getByRole('button', { name: '使用深色主题' })
+    .click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+
+  await page.keyboard.press('Control+K');
+  await page
+    .getByRole('dialog', { name: '命令面板' })
+    .getByRole('button', { name: '打开设置' })
+    .click();
+  await expect(page).toHaveURL(/\/settings$/);
+  await expect(page.getByRole('heading', { name: '设置', level: 2 })).toBeVisible();
+});

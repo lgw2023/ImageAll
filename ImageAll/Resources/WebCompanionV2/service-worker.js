@@ -1,7 +1,7 @@
 'use strict';
 
 const CACHE_PREFIX = 'imageall-web-v2-shell-';
-const CACHE_NAME = `${CACHE_PREFIX}9206c52ec9dd4b9f`;
+const CACHE_NAME = `${CACHE_PREFIX}a856dfa9d765b910`;
 let accountAuthorization = null;
 
 function requestAuthorizationFromSpecificClient(client) {
@@ -51,8 +51,30 @@ async function precachePublicShell() {
   const urls = manifest.assets.filter(
     (value) => typeof value === 'string' && value.startsWith('/web-v2/') && !value.includes('..'),
   );
+  const responses = await Promise.all(
+    urls.map(async (url) => {
+      const asset = await fetch(url, {
+        cache: 'reload',
+        credentials: 'same-origin',
+      });
+      if (!asset.ok) throw new Error(`public shell asset unavailable: ${url}`);
+      const headers = new Headers(asset.headers);
+      headers.delete('connection');
+      headers.delete('content-encoding');
+      headers.delete('content-length');
+      headers.delete('keep-alive');
+      headers.delete('transfer-encoding');
+      headers.delete('vary');
+      const normalized = new Response(await asset.arrayBuffer(), {
+        status: asset.status,
+        statusText: asset.statusText,
+        headers,
+      });
+      return [url, normalized];
+    }),
+  );
   const cache = await caches.open(CACHE_NAME);
-  await cache.addAll(urls);
+  await Promise.all(responses.map(([url, response]) => cache.put(url, response)));
 }
 
 self.addEventListener('install', (event) => {
@@ -124,7 +146,7 @@ self.addEventListener('fetch', (event) => {
         return await fetch(event.request);
       } catch {
         const cache = await caches.open(CACHE_NAME);
-        const exact = await cache.match(event.request, { ignoreSearch: true });
+        const exact = await cache.match(event.request, { ignoreSearch: true, ignoreVary: true });
         if (exact) return exact;
         const acceptsHTML = event.request.headers.get('accept')?.includes('text/html');
         if (acceptsHTML) {

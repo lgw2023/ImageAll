@@ -11,6 +11,7 @@ export default defineConfig({
     baseURL: 'http://127.0.0.1:4173/web-v2/',
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
+    serviceWorkers: 'block',
   },
   webServer: {
     command: 'vite preview --host 127.0.0.1 --port 4173',

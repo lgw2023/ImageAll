@@ -75,3 +75,16 @@ export async function requestEmpty(path: string, options: RequestOptions): Promi
   }
   if (!response.ok) throw await errorFromResponse(response);
 }
+
+export async function requestBlob(path: string, signal?: AbortSignal): Promise<Blob> {
+  let response: Response;
+  try {
+    response = await rawFetch(path, { signal: signal ?? null, headers: { Accept: '*/*' } });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error;
+    throw new APIError(0, '无法连接 Mac', undefined, true);
+  }
+  if (response.status === 401 && (await refreshSession())) return requestBlob(path, signal);
+  if (!response.ok) throw await errorFromResponse(response);
+  return response.blob();
+}

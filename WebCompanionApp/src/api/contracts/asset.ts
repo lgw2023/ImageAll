@@ -44,6 +44,26 @@ export const assetPageSchema = z.object({
   nextCursor: nullishToNull(z.string()),
 });
 
+export const sourceSummarySchema = z.object({
+  id: uuidSchema,
+  kind: z.enum(['folder', 'photos']),
+  displayName: z.string().min(1),
+  state: z.enum(['active', 'disabled', 'unavailable', 'authorizationRequired']),
+});
+
+export const sourceFolderSchema = z.object({
+  sourceID: uuidSchema,
+  relativePath: z.string().min(1),
+  parentRelativePath: nullishToNull(z.string()),
+  name: z.string().min(1),
+});
+
+export const sourceFolderPageSchema = z.object({
+  folders: z.array(sourceFolderSchema),
+  totalCount: z.int().nonnegative(),
+  nextOffset: nullishToNull(z.int().nonnegative()),
+});
+
 export const inspectorTagDecisionSchema = z.enum(['unknown', 'accepted', 'rejected']);
 export const inspectorTagStateSchema = z.object({
   tagID: uuidSchema,
@@ -97,3 +117,6 @@ export type AssetPage = z.infer<typeof assetPageSchema>;
 export type AssetDetail = z.infer<typeof assetDetailSchema>;
 export type FavoriteState = z.infer<typeof favoriteStateSchema>;
 export type FavoriteMutationResponse = z.infer<typeof favoriteMutationResponseSchema>;
+export type SourceSummary = z.infer<typeof sourceSummarySchema>;
+export type SourceFolder = z.infer<typeof sourceFolderSchema>;
+export type SourceFolderPage = z.infer<typeof sourceFolderPageSchema>;

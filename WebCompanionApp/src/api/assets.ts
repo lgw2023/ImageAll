@@ -3,12 +3,16 @@ import {
   assetDetailSchema,
   assetPageSchema,
   favoriteMutationResponseSchema,
+  sourceFolderPageSchema,
+  sourceSummarySchema,
   type AssetMediaKind,
   type AssetPage,
   type AssetSort,
   type AssetSummary,
   type FavoriteMutationResponse,
+  type SourceFolderPage,
 } from './contracts/asset';
+import { z } from 'zod';
 import type { WorldMapSelectionQuery } from './contracts/map';
 
 export type AssetQuery = {
@@ -16,6 +20,8 @@ export type AssetQuery = {
   sort: AssetSort;
   mediaKind: AssetMediaKind | null;
   acceptedTagID: string | null;
+  sourceID: string | null;
+  folderRelativePath: string | null;
   favoritesOnly: boolean;
   worldMapSelection: WorldMapSelectionQuery | null;
 };
@@ -30,6 +36,11 @@ export async function fetchAssetPage(
   if (searchText) parameters.set('q', searchText);
   if (query.mediaKind) parameters.set('mediaKinds', query.mediaKind);
   if (query.acceptedTagID) parameters.set('acceptedTagIDs', query.acceptedTagID);
+  if (query.sourceID) parameters.set('sourceIDs', query.sourceID);
+  if (query.sourceID && query.folderRelativePath) {
+    parameters.set('folderSourceID', query.sourceID);
+    parameters.set('folderRelativePath', query.folderRelativePath);
+  }
   if (query.favoritesOnly) parameters.set('favorite', 'favorited');
   if (query.worldMapSelection) {
     parameters.set('worldMapCellDegrees', String(query.worldMapSelection.cellDegrees));
@@ -45,6 +56,22 @@ export async function fetchAssetPage(
   }
   if (cursor) parameters.set('cursor', cursor);
   return requestJSON(`/v1/assets?${parameters.toString()}`, assetPageSchema, {
+    signal: signal ?? null,
+  });
+}
+
+export function fetchSources(signal?: AbortSignal) {
+  return requestJSON('/v1/sources', z.array(sourceSummarySchema), { signal: signal ?? null });
+}
+
+export function fetchSourceFolders(
+  sourceID: string,
+  parentRelativePath: string | null,
+  signal?: AbortSignal,
+): Promise<SourceFolderPage> {
+  const parameters = new URLSearchParams({ sourceID, offset: '0', limit: '100' });
+  if (parentRelativePath) parameters.set('parentRelativePath', parentRelativePath);
+  return requestJSON(`/v1/source-folders?${parameters.toString()}`, sourceFolderPageSchema, {
     signal: signal ?? null,
   });
 }

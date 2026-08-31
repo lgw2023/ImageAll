@@ -1,10 +1,23 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { useQuery } from '@tanstack/react-query';
-import { Check, ExternalLink, Heart, ImageOff, RotateCcw, X } from 'lucide-react';
+import {
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  ExternalLink,
+  Heart,
+  ImageOff,
+  Maximize2,
+  Minus,
+  Minimize2,
+  Plus,
+  RotateCcw,
+  X,
+} from 'lucide-react';
 
 import { assetMediaURL, assetPreviewURL, fetchAssetDetail, openOriginalAsset } from '@/api/assets';
-import type { AssetDetail } from '@/api/contracts/asset';
+import type { AssetDetail, AssetSummary } from '@/api/contracts/asset';
 import type { TagDecisionAction } from '@/api/contracts/tag';
 import { errorMessage } from '@/api/errors';
 
@@ -14,6 +27,9 @@ type AssetViewerProps = {
   onClose: () => void;
   onFavorite: (assetID: string, isFavorite: boolean) => Promise<void>;
   onTagDecision: (tagID: string, assetIDs: string[], action: TagDecisionAction) => Promise<void>;
+  previousAsset: AssetSummary | null;
+  nextAsset: AssetSummary | null;
+  onNavigate: (assetID: string) => void;
 };
 
 function formatDate(value: number | null): string {
@@ -40,11 +56,18 @@ export function AssetViewer({
   onClose,
   onFavorite,
   onTagDecision,
+  previousAsset,
+  nextAsset,
+  onNavigate,
 }: AssetViewerProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const mediaRef = useRef<HTMLDivElement>(null);
+  const panStart = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
+  const [zoom, setZoom] = useState(1);
   const [previewFailed, setPreviewFailed] = useState(false);
   const [openingOriginal, setOpeningOriginal] = useState(false);
   const [localMessage, setLocalMessage] = useState('');
+  const [fullscreen, setFullscreen] = useState(false);
   const detail = useQuery({
     queryKey: ['asset', assetID],
     queryFn: ({ signal }) => fetchAssetDetail(assetID, signal),
@@ -59,6 +82,46 @@ export function AssetViewer({
     };
   }, []);
 
+  useEffect(() => {
+    const update = () => setFullscreen(document.fullscreenElement === mediaRef.current);
+    document.addEventListener('fullscreenchange', update);
+    return () => document.removeEventListener('fullscreenchange', update);
+  }, []);
+
+  useEffect(() => {
+    const adjacent = [previousAsset, nextAsset].filter(
+      (asset): asset is AssetSummary => asset?.mediaType.startsWith('image') === true,
+    );
+    const preloaders = adjacent.map((asset) => {
+      const image = new Image();
+      image.src = assetPreviewURL(asset.id, asset.contentRevision);
+      return image;
+    });
+    return () => {
+      for (const image of preloaders) image.src = '';
+    };
+  }, [nextAsset, previousAsset]);
+
+  useEffect(() => {
+    const handleNavigation = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'ArrowLeft' && previousAsset) {
+        event.preventDefault();
+        onNavigate(previousAsset.id);
+      } else if (event.key === 'ArrowRight' && nextAsset) {
+        event.preventDefault();
+        onNavigate(nextAsset.id);
+      } else if (event.key === '+' || event.key === '=') {
+        event.preventDefault();
+        setZoom((value) => Math.min(4, value + 0.25));
+      } else if (event.key === '-') {
+        event.preventDefault();
+        setZoom((value) => Math.max(1, value - 0.25));
+      }
+    };
+    window.addEventListener('keydown', handleNavigation);
+    return () => window.removeEventListener('keydown', handleNavigation);
+  }, [nextAsset, onNavigate, previousAsset]);
+
   async function requestOpenOriginal() {
     setOpeningOriginal(true);
     setLocalMessage('');
@@ -69,6 +132,15 @@ export function AssetViewer({
       setLocalMessage(errorMessage(error));
     } finally {
       setOpeningOriginal(false);
+    }
+  }
+
+  async function toggleFullscreen() {
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else await mediaRef.current?.requestFullscreen();
+    } catch {
+      setLocalMessage('浏览器未允许进入全屏；可继续使用当前大图视图。');
     }
   }
 
@@ -93,9 +165,29 @@ export function AssetViewer({
               {detail.data ? viewerTitle(detail.data) : '正在载入照片…'}
             </h2>
           </div>
-          <button aria-label="关闭照片详情" className="icon-button" onClick={onClose} type="button">
-            <X aria-hidden="true" size={18} />
-          </button>
+          <div className="asset-viewer-header-actions">
+            <button
+              aria-label={fullscreen ? '退出全屏预览' : '进入全屏预览'}
+              className="icon-button"
+              disabled={!document.fullscreenEnabled}
+              onClick={() => void toggleFullscreen()}
+              type="button"
+            >
+              {fullscreen ? (
+                <Minimize2 aria-hidden="true" size={18} />
+              ) : (
+                <Maximize2 aria-hidden="true" size={18} />
+              )}
+            </button>
+            <button
+              aria-label="关闭照片详情"
+              className="icon-button"
+              onClick={onClose}
+              type="button"
+            >
+              <X aria-hidden="true" size={18} />
+            </button>
+          </div>
         </header>
 
         {detail.isError ? (
@@ -110,7 +202,38 @@ export function AssetViewer({
 
         {detail.data ? (
           <div className="asset-viewer-content">
-            <div className="asset-viewer-media">
+            <div
+              className="asset-viewer-media"
+              data-pannable={zoom > 1}
+              onPointerDown={(event) => {
+                if (
+                  zoom <= 1 ||
+                  event.button !== 0 ||
+                  (event.target instanceof Element && event.target.closest('button'))
+                )
+                  return;
+                const media = mediaRef.current;
+                if (!media) return;
+                media.setPointerCapture(event.pointerId);
+                panStart.current = {
+                  x: event.clientX,
+                  y: event.clientY,
+                  left: media.scrollLeft,
+                  top: media.scrollTop,
+                };
+              }}
+              onPointerMove={(event) => {
+                const start = panStart.current;
+                const media = mediaRef.current;
+                if (!start || !media) return;
+                media.scrollLeft = start.left - (event.clientX - start.x);
+                media.scrollTop = start.top - (event.clientY - start.y);
+              }}
+              onPointerUp={() => {
+                panStart.current = null;
+              }}
+              ref={mediaRef}
+            >
               {previewFailed || detail.data.availability !== 'available' ? (
                 <div className="viewer-media-placeholder">
                   <ImageOff aria-hidden="true" size={30} />
@@ -127,8 +250,64 @@ export function AssetViewer({
                   alt={viewerTitle(detail.data)}
                   onError={() => setPreviewFailed(true)}
                   src={assetPreviewURL(detail.data.assetID, detail.data.contentRevision)}
+                  style={{
+                    width: `${String(zoom * 100)}%`,
+                    height: `${String(zoom * 100)}%`,
+                    maxWidth: 'none',
+                    maxHeight: 'none',
+                  }}
                 />
               )}
+              {!detail.data.mediaType.startsWith('video') && !previewFailed ? (
+                <div className="viewer-media-controls" aria-label="预览缩放">
+                  <button
+                    aria-label="缩小预览"
+                    className="icon-button"
+                    disabled={zoom <= 1}
+                    onClick={() => setZoom((value) => Math.max(1, value - 0.25))}
+                    type="button"
+                  >
+                    <Minus aria-hidden="true" size={15} />
+                  </button>
+                  <span aria-live="polite">{Math.round(zoom * 100)}%</span>
+                  <button
+                    aria-label="放大预览"
+                    className="icon-button"
+                    disabled={zoom >= 4}
+                    onClick={() => setZoom((value) => Math.min(4, value + 0.25))}
+                    type="button"
+                  >
+                    <Plus aria-hidden="true" size={15} />
+                  </button>
+                  <button
+                    aria-label="重置预览缩放"
+                    className="icon-button"
+                    disabled={zoom === 1}
+                    onClick={() => setZoom(1)}
+                    type="button"
+                  >
+                    <RotateCcw aria-hidden="true" size={14} />
+                  </button>
+                </div>
+              ) : null}
+              <button
+                aria-label="上一张照片"
+                className="icon-button viewer-previous"
+                disabled={!previousAsset}
+                onClick={() => previousAsset && onNavigate(previousAsset.id)}
+                type="button"
+              >
+                <ChevronLeft aria-hidden="true" size={20} />
+              </button>
+              <button
+                aria-label="下一张照片"
+                className="icon-button viewer-next"
+                disabled={!nextAsset}
+                onClick={() => nextAsset && onNavigate(nextAsset.id)}
+                type="button"
+              >
+                <ChevronRight aria-hidden="true" size={20} />
+              </button>
             </div>
 
             <aside className="asset-detail-sidebar" aria-label="照片属性与标签">

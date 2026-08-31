@@ -5,7 +5,15 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   base: '/web-v2/',
-  plugins: [react()],
+  plugins: [
+    react(),
+    {
+      name: 'imageall-trim-output-trailing-whitespace',
+      renderChunk(code) {
+        return { code: code.replace(/[\t ]+$/gm, ''), map: null };
+      },
+    },
+  ],
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
@@ -19,6 +27,11 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+  },
+  preview: {
+    headers: {
+      'Service-Worker-Allowed': '/',
+    },
   },
   test: {
     environment: 'jsdom',

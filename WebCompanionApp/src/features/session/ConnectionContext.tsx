@@ -108,32 +108,35 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   }, [retry]);
 
   useEffect(() => {
-    if (capabilities.isPending) {
-      setPhase('connecting');
-      setDetail('正在确认 Host 状态。');
-      return;
-    }
+    if (capabilities.isPending) return;
     if (capabilities.isError) {
-      setPhase('offline');
-      setDetail(errorMessage(capabilities.error));
-      if (capabilities.error instanceof APIError && capabilities.error.status === 401) {
-        session.expire('会话已过期，请重新连接。');
-      }
-      return;
+      let disposed = false;
+      queueMicrotask(() => {
+        if (disposed) return;
+        setPhase('offline');
+        setDetail(errorMessage(capabilities.error));
+        if (capabilities.error instanceof APIError && capabilities.error.status === 401) {
+          session.expire('会话已过期，请重新连接。');
+        }
+      });
+      return () => {
+        disposed = true;
+      };
     }
-    if (!capabilities.data) return;
 
     const invalidate = async (queryKey: readonly unknown[]) => {
       await queryClient.invalidateQueries({ queryKey });
     };
     const supportsEvents = capabilities.data.capabilities.includes('events');
     if (session.session?.authMode !== 'pairedDevice' || !supportsEvents) {
-      setPhase('online');
-      setDetail(
-        session.session?.authMode === 'account'
-          ? '账户会话已连接；通过安全轮询同步 Host。'
-          : 'Host 已连接。',
-      );
+      queueMicrotask(() => {
+        setPhase('online');
+        setDetail(
+          session.session?.authMode === 'account'
+            ? '账户会话已连接；通过安全轮询同步 Host。'
+            : 'Host 已连接。',
+        );
+      });
       const poll = window.setInterval(() => {
         void restoreSession()
           .then(async () => {
