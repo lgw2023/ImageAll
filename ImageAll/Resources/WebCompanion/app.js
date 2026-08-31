@@ -38440,6 +38440,17 @@ async function applySlimmingJobAction(
   }
 }
 
+function reconcileReviewLightboxAfterQueueMutation(previousReviewKey) {
+  if (!previousReviewKey
+    || state.lightboxContext !== "review"
+    || state.lightboxReviewKey !== previousReviewKey
+    || elements.lightbox.classList.contains("hidden")
+    || state.review.items.some(
+      (item) => reviewItemKey(item) === previousReviewKey
+    )) return;
+  syncReviewLightboxSelection();
+}
+
 async function applyReviewTagDecision(action, tagID) {
   const selectedItems = selectedReviewItems();
   const assetIDs = selectedItems.map((item) => item.assetID);
@@ -38451,7 +38462,7 @@ async function applyReviewTagDecision(action, tagID) {
     || state.review.mutating
     || state.tagMutating
     || state.review.loadedScopeKey !== currentReviewScopeKey()) return;
-  const previousIndex = state.review.selectedIndex;
+  const submittedAssetIDs = new Set(assetIDs);
   state.tagMutating = true;
   state.review.mutating = true;
   syncWriteActionControls();
@@ -38467,6 +38478,19 @@ async function applyReviewTagDecision(action, tagID) {
       }),
     });
     if (generation !== state.workspaceGeneration) return;
+    const selectionStillTargetsSubmission =
+      state.review.selectedAssetIDs.size === submittedAssetIDs.size
+      && [...submittedAssetIDs].every(
+        (assetID) => state.review.selectedAssetIDs.has(assetID)
+      );
+    const queueKeysBeforeReload = state.review.items.map(reviewItemKey);
+    const primaryKeyBeforeReload = reviewItemKey(
+      state.review.items[state.review.selectedIndex]
+    );
+    const previewKeyBeforeReload = state.lightboxContext === "review"
+      && !elements.lightbox.classList.contains("hidden")
+      ? state.lightboxReviewKey
+      : null;
     state.review.detail = null;
     state.review.tagAggregates = [];
     state.review.detailSelectionKey = null;
@@ -38485,9 +38509,29 @@ async function applyReviewTagDecision(action, tagID) {
         }),
       ]);
       if (generation !== state.workspaceGeneration) return;
-      if (!state.review.selectedAssetIDs.size && state.review.items.length) {
-        selectReviewIndex(Math.min(previousIndex, state.review.items.length - 1));
+      const remainingAssetIDs = new Set(
+        state.review.items.map((item) => item.assetID)
+      );
+      const submittedSelectionWasRemoved = [...submittedAssetIDs].every(
+        (assetID) => !remainingAssetIDs.has(assetID)
+      );
+      if (selectionStillTargetsSubmission
+        && submittedSelectionWasRemoved
+        && state.review.items.length) {
+        const remainingKeys = state.review.items.map(reviewItemKey);
+        const continuationKeys = continuedAssetIDs(
+          queueKeysBeforeReload,
+          remainingKeys
+        );
+        const replacementKey = replacementPreviewAssetID(
+          continuationKeys,
+          remainingKeys,
+          primaryKeyBeforeReload
+        );
+        const replacementIndex = remainingKeys.indexOf(replacementKey);
+        if (replacementIndex >= 0) selectReviewIndex(replacementIndex);
       }
+      reconcileReviewLightboxAfterQueueMutation(previewKeyBeforeReload);
       await loadReviewInspectorDetail({ force: true, quiet: true });
       undoToast(
         result.replayed

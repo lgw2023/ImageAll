@@ -2912,6 +2912,22 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function leaveIntegratedReviewForLibrary"))
         XCTAssertTrue(script.contains("function loadReviewInspectorDetail"))
         XCTAssertTrue(script.contains("function applyReviewTagDecision"))
+        XCTAssertTrue(script.contains("function reconcileReviewLightboxAfterQueueMutation"))
+        XCTAssertTrue(
+            script.contains(
+                "const submittedSelectionWasRemoved = [...submittedAssetIDs].every("
+            )
+        )
+        XCTAssertTrue(
+            script.contains(
+                "if (selectionStillTargetsSubmission\n        && submittedSelectionWasRemoved"
+            )
+        )
+        XCTAssertTrue(
+            script.contains(
+                "reconcileReviewLightboxAfterQueueMutation(previewKeyBeforeReload);"
+            )
+        )
         XCTAssertTrue(stylesheet.contains(".review-inspector-section"))
         XCTAssertTrue(stylesheet.contains(".slimming-workspace.integrated"))
         XCTAssertTrue(script.contains("function syncSlimmingPresentation"))

@@ -256,6 +256,7 @@ def main():
     asset_queries = []
     tag_decisions = []
     fail_next_tag_decision = [False]
+    remove_review_items_for_next_tag_decision = [False]
     created_tag_applications = []
     review_decisions = []
     review_queue_queries = []
@@ -985,6 +986,13 @@ def main():
                     status=409,
                 )
                 return
+            if remove_review_items_for_next_tag_decision[0]:
+                remove_review_items_for_next_tag_decision[0] = False
+                decided_ids = set(payload["assetIDs"])
+                review_items[:] = [
+                    item for item in review_items
+                    if item["assetID"] not in decided_ids
+                ]
             fulfill_json(
                 route,
                 {
@@ -4320,6 +4328,141 @@ def main():
               );
               selectReviewIndex(index);
               window.__reviewBatchContinuationFrame = null;
+            }""",
+            REVIEW_IDS[0],
+        )
+
+        review_items.extend([
+            {
+                **review_items[0],
+                "assetID": asset_id,
+                "fileName": f"MANUAL_TAG_CONTINUATION_{index}.JPG",
+                "contentRevision": 1150 + index,
+                "score": 0.70 - index * 0.01,
+            }
+            for index, asset_id in enumerate(REVIEW_HISTORY_IDS[:2], start=1)
+        ])
+        review_manual_tag_continuation = page.evaluate(
+            """async ([firstSelectedID, primaryID]) => {
+              await loadReviewQueue({
+                preserveLoadedWindow: true,
+                schedulePagination: false,
+              });
+              state.review.selectionMode = true;
+              state.review.selectedAssetIDs = new Set([firstSelectedID, primaryID]);
+              state.review.selectedIndex = state.review.items.findIndex(
+                (item) => item.assetID === primaryID
+              );
+              state.review.selectionAnchorIndex = state.review.items.findIndex(
+                (item) => item.assetID === firstSelectedID
+              );
+              renderReviewSelectionState();
+              openReviewLightbox(state.review.items[state.review.selectedIndex], {
+                preserveSelection: true,
+              });
+              window.__reviewManualTagContinuationFrame = {
+                undoTag: { ...state.undo.tag },
+                primaryKey: reviewItemKey(
+                  state.review.items[state.review.selectedIndex]
+                ),
+                anchorKey: reviewItemKey(
+                  state.review.items[state.review.selectionAnchorIndex]
+                ),
+              };
+              return {
+                primaryKey: window.__reviewManualTagContinuationFrame.primaryKey,
+                anchorKey: window.__reviewManualTagContinuationFrame.anchorKey,
+                queueKeys: state.review.items.map(reviewItemKey),
+              };
+            }""",
+            [REVIEW_IDS[0], REVIEW_IDS[2]],
+        )
+        assert review_manual_tag_continuation["queueKeys"] == [
+            f"{REVIEW_IDS[0]}:featurePrint",
+            f"{REVIEW_IDS[1]}:featurePrint",
+            f"{REVIEW_IDS[2]}:featurePrint",
+            f"{REVIEW_HISTORY_IDS[0]}:featurePrint",
+            f"{REVIEW_HISTORY_IDS[1]}:featurePrint",
+        ]
+        page.locator("#lightbox.review-docked:not(.hidden)").wait_for()
+        review_current_tag_accept = page.locator(
+            f'#reviewTags [data-tag-id="{CAT_TAG_ID}"][data-action="accept"]'
+        )
+        review_current_tag_accept.wait_for()
+        page.wait_for_function(
+            "selector => !document.querySelector(selector)?.disabled",
+            arg=f'#reviewTags [data-tag-id="{CAT_TAG_ID}"][data-action="accept"]',
+        )
+        remove_review_items_for_next_tag_decision[0] = True
+        with page.expect_response("**/v1/tag-decisions/batch"):
+            review_current_tag_accept.click()
+        page.wait_for_function(
+            "() => !state.tagMutating && !state.review.mutating "
+            "&& state.review.items.length === 3"
+        )
+        review_manual_tag_continuation_result = page.evaluate(
+            """() => ({
+              selectedAssetIDs: [...state.review.selectedAssetIDs],
+              primaryKey: reviewItemKey(
+                state.review.items[state.review.selectedIndex]
+              ),
+              anchorKey: reviewItemKey(
+                state.review.items[state.review.selectionAnchorIndex]
+              ),
+              lightboxKey: state.lightboxReviewKey,
+              lightboxAssetID: state.lightboxAssetID,
+              queueKeys: state.review.items.map(reviewItemKey),
+              selectedIndex: state.review.selectedIndex,
+            })"""
+        )
+        assert tag_decisions[-1]["tagID"] == CAT_TAG_ID
+        assert tag_decisions[-1]["action"] == "accept"
+        assert tag_decisions[-1]["assetIDs"] == [REVIEW_IDS[0], REVIEW_IDS[2]]
+        assert review_manual_tag_continuation_result["queueKeys"] == [
+            f"{REVIEW_IDS[1]}:featurePrint",
+            f"{REVIEW_HISTORY_IDS[0]}:featurePrint",
+            f"{REVIEW_HISTORY_IDS[1]}:featurePrint",
+        ]
+        assert review_manual_tag_continuation_result["primaryKey"] == (
+            f"{REVIEW_HISTORY_IDS[0]}:featurePrint"
+        ), review_manual_tag_continuation_result
+        assert review_manual_tag_continuation_result["anchorKey"] == (
+            f"{REVIEW_HISTORY_IDS[0]}:featurePrint"
+        ), review_manual_tag_continuation_result
+        assert review_manual_tag_continuation_result["selectedAssetIDs"] == [
+            REVIEW_HISTORY_IDS[0]
+        ]
+        assert review_manual_tag_continuation_result["lightboxKey"] == (
+            f"{REVIEW_HISTORY_IDS[0]}:featurePrint"
+        ), review_manual_tag_continuation_result
+        assert review_manual_tag_continuation_result["lightboxAssetID"] == (
+            REVIEW_HISTORY_IDS[0]
+        )
+        page.screenshot(
+            path="/tmp/imageall-review-manual-tag-continuation.png",
+            full_page=True,
+        )
+        page.locator("#lightboxBackButton").click()
+        page.locator("#lightbox").wait_for(state="hidden")
+        review_items[:] = [
+            review_item(asset_id, index + 1)
+            for index, asset_id in enumerate(REVIEW_IDS)
+        ]
+        page.evaluate(
+            """async firstAssetID => {
+              const frame = window.__reviewManualTagContinuationFrame;
+              state.undo.tag = frame.undoTag;
+              renderUndoControls();
+              state.review.selectionMode = false;
+              await loadReviewQueue({
+                preserveLoadedWindow: true,
+                schedulePagination: false,
+              });
+              const index = state.review.items.findIndex(
+                (item) => item.assetID === firstAssetID
+              );
+              selectReviewIndex(index);
+              window.__reviewManualTagContinuationFrame = null;
             }""",
             REVIEW_IDS[0],
         )
