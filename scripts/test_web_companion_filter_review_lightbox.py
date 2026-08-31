@@ -7882,10 +7882,10 @@ def main():
             full_page=True,
         )
 
-        # A slow touch gesture can outlive the first 360 ms takeover window.
-        # Each continued move must renew the suspension so Chromium's native
-        # scroll anchoring cannot resume under the user's finger; releasing the
-        # gesture must still restore the prior inline value after a finite wait.
+        # A slow trusted touch gesture can outlive the first 360 ms takeover
+        # window. Each continued move must renew the suspension so Chromium's
+        # native scroll anchoring cannot resume under the user's finger, while
+        # the passive listener still lets the browser perform the real scroll.
         page.evaluate(
             """() => {
               setInspectorVisible(true);
@@ -7898,6 +7898,12 @@ def main():
               const pane = document.querySelector('#libraryScroll');
               const card = document.querySelectorAll('#assetGrid > .asset-card')[8];
               pane.scrollTop = card.offsetTop - 24;
+              window.__trustedGalleryTouches = [];
+              for (const type of ['touchstart', 'touchmove', 'touchend', 'touchcancel']) {
+                pane.addEventListener(type, event => {
+                  window.__trustedGalleryTouches.push({ type, trusted: event.isTrusted });
+                }, { once: true });
+              }
               return {
                 assetID: card.dataset.assetId,
                 scrollTop: pane.scrollTop,
@@ -7907,9 +7913,31 @@ def main():
         assert gallery_touch_frame["scrollTop"] > 0
         page.locator("#inspectorVisibilityButton").click()
         page.wait_for_function("() => state.layout.inspectorVisible === false")
-        page.dispatch_event("#libraryScroll", "touchstart")
+        gallery_touch_bounds = page.locator("#libraryScroll").bounding_box()
+        assert gallery_touch_bounds is not None
+        gallery_touch_x = gallery_touch_bounds["x"] + gallery_touch_bounds["width"] / 2
+        gallery_touch_start_y = gallery_touch_bounds["y"] + gallery_touch_bounds["height"] * 0.72
+        gallery_touch_move_y = gallery_touch_start_y - 180
+        cdp = context.new_cdp_session(page)
+        cdp.send(
+            "Emulation.setTouchEmulationEnabled",
+            {"enabled": True, "maxTouchPoints": 1},
+        )
+        cdp.send(
+            "Input.dispatchTouchEvent",
+            {
+                "type": "touchStart",
+                "touchPoints": [{"x": gallery_touch_x, "y": gallery_touch_start_y}],
+            },
+        )
         page.wait_for_timeout(280)
-        page.dispatch_event("#libraryScroll", "touchmove")
+        cdp.send(
+            "Input.dispatchTouchEvent",
+            {
+                "type": "touchMove",
+                "touchPoints": [{"x": gallery_touch_x, "y": gallery_touch_move_y}],
+            },
+        )
         page.wait_for_timeout(140)
         gallery_touch_during = page.evaluate(
             """() => {
@@ -7919,6 +7947,8 @@ def main():
                 activeRestore: workspaceLayoutReflowActiveScrollAnchors.has(pane),
                 focus: document.activeElement?.id,
                 selection: [...state.selectedAssetIDs].sort(),
+                scrollTop: pane.scrollTop,
+                touches: window.__trustedGalleryTouches,
               };
             }"""
         )
@@ -7926,7 +7956,85 @@ def main():
         assert gallery_touch_during["activeRestore"] is False
         assert gallery_touch_during["focus"] == "inspectorVisibilityButton"
         assert gallery_touch_during["selection"] == gallery_reflow_selection
-        page.dispatch_event("#libraryScroll", "touchend")
+        assert gallery_touch_during["scrollTop"] > gallery_touch_frame["scrollTop"] + 80
+        assert gallery_touch_during["touches"][:2] == [
+            {"type": "touchstart", "trusted": True},
+            {"type": "touchmove", "trusted": True},
+        ], gallery_touch_during
+        cdp.send(
+            "Input.dispatchTouchEvent",
+            {
+                "type": "touchMove",
+                "touchPoints": [{"x": gallery_touch_x, "y": gallery_touch_move_y - 120}],
+            },
+        )
+        page.wait_for_timeout(16)
+        cdp.send(
+            "Input.dispatchTouchEvent",
+            {"type": "touchEnd", "touchPoints": []},
+        )
+        # CDP touch dispatch does not synthesize platform fling physics. Emit a
+        # browser scroll after touchend to represent the compositor's momentum
+        # tail: the trusted touch session must keep anchoring suspended until
+        # that follow-on scrolling becomes quiet.
+        page.wait_for_timeout(250)
+        page.locator("#libraryScroll").evaluate("pane => { pane.scrollTop += 48; }")
+        page.wait_for_timeout(150)
+        gallery_touch_momentum = page.evaluate(
+            """() => {
+              const pane = document.querySelector('#libraryScroll');
+              return {
+                nativeAnchor: pane.style.overflowAnchor,
+                momentumActive: typeof workspaceLayoutReflowTouchMomentumSessions !== 'undefined'
+                  && workspaceLayoutReflowTouchMomentumSessions.has(pane),
+              };
+            }"""
+        )
+        assert gallery_touch_momentum["nativeAnchor"] == "none", gallery_touch_momentum
+        assert gallery_touch_momentum["momentumActive"] is True
+        gallery_touch_late_thumbnail = page.evaluate(
+            """async () => {
+              const pane = document.querySelector('#libraryScroll');
+              const workspace = document.querySelector('#libraryPane');
+              const anchor = captureWorkspacePresentationScroll(workspace, pane);
+              const firstCard = document.querySelector('#assetGrid > .asset-card');
+              if (!anchor?.target || !firstCard) {
+                throw new Error('touch momentum did not expose a semantic gallery anchor');
+              }
+              const beforeOffset = anchor.target.getBoundingClientRect().top
+                - pane.getBoundingClientRect().top;
+              state.layout.aspectMode = 'original';
+              const probe = document.createElement('img');
+              probe.hidden = true;
+              probe.dataset.protectedPath = '/synthetic-thumbnail?aspect=original';
+              await new Promise((resolve, reject) => {
+                probe.addEventListener('load', () => requestAnimationFrame(resolve), {
+                  once: true,
+                });
+                probe.addEventListener('error', reject, { once: true });
+                bindThumbnailRenderedAspect(probe);
+                firstCard.append(probe);
+                probe.src = 'data:image/svg+xml,' + encodeURIComponent(
+                  '<svg xmlns="http://www.w3.org/2000/svg" width="512" height="1024"></svg>'
+                );
+              });
+              probe.remove();
+              return {
+                assetID: anchor.target.closest('[data-asset-id]')?.dataset.assetId || null,
+                beforeOffset,
+                afterOffset: anchor.target.getBoundingClientRect().top
+                  - pane.getBoundingClientRect().top,
+                nativeAnchor: pane.style.overflowAnchor,
+                momentumActive: workspaceLayoutReflowTouchMomentumSessions.has(pane),
+              };
+            }"""
+        )
+        assert abs(
+            gallery_touch_late_thumbnail["afterOffset"]
+            - gallery_touch_late_thumbnail["beforeOffset"]
+        ) <= 2, gallery_touch_late_thumbnail
+        assert gallery_touch_late_thumbnail["nativeAnchor"] == "none"
+        assert gallery_touch_late_thumbnail["momentumActive"] is True
         page.wait_for_timeout(400)
         gallery_touch_after = page.evaluate(
             """() => {
@@ -7934,12 +8042,24 @@ def main():
               return {
                 nativeAnchor: pane.style.overflowAnchor,
                 activeRestore: workspaceLayoutReflowActiveScrollAnchors.has(pane),
+                momentumActive: typeof workspaceLayoutReflowTouchMomentumSessions !== 'undefined'
+                  && workspaceLayoutReflowTouchMomentumSessions.has(pane),
               };
             }"""
         )
         assert gallery_touch_after["nativeAnchor"] == ""
         assert gallery_touch_after["activeRestore"] is False
+        assert gallery_touch_after["momentumActive"] is False
         assert len(asset_queries) == gallery_reflow_request_count
+        page.evaluate(
+            """() => {
+              state.layout.aspectMode = 'square';
+              document.querySelector('#assetGrid > .asset-card')
+                ?.style.removeProperty('--asset-aspect');
+            }"""
+        )
+        cdp.send("Emulation.setTouchEmulationEnabled", {"enabled": False})
+        cdp.detach()
 
         page.evaluate(
             """() => {

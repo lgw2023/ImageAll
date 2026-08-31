@@ -4843,9 +4843,14 @@ function captureWorkspaceLayoutReflowScrollAnchors() {
 let workspaceLayoutReflowUserInputGeneration = 0;
 const workspaceLayoutReflowNativeAnchorSuspensions = new WeakMap();
 const workspaceLayoutReflowActiveScrollAnchors = new WeakMap();
+const workspaceLayoutReflowTouchMomentumSessions = new WeakMap();
 const WORKSPACE_LAYOUT_REFLOW_USER_WINDOW_MS = 360;
+const WORKSPACE_LAYOUT_REFLOW_TOUCH_MOMENTUM_MAX_MS = 1800;
 
-function suspendWorkspaceLayoutReflowNativeAnchor(scrollOwner) {
+function suspendWorkspaceLayoutReflowNativeAnchor(
+  scrollOwner,
+  windowMS = WORKSPACE_LAYOUT_REFLOW_USER_WINDOW_MS
+) {
   const existing = workspaceLayoutReflowNativeAnchorSuspensions.get(scrollOwner);
   const previousInlineValue = existing?.previousInlineValue
     ?? scrollOwner.style.overflowAnchor;
@@ -4857,11 +4862,76 @@ function suspendWorkspaceLayoutReflowNativeAnchor(scrollOwner) {
     if (previousInlineValue) scrollOwner.style.overflowAnchor = previousInlineValue;
     else scrollOwner.style.removeProperty("overflow-anchor");
     workspaceLayoutReflowNativeAnchorSuspensions.delete(scrollOwner);
-  }, WORKSPACE_LAYOUT_REFLOW_USER_WINDOW_MS);
+  }, windowMS);
   workspaceLayoutReflowNativeAnchorSuspensions.set(scrollOwner, {
     previousInlineValue,
     timeoutID,
   });
+}
+
+function clearWorkspaceLayoutReflowTouchMomentumSession(scrollOwner, session = null) {
+  const current = workspaceLayoutReflowTouchMomentumSessions.get(scrollOwner);
+  if (!current || (session && current !== session)) return;
+  if (current.timeoutID) clearTimeout(current.timeoutID);
+  workspaceLayoutReflowTouchMomentumSessions.delete(scrollOwner);
+}
+
+function scheduleWorkspaceLayoutReflowTouchMomentumExpiry(
+  scrollOwner,
+  session,
+  windowMS = WORKSPACE_LAYOUT_REFLOW_USER_WINDOW_MS
+) {
+  if (session.timeoutID) clearTimeout(session.timeoutID);
+  session.timeoutID = setTimeout(() => {
+    clearWorkspaceLayoutReflowTouchMomentumSession(scrollOwner, session);
+  }, windowMS);
+}
+
+function rememberWorkspaceLayoutReflowTouchSession(event, scrollOwner) {
+  if (!event.isTrusted) return;
+  const type = event.type;
+  if (type === "touchstart") {
+    clearWorkspaceLayoutReflowTouchMomentumSession(scrollOwner);
+    workspaceLayoutReflowTouchMomentumSessions.set(scrollOwner, {
+      ended: false,
+      hardExpiresAt: Infinity,
+      timeoutID: null,
+    });
+    return;
+  }
+  let session = workspaceLayoutReflowTouchMomentumSessions.get(scrollOwner);
+  if (type === "touchmove") {
+    if (!session) {
+      session = { ended: false, hardExpiresAt: Infinity, timeoutID: null };
+      workspaceLayoutReflowTouchMomentumSessions.set(scrollOwner, session);
+    }
+    session.ended = false;
+    if (session.timeoutID) {
+      clearTimeout(session.timeoutID);
+      session.timeoutID = null;
+    }
+    return;
+  }
+  if (!session || (type !== "touchend" && type !== "touchcancel")) return;
+  session.ended = true;
+  session.hardExpiresAt = performance.now()
+    + WORKSPACE_LAYOUT_REFLOW_TOUCH_MOMENTUM_MAX_MS;
+  scheduleWorkspaceLayoutReflowTouchMomentumExpiry(scrollOwner, session);
+}
+
+function rememberWorkspaceLayoutReflowTouchMomentum(event) {
+  const scrollOwner = event.target;
+  if (!(scrollOwner instanceof HTMLElement)) return;
+  const session = workspaceLayoutReflowTouchMomentumSessions.get(scrollOwner);
+  if (!session?.ended) return;
+  const remainingMS = session.hardExpiresAt - performance.now();
+  if (remainingMS <= 0) {
+    clearWorkspaceLayoutReflowTouchMomentumSession(scrollOwner, session);
+    return;
+  }
+  const windowMS = Math.min(WORKSPACE_LAYOUT_REFLOW_USER_WINDOW_MS, remainingMS);
+  suspendWorkspaceLayoutReflowNativeAnchor(scrollOwner, windowMS);
+  scheduleWorkspaceLayoutReflowTouchMomentumExpiry(scrollOwner, session, windowMS);
 }
 
 function clearWorkspaceLayoutReflowActiveScrollAnchor(scrollOwner, session = null) {
@@ -4923,6 +4993,9 @@ function rememberWorkspaceLayoutReflowUserInput(event) {
   );
   const scrollOwner = reflowSurface?.[1];
   if (!(scrollOwner instanceof HTMLElement)) return;
+  if (event.type.startsWith("touch")) {
+    rememberWorkspaceLayoutReflowTouchSession(event, scrollOwner);
+  }
   const activeSession = workspaceLayoutReflowActiveScrollAnchors.get(scrollOwner);
   if (event instanceof WheelEvent && activeSession) {
     suspendWorkspaceLayoutReflowNativeAnchor(scrollOwner);
@@ -46038,10 +46111,19 @@ function bindEvents() {
     capture: true,
     passive: true,
   });
+  document.addEventListener("touchend", rememberWorkspaceLayoutReflowUserInput, {
+    capture: true,
+    passive: true,
+  });
+  document.addEventListener("touchcancel", rememberWorkspaceLayoutReflowUserInput, {
+    capture: true,
+    passive: true,
+  });
   document.addEventListener("pointerdown", rememberWorkspaceLayoutReflowUserInput, true);
   document.addEventListener("focusin", rememberActiveWorkspacePresentationFocus);
   document.addEventListener("scroll", rememberActiveWorkspacePresentationFocus, true);
   document.addEventListener("scroll", rememberWorkspacePresentationScroll, true);
+  document.addEventListener("scroll", rememberWorkspaceLayoutReflowTouchMomentum, true);
   setupSidebarReordering();
   bindGridDensityControls();
   elements.personalModelToolbarActions.addEventListener("focusin", (event) => {
