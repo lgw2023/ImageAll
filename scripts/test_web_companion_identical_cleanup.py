@@ -230,6 +230,89 @@ async def main():
         sources = page.locator("#slimmingIdenticalCleanupSources")
         assert await sources.locator(".identical-cleanup-source-row").count() == 2
         assert "Apple Photos 5 张" in await sources.get_attribute("aria-label")
+        chart_grid = page.locator(".identical-cleanup-chart-grid")
+        assert await chart_grid.locator(":scope > section > [tabindex='0']").count() == 3
+        disposition = page.locator("#slimmingIdenticalCleanupDispositionChart")
+        assert await disposition.get_attribute("role") == "group"
+        assert await disposition.get_attribute("aria-roledescription") == "可探索图表"
+        navigation_plan_reads = len(plan_requests)
+        navigation_cleanup_writes = len(submitted_cleanup_requests)
+
+        await disposition.focus()
+        await disposition.press("ArrowRight")
+        disposition_reading = await page.locator(
+            "#slimmingIdenticalCleanupDispositionStatus"
+        ).inner_text()
+        assert disposition_reading == "清理 8 张 · 第 2 / 2 项", disposition_reading
+        assert await disposition.locator(
+            "[data-identical-cleanup-legend-key='removal']"
+        ).get_attribute("data-current") == "true"
+        await disposition.press("Home")
+        assert await page.locator(
+            "#slimmingIdenticalCleanupDispositionStatus"
+        ).inner_text() == "保留 4 张 · 第 1 / 2 项"
+
+        await histogram.focus()
+        await histogram.press("End")
+        assert await page.locator(
+            "#slimmingIdenticalCleanupHistogramStatus"
+        ).inner_text() == "每组 5+ 项 · 1 组 · 第 3 / 3 项"
+        assert await histogram.locator(
+            "[data-identical-cleanup-histogram-key='5+']"
+        ).get_attribute("data-current") == "true"
+        await histogram.locator(
+            "[data-identical-cleanup-histogram-key='2']"
+        ).click()
+        assert await page.evaluate(
+            "() => document.activeElement?.id"
+        ) == "slimmingIdenticalCleanupGroupHistogram"
+        assert await page.locator(
+            "#slimmingIdenticalCleanupHistogramStatus"
+        ).inner_text() == "每组 2 项 · 2 组 · 第 1 / 3 项"
+
+        await sources.focus()
+        await sources.press("ArrowDown")
+        assert await page.locator(
+            "#slimmingIdenticalCleanupSourcesStatus"
+        ).inner_text() == "文件夹来源 · 待清理 3 张 · 第 2 / 2 项"
+        assert await sources.locator(
+            "[data-identical-cleanup-source-key='files']"
+        ).get_attribute("data-current") == "true"
+        await sources.press("Home")
+        assert await page.locator(
+            "#slimmingIdenticalCleanupSourcesStatus"
+        ).inner_text() == "Apple Photos · 待清理 5 张 · 第 1 / 2 项"
+
+        await histogram.focus()
+        await histogram.press("End")
+        await page.evaluate(
+            """() => {
+              window.__stableIdenticalCleanupChart = {
+                container: document.querySelector(
+                  '#slimmingIdenticalCleanupGroupHistogram'
+                ),
+                mark: document.querySelector(
+                  '[data-identical-cleanup-histogram-key="5+"]'
+                ),
+              };
+              renderSlimmingIdenticalCleanupDialog();
+            }"""
+        )
+        assert await page.evaluate(
+            """() => {
+              const frame = window.__stableIdenticalCleanupChart;
+              return document.activeElement === frame.container
+                && frame.mark === document.querySelector(
+                  '[data-identical-cleanup-histogram-key="5+"]'
+                )
+                && frame.mark.dataset.current === 'true'
+                && document.querySelector(
+                  '#slimmingIdenticalCleanupHistogramStatus'
+                ).textContent === '每组 5+ 项 · 1 组 · 第 3 / 3 项';
+            }"""
+        )
+        assert len(plan_requests) == navigation_plan_reads
+        assert len(submitted_cleanup_requests) == navigation_cleanup_writes
         assert await page.locator("#slimmingIdenticalCleanupNotice > p").count() == 4
         assert "原文件字节并不完全相同" in await page.locator(
             "#slimmingIdenticalCleanupNotice"

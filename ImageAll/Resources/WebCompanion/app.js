@@ -900,8 +900,11 @@ const elements = {
   slimmingIdenticalCleanupMetrics: $("#slimmingIdenticalCleanupMetrics"),
   slimmingIdenticalCleanupRetentionSummary: $("#slimmingIdenticalCleanupRetentionSummary"),
   slimmingIdenticalCleanupDispositionChart: $("#slimmingIdenticalCleanupDispositionChart"),
+  slimmingIdenticalCleanupDispositionStatus: $("#slimmingIdenticalCleanupDispositionStatus"),
   slimmingIdenticalCleanupGroupHistogram: $("#slimmingIdenticalCleanupGroupHistogram"),
+  slimmingIdenticalCleanupHistogramStatus: $("#slimmingIdenticalCleanupHistogramStatus"),
   slimmingIdenticalCleanupSources: $("#slimmingIdenticalCleanupSources"),
+  slimmingIdenticalCleanupSourcesStatus: $("#slimmingIdenticalCleanupSourcesStatus"),
   slimmingIdenticalCleanupNotice: $("#slimmingIdenticalCleanupNotice"),
   slimmingIdenticalCleanupError: $("#slimmingIdenticalCleanupError"),
   cancelSlimmingIdenticalCleanupButton: $("#cancelSlimmingIdenticalCleanupButton"),
@@ -1464,6 +1467,11 @@ const state = {
       verificationHistoryRestoreFocus: true,
       verificationRestorable: false,
       verificationOpening: false,
+      chartSelection: {
+        disposition: null,
+        histogram: null,
+        sources: null,
+      },
     },
     recycle: {
       entries: [],
@@ -35088,6 +35096,108 @@ function identicalCleanupPart(container, key, tagName, className) {
   return part;
 }
 
+function identicalCleanupChartSurface(kind) {
+  return {
+    disposition: {
+      container: elements.slimmingIdenticalCleanupDispositionChart,
+      status: elements.slimmingIdenticalCleanupDispositionStatus,
+      title: "去留比例",
+    },
+    histogram: {
+      container: elements.slimmingIdenticalCleanupGroupHistogram,
+      status: elements.slimmingIdenticalCleanupHistogramStatus,
+      title: "重复组规模",
+    },
+    sources: {
+      container: elements.slimmingIdenticalCleanupSources,
+      status: elements.slimmingIdenticalCleanupSourcesStatus,
+      title: "待清理媒体来源",
+    },
+  }[kind] || null;
+}
+
+function identicalCleanupChartMarks(container) {
+  return [...container.querySelectorAll(
+    "[data-identical-cleanup-chart-mark]"
+  )];
+}
+
+function syncIdenticalCleanupChartSelection(kind, preferredKey = null) {
+  const surface = identicalCleanupChartSurface(kind);
+  if (!surface) return [];
+  const marks = identicalCleanupChartMarks(surface.container);
+  const rememberedKey = state.slimming.identicalCleanup.chartSelection[kind];
+  const selected = marks.find((mark) => (
+    mark.dataset.identicalCleanupChartMark === preferredKey
+  )) || marks.find((mark) => (
+    mark.dataset.identicalCleanupChartMark === rememberedKey
+  )) || marks[0] || null;
+  for (const mark of marks) {
+    mark.dataset.current = String(mark === selected);
+  }
+  const selectedKey = selected?.dataset.identicalCleanupChartMark || null;
+  state.slimming.identicalCleanup.chartSelection[kind] = selectedKey;
+  surface.container.dataset.activeKey = selectedKey || "";
+  syncIdenticalCleanupText(
+    surface.status,
+    selected?.dataset.identicalCleanupChartReading || "暂无可探索数据"
+  );
+  configurePersistentHelp(surface.container, {
+    title: `${surface.title}图表`,
+    detail: "方向键逐项读取，Page Up/Page Down 按图表规模移动，Home/End 直达首尾；指针经过或点击图形也会显示精确值。只浏览方案，不会执行清理。",
+    kind: "slimming",
+    keyShortcuts: "ArrowLeft ArrowRight ArrowUp ArrowDown PageUp PageDown Home End",
+  });
+  return marks;
+}
+
+function moveIdenticalCleanupChartSelection(event) {
+  const container = event.target.closest("[data-identical-cleanup-chart]");
+  if (!container || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+    return false;
+  }
+  const movementKeys = [
+    "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown",
+    "PageUp", "PageDown", "Home", "End",
+  ];
+  if (!movementKeys.includes(event.key)) return false;
+  const kind = container.dataset.identicalCleanupChart;
+  const marks = identicalCleanupChartMarks(container);
+  if (!marks.length) return false;
+  const current = Math.max(0, marks.findIndex((mark) => mark.dataset.current === "true"));
+  const pageStep = Math.max(1, Math.ceil(marks.length / 2));
+  const delta = {
+    ArrowLeft: -1,
+    ArrowUp: -1,
+    ArrowRight: 1,
+    ArrowDown: 1,
+    PageUp: -pageStep,
+    PageDown: pageStep,
+  }[event.key];
+  const next = event.key === "Home" ? 0
+    : event.key === "End" ? marks.length - 1
+      : Math.max(0, Math.min(marks.length - 1, current + delta));
+  event.preventDefault();
+  event.stopPropagation();
+  syncIdenticalCleanupChartSelection(
+    kind,
+    marks[next].dataset.identicalCleanupChartMark
+  );
+  return true;
+}
+
+function selectIdenticalCleanupChartMark(event, { focus = false } = {}) {
+  const mark = event.target.closest("[data-identical-cleanup-chart-mark]");
+  const container = mark?.closest("[data-identical-cleanup-chart]");
+  if (!mark || !container) return false;
+  syncIdenticalCleanupChartSelection(
+    container.dataset.identicalCleanupChart,
+    mark.dataset.identicalCleanupChartMark
+  );
+  if (focus) container.focus({ preventScroll: true });
+  return true;
+}
+
 function renderIdenticalCleanupDispositionChart(plan) {
   const container = elements.slimmingIdenticalCleanupDispositionChart;
   const retained = identicalCleanupPlanCount(plan, "retainedAssetCount") || 0;
@@ -35125,6 +35235,10 @@ function renderIdenticalCleanupDispositionChart(plan) {
       item.dataset.identicalCleanupLegendKey = tone;
     }
     item.className = tone;
+    item.id = `identical-cleanup-disposition-${tone}`;
+    item.dataset.identicalCleanupChartMark = tone;
+    item.dataset.identicalCleanupChartReading =
+      `${label} ${value.toLocaleString()} 张 · 第 ${tone === "retained" ? 1 : 2} / 2 项`;
     let dot = item.querySelector(":scope > [data-identical-cleanup-legend-part='dot']");
     if (!dot) {
       dot = document.createElement("i");
@@ -35146,6 +35260,7 @@ function renderIdenticalCleanupDispositionChart(plan) {
     "aria-label",
     `去留比例：已核验 ${verified.toLocaleString()} 张，保留 ${retained.toLocaleString()} 张，清理 ${removal.toLocaleString()} 张`
   );
+  syncIdenticalCleanupChartSelection("disposition");
 }
 
 function renderIdenticalCleanupGroupHistogram(plan) {
@@ -35168,7 +35283,7 @@ function renderIdenticalCleanupGroupHistogram(plan) {
     syncIdenticalCleanupText(empty, "当前 Host 未提供分组规模分布。");
     wanted.push(empty);
   } else {
-    for (const [label, count] of visibleBuckets) {
+    for (const [index, [label, count]] of visibleBuckets.entries()) {
       let column = container.querySelector(
         `:scope > [data-identical-cleanup-histogram-key="${label}"]`
       );
@@ -35177,6 +35292,10 @@ function renderIdenticalCleanupGroupHistogram(plan) {
         column.dataset.identicalCleanupHistogramKey = label;
       }
       column.className = "identical-cleanup-histogram-column";
+      column.id = `identical-cleanup-histogram-${label === "5+" ? "5-plus" : label}`;
+      column.dataset.identicalCleanupChartMark = label;
+      column.dataset.identicalCleanupChartReading =
+        `每组 ${label} 项 · ${count.toLocaleString()} 组 · 第 ${index + 1} / ${visibleBuckets.length} 项`;
       const value = identicalCleanupPart(column, "value", "strong", "");
       const track = identicalCleanupPart(
         column, "track", "span", "identical-cleanup-histogram-track"
@@ -35198,6 +35317,7 @@ function renderIdenticalCleanupGroupHistogram(plan) {
   reconcileStableChildren(container, wanted);
   const summary = visibleBuckets.map(([label, count]) => `每组 ${label} 项有 ${count} 组`).join("，");
   container.setAttribute("aria-label", `重复组规模分布${summary ? `：${summary}` : "不可用"}`);
+  syncIdenticalCleanupChartSelection("histogram");
 }
 
 function renderIdenticalCleanupSourceChart(plan) {
@@ -35216,6 +35336,10 @@ function renderIdenticalCleanupSourceChart(plan) {
       row.dataset.identicalCleanupSourceKey = tone;
     }
     row.className = `identical-cleanup-source-row ${tone}`;
+    row.id = `identical-cleanup-source-${tone}`;
+    row.dataset.identicalCleanupChartMark = tone;
+    row.dataset.identicalCleanupChartReading =
+      `${label} · 待清理 ${count.toLocaleString()} 张 · 第 ${tone === "photos" ? 1 : 2} / 2 项`;
     const term = identicalCleanupPart(row, "term", "dt", "");
     const description = identicalCleanupPart(row, "description", "dd", "");
     const track = identicalCleanupPart(
@@ -35238,6 +35362,7 @@ function renderIdenticalCleanupSourceChart(plan) {
     "aria-label",
     `待清理媒体来源：Apple Photos ${sources[0][1].toLocaleString()} 张，文件夹来源 ${sources[1][1].toLocaleString()} 张`
   );
+  syncIdenticalCleanupChartSelection("sources");
 }
 
 function syncIdenticalCleanupNotices(notices) {
@@ -35378,6 +35503,9 @@ function renderSlimmingIdenticalCleanupDialog() {
     reconcileStableChildren(elements.slimmingIdenticalCleanupDispositionChart, []);
     reconcileStableChildren(elements.slimmingIdenticalCleanupGroupHistogram, []);
     reconcileStableChildren(elements.slimmingIdenticalCleanupSources, []);
+    syncIdenticalCleanupChartSelection("disposition");
+    syncIdenticalCleanupChartSelection("histogram");
+    syncIdenticalCleanupChartSelection("sources");
     syncIdenticalCleanupNotices([]);
   }
   const disabled = cleanup.preparing || cleanup.submitting || !plan;
@@ -35430,6 +35558,11 @@ function clearSlimmingIdenticalCleanupDialogState({ cancelRequest = true } = {})
   cleanup.focusID = "cancelSlimmingIdenticalCleanupButton";
   cleanup.restorable = false;
   cleanup.opening = false;
+  cleanup.chartSelection = {
+    disposition: null,
+    histogram: null,
+    sources: null,
+  };
 }
 
 function presentSlimmingIdenticalCleanupDialog({
@@ -46991,6 +47124,23 @@ function bindEvents() {
   elements.slimmingIdenticalCleanupDialog.addEventListener("cancel", (event) => {
     event.preventDefault();
     void returnFromSlimmingIdenticalCleanup();
+  });
+  elements.slimmingIdenticalCleanupDialog.addEventListener("keydown", (event) => {
+    moveIdenticalCleanupChartSelection(event);
+  });
+  elements.slimmingIdenticalCleanupDialog.addEventListener("focusin", (event) => {
+    const chart = event.target.closest?.("[data-identical-cleanup-chart]");
+    if (chart && event.target === chart) {
+      syncIdenticalCleanupChartSelection(chart.dataset.identicalCleanupChart);
+    }
+  });
+  elements.slimmingIdenticalCleanupDialog.addEventListener("pointermove", (event) => {
+    if (event.pointerType === "mouse" || event.pointerType === "pen") {
+      selectIdenticalCleanupChartMark(event);
+    }
+  });
+  elements.slimmingIdenticalCleanupDialog.addEventListener("click", (event) => {
+    selectIdenticalCleanupChartMark(event, { focus: true });
   });
   elements.identicalCleanupBlockingDialog.addEventListener("cancel", (event) => {
     event.preventDefault();

@@ -10,8 +10,8 @@
   <meta name="apple-mobile-web-app-title" content="ImageAll">
   <title>ImageAll 网页版</title>
   <link rel="manifest" href="/manifest.webmanifest">
-  <link rel="stylesheet" href="/app.css?v=20260831-204">
-  <script src="/app.js?v=20260831-204" defer></script>
+  <link rel="stylesheet" href="/app.css?v=20260831-205">
+  <script src="/app.js?v=20260831-205" defer></script>
 </head>
 <body>
   <div id="bootView" class="centered-state">
@@ -2430,17 +2430,35 @@
             <section class="identical-cleanup-chart-card">
               <h4>去留比例</h4>
               <div id="slimmingIdenticalCleanupDispositionChart"
-                class="identical-cleanup-disposition-chart" role="img"></div>
+                class="identical-cleanup-disposition-chart" role="group" tabindex="0"
+                data-identical-cleanup-chart="disposition" data-chart-axis="horizontal"
+                aria-roledescription="可探索图表"
+                aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown PageUp PageDown Home End"
+                aria-describedby="slimmingIdenticalCleanupDispositionStatus"></div>
+              <p id="slimmingIdenticalCleanupDispositionStatus"
+                class="identical-cleanup-chart-status" aria-live="polite" aria-atomic="true"></p>
             </section>
             <section class="identical-cleanup-chart-card">
               <h4>重复组规模</h4>
               <div id="slimmingIdenticalCleanupGroupHistogram"
-                class="identical-cleanup-group-histogram" role="img"></div>
+                class="identical-cleanup-group-histogram" role="group" tabindex="0"
+                data-identical-cleanup-chart="histogram" data-chart-axis="horizontal"
+                aria-roledescription="可探索图表"
+                aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown PageUp PageDown Home End"
+                aria-describedby="slimmingIdenticalCleanupHistogramStatus"></div>
+              <p id="slimmingIdenticalCleanupHistogramStatus"
+                class="identical-cleanup-chart-status" aria-live="polite" aria-atomic="true"></p>
             </section>
             <section class="identical-cleanup-chart-card identical-cleanup-source-card">
               <h4>待清理媒体来源</h4>
               <dl id="slimmingIdenticalCleanupSources"
-                class="identical-cleanup-source-chart"></dl>
+                class="identical-cleanup-source-chart" role="group" tabindex="0"
+                data-identical-cleanup-chart="sources" data-chart-axis="vertical"
+                aria-roledescription="可探索图表"
+                aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown PageUp PageDown Home End"
+                aria-describedby="slimmingIdenticalCleanupSourcesStatus"></dl>
+              <p id="slimmingIdenticalCleanupSourcesStatus"
+                class="identical-cleanup-chart-status" aria-live="polite" aria-atomic="true"></p>
             </section>
           </div>
         </section>
