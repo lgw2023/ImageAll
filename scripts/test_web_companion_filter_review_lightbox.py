@@ -255,6 +255,7 @@ def review_item(asset_id, index):
 def main():
     asset_queries = []
     tag_decisions = []
+    tag_undo_snapshots = []
     fail_next_tag_decision = [False]
     remove_review_items_for_next_tag_decision = [False]
     created_tag_applications = []
@@ -989,6 +990,7 @@ def main():
                 return
             if remove_review_items_for_next_tag_decision[0]:
                 remove_review_items_for_next_tag_decision[0] = False
+                tag_undo_snapshots.append([dict(item) for item in review_items])
                 decided_ids = set(payload["assetIDs"])
                 review_items[:] = [
                     item for item in review_items
@@ -1005,6 +1007,20 @@ def main():
             )
 
         page.route("**/v1/tag-decisions/batch", route_tag_decision)
+
+        def route_tag_undo(route):
+            payload = route.request.post_data_json
+            assert payload["undoID"] == "77777777-7777-7777-7777-777777777777"
+            restored_items = tag_undo_snapshots.pop()
+            restored_count = len(restored_items) - len(review_items)
+            review_items[:] = restored_items
+            fulfill_json(route, {
+                "operationID": payload["operationID"],
+                "restoredAssetCount": restored_count,
+                "replayed": False,
+            })
+
+        page.route("**/v1/tag-decisions/undo", route_tag_undo)
 
         def route_tag_selection(route):
             payload = route.request.post_data_json
@@ -4546,6 +4562,100 @@ def main():
         page.screenshot(
             path="/tmp/imageall-review-manual-tag-continuation.png",
             full_page=True,
+        )
+        tag_undo_continuity_frame = page.evaluate(
+            """() => {
+              const pane = document.querySelector('#reviewQueuePane');
+              const item = state.review.items[state.review.selectedIndex];
+              pane.style.height = '180px';
+              pane.style.overflowY = 'auto';
+              pane.scrollTop = Math.min(80, pane.scrollHeight - pane.clientHeight);
+              return {
+                primaryKey: reviewItemKey(item),
+                scrollTop: pane.scrollTop,
+              };
+            }"""
+        )
+        assert tag_undo_continuity_frame["scrollTop"] > 0
+        review_queue_query_count_before_tag_undo = len(review_queue_queries)
+        tag_undo_button = page.locator("#undoToastButton")
+        tag_undo_button.focus()
+        tag_undo_button_state = tag_undo_button.evaluate(
+            """element => ({
+              active: document.activeElement === element,
+              disabled: element.disabled,
+              hidden: element.classList.contains('hidden'),
+              toastUndoKind: state.toastUndoKind,
+            })"""
+        )
+        assert tag_undo_button_state == {
+            "active": True,
+            "disabled": False,
+            "hidden": False,
+            "toastUndoKind": "tag",
+        }, tag_undo_button_state
+        with page.expect_response("**/v1/tag-decisions/undo"):
+            tag_undo_button.press("Enter")
+        page.wait_for_function(
+            "() => !state.undo.tag.mutating && !state.undo.tag.id "
+            "&& !state.review.loading && state.review.items.length === 5"
+        )
+        tag_undo_continuity_result = page.evaluate(
+            """() => {
+              const item = state.review.items[state.review.selectedIndex];
+              return {
+                queueKeys: state.review.items.map(reviewItemKey),
+                selectedAssetIDs: [...state.review.selectedAssetIDs],
+                primaryKey: reviewItemKey(item),
+                anchorKey: reviewItemKey(
+                  state.review.items[state.review.selectionAnchorIndex]
+                ),
+                lightboxKey: state.lightboxReviewKey,
+                lightboxAssetID: state.lightboxAssetID,
+                scrollTop: document.querySelector('#reviewQueuePane').scrollTop,
+                focusedReviewKey: document.activeElement
+                  ?.closest('.review-card')?.dataset.reviewKey || null,
+                focusedLightboxAction: document.activeElement
+                  ?.closest('.lightbox-review-action')?.dataset.action || null,
+                undoDisabled: document.querySelector('#undoTagButton').disabled,
+              };
+            }"""
+        )
+        assert len(review_queue_queries) - review_queue_query_count_before_tag_undo == 2
+        assert tag_undo_continuity_result["queueKeys"] == [
+            f"{REVIEW_IDS[0]}:featurePrint",
+            f"{REVIEW_IDS[1]}:featurePrint",
+            f"{REVIEW_IDS[2]}:featurePrint",
+            f"{REVIEW_HISTORY_IDS[0]}:featurePrint",
+            f"{REVIEW_HISTORY_IDS[1]}:featurePrint",
+        ]
+        assert tag_undo_continuity_result["selectedAssetIDs"] == [
+            REVIEW_HISTORY_IDS[0]
+        ]
+        assert tag_undo_continuity_result["primaryKey"] == (
+            tag_undo_continuity_frame["primaryKey"]
+        )
+        assert tag_undo_continuity_result["anchorKey"] == (
+            tag_undo_continuity_frame["primaryKey"]
+        )
+        assert tag_undo_continuity_result["lightboxKey"] == (
+            tag_undo_continuity_frame["primaryKey"]
+        )
+        assert tag_undo_continuity_result["lightboxAssetID"] == (
+            REVIEW_HISTORY_IDS[0]
+        )
+        assert tag_undo_continuity_result["scrollTop"] == (
+            tag_undo_continuity_frame["scrollTop"]
+        )
+        assert tag_undo_continuity_result["focusedReviewKey"] is None
+        assert tag_undo_continuity_result["focusedLightboxAction"] == "accept"
+        assert tag_undo_continuity_result["undoDisabled"] is True
+        page.screenshot(
+            path="/tmp/imageall-review-tag-undo-reinsert-continuity.png",
+            full_page=True,
+        )
+        page.locator("#reviewQueuePane").evaluate(
+            "element => { element.style.height = ''; element.style.overflowY = ''; }"
         )
         page.locator("#lightboxBackButton").click()
         page.locator("#lightbox").wait_for(state="hidden")

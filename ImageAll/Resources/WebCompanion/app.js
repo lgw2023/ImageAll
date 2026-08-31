@@ -11515,14 +11515,16 @@ async function undoLatestDecision(kind) {
   const channel = state.undo[kind];
   const undoID = channel?.id;
   if (!channel || !state.online || !undoID || channel.mutating) return;
-  const restoreReviewFocus = kind === "review"
-    && reviewWorkspaceIsOpen()
-    && state.review.mode === "queue"
-    && [
+  const focusedUndoControls = kind === "review"
+    ? [
       elements.reviewUndoButton,
       elements.undoReviewButton,
       elements.undoToastButton,
-    ].includes(document.activeElement);
+    ]
+    : [elements.undoTagButton, elements.undoToastButton];
+  const restoreReviewFocus = reviewWorkspaceIsOpen()
+    && state.review.mode === "queue"
+    && focusedUndoControls.includes(document.activeElement);
   if (!channel.operationID) {
     channel.operationID = crypto.randomUUID();
   }

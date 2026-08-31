@@ -4243,6 +4243,12 @@ final class RemoteHTTPServerTests: XCTestCase {
         let undoDecisionScript = String(
             script[undoDecisionStart.lowerBound..<latestUndoKindStart.lowerBound]
         )
+        XCTAssertTrue(
+            undoDecisionScript.contains("const focusedUndoControls = kind === \"review\"")
+        )
+        XCTAssertTrue(
+            undoDecisionScript.contains("[elements.undoTagButton, elements.undoToastButton]")
+        )
         XCTAssertTrue(undoDecisionScript.contains("restoreReviewFocus"))
         XCTAssertTrue(undoDecisionScript.contains("await refreshWorkspace"))
         XCTAssertTrue(undoDecisionScript.contains(".lightbox-review-action:not(:disabled)"))
