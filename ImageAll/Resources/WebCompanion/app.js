@@ -4727,21 +4727,117 @@ function workspacePresentationFocusIsUsable(workspace, target) {
     && !target.closest("[inert], [aria-hidden='true']");
 }
 
+const workspacePresentationFocusSnapshots = new WeakMap();
+const workspacePresentationModes = new WeakMap();
+
+function workspacePresentationScrollOwner(workspace, target) {
+  let candidate = target?.parentElement || null;
+  while (candidate && workspace.contains(candidate)) {
+    const overflowY = getComputedStyle(candidate).overflowY;
+    if (["auto", "scroll", "overlay"].includes(overflowY)
+      && candidate.scrollHeight > candidate.clientHeight + 1) {
+      return candidate;
+    }
+    if (candidate === workspace) break;
+    candidate = candidate.parentElement;
+  }
+  return null;
+}
+
+function captureWorkspacePresentationFocus(workspace, target) {
+  const scrollOwner = target instanceof HTMLElement && workspace.contains(target)
+    ? workspacePresentationScrollOwner(workspace, target)
+    : null;
+  return {
+    target,
+    scrollOffset: scrollOwner
+      ? target.getBoundingClientRect().top - scrollOwner.getBoundingClientRect().top
+      : null,
+  };
+}
+
+function preferredWorkspacePresentationFocus(workspace, target, mode) {
+  const previousMode = workspacePresentationModes.get(workspace);
+  const snapshot = workspacePresentationFocusSnapshots.get(workspace);
+  workspacePresentationModes.set(workspace, mode);
+  if (previousMode !== undefined && previousMode !== mode && snapshot?.target === target) {
+    return snapshot;
+  }
+  return captureWorkspacePresentationFocus(workspace, target);
+}
+
+function currentWorkspacePresentationMode(workspace) {
+  if (workspace === elements.reviewWorkspace) return reviewWorkspaceUsesIntegratedLayout();
+  if (workspace === elements.trainingWorkspace) return trainingWorkspaceUsesIntegratedLayout();
+  if (workspace === elements.slimmingWorkspace) return slimmingWorkspaceUsesIntegratedLayout();
+  if (workspace === elements.galleryOverviewWorkspace) {
+    return galleryOverviewUsesIntegratedLayout();
+  }
+  if (workspace === elements.worldMapWorkspace) return worldMapUsesIntegratedLayout();
+  return null;
+}
+
+function rememberActiveWorkspacePresentationFocus() {
+  const target = document.activeElement;
+  if (!(target instanceof HTMLElement)) return;
+  const workspace = [
+    elements.reviewWorkspace,
+    elements.trainingWorkspace,
+    elements.slimmingWorkspace,
+    elements.galleryOverviewWorkspace,
+    elements.worldMapWorkspace,
+  ].find((candidate) => candidate.contains(target));
+  if (!workspace || !workspacePresentationFocusIsUsable(workspace, target)) return;
+  const synchronizedMode = workspacePresentationModes.get(workspace);
+  if (synchronizedMode !== undefined
+    && currentWorkspacePresentationMode(workspace) !== synchronizedMode) return;
+  workspacePresentationFocusSnapshots.set(
+    workspace,
+    captureWorkspacePresentationFocus(workspace, target)
+  );
+}
+
+function restoreWorkspacePresentationScroll(workspace, target, preferredFocus, settle = false) {
+  if (target === preferredFocus?.target && Number.isFinite(preferredFocus.scrollOffset)) {
+    const scrollOwner = workspacePresentationScrollOwner(workspace, target);
+    if (scrollOwner) {
+      const currentOffset = target.getBoundingClientRect().top
+        - scrollOwner.getBoundingClientRect().top;
+      scrollOwner.scrollTop += currentOffset - preferredFocus.scrollOffset;
+    }
+  }
+  if (!settle) {
+    requestAnimationFrame(() => {
+      restoreWorkspacePresentationScroll(workspace, target, preferredFocus, true);
+    });
+    return;
+  }
+  rememberActiveWorkspacePresentationFocus();
+}
+
 function reconcileWorkspacePresentationFocus(workspace, fallback, preferredFocus = null) {
   requestAnimationFrame(() => {
-    const target = workspacePresentationFocusIsUsable(workspace, preferredFocus)
-      ? preferredFocus
+    const preferredTarget = preferredFocus?.target || preferredFocus;
+    const target = workspacePresentationFocusIsUsable(workspace, preferredTarget)
+      ? preferredTarget
       : (workspacePresentationFocusIsUsable(workspace, document.activeElement)
         ? document.activeElement
         : fallback);
     if (document.activeElement !== target) target.focus({ preventScroll: true });
+    restoreWorkspacePresentationScroll(workspace, target, preferredFocus);
   });
 }
 
 function syncReviewPresentation({ focus = false, renderSurfaces = true } = {}) {
-  const preferredFocus = focus ? document.activeElement : null;
   const open = reviewWorkspaceIsOpen();
   const integrated = open && reviewWorkspaceUsesIntegratedLayout();
+  const preferredFocus = focus
+    ? preferredWorkspacePresentationFocus(
+      elements.reviewWorkspace,
+      document.activeElement,
+      integrated
+    )
+    : null;
   const lightboxOpen = !elements.lightbox.classList.contains("hidden")
     && state.lightboxContext === "review";
   const dockedLightbox = lightboxOpen
@@ -4937,9 +5033,15 @@ function syncIntegratedTrainingFrame() {
 }
 
 function syncTrainingPresentation({ focus = false, renderSurfaces = true } = {}) {
-  const preferredFocus = focus ? document.activeElement : null;
   const open = trainingWorkspaceIsOpen();
   const integrated = open && trainingWorkspaceUsesIntegratedLayout();
+  const preferredFocus = focus
+    ? preferredWorkspacePresentationFocus(
+      elements.trainingWorkspace,
+      document.activeElement,
+      integrated
+    )
+    : null;
 
   if (integrated) {
     elements.appView.inert = false;
@@ -5016,9 +5118,15 @@ function syncIntegratedSlimmingFrame() {
 }
 
 function syncSlimmingPresentation({ focus = false, renderSurfaces = true } = {}) {
-  const preferredFocus = focus ? document.activeElement : null;
   const open = slimmingWorkspaceIsOpen();
   const integrated = open && slimmingWorkspaceUsesIntegratedLayout();
+  const preferredFocus = focus
+    ? preferredWorkspacePresentationFocus(
+      elements.slimmingWorkspace,
+      document.activeElement,
+      integrated
+    )
+    : null;
   const lightboxOpen = !elements.lightbox.classList.contains("hidden")
     && state.lightboxContext === "slimming";
 
@@ -5752,9 +5860,15 @@ function restoreWorkspacePortal(workspace, portal) {
 }
 
 function syncGalleryOverviewPresentation({ focus = false, renderSurfaces = true } = {}) {
-  const preferredFocus = focus ? document.activeElement : null;
   const open = galleryOverviewIsOpen();
   const integrated = open && galleryOverviewUsesIntegratedLayout();
+  const preferredFocus = focus
+    ? preferredWorkspacePresentationFocus(
+      elements.galleryOverviewWorkspace,
+      document.activeElement,
+      integrated
+    )
+    : null;
 
   if (integrated) {
     elements.appView.inert = false;
@@ -6364,9 +6478,15 @@ function syncIntegratedWorldMapFrame() {
 }
 
 function syncWorldMapPresentation({ focus = false, renderSurfaces = true } = {}) {
-  const preferredFocus = focus ? document.activeElement : null;
   const open = worldMapIsOpen();
   const integrated = open && worldMapUsesIntegratedLayout();
+  const preferredFocus = focus
+    ? preferredWorkspacePresentationFocus(
+      elements.worldMapWorkspace,
+      document.activeElement,
+      integrated
+    )
+    : null;
   const lightboxOpen = !elements.lightbox.classList.contains("hidden")
     && state.lightboxContext === "worldMap";
 
@@ -45582,6 +45702,8 @@ function setupSidebarReordering() {
 function bindEvents() {
   bindWorkspaceInteractionDeferral();
   bindPersistentHelp();
+  document.addEventListener("focusin", rememberActiveWorkspacePresentationFocus);
+  document.addEventListener("scroll", rememberActiveWorkspacePresentationFocus, true);
   setupSidebarReordering();
   bindGridDensityControls();
   elements.personalModelToolbarActions.addEventListener("focusin", (event) => {

@@ -751,6 +751,10 @@ def main():
             "[data-gallery-overview-source-id]"
         ).first
         responsive_overview_focus.focus()
+        responsive_overview_offset = responsive_overview_focus.evaluate(
+            "element => element.getBoundingClientRect().top "
+            "- document.querySelector('#galleryOverviewScroll').getBoundingClientRect().top"
+        )
         page.set_viewport_size({"width": 390, "height": 844})
         page.wait_for_timeout(100)
         assert page.locator("#appView").get_attribute("inert") is not None
@@ -760,6 +764,12 @@ def main():
         assert page.locator("#closeGalleryOverviewButton").get_attribute("aria-label") == "返回图库"
         assert responsive_overview_focus.evaluate(
             "element => document.activeElement === element"
+        )
+        page.wait_for_function(
+            "expected => Math.abs(document.activeElement.getBoundingClientRect().top "
+            "- document.querySelector('#galleryOverviewScroll').getBoundingClientRect().top "
+            "- expected) <= 2",
+            arg=responsive_overview_offset,
         )
         assert overview_requests == responsive_overview_requests
         page.screenshot(

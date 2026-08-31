@@ -3047,6 +3047,10 @@ def main():
         assert responsive_review_focus.evaluate(
             "element => document.activeElement === element"
         )
+        responsive_review_offset = responsive_review_focus.evaluate(
+            "element => element.getBoundingClientRect().top "
+            "- document.querySelector('.review-overview-content').getBoundingClientRect().top"
+        )
         page.set_viewport_size({"width": 390, "height": 844})
         page.wait_for_function(
             "() => !document.querySelector('#reviewWorkspace').classList.contains('integrated')"
@@ -3058,6 +3062,24 @@ def main():
         ) == {"appInert": True, "role": "dialog", "ariaModal": "true"}
         assert responsive_review_focus.evaluate(
             "element => document.activeElement === element"
+        )
+        page.wait_for_function(
+            "expected => Math.abs(document.activeElement.getBoundingClientRect().top "
+            "- document.querySelector('.review-overview').getBoundingClientRect().top "
+            "- expected) <= 2",
+            arg=responsive_review_offset,
+        )
+        responsive_review_mobile_offset = responsive_review_focus.evaluate(
+            "element => element.getBoundingClientRect().top "
+            "- document.querySelector('.review-overview').getBoundingClientRect().top"
+        )
+        assert abs(responsive_review_mobile_offset - responsive_review_offset) <= 2, {
+            "wide": responsive_review_offset,
+            "narrow": responsive_review_mobile_offset,
+        }
+        page.screenshot(
+            path="/tmp/imageall-review-responsive-scroll-anchor.png",
+            full_page=True,
         )
         assert review_handle.is_hidden()
         assert page.evaluate("() => document.documentElement.scrollWidth <= 390")
@@ -3077,6 +3099,10 @@ def main():
         assert narrow_review_help_bounds["x"] + narrow_review_help_bounds["width"] <= 382
         assert narrow_review_help_bounds["y"] >= 8
         page.wait_for_timeout(180)
+        responsive_review_return_offset = responsive_review_focus.evaluate(
+            "element => element.getBoundingClientRect().top "
+            "- document.querySelector('.review-overview').getBoundingClientRect().top"
+        )
         page.screenshot(path="/tmp/imageall-review-persistent-help-390.png", full_page=True)
         page.set_viewport_size({"width": 1440, "height": 960})
         page.wait_for_function(
@@ -3090,6 +3116,35 @@ def main():
         assert responsive_review_focus.evaluate(
             "element => document.activeElement === element"
         )
+        page.wait_for_timeout(100)
+        responsive_review_wide_frame = responsive_review_focus.evaluate(
+            """element => {
+              const content = document.querySelector('.review-overview-content');
+              const offset = element.getBoundingClientRect().top
+                - content.getBoundingClientRect().top;
+              return {
+                offset,
+                unscrolledOffset: offset + content.scrollTop,
+                maximumScroll: Math.max(0, content.scrollHeight - content.clientHeight),
+              };
+            }"""
+        )
+        responsive_review_expected_wide_offset = min(
+            responsive_review_wide_frame["unscrolledOffset"],
+            max(
+                responsive_review_wide_frame["unscrolledOffset"]
+                - responsive_review_wide_frame["maximumScroll"],
+                responsive_review_return_offset,
+            ),
+        )
+        assert abs(
+            responsive_review_wide_frame["offset"]
+            - responsive_review_expected_wide_offset
+        ) <= 2, {
+            "before": responsive_review_return_offset,
+            "expected": responsive_review_expected_wide_offset,
+            "after": responsive_review_wide_frame,
+        }
         page.locator("#reviewOverviewGrid").evaluate(
             "element => { element.style.paddingBottom = ''; "
             "element.closest('.review-overview-content').scrollTop = 0; }"

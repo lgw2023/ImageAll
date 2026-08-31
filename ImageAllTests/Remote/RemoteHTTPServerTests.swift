@@ -2912,19 +2912,45 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function syncGalleryOverviewPresentation"))
         XCTAssertTrue(script.contains("function syncWorldMapPresentation"))
         XCTAssertTrue(script.contains("function workspacePresentationFocusIsUsable"))
+        XCTAssertTrue(script.contains("function workspacePresentationScrollOwner"))
+        XCTAssertTrue(script.contains("function captureWorkspacePresentationFocus"))
+        XCTAssertTrue(script.contains("function preferredWorkspacePresentationFocus"))
+        XCTAssertTrue(script.contains("function restoreWorkspacePresentationScroll"))
         XCTAssertTrue(script.contains("function reconcileWorkspacePresentationFocus"))
         XCTAssertTrue(script.contains("workspace.contains(target)"))
         XCTAssertTrue(script.contains("!target.matches(\":disabled\")"))
         XCTAssertTrue(script.contains("!target.closest(\"[inert], [aria-hidden='true']\")"))
         XCTAssertEqual(
-            script.components(
-                separatedBy: "const preferredFocus = focus ? document.activeElement : null;"
-            ).count - 1,
-            5
+            script.components(separatedBy: "preferredWorkspacePresentationFocus(").count - 1,
+            6
         )
         XCTAssertEqual(
             script.components(separatedBy: "reconcileWorkspacePresentationFocus(").count - 1,
             6
+        )
+        XCTAssertTrue(script.contains("candidate.scrollHeight > candidate.clientHeight + 1"))
+        XCTAssertTrue(script.contains("Number.isFinite(preferredFocus.scrollOffset)"))
+        XCTAssertTrue(script.contains("const workspacePresentationFocusSnapshots = new WeakMap()"))
+        XCTAssertTrue(script.contains("const workspacePresentationModes = new WeakMap()"))
+        XCTAssertTrue(script.contains("previousMode !== mode && snapshot?.target === target"))
+        XCTAssertTrue(script.contains("currentWorkspacePresentationMode(workspace) !== synchronizedMode"))
+        XCTAssertTrue(
+            script.contains("scrollOwner.scrollTop += currentOffset - preferredFocus.scrollOffset;")
+        )
+        XCTAssertTrue(
+            script.contains(
+                "restoreWorkspacePresentationScroll(workspace, target, preferredFocus, true);"
+            )
+        )
+        XCTAssertTrue(
+            script.contains(
+                "document.addEventListener(\"focusin\", rememberActiveWorkspacePresentationFocus)"
+            )
+        )
+        XCTAssertTrue(
+            script.contains(
+                "document.addEventListener(\"scroll\", rememberActiveWorkspacePresentationFocus, true)"
+            )
         )
         XCTAssertTrue(script.contains("function syncIntegratedReviewFrame"))
         XCTAssertTrue(script.contains("function leaveIntegratedReviewForLibrary"))
