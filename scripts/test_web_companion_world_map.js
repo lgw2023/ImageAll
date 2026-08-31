@@ -871,6 +871,82 @@ let browser;
     Object.values(locationPollContinuity).every(Boolean),
     `location backfill poll continuity failed: ${JSON.stringify(locationPollContinuity)}`
   );
+  const locationKeyboardReads = locationBackfillRequestCount;
+  const locationKeyboardCommands = locationBackfillCommands.length;
+  const locationActions = page.locator(
+    "#worldMapLocationBackfillSources [data-location-backfill-action]"
+  );
+  assert.equal(
+    await locationActions.evaluateAll((buttons) => buttons.filter(
+      (button) => button.tabIndex === 0
+    ).length),
+    1,
+    "the long source list should expose one roving Tab stop"
+  );
+  assert.equal(
+    await page.evaluate(() => document.activeElement?.getAttribute("aria-keyshortcuts")),
+    "ArrowUp ArrowDown PageUp PageDown Home End"
+  );
+  assert.match(
+    await page.evaluate(() => document.activeElement?.getAttribute("aria-label")),
+    /Synthetic Archive 5/
+  );
+  const locationPageExpectation = await page.evaluate(() => {
+    const buttons = [...document.querySelectorAll(
+      "#worldMapLocationBackfillSources [data-location-backfill-action]"
+    )].filter((button) => !button.disabled
+      && button.getAttribute("aria-disabled") !== "true");
+    return {
+      sourceIDs: buttons.map((button) => button.dataset.sourceId),
+      currentIndex: buttons.indexOf(document.activeElement),
+      documentScrollY: scrollY,
+    };
+  });
+  await page.keyboard.press("PageDown");
+  const locationPageDownSourceID = await page.evaluate(
+    () => document.activeElement?.closest("[data-source-id]")?.dataset.sourceId
+  );
+  assert.ok(
+    locationPageExpectation.sourceIDs.indexOf(locationPageDownSourceID)
+      >= locationPageExpectation.currentIndex + 2,
+    "Page Down should move by the visible page rather than one source"
+  );
+  const locationPageVisibility = await page.evaluate(() => {
+    const bodyRect = document.querySelector("#worldMapLocationBackfillBody").getBoundingClientRect();
+    const cardRect = document.activeElement.closest("[data-source-id]").getBoundingClientRect();
+    return {
+      fullyVisible: cardRect.top >= bodyRect.top - 1 && cardRect.bottom <= bodyRect.bottom + 1,
+      documentScrollY: scrollY,
+    };
+  });
+  assert.equal(locationPageVisibility.fullyVisible, true);
+  assert.equal(locationPageVisibility.documentScrollY, locationPageExpectation.documentScrollY,
+    "source navigation must only scroll the location panel");
+  await page.keyboard.press("Home");
+  assert.equal(
+    await page.evaluate(
+      () => document.activeElement?.closest("[data-source-id]")?.dataset.sourceId
+    ),
+    folderSourceID
+  );
+  await page.keyboard.press("End");
+  assert.equal(
+    await page.evaluate(
+      () => document.activeElement?.closest("[data-source-id]")?.dataset.sourceId
+    ),
+    locationBackfillPreviewSourceIDs.at(-1)
+  );
+  await page.keyboard.press("ArrowUp");
+  assert.equal(
+    await page.evaluate(
+      () => document.activeElement?.closest("[data-source-id]")?.dataset.sourceId
+    ),
+    locationBackfillPreviewSourceIDs.at(-2)
+  );
+  assert.equal(locationBackfillRequestCount, locationKeyboardReads,
+    "pure source navigation must not read the Host");
+  assert.equal(locationBackfillCommands.length, locationKeyboardCommands,
+    "pure source navigation must not submit a location command");
   const locationBackfillReadsBeforeHistory = locationBackfillRequestCount;
   const locationStartButton = page.locator(
     `[data-source-id="${folderSourceID}"] [data-location-backfill-action="start"]`
@@ -908,8 +984,29 @@ let browser;
   );
   await page.locator(
     `[data-source-id="${folderSourceID}"] [data-location-backfill-action="start"]`
-  ).click();
+  ).evaluate((button) => {
+    button.focus({ preventScroll: true });
+    window.__locationStartAction = button;
+    button.click();
+  });
   await page.locator(`[data-source-id="${folderSourceID}"][data-phase="running"]`).waitFor();
+  const runningActionContinuity = await page.evaluate((sourceID) => {
+    const action = document.querySelector(
+      `[data-source-id="${sourceID}"] [data-location-backfill-action="cancel"]`
+    );
+    return {
+      sameNode: action === window.__locationStartAction,
+      focused: document.activeElement === action,
+      busy: action?.getAttribute("aria-busy"),
+      tabIndex: action?.tabIndex,
+    };
+  }, folderSourceID);
+  assert.deepEqual(runningActionContinuity, {
+    sameNode: true,
+    focused: true,
+    busy: "false",
+    tabIndex: 0,
+  });
   await page.locator(
     `[data-source-id="${photosSourceID}"] [data-location-backfill-action="cancel"]`
   ).click();
@@ -926,6 +1023,19 @@ let browser;
   await page.locator(`[data-source-id="${photosSourceID}"][data-phase="cancelled"]`).waitFor({
     timeout: 4_000,
   });
+  await page.waitForFunction(
+    (sourceID) => document.activeElement?.closest("[data-source-id]")?.dataset.sourceId
+      === sourceID,
+    locationBackfillPreviewSourceIDs[0]
+  );
+  assert.equal(
+    await page.locator(
+      `[data-source-id="${locationBackfillPreviewSourceIDs[0]}"] `
+      + '[data-location-backfill-action="start"]'
+    ).getAttribute("tabindex"),
+    "0",
+    "terminal actions should hand focus to the nearest remaining source"
+  );
   assert.match(
     await page.locator(`.world-map-location-source-card[data-source-id="${folderSourceID}"]`).textContent(),
     /目录已更新/

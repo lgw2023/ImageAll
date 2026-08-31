@@ -6390,6 +6390,80 @@ function appendWorldMapLocationMetric(parent, value, label) {
   return metric;
 }
 
+const worldMapLocationNavigationShortcuts =
+  "ArrowUp ArrowDown PageUp PageDown Home End";
+
+function worldMapLocationActionButtons() {
+  return [...elements.worldMapLocationBackfillSources.querySelectorAll(
+    ":scope > .world-map-location-source-card button[data-location-backfill-action]"
+  )].filter((button) => !button.disabled
+    && button.getAttribute("aria-disabled") !== "true");
+}
+
+function syncWorldMapLocationActionTabStops(preferredSourceID = null) {
+  const allButtons = [...elements.worldMapLocationBackfillSources.querySelectorAll(
+    ":scope > .world-map-location-source-card button[data-location-backfill-action]"
+  )];
+  const buttons = worldMapLocationActionButtons();
+  const active = document.activeElement?.closest?.(
+    "button[data-location-backfill-action][data-source-id]"
+  );
+  const preferred = buttons.find((button) => button === active)
+    || buttons.find((button) => button.dataset.sourceId === preferredSourceID)
+    || buttons.find((button) => (
+      button.dataset.sourceId === state.worldMap.locationBackfill.focusTarget?.sourceID
+    ))
+    || buttons[0]
+    || null;
+  for (const button of allButtons) button.tabIndex = button === preferred ? 0 : -1;
+}
+
+function nearestWorldMapLocationAction(sourceID) {
+  const cards = [...elements.worldMapLocationBackfillSources.querySelectorAll(
+    ":scope > .world-map-location-source-card"
+  )];
+  const originIndex = Math.max(0, cards.findIndex((card) => card.dataset.sourceId === sourceID));
+  return worldMapLocationActionButtons()
+    .map((button) => ({
+      button,
+      index: cards.indexOf(button.closest(".world-map-location-source-card")),
+    }))
+    .sort((left, right) => (
+      Math.abs(left.index - originIndex) - Math.abs(right.index - originIndex)
+      || Number(right.index >= originIndex) - Number(left.index >= originIndex)
+      || left.index - right.index
+    ))[0]?.button || null;
+}
+
+function focusWorldMapLocationAction(button, { reveal = true } = {}) {
+  if (!button) return false;
+  button.focus({ preventScroll: true });
+  if (reveal) button.closest(".world-map-location-source-card")
+    ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  syncWorldMapLocationActionTabStops(button.dataset.sourceId);
+  return true;
+}
+
+function moveWorldMapLocationActionFocus(event) {
+  if (event.altKey || event.ctrlKey || event.metaKey) return false;
+  if (!worldMapLocationNavigationShortcuts.split(" ").includes(event.key)) return false;
+  const current = event.target.closest(
+    "button[data-location-backfill-action][data-source-id]"
+  );
+  const buttons = worldMapLocationActionButtons();
+  const currentIndex = buttons.indexOf(current);
+  if (currentIndex < 0 || !buttons.length) return false;
+  event.preventDefault();
+  const rows = buttons.map((button) => button.closest(".world-map-location-source-card"));
+  const nextIndex = longListNavigationTarget(
+    rows,
+    currentIndex,
+    event.key,
+    elements.worldMapLocationBackfillBody
+  );
+  return focusWorldMapLocationAction(buttons[nextIndex]);
+}
+
 function createWorldMapLocationSourceCard() {
   const card = document.createElement("article");
   card.className = "world-map-location-source-card";
@@ -6436,8 +6510,7 @@ function syncWorldMapLocationSourceAction(footer, snapshot, busy) {
   let action = footer.querySelector(":scope > .world-map-location-source-action");
   const matchesDesiredAction = desiredAction === "status"
     ? action?.tagName === "SPAN" && !action.dataset.locationBackfillAction
-    : action?.tagName === "BUTTON"
-      && action.dataset.locationBackfillAction === desiredAction;
+    : action?.tagName === "BUTTON";
   if (!matchesDesiredAction) {
     action = document.createElement(desiredAction === "status" ? "span" : "button");
     action.className = "world-map-location-source-action";
@@ -6456,12 +6529,27 @@ function syncWorldMapLocationSourceAction(footer, snapshot, busy) {
     action.type = "button";
     action.dataset.locationBackfillAction = desiredAction;
     action.dataset.sourceId = snapshot.sourceID;
-    action.disabled = busy;
+    action.setAttribute("aria-keyshortcuts", worldMapLocationNavigationShortcuts);
+    action.setAttribute("aria-busy", String(busy));
+    action.setAttribute("aria-disabled", String(busy));
+    action.disabled = busy && document.activeElement !== action;
     if (desiredAction === "cancel") {
       action.textContent = busy ? "正在提交…" : "取消";
+      action.setAttribute(
+        "aria-label",
+        busy
+          ? `正在提交取消“${snapshot.sourceDisplayName}”的位置检查`
+          : `取消“${snapshot.sourceDisplayName}”的位置检查`
+      );
     } else {
       const retry = ["retryableFailed", "cancelled", "terminalFailed"].includes(snapshot.phase);
       action.textContent = busy ? "正在提交…" : (retry ? "重试" : "开始检查");
+      action.setAttribute(
+        "aria-label",
+        busy
+          ? `正在提交“${snapshot.sourceDisplayName}”的位置检查`
+          : `${retry ? "重试" : "开始检查"}“${snapshot.sourceDisplayName}”的位置`
+      );
     }
   }
   reconcileStableChildren(footer, [metrics, action]);
@@ -6516,6 +6604,12 @@ function syncWorldMapLocationSourceCard(card, snapshot, busy) {
 }
 
 function reconcileWorldMapLocationSourceCards(snapshots, busySourceIDs) {
+  const activeAction = elements.worldMapLocationBackfillSources.contains(document.activeElement)
+    ? document.activeElement.closest?.(
+      "button[data-location-backfill-action][data-source-id]"
+    )
+    : null;
+  const activeSourceID = activeAction?.dataset.sourceId || null;
   const existingCards = new Map(
     [...elements.worldMapLocationBackfillSources.querySelectorAll(
       ":scope > .world-map-location-source-card"
@@ -6528,6 +6622,13 @@ function reconcileWorldMapLocationSourceCards(snapshots, busySourceIDs) {
     return card;
   });
   reconcileStableChildren(elements.worldMapLocationBackfillSources, cards);
+  syncWorldMapLocationActionTabStops(activeSourceID);
+  if (activeSourceID && (!activeAction.isConnected || document.activeElement !== activeAction)) {
+    const fallback = nearestWorldMapLocationAction(activeSourceID);
+    if (!focusWorldMapLocationAction(fallback)) {
+      elements.closeWorldMapLocationBackfillButton.focus({ preventScroll: true });
+    }
+  }
 }
 
 function renderWorldMapLocationBackfill() {
@@ -6647,7 +6748,14 @@ function reconcileWorldMapLocationBackfillHistoryFocus() {
   }
   const snapshot = backfill.snapshots.find((item) => item.sourceID === focus.sourceID);
   const available = focus.action === "start" ? snapshot?.canStart : snapshot?.canCancel;
-  backfill.focusTarget = available ? focus : { kind: "close" };
+  if (available) {
+    backfill.focusTarget = focus;
+    return;
+  }
+  const currentAction = snapshot?.canCancel ? "cancel" : (snapshot?.canStart ? "start" : null);
+  backfill.focusTarget = currentAction
+    ? { kind: "action", sourceID: focus.sourceID, action: currentAction }
+    : { kind: "close" };
 }
 
 async function restoreWorldMapLocationBackfillLayoutFromHistory() {
@@ -6708,9 +6816,12 @@ function restoreWorldMapLocationBackfillFocus(snapshot) {
     target = elements.worldMapLocationBackfillSources.querySelector(
       `[data-location-backfill-action="${CSS.escape(snapshot.action)}"]`
       + `[data-source-id="${CSS.escape(snapshot.sourceID)}"]`
+    ) || elements.worldMapLocationBackfillSources.querySelector(
+      `button[data-location-backfill-action][data-source-id="${CSS.escape(snapshot.sourceID)}"]`
     ) || target;
   }
   restoreOverlayFocus(target);
+  syncWorldMapLocationActionTabStops(target.dataset?.sourceId || null);
 }
 
 function clearWorldMapLocationBackfillDialogState({ cancelRequest = true } = {}) {
@@ -46098,13 +46209,20 @@ function bindEvents() {
   }, { passive: true });
   elements.worldMapLocationBackfillSources.addEventListener("focusin", () => {
     if (!elements.worldMapLocationBackfillDialog.open) return;
+    const action = document.activeElement?.closest?.(
+      "button[data-location-backfill-action][data-source-id]"
+    );
+    syncWorldMapLocationActionTabStops(action?.dataset.sourceId || null);
     state.worldMap.locationBackfill.focusTarget =
       captureWorldMapLocationBackfillFocus();
     checkpointActiveWorkspaceHistory();
   });
+  elements.worldMapLocationBackfillSources.addEventListener("keydown", (event) => {
+    moveWorldMapLocationActionFocus(event);
+  });
   elements.worldMapLocationBackfillSources.addEventListener("click", (event) => {
     const button = event.target.closest("[data-location-backfill-action]");
-    if (!button || button.disabled) return;
+    if (!button || button.disabled || button.getAttribute("aria-disabled") === "true") return;
     void submitWorldMapLocationBackfill(
       button.dataset.sourceId,
       button.dataset.locationBackfillAction

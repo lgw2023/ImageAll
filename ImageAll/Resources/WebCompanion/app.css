@@ -10503,6 +10503,10 @@ img.thumbnail-load-failed {
 .world-map-location-metric span,
 .world-map-location-scan-progress { color: var(--location-secondary); font-size: 9px; }
 .world-map-location-source-action { margin-left: auto; }
+.world-map-location-source-action[aria-busy="true"] {
+  cursor: progress;
+  opacity: 0.66;
+}
 .world-map-location-scan-progress { min-height: 13px; font-variant-numeric: tabular-nums; }
 
 .world-map-place-open {
