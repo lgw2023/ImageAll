@@ -2324,6 +2324,13 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(root.contentType, "text/html; charset=utf-8")
         XCTAssertEqual(String(decoding: root.body, as: UTF8.self), "<h1>ImageAll</h1>")
         XCTAssertFalse(root.allowsSameOriginFraming)
+        XCTAssertEqual(
+            String(
+                decoding: try XCTUnwrap(store.asset(for: "/legacy/")?.body),
+                as: UTF8.self
+            ),
+            "<h1>ImageAll</h1>"
+        )
         let worldMap = try XCTUnwrap(store.asset(for: "/world-map/index.html"))
         XCTAssertEqual(String(decoding: worldMap.body, as: UTF8.self), "<main>Photo Atlas</main>")
         XCTAssertTrue(worldMap.allowsSameOriginFraming)
@@ -2414,6 +2421,7 @@ final class RemoteHTTPServerTests: XCTestCase {
             store.asset(for: "/web-v2/service-worker.js")?.serviceWorkerAllowedScope,
             "/"
         )
+        XCTAssertEqual(store.defaultServiceWorkerAsset()?.body, workerData)
         XCTAssertNotNil(store.asset(for: "/web-v2/gallery"))
         XCTAssertNotNil(
             store.asset(
@@ -5328,7 +5336,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("closeLayoutMenu({ restoreFocus: false });"))
     }
 
-    func testWebRootLoadsWithoutAuthenticationAndUsesBrowserSecurityHeaders() async throws {
+    func testWebDefaultRedirectAndLegacyEntryUseBrowserSecurityHeaders() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(
                 "RemoteHTTPServerTests-Web-\(UUID().uuidString)",
@@ -5361,9 +5369,26 @@ final class RemoteHTTPServerTests: XCTestCase {
         try await Task.sleep(nanoseconds: 150_000_000)
         defer { Task { await server.stop() } }
 
-        let (data, response) = try await URLSession.shared.data(
+        let redirectDelegate = RemoteHTTPNoRedirectDelegate()
+        let redirectSession = URLSession(
+            configuration: .ephemeral,
+            delegate: redirectDelegate,
+            delegateQueue: nil
+        )
+        defer { redirectSession.invalidateAndCancel() }
+        let (_, redirectResponse) = try await redirectSession.data(
             from: URL(string: "http://127.0.0.1:\(port)/")!
         )
+        let redirectHTTP = try XCTUnwrap(redirectResponse as? HTTPURLResponse)
+        XCTAssertEqual(redirectHTTP.statusCode, 302)
+        XCTAssertEqual(
+            redirectHTTP.value(forHTTPHeaderField: "Location"),
+            "/web-v2/gallery"
+        )
+        XCTAssertEqual(redirectHTTP.value(forHTTPHeaderField: "X-Frame-Options"), "DENY")
+
+        let legacyURL = URL(string: "http://127.0.0.1:\(port)/legacy/")!
+        let (data, response) = try await URLSession.shared.data(from: legacyURL)
         let http = try XCTUnwrap(response as? HTTPURLResponse)
         XCTAssertEqual(http.statusCode, 200)
         XCTAssertEqual(String(decoding: data, as: UTF8.self), "<main>ImageAll Web</main>")
@@ -5376,6 +5401,17 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(
             try XCTUnwrap(http.value(forHTTPHeaderField: "Content-Security-Policy"))
                 .contains("worker-src 'self'")
+        )
+
+        var headRequest = URLRequest(url: legacyURL)
+        headRequest.httpMethod = "HEAD"
+        let (headData, headResponse) = try await URLSession.shared.data(for: headRequest)
+        let headHTTP = try XCTUnwrap(headResponse as? HTTPURLResponse)
+        XCTAssertEqual(headHTTP.statusCode, 200)
+        XCTAssertTrue(headData.isEmpty)
+        XCTAssertEqual(
+            headHTTP.value(forHTTPHeaderField: "Content-Length"),
+            String(Data("<main>ImageAll Web</main>".utf8).count)
         )
 
         let (_, mapResponse) = try await URLSession.shared.data(
@@ -7278,6 +7314,18 @@ private final class RemoteHTTPStorageMaintenanceCommandStub:
     ) async throws -> StorageMaintenanceCommandRequestSnapshot {
         lock.withLock { storedLastCommand = command }
         return receipt
+    }
+}
+
+private final class RemoteHTTPNoRedirectDelegate: NSObject, URLSessionTaskDelegate {
+    func urlSession(
+        _: URLSession,
+        task _: URLSessionTask,
+        willPerformHTTPRedirection _: HTTPURLResponse,
+        newRequest _: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        completionHandler(nil)
     }
 }
 

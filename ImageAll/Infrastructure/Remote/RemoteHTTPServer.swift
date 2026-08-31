@@ -576,8 +576,26 @@ actor RemoteHTTPServer {
     ) async {
         let (path, query) = Self.splitPathAndQuery(pathAndQuery)
 
-        if method == "GET", webAssetStore.isPublicAssetPath(path) {
-            guard let asset = webAssetStore.asset(for: path) else {
+        if ["GET", "HEAD"].contains(method), ["/", "/index.html"].contains(path) {
+            await respond(
+                connection,
+                status: 302,
+                contentType: "text/plain; charset=utf-8",
+                body: Data("ImageAll Web Companion 已迁移到 /web-v2/gallery".utf8),
+                timeoutTask: timeoutTask,
+                additionalHeaders: RemoteWebCompanionSession.browserSecurityHeaders + [
+                    ("Location", "/web-v2/gallery"),
+                ],
+                includeBody: method == "GET"
+            )
+            return
+        }
+
+        if ["GET", "HEAD"].contains(method), webAssetStore.isPublicAssetPath(path) {
+            let asset = path == "/service-worker.js"
+                ? webAssetStore.defaultServiceWorkerAsset()
+                : webAssetStore.asset(for: path)
+            guard let asset else {
                 timeoutTask.cancel()
                 await respond(
                     connection,
@@ -598,7 +616,8 @@ actor RemoteHTTPServer {
                 contentType: asset.contentType,
                 body: asset.body,
                 timeoutTask: timeoutTask,
-                additionalHeaders: staticHeaders
+                additionalHeaders: staticHeaders,
+                includeBody: method == "GET"
             )
             return
         }
@@ -1780,7 +1799,8 @@ actor RemoteHTTPServer {
         contentType: String,
         body: Data,
         timeoutTask: Task<Void, Never>? = nil,
-        additionalHeaders: [(String, String)] = []
+        additionalHeaders: [(String, String)] = [],
+        includeBody: Bool = true
     ) async {
         timeoutTask?.cancel()
         let reason: String = {
@@ -1789,6 +1809,7 @@ actor RemoteHTTPServer {
             case 202: "Accepted"
             case 204: "No Content"
             case 206: "Partial Content"
+            case 302: "Found"
             case 400: "Bad Request"
             case 401: "Unauthorized"
             case 403: "Forbidden"
@@ -1809,7 +1830,7 @@ actor RemoteHTTPServer {
         header += "Content-Length: \(body.count)\r\n"
         header += "Connection: close\r\n\r\n"
         var payload = Data(header.utf8)
-        payload.append(body)
+        if includeBody { payload.append(body) }
         // `isComplete: true` with `.finalMessage` performs a graceful TCP half-close (FIN)
         // once the response is flushed, rather than an abrupt reset.
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in

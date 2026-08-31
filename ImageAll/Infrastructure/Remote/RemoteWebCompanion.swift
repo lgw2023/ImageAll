@@ -20,6 +20,8 @@ struct RemoteWebCompanionAssetStore {
     private static let routeMap: [String: Descriptor] = [
         "/": Descriptor(name: "index.html", contentType: "text/html; charset=utf-8", isWorldMap: false, allowsSameOriginFraming: false),
         "/index.html": Descriptor(name: "index.html", contentType: "text/html; charset=utf-8", isWorldMap: false, allowsSameOriginFraming: false),
+        "/legacy/": Descriptor(name: "index.html", contentType: "text/html; charset=utf-8", isWorldMap: false, allowsSameOriginFraming: false),
+        "/legacy/index.html": Descriptor(name: "index.html", contentType: "text/html; charset=utf-8", isWorldMap: false, allowsSameOriginFraming: false),
         "/app.css": Descriptor(name: "app.css", contentType: "text/css; charset=utf-8", isWorldMap: false, allowsSameOriginFraming: false),
         "/app.js": Descriptor(name: "app.js", contentType: "text/javascript; charset=utf-8", isWorldMap: false, allowsSameOriginFraming: false),
         "/service-worker.js": Descriptor(name: "service-worker.js", contentType: "text/javascript; charset=utf-8", isWorldMap: false, allowsSameOriginFraming: false),
@@ -155,6 +157,13 @@ struct RemoteWebCompanionAssetStore {
 
     func isPublicAssetPath(_ path: String) -> Bool {
         Self.routeMap[path] != nil || v2Descriptor(for: path) != nil
+    }
+
+    /// The retained legacy client still registers the historical root URL. Serving the audited
+    /// V2 worker there prevents opening `/legacy/` from replacing the default app's worker with
+    /// an older implementation while preserving the shared media-authorization protocol.
+    func defaultServiceWorkerAsset() -> RemoteWebCompanionAsset? {
+        asset(for: "/web-v2/service-worker.js") ?? asset(for: "/service-worker.js")
     }
 
     private func v2Descriptor(for path: String) -> V2Descriptor? {
