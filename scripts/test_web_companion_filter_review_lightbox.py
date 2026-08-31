@@ -4410,6 +4410,105 @@ def main():
             REVIEW_IDS,
         )
         assert page.evaluate("() => state.review.selectedAssetIDs.size") == 3
+
+        review_dynamic_double_click = page.evaluate(
+            """injectedAssetID => {
+              const primaryItem = state.review.items[2];
+              const anchorItem = state.review.items[0];
+              const primaryKey = reviewItemKey(primaryItem);
+              const anchorKey = reviewItemKey(anchorItem);
+              state.review.selectedAssetIDs = new Set([
+                anchorItem.assetID,
+                state.review.items[1].assetID,
+                primaryItem.assetID,
+              ]);
+              state.review.selectedIndex = 2;
+              state.review.selectionAnchorIndex = 0;
+              renderReviewSelectionState();
+
+              const originalCard = document.querySelector(
+                `[data-review-key="${CSS.escape(primaryKey)}"]`
+              );
+              const originalButton = originalCard.querySelector('.review-card-main');
+              originalButton.dispatchEvent(new MouseEvent('click', {
+                bubbles: true,
+                detail: 1,
+              }));
+
+              state.review.items = [{
+                ...state.review.items[0],
+                assetID: injectedAssetID,
+                fileName: 'DYNAMIC_INSERT.JPG',
+                contentRevision: 999,
+              }, ...state.review.items];
+              renderReview();
+              const movedCard = document.querySelector(
+                `[data-review-key="${CSS.escape(primaryKey)}"]`
+              );
+              const movedButton = movedCard.querySelector('.review-card-main');
+              movedButton.dispatchEvent(new MouseEvent('click', {
+                bubbles: true,
+                detail: 2,
+              }));
+              movedButton.dispatchEvent(new MouseEvent('dblclick', {
+                bubbles: true,
+                detail: 2,
+              }));
+
+              return {
+                primaryKey,
+                anchorKey,
+                actualPrimaryKey: reviewItemKey(
+                  state.review.items[state.review.selectedIndex]
+                ),
+                actualAnchorKey: reviewItemKey(
+                  state.review.items[state.review.selectionAnchorIndex]
+                ),
+                cardNodePreserved: movedCard === originalCard,
+                buttonNodePreserved: movedButton === originalButton,
+                lightboxAssetID: state.lightboxAssetID,
+                lightboxPreservesSelection: state.lightboxPreservesSelection,
+                selectedAssetIDs: [...state.review.selectedAssetIDs].sort(),
+              };
+            }""",
+            "6f7d7d55-8616-4d61-a79d-f207974e7249",
+        )
+        assert review_dynamic_double_click["actualPrimaryKey"] == (
+            review_dynamic_double_click["primaryKey"]
+        ), review_dynamic_double_click
+        assert review_dynamic_double_click["actualAnchorKey"] == (
+            review_dynamic_double_click["anchorKey"]
+        ), review_dynamic_double_click
+        assert review_dynamic_double_click["cardNodePreserved"] is True
+        assert review_dynamic_double_click["buttonNodePreserved"] is True
+        assert review_dynamic_double_click["lightboxAssetID"] == REVIEW_IDS[2]
+        assert review_dynamic_double_click["lightboxPreservesSelection"] is True
+        page.screenshot(
+            path="/tmp/imageall-review-dynamic-double-click-selection.png",
+            full_page=True,
+        )
+        page.keyboard.press("Escape")
+        page.locator("#lightbox").wait_for(state="hidden")
+        page.evaluate(
+            """injectedAssetID => {
+              state.review.items = state.review.items.filter(
+                (item) => item.assetID !== injectedAssetID
+              );
+              const selectedIDs = new Set(state.review.selectedAssetIDs);
+              state.review.selectedAssetIDs = selectedIDs;
+              state.review.selectedIndex = state.review.items.findIndex(
+                (item) => reviewItemKey(item) ===
+                  history.state.imageAllWorkspace.context.reviewItemKey
+              );
+              state.review.selectionAnchorIndex = state.review.items.findIndex(
+                (item) => reviewItemKey(item) ===
+                  history.state.imageAllWorkspace.context.reviewSelectionAnchorKey
+              );
+              renderReview();
+              checkpointActiveWorkspaceHistory();
+            }""",
+            "6f7d7d55-8616-4d61-a79d-f207974e7249",
+        )
         review_select_all.click()
         page.wait_for_function(
             "count => state.review.selectedAssetIDs.size === count",

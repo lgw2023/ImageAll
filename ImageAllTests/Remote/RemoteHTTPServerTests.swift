@@ -2983,7 +2983,19 @@ final class RemoteHTTPServerTests: XCTestCase {
                 "const preservesSelection = restoreGridSelectionForDoubleClick(\n      \"library\""
             )
         )
-        XCTAssertTrue(script.contains("restoreGridSelectionForDoubleClick(\"review\""))
+        XCTAssertTrue(
+            script.contains(
+                "const restoredSelection = restoreGridSelectionForDoubleClick(\n      \"review\",\n      reviewItemKey(item)"
+            )
+        )
+        XCTAssertTrue(
+            script.contains(
+                "primaryKey: reviewItemKey(state.review.items[state.review.selectedIndex])"
+            )
+        )
+        XCTAssertTrue(script.contains("anchorKey: reviewItemKey("))
+        XCTAssertTrue(script.contains("reviewItemKey(item) === itemID"))
+        XCTAssertTrue(script.contains("const restoredSelectedAssetIDs = new Set("))
         XCTAssertTrue(
             script.contains(
                 "const preservesSelection = restoreGridSelectionForDoubleClick(\n      \"slimming\""

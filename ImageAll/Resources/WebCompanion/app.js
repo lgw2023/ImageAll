@@ -21851,8 +21851,10 @@ function rememberGridSelectionBeforeClick(surface, itemID, event) {
   } else if (surface === "review") {
     selection = {
       selectedIDs: [...state.review.selectedAssetIDs],
-      selectedIndex: state.review.selectedIndex,
-      anchorIndex: state.review.selectionAnchorIndex,
+      primaryKey: reviewItemKey(state.review.items[state.review.selectedIndex]),
+      anchorKey: reviewItemKey(
+        state.review.items[state.review.selectionAnchorIndex]
+      ),
     };
   } else if (surface === "slimming") {
     selection = {
@@ -21899,9 +21901,32 @@ function restoreGridSelectionForDoubleClick(surface, itemID) {
   }
   if (surface === "review"
     && (state.review.selectionMode || pending.selection.selectedIDs.length > 1)) {
-    state.review.selectedAssetIDs = new Set(pending.selection.selectedIDs);
-    state.review.selectedIndex = pending.selection.selectedIndex;
-    state.review.selectionAnchorIndex = pending.selection.anchorIndex;
+    const visibleAssetIDs = new Set(state.review.items.map((item) => item.assetID));
+    const restoredSelectedAssetIDs = new Set(
+      pending.selection.selectedIDs.filter((assetID) => visibleAssetIDs.has(assetID))
+    );
+    if (!restoredSelectedAssetIDs.size) return false;
+    state.review.selectedAssetIDs = restoredSelectedAssetIDs;
+    const selectedIndexForKey = (key) => state.review.items.findIndex((item) => (
+      reviewItemKey(item) === key
+        && state.review.selectedAssetIDs.has(item.assetID)
+    ));
+    const targetIndex = state.review.items.findIndex((item) => (
+      reviewItemKey(item) === itemID
+        && state.review.selectedAssetIDs.has(item.assetID)
+    ));
+    const primaryIndex = selectedIndexForKey(pending.selection.primaryKey);
+    state.review.selectedIndex = primaryIndex >= 0
+      ? primaryIndex
+      : (targetIndex >= 0
+        ? targetIndex
+        : state.review.items.findIndex(
+          (item) => state.review.selectedAssetIDs.has(item.assetID)
+        ));
+    const anchorIndex = selectedIndexForKey(pending.selection.anchorKey);
+    state.review.selectionAnchorIndex = anchorIndex >= 0
+      ? anchorIndex
+      : state.review.selectedIndex;
     renderReviewSelectionState();
     checkpointActiveWorkspaceHistory();
     return true;
@@ -48133,8 +48158,12 @@ function bindEvents() {
       if (!item) return;
       if ((state.review.selectionMode
         || state.review.selectedAssetIDs.size > 1
-        || continuesGridSelectionDoubleClick("review", item.assetID, event))
-        && rememberGridSelectionBeforeClick("review", item.assetID, event)) return;
+        || continuesGridSelectionDoubleClick("review", reviewItemKey(item), event))
+        && rememberGridSelectionBeforeClick(
+          "review",
+          reviewItemKey(item),
+          event
+        )) return;
       selectReviewIndex(index, {
         additive: state.review.selectionMode || event.metaKey || event.ctrlKey,
         extendRange: event.shiftKey,
@@ -48151,7 +48180,10 @@ function bindEvents() {
     const index = Number(card?.dataset.reviewIndex);
     const item = Number.isInteger(index) ? state.review.items[index] : null;
     if (!item) return;
-    const restoredSelection = restoreGridSelectionForDoubleClick("review", item.assetID);
+    const restoredSelection = restoreGridSelectionForDoubleClick(
+      "review",
+      reviewItemKey(item)
+    );
     if (!state.review.selectionMode && !restoredSelection) selectReviewIndex(index);
     openReviewLightbox(item, {
       preserveSelection: restoredSelection,
