@@ -13,10 +13,11 @@ Host 依然是权威业务层。路径由
 
 | Method | Path | 用途 | 认证/安全 |
 | --- | --- | --- | --- |
-| POST | `/v1/web/session/pair` | 配对换取会话 | 公开配对边界，秘密来自 fragment |
-| POST | `/v1/web/session/login` | 账户/Basic 登录 | 凭据仅在当前客户端内存 |
-| POST | `/v1/web/session/refresh` | 刷新会话 | 允许在会话恢复窗口中调用 |
-| POST | `/v1/web/session/logout` | 注销 | Cookie/Basic 变更校验 Origin/Host |
+| POST | `/web/session/pair` | 配对换取会话 | 公开配对边界，秘密来自 fragment |
+| POST | `/web/account/login` | 账户/Basic 登录 | 凭据仅在当前客户端内存 |
+| GET | `/web/session` | 当前会话状态 | Cookie 或 Basic 鉴权 |
+| POST | `/web/session/refresh` | 刷新会话 | 允许在会话恢复窗口中调用 |
+| POST | `/web/session/logout` | 注销 | Cookie/Basic 变更校验 Origin/Host |
 | GET | `/v1/pairing/offer` | 当前配对提示 | 已鉴权 |
 | POST | `/v1/pairing/complete` | 完成配对 | 特定未鉴权路径 |
 | POST | `/v1/pairing/token` | 刷新配对 token | 特定未鉴权路径 |

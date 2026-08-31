@@ -1,4 +1,5 @@
 import Darwin
+import CryptoKit
 import Foundation
 import ImageIO
 import ImageAllRemoteProtocol
@@ -2329,6 +2330,109 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertNil(store.asset(for: "/../pairing.json"))
         XCTAssertNil(store.asset(for: "/world-map/../index.html"))
         XCTAssertNil(store.asset(for: "/v1/capabilities"))
+    }
+
+    func testWebV2AssetStoreUsesAuditedManifestHashesAndSPARouteAllowlist() throws {
+        let rootDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "RemoteHTTPServerTests-WebV2-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        let v2Directory = rootDirectory.appendingPathComponent("WebCompanionV2", isDirectory: true)
+        let assetsDirectory = v2Directory.appendingPathComponent("assets", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: assetsDirectory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: rootDirectory) }
+
+        let indexData = Data("<main>ImageAll V2</main>".utf8)
+        let scriptData = Data("export const ready = true;".utf8)
+        let workerData = Data("self.addEventListener('fetch', () => {});".utf8)
+        let externalData = Data("not a public asset".utf8)
+        try indexData.write(to: v2Directory.appendingPathComponent("index.html"))
+        try scriptData.write(to: assetsDirectory.appendingPathComponent("index-12345678.js"))
+        try workerData.write(to: v2Directory.appendingPathComponent("service-worker.js"))
+        let externalURL = rootDirectory.appendingPathComponent("private.js")
+        try externalData.write(to: externalURL)
+        try FileManager.default.createSymbolicLink(
+            at: assetsDirectory.appendingPathComponent("escape-12345678.js"),
+            withDestinationURL: externalURL
+        )
+
+        func sha256(_ data: Data) -> String {
+            SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        }
+        let manifest: [String: Any] = [
+            "version": 1,
+            "basePath": "/web-v2/",
+            "entrypoint": "index.html",
+            "spaRoutes": ["", "gallery", "assets/:assetId"],
+            "assets": [
+                [
+                    "path": "index.html",
+                    "mimeType": "text/html; charset=utf-8",
+                    "sha256": sha256(indexData),
+                    "cachePolicy": "no-store",
+                ],
+                [
+                    "path": "assets/index-12345678.js",
+                    "mimeType": "text/javascript; charset=utf-8",
+                    "sha256": sha256(scriptData),
+                    "cachePolicy": "immutable",
+                ],
+                [
+                    "path": "service-worker.js",
+                    "mimeType": "text/javascript; charset=utf-8",
+                    "sha256": sha256(workerData),
+                    "cachePolicy": "no-store",
+                ],
+                [
+                    "path": "assets/escape-12345678.js",
+                    "mimeType": "text/javascript; charset=utf-8",
+                    "sha256": sha256(externalData),
+                    "cachePolicy": "immutable",
+                ],
+            ],
+        ]
+        try JSONSerialization.data(withJSONObject: manifest, options: [.sortedKeys])
+            .write(to: v2Directory.appendingPathComponent("asset-manifest.json"))
+
+        let store = RemoteWebCompanionAssetStore(
+            directoryURL: rootDirectory,
+            v2DirectoryURL: v2Directory
+        )
+        XCTAssertEqual(
+            String(decoding: try XCTUnwrap(store.asset(for: "/web-v2/")?.body), as: UTF8.self),
+            "<main>ImageAll V2</main>"
+        )
+        XCTAssertEqual(
+            store.asset(for: "/web-v2/assets/index-12345678.js")?.contentType,
+            "text/javascript; charset=utf-8"
+        )
+        XCTAssertEqual(
+            store.asset(for: "/web-v2/service-worker.js")?.serviceWorkerAllowedScope,
+            "/"
+        )
+        XCTAssertNotNil(store.asset(for: "/web-v2/gallery"))
+        XCTAssertNotNil(
+            store.asset(
+                for: "/web-v2/assets/7dd77e6b-8c95-4f5a-90e7-cbc61f3e24c4"
+            )
+        )
+        XCTAssertNil(store.asset(for: "/web-v2/review"))
+        XCTAssertNil(store.asset(for: "/web-v2/assets/not-a-uuid"))
+        XCTAssertNil(store.asset(for: "/web-v2/unknown.js"))
+        XCTAssertNil(store.asset(for: "/web-v2/../index.html"))
+        XCTAssertNil(store.asset(for: "/web-v2/%2e%2e/index.html"))
+        XCTAssertNil(store.asset(for: "/web-v2/assets\\index-12345678.js"))
+        XCTAssertNil(store.asset(for: "/web-v2/assets/escape-12345678.js"))
+        XCTAssertFalse(store.isPublicAssetPath("/v1/capabilities"))
+
+        try Data("export const compromised = true;".utf8)
+            .write(to: assetsDirectory.appendingPathComponent("index-12345678.js"))
+        XCTAssertTrue(store.isPublicAssetPath("/web-v2/assets/index-12345678.js"))
+        XCTAssertNil(store.asset(for: "/web-v2/assets/index-12345678.js"))
     }
 
     func testBundledWebCompanionExposesDailyWorkflowSurfaces() throws {

@@ -47,8 +47,9 @@ route entered
 
 ## 缓存与隐私
 
-localStorage 允许键：`theme`、`galleryDensity`、`sidebarCollapsed`、`inspectorWidth`，后续增加必须经 ADR/
-规格评审。sessionStorage 也不用于 token、密码、媒体 blob 或 API 实体。TanStack Query 不启用持久化插件。
+localStorage 允许键：`clientID`（配对指纹的随机非秘密标识）、`theme`、`galleryDensity`、
+`sidebarCollapsed`、`inspectorWidth`，后续增加必须经 ADR/规格评审。sessionStorage 也不用于 token、
+密码、媒体 blob 或 API 实体。TanStack Query 不启用持久化插件。
 
 ## 滚动、焦点和恢复
 

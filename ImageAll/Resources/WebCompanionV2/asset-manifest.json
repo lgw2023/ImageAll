@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "basePath": "/web-v2/",
+  "entrypoint": "index.html",
+  "spaRoutes": [
+    "",
+    "gallery",
+    "gallery/favorites",
+    "gallery/overview",
+    "assets/:assetId",
+    "review",
+    "review/queue",
+    "map",
+    "training",
+    "slimming",
+    "sources",
+    "storage",
+    "tags",
+    "activity",
+    "settings"
+  ],
+  "assets": [
+    {
+      "path": "assets/index-BxJjs1Ck.css",
+      "mimeType": "text/css; charset=utf-8",
+      "sha256": "fb52664e9be6d705df371a27f64eb12ac0be0ffbc4ae24206cf0ec88c4b0368b",
+      "cachePolicy": "immutable"
+    },
+    {
+      "path": "assets/index-CldTKAwC.js",
+      "mimeType": "text/javascript; charset=utf-8",
+      "sha256": "8021d4737b1880922482b10636494d7a00b9fba061ffedf1bb0731e3a8f7bf18",
+      "cachePolicy": "immutable"
+    },
+    {
+      "path": "icon.svg",
+      "mimeType": "image/svg+xml",
+      "sha256": "f3ee02d91e407d287cf0c35b837b39b4c7c2f02a93214b671dd1215f9d577186",
+      "cachePolicy": "no-store"
+    },
+    {
+      "path": "index.html",
+      "mimeType": "text/html; charset=utf-8",
+      "sha256": "90ce13102de069fd57faaa760963d3bd0d8cf91fa143b965d76ed3825d754e8a",
+      "cachePolicy": "no-store"
+    },
+    {
+      "path": "manifest.webmanifest",
+      "mimeType": "application/manifest+json; charset=utf-8",
+      "sha256": "e98c549f9acdff2c44a07fdb602875023a7eefef3e4a58506e0f7a34254ccaab",
+      "cachePolicy": "no-store"
+    },
+    {
+      "path": "offline-assets.json",
+      "mimeType": "application/json; charset=utf-8",
+      "sha256": "704b74bbabdaa24caf4ed66c148bc92e7b1b7ad2008490d5077cd4538f81345a",
+      "cachePolicy": "no-store"
+    },
+    {
+      "path": "service-worker.js",
+      "mimeType": "text/javascript; charset=utf-8",
+      "sha256": "06775caaae4a92bc893d6bc9963fe1d12f966d11b554a6c851f31a3aa1b944a0",
+      "cachePolicy": "no-store"
+    }
+  ]
+}

@@ -6,6 +6,7 @@ struct RemoteWebCompanionAsset: Equatable {
     let contentType: String
     let body: Data
     let allowsSameOriginFraming: Bool
+    let serviceWorkerAllowedScope: String?
 }
 
 struct RemoteWebCompanionAssetStore {
@@ -33,39 +34,246 @@ struct RemoteWebCompanionAssetStore {
         "/world-map/world-map.js": Descriptor(name: "world-map.js", contentType: "text/javascript; charset=utf-8", isWorldMap: true, allowsSameOriginFraming: false),
     ]
 
+    private struct V2Manifest: Decodable {
+        let version: Int
+        let basePath: String
+        let entrypoint: String
+        let spaRoutes: [String]
+        let assets: [V2ManifestAsset]
+    }
+
+    private struct V2ManifestAsset: Decodable {
+        let path: String
+        let mimeType: String
+        let sha256: String
+        let cachePolicy: String
+    }
+
+    private struct V2Descriptor {
+        let relativePath: String
+        let contentType: String
+        let sha256: String
+    }
+
+    private struct V2Configuration {
+        let routeMap: [String: V2Descriptor]
+        let entrypoint: V2Descriptor
+        let spaRoutes: Set<String>
+    }
+
+    private static let v2BasePath = "/web-v2/"
+    private static let supportedV2SPARoutes: Set<String> = [
+        "",
+        "gallery",
+        "gallery/favorites",
+        "gallery/overview",
+        "assets/:assetId",
+        "review",
+        "review/queue",
+        "map",
+        "training",
+        "slimming",
+        "sources",
+        "storage",
+        "tags",
+        "activity",
+        "settings",
+    ]
+    private static let auditedV2MIMETypes: Set<String> = [
+        "application/json; charset=utf-8",
+        "application/manifest+json; charset=utf-8",
+        "font/woff2",
+        "image/png",
+        "image/svg+xml",
+        "text/css; charset=utf-8",
+        "text/html; charset=utf-8",
+        "text/javascript; charset=utf-8",
+    ]
+
     private let directoryURL: URL?
     private let worldMapDirectoryURL: URL?
+    private let v2DirectoryURL: URL?
+    private let v2Configuration: V2Configuration?
 
     init(
         directoryURL: URL? = nil,
         worldMapDirectoryURL: URL? = nil,
+        v2DirectoryURL: URL? = nil,
         bundle: Bundle = .main
     ) {
         self.directoryURL = directoryURL
             ?? bundle.resourceURL?.appendingPathComponent("WebCompanion", isDirectory: true)
         self.worldMapDirectoryURL = worldMapDirectoryURL
             ?? bundle.resourceURL?.appendingPathComponent("WorldMap", isDirectory: true)
+        let resolvedV2DirectoryURL = v2DirectoryURL
+            ?? bundle.resourceURL?.appendingPathComponent("WebCompanionV2", isDirectory: true)
+        self.v2DirectoryURL = resolvedV2DirectoryURL
+        self.v2Configuration = Self.loadV2Configuration(from: resolvedV2DirectoryURL)
     }
 
     func asset(for path: String) -> RemoteWebCompanionAsset? {
-        guard let descriptor = Self.routeMap[path] else {
+        if let descriptor = Self.routeMap[path] {
+            let baseURL = descriptor.isWorldMap ? worldMapDirectoryURL : directoryURL
+            guard let baseURL else { return nil }
+            let url = baseURL.appendingPathComponent(descriptor.name, isDirectory: false)
+            guard let data = try? Data(contentsOf: url) else {
+                return nil
+            }
+            return RemoteWebCompanionAsset(
+                contentType: descriptor.contentType,
+                body: data,
+                allowsSameOriginFraming: descriptor.allowsSameOriginFraming,
+                serviceWorkerAllowedScope: nil
+            )
+        }
+
+        guard let descriptor = v2Descriptor(for: path),
+              let baseURL = v2DirectoryURL
+        else {
             return nil
         }
-        let baseURL = descriptor.isWorldMap ? worldMapDirectoryURL : directoryURL
-        guard let baseURL else { return nil }
-        let url = baseURL.appendingPathComponent(descriptor.name, isDirectory: false)
+        guard let url = Self.v2AssetURL(
+            relativePath: descriptor.relativePath,
+            under: baseURL
+        ) else {
+            return nil
+        }
         guard let data = try? Data(contentsOf: url) else {
             return nil
         }
+        let actualHash = SHA256.hash(data: data)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        guard actualHash == descriptor.sha256 else { return nil }
         return RemoteWebCompanionAsset(
             contentType: descriptor.contentType,
             body: data,
-            allowsSameOriginFraming: descriptor.allowsSameOriginFraming
+            allowsSameOriginFraming: false,
+            serviceWorkerAllowedScope: descriptor.relativePath == "service-worker.js" ? "/" : nil
         )
     }
 
-    static func isPublicAssetPath(_ path: String) -> Bool {
-        routeMap[path] != nil
+    func isPublicAssetPath(_ path: String) -> Bool {
+        Self.routeMap[path] != nil || v2Descriptor(for: path) != nil
+    }
+
+    private func v2Descriptor(for path: String) -> V2Descriptor? {
+        guard let v2Configuration,
+              let relativePath = Self.safeV2RelativePath(from: path)
+        else {
+            return nil
+        }
+        if let exact = v2Configuration.routeMap[relativePath] {
+            return exact
+        }
+        guard !relativePath.contains("."),
+              Self.matchesV2SPARoute(relativePath, routes: v2Configuration.spaRoutes)
+        else {
+            return nil
+        }
+        return v2Configuration.entrypoint
+    }
+
+    private static func loadV2Configuration(from directoryURL: URL?) -> V2Configuration? {
+        guard let directoryURL,
+              let data = try? Data(
+                  contentsOf: directoryURL.appendingPathComponent(
+                      "asset-manifest.json",
+                      isDirectory: false
+                  )
+              ),
+              let manifest = try? JSONDecoder().decode(V2Manifest.self, from: data),
+              manifest.version == 1,
+              manifest.basePath == v2BasePath,
+              Set(manifest.spaRoutes).isSubset(of: supportedV2SPARoutes),
+              manifest.spaRoutes.count == Set(manifest.spaRoutes).count
+        else {
+            return nil
+        }
+
+        var descriptors: [String: V2Descriptor] = [:]
+        for asset in manifest.assets {
+            guard isSafeV2ManifestPath(asset.path),
+                  auditedV2MIMETypes.contains(asset.mimeType),
+                  ["immutable", "no-store"].contains(asset.cachePolicy),
+                  isSHA256Hex(asset.sha256),
+                  descriptors[asset.path] == nil
+            else {
+                return nil
+            }
+            descriptors[asset.path] = V2Descriptor(
+                relativePath: asset.path,
+                contentType: asset.mimeType,
+                sha256: asset.sha256
+            )
+        }
+        guard let entrypoint = descriptors[manifest.entrypoint],
+              entrypoint.contentType == "text/html; charset=utf-8"
+        else {
+            return nil
+        }
+        return V2Configuration(
+            routeMap: descriptors,
+            entrypoint: entrypoint,
+            spaRoutes: Set(manifest.spaRoutes)
+        )
+    }
+
+    private static func safeV2RelativePath(from path: String) -> String? {
+        let relativePath: String
+        if path == "/web-v2" || path == v2BasePath {
+            relativePath = ""
+        } else if path.hasPrefix(v2BasePath) {
+            relativePath = String(path.dropFirst(v2BasePath.count))
+        } else {
+            return nil
+        }
+        guard !relativePath.contains("%"),
+              !relativePath.contains("\\"),
+              !relativePath.contains("//"),
+              relativePath.split(separator: "/", omittingEmptySubsequences: false)
+                  .allSatisfy({ $0 != "." && $0 != ".." })
+        else {
+            return nil
+        }
+        return relativePath
+    }
+
+    private static func isSafeV2ManifestPath(_ path: String) -> Bool {
+        guard !path.isEmpty,
+              path == path.trimmingCharacters(in: .whitespacesAndNewlines),
+              !path.hasPrefix("/"),
+              safeV2RelativePath(from: v2BasePath + path) == path
+        else {
+            return false
+        }
+        return true
+    }
+
+    private static func isSHA256Hex(_ value: String) -> Bool {
+        value.count == 64 && value.allSatisfy("0123456789abcdef".contains)
+    }
+
+    private static func v2AssetURL(relativePath: String, under directoryURL: URL) -> URL? {
+        let resolvedRoot = directoryURL.resolvingSymlinksInPath().standardizedFileURL
+        let resolvedAsset = directoryURL
+            .appendingPathComponent(relativePath, isDirectory: false)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        let rootPrefix = resolvedRoot.path.hasSuffix("/")
+            ? resolvedRoot.path
+            : resolvedRoot.path + "/"
+        guard resolvedAsset.path.hasPrefix(rootPrefix) else { return nil }
+        return resolvedAsset
+    }
+
+    private static func matchesV2SPARoute(_ path: String, routes: Set<String>) -> Bool {
+        if routes.contains(path) { return true }
+        let components = path.split(separator: "/", omittingEmptySubsequences: false)
+        return routes.contains("assets/:assetId")
+            && components.count == 2
+            && components[0] == "assets"
+            && UUID(uuidString: String(components[1])) != nil
     }
 }
 

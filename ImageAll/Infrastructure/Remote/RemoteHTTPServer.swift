@@ -576,7 +576,7 @@ actor RemoteHTTPServer {
     ) async {
         let (path, query) = Self.splitPathAndQuery(pathAndQuery)
 
-        if method == "GET", RemoteWebCompanionAssetStore.isPublicAssetPath(path) {
+        if method == "GET", webAssetStore.isPublicAssetPath(path) {
             guard let asset = webAssetStore.asset(for: path) else {
                 timeoutTask.cancel()
                 await respond(
@@ -586,15 +586,19 @@ actor RemoteHTTPServer {
                 )
                 return
             }
+            var staticHeaders = asset.allowsSameOriginFraming
+                ? RemoteWebCompanionSession.embeddedWorldMapSecurityHeaders
+                : RemoteWebCompanionSession.browserSecurityHeaders
+            if let scope = asset.serviceWorkerAllowedScope {
+                staticHeaders.append(("Service-Worker-Allowed", scope))
+            }
             await respond(
                 connection,
                 status: 200,
                 contentType: asset.contentType,
                 body: asset.body,
                 timeoutTask: timeoutTask,
-                additionalHeaders: asset.allowsSameOriginFraming
-                    ? RemoteWebCompanionSession.embeddedWorldMapSecurityHeaders
-                    : RemoteWebCompanionSession.browserSecurityHeaders
+                additionalHeaders: staticHeaders
             )
             return
         }
