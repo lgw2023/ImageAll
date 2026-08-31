@@ -5,8 +5,8 @@
 - “Mac 现状”和“旧 Web 现状”是阶段 0 对当前源码和合成浏览器 fixture 的盘点；不表示真实照片验收。
 - “新版目标”是验收契约，不是已完成声明。
 - “API”只说明当前 Host 有相关能力；新 UI 还必须有类型解码、主/失败流程、回归和截图才能达到 `parity-proven`。
-- 状态必须用本目录 README 的受控词汇。工程基座已进入 `foundation`，图库纵切片处于
-  `in-progress`；未满足全部验收门的行不得提前写成 `parity-proven`。
+- 状态必须用本目录 README 的受控词汇。工程基座已进入 `foundation`，图库、策展与管理纵切片
+  处于 `in-progress`；未满足全部验收门的行不得提前写成 `parity-proven`。
 
 ## 矩阵
 
@@ -39,12 +39,12 @@
 | 精简 setup/阈值 | Mac 工作区 | 有 | 受控表单、Host 回读、变更证据 | 已有 | 无 | baseline | 旧阈值回归 | 无 | 新 UI 未建 |
 | 重复聚类审查 | Mac 有 | 有 | 图像对比、键盘、范围稳定 | 已有 | 无 | baseline | 旧精简脚本 | 无 | 未验证大组性能 |
 | 清理计划/移除/回收 | Mac 安全流程 | 有 | 预览、精确数量、不乐观成功、可追踪 | 已有 | 无 | baseline | Swift 高风险路由测试 | 无 | 禁止真实数据自动测试 |
-| 来源列表/管理 | Mac 侧栏/设置 | Web 有请求流 | 能力提示、审计反馈、精确作用域 | 已有 | 无 | baseline | 旧 flow 12 次来源操作 | 无 | 只用合成 source |
-| 存储与维护 | Mac 设置 | Web 有 | 容量、健康、操作请求和进度 | 已有 | 无 | baseline | 旧 flow 1 次存储请求 | 无 | 不证明真实磁盘操作 |
+| 来源列表/管理 | Mac 侧栏/设置 | Web 有请求流 | 能力提示、审计反馈、精确作用域 | 已有 | 无 | in-progress | `management.spec.ts`：来源刷新、Host 完成状态、axe | `evidence/management/` 来源桌面+移动 | 合成 source；不证明真实文件夹/Photos 授权 |
+| 存储与维护 | Mac 设置 | Web 有 | 容量、健康、操作请求和进度 | 已有 | 无 | in-progress | `management.spec.ts`：容量、清理确认、Host 结果 | `evidence/management/` 存储桌面+移动 | 不证明真实磁盘回收、导出或 App 重启 |
 | 通知/工作区提示 | Mac 通知 | Web banner/overlay | 持久且不挡主路径，动作可追踪 | 已有 | 无 | baseline | Swift 端点测试 | 基线图有 warning | 新信息层级未建 |
-| 通用设置 | Mac Settings | Web 有 | 类型表单、dirty/reset/save、Host 回读 | 已有 | 无 | baseline | Swift 设置测试 | 无 | 新 UI 未建 |
-| 配对设备管理 | Mac 设置 | Web 有 | 撤销确认、当前设备保护 | 已有 | 无 | baseline | Swift route 测试 | 无 | 新 UI 未建 |
-| 长任务与操作 | Mac 任务 | Web jobs/activity | 跨路由可见、重连后恢复、操作可审计 | 已有 | 无 | baseline | Swift jobs 测试 | 无 | 新 activity center 未建 |
+| 通用设置 | Mac Settings | Web 有 | 类型表单、dirty/reset/save、Host 回读 | 已有 | 无 | in-progress | `management.spec.ts`：部分更新、Host 回读、409 冲突 | `evidence/management/` 设置桌面+移动 | 阈值仅摘要；不证明 Mac 设置持久化 |
+| 配对设备管理 | Mac 设置 | Web 有 | 撤销确认、当前设备保护 | 已有 | 无 | in-progress | `management.spec.ts`：当前设备禁用、确认后撤销 | `evidence/management/` 设置桌面+移动 | 合成设备；不证明真实远程会话失效 |
+| 长任务与操作 | Mac 任务 | Web jobs/activity | 跨路由可见、重连后恢复、操作可审计 | 已有 | 无 | in-progress | `management.spec.ts`：任务进度、暂停、Host 状态回读 | `evidence/management/` 活动桌面+移动 | 单项合成任务；重连恢复和多任务压力待验收 |
 | 深色/对比/减少动效 | Mac 系统主题 | CSS 已有多类 media | system/light/dark、forced-colors、reduced-motion | 不需 | 无 | baseline | 旧 CSS/脚本 | 基线仅 light | 无新 token 实现 |
 | 键盘/焦点/History | Mac 原生 | 已有大量回归 | 语义 route、焦点圈定/返回、虚拟网格 roving | 不需 | 无 | in-progress | `gallery.spec.ts` + `curation.spec.ts`：History、焦点返回、审查键盘、axe | `evidence/gallery/`、`evidence/curation/` | 完整键盘/VoiceOver 手工门未完成 |
 | PWA 外壳 | 不适用 | 有 manifest，SW 仅认证 | 可安装、公共 shell 离线，绝不缓存私有数据 | 不需 | SW header/scope | foundation | manifest 生成检查、E2E 在线外壳 | `evidence/foundation/` | 离线、升级、Cache Storage 专项门未完成 |

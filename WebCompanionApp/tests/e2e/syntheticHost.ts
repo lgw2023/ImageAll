@@ -31,6 +31,9 @@ const capabilities = {
     'reviewQueue',
     'reviewDecisions',
     'tags',
+    'sourceManagement',
+    'generalSettings',
+    'jobs',
     'pairing',
   ],
   listenPort: 5173,
@@ -136,12 +139,206 @@ export async function installSyntheticAuthenticatedHost(page: Page) {
     },
   ];
   const reviewedAssets = new Set<string>();
+  let sourceRequests: Record<string, unknown>[] = [];
+  let storageRequests: Record<string, unknown>[] = [];
+  let settings = {
+    localModel: {
+      isEnabled: true,
+      state: 'ready',
+      modelName: 'Synthetic Vision',
+      runtimeName: 'Core ML',
+      detail: '合成本地模型已就绪',
+    },
+    idleThumbnailPrewarmEnabled: true,
+    idleThresholdSeconds: 120,
+    toolbarDisplayMode: 'iconAndTitle',
+    suggestionThresholds: {
+      defaults: [
+        { method: 'featureKnn', minScore: 0.74 },
+        { method: 'personalCentroid', minScore: 0.82 },
+      ],
+      tags: [],
+    },
+    maxPendingSuggestionsPerTag: 200,
+  };
+  let jobs = [
+    {
+      id: '6cba0aa1-e0c3-4421-bb0f-4f7edab5c3b6',
+      sourceID,
+      sourceDisplayName: 'Synthetic Library',
+      kind: 'folderReconcile',
+      state: 'running',
+      progress: { completedUnitCount: 42, totalUnitCount: 120 },
+      availableActions: ['pause', 'cancel'],
+      controlRequest: 'none',
+      attempts: 1,
+      maxAttempts: 3,
+      lastErrorCode: null,
+      navigationTarget: null,
+    },
+  ];
+  let devices = [
+    {
+      deviceID: session.deviceID,
+      deviceName: '当前浏览器',
+      pairedAtMs: 1_787_000_000_000,
+      lastSeenAtMs: 1_787_820_000_000,
+    },
+    {
+      deviceID: '7cba0aa1-e0c3-4421-bb0f-4f7edab5c3b7',
+      deviceName: '旧 iPad',
+      pairedAtMs: 1_786_000_000_000,
+      lastSeenAtMs: 1_786_500_000_000,
+    },
+  ];
   await page.route('**/web/session', (route) =>
     route.fulfill({ status: 200, contentType: 'application/json', json: session }),
   );
   await page.route('**/v1/capabilities', (route) =>
     route.fulfill({ status: 200, contentType: 'application/json', json: capabilities }),
   );
+  await page.route('**/v1/source-management', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        sources: [
+          {
+            id: sourceID,
+            kind: 'folder',
+            displayName: 'Synthetic Library',
+            state: 'active',
+          },
+        ],
+        canConnectPhotos: true,
+        requests: sourceRequests,
+      },
+    }),
+  );
+  await page.route('**/v1/source-management/requests', (route) => {
+    const body = route.request().postDataJSON() as {
+      operationID: string;
+      action: string;
+      sourceID: string | null;
+    };
+    const request = {
+      id: '5cba0aa1-e0c3-4421-bb0f-4f7edab5c3b5',
+      operationID: body.operationID,
+      action: body.action,
+      sourceID: body.sourceID,
+      sourceDisplayName: body.sourceID ? 'Synthetic Library' : null,
+      phase: 'completed',
+      message: 'Mac 已完成合成来源请求。',
+      completedCount: 120,
+      totalCount: 120,
+      warmedCount: null,
+      failedCount: 0,
+      reusedCount: null,
+      ineligibleCount: null,
+      completedSourceCount: 1,
+      totalSourceCount: 1,
+      updatedAtMs: 1_787_820_000_000,
+    };
+    sourceRequests = [request];
+    return route.fulfill({ status: 202, contentType: 'application/json', json: request });
+  });
+  await page.route('**/v1/storage-maintenance', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        previewCache: { entryCount: 120, registeredBytes: 25_165_824 },
+        photosOriginals: { entryCount: 3, registeredBytes: 314_572_800 },
+        clearPreviewCacheAvailability: { isAvailable: true, reason: null },
+        clearPhotosOriginalsAvailability: { isAvailable: true, reason: null },
+        appStorage: {
+          kind: 'internalStorage',
+          requiresRestart: false,
+          pendingExternalRootName: null,
+        },
+        requests: storageRequests,
+      },
+    }),
+  );
+  await page.route('**/v1/storage-maintenance/requests', (route) => {
+    const body = route.request().postDataJSON() as { operationID: string; action: string };
+    const request = {
+      id: '8cba0aa1-e0c3-4421-bb0f-4f7edab5c3b8',
+      operationID: body.operationID,
+      action: body.action,
+      phase: 'completed',
+      message: 'Mac 已完成合成维护请求。',
+      updatedAtMs: 1_787_820_000_000,
+      result: {
+        affectedEntryCount: 120,
+        affectedBytes: 25_165_824,
+        bundleName: null,
+        totalRecordCount: null,
+        requiresRestart: false,
+        partialReclaim: false,
+      },
+    };
+    storageRequests = [request];
+    return route.fulfill({ status: 202, contentType: 'application/json', json: request });
+  });
+  await page.route('**/v1/settings/general', (route) => {
+    if (route.request().method() === 'GET') {
+      return route.fulfill({ status: 200, contentType: 'application/json', json: settings });
+    }
+    const body = route.request().postDataJSON() as {
+      modelEnabled?: boolean;
+      idleThumbnailPrewarmEnabled?: boolean;
+      toolbarDisplayMode?: 'iconOnly' | 'iconAndTitle';
+      maxPendingSuggestionsPerTag?: number;
+    };
+    settings = {
+      ...settings,
+      localModel: {
+        ...settings.localModel,
+        isEnabled: body.modelEnabled ?? settings.localModel.isEnabled,
+      },
+      idleThumbnailPrewarmEnabled:
+        body.idleThumbnailPrewarmEnabled ?? settings.idleThumbnailPrewarmEnabled,
+      toolbarDisplayMode: body.toolbarDisplayMode ?? settings.toolbarDisplayMode,
+      maxPendingSuggestionsPerTag:
+        body.maxPendingSuggestionsPerTag ?? settings.maxPendingSuggestionsPerTag,
+    };
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: { settings, replayed: false },
+    });
+  });
+  await page.route('**/v1/jobs', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', json: jobs }),
+  );
+  await page.route(/\/v1\/jobs\/[0-9a-f-]+\/actions$/i, (route) => {
+    const jobID = new URL(route.request().url()).pathname.split('/').at(-2) ?? '';
+    const body = route.request().postDataJSON() as { action: string };
+    jobs = jobs.map((job) =>
+      job.id === jobID
+        ? {
+            ...job,
+            state:
+              body.action === 'pause'
+                ? 'paused'
+                : body.action === 'resume'
+                  ? 'running'
+                  : 'cancelled',
+            availableActions: body.action === 'pause' ? ['resume', 'cancel'] : [],
+          }
+        : job,
+    );
+    return route.fulfill({ status: 200, contentType: 'application/json', json: { jobID } });
+  });
+  await page.route('**/v1/pairing/devices', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', json: devices }),
+  );
+  await page.route(/\/v1\/pairing\/devices\/[0-9a-f-]+$/i, (route) => {
+    const deviceID = new URL(route.request().url()).pathname.split('/').at(-1) ?? '';
+    devices = devices.filter((device) => device.deviceID !== deviceID);
+    return route.fulfill({ status: 204 });
+  });
   await page.route('**/v1/tags', (route) =>
     route.fulfill({ status: 200, contentType: 'application/json', json: syntheticTags }),
   );

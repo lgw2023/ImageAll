@@ -1,18 +1,14 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import {
-  Activity,
-  Archive,
-  Database,
-  FolderKanban,
-  Map,
-  Settings,
-  WandSparkles,
-} from 'lucide-react';
+import { Archive, Map, WandSparkles } from 'lucide-react';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 
 import { SessionGate } from '@/features/session/SessionGate';
 import { SessionProvider } from '@/features/session/SessionContext';
 import { GalleryRoute } from '@/features/gallery/GalleryRoute';
+import { ActivityRoute } from '@/features/management/ActivityRoute';
+import { SettingsRoute } from '@/features/management/SettingsRoute';
+import { SourcesRoute } from '@/features/management/SourcesRoute';
+import { StorageRoute } from '@/features/management/StorageRoute';
 import { GalleryOverviewRoute } from '@/features/overview/GalleryOverviewRoute';
 import { ReviewRoute } from '@/features/review/ReviewRoute';
 import { TagLibraryRoute } from '@/features/tags/TagLibraryRoute';
@@ -56,34 +52,6 @@ const placeholders = [
     description: '审查重复和相似项，在 Mac 确认后安全释放空间。',
     icon: Archive,
   },
-  {
-    path: 'sources',
-    eyebrow: '管理',
-    title: '照片来源',
-    description: '查看 Apple Photos 和文件夹来源的同步与扫描状态。',
-    icon: FolderKanban,
-  },
-  {
-    path: 'storage',
-    eyebrow: '管理',
-    title: '存储与维护',
-    description: '查看应用存储健康并向 Mac 发起受控维护。',
-    icon: Database,
-  },
-  {
-    path: 'activity',
-    eyebrow: '管理',
-    title: '活动',
-    description: '跟踪训练、维护、建议和精简任务。',
-    icon: Activity,
-  },
-  {
-    path: 'settings',
-    eyebrow: '管理',
-    title: '设置',
-    description: '管理通用选项、连接与已配对设备。',
-    icon: Settings,
-  },
 ] as const;
 
 export function App() {
@@ -104,6 +72,10 @@ export function App() {
                     <Route path="review" element={<ReviewRoute />} />
                     <Route path="review/queue" element={<ReviewRoute />} />
                     <Route path="tags" element={<TagLibraryRoute />} />
+                    <Route path="sources" element={<SourcesRoute />} />
+                    <Route path="storage" element={<StorageRoute />} />
+                    <Route path="activity" element={<ActivityRoute />} />
+                    <Route path="settings" element={<SettingsRoute />} />
                     {placeholders.map((route) => (
                       <Route
                         key={route.path}

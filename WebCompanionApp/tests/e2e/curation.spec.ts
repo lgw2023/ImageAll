@@ -82,7 +82,7 @@ test('tag library creates a group and moves a renamed tag through Host mutations
   await page.getByLabel('名称', { exact: true }).fill('自然风景');
   await page.getByRole('combobox').selectOption({ label: '旅行主题' });
   await page.getByRole('button', { name: '保存' }).click();
-  await expect(page.getByText('自然风景')).toBeVisible();
+  await expect(page.getByText('自然风景', { exact: true })).toBeVisible();
   if (process.env.IMAGEALL_CAPTURE_EVIDENCE === '1') {
     await page.screenshot({
       path: `../docs/web-companion-refactor/evidence/curation/imageall-react-tags-${testInfo.project.name}.png`,
