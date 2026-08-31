@@ -5063,6 +5063,10 @@ function restoreWorkspaceLayoutReflowScrollAnchors(
     if (!scrollOwner) continue;
     if (!settle && frame === 0) {
       activateWorkspaceLayoutReflowScrollAnchor(scrollOwner, workspace, scrollAnchor);
+    } else if (!settle
+      && workspaceLayoutReflowActiveScrollAnchors.get(scrollOwner)?.scrollAnchor
+        !== scrollAnchor) {
+      continue;
     }
     const currentOffset = scrollAnchor.target.getBoundingClientRect().top
       - scrollOwner.getBoundingClientRect().top;

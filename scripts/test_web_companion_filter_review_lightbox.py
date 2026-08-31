@@ -7822,12 +7822,81 @@ def main():
                 "after": visibility_reflow_after,
             }
 
+        # A density animation can still be restoring a deep photo when the
+        # user jumps to the first photo and starts a newer inspector reflow.
+        # The first row settles earlier; the stale deep-photo loop must not
+        # outlive it and pull the viewport back down in later frames.
+        gallery_superseded_reflow_frame = page.evaluate(
+            """() => {
+              const pane = document.querySelector('#libraryScroll');
+              const cards = document.querySelectorAll('#assetGrid > .asset-card');
+              pane.scrollTop = cards[8].offsetTop - 24;
+              const oldAssetID = captureWorkspacePresentationScroll(
+                document.querySelector('#libraryPane'),
+                pane
+              )?.target?.closest('[data-asset-id]')?.dataset.assetId || null;
+              applyGridDensity(8);
+              pane.scrollTop = 0;
+              document.querySelector('#inspectorVisibilityButton')
+                .focus({ preventScroll: true });
+              setInspectorVisible(false);
+              window.__gallerySupersededReflowAnchor = cards[0];
+              return {
+                oldAssetID,
+                assetID: cards[0].dataset.assetId,
+                offset: cards[0].getBoundingClientRect().top
+                  - pane.getBoundingClientRect().top,
+                scrollTop: pane.scrollTop,
+              };
+            }"""
+        )
+        assert gallery_superseded_reflow_frame["oldAssetID"]
+        assert gallery_superseded_reflow_frame["oldAssetID"] != (
+            gallery_superseded_reflow_frame["assetID"]
+        )
+        page.wait_for_timeout(400)
+        gallery_superseded_reflow_after = page.evaluate(
+            """() => {
+              const pane = document.querySelector('#libraryScroll');
+              const card = window.__gallerySupersededReflowAnchor;
+              return {
+                assetID: card.dataset.assetId,
+                offset: card.getBoundingClientRect().top - pane.getBoundingClientRect().top,
+                scrollTop: pane.scrollTop,
+                focus: document.activeElement?.id,
+                selection: [...state.selectedAssetIDs].sort(),
+              };
+            }"""
+        )
+        assert gallery_superseded_reflow_after["assetID"] == (
+            gallery_superseded_reflow_frame["assetID"]
+        )
+        assert abs(
+            gallery_superseded_reflow_after["offset"]
+            - gallery_superseded_reflow_frame["offset"]
+        ) <= 2, {
+            "before": gallery_superseded_reflow_frame,
+            "after": gallery_superseded_reflow_after,
+        }
+        assert gallery_superseded_reflow_after["scrollTop"] <= 1
+        assert gallery_superseded_reflow_after["focus"] == "inspectorVisibilityButton"
+        assert gallery_superseded_reflow_after["selection"] == gallery_reflow_selection
+        assert len(asset_queries) == gallery_reflow_request_count
+        page.evaluate(
+            """() => {
+              setInspectorVisible(true);
+              applyGridDensity(5);
+            }"""
+        )
+        page.wait_for_timeout(400)
+
         page.locator("#gridDensityButton").click()
         page.locator('#gridDensityPopover:not(.hidden) [data-grid-density="8"]').click()
         page.wait_for_function(
             "() => getComputedStyle(document.documentElement)"
             ".getPropertyValue('--asset-min-width').trim() === '620px'"
         )
+        page.wait_for_timeout(400)
         gallery_user_scroll_frame = page.evaluate(
             """() => {
               const pane = document.querySelector('#libraryScroll');
@@ -7881,7 +7950,6 @@ def main():
             path="/tmp/imageall-gallery-user-scroll-wins.png",
             full_page=True,
         )
-
         # A slow trusted touch gesture can outlive the first 360 ms takeover
         # window. Each continued move must renew the suspension so Chromium's
         # native scroll anchoring cannot resume under the user's finger, while
@@ -7978,7 +8046,12 @@ def main():
         # tail: the trusted touch session must keep anchoring suspended until
         # that follow-on scrolling becomes quiet.
         page.wait_for_timeout(250)
-        page.locator("#libraryScroll").evaluate("pane => { pane.scrollTop += 48; }")
+        page.locator("#libraryScroll").evaluate(
+            """pane => {
+              const maximum = Math.max(0, pane.scrollHeight - pane.clientHeight);
+              pane.scrollTop += pane.scrollTop < maximum - 1 ? 48 : -48;
+            }"""
+        )
         page.wait_for_timeout(150)
         gallery_touch_momentum = page.evaluate(
             """() => {
