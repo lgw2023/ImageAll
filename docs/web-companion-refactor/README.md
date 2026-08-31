@@ -1,0 +1,37 @@
+# Web Companion 系统性重构
+
+本目录是 Web Companion 从原生 HTML/CSS/JavaScript 单体向 Vite + React + TypeScript
+工程化应用迁移的可审计交付面。它不是一份一次性计划：功能矩阵、验收门、测试证据和截图必须
+随每个纵切片一起更新。
+
+## 决策边界
+
+- [ADR-063](../ADR-063-WEB-COMPANION-REACT-ARCHITECTURE.md)：新应用技术架构、交付形式和非功能门。
+- [ADR-064](../ADR-064-WEB-COMPANION-INCREMENTAL-MIGRATION.md)：旁路运行、逐流程迁移、默认切换与旧版退场。
+- 本轮不改动 PhotoKit/GRDB 权威语义，不重写远程业务协议，不将私有图像或 API 结果加入
+  Service Worker 缓存。
+- 只允许用合成 fixture 做自动化验证。本阶段不读取、遍历或写入 HDD2 上的受保护真实数据。
+
+## 文档索引
+
+- [PHASE-0-AUDIT.md](PHASE-0-AUDIT.md)：当前实现、资源链、安全边界、技术债和基线证据。
+- [FEATURE-PARITY-MATRIX.md](FEATURE-PARITY-MATRIX.md)：Mac、旧 Web、新 Web 的功能对照和迁移状态。
+- [API-INVENTORY.md](API-INVENTORY.md)：现有 Host API、类型源和缺失能力。
+- [DESIGN-SYSTEM.md](DESIGN-SYSTEM.md)：视觉语汇、令牌、断点、可访问性和动效。
+- [INFORMATION-ARCHITECTURE.md](INFORMATION-ARCHITECTURE.md)：信息架构和路由。
+- [COMPONENT-MAP.md](COMPONENT-MAP.md)：页面、功能模块与通用组件边界。
+- [ROUTING-STATE-MODEL.md](ROUTING-STATE-MODEL.md)：URL、历史、服务端、工作区和局部状态的归属。
+- [API-TYPE-MODEL.md](API-TYPE-MODEL.md)：协议 schema、解码、错误和事件一致性。
+- [TEST-STRATEGY.md](TEST-STRATEGY.md)：分层测试、fixture、视觉/性能/可访问性和 Swift 包装验证。
+- [ACCEPTANCE-GATES.md](ACCEPTANCE-GATES.md)：切换默认入口和删除旧实现前的硬门。
+
+## 状态词汇
+
+| 状态 | 含义 |
+| --- | --- |
+| `baseline` | 只完成旧版盘点和证据冻结 |
+| `foundation` | 已建立新工程基座，但功能不算迁移 |
+| `in-progress` | 新纵切片可运行，尚未通过全部门 |
+| `parity-proven` | 主路径、必要失败路径、回归与截图证据均完整 |
+| `default` | 新版已是默认入口，旧版仍可回滚 |
+| `retired` | 稳定周期结束且退场清单完成，旧实现已删除 |
