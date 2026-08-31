@@ -4212,6 +4212,118 @@ def main():
             arg=review_favorite_refresh_frame["primaryKey"],
         )
 
+        review_items.extend([
+            {
+                **review_items[0],
+                "assetID": asset_id,
+                "fileName": f"BATCH_CONTINUATION_{index}.JPG",
+                "contentRevision": 1100 + index,
+                "score": 0.72 - index * 0.01,
+            }
+            for index, asset_id in enumerate(REVIEW_HISTORY_IDS[:2], start=1)
+        ])
+        review_batch_continuation = page.evaluate(
+            """async ([firstSelectedID, primaryID]) => {
+              await loadReviewQueue({
+                preserveLoadedWindow: true,
+                schedulePagination: false,
+              });
+              state.review.selectionMode = true;
+              state.review.selectedAssetIDs = new Set([firstSelectedID, primaryID]);
+              state.review.selectedIndex = state.review.items.findIndex(
+                (item) => item.assetID === primaryID
+              );
+              state.review.selectionAnchorIndex = state.review.items.findIndex(
+                (item) => item.assetID === firstSelectedID
+              );
+              renderReviewSelectionState();
+              window.__reviewBatchContinuationFrame = {
+                undoReview: { ...state.undo.review },
+                primaryKey: reviewItemKey(
+                  state.review.items[state.review.selectedIndex]
+                ),
+                anchorKey: reviewItemKey(
+                  state.review.items[state.review.selectionAnchorIndex]
+                ),
+              };
+              return {
+                primaryKey: window.__reviewBatchContinuationFrame.primaryKey,
+                anchorKey: window.__reviewBatchContinuationFrame.anchorKey,
+                queueKeys: state.review.items.map(reviewItemKey),
+              };
+            }""",
+            [REVIEW_IDS[0], REVIEW_IDS[2]],
+        )
+        assert review_batch_continuation["queueKeys"] == [
+            f"{REVIEW_IDS[0]}:featurePrint",
+            f"{REVIEW_IDS[1]}:featurePrint",
+            f"{REVIEW_IDS[2]}:featurePrint",
+            f"{REVIEW_HISTORY_IDS[0]}:featurePrint",
+            f"{REVIEW_HISTORY_IDS[1]}:featurePrint",
+        ]
+        with page.expect_response("**/v1/review/decisions/batch"):
+            page.locator(
+                ".review-decision-bar .review-action[data-action='accept']"
+            ).click()
+        page.wait_for_function(
+            "() => !state.review.mutating && state.review.items.length === 3"
+        )
+        review_batch_continuation_result = page.evaluate(
+            """() => ({
+              selectedAssetIDs: [...state.review.selectedAssetIDs],
+              primaryKey: reviewItemKey(
+                state.review.items[state.review.selectedIndex]
+              ),
+              anchorKey: reviewItemKey(
+                state.review.items[state.review.selectionAnchorIndex]
+              ),
+              queueKeys: state.review.items.map(reviewItemKey),
+              selectedIndex: state.review.selectedIndex,
+            })"""
+        )
+        assert review_decisions[-1]["assetIDs"] == [REVIEW_IDS[0], REVIEW_IDS[2]]
+        assert review_decisions[-1]["action"] == "accept"
+        assert review_batch_continuation_result["queueKeys"] == [
+            f"{REVIEW_IDS[1]}:featurePrint",
+            f"{REVIEW_HISTORY_IDS[0]}:featurePrint",
+            f"{REVIEW_HISTORY_IDS[1]}:featurePrint",
+        ]
+        assert review_batch_continuation_result["primaryKey"] == (
+            f"{REVIEW_HISTORY_IDS[0]}:featurePrint"
+        ), review_batch_continuation_result
+        assert review_batch_continuation_result["anchorKey"] == (
+            f"{REVIEW_HISTORY_IDS[0]}:featurePrint"
+        ), review_batch_continuation_result
+        assert review_batch_continuation_result["selectedAssetIDs"] == [
+            REVIEW_HISTORY_IDS[0]
+        ]
+        page.screenshot(
+            path="/tmp/imageall-review-batch-decision-continuation.png",
+            full_page=True,
+        )
+        review_items[:] = [
+            review_item(asset_id, index + 1)
+            for index, asset_id in enumerate(REVIEW_IDS)
+        ]
+        page.evaluate(
+            """async firstAssetID => {
+              const frame = window.__reviewBatchContinuationFrame;
+              state.undo.review = frame.undoReview;
+              renderUndoControls();
+              state.review.selectionMode = false;
+              await loadReviewQueue({
+                preserveLoadedWindow: true,
+                schedulePagination: false,
+              });
+              const index = state.review.items.findIndex(
+                (item) => item.assetID === firstAssetID
+              );
+              selectReviewIndex(index);
+              window.__reviewBatchContinuationFrame = null;
+            }""",
+            REVIEW_IDS[0],
+        )
+
         first_review_card.hover()
         first_review_favorite.click()
         page.wait_for_function(

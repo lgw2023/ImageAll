@@ -38481,6 +38481,7 @@ async function applyReviewDecision(action) {
     || state.review.loading
     || state.review.mutating
     || state.review.loadedScopeKey !== currentReviewScopeKey()) return;
+  const submittedAssetIDs = new Set(assetIDs);
   state.review.mutating = true;
   syncReviewControls();
   try {
@@ -38494,7 +38495,15 @@ async function applyReviewDecision(action) {
       }),
     });
     if (generation !== state.workspaceGeneration) return;
-    const previousIndex = state.review.selectedIndex;
+    const selectionStillTargetsSubmission =
+      state.review.selectedAssetIDs.size === submittedAssetIDs.size
+      && [...submittedAssetIDs].every(
+        (assetID) => state.review.selectedAssetIDs.has(assetID)
+      );
+    const queueKeysBeforeReload = state.review.items.map(reviewItemKey);
+    const primaryKeyBeforeReload = reviewItemKey(
+      state.review.items[state.review.selectedIndex]
+    );
     try {
       await Promise.all([
         loadReviewOverview({ throwOnError: true }),
@@ -38509,8 +38518,19 @@ async function applyReviewDecision(action) {
         }),
       ]);
       if (generation !== state.workspaceGeneration) return;
-      if (state.review.items.length) {
-        selectReviewIndex(Math.min(previousIndex, state.review.items.length - 1));
+      if (selectionStillTargetsSubmission && state.review.items.length) {
+        const remainingKeys = state.review.items.map(reviewItemKey);
+        const continuationKeys = continuedAssetIDs(
+          queueKeysBeforeReload,
+          remainingKeys
+        );
+        const replacementKey = replacementPreviewAssetID(
+          continuationKeys,
+          remainingKeys,
+          primaryKeyBeforeReload
+        );
+        const replacementIndex = remainingKeys.indexOf(replacementKey);
+        if (replacementIndex >= 0) selectReviewIndex(replacementIndex);
       }
       undoToast(
         result.replayed

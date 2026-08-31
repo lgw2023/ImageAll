@@ -3000,6 +3000,21 @@ final class RemoteHTTPServerTests: XCTestCase {
             )
         )
         XCTAssertTrue(script.contains("reviewScopeKey !== currentReviewScopeKey()"))
+        XCTAssertTrue(script.contains("const submittedAssetIDs = new Set(assetIDs);"))
+        XCTAssertTrue(script.contains("const selectionStillTargetsSubmission ="))
+        XCTAssertTrue(
+            script.contains(
+                "const queueKeysBeforeReload = state.review.items.map(reviewItemKey);"
+            )
+        )
+        XCTAssertTrue(script.contains("const primaryKeyBeforeReload = reviewItemKey("))
+        XCTAssertTrue(script.contains("if (selectionStillTargetsSubmission && state.review.items.length)"))
+        XCTAssertTrue(
+            script.contains(
+                "const continuationKeys = continuedAssetIDs(\n          queueKeysBeforeReload,\n          remainingKeys"
+            )
+        )
+        XCTAssertTrue(script.contains("primaryKeyBeforeReload\n        );"))
         XCTAssertTrue(
             script.contains(
                 "const preservesSelection = restoreGridSelectionForDoubleClick(\n      \"slimming\""
