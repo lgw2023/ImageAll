@@ -5,8 +5,8 @@
 - “Mac 现状”和“旧 Web 现状”是阶段 0 对当前源码和合成浏览器 fixture 的盘点；不表示真实照片验收。
 - “新版目标”是验收契约，不是已完成声明。
 - “API”只说明当前 Host 有相关能力；新 UI 还必须有类型解码、主/失败流程、回归和截图才能达到 `parity-proven`。
-- 状态必须用本目录 README 的受控词汇。工程基座已进入 `foundation`，图库、策展、管理、地图与
-  训练纵切片处于 `in-progress`；未满足全部验收门的行不得提前写成 `parity-proven`。
+- 状态必须用本目录 README 的受控词汇。工程基座已进入 `foundation`，图库、策展、管理、地图、
+  训练与图库精简纵切片处于 `in-progress`；未满足全部验收门的行不得提前写成 `parity-proven`。
 
 ## 矩阵
 
@@ -36,9 +36,9 @@
 | 训练 launch/activity | Mac 任务 | 有 | 非乐观 launch、activity 可恢复 | 已有 | 无 | in-progress | `training.spec.ts`：202 后反馈、活动轮询、标签进度、取消回读 | `evidence/training/` 当前活动 | 合成活动；不证明实际训练完成、指标或模型质量 |
 | 嵌入准备 | Mac 有 | 有 | 发起/取消/重试与进度 | 已有 | 无 | in-progress | `training.spec.ts`：图库选择→精确 assetIDs→工作台进度/取消 | `evidence/training/` 准备入口同设计系统 | 合成资产；不证明真实特征缓存生成 |
 | 样本/标签库建议 | Mac 有 | 有 | 建议列表、request/action 完整闭环 | 已有 | 无 | in-progress | `training.spec.ts`：抽检/按标签提交、来源范围、进度、取消、阈值投影 | `evidence/training/` 工作台 | 合成模型/阈值；不证明建议正确性或真实审核写入 |
-| 精简 setup/阈值 | Mac 工作区 | 有 | 受控表单、Host 回读、变更证据 | 已有 | 无 | baseline | 旧阈值回归 | 无 | 新 UI 未建 |
-| 重复聚类审查 | Mac 有 | 有 | 图像对比、键盘、范围稳定 | 已有 | 无 | baseline | 旧精简脚本 | 无 | 未验证大组性能 |
-| 清理计划/移除/回收 | Mac 安全流程 | 有 | 预览、精确数量、不乐观成功、可追踪 | 已有 | 无 | baseline | Swift 高风险路由测试 | 无 | 禁止真实数据自动测试 |
+| 精简 setup/阈值 | Mac 工作区 | 有 | 受控表单、Host 回读、变更证据 | 已有 | 无 | in-progress | `slimming.spec.ts`：来源索引维护、阈值 PUT 回读、目录/筛选/种子精确 launch、503→重试 | `evidence/slimming/` 桌面+移动 | 合成来源和任务；不证明真实目录扫描、阈值效果或相似度质量 |
+| 重复聚类审查 | Mac 有 | 有 | 图像对比、键盘、范围稳定 | 已有 | 无 | in-progress | `slimming.spec.ts`：范围切换、成员对比、代表项/收藏项硬保护、审查 disposition、axe/无溢出 | `evidence/slimming/` 组内审查 | 合成 3 项单组；未验证真实缩略图、超大组性能或人工相似度正确性 |
+| 清理计划/移除/回收 | Mac 安全流程 | 有 | 预览、精确数量、不乐观成功、可追踪 | 已有 | 无 | in-progress | `slimming.spec.ts`：gallery/cluster 冻结选择、两种模式确认、只读计划→执行→验证、恢复/永久清理 | `evidence/slimming/` 清理选择与保护 | 只验证合成 Host 状态机；不证明真实文件/Photos 移动、删除、磁盘释放或授权处理，自动测试未读取 HDD2 |
 | 来源列表/管理 | Mac 侧栏/设置 | Web 有请求流 | 能力提示、审计反馈、精确作用域 | 已有 | 无 | in-progress | `management.spec.ts`：来源刷新、Host 完成状态、axe | `evidence/management/` 来源桌面+移动 | 合成 source；不证明真实文件夹/Photos 授权 |
 | 存储与维护 | Mac 设置 | Web 有 | 容量、健康、操作请求和进度 | 已有 | 无 | in-progress | `management.spec.ts`：容量、清理确认、Host 结果 | `evidence/management/` 存储桌面+移动 | 不证明真实磁盘回收、导出或 App 重启 |
 | 通知/工作区提示 | Mac 通知 | Web banner/overlay | 持久且不挡主路径，动作可追踪 | 已有 | 无 | baseline | Swift 端点测试 | 基线图有 warning | 新信息层级未建 |

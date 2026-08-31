@@ -1,6 +1,6 @@
 import { useState, type SyntheticEvent } from 'react';
 
-import { RefreshCw, Search, SlidersHorizontal } from 'lucide-react';
+import { RefreshCw, ScanSearch, Search, SlidersHorizontal } from 'lucide-react';
 import { NavLink } from 'react-router-dom';
 
 import type { AssetMediaKind, AssetSort } from '@/api/contracts/asset';
@@ -21,6 +21,7 @@ type GalleryToolbarProps = {
   isRefreshing: boolean;
   onApply: (filters: GalleryFilters) => void;
   onRefresh: () => void;
+  onAnalyzeCurrentFilter: () => void;
 };
 
 export function GalleryToolbar({
@@ -31,6 +32,7 @@ export function GalleryToolbar({
   isRefreshing,
   onApply,
   onRefresh,
+  onAnalyzeCurrentFilter,
 }: GalleryToolbarProps) {
   const [draftSearch, setDraftSearch] = useState(filters.searchText);
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -124,6 +126,9 @@ export function GalleryToolbar({
       <span className="gallery-result-count" aria-live="polite">
         已载入 {loadedCount.toLocaleString('zh-CN')} 项
       </span>
+      <button className="button" onClick={onAnalyzeCurrentFilter} type="button">
+        <ScanSearch aria-hidden="true" size={15} /> 分析当前筛选
+      </button>
       <button
         aria-label="刷新图库"
         className="icon-button"

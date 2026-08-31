@@ -72,7 +72,7 @@ test('gallery filters are URL-addressable and sent to the Host', async ({ page }
   await expect.poll(() => new URL(page.url()).searchParams.get('q')).toBe('IMG_0007');
 
   if (testInfo.project.name === 'chromium-mobile') {
-    await page.getByRole('button', { name: '筛选' }).click();
+    await page.getByRole('button', { name: '筛选', exact: true }).click();
   }
   const mediaRequest = page.waitForRequest((request) => {
     const url = new URL(request.url());

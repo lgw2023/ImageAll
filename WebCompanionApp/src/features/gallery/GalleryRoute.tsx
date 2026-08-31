@@ -17,6 +17,7 @@ import type { TagDecisionAction } from '@/api/contracts/tag';
 import { errorMessage } from '@/api/errors';
 import { applyTagDecision, fetchTags, fetchTagSelection, undoTagDecision } from '@/api/tags';
 import { prepareEmbeddings } from '@/api/training';
+import { submitSlimmingRemoval } from '@/api/slimming';
 
 import { AssetViewer } from './AssetViewer';
 import { GalleryToolbar, type GalleryFilters } from './GalleryToolbar';
@@ -284,11 +285,90 @@ export function GalleryRoute() {
     },
   });
 
+  function selectedMediaScope(assetIDs: string[]) {
+    const groups = new Map<'image' | 'video', string[]>([
+      ['image', []],
+      ['video', []],
+    ]);
+    for (const id of assetIDs) {
+      const mediaType = assets.find((asset) => asset.id === id)?.mediaType ?? 'image/jpeg';
+      groups.get(mediaType.startsWith('video/') ? 'video' : 'image')?.push(id);
+    }
+    const requests = [...groups].filter(([, ids]) => ids.length > 0);
+    if (requests.length !== 1) {
+      throw new Error('照片与视频需要分开处理；请先把图库筛选为单一媒体类型。');
+    }
+    const request = requests[0];
+    if (!request) throw new Error('没有可处理的项目。');
+    return request;
+  }
+
+  const recycleMutation = useMutation({
+    mutationFn: async (assetIDs: string[]) => {
+      const [mediaKind, ids] = selectedMediaScope(assetIDs);
+      return submitSlimmingRemoval({
+        scope: 'gallerySelection',
+        jobID: null,
+        clusterID: null,
+        mediaKind,
+        assetIDs: ids,
+        mode: 'recoverableRecycle',
+      });
+    },
+    onSuccess: (request) => {
+      setStatusMessage(
+        `Mac 已冻结 ${String(request.assetIDs.length)} 项选择并进入可恢复回收确认队列；这不代表移动已经完成。`,
+      );
+      setSelection({ signature: selectionSignature, ids: new Set() });
+      selectionAnchor.current = null;
+      void queryClient.invalidateQueries({ queryKey: ['slimming-removals'] });
+      void queryClient.invalidateQueries({ queryKey: ['slimming-recycle'] });
+      void queryClient.invalidateQueries({ queryKey: ['assets'] });
+    },
+  });
+
   const mutationPending =
     favoriteMutation.isPending ||
     tagMutation.isPending ||
     undoMutation.isPending ||
-    embeddingMutation.isPending;
+    embeddingMutation.isPending ||
+    recycleMutation.isPending;
+
+  function openCurrentFilterAnalysis() {
+    if (!filters.mediaKind) {
+      setStatusMessage('请先把图库筛选为照片或视频，再分析当前筛选。');
+      return;
+    }
+    const parameters = new URLSearchParams({
+      section: 'analyze',
+      mode: 'currentFilter',
+      media: filters.mediaKind,
+      filterSort: filters.sort,
+    });
+    if (filters.searchText) parameters.set('filterQ', filters.searchText);
+    if (filters.acceptedTagID) parameters.set('filterTag', filters.acceptedTagID);
+    if (favoritesOnly) parameters.set('filterFavorite', 'favorited');
+    void navigate(`/slimming?${parameters}`);
+  }
+
+  function openSeedAnalysis() {
+    try {
+      const [mediaKind, ids] = selectedMediaScope(selectedAssetIDs);
+      const parameters = new URLSearchParams({
+        section: 'analyze',
+        mode: 'seeds',
+        media: mediaKind,
+        seedAssetIDs: ids.join(','),
+        filterSort: filters.sort,
+      });
+      if (filters.searchText) parameters.set('filterQ', filters.searchText);
+      if (filters.acceptedTagID) parameters.set('filterTag', filters.acceptedTagID);
+      if (favoritesOnly) parameters.set('filterFavorite', 'favorited');
+      void navigate(`/slimming?${parameters}`);
+    } catch (error) {
+      setStatusMessage(errorMessage(error));
+    }
+  }
 
   function applyFilters(next: GalleryFilters) {
     const parameters = new URLSearchParams();
@@ -398,6 +478,7 @@ export function GalleryRoute() {
         isRefreshing={assetsQuery.isRefetching}
         loadedCount={assets.length}
         onApply={applyFilters}
+        onAnalyzeCurrentFilter={openCurrentFilterAnalysis}
         onRefresh={() => void assetsQuery.refetch()}
         tags={activeTags}
       />
@@ -453,11 +534,24 @@ export function GalleryRoute() {
             selectionAnchor.current = null;
           }}
           onFavorite={(isFavorite) => void applyFavorite(selectedAssetIDs, isFavorite)}
+          onFindSimilar={openSeedAnalysis}
           onPrepareEmbeddings={() =>
             void embeddingMutation.mutateAsync(selectedAssetIDs).catch((error: unknown) => {
               setStatusMessage(errorMessage(error));
             })
           }
+          onRecycle={() => {
+            if (
+              !window.confirm(
+                `将所选 ${String(selectedAssetIDs.length)} 项交给 Mac 放入可恢复回收区？`,
+              )
+            ) {
+              return;
+            }
+            void recycleMutation.mutateAsync(selectedAssetIDs).catch((error: unknown) => {
+              setStatusMessage(errorMessage(error));
+            });
+          }}
           onSelectedTagChange={setSelectedTagID}
           onTagDecision={(action) =>
             void applyDecision(effectiveSelectedTagID, selectedAssetIDs, action)

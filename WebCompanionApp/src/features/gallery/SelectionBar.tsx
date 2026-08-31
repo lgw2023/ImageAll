@@ -1,4 +1,4 @@
-import { Check, DatabaseZap, Heart, RotateCcw, X } from 'lucide-react';
+import { Check, DatabaseZap, Heart, ScanSearch, Trash2, RotateCcw, X } from 'lucide-react';
 
 import type { TagSelectionAggregate, TagSummary } from '@/api/contracts/tag';
 
@@ -12,6 +12,8 @@ type SelectionBarProps = {
   onFavorite: (isFavorite: boolean) => void;
   onTagDecision: (action: 'accept' | 'reject' | 'clear') => void;
   onPrepareEmbeddings: () => void;
+  onFindSimilar: () => void;
+  onRecycle: () => void;
   onClear: () => void;
 };
 
@@ -25,6 +27,8 @@ export function SelectionBar({
   onFavorite,
   onTagDecision,
   onPrepareEmbeddings,
+  onFindSimilar,
+  onRecycle,
   onClear,
 }: SelectionBarProps) {
   return (
@@ -54,6 +58,12 @@ export function SelectionBar({
         </button>
         <button className="button" disabled={pending} onClick={onPrepareEmbeddings} type="button">
           <DatabaseZap aria-hidden="true" size={15} /> 准备特征
+        </button>
+        <button className="button" disabled={pending} onClick={onFindSimilar} type="button">
+          <ScanSearch aria-hidden="true" size={15} /> 查找相似项
+        </button>
+        <button className="button" disabled={pending} onClick={onRecycle} type="button">
+          <Trash2 aria-hidden="true" size={15} /> 移至回收区
         </button>
         <label className="compact-field selection-tag-field">
           <span>标签</span>

@@ -46,11 +46,15 @@
     --color-accent: #1769aa;
     --color-accent-hover: #11578f;
     --color-accent-subtle: #e8f2fa;
+    --color-accent-soft: #e8f2fa;
+    --color-accent-border: #9bc4e2;
+    --color-accent-strong: #0f568c;
     --color-success: #247a43;
     --color-warning: #9a5a00;
     --color-danger: #b42318;
     --color-focus: #0066cc;
     --shadow-raised: 0 10px 34px rgb(20 20 20 / 10%);
+    --shadow-float: 0 18px 48px rgb(20 20 20 / 14%);
     --radius-control: 6px;
     --radius-card: 8px;
     --radius-panel: 12px;
@@ -72,11 +76,15 @@
     --color-accent: #62a8df;
     --color-accent-hover: #86bce5;
     --color-accent-subtle: #173247;
+    --color-accent-soft: #173247;
+    --color-accent-border: #376b8f;
+    --color-accent-strong: #8fc9f2;
     --color-success: #66c48a;
     --color-warning: #f0b35a;
     --color-danger: #ff8a80;
     --color-focus: #75bfff;
     --shadow-raised: 0 14px 40px rgb(0 0 0 / 34%);
+    --shadow-float: 0 20px 52px rgb(0 0 0 / 42%);
   }
 }
 
@@ -160,18 +168,26 @@
   .button:disabled {
     color: var(--color-text-muted);
     cursor: not-allowed;
-    opacity: 0.7;
+    opacity: 1;
+    transition: none;
   }
 
   .button-primary {
     color: white;
     border-color: var(--color-accent);
     background: var(--color-accent);
+    transition: none;
   }
 
   .button-primary:not(:disabled):hover {
     border-color: var(--color-accent-hover);
     background: var(--color-accent-hover);
+  }
+
+  .button-primary:disabled {
+    color: var(--color-text-muted);
+    border-color: var(--color-border);
+    background: var(--color-surface-muted);
   }
 
   .icon-button {
@@ -3192,6 +3208,573 @@
   .map-selection .button,
   .place-candidate .button {
     width: 100%;
+  }
+}
+
+@layer layout {
+  .slimming-workspace {
+    display: grid;
+    min-width: 0;
+    gap: 16px;
+  }
+
+  .slimming-heading,
+  .slimming-panel-heading,
+  .slimming-card-heading,
+  .slimming-action-row,
+  .slimming-review-actions,
+  .slimming-message,
+  .slimming-protection-note,
+  .slimming-verification {
+    display: flex;
+    align-items: center;
+  }
+
+  .slimming-heading,
+  .slimming-panel-heading,
+  .slimming-card-heading {
+    justify-content: space-between;
+    gap: 16px;
+  }
+
+  .slimming-heading p,
+  .slimming-panel-heading p,
+  .slimming-job-card p,
+  .slimming-request-list p,
+  .slimming-recycle-card p {
+    margin: 4px 0 0;
+    color: var(--color-text-muted);
+  }
+
+  .slimming-media-switch,
+  .slimming-section-tabs,
+  .slimming-scope-tabs {
+    display: flex;
+    padding: 3px;
+    gap: 3px;
+    border: 1px solid var(--color-border);
+    border-radius: 9px;
+    background: var(--color-surface-muted);
+  }
+
+  .slimming-media-switch .segment,
+  .slimming-scope-tabs .segment {
+    min-height: 34px;
+    padding: 6px 12px;
+    border-color: transparent;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  .slimming-media-switch .segment[aria-pressed='true'],
+  .slimming-scope-tabs .segment[aria-pressed='true'],
+  .slimming-section-tabs .button[aria-current='page'] {
+    color: var(--color-accent-strong);
+    border-color: var(--color-accent-border);
+    background: var(--color-surface);
+  }
+
+  .slimming-section-tabs {
+    width: fit-content;
+  }
+
+  .slimming-section-tabs .button {
+    border-color: transparent;
+    background: transparent;
+  }
+
+  .slimming-message {
+    min-height: 46px;
+    padding: 8px 10px 8px 13px;
+    gap: 9px;
+    border: 1px solid var(--color-accent-border);
+    border-radius: var(--radius-card);
+    color: var(--color-accent-strong);
+    background: var(--color-accent-soft);
+  }
+
+  .slimming-message span {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .slimming-analyze-grid,
+  .slimming-cleanup-grid,
+  .slimming-recycle-grid {
+    display: grid;
+    min-width: 0;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+  }
+
+  .slimming-history-panel {
+    grid-column: 1 / -1;
+  }
+
+  .slimming-panel {
+    min-width: 0;
+    padding: 17px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-panel);
+    background: var(--color-surface);
+  }
+
+  .slimming-panel h3 {
+    margin-bottom: 0;
+    font-size: 16px;
+  }
+
+  .slimming-panel-heading {
+    margin-bottom: 14px;
+    align-items: flex-start;
+  }
+
+  .slimming-panel-heading > span {
+    flex: none;
+    color: var(--color-text-muted);
+    font-size: 12px;
+  }
+
+  .slimming-state {
+    display: grid;
+    min-height: 96px;
+    padding: 18px;
+    place-content: center;
+    gap: 8px;
+    border: 1px dashed var(--color-border);
+    border-radius: var(--radius-card);
+    color: var(--color-text-muted);
+    text-align: center;
+  }
+
+  .slimming-error {
+    color: var(--color-danger);
+    border-color: var(--color-danger);
+  }
+
+  .slimming-mode-list,
+  .slimming-removal-choice {
+    display: flex;
+    margin: 0 0 14px;
+    padding: 0;
+    flex-wrap: wrap;
+    gap: 8px;
+    border: 0;
+  }
+
+  .slimming-mode-list legend,
+  .slimming-removal-choice legend {
+    width: 100%;
+    margin-bottom: 6px;
+    color: var(--color-text-muted);
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .slimming-mode-list label {
+    display: flex;
+    min-width: 150px;
+    padding: 10px;
+    flex: 1;
+    align-items: flex-start;
+    gap: 8px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-card);
+    cursor: pointer;
+  }
+
+  .slimming-mode-list label:has(input:checked) {
+    border-color: var(--color-accent-border);
+    background: var(--color-accent-soft);
+  }
+
+  .slimming-mode-list span,
+  .slimming-source-card > span,
+  .slimming-member-meta,
+  .slimming-card-heading > div {
+    display: grid;
+    min-width: 0;
+    gap: 3px;
+  }
+
+  .slimming-mode-list small,
+  .slimming-source-card small,
+  .slimming-member-meta > span,
+  .slimming-card-heading span,
+  .slimming-request-list article > span {
+    color: var(--color-text-muted);
+    font-size: 12px;
+  }
+
+  .slimming-source-list,
+  .slimming-job-list,
+  .slimming-request-list,
+  .slimming-recycle-list,
+  .slimming-cluster-list {
+    display: grid;
+    gap: 8px;
+  }
+
+  .slimming-source-card,
+  .slimming-job-card,
+  .slimming-request-list article,
+  .slimming-recycle-card,
+  .slimming-plan-card {
+    padding: 11px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-card);
+    background: var(--color-surface-raised);
+  }
+
+  .slimming-source-card {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 9px;
+    cursor: pointer;
+  }
+
+  .slimming-action-row {
+    margin-top: 12px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .slimming-action-row .button,
+  .slimming-review-actions > .button,
+  .slimming-recycle-card .button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+  }
+
+  .slimming-threshold-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .slimming-threshold-grid label {
+    display: grid;
+    gap: 5px;
+    color: var(--color-text-muted);
+    font-size: 12px;
+    font-weight: 650;
+  }
+
+  .slimming-threshold-grid input,
+  .slimming-threshold-grid select,
+  .slimming-recycle-toolbar input,
+  .slimming-review-sidebar select {
+    width: 100%;
+    min-width: 0;
+    min-height: 36px;
+    padding: 6px 8px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-control);
+    color: var(--color-text);
+    background: var(--color-surface);
+  }
+
+  .slimming-card-heading {
+    align-items: flex-start;
+  }
+
+  .slimming-progress {
+    display: grid;
+    margin-top: 9px;
+    gap: 5px;
+    color: var(--color-text-muted);
+    font-size: 12px;
+  }
+
+  .slimming-progress progress {
+    width: 100%;
+    height: 7px;
+    accent-color: var(--color-accent);
+  }
+
+  .slimming-review-layout {
+    display: grid;
+    min-width: 0;
+    grid-template-columns: minmax(220px, 0.7fr) minmax(0, 2fr);
+    gap: 14px;
+  }
+
+  .slimming-review-sidebar {
+    display: grid;
+    align-content: start;
+    gap: 13px;
+  }
+
+  .slimming-review-sidebar .compact-field {
+    display: grid;
+    gap: 5px;
+  }
+
+  .slimming-scope-tabs {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .slimming-scope-tabs .segment {
+    display: grid;
+    padding-inline: 6px;
+    gap: 2px;
+    font-size: 12px;
+  }
+
+  .slimming-scope-tabs .segment span {
+    color: var(--color-text-muted);
+    font-size: 11px;
+  }
+
+  .slimming-cluster-button {
+    display: flex;
+    width: 100%;
+    min-width: 0;
+    padding: 9px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 9px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-card);
+    color: var(--color-text);
+    background: var(--color-surface-raised);
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .slimming-cluster-button[aria-current='true'] {
+    border-color: var(--color-accent-border);
+    background: var(--color-accent-soft);
+  }
+
+  .slimming-cluster-button > span:first-child {
+    display: grid;
+    min-width: 0;
+  }
+
+  .slimming-cluster-button small {
+    color: var(--color-text-muted);
+  }
+
+  .slimming-member-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+    gap: 10px;
+  }
+
+  .slimming-member-card {
+    min-width: 0;
+    overflow: hidden;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-card);
+    background: var(--color-surface-raised);
+  }
+
+  .slimming-member-preview {
+    position: relative;
+    overflow: hidden;
+    aspect-ratio: 4 / 3;
+    background: var(--color-surface-muted);
+  }
+
+  .slimming-member-preview img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .slimming-member-preview > span {
+    position: absolute;
+    right: 6px;
+    bottom: 6px;
+    display: inline-flex;
+    padding: 4px 6px;
+    align-items: center;
+    gap: 4px;
+    border-radius: 5px;
+    color: white;
+    background: rgb(20 20 20 / 82%);
+    font-size: 11px;
+    font-weight: 700;
+  }
+
+  .slimming-member-meta {
+    padding: 9px;
+  }
+
+  .slimming-member-meta strong,
+  .slimming-member-meta span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .slimming-member-meta label {
+    display: flex;
+    margin-top: 5px;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+  }
+
+  .slimming-review-actions {
+    margin-top: 14px;
+    padding-top: 13px;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 10px;
+    border-top: 1px solid var(--color-border);
+  }
+
+  .slimming-review-actions .slimming-action-row {
+    margin: 0;
+  }
+
+  .slimming-removal-choice {
+    margin: 0;
+  }
+
+  .slimming-removal-choice label {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .slimming-request-panel {
+    grid-column: 1 / -1;
+  }
+
+  .slimming-protection-note,
+  .slimming-verification {
+    gap: 6px;
+    color: var(--color-success) !important;
+  }
+
+  .slimming-policy-note {
+    padding: 7px 9px;
+    border-left: 3px solid var(--color-warning);
+    background: var(--color-surface-muted);
+  }
+
+  .slimming-plan-card {
+    margin-top: 12px;
+  }
+
+  .slimming-plan-card dl {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .slimming-plan-card dl div {
+    padding: 8px;
+    border-radius: var(--radius-control);
+    background: var(--color-surface-muted);
+  }
+
+  .slimming-plan-card dt {
+    color: var(--color-text-muted);
+    font-size: 11px;
+  }
+
+  .slimming-plan-card dd {
+    margin: 3px 0 0;
+    font-size: 18px;
+    font-weight: 750;
+  }
+
+  .slimming-verification {
+    margin-top: 9px;
+    padding: 8px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-control);
+  }
+
+  .slimming-verification.complete {
+    border-color: var(--color-success);
+  }
+
+  .slimming-recycle-grid {
+    grid-template-columns: minmax(0, 1.7fr) minmax(280px, 0.8fr);
+  }
+
+  .slimming-recycle-toolbar {
+    display: grid;
+    margin-bottom: 12px;
+    grid-template-columns: minmax(0, 1fr) minmax(180px, 0.4fr);
+    gap: 10px;
+  }
+
+  .slimming-recycle-toolbar .compact-field {
+    display: grid;
+    gap: 4px;
+  }
+}
+
+@media (max-width: 899px) {
+  .slimming-analyze-grid,
+  .slimming-cleanup-grid,
+  .slimming-recycle-grid,
+  .slimming-review-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .slimming-review-sidebar {
+    max-height: none;
+  }
+
+  .slimming-request-panel {
+    grid-column: auto;
+  }
+}
+
+@media (max-width: 599px) {
+  .slimming-heading,
+  .slimming-panel-heading,
+  .slimming-card-heading,
+  .slimming-review-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .slimming-media-switch,
+  .slimming-section-tabs {
+    width: 100%;
+  }
+
+  .slimming-media-switch .segment,
+  .slimming-section-tabs .button {
+    min-width: 0;
+    flex: 1;
+    padding-inline: 6px;
+    font-size: 12px;
+  }
+
+  .slimming-section-tabs {
+    overflow-x: auto;
+  }
+
+  .slimming-panel {
+    padding: 13px;
+  }
+
+  .slimming-threshold-grid,
+  .slimming-plan-card dl,
+  .slimming-recycle-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .slimming-member-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .slimming-action-row .button,
+  .slimming-review-actions > .button {
+    flex: 1;
   }
 }
 

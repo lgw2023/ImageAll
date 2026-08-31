@@ -37,6 +37,7 @@ const capabilities = {
     'pairing',
     'trainingActivities',
     'librarySuggestions',
+    'librarySlimming',
   ],
   listenPort: 5173,
   usesTLS: false,
@@ -261,6 +262,135 @@ export async function installSyntheticAuthenticatedHost(page: Page) {
   let tagSuggestionActivities: Record<string, unknown>[] = [];
   let standardSuggestionJob: Record<string, unknown> | null = null;
   let personalSuggestionJob: Record<string, unknown> | null = null;
+  const slimmingJobID = '51ba0aa1-e0c3-4421-bb0f-4f7edab5c351';
+  const slimmingClusterID = '52ba0aa1-e0c3-4421-bb0f-4f7edab5c352';
+  const recycleEntryID = '53ba0aa1-e0c3-4421-bb0f-4f7edab5c353';
+  const recyclePhotoEntryID = '53ba0aa1-e0c3-4421-bb0f-4f7edab5c358';
+  const cleanupPlanID = '54ba0aa1-e0c3-4421-bb0f-4f7edab5c354';
+  let clusterDisposition: 'confirmed' | 'ignored' | null = null;
+  let similarityIndexState: 'ready' | 'building' = 'ready';
+  let slimmingThresholds = {
+    featurePrintRecallTopK: 24,
+    featurePrintMaxL2Distance: 0.18,
+    dinoCosineMinSimilarity: 0.88,
+    sceneBucketActivationAssetCount: 2500,
+    featurePrintRecallMode: 'topK',
+    featurePrintL2Mode: 'radius',
+    dinoCosineMode: 'minimum',
+    sceneBucketingMode: 'automatic',
+  };
+  const factorySlimmingThresholds = structuredClone(slimmingThresholds);
+  function slimmingJob(
+    id = slimmingJobID,
+    mode: 'catalog' | 'currentFilter' | 'seeds' = 'catalog',
+    state: 'running' | 'paused' | 'completed' = 'completed',
+  ) {
+    return {
+      id,
+      mode,
+      mediaKind: 'image',
+      state,
+      progress: { completedUnitCount: state === 'completed' ? 120 : 42, totalUnitCount: 120 },
+      attempts: 1,
+      maxAttempts: 3,
+      memberCount: mode === 'seeds' ? 2 : 120,
+      seedCount: mode === 'seeds' ? 2 : 0,
+      clusterCount: state === 'completed' ? 1 : 0,
+      hasResult: state === 'completed',
+      createdAtMs: 1_787_800_000_000,
+      updatedAtMs: 1_787_820_000_000,
+      sourceNames: mode === 'catalog' ? ['Synthetic Library'] : [],
+      availableActions:
+        state === 'running' ? ['pause', 'cancel'] : state === 'paused' ? ['resume', 'cancel'] : [],
+      controlRequest: 'none',
+      scanProgress:
+        state === 'completed'
+          ? null
+          : { phase: 'clustering', completedUnitCount: 42, totalUnitCount: 120 },
+      lastErrorCode: null,
+    };
+  }
+  let slimmingJobs = [slimmingJob()];
+  let removalRequests: Record<string, unknown>[] = [];
+  let recycleRequests: Record<string, unknown>[] = [];
+  let cleanupRequests: Record<string, unknown>[] = [];
+  let recycleEntries: Record<string, unknown>[] = [
+    {
+      id: recycleEntryID,
+      assetID: assetIDs[3],
+      sourceID,
+      sourceDisplayName: 'Synthetic Library',
+      sourceKind: 'file',
+      mediaKind: 'image',
+      fileName: 'IMG_0004.jpg',
+      trashedAtMs: 1_787_810_000_000,
+      purgeAfterMs: 1_790_402_000_000,
+      state: 'recycled',
+      errorCode: null,
+      problem: null,
+      resolution: 'restoreOrPurge',
+      availableActions: ['restore', 'purge'],
+      stateMessage: '项目安全保存在 ImageAll 回收区。',
+      policyMessage: '永久清理需要再次由 Mac 确认。',
+      explanationMessage: null,
+      favorite: {
+        assetID: assetIDs[3],
+        isFavorite: false,
+        photosObservedValue: false,
+        syncStatus: 'synced',
+        lastErrorCode: null,
+      },
+    },
+    {
+      id: recyclePhotoEntryID,
+      assetID: assetIDs[4],
+      sourceID,
+      sourceDisplayName: 'Synthetic Photos',
+      sourceKind: 'photos',
+      mediaKind: 'image',
+      fileName: 'IMG_0005.jpg',
+      trashedAtMs: 1_787_811_000_000,
+      purgeAfterMs: 1_790_403_000_000,
+      state: 'recycled',
+      errorCode: null,
+      problem: null,
+      resolution: 'restoreOrPurge',
+      availableActions: ['restore'],
+      stateMessage: 'Photos 项等待恢复。',
+      policyMessage: 'Photos 的永久删除由系统管理。',
+      explanationMessage: null,
+      favorite: {
+        assetID: assetIDs[4],
+        isFavorite: false,
+        photosObservedValue: false,
+        syncStatus: 'synced',
+        lastErrorCode: null,
+      },
+    },
+  ];
+  function slimmingSetup(mediaKind: string) {
+    return {
+      mediaKind,
+      sources: [
+        {
+          id: sourceID,
+          displayName: 'Synthetic Library',
+          kind: 'folder',
+          similarityIndex: {
+            state: similarityIndexState,
+            assetCount: 120,
+            indexedCount: similarityIndexState === 'ready' ? 120 : 42,
+            clusterCount: 1,
+            pendingCount: similarityIndexState === 'ready' ? 0 : 78,
+            updatedAtMs: 1_787_820_000_000,
+          },
+        },
+      ],
+      thresholds: slimmingThresholds,
+      factoryThresholds: factorySlimmingThresholds,
+      sourceSimilarityIndexAvailable: true,
+    };
+  }
   const mapClusters = [
     {
       id: 'shanghai',
@@ -614,6 +744,406 @@ export async function installSyntheticAuthenticatedHost(page: Page) {
       contentType: 'application/json',
       json: { operationID: body.operationID, resolution: placeResolution, replayed: false },
     });
+  });
+  await page.route('**/v1/library-slimming/setup?*', (route) => {
+    const mediaKind = new URL(route.request().url()).searchParams.get('mediaKind') ?? 'image';
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: slimmingSetup(mediaKind),
+    });
+  });
+  await page.route('**/v1/library-slimming/source-maintenance', (route) => {
+    const body = route.request().postDataJSON() as {
+      operationID: string;
+      action: 'refreshCatalog' | 'initializeSimilarityIndex';
+      mediaKind: string;
+      sourceIDs: string[];
+    };
+    if (body.action === 'initializeSimilarityIndex') similarityIndexState = 'building';
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        operationID: body.operationID,
+        action: body.action,
+        mediaKind: body.mediaKind,
+        sourceIDs: body.sourceIDs,
+        setup: slimmingSetup(body.mediaKind),
+        replayed: false,
+      },
+    });
+  });
+  await page.route('**/v1/library-slimming/thresholds', (route) => {
+    const body = route.request().postDataJSON() as {
+      thresholds: typeof slimmingThresholds;
+    };
+    slimmingThresholds = body.thresholds;
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: { thresholds: slimmingThresholds, replayed: false },
+    });
+  });
+  await page.route('**/v1/library-slimming/launch', (route) => {
+    const body = route.request().postDataJSON() as {
+      operationID: string;
+      mediaKind: 'image' | 'video';
+      mode: 'catalog' | 'currentFilter' | 'seeds';
+      seedAssetIDs: string[];
+    };
+    const jobID = '61ba0aa1-e0c3-4421-bb0f-4f7edab5c361';
+    slimmingJobs = [
+      {
+        ...slimmingJob(jobID, body.mode, 'running'),
+        mediaKind: body.mediaKind,
+        memberCount: body.mode === 'seeds' ? body.seedAssetIDs.length : 120,
+        seedCount: body.seedAssetIDs.length,
+      },
+      ...slimmingJobs,
+    ];
+    return route.fulfill({
+      status: 202,
+      contentType: 'application/json',
+      json: {
+        operationID: body.operationID,
+        jobID,
+        acceptedAtMs: 1_787_820_000_000,
+        memberCount: body.mode === 'seeds' ? body.seedAssetIDs.length : 120,
+        replayed: false,
+      },
+    });
+  });
+  await page.route(/\/v1\/library-slimming\/jobs\/[0-9a-f-]+\/actions$/i, (route) => {
+    const jobID = new URL(route.request().url()).pathname.split('/').at(-2) ?? '';
+    const body = route.request().postDataJSON() as {
+      action: 'pause' | 'resume' | 'deleteRecord';
+    };
+    if (body.action === 'deleteRecord') {
+      slimmingJobs = slimmingJobs.filter((job) => job.id !== jobID);
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        json: { job: null, deleted: true, replayed: false },
+      });
+    }
+    slimmingJobs = slimmingJobs.map((job) =>
+      job.id === jobID
+        ? {
+            ...job,
+            state: body.action === 'pause' ? 'paused' : 'running',
+            availableActions: body.action === 'pause' ? ['resume', 'cancel'] : ['pause', 'cancel'],
+          }
+        : job,
+    );
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        job: slimmingJobs.find((job) => job.id === jobID) ?? null,
+        deleted: false,
+        replayed: false,
+      },
+    });
+  });
+  await page.route('**/v1/library-slimming/workspace?*', (route) => {
+    const query = new URL(route.request().url()).searchParams;
+    const mediaKind = query.get('mediaKind') ?? 'image';
+    const requestedScope = query.get('clusterScope') ?? 'pending';
+    const requestedJobID = query.get('jobID') ?? slimmingJobID;
+    const dispositionScope = clusterDisposition ?? 'pending';
+    const showCluster =
+      mediaKind === 'image' &&
+      requestedJobID === slimmingJobID &&
+      requestedScope === dispositionScope;
+    const cluster = {
+      id: slimmingClusterID,
+      kind: 'byteIdentical',
+      memberCount: 3,
+      representativeAssetID: assetIDs[0],
+      score: 1,
+      isSeedOnlyResult: false,
+      technicalSummary: '三个合成项目的内容指纹完全相同。',
+      reviewDisposition: clusterDisposition,
+      originalMemberCount: 3,
+      isHistoricalProcessedRecord: false,
+    };
+    const selectedCluster = showCluster ? (query.get('clusterID') ?? slimmingClusterID) : null;
+    const members =
+      selectedCluster === slimmingClusterID
+        ? [
+            {
+              id: assetIDs[0],
+              sourceID,
+              sourceName: 'Synthetic Library',
+              fileName: 'IMG_0001.jpg',
+              mediaType: 'image/jpeg',
+              availability: 'available',
+              contentRevision: 1,
+              width: 1600,
+              height: 1200,
+              durationMs: null,
+              favorite: {
+                assetID: assetIDs[0],
+                isFavorite: false,
+                photosObservedValue: false,
+                syncStatus: 'synced',
+                lastErrorCode: null,
+              },
+            },
+            {
+              id: assetIDs[1],
+              sourceID,
+              sourceName: 'Synthetic Library',
+              fileName: 'IMG_0002.jpg',
+              mediaType: 'image/jpeg',
+              availability: 'available',
+              contentRevision: 1,
+              width: 1600,
+              height: 1200,
+              durationMs: null,
+              favorite: {
+                assetID: assetIDs[1],
+                isFavorite: false,
+                photosObservedValue: false,
+                syncStatus: 'synced',
+                lastErrorCode: null,
+              },
+            },
+            {
+              id: assetIDs[2],
+              sourceID,
+              sourceName: 'Synthetic Library',
+              fileName: 'IMG_0003.jpg',
+              mediaType: 'image/jpeg',
+              availability: 'available',
+              contentRevision: 1,
+              width: 1600,
+              height: 1200,
+              durationMs: null,
+              favorite: {
+                assetID: assetIDs[2],
+                isFavorite: true,
+                photosObservedValue: false,
+                syncStatus: 'synced',
+                lastErrorCode: null,
+              },
+            },
+          ]
+        : [];
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        mediaKind,
+        jobs: mediaKind === 'image' ? slimmingJobs : [],
+        totalJobCount: mediaKind === 'image' ? slimmingJobs.length : 0,
+        selectedJobID: mediaKind === 'image' ? requestedJobID : null,
+        clusters: showCluster ? [cluster] : [],
+        selectedClusterID: selectedCluster,
+        members,
+        pendingAnalysisCount: 0,
+        analyzedAssetCount: mediaKind === 'image' ? 120 : 0,
+        policyVersion: 'synthetic-slimming-v1',
+        clusterScopeCounts: {
+          pending: clusterDisposition === null ? 1 : 0,
+          confirmed: clusterDisposition === 'confirmed' ? 1 : 0,
+          ignored: clusterDisposition === 'ignored' ? 1 : 0,
+        },
+      },
+    });
+  });
+  await page.route('**/v1/library-slimming/cluster-review', (route) => {
+    const body = route.request().postDataJSON() as {
+      operationID: string;
+      jobID: string;
+      clusterID: string;
+      disposition: 'confirmed' | 'ignored' | null;
+    };
+    clusterDisposition = body.disposition;
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: { ...body, replayed: false },
+    });
+  });
+  await page.route('**/v1/library-slimming/removals?*', (route) => {
+    const mediaKind = new URL(route.request().url()).searchParams.get('mediaKind') ?? 'image';
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: { mediaKind, requests: removalRequests },
+    });
+  });
+  await page.route('**/v1/library-slimming/removals', (route) => {
+    const body = route.request().postDataJSON() as {
+      operationID: string;
+      scope: 'analysisCluster' | 'gallerySelection';
+      jobID: string | null;
+      clusterID: string | null;
+      mediaKind: 'image' | 'video';
+      assetIDs: string[];
+      mode: 'recoverableRecycle' | 'releaseSourceSpace';
+    };
+    const favoriteProtectedAssetIDs = body.assetIDs.filter((id) => id === assetIDs[2]);
+    const request = {
+      id: '55ba0aa1-e0c3-4421-bb0f-4f7edab5c355',
+      operationID: body.operationID,
+      scope: body.scope,
+      jobID: body.jobID,
+      clusterID: body.clusterID,
+      mediaKind: body.mediaKind,
+      assetIDs: body.assetIDs,
+      favoriteProtectedAssetIDs,
+      mode: body.mode,
+      phase: 'awaitingMac',
+      progress: null,
+      audit: null,
+      message: 'Mac 已冻结选择，等待本机确认。',
+      updatedAtMs: 1_787_820_000_000,
+    };
+    removalRequests = [request, ...removalRequests];
+    return route.fulfill({ status: 202, contentType: 'application/json', json: request });
+  });
+  await page.route('**/v1/library-slimming/recycle?*', (route) => {
+    const query = new URL(route.request().url()).searchParams;
+    const scope = query.get('scope') ?? 'all';
+    const search = (query.get('search') ?? '').toLowerCase();
+    const entries = recycleEntries.filter((entry) => {
+      if (scope === 'files' && entry.sourceKind !== 'file') return false;
+      if (scope === 'photos' && entry.sourceKind !== 'photos') return false;
+      if (scope === 'attention' && entry.state !== 'failed') return false;
+      const fileName = typeof entry.fileName === 'string' ? entry.fileName : '';
+      return !search || fileName.toLowerCase().includes(search);
+    });
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        mediaKind: query.get('mediaKind') ?? 'image',
+        entries,
+        totalCount: recycleEntries.length,
+        requests: recycleRequests,
+        scopeCounts: {
+          all: recycleEntries.length,
+          photos: recycleEntries.filter((entry) => entry.sourceKind === 'photos').length,
+          files: recycleEntries.filter((entry) => entry.sourceKind === 'file').length,
+          attention: recycleEntries.filter((entry) => entry.state === 'failed').length,
+        },
+      },
+    });
+  });
+  await page.route('**/v1/library-slimming/recycle/requests', (route) => {
+    const body = route.request().postDataJSON() as {
+      operationID: string;
+      entryID: string;
+      action: 'restore' | 'purge' | 'discardPreflightFailure' | 'retryInterruptedOperation';
+    };
+    const entry = recycleEntries.find((item) => item.id === body.entryID);
+    const request = {
+      id: '56ba0aa1-e0c3-4421-bb0f-4f7edab5c356',
+      operationID: body.operationID,
+      entryID: body.entryID,
+      action: body.action,
+      fileName: entry?.fileName ?? null,
+      phase: 'completed',
+      message: body.action === 'restore' ? 'Mac 已恢复合成项目。' : 'Mac 已完成合成回收处理。',
+      updatedAtMs: 1_787_820_010_000,
+    };
+    recycleRequests = [request, ...recycleRequests];
+    recycleEntries = recycleEntries.map((item) =>
+      item.id === body.entryID
+        ? {
+            ...item,
+            state:
+              body.action === 'restore'
+                ? 'restored'
+                : body.action === 'purge'
+                  ? 'purged'
+                  : 'recycled',
+            availableActions: [],
+            stateMessage: request.message,
+          }
+        : item,
+    );
+    return route.fulfill({ status: 202, contentType: 'application/json', json: request });
+  });
+  await page.route('**/v1/library-slimming/identical-cleanup/plans', (route) => {
+    const body = route.request().postDataJSON() as { jobID: string; mediaKind: string };
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        id: cleanupPlanID,
+        jobID: body.jobID,
+        mediaKind: body.mediaKind,
+        groupCount: 1,
+        byteIdenticalGroupCount: 1,
+        perfectVisualGroupCount: 0,
+        verifiedAssetCount: 3,
+        retainedAssetCount: 1,
+        favoriteRetainedAssetCount: 1,
+        ordinaryRetainedAssetCount: 0,
+        protectedSkippedAssetCount: 0,
+        removalAssetCount: 2,
+        skippedGroupCount: 0,
+        photosAssetCount: 0,
+        fileAssetCount: 2,
+        groupSizeHistogram: { '3': 1 },
+        preparedAtMs: 1_787_820_000_000,
+      },
+    });
+  });
+  await page.route('**/v1/library-slimming/identical-cleanup/requests?*', (route) => {
+    const mediaKind = new URL(route.request().url()).searchParams.get('mediaKind') ?? 'image';
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: { mediaKind, requests: cleanupRequests },
+    });
+  });
+  await page.route('**/v1/library-slimming/identical-cleanup/requests', (route) => {
+    const body = route.request().postDataJSON() as {
+      operationID: string;
+      planID: string;
+      mode: 'recoverableRecycle' | 'releaseSourceSpace';
+    };
+    const request = {
+      id: '57ba0aa1-e0c3-4421-bb0f-4f7edab5c357',
+      operationID: body.operationID,
+      planID: body.planID,
+      jobID: slimmingJobID,
+      mediaKind: 'image',
+      mode: body.mode,
+      phase: 'completed',
+      executionStage: 'verifyingResult',
+      progress: {
+        phase: 'completedAsset',
+        completedAssetCount: 2,
+        totalAssetCount: 2,
+        copiedBytes: 4096,
+        totalFileBytes: 4096,
+      },
+      audit: null,
+      verification: {
+        verifiedGroupCount: 1,
+        targetGroupCount: 1,
+        targetRetainedAssetCount: 1,
+        observedAssetCount: 3,
+        currentAvailableAssetCount: 1,
+        retainedNonredundantAssetCount: 1,
+        recycledRedundantAssetCount: 2,
+        remainingRedundantAssetCount: 0,
+        unresolvedAssetCount: 0,
+        unresolvedGroupCount: 0,
+        isComplete: true,
+      },
+      verificationUnavailableMessage: null,
+      message: 'Mac 已完成并验证合成清理计划。',
+      updatedAtMs: 1_787_820_020_000,
+    };
+    cleanupRequests = [request, ...cleanupRequests];
+    return route.fulfill({ status: 202, contentType: 'application/json', json: request });
   });
   await page.route('**/v1/training/setup?*', (route) =>
     route.fulfill({
