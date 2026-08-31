@@ -3110,9 +3110,34 @@ final class RemoteHTTPServerTests: XCTestCase {
                 "const continuationIDs = continuedAssetIDs(context.assetIDs || [], remainingIDs);"
             )
         )
+        XCTAssertTrue(script.contains("const reviewItemKeys = surface === \"review\""))
+        XCTAssertTrue(script.contains("const reviewPrimaryKey = surface === \"review\""))
+        XCTAssertTrue(script.contains("const reviewAnchorKey = surface === \"review\""))
+        XCTAssertTrue(script.contains("const reviewPreviewKey = surface === \"review\""))
+        XCTAssertTrue(script.contains("const reviewSelectionStillMatches = context?.surface === \"review\""))
         XCTAssertTrue(
             script.contains(
-                "context.reviewItemIDs || [],\n    remainingIDs"
+                "reviewItemKey(state.review.items[state.review.selectedIndex])\n      === context.reviewPrimaryKey"
+            )
+        )
+        XCTAssertTrue(
+            script.contains(
+                "reviewItemKey(state.review.items[state.review.selectionAnchorIndex])\n      === context.reviewAnchorKey"
+            )
+        )
+        XCTAssertTrue(
+            script.contains(
+                "const continueRemovedReviewSelection = reviewSelectionStillMatches"
+            )
+        )
+        XCTAssertTrue(
+            script.contains(
+                "context.reviewItemKeys || [],\n        remainingKeys"
+            )
+        )
+        XCTAssertTrue(
+            script.contains(
+                "remainingKeys,\n        context.reviewPrimaryKey"
             )
         )
         XCTAssertTrue(

@@ -5504,9 +5504,23 @@ def main():
             "() => document.querySelector('#reviewInspectorActionStatus')"
             ".textContent.includes('等待 Mac')"
         )
-        assert page.evaluate(
-            "() => [...state.galleryRemoval.contexts.values()][0].reviewItemIDs"
-        ) == [REVIEW_IDS[0]]
+        review_removal_context = page.evaluate(
+            """() => {
+              const context = [...state.galleryRemoval.contexts.values()][0];
+              return {
+                itemKeys: context.reviewItemKeys,
+                primaryKey: context.reviewPrimaryKey,
+                anchorKey: context.reviewAnchorKey,
+                previewKey: context.reviewPreviewKey,
+              };
+            }"""
+        )
+        assert review_removal_context == {
+            "itemKeys": [f"{REVIEW_IDS[0]}:featurePrint"],
+            "primaryKey": f"{REVIEW_IDS[0]}:featurePrint",
+            "anchorKey": f"{REVIEW_IDS[0]}:featurePrint",
+            "previewKey": f"{REVIEW_IDS[0]}:featurePrint",
+        }
         assert len(submitted_review_removals) == 1
         review_removal_payload = submitted_review_removals[0]
         assert review_removal_payload["scope"] == "gallerySelection"
@@ -5573,6 +5587,159 @@ def main():
         assert REVIEW_IDS[0] not in page.evaluate(
             "() => JSON.stringify(history.state.imageAllWorkspace.context)"
         )
+
+        page.locator("#lightboxBackButton").click()
+        page.locator("#lightbox").wait_for(state="hidden")
+        review_items_after_single_delete = [dict(item) for item in review_items]
+        review_items.extend([
+            {
+                **review_items[0],
+                "assetID": asset_id,
+                "fileName": f"DELETE_CONTINUATION_{index}.JPG",
+                "contentRevision": 1200 + index,
+                "score": 0.69 - index * 0.01,
+            }
+            for index, asset_id in enumerate(REVIEW_HISTORY_IDS[:3], start=1)
+        ])
+        review_delete_continuation = page.evaluate(
+            """async ([firstSelectedID, primaryID]) => {
+              await loadReviewQueue({
+                preserveLoadedWindow: true,
+                schedulePagination: false,
+              });
+              state.review.selectionMode = true;
+              state.review.selectedAssetIDs = new Set([firstSelectedID, primaryID]);
+              state.review.selectedIndex = state.review.items.findIndex(
+                (item) => item.assetID === primaryID
+              );
+              state.review.selectionAnchorIndex = state.review.items.findIndex(
+                (item) => item.assetID === firstSelectedID
+              );
+              renderReviewSelectionState();
+              return {
+                primaryKey: reviewItemKey(
+                  state.review.items[state.review.selectedIndex]
+                ),
+                anchorKey: reviewItemKey(
+                  state.review.items[state.review.selectionAnchorIndex]
+                ),
+                queueKeys: state.review.items.map(reviewItemKey),
+              };
+            }""",
+            [REVIEW_IDS[1], REVIEW_HISTORY_IDS[0]],
+        )
+        assert review_delete_continuation["queueKeys"] == [
+            f"{REVIEW_IDS[1]}:featurePrint",
+            f"{REVIEW_IDS[2]}:featurePrint",
+            f"{REVIEW_HISTORY_IDS[0]}:featurePrint",
+            f"{REVIEW_HISTORY_IDS[1]}:featurePrint",
+            f"{REVIEW_HISTORY_IDS[2]}:featurePrint",
+        ]
+        review_delete_action.click()
+        page.locator("#confirmDialog[open]").wait_for()
+        page.locator("#confirmActionButton").click()
+        page.wait_for_function(
+            "() => state.galleryRemoval.contexts.size === 1 "
+            "&& document.querySelector('#reviewInspectorActionStatus')"
+            ".textContent.includes('等待 Mac')"
+        )
+        assert submitted_review_removals[-1]["assetIDs"] == [
+            REVIEW_IDS[1],
+            REVIEW_HISTORY_IDS[0],
+        ]
+        review_items[:] = [
+            item for item in review_items
+            if item["assetID"] not in {REVIEW_IDS[1], REVIEW_HISTORY_IDS[0]}
+        ]
+        review_removal["request"].update({
+            "phase": "completed",
+            "progress": {
+                "phase": "completedAsset",
+                "completedAssetCount": 2,
+                "totalAssetCount": 2,
+                "copiedBytes": 0,
+                "totalFileBytes": 0,
+            },
+            "audit": {
+                "hiddenAssetIDs": [REVIEW_IDS[1], REVIEW_HISTORY_IDS[0]],
+                "recycledEntryIDs": [],
+                "permanentlyDeletedAssetIDs": [
+                    REVIEW_IDS[1], REVIEW_HISTORY_IDS[0]
+                ],
+                "durabilityPendingAssetIDs": [],
+                "failedAssetIDs": [],
+                "authorizationRequiredSourceIDs": [],
+                "authorizationRequiredAssetIDs": [],
+                "authorizationDeniedPhotosAssetIDs": [],
+                "mutationAuthorizationInvalidAssetIDs": [],
+                "photosMutationFailedAssetIDs": [],
+                "photosMutationFailureCategories": [],
+                "photosMutationFailureCodes": [],
+                "sourceChangedAssetIDs": [],
+            },
+            "message": "已永久删除 2 张，继续下一条审核建议",
+            "updatedAtMs": 1_700_000_022_000,
+        })
+        page.wait_for_function(
+            "() => state.galleryRemoval.contexts.size === 0 "
+            "&& state.review.items.length === 3"
+        )
+        review_delete_continuation_result = page.evaluate(
+            """() => ({
+              selectedAssetIDs: [...state.review.selectedAssetIDs],
+              primaryKey: reviewItemKey(
+                state.review.items[state.review.selectedIndex]
+              ),
+              anchorKey: reviewItemKey(
+                state.review.items[state.review.selectionAnchorIndex]
+              ),
+              queueKeys: state.review.items.map(reviewItemKey),
+              selectedIndex: state.review.selectedIndex,
+            })"""
+        )
+        assert review_delete_continuation_result["queueKeys"] == [
+            f"{REVIEW_IDS[2]}:featurePrint",
+            f"{REVIEW_HISTORY_IDS[1]}:featurePrint",
+            f"{REVIEW_HISTORY_IDS[2]}:featurePrint",
+        ]
+        assert review_delete_continuation_result["primaryKey"] == (
+            f"{REVIEW_HISTORY_IDS[1]}:featurePrint"
+        ), review_delete_continuation_result
+        assert review_delete_continuation_result["anchorKey"] == (
+            f"{REVIEW_HISTORY_IDS[1]}:featurePrint"
+        ), review_delete_continuation_result
+        assert review_delete_continuation_result["selectedAssetIDs"] == [
+            REVIEW_HISTORY_IDS[1]
+        ]
+        page.screenshot(
+            path="/tmp/imageall-review-batch-delete-continuation.png",
+            full_page=True,
+        )
+        review_items[:] = review_items_after_single_delete
+        review_removal["request"] = None
+        submitted_review_removals.clear()
+        page.evaluate(
+            """async assetID => {
+              state.galleryRemoval.requests = [];
+              state.slimming.removal.requests = [];
+              state.review.selectionMode = false;
+              await Promise.all([
+                loadReviewOverview({ throwOnError: false }),
+                loadReviewQueue({
+                  preserveLoadedWindow: true,
+                  schedulePagination: false,
+                }),
+              ]);
+              const index = state.review.items.findIndex(
+                (item) => item.assetID === assetID
+              );
+              selectReviewIndex(index);
+              openReviewLightbox(state.review.items[index]);
+              renderGalleryRemovalControls();
+            }""",
+            REVIEW_IDS[1],
+        )
+        page.locator("#lightbox:not(.hidden)").wait_for()
 
         review_items.insert(1, {
             **review_items[0],

@@ -22282,6 +22282,27 @@ async function submitGalleryRemoval({
   const scrollTop = surface === "review"
     ? elements.reviewQueuePane.scrollTop
     : elements.libraryScroll.scrollTop;
+  const reviewItemKeys = surface === "review"
+    ? state.review.items.map(reviewItemKey)
+    : [];
+  const reviewPrimaryKey = surface === "review"
+    ? reviewItemKey(state.review.items[state.review.selectedIndex])
+    : null;
+  const reviewAnchorKey = surface === "review"
+    ? reviewItemKey(state.review.items[state.review.selectionAnchorIndex])
+    : null;
+  const reviewPreviewKey = surface === "review" && effectivePreviewAssetID
+    ? (state.lightboxContext === "review"
+      && state.lightboxAssetID === effectivePreviewAssetID
+      && state.lightboxReviewKey
+      ? state.lightboxReviewKey
+      : reviewItemKey(state.review.items.find(
+        (item) => item.assetID === effectivePreviewAssetID
+      )))
+    : null;
+  const reviewSelectedAssetIDs = surface === "review"
+    ? [...state.review.selectedAssetIDs]
+    : [];
   state.galleryRemoval.submitting = true;
   renderGalleryRemovalControls();
   if (effectivePreviewAssetID
@@ -22320,13 +22341,11 @@ async function submitGalleryRemoval({
       selectionMode: state.selectionMode,
       scrollTop,
       previewAssetID: effectivePreviewAssetID,
-      reviewItemIDs: surface === "review"
-        ? state.review.items.map((item) => item.assetID)
-        : [],
-      reviewSelectedIndex: surface === "review" ? state.review.selectedIndex : -1,
-      reviewSelectedAssetIDs: surface === "review"
-        ? [...state.review.selectedAssetIDs]
-        : [],
+      reviewItemKeys,
+      reviewPrimaryKey,
+      reviewAnchorKey,
+      reviewPreviewKey,
+      reviewSelectedAssetIDs,
     });
     toast("已冻结当前选区，请回到 Mac 核对并确认");
   } catch (error) {
@@ -22353,24 +22372,27 @@ function reconcileReviewPreviewAfterGalleryRemoval(context, hiddenAssetIDs) {
     || state.lightboxAssetID !== previewAssetID
     || elements.lightbox.classList.contains("hidden")) return;
 
-  const remainingIDs = state.review.items.map((item) => item.assetID);
-  const continuationIDs = continuedAssetIDs(
-    context.reviewItemIDs || [],
-    remainingIDs
+  const remainingKeys = state.review.items.map(reviewItemKey);
+  const continuationKeys = continuedAssetIDs(
+    context.reviewItemKeys || [],
+    remainingKeys
   );
-  const replacementID = replacementPreviewAssetID(
-    continuationIDs,
-    remainingIDs,
-    previewAssetID
+  const replacementKey = replacementPreviewAssetID(
+    continuationKeys,
+    remainingKeys,
+    context.reviewPreviewKey || context.reviewPrimaryKey
   );
-  if (!replacementID) {
+  if (!replacementKey) {
     closeLightbox();
     return;
   }
 
-  const replacementIndex = state.review.items.findIndex(
-    (item) => item.assetID === replacementID
-  );
+  const replacementIndex = remainingKeys.indexOf(replacementKey);
+  const replacementID = state.review.items[replacementIndex]?.assetID;
+  if (replacementIndex < 0 || !replacementID) {
+    closeLightbox();
+    return;
+  }
   state.review.selectedIndex = replacementIndex;
   state.review.selectedAssetIDs = new Set([replacementID]);
   state.review.selectionAnchorIndex = replacementIndex;
@@ -22404,6 +22426,19 @@ async function applyGalleryRemovalTerminal(request) {
   const context = state.galleryRemoval.contexts.get(request.id) || null;
   state.galleryRemoval.contexts.delete(request.id);
   const hidden = new Set(request.audit?.hiddenAssetIDs || []);
+  const frozenReviewSelection = new Set(context?.reviewSelectedAssetIDs || []);
+  const reviewSelectionStillMatches = context?.surface === "review"
+    && frozenReviewSelection.size > 0
+    && state.review.selectedAssetIDs.size === frozenReviewSelection.size
+    && [...frozenReviewSelection].every(
+      (assetID) => state.review.selectedAssetIDs.has(assetID)
+    )
+    && reviewItemKey(state.review.items[state.review.selectedIndex])
+      === context.reviewPrimaryKey
+    && reviewItemKey(state.review.items[state.review.selectionAnchorIndex])
+      === context.reviewAnchorKey;
+  const continueRemovedReviewSelection = reviewSelectionStillMatches
+    && [...frozenReviewSelection].every((assetID) => hidden.has(assetID));
   if (hidden.size && request.mediaKind === state.mediaKind) {
     const scrollTop = elements.libraryScroll.scrollTop;
     state.selectedAssetIDs = new Set(
@@ -22460,6 +22495,20 @@ async function applyGalleryRemovalTerminal(request) {
         schedulePagination: false,
       }),
     ]);
+    if (continueRemovedReviewSelection && state.review.items.length) {
+      const remainingKeys = state.review.items.map(reviewItemKey);
+      const continuationKeys = continuedAssetIDs(
+        context.reviewItemKeys || [],
+        remainingKeys
+      );
+      const replacementKey = replacementPreviewAssetID(
+        continuationKeys,
+        remainingKeys,
+        context.reviewPrimaryKey
+      );
+      const replacementIndex = remainingKeys.indexOf(replacementKey);
+      if (replacementIndex >= 0) selectReviewIndex(replacementIndex);
+    }
     reconcileReviewPreviewAfterGalleryRemoval(context, hidden);
     if (context.scrollTop != null) {
       const delta = Math.abs(elements.reviewQueuePane.scrollTop - context.scrollTop);
