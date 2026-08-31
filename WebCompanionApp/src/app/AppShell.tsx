@@ -65,6 +65,7 @@ const navigationGroups: { label: string; items: NavigationItem[] }[] = [
 const routeTitles = new Map(
   navigationGroups.flatMap((group) => group.items.map((item) => [item.to, item.label])),
 );
+routeTitles.set('/assets', '照片详情');
 
 export function AppShell() {
   const [navigationOpen, setNavigationOpen] = useState(false);

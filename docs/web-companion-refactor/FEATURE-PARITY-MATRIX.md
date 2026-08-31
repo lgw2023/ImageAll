@@ -5,24 +5,25 @@
 - “Mac 现状”和“旧 Web 现状”是阶段 0 对当前源码和合成浏览器 fixture 的盘点；不表示真实照片验收。
 - “新版目标”是验收契约，不是已完成声明。
 - “API”只说明当前 Host 有相关能力；新 UI 还必须有类型解码、主/失败流程、回归和截图才能达到 `parity-proven`。
-- 状态必须用本目录 README 的受控词汇。本版仍处于 `baseline`。
+- 状态必须用本目录 README 的受控词汇。工程基座已进入 `foundation`，图库纵切片处于
+  `in-progress`；未满足全部验收门的行不得提前写成 `parity-proven`。
 
 ## 矩阵
 
 | 能力 | Mac 现状 | 旧 Web 现状 | 新版目标 | API | 服务端缺口 | 迁移状态 | 测试证据 | 截图证据 | 证据限制 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 会话恢复 | 原生 Host | pair/login/refresh/logout | 单次 refresh、可解释错误、不循环 | 已有 | 无 | baseline | Swift 会话测试 | 无 | 新 UI 未验证 |
-| 配对与账户登录 | 远程服务设置 | 两种入口 | 分步、键盘可用、凭据只在内存 | 已有 | 无 | baseline | Swift 鉴权回归 | 无 | 未做端到端 |
+| 会话恢复 | 原生 Host | pair/login/refresh/logout | 单次 refresh、可解释错误、不循环 | 已有 | 无 | foundation | `foundation.spec.ts` 合成会话/401 | `evidence/foundation/` | 未覆盖会话过期并发刷新 |
+| 配对与账户登录 | 远程服务设置 | 两种入口 | 分步、键盘可用、凭据只在内存 | 已有 | 无 | foundation | `foundation.spec.ts` 未鉴权键盘入口 | 无 | 尚未证明完整提交/登出闭环 |
 | 连接/离线/重连 | 原生状态 | 顶栏状态 | 不清空当前视图、指数退避、可访问文案 | WebSocket | 无 | baseline | 旧脚本回归 | 无 | 未建立新事件层 |
-| 图库分页 | 原生列表/网格 | 72/页、增量卡片 | infinite query + 虚拟化 + 锚点恢复 | 已有 | 无 | baseline | 旧全流程通过 | 三档图库基线 | 旧版 10k DOM 不受控 |
-| 筛选 | 有 | 来源/文件夹/收藏/标签等 | URL 可重现、draft/apply 分离、移动 sheet | 已有 | 无 | baseline | 旧筛选 flow 通过 | 基线图可见 toolbar | 只证明旧契约 |
-| 排序与视图 | 有 | 有并本地持久 | 可分享 sort，非敏感 density 持久 | 已有 | 无 | baseline | 旧脚本 | 基线图 | 新 URL 未验证 |
-| 选择/范围/全选 | 原生 selection | 单选、Shift、批量 | 明确已加载/全 query 范围，键盘可用 | 已有 | 无 | baseline | 旧交互脚本 | 移动基线 | 虚拟化选择未证明 |
-| 收藏 | 有 | 批量、失败重试 | 有界乐观更新、Host 结果对齐、可重试 | 已有 | 无 | baseline | 旧 flow 包含 13 次收藏 | 无 | 未验证新 cache 调和 |
-| 单图查看/Lightbox | 原生预览 | blob、全屏、相邻预取 | overlay route、焦点返回、取消与 revoke | 已有 | 无 | baseline | 旧 lightbox flow 通过 | 无 | 只用合成黑图 |
+| 图库分页 | 原生列表/网格 | 72/页、增量卡片 | infinite query + 虚拟化 + 锚点恢复 | 已有 | 无 | in-progress | `gallery.spec.ts`：120 项/DOM 上限/500 重试 | `evidence/gallery/` 桌面+移动 | 还需 10k 性能与滚动锚点门 |
+| 筛选 | 有 | 来源/文件夹/收藏/标签等 | URL 可重现、draft/apply 分离、移动 sheet | 已有 | 无 | in-progress | `gallery.spec.ts`：q/media/favorites URL 与 Host 请求 | `evidence/gallery/` toolbar | 移动端当前是折叠面板，精确 sheet 待验收 |
+| 排序与视图 | 有 | 有并本地持久 | 可分享 sort，非敏感 density 持久 | 已有 | 无 | in-progress | strict schema + URL state | `evidence/gallery/` | density 尚未实现，排序交互待专项 E2E |
+| 选择/范围/全选 | 原生 selection | 单选、Shift、批量 | 明确已加载/全 query 范围，键盘可用 | 已有 | 无 | in-progress | `gallery.spec.ts`：Shift 范围、虚拟 DOM、焦点返回 | `evidence/gallery/` selection bar | 还需全 query 范围与专项键盘验收 |
+| 收藏 | 有 | 批量、失败重试 | 有界乐观更新、Host 结果对齐、可重试 | 已有 | 无 | in-progress | `gallery.spec.ts`：Host 状态调和、部分失败提示 | `evidence/gallery/` 卡片/详情 | retry 动作和批量部分失败仍待补齐 |
+| 单图查看/Lightbox | 原生预览 | blob、全屏、相邻预取 | overlay route、焦点返回、取消与 revoke | 已有 | 无 | in-progress | `gallery.spec.ts`：detail route/dialog/关闭后焦点 | `evidence/gallery/imageall-react-asset-detail-chromium-desktop.png` | 还需相邻预取、快速切换取消、URL 回收证据 |
 | 视频/媒体 Range | 原生 | 支持 GET/HEAD Range | 保持浏览器媒体语义和会话边界 | 已有 | 无 | baseline | Swift Range 测试 | 无 | 未验证新 viewer |
-| 打开原片 | Mac 直接打开 | Web 请求 Host | 显示 Host 实际结果，不泄露本地路径 | 已有 | 无 | baseline | Swift route 测试 | 无 | 新 UI 未证明 |
-| 标签应用 | 有 | 批量决策、undo | 预览范围、可撤销反馈、部分失败 | 已有 | 无 | baseline | 旧 flow 11 次决策 | 无 | 新批处理未验证 |
+| 打开原片 | Mac 直接打开 | Web 请求 Host | 显示 Host 实际结果，不泄露本地路径 | 已有 | 无 | in-progress | `gallery.spec.ts`：204 后可见确认 | `evidence/gallery/` detail | 合成 Host；不证明真实 Finder/Photos 打开 |
+| 标签应用 | 有 | 批量决策、undo | 预览范围、可撤销反馈、部分失败 | 已有 | 无 | in-progress | `gallery.spec.ts`：选择汇总、批量决定、undo | `evidence/gallery/` selection/detail | 冲突、过期 undo、部分失败待补齐 |
 | 标签创建/分组/归档 | 有 | 有 | 语义表单、冲突/验证错误就地呈现 | 已有 | 无 | baseline | Swift + 旧脚本 | 无 | 未做新表单 |
 | 图库概览 | Mac 统计 | 独立 history route | 可定址统计、进入已筛选图库 | 已有 | 无 | baseline | 旧 route 回归 | 无 | 新可视化未验证 |
 | 审查概览 | Mac 工作区 | 有 | 空/错/加载、进入队列 | 已有 | 无 | baseline | 旧 flow 通过 | 无 | 新 route 未建 |
@@ -45,9 +46,9 @@
 | 配对设备管理 | Mac 设置 | Web 有 | 撤销确认、当前设备保护 | 已有 | 无 | baseline | Swift route 测试 | 无 | 新 UI 未建 |
 | 长任务与操作 | Mac 任务 | Web jobs/activity | 跨路由可见、重连后恢复、操作可审计 | 已有 | 无 | baseline | Swift jobs 测试 | 无 | 新 activity center 未建 |
 | 深色/对比/减少动效 | Mac 系统主题 | CSS 已有多类 media | system/light/dark、forced-colors、reduced-motion | 不需 | 无 | baseline | 旧 CSS/脚本 | 基线仅 light | 无新 token 实现 |
-| 键盘/焦点/History | Mac 原生 | 已有大量回归 | 语义 route、焦点圈定/返回、虚拟网格 roving | 不需 | 无 | baseline | 旧 focus/history 脚本 | 无 | 新虚拟化仍是高风险 |
-| PWA 外壳 | 不适用 | 有 manifest，SW 仅认证 | 可安装、公共 shell 离线，绝不缓存私有数据 | 不需 | SW header/scope | baseline | 旧 SW 测试 | 无 | 新缓存策略未实现 |
-| Swift 打包/静态资源 | App bundle folder | 固定资源表 | Vite manifest、哈希资源、受控 SPA fallback | 静态 | 明确缺口 | baseline | 旧 Swift 资源测试 | 无 | 是基座阻塞项 |
+| 键盘/焦点/History | Mac 原生 | 已有大量回归 | 语义 route、焦点圈定/返回、虚拟网格 roving | 不需 | 无 | in-progress | `gallery.spec.ts`：overlay History 与焦点返回；axe | `evidence/gallery/` | roving 实现存在，完整键盘/VoiceOver 手工门未完成 |
+| PWA 外壳 | 不适用 | 有 manifest，SW 仅认证 | 可安装、公共 shell 离线，绝不缓存私有数据 | 不需 | SW header/scope | foundation | manifest 生成检查、E2E 在线外壳 | `evidence/foundation/` | 离线、升级、Cache Storage 专项门未完成 |
+| Swift 打包/静态资源 | App bundle folder | 固定资源表 | Vite manifest、哈希资源、受控 SPA fallback | 静态 | 已补 manifest delivery | in-progress | `WebCompanionV2StaticResourceTests` + App bundle hash | 无 | 全量服务器安全/Range 回归仍待最终门 |
 
 ## 状态更新规则
 

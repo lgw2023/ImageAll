@@ -11,6 +11,7 @@ type RequestOptions = Omit<RequestInit, 'credentials' | 'cache'> & {
 
 async function rawFetch(path: string, options: RequestOptions = {}): Promise<Response> {
   const headers = new Headers(options.headers);
+  if (!headers.has('Accept')) headers.set('Accept', 'application/json');
   const authorization = readAccountAuthorization();
   if (authorization && !headers.has('Authorization')) headers.set('Authorization', authorization);
   if (options.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');

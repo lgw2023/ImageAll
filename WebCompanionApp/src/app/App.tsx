@@ -4,7 +4,6 @@ import {
   Archive,
   Database,
   FolderKanban,
-  Images,
   Map,
   ScanSearch,
   Settings,
@@ -15,6 +14,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 
 import { SessionGate } from '@/features/session/SessionGate';
 import { SessionProvider } from '@/features/session/SessionContext';
+import { GalleryRoute } from '@/features/gallery/GalleryRoute';
 
 import { AppErrorBoundary } from './AppErrorBoundary';
 import { AppShell } from './AppShell';
@@ -34,13 +34,6 @@ const queryClient = new QueryClient({
 });
 
 const placeholders = [
-  {
-    path: 'gallery',
-    eyebrow: '照片',
-    title: '图库',
-    description: '浏览、筛选、查看和批量处理你的照片。',
-    icon: Images,
-  },
   {
     path: 'review',
     eyebrow: '照片',
@@ -117,6 +110,9 @@ export function App() {
                 <Routes>
                   <Route element={<AppShell />}>
                     <Route index element={<Navigate replace to="gallery" />} />
+                    <Route path="gallery" element={<GalleryRoute />} />
+                    <Route path="gallery/favorites" element={<GalleryRoute />} />
+                    <Route path="assets/:assetId" element={<GalleryRoute />} />
                     {placeholders.map((route) => (
                       <Route
                         key={route.path}

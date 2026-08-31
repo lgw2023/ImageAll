@@ -1,7 +1,7 @@
 'use strict';
 
 const CACHE_PREFIX = 'imageall-web-v2-shell-';
-const CACHE_NAME = `${CACHE_PREFIX}c71896a248520703`;
+const CACHE_NAME = `${CACHE_PREFIX}45280bdd7237f3a9`;
 let accountAuthorization = null;
 
 function requestAuthorizationFromSpecificClient(client) {
@@ -85,10 +85,10 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin) return;
 
-  const isMediaRequest =
-    /^\/v1\/assets\/[0-9a-f-]+\/media$/i.test(url.pathname) &&
+  const isProtectedAssetRequest =
+    /^\/v1\/assets\/[0-9a-f-]+\/(?:thumbnail|preview|media)$/i.test(url.pathname) &&
     ['GET', 'HEAD'].includes(event.request.method);
-  if (isMediaRequest) {
+  if (isProtectedAssetRequest) {
     event.respondWith(
       (async () => {
         const authorization =
