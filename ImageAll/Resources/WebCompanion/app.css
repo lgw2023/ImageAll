@@ -454,6 +454,41 @@ select:focus-visible,
   white-space: nowrap;
 }
 
+.app-shell.toolbar-condensed .titlebar {
+  gap: 8px;
+  padding-right: 6px;
+  padding-left: 6px;
+}
+
+.app-shell.toolbar-condensed .titlebar-leading {
+  gap: 4px;
+}
+
+.app-shell.toolbar-condensed .titlebar-actions {
+  gap: 2px;
+}
+
+.app-shell.toolbar-condensed .titlebar .button-compact {
+  gap: 4px;
+  padding-right: 6px;
+  padding-left: 6px;
+}
+
+.app-shell.toolbar-condensed .titlebar .connection-status {
+  gap: 4px;
+}
+
+.app-shell.toolbar-measuring .titlebar {
+  width: max-content;
+  max-width: none;
+  justify-content: flex-start;
+}
+
+.app-shell.toolbar-measuring .titlebar-leading,
+.app-shell.toolbar-measuring .titlebar-actions {
+  flex: 0 0 auto;
+}
+
 .titlebar-separator {
   width: 1px;
   height: 16px;

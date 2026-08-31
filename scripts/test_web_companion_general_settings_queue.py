@@ -49,6 +49,8 @@ def main():
             settings["idleThumbnailPrewarmEnabled"] = payload[
                 "idleThumbnailPrewarmEnabled"
             ]
+        if "toolbarDisplayMode" in payload:
+            settings["toolbarDisplayMode"] = payload["toolbarDisplayMode"]
 
     def route_api(route):
         path = urlparse(route.request.url).path
@@ -178,6 +180,105 @@ def main():
         assert updates[-1]["idleThumbnailPrewarmEnabled"] is True
         assert page.locator("#generalSettingsError").is_visible()
         page.screenshot(path="/tmp/imageall-general-settings-queued-save.png", full_page=True)
+
+        page.set_viewport_size({"width": 1600, "height": 820})
+        page.wait_for_function(
+            "() => !document.querySelector('#appView').classList.contains('compact-toolbar-active')"
+        )
+        page.locator(
+            '#toolbarDisplayModeControl [data-toolbar-display-mode="iconAndTitle"]'
+        ).click()
+        page.wait_for_function(
+            "() => document.querySelector('#appView').dataset.toolbarDisplayMode === 'iconAndTitle'"
+        )
+        page.locator("#generalSettingsCloseButton").click()
+        page.locator("#generalSettingsDialog").wait_for(state="hidden")
+        normal_required = page.evaluate("() => fullToolbarRequiredWidth()")
+        page.locator("#storageButton").focus()
+        near_miss_width = max(721, normal_required - 20)
+        page.set_viewport_size({"width": near_miss_width, "height": 820})
+        page.wait_for_function(
+            "() => document.querySelector('#appView').classList.contains('toolbar-condensed')"
+        )
+        assert not page.locator("#appView").evaluate(
+            "node => node.classList.contains('compact-toolbar-active')"
+        ), page.evaluate(
+            "() => ({ ...document.querySelector('#appView').dataset, width: innerWidth })"
+        )
+        condensed_toolbar_metrics = page.evaluate(
+            """() => ({
+              normalRequired: Number(document.querySelector('#appView')
+                .dataset.toolbarNormalRequiredWidth),
+              condensedRequired: Number(document.querySelector('#appView')
+                .dataset.toolbarRequiredWidth),
+              available: Number(document.querySelector('#appView')
+                .dataset.toolbarAvailableWidth),
+              scroll: document.documentElement.scrollWidth,
+              viewport: innerWidth,
+            })"""
+        )
+        assert condensed_toolbar_metrics["normalRequired"] \
+            > condensed_toolbar_metrics["available"], condensed_toolbar_metrics
+        assert condensed_toolbar_metrics["condensedRequired"] \
+            <= condensed_toolbar_metrics["available"], condensed_toolbar_metrics
+        assert condensed_toolbar_metrics["scroll"] \
+            <= condensed_toolbar_metrics["viewport"], condensed_toolbar_metrics
+        for selector in [
+            "#toolbarConnectFolderButton",
+            "#toolbarExportPortableDataButton",
+            "#storageButton",
+            "#jobsButton",
+        ]:
+            assert page.locator(selector).is_visible(), selector
+        assert not page.locator("#compactToolbarMenuButton").is_visible()
+        assert page.evaluate("document.activeElement?.id") == "storageButton", page.evaluate(
+            "() => ({ active: document.activeElement?.id, "
+            "classes: document.querySelector('#appView').className, "
+            "dataset: { ...document.querySelector('#appView').dataset } })"
+        )
+        page.set_viewport_size({"width": 1440, "height": 820})
+        page.wait_for_function(
+            "() => document.querySelector('#appView').classList.contains('toolbar-condensed')"
+        )
+        assert not page.locator("#appView").evaluate(
+            "node => node.classList.contains('compact-toolbar-active')"
+        ), page.evaluate(
+            "() => ({ ...document.querySelector('#appView').dataset, width: innerWidth })"
+        )
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        assert page.locator("#toolbarConnectFolderButton").is_visible()
+        assert page.locator("#toolbarExportPortableDataButton").is_visible()
+        assert page.locator("#storageButton").is_visible()
+        assert page.locator("#jobsButton").is_visible()
+        page.evaluate(
+            "() => new Promise(resolve => requestAnimationFrame(() => "
+            "requestAnimationFrame(() => requestAnimationFrame(resolve))))"
+        )
+        assert page.locator("#appView").get_attribute("data-toolbar-layout") == "condensed", (
+            page.evaluate(
+                "() => ({ classes: document.querySelector('#appView').className, "
+                "dataset: { ...document.querySelector('#appView').dataset }, width: innerWidth, "
+                "titlebar: { gap: getComputedStyle(document.querySelector('.titlebar')).gap, "
+                "padding: getComputedStyle(document.querySelector('.titlebar')).paddingInline }, "
+                "actionsGap: getComputedStyle(document.querySelector('.titlebar-actions')).gap, "
+                "buttonPadding: getComputedStyle(document.querySelector('#storageButton')).paddingInline })"
+            )
+        )
+        assert not page.locator("#appView").evaluate(
+            "node => node.classList.contains('compact-toolbar-active')"
+        )
+        page.screenshot(
+            path="/tmp/imageall-adaptive-toolbar-condensed.png",
+            full_page=True,
+        )
+        page.set_viewport_size({"width": 820, "height": 820})
+        page.wait_for_function(
+            "() => document.querySelector('#appView').classList.contains('compact-toolbar-active')"
+        )
+        assert page.locator("#appView").get_attribute("data-toolbar-layout") == "compact"
+        assert page.locator("#compactToolbarMenuButton").is_visible()
+        assert not page.locator("#storageButton").is_visible()
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         context.close()
         browser.close()
 

@@ -42005,10 +42005,17 @@ function toolbarChildrenRequiredWidth(container, { titleLimit = null } = {}) {
   return childrenWidth + gap * Math.max(0, children.length - 1);
 }
 
-function fullToolbarRequiredWidth() {
+function fullToolbarRequiredWidth({ condensed = false } = {}) {
   if (globalThis.innerWidth <= 720) return Number.POSITIVE_INFINITY;
   const wasCompact = elements.appView.classList.contains("compact-toolbar-active");
+  const wasCondensed = elements.appView.classList.contains("toolbar-condensed");
   if (wasCompact) elements.appView.classList.remove("compact-toolbar-active");
+  elements.appView.classList.toggle("toolbar-condensed", condensed);
+  elements.appView.classList.add("toolbar-measuring");
+  // Compact and condensed modes both change child visibility and spacing. Flush
+  // their intrinsic max-content layout before reading flex children so a narrow
+  // viewport cannot feed already-shrunk button widths back into the decision.
+  void elements.titlebar.offsetWidth;
   const titlebarStyle = getComputedStyle(elements.titlebar);
   const padding = (Number.parseFloat(titlebarStyle.paddingLeft) || 0)
     + (Number.parseFloat(titlebarStyle.paddingRight) || 0);
@@ -42017,6 +42024,8 @@ function fullToolbarRequiredWidth() {
     + toolbarChildrenRequiredWidth(elements.titlebarActions)
     + gap
     + padding;
+  elements.appView.classList.remove("toolbar-measuring");
+  elements.appView.classList.toggle("toolbar-condensed", wasCondensed);
   if (wasCompact) elements.appView.classList.add("compact-toolbar-active");
   return Math.ceil(required);
 }
@@ -42034,15 +42043,37 @@ function syncAdaptiveToolbar() {
   );
   const hardCompact = globalThis.innerWidth <= 720;
   const available = elements.titlebar.clientWidth;
-  const required = hardCompact ? Number.POSITIVE_INFINITY : fullToolbarRequiredWidth();
-  const hysteresis = wasCompact ? 28 : 6;
-  const shouldCompact = hardCompact || required > available - hysteresis;
+  const normalRequired = hardCompact
+    ? Number.POSITIVE_INFINITY
+    : fullToolbarRequiredWidth({ condensed: false });
+  const normalHysteresis = wasCompact
+    || elements.appView.classList.contains("toolbar-condensed")
+    ? 28
+    : 6;
+  const shouldUseNormal = !hardCompact && normalRequired <= available - normalHysteresis;
+  const condensedRequired = shouldUseNormal || hardCompact
+    ? normalRequired
+    : fullToolbarRequiredWidth({ condensed: true });
+  const condensedHysteresis = wasCompact ? 28 : 6;
+  const shouldCondense = !shouldUseNormal
+    && !hardCompact
+    && condensedRequired <= available - condensedHysteresis;
+  const shouldCompact = hardCompact || (!shouldUseNormal && !shouldCondense);
   if (!shouldCompact) closeCompactToolbarMenu({ restoreFocus: false });
+  elements.appView.classList.toggle("toolbar-condensed", shouldCondense);
   elements.appView.classList.toggle("compact-toolbar-active", shouldCompact);
-  elements.appView.dataset.toolbarRequiredWidth = Number.isFinite(required)
-    ? String(required)
+  elements.appView.dataset.toolbarNormalRequiredWidth = Number.isFinite(normalRequired)
+    ? String(normalRequired)
+    : "compact";
+  elements.appView.dataset.toolbarRequiredWidth = Number.isFinite(condensedRequired)
+    ? String(condensedRequired)
     : "compact";
   elements.appView.dataset.toolbarAvailableWidth = String(Math.round(available));
+  elements.appView.dataset.toolbarLayout = shouldCompact
+    ? "compact"
+    : shouldCondense
+      ? "condensed"
+      : "normal";
   if (!shouldCompact && compactMenuHadFocus) restoreOverlayFocus(elements.commandButton);
   syncCompactToolbarMenuButton();
 }
