@@ -8079,26 +8079,17 @@ function trapLibraryLightboxFocus(event) {
   const focusable = [
     ...focusableOverlayElements(elements.lightbox),
     ...focusableOverlayElements(adjacentInspector),
+    ...focusableOverlayElements(elements.toast),
   ];
   if (!focusable.length) return false;
-  const first = focusable[0];
-  const last = focusable[focusable.length - 1];
-  if (!focusable.includes(document.activeElement)) {
-    event.preventDefault();
-    (event.shiftKey ? last : first).focus({ preventScroll: true });
-    return true;
-  }
-  if (event.shiftKey && document.activeElement === first) {
-    event.preventDefault();
-    last.focus({ preventScroll: true });
-    return true;
-  }
-  if (!event.shiftKey && document.activeElement === last) {
-    event.preventDefault();
-    first.focus({ preventScroll: true });
-    return true;
-  }
-  return false;
+  const currentIndex = focusable.indexOf(document.activeElement);
+  const offset = event.shiftKey ? -1 : 1;
+  const nextIndex = currentIndex < 0
+    ? (event.shiftKey ? focusable.length - 1 : 0)
+    : (currentIndex + offset + focusable.length) % focusable.length;
+  event.preventDefault();
+  focusable[nextIndex].focus({ preventScroll: true });
+  return true;
 }
 
 function clearLibraryLightboxIsolation() {

@@ -5619,6 +5619,75 @@ def main():
             "frameMatches": True,
             "detailClear": True,
         }, review_lightbox_layout
+        review_docked_focus_cycle = page.evaluate(
+            """() => {
+              const lightbox = document.querySelector('#lightbox');
+              const detail = document.querySelector('.review-detail-pane');
+              const toastElement = document.querySelector('#toast');
+              const undoButton = document.querySelector('#undoToastButton');
+              const frame = {
+                lightboxFirst: focusableOverlayElements(lightbox)[0],
+                lightboxLast: focusableOverlayElements(lightbox).at(-1),
+                inspectorFirst: focusableOverlayElements(detail)[0],
+                inspectorLast: focusableOverlayElements(detail).at(-1),
+                toast: toastElement,
+                undoButton,
+                toastHidden: toastElement.classList.contains('hidden'),
+                undoHidden: undoButton.classList.contains('hidden'),
+                undoDisabled: undoButton.disabled,
+              };
+              toastElement.classList.remove('hidden');
+              undoButton.classList.remove('hidden');
+              undoButton.disabled = false;
+              window.__reviewDockedFocusCycleFrame = frame;
+              frame.lightboxLast.focus({ preventScroll: true });
+              return {
+                lightboxFirst: Boolean(frame.lightboxFirst),
+                lightboxLast: Boolean(frame.lightboxLast),
+                inspectorFirst: Boolean(frame.inspectorFirst),
+                inspectorLast: Boolean(frame.inspectorLast),
+                focusedLightboxLast: document.activeElement === frame.lightboxLast,
+              };
+            }"""
+        )
+        assert all(review_docked_focus_cycle.values()), review_docked_focus_cycle
+        page.keyboard.press("Tab")
+        assert page.evaluate(
+            "() => document.activeElement "
+            "=== window.__reviewDockedFocusCycleFrame.inspectorFirst"
+        )
+        page.screenshot(
+            path="/tmp/imageall-review-docked-focus-cycle.png",
+            full_page=True,
+        )
+        page.keyboard.press("Shift+Tab")
+        assert page.evaluate(
+            "() => document.activeElement "
+            "=== window.__reviewDockedFocusCycleFrame.lightboxLast"
+        )
+        page.evaluate(
+            "() => window.__reviewDockedFocusCycleFrame.inspectorLast"
+            ".focus({ preventScroll: true })"
+        )
+        page.keyboard.press("Tab")
+        assert page.evaluate(
+            "() => document.activeElement "
+            "=== window.__reviewDockedFocusCycleFrame.undoButton"
+        )
+        page.keyboard.press("Tab")
+        assert page.evaluate(
+            "() => document.activeElement "
+            "=== window.__reviewDockedFocusCycleFrame.lightboxFirst"
+        )
+        page.evaluate(
+            """() => {
+              const frame = window.__reviewDockedFocusCycleFrame;
+              frame.toast.classList.toggle('hidden', frame.toastHidden);
+              frame.undoButton.classList.toggle('hidden', frame.undoHidden);
+              frame.undoButton.disabled = frame.undoDisabled;
+              window.__reviewDockedFocusCycleFrame = null;
+            }"""
+        )
         page.locator("#reviewTagSearch").focus()
         page.locator("#reviewTagSearch").fill("旅行")
         assert page.locator(

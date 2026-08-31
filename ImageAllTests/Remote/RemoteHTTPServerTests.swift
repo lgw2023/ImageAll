@@ -3109,6 +3109,23 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function syncLightboxWorkspaceFrame"))
         XCTAssertTrue(script.contains("function trapLibraryLightboxFocus"))
         XCTAssertTrue(script.contains("elements.lightbox.classList.add(\"review-docked\")"))
+        let dockedFocusTrapStart = try XCTUnwrap(
+            script.range(of: "function trapLibraryLightboxFocus")
+        )
+        let dockedFocusTrapEnd = try XCTUnwrap(
+            script.range(
+                of: "function clearLibraryLightboxIsolation",
+                range: dockedFocusTrapStart.upperBound..<script.endIndex
+            )
+        )
+        let dockedFocusTrapScript = String(
+            script[dockedFocusTrapStart.lowerBound..<dockedFocusTrapEnd.lowerBound]
+        )
+        XCTAssertTrue(
+            dockedFocusTrapScript.contains("focusableOverlayElements(elements.toast)")
+        )
+        XCTAssertTrue(dockedFocusTrapScript.contains("const currentIndex = focusable.indexOf"))
+        XCTAssertTrue(dockedFocusTrapScript.contains("focusable[nextIndex].focus"))
         XCTAssertTrue(script.contains("function reconcileReviewPreviewAfterGalleryRemoval"))
         XCTAssertTrue(script.contains("function reconcileLibraryPreviewAfterGalleryRemoval"))
         XCTAssertTrue(script.contains("function reconcileLibrarySelectionAfterGalleryRemoval"))
