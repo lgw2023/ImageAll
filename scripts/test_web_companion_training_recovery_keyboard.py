@@ -1433,7 +1433,12 @@ def main():
         assert "最终损失\n0.270" in metric_highlights
         assert page.locator("#trainingMetricEmpty").is_hidden()
         assert page.locator("#trainingLossChart").is_visible()
-        assert page.locator("#trainingLossChart").get_attribute("role") == "img"
+        assert page.locator("#trainingLossChart").get_attribute("role") == "group"
+        assert page.locator("#trainingLossChart").get_attribute("tabindex") == "0"
+        assert page.locator("#trainingLossChart").get_attribute("aria-roledescription") == \
+            "可探索图表"
+        assert page.locator("#trainingLossChart").get_attribute("aria-keyshortcuts") == \
+            "ArrowLeft ArrowRight PageUp PageDown Home End"
         assert page.locator("#trainingLossChart").get_attribute("aria-label") == (
             "训练损失曲线：4 轮，最佳损失 0.240（第 3 轮），最终损失 0.270"
         )
@@ -1442,6 +1447,41 @@ def main():
         assert page.locator(
             '#trainingLossChart [data-metric-epoch="3"][data-best="true"]'
         ).count() == 1
+        assert "第 3 轮" in page.locator("#trainingMetricPointStatus").inner_text()
+        assert "最佳" in page.locator("#trainingMetricPointStatus").inner_text()
+        training_chart_request_counts = (
+            len(workspace_requests),
+            len(jobs_requests),
+            len(training_activity_requests),
+        )
+        page.locator("#trainingLossChart").focus()
+        page.keyboard.press("ArrowRight")
+        assert page.locator("#trainingLossChart").get_attribute(
+            "data-active-metric-epoch"
+        ) == "4"
+        assert "0.270" in page.locator("#trainingMetricPointStatus").inner_text()
+        page.keyboard.press("Home")
+        assert "第 1 轮" in page.locator("#trainingMetricPointStatus").inner_text()
+        page.keyboard.press("End")
+        assert page.locator(
+            '#trainingLossChart [data-metric-epoch="4"][data-current="true"]'
+        ).count() == 1
+        second_metric_bounds = page.locator(
+            '#trainingLossChart [data-metric-epoch="2"]'
+        ).bounding_box()
+        chart_pointer_bounds = page.locator("#trainingLossChart").bounding_box()
+        assert second_metric_bounds is not None and chart_pointer_bounds is not None
+        page.mouse.move(
+            second_metric_bounds["x"] + second_metric_bounds["width"] / 2,
+            chart_pointer_bounds["y"] + chart_pointer_bounds["height"] / 2,
+        )
+        assert "第 2 轮" in page.locator("#trainingMetricPointStatus").inner_text()
+        page.keyboard.press("End")
+        assert training_chart_request_counts == (
+            len(workspace_requests),
+            len(jobs_requests),
+            len(training_activity_requests),
+        )
         stable_training_metrics = page.evaluate(
             """() => {
               const highlights = document.querySelector("#trainingMetricHighlights");
@@ -1616,6 +1656,10 @@ def main():
                 newPoint: Boolean(chart.querySelector(
                   '[data-metric-epoch="5"][data-best="true"]'
                 )),
+                activeEpoch: chart.dataset.activeMetricEpoch,
+                pointStatus: document.querySelector(
+                  "#trainingMetricPointStatus"
+                ).textContent,
                 label: chart.getAttribute("aria-label"),
                 selectionStable: getSelection().toString() === frame.selectedText
                   && getSelection().containsNode(frame.bestTitle, true),
@@ -1639,6 +1683,8 @@ def main():
             "axisTitlesStable": True,
             "points": 5,
             "newPoint": True,
+            "activeEpoch": "4",
+            "pointStatus": "第 4 轮 · 评估损失 0.270 · 第 4 项，共 5 项",
             "label": "训练损失曲线：5 轮，最佳损失 0.220（第 5 轮），最终损失 0.220",
             "selectionStable": True,
             "hovered": True,
@@ -1657,8 +1703,12 @@ def main():
             PERSONAL_RUN_ID,
         )
         assert page.locator("#trainingLossChart [data-metric-epoch]").count() == 4
+        page.locator("#trainingMetricPointStatus").scroll_into_view_if_needed()
+        page.wait_for_timeout(100)
         page.screenshot(path="/tmp/imageall-training-loss-chart.png", full_page=True)
         page.set_viewport_size({"width": 390, "height": 844})
+        page.wait_for_timeout(100)
+        page.locator("#trainingMetricPointStatus").scroll_into_view_if_needed()
         page.wait_for_timeout(100)
         assert page.locator("#trainingLossChart").is_visible()
         chart_bounds = page.locator("#trainingLossChart").bounding_box()

@@ -672,6 +672,7 @@ const elements = {
   trainingMetricsSummary: $("#trainingMetricsSummary"),
   trainingMetricHighlights: $("#trainingMetricHighlights"),
   trainingLossChart: $("#trainingLossChart"),
+  trainingMetricPointStatus: $("#trainingMetricPointStatus"),
   trainingMetricEmpty: $("#trainingMetricEmpty"),
   trainingMetricsJSON: $("#trainingMetricsJSON"),
   trainingArtifactLedger: $("#trainingArtifactLedger"),
@@ -29116,7 +29117,75 @@ function syncTrainingChartElement(container, key, name, attributes = {}) {
   return element;
 }
 
-function renderTrainingLossChart(points, bestMetric, latestMetric) {
+function trainingMetricChartMarks() {
+  return [...elements.trainingLossChart.querySelectorAll("[data-metric-epoch]")];
+}
+
+function syncTrainingMetricPointSelection(mark) {
+  if (!mark) return;
+  const marks = trainingMetricChartMarks();
+  if (!marks.includes(mark)) return;
+  for (const candidate of marks) {
+    candidate.dataset.current = String(candidate === mark);
+  }
+  elements.trainingLossChart.dataset.activeMetricEpoch = mark.dataset.metricEpoch;
+  const focusRule = elements.trainingLossChart.querySelector(
+    '[data-training-chart-part="focus-rule"]'
+  );
+  const x = mark.getAttribute("cx");
+  if (focusRule && x != null) {
+    focusRule.setAttribute("x1", x);
+    focusRule.setAttribute("x2", x);
+  }
+  const status = mark.dataset.metricStatus || "聚焦曲线后可查看每轮精确损失";
+  if (elements.trainingMetricPointStatus.textContent !== status) {
+    elements.trainingMetricPointStatus.textContent = status;
+  }
+}
+
+function moveTrainingMetricPoint(event) {
+  if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+  if (!["ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End"]
+    .includes(event.key)) return;
+  const marks = trainingMetricChartMarks();
+  if (!marks.length) return;
+  const currentIndex = Math.max(0, marks.findIndex(
+    (mark) => mark.dataset.metricEpoch === elements.trainingLossChart.dataset.activeMetricEpoch
+  ));
+  const pageStep = Math.max(1, Math.ceil(marks.length / 6));
+  let nextIndex = currentIndex;
+  if (event.key === "Home") nextIndex = 0;
+  else if (event.key === "End") nextIndex = marks.length - 1;
+  else if (event.key === "PageUp") nextIndex -= pageStep;
+  else if (event.key === "PageDown") nextIndex += pageStep;
+  else nextIndex += event.key === "ArrowLeft" ? -1 : 1;
+  event.preventDefault();
+  event.stopPropagation();
+  syncTrainingMetricPointSelection(
+    marks[Math.max(0, Math.min(marks.length - 1, nextIndex))]
+  );
+}
+
+function nearestTrainingMetricMark(clientX) {
+  return trainingMetricChartMarks().reduce((nearest, mark) => {
+    const rect = mark.getBoundingClientRect();
+    const distance = Math.abs(clientX - (rect.left + rect.width / 2));
+    return !nearest || distance < nearest.distance ? { mark, distance } : nearest;
+  }, null)?.mark || null;
+}
+
+function trainingMetricPointStatus(point, index, count, bestMetric, latestMetric) {
+  const parts = [
+    `第 ${point.epoch} 轮`,
+    `评估损失 ${formatTrainingLoss(point.loss)}`,
+  ];
+  if (point.epoch === bestMetric.epoch && point.loss === bestMetric.loss) parts.push("最佳");
+  if (point.epoch === latestMetric.epoch && point.loss === latestMetric.loss) parts.push("最终");
+  parts.push(`第 ${index + 1} 项，共 ${count} 项`);
+  return parts.join(" · ");
+}
+
+function renderTrainingLossChart(points, bestMetric, latestMetric, activeEpoch = null) {
   const width = 720;
   const height = 230;
   const margin = { top: 18, right: 22, bottom: 42, left: 58 };
@@ -29137,6 +29206,7 @@ function renderTrainingLossChart(points, bestMetric, latestMetric) {
     : ((epoch - firstEpoch) / (lastEpoch - firstEpoch)) * plotWidth);
   const y = (loss) => margin.top
     + ((domainMaximum - loss) / domainRange) * plotHeight;
+  const activeMetric = points.find((point) => point.epoch === activeEpoch) || bestMetric;
 
   const svg = syncTrainingChartElement(elements.trainingLossChart, "svg", "svg", {
     viewBox: `0 0 ${width} ${height}`,
@@ -29200,19 +29270,36 @@ function renderTrainingLossChart(points, bestMetric, latestMetric) {
     y1: y(bestMetric.loss),
     y2: y(bestMetric.loss),
   }));
+  chartParts.push(syncTrainingChartElement(svg, "focus-rule", "line", {
+    class: "training-chart-focus-rule",
+    x1: x(activeMetric.epoch),
+    x2: x(activeMetric.epoch),
+    y1: margin.top,
+    y2: height - margin.bottom,
+  }));
   chartParts.push(syncTrainingChartElement(svg, "loss-line", "polyline", {
     class: "training-chart-loss-line",
     points: points.map((point) => `${x(point.epoch)},${y(point.loss)}`).join(" "),
   }));
-  for (const point of points) {
+  for (const [index, point] of points.entries()) {
     const best = point.epoch === bestMetric.epoch && point.loss === bestMetric.loss;
+    const current = point.epoch === activeMetric.epoch;
     const mark = syncTrainingChartElement(svg, `point-${point.epoch}`, "circle", {
       class: best ? "training-chart-point best" : "training-chart-point",
       cx: x(point.epoch),
       cy: y(point.loss),
       r: best ? 5 : 3.5,
       "data-metric-epoch": point.epoch,
+      "data-metric-loss": point.loss,
+      "data-metric-status": trainingMetricPointStatus(
+        point,
+        index,
+        points.length,
+        bestMetric,
+        latestMetric
+      ),
       "data-best": String(best),
+      "data-current": String(current),
     });
     let title = mark.querySelector(":scope > title");
     if (!title) title = createTrainingChartElement("title");
@@ -29246,12 +29333,21 @@ function renderTrainingLossChart(points, bestMetric, latestMetric) {
     `训练损失曲线：${points.length} 轮，最佳损失 ${formatTrainingLoss(bestMetric.loss)}`
       + `（第 ${bestMetric.epoch} 轮），最终损失 ${formatTrainingLoss(latestMetric.loss)}`
   );
+  syncTrainingMetricPointSelection(
+    elements.trainingLossChart.querySelector(
+      `[data-metric-epoch="${CSS.escape(String(activeMetric.epoch))}"]`
+    )
+  );
 }
 
-function renderTrainingMetrics(value) {
-  const fingerprint = value || "";
+function renderTrainingMetrics(value, runID = "") {
+  const runKey = runID || "";
+  const fingerprint = `${runKey}\n${value || ""}`;
   if (elements.trainingLossChart.dataset.trainingMetricsFingerprint === fingerprint) return;
+  const runChanged = elements.trainingLossChart.dataset.trainingMetricRunId !== runKey;
   elements.trainingLossChart.dataset.trainingMetricsFingerprint = fingerprint;
+  elements.trainingLossChart.dataset.trainingMetricRunId = runKey;
+  if (runChanged) delete elements.trainingLossChart.dataset.activeMetricEpoch;
   const summary = trainingMetricsSummary(value);
   if (elements.trainingMetricsSummary.textContent !== summary) {
     elements.trainingMetricsSummary.textContent = summary;
@@ -29264,13 +29360,18 @@ function renderTrainingMetrics(value) {
   const hasCurve = points.length > 0;
   elements.trainingMetricHighlights.classList.toggle("hidden", !hasCurve);
   elements.trainingLossChart.classList.toggle("hidden", !hasCurve);
+  elements.trainingMetricPointStatus.classList.toggle("hidden", !hasCurve);
   elements.trainingMetricEmpty.classList.toggle("hidden", hasCurve);
   if (!hasCurve) {
+    elements.trainingLossChart.tabIndex = -1;
+    delete elements.trainingLossChart.dataset.activeMetricEpoch;
     reconcileStableChildren(elements.trainingMetricHighlights, []);
     reconcileStableChildren(elements.trainingLossChart, []);
     elements.trainingLossChart.setAttribute("aria-label", "训练损失曲线：没有可绘制的数据");
+    elements.trainingMetricPointStatus.textContent = "聚焦曲线后可查看每轮精确损失";
     return;
   }
+  elements.trainingLossChart.tabIndex = 0;
   const bestMetric = points.reduce((best, point) => (
     point.loss < best.loss || (point.loss === best.loss && point.epoch < best.epoch)
       ? point
@@ -29323,7 +29424,12 @@ function renderTrainingMetrics(value) {
     highlightCards.push(card);
   }
   reconcileStableChildren(elements.trainingMetricHighlights, highlightCards);
-  renderTrainingLossChart(points, bestMetric, latestMetric);
+  renderTrainingLossChart(
+    points,
+    bestMetric,
+    latestMetric,
+    Number(elements.trainingLossChart.dataset.activeMetricEpoch)
+  );
 }
 
 function reconcileTrainingFacts(container, facts) {
@@ -30570,7 +30676,7 @@ function renderTrainingDetail() {
   elements.trainingErrorMessage.textContent = guidance?.message || "这台 Mac 已保留失败记录。";
   elements.trainingErrorAction.textContent = guidance?.suggestedAction || "检查关联任务后可重新配置。";
   elements.trainingErrorCode.textContent = run.errorCode || "";
-  renderTrainingMetrics(run.metricsJSON);
+  renderTrainingMetrics(run.metricsJSON, run.id);
 
   reconcileTrainingFacts(elements.trainingArtifactLedger, [
     {
@@ -47312,6 +47418,21 @@ function bindEvents() {
     if (!["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
     moveTrainingRunSelection(event.key);
+  });
+  elements.trainingLossChart.addEventListener("focus", () => {
+    const marks = trainingMetricChartMarks();
+    const selected = marks.find(
+      (mark) => mark.dataset.metricEpoch === elements.trainingLossChart.dataset.activeMetricEpoch
+    ) || marks.find((mark) => mark.dataset.best === "true") || marks[0];
+    syncTrainingMetricPointSelection(selected);
+  });
+  elements.trainingLossChart.addEventListener("keydown", moveTrainingMetricPoint);
+  elements.trainingLossChart.addEventListener("pointermove", (event) => {
+    syncTrainingMetricPointSelection(nearestTrainingMetricMark(event.clientX));
+  });
+  elements.trainingLossChart.addEventListener("click", (event) => {
+    syncTrainingMetricPointSelection(nearestTrainingMetricMark(event.clientX));
+    elements.trainingLossChart.focus({ preventScroll: true });
   });
   elements.trainingActivityStrip.addEventListener("click", (event) => {
     const retry = event.target.closest("[data-training-batch-reconfigure-id]");
