@@ -4818,6 +4818,62 @@ function captureWorkspacePresentationScroll(workspace, scrollOwner) {
   };
 }
 
+function workspaceLayoutReflowScrollSurfaces() {
+  return [
+    [elements.libraryPane, elements.libraryScroll],
+    [elements.reviewWorkspace, elements.reviewQueuePane],
+    [elements.reviewWorkspace, elements.reviewOverview.querySelector(".review-overview-content")],
+    [elements.reviewWorkspace, elements.reviewOverview.querySelector(".review-local-model-panel")],
+    [elements.trainingWorkspace, elements.trainingRunPane],
+    [elements.trainingWorkspace, elements.trainingDetailPane],
+    [elements.slimmingWorkspace, elements.slimmingNavigatorPane],
+    [elements.slimmingWorkspace, elements.slimmingMemberGrid],
+    [elements.galleryOverviewWorkspace, elements.galleryOverviewScroll],
+    [elements.worldMapWorkspace, elements.worldMapDetail],
+  ];
+}
+
+function captureWorkspaceLayoutReflowScrollAnchors() {
+  return workspaceLayoutReflowScrollSurfaces().flatMap(([workspace, scrollOwner]) => {
+    const scrollAnchor = captureWorkspacePresentationScroll(workspace, scrollOwner);
+    return scrollAnchor ? [{ workspace, scrollAnchor }] : [];
+  });
+}
+
+function restoreWorkspaceLayoutReflowScrollAnchors(
+  anchors,
+  settle = false,
+  frame = 0,
+  previousLayoutOffsets = null
+) {
+  const layoutOffsets = [];
+  let geometryChanged = false;
+  for (const [anchorIndex, { workspace, scrollAnchor }] of (anchors || []).entries()) {
+    if (!workspacePresentationFocusIsUsable(workspace, scrollAnchor?.target)
+      || !Number.isFinite(scrollAnchor.scrollOffset)) continue;
+    const scrollOwner = workspacePresentationScrollOwner(workspace, scrollAnchor.target);
+    if (!scrollOwner) continue;
+    const currentOffset = scrollAnchor.target.getBoundingClientRect().top
+      - scrollOwner.getBoundingClientRect().top;
+    const layoutOffset = currentOffset + scrollOwner.scrollTop;
+    layoutOffsets[anchorIndex] = layoutOffset;
+    const previousLayoutOffset = previousLayoutOffsets?.[anchorIndex];
+    if (Number.isFinite(previousLayoutOffset)
+      && Math.abs(layoutOffset - previousLayoutOffset) > 0.5) geometryChanged = true;
+    scrollOwner.scrollTop += currentOffset - scrollAnchor.scrollOffset;
+  }
+  if (!settle && anchors?.length && frame < 18 && (frame < 2 || geometryChanged)) {
+    requestAnimationFrame(() => {
+      restoreWorkspaceLayoutReflowScrollAnchors(
+        anchors,
+        false,
+        frame + 1,
+        layoutOffsets
+      );
+    });
+  }
+}
+
 function preferredWorkspacePresentationFocus(workspace, target, mode) {
   const previousMode = workspacePresentationModes.get(workspace);
   const snapshot = workspacePresentationFocusSnapshots.get(workspace);
@@ -9013,8 +9069,10 @@ function renderThumbnailAspectControls() {
 }
 
 function setSidebarVisible(visible) {
+  const reflowAnchors = captureWorkspaceLayoutReflowScrollAnchors();
   state.layout.sidebarVisible = visible;
   renderLayoutPreferences();
+  restoreWorkspaceLayoutReflowScrollAnchors(reflowAnchors);
   persistWorkspacePreferences();
 }
 
@@ -9048,8 +9106,10 @@ async function toggleSidebarVisibility(returnFocus = document.activeElement) {
 }
 
 function setInspectorVisible(visible) {
+  const reflowAnchors = captureWorkspaceLayoutReflowScrollAnchors();
   state.layout.inspectorVisible = visible;
   renderLayoutPreferences();
+  restoreWorkspaceLayoutReflowScrollAnchors(reflowAnchors);
   persistWorkspacePreferences();
 }
 
@@ -9121,8 +9181,11 @@ function splitResizeDescriptor(kind) {
 
 function setSplitWidth(kind, width, { persist = false } = {}) {
   const descriptor = splitResizeDescriptor(kind);
+  const reflowAnchors = state.splitResize?.reflowAnchors
+    || captureWorkspaceLayoutReflowScrollAnchors();
   state.layout[descriptor.key] = clampSplitWidth(width, descriptor.range);
   renderLayoutPreferences();
+  restoreWorkspaceLayoutReflowScrollAnchors(reflowAnchors, Boolean(state.splitResize));
   if (persist) persistWorkspacePreferences();
 }
 
@@ -9135,6 +9198,7 @@ function beginSplitResize(event, kind) {
     pointerID: event.pointerId,
     startX: event.clientX,
     startWidth: state.layout[descriptor.key],
+    reflowAnchors: captureWorkspaceLayoutReflowScrollAnchors(),
   };
   descriptor.handle.dataset.resizing = "true";
   descriptor.handle.setPointerCapture?.(event.pointerId);
@@ -9160,6 +9224,7 @@ function finishSplitResize(event) {
   delete descriptor.handle.dataset.resizing;
   descriptor.container.classList.remove("split-resizing");
   document.documentElement.classList.remove("split-resizing");
+  restoreWorkspaceLayoutReflowScrollAnchors(session.reflowAnchors);
   state.splitResize = null;
   persistWorkspacePreferences();
 }
@@ -17314,9 +17379,11 @@ function refreshVisibleThumbnailAspect() {
 function setThumbnailAspectMode(aspectMode) {
   if (!["square", "original"].includes(aspectMode)
     || state.layout.aspectMode === aspectMode) return;
+  const reflowAnchors = captureWorkspaceLayoutReflowScrollAnchors();
   state.layout.aspectMode = aspectMode;
   renderLayoutPreferences();
   refreshVisibleThumbnailAspect();
+  restoreWorkspaceLayoutReflowScrollAnchors(reflowAnchors);
   persistWorkspacePreferences();
 }
 
@@ -41815,8 +41882,10 @@ function applyGridDensity(value) {
   if (!Number.isInteger(next) || !GRID_DENSITY_OPTIONS.some((option) => option.value === next)) {
     return;
   }
+  const reflowAnchors = captureWorkspaceLayoutReflowScrollAnchors();
   state.layout.density = next;
   renderLayoutPreferences();
+  restoreWorkspaceLayoutReflowScrollAnchors(reflowAnchors);
   persistWorkspacePreferences();
   void returnFromLayoutMenu();
 }

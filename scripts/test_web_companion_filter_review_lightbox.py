@@ -3990,6 +3990,156 @@ def main():
             "expected => state.review.items.length === expected",
             arg=len(review_items),
         )
+        density_reflow_request_count = len(asset_queries)
+        density_reflow_selection = page.evaluate(
+            "() => [...state.review.selectedAssetIDs].sort()"
+        )
+        density_reflow_scroll_top = page.evaluate(
+            """() => {
+              const pane = document.querySelector('#reviewQueuePane');
+              const target = document.querySelector('[data-review-index="20"]');
+              pane.scrollTop = target.offsetTop - 24;
+              document.querySelector('#reviewGridDensityButton').focus({ preventScroll: true });
+              return pane.scrollTop;
+            }"""
+        )
+        assert density_reflow_scroll_top > 0
+        page.wait_for_function(
+            "() => workspacePresentationScrollSnapshots.get("
+            "document.querySelector('#reviewWorkspace'))?.target"
+            "?.closest('[data-review-index]')"
+        )
+        density_reflow_frame = page.evaluate(
+            """() => {
+              const pane = document.querySelector('#reviewQueuePane');
+              const snapshot = workspacePresentationScrollSnapshots.get(
+                document.querySelector('#reviewWorkspace')
+              );
+              const target = snapshot.target.closest('[data-review-index]');
+              window.__densityReviewAnchor = target;
+              return {
+                offset: target.getBoundingClientRect().top - pane.getBoundingClientRect().top,
+                scrollTop: pane.scrollTop,
+                assetID: target.dataset.assetId,
+              };
+            }"""
+        )
+        review_density_button.click()
+        page.locator(
+            '#reviewGridDensityPopover:not(.hidden) [data-grid-density="8"]'
+        ).click()
+        page.wait_for_function(
+            "() => getComputedStyle(document.documentElement)"
+            ".getPropertyValue('--asset-min-width').trim() === '620px'"
+        )
+        page.wait_for_function(
+            "expected => Math.abs(window.__densityReviewAnchor.getBoundingClientRect().top "
+            "- document.querySelector('#reviewQueuePane').getBoundingClientRect().top "
+            "- expected) <= 2",
+            arg=density_reflow_frame["offset"],
+        )
+        density_reflow_after = page.evaluate(
+            """() => {
+              const pane = document.querySelector('#reviewQueuePane');
+              const target = window.__densityReviewAnchor;
+              return {
+                offset: target.getBoundingClientRect().top - pane.getBoundingClientRect().top,
+                scrollTop: pane.scrollTop,
+                assetID: target.dataset.assetId,
+                focus: document.activeElement?.id,
+              };
+            }"""
+        )
+        assert abs(density_reflow_after["offset"] - density_reflow_frame["offset"]) <= 2, {
+            "before": density_reflow_frame,
+            "after": density_reflow_after,
+        }
+        assert density_reflow_after["assetID"] == density_reflow_frame["assetID"]
+        assert density_reflow_after["focus"] == "reviewGridDensityButton"
+        assert page.evaluate(
+            "() => [...state.review.selectedAssetIDs].sort()"
+        ) == density_reflow_selection
+        assert len(asset_queries) == density_reflow_request_count
+        page.screenshot(
+            path="/tmp/imageall-review-density-scroll-anchor.png",
+            full_page=True,
+        )
+        review_density_button.click()
+        page.locator(
+            '#reviewGridDensityPopover:not(.hidden) [data-grid-density="5"]'
+        ).click()
+        page.wait_for_function(
+            "() => getComputedStyle(document.documentElement)"
+            ".getPropertyValue('--asset-min-width').trim() === '245px'"
+        )
+        page.wait_for_function(
+            "expected => Math.abs(window.__densityReviewAnchor.getBoundingClientRect().top "
+            "- document.querySelector('#reviewQueuePane').getBoundingClientRect().top "
+            "- expected) <= 2",
+            arg=density_reflow_frame["offset"],
+        )
+        assert page.evaluate(
+            "() => document.activeElement?.id"
+        ) == "reviewGridDensityButton"
+        assert page.evaluate(
+            "() => [...state.review.selectedAssetIDs].sort()"
+        ) == density_reflow_selection
+        assert len(asset_queries) == density_reflow_request_count
+        review_queue_handle.focus()
+        page.keyboard.press("Home")
+        page.wait_for_function("() => state.layout.reviewInspectorWidth === 240")
+        page.wait_for_function(
+            "expected => Math.abs(window.__densityReviewAnchor.getBoundingClientRect().top "
+            "- document.querySelector('#reviewQueuePane').getBoundingClientRect().top "
+            "- expected) <= 2",
+            arg=density_reflow_frame["offset"],
+        )
+        assert page.evaluate(
+            "() => document.activeElement?.id"
+        ) == "reviewQueueResizeHandle"
+        page.keyboard.press("End")
+        page.wait_for_function("() => state.layout.reviewInspectorWidth === 380")
+        page.wait_for_function(
+            "expected => Math.abs(window.__densityReviewAnchor.getBoundingClientRect().top "
+            "- document.querySelector('#reviewQueuePane').getBoundingClientRect().top "
+            "- expected) <= 2",
+            arg=density_reflow_frame["offset"],
+        )
+        review_queue_handle.dblclick()
+        page.wait_for_function("() => state.layout.reviewInspectorWidth === 300")
+        page.wait_for_function(
+            "expected => Math.abs(window.__densityReviewAnchor.getBoundingClientRect().top "
+            "- document.querySelector('#reviewQueuePane').getBoundingClientRect().top "
+            "- expected) <= 2",
+            arg=density_reflow_frame["offset"],
+        )
+        density_split_default_frame = page.evaluate(
+            """() => {
+              const pane = document.querySelector('#reviewQueuePane');
+              const target = window.__densityReviewAnchor;
+              const offset = target.getBoundingClientRect().top
+                - pane.getBoundingClientRect().top;
+              return {
+                offset,
+                scrollTop: pane.scrollTop,
+                maximumScroll: Math.max(0, pane.scrollHeight - pane.clientHeight),
+                unscrolledOffset: offset + pane.scrollTop,
+              };
+            }"""
+        )
+        assert abs(
+            density_split_default_frame["offset"] - density_reflow_frame["offset"]
+        ) <= 2, {
+            "before": density_reflow_frame,
+            "after": density_split_default_frame,
+        }
+        assert page.evaluate(
+            "() => [...state.review.selectedAssetIDs].sort()"
+        ) == density_reflow_selection
+        assert len(asset_queries) == density_reflow_request_count
+        page.locator("#reviewQueuePane").evaluate(
+            "element => { element.scrollTop = 0; }"
+        )
         review_queue_query_count_before_marquee = len(review_queue_queries)
         review_marquee_scroll, review_marquee_selection_before_refresh = drag_marquee_to_bottom_edge(
             page,

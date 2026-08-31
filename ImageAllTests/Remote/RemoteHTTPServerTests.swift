@@ -2916,6 +2916,9 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function workspacePresentationScrollAnchorSelector"))
         XCTAssertTrue(script.contains("function workspacePresentationAnchorIsPinned"))
         XCTAssertTrue(script.contains("function captureWorkspacePresentationScroll"))
+        XCTAssertTrue(script.contains("function workspaceLayoutReflowScrollSurfaces"))
+        XCTAssertTrue(script.contains("function captureWorkspaceLayoutReflowScrollAnchors"))
+        XCTAssertTrue(script.contains("function restoreWorkspaceLayoutReflowScrollAnchors"))
         XCTAssertTrue(script.contains("function captureWorkspacePresentationFocus"))
         XCTAssertTrue(script.contains("function preferredWorkspacePresentationFocus"))
         XCTAssertTrue(script.contains("function restoreWorkspacePresentationScroll"))
@@ -2963,6 +2966,20 @@ final class RemoteHTTPServerTests: XCTestCase {
             )
         )
         XCTAssertTrue(script.contains("const scrollAnchor = focusAnchor || preferredFocus?.scrollAnchor"))
+        XCTAssertTrue(script.contains("frame < 18 && (frame < 2 || geometryChanged)"))
+        XCTAssertTrue(script.contains("reflowAnchors: captureWorkspaceLayoutReflowScrollAnchors()"))
+        XCTAssertTrue(
+            script.contains(
+                "restoreWorkspaceLayoutReflowScrollAnchors(reflowAnchors, Boolean(state.splitResize))"
+            )
+        )
+        XCTAssertTrue(script.contains("restoreWorkspaceLayoutReflowScrollAnchors(session.reflowAnchors)"))
+        XCTAssertEqual(
+            script.components(
+                separatedBy: "const reflowAnchors = captureWorkspaceLayoutReflowScrollAnchors();"
+            ).count - 1,
+            4
+        )
         XCTAssertTrue(script.contains("function syncIntegratedReviewFrame"))
         XCTAssertTrue(script.contains("function leaveIntegratedReviewForLibrary"))
         XCTAssertTrue(script.contains("function loadReviewInspectorDetail"))
