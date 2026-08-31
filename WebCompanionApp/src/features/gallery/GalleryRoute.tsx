@@ -16,6 +16,7 @@ import type { WorldMapSelectionQuery } from '@/api/contracts/map';
 import type { TagDecisionAction } from '@/api/contracts/tag';
 import { errorMessage } from '@/api/errors';
 import { applyTagDecision, fetchTags, fetchTagSelection, undoTagDecision } from '@/api/tags';
+import { prepareEmbeddings } from '@/api/training';
 
 import { AssetViewer } from './AssetViewer';
 import { GalleryToolbar, type GalleryFilters } from './GalleryToolbar';
@@ -258,8 +259,36 @@ export function GalleryRoute() {
     },
   });
 
+  const embeddingMutation = useMutation({
+    mutationFn: async (assetIDs: string[]) => {
+      const groups = new Map<'image' | 'video', string[]>([
+        ['image', []],
+        ['video', []],
+      ]);
+      for (const id of assetIDs) {
+        const mediaType = assets.find((asset) => asset.id === id)?.mediaType ?? 'image/jpeg';
+        groups.get(mediaType.startsWith('video/') ? 'video' : 'image')?.push(id);
+      }
+      const requests = [...groups].filter(([, ids]) => ids.length > 0);
+      if (requests.length !== 1) {
+        throw new Error('照片与视频需要分开准备特征；请先把图库筛选为单一媒体类型。');
+      }
+      const request = requests[0];
+      if (!request) throw new Error('没有可准备的项目。');
+      await prepareEmbeddings(request[0], request[1]);
+      return request[1].length;
+    },
+    onSuccess: (assetCount) => {
+      setStatusMessage(`已把 ${String(assetCount)} 项特征准备交给 Mac；可在“训练”中跟踪。`);
+      void queryClient.invalidateQueries({ queryKey: ['embedding-preparation'] });
+    },
+  });
+
   const mutationPending =
-    favoriteMutation.isPending || tagMutation.isPending || undoMutation.isPending;
+    favoriteMutation.isPending ||
+    tagMutation.isPending ||
+    undoMutation.isPending ||
+    embeddingMutation.isPending;
 
   function applyFilters(next: GalleryFilters) {
     const parameters = new URLSearchParams();
@@ -424,6 +453,11 @@ export function GalleryRoute() {
             selectionAnchor.current = null;
           }}
           onFavorite={(isFavorite) => void applyFavorite(selectedAssetIDs, isFavorite)}
+          onPrepareEmbeddings={() =>
+            void embeddingMutation.mutateAsync(selectedAssetIDs).catch((error: unknown) => {
+              setStatusMessage(errorMessage(error));
+            })
+          }
           onSelectedTagChange={setSelectedTagID}
           onTagDecision={(action) =>
             void applyDecision(effectiveSelectedTagID, selectedAssetIDs, action)

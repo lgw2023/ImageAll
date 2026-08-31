@@ -538,10 +538,7 @@
     border: 1px solid var(--color-border);
     border-radius: var(--radius-panel);
     color: var(--color-text-muted);
-    background:
-      linear-gradient(var(--color-border) 1px, transparent 1px),
-      linear-gradient(90deg, var(--color-border) 1px, transparent 1px), var(--color-surface);
-    background-size: 48px 48px;
+    background: var(--color-surface);
   }
 
   .empty-workbench > * {
@@ -2010,6 +2007,348 @@
     border-bottom: 0;
   }
 
+  .training-heading {
+    align-items: center;
+  }
+
+  .training-media-switch {
+    display: flex;
+    padding: 3px;
+    gap: 3px;
+    border-radius: var(--radius-control);
+    background: var(--color-surface-muted);
+  }
+
+  .training-media-switch .button {
+    min-width: 72px;
+    border-color: transparent;
+    background: transparent;
+  }
+
+  .training-media-switch .button[aria-pressed='true'] {
+    border-color: var(--color-border);
+    color: var(--color-accent);
+    background: var(--color-surface);
+  }
+
+  .training-section-tabs {
+    display: flex;
+    min-width: 0;
+    padding: 4px;
+    gap: 3px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-card);
+    background: var(--color-surface);
+    overflow-x: auto;
+  }
+
+  .training-section-tabs button {
+    display: inline-flex;
+    min-height: 36px;
+    padding: 7px 12px;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-control);
+    color: var(--color-text-muted);
+    background: transparent;
+    font-weight: 650;
+    white-space: nowrap;
+  }
+
+  .training-section-tabs button:hover {
+    background: var(--color-surface-muted);
+  }
+
+  .training-section-tabs button[aria-current='page'] {
+    border-color: var(--color-border);
+    color: var(--color-accent);
+    background: var(--color-accent-subtle);
+  }
+
+  .training-workbench-grid {
+    display: grid;
+    min-width: 0;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+    gap: 12px;
+  }
+
+  .training-panel {
+    display: grid;
+    min-width: 0;
+    padding: 16px;
+    align-content: start;
+    gap: 14px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-card);
+    background: var(--color-surface);
+  }
+
+  .training-launch-panel {
+    grid-row: span 2;
+  }
+
+  .training-history-panel,
+  .training-source-panel {
+    grid-column: 1 / -1;
+  }
+
+  .training-choice-group {
+    display: grid;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    gap: 6px;
+    border: 0;
+  }
+
+  .training-choice-group legend {
+    margin-bottom: 6px;
+    color: var(--color-text-muted);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+
+  .training-choice-group label {
+    display: flex;
+    min-width: 0;
+    min-height: 42px;
+    padding: 7px 9px;
+    align-items: center;
+    gap: 9px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-control);
+    background: var(--color-surface-raised);
+  }
+
+  .training-choice-group label:has(input:checked) {
+    border-color: color-mix(in srgb, var(--color-accent) 55%, var(--color-border));
+    background: var(--color-accent-subtle);
+  }
+
+  .training-choice-group input {
+    width: 17px;
+    height: 17px;
+    margin: 0;
+    flex: 0 0 auto;
+    accent-color: var(--color-accent);
+  }
+
+  .training-choice-group label > span {
+    display: grid;
+    min-width: 0;
+    gap: 2px;
+  }
+
+  .training-choice-group small,
+  .training-card-heading span,
+  .training-run-list article > span,
+  .training-service-row > span:not(.state-pill) {
+    color: var(--color-text-muted);
+    font-size: 11px;
+  }
+
+  .training-scroll-choices {
+    max-height: 250px;
+    padding-right: 3px;
+    overflow-y: auto;
+  }
+
+  .training-scope-note {
+    margin: 0;
+    padding: 10px;
+    border-radius: var(--radius-control);
+    color: var(--color-text-muted);
+    background: var(--color-surface-muted);
+    font-size: 11px;
+  }
+
+  .training-submit-row,
+  .training-source-summary,
+  .training-availability-row,
+  .training-service-row {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .training-submit-row > span,
+  .training-source-summary > span {
+    color: var(--color-text-muted);
+    font-size: 11px;
+  }
+
+  .training-activity-list,
+  .training-run-list {
+    display: grid;
+    min-width: 0;
+    gap: 8px;
+  }
+
+  .training-activity-card,
+  .training-suggestion-card,
+  .training-run-list article {
+    display: grid;
+    min-width: 0;
+    padding: 12px;
+    align-content: start;
+    gap: 9px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-control);
+    background: var(--color-surface-raised);
+  }
+
+  .training-card-heading {
+    display: flex;
+    min-width: 0;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .training-card-heading > div {
+    display: grid;
+    min-width: 0;
+    gap: 2px;
+  }
+
+  .training-activity-card > p,
+  .training-run-list article p {
+    margin: 0;
+    color: var(--color-text-muted);
+    font-size: 11px;
+  }
+
+  .training-progress {
+    display: grid;
+    gap: 5px;
+  }
+
+  .training-progress > div,
+  .training-count-row,
+  .training-tag-activity-list li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    color: var(--color-text-muted);
+    font-size: 11px;
+  }
+
+  .training-progress progress {
+    width: 100%;
+    height: 7px;
+    accent-color: var(--color-accent);
+  }
+
+  .training-count-row {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .training-tag-activity-list {
+    display: grid;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .training-tag-activity-list li {
+    min-height: 30px;
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .training-panel-state {
+    display: grid;
+    min-height: 110px;
+    padding: 14px;
+    place-items: center;
+    align-content: center;
+    gap: 7px;
+    border-radius: var(--radius-control);
+    color: var(--color-text-muted);
+    background: var(--color-surface-muted);
+    text-align: center;
+  }
+
+  .training-panel-error {
+    color: var(--color-danger);
+  }
+
+  .training-slot-grid,
+  .training-suggestion-grid,
+  .training-source-grid {
+    display: grid;
+    min-width: 0;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .training-slot-grid > div {
+    display: grid;
+    padding: 10px;
+    gap: 2px;
+    border-radius: var(--radius-control);
+    background: var(--color-surface-muted);
+  }
+
+  .training-slot-grid span {
+    color: var(--color-text-muted);
+    font-size: 11px;
+  }
+
+  .training-run-list article {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+  }
+
+  .training-run-list article > div {
+    display: grid;
+    min-width: 0;
+  }
+
+  .training-run-list article p {
+    grid-column: 1 / -1;
+  }
+
+  .training-service-row {
+    padding: 10px;
+    border-radius: var(--radius-control);
+    background: var(--color-surface-muted);
+  }
+
+  .training-service-row > span:not(.state-pill) {
+    flex: 1;
+  }
+
+  .training-tag-suggestion-form {
+    display: grid;
+    gap: 10px;
+  }
+
+  .state-pill[data-state='preparingSamples'],
+  .state-pill[data-state='preparingEmbeddings'],
+  .state-pill[data-state='trainingAndPublishing'],
+  .state-pill[data-state='preparingCandidates'],
+  .state-pill[data-state='scoring'],
+  .state-pill[data-state='publishing'],
+  .state-pill[data-state='running'],
+  .state-pill[data-state='queued'],
+  .state-pill[data-state='pending'] {
+    color: var(--color-accent);
+  }
+
+  .state-pill[data-state='failed'],
+  .state-pill[data-state='cancelled'],
+  .state-pill[data-state='unavailable'] {
+    color: var(--color-danger);
+  }
+
   .map-gallery-banner {
     display: grid;
     padding: 10px 12px;
@@ -2489,6 +2828,17 @@
   .review-queue-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
+
+  .training-workbench-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .training-launch-panel,
+  .training-history-panel,
+  .training-source-panel {
+    grid-row: auto;
+    grid-column: auto;
+  }
 }
 
 @media (max-width: 599px) {
@@ -2749,6 +3099,52 @@
 
   .form-actions .button {
     flex: 1;
+  }
+
+  .training-heading,
+  .training-submit-row,
+  .training-source-summary,
+  .training-availability-row,
+  .training-service-row {
+    width: 100%;
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .training-media-switch,
+  .training-section-tabs {
+    width: 100%;
+  }
+
+  .training-media-switch .button,
+  .training-section-tabs button {
+    flex: 1;
+  }
+
+  .training-section-tabs button {
+    padding-inline: 8px;
+  }
+
+  .training-panel {
+    padding: 13px;
+  }
+
+  .training-slot-grid,
+  .training-suggestion-grid,
+  .training-source-grid,
+  .training-run-list article {
+    grid-template-columns: 1fr;
+  }
+
+  .training-run-list article p {
+    grid-column: auto;
+  }
+
+  .training-submit-row .button,
+  .training-source-summary .button,
+  .training-availability-row .button,
+  .training-service-row .button {
+    width: 100%;
   }
 
   .map-gallery-banner {

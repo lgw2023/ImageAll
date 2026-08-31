@@ -1,4 +1,4 @@
-import { Check, Heart, RotateCcw, X } from 'lucide-react';
+import { Check, DatabaseZap, Heart, RotateCcw, X } from 'lucide-react';
 
 import type { TagSelectionAggregate, TagSummary } from '@/api/contracts/tag';
 
@@ -11,6 +11,7 @@ type SelectionBarProps = {
   onSelectedTagChange: (tagID: string) => void;
   onFavorite: (isFavorite: boolean) => void;
   onTagDecision: (action: 'accept' | 'reject' | 'clear') => void;
+  onPrepareEmbeddings: () => void;
   onClear: () => void;
 };
 
@@ -23,6 +24,7 @@ export function SelectionBar({
   onSelectedTagChange,
   onFavorite,
   onTagDecision,
+  onPrepareEmbeddings,
   onClear,
 }: SelectionBarProps) {
   return (
@@ -49,6 +51,9 @@ export function SelectionBar({
           type="button"
         >
           取消收藏
+        </button>
+        <button className="button" disabled={pending} onClick={onPrepareEmbeddings} type="button">
+          <DatabaseZap aria-hidden="true" size={15} /> 准备特征
         </button>
         <label className="compact-field selection-tag-field">
           <span>标签</span>

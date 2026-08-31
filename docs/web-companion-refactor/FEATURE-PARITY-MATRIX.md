@@ -5,8 +5,8 @@
 - “Mac 现状”和“旧 Web 现状”是阶段 0 对当前源码和合成浏览器 fixture 的盘点；不表示真实照片验收。
 - “新版目标”是验收契约，不是已完成声明。
 - “API”只说明当前 Host 有相关能力；新 UI 还必须有类型解码、主/失败流程、回归和截图才能达到 `parity-proven`。
-- 状态必须用本目录 README 的受控词汇。工程基座已进入 `foundation`，图库、策展与管理纵切片
-  处于 `in-progress`；未满足全部验收门的行不得提前写成 `parity-proven`。
+- 状态必须用本目录 README 的受控词汇。工程基座已进入 `foundation`，图库、策展、管理、地图与
+  训练纵切片处于 `in-progress`；未满足全部验收门的行不得提前写成 `parity-proven`。
 
 ## 矩阵
 
@@ -28,14 +28,14 @@
 | 图库概览 | Mac 统计 | 独立 history route | 可定址统计、进入已筛选图库 | 已有 | 无 | in-progress | `curation.spec.ts`：Host 统计与筛选链接 | `evidence/curation/` 概览桌面+移动 | 合成 120 项；年份/来源深链仍待扩展 |
 | 审查概览 | Mac 工作区 | 有 | 空/错/加载、进入队列 | 已有 | 无 | in-progress | `curation.spec.ts`：概览→队列、503→重试 | `evidence/curation/` 审查 | 长任务操作仍由训练/活动切片补齐 |
 | 审查队列/决策/undo | Mac 工作区 | 有 | 键盘决策、安全撤销、队列刷新 | 已有 | 无 | in-progress | `curation.spec.ts`：单项/批量/A 键/undo | `evidence/curation/` 队列桌面+移动 | 冲突/过期 undo 与大队列性能待补 |
-| 库建议 | Mac 有 | 有 | 建议、申请、活动状态一致 | 已有 | 无 | baseline | Swift 端点测试 | 无 | 新 UI 未建 |
+| 库建议 | Mac 有 | 有 | 建议、申请、活动状态一致 | 已有 | 无 | in-progress | `training.spec.ts`：标准/个人轨道、精确来源、job 暂停与 Host 回读 | `evidence/training/` 工作台 | 合成服务与 job；不证明真实模型推理或建议质量 |
 | 世界地图查看 | Mac 地图 | 独立 route/资源 | 同源可访问地图、视口保留 | 已有 | 无 | in-progress | `map.spec.ts`：iframe 消息桥、视口宽度、503 重试、axe | `evidence/map/` 桌面+移动 | 合成渲染器；真实 MapLibre/WebGL 手工门待完成 |
 | 地图选择 | Mac 有 | 有 | 选择返回图库筛选并可后退 | 已有 | 无 | in-progress | `map.spec.ts`：聚合选择→Host selection→范围图库→后退 | `evidence/map/` 深圳选择 | 合成 3 个聚合；大规模聚合性能待验收 |
 | 位置回填/地方标签 | Mac 有 | 有 | 明确范围、长任务进度、失败处理 | 已有 | 无 | in-progress | `map.spec.ts`：回填开始/Host 回读、搜索/确认地点 | `evidence/map/` 页面下方工作区 | 不证明真实元数据扫描或地理编码正确性 |
-| 训练 setup | Mac 工作区 | 有 | 类型表单、前置条件、可访问错误 | 已有 | 无 | baseline | 旧训练脚本 | 无 | 新表单未建 |
-| 训练 launch/activity | Mac 任务 | 有 | 非乐观 launch、activity 可恢复 | 已有 | 无 | baseline | Swift + 旧脚本 | 无 | 未做新长任务 |
-| 嵌入准备 | Mac 有 | 有 | 发起/取消/重试与进度 | 已有 | 无 | baseline | Swift 端点测试 | 无 | 新 UI 未建 |
-| 样本/标签库建议 | Mac 有 | 有 | 建议列表、request/action 完整闭环 | 已有 | 无 | baseline | Swift 端点测试 | 无 | 新 UI 未建 |
+| 训练 setup | Mac 工作区 | 有 | 类型表单、前置条件、可访问错误 | 已有 | 无 | in-progress | `training.spec.ts`：Host 方法可用性、标签/来源精确范围、503→重试、axe | `evidence/training/` 桌面+移动 | 合成 setup；未用真实样本验证前置条件 |
+| 训练 launch/activity | Mac 任务 | 有 | 非乐观 launch、activity 可恢复 | 已有 | 无 | in-progress | `training.spec.ts`：202 后反馈、活动轮询、标签进度、取消回读 | `evidence/training/` 当前活动 | 合成活动；不证明实际训练完成、指标或模型质量 |
+| 嵌入准备 | Mac 有 | 有 | 发起/取消/重试与进度 | 已有 | 无 | in-progress | `training.spec.ts`：图库选择→精确 assetIDs→工作台进度/取消 | `evidence/training/` 准备入口同设计系统 | 合成资产；不证明真实特征缓存生成 |
+| 样本/标签库建议 | Mac 有 | 有 | 建议列表、request/action 完整闭环 | 已有 | 无 | in-progress | `training.spec.ts`：抽检/按标签提交、来源范围、进度、取消、阈值投影 | `evidence/training/` 工作台 | 合成模型/阈值；不证明建议正确性或真实审核写入 |
 | 精简 setup/阈值 | Mac 工作区 | 有 | 受控表单、Host 回读、变更证据 | 已有 | 无 | baseline | 旧阈值回归 | 无 | 新 UI 未建 |
 | 重复聚类审查 | Mac 有 | 有 | 图像对比、键盘、范围稳定 | 已有 | 无 | baseline | 旧精简脚本 | 无 | 未验证大组性能 |
 | 清理计划/移除/回收 | Mac 安全流程 | 有 | 预览、精确数量、不乐观成功、可追踪 | 已有 | 无 | baseline | Swift 高风险路由测试 | 无 | 禁止真实数据自动测试 |

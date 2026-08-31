@@ -35,6 +35,8 @@ const capabilities = {
     'generalSettings',
     'jobs',
     'pairing',
+    'trainingActivities',
+    'librarySuggestions',
   ],
   listenPort: 5173,
   usesTLS: false,
@@ -249,6 +251,16 @@ export async function installSyntheticAuthenticatedHost(page: Page) {
       lastSeenAtMs: 1_786_500_000_000,
     },
   ];
+  const trainingRunID = '41ba0aa1-e0c3-4421-bb0f-4f7edab5c341';
+  const trainingJobID = '42ba0aa1-e0c3-4421-bb0f-4f7edab5c342';
+  const standardSuggestionJobID = '43ba0aa1-e0c3-4421-bb0f-4f7edab5c343';
+  const personalSuggestionJobID = '44ba0aa1-e0c3-4421-bb0f-4f7edab5c344';
+  let trainingActivities: Record<string, unknown>[] = [];
+  let embeddingActivities: Record<string, unknown>[] = [];
+  let sampleSuggestionActivities: Record<string, unknown>[] = [];
+  let tagSuggestionActivities: Record<string, unknown>[] = [];
+  let standardSuggestionJob: Record<string, unknown> | null = null;
+  let personalSuggestionJob: Record<string, unknown> | null = null;
   const mapClusters = [
     {
       id: 'shanghai',
@@ -490,6 +502,21 @@ export async function installSyntheticAuthenticatedHost(page: Page) {
           }
         : job,
     );
+    const updateSuggestionJob = (job: Record<string, unknown> | null) =>
+      job?.jobID === jobID
+        ? {
+            ...job,
+            state:
+              body.action === 'pause'
+                ? 'paused'
+                : body.action === 'resume'
+                  ? 'running'
+                  : 'cancelled',
+            availableActions: body.action === 'pause' ? ['resume', 'cancel'] : [],
+          }
+        : job;
+    standardSuggestionJob = updateSuggestionJob(standardSuggestionJob);
+    personalSuggestionJob = updateSuggestionJob(personalSuggestionJob);
     return route.fulfill({ status: 200, contentType: 'application/json', json: { jobID } });
   });
   await page.route('**/v1/pairing/devices', (route) =>
@@ -586,6 +613,344 @@ export async function installSyntheticAuthenticatedHost(page: Page) {
       status: 200,
       contentType: 'application/json',
       json: { operationID: body.operationID, resolution: placeResolution, replayed: false },
+    });
+  });
+  await page.route('**/v1/training/setup?*', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        mediaKind: new URL(route.request().url()).searchParams.get('mediaKind') ?? 'image',
+        tags: [
+          {
+            id: tagIDs[0],
+            displayName: '风景',
+            acceptedSampleCount: 18,
+            rejectedSampleCount: 6,
+            featureMode: 'update',
+            personalEligible: true,
+          },
+          {
+            id: tagIDs[1],
+            displayName: '家人',
+            acceptedSampleCount: 12,
+            rejectedSampleCount: 5,
+            featureMode: 'generate',
+            personalEligible: true,
+          },
+        ],
+        sources: [{ id: sourceID, displayName: 'Synthetic Library' }],
+        methods: [
+          { method: 'featureKnn', isAvailable: true },
+          { method: 'personalCentroid', isAvailable: true },
+          { method: 'personalAdamW', isAvailable: true },
+        ],
+      },
+    }),
+  );
+  await page.route('**/v1/training/workspace?*', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        mediaKind: new URL(route.request().url()).searchParams.get('mediaKind') ?? 'image',
+        methodFilter: null,
+        runs: [
+          {
+            id: trainingRunID,
+            mediaKind: 'image',
+            method: 'personalCentroid',
+            state: 'succeeded',
+            createdAtMs: 1_787_800_000_000,
+            catalogScopeID: 'synthetic-catalog',
+            tagID: tagIDs[0],
+            tagDisplayName: '风景',
+            sampleCount: 24,
+          },
+        ],
+        slots: [
+          {
+            method: 'personalCentroid',
+            isPublished: true,
+            publishedRunID: trainingRunID,
+            artifactRef: 'synthetic://personal-centroid',
+          },
+          { method: 'personalAdamW', isPublished: false },
+        ],
+        activities: trainingActivities,
+      },
+    }),
+  );
+  await page.route('**/v1/training/activities?*', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: trainingActivities,
+    }),
+  );
+  await page.route('**/v1/training/launch', (route) => {
+    const body = route.request().postDataJSON() as {
+      operationID: string;
+      mediaKind: 'image' | 'video';
+      method: 'featureKnn' | 'personalCentroid' | 'personalAdamW';
+      tagIDs: string[];
+    };
+    const activity = {
+      operationID: body.operationID,
+      mediaKind: body.mediaKind,
+      method: body.method,
+      phase: 'preparingEmbeddings',
+      completedUnitCount: 1,
+      totalUnitCount: body.tagIDs.length,
+      sampleCount: 24,
+      errorCode: null,
+      availableActions: ['cancel'],
+      tagActivities: body.tagIDs.map((tagID) => ({
+        tagID,
+        displayName: tagID === tagIDs[0] ? '风景' : '家人',
+        phase: 'preparingEmbeddings',
+        sampleCount: 24,
+        errorCode: null,
+      })),
+      acceptedAtMs: 1_787_820_000_000,
+      updatedAtMs: 1_787_820_001_000,
+    };
+    trainingActivities = [activity];
+    return route.fulfill({
+      status: 202,
+      contentType: 'application/json',
+      json: {
+        operationID: body.operationID,
+        method: body.method,
+        acceptedAtMs: 1_787_820_000_000,
+        scheduledTagCount: body.tagIDs.length,
+        jobID: trainingJobID,
+        replayed: false,
+      },
+    });
+  });
+  await page.route(/\/v1\/training\/activities\/[0-9a-f-]+\/actions$/i, (route) => {
+    const operationID = new URL(route.request().url()).pathname.split('/').at(-2) ?? '';
+    trainingActivities = trainingActivities.map((activity) =>
+      activity.operationID === operationID
+        ? { ...activity, phase: 'cancelled', availableActions: [] }
+        : activity,
+    );
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: { activity: trainingActivities.find((item) => item.operationID === operationID) },
+    });
+  });
+  await page.route('**/v1/embedding-preparation?*', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        mediaKind: new URL(route.request().url()).searchParams.get('mediaKind') ?? 'image',
+        isAvailable: true,
+        activities: embeddingActivities,
+      },
+    }),
+  );
+  await page.route('**/v1/embedding-preparation/requests', (route) => {
+    const body = route.request().postDataJSON() as {
+      operationID: string;
+      mediaKind: 'image' | 'video';
+      assetIDs: string[];
+    };
+    const activity = {
+      operationID: body.operationID,
+      mediaKind: body.mediaKind,
+      phase: 'running',
+      completedUnitCount: 0,
+      totalUnitCount: body.assetIDs.length,
+      preparedCount: 0,
+      cachedCount: 0,
+      cloudOnlyCount: 0,
+      failedCount: 0,
+      errorCode: null,
+      availableActions: ['cancel'],
+    };
+    embeddingActivities = [activity];
+    return route.fulfill({
+      status: 202,
+      contentType: 'application/json',
+      json: { activity, replayed: false },
+    });
+  });
+  await page.route(/\/v1\/embedding-preparation\/requests\/[0-9a-f-]+\/actions$/i, (route) => {
+    const operationID = new URL(route.request().url()).pathname.split('/').at(-2) ?? '';
+    embeddingActivities = embeddingActivities.map((activity) =>
+      activity.operationID === operationID
+        ? { ...activity, phase: 'cancelled', availableActions: [] }
+        : activity,
+    );
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: { activity: embeddingActivities.find((item) => item.operationID === operationID) },
+    });
+  });
+  await page.route('**/v1/sample-suggestions?*', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        mediaKind: new URL(route.request().url()).searchParams.get('mediaKind') ?? 'image',
+        isAvailable: true,
+        maximumSampleCount: 500,
+        activities: sampleSuggestionActivities,
+      },
+    }),
+  );
+  await page.route('**/v1/sample-suggestions/requests', (route) => {
+    const body = route.request().postDataJSON() as {
+      operationID: string;
+      mediaKind: 'image' | 'video';
+    };
+    const activity = {
+      operationID: body.operationID,
+      mediaKind: body.mediaKind,
+      phase: 'running',
+      completedUnitCount: 18,
+      totalUnitCount: 120,
+      suggestedCount: 7,
+      skippedCount: 3,
+      errorCode: null,
+      availableActions: ['cancel'],
+    };
+    sampleSuggestionActivities = [activity];
+    return route.fulfill({
+      status: 202,
+      contentType: 'application/json',
+      json: { activity, replayed: false },
+    });
+  });
+  await page.route(/\/v1\/sample-suggestions\/requests\/[0-9a-f-]+\/actions$/i, (route) => {
+    const operationID = new URL(route.request().url()).pathname.split('/').at(-2) ?? '';
+    sampleSuggestionActivities = sampleSuggestionActivities.map((activity) =>
+      activity.operationID === operationID
+        ? { ...activity, phase: 'cancelled', availableActions: [] }
+        : activity,
+    );
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        activity: sampleSuggestionActivities.find((item) => item.operationID === operationID),
+      },
+    });
+  });
+  await page.route('**/v1/library-suggestions?*', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        mediaKind: new URL(route.request().url()).searchParams.get('mediaKind') ?? 'image',
+        service: {
+          state: 'ready',
+          serviceVersion: '1.0.0',
+          provider: 'Synthetic Core ML',
+          modelID: 'synthetic-vision-v1',
+        },
+        standardAvailable: true,
+        personalMode: 'fullLibrary',
+        standardJob: standardSuggestionJob,
+        personalJob: personalSuggestionJob,
+      },
+    }),
+  );
+  await page.route('**/v1/library-suggestions/requests', (route) => {
+    const body = route.request().postDataJSON() as {
+      operationID: string;
+      track: 'standard' | 'personal';
+    };
+    const jobID = body.track === 'standard' ? standardSuggestionJobID : personalSuggestionJobID;
+    const job = {
+      jobID,
+      state: 'running',
+      checkedCount: 24,
+      totalCount: 120,
+      suggestedCount: 9,
+      skippedCount: 2,
+      lastErrorCode: null,
+      availableActions: ['pause', 'cancel'],
+    };
+    if (body.track === 'standard') standardSuggestionJob = job;
+    else personalSuggestionJob = job;
+    return route.fulfill({
+      status: 202,
+      contentType: 'application/json',
+      json: { operationID: body.operationID, track: body.track, jobID, replayed: false },
+    });
+  });
+  await page.route('**/v1/tag-library-suggestions?*', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        mediaKind: new URL(route.request().url()).searchParams.get('mediaKind') ?? 'image',
+        maximumPendingCount: 200,
+        personalCentroidAvailable: true,
+        personalAdamWAvailable: true,
+        tags: [
+          {
+            tagID: tagIDs[0],
+            personalEligible: true,
+            personalCentroidMinScore: 0.82,
+            personalAdamWMinScore: 0.86,
+          },
+          {
+            tagID: tagIDs[1],
+            personalEligible: true,
+            personalCentroidMinScore: 0.8,
+            personalAdamWMinScore: 0.85,
+          },
+        ],
+        activities: tagSuggestionActivities,
+      },
+    }),
+  );
+  await page.route('**/v1/tag-library-suggestions/requests', (route) => {
+    const body = route.request().postDataJSON() as {
+      operationID: string;
+      mediaKind: 'image' | 'video';
+      method: 'personalCentroid' | 'personalAdamW';
+      tagID: string;
+    };
+    const activity = {
+      operationID: body.operationID,
+      mediaKind: body.mediaKind,
+      method: body.method,
+      tagID: body.tagID,
+      phase: 'scoring',
+      completedUnitCount: 42,
+      totalUnitCount: 120,
+      aboveThresholdCount: 11,
+      insertedCount: 4,
+      skippedCount: 2,
+      errorCode: null,
+      availableActions: ['cancel'],
+    };
+    tagSuggestionActivities = [activity];
+    return route.fulfill({
+      status: 202,
+      contentType: 'application/json',
+      json: { activity, replayed: false },
+    });
+  });
+  await page.route(/\/v1\/tag-library-suggestions\/requests\/[0-9a-f-]+\/actions$/i, (route) => {
+    const operationID = new URL(route.request().url()).pathname.split('/').at(-2) ?? '';
+    tagSuggestionActivities = tagSuggestionActivities.map((activity) =>
+      activity.operationID === operationID
+        ? { ...activity, phase: 'cancelled', availableActions: [] }
+        : activity,
+    );
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: { activity: tagSuggestionActivities.find((item) => item.operationID === operationID) },
     });
   });
   await page.route('**/v1/tags', (route) =>

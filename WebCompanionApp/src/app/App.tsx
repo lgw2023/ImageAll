@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Archive, WandSparkles } from 'lucide-react';
+import { Archive } from 'lucide-react';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 
 import { SessionGate } from '@/features/session/SessionGate';
@@ -13,6 +13,7 @@ import { StorageRoute } from '@/features/management/StorageRoute';
 import { GalleryOverviewRoute } from '@/features/overview/GalleryOverviewRoute';
 import { ReviewRoute } from '@/features/review/ReviewRoute';
 import { TagLibraryRoute } from '@/features/tags/TagLibraryRoute';
+import { TrainingRoute } from '@/features/training/TrainingRoute';
 
 import { AppErrorBoundary } from './AppErrorBoundary';
 import { AppShell } from './AppShell';
@@ -32,13 +33,6 @@ const queryClient = new QueryClient({
 });
 
 const placeholders = [
-  {
-    path: 'training',
-    eyebrow: '工具',
-    title: '训练',
-    description: '配置个人模型、准备嵌入并跟踪训练活动。',
-    icon: WandSparkles,
-  },
   {
     path: 'slimming',
     eyebrow: '工具',
@@ -71,6 +65,7 @@ export function App() {
                     <Route path="storage" element={<StorageRoute />} />
                     <Route path="activity" element={<ActivityRoute />} />
                     <Route path="settings" element={<SettingsRoute />} />
+                    <Route path="training" element={<TrainingRoute />} />
                     {placeholders.map((route) => (
                       <Route
                         key={route.path}
