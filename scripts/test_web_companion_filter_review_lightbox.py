@@ -2,6 +2,7 @@
 import base64
 import json
 import re
+import time
 from urllib.parse import parse_qs, urlparse
 
 from playwright.sync_api import sync_playwright
@@ -23,6 +24,7 @@ IMAGE_IDS = [
 IMAGE_PAGE_2_IDS = [
     f"10000000-0000-4000-8000-{index:012d}" for index in range(1, 17)
 ]
+GALLERY_SQUARE_ORIGINAL_FALLBACK = [False]
 REVIEW_IDS = [
     "33333333-3333-3333-3333-333333333333",
     "44444444-4444-4444-4444-444444444444",
@@ -85,7 +87,13 @@ def original_thumbnail_svg(asset_id):
         # square fallback into the asset metadata ratio.
         REVIEW_IDS[2]: (512, 512),
     }
-    width, height = dimensions.get(asset_id, (1200, 900))
+    width, height = dimensions.get(
+        asset_id,
+        (512, 512)
+        if GALLERY_SQUARE_ORIGINAL_FALLBACK[0]
+        and asset_id in IMAGE_IDS + IMAGE_PAGE_2_IDS
+        else (1200, 900),
+    )
     return f"""\
 <svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
   <rect width="{width}" height="{height}" fill="#183d4a"/>
@@ -273,6 +281,8 @@ def main():
     review_removal = {"request": None}
     hidden_gallery_asset_ids = set()
     thumbnail_queries = []
+    delay_gallery_original_thumbnails = [False]
+    delayed_gallery_original_requests = []
     workspace_notice_requests = []
     workspace_notice_fail_next = [False]
     workspace_notice_actions = []
@@ -897,6 +907,13 @@ def main():
                 "aspect": query.get("aspect", ["square"])[0],
             })
             if query.get("aspect") == ["original"]:
+                if (
+                    delay_gallery_original_thumbnails[0]
+                    and asset_id in IMAGE_IDS + IMAGE_PAGE_2_IDS
+                    and not delayed_gallery_original_requests
+                ):
+                    delayed_gallery_original_requests.append(asset_id)
+                    time.sleep(0.65)
                 route.fulfill(
                     status=200,
                     content_type="image/svg+xml; charset=utf-8",
@@ -7671,6 +7688,203 @@ def main():
         assert gallery_after_refresh["searchInput"] == ""
         assert private_search not in gallery_after_refresh["history"]
         assert "CAT_0001.JPG" not in gallery_after_refresh["history"]
+
+        # Mac keeps the semantic photo under the user's eye while density,
+        # sidebar, inspector and original-aspect layout changes reflow the main
+        # gallery. Original-aspect Host fallbacks can arrive after the immediate
+        # CSS transition, so deliberately delay those synthetic thumbnails and
+        # prove the same photo remains at the same viewport offset.
+        page.set_viewport_size({"width": 1440, "height": 960})
+        page.evaluate(
+            """() => {
+              setThumbnailAspectMode('square');
+              applyGridDensity(5);
+              setSidebarVisible(true);
+              setInspectorVisible(true);
+            }"""
+        )
+        page.wait_for_timeout(250)
+        gallery_reflow_request_count = len(asset_queries)
+        gallery_reflow_selection = page.evaluate(
+            "() => [...state.selectedAssetIDs].sort()"
+        )
+        gallery_reflow_frame = page.evaluate(
+            """() => {
+              const pane = document.querySelector('#libraryScroll');
+              const card = document.querySelectorAll('#assetGrid > .asset-card')[8];
+              pane.scrollTop = card.offsetTop - 24;
+              document.querySelector('#gridDensityButton').focus({ preventScroll: true });
+              return { requestedAssetID: card.dataset.assetId, scrollTop: pane.scrollTop };
+            }"""
+        )
+        assert gallery_reflow_frame["scrollTop"] > 0
+        gallery_reflow_frame = page.evaluate(
+            """frame => {
+              const pane = document.querySelector('#libraryScroll');
+              const snapshot = captureWorkspacePresentationScroll(
+                document.querySelector('#libraryPane'),
+                pane
+              );
+              if (!snapshot?.target?.closest('[data-asset-id]')) {
+                throw new Error('main gallery did not expose a semantic scroll anchor');
+              }
+              const card = snapshot.target.closest('[data-asset-id]');
+              window.__galleryReflowAnchor = card;
+              return {
+                ...frame,
+                assetID: card.dataset.assetId,
+                offset: card.getBoundingClientRect().top - pane.getBoundingClientRect().top,
+              };
+            }""",
+            gallery_reflow_frame,
+        )
+
+        page.locator("#gridDensityButton").click()
+        page.locator('#gridDensityPopover:not(.hidden) [data-grid-density="8"]').click()
+        page.wait_for_function(
+            "() => getComputedStyle(document.documentElement)"
+            ".getPropertyValue('--asset-min-width').trim() === '620px'"
+        )
+        page.wait_for_function(
+            "expected => Math.abs(window.__galleryReflowAnchor.getBoundingClientRect().top "
+            "- document.querySelector('#libraryScroll').getBoundingClientRect().top "
+            "- expected) <= 2",
+            arg=gallery_reflow_frame["offset"],
+        )
+        page.locator("#gridDensityButton").click()
+        page.locator('#gridDensityPopover:not(.hidden) [data-grid-density="5"]').click()
+        page.wait_for_function(
+            "expected => Math.abs(window.__galleryReflowAnchor.getBoundingClientRect().top "
+            "- document.querySelector('#libraryScroll').getBoundingClientRect().top "
+            "- expected) <= 2",
+            arg=gallery_reflow_frame["offset"],
+        )
+
+        for control_id, expected_visibility in [
+            ("sidebarVisibilityButton", False),
+            ("sidebarVisibilityButton", True),
+            ("inspectorVisibilityButton", False),
+            ("inspectorVisibilityButton", True),
+        ]:
+            visibility_capture = page.evaluate(
+                """() => {
+                  const pane = document.querySelector('#libraryScroll');
+                  const anchor = captureWorkspacePresentationScroll(
+                    document.querySelector('#libraryPane'),
+                    pane
+                  );
+                  const card = anchor?.target?.closest('[data-asset-id]');
+                  window.__galleryVisibilityAnchor = card;
+                  return {
+                    assetID: card?.dataset.assetId || null,
+                    offset: card
+                      ? card.getBoundingClientRect().top - pane.getBoundingClientRect().top
+                      : null,
+                    scrollTop: pane.scrollTop,
+                  };
+                }"""
+            )
+            page.locator(f"#{control_id}").click()
+            state_key = "sidebarVisible" if control_id.startswith("sidebar") else "inspectorVisible"
+            page.wait_for_function(
+                "([key, expected]) => state.layout[key] === expected",
+                arg=[state_key, expected_visibility],
+            )
+            page.wait_for_timeout(400)
+            visibility_reflow_after = page.evaluate(
+                """() => {
+                  const pane = document.querySelector('#libraryScroll');
+                  return {
+                    offset: window.__galleryVisibilityAnchor.getBoundingClientRect().top
+                      - pane.getBoundingClientRect().top,
+                    scrollTop: pane.scrollTop,
+                    maximumScroll: Math.max(0, pane.scrollHeight - pane.clientHeight),
+                  };
+                }"""
+            )
+            visibility_reflow_clamped = (
+                visibility_reflow_after["scrollTop"] <= 1
+                and 0 <= visibility_reflow_after["offset"] <= visibility_capture["offset"]
+            ) or (
+                abs(
+                    visibility_reflow_after["scrollTop"]
+                    - visibility_reflow_after["maximumScroll"]
+                ) <= 1
+                and visibility_reflow_after["offset"] >= visibility_capture["offset"]
+            )
+            assert (
+                abs(visibility_reflow_after["offset"] - visibility_capture["offset"]) <= 2
+                or visibility_reflow_clamped
+            ), {
+                "control": control_id,
+                "visible": expected_visibility,
+                "captured": visibility_capture,
+                "after": visibility_reflow_after,
+            }
+
+        gallery_reflow_frame = page.evaluate(
+            """frame => {
+              const pane = document.querySelector('#libraryScroll');
+              const snapshot = captureWorkspacePresentationScroll(
+                document.querySelector('#libraryPane'),
+                pane
+              );
+              const card = snapshot.target.closest('[data-asset-id]');
+              window.__galleryReflowAnchor = card;
+              return {
+                ...frame,
+                assetID: card.dataset.assetId,
+                offset: card.getBoundingClientRect().top - pane.getBoundingClientRect().top,
+              };
+            }""",
+            gallery_reflow_frame,
+        )
+        page.locator("#thumbnailAspectButton").focus()
+        GALLERY_SQUARE_ORIGINAL_FALLBACK[0] = True
+        delay_gallery_original_thumbnails[0] = True
+        page.locator("#thumbnailAspectButton").click()
+        page.wait_for_function(
+            "() => { const image = window.__galleryReflowAnchor.querySelector('img'); "
+            "return image?.complete && image.naturalWidth === 512; }",
+            timeout=10000,
+        )
+        page.wait_for_timeout(100)
+        gallery_async_aspect_frame = page.evaluate(
+            """() => {
+              const pane = document.querySelector('#libraryScroll');
+              const card = window.__galleryReflowAnchor;
+              const frame = {
+                assetID: card.dataset.assetId,
+                offset: card.getBoundingClientRect().top - pane.getBoundingClientRect().top,
+                focus: document.activeElement?.id,
+                selection: [...state.selectedAssetIDs].sort(),
+                route: visibleWorkspaceRoute(),
+                squareCount: [...document.querySelectorAll('#assetGrid .asset-card img')]
+                  .filter(image => image.complete && image.naturalWidth === 512).length,
+              };
+              return frame;
+            }"""
+        )
+        assert abs(
+            gallery_async_aspect_frame["offset"] - gallery_reflow_frame["offset"]
+        ) <= 2, {
+            "before": gallery_reflow_frame,
+            "after": gallery_async_aspect_frame,
+        }
+        assert gallery_async_aspect_frame["assetID"] == gallery_reflow_frame["assetID"]
+        assert gallery_async_aspect_frame["focus"] == "thumbnailAspectButton"
+        assert gallery_async_aspect_frame["selection"] == gallery_reflow_selection
+        assert gallery_async_aspect_frame["route"] == "gallery"
+        assert gallery_async_aspect_frame["squareCount"] > 0
+        assert delayed_gallery_original_requests
+        assert len(asset_queries) == gallery_reflow_request_count
+        page.screenshot(
+            path="/tmp/imageall-gallery-layout-reflow-anchor.png",
+            full_page=True,
+        )
+        GALLERY_SQUARE_ORIGINAL_FALLBACK[0] = False
+        delay_gallery_original_thumbnails[0] = False
+        page.evaluate("() => setThumbnailAspectMode('square')")
 
         # Deleting the loaded page tail in the main-gallery lightbox must keep
         # moving forward into the next keyset page, matching the Mac single-photo

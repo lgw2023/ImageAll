@@ -2974,6 +2974,13 @@ final class RemoteHTTPServerTests: XCTestCase {
             )
         )
         XCTAssertTrue(script.contains("restoreWorkspaceLayoutReflowScrollAnchors(session.reflowAnchors)"))
+        XCTAssertTrue(script.contains("const semanticScrollAnchor = aspectWorkspace && scrollContainer"))
+        XCTAssertTrue(
+            script.contains(
+                "{ workspace: aspectWorkspace, scrollAnchor: semanticScrollAnchor }"
+            )
+        )
+        XCTAssertTrue(script.contains("restoreWorkspaceLayoutReflowScrollAnchors(["))
         XCTAssertEqual(
             script.components(
                 separatedBy: "const reflowAnchors = captureWorkspaceLayoutReflowScrollAnchors();"

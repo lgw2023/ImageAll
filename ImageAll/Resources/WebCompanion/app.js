@@ -17253,6 +17253,16 @@ function syncThumbnailRenderedAspect(image) {
       : slimmingMemberCard
         ? slimmingMemberScrollContainer()
         : null;
+  const aspectWorkspace = assetCard
+    ? elements.libraryPane
+    : reviewCard
+      ? elements.reviewWorkspace
+      : slimmingMemberCard
+        ? elements.slimmingWorkspace
+        : null;
+  const semanticScrollAnchor = aspectWorkspace && scrollContainer
+    ? captureWorkspacePresentationScroll(aspectWorkspace, scrollContainer)
+    : null;
   const scrollTop = scrollContainer?.scrollTop ?? null;
   if (assetCard) assetCard.style.setProperty("--asset-aspect", aspect);
   if (reviewCard) reviewCard.style.setProperty("--review-card-aspect", aspect);
@@ -17262,11 +17272,17 @@ function syncThumbnailRenderedAspect(image) {
   const changedCard = assetCard || reviewCard || slimmingMemberCard;
   if (scrollContainer && changedCard && scrollTop != null) {
     // Resolving a lazily loaded original-aspect request can change a row from
-    // its metadata ratio to a square Host fallback. Force that reflow now and
-    // restore the user's exact scroll position so browser scroll anchoring does
-    // not move the workspace while thumbnails arrive.
+    // its metadata ratio to a square Host fallback. Force that reflow now, then
+    // restore the visible semantic item rather than the raw scrollTop: cards in
+    // earlier rows can arrive later and change the anchor's document position.
     void changedCard.offsetHeight;
-    scrollContainer.scrollTop = scrollTop;
+    if (aspectWorkspace && semanticScrollAnchor) {
+      restoreWorkspaceLayoutReflowScrollAnchors([
+        { workspace: aspectWorkspace, scrollAnchor: semanticScrollAnchor },
+      ], true);
+    } else {
+      scrollContainer.scrollTop = scrollTop;
+    }
   }
 }
 
