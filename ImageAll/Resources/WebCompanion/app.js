@@ -176,6 +176,7 @@ const elements = {
   generalSettingsLoading: $("#generalSettingsLoading"),
   generalSettingsContent: $("#generalSettingsContent"),
   generalSettingsError: $("#generalSettingsError"),
+  generalSettingsSaveStatus: $("#generalSettingsSaveStatus"),
   toolbarDisplayModeControl: $("#toolbarDisplayModeControl"),
   generalSettingsModelToggle: $("#generalSettingsModelToggle"),
   generalSettingsModelState: $("#generalSettingsModelState"),
@@ -1088,6 +1089,8 @@ const state = {
     snapshot: null,
     loading: false,
     submitting: false,
+    activeUpdate: null,
+    updateQueue: [],
     requestGeneration: 0,
     returnFocus: null,
     thresholdReturnFocus: null,
@@ -13281,6 +13284,25 @@ function generalSettingsModelStateText(model) {
   }[model?.state] || "—";
 }
 
+function pendingGeneralSettingsUpdates() {
+  const manager = state.generalSettings;
+  return [manager.activeUpdate, ...manager.updateQueue].filter(Boolean);
+}
+
+function pendingGeneralSettingsValue(field, fallback) {
+  let value = fallback;
+  for (const entry of pendingGeneralSettingsUpdates()) {
+    if (Object.prototype.hasOwnProperty.call(entry.patch, field)) {
+      value = entry.patch[field];
+    }
+  }
+  return value;
+}
+
+function pendingGeneralSettingsCount() {
+  return pendingGeneralSettingsUpdates().length;
+}
+
 function applyToolbarDisplayMode(mode) {
   const normalized = mode === "iconAndTitle" ? "iconAndTitle" : "iconOnly";
   elements.appView.dataset.toolbarDisplayMode = normalized;
@@ -13786,6 +13808,10 @@ function renderGeneralSettings() {
   renderReviewSuggestionLimit();
   syncReviewThresholdControlAvailability();
   elements.generalSettingsDialog.setAttribute("aria-busy", String(manager.submitting));
+  const pendingCount = pendingGeneralSettingsCount();
+  elements.generalSettingsSaveStatus.textContent = pendingCount > 0
+    ? `正在保存到 Mac${pendingCount > 1 ? ` · ${pendingCount} 项` : ""}`
+    : "";
   elements.generalSettingsLoading.classList.toggle("hidden", Boolean(snapshot) || !manager.loading);
   elements.generalSettingsContent.classList.toggle("hidden", !snapshot);
   for (const button of elements.toolbarDisplayModeControl.querySelectorAll("button")) {
@@ -13793,14 +13819,30 @@ function renderGeneralSettings() {
   }
   elements.generalSettingsModelToggle.disabled = unavailable;
   elements.generalSettingsPrewarmToggle.disabled = unavailable;
-  renderSuggestionThresholdDefaults(unavailable);
+  renderSuggestionThresholdDefaults(unavailable || manager.submitting);
   if (!snapshot) {
     renderReviewLocalModelStatus();
     return;
   }
 
-  applyToolbarDisplayMode(snapshot.toolbarDisplayMode);
-  const model = snapshot.localModel;
+  applyToolbarDisplayMode(pendingGeneralSettingsValue(
+    "toolbarDisplayMode",
+    snapshot.toolbarDisplayMode
+  ));
+  const pendingModelEnabled = pendingGeneralSettingsValue(
+    "modelEnabled",
+    snapshot.localModel.isEnabled
+  );
+  const model = pendingModelEnabled === snapshot.localModel.isEnabled
+    ? snapshot.localModel
+    : {
+      ...snapshot.localModel,
+      isEnabled: pendingModelEnabled,
+      state: pendingModelEnabled ? "validating" : "disabled",
+      detail: pendingModelEnabled
+        ? "正在请 Mac 校验模型；其他设置仍可继续修改。"
+        : "模型不会初始化或运行。",
+    };
   elements.generalSettingsModelToggle.setAttribute("aria-checked", String(model.isEnabled));
   elements.generalSettingsModelState.textContent = generalSettingsModelStateText(model);
   elements.generalSettingsModelName.textContent = model.modelName;
@@ -13808,7 +13850,10 @@ function renderGeneralSettings() {
   elements.generalSettingsModelDetail.textContent = model.detail;
   elements.generalSettingsPrewarmToggle.setAttribute(
     "aria-checked",
-    String(snapshot.idleThumbnailPrewarmEnabled)
+    String(pendingGeneralSettingsValue(
+      "idleThumbnailPrewarmEnabled",
+      snapshot.idleThumbnailPrewarmEnabled
+    ))
   );
   const minutes = Math.max(1, Math.round(snapshot.idleThresholdSeconds / 60));
   elements.generalSettingsPrewarmDetail.textContent =
@@ -13844,45 +13889,81 @@ async function loadGeneralSettings({ quiet = false } = {}) {
   }
 }
 
-async function submitGeneralSettingsPatch(patch) {
+function submitGeneralSettingsPatch(patch) {
   const manager = state.generalSettings;
-  if (!state.online || manager.loading || manager.submitting || !manager.snapshot) return false;
+  if (!state.online || manager.loading || !manager.snapshot) return Promise.resolve(false);
+  const lastPending = manager.updateQueue.at(-1) || manager.activeUpdate;
+  if (lastPending && JSON.stringify(lastPending.patch) === JSON.stringify(patch)) {
+    return lastPending.result;
+  }
   manager.pendingDefaultFocus = suggestionDefaultFocusKey(document.activeElement);
   manager.pendingThresholdFocus = thresholdFocusSelector(document.activeElement);
+  const suggestionMutation = patch.suggestionThresholdMutation;
+  if (!manager.pendingDefaultFocus
+    && suggestionMutation?.action === "setDefault") {
+    manager.pendingDefaultFocus = ["input", suggestionMutation.method];
+  }
+  if (!manager.pendingThresholdFocus
+    && suggestionMutation?.tagID
+    && suggestionMutation?.method) {
+    manager.pendingThresholdFocus = [
+      "input",
+      suggestionMutation.tagID,
+      suggestionMutation.method,
+    ];
+  }
   if (elements.reviewOverviewGrid.contains(document.activeElement)) {
     state.review.pendingThresholdFocus = manager.pendingThresholdFocus;
   }
+  let resolveResult;
+  const result = new Promise((resolve) => { resolveResult = resolve; });
+  manager.updateQueue.push({ patch, resolve: resolveResult, result });
+  renderGeneralSettings();
+  void processGeneralSettingsUpdateQueue();
+  return result;
+}
+
+async function processGeneralSettingsUpdateQueue() {
+  const manager = state.generalSettings;
+  if (manager.submitting || manager.updateQueue.length === 0) return;
   manager.submitting = true;
   elements.generalSettingsError.classList.add("hidden");
   elements.suggestionThresholdError.classList.add("hidden");
   renderGeneralSettings();
-  let succeeded = false;
-  try {
-    const response = await api("/v1/settings/general", {
-      method: "PUT",
-      body: JSON.stringify({ operationID: crypto.randomUUID(), ...patch }),
-    });
-    manager.snapshot = response.settings;
-    applyToolbarDisplayMode(response.settings.toolbarDisplayMode);
-    succeeded = true;
-  } catch (error) {
-    const message = error.message || "Mac 未能保存通用设置";
-    elements.generalSettingsError.textContent = message;
-    elements.generalSettingsError.classList.remove("hidden");
-    if (elements.suggestionThresholdDialog.open) {
-      elements.suggestionThresholdError.textContent = message;
-      elements.suggestionThresholdError.classList.remove("hidden");
-    }
-  } finally {
-    manager.submitting = false;
+  while (manager.updateQueue.length > 0) {
+    const entry = manager.updateQueue.shift();
+    manager.activeUpdate = entry;
     renderGeneralSettings();
-    if (manager.pendingDefaultFocus) {
-      restoreOverlayFocus(suggestionDefaultFocusTarget(manager.pendingDefaultFocus));
+    let succeeded = false;
+    try {
+      const response = await api("/v1/settings/general", {
+        method: "PUT",
+        body: JSON.stringify({ operationID: crypto.randomUUID(), ...entry.patch }),
+      });
+      manager.snapshot = response.settings;
+      succeeded = true;
+    } catch (error) {
+      const message = error.message || "Mac 未能保存通用设置";
+      elements.generalSettingsError.textContent = message;
+      elements.generalSettingsError.classList.remove("hidden");
+      if (elements.suggestionThresholdDialog.open) {
+        elements.suggestionThresholdError.textContent = message;
+        elements.suggestionThresholdError.classList.remove("hidden");
+      }
+    } finally {
+      manager.activeUpdate = null;
+      entry.resolve(succeeded);
+      renderGeneralSettings();
     }
-    manager.pendingDefaultFocus = null;
-    manager.pendingThresholdFocus = null;
   }
-  return succeeded;
+  manager.submitting = false;
+  renderGeneralSettings();
+  const defaultFocusTarget = suggestionDefaultFocusTarget(manager.pendingDefaultFocus);
+  if (defaultFocusTarget && !defaultFocusTarget.disabled) {
+    restoreOverlayFocus(defaultFocusTarget);
+  }
+  manager.pendingDefaultFocus = null;
+  manager.pendingThresholdFocus = null;
 }
 
 function commitSuggestionDefault(input) {

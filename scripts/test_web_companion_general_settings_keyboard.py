@@ -37,6 +37,8 @@ def main():
     source_requests = []
     source_management_reads = [0]
     settings_reads = [0]
+    hold_next_model_update = [False]
+    held_model_updates = []
     catalog_jobs = []
     catalog_job_fetches = [0]
     asset_requests = []
@@ -255,6 +257,10 @@ def main():
                 return
             payload = route.request.post_data_json
             updates.append(payload)
+            if hold_next_model_update[0] and payload.get("modelEnabled") is True:
+                hold_next_model_update[0] = False
+                held_model_updates.append((route, payload))
+                return
             if "toolbarDisplayMode" in payload:
                 settings["toolbarDisplayMode"] = payload["toolbarDisplayMode"]
             if "idleThumbnailPrewarmEnabled" in payload:
@@ -1479,18 +1485,46 @@ def main():
             "() => ({ id: document.activeElement?.id, text: document.activeElement?.textContent, mode: document.activeElement?.dataset?.toolbarDisplayMode })"
         )
         assert active["id"] == "generalSettingsModelToggle", active
+        hold_next_model_update[0] = True
         page.keyboard.press("Enter")
+        page.wait_for_function("() => state.generalSettings.submitting === true")
         page.wait_for_function(
-            "() => document.querySelector('#generalSettingsModelState').textContent === '模型已就绪'"
+            "() => document.querySelector('#generalSettingsModelToggle')"
+            ".getAttribute('aria-checked') === 'true'"
         )
-        assert updates[-1]["modelEnabled"] is True
+        for _ in range(20):
+            if held_model_updates:
+                break
+            page.wait_for_timeout(25)
+        assert len(held_model_updates) == 1
 
         page.keyboard.press("ArrowDown")
         assert page.evaluate("() => document.activeElement?.id") == "generalSettingsPrewarmToggle"
         page.keyboard.press("Enter")
         page.wait_for_function(
+            "() => document.querySelector('#generalSettingsPrewarmToggle')"
+            ".getAttribute('aria-checked') === 'false'"
+        )
+        assert len(updates) == display_mode_update_count + 2
+
+        held_route, held_payload = held_model_updates.pop()
+        settings["localModel"] = {
+            **settings["localModel"],
+            "isEnabled": True,
+            "state": "ready",
+            "detail": "模型已在 App 内完成校验并可供本地推理。",
+        }
+        fulfill_json(held_route, {"settings": settings, "replayed": False})
+        page.wait_for_function(
+            "() => document.querySelector('#generalSettingsModelState').textContent === '模型已就绪'"
+        )
+        page.wait_for_function(
             "() => document.querySelector('#generalSettingsPrewarmToggle').getAttribute('aria-checked') === 'false'"
         )
+        page.wait_for_function(
+            "() => state.generalSettings.submitting === false"
+        )
+        assert updates[-2]["modelEnabled"] is True
         assert updates[-1]["idleThumbnailPrewarmEnabled"] is False
 
         default_input = page.locator('[data-suggestion-default="featureKnn"]')
@@ -1517,12 +1551,15 @@ def main():
         page.wait_for_function(
             "() => document.querySelector('[data-suggestion-default=\"featureKnn\"]').value === '0.15'"
         )
+        page.wait_for_function("() => state.generalSettings.submitting === false")
         assert updates[-1]["suggestionThresholdMutation"] == {
             "action": "setDefault",
             "method": "featureKnn",
             "minScore": 0.15,
         }
-        assert page.evaluate("() => document.activeElement?.dataset.suggestionDefault") == "featureKnn"
+        page.wait_for_function(
+            "() => document.activeElement?.dataset.suggestionDefault === 'featureKnn'"
+        )
 
         page.locator(
             '[data-suggestion-default-step="0.05"]'
@@ -1531,6 +1568,7 @@ def main():
         page.wait_for_function(
             "() => document.querySelector('[data-suggestion-default=\"featureKnn\"]').value === '0.20'"
         )
+        page.wait_for_function("() => state.generalSettings.submitting === false")
         assert updates[-1]["suggestionThresholdMutation"] == {
             "action": "setDefault",
             "method": "featureKnn",
@@ -1555,6 +1593,7 @@ def main():
         page.wait_for_function(
             "() => document.querySelector('[data-suggestion-default=\"featureKnn\"]').value === '0.15'"
         )
+        page.wait_for_function("() => state.generalSettings.submitting === false")
         assert updates[-1]["suggestionThresholdMutation"] == {
             "action": "setDefault",
             "method": "featureKnn",

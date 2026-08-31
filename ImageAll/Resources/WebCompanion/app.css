@@ -4190,6 +4190,13 @@ img.thumbnail-load-failed {
   line-height: 1.5;
 }
 
+.general-settings-header .general-settings-save-status {
+  min-height: 16px;
+  margin-top: 5px;
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .general-settings-content {
   overflow: auto;
 }
