@@ -4840,12 +4840,145 @@ function captureWorkspaceLayoutReflowScrollAnchors() {
   });
 }
 
+let workspaceLayoutReflowUserInputGeneration = 0;
+const workspaceLayoutReflowNativeAnchorSuspensions = new WeakMap();
+const workspaceLayoutReflowActiveScrollAnchors = new WeakMap();
+const WORKSPACE_LAYOUT_REFLOW_USER_WINDOW_MS = 360;
+
+function suspendWorkspaceLayoutReflowNativeAnchor(scrollOwner) {
+  const existing = workspaceLayoutReflowNativeAnchorSuspensions.get(scrollOwner);
+  const previousInlineValue = existing?.previousInlineValue
+    ?? scrollOwner.style.overflowAnchor;
+  if (existing?.timeoutID) clearTimeout(existing.timeoutID);
+  scrollOwner.style.overflowAnchor = "none";
+  const timeoutID = setTimeout(() => {
+    const current = workspaceLayoutReflowNativeAnchorSuspensions.get(scrollOwner);
+    if (current?.timeoutID !== timeoutID) return;
+    if (previousInlineValue) scrollOwner.style.overflowAnchor = previousInlineValue;
+    else scrollOwner.style.removeProperty("overflow-anchor");
+    workspaceLayoutReflowNativeAnchorSuspensions.delete(scrollOwner);
+  }, WORKSPACE_LAYOUT_REFLOW_USER_WINDOW_MS);
+  workspaceLayoutReflowNativeAnchorSuspensions.set(scrollOwner, {
+    previousInlineValue,
+    timeoutID,
+  });
+}
+
+function clearWorkspaceLayoutReflowActiveScrollAnchor(scrollOwner, session = null) {
+  const current = workspaceLayoutReflowActiveScrollAnchors.get(scrollOwner);
+  if (!current || (session && current !== session)) return;
+  if (current.timeoutID) clearTimeout(current.timeoutID);
+  workspaceLayoutReflowActiveScrollAnchors.delete(scrollOwner);
+}
+
+function scheduleWorkspaceLayoutReflowActiveScrollAnchorExpiry(scrollOwner, session) {
+  if (session.timeoutID) clearTimeout(session.timeoutID);
+  session.expiresAt = performance.now() + WORKSPACE_LAYOUT_REFLOW_USER_WINDOW_MS;
+  session.timeoutID = setTimeout(() => {
+    clearWorkspaceLayoutReflowActiveScrollAnchor(scrollOwner, session);
+  }, WORKSPACE_LAYOUT_REFLOW_USER_WINDOW_MS);
+}
+
+function activateWorkspaceLayoutReflowScrollAnchor(scrollOwner, workspace, scrollAnchor) {
+  const existing = workspaceLayoutReflowActiveScrollAnchors.get(scrollOwner);
+  if (existing?.scrollAnchor === scrollAnchor) {
+    scheduleWorkspaceLayoutReflowActiveScrollAnchorExpiry(scrollOwner, existing);
+    return existing;
+  }
+  clearWorkspaceLayoutReflowActiveScrollAnchor(scrollOwner);
+  const session = {
+    workspace,
+    scrollAnchor,
+    expiresAt: 0,
+    timeoutID: null,
+    wheelFramePending: false,
+  };
+  workspaceLayoutReflowActiveScrollAnchors.set(scrollOwner, session);
+  scheduleWorkspaceLayoutReflowActiveScrollAnchorExpiry(scrollOwner, session);
+  return session;
+}
+
+function continueWorkspaceLayoutReflowAfterWheel(scrollOwner, session) {
+  if (workspaceLayoutReflowActiveScrollAnchors.get(scrollOwner) !== session) return;
+  session.wheelFramePending = false;
+  restoreWorkspaceLayoutReflowScrollAnchors([
+    { workspace: session.workspace, scrollAnchor: session.scrollAnchor },
+  ], true);
+  if (performance.now() >= session.expiresAt) {
+    clearWorkspaceLayoutReflowActiveScrollAnchor(scrollOwner, session);
+    return;
+  }
+  session.wheelFramePending = true;
+  requestAnimationFrame(() => {
+    continueWorkspaceLayoutReflowAfterWheel(scrollOwner, session);
+  });
+}
+
+function rememberWorkspaceLayoutReflowUserInput(event) {
+  const target = event.target;
+  if (!(target instanceof Node)) return;
+  const reflowSurface = workspaceLayoutReflowScrollSurfaces().find(
+    ([, scrollOwner]) => scrollOwner instanceof HTMLElement
+      && (scrollOwner === target || scrollOwner.contains(target))
+  );
+  const scrollOwner = reflowSurface?.[1];
+  if (!(scrollOwner instanceof HTMLElement)) return;
+  const activeSession = workspaceLayoutReflowActiveScrollAnchors.get(scrollOwner);
+  if (event instanceof WheelEvent && activeSession) {
+    suspendWorkspaceLayoutReflowNativeAnchor(scrollOwner);
+    const multiplier = event.deltaMode === WheelEvent.DOM_DELTA_LINE
+      ? 16
+      : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+        ? scrollOwner.clientHeight
+        : 1;
+    const deltaY = Number(event.deltaY) * multiplier;
+    if (Number.isFinite(deltaY) && deltaY !== 0) {
+      activeSession.scrollAnchor.scrollOffset -= deltaY;
+      scheduleWorkspaceLayoutReflowActiveScrollAnchorExpiry(scrollOwner, activeSession);
+      if (!activeSession.wheelFramePending) {
+        activeSession.wheelFramePending = true;
+        requestAnimationFrame(() => {
+          continueWorkspaceLayoutReflowAfterWheel(scrollOwner, activeSession);
+        });
+      }
+      return;
+    }
+  }
+  if (event.type === "wheel" || event.type === "touchstart") {
+    suspendWorkspaceLayoutReflowNativeAnchor(scrollOwner);
+  }
+  workspaceLayoutReflowUserInputGeneration += 1;
+  clearWorkspaceLayoutReflowActiveScrollAnchor(scrollOwner);
+}
+
+function clearWorkspaceLayoutReflowActiveScrollAnchors(anchors) {
+  for (const { workspace, scrollAnchor } of anchors || []) {
+    const scrollOwner = workspaceLayoutReflowScrollSurfaces().find(
+      ([candidateWorkspace, candidateScrollOwner]) => candidateWorkspace === workspace
+        && candidateScrollOwner instanceof HTMLElement
+        && candidateScrollOwner.contains(scrollAnchor?.target)
+    )?.[1] || workspacePresentationScrollOwner(workspace, scrollAnchor?.target);
+    const session = scrollOwner
+      ? workspaceLayoutReflowActiveScrollAnchors.get(scrollOwner)
+      : null;
+    if (scrollOwner && session?.scrollAnchor === scrollAnchor) {
+      clearWorkspaceLayoutReflowActiveScrollAnchor(scrollOwner, session);
+    }
+  }
+}
+
 function restoreWorkspaceLayoutReflowScrollAnchors(
   anchors,
   settle = false,
   frame = 0,
-  previousLayoutOffsets = null
+  previousLayoutOffsets = null,
+  userInputGeneration = workspaceLayoutReflowUserInputGeneration
 ) {
+  if (!settle && frame > 0
+    && userInputGeneration !== workspaceLayoutReflowUserInputGeneration) {
+    clearWorkspaceLayoutReflowActiveScrollAnchors(anchors);
+    return;
+  }
   const layoutOffsets = [];
   let geometryChanged = false;
   for (const [anchorIndex, { workspace, scrollAnchor }] of (anchors || []).entries()) {
@@ -4853,6 +4986,9 @@ function restoreWorkspaceLayoutReflowScrollAnchors(
       || !Number.isFinite(scrollAnchor.scrollOffset)) continue;
     const scrollOwner = workspacePresentationScrollOwner(workspace, scrollAnchor.target);
     if (!scrollOwner) continue;
+    if (!settle && frame === 0) {
+      activateWorkspaceLayoutReflowScrollAnchor(scrollOwner, workspace, scrollAnchor);
+    }
     const currentOffset = scrollAnchor.target.getBoundingClientRect().top
       - scrollOwner.getBoundingClientRect().top;
     const layoutOffset = currentOffset + scrollOwner.scrollTop;
@@ -4862,13 +4998,16 @@ function restoreWorkspaceLayoutReflowScrollAnchors(
       && Math.abs(layoutOffset - previousLayoutOffset) > 0.5) geometryChanged = true;
     scrollOwner.scrollTop += currentOffset - scrollAnchor.scrollOffset;
   }
-  if (!settle && anchors?.length && frame < 18 && (frame < 2 || geometryChanged)) {
+  const shouldContinue = !settle && anchors?.length
+    && frame < 18 && (frame < 2 || geometryChanged);
+  if (shouldContinue) {
     requestAnimationFrame(() => {
       restoreWorkspaceLayoutReflowScrollAnchors(
         anchors,
         false,
         frame + 1,
-        layoutOffsets
+        layoutOffsets,
+        userInputGeneration
       );
     });
   }
@@ -45885,6 +46024,15 @@ function setupSidebarReordering() {
 function bindEvents() {
   bindWorkspaceInteractionDeferral();
   bindPersistentHelp();
+  document.addEventListener("wheel", rememberWorkspaceLayoutReflowUserInput, {
+    capture: true,
+    passive: true,
+  });
+  document.addEventListener("touchstart", rememberWorkspaceLayoutReflowUserInput, {
+    capture: true,
+    passive: true,
+  });
+  document.addEventListener("pointerdown", rememberWorkspaceLayoutReflowUserInput, true);
   document.addEventListener("focusin", rememberActiveWorkspacePresentationFocus);
   document.addEventListener("scroll", rememberActiveWorkspacePresentationFocus, true);
   document.addEventListener("scroll", rememberWorkspacePresentationScroll, true);

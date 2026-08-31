@@ -7822,14 +7822,78 @@ def main():
                 "after": visibility_reflow_after,
             }
 
+        page.locator("#gridDensityButton").click()
+        page.locator('#gridDensityPopover:not(.hidden) [data-grid-density="8"]').click()
+        page.wait_for_function(
+            "() => getComputedStyle(document.documentElement)"
+            ".getPropertyValue('--asset-min-width').trim() === '620px'"
+        )
+        gallery_user_scroll_frame = page.evaluate(
+            """() => {
+              const pane = document.querySelector('#libraryScroll');
+              const card = document.querySelectorAll('#assetGrid > .asset-card')[8];
+              pane.scrollTop = card.offsetTop - 24;
+              window.__galleryUserScrollAnchor = card;
+              return {
+                assetID: card.dataset.assetId,
+                offset: card.getBoundingClientRect().top - pane.getBoundingClientRect().top,
+                scrollTop: pane.scrollTop,
+              };
+            }"""
+        )
+        assert gallery_user_scroll_frame["scrollTop"] > 0
+        page.locator("#inspectorVisibilityButton").click()
+        page.wait_for_function("() => state.layout.inspectorVisible === false")
+        gallery_scroll_bounds = page.locator("#libraryScroll").bounding_box()
+        assert gallery_scroll_bounds is not None
+        page.mouse.move(
+            gallery_scroll_bounds["x"] + gallery_scroll_bounds["width"] / 2,
+            gallery_scroll_bounds["y"] + gallery_scroll_bounds["height"] / 2,
+        )
+        page.mouse.wheel(0, 480)
+        page.wait_for_timeout(400)
+        gallery_user_scroll_after = page.evaluate(
+            """() => {
+              const pane = document.querySelector('#libraryScroll');
+              const card = window.__galleryUserScrollAnchor;
+              return {
+                assetID: card.dataset.assetId,
+                offset: card.getBoundingClientRect().top - pane.getBoundingClientRect().top,
+                scrollTop: pane.scrollTop,
+                focus: document.activeElement?.id,
+                selection: [...state.selectedAssetIDs].sort(),
+                nativeAnchor: pane.style.overflowAnchor,
+                activeRestore: workspaceLayoutReflowActiveScrollAnchors.has(pane),
+              };
+            }"""
+        )
+        assert gallery_user_scroll_after["assetID"] == gallery_user_scroll_frame["assetID"]
+        assert gallery_user_scroll_after["offset"] < gallery_user_scroll_frame["offset"] - 120, {
+            "before": gallery_user_scroll_frame,
+            "after": gallery_user_scroll_after,
+        }
+        assert gallery_user_scroll_after["focus"] == "inspectorVisibilityButton"
+        assert gallery_user_scroll_after["selection"] == gallery_reflow_selection
+        assert gallery_user_scroll_after["nativeAnchor"] == ""
+        assert gallery_user_scroll_after["activeRestore"] is False
+        assert len(asset_queries) == gallery_reflow_request_count
+        page.screenshot(
+            path="/tmp/imageall-gallery-user-scroll-wins.png",
+            full_page=True,
+        )
+        page.evaluate(
+            """() => {
+              setInspectorVisible(true);
+              applyGridDensity(5);
+            }"""
+        )
+        page.wait_for_timeout(400)
+
         gallery_reflow_frame = page.evaluate(
             """frame => {
               const pane = document.querySelector('#libraryScroll');
-              const snapshot = captureWorkspacePresentationScroll(
-                document.querySelector('#libraryPane'),
-                pane
-              );
-              const card = snapshot.target.closest('[data-asset-id]');
+              const card = document.querySelectorAll('#assetGrid > .asset-card')[8];
+              pane.scrollTop = card.offsetTop - 24;
               window.__galleryReflowAnchor = card;
               return {
                 ...frame,
@@ -7840,6 +7904,11 @@ def main():
             gallery_reflow_frame,
         )
         page.locator("#thumbnailAspectButton").focus()
+        page.evaluate(
+            """() => {
+              for (const asset of state.assets) asset.contentRevision += 1000;
+            }"""
+        )
         GALLERY_SQUARE_ORIGINAL_FALLBACK[0] = True
         delay_gallery_original_thumbnails[0] = True
         page.locator("#thumbnailAspectButton").click()

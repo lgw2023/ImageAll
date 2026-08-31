@@ -2975,6 +2975,21 @@ final class RemoteHTTPServerTests: XCTestCase {
         )
         XCTAssertTrue(script.contains("restoreWorkspaceLayoutReflowScrollAnchors(session.reflowAnchors)"))
         XCTAssertTrue(script.contains("const semanticScrollAnchor = aspectWorkspace && scrollContainer"))
+        XCTAssertTrue(script.contains("workspaceLayoutReflowUserInputGeneration"))
+        XCTAssertTrue(script.contains("workspaceLayoutReflowNativeAnchorSuspensions"))
+        XCTAssertTrue(script.contains("workspaceLayoutReflowActiveScrollAnchors"))
+        XCTAssertTrue(script.contains("activeSession.scrollAnchor.scrollOffset -= deltaY"))
+        XCTAssertTrue(script.contains("function continueWorkspaceLayoutReflowAfterWheel"))
+        XCTAssertTrue(
+            script.contains(
+                "document.addEventListener(\"wheel\", rememberWorkspaceLayoutReflowUserInput"
+            )
+        )
+        XCTAssertTrue(
+            script.contains(
+                "document.addEventListener(\"touchstart\", rememberWorkspaceLayoutReflowUserInput"
+            )
+        )
         XCTAssertTrue(
             script.contains(
                 "{ workspace: aspectWorkspace, scrollAnchor: semanticScrollAnchor }"
