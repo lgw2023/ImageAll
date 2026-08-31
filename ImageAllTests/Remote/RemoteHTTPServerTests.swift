@@ -4360,6 +4360,12 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(script.contains("function reconcileReviewOverviewCard("))
         XCTAssertTrue(script.contains("function syncReviewOverviewGroupToggle("))
         XCTAssertTrue(script.contains("function toggleReviewOverviewGroup("))
+        XCTAssertTrue(script.contains("function syncReviewOverviewCardTabStops("))
+        XCTAssertTrue(script.contains("function moveReviewOverviewCardFocus(event)"))
+        XCTAssertTrue(script.contains("state.review.overviewFocusTagID"))
+        XCTAssertTrue(script.contains("if (moveReviewOverviewCardFocus(event)) return;"))
+        XCTAssertTrue(script.contains("button.setAttribute(\"aria-posinset\""))
+        XCTAssertTrue(script.contains("button.setAttribute(\"aria-setsize\""))
         XCTAssertTrue(script.contains("function focusReviewSourceFilterButton("))
         XCTAssertTrue(script.contains("function moveReviewSourceFilterFocus(event)"))
         XCTAssertTrue(

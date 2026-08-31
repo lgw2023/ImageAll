@@ -1310,6 +1310,7 @@ const state = {
     overviewLoading: false,
     overviewGeneration: 0,
     overviewRenderedFingerprint: null,
+    overviewFocusTagID: null,
     items: [],
     nextCursor: null,
     selectedIndex: -1,
@@ -26293,6 +26294,87 @@ function organizeReviewOverviewGroups() {
   for (const group of existingGroups.values()) group.remove();
 }
 
+function reviewOverviewOpenButtons({ includeDisabled = false } = {}) {
+  return [...elements.reviewOverviewGrid.querySelectorAll(
+    "[data-review-overview-tag-id]"
+  )].filter((button) => (
+    !button.closest("[hidden]") && (includeDisabled || !button.disabled)
+  ));
+}
+
+function syncReviewOverviewCardTabStops(preferredTagID = null) {
+  const enabledButtons = reviewOverviewOpenButtons();
+  const preferred = enabledButtons.find((button) => (
+    button.dataset.reviewOverviewTagId === preferredTagID
+  ));
+  const focused = enabledButtons.find((button) => button === document.activeElement);
+  const remembered = enabledButtons.find((button) => (
+    button.dataset.reviewOverviewTagId === state.review.overviewFocusTagID
+  ));
+  const existing = enabledButtons.find((button) => button.tabIndex === 0);
+  const tabStop = preferred || focused || remembered || existing || enabledButtons[0] || null;
+  for (const button of elements.reviewOverviewGrid.querySelectorAll(
+    "[data-review-overview-tag-id]"
+  )) {
+    button.tabIndex = button === tabStop ? 0 : -1;
+    button.removeAttribute("aria-posinset");
+    button.removeAttribute("aria-setsize");
+  }
+  enabledButtons.forEach((button, index) => {
+    button.setAttribute("aria-posinset", String(index + 1));
+    button.setAttribute("aria-setsize", String(enabledButtons.length));
+  });
+  state.review.overviewFocusTagID = tabStop?.dataset.reviewOverviewTagId || null;
+  return enabledButtons;
+}
+
+function moveReviewOverviewCardFocus(event) {
+  const button = event.target.closest("[data-review-overview-tag-id]");
+  if (!button || button.disabled || event.altKey || event.ctrlKey || event.metaKey) return false;
+  const movementKeys = [
+    "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown",
+    "PageUp", "PageDown", "Home", "End",
+  ];
+  if (!movementKeys.includes(event.key)) return false;
+  const buttons = syncReviewOverviewCardTabStops(button.dataset.reviewOverviewTagId);
+  const currentIndex = buttons.indexOf(button);
+  if (currentIndex < 0) return false;
+
+  const grid = button.closest(".review-overview-group-grid");
+  const viewport = button.closest(".review-overview-content") || elements.reviewOverviewGrid;
+  const columns = grid
+    ? renderedGridColumnCount(grid, ":scope > .review-overview-card")
+    : 1;
+  const pageItems = grid
+    ? renderedGridPageItemCount(
+      viewport,
+      grid,
+      ":scope > .review-overview-card"
+    )
+    : columns;
+  const delta = {
+    ArrowLeft: -1,
+    ArrowRight: 1,
+    ArrowUp: -columns,
+    ArrowDown: columns,
+    PageUp: -pageItems,
+    PageDown: pageItems,
+  }[event.key];
+  const nextIndex = event.key === "Home" ? 0
+    : event.key === "End" ? buttons.length - 1
+      : Math.max(0, Math.min(buttons.length - 1, currentIndex + delta));
+  const target = buttons[nextIndex];
+  if (!target) return false;
+
+  event.preventDefault();
+  event.stopPropagation();
+  syncReviewOverviewCardTabStops(target.dataset.reviewOverviewTagId);
+  target.closest(".review-overview-card")
+    ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  target.focus({ preventScroll: true });
+  return true;
+}
+
 function reviewOverviewContentFingerprint() {
   return JSON.stringify({
     mediaKind: state.mediaKind,
@@ -26378,7 +26460,7 @@ function renderReviewOverview({ preserveContent = false, reconcileContent = fals
         ? `打开 ${overview.pendingSuggestionCount} 条待审核${currentMediaNoun()}，逐项或批量使用 P 属于、X 不属于、U 稍后。`
         : `“${overview.displayName}”当前没有待审核${currentMediaNoun()}；可展开门槛与生成来创建新建议。`,
       kind: "review",
-      keyShortcuts: "Enter Space",
+      keyShortcuts: "ArrowLeft ArrowRight ArrowUp ArrowDown PageUp PageDown Home End Enter Space",
       owner: `review-overview:${overview.id}`,
     });
 
@@ -26629,6 +26711,7 @@ function renderReviewOverview({ preserveContent = false, reconcileContent = fals
   }
   for (const card of existingCards.values()) card.remove();
   organizeReviewOverviewGroups();
+  syncReviewOverviewCardTabStops(focusedTagID);
   syncReviewControls();
   if (reconcileContent && overviewContent) overviewContent.scrollTop = overviewScrollTop;
   const focusAfterRender = () => {
@@ -40515,6 +40598,7 @@ function resetWorkspaceSessionState() {
   state.review.overviewLoadedScopeKey = null;
   state.review.overviewLoading = false;
   state.review.overviewRenderedFingerprint = null;
+  state.review.overviewFocusTagID = null;
   state.review.overviewGeneration += 1;
   state.review.nextCursor = null;
   state.review.selectedIndex = -1;
@@ -41840,7 +41924,7 @@ function focusWorkspacePrimaryControl(route = visibleWorkspaceRoute()) {
         `[data-review-index="${state.review.selectedIndex}"]`
       ))
       : elements.reviewOverviewGrid.querySelector(
-        "[data-review-overview-tag-id]:not(:disabled)"
+        "[data-review-overview-tag-id][tabindex=\"0\"]:not(:disabled)"
       );
     target ||= elements.closeReviewButton;
   } else if (route === "training") {
@@ -47560,6 +47644,7 @@ function bindEvents() {
       void commitReviewThresholdInput(thresholdInput);
       return;
     }
+    if (moveReviewOverviewCardFocus(event)) return;
     if (handleTagGroupNavigationKeydown(event, {
       container: elements.reviewOverviewGrid,
       selector: "[data-review-overview-group-toggle]",
@@ -47567,6 +47652,12 @@ function bindEvents() {
         toggleReviewOverviewGroup(toggle.dataset.reviewOverviewGroupToggle);
       },
     })) return;
+  });
+  elements.reviewOverviewGrid.addEventListener("focusin", (event) => {
+    const button = event.target.closest?.("[data-review-overview-tag-id]");
+    if (button && !button.disabled) {
+      syncReviewOverviewCardTabStops(button.dataset.reviewOverviewTagId);
+    }
   });
   elements.closeTagSuggestionDialogButton.addEventListener("click", () => {
     void returnFromTagSuggestion();

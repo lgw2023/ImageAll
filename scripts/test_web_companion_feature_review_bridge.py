@@ -47,6 +47,7 @@ def main():
     job_action_fail_next = [False]
     overview_source_queries = []
     queue_source_queries = []
+    queue_tag_queries = []
     page_errors = []
     console_errors = []
     failed_resources = []
@@ -316,6 +317,9 @@ def main():
 
         def route_review_queue(route):
             queue_source_queries.append(requested_source_ids(route))
+            queue_tag_queries.append(
+                parse_qs(urlparse(route.request.url).query).get("tagID", [None])[0]
+            )
             fulfill_json(
                 route,
                 {
@@ -1071,6 +1075,143 @@ def main():
         )
         page.wait_for_function(
             "() => document.querySelectorAll('[data-review-overview-group-toggle]').length === 1"
+        )
+
+        for index in range(14):
+            tag_id = f"11111111-aaaa-bbbb-cccc-600000000{index:03d}"
+            navigation_tags.append({
+                "id": tag_id,
+                "displayName": f"待审标签 {index + 1:02d}",
+                "state": "active",
+                "groupID": GROUP_ID,
+            })
+            navigation_overviews.append({
+                "id": tag_id,
+                "displayName": f"待审标签 {index + 1:02d}",
+                "acceptedSampleCount": index,
+                "rejectedSampleCount": 0,
+                "pendingSuggestionCount": 1,
+                "pendingSuggestionCounts": {
+                    "featurePrint": 1,
+                    "standardModel": 0,
+                    "personalModel": 0,
+                    "personalAdamW": 0,
+                },
+                "taskStatus": "completed",
+                "checkedCount": 1,
+                "totalCount": 1,
+                "skippedCount": 0,
+                "missingPositiveCount": 0,
+                "missingNegativeCount": 0,
+                "canGenerate": False,
+                "canUpdate": False,
+                "canGeneratePersonalModel": False,
+                "canReview": True,
+                "canPause": False,
+                "canResume": False,
+                "canCancel": False,
+                "activeJobID": None,
+            })
+        page.evaluate(
+            "async () => { await refreshWorkspace({ quiet: true, kinds: ['tagsChanged'] }); "
+            "await loadReviewOverview(); "
+            "const content = document.querySelector('.review-overview-content'); "
+            "content.style.height = '260px'; content.style.maxHeight = '260px'; "
+            "renderReviewOverview({ reconcileContent: true }); }"
+        )
+        overview_open_buttons = page.locator(
+            '[data-review-overview-tag-id]:not(:disabled)'
+        )
+        assert overview_open_buttons.count() == 15
+        card_navigation_overview_count = len(overview_source_queries)
+        card_navigation_queue_count = len(queue_tag_queries)
+        assert page.evaluate(
+            "() => [...document.querySelectorAll("
+            "'[data-review-overview-tag-id]:not(:disabled)')].filter("
+            "button => button.tabIndex === 0).length"
+        ) == 1
+        first_open = page.locator(f'[data-review-overview-tag-id="{TAG_ID}"]')
+        first_open.focus()
+        first_open.press("ArrowRight")
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.reviewOverviewTagId"
+        ) == navigation_tags[0]["id"]
+        grid_columns = page.evaluate(
+            "() => renderedGridColumnCount("
+            "document.querySelector('.review-overview-group-grid'), "
+            "':scope > .review-overview-card')"
+        )
+        page.keyboard.press("ArrowDown")
+        expected_down_index = min(13, grid_columns)
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.reviewOverviewTagId"
+        ) == navigation_tags[expected_down_index]["id"]
+        before_page_tag_id = page.evaluate(
+            "() => document.activeElement?.dataset.reviewOverviewTagId"
+        )
+        page.keyboard.press("PageDown")
+        paged_tag_id = page.evaluate(
+            "() => document.activeElement?.dataset.reviewOverviewTagId"
+        )
+        assert paged_tag_id != before_page_tag_id
+        assert page.evaluate(
+            """() => {
+              const viewport = document.querySelector('.review-overview-content')
+                .getBoundingClientRect();
+              const target = document.activeElement.closest('.review-overview-card')
+                .getBoundingClientRect();
+              return target.top >= viewport.top && target.bottom <= viewport.bottom;
+            }"""
+        )
+        page.keyboard.press("End")
+        last_navigation_tag_id = navigation_tags[-1]["id"]
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.reviewOverviewTagId"
+        ) == last_navigation_tag_id
+        assert page.evaluate(
+            "() => document.activeElement.getAttribute('aria-posinset')"
+        ) == "15"
+        assert page.evaluate(
+            "() => document.activeElement.getAttribute('aria-setsize')"
+        ) == "15"
+        page.screenshot(
+            path="/tmp/imageall-review-overview-card-keyboard.png",
+            full_page=True,
+        )
+        page.evaluate(
+            "() => { window.__stableReviewOverviewOpen = document.activeElement; "
+            "renderReviewOverview({ reconcileContent: true }); }"
+        )
+        assert page.evaluate(
+            "() => document.activeElement === window.__stableReviewOverviewOpen "
+            "&& document.activeElement.tabIndex === 0"
+        )
+        page.keyboard.press("Home")
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.reviewOverviewTagId"
+        ) == TAG_ID
+        assert len(overview_source_queries) == card_navigation_overview_count
+        assert len(queue_tag_queries) == card_navigation_queue_count
+
+        page.keyboard.press("End")
+        page.keyboard.press("Enter")
+        page.locator("#reviewQueueLayout:not(.hidden)").wait_for(state="visible")
+        assert len(queue_tag_queries) == card_navigation_queue_count + 1
+        assert queue_tag_queries[-1] == last_navigation_tag_id
+        page.locator("#reviewBackButton").click()
+        page.locator("#reviewOverview:not(.hidden)").wait_for(state="visible")
+
+        navigation_tags.clear()
+        navigation_overviews.clear()
+        page.evaluate(
+            "async () => { await refreshWorkspace({ quiet: true, kinds: ['tagsChanged'] }); "
+            "await loadReviewOverview(); "
+            "const content = document.querySelector('.review-overview-content'); "
+            "content.style.height = ''; content.style.maxHeight = ''; "
+            "renderReviewOverview({ reconcileContent: true }); }"
+        )
+        page.wait_for_function(
+            "() => document.querySelectorAll('[data-review-overview-card-id]').length === 1"
         )
         group_toggle = page.locator(f'[data-review-overview-group-toggle="{GROUP_ID}"]')
         card = page.locator(f'[data-review-overview-card-id="{TAG_ID}"]')
