@@ -10,8 +10,8 @@
   <meta name="apple-mobile-web-app-title" content="ImageAll">
   <title>ImageAll 网页版</title>
   <link rel="manifest" href="/manifest.webmanifest">
-  <link rel="stylesheet" href="/app.css?v=20260831-201">
-  <script src="/app.js?v=20260831-201" defer></script>
+  <link rel="stylesheet" href="/app.css?v=20260831-202">
+  <script src="/app.js?v=20260831-202" defer></script>
 </head>
 <body>
   <div id="bootView" class="centered-state">
@@ -1348,7 +1348,10 @@
             </section>
             <section class="gallery-overview-panel gallery-overview-availability-panel">
               <header><div><h2>可用状态</h2><p>当前目录能否读取</p></div><span aria-hidden="true">◔</span></header>
-              <div id="galleryOverviewAvailability" class="gallery-overview-availability"></div>
+              <div id="galleryOverviewAvailability" class="gallery-overview-availability"
+                role="group" aria-label="可用状态；使用上下方向键浏览，按 Enter 筛选图库"></div>
+              <p id="galleryOverviewAvailabilityStatus" class="gallery-overview-availability-status"
+                role="status" aria-live="polite">聚焦状态后可查看精确照片与视频数量</p>
             </section>
           </div>
 

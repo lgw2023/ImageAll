@@ -82,8 +82,10 @@ def main():
             "videoCount": 2 + index % 7,
         } for index, year in enumerate(range(2007, 2027))],
         "availability": [
-            {"availability": "available", "imageCount": 118, "videoCount": 30},
+            {"availability": "available", "imageCount": 116, "videoCount": 28},
             {"availability": "missing", "imageCount": 2, "videoCount": 0},
+            {"availability": "unreadable", "imageCount": 1, "videoCount": 1},
+            {"availability": "unsupported", "imageCount": 1, "videoCount": 1},
         ],
         "undatedCount": 3,
         "positiveLabeledAssetCount": 20,
@@ -417,12 +419,47 @@ def main():
             "() => [...document.querySelectorAll('[data-gallery-overview-year]')]"
             ".indexOf(document.activeElement)"
         ) >= 2
+
+        availability_rows = page.locator("[data-gallery-overview-availability]")
+        assert availability_rows.count() == 4
+        assert availability_rows.evaluate_all(
+            "rows => rows.filter(row => row.tabIndex === 0).length"
+        ) == 1
+        availability_rows.first.focus()
+        assert availability_rows.first.get_attribute("aria-keyshortcuts") == \
+            "ArrowUp ArrowDown Home End"
+        page.keyboard.press("ArrowDown")
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.galleryOverviewAvailability"
+        ) == "missing"
+        page.keyboard.press("End")
+        assert page.evaluate(
+            "() => document.activeElement?.dataset.galleryOverviewAvailability"
+        ) == "unsupported"
+        assert "照片" in page.locator("#galleryOverviewAvailabilityStatus").inner_text()
+        assert "视频" in page.locator("#galleryOverviewAvailabilityStatus").inner_text()
+        page.keyboard.press("Home")
+        assert "可用" in page.evaluate(
+            "() => document.activeElement?.getAttribute('aria-label')"
+        )
         page.screenshot(
             path="/tmp/imageall-gallery-overview-chart-keyboard.png",
             full_page=True,
         )
         assert overview_requests == overview_reads_before_chart_navigation
         assert len(asset_queries) == asset_reads_before_chart_navigation
+
+        page.keyboard.press("ArrowDown")
+        page.keyboard.press("Enter")
+        page.locator("#galleryOverviewWorkspace").wait_for(state="hidden")
+        page.wait_for_timeout(100)
+        assert "文件缺失" in page.locator("#activeFilterSummary").inner_text()
+        assert any(
+            query.get("availabilities") == ["missing"]
+            for query in asset_queries
+        )
+        page.locator("#galleryOverviewNavigationButton").click()
+        page.locator("#galleryOverviewWorkspace:not(.hidden)").wait_for()
 
         page.locator("#galleryOverviewFavoritesMetric").click()
         page.locator("#galleryOverviewWorkspace").wait_for(state="hidden")
