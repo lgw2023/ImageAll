@@ -21825,6 +21825,41 @@ function handleAssetSelection(assetID, { additive = false, range = false } = {})
   });
 }
 
+function captureReviewSelectionSnapshot() {
+  return {
+    selectedIDs: [...state.review.selectedAssetIDs],
+    primaryKey: reviewItemKey(state.review.items[state.review.selectedIndex]),
+    anchorKey: reviewItemKey(state.review.items[state.review.selectionAnchorIndex]),
+  };
+}
+
+function restoreReviewSelectionSnapshot(snapshot, { preferredKey = null } = {}) {
+  const visibleAssetIDs = new Set(state.review.items.map((item) => item.assetID));
+  const restoredSelectedAssetIDs = new Set(
+    (snapshot?.selectedIDs || []).filter((assetID) => visibleAssetIDs.has(assetID))
+  );
+  if (!restoredSelectedAssetIDs.size) return false;
+  state.review.selectedAssetIDs = restoredSelectedAssetIDs;
+  const selectedIndexForKey = (key) => state.review.items.findIndex((item) => (
+    reviewItemKey(item) === key
+      && state.review.selectedAssetIDs.has(item.assetID)
+  ));
+  const preferredIndex = selectedIndexForKey(preferredKey);
+  const primaryIndex = selectedIndexForKey(snapshot?.primaryKey);
+  state.review.selectedIndex = primaryIndex >= 0
+    ? primaryIndex
+    : (preferredIndex >= 0
+      ? preferredIndex
+      : state.review.items.findIndex(
+        (item) => state.review.selectedAssetIDs.has(item.assetID)
+      ));
+  const anchorIndex = selectedIndexForKey(snapshot?.anchorKey);
+  state.review.selectionAnchorIndex = anchorIndex >= 0
+    ? anchorIndex
+    : state.review.selectedIndex;
+  return true;
+}
+
 function rememberGridSelectionBeforeClick(surface, itemID, event) {
   const clickCount = Number(event.detail);
   const pending = state.gridDoubleClickSelectionSnapshot;
@@ -21849,13 +21884,7 @@ function rememberGridSelectionBeforeClick(surface, itemID, event) {
       anchorID: state.selectionAnchorID,
     };
   } else if (surface === "review") {
-    selection = {
-      selectedIDs: [...state.review.selectedAssetIDs],
-      primaryKey: reviewItemKey(state.review.items[state.review.selectedIndex]),
-      anchorKey: reviewItemKey(
-        state.review.items[state.review.selectionAnchorIndex]
-      ),
-    };
+    selection = captureReviewSelectionSnapshot();
   } else if (surface === "slimming") {
     selection = {
       selectedIDs: [...state.slimming.selectedMemberIDs],
@@ -21901,32 +21930,9 @@ function restoreGridSelectionForDoubleClick(surface, itemID) {
   }
   if (surface === "review"
     && (state.review.selectionMode || pending.selection.selectedIDs.length > 1)) {
-    const visibleAssetIDs = new Set(state.review.items.map((item) => item.assetID));
-    const restoredSelectedAssetIDs = new Set(
-      pending.selection.selectedIDs.filter((assetID) => visibleAssetIDs.has(assetID))
-    );
-    if (!restoredSelectedAssetIDs.size) return false;
-    state.review.selectedAssetIDs = restoredSelectedAssetIDs;
-    const selectedIndexForKey = (key) => state.review.items.findIndex((item) => (
-      reviewItemKey(item) === key
-        && state.review.selectedAssetIDs.has(item.assetID)
-    ));
-    const targetIndex = state.review.items.findIndex((item) => (
-      reviewItemKey(item) === itemID
-        && state.review.selectedAssetIDs.has(item.assetID)
-    ));
-    const primaryIndex = selectedIndexForKey(pending.selection.primaryKey);
-    state.review.selectedIndex = primaryIndex >= 0
-      ? primaryIndex
-      : (targetIndex >= 0
-        ? targetIndex
-        : state.review.items.findIndex(
-          (item) => state.review.selectedAssetIDs.has(item.assetID)
-        ));
-    const anchorIndex = selectedIndexForKey(pending.selection.anchorKey);
-    state.review.selectionAnchorIndex = anchorIndex >= 0
-      ? anchorIndex
-      : state.review.selectedIndex;
+    if (!restoreReviewSelectionSnapshot(pending.selection, { preferredKey: itemID })) {
+      return false;
+    }
     renderReviewSelectionState();
     checkpointActiveWorkspaceHistory();
     return true;
@@ -27071,18 +27077,21 @@ async function toggleReviewItemFavorite(assetID, { returnFocus = null } = {}) {
   const favorite = favoriteStateForAssetID(assetID);
   if (!assetID || itemIndex < 0 || !favorite || state.favoriteMutating) return;
 
+  const workspaceGeneration = state.workspaceGeneration;
+  const reviewScopeKey = currentReviewScopeKey();
   const scrollTop = elements.reviewQueuePane.scrollTop;
-  const selectedAssetIDs = new Set(state.review.selectedAssetIDs);
-  const selectedIndex = state.review.selectedIndex;
-  const anchorIndex = state.review.selectionAnchorIndex;
+  const selectionSnapshot = captureReviewSelectionSnapshot();
+  const returnReviewKey = returnFocus?.closest?.("[data-review-key]")?.dataset.reviewKey
+    || reviewItemKey(state.review.items[itemIndex]);
   await applyFavoriteMutation([assetID], favorite.isFavorite !== true);
+  if (workspaceGeneration !== state.workspaceGeneration
+    || state.review.mode !== "queue"
+    || reviewScopeKey !== currentReviewScopeKey()) return;
   elements.reviewQueuePane.scrollTop = scrollTop;
 
   // Favorite is orthogonal to review selection. Keep the frozen P/X/U target,
   // primary detail, range anchor and viewport exactly where the user left them.
-  state.review.selectedAssetIDs = selectedAssetIDs;
-  state.review.selectedIndex = selectedIndex;
-  state.review.selectionAnchorIndex = anchorIndex;
+  restoreReviewSelectionSnapshot(selectionSnapshot, { preferredKey: returnReviewKey });
   renderReviewSelectionState({ renderDetail: false });
   elements.reviewQueuePane.scrollTop = scrollTop;
 
@@ -27090,7 +27099,7 @@ async function toggleReviewItemFavorite(assetID, { returnFocus = null } = {}) {
     returnFocus.focus({ preventScroll: true });
     return;
   }
-  reviewCardFocusTarget(assetID)?.focus({ preventScroll: true });
+  reviewCardFocusTarget(returnReviewKey)?.focus({ preventScroll: true });
 }
 
 async function toggleReviewCardFavorite(button) {

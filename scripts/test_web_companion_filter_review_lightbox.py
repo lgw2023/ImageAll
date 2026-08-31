@@ -4050,6 +4050,168 @@ def main():
         ) == review_context_snapshot
         assert len(asset_queries) == review_context_asset_query_count
         assert len(review_decisions) == review_context_decision_count
+
+        review_favorite_refresh_frame = page.evaluate(
+            """injectedAssetID => {
+              const primaryItem = state.review.items[2];
+              const anchorItem = state.review.items[0];
+              const primaryKey = reviewItemKey(primaryItem);
+              const anchorKey = reviewItemKey(anchorItem);
+              const originalFetch = window.fetch.bind(window);
+              const frame = {
+                injectedAssetID,
+                primaryKey,
+                anchorKey,
+                primaryAssetID: primaryItem.assetID,
+                originalFetch,
+                originalSelectionMode: state.review.selectionMode,
+                originalSelectedAssetIDs: [...state.review.selectedAssetIDs],
+                originalPrimaryKey: reviewItemKey(
+                  state.review.items[state.review.selectedIndex]
+                ),
+                originalAnchorKey: reviewItemKey(
+                  state.review.items[state.review.selectionAnchorIndex]
+                ),
+                scrollTop: document.querySelector('#reviewQueuePane').scrollTop,
+              };
+              state.review.selectionMode = true;
+              state.review.selectedAssetIDs = new Set(
+                state.review.items.slice(0, 3).map((item) => item.assetID)
+              );
+              state.review.selectedIndex = 2;
+              state.review.selectionAnchorIndex = 0;
+              renderReviewSelectionState();
+              frame.card = document.querySelector(
+                `[data-review-key="${CSS.escape(primaryKey)}"]`
+              );
+              frame.button = frame.card.querySelector('.review-card-favorite');
+              window.__reviewFavoriteRefreshFrame = frame;
+              window.fetch = (input, init) => {
+                const url = new URL(
+                  typeof input === 'string' ? input : input.url,
+                  location.href
+                );
+                if (url.pathname !== '/v1/favorites') {
+                  return originalFetch(input, init);
+                }
+                return new Promise((resolve, reject) => {
+                  frame.release = () => originalFetch(input, init).then(resolve, reject);
+                });
+              };
+              return {
+                primaryKey,
+                anchorKey,
+                primaryAssetID: primaryItem.assetID,
+                selectedAssetIDs: [...state.review.selectedAssetIDs].sort(),
+              };
+            }""",
+            "6f7d7d55-8616-4d61-a79d-f207974e7250",
+        )
+        review_dynamic_favorite = page.locator(
+            f'[data-review-key="{review_favorite_refresh_frame["primaryKey"]}"] '
+            "> .review-card-favorite"
+        )
+        review_dynamic_favorite.click()
+        page.wait_for_function(
+            "() => state.favoriteMutating "
+            "&& typeof window.__reviewFavoriteRefreshFrame?.release === 'function'"
+        )
+        page.evaluate(
+            """() => {
+              const frame = window.__reviewFavoriteRefreshFrame;
+              const first = state.review.items[0];
+              state.review.items = [{
+                ...first,
+                assetID: frame.injectedAssetID,
+                fileName: 'FAVORITE_REFRESH_INSERT.JPG',
+                contentRevision: 1000,
+                favorite: {
+                  ...first.favorite,
+                  assetID: frame.injectedAssetID,
+                },
+              }, ...state.review.items];
+              renderReview();
+              frame.movedCard = document.querySelector(
+                `[data-review-key="${CSS.escape(frame.primaryKey)}"]`
+              );
+              frame.movedButton = frame.movedCard.querySelector(
+                '.review-card-favorite'
+              );
+              frame.release();
+            }"""
+        )
+        page.wait_for_function("() => !state.favoriteMutating")
+        review_favorite_refresh_result = page.evaluate(
+            """() => {
+              const frame = window.__reviewFavoriteRefreshFrame;
+              return {
+                primaryKey: frame.primaryKey,
+                anchorKey: frame.anchorKey,
+                actualPrimaryKey: reviewItemKey(
+                  state.review.items[state.review.selectedIndex]
+                ),
+                actualAnchorKey: reviewItemKey(
+                  state.review.items[state.review.selectionAnchorIndex]
+                ),
+                selectedAssetIDs: [...state.review.selectedAssetIDs].sort(),
+                cardNodePreserved: frame.card === frame.movedCard,
+                buttonNodePreserved: frame.button === frame.movedButton,
+                focused: document.activeElement === frame.movedButton,
+                scrollTop: document.querySelector('#reviewQueuePane').scrollTop,
+                favorite: state.review.items.find(
+                  (item) => reviewItemKey(item) === frame.primaryKey
+                )?.favorite?.isFavorite,
+              };
+            }"""
+        )
+        assert review_favorite_refresh_result["actualPrimaryKey"] == (
+            review_favorite_refresh_result["primaryKey"]
+        ), review_favorite_refresh_result
+        assert review_favorite_refresh_result["actualAnchorKey"] == (
+            review_favorite_refresh_result["anchorKey"]
+        ), review_favorite_refresh_result
+        assert review_favorite_refresh_result["selectedAssetIDs"] == (
+            review_favorite_refresh_frame["selectedAssetIDs"]
+        )
+        assert review_favorite_refresh_result["cardNodePreserved"] is True
+        assert review_favorite_refresh_result["buttonNodePreserved"] is True
+        assert review_favorite_refresh_result["focused"] is True
+        assert review_favorite_refresh_result["scrollTop"] == review_scroll_top
+        assert review_favorite_refresh_result["favorite"] is True
+        page.screenshot(
+            path="/tmp/imageall-review-favorite-refresh-selection.png",
+            full_page=True,
+        )
+        page.evaluate(
+            """() => {
+              const frame = window.__reviewFavoriteRefreshFrame;
+              window.fetch = frame.originalFetch;
+              state.review.items = state.review.items.filter(
+                (item) => item.assetID !== frame.injectedAssetID
+              );
+              state.review.selectionMode = frame.originalSelectionMode;
+              state.review.selectedAssetIDs = new Set(frame.originalSelectedAssetIDs);
+              state.review.selectedIndex = state.review.items.findIndex(
+                (item) => reviewItemKey(item) === frame.originalPrimaryKey
+              );
+              state.review.selectionAnchorIndex = state.review.items.findIndex(
+                (item) => reviewItemKey(item) === frame.originalAnchorKey
+              );
+              renderReview();
+              window.__reviewFavoriteRefreshFrame = null;
+            }"""
+        )
+        review_dynamic_favorite = page.locator(
+            f'[data-review-key="{review_favorite_refresh_frame["primaryKey"]}"] '
+            "> .review-card-favorite"
+        )
+        review_dynamic_favorite.press("Enter")
+        page.wait_for_function(
+            "key => state.review.items.find(item => reviewItemKey(item) === key)"
+            "?.favorite?.isFavorite === false",
+            arg=review_favorite_refresh_frame["primaryKey"],
+        )
+
         first_review_card.hover()
         first_review_favorite.click()
         page.wait_for_function(

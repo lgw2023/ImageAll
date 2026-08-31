@@ -2988,14 +2988,18 @@ final class RemoteHTTPServerTests: XCTestCase {
                 "const restoredSelection = restoreGridSelectionForDoubleClick(\n      \"review\",\n      reviewItemKey(item)"
             )
         )
+        XCTAssertTrue(script.contains("function captureReviewSelectionSnapshot()"))
+        XCTAssertTrue(script.contains("function restoreReviewSelectionSnapshot("))
+        XCTAssertTrue(script.contains("selection = captureReviewSelectionSnapshot();"))
+        XCTAssertTrue(script.contains("anchorKey: reviewItemKey("))
+        XCTAssertTrue(script.contains("const restoredSelectedAssetIDs = new Set("))
+        XCTAssertTrue(script.contains("const selectionSnapshot = captureReviewSelectionSnapshot();"))
         XCTAssertTrue(
             script.contains(
-                "primaryKey: reviewItemKey(state.review.items[state.review.selectedIndex])"
+                "restoreReviewSelectionSnapshot(selectionSnapshot, { preferredKey: returnReviewKey })"
             )
         )
-        XCTAssertTrue(script.contains("anchorKey: reviewItemKey("))
-        XCTAssertTrue(script.contains("reviewItemKey(item) === itemID"))
-        XCTAssertTrue(script.contains("const restoredSelectedAssetIDs = new Set("))
+        XCTAssertTrue(script.contains("reviewScopeKey !== currentReviewScopeKey()"))
         XCTAssertTrue(
             script.contains(
                 "const preservesSelection = restoreGridSelectionForDoubleClick(\n      \"slimming\""
