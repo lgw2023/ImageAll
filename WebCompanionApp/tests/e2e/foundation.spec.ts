@@ -37,6 +37,102 @@ test('unauthenticated users get an accessible pairing and account entry point', 
   await expectNoSeriousAccessibilityViolations(page);
 });
 
+test('pairing, logout, and account login stay Host-authoritative without persisted secrets', async ({
+  page,
+}, testInfo) => {
+  await installSyntheticAuthenticatedHost(page);
+  let authenticated = false;
+  let pairingBody: Record<string, unknown> = {};
+  let accountAuthorization = '';
+
+  await page.route('**/web/session', (route) =>
+    route.fulfill({
+      status: authenticated ? 200 : 401,
+      contentType: 'application/json',
+      json: authenticated
+        ? {
+            authenticated: true,
+            deviceID: '8bc2a920-f281-413b-8c4c-33c8ed7f78ca',
+            authMode: 'pairedDevice',
+            username: null,
+          }
+        : { error: 'unauthorized' },
+    }),
+  );
+  await page.route('**/web/session/refresh', (route) =>
+    route.fulfill({
+      status: 401,
+      contentType: 'application/json',
+      json: { error: 'unauthorized' },
+    }),
+  );
+  await page.route('**/web/session/pair', async (route) => {
+    pairingBody = route.request().postDataJSON() as Record<string, unknown>;
+    authenticated = true;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        authenticated: true,
+        deviceID: '8bc2a920-f281-413b-8c4c-33c8ed7f78ca',
+        authMode: 'pairedDevice',
+        username: null,
+      },
+    });
+  });
+  await page.route('**/web/session/logout', async (route) => {
+    authenticated = false;
+    await route.fulfill({ status: 204 });
+  });
+  await page.route('**/web/account/login', async (route) => {
+    accountAuthorization = route.request().headers().authorization ?? '';
+    authenticated = true;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        authenticated: true,
+        deviceID: null,
+        authMode: 'account',
+        username: 'reader',
+      },
+    });
+  });
+
+  await page.goto('.');
+  await page.getByRole('textbox', { name: '配对码' }).fill('pairing-secret');
+  await page.getByRole('button', { name: '连接图库' }).click();
+  await expect(page.getByRole('heading', { name: '图库', level: 1 })).toBeVisible();
+  expect(pairingBody).toMatchObject({ pairingToken: 'pairing-secret' });
+  expect(typeof pairingBody.clientID).toBe('string');
+
+  if (testInfo.project.name === 'chromium-mobile') {
+    await page.getByRole('button', { name: '显示检视器' }).click();
+  }
+  await page.getByRole('button', { name: '退出当前会话' }).click();
+  await expect(page.getByRole('heading', { name: '连接你的 Mac 照片工作台' })).toBeVisible();
+
+  await page.getByRole('tab', { name: '账户' }).click();
+  await page.getByRole('textbox', { name: '账户名' }).fill('reader');
+  await page.getByLabel('密码').fill('account-secret');
+  await page.getByRole('button', { name: '登录图库' }).click();
+  await expect(page.getByRole('heading', { name: '图库', level: 1 })).toBeVisible();
+  expect(accountAuthorization).toMatch(/^Basic /);
+
+  const persistedValues = await page.evaluate(() => {
+    const values: string[] = [];
+    for (const storage of [localStorage, sessionStorage]) {
+      for (let index = 0; index < storage.length; index += 1) {
+        const key = storage.key(index);
+        if (key) values.push(storage.getItem(key) ?? '');
+      }
+    }
+    return values;
+  });
+  expect(persistedValues).not.toContain('pairing-secret');
+  expect(persistedValues).not.toContain('account-secret');
+});
+
 test('authenticated users get the responsive workbench shell', async ({ page }, testInfo) => {
   await installSyntheticAuthenticatedHost(page);
 
