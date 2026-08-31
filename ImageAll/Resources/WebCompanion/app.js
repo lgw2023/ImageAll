@@ -4944,7 +4944,9 @@ function rememberWorkspaceLayoutReflowUserInput(event) {
       return;
     }
   }
-  if (event.type === "wheel" || event.type === "touchstart") {
+  if (event.type === "wheel"
+    || event.type === "touchstart"
+    || event.type === "touchmove") {
     suspendWorkspaceLayoutReflowNativeAnchor(scrollOwner);
   }
   workspaceLayoutReflowUserInputGeneration += 1;
@@ -46029,6 +46031,10 @@ function bindEvents() {
     passive: true,
   });
   document.addEventListener("touchstart", rememberWorkspaceLayoutReflowUserInput, {
+    capture: true,
+    passive: true,
+  });
+  document.addEventListener("touchmove", rememberWorkspaceLayoutReflowUserInput, {
     capture: true,
     passive: true,
   });

@@ -7881,6 +7881,66 @@ def main():
             path="/tmp/imageall-gallery-user-scroll-wins.png",
             full_page=True,
         )
+
+        # A slow touch gesture can outlive the first 360 ms takeover window.
+        # Each continued move must renew the suspension so Chromium's native
+        # scroll anchoring cannot resume under the user's finger; releasing the
+        # gesture must still restore the prior inline value after a finite wait.
+        page.evaluate(
+            """() => {
+              setInspectorVisible(true);
+              applyGridDensity(8);
+            }"""
+        )
+        page.wait_for_timeout(250)
+        gallery_touch_frame = page.evaluate(
+            """() => {
+              const pane = document.querySelector('#libraryScroll');
+              const card = document.querySelectorAll('#assetGrid > .asset-card')[8];
+              pane.scrollTop = card.offsetTop - 24;
+              return {
+                assetID: card.dataset.assetId,
+                scrollTop: pane.scrollTop,
+              };
+            }"""
+        )
+        assert gallery_touch_frame["scrollTop"] > 0
+        page.locator("#inspectorVisibilityButton").click()
+        page.wait_for_function("() => state.layout.inspectorVisible === false")
+        page.dispatch_event("#libraryScroll", "touchstart")
+        page.wait_for_timeout(280)
+        page.dispatch_event("#libraryScroll", "touchmove")
+        page.wait_for_timeout(140)
+        gallery_touch_during = page.evaluate(
+            """() => {
+              const pane = document.querySelector('#libraryScroll');
+              return {
+                nativeAnchor: pane.style.overflowAnchor,
+                activeRestore: workspaceLayoutReflowActiveScrollAnchors.has(pane),
+                focus: document.activeElement?.id,
+                selection: [...state.selectedAssetIDs].sort(),
+              };
+            }"""
+        )
+        assert gallery_touch_during["nativeAnchor"] == "none", gallery_touch_during
+        assert gallery_touch_during["activeRestore"] is False
+        assert gallery_touch_during["focus"] == "inspectorVisibilityButton"
+        assert gallery_touch_during["selection"] == gallery_reflow_selection
+        page.dispatch_event("#libraryScroll", "touchend")
+        page.wait_for_timeout(400)
+        gallery_touch_after = page.evaluate(
+            """() => {
+              const pane = document.querySelector('#libraryScroll');
+              return {
+                nativeAnchor: pane.style.overflowAnchor,
+                activeRestore: workspaceLayoutReflowActiveScrollAnchors.has(pane),
+              };
+            }"""
+        )
+        assert gallery_touch_after["nativeAnchor"] == ""
+        assert gallery_touch_after["activeRestore"] is False
+        assert len(asset_queries) == gallery_reflow_request_count
+
         page.evaluate(
             """() => {
               setInspectorVisible(true);
