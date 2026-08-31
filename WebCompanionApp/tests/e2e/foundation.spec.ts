@@ -61,3 +61,33 @@ test('authenticated users get the responsive workbench shell', async ({ page }, 
     });
   }
 });
+
+test('live Host events preserve context, refresh projections, and expose recoverable notices', async ({
+  page,
+}) => {
+  let assetRequests = 0;
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname === '/v1/assets') assetRequests += 1;
+  });
+  const host = await installSyntheticAuthenticatedHost(page);
+
+  await page.goto('gallery?q=IMG');
+  await expect(page.getByText('已连接')).toBeVisible();
+  await page.getByRole('button', { name: '选择 IMG_0001.jpg' }).click();
+  await expect(page.getByText('已选择 1 项')).toBeVisible();
+  const requestCountBeforeEvent = assetRequests;
+
+  host.sendEvent('assetsChanged');
+  await expect.poll(() => assetRequests).toBeGreaterThan(requestCountBeforeEvent);
+  await expect(page.getByText('已选择 1 项')).toBeVisible();
+  await expect.poll(() => new URL(page.url()).searchParams.get('q')).toBe('IMG');
+
+  host.showRecycleNotice();
+  await expect(page.getByText('来源删除被回收站中的项目阻止。')).toBeVisible();
+  await page.getByRole('button', { name: '打开回收站' }).click();
+  await expect(page).toHaveURL(/\/slimming\?section=recycle/);
+
+  host.closeEvents();
+  await expect(page.getByText('正在重连')).toBeVisible();
+  await expect(page.getByText('正在恢复实时连接')).toBeVisible();
+});

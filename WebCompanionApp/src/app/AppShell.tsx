@@ -1,6 +1,6 @@
 import { useState, type ComponentType } from 'react';
 
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Activity,
   Archive,
@@ -20,10 +20,16 @@ import {
   WandSparkles,
   X,
 } from 'lucide-react';
-import { NavLink, Outlet, useLocation } from 'react-router-dom';
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 
 import { fetchCapabilities } from '@/api/capabilities';
 import { errorMessage } from '@/api/errors';
+import {
+  dismissWorkspaceNotice,
+  fetchWorkspaceNotice,
+  performWorkspaceNoticeAction,
+} from '@/api/workspaceNotice';
+import { useConnection } from '@/features/session/ConnectionContext';
 import { useSession } from '@/features/session/SessionContext';
 
 import { useTheme } from './ThemeProvider';
@@ -73,13 +79,45 @@ export function AppShell() {
     () => window.matchMedia('(min-width: 900px)').matches,
   );
   const location = useLocation();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const theme = useTheme();
   const session = useSession();
+  const connection = useConnection();
   const capabilities = useQuery({
     queryKey: ['capabilities'],
     queryFn: ({ signal }) => fetchCapabilities(signal),
     staleTime: 60_000,
     retry: 1,
+  });
+  const noticesSupported = capabilities.data?.capabilities.includes('workspaceNotices') ?? false;
+  const notice = useQuery({
+    queryKey: ['workspace-notice'],
+    queryFn: ({ signal }) => fetchWorkspaceNotice(signal),
+    enabled: noticesSupported,
+    refetchInterval: connection.phase === 'online' ? 15_000 : false,
+  });
+  const dismissNotice = useMutation({
+    mutationFn: dismissWorkspaceNotice,
+    onSuccess: (next) => queryClient.setQueryData(['workspace-notice'], next),
+  });
+  const runNoticeAction = useMutation({
+    mutationFn: ({ noticeID, actionID }: { noticeID: string; actionID: string }) =>
+      performWorkspaceNoticeAction(noticeID, actionID),
+    onSuccess: (response, variables) => {
+      queryClient.setQueryData(['workspace-notice'], response.notice);
+      const action = notice.data?.actions.find((candidate) => candidate.id === variables.actionID);
+      if (response.performed && action?.kind === 'openRecycleBin') {
+        void navigate('/slimming?section=recycle');
+      }
+      if (response.performed) {
+        void Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['assets'] }),
+          queryClient.invalidateQueries({ queryKey: ['tags'] }),
+          queryClient.invalidateQueries({ queryKey: ['slimming-recycle'] }),
+        ]);
+      }
+    },
   });
   const routePath = `/${location.pathname.split('/').find(Boolean) ?? 'gallery'}`;
   const title = routeTitles.get(routePath) ?? '工作区';
@@ -115,10 +153,16 @@ export function AppShell() {
         <div className="titlebar-actions">
           <span
             className="connection-pill"
-            data-state={capabilities.isError ? 'offline' : 'online'}
+            data-state={connection.phase === 'online' ? 'online' : 'offline'}
           >
             <span className="connection-dot" aria-hidden="true" />
-            {capabilities.isPending ? '正在连接' : capabilities.isError ? 'Mac 离线' : '已连接'}
+            {connection.phase === 'online'
+              ? '已连接'
+              : connection.phase === 'offline'
+                ? 'Mac 离线'
+                : connection.phase === 'retrying'
+                  ? '正在重连'
+                  : '正在连接'}
           </span>
           <button
             aria-label={theme.resolved === 'dark' ? '使用浅色主题' : '使用深色主题'}
@@ -176,7 +220,7 @@ export function AppShell() {
             </section>
           ))}
         </nav>
-        <a className="legacy-link" href="/">
+        <a className="legacy-link" href="/legacy/">
           <ChevronLeft aria-hidden="true" size={15} /> 返回旧版
         </a>
       </aside>
@@ -191,16 +235,56 @@ export function AppShell() {
       ) : null}
 
       <main className="workspace" id="main-content" tabIndex={-1}>
-        {capabilities.isError ? (
+        {connection.phase === 'offline' || connection.phase === 'retrying' ? (
           <div className="connection-banner" role="status">
             <div>
-              <strong>与 Mac 的连接已中断</strong>
-              <span>{errorMessage(capabilities.error)}</span>
+              <strong>
+                {connection.phase === 'offline' ? '与 Mac 的连接已中断' : '正在恢复实时连接'}
+              </strong>
+              <span>{connection.detail}</span>
             </div>
-            <button className="button" onClick={() => void capabilities.refetch()} type="button">
+            <button className="button" onClick={connection.retry} type="button">
               重试
             </button>
           </div>
+        ) : null}
+        {notice.data ? (
+          <section
+            aria-live={notice.data.severity === 'warning' ? 'assertive' : 'polite'}
+            className="workspace-notice"
+            data-severity={notice.data.severity}
+          >
+            <p>{notice.data.message}</p>
+            <div className="workspace-notice-actions">
+              {notice.data.actions.map((action) => (
+                <button
+                  className="button"
+                  disabled={runNoticeAction.isPending}
+                  key={action.id}
+                  onClick={() =>
+                    runNoticeAction.mutate({ noticeID: notice.data!.id, actionID: action.id })
+                  }
+                  type="button"
+                >
+                  {action.title}
+                </button>
+              ))}
+              <button
+                aria-label="关闭工作区通知"
+                className="icon-button"
+                disabled={dismissNotice.isPending}
+                onClick={() => dismissNotice.mutate(notice.data!.id)}
+                type="button"
+              >
+                <X aria-hidden="true" size={16} />
+              </button>
+            </div>
+          </section>
+        ) : null}
+        {dismissNotice.isError || runNoticeAction.isError ? (
+          <p className="form-error" role="alert">
+            {errorMessage(dismissNotice.error ?? runNoticeAction.error)}
+          </p>
         ) : null}
         <Outlet />
       </main>

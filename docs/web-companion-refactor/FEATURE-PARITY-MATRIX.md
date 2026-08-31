@@ -14,7 +14,7 @@
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 会话恢复 | 原生 Host | pair/login/refresh/logout | 单次 refresh、可解释错误、不循环 | 已有 | 无 | foundation | `foundation.spec.ts` 合成会话/401 | `evidence/foundation/` | 未覆盖会话过期并发刷新 |
 | 配对与账户登录 | 远程服务设置 | 两种入口 | 分步、键盘可用、凭据只在内存 | 已有 | 无 | foundation | `foundation.spec.ts` 未鉴权键盘入口 | 无 | 尚未证明完整提交/登出闭环 |
-| 连接/离线/重连 | 原生状态 | 顶栏状态 | 不清空当前视图、指数退避、可访问文案 | WebSocket | 无 | baseline | 旧脚本回归 | 无 | 未建立新事件层 |
+| 连接/离线/重连 | 原生状态 | 顶栏状态 | 不清空当前视图、指数退避、可访问文案 | WebSocket | 无 | in-progress | `foundation.spec.ts`：事件失效、筛选/选择保留、断线重连；账户 10s 轮询 | `evidence/foundation/` | 仍需最终断网/PWA 升级门 |
 | 图库分页 | 原生列表/网格 | 72/页、增量卡片 | infinite query + 虚拟化 + 锚点恢复 | 已有 | 无 | in-progress | `gallery.spec.ts`：120 项/DOM 上限/500 重试 | `evidence/gallery/` 桌面+移动 | 还需 10k 性能与滚动锚点门 |
 | 筛选 | 有 | 来源/文件夹/收藏/标签等 | URL 可重现、draft/apply 分离、移动 sheet | 已有 | 无 | in-progress | `gallery.spec.ts`：q/media/favorites URL 与 Host 请求 | `evidence/gallery/` toolbar | 移动端当前是折叠面板，精确 sheet 待验收 |
 | 排序与视图 | 有 | 有并本地持久 | 可分享 sort，非敏感 density 持久 | 已有 | 无 | in-progress | strict schema + URL state | `evidence/gallery/` | density 尚未实现，排序交互待专项 E2E |
@@ -41,10 +41,10 @@
 | 清理计划/移除/回收 | Mac 安全流程 | 有 | 预览、精确数量、不乐观成功、可追踪 | 已有 | 无 | in-progress | `slimming.spec.ts`：gallery/cluster 冻结选择、两种模式确认、只读计划→执行→验证、恢复/永久清理 | `evidence/slimming/` 清理选择与保护 | 只验证合成 Host 状态机；不证明真实文件/Photos 移动、删除、磁盘释放或授权处理，自动测试未读取 HDD2 |
 | 来源列表/管理 | Mac 侧栏/设置 | Web 有请求流 | 能力提示、审计反馈、精确作用域 | 已有 | 无 | in-progress | `management.spec.ts`：来源刷新、Host 完成状态、axe | `evidence/management/` 来源桌面+移动 | 合成 source；不证明真实文件夹/Photos 授权 |
 | 存储与维护 | Mac 设置 | Web 有 | 容量、健康、操作请求和进度 | 已有 | 无 | in-progress | `management.spec.ts`：容量、清理确认、Host 结果 | `evidence/management/` 存储桌面+移动 | 不证明真实磁盘回收、导出或 App 重启 |
-| 通知/工作区提示 | Mac 通知 | Web banner/overlay | 持久且不挡主路径，动作可追踪 | 已有 | 无 | baseline | Swift 端点测试 | 基线图有 warning | 新信息层级未建 |
+| 通知/工作区提示 | Mac 通知 | Web banner/overlay | 持久且不挡主路径，动作可追踪 | 已有 | 无 | in-progress | `foundation.spec.ts`：Host 通知→回收站动作→投影刷新；Swift 端点测试 | 基线图有 warning | 待最终主题/缩放审查 |
 | 通用设置 | Mac Settings | Web 有 | 类型表单、dirty/reset/save、Host 回读 | 已有 | 无 | in-progress | `management.spec.ts`：部分更新、Host 回读、409 冲突 | `evidence/management/` 设置桌面+移动 | 阈值仅摘要；不证明 Mac 设置持久化 |
 | 配对设备管理 | Mac 设置 | Web 有 | 撤销确认、当前设备保护 | 已有 | 无 | in-progress | `management.spec.ts`：当前设备禁用、确认后撤销 | `evidence/management/` 设置桌面+移动 | 合成设备；不证明真实远程会话失效 |
-| 长任务与操作 | Mac 任务 | Web jobs/activity | 跨路由可见、重连后恢复、操作可审计 | 已有 | 无 | in-progress | `management.spec.ts`：任务进度、暂停、Host 状态回读 | `evidence/management/` 活动桌面+移动 | 单项合成任务；重连恢复和多任务压力待验收 |
+| 长任务与操作 | Mac 任务 | Web jobs/activity | 跨路由可见、重连后恢复、操作可审计 | 已有 | 无 | in-progress | `management.spec.ts`：任务进度、暂停、Host 状态回读；事件层精确刷新 jobs | `evidence/management/` 活动桌面+移动 | 单项合成任务；多任务压力待验收 |
 | 深色/对比/减少动效 | Mac 系统主题 | CSS 已有多类 media | system/light/dark、forced-colors、reduced-motion | 不需 | 无 | baseline | 旧 CSS/脚本 | 基线仅 light | 无新 token 实现 |
 | 键盘/焦点/History | Mac 原生 | 已有大量回归 | 语义 route、焦点圈定/返回、虚拟网格 roving | 不需 | 无 | in-progress | `gallery.spec.ts` + `curation.spec.ts`：History、焦点返回、审查键盘、axe | `evidence/gallery/`、`evidence/curation/` | 完整键盘/VoiceOver 手工门未完成 |
 | PWA 外壳 | 不适用 | 有 manifest，SW 仅认证 | 可安装、公共 shell 离线，绝不缓存私有数据 | 不需 | SW header/scope | foundation | manifest 生成检查、E2E 在线外壳 | `evidence/foundation/` | 离线、升级、Cache Storage 专项门未完成 |

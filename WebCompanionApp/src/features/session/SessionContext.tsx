@@ -21,6 +21,7 @@ type SessionContextValue = {
   pair: (token: string, deviceName: string) => Promise<void>;
   login: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
+  expire: (message: string) => void;
 };
 
 const SessionContext = createContext<SessionContextValue | null>(null);
@@ -67,9 +68,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     setPhase('unauthenticated');
   }, []);
 
+  const expire = useCallback((message: string) => {
+    setSession(null);
+    setInitialMessage(message);
+    setPhase('unauthenticated');
+  }, []);
+
   const value = useMemo<SessionContextValue>(
-    () => ({ phase, session, initialMessage, pair, login, logout }),
-    [initialMessage, login, logout, pair, phase, session],
+    () => ({ phase, session, initialMessage, pair, login, logout, expire }),
+    [expire, initialMessage, login, logout, pair, phase, session],
   );
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;

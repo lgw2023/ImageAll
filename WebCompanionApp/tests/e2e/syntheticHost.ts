@@ -1,4 +1,4 @@
-import type { Page } from '@playwright/test';
+import type { Page, WebSocketRoute } from '@playwright/test';
 
 export const sourceID = '9de47499-1ca0-4cc2-84bc-a881018e8b0c';
 export const tagIDs = [
@@ -38,6 +38,8 @@ const capabilities = {
     'trainingActivities',
     'librarySuggestions',
     'librarySlimming',
+    'workspaceNotices',
+    'events',
   ],
   listenPort: 5173,
   usesTLS: false,
@@ -183,7 +185,24 @@ const syntheticWorldMapHTML = `<!doctype html>
 </body>
 </html>`;
 
-export async function installSyntheticAuthenticatedHost(page: Page) {
+export type SyntheticHostController = {
+  sendEvent: (
+    kind: 'sourcesChanged' | 'tagsChanged' | 'assetsChanged' | 'jobsChanged' | 'reviewChanged',
+  ) => void;
+  closeEvents: () => void;
+  showRecycleNotice: () => void;
+};
+
+export async function installSyntheticAuthenticatedHost(
+  page: Page,
+): Promise<SyntheticHostController> {
+  let eventSocket: WebSocketRoute | null = null;
+  let workspaceNotice: {
+    id: string;
+    severity: 'warning';
+    message: string;
+    actions: { id: string; kind: 'openRecycleBin'; title: string; sourceID: string }[];
+  } | null = null;
   let firstAssetFavorite = false;
   let syntheticTags = structuredClone(tags) as {
     id: string;
@@ -487,6 +506,9 @@ export async function installSyntheticAuthenticatedHost(page: Page) {
     confirmedPlaceID: null as string | null,
     candidates: [] as (typeof placeCandidate)[],
   };
+  await page.routeWebSocket('**/v1/events/websocket', (socket) => {
+    eventSocket = socket;
+  });
   await page.route('**/world-map/index.html', (route) =>
     route.fulfill({
       status: 200,
@@ -500,6 +522,29 @@ export async function installSyntheticAuthenticatedHost(page: Page) {
   await page.route('**/v1/capabilities', (route) =>
     route.fulfill({ status: 200, contentType: 'application/json', json: capabilities }),
   );
+  await page.route('**/v1/workspace-notice', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: { notice: workspaceNotice },
+    }),
+  );
+  await page.route('**/v1/workspace-notice/dismiss', (route) => {
+    workspaceNotice = null;
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: { dismissed: true, notice: null },
+    });
+  });
+  await page.route('**/v1/workspace-notice/action', (route) => {
+    workspaceNotice = null;
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: { performed: true, notice: null },
+    });
+  });
   await page.route('**/v1/source-management', (route) =>
     route.fulfill({
       status: 200,
@@ -1799,4 +1844,44 @@ export async function installSyntheticAuthenticatedHost(page: Page) {
   await page.route(/\/v1\/assets\/[0-9a-f-]+\/open-original$/i, (route) =>
     route.fulfill({ status: 204 }),
   );
+  return {
+    sendEvent: (kind) => {
+      eventSocket?.send(
+        JSON.stringify({
+          id: crypto.randomUUID(),
+          kind,
+          emittedAtMs: Date.now(),
+          sourceID: null,
+          tagID: null,
+          jobID: null,
+        }),
+      );
+    },
+    closeEvents: () => eventSocket?.close({ code: 1012, reason: 'synthetic restart' }),
+    showRecycleNotice: () => {
+      workspaceNotice = {
+        id: 'notice-1',
+        severity: 'warning',
+        message: '来源删除被回收站中的项目阻止。',
+        actions: [
+          {
+            id: 'open-recycle',
+            kind: 'openRecycleBin',
+            title: '打开回收站',
+            sourceID,
+          },
+        ],
+      };
+      eventSocket?.send(
+        JSON.stringify({
+          id: crypto.randomUUID(),
+          kind: 'sourcesChanged',
+          emittedAtMs: Date.now(),
+          sourceID,
+          tagID: null,
+          jobID: null,
+        }),
+      );
+    },
+  };
 }
