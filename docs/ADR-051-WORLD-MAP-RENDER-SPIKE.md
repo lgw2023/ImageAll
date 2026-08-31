@@ -244,6 +244,9 @@ job control 在安全批次边界生效，已提交的位置观察保留。cance
 18. Web Companion 复用同一目录聚合与 bundle 渲染器；地图文档只允许同源 iframe，视口请求按代次
     协调，地点照片继续走受保护媒体路由。网页不得接收路径或 Photos identifier，也不得绕过 Mac 的
     位置回填与地点解析确认。
+19. deck.gl canvas 中的聚合照片塔必须由共享 bundle 提供可见的当前视口键盘导航器；导航器只消费
+    已注入的聚合簇，按稳定 cluster ID 协调指针选择、键盘焦点与恢复，并只在用户明确打开时发送既有
+    `clusterClicked`。Mac 与 Web 共用同一 DOM、焦点环和低饱和纸张视觉，不建立第二套地点或照片状态。
 
 ## 4. 当前状态与后续闸门
 

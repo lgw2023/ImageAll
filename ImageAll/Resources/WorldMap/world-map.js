@@ -1,5 +1,12 @@
 const bridge = globalThis.webkit?.messageHandlers?.worldMapBridge;
 const tooltip = document.getElementById("tooltip");
+const clusterNavigator = document.getElementById("cluster-navigator");
+const clusterNavigatorPrevious = document.getElementById("cluster-navigator-previous");
+const clusterNavigatorCurrent = document.getElementById("cluster-navigator-current");
+const clusterNavigatorNext = document.getElementById("cluster-navigator-next");
+const clusterNavigatorName = document.getElementById("cluster-navigator-name");
+const clusterNavigatorMeta = document.getElementById("cluster-navigator-meta");
+const clusterNavigatorStatus = document.getElementById("cluster-navigator-status");
 const maplibregl = globalThis.maplibregl;
 const deckRuntime = globalThis.deck;
 const mapWorkerBase64 = globalThis.ImageAllMapLibreWorkerBase64;
@@ -9,6 +16,8 @@ const requestedInitialCamera = globalThis.ImageAllWorldMapInitialCamera;
 let overlay = null;
 let clusters = [];
 let selectedClusterID = null;
+let keyboardClusterID = null;
+let clusterNavigatorKeyboardActive = false;
 let rendererReady = false;
 
 function finiteNumber(value, fallback) {
@@ -185,6 +194,87 @@ function elevationForCount(count) {
   return 4200 * Math.pow(Math.log2(count + 1), 1.65);
 }
 
+function clustersInCurrentViewport() {
+  const bounds = map?.getBounds?.();
+  return clusters
+    .filter((cluster) => {
+      if (!bounds) return true;
+      return bounds.contains([cluster.longitude, cluster.latitude]);
+    })
+    .sort((left, right) => (
+      right.photoCount - left.photoCount
+      || left.displayName.localeCompare(right.displayName, "zh-CN")
+      || left.id.localeCompare(right.id)
+    ));
+}
+
+function keyboardClusterPresentation(cluster, index, count) {
+  const name = cluster.displayName || "未命名地点";
+  return {
+    name: `${name} · ${index + 1} / ${count}`,
+    meta: `${cluster.photoCount.toLocaleString()} 张 · GPS ${cluster.gpsCount.toLocaleString()} · 标签 ${cluster.tagCount.toLocaleString()}`,
+    ariaLabel: `${name}，${cluster.photoCount.toLocaleString()} 张照片，GPS ${cluster.gpsCount.toLocaleString()}，地点标签 ${cluster.tagCount.toLocaleString()}，第 ${index + 1} 个，共 ${count} 个；按 Enter 打开`,
+  };
+}
+
+function showKeyboardClusterTooltip(cluster) {
+  if (!cluster || !map) return;
+  const point = map.project([cluster.longitude, cluster.latitude]);
+  showTooltip(cluster, point.x, point.y);
+}
+
+function syncClusterNavigator({ announce = false, preferSelected = false } = {}) {
+  const candidates = clustersInCurrentViewport();
+  const selected = candidates.find((cluster) => cluster.id === selectedClusterID);
+  let current = candidates.find((cluster) => cluster.id === keyboardClusterID);
+  if ((preferSelected && selected) || !current) current = selected || candidates[0] || null;
+  keyboardClusterID = current?.id || null;
+
+  if (!current) {
+    clusterNavigator.dataset.empty = "true";
+    delete clusterNavigatorCurrent.dataset.clusterId;
+    clusterNavigatorName.textContent = "当前视口没有照片塔";
+    clusterNavigatorMeta.textContent = "拖动或缩放地图后重试";
+    clusterNavigatorCurrent.setAttribute("aria-label", "当前视口没有照片塔");
+    clusterNavigatorCurrent.disabled = true;
+    clusterNavigatorPrevious.disabled = true;
+    clusterNavigatorNext.disabled = true;
+    if (announce) clusterNavigatorStatus.textContent = "当前视口没有可浏览的照片塔";
+    return;
+  }
+
+  const index = candidates.indexOf(current);
+  const presentation = keyboardClusterPresentation(current, index, candidates.length);
+  delete clusterNavigator.dataset.empty;
+  clusterNavigatorCurrent.dataset.clusterId = current.id;
+  clusterNavigatorName.textContent = presentation.name;
+  clusterNavigatorMeta.textContent = presentation.meta;
+  clusterNavigatorCurrent.setAttribute("aria-label", presentation.ariaLabel);
+  clusterNavigatorCurrent.title = `${current.displayName || "未命名地点"} · 按 Enter 打开照片塔`;
+  clusterNavigatorCurrent.disabled = false;
+  clusterNavigatorPrevious.disabled = index === 0;
+  clusterNavigatorNext.disabled = index === candidates.length - 1;
+  if (announce) clusterNavigatorStatus.textContent = `已定位到${presentation.ariaLabel}`;
+  if (clusterNavigatorKeyboardActive) showKeyboardClusterTooltip(current);
+}
+
+function moveKeyboardCluster(target) {
+  const candidates = clustersInCurrentViewport();
+  if (!candidates.length) {
+    syncClusterNavigator({ announce: true });
+    return;
+  }
+  const currentIndex = Math.max(0, candidates.findIndex(
+    (cluster) => cluster.id === keyboardClusterID
+  ));
+  const nextIndex = typeof target === "number"
+    ? Math.max(0, Math.min(candidates.length - 1, target))
+    : Math.max(0, Math.min(candidates.length - 1, currentIndex + target));
+  keyboardClusterID = candidates[nextIndex].id;
+  syncClusterNavigator({ announce: true });
+  renderLayers();
+}
+
 function renderLayers() {
   if (!overlay) return;
   const selected = clusters.find((cluster) => cluster.id === selectedClusterID);
@@ -272,6 +362,26 @@ function renderLayers() {
     );
   }
 
+  const keyboardCluster = clusterNavigatorKeyboardActive
+    ? clusters.find((cluster) => cluster.id === keyboardClusterID)
+    : null;
+  if (keyboardCluster) {
+    layers.push(
+      new deckRuntime.ScatterplotLayer({
+        id: "keyboard-city-ring",
+        data: [keyboardCluster],
+        pickable: false,
+        stroked: true,
+        filled: false,
+        radiusUnits: "meters",
+        getPosition: (item) => [item.longitude, item.latitude],
+        getRadius: radius * 2.6,
+        getLineColor: [60, 89, 96, 238],
+        lineWidthMinPixels: 3.1
+      })
+    );
+  }
+
   overlay.setProps({ layers });
 }
 
@@ -298,6 +408,8 @@ function showTooltip(object, x, y) {
 function selectCluster(object) {
   if (!object) return;
   selectedClusterID = object.id;
+  keyboardClusterID = object.id;
+  syncClusterNavigator({ preferSelected: true });
   renderLayers();
   post({ type: "clusterClicked", clusterID: object.id });
 }
@@ -344,6 +456,7 @@ function installRenderer() {
       overlay = new deckRuntime.MapboxOverlay({ interleaved: false, layers: [] });
       map.addControl(overlay);
     }
+    syncClusterNavigator();
     renderLayers();
     if (!rendererReady) {
       rendererReady = true;
@@ -359,7 +472,11 @@ function installRenderer() {
 map.on("style.load", installRenderer);
 installRenderer();
 map.on("zoomend", renderLayers);
-map.on("moveend", postViewport);
+map.on("moveend", () => {
+  syncClusterNavigator();
+  renderLayers();
+  postViewport();
+});
 map.on("dragstart", () => { tooltip.style.display = "none"; });
 map.on("error", (event) => {
   post({
@@ -369,6 +486,44 @@ map.on("error", (event) => {
   console.warn("MapLibre renderer error", event.error);
 });
 
+clusterNavigatorPrevious.addEventListener("click", () => moveKeyboardCluster(-1));
+clusterNavigatorNext.addEventListener("click", () => moveKeyboardCluster(1));
+clusterNavigatorCurrent.addEventListener("click", () => {
+  const current = clusters.find((cluster) => cluster.id === keyboardClusterID);
+  if (current) selectCluster(current);
+});
+clusterNavigator.addEventListener("keydown", (event) => {
+  const candidates = clustersInCurrentViewport();
+  if (!candidates.length) return;
+  const currentIndex = Math.max(0, candidates.findIndex(
+    (cluster) => cluster.id === keyboardClusterID
+  ));
+  const target = {
+    ArrowLeft: currentIndex - 1,
+    ArrowRight: currentIndex + 1,
+    PageUp: currentIndex - 5,
+    PageDown: currentIndex + 5,
+    Home: 0,
+    End: candidates.length - 1,
+  }[event.key];
+  if (target == null) return;
+  event.preventDefault();
+  moveKeyboardCluster(target);
+});
+clusterNavigator.addEventListener("focusin", () => {
+  clusterNavigatorKeyboardActive = true;
+  syncClusterNavigator();
+  renderLayers();
+});
+clusterNavigator.addEventListener("focusout", () => {
+  requestAnimationFrame(() => {
+    if (clusterNavigator.contains(document.activeElement)) return;
+    clusterNavigatorKeyboardActive = false;
+    tooltip.style.display = "none";
+    renderLayers();
+  });
+});
+
 globalThis.ImageAllWorldMap = Object.freeze({
   updateClusters(payload) {
     if (!payload || !Array.isArray(payload.clusters)) return;
@@ -376,6 +531,10 @@ globalThis.ImageAllWorldMap = Object.freeze({
     if (selectedClusterID && !clusters.some((item) => item.id === selectedClusterID)) {
       selectedClusterID = null;
     }
+    if (keyboardClusterID && !clusters.some((item) => item.id === keyboardClusterID)) {
+      keyboardClusterID = null;
+    }
+    syncClusterNavigator();
     renderLayers();
   },
   restoreSelection(clusterID) {
@@ -383,11 +542,13 @@ globalThis.ImageAllWorldMap = Object.freeze({
       && clusters.some((item) => item.id === clusterID)
       ? clusterID
       : null;
+    keyboardClusterID = selectedClusterID;
+    syncClusterNavigator({ preferSelected: true });
     renderLayers();
   },
   restoreViewport,
   snapshotState() {
-    return { selectedClusterID, viewport: currentViewport() };
+    return { selectedClusterID, keyboardClusterID, viewport: currentViewport() };
   },
   rendererStatus() {
     return { ready: rendererReady, webgl2Available: webGL2Available() };

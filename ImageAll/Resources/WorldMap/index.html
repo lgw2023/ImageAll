@@ -14,11 +14,26 @@
   <div id="paper-wash" aria-hidden="true"></div>
   <div id="paper-texture" aria-hidden="true"></div>
   <div id="tooltip" role="status" aria-live="polite"></div>
+  <section id="cluster-navigator" aria-label="当前视口照片塔">
+    <button id="cluster-navigator-previous" type="button" aria-label="上一个照片塔" title="上一个照片塔（←）">
+      <span aria-hidden="true">‹</span>
+    </button>
+    <button id="cluster-navigator-current" type="button"
+      aria-keyshortcuts="ArrowLeft ArrowRight PageUp PageDown Home End Enter">
+      <span class="cluster-navigator-kicker">KEYBOARD ATLAS</span>
+      <strong id="cluster-navigator-name">当前视口没有照片塔</strong>
+      <span id="cluster-navigator-meta">拖动或缩放地图后重试</span>
+    </button>
+    <button id="cluster-navigator-next" type="button" aria-label="下一个照片塔" title="下一个照片塔（→）">
+      <span aria-hidden="true">›</span>
+    </button>
+    <p id="cluster-navigator-status" class="visually-hidden" role="status" aria-live="polite"></p>
+  </section>
   <div id="fallback-badge">LOCAL ATLAS · OFFLINE READY</div>
   <script src="maplibre-gl.js"></script>
   <script src="maplibre-gl-worker-source.js"></script>
   <script src="deck.gl.min.js"></script>
   <script src="natural-earth-countries.js"></script>
-  <script src="world-map.js?v=20260806-46"></script>
+  <script src="world-map.js?v=20260831-47"></script>
 </body>
 </html>

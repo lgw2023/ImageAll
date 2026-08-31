@@ -391,7 +391,7 @@ struct WorldMapWorkspaceView: View {
             Text("你的照片，长成一座世界。")
                 .font(.system(size: 27, weight: .bold, design: .rounded))
                 .foregroundStyle(Palette.ink)
-            Text("拖拽探索 · 双指缩放 · ⌃拖拽旋转与俯仰 · 点击照片塔")
+            Text("拖拽探索 · 双指缩放 · ⌃拖拽旋转与俯仰 · Tab 键浏览照片塔")
                 .font(.caption)
                 .foregroundStyle(Palette.secondaryInk)
         }

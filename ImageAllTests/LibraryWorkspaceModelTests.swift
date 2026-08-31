@@ -14908,6 +14908,94 @@ final class WorldMapWebKitSmokeTests: XCTestCase {
         webView.stopLoading()
     }
 
+    func testBundledWorldMapKeyboardNavigatorSelectsVisibleClusterThroughExistingBridge() async throws {
+        let ready = expectation(description: "WorldMap WebKit bridge ready")
+        let clusterClicked = expectation(description: "Keyboard navigator selected cluster")
+        let handler = WorldMapWebKitMessageHandler(
+            ready: ready,
+            clusterClicked: clusterClicked
+        )
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.userContentController.add(handler, name: "worldMapBridge")
+        let webView = WKWebView(
+            frame: .init(x: 0, y: 0, width: 1_200, height: 760),
+            configuration: configuration
+        )
+        let window = NSWindow(
+            contentRect: .init(x: 0, y: 0, width: 1_200, height: 760),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = webView
+        window.orderBack(nil)
+        defer { window.close() }
+
+        let resources = try worldMapResourcesURL()
+        webView.loadFileURL(
+            resources.appendingPathComponent("index.html"),
+            allowingReadAccessTo: resources
+        )
+        await fulfillment(of: [ready], timeout: 15)
+
+        let snapshotJSON = try await evaluateJavaScriptString(
+            """
+            window.ImageAllWorldMap.updateClusters({
+                revision: 1,
+                clusters: [
+                    {
+                        id: "shanghai", longitude: 121.4737, latitude: 31.2304,
+                        photoCount: 42, gpsCount: 30, tagCount: 12, displayName: "上海"
+                    },
+                    {
+                        id: "paris", longitude: 2.3522, latitude: 48.8566,
+                        photoCount: 30, gpsCount: 20, tagCount: 10, displayName: "巴黎"
+                    },
+                    {
+                        id: "new-york", longitude: -74.006, latitude: 40.7128,
+                        photoCount: 20, gpsCount: 18, tagCount: 2, displayName: "纽约"
+                    }
+                ]
+            });
+            const navigatorElement = document.getElementById("cluster-navigator");
+            const current = document.getElementById("cluster-navigator-current");
+            current.focus();
+            navigatorElement.dispatchEvent(new KeyboardEvent("keydown", {
+                key: "ArrowRight", bubbles: true, cancelable: true
+            }));
+            current.click();
+            JSON.stringify({
+                clusterID: current.dataset.clusterId,
+                label: current.getAttribute("aria-label"),
+                selectedClusterID: window.ImageAllWorldMap.snapshotState().selectedClusterID,
+                previousDisabled: document.getElementById("cluster-navigator-previous").disabled,
+                nextDisabled: document.getElementById("cluster-navigator-next").disabled
+            });
+            """,
+            in: webView
+        )
+        await fulfillment(of: [clusterClicked], timeout: 3)
+
+        let snapshotData = try XCTUnwrap(snapshotJSON?.data(using: .utf8))
+        let snapshot = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: snapshotData) as? [String: Any]
+        )
+        XCTAssertEqual(snapshot["clusterID"] as? String, "paris")
+        XCTAssertEqual(snapshot["selectedClusterID"] as? String, "paris")
+        XCTAssertTrue((snapshot["label"] as? String)?.contains("巴黎，30 张照片") == true)
+        XCTAssertEqual(snapshot["previousDisabled"] as? Bool, false)
+        XCTAssertEqual(snapshot["nextDisabled"] as? Bool, false)
+        XCTAssertEqual(handler.clusterClickedIDs, ["paris"])
+        XCTAssertFalse(
+            handler.eventTypes.contains("renderError"),
+            "WebKit bridge events: \(handler.eventTypes), errors: \(handler.renderErrors)"
+        )
+
+        configuration.userContentController.removeScriptMessageHandler(forName: "worldMapBridge")
+        webView.stopLoading()
+    }
+
     private func worldMapResourcesURL() throws -> URL {
         let testBundleURL = Bundle(for: Self.self).bundleURL
         let appBundleURL = testBundleURL
@@ -14938,15 +15026,23 @@ final class WorldMapWebKitSmokeTests: XCTestCase {
 private final class WorldMapWebKitMessageHandler: NSObject, WKScriptMessageHandler {
     private let ready: XCTestExpectation
     private let cameraChanged: XCTestExpectation?
+    private let clusterClicked: XCTestExpectation?
     private var hasFulfilledReady = false
     private var hasFulfilledCameraChanged = false
+    private var hasFulfilledClusterClicked = false
     private(set) var eventTypes: [String] = []
     private(set) var renderErrors: [String] = []
     private(set) var lastViewport: WorldMapViewport?
+    private(set) var clusterClickedIDs: [String] = []
 
-    init(ready: XCTestExpectation, cameraChanged: XCTestExpectation? = nil) {
+    init(
+        ready: XCTestExpectation,
+        cameraChanged: XCTestExpectation? = nil,
+        clusterClicked: XCTestExpectation? = nil
+    ) {
         self.ready = ready
         self.cameraChanged = cameraChanged
+        self.clusterClicked = clusterClicked
     }
 
     func userContentController(
@@ -14977,6 +15073,13 @@ private final class WorldMapWebKitMessageHandler: NSObject, WKScriptMessageHandl
             if !hasFulfilledCameraChanged {
                 hasFulfilledCameraChanged = true
                 cameraChanged?.fulfill()
+            }
+        }
+        if type == "clusterClicked", let clusterID = body["clusterID"] as? String {
+            clusterClickedIDs.append(clusterID)
+            if !hasFulfilledClusterClicked {
+                hasFulfilledClusterClicked = true
+                clusterClicked?.fulfill()
             }
         }
     }
