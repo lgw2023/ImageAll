@@ -13,6 +13,7 @@ import {
   type JobAction,
   type SourceManagementAction,
   type StorageMaintenanceAction,
+  type SuggestionThresholdMethod,
 } from './contracts/management';
 
 export function fetchSourceManagement(signal?: AbortSignal) {
@@ -51,12 +52,21 @@ export type GeneralSettingsPatch = {
   idleThumbnailPrewarmEnabled?: boolean;
   toolbarDisplayMode?: 'iconOnly' | 'iconAndTitle';
   maxPendingSuggestionsPerTag?: number;
+  suggestionThresholdMutation?: {
+    action: 'setDefault' | 'setOverride' | 'clearOverride' | 'prune';
+    method: SuggestionThresholdMethod;
+    tagID?: string;
+    minScore?: number;
+  };
 };
 
-export function updateGeneralSettings(patch: GeneralSettingsPatch) {
+export function updateGeneralSettings(
+  patch: GeneralSettingsPatch,
+  operationID: string = crypto.randomUUID(),
+) {
   return requestJSON('/v1/settings/general', generalSettingsUpdateResponseSchema, {
     method: 'PUT',
-    body: JSON.stringify({ operationID: crypto.randomUUID(), ...patch }),
+    body: JSON.stringify({ operationID, ...patch }),
   });
 }
 

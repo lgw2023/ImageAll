@@ -40,6 +40,7 @@
 - [PROGRESS-2026-09-01-PRISM-REDESIGN.md](PROGRESS-2026-09-01-PRISM-REDESIGN.md)：基于行业调研重构独立的 Prism Web 视觉系统、图库画布与 Review AI 工作台。
 - [PROGRESS-2026-09-01-SOURCE-MANAGEMENT-COMMAND-DECK.md](PROGRESS-2026-09-01-SOURCE-MANAGEMENT-COMMAND-DECK.md)：以独立的暗房控制台视觉交付完整来源管理、状态门控、任务取消与安全移除闭环。
 - [PROGRESS-2026-09-01-HELIOS-WEB-REDESIGN.md](PROGRESS-2026-09-01-HELIOS-WEB-REDESIGN.md)：在功能对齐、视觉独立的边界下，交付 Helios 全站视觉系统、移动筛选抽屉与完整存储命令工作台。
+- [PROGRESS-2026-09-01-SUGGESTION-THRESHOLD-PARITY.md](PROGRESS-2026-09-01-SUGGESTION-THRESHOLD-PARITY.md)：纠正设置页只读摘要缺口，交付三轨默认值、按标签覆盖、参考值、继承恢复与低分待审清理闭环。
 
 ## 状态词汇
 

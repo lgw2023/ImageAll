@@ -3,7 +3,7 @@ import { useState, type SyntheticEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { MonitorCog, Smartphone, Trash2 } from 'lucide-react';
 
-import type { GeneralSettings } from '@/api/contracts/management';
+import type { GeneralSettings, SuggestionThresholdMethod } from '@/api/contracts/management';
 import { errorMessage } from '@/api/errors';
 import {
   fetchGeneralSettings,
@@ -13,6 +13,125 @@ import {
   type GeneralSettingsPatch,
 } from '@/api/management';
 import { useSession } from '@/features/session/SessionContext';
+
+import { SuggestionThresholdDialog } from './SuggestionThresholdDialog';
+
+const thresholdMethodCopy: Record<
+  SuggestionThresholdMethod,
+  { title: string; description: string }
+> = {
+  featureKnn: {
+    title: '特征向量默认门槛',
+    description: '用于 Feature Print 近邻建议。',
+  },
+  personalCentroid: {
+    title: '个人模型默认门槛',
+    description: '用于个人标签质心建议。',
+  },
+  personalAdamW: {
+    title: '超级个人模型默认门槛',
+    description: '用于 AdamW 个人模型建议。',
+  },
+};
+
+function SuggestionThresholdPanel({ settings }: { settings: GeneralSettings }) {
+  const queryClient = useQueryClient();
+  const defaults = settings.suggestionThresholds?.defaults ?? [];
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [pendingMethod, setPendingMethod] = useState<SuggestionThresholdMethod | null>(null);
+  const [message, setMessage] = useState('');
+  const [showTagOverrides, setShowTagOverrides] = useState(false);
+
+  if (!settings.suggestionThresholds) return null;
+
+  async function saveDefault(method: SuggestionThresholdMethod) {
+    const parsed = Number(drafts[method]);
+    if (!Number.isFinite(parsed)) {
+      setMessage('请输入有效的有限数字。');
+      return;
+    }
+    setPendingMethod(method);
+    setMessage('');
+    try {
+      const response = await updateGeneralSettings({
+        suggestionThresholdMutation: { action: 'setDefault', method, minScore: parsed },
+      });
+      queryClient.setQueryData(['general-settings'], response.settings);
+      setDrafts((current) =>
+        Object.fromEntries(Object.entries(current).filter(([key]) => key !== method)),
+      );
+      setMessage(`${thresholdMethodCopy[method].title}已更新为 ${parsed.toFixed(2)}。`);
+    } catch (error) {
+      setMessage(errorMessage(error));
+    } finally {
+      setPendingMethod(null);
+    }
+  }
+
+  return (
+    <section className="settings-panel threshold-settings-panel" aria-labelledby="threshold-title">
+      <div>
+        <p className="eyebrow">建议进入审查队列的最低分数</p>
+        <h3 id="threshold-title">建议阈值</h3>
+        <p className="panel-note">三条轨道的分数含义不同，请分别调整；分数不可横向比较。</p>
+      </div>
+      <div className="threshold-default-list">
+        {defaults.map((row) => {
+          const copy = thresholdMethodCopy[row.method];
+          const draft = drafts[row.method] ?? row.minScore.toFixed(2);
+          const parsed = Number(draft);
+          const dirty = Number.isFinite(parsed) && parsed !== row.minScore;
+          return (
+            <div className="threshold-default-row" key={row.method}>
+              <label htmlFor={`threshold-default-${row.method}`}>
+                <strong>{copy.title}</strong>
+                <small>{copy.description}</small>
+              </label>
+              <input
+                id={`threshold-default-${row.method}`}
+                inputMode="decimal"
+                onChange={(event) =>
+                  setDrafts((current) => ({ ...current, [row.method]: event.target.value }))
+                }
+                step="0.01"
+                type="number"
+                value={draft}
+              />
+              <button
+                aria-label={`保存${copy.title}`}
+                className="button"
+                disabled={!dirty || pendingMethod !== null}
+                onClick={() => void saveDefault(row.method)}
+                type="button"
+              >
+                {pendingMethod === row.method ? '保存中…' : '保存'}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      {settings.suggestionThresholds.tags.length ? (
+        <button
+          className="button threshold-overrides-button"
+          onClick={() => setShowTagOverrides(true)}
+          type="button"
+        >
+          按标签覆盖
+          <span>{settings.suggestionThresholds.tags.length} 个活动标签</span>
+        </button>
+      ) : null}
+      <p aria-live="polite" className="form-status threshold-status">
+        {message}
+      </p>
+      {showTagOverrides ? (
+        <SuggestionThresholdDialog
+          onClose={() => setShowTagOverrides(false)}
+          thresholds={settings.suggestionThresholds}
+        />
+      ) : null}
+    </section>
+  );
+}
 
 function SettingsForm({
   initial,
@@ -126,20 +245,7 @@ function SettingsForm({
           />
         </label>
       </section>
-      {initial.suggestionThresholds ? (
-        <section className="settings-panel" aria-labelledby="threshold-summary-title">
-          <h3 id="threshold-summary-title">建议阈值摘要</h3>
-          <div className="threshold-summary">
-            {initial.suggestionThresholds.defaults.map((row) => (
-              <div key={row.method}>
-                <span>{row.method}</span>
-                <strong>{row.minScore.toFixed(2)}</strong>
-              </div>
-            ))}
-          </div>
-          <p className="panel-note">逐标签阈值在训练与精简工作区按 Host 回读编辑。</p>
-        </section>
-      ) : null}
+      <SuggestionThresholdPanel settings={initial} />
       <div className="form-actions">
         <button
           className="button"

@@ -1,5 +1,7 @@
 import type { Page, WebSocketRoute } from '@playwright/test';
 
+import type { GeneralSettings } from '../../src/api/contracts/management';
+
 export const sourceID = '9de47499-1ca0-4cc2-84bc-a881018e8b0c';
 export const tagIDs = [
   '55220ca2-8800-4cea-a6b9-9f9e148d2adc',
@@ -264,7 +266,7 @@ export async function installSyntheticAuthenticatedHost(
   const reviewedAssets = new Set<string>();
   let sourceRequests: Record<string, unknown>[] = [];
   let storageRequests: Record<string, unknown>[] = [];
-  let settings = {
+  let settings: GeneralSettings = {
     localModel: {
       isEnabled: true,
       state: 'ready',
@@ -279,8 +281,34 @@ export async function installSyntheticAuthenticatedHost(
       defaults: [
         { method: 'featureKnn', minScore: 0.74 },
         { method: 'personalCentroid', minScore: 0.82 },
+        { method: 'personalAdamW', minScore: 0.86 },
       ],
-      tags: [],
+      tags: [
+        {
+          tagID: tagIDs[0],
+          displayName: '风景',
+          methods: [
+            {
+              method: 'featureKnn',
+              effectiveMinScore: 0.74,
+              overrideMinScore: null,
+              reference: { minScore: 0.69, acceptedSampleCount: 12, rejectedSampleCount: 7 },
+            },
+            {
+              method: 'personalCentroid',
+              effectiveMinScore: 0.84,
+              overrideMinScore: 0.84,
+              reference: { minScore: 0.81, acceptedSampleCount: 9, rejectedSampleCount: 6 },
+            },
+            {
+              method: 'personalAdamW',
+              effectiveMinScore: 0.86,
+              overrideMinScore: null,
+              reference: null,
+            },
+          ],
+        },
+      ],
     },
     maxPendingSuggestionsPerTag: 200,
   };
@@ -737,6 +765,65 @@ export async function installSyntheticAuthenticatedHost(
       idleThumbnailPrewarmEnabled?: boolean;
       toolbarDisplayMode?: 'iconOnly' | 'iconAndTitle';
       maxPendingSuggestionsPerTag?: number;
+      suggestionThresholdMutation?: {
+        action: 'setDefault' | 'setOverride' | 'clearOverride' | 'prune';
+        method: 'featureKnn' | 'personalCentroid' | 'personalAdamW';
+        tagID?: string;
+        minScore?: number;
+      };
+    };
+    const mutation = body.suggestionThresholdMutation;
+    const currentThresholds = settings.suggestionThresholds;
+    if (!currentThresholds) throw new Error('Synthetic threshold settings are unavailable.');
+    const defaultScore = mutation?.action === 'setDefault' ? mutation.minScore : undefined;
+    const defaultMethod = mutation?.action === 'setDefault' ? mutation.method : undefined;
+    const nextDefaults =
+      defaultScore !== undefined
+        ? currentThresholds.defaults.map((row) =>
+            row.method === defaultMethod ? { ...row, minScore: defaultScore } : row,
+          )
+        : currentThresholds.defaults;
+    const nextTags = mutation?.tagID
+      ? currentThresholds.tags.map((tag) => {
+          if (tag.tagID !== mutation.tagID) return tag;
+          return {
+            ...tag,
+            methods: tag.methods.map((row) => {
+              if (row.method !== mutation.method) return row;
+              if (mutation.action === 'setOverride' && mutation.minScore !== undefined) {
+                return {
+                  ...row,
+                  effectiveMinScore: mutation.minScore,
+                  overrideMinScore: mutation.minScore,
+                };
+              }
+              if (mutation.action === 'clearOverride') {
+                return {
+                  ...row,
+                  effectiveMinScore:
+                    nextDefaults.find((item) => item.method === row.method)?.minScore ??
+                    row.effectiveMinScore,
+                  overrideMinScore: null,
+                };
+              }
+              return row;
+            }),
+          };
+        })
+      : currentThresholds.tags.map((tag) => ({
+          ...tag,
+          methods: tag.methods.map((row) =>
+            defaultScore !== undefined &&
+            defaultMethod === row.method &&
+            row.overrideMinScore === null
+              ? { ...row, effectiveMinScore: defaultScore }
+              : row,
+          ),
+        }));
+    const suggestionThresholds = {
+      ...currentThresholds,
+      defaults: nextDefaults,
+      tags: nextTags,
     };
     settings = {
       ...settings,
@@ -749,6 +836,7 @@ export async function installSyntheticAuthenticatedHost(
       toolbarDisplayMode: body.toolbarDisplayMode ?? settings.toolbarDisplayMode,
       maxPendingSuggestionsPerTag:
         body.maxPendingSuggestionsPerTag ?? settings.maxPendingSuggestionsPerTag,
+      suggestionThresholds,
     };
     return route.fulfill({
       status: 200,

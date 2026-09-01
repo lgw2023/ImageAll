@@ -107,7 +107,7 @@ const thresholdReferenceSchema = z.object({
   acceptedSampleCount: z.int().nonnegative(),
   rejectedSampleCount: z.int().nonnegative(),
 });
-const thresholdMethodSchema = z.enum(['featureKnn', 'personalCentroid', 'personalAdamW']);
+export const thresholdMethodSchema = z.enum(['featureKnn', 'personalCentroid', 'personalAdamW']);
 const thresholdRowSchema = z.object({
   method: thresholdMethodSchema,
   effectiveMinScore: z.number(),
@@ -197,6 +197,7 @@ export type SourceManagement = z.infer<typeof sourceManagementSchema>;
 export type SourceManagementAction = z.infer<typeof sourceManagementActionSchema>;
 export type StorageMaintenanceAction = z.infer<typeof storageActionSchema>;
 export type GeneralSettings = z.infer<typeof generalSettingsSchema>;
+export type SuggestionThresholdMethod = z.infer<typeof thresholdMethodSchema>;
 export type JobSummary = z.infer<typeof jobSummarySchema>;
 export type JobAction = z.infer<typeof jobActionSchema>;
 export type PairedDevice = z.infer<typeof pairedDeviceSchema>;

@@ -1,7 +1,11 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
 
-import { installSyntheticAuthenticatedHost, sourceID as syntheticSourceID } from './syntheticHost';
+import {
+  installSyntheticAuthenticatedHost,
+  sourceID as syntheticSourceID,
+  tagIDs,
+} from './syntheticHost';
 
 async function expectAccessible(page: import('@playwright/test').Page) {
   const accessibility = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();
@@ -833,6 +837,150 @@ test('settings save partial fields and protect the current paired device', async
       animations: 'disabled',
     });
   }
+  await expectAccessible(page);
+});
+
+test('settings updates one default suggestion threshold without overwriting other settings', async ({
+  page,
+}) => {
+  await installSyntheticAuthenticatedHost(page);
+  let submitted: Record<string, unknown> | null = null;
+  await page.route('**/v1/settings/general', async (route) => {
+    if (route.request().method() !== 'PUT') return route.fallback();
+    submitted = route.request().postDataJSON() as Record<string, unknown>;
+    return route.fallback();
+  });
+  await page.goto('settings');
+
+  const featureThreshold = page.getByRole('spinbutton', { name: /^特征向量默认门槛/ });
+  await featureThreshold.fill('0.79');
+  await page.getByRole('button', { name: '保存特征向量默认门槛' }).click();
+
+  await expect(page.getByText('特征向量默认门槛已更新为 0.79。')).toBeVisible();
+  expect(submitted).toMatchObject({
+    suggestionThresholdMutation: {
+      action: 'setDefault',
+      method: 'featureKnn',
+      minScore: 0.79,
+    },
+  });
+  expect(submitted).not.toHaveProperty('modelEnabled');
+  expect(submitted).not.toHaveProperty('idleThumbnailPrewarmEnabled');
+  expect(submitted).not.toHaveProperty('toolbarDisplayMode');
+  await expect(featureThreshold).toHaveValue('0.79');
+  await expectAccessible(page);
+});
+
+test('settings manages per-tag threshold overrides through the Host', async ({
+  page,
+}, testInfo) => {
+  await installSyntheticAuthenticatedHost(page);
+  const submitted: Record<string, unknown>[] = [];
+  await page.route('**/v1/settings/general', async (route) => {
+    if (route.request().method() !== 'PUT') return route.fallback();
+    submitted.push(route.request().postDataJSON() as Record<string, unknown>);
+    return route.fallback();
+  });
+  await page.goto('settings');
+
+  const openButton = page.getByRole('button', { name: '按标签覆盖' });
+  await openButton.click();
+  const dialog = page.getByRole('dialog', { name: '按标签覆盖' });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole('searchbox', { name: '搜索标签' }).fill('风景');
+  const centroid = dialog.getByRole('group', { name: '风景 · 个人模型' });
+  await centroid.getByRole('spinbutton').fill('0.88');
+  await centroid.getByRole('button', { name: '保存覆盖' }).click();
+  await expect(dialog.getByText('风景的个人模型门槛已更新为 0.88。')).toBeVisible();
+
+  const feature = dialog.getByRole('group', { name: '风景 · 特征向量' });
+  await feature.getByRole('button', { name: '采用参考值 0.69' }).click();
+  await expect(feature.getByRole('spinbutton')).toHaveValue('0.69');
+
+  await centroid.getByRole('button', { name: '恢复继承默认' }).click();
+  await expect(centroid.getByText('继承默认 0.82')).toBeVisible();
+  expect(submitted.map((body) => body.suggestionThresholdMutation)).toEqual([
+    { action: 'setOverride', method: 'personalCentroid', tagID: tagIDs[0], minScore: 0.88 },
+    { action: 'setOverride', method: 'featureKnn', tagID: tagIDs[0], minScore: 0.69 },
+    { action: 'clearOverride', method: 'personalCentroid', tagID: tagIDs[0] },
+  ]);
+
+  await expectAccessible(page);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
+    true,
+  );
+  if (testInfo.project.name === 'chromium-mobile') {
+    const undersizedTouchTargets = await dialog.getByRole('button').evaluateAll((buttons) =>
+      buttons
+        .map((button) => ({
+          name: button.getAttribute('aria-label') ?? button.textContent.trim(),
+          height: button.getBoundingClientRect().height,
+        }))
+        .filter((item) => item.height < 44),
+    );
+    expect(undersizedTouchTargets).toEqual([]);
+  }
+  if (process.env.IMAGEALL_CAPTURE_EVIDENCE === '1') {
+    await page.screenshot({
+      path: `../docs/web-companion-refactor/evidence/management/imageall-react-suggestion-thresholds-${testInfo.project.name}.png`,
+      animations: 'disabled',
+    });
+  }
+
+  await dialog.getByRole('button', { name: '完成' }).click();
+  await expect(dialog).toBeHidden();
+  await expect(openButton).toBeFocused();
+  await expectAccessible(page);
+});
+
+test('settings confirms and idempotently retries pruning low-score suggestions', async ({
+  page,
+}) => {
+  await installSyntheticAuthenticatedHost(page);
+  const submitted: Record<string, unknown>[] = [];
+  await page.route('**/v1/settings/general', async (route) => {
+    if (route.request().method() !== 'PUT') return route.fallback();
+    const body = route.request().postDataJSON() as Record<string, unknown>;
+    const mutation = body.suggestionThresholdMutation as { action?: string } | undefined;
+    if (mutation?.action !== 'prune') return route.fallback();
+    submitted.push(body);
+    if (submitted.length === 1) {
+      return route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        json: { message: 'Mac 正在刷新建议，请稍后重试。' },
+      });
+    }
+    return route.fallback();
+  });
+  await page.goto('settings');
+  await page.getByRole('button', { name: '按标签覆盖' }).click();
+  const thresholdDialog = page.getByRole('dialog', { name: '按标签覆盖' });
+  const feature = thresholdDialog.getByRole('group', { name: '风景 · 特征向量' });
+  const pruneButton = feature.getByRole('button', { name: '清理低分待审项' });
+  await pruneButton.click();
+
+  const confirmation = page.getByRole('alertdialog', {
+    name: '清理“风景”的特征向量低分建议？',
+  });
+  await expect(confirmation).toContainText('当前有效门槛 0.74');
+  await expect(confirmation).toContainText('不会修改门槛，也不会启动新的图库扫描');
+  await confirmation.getByRole('button', { name: '确认清理低分待审项' }).click();
+  await expect(confirmation.getByText('Mac 正在刷新建议，请稍后重试。')).toBeVisible();
+  await confirmation.getByRole('button', { name: '确认清理低分待审项' }).click();
+
+  await expect(confirmation).toBeHidden();
+  await expect(
+    thresholdDialog.getByText('Mac 已按风景的特征向量有效门槛清理低分待审项。'),
+  ).toBeVisible();
+  await expect(pruneButton).toBeFocused();
+  expect(submitted).toHaveLength(2);
+  expect(submitted[0]?.operationID).toBe(submitted[1]?.operationID);
+  expect(submitted[1]?.suggestionThresholdMutation).toEqual({
+    action: 'prune',
+    method: 'featureKnn',
+    tagID: tagIDs[0],
+  });
   await expectAccessible(page);
 });
 
