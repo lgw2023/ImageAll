@@ -936,7 +936,13 @@
   }
 
   .gallery-filter-controls {
-    display: contents;
+    display: flex;
+    width: 100%;
+    flex: 1 0 100%;
+    order: 10;
+    align-items: end;
+    flex-wrap: wrap;
+    gap: 8px;
   }
 
   .gallery-filter-toggle {
@@ -992,6 +998,162 @@
     background: var(--color-surface-raised);
   }
 
+  .gallery-tag-filter,
+  .gallery-choice-filter {
+    order: 20;
+    min-width: 0;
+    min-height: 78px;
+    margin: 2px 0 0;
+    padding: 9px 10px 10px;
+    border: 1px solid var(--color-border);
+    border-radius: calc(var(--radius-control) + 2px);
+    background: color-mix(in srgb, var(--color-surface-muted) 72%, transparent);
+  }
+
+  .gallery-tag-filter {
+    display: grid;
+    flex: 2 1 390px;
+    align-content: start;
+    gap: 8px;
+  }
+
+  .gallery-choice-filter {
+    flex: 1 1 220px;
+  }
+
+  .gallery-format-filter {
+    flex: 2 1 420px;
+  }
+
+  .gallery-tag-filter legend,
+  .gallery-choice-filter legend {
+    padding: 0 5px;
+    color: var(--color-text-muted);
+    font-size: 9px;
+    font-weight: 750;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .gallery-tag-builder {
+    display: grid;
+    grid-template-columns: minmax(132px, 1fr) minmax(98px, 0.55fr) auto;
+    align-items: end;
+    gap: 7px;
+  }
+
+  .gallery-tag-builder label {
+    display: grid;
+    min-width: 0;
+    gap: 3px;
+  }
+
+  .gallery-tag-builder label > span {
+    color: var(--color-text-muted);
+    font-size: 9px;
+    font-weight: 700;
+  }
+
+  .gallery-tag-builder select {
+    width: 100%;
+    min-height: 32px;
+    padding: 5px 24px 5px 8px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-control);
+    color: var(--color-text);
+    background: var(--color-surface);
+  }
+
+  .gallery-tag-builder .button {
+    min-height: 32px;
+  }
+
+  .gallery-filter-chips,
+  .gallery-filter-options,
+  .gallery-tag-relation {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .gallery-filter-chip,
+  .gallery-filter-options label,
+  .gallery-tag-relation label {
+    display: inline-flex;
+    min-height: 28px;
+    padding: 4px 8px;
+    align-items: center;
+    gap: 5px;
+    border: 1px solid var(--color-border);
+    border-radius: 999px;
+    color: var(--color-text-muted);
+    background: var(--color-surface);
+    font-size: 10px;
+    line-height: 1.2;
+    cursor: pointer;
+  }
+
+  .gallery-filter-chip {
+    border-color: var(--color-accent-border);
+    color: var(--color-accent-strong);
+    background: var(--color-accent-soft);
+    cursor: default;
+  }
+
+  .gallery-filter-chip button {
+    display: inline-grid;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    place-items: center;
+    border: 0;
+    border-radius: 50%;
+    color: inherit;
+    background: transparent;
+    line-height: 1;
+  }
+
+  .gallery-filter-chip button:hover {
+    background: color-mix(in srgb, currentColor 12%, transparent);
+  }
+
+  .gallery-filter-options label:has(input:checked),
+  .gallery-tag-relation label:has(input:checked) {
+    border-color: var(--color-accent-border);
+    color: var(--color-accent-strong);
+    background: var(--color-accent-soft);
+  }
+
+  .gallery-filter-options input,
+  .gallery-tag-relation input {
+    width: 13px;
+    height: 13px;
+    margin: 0;
+    accent-color: var(--color-accent);
+  }
+
+  .gallery-tag-relation {
+    padding-top: 1px;
+  }
+
+  .gallery-clear-filters {
+    order: 21;
+    align-self: center;
+  }
+
+  .gallery-clear-filters > span {
+    display: inline-grid;
+    min-width: 18px;
+    height: 18px;
+    padding-inline: 4px;
+    place-items: center;
+    border-radius: 999px;
+    color: var(--color-accent-strong);
+    background: var(--color-accent-soft);
+    font-size: 9px;
+    font-weight: 800;
+  }
+
   .gallery-scope-switch {
     display: flex;
     padding: 3px;
@@ -1030,6 +1192,7 @@
     min-width: 0;
     min-height: 34px;
     flex: 1 0 100%;
+    order: 30;
     align-items: center;
     gap: 5px;
     overflow-x: auto;
@@ -4084,9 +4247,28 @@
     display: flex;
   }
 
+  .gallery-tag-filter,
+  .gallery-choice-filter {
+    flex-basis: 100%;
+  }
+
   .compact-field {
     min-width: calc(50% - 4px);
     flex: 1;
+  }
+
+  .gallery-tag-builder {
+    grid-template-columns: minmax(0, 1fr) minmax(106px, 0.65fr);
+  }
+
+  .gallery-tag-builder .button {
+    grid-column: 1 / -1;
+  }
+
+  .gallery-filter-options label,
+  .gallery-tag-relation label {
+    min-height: 36px;
+    padding-inline: 10px;
   }
 
   .gallery-scope-switch {

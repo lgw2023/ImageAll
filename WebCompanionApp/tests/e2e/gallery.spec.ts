@@ -1,7 +1,7 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
 
-import { assetIDs, installSyntheticAuthenticatedHost, sourceID } from './syntheticHost';
+import { assetIDs, installSyntheticAuthenticatedHost, sourceID, tagIDs } from './syntheticHost';
 
 test('gallery supports virtual browsing, range selection, mutations, undo, and detail', async ({
   page,
@@ -370,9 +370,180 @@ test('gallery filters are URL-addressable and sent to the Host', async ({ page }
   await mediaRequest;
   await expect.poll(() => new URL(page.url()).searchParams.get('media')).toBe('video');
 
+  const untaggedRequest = page.waitForRequest((request) => {
+    const url = new URL(request.url());
+    return url.pathname === '/v1/assets' && url.searchParams.get('tagPresence') === 'untagged';
+  });
+  await page.getByLabel('标签范围').selectOption('untagged');
+  await untaggedRequest;
+  await expect.poll(() => new URL(page.url()).searchParams.get('tagPresence')).toBe('untagged');
+
   await page.getByRole('link', { name: '收藏' }).click();
   await expect(page).toHaveURL(/\/gallery\/favorites/);
   await expect(page.getByRole('heading', { name: '我的收藏', level: 2 })).toBeVisible();
+});
+
+test('gallery composes accepted and rejected tag conditions with an addressable ANY relation', async ({
+  page,
+}, testInfo) => {
+  await installSyntheticAuthenticatedHost(page);
+  await page.goto('gallery');
+  if (testInfo.project.name === 'chromium-mobile') {
+    await page.getByRole('button', { name: '筛选', exact: true }).click();
+  }
+
+  await page.getByLabel('添加标签').selectOption(tagIDs[0]);
+  await page.getByLabel('标签决定').selectOption('accepted');
+  await page.getByRole('button', { name: '添加标签条件' }).click();
+  await expect(page.getByText('风景 · 已确认')).toBeVisible();
+
+  await page.getByLabel('添加标签').selectOption(tagIDs[1]);
+  await page.getByLabel('标签决定').selectOption('rejected');
+  const mixedRequest = page.waitForRequest((request) => {
+    const url = new URL(request.url());
+    return (
+      url.pathname === '/v1/assets' &&
+      url.searchParams.get('acceptedTagIDs') === tagIDs[0] &&
+      url.searchParams.get('rejectedTagIDs') === tagIDs[1]
+    );
+  });
+  await page.getByRole('button', { name: '添加标签条件' }).click();
+  await mixedRequest;
+  await expect(page.getByText('家人 · 已拒绝')).toBeVisible();
+
+  const anyRequest = page.waitForRequest((request) => {
+    const url = new URL(request.url());
+    return url.pathname === '/v1/assets' && url.searchParams.get('tagMatchMode') === 'any';
+  });
+  await page.getByRole('radio', { name: '满足任一' }).click();
+  await anyRequest;
+  const url = new URL(page.url());
+  expect(url.searchParams.get('acceptedTags')).toBe(tagIDs[0]);
+  expect(url.searchParams.get('rejectedTags')).toBe(tagIDs[1]);
+  expect(url.searchParams.get('tagMatch')).toBe('any');
+
+  await page.reload();
+  if (testInfo.project.name === 'chromium-mobile') {
+    await page.getByRole('button', { name: '筛选', exact: true }).click();
+  }
+  await expect(page.getByText('风景 · 已确认')).toBeVisible();
+  await expect(page.getByText('家人 · 已拒绝')).toBeVisible();
+  await expect(page.getByRole('radio', { name: '满足任一' })).toBeChecked();
+});
+
+test('gallery combines availability and media format filters without losing URL state', async ({
+  page,
+}, testInfo) => {
+  await installSyntheticAuthenticatedHost(page);
+  await page.goto('gallery');
+  if (testInfo.project.name === 'chromium-mobile') {
+    await page.getByRole('button', { name: '筛选', exact: true }).click();
+  }
+
+  await page.getByRole('checkbox', { name: '文件缺失' }).click();
+  await expect(page.getByRole('checkbox', { name: '文件缺失' })).toBeChecked();
+  const formatRequest = page.waitForRequest((request) => {
+    const url = new URL(request.url());
+    return (
+      url.pathname === '/v1/assets' &&
+      url.searchParams.get('availabilities') === 'missing' &&
+      url.searchParams.get('mediaTypes') === 'public.jpeg'
+    );
+  });
+  await page.getByRole('checkbox', { name: 'JPEG', exact: true }).click();
+  await formatRequest;
+  await expect(page.getByRole('checkbox', { name: 'JPEG', exact: true })).toBeChecked();
+
+  const url = new URL(page.url());
+  expect(url.searchParams.get('availability')).toBe('missing');
+  expect(url.searchParams.get('formats')).toBe('public.jpeg');
+  await page.reload();
+  if (testInfo.project.name === 'chromium-mobile') {
+    await page.getByRole('button', { name: '筛选', exact: true }).click();
+  }
+  await expect(page.getByRole('checkbox', { name: '文件缺失' })).toBeChecked();
+  await expect(page.getByRole('checkbox', { name: 'JPEG', exact: true })).toBeChecked();
+});
+
+test('gallery clears every advanced condition in one action', async ({ page }, testInfo) => {
+  await installSyntheticAuthenticatedHost(page);
+  await page.goto(
+    `gallery?acceptedTags=${tagIDs[0]}&rejectedTags=${tagIDs[1]}&tagMatch=any&availability=missing&formats=public.jpeg`,
+  );
+  if (testInfo.project.name === 'chromium-mobile') {
+    await page.getByRole('button', { name: '筛选', exact: true }).click();
+  }
+  await expect(page.getByText('风景 · 已确认')).toBeVisible();
+  await expect(page.getByText('家人 · 已拒绝')).toBeVisible();
+  await expect(page.getByRole('checkbox', { name: '文件缺失' })).toBeChecked();
+  await expect(page.getByRole('checkbox', { name: 'JPEG', exact: true })).toBeChecked();
+  const accessibility = await new AxeBuilder({ page })
+    .include('.gallery-toolbar')
+    .withTags(['wcag2a', 'wcag2aa'])
+    .analyze();
+  expect(accessibility.violations).toEqual([]);
+  if (process.env.IMAGEALL_CAPTURE_EVIDENCE === '1') {
+    await page.locator('.gallery-toolbar').screenshot({
+      path: `../docs/web-companion-refactor/evidence/gallery/imageall-react-advanced-filters-${testInfo.project.name}.png`,
+      animations: 'disabled',
+    });
+  }
+
+  const clearedRequest = page.waitForRequest((request) => {
+    const url = new URL(request.url());
+    return (
+      url.pathname === '/v1/assets' &&
+      !url.searchParams.has('acceptedTagIDs') &&
+      !url.searchParams.has('rejectedTagIDs') &&
+      !url.searchParams.has('availabilities') &&
+      !url.searchParams.has('mediaTypes')
+    );
+  });
+  await page.getByRole('button', { name: '清除 4 个筛选条件' }).click();
+  await clearedRequest;
+  await expect.poll(() => new URL(page.url()).search).toBe('');
+  await expect(page.getByText('风景 · 已确认')).toBeHidden();
+  await expect(page.getByText('家人 · 已拒绝')).toBeHidden();
+});
+
+test('gallery advanced filters never overlap primary controls', async ({ page }, testInfo) => {
+  await installSyntheticAuthenticatedHost(page);
+  await page.goto(
+    `gallery?acceptedTags=${tagIDs[0]}&rejectedTags=${tagIDs[1]}&tagMatch=any&availability=missing&formats=public.jpeg`,
+  );
+  if (testInfo.project.name === 'chromium-mobile') {
+    await page.getByRole('button', { name: '筛选', exact: true }).click();
+  }
+
+  const overlaps = await page.locator('.gallery-toolbar').evaluate((toolbar) => {
+    const controls = [
+      ...toolbar.querySelectorAll<HTMLElement>(
+        ':scope > .gallery-search, :scope > .gallery-filter-toggle, :scope > .gallery-result-count, :scope > .button, :scope > .icon-button, :scope > .gallery-filter-controls > .compact-field, :scope > .gallery-filter-controls > fieldset, :scope > .gallery-filter-controls > .gallery-scope-switch, :scope > .gallery-filter-controls > .gallery-clear-filters',
+      ),
+    ].filter((element) => {
+      const style = getComputedStyle(element);
+      const box = element.getBoundingClientRect();
+      return (
+        style.display !== 'none' && style.visibility !== 'hidden' && box.width > 0 && box.height > 0
+      );
+    });
+    const collisions: string[] = [];
+    controls.forEach((left, index) => {
+      const a = left.getBoundingClientRect();
+      controls.slice(index + 1).forEach((right) => {
+        const b = right.getBoundingClientRect();
+        const overlapWidth = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+        const overlapHeight = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+        if (overlapWidth > 1 && overlapHeight > 1) {
+          const describe = (element: HTMLElement, box: DOMRect) =>
+            `${element.className || element.tagName}[${element.textContent.trim().slice(0, 18)}]@${String(Math.round(box.x))},${String(Math.round(box.y))},${String(Math.round(box.width))}x${String(Math.round(box.height))}`;
+          collisions.push(`${describe(left, a)} <> ${describe(right, b)}`);
+        }
+      });
+    });
+    return collisions;
+  });
+  expect(overlaps).toEqual([]);
 });
 
 test('gallery preserves source, folder, density, selection, and viewer return context', async ({

@@ -155,6 +155,7 @@ export const assetLocalSuggestionResponseSchema = z.object({
 });
 
 export type AssetSort = z.infer<typeof assetSortSchema>;
+export type AssetAvailability = z.infer<typeof assetAvailabilitySchema>;
 export type AssetMediaKind = z.infer<typeof assetMediaKindSchema>;
 export type AssetSummary = z.infer<typeof assetSummarySchema>;
 export type AssetPage = z.infer<typeof assetPageSchema>;

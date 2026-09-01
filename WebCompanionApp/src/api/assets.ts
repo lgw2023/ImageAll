@@ -10,6 +10,7 @@ import {
   sourceSummarySchema,
   type AssetLocalSuggestionResponse,
   type AssetLocalSuggestionTrack,
+  type AssetAvailability,
   type AssetMediaKind,
   type AssetPage,
   type AssetSort,
@@ -26,7 +27,11 @@ export type AssetQuery = {
   searchText: string;
   sort: AssetSort;
   mediaKind: AssetMediaKind | null;
-  acceptedTagID: string | null;
+  tagConditions: { tagID: string; decision: 'accepted' | 'rejected' }[];
+  tagMatchMode: 'all' | 'any';
+  tagPresence: 'any' | 'tagged' | 'untagged';
+  availabilities: AssetAvailability[];
+  mediaTypes: string[];
   sourceID: string | null;
   folderRelativePath: string | null;
   favoritesOnly: boolean;
@@ -42,7 +47,20 @@ export async function fetchAssetPage(
   const searchText = query.searchText.trim();
   if (searchText) parameters.set('q', searchText);
   if (query.mediaKind) parameters.set('mediaKinds', query.mediaKind);
-  if (query.acceptedTagID) parameters.set('acceptedTagIDs', query.acceptedTagID);
+  const acceptedTagIDs = query.tagConditions
+    .filter((condition) => condition.decision === 'accepted')
+    .map((condition) => condition.tagID);
+  const rejectedTagIDs = query.tagConditions
+    .filter((condition) => condition.decision === 'rejected')
+    .map((condition) => condition.tagID);
+  if (acceptedTagIDs.length > 0) parameters.set('acceptedTagIDs', acceptedTagIDs.join(','));
+  if (rejectedTagIDs.length > 0) parameters.set('rejectedTagIDs', rejectedTagIDs.join(','));
+  if (query.tagConditions.length > 1) parameters.set('tagMatchMode', query.tagMatchMode);
+  if (query.tagPresence !== 'any') parameters.set('tagPresence', query.tagPresence);
+  if (query.availabilities.length > 0) {
+    parameters.set('availabilities', query.availabilities.join(','));
+  }
+  if (query.mediaTypes.length > 0) parameters.set('mediaTypes', query.mediaTypes.join(','));
   if (query.sourceID) parameters.set('sourceIDs', query.sourceID);
   if (query.sourceID && query.folderRelativePath) {
     parameters.set('folderSourceID', query.sourceID);

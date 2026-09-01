@@ -17,7 +17,13 @@ import {
   mutateFavorites,
   retryFavoriteSync,
 } from '@/api/assets';
-import type { AssetDetail, AssetPage, AssetSort, AssetSummary } from '@/api/contracts/asset';
+import type {
+  AssetAvailability,
+  AssetDetail,
+  AssetPage,
+  AssetSort,
+  AssetSummary,
+} from '@/api/contracts/asset';
 import type { WorldMapSelectionQuery } from '@/api/contracts/map';
 import type { TagDecisionAction } from '@/api/contracts/tag';
 import { errorMessage } from '@/api/errors';
@@ -65,6 +71,35 @@ function parseSourceID(value: string | null): string | null {
 
 function parseFolderRelativePath(value: string | null): string | null {
   return value === null || value.trim() === '' ? null : value;
+}
+
+function parseList(value: string | null): string[] {
+  return [
+    ...new Set(
+      (value ?? '')
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ),
+  ];
+}
+
+function parseTagConditions(parameters: URLSearchParams): GalleryFilters['tagConditions'] {
+  const accepted = parseList(parameters.get('acceptedTags') ?? parameters.get('tag'));
+  const rejected = parseList(parameters.get('rejectedTags'));
+  return [
+    ...accepted.map((tagID) => ({ tagID, decision: 'accepted' as const })),
+    ...rejected
+      .filter((tagID) => !accepted.includes(tagID))
+      .map((tagID) => ({ tagID, decision: 'rejected' as const })),
+  ];
+}
+
+function parseAvailabilities(value: string | null): AssetAvailability[] {
+  return parseList(value).filter(
+    (item): item is AssetAvailability =>
+      item === 'available' || item === 'missing' || item === 'unreadable' || item === 'unsupported',
+  );
 }
 
 function parseWorldMapSelection(parameters: URLSearchParams): WorldMapSelectionQuery | null {
@@ -120,6 +155,33 @@ function appendWorldMapSelection(
   }
 }
 
+function appendFilterTransfer(parameters: URLSearchParams, filters: GalleryFilters) {
+  const acceptedTagIDs = filters.tagConditions
+    .filter((condition) => condition.decision === 'accepted')
+    .map((condition) => condition.tagID);
+  const rejectedTagIDs = filters.tagConditions
+    .filter((condition) => condition.decision === 'rejected')
+    .map((condition) => condition.tagID);
+  if (acceptedTagIDs.length === 1 && rejectedTagIDs.length === 0) {
+    parameters.set('filterTag', acceptedTagIDs[0] ?? '');
+  } else {
+    if (acceptedTagIDs.length > 0) {
+      parameters.set('filterAcceptedTags', acceptedTagIDs.join(','));
+    }
+    if (rejectedTagIDs.length > 0) {
+      parameters.set('filterRejectedTags', rejectedTagIDs.join(','));
+    }
+  }
+  if (filters.tagConditions.length > 1) parameters.set('filterTagMatch', filters.tagMatchMode);
+  if (filters.tagPresence !== 'any') parameters.set('filterTagPresence', filters.tagPresence);
+  if (filters.availabilities.length > 0) {
+    parameters.set('filterAvailabilities', filters.availabilities.join(','));
+  }
+  if (filters.mediaTypes.length > 0) {
+    parameters.set('filterMediaTypes', filters.mediaTypes.join(','));
+  }
+}
+
 function updateFavoritePages(
   existing: InfiniteData<AssetPage, string | null> | undefined,
   states: Map<string, NonNullable<AssetSummary['favorite']>>,
@@ -158,7 +220,15 @@ export function GalleryRoute() {
         searchParameters.get('media') === 'image' || searchParameters.get('media') === 'video'
           ? (searchParameters.get('media') as 'image' | 'video')
           : null,
-      acceptedTagID: searchParameters.get('tag'),
+      tagConditions: parseTagConditions(searchParameters),
+      tagMatchMode: searchParameters.get('tagMatch') === 'any' ? 'any' : 'all',
+      tagPresence:
+        searchParameters.get('tagPresence') === 'tagged' ||
+        searchParameters.get('tagPresence') === 'untagged'
+          ? (searchParameters.get('tagPresence') as 'tagged' | 'untagged')
+          : 'any',
+      availabilities: parseAvailabilities(searchParameters.get('availability')),
+      mediaTypes: parseList(searchParameters.get('formats')),
       sourceID: parseSourceID(searchParameters.get('source')),
       folderRelativePath: parseFolderRelativePath(searchParameters.get('folder')),
       density: searchParameters.get('view') === 'compact' ? 'compact' : 'comfortable',
@@ -170,7 +240,11 @@ export function GalleryRoute() {
       searchText: filters.searchText,
       sort: filters.sort,
       mediaKind: filters.mediaKind,
-      acceptedTagID: filters.acceptedTagID,
+      tagConditions: filters.tagConditions,
+      tagMatchMode: filters.tagMatchMode,
+      tagPresence: filters.tagPresence,
+      availabilities: filters.availabilities,
+      mediaTypes: filters.mediaTypes,
       sourceID: filters.sourceID,
       folderRelativePath: filters.sourceID ? filters.folderRelativePath : null,
       favoritesOnly,
@@ -463,7 +537,7 @@ export function GalleryRoute() {
       filterSort: filters.sort,
     });
     if (filters.searchText) parameters.set('filterQ', filters.searchText);
-    if (filters.acceptedTagID) parameters.set('filterTag', filters.acceptedTagID);
+    appendFilterTransfer(parameters, filters);
     if (filters.sourceID) parameters.set('filterSource', filters.sourceID);
     if (filters.sourceID && filters.folderRelativePath) {
       parameters.set('filterFolder', filters.folderRelativePath);
@@ -483,7 +557,7 @@ export function GalleryRoute() {
         filterSort: filters.sort,
       });
       if (filters.searchText) parameters.set('filterQ', filters.searchText);
-      if (filters.acceptedTagID) parameters.set('filterTag', filters.acceptedTagID);
+      appendFilterTransfer(parameters, filters);
       if (filters.sourceID) parameters.set('filterSource', filters.sourceID);
       if (filters.sourceID && filters.folderRelativePath) {
         parameters.set('filterFolder', filters.folderRelativePath);
@@ -500,7 +574,26 @@ export function GalleryRoute() {
     if (next.searchText) parameters.set('q', next.searchText);
     if (next.sort !== 'newest') parameters.set('sort', next.sort);
     if (next.mediaKind) parameters.set('media', next.mediaKind);
-    if (next.acceptedTagID) parameters.set('tag', next.acceptedTagID);
+    const acceptedTagIDs = next.tagConditions
+      .filter((condition) => condition.decision === 'accepted')
+      .map((condition) => condition.tagID);
+    const rejectedTagIDs = next.tagConditions
+      .filter((condition) => condition.decision === 'rejected')
+      .map((condition) => condition.tagID);
+    if (acceptedTagIDs.length === 1 && rejectedTagIDs.length === 0) {
+      parameters.set('tag', acceptedTagIDs[0] ?? '');
+    } else {
+      if (acceptedTagIDs.length > 0) parameters.set('acceptedTags', acceptedTagIDs.join(','));
+      if (rejectedTagIDs.length > 0) parameters.set('rejectedTags', rejectedTagIDs.join(','));
+    }
+    if (next.tagConditions.length > 1 && next.tagMatchMode === 'any') {
+      parameters.set('tagMatch', 'any');
+    }
+    if (next.tagPresence !== 'any') parameters.set('tagPresence', next.tagPresence);
+    if (next.availabilities.length > 0) {
+      parameters.set('availability', next.availabilities.join(','));
+    }
+    if (next.mediaTypes.length > 0) parameters.set('formats', next.mediaTypes.join(','));
     if (next.sourceID) parameters.set('source', next.sourceID);
     if (next.sourceID && next.folderRelativePath) parameters.set('folder', next.folderRelativePath);
     if (next.density === 'compact') parameters.set('view', 'compact');
@@ -509,7 +602,11 @@ export function GalleryRoute() {
       searchText: next.searchText,
       sort: next.sort,
       mediaKind: next.mediaKind,
-      acceptedTagID: next.acceptedTagID,
+      tagConditions: next.tagConditions,
+      tagMatchMode: next.tagMatchMode,
+      tagPresence: next.tagPresence,
+      availabilities: next.availabilities,
+      mediaTypes: next.mediaTypes,
       sourceID: next.sourceID,
       folderRelativePath: next.sourceID ? next.folderRelativePath : null,
       favoritesOnly,

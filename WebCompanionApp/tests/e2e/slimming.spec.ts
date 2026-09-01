@@ -167,9 +167,11 @@ test('gallery selection drafts seed analysis and submits Host-authoritative dele
   await expect(page.getByText(/已冻结 1 项选择.*不代表删除已完成/)).toBeVisible();
 });
 
-test('gallery current filter becomes an exact analysis request', async ({ page }) => {
+test('gallery advanced filter becomes an exact analysis request', async ({ page }) => {
   await installSyntheticAuthenticatedHost(page);
-  await page.goto(`gallery?media=image&q=IMG_00&tag=${tagIDs[0]}&sort=oldest`);
+  await page.goto(
+    `gallery?media=image&q=IMG_00&acceptedTags=${tagIDs[0]}&rejectedTags=${tagIDs[1]}&tagMatch=any&availability=missing,unreadable&formats=public.jpeg,public.png&sort=oldest`,
+  );
   await page.getByRole('button', { name: '分析当前筛选' }).click();
   await expect(page).toHaveURL(/mode=currentFilter/);
   const request = page.waitForRequest(
@@ -185,8 +187,14 @@ test('gallery current filter becomes an exact analysis request', async ({ page }
     filter: {
       searchText: 'IMG_00',
       sort: 'oldest',
-      tagDecisionFilters: [{ tagID: tagIDs[0], decision: 'accepted' }],
+      tagDecisionFilters: [
+        { tagID: tagIDs[0], decision: 'accepted' },
+        { tagID: tagIDs[1], decision: 'rejected' },
+      ],
+      tagMatchMode: 'any',
+      availabilities: ['missing', 'unreadable'],
       mediaKinds: ['image'],
+      mediaTypes: ['public.jpeg', 'public.png'],
     },
   });
 });

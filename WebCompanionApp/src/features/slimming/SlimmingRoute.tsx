@@ -281,6 +281,22 @@ export function SlimmingRoute() {
 
   function currentFilter() {
     const tagID = searchParameters.get('filterTag');
+    const acceptedTagIDs = [
+      ...new Set(
+        (searchParameters.get('filterAcceptedTags') ?? tagID ?? '')
+          .split(',')
+          .map((item) => item.trim())
+          .filter(Boolean),
+      ),
+    ];
+    const rejectedTagIDs = [
+      ...new Set(
+        (searchParameters.get('filterRejectedTags') ?? '')
+          .split(',')
+          .map((item) => item.trim())
+          .filter(Boolean),
+      ),
+    ].filter((id) => !acceptedTagIDs.includes(id));
     const sort = searchParameters.get('filterSort');
     const sourceID = searchParameters.get('filterSource');
     const folderRelativePath = searchParameters.get('filterFolder');
@@ -290,13 +306,31 @@ export function SlimmingRoute() {
       sort: sort === 'oldest' || sort === 'fileNameAscending' ? sort : 'newest',
       limit: 200,
       cursor: null,
-      tagDecisionFilters: tagID ? [{ tagID, decision: 'accepted' }] : [],
+      tagDecisionFilters: [
+        ...acceptedTagIDs.map((id) => ({ tagID: id, decision: 'accepted' as const })),
+        ...rejectedTagIDs.map((id) => ({ tagID: id, decision: 'rejected' as const })),
+      ],
       excludedTagIDs: [],
-      tagMatchMode: 'all',
-      availabilities: [],
+      tagMatchMode: searchParameters.get('filterTagMatch') === 'any' ? 'any' : 'all',
+      availabilities: (searchParameters.get('filterAvailabilities') ?? '')
+        .split(',')
+        .filter(
+          (value) =>
+            value === 'available' ||
+            value === 'missing' ||
+            value === 'unreadable' ||
+            value === 'unsupported',
+        ),
       mediaKinds: [mediaKind],
-      mediaTypes: [],
-      tagPresence: 'any',
+      mediaTypes: (searchParameters.get('filterMediaTypes') ?? '')
+        .split(',')
+        .map((value) => value.trim())
+        .filter(Boolean),
+      tagPresence:
+        searchParameters.get('filterTagPresence') === 'tagged' ||
+        searchParameters.get('filterTagPresence') === 'untagged'
+          ? searchParameters.get('filterTagPresence')
+          : 'any',
       favorite: searchParameters.get('filterFavorite') === 'favorited' ? 'favorited' : null,
       worldMapSelection: null,
       folderScope:

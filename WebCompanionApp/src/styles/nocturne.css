@@ -2372,8 +2372,22 @@ body::before {
 }
 
 .gallery-toolbar {
+  display: flex;
   min-height: 96px;
   padding: 14px 0 13px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+
+.gallery-filter-controls {
+  width: 100%;
+  flex: 1 0 100%;
+  flex-wrap: wrap;
+  overflow: visible;
+}
+
+.gallery-filter-controls .gallery-scope-switch {
+  order: 0;
 }
 
 .gallery-search {

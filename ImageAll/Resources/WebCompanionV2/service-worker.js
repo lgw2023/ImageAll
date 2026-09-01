@@ -1,7 +1,7 @@
 'use strict';
 
 const CACHE_PREFIX = 'imageall-web-v2-shell-';
-const CACHE_NAME = `${CACHE_PREFIX}41cb05f9133f7d5d`;
+const CACHE_NAME = `${CACHE_PREFIX}72c011c90050e615`;
 let accountAuthorization = null;
 
 function requestAuthorizationFromSpecificClient(client) {

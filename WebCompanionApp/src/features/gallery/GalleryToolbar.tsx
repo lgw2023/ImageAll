@@ -1,18 +1,81 @@
 import { useState, type SyntheticEvent } from 'react';
 
-import { BoxSelect, RefreshCw, ScanSearch, Search, SlidersHorizontal } from 'lucide-react';
+import {
+  BoxSelect,
+  RefreshCw,
+  RotateCcw,
+  ScanSearch,
+  Search,
+  SlidersHorizontal,
+} from 'lucide-react';
 import { NavLink } from 'react-router-dom';
 
-import type { AssetMediaKind, AssetSort, SourceFolder, SourceSummary } from '@/api/contracts/asset';
+import type {
+  AssetAvailability,
+  AssetMediaKind,
+  AssetSort,
+  SourceFolder,
+  SourceSummary,
+} from '@/api/contracts/asset';
 import type { TagSummary } from '@/api/contracts/tag';
 
 export type GalleryDensity = 'comfortable' | 'compact';
+
+const AVAILABILITY_OPTIONS: { value: AssetAvailability; label: string }[] = [
+  { value: 'available', label: '可用' },
+  { value: 'missing', label: '文件缺失' },
+  { value: 'unreadable', label: '不可读取' },
+  { value: 'unsupported', label: '格式不支持' },
+];
+
+const MEDIA_FORMAT_GROUPS = [
+  { id: 'jpeg', label: 'JPEG', mediaKind: 'image', mediaTypes: ['public.jpeg'] },
+  { id: 'png', label: 'PNG', mediaKind: 'image', mediaTypes: ['public.png'] },
+  {
+    id: 'heic',
+    label: 'HEIC / HEIF',
+    mediaKind: 'image',
+    mediaTypes: ['public.heic', 'public.heif'],
+  },
+  { id: 'tiff', label: 'TIFF', mediaKind: 'image', mediaTypes: ['public.tiff'] },
+  { id: 'webp', label: 'WebP', mediaKind: 'image', mediaTypes: ['org.webmproject.webp'] },
+  {
+    id: 'jpeg2000',
+    label: 'JPEG 2000',
+    mediaKind: 'image',
+    mediaTypes: ['public.jpeg-2000'],
+  },
+  { id: 'gif', label: 'GIF', mediaKind: 'image', mediaTypes: ['com.compuserve.gif'] },
+  { id: 'svg', label: 'SVG', mediaKind: 'image', mediaTypes: ['public.svg-image'] },
+  {
+    id: 'pdfai',
+    label: 'PDF / AI',
+    mediaKind: 'image',
+    mediaTypes: ['com.adobe.pdf', 'com.adobe.illustrator.ai-image'],
+  },
+  {
+    id: 'raw',
+    label: 'RAW',
+    mediaKind: 'image',
+    mediaTypes: ['com.fuji.raw-image', 'com.adobe.raw-image', 'public.camera-raw-image'],
+  },
+  {
+    id: 'mp4mov',
+    label: 'MP4 / MOV',
+    mediaKind: 'video',
+    mediaTypes: ['public.mpeg-4', 'com.apple.quicktime-movie'],
+  },
+] as const;
 
 export type GalleryFilters = {
   searchText: string;
   sort: AssetSort;
   mediaKind: AssetMediaKind | null;
-  acceptedTagID: string | null;
+  tagConditions: { tagID: string; decision: 'accepted' | 'rejected' }[];
+  tagMatchMode: 'all' | 'any';
+  tagPresence: 'any' | 'tagged' | 'untagged';
+  availabilities: AssetAvailability[];
+  mediaTypes: string[];
   sourceID: string | null;
   folderRelativePath: string | null;
   density: GalleryDensity;
@@ -52,10 +115,20 @@ export function GalleryToolbar({
   onToggleBoxSelection,
 }: GalleryToolbarProps) {
   const [draftSearch, setDraftSearch] = useState(filters.searchText);
+  const [draftTagID, setDraftTagID] = useState('');
+  const [draftTagDecision, setDraftTagDecision] = useState<'accepted' | 'rejected'>('accepted');
   const [filtersOpen, setFiltersOpen] = useState(false);
   const selectedSource = sources.find((source) => source.id === filters.sourceID) ?? null;
   const folderSegments = filters.folderRelativePath?.split('/').filter(Boolean) ?? [];
   const querySuffix = searchQuery ? `?${searchQuery}` : '';
+  const selectedFormatGroupCount = MEDIA_FORMAT_GROUPS.filter((group) =>
+    group.mediaTypes.every((type) => filters.mediaTypes.includes(type)),
+  ).length;
+  const activeAdvancedFilterCount =
+    filters.tagConditions.length +
+    filters.availabilities.length +
+    selectedFormatGroupCount +
+    Number(filters.tagPresence !== 'any');
 
   function submit(event: SyntheticEvent<HTMLFormElement, SubmitEvent>) {
     event.preventDefault();
@@ -113,12 +186,19 @@ export function GalleryToolbar({
         <label className="compact-field">
           <span>媒体</span>
           <select
-            onChange={(event) =>
+            onChange={(event) => {
+              const mediaKind = event.target.value ? (event.target.value as AssetMediaKind) : null;
+              const permittedTypes = new Set<string>(
+                MEDIA_FORMAT_GROUPS.filter(
+                  (group) => mediaKind === null || group.mediaKind === mediaKind,
+                ).flatMap((group) => [...group.mediaTypes]),
+              );
               onApply({
                 ...filters,
-                mediaKind: event.target.value ? (event.target.value as AssetMediaKind) : null,
-              })
-            }
+                mediaKind,
+                mediaTypes: filters.mediaTypes.filter((type) => permittedTypes.has(type)),
+              });
+            }}
             value={filters.mediaKind ?? ''}
           >
             <option value="">全部</option>
@@ -128,19 +208,178 @@ export function GalleryToolbar({
         </label>
 
         <label className="compact-field">
-          <span>标签</span>
+          <span>标签范围</span>
           <select
-            onChange={(event) => onApply({ ...filters, acceptedTagID: event.target.value || null })}
-            value={filters.acceptedTagID ?? ''}
+            onChange={(event) => {
+              const tagPresence = event.target.value as GalleryFilters['tagPresence'];
+              onApply({
+                ...filters,
+                tagPresence,
+                tagConditions: tagPresence === 'any' ? filters.tagConditions : [],
+                tagMatchMode: tagPresence === 'any' ? filters.tagMatchMode : 'all',
+              });
+            }}
+            value={filters.tagPresence}
           >
-            <option value="">全部标签</option>
-            {tags.map((tag) => (
-              <option key={tag.id} value={tag.id}>
-                {tag.displayName}
-              </option>
-            ))}
+            <option value="any">全部照片</option>
+            <option value="tagged">已有标签</option>
+            <option value="untagged">无标签</option>
           </select>
         </label>
+
+        {filters.tagPresence === 'any' ? (
+          <fieldset className="gallery-tag-filter">
+            <legend>标签判断</legend>
+            {filters.tagConditions.length > 0 ? (
+              <div className="gallery-filter-chips" aria-label="已选标签条件">
+                {filters.tagConditions.map((condition) => {
+                  const tagName =
+                    tags.find((candidate) => candidate.id === condition.tagID)?.displayName ??
+                    '未知标签';
+                  const decisionName = condition.decision === 'accepted' ? '已确认' : '已拒绝';
+                  return (
+                    <span className="gallery-filter-chip" key={condition.tagID}>
+                      {tagName} · {decisionName}
+                      <button
+                        aria-label={`移除标签条件 ${tagName} ${decisionName}`}
+                        onClick={() =>
+                          onApply({
+                            ...filters,
+                            tagConditions: filters.tagConditions.filter(
+                              (candidate) => candidate.tagID !== condition.tagID,
+                            ),
+                          })
+                        }
+                        type="button"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  );
+                })}
+              </div>
+            ) : null}
+            <div className="gallery-tag-builder">
+              <label>
+                <span>添加标签</span>
+                <select onChange={(event) => setDraftTagID(event.target.value)} value={draftTagID}>
+                  <option value="">选择标签…</option>
+                  {tags.map((tag) => (
+                    <option key={tag.id} value={tag.id}>
+                      {tag.displayName}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span>标签决定</span>
+                <select
+                  onChange={(event) =>
+                    setDraftTagDecision(event.target.value as 'accepted' | 'rejected')
+                  }
+                  value={draftTagDecision}
+                >
+                  <option value="accepted">已确认</option>
+                  <option value="rejected">已拒绝</option>
+                </select>
+              </label>
+              <button
+                className="button"
+                disabled={!draftTagID}
+                onClick={() => {
+                  if (!draftTagID) return;
+                  onApply({
+                    ...filters,
+                    tagConditions: [
+                      ...filters.tagConditions.filter(
+                        (condition) => condition.tagID !== draftTagID,
+                      ),
+                      { tagID: draftTagID, decision: draftTagDecision },
+                    ],
+                  });
+                  setDraftTagID('');
+                }}
+                type="button"
+              >
+                添加标签条件
+              </button>
+            </div>
+            {filters.tagConditions.length > 1 ? (
+              <div aria-label="标签条件关系" className="gallery-tag-relation" role="radiogroup">
+                <label>
+                  <input
+                    checked={filters.tagMatchMode === 'all'}
+                    name="gallery-tag-match"
+                    onChange={() => onApply({ ...filters, tagMatchMode: 'all' })}
+                    type="radio"
+                  />
+                  满足全部
+                </label>
+                <label>
+                  <input
+                    checked={filters.tagMatchMode === 'any'}
+                    name="gallery-tag-match"
+                    onChange={() => onApply({ ...filters, tagMatchMode: 'any' })}
+                    type="radio"
+                  />
+                  满足任一
+                </label>
+              </div>
+            ) : null}
+          </fieldset>
+        ) : null}
+
+        <fieldset className="gallery-choice-filter">
+          <legend>可用状态</legend>
+          <div className="gallery-filter-options">
+            {AVAILABILITY_OPTIONS.map((option) => (
+              <label key={option.value}>
+                <input
+                  checked={filters.availabilities.includes(option.value)}
+                  onChange={(event) =>
+                    onApply({
+                      ...filters,
+                      availabilities: event.target.checked
+                        ? [...filters.availabilities, option.value]
+                        : filters.availabilities.filter((value) => value !== option.value),
+                    })
+                  }
+                  type="checkbox"
+                />
+                {option.label}
+              </label>
+            ))}
+          </div>
+        </fieldset>
+
+        <fieldset className="gallery-choice-filter gallery-format-filter">
+          <legend>文件格式</legend>
+          <div className="gallery-filter-options">
+            {MEDIA_FORMAT_GROUPS.filter(
+              (group) => filters.mediaKind === null || group.mediaKind === filters.mediaKind,
+            ).map((group) => {
+              const selected = group.mediaTypes.every((type) => filters.mediaTypes.includes(type));
+              return (
+                <label key={group.id}>
+                  <input
+                    checked={selected}
+                    onChange={(event) => {
+                      const groupTypes = new Set<string>(group.mediaTypes);
+                      onApply({
+                        ...filters,
+                        mediaTypes: event.target.checked
+                          ? [...new Set([...filters.mediaTypes, ...group.mediaTypes])]
+                          : filters.mediaTypes.filter((type) => !groupTypes.has(type)),
+                      });
+                    }}
+                    type="checkbox"
+                  />
+                  {group.label}
+                </label>
+              );
+            })}
+          </div>
+        </fieldset>
 
         <label className="compact-field">
           <span>排序</span>
@@ -166,6 +405,27 @@ export function GalleryToolbar({
             <option value="compact">紧凑</option>
           </select>
         </label>
+
+        {activeAdvancedFilterCount > 0 ? (
+          <button
+            aria-label={`清除 ${String(activeAdvancedFilterCount)} 个筛选条件`}
+            className="button gallery-clear-filters"
+            onClick={() =>
+              onApply({
+                ...filters,
+                tagConditions: [],
+                tagMatchMode: 'all',
+                tagPresence: 'any',
+                availabilities: [],
+                mediaTypes: [],
+              })
+            }
+            type="button"
+          >
+            <RotateCcw aria-hidden="true" size={14} /> 清除筛选
+            <span aria-hidden="true">{activeAdvancedFilterCount}</span>
+          </button>
+        ) : null}
 
         <div className="gallery-scope-switch" aria-label="图库范围">
           <NavLink className={!favoritesOnly ? 'active' : ''} end to={`/gallery${querySuffix}`}>

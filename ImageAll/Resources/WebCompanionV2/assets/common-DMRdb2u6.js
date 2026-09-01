@@ -1,0 +1,1 @@
+import{v as e}from"./index-7Q3cC5it.js";var t=e();function n(e){return e.nullish().transform(e=>e??null)}export{t as n,n as t};
