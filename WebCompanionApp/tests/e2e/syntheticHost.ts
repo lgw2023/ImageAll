@@ -255,6 +255,10 @@ export async function installSyntheticAuthenticatedHost(
     state: 'active' | 'archived';
     groupID: string;
   }[];
+  const tagDecisions = new Map<string, 'unknown' | 'accepted' | 'rejected'>();
+  const firstSyntheticAssetID = assetIDs[0];
+  if (!firstSyntheticAssetID) throw new Error('Synthetic gallery requires one asset.');
+  tagDecisions.set(`${firstSyntheticAssetID}:${tagIDs[0]}`, 'accepted');
   let syntheticGroups = [
     {
       id: '2cba0aa1-e0c3-4421-bb0f-4f7edab5c3b0',
@@ -1981,13 +1985,23 @@ export async function installSyntheticAuthenticatedHost(
   await page.route(/\/v1\/assets\/([0-9a-f-]+)$/i, (route) => {
     const id = new URL(route.request().url()).pathname.split('/').at(-1) ?? assetIDs[0] ?? '';
     const item = detail(id);
+    const itemWithDecisions = {
+      ...item,
+      tags: item.tags.map((tag) => ({
+        ...tag,
+        decision: tagDecisions.get(`${id}:${tag.tagID}`) ?? 'unknown',
+      })),
+    };
     return route.fulfill({
       status: 200,
       contentType: 'application/json',
       json:
         id === assetIDs[0]
-          ? { ...item, favorite: { ...item.favorite, isFavorite: firstAssetFavorite } }
-          : item,
+          ? {
+              ...itemWithDecisions,
+              favorite: { ...itemWithDecisions.favorite, isFavorite: firstAssetFavorite },
+            }
+          : itemWithDecisions,
     });
   });
   await page.route('**/v1/favorites', (route) => {
@@ -2015,28 +2029,47 @@ export async function installSyntheticAuthenticatedHost(
       },
     });
   });
-  await page.route('**/v1/tags/selection', (route) =>
-    route.fulfill({
+  await page.route('**/v1/tags/selection', (route) => {
+    const body = route.request().postDataJSON() as { tagIDs: string[]; assetIDs: string[] };
+    return route.fulfill({
       status: 200,
       contentType: 'application/json',
-      json: [
-        { tagID: tagIDs[0], acceptedCount: 1, rejectedCount: 0, unknownCount: 1 },
-        { tagID: tagIDs[1], acceptedCount: 0, rejectedCount: 0, unknownCount: 2 },
-      ],
-    }),
-  );
-  await page.route('**/v1/tag-decisions/batch', (route) =>
-    route.fulfill({
+      json: body.tagIDs.map((tagID) => {
+        const decisions = body.assetIDs.map(
+          (assetID) => tagDecisions.get(`${assetID}:${tagID}`) ?? 'unknown',
+        );
+        return {
+          tagID,
+          acceptedCount: decisions.filter((decision) => decision === 'accepted').length,
+          rejectedCount: decisions.filter((decision) => decision === 'rejected').length,
+          unknownCount: decisions.filter((decision) => decision === 'unknown').length,
+        };
+      }),
+    });
+  });
+  await page.route('**/v1/tag-decisions/batch', (route) => {
+    const body = route.request().postDataJSON() as {
+      operationID: string;
+      tagID: string;
+      assetIDs: string[];
+      action: 'accept' | 'reject' | 'clear';
+    };
+    const nextDecision =
+      body.action === 'accept' ? 'accepted' : body.action === 'reject' ? 'rejected' : 'unknown';
+    for (const assetID of body.assetIDs) {
+      tagDecisions.set(`${assetID}:${body.tagID}`, nextDecision);
+    }
+    return route.fulfill({
       status: 200,
       contentType: 'application/json',
       json: {
-        operationID: '2cba0aa1-e0c3-4421-bb0f-4f7edab5c3b0',
-        appliedAssetCount: 2,
+        operationID: body.operationID,
+        appliedAssetCount: body.assetIDs.length,
         replayed: false,
         undoID: '9de47499-1ca0-4cc2-84bc-a881018e8b0c',
       },
-    }),
-  );
+    });
+  });
   await page.route('**/v1/tag-decisions/undo', (route) =>
     route.fulfill({
       status: 200,

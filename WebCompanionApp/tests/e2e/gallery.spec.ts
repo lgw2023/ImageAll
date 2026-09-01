@@ -62,6 +62,183 @@ test('gallery supports virtual browsing, range selection, mutations, undo, and d
   expect(accessibility.violations).toEqual([]);
 });
 
+test('gallery selection exposes Mac-equivalent metadata in the workspace inspector', async ({
+  page,
+}) => {
+  await installSyntheticAuthenticatedHost(page);
+  await page.goto('gallery');
+
+  await page.getByRole('button', { name: '选择 IMG_0001.jpg' }).click();
+  await page.getByRole('button', { name: '显示检视器' }).click();
+
+  const inspector = page.getByRole('complementary', { name: '检视器' });
+  await expect(inspector.getByRole('heading', { name: '照片信息' })).toBeVisible();
+  await expect(
+    inspector.getByRole('definition').filter({ hasText: /^IMG_0001\.jpg$/ }),
+  ).toBeVisible();
+  await expect(
+    inspector.getByRole('definition').filter({ hasText: /^Synthetic Library$/ }),
+  ).toBeVisible();
+  await expect(
+    inspector.getByRole('definition').filter({ hasText: /^image\/jpeg$/ }),
+  ).toBeVisible();
+  await expect(
+    inspector.getByRole('definition').filter({ hasText: /^1600 × 1200$/ }),
+  ).toBeVisible();
+  await expect(inspector.getByRole('definition').filter({ hasText: /^可用$/ })).toBeVisible();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+});
+
+test('workspace inspector applies a tag decision to the frozen multi-selection', async ({
+  page,
+}) => {
+  await installSyntheticAuthenticatedHost(page);
+  const submitted: { tagID: string; assetIDs: string[]; action: string }[] = [];
+  await page.route('**/v1/tag-decisions/batch', (route) => {
+    submitted.push(route.request().postDataJSON() as (typeof submitted)[number]);
+    return route.fallback();
+  });
+  await page.goto('gallery');
+
+  await page.getByRole('button', { name: '选择 IMG_0001.jpg' }).click();
+  await page.getByRole('button', { name: '选择 IMG_0002.jpg' }).click({ modifiers: ['Shift'] });
+  await page.getByRole('button', { name: '显示检视器' }).click();
+
+  const inspector = page.getByRole('complementary', { name: '检视器' });
+  await expect(inspector.getByRole('heading', { name: '2 项选择' })).toBeVisible();
+  const landscape = inspector.getByRole('button', { name: '标签 风景，状态不一致' });
+  await landscape.click();
+  await expect
+    .poll(() => submitted.at(-1))
+    .toMatchObject({
+      tagID: tagIDs[0],
+      assetIDs: [assetIDs[0], assetIDs[1]],
+      action: 'accept',
+    });
+  await expect(inspector.getByText('已更新 2 项标签决定。')).toBeVisible();
+  const acceptedLandscape = inspector.getByRole('button', { name: '标签 风景，已确认' });
+  await expect(acceptedLandscape).toBeFocused();
+  await acceptedLandscape.press('x');
+  await expect.poll(() => submitted.at(-1)?.action).toBe('reject');
+  const rejectedLandscape = inspector.getByRole('button', { name: '标签 风景，已拒绝' });
+  await expect(rejectedLandscape).toBeFocused();
+  await rejectedLandscape.press('Backspace');
+  await expect.poll(() => submitted.at(-1)?.action).toBe('clear');
+  await expect(inspector.getByRole('button', { name: '标签 风景，未决定' })).toBeFocused();
+});
+
+test('workspace inspector retries a failed tag decision with the same operation ID', async ({
+  page,
+}) => {
+  await installSyntheticAuthenticatedHost(page);
+  const submitted: { operationID: string }[] = [];
+  await page.route('**/v1/tag-decisions/batch', (route) => {
+    submitted.push(route.request().postDataJSON() as (typeof submitted)[number]);
+    if (submitted.length === 1) {
+      return route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        json: { message: 'Mac 正在更新标签，请稍后重试。' },
+      });
+    }
+    return route.fallback();
+  });
+  await page.goto('gallery');
+
+  await page.getByRole('button', { name: '选择 IMG_0001.jpg' }).click();
+  await page.getByRole('button', { name: '选择 IMG_0002.jpg' }).click({ modifiers: ['Shift'] });
+  await page.getByRole('button', { name: '显示检视器' }).click();
+  const inspector = page.getByRole('complementary', { name: '检视器' });
+  await inspector.getByRole('button', { name: '标签 风景，状态不一致' }).click();
+  await expect(inspector.getByText('Mac 正在更新标签，请稍后重试。')).toBeVisible();
+  await inspector.getByRole('button', { name: '重试标签决定' }).click();
+
+  await expect(inspector.getByText('已更新 2 项标签决定。')).toBeVisible();
+  expect(submitted).toHaveLength(2);
+  expect(submitted[0]?.operationID).toBe(submitted[1]?.operationID);
+});
+
+test('workspace inspector preserves selection and returns focus when its drawer closes', async ({
+  page,
+}, testInfo) => {
+  await installSyntheticAuthenticatedHost(page);
+  await page.goto('gallery');
+
+  await page.getByRole('button', { name: '选择 IMG_0001.jpg' }).click();
+  const trigger = page.getByRole('button', { name: '显示检视器' });
+  await trigger.click();
+  const inspector = page.getByRole('complementary', { name: '检视器' });
+  await expect(inspector.getByRole('heading', { name: '照片信息' })).toBeVisible();
+
+  const accessibility = await new AxeBuilder({ page })
+    .include('.inspector')
+    .withTags(['wcag2a', 'wcag2aa'])
+    .analyze();
+  expect(accessibility.violations).toEqual([]);
+  expect(await inspector.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
+    true,
+  );
+  if (testInfo.project.name === 'chromium-mobile') {
+    const undersizedButtons = await inspector.getByRole('button').evaluateAll((buttons) =>
+      buttons
+        .map((button) => ({
+          name: button.getAttribute('aria-label') ?? button.textContent.trim(),
+          height: button.getBoundingClientRect().height,
+        }))
+        .filter((item) => item.height < 44),
+    );
+    expect(undersizedButtons).toEqual([]);
+  }
+  if (process.env.IMAGEALL_CAPTURE_EVIDENCE === '1') {
+    await page.screenshot({
+      path: `../docs/web-companion-refactor/evidence/gallery/imageall-react-context-inspector-${testInfo.project.name}.png`,
+      animations: 'disabled',
+    });
+  }
+
+  await inspector.getByRole('button', { name: '关闭检视器' }).click();
+  await expect(trigger).toBeFocused();
+  await expect(page.getByText('已选择 1 项')).toBeVisible();
+  await trigger.click();
+  await expect(
+    inspector.getByRole('definition').filter({ hasText: /^IMG_0001\.jpg$/ }),
+  ).toBeVisible();
+});
+
+test('workspace inspector exposes the frozen selection favorite and delete actions', async ({
+  page,
+}) => {
+  await installSyntheticAuthenticatedHost(page);
+  let favoriteRequest: { assetIDs: string[]; isFavorite: boolean } | null = null;
+  await page.route('**/v1/favorites', (route) => {
+    favoriteRequest = route.request().postDataJSON() as typeof favoriteRequest;
+    return route.fallback();
+  });
+  await page.goto('gallery');
+
+  await page.getByRole('button', { name: '选择 IMG_0001.jpg' }).click();
+  await page.getByRole('button', { name: '选择 IMG_0002.jpg' }).click({ modifiers: ['Shift'] });
+  await page.getByRole('button', { name: '显示检视器' }).click();
+  const inspector = page.getByRole('complementary', { name: '检视器' });
+
+  await inspector.getByRole('button', { name: '收藏所选 2 项' }).click();
+  expect(favoriteRequest).toMatchObject({
+    assetIDs: [assetIDs[0], assetIDs[1]],
+    isFavorite: true,
+  });
+
+  const deleteTrigger = inspector.getByRole('button', { name: '删除所选 2 项' });
+  await deleteTrigger.click();
+  const confirmation = page.getByRole('alertdialog', { name: '删除 2 个所选项目？' });
+  await expect(confirmation).toBeVisible();
+  await confirmation.getByRole('button', { name: '取消' }).click();
+  await expect(deleteTrigger).toBeFocused();
+
+  await inspector.getByRole('button', { name: '清除选择' }).click();
+  await expect(page.getByText('已选择 2 项')).toBeHidden();
+  await expect(inspector.getByRole('heading', { name: '工作区状态' })).toBeVisible();
+});
+
 test('single-photo inspector groups tags by the Host catalog order', async ({ page }, testInfo) => {
   await installSyntheticAuthenticatedHost(page);
   const landscapeTagID = '55220ca2-8800-4cea-a6b9-9f9e148d2adc';

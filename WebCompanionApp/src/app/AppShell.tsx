@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ComponentType } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -34,6 +34,10 @@ import { useConnection } from '@/features/session/ConnectionContext';
 import { useSession } from '@/features/session/SessionContext';
 
 import { useTheme } from './ThemeProvider';
+import {
+  WorkspaceInspectorContext,
+  type WorkspaceInspectorDescriptor,
+} from './WorkspaceInspectorContext';
 
 type NavigationItem = {
   to: string;
@@ -153,7 +157,12 @@ export function AppShell() {
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const commandTriggerRef = useRef<HTMLButtonElement>(null);
+  const inspectorTriggerRef = useRef<HTMLButtonElement>(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [workspaceInspector, setWorkspaceInspector] = useState<{
+    ownerID: string;
+    descriptor: WorkspaceInspectorDescriptor;
+  } | null>(null);
   const location = useLocation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -198,10 +207,28 @@ export function AppShell() {
   const routePath = `/${location.pathname.split('/').find(Boolean) ?? 'gallery'}`;
   const title = routeTitles.get(routePath) ?? '工作区';
   const activeNotice = notice.data;
+  const publishWorkspaceInspector = useCallback(
+    (ownerID: string, descriptor: WorkspaceInspectorDescriptor) => {
+      setWorkspaceInspector({ ownerID, descriptor });
+    },
+    [],
+  );
+  const clearWorkspaceInspector = useCallback((ownerID: string) => {
+    setWorkspaceInspector((current) => (current?.ownerID === ownerID ? null : current));
+  }, []);
+  const workspaceInspectorRegistry = useMemo(
+    () => ({ publish: publishWorkspaceInspector, clear: clearWorkspaceInspector }),
+    [clearWorkspaceInspector, publishWorkspaceInspector],
+  );
 
   function closeCommandPalette() {
     setCommandPaletteOpen(false);
     requestAnimationFrame(() => commandTriggerRef.current?.focus());
+  }
+
+  function closeInspector() {
+    setInspectorOpen(false);
+    requestAnimationFrame(() => inspectorTriggerRef.current?.focus({ preventScroll: true }));
   }
 
   useEffect(() => {
@@ -296,6 +323,7 @@ export function AppShell() {
                 return next;
               })
             }
+            ref={inspectorTriggerRef}
             type="button"
           >
             <PanelRight size={18} />
@@ -406,14 +434,18 @@ export function AppShell() {
             {errorMessage(dismissNotice.error ?? runNoticeAction.error)}
           </p>
         ) : null}
-        <Outlet />
+        <WorkspaceInspectorContext.Provider value={workspaceInspectorRegistry}>
+          <Outlet />
+        </WorkspaceInspectorContext.Provider>
       </main>
 
       <aside className="inspector" data-open={inspectorOpen} aria-label="检视器">
         <div className="inspector-header">
           <div>
-            <p className="eyebrow">Session inspector</p>
-            <h2>工作区状态</h2>
+            <p className="eyebrow">
+              {workspaceInspector?.descriptor.eyebrow ?? 'Session inspector'}
+            </p>
+            <h2>{workspaceInspector?.descriptor.title ?? '工作区状态'}</h2>
           </div>
           <span className="inspector-live">
             <span aria-hidden="true" /> LIVE
@@ -421,38 +453,46 @@ export function AppShell() {
           <button
             className="icon-button inspector-close"
             aria-label="关闭检视器"
-            onClick={() => setInspectorOpen(false)}
+            onClick={closeInspector}
             type="button"
           >
             <X size={17} />
           </button>
         </div>
-        <dl className="metadata-list">
-          <div>
-            <dt>会话</dt>
-            <dd>
-              {session.session?.authMode === 'account'
-                ? (session.session.username ?? '账户')
-                : '已配对设备'}
-            </dd>
-          </div>
-          <div>
-            <dt>Host</dt>
-            <dd>{capabilities.data?.hostAppVersion ?? '—'}</dd>
-          </div>
-          <div>
-            <dt>协议</dt>
-            <dd>{capabilities.data ? `v${String(capabilities.data.protocolVersion)}` : '—'}</dd>
-          </div>
-          <div>
-            <dt>传输</dt>
-            <dd>{capabilities.data?.usesTLS ? 'TLS' : '本机 loopback'}</dd>
-          </div>
-        </dl>
-        <div className="inspector-note">
-          <SlidersHorizontal size={17} aria-hidden="true" />
-          <p>选中照片或工作项后，属性和上下文操作将显示在这里。</p>
-        </div>
+        {workspaceInspector ? (
+          inspectorOpen ? (
+            workspaceInspector.descriptor.content
+          ) : null
+        ) : (
+          <>
+            <dl className="metadata-list">
+              <div>
+                <dt>会话</dt>
+                <dd>
+                  {session.session?.authMode === 'account'
+                    ? (session.session.username ?? '账户')
+                    : '已配对设备'}
+                </dd>
+              </div>
+              <div>
+                <dt>Host</dt>
+                <dd>{capabilities.data?.hostAppVersion ?? '—'}</dd>
+              </div>
+              <div>
+                <dt>协议</dt>
+                <dd>{capabilities.data ? `v${String(capabilities.data.protocolVersion)}` : '—'}</dd>
+              </div>
+              <div>
+                <dt>传输</dt>
+                <dd>{capabilities.data?.usesTLS ? 'TLS' : '本机 loopback'}</dd>
+              </div>
+            </dl>
+            <div className="inspector-note">
+              <SlidersHorizontal size={17} aria-hidden="true" />
+              <p>选中照片或工作项后，属性和上下文操作将显示在这里。</p>
+            </div>
+          </>
+        )}
         <button
           className="button inspector-logout"
           onClick={() => void session.logout()}

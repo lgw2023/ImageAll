@@ -101,10 +101,11 @@ export async function applyTagDecision(
   tagID: string,
   assetIDs: string[],
   action: TagDecisionAction,
+  operationID: string = crypto.randomUUID(),
 ): Promise<BatchTagDecisionResponse> {
   return requestJSON('/v1/tag-decisions/batch', batchTagDecisionResponseSchema, {
     method: 'POST',
-    body: JSON.stringify({ operationID: crypto.randomUUID(), tagID, assetIDs, action }),
+    body: JSON.stringify({ operationID, tagID, assetIDs, action }),
   });
 }
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   useInfiniteQuery,
@@ -37,11 +37,13 @@ import {
 } from '@/api/tags';
 import { prepareEmbeddings } from '@/api/training';
 import { submitSlimmingRemoval } from '@/api/slimming';
+import { useWorkspaceInspector } from '@/app/WorkspaceInspectorContext';
 
 import { AssetViewer } from './AssetViewer';
 import { ActionToast } from './ActionToast';
 import { AssetDeletionDialog } from './AssetDeletionDialog';
 import { GalleryToolbar, type GalleryFilters } from './GalleryToolbar';
+import { GallerySelectionInspector } from './GallerySelectionInspector';
 import { SelectionBar } from './SelectionBar';
 import { useThumbnailRecovery } from './useThumbnailRecovery';
 import { VirtualAssetGrid } from './VirtualAssetGrid';
@@ -315,6 +317,7 @@ export function GalleryRoute() {
   const previousViewerAsset = viewerAssetIndex > 0 ? (assets[viewerAssetIndex - 1] ?? null) : null;
   const nextViewerAsset = viewerAssetIndex >= 0 ? (assets[viewerAssetIndex + 1] ?? null) : null;
   const activeTags = useMemo(() => tags.data ?? [], [tags.data]);
+  const activeTagGroups = useMemo(() => tagGroups.data ?? [], [tagGroups.data]);
   const effectiveSelectedTagID = activeTags.some((tag) => tag.id === selectedTagID)
     ? selectedTagID
     : (activeTags[0]?.id ?? '');
@@ -331,6 +334,10 @@ export function GalleryRoute() {
   }, [assetId]);
 
   const selectedAssetIDs = useMemo(() => [...selectedIDs], [selectedIDs]);
+  const selectedAssets = useMemo(
+    () => assets.filter((asset) => selectedIDs.has(asset.id)),
+    [assets, selectedIDs],
+  );
   const selectionAggregate = useQuery({
     queryKey: ['tag-selection', activeTags.map((tag) => tag.id), selectedAssetIDs],
     queryFn: ({ signal }) =>
@@ -400,11 +407,13 @@ export function GalleryRoute() {
       tagID,
       assetIDs,
       action,
+      operationID,
     }: {
       tagID: string;
       assetIDs: string[];
       action: TagDecisionAction;
-    }) => applyTagDecision(tagID, assetIDs, action),
+      operationID?: string;
+    }) => applyTagDecision(tagID, assetIDs, action, operationID),
     onSuccess: (response, variables) => {
       setUndoID(response.undoID);
       setStatusMessage(`已更新 ${String(response.appliedAssetCount)} 项标签决定。`);
@@ -671,10 +680,20 @@ export function GalleryRoute() {
     }
   }
 
-  async function applyDecision(tagID: string, assetIDs: string[], action: TagDecisionAction) {
+  async function applyDecision(
+    tagID: string,
+    assetIDs: string[],
+    action: TagDecisionAction,
+    operationID?: string,
+  ) {
     setStatusMessage('');
     try {
-      await tagMutation.mutateAsync({ tagID, assetIDs, action });
+      await tagMutation.mutateAsync({
+        tagID,
+        assetIDs,
+        action,
+        ...(operationID ? { operationID } : {}),
+      });
       return true;
     } catch (error) {
       setStatusMessage(errorMessage(error));
@@ -715,6 +734,81 @@ export function GalleryRoute() {
     if (locationState.fromGallery) void navigate(-1);
     else void navigate(favoritesOnly ? '/gallery/favorites' : '/gallery', { replace: true });
   }
+
+  const applyDecisionRef = useRef(applyDecision);
+  const inspectorActionsRef = useRef({
+    clear: clearSelection,
+    delete: () => setSelectionDeletionRequested(true),
+    favorite: applyFavorite,
+    open: openAsset,
+  });
+  useEffect(() => {
+    applyDecisionRef.current = applyDecision;
+    inspectorActionsRef.current = {
+      clear: clearSelection,
+      delete: () => setSelectionDeletionRequested(true),
+      favorite: applyFavorite,
+      open: openAsset,
+    };
+  });
+  const applyInspectorDecision = useCallback(
+    (tagID: string, assetIDs: string[], action: TagDecisionAction, operationID: string) =>
+      applyDecisionRef.current(tagID, assetIDs, action, operationID),
+    [],
+  );
+  const clearInspectorSelection = useCallback(() => inspectorActionsRef.current.clear(), []);
+  const deleteInspectorSelection = useCallback(() => inspectorActionsRef.current.delete(), []);
+  const favoriteInspectorSelection = useCallback(
+    (assetIDs: string[], isFavorite: boolean) =>
+      inspectorActionsRef.current.favorite(assetIDs, isFavorite),
+    [],
+  );
+  const openInspectorAsset = useCallback(
+    (assetID: string) => inspectorActionsRef.current.open(assetID),
+    [],
+  );
+  const workspaceInspector = useMemo(
+    () =>
+      selectedAssets.length
+        ? {
+            eyebrow: '当前选择',
+            title:
+              selectedAssets.length === 1
+                ? '照片信息'
+                : `${selectedAssets.length.toLocaleString('zh-CN')} 项选择`,
+            content: (
+              <GallerySelectionInspector
+                aggregates={selectionAggregate.data ?? []}
+                assets={selectedAssets}
+                mutationPending={mutationPending || selectionAggregate.isFetching}
+                onClear={clearInspectorSelection}
+                onDelete={deleteInspectorSelection}
+                onFavorite={favoriteInspectorSelection}
+                onOpen={openInspectorAsset}
+                onTagDecision={applyInspectorDecision}
+                statusMessage={statusMessage}
+                tagCatalog={activeTags}
+                tagGroups={activeTagGroups}
+              />
+            ),
+          }
+        : null,
+    [
+      activeTagGroups,
+      activeTags,
+      applyInspectorDecision,
+      clearInspectorSelection,
+      deleteInspectorSelection,
+      favoriteInspectorSelection,
+      mutationPending,
+      openInspectorAsset,
+      selectedAssets,
+      selectionAggregate.data,
+      selectionAggregate.isFetching,
+      statusMessage,
+    ],
+  );
+  useWorkspaceInspector(workspaceInspector);
 
   return (
     <section className="gallery-workspace" aria-labelledby="gallery-title">
