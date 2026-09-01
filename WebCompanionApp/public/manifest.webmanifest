@@ -1,13 +1,13 @@
 {
   "name": "ImageAll Web Companion",
   "short_name": "ImageAll",
-  "description": "与 Mac 上的 ImageAll 安全配对后管理照片。",
+  "description": "与 Mac 安全配对的私人影像工作台。",
   "lang": "zh-CN",
   "start_url": "/web-v2/gallery",
   "scope": "/web-v2/",
   "display": "standalone",
-  "background_color": "#f4f4f2",
-  "theme_color": "#f4f4f2",
+  "background_color": "#11110f",
+  "theme_color": "#11110f",
   "icons": [
     {
       "src": "/web-v2/icon.svg",

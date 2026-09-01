@@ -248,10 +248,10 @@ export function AppShell() {
           {navigationOpen ? <X size={18} /> : <Menu size={18} />}
         </button>
         <div className="titlebar-heading">
-          <span className="titlebar-product">ImageAll</span>
-          <span aria-hidden="true" className="titlebar-separator">
-            /
+          <span className="titlebar-product" aria-label="ImageAll">
+            IMAGE<span aria-hidden="true">/</span>ALL
           </span>
+          <span aria-hidden="true" className="titlebar-separator" />
           <h1>{title}</h1>
         </div>
         <div className="titlebar-actions">
@@ -271,12 +271,14 @@ export function AppShell() {
           <button
             aria-haspopup="dialog"
             aria-label="打开命令面板"
-            className="icon-button"
+            className="command-trigger"
             onClick={() => setCommandPaletteOpen(true)}
             ref={commandTriggerRef}
             type="button"
           >
             <Search aria-hidden="true" size={18} />
+            <span>搜索 / 命令</span>
+            <kbd>⌘ K</kbd>
           </button>
           <button
             aria-label={theme.resolved === 'dark' ? '使用浅色主题' : '使用深色主题'}
@@ -306,18 +308,20 @@ export function AppShell() {
       <aside className="sidebar" data-open={navigationOpen}>
         <div className="sidebar-brand">
           <div className="sidebar-brand-mark" aria-hidden="true">
-            <Images size={18} />
+            <span>I</span>
+            <span>A</span>
           </div>
           <div>
-            <strong>Web Companion</strong>
-            <span>照片工作台</span>
+            <strong>ImageAll</strong>
+            <span>Visual archive</span>
           </div>
         </div>
+        <p className="sidebar-edition">私人影像工作台 · WEB 02</p>
         <nav aria-label="主导航">
-          {navigationGroups.map((group) => (
+          {navigationGroups.map((group, groupIndex) => (
             <section className="navigation-group" key={group.label}>
               <h2>{group.label}</h2>
-              {group.items.map((item) => {
+              {group.items.map((item, itemIndex) => {
                 const Icon = item.icon;
                 return (
                   <NavLink
@@ -326,6 +330,10 @@ export function AppShell() {
                     onClick={() => setNavigationOpen(false)}
                     to={item.to}
                   >
+                    <span className="navigation-index" aria-hidden="true">
+                      {String(groupIndex + 1).padStart(2, '0')}.
+                      {String(itemIndex + 1).padStart(2, '0')}
+                    </span>
                     <Icon aria-hidden={true} size={17} />
                     <span>{item.label}</span>
                   </NavLink>
@@ -406,9 +414,12 @@ export function AppShell() {
       <aside className="inspector" data-open={inspectorOpen} aria-label="检视器">
         <div className="inspector-header">
           <div>
-            <p className="eyebrow">检视器</p>
-            <h2>当前工作区</h2>
+            <p className="eyebrow">Session inspector</p>
+            <h2>工作区状态</h2>
           </div>
+          <span className="inspector-live">
+            <span aria-hidden="true" /> LIVE
+          </span>
           <button
             className="icon-button inspector-close"
             aria-label="关闭检视器"

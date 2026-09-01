@@ -130,12 +130,13 @@ export function VirtualAssetGrid({
   const dragStart = useRef<{ x: number; y: number; pointerID: number } | null>(null);
   const suppressClick = useRef(false);
   const columns = columnCount(width, density);
-  const gap = 12;
+  const gap = density === 'compact' ? 4 : 6;
   const cardWidth = Math.max(
     density === 'compact' ? 96 : 140,
     (width - gap * (columns - 1)) / columns,
   );
-  const rowHeight = cardWidth + (density === 'compact' ? 50 : 66) + gap;
+  const cardHeight = Math.round(cardWidth * 0.75);
+  const rowHeight = cardHeight + gap;
   const rowCount = Math.ceil(assets.length / columns);
   // TanStack Virtual intentionally returns imperative functions that React Compiler skips.
   // eslint-disable-next-line react-hooks/incompatible-library
@@ -332,6 +333,7 @@ export function VirtualAssetGrid({
             style={{
               gap,
               gridTemplateColumns: `repeat(${String(columns)}, minmax(0, 1fr))`,
+              height: cardHeight,
               transform: `translateY(${String(row.start)}px)`,
             }}
           >
@@ -392,8 +394,13 @@ export function VirtualAssetGrid({
                       ) : null}
                     </span>
                     <span className="asset-card-copy">
-                      <strong title={title}>{title}</strong>
-                      <span>{asset.sourceName}</span>
+                      <span className="asset-card-index" aria-hidden="true">
+                        {String(index + 1).padStart(3, '0')}
+                      </span>
+                      <span className="asset-card-labels">
+                        <strong title={title}>{title}</strong>
+                        <span>{asset.sourceName}</span>
+                      </span>
                     </span>
                   </button>
                   <button

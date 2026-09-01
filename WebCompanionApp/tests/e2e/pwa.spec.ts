@@ -26,8 +26,8 @@ test('PWA caches only the public shell, upgrades cleanly, and exposes no private
     start_url: '/web-v2/gallery',
     scope: '/web-v2/',
     display: 'standalone',
-    background_color: '#f4f4f2',
-    theme_color: '#f4f4f2',
+    background_color: '#11110f',
+    theme_color: '#11110f',
   });
   expect(Array.isArray(manifest.icons)).toBe(true);
 

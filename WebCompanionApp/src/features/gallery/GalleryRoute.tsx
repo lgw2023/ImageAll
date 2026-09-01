@@ -536,16 +536,31 @@ export function GalleryRoute() {
   return (
     <section className="gallery-workspace" aria-labelledby="gallery-title">
       <div className="gallery-heading">
-        <div>
-          <p className="eyebrow">照片</p>
+        <div className="gallery-title-lockup">
+          <p className="eyebrow">Private image archive</p>
           <h2 id="gallery-title">{favoritesOnly ? '收藏图库' : '图库'}</h2>
-          <p>分页浏览、筛选和处理由 Mac Host 提供的照片投影。</p>
-        </div>
-        {thumbnailRecovery.recovering ? (
-          <span className="thumbnail-recovery-status" role="status">
-            正在恢复可见缩略图…
+          <span className="gallery-title-translation" aria-hidden="true">
+            {favoritesOnly ? 'Selected works' : 'All photographs'}
           </span>
-        ) : null}
+          <p>让照片占据画面，让工具只在需要时出现。</p>
+        </div>
+        <div className="gallery-heading-aside">
+          <dl className="gallery-heading-stats">
+            <div>
+              <dt>LOADED</dt>
+              <dd>{assets.length.toLocaleString('zh-CN')}</dd>
+            </div>
+            <div>
+              <dt>AUTHORITY</dt>
+              <dd>MAC HOST</dd>
+            </div>
+          </dl>
+          {thumbnailRecovery.recovering ? (
+            <span className="thumbnail-recovery-status" role="status">
+              正在恢复可见缩略图…
+            </span>
+          ) : null}
+        </div>
       </div>
 
       {worldMapSelection ? (

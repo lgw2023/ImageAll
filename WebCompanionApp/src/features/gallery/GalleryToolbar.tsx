@@ -72,7 +72,7 @@ export function GalleryToolbar({
         <input
           id="gallery-search-input"
           onChange={(event) => setDraftSearch(event.target.value)}
-          placeholder="搜索照片"
+          placeholder="搜索文件名、路径或记忆"
           type="search"
           value={draftSearch}
         />
