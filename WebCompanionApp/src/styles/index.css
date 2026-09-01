@@ -2038,6 +2038,161 @@
     gap: 12px;
   }
 
+  .review-overview-layout {
+    display: grid;
+    min-width: 0;
+    align-items: start;
+    gap: 14px;
+  }
+
+  .review-overview-layout[data-models='true'] {
+    grid-template-columns: minmax(280px, 330px) minmax(0, 1fr);
+  }
+
+  .review-overview-content {
+    min-width: 0;
+  }
+
+  .review-local-model-panel {
+    display: grid;
+    min-width: 0;
+    padding: 14px;
+    gap: 12px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-panel);
+    background: var(--color-surface);
+  }
+
+  .review-model-panel-heading,
+  .review-model-panel-heading > div,
+  .review-model-card > header,
+  .review-model-card > header > div,
+  .review-model-progress > div,
+  .review-model-actions {
+    display: flex;
+  }
+
+  .review-model-panel-heading,
+  .review-model-card > header {
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .review-model-panel-heading > div {
+    min-width: 0;
+    align-items: flex-start;
+    gap: 9px;
+  }
+
+  .review-model-panel-heading h3,
+  .review-model-panel-heading p,
+  .review-model-card p,
+  .review-model-progress p,
+  .review-model-scope-note {
+    margin: 0;
+  }
+
+  .review-model-panel-heading p,
+  .review-model-card p,
+  .review-model-service > span:last-child,
+  .review-model-progress,
+  .review-model-scope-note {
+    color: var(--color-text-muted);
+    font-size: 11px;
+  }
+
+  .review-model-service,
+  .review-model-tracks,
+  .review-model-card,
+  .review-model-progress,
+  .review-model-panel-state {
+    display: grid;
+  }
+
+  .review-model-service {
+    padding: 11px;
+    gap: 5px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-control);
+    background: var(--color-surface-muted);
+  }
+
+  .review-model-service .state-pill {
+    width: max-content;
+  }
+
+  .review-model-tracks {
+    gap: 8px;
+  }
+
+  .review-model-card {
+    padding: 12px;
+    gap: 10px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-card);
+    background: var(--color-surface-muted);
+  }
+
+  .review-model-card > header > div {
+    min-width: 0;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .review-model-card > header > div span {
+    color: var(--color-text-muted);
+    font-size: 10px;
+  }
+
+  .review-model-progress {
+    gap: 6px;
+  }
+
+  .review-model-progress > div {
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .review-model-progress progress {
+    width: 100%;
+    height: 5px;
+    accent-color: var(--color-accent);
+  }
+
+  .review-model-actions {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .review-model-actions .button {
+    min-height: 34px;
+    padding-inline: 10px;
+    flex: 1 1 auto;
+  }
+
+  .review-model-panel-state {
+    min-height: 132px;
+    padding: 14px;
+    place-content: center;
+    justify-items: start;
+    gap: 8px;
+    border: 1px dashed var(--color-border-strong);
+    border-radius: var(--radius-card);
+  }
+
+  .review-model-message {
+    padding: 9px 10px;
+    border-radius: var(--radius-control);
+    color: var(--color-text);
+    background: var(--color-accent-subtle);
+    font-size: 11px;
+  }
+
+  .review-model-scope-note {
+    color: var(--color-warning);
+  }
+
   .review-heading-actions {
     display: grid;
     min-width: min(100%, 230px);
@@ -4543,6 +4698,22 @@
   .slimming-action-row .button,
   .slimming-review-actions > .button {
     flex: 1;
+  }
+}
+
+@media (max-width: 899px) {
+  .review-overview-layout[data-models='true'] {
+    grid-template-columns: 1fr;
+  }
+
+  .review-model-tracks {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 599px) {
+  .review-model-tracks {
+    grid-template-columns: 1fr;
   }
 }
 

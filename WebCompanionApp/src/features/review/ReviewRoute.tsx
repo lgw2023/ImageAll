@@ -16,6 +16,7 @@ import {
 import { Link, useSearchParams } from 'react-router-dom';
 
 import { fetchSources } from '@/api/assets';
+import { fetchCapabilities } from '@/api/capabilities';
 import type { ReviewDecisionAction } from '@/api/contracts/review';
 import { errorMessage } from '@/api/errors';
 import { fetchGeneralSettings, updateGeneralSettings } from '@/api/management';
@@ -26,6 +27,7 @@ import {
   undoReviewDecision,
 } from '@/api/review';
 
+import { ReviewLocalModelPanel } from './ReviewLocalModelPanel';
 import { ReviewSinglePhotoDialog } from './ReviewSinglePhotoDialog';
 import { ReviewSourceScope } from './ReviewSourceScope';
 
@@ -117,6 +119,11 @@ function ReviewOverview({ sourceIDs, sourceScope, search }: ReviewWorkspaceProps
     queryFn: ({ signal }) => fetchGeneralSettings(signal),
     staleTime: 60_000,
   });
+  const capabilities = useQuery({
+    queryKey: ['capabilities'],
+    queryFn: ({ signal }) => fetchCapabilities(signal),
+    staleTime: 60_000,
+  });
   const updateLimit = useMutation({
     mutationFn: (value: number) => updateGeneralSettings({ maxPendingSuggestionsPerTag: value }),
     onSuccess: (response) => {
@@ -124,6 +131,8 @@ function ReviewOverview({ sourceIDs, sourceScope, search }: ReviewWorkspaceProps
     },
   });
   const suggestionLimit = settings.data?.maxPendingSuggestionsPerTag ?? null;
+  const supportsLibrarySuggestions =
+    capabilities.data?.capabilities.includes('librarySuggestions') === true;
   const adjustSuggestionLimit = (delta: number) => {
     if (suggestionLimit === null || updateLimit.isPending) return;
     const next = Math.min(10_000, Math.max(1, suggestionLimit + delta));
@@ -202,36 +211,41 @@ function ReviewOverview({ sourceIDs, sourceScope, search }: ReviewWorkspaceProps
         </div>
       </header>
 
-      {overview.data.tags.length ? (
-        <div className="review-tag-grid">
-          {overview.data.tags.map((tag) => (
-            <article className="review-tag-card" key={tag.id}>
-              <div>
-                <h3>{tag.displayName}</h3>
-                <span data-status={tag.taskStatus}>{tag.taskStatus}</span>
-              </div>
-              <strong>{tag.pendingSuggestionCount.toLocaleString('zh-CN')}</strong>
-              <p>
-                已确认 {tag.acceptedSampleCount.toLocaleString('zh-CN')} · 已拒绝{' '}
-                {tag.rejectedSampleCount.toLocaleString('zh-CN')}
-              </p>
-              {tag.canReview && tag.pendingSuggestionCount > 0 ? (
-                <Link className="button button-primary" to={queueHref(tag.id, search)}>
-                  开始审查
-                </Link>
-              ) : (
-                <span className="muted-label">当前没有可审查项目</span>
-              )}
-            </article>
-          ))}
+      <div className="review-overview-layout" data-models={supportsLibrarySuggestions}>
+        {supportsLibrarySuggestions ? <ReviewLocalModelPanel sourceIDs={sourceIDs} /> : null}
+        <div className="review-overview-content">
+          {overview.data.tags.length ? (
+            <div className="review-tag-grid">
+              {overview.data.tags.map((tag) => (
+                <article className="review-tag-card" key={tag.id}>
+                  <div>
+                    <h3>{tag.displayName}</h3>
+                    <span data-status={tag.taskStatus}>{tag.taskStatus}</span>
+                  </div>
+                  <strong>{tag.pendingSuggestionCount.toLocaleString('zh-CN')}</strong>
+                  <p>
+                    已确认 {tag.acceptedSampleCount.toLocaleString('zh-CN')} · 已拒绝{' '}
+                    {tag.rejectedSampleCount.toLocaleString('zh-CN')}
+                  </p>
+                  {tag.canReview && tag.pendingSuggestionCount > 0 ? (
+                    <Link className="button button-primary" to={queueHref(tag.id, search)}>
+                      开始审查
+                    </Link>
+                  ) : (
+                    <span className="muted-label">当前没有可审查项目</span>
+                  )}
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="workspace-state">
+              <ScanSearch aria-hidden="true" size={26} />
+              <strong>还没有审查标签</strong>
+              <p>先在标签库建立样本或运行建议任务。</p>
+            </div>
+          )}
         </div>
-      ) : (
-        <div className="workspace-state">
-          <ScanSearch aria-hidden="true" size={26} />
-          <strong>还没有审查标签</strong>
-          <p>先在标签库建立样本或运行建议任务。</p>
-        </div>
-      )}
+      </div>
     </section>
   );
 }

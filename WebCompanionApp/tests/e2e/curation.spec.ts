@@ -1,7 +1,7 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
 
-import { installSyntheticAuthenticatedHost } from './syntheticHost';
+import { installSyntheticAuthenticatedHost, sourceID } from './syntheticHost';
 
 const reviewArchiveSourceID = '8de47499-1ca0-4cc2-84bc-a881018e8b0c';
 
@@ -96,6 +96,190 @@ test('review overview updates the shared per-tag suggestion limit without leavin
       animations: 'disabled',
     });
   }
+});
+
+test('review overview controls Host-authoritative standard and personal model jobs', async ({
+  page,
+}, testInfo) => {
+  await installSyntheticAuthenticatedHost(page);
+  const standardJobID = '60000000-0000-4000-8000-000000000001';
+  const personalJobID = '60000000-0000-4000-8000-000000000002';
+  type SyntheticJob = {
+    jobID: string;
+    state: 'running' | 'paused' | 'cancelled';
+    checkedCount: number;
+    totalCount: number;
+    suggestedCount: number;
+    skippedCount: number;
+    lastErrorCode: null;
+    availableActions: ('pause' | 'resume' | 'cancel')[];
+  };
+  let standardJob: SyntheticJob | null = null;
+  let personalJob: SyntheticJob | null = null;
+  const launches: Record<string, unknown>[] = [];
+
+  await page.route('**/v1/library-suggestions?*', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        mediaKind: 'image',
+        service: {
+          state: 'ready',
+          serviceVersion: '1.0.0',
+          provider: 'Synthetic Core ML',
+          modelID: 'synthetic-vision-v1',
+        },
+        standardAvailable: true,
+        personalMode: 'fullLibrary',
+        standardJob,
+        personalJob,
+      },
+    }),
+  );
+  await page.route('**/v1/library-suggestions/requests', (route) => {
+    const body = route.request().postDataJSON() as {
+      operationID: string;
+      mediaKind: string;
+      track: 'standard' | 'personal';
+      sourceIDs: string[] | null;
+    };
+    launches.push(body);
+    const job: SyntheticJob = {
+      jobID: body.track === 'standard' ? standardJobID : personalJobID,
+      state: 'running',
+      checkedCount: 24,
+      totalCount: 120,
+      suggestedCount: 9,
+      skippedCount: 2,
+      lastErrorCode: null,
+      availableActions: ['pause', 'cancel'],
+    };
+    if (body.track === 'standard') standardJob = job;
+    else personalJob = job;
+    return route.fulfill({
+      status: 202,
+      contentType: 'application/json',
+      json: {
+        operationID: body.operationID,
+        track: body.track,
+        jobID: job.jobID,
+        replayed: false,
+      },
+    });
+  });
+  await page.route(/\/v1\/jobs\/[0-9a-f-]+\/actions$/i, (route) => {
+    const jobID = new URL(route.request().url()).pathname.split('/').at(-2) ?? '';
+    const body = route.request().postDataJSON() as { action: 'pause' | 'resume' | 'cancel' };
+    const current = jobID === standardJobID ? standardJob : personalJob;
+    if (!current) return route.abort();
+    const next: SyntheticJob = {
+      ...current,
+      state:
+        body.action === 'pause' ? 'paused' : body.action === 'resume' ? 'running' : 'cancelled',
+      availableActions:
+        body.action === 'pause'
+          ? ['resume', 'cancel']
+          : body.action === 'resume'
+            ? ['pause', 'cancel']
+            : [],
+    };
+    if (jobID === standardJobID) standardJob = next;
+    else personalJob = next;
+    return route.fulfill({ status: 200, contentType: 'application/json', json: { jobID } });
+  });
+
+  await page.goto(`review?source=${sourceID}`);
+  const panel = page.getByRole('region', { name: '本地模型' });
+  await expect(panel.getByText('Synthetic Core ML', { exact: false })).toBeVisible();
+
+  const healthRequest = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === '/v1/library-suggestions' &&
+      new URL(request.url()).searchParams.get('refreshServiceHealth') === '1',
+  );
+  await panel.getByRole('button', { name: '检查服务' }).click();
+  await healthRequest;
+
+  await panel
+    .getByRole('article', { name: '标准模型' })
+    .getByRole('button', { name: '开始生成' })
+    .click();
+  await expect.poll(() => launches.length).toBe(1);
+  expect(launches[0]).toMatchObject({
+    mediaKind: 'image',
+    track: 'standard',
+    sourceIDs: [sourceID],
+  });
+  await expect(panel.getByRole('article', { name: '标准模型' })).toContainText('24 / 120');
+  await expect(
+    panel.getByRole('article', { name: '个人模型' }).getByRole('button', { name: '开始生成' }),
+  ).toBeDisabled();
+
+  await panel
+    .getByRole('article', { name: '标准模型' })
+    .getByRole('button', { name: '暂停' })
+    .click();
+  await expect(panel.getByRole('article', { name: '标准模型' })).toContainText('已暂停');
+  await panel
+    .getByRole('article', { name: '标准模型' })
+    .getByRole('button', { name: '继续' })
+    .click();
+  await expect(panel.getByRole('article', { name: '标准模型' })).toContainText('运行中');
+  await panel
+    .getByRole('article', { name: '标准模型' })
+    .getByRole('button', { name: '取消' })
+    .click();
+  await expect(panel.getByRole('article', { name: '标准模型' })).toContainText('已取消');
+
+  await panel
+    .getByRole('article', { name: '个人模型' })
+    .getByRole('button', { name: '开始生成' })
+    .click();
+  await expect.poll(() => launches.length).toBe(2);
+  expect(launches[1]).toMatchObject({ track: 'personal', sourceIDs: [sourceID] });
+
+  const accessibility = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();
+  expect(accessibility.violations).toEqual([]);
+  if (process.env.IMAGEALL_CAPTURE_EVIDENCE === '1') {
+    await page.screenshot({
+      path: `../docs/web-companion-refactor/evidence/curation/imageall-react-review-models-${testInfo.project.name}.png`,
+      animations: 'disabled',
+      fullPage: true,
+    });
+  }
+});
+
+test('review model launch failure stays retryable and preserves its source scope', async ({
+  page,
+}) => {
+  await installSyntheticAuthenticatedHost(page);
+  let failNextLaunch = true;
+  let failedSourceIDs: string[] | null = null;
+  await page.route('**/v1/library-suggestions/requests', (route) => {
+    if (!failNextLaunch) return route.fallback();
+    failNextLaunch = false;
+    failedSourceIDs = (route.request().postDataJSON() as { sourceIDs: string[] | null }).sourceIDs;
+    return route.fulfill({
+      status: 503,
+      contentType: 'application/json',
+      json: { code: 'unavailable', message: '本地模型服务暂时不可用' },
+    });
+  });
+
+  await page.goto(`review?source=${sourceID}`);
+  const standard = page
+    .getByRole('region', { name: '本地模型' })
+    .getByRole('article', { name: '标准模型' });
+  await standard.getByRole('button', { name: '开始生成' }).click();
+  await expect(page.getByRole('region', { name: '本地模型' }).getByRole('alert')).toContainText(
+    '本地模型服务暂时不可用',
+  );
+  expect(failedSourceIDs).toEqual([sourceID]);
+  await expect(standard.getByRole('button', { name: '开始生成' })).toBeEnabled();
+
+  await standard.getByRole('button', { name: '开始生成' }).click();
+  await expect(standard).toContainText('运行中');
 });
 
 test('review queue applies an authoritative decision and supports undo', async ({
