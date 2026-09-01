@@ -29,6 +29,7 @@ import {
   undoReviewDecision,
 } from '@/api/review';
 import { fetchTagGroups, fetchTags } from '@/api/tags';
+import { useCollapsedTagGroups } from '@/features/tags/useCollapsedTagGroups';
 
 import { ReviewLocalModelPanel } from './ReviewLocalModelPanel';
 import { buildReviewTagGroups } from './reviewGroups';
@@ -43,8 +44,6 @@ const originLabels = {
 } as const;
 
 const emptySelection = new Set<string>();
-const collapsedReviewGroupsKey = 'imageall-web-v2-collapsed-tag-groups';
-
 const reviewDensityOptions = [
   { value: 0, label: '微缩' },
   { value: 1, label: '精细' },
@@ -152,31 +151,8 @@ function ReviewOverview({ sourceIDs, sourceScope, search }: ReviewWorkspaceProps
     () => buildReviewTagGroups(tags.data ?? [], tagGroups.data ?? [], overview.data?.tags ?? []),
     [overview.data?.tags, tagGroups.data, tags.data],
   );
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => {
-    try {
-      const stored = localStorage.getItem(collapsedReviewGroupsKey);
-      const parsed: unknown = stored ? JSON.parse(stored) : [];
-      return new Set(
-        Array.isArray(parsed) ? parsed.filter((item) => typeof item === 'string') : [],
-      );
-    } catch {
-      return new Set();
-    }
-  });
+  const { collapsedGroups, toggleGroup } = useCollapsedTagGroups();
   const groupToggleRefs = useRef(new Map<string, HTMLButtonElement>());
-  const toggleGroup = (groupID: string) => {
-    setCollapsedGroups((current) => {
-      const next = new Set(current);
-      if (next.has(groupID)) next.delete(groupID);
-      else next.add(groupID);
-      try {
-        localStorage.setItem(collapsedReviewGroupsKey, JSON.stringify([...next]));
-      } catch {
-        // A blocked preference store must not make the in-memory disclosure unusable.
-      }
-      return next;
-    });
-  };
   const moveGroupFocus = (groupID: string, event: React.KeyboardEvent<HTMLButtonElement>) => {
     const currentIndex = groupedTags.findIndex(({ group }) => group.id === groupID);
     if (currentIndex < 0) return;

@@ -24,6 +24,7 @@ import { errorMessage } from '@/api/errors';
 import {
   applyTagDecision,
   createTagAndApply,
+  fetchTagGroups,
   fetchTags,
   fetchTagSelection,
   undoTagDecision,
@@ -203,6 +204,11 @@ export function GalleryRoute() {
     queryKey: ['tags'],
     queryFn: ({ signal }) => fetchTags(signal),
     select: (items) => items.filter((tag) => tag.state === 'active'),
+  });
+  const tagGroups = useQuery({
+    queryKey: ['tag-groups'],
+    queryFn: ({ signal }) => fetchTagGroups(signal),
+    staleTime: 60_000,
   });
   const sources = useQuery({
     queryKey: ['sources'],
@@ -835,6 +841,8 @@ export function GalleryRoute() {
           onUndo={undoLastTagDecision}
           previousAsset={previousViewerAsset}
           statusMessage={statusMessage}
+          tagCatalog={activeTags}
+          tagGroups={tagGroups.data ?? []}
           undoAvailable={Boolean(undoID)}
           undoPending={undoMutation.isPending}
         />

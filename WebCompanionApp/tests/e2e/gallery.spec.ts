@@ -57,6 +57,187 @@ test('gallery supports virtual browsing, range selection, mutations, undo, and d
   expect(accessibility.violations).toEqual([]);
 });
 
+test('single-photo inspector groups tags by the Host catalog order', async ({ page }, testInfo) => {
+  await installSyntheticAuthenticatedHost(page);
+  const landscapeTagID = '55220ca2-8800-4cea-a6b9-9f9e148d2adc';
+  const familyTagID = '37cb4f7b-89bd-4548-80b8-ced4e1af5107';
+  const peopleGroupID = 'a0000000-0000-4000-8000-000000000001';
+  const natureGroupID = 'a0000000-0000-4000-8000-000000000005';
+
+  await page.route('**/v1/tags', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: [
+        { id: familyTagID, displayName: '家人', state: 'active', groupID: peopleGroupID },
+        { id: landscapeTagID, displayName: '风景', state: 'active', groupID: natureGroupID },
+      ],
+    }),
+  );
+  await page.route('**/v1/tag-groups', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: [
+        { id: natureGroupID, displayName: '自然与动植物', sortOrder: 4, isSystem: true },
+        { id: peopleGroupID, displayName: '人物与关系', sortOrder: 0, isSystem: true },
+      ],
+    }),
+  );
+  await page.route(/\/v1\/assets\/([0-9a-f-]+)$/i, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        assetID: assetIDs[0],
+        sourceID,
+        sourceName: 'Synthetic Library',
+        fileName: 'IMG_0001.jpg',
+        relativePath: '2026/Synthetic/IMG_0001.jpg',
+        mediaType: 'image/jpeg',
+        availability: 'available',
+        contentRevision: 1,
+        acceptedTagCount: 1,
+        rejectedTagCount: 0,
+        mediaCreatedAtMs: 1_787_820_000_000,
+        mediaModifiedAtMs: 1_787_820_000_000,
+        width: 1600,
+        height: 1200,
+        durationMs: null,
+        fingerprintSizeBytes: 1024,
+        favorite: null,
+        tags: [
+          { tagID: landscapeTagID, displayName: '风景', decision: 'accepted' },
+          { tagID: familyTagID, displayName: '家人', decision: 'unknown' },
+        ],
+        pendingSuggestions: [],
+      },
+    }),
+  );
+
+  await page.goto('gallery');
+  await page.getByRole('button', { name: '查看 IMG_0001.jpg' }).dblclick();
+  const dialog = page.getByRole('dialog');
+  const groups = dialog.getByRole('region', { name: /^(人物与关系|自然与动植物)$/ });
+  await expect(groups).toHaveCount(2);
+  await expect(groups.nth(0)).toHaveAccessibleName('人物与关系');
+  await expect(groups.nth(0)).toContainText('家人');
+  await expect(groups.nth(1)).toHaveAccessibleName('自然与动植物');
+  await expect(groups.nth(1)).toContainText('风景');
+
+  const peopleToggle = dialog.getByRole('button', { name: /人物与关系/ });
+  const natureToggle = dialog.getByRole('button', { name: /自然与动植物/ });
+  await peopleToggle.focus();
+  await peopleToggle.press('ArrowDown');
+  await expect(natureToggle).toBeFocused();
+  await natureToggle.press('Home');
+  await expect(peopleToggle).toBeFocused();
+
+  await peopleToggle.click();
+  await expect(peopleToggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(dialog.getByRole('button', { name: '标签 家人，未决定' })).toBeHidden();
+  await page.reload();
+  const reloadedDialog = page.getByRole('dialog');
+  await expect(reloadedDialog.getByRole('button', { name: /人物与关系/ })).toHaveAttribute(
+    'aria-expanded',
+    'false',
+  );
+  await expect(reloadedDialog.getByRole('button', { name: '标签 家人，未决定' })).toBeHidden();
+  const accessibility = await new AxeBuilder({ page })
+    .include('.asset-detail-sidebar')
+    .withTags(['wcag2a', 'wcag2aa'])
+    .analyze();
+  expect(accessibility.violations).toEqual([]);
+  if (process.env.IMAGEALL_CAPTURE_EVIDENCE === '1') {
+    await reloadedDialog.locator('.asset-tags').screenshot({
+      path: `../docs/web-companion-refactor/evidence/gallery/imageall-react-inspector-tags-${testInfo.project.name}.png`,
+      animations: 'disabled',
+    });
+  }
+});
+
+test('single-photo inspector tag body supports Mac click, right-click, and keyboard decisions', async ({
+  page,
+}) => {
+  await installSyntheticAuthenticatedHost(page);
+  const landscapeTagID = '55220ca2-8800-4cea-a6b9-9f9e148d2adc';
+  const familyTagID = '37cb4f7b-89bd-4548-80b8-ced4e1af5107';
+  const decisions = new Map<string, 'unknown' | 'accepted' | 'rejected'>([
+    [landscapeTagID, 'accepted'],
+    [familyTagID, 'unknown'],
+  ]);
+  const actions: { tagID: string; assetIDs: string[]; action: string }[] = [];
+
+  await page.route(/\/v1\/assets\/([0-9a-f-]+)$/i, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        assetID: assetIDs[0],
+        sourceID,
+        sourceName: 'Synthetic Library',
+        fileName: 'IMG_0001.jpg',
+        relativePath: '2026/Synthetic/IMG_0001.jpg',
+        mediaType: 'image/jpeg',
+        availability: 'available',
+        contentRevision: 1,
+        acceptedTagCount: [...decisions.values()].filter((value) => value === 'accepted').length,
+        rejectedTagCount: [...decisions.values()].filter((value) => value === 'rejected').length,
+        mediaCreatedAtMs: 1_787_820_000_000,
+        mediaModifiedAtMs: 1_787_820_000_000,
+        width: 1600,
+        height: 1200,
+        durationMs: null,
+        fingerprintSizeBytes: 1024,
+        favorite: null,
+        tags: [
+          { tagID: landscapeTagID, displayName: '风景', decision: decisions.get(landscapeTagID) },
+          { tagID: familyTagID, displayName: '家人', decision: decisions.get(familyTagID) },
+        ],
+        pendingSuggestions: [],
+      },
+    }),
+  );
+  await page.route('**/v1/tag-decisions/batch', (route) => {
+    const body = route.request().postDataJSON() as (typeof actions)[number];
+    actions.push(body);
+    decisions.set(
+      body.tagID,
+      body.action === 'accept' ? 'accepted' : body.action === 'reject' ? 'rejected' : 'unknown',
+    );
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        operationID: '2cba0aa1-e0c3-4421-bb0f-4f7edab5c3b0',
+        appliedAssetCount: 1,
+        replayed: false,
+        undoID: '9de47499-1ca0-4cc2-84bc-a881018e8b0c',
+      },
+    });
+  });
+
+  await page.goto('gallery');
+  await page.getByRole('button', { name: '查看 IMG_0001.jpg' }).dblclick();
+  const family = page.getByRole('button', { name: '标签 家人，未决定' });
+  await family.click();
+  await expect.poll(() => actions.at(-1)).toMatchObject({ tagID: familyTagID, action: 'accept' });
+  await expect(page.getByRole('button', { name: '标签 家人，已确认' })).toBeFocused();
+
+  const acceptedFamily = page.getByRole('button', { name: '标签 家人，已确认' });
+  await acceptedFamily.press('x');
+  await expect.poll(() => actions.at(-1)).toMatchObject({ tagID: familyTagID, action: 'reject' });
+  await expect(page.getByRole('button', { name: '标签 家人，已拒绝' })).toBeFocused();
+
+  const rejectedFamily = page.getByRole('button', { name: '标签 家人，已拒绝' });
+  await rejectedFamily.press('Backspace');
+  await expect.poll(() => actions.at(-1)).toMatchObject({ tagID: familyTagID, action: 'clear' });
+  await expect(page.getByRole('button', { name: '标签 家人，未决定' })).toBeFocused();
+
+  await page.getByRole('button', { name: '标签 风景，已确认' }).click({ button: 'right' });
+  await expect.poll(() => actions.at(-1)).toMatchObject({ tagID: landscapeTagID, action: 'clear' });
+});
+
 test('gallery filters are URL-addressable and sent to the Host', async ({ page }, testInfo) => {
   await installSyntheticAuthenticatedHost(page);
   await page.goto('gallery');

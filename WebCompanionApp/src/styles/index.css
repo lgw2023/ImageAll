@@ -1821,6 +1821,61 @@
     gap: 5px;
   }
 
+  .asset-tag-groups {
+    display: grid;
+    margin-top: 12px;
+    gap: 10px;
+  }
+
+  .asset-tag-group {
+    min-width: 0;
+  }
+
+  .asset-tag-group-toggle {
+    display: grid;
+    width: 100%;
+    min-height: 34px;
+    padding: 5px 7px;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 6px;
+    border: 0;
+    border-radius: var(--radius-control);
+    color: var(--color-text);
+    background: transparent;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .asset-tag-group-toggle:hover {
+    background: var(--color-surface-muted);
+  }
+
+  .asset-tag-group-toggle:focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 1px;
+  }
+
+  .asset-tag-group-toggle h4 {
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    font-size: 11px;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .asset-tag-group-toggle > span {
+    color: var(--color-text-muted);
+    font-size: 10px;
+  }
+
+  .asset-tag-list[hidden] {
+    display: none;
+  }
+
   .asset-tag-row {
     display: flex;
     min-height: 38px;
@@ -1839,6 +1894,34 @@
 
   .asset-tag-row[data-decision='rejected'] {
     border-color: color-mix(in srgb, var(--color-danger) 34%, var(--color-border));
+  }
+
+  .asset-tag-main {
+    display: flex;
+    min-width: 0;
+    flex: 1;
+    padding: 5px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    border: 0;
+    border-radius: calc(var(--radius-control) - 3px);
+    color: inherit;
+    background: transparent;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .asset-tag-main:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+  }
+
+  .asset-tag-main small {
+    flex: 0 0 auto;
+    color: var(--color-text-muted);
+    font-size: 10px;
   }
 
   .asset-tag-row > div {

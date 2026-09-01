@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { useQuery } from '@tanstack/react-query';
 import {
   Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   CloudDownload,
@@ -20,9 +21,11 @@ import {
 import { assetMediaURL, assetPreviewURL, fetchAssetDetail, openOriginalAsset } from '@/api/assets';
 import { fetchCapabilities } from '@/api/capabilities';
 import type { AssetDetail, AssetSummary } from '@/api/contracts/asset';
-import type { TagDecisionAction } from '@/api/contracts/tag';
+import type { TagDecisionAction, TagGroupSummary, TagSummary } from '@/api/contracts/tag';
 import { errorMessage } from '@/api/errors';
 import { useConnection } from '@/features/session/ConnectionContext';
+import { groupTagsByHostCatalog } from '@/features/tags/tagGrouping';
+import { useCollapsedTagGroups } from '@/features/tags/useCollapsedTagGroups';
 
 import { useAssetPreview } from './useAssetPreview';
 import { useCloudPreview } from './useCloudPreview';
@@ -43,8 +46,26 @@ type AssetViewerProps = {
   onDismissStatus: () => void;
   onUndo: () => void;
   statusMessage: string;
+  tagCatalog: TagSummary[];
+  tagGroups: TagGroupSummary[];
   undoAvailable: boolean;
   undoPending: boolean;
+};
+
+type InspectorTag = AssetDetail['tags'][number];
+type InspectorTagDecision = InspectorTag['decision'];
+type InspectorTagFocusTarget = 'main' | TagDecisionAction;
+
+const inspectorDecisionLabels: Record<InspectorTagDecision, string> = {
+  unknown: '未决定',
+  accepted: '已确认',
+  rejected: '已拒绝',
+};
+
+const decisionAfterAction: Record<TagDecisionAction, InspectorTagDecision> = {
+  accept: 'accepted',
+  reject: 'rejected',
+  clear: 'unknown',
 };
 
 function formatDate(value: number | null): string {
@@ -89,12 +110,15 @@ export function AssetViewer({
   onDismissStatus,
   onUndo,
   statusMessage,
+  tagCatalog,
+  tagGroups,
   undoAvailable,
   undoPending,
 }: AssetViewerProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const mediaRef = useRef<HTMLDivElement>(null);
   const suggestionListRef = useRef<HTMLDivElement>(null);
+  const tagGroupToggleRefs = useRef(new Map<string, HTMLButtonElement>());
   const panStart = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
   const [zoom, setZoom] = useState(1);
   const [failedPreviewAssetID, setFailedPreviewAssetID] = useState<string | null>(null);
@@ -103,6 +127,11 @@ export function AssetViewer({
   const [fullscreen, setFullscreen] = useState(false);
   const [previewReloadGeneration, setPreviewReloadGeneration] = useState(0);
   const [expandedSuggestionAssetID, setExpandedSuggestionAssetID] = useState<string | null>(null);
+  const [tagFocusRequest, setTagFocusRequest] = useState<{
+    tagID: string;
+    target: InspectorTagFocusTarget;
+    expectedDecision: InspectorTagDecision;
+  } | null>(null);
   const connection = useConnection();
   const detail = useQuery({
     queryKey: ['asset', assetID],
@@ -113,6 +142,12 @@ export function AssetViewer({
     queryFn: ({ signal }) => fetchCapabilities(signal),
     staleTime: 60_000,
   });
+  const inspectorTagGroups = useMemo(
+    () =>
+      groupTagsByHostCatalog(tagCatalog, tagGroups, detail.data?.tags ?? [], (tag) => tag.tagID),
+    [detail.data?.tags, tagCatalog, tagGroups],
+  );
+  const { collapsedGroups, toggleGroup } = useCollapsedTagGroups();
   const imagePreviewEnabled =
     detail.data?.availability === 'available' && detail.data.mediaType.startsWith('image');
   const imagePreview = useAssetPreview(
@@ -172,6 +207,26 @@ export function AssetViewer({
   }, [nextAsset, previousAsset]);
 
   useEffect(() => {
+    if (!tagFocusRequest || mutationPending) return;
+    const currentTag = detail.data?.tags.find((tag) => tag.tagID === tagFocusRequest.tagID);
+    if (currentTag?.decision !== tagFocusRequest.expectedDecision) return;
+    const focusKey = `${tagFocusRequest.tagID}:${tagFocusRequest.target}`;
+    const frame = requestAnimationFrame(() => {
+      const target = dialogRef.current?.querySelector<HTMLElement>(
+        `[data-tag-focus="${CSS.escape(focusKey)}"]`,
+      );
+      if (!target) return;
+      target.focus({ preventScroll: true });
+      setTagFocusRequest((current) =>
+        current?.tagID === tagFocusRequest.tagID && current.target === tagFocusRequest.target
+          ? null
+          : current,
+      );
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [detail.data?.tags, mutationPending, tagFocusRequest]);
+
+  useEffect(() => {
     const handleNavigation = (event: globalThis.KeyboardEvent) => {
       if (event.key === 'ArrowLeft' && previousAsset) {
         event.preventDefault();
@@ -211,6 +266,33 @@ export function AssetViewer({
     } catch {
       setLocalMessage('浏览器未允许进入全屏；可继续使用当前大图视图。');
     }
+  }
+
+  async function applyInspectorTagDecision(
+    tagID: string,
+    action: TagDecisionAction,
+    target: InspectorTagFocusTarget,
+  ) {
+    setTagFocusRequest({ tagID, target, expectedDecision: decisionAfterAction[action] });
+    const applied = await onTagDecision(tagID, [assetID], action);
+    if (!applied) setTagFocusRequest(null);
+  }
+
+  function moveTagGroupFocus(groupID: string, event: React.KeyboardEvent<HTMLButtonElement>) {
+    const currentIndex = inspectorTagGroups.findIndex(({ group }) => group.id === groupID);
+    if (currentIndex < 0) return;
+    let nextIndex: number | null = null;
+    if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
+      nextIndex = Math.min(currentIndex + 1, inspectorTagGroups.length - 1);
+    } else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') {
+      nextIndex = Math.max(currentIndex - 1, 0);
+    } else if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = inspectorTagGroups.length - 1;
+    if (nextIndex === null) return;
+    event.preventDefault();
+    const nextGroup = inspectorTagGroups[nextIndex];
+    if (nextGroup)
+      tagGroupToggleRefs.current.get(nextGroup.group.id)?.focus({ preventScroll: true });
   }
 
   return (
@@ -669,49 +751,118 @@ export function AssetViewer({
                   inputLabel="为当前照片新建标签"
                   onCreate={onCreateTag}
                 />
-                <div className="asset-tag-list">
-                  {detail.data.tags.map((tag) => (
-                    <div className="asset-tag-row" data-decision={tag.decision} key={tag.tagID}>
-                      <span>{tag.displayName}</span>
-                      <div>
+                <div className="asset-tag-groups">
+                  {inspectorTagGroups.map(({ group, tags }) => {
+                    const collapsed = collapsedGroups.has(group.id);
+                    const contentID = `asset-tag-group-${group.id}`;
+                    const headingID = `${contentID}-heading`;
+                    return (
+                      <section
+                        aria-labelledby={headingID}
+                        className="asset-tag-group"
+                        key={group.id}
+                      >
                         <button
-                          aria-label={`确认标签 ${tag.displayName}`}
-                          aria-pressed={tag.decision === 'accepted'}
-                          className="icon-button"
-                          disabled={mutationPending}
-                          onClick={() =>
-                            void onTagDecision(tag.tagID, [detail.data.assetID], 'accept')
-                          }
+                          aria-controls={contentID}
+                          aria-expanded={!collapsed}
+                          className="asset-tag-group-toggle"
+                          onClick={() => toggleGroup(group.id)}
+                          onKeyDown={(event) => moveTagGroupFocus(group.id, event)}
+                          ref={(element) => {
+                            if (element) tagGroupToggleRefs.current.set(group.id, element);
+                            else tagGroupToggleRefs.current.delete(group.id);
+                          }}
                           type="button"
                         >
-                          <Check aria-hidden="true" size={15} />
+                          {collapsed ? (
+                            <ChevronRight aria-hidden="true" size={15} />
+                          ) : (
+                            <ChevronDown aria-hidden="true" size={15} />
+                          )}
+                          <h4 id={headingID}>{group.displayName}</h4>
+                          <span>{String(tags.length)} 个标签</span>
                         </button>
-                        <button
-                          aria-label={`拒绝标签 ${tag.displayName}`}
-                          aria-pressed={tag.decision === 'rejected'}
-                          className="icon-button"
-                          disabled={mutationPending}
-                          onClick={() =>
-                            void onTagDecision(tag.tagID, [detail.data.assetID], 'reject')
-                          }
-                          type="button"
-                        >
-                          <X aria-hidden="true" size={15} />
-                        </button>
-                        <button
-                          aria-label={`清除标签决定 ${tag.displayName}`}
-                          className="icon-button"
-                          disabled={mutationPending || tag.decision === 'unknown'}
-                          onClick={() =>
-                            void onTagDecision(tag.tagID, [detail.data.assetID], 'clear')
-                          }
-                          type="button"
-                        >
-                          <RotateCcw aria-hidden="true" size={14} />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
+                        <div className="asset-tag-list" hidden={collapsed} id={contentID}>
+                          {tags.map((tag) => (
+                            <div
+                              className="asset-tag-row"
+                              data-decision={tag.decision}
+                              key={tag.tagID}
+                            >
+                              <button
+                                aria-label={`标签 ${tag.displayName}，${inspectorDecisionLabels[tag.decision]}`}
+                                className="asset-tag-main"
+                                data-tag-focus={`${tag.tagID}:main`}
+                                disabled={mutationPending}
+                                onClick={() =>
+                                  void applyInspectorTagDecision(tag.tagID, 'accept', 'main')
+                                }
+                                onContextMenu={(event) => {
+                                  event.preventDefault();
+                                  void applyInspectorTagDecision(tag.tagID, 'clear', 'main');
+                                }}
+                                onKeyDown={(event) => {
+                                  const action =
+                                    event.key.toLowerCase() === 'x'
+                                      ? 'reject'
+                                      : event.key === 'Delete' || event.key === 'Backspace'
+                                        ? 'clear'
+                                        : null;
+                                  if (!action) return;
+                                  event.preventDefault();
+                                  void applyInspectorTagDecision(tag.tagID, action, 'main');
+                                }}
+                                type="button"
+                              >
+                                <span>{tag.displayName}</span>
+                                <small>{inspectorDecisionLabels[tag.decision]}</small>
+                              </button>
+                              <div>
+                                <button
+                                  aria-label={`确认标签 ${tag.displayName}`}
+                                  aria-pressed={tag.decision === 'accepted'}
+                                  className="icon-button"
+                                  data-tag-focus={`${tag.tagID}:accept`}
+                                  disabled={mutationPending}
+                                  onClick={() =>
+                                    void applyInspectorTagDecision(tag.tagID, 'accept', 'accept')
+                                  }
+                                  type="button"
+                                >
+                                  <Check aria-hidden="true" size={15} />
+                                </button>
+                                <button
+                                  aria-label={`拒绝标签 ${tag.displayName}`}
+                                  aria-pressed={tag.decision === 'rejected'}
+                                  className="icon-button"
+                                  data-tag-focus={`${tag.tagID}:reject`}
+                                  disabled={mutationPending}
+                                  onClick={() =>
+                                    void applyInspectorTagDecision(tag.tagID, 'reject', 'reject')
+                                  }
+                                  type="button"
+                                >
+                                  <X aria-hidden="true" size={15} />
+                                </button>
+                                <button
+                                  aria-label={`清除标签决定 ${tag.displayName}`}
+                                  className="icon-button"
+                                  data-tag-focus={`${tag.tagID}:clear`}
+                                  disabled={mutationPending || tag.decision === 'unknown'}
+                                  onClick={() =>
+                                    void applyInspectorTagDecision(tag.tagID, 'clear', 'clear')
+                                  }
+                                  type="button"
+                                >
+                                  <RotateCcw aria-hidden="true" size={14} />
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </section>
+                    );
+                  })}
                 </div>
               </section>
               <p aria-live="polite" className="viewer-local-message">

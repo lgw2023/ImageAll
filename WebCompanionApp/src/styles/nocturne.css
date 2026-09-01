@@ -723,6 +723,47 @@ body {
   background: #121416;
 }
 
+.asset-tag-group {
+  padding: 6px;
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: 15px;
+  background:
+    linear-gradient(135deg, rgb(157 140 255 / 7%), transparent 55%), rgb(255 255 255 / 2%);
+}
+
+.asset-tag-group-toggle {
+  transition:
+    color var(--transition-fast),
+    background var(--transition-fast);
+}
+
+.asset-tag-group-toggle:hover {
+  color: var(--color-accent-strong);
+  background: rgb(157 140 255 / 9%);
+}
+
+.asset-tag-row {
+  border-color: rgb(255 255 255 / 9%);
+  background: rgb(8 8 17 / 44%);
+}
+
+.asset-tag-main small {
+  padding: 3px 6px;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 5%);
+  letter-spacing: 0.02em;
+}
+
+.asset-tag-row[data-decision='accepted'] .asset-tag-main small {
+  color: var(--color-success);
+  background: color-mix(in srgb, var(--color-success) 11%, transparent);
+}
+
+.asset-tag-row[data-decision='rejected'] .asset-tag-main small {
+  color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 10%, transparent);
+}
+
 .asset-viewer-tag-row,
 .local-suggestion-result,
 .viewer-cloud-preview {
