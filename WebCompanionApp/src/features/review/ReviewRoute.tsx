@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, ChevronLeft, RotateCcw, ScanSearch, SkipForward, X } from 'lucide-react';
@@ -12,6 +12,8 @@ import {
   fetchReviewQueue,
   undoReviewDecision,
 } from '@/api/review';
+
+import { ReviewSinglePhotoDialog } from './ReviewSinglePhotoDialog';
 
 const originLabels = {
   featurePrint: '视觉相似',
@@ -93,10 +95,14 @@ function ReviewOverview() {
 
 function ReviewQueue({ tagID }: { tagID: string }) {
   const queryClient = useQueryClient();
+  const gridRef = useRef<HTMLDivElement>(null);
+  const hasFocusedGrid = useRef(false);
   const [selected, setSelected] = useState(new Set<string>());
   const [dismissed, setDismissed] = useState(new Set<string>());
   const [message, setMessage] = useState('');
   const [undoID, setUndoID] = useState<string | null>(null);
+  const [activeAssetID, setActiveAssetID] = useState<string | null>(null);
+  const [previewAssetID, setPreviewAssetID] = useState<string | null>(null);
   const queue = useInfiniteQuery({
     queryKey: ['review-queue', tagID],
     queryFn: ({ pageParam, signal }) => fetchReviewQueue(tagID, pageParam, signal),
@@ -110,6 +116,16 @@ function ReviewQueue({ tagID }: { tagID: string }) {
       ),
     [dismissed, queue.data],
   );
+  const resolvedActiveAssetID = items.some((item) => item.assetID === activeAssetID)
+    ? activeAssetID
+    : (items[0]?.assetID ?? null);
+  const activeIndex = resolvedActiveAssetID
+    ? items.findIndex((item) => item.assetID === resolvedActiveAssetID)
+    : -1;
+  const previewIndex = previewAssetID
+    ? items.findIndex((item) => item.assetID === previewAssetID)
+    : -1;
+  const previewItem = previewIndex >= 0 ? items[previewIndex] : null;
   const decision = useMutation({
     mutationFn: ({ assetIDs, action }: { assetIDs: string[]; action: ReviewDecisionAction }) =>
       applyReviewDecision(tagID, assetIDs, action),
@@ -133,36 +149,96 @@ function ReviewQueue({ tagID }: { tagID: string }) {
   });
 
   const apply = useCallback(
-    async (assetIDs: string[], action: ReviewDecisionAction) => {
+    async (
+      assetIDs: string[],
+      action: ReviewDecisionAction,
+      continueFromAssetID: string | null = null,
+      keepPreviewOpen = false,
+    ) => {
       if (!assetIDs.length) return;
+      const currentIndex = continueFromAssetID
+        ? items.findIndex((item) => item.assetID === continueFromAssetID)
+        : -1;
+      const remaining = items.filter((item) => !assetIDs.includes(item.assetID));
+      const continuation =
+        currentIndex >= 0
+          ? (items.slice(currentIndex + 1).find((item) => !assetIDs.includes(item.assetID)) ??
+            items.slice(0, currentIndex).find((item) => !assetIDs.includes(item.assetID)) ??
+            null)
+          : null;
       setMessage('');
       try {
         await decision.mutateAsync({ assetIDs, action });
+        const nextAssetID = continuation?.assetID ?? remaining[0]?.assetID ?? null;
+        setActiveAssetID(nextAssetID);
+        if (keepPreviewOpen) setPreviewAssetID(nextAssetID);
       } catch (error) {
         setMessage(errorMessage(error));
       }
     },
-    [decision],
+    [decision, items],
+  );
+
+  const moveActive = useCallback(
+    (offset: number, showPreview = false) => {
+      if (!items.length) return;
+      const currentIndex = showPreview ? previewIndex : activeIndex;
+      const start = currentIndex >= 0 ? currentIndex : 0;
+      const nextIndex = Math.min(Math.max(start + offset, 0), items.length - 1);
+      const nextAssetID = items[nextIndex]?.assetID ?? null;
+      setActiveAssetID(nextAssetID);
+      if (showPreview) setPreviewAssetID(nextAssetID);
+    },
+    [activeIndex, items, previewIndex],
+  );
+
+  const deferAsset = useCallback(
+    (assetID: string | null, showPreview = false) => {
+      if (!items.length) return;
+      const currentIndex = assetID
+        ? items.findIndex((item) => item.assetID === assetID)
+        : activeIndex;
+      const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % items.length : 0;
+      const nextAssetID = items[nextIndex]?.assetID ?? null;
+      setActiveAssetID(nextAssetID);
+      if (showPreview) setPreviewAssetID(nextAssetID);
+      setMessage('已将当前项目留到稍后处理。');
+    },
+    [activeIndex, items],
   );
 
   useEffect(() => {
+    if (!items.length || hasFocusedGrid.current) return;
+    hasFocusedGrid.current = true;
+    gridRef.current?.focus({ preventScroll: true });
+  }, [items.length]);
+
+  useEffect(() => {
     function handleShortcut(event: KeyboardEvent) {
+      if (previewAssetID) return;
       const target = event.target as HTMLElement | null;
       if (target?.matches('input, select, textarea, button, a')) return;
-      const currentIDs = selected.size ? [...selected] : items[0] ? [items[0].assetID] : [];
-      if (event.key.toLowerCase() === 'a') void apply(currentIDs, 'accept');
-      else if (event.key.toLowerCase() === 'r') void apply(currentIDs, 'reject');
-      else if (event.key.toLowerCase() === 's') {
-        const firstItem = items[0];
-        if (!firstItem) return;
-        setDismissed((current) => new Set([...current, firstItem.assetID]));
-        setMessage('已将当前项目留到稍后处理。');
+      const key = event.key.toLowerCase();
+      const current =
+        items.find((item) => item.assetID === resolvedActiveAssetID) ?? items[0] ?? null;
+      const currentIDs = selected.size ? [...selected] : current ? [current.assetID] : [];
+      if ((key === 'p' || key === 'a') && !event.metaKey && !event.ctrlKey) {
+        void apply(currentIDs, 'accept', current?.assetID ?? null);
+      } else if (key === 'x' || key === 'r') {
+        void apply(currentIDs, 'reject', current?.assetID ?? null);
+      } else if (key === 'u' || key === 's') deferAsset(current?.assetID ?? null);
+      else if ((event.metaKey || event.ctrlKey) && key === 'a') {
+        setSelected(new Set(items.map((item) => item.assetID)));
+      } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') moveActive(-1);
+      else if (event.key === 'ArrowRight' || event.key === 'ArrowDown') moveActive(1);
+      else if ((event.key === ' ' || event.key === 'Enter') && current) {
+        setPreviewAssetID(current.assetID);
       } else return;
       event.preventDefault();
     }
     window.addEventListener('keydown', handleShortcut);
     return () => window.removeEventListener('keydown', handleShortcut);
-  }, [apply, items, selected]);
+  }, [apply, deferAsset, items, moveActive, previewAssetID, resolvedActiveAssetID, selected]);
 
   if (queue.isPending)
     return (
@@ -195,22 +271,38 @@ function ReviewQueue({ tagID }: { tagID: string }) {
           </Link>
           <h2 id="review-queue-title">审查队列</h2>
           <p>
-            <kbd>A</kbd> 接受 · <kbd>R</kbd> 拒绝 · <kbd>S</kbd> 稍后处理
+            <kbd>Space</kbd> 单图 · <kbd>P</kbd> 属于 · <kbd>X</kbd> 不属于 · <kbd>U</kbd> 稍后
           </p>
         </div>
         <span>{items.length.toLocaleString('zh-CN')} 项已载入</span>
       </header>
 
       {items.length ? (
-        <div className="review-queue-grid" role="list" aria-label="待审查照片">
+        <div
+          aria-label="待审查照片"
+          className="review-queue-grid"
+          ref={gridRef}
+          role="list"
+          tabIndex={0}
+        >
           {items.map((item) => {
             const title = item.fileName ?? `照片 ${item.assetID.slice(0, 8)}`;
             const checked = selected.has(item.assetID);
             const revision = item.contentRevision ?? 0;
             return (
               <article
+                aria-current={resolvedActiveAssetID === item.assetID ? 'true' : undefined}
                 className="review-card"
                 key={`${item.assetID}:${item.suggestionOrigin}`}
+                onClick={(event) => {
+                  if ((event.target as Element).closest('button, input, label, a')) return;
+                  setActiveAssetID(item.assetID);
+                }}
+                onDoubleClick={(event) => {
+                  if ((event.target as Element).closest('button, input, label, a')) return;
+                  setActiveAssetID(item.assetID);
+                  setPreviewAssetID(item.assetID);
+                }}
                 role="listitem"
               >
                 <label className="review-select">
@@ -262,7 +354,7 @@ function ReviewQueue({ tagID }: { tagID: string }) {
                     aria-label={`稍后处理 ${title}`}
                     className="icon-button"
                     disabled={pending}
-                    onClick={() => setDismissed((current) => new Set([...current, item.assetID]))}
+                    onClick={() => deferAsset(item.assetID)}
                     type="button"
                   >
                     <SkipForward aria-hidden="true" size={15} />
@@ -350,6 +442,24 @@ function ReviewQueue({ tagID }: { tagID: string }) {
             ×
           </button>
         </div>
+      ) : null}
+
+      {previewItem ? (
+        <ReviewSinglePhotoDialog
+          canMoveNext={previewIndex < items.length - 1}
+          canMovePrevious={previewIndex > 0}
+          item={previewItem}
+          message={message}
+          onClose={() => setPreviewAssetID(null)}
+          onDecision={(action) =>
+            void apply([previewItem.assetID], action, previewItem.assetID, true)
+          }
+          onDefer={() => deferAsset(previewItem.assetID, true)}
+          onMove={(offset) => moveActive(offset, true)}
+          pending={pending}
+          position={previewIndex + 1}
+          total={items.length}
+        />
       ) : null}
     </section>
   );

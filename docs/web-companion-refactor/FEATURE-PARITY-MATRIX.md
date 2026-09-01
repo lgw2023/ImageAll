@@ -30,8 +30,8 @@
 | 标签应用 | 有 | 批量决策、undo、新建并应用 | 预览范围、可撤销反馈、原子创建并应用冻结选区 | 已有 | 无 | parity-proven | `gallery.spec.ts`：选择汇总、批量决定、undo、单图与冻结多选 `/v1/tags/create-and-apply`、409 同名重试 operation ID 稳定 | `evidence/gallery/imageall-react-inline-tag-chromium-{desktop,mobile}.png` | 合成 Host；真实冲突/过期窗口取决于 Host |
 | 标签创建/分组/归档 | 有 | 有 | 语义表单、确认与 Host 错误就地呈现 | 已有 | 无 | parity-proven | `curation.spec.ts`：创建分组、标签改名/移动；组件确认回归 | `evidence/curation/` 标签库 | 合成 Host；不证明真实大标签库维护成本 |
 | 图库概览 | Mac 统计 | 独立 history route | 可定址统计、进入已筛选图库 | 已有 | 无 | parity-proven | `curation.spec.ts`：Host 统计与筛选链接 | `evidence/curation/` 概览桌面+移动 | 合成 120 项；不外推真实统计耗时 |
-| 审查概览 | Mac 工作区 | 有 | 空/错/加载、进入队列 | 已有 | 无 | parity-proven | `curation.spec.ts`：概览→队列、503→重试 | `evidence/curation/` 审查 | 合成队列 |
-| 审查队列/决策/undo | Mac 工作区 | 有 | 键盘决策、安全撤销、队列刷新 | 已有 | 无 | parity-proven | `curation.spec.ts`：单项/批量/A 键/undo | `evidence/curation/` 队列桌面+移动 | 合成 8 项；不证明真实建议质量或超大队列性能 |
+| 审查概览 | Mac 有来源范围、每标签上限、本地模型状态/任务和分组折叠 | 只有标签卡、计数和进入队列 | 补齐来源范围、生成/暂停/恢复/取消、本地模型状态和分组语义 | 概览与来源参数已有；任务能力分散在 training API | 尚缺面向 Review 的统一能力投影 | in-progress | `curation.spec.ts`：概览→队列、503→重试 | `evidence/curation/` 审查 | 当前只证明基础概览；不得外推为 Mac 审查概览全功能对齐 |
+| 审查队列/连续单图/决策/undo | Mac 网格选择、Space 单图、P/X/U 连续判断、方向键、来源/密度/宽高比 | 原有卡片单项/批量、A/R/S、undo | 保留批量，同时对齐 Space、P/X/U、连续推进、焦点与返回上下文 | 已有 | 来源筛选参数已有；其余无 Host 缺口 | in-progress | `curation.spec.ts`：单项/批量/旧快捷键/undo；Space→U→P→自动下一张→Esc，桌面+移动、axe | `evidence/curation/imageall-react-review-single-photo-chromium-{desktop,mobile}.png` | 合成 8 项已证明连续单图主路径；来源筛选、网格密度/宽高比和 iCloud-only 审核预览仍未对齐 |
 | 库建议 | Mac 有 | 有 | 建议、申请、活动状态一致 | 已有 | 无 | parity-proven | `training.spec.ts`：标准/个人轨道、精确来源、job 暂停与 Host 回读 | `evidence/training/` 工作台 | 合成服务与 job；不证明真实模型推理或建议质量 |
 | 世界地图查看 | Mac 地图 | 独立 route/资源 | 同源可访问地图、视口保留 | 已有 | 无 | parity-proven | `map.spec.ts`：iframe 消息桥、视口、失败重试、axe | `evidence/map/` 桌面+移动 | 合成渲染器；真实 MapLibre/WebGL 仍是人工发布检查 |
 | 地图选择 | Mac 有 | 有 | 选择返回图库筛选并可后退 | 已有 | 无 | parity-proven | `map.spec.ts`：聚合选择→Host selection→范围图库→后退 | `evidence/map/` 深圳选择 | 合成 3 个聚合；不外推真实大规模聚合性能 |

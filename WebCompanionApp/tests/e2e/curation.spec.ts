@@ -66,6 +66,52 @@ test('review queue applies an authoritative decision and supports undo', async (
   expect(accessibility.violations).toEqual([]);
 });
 
+test('review queue supports the Mac-style continuous single-photo workflow', async ({
+  page,
+}, testInfo) => {
+  await installSyntheticAuthenticatedHost(page);
+  await page.goto('review');
+  await page.getByRole('link', { name: '开始审查' }).click();
+  await expect(page.getByRole('heading', { name: '审查队列', level: 2 })).toBeVisible();
+
+  await page.keyboard.press('Space');
+  const reviewer = page.getByRole('dialog', { name: '单图审核' });
+  await expect(reviewer).toBeVisible();
+  await expect(reviewer.getByText('REVIEW_001.jpg', { exact: true })).toBeVisible();
+
+  await page.keyboard.press('u');
+  await expect(reviewer.getByText('REVIEW_002.jpg', { exact: true })).toBeVisible();
+  await expect(page.getByText('REVIEW_001.jpg', { exact: true })).toBeVisible();
+  await expect(reviewer.getByRole('status')).toContainText('稍后处理');
+
+  const accessibility = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();
+  expect(accessibility.violations).toEqual([]);
+  if (process.env.IMAGEALL_CAPTURE_EVIDENCE === '1') {
+    await page.screenshot({
+      path: `../docs/web-companion-refactor/evidence/curation/imageall-react-review-single-photo-${testInfo.project.name}.png`,
+      animations: 'disabled',
+    });
+  }
+
+  const decisionRequest = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === '/v1/review/decisions/batch' &&
+      request.method() === 'POST',
+  );
+  await page.keyboard.press('p');
+  expect((await decisionRequest).postDataJSON()).toMatchObject({
+    assetIDs: ['10000000-0000-4000-8000-000000000002'],
+    action: 'accept',
+  });
+  await expect(reviewer.getByText('REVIEW_003.jpg', { exact: true })).toBeVisible();
+  await expect(reviewer.getByRole('status')).toContainText('已处理 1 项建议');
+
+  await page.keyboard.press('Escape');
+  await expect(reviewer).toBeHidden();
+  await expect(page.getByText('REVIEW_002.jpg', { exact: true })).toBeHidden();
+  await expect(page.locator('.review-card[aria-current="true"]')).toContainText('REVIEW_003.jpg');
+});
+
 test('tag library creates a group and moves a renamed tag through Host mutations', async ({
   page,
 }, testInfo) => {
