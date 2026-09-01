@@ -2,13 +2,19 @@ import { describe, expect, it } from 'vitest';
 
 import {
   assetDetailSchema,
+  assetLocalSuggestionResponseSchema,
   assetPageSchema,
   cloudPreviewSnapshotSchema,
   favoriteMutationResponseSchema,
+  favoriteSyncRetryResponseSchema,
   sourceFolderPageSchema,
   sourceSummarySchema,
 } from './asset';
-import { batchTagDecisionResponseSchema, tagSelectionAggregateSchema } from './tag';
+import {
+  batchTagDecisionResponseSchema,
+  createTagAndApplyResponseSchema,
+  tagSelectionAggregateSchema,
+} from './tag';
 
 const assetID = '88a75486-6dca-465a-8260-7e4587ea9446';
 const sourceID = '9de47499-1ca0-4cc2-84bc-a881018e8b0c';
@@ -140,6 +146,48 @@ describe('gallery protocol contracts', () => {
         ...snapshot,
         progress: 1.1,
       }),
+    ).toThrow();
+  });
+
+  it('decodes local-model, favorite-retry, and atomic tag-create responses', () => {
+    const local = assetLocalSuggestionResponseSchema.parse({
+      operationID: groupID,
+      assetID,
+      track: 'personal',
+      state: 'results',
+      suggestions: [
+        {
+          id: 'personal:pet',
+          track: 'personal',
+          tagID,
+          displayName: '我的猫',
+          recommendation: 'suggested',
+        },
+      ],
+      replayed: false,
+    });
+    const retry = favoriteSyncRetryResponseSchema.parse({
+      operationID: groupID,
+      localOnlyCount: 0,
+      syncedCount: 1,
+      pendingCount: 0,
+      failedCount: 0,
+      replayed: false,
+    });
+    const created = createTagAndApplyResponseSchema.parse({
+      operationID: groupID,
+      tagID,
+      displayName: '胶片感',
+      appliedAssetCount: 2,
+      replayed: false,
+      undoID: sourceID,
+    });
+
+    expect(local.suggestions[0]?.tagID).toBe(tagID);
+    expect(retry.syncedCount).toBe(1);
+    expect(created.undoID).toBe(sourceID);
+    expect(() =>
+      assetLocalSuggestionResponseSchema.parse({ ...local, track: 'openVocabulary' }),
     ).toThrow();
   });
 

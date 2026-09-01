@@ -26,16 +26,25 @@ import { useConnection } from '@/features/session/ConnectionContext';
 
 import { useAssetPreview } from './useAssetPreview';
 import { useCloudPreview } from './useCloudPreview';
+import { ActionToast } from './ActionToast';
+import { InlineTagCreateForm } from './InlineTagCreateForm';
+import { useLocalSuggestions } from './useLocalSuggestions';
 
 type AssetViewerProps = {
   assetID: string;
   mutationPending: boolean;
   onClose: () => void;
   onFavorite: (assetID: string, isFavorite: boolean) => Promise<void>;
-  onTagDecision: (tagID: string, assetIDs: string[], action: TagDecisionAction) => Promise<void>;
+  onCreateTag: (name: string, assetIDs: string[], operationID: string) => Promise<void>;
+  onTagDecision: (tagID: string, assetIDs: string[], action: TagDecisionAction) => Promise<boolean>;
   previousAsset: AssetSummary | null;
   nextAsset: AssetSummary | null;
   onNavigate: (assetID: string) => void;
+  onDismissStatus: () => void;
+  onUndo: () => void;
+  statusMessage: string;
+  undoAvailable: boolean;
+  undoPending: boolean;
 };
 
 function formatDate(value: number | null): string {
@@ -72,10 +81,16 @@ export function AssetViewer({
   mutationPending,
   onClose,
   onFavorite,
+  onCreateTag,
   onTagDecision,
   previousAsset,
   nextAsset,
   onNavigate,
+  onDismissStatus,
+  onUndo,
+  statusMessage,
+  undoAvailable,
+  undoPending,
 }: AssetViewerProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const mediaRef = useRef<HTMLDivElement>(null);
@@ -116,6 +131,10 @@ export function AssetViewer({
     online: connection.phase === 'online',
     onCompleted: handleCloudPreviewCompleted,
   });
+  const localSuggestions = useLocalSuggestions(assetID);
+  const supportsLocalSuggestions =
+    capabilities.data?.capabilities.includes('assetLocalSuggestions') === true &&
+    detail.data?.mediaType.startsWith('image') === true;
   const previewFailed = failedPreviewAssetID === assetID;
   const pendingSuggestions = detail.data?.pendingSuggestions ?? [];
   const suggestionsExpanded = expandedSuggestionAssetID === assetID;
@@ -536,6 +555,106 @@ export function AssetViewer({
                 </section>
               ) : null}
 
+              {supportsLocalSuggestions ? (
+                <section
+                  aria-labelledby="asset-local-suggestions-title"
+                  className="asset-local-suggestions"
+                >
+                  <div className="asset-tags-heading">
+                    <h3 id="asset-local-suggestions-title">当前照片模型</h3>
+                    <span>ON DEVICE</span>
+                  </div>
+                  <p>{localSuggestions.state.message}</p>
+                  <div aria-label="本地模型" className="asset-local-suggestion-track" role="group">
+                    <button
+                      aria-pressed={localSuggestions.state.track === 'standard'}
+                      className="button"
+                      disabled={
+                        mutationPending ||
+                        connection.phase !== 'online' ||
+                        localSuggestions.state.status === 'loading'
+                      }
+                      onClick={() => void localSuggestions.run('standard')}
+                      type="button"
+                    >
+                      运行标准场景模型
+                    </button>
+                    <button
+                      aria-pressed={localSuggestions.state.track === 'personal'}
+                      className="button"
+                      disabled={
+                        mutationPending ||
+                        connection.phase !== 'online' ||
+                        localSuggestions.state.status === 'loading'
+                      }
+                      onClick={() => void localSuggestions.run('personal')}
+                      type="button"
+                    >
+                      运行个人标签模型
+                    </button>
+                  </div>
+                  {localSuggestions.state.status === 'loading' ? (
+                    <span className="asset-local-suggestion-loading" role="status">
+                      <span aria-hidden="true" className="spinner" /> 正在分析当前照片…
+                    </span>
+                  ) : null}
+                  {localSuggestions.state.suggestions.length > 0 ? (
+                    <div className="asset-local-suggestion-results">
+                      {localSuggestions.state.suggestions.map((suggestion) => (
+                        <article className="asset-suggestion-row" key={suggestion.id}>
+                          <div>
+                            <strong>{suggestion.displayName}</strong>
+                            <span>
+                              {suggestion.recommendation === 'autoAssigned'
+                                ? '自动匹配'
+                                : '建议复核'}
+                            </span>
+                          </div>
+                          {suggestion.track === 'personal' && suggestion.tagID ? (
+                            <div aria-label={`${suggestion.displayName} 个人模型建议`} role="group">
+                              <button
+                                aria-label={`属于 ${suggestion.displayName}`}
+                                className="button"
+                                disabled={mutationPending || connection.phase !== 'online'}
+                                onClick={() => {
+                                  void onTagDecision(
+                                    suggestion.tagID ?? '',
+                                    [detail.data.assetID],
+                                    'accept',
+                                  ).then((applied) => {
+                                    if (applied) localSuggestions.dismiss(suggestion.id);
+                                  });
+                                }}
+                                type="button"
+                              >
+                                属于
+                              </button>
+                              <button
+                                aria-label={`不属于 ${suggestion.displayName}`}
+                                className="button"
+                                disabled={mutationPending || connection.phase !== 'online'}
+                                onClick={() => {
+                                  void onTagDecision(
+                                    suggestion.tagID ?? '',
+                                    [detail.data.assetID],
+                                    'reject',
+                                  ).then((applied) => {
+                                    if (applied) localSuggestions.dismiss(suggestion.id);
+                                  });
+                                }}
+                                type="button"
+                              >
+                                不属于
+                              </button>
+                            </div>
+                          ) : null}
+                        </article>
+                      ))}
+                    </div>
+                  ) : null}
+                </section>
+              ) : null}
+
               <section className="asset-tags" aria-labelledby="asset-tags-title">
                 <div className="asset-tags-heading">
                   <h3 id="asset-tags-title">标签</h3>
@@ -544,6 +663,12 @@ export function AssetViewer({
                     {String(detail.data.rejectedTagCount)} 拒绝
                   </span>
                 </div>
+                <InlineTagCreateForm
+                  assetIDs={[detail.data.assetID]}
+                  disabled={mutationPending || connection.phase !== 'online'}
+                  inputLabel="为当前照片新建标签"
+                  onCreate={onCreateTag}
+                />
                 <div className="asset-tag-list">
                   {detail.data.tags.map((tag) => (
                     <div className="asset-tag-row" data-decision={tag.decision} key={tag.tagID}>
@@ -596,6 +721,15 @@ export function AssetViewer({
           </div>
         ) : null}
       </div>
+      {statusMessage ? (
+        <ActionToast
+          message={statusMessage}
+          onDismiss={onDismissStatus}
+          onUndo={onUndo}
+          undoAvailable={undoAvailable}
+          undoPending={undoPending}
+        />
+      ) : null}
     </dialog>
   );
 }

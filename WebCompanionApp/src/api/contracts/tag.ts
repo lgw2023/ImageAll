@@ -36,6 +36,15 @@ export const undoTagDecisionResponseSchema = z.object({
   replayed: z.boolean(),
 });
 
+export const createTagAndApplyResponseSchema = z.object({
+  operationID: uuidSchema,
+  tagID: uuidSchema,
+  displayName: z.string().min(1),
+  appliedAssetCount: z.int().nonnegative(),
+  replayed: z.boolean(),
+  undoID: nullishToNull(uuidSchema),
+});
+
 export const tagMutationResponseSchema = z.object({
   operationID: uuidSchema,
   tag: nullishToNull(tagSummarySchema),
@@ -59,3 +68,4 @@ export type TagGroupSummary = z.infer<typeof tagGroupSummarySchema>;
 export type TagSelectionAggregate = z.infer<typeof tagSelectionAggregateSchema>;
 export type TagDecisionAction = 'accept' | 'reject' | 'clear';
 export type BatchTagDecisionResponse = z.infer<typeof batchTagDecisionResponseSchema>;
+export type CreateTagAndApplyResponse = z.infer<typeof createTagAndApplyResponseSchema>;

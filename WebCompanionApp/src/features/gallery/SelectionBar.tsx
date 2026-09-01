@@ -2,14 +2,18 @@ import { Check, DatabaseZap, Heart, ScanSearch, Trash2, RotateCcw, X } from 'luc
 
 import type { TagSelectionAggregate, TagSummary } from '@/api/contracts/tag';
 
+import { InlineTagCreateForm } from './InlineTagCreateForm';
+
 type SelectionBarProps = {
   selectedCount: number;
+  selectedAssetIDs: string[];
   tags: TagSummary[];
   selectedTagID: string;
   aggregate: TagSelectionAggregate | null;
   pending: boolean;
   onSelectedTagChange: (tagID: string) => void;
   onFavorite: (isFavorite: boolean) => void;
+  onCreateTag: (name: string, assetIDs: string[], operationID: string) => Promise<void>;
   onTagDecision: (action: 'accept' | 'reject' | 'clear') => void;
   onPrepareEmbeddings: () => void;
   onFindSimilar: () => void;
@@ -19,12 +23,14 @@ type SelectionBarProps = {
 
 export function SelectionBar({
   selectedCount,
+  selectedAssetIDs,
   tags,
   selectedTagID,
   aggregate,
   pending,
   onSelectedTagChange,
   onFavorite,
+  onCreateTag,
   onTagDecision,
   onPrepareEmbeddings,
   onFindSimilar,
@@ -109,6 +115,12 @@ export function SelectionBar({
           <RotateCcw aria-hidden="true" size={15} /> 清除决定
         </button>
       </div>
+      <InlineTagCreateForm
+        assetIDs={selectedAssetIDs}
+        disabled={pending}
+        inputLabel="为已选照片新建标签"
+        onCreate={onCreateTag}
+      />
     </section>
   );
 }

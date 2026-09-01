@@ -907,7 +907,7 @@ textarea {
 .selection-bar {
   z-index: 25;
   bottom: 18px;
-  width: fit-content;
+  width: min(880px, calc(100% - 28px));
   max-width: calc(100% - 28px);
   margin: -70px auto 0;
   padding: 8px 10px;
@@ -938,6 +938,10 @@ textarea {
   font-size: 8px;
 }
 
+.selection-bar :is(.compact-field > span, .inline-tag-create label > span) {
+  color: #b9b2a7;
+}
+
 .action-toast {
   border-radius: 3px;
   background: var(--color-stage);
@@ -963,6 +967,18 @@ textarea {
 .workspace-state {
   border-radius: 3px;
   background: var(--color-surface);
+}
+
+.favorite-sync-banner {
+  border-radius: 2px;
+}
+
+.favorite-sync-banner .button {
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .asset-viewer {
@@ -1082,6 +1098,29 @@ textarea {
   border-bottom: 1px solid var(--color-border);
 }
 
+.asset-local-suggestions {
+  padding: 18px 0;
+  border-block: 1px solid var(--color-border);
+}
+
+.asset-suggestions + .asset-local-suggestions {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.asset-local-suggestion-track .button {
+  border-radius: 2px;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.asset-local-suggestion-track .button[aria-pressed='true'] {
+  border-color: var(--color-accent);
+  background: rgb(197 81 46 / 8%);
+}
+
 .asset-suggestion-row {
   border-color: #d1cabd;
   border-radius: 2px;
@@ -1115,6 +1154,25 @@ textarea {
 .asset-tag-row {
   border-radius: 2px;
   background: transparent;
+}
+
+.inline-tag-create input,
+.inline-tag-create .button {
+  border-radius: 2px;
+}
+
+.inline-tag-create label > span,
+.inline-tag-create .button {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.selection-bar .inline-tag-create input {
+  border-color: #4b4942;
+  color: #f6f1e8;
+  background: #23231f;
 }
 
 .viewer-media-controls {

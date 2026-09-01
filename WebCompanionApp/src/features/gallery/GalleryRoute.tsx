@@ -7,19 +7,32 @@ import {
   useQueryClient,
   type InfiniteData,
 } from '@tanstack/react-query';
-import { Images, MapPin, RotateCcw } from 'lucide-react';
+import { Heart, Images, MapPin, RotateCcw } from 'lucide-react';
 import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
-import { fetchAssetPage, fetchSourceFolders, fetchSources, mutateFavorites } from '@/api/assets';
+import {
+  fetchAssetPage,
+  fetchSourceFolders,
+  fetchSources,
+  mutateFavorites,
+  retryFavoriteSync,
+} from '@/api/assets';
 import type { AssetDetail, AssetPage, AssetSort, AssetSummary } from '@/api/contracts/asset';
 import type { WorldMapSelectionQuery } from '@/api/contracts/map';
 import type { TagDecisionAction } from '@/api/contracts/tag';
 import { errorMessage } from '@/api/errors';
-import { applyTagDecision, fetchTags, fetchTagSelection, undoTagDecision } from '@/api/tags';
+import {
+  applyTagDecision,
+  createTagAndApply,
+  fetchTags,
+  fetchTagSelection,
+  undoTagDecision,
+} from '@/api/tags';
 import { prepareEmbeddings } from '@/api/training';
 import { submitSlimmingRemoval } from '@/api/slimming';
 
 import { AssetViewer } from './AssetViewer';
+import { ActionToast } from './ActionToast';
 import { GalleryToolbar, type GalleryFilters } from './GalleryToolbar';
 import { SelectionBar } from './SelectionBar';
 import { useThumbnailRecovery } from './useThumbnailRecovery';
@@ -249,6 +262,20 @@ export function GalleryRoute() {
   const selectedAggregate =
     selectionAggregate.data?.find((aggregate) => aggregate.tagID === effectiveSelectedTagID) ??
     null;
+  const visibleFavoriteSyncCounts = useMemo(
+    () =>
+      assets.reduce(
+        (counts, asset) => {
+          if (asset.favorite?.syncStatus === 'pending') counts.pending += 1;
+          if (asset.favorite?.syncStatus === 'failed') counts.failed += 1;
+          return counts;
+        },
+        { pending: 0, failed: 0 },
+      ),
+    [assets],
+  );
+  const visibleFavoriteRetryCount =
+    visibleFavoriteSyncCounts.pending + visibleFavoriteSyncCounts.failed;
 
   const favoriteMutation = useMutation({
     mutationFn: ({ assetIDs, isFavorite }: { assetIDs: string[]; isFavorite: boolean }) =>
@@ -273,6 +300,19 @@ export function GalleryRoute() {
     },
   });
 
+  const favoriteRetryMutation = useMutation({
+    mutationFn: retryFavoriteSync,
+    onSuccess: (response) => {
+      void queryClient.invalidateQueries({ queryKey: ['assets'] });
+      void queryClient.invalidateQueries({ queryKey: ['asset'] });
+      setStatusMessage(
+        response.pendingCount > 0 || response.failedCount > 0
+          ? `红心同步仍有 ${String(response.pendingCount)} 项等待、${String(response.failedCount)} 项失败。`
+          : 'Photos 红心同步已完成。',
+      );
+    },
+  });
+
   const tagMutation = useMutation({
     mutationFn: ({
       tagID,
@@ -291,6 +331,28 @@ export function GalleryRoute() {
       for (const id of variables.assetIDs) {
         void queryClient.invalidateQueries({ queryKey: ['asset', id] });
       }
+    },
+  });
+
+  const createTagMutation = useMutation({
+    mutationFn: ({
+      name,
+      assetIDs,
+      operationID,
+    }: {
+      name: string;
+      assetIDs: string[];
+      operationID: string;
+    }) => createTagAndApply(name, assetIDs, operationID),
+    onSuccess: (response) => {
+      setUndoID(response.undoID);
+      setStatusMessage(
+        `已新增标签“${response.displayName}”并应用到 ${String(response.appliedAssetCount)} 项。`,
+      );
+      void queryClient.invalidateQueries({ queryKey: ['tags'] });
+      void queryClient.invalidateQueries({ queryKey: ['assets'] });
+      void queryClient.invalidateQueries({ queryKey: ['asset'] });
+      void queryClient.invalidateQueries({ queryKey: ['tag-selection'] });
     },
   });
 
@@ -374,7 +436,9 @@ export function GalleryRoute() {
 
   const mutationPending =
     favoriteMutation.isPending ||
+    favoriteRetryMutation.isPending ||
     tagMutation.isPending ||
+    createTagMutation.isPending ||
     undoMutation.isPending ||
     embeddingMutation.isPending ||
     recycleMutation.isPending;
@@ -506,9 +570,23 @@ export function GalleryRoute() {
     setStatusMessage('');
     try {
       await tagMutation.mutateAsync({ tagID, assetIDs, action });
+      return true;
     } catch (error) {
       setStatusMessage(errorMessage(error));
+      return false;
     }
+  }
+
+  async function createAndApplyTag(name: string, assetIDs: string[], operationID: string) {
+    setStatusMessage('');
+    await createTagMutation.mutateAsync({ name, assetIDs, operationID });
+  }
+
+  function undoLastTagDecision() {
+    if (!undoID) return;
+    void undoMutation.mutateAsync(undoID).catch((error: unknown) => {
+      setStatusMessage(errorMessage(error));
+    });
   }
 
   function openAsset(id: string) {
@@ -537,12 +615,12 @@ export function GalleryRoute() {
     <section className="gallery-workspace" aria-labelledby="gallery-title">
       <div className="gallery-heading">
         <div className="gallery-title-lockup">
-          <p className="eyebrow">Private image archive</p>
-          <h2 id="gallery-title">{favoritesOnly ? '收藏图库' : '图库'}</h2>
+          <p className="eyebrow">LIBRARY / LIVE</p>
+          <h2 id="gallery-title">{favoritesOnly ? '我的收藏' : '全部照片'}</h2>
           <span className="gallery-title-translation" aria-hidden="true">
-            {favoritesOnly ? 'Selected works' : 'All photographs'}
+            {favoritesOnly ? 'FAVORITES' : 'VISUAL MEMORY'}
           </span>
-          <p>让照片占据画面，让工具只在需要时出现。</p>
+          <p>搜索、整理和重新发现你的每一段视觉记忆。</p>
         </div>
         <div className="gallery-heading-aside">
           <dl className="gallery-heading-stats">
@@ -551,8 +629,8 @@ export function GalleryRoute() {
               <dd>{assets.length.toLocaleString('zh-CN')}</dd>
             </div>
             <div>
-              <dt>AUTHORITY</dt>
-              <dd>MAC HOST</dd>
+              <dt>SOURCE</dt>
+              <dd>MAC · LIVE</dd>
             </div>
           </dl>
           {thumbnailRecovery.recovering ? (
@@ -605,6 +683,33 @@ export function GalleryRoute() {
         <p className="gallery-scope-error" role="status">
           {errorMessage(sources.error ?? sourceFolders.error)}；图库其余范围仍可使用。
         </p>
+      ) : null}
+
+      {visibleFavoriteRetryCount > 0 ? (
+        <section className="favorite-sync-banner" aria-label="红心同步状态">
+          <div>
+            <Heart aria-hidden="true" size={16} />
+            <span>
+              当前窗口有 {String(visibleFavoriteSyncCounts.pending)} 项等待同步、
+              {String(visibleFavoriteSyncCounts.failed)} 项同步失败。
+            </span>
+          </div>
+          <button
+            aria-label={`重试红心同步：${String(visibleFavoriteRetryCount)} 项`}
+            className="button"
+            disabled={favoriteRetryMutation.isPending}
+            onClick={() => {
+              setStatusMessage('');
+              void favoriteRetryMutation.mutateAsync().catch((error: unknown) => {
+                setStatusMessage(errorMessage(error));
+              });
+            }}
+            type="button"
+          >
+            <RotateCcw aria-hidden="true" size={14} />
+            {favoriteRetryMutation.isPending ? '正在重试…' : '重试同步'}
+          </button>
+        </section>
       ) : null}
 
       {assetsQuery.isPending ? (
@@ -670,10 +775,12 @@ export function GalleryRoute() {
       {selectedAssetIDs.length > 0 ? (
         <SelectionBar
           aggregate={selectedAggregate}
+          selectedAssetIDs={selectedAssetIDs}
           onClear={() => {
             clearSelection();
           }}
           onFavorite={(isFavorite) => void applyFavorite(selectedAssetIDs, isFavorite)}
+          onCreateTag={createAndApplyTag}
           onFindSimilar={openSeedAnalysis}
           onPrepareEmbeddings={() =>
             void embeddingMutation.mutateAsync(selectedAssetIDs).catch((error: unknown) => {
@@ -703,32 +810,14 @@ export function GalleryRoute() {
         />
       ) : null}
 
-      {statusMessage ? (
-        <div className="action-toast" role="status">
-          <span>{statusMessage}</span>
-          {undoID ? (
-            <button
-              className="button"
-              disabled={undoMutation.isPending}
-              onClick={() => {
-                void undoMutation.mutateAsync(undoID).catch((error: unknown) => {
-                  setStatusMessage(errorMessage(error));
-                });
-              }}
-              type="button"
-            >
-              <RotateCcw aria-hidden="true" size={14} /> 撤销
-            </button>
-          ) : null}
-          <button
-            aria-label="关闭消息"
-            className="icon-button"
-            onClick={() => setStatusMessage('')}
-            type="button"
-          >
-            ×
-          </button>
-        </div>
+      {statusMessage && !assetId ? (
+        <ActionToast
+          message={statusMessage}
+          onDismiss={() => setStatusMessage('')}
+          onUndo={undoLastTagDecision}
+          undoAvailable={Boolean(undoID)}
+          undoPending={undoMutation.isPending}
+        />
       ) : null}
 
       {assetId ? (
@@ -738,10 +827,16 @@ export function GalleryRoute() {
           key={assetId}
           mutationPending={mutationPending}
           onClose={closeViewer}
+          onCreateTag={createAndApplyTag}
+          onDismissStatus={() => setStatusMessage('')}
           onFavorite={(id, isFavorite) => applyFavorite([id], isFavorite)}
           onNavigate={navigateViewer}
           onTagDecision={applyDecision}
+          onUndo={undoLastTagDecision}
           previousAsset={previousViewerAsset}
+          statusMessage={statusMessage}
+          undoAvailable={Boolean(undoID)}
+          undoPending={undoMutation.isPending}
         />
       ) : null}
     </section>

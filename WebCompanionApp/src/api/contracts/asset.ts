@@ -110,6 +110,15 @@ export const favoriteMutationResponseSchema = z.object({
   replayed: z.boolean(),
 });
 
+export const favoriteSyncRetryResponseSchema = z.object({
+  operationID: uuidSchema,
+  localOnlyCount: z.int().nonnegative(),
+  syncedCount: z.int().nonnegative(),
+  pendingCount: z.int().nonnegative(),
+  failedCount: z.int().nonnegative(),
+  replayed: z.boolean(),
+});
+
 export const cloudPreviewPhaseSchema = z.enum(['downloading', 'completed', 'cancelled', 'failed']);
 
 export const cloudPreviewSnapshotSchema = z.object({
@@ -121,6 +130,30 @@ export const cloudPreviewSnapshotSchema = z.object({
   updatedAtMs: z.int(),
 });
 
+export const assetLocalSuggestionTrackSchema = z.enum(['standard', 'personal']);
+export const assetLocalSuggestionStateSchema = z.enum([
+  'results',
+  'previewUnavailable',
+  'personalUnavailable',
+  'serviceUnavailable',
+  'failed',
+]);
+export const assetLocalSuggestionSchema = z.object({
+  id: z.string().min(1),
+  track: assetLocalSuggestionTrackSchema,
+  tagID: nullishToNull(uuidSchema),
+  displayName: z.string().min(1),
+  recommendation: z.enum(['suggested', 'autoAssigned']),
+});
+export const assetLocalSuggestionResponseSchema = z.object({
+  operationID: uuidSchema,
+  assetID: uuidSchema,
+  track: assetLocalSuggestionTrackSchema,
+  state: assetLocalSuggestionStateSchema,
+  suggestions: z.array(assetLocalSuggestionSchema),
+  replayed: z.boolean(),
+});
+
 export type AssetSort = z.infer<typeof assetSortSchema>;
 export type AssetMediaKind = z.infer<typeof assetMediaKindSchema>;
 export type AssetSummary = z.infer<typeof assetSummarySchema>;
@@ -128,7 +161,12 @@ export type AssetPage = z.infer<typeof assetPageSchema>;
 export type AssetDetail = z.infer<typeof assetDetailSchema>;
 export type FavoriteState = z.infer<typeof favoriteStateSchema>;
 export type FavoriteMutationResponse = z.infer<typeof favoriteMutationResponseSchema>;
+export type FavoriteSyncRetryResponse = z.infer<typeof favoriteSyncRetryResponseSchema>;
 export type SourceSummary = z.infer<typeof sourceSummarySchema>;
 export type SourceFolder = z.infer<typeof sourceFolderSchema>;
 export type SourceFolderPage = z.infer<typeof sourceFolderPageSchema>;
 export type CloudPreviewSnapshot = z.infer<typeof cloudPreviewSnapshotSchema>;
+export type AssetLocalSuggestionTrack = z.infer<typeof assetLocalSuggestionTrackSchema>;
+export type AssetLocalSuggestionState = z.infer<typeof assetLocalSuggestionStateSchema>;
+export type AssetLocalSuggestion = z.infer<typeof assetLocalSuggestionSchema>;
+export type AssetLocalSuggestionResponse = z.infer<typeof assetLocalSuggestionResponseSchema>;

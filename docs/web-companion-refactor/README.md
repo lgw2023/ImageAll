@@ -30,6 +30,7 @@
 - [ACCEPTANCE-GATES.md](ACCEPTANCE-GATES.md)：切换默认入口和删除旧实现前的硬门。
 - [DELIVERY-2026-08-31.md](DELIVERY-2026-08-31.md)：本轮中文交付、验证结果、限制、提交与回滚。
 - [PROGRESS-2026-09-01-CLOUD-AND-SUGGESTIONS.md](PROGRESS-2026-09-01-CLOUD-AND-SUGGESTIONS.md)：持续功能对齐中的 iCloud 单图恢复、待审建议与下一批细粒度缺口。
+- [PROGRESS-2026-09-01-NOCTURNE-AND-GALLERY-WORKFLOWS.md](PROGRESS-2026-09-01-NOCTURNE-AND-GALLERY-WORKFLOWS.md)：即时模型、收藏重试、原子标签闭环，以及脱离 Mac 外观的 Nocturne Web 视觉重构。
 
 ## 状态词汇
 

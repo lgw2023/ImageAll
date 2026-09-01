@@ -48,7 +48,7 @@ test('system, light, dark, reduced-motion, forced-colors, and enlarged text rema
   await installSyntheticAuthenticatedHost(page);
   await page.goto('gallery');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-  await expect(page.getByRole('heading', { name: '图库', level: 2 })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '全部照片', level: 2 })).toBeVisible();
 
   await page.keyboard.press('Control+K');
   await page
@@ -79,7 +79,7 @@ test('system, light, dark, reduced-motion, forced-colors, and enlarged text rema
   await page.evaluate(() => {
     document.documentElement.style.fontSize = '200%';
   });
-  await expect(page.getByRole('heading', { name: '图库', level: 2 })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '全部照片', level: 2 })).toBeVisible();
   await expect(page.getByRole('button', { name: '框选' })).toBeVisible();
   await expectNoDocumentOverflow(page);
   await expectNoSeriousAccessibilityViolations(page);

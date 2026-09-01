@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { requestJSON } from './client';
 import {
   batchTagDecisionResponseSchema,
+  createTagAndApplyResponseSchema,
   installPresetTagsResponseSchema,
   tagGroupMutationResponseSchema,
   tagGroupSummarySchema,
@@ -11,6 +12,7 @@ import {
   tagSummarySchema,
   undoTagDecisionResponseSchema,
   type BatchTagDecisionResponse,
+  type CreateTagAndApplyResponse,
   type TagDecisionAction,
   type TagSelectionAggregate,
   type TagSummary,
@@ -103,6 +105,17 @@ export async function applyTagDecision(
   return requestJSON('/v1/tag-decisions/batch', batchTagDecisionResponseSchema, {
     method: 'POST',
     body: JSON.stringify({ operationID: crypto.randomUUID(), tagID, assetIDs, action }),
+  });
+}
+
+export function createTagAndApply(
+  name: string,
+  assetIDs: string[],
+  operationID: string,
+): Promise<CreateTagAndApplyResponse> {
+  return requestJSON('/v1/tags/create-and-apply', createTagAndApplyResponseSchema, {
+    method: 'POST',
+    body: JSON.stringify({ operationID, name, assetIDs }),
   });
 }
 

@@ -195,6 +195,7 @@ export type SyntheticHostController = {
 
 export async function installSyntheticAuthenticatedHost(
   page: Page,
+  options: { extraCapabilities?: string[] } = {},
 ): Promise<SyntheticHostController> {
   let eventSocket: WebSocketRoute | null = null;
   let workspaceNotice: {
@@ -520,7 +521,14 @@ export async function installSyntheticAuthenticatedHost(
     route.fulfill({ status: 200, contentType: 'application/json', json: session }),
   );
   await page.route('**/v1/capabilities', (route) =>
-    route.fulfill({ status: 200, contentType: 'application/json', json: capabilities }),
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        ...capabilities,
+        capabilities: [...capabilities.capabilities, ...(options.extraCapabilities ?? [])],
+      },
+    }),
   );
   await page.route('**/v1/workspace-notice', (route) =>
     route.fulfill({

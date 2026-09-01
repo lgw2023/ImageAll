@@ -1,16 +1,21 @@
 import { requestBlob, requestEmpty, requestJSON } from './client';
 import {
   assetDetailSchema,
+  assetLocalSuggestionResponseSchema,
   assetPageSchema,
   cloudPreviewSnapshotSchema,
   favoriteMutationResponseSchema,
+  favoriteSyncRetryResponseSchema,
   sourceFolderPageSchema,
   sourceSummarySchema,
+  type AssetLocalSuggestionResponse,
+  type AssetLocalSuggestionTrack,
   type AssetMediaKind,
   type AssetPage,
   type AssetSort,
   type AssetSummary,
   type FavoriteMutationResponse,
+  type FavoriteSyncRetryResponse,
   type SourceFolderPage,
   type CloudPreviewSnapshot,
 } from './contracts/asset';
@@ -94,6 +99,13 @@ export async function mutateFavorites(
   });
 }
 
+export function retryFavoriteSync(): Promise<FavoriteSyncRetryResponse> {
+  return requestJSON('/v1/favorites/retry', favoriteSyncRetryResponseSchema, {
+    method: 'POST',
+    body: JSON.stringify({ operationID: crypto.randomUUID() }),
+  });
+}
+
 export async function openOriginalAsset(assetID: string): Promise<void> {
   return requestEmpty(`/v1/assets/${encodeURIComponent(assetID)}/open-original`, {
     method: 'POST',
@@ -138,6 +150,23 @@ export function downloadLegacyCloudPreview(assetID: string): Promise<Blob> {
   return requestBlob(`/v1/assets/${encodeURIComponent(assetID)}/cloud-preview`, undefined, {
     method: 'POST',
   });
+}
+
+export function analyzeAssetLocalSuggestions(
+  assetID: string,
+  operationID: string,
+  track: AssetLocalSuggestionTrack,
+  signal?: AbortSignal,
+): Promise<AssetLocalSuggestionResponse> {
+  return requestJSON(
+    `/v1/assets/${encodeURIComponent(assetID)}/local-suggestions`,
+    assetLocalSuggestionResponseSchema,
+    {
+      method: 'POST',
+      body: JSON.stringify({ operationID, track }),
+      signal: signal ?? null,
+    },
+  );
 }
 
 export function assetThumbnailURL(asset: AssetSummary, width = 420): string {

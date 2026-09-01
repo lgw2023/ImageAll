@@ -153,9 +153,7 @@ export function AppShell() {
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const commandTriggerRef = useRef<HTMLButtonElement>(null);
-  const [inspectorOpen, setInspectorOpen] = useState(
-    () => window.matchMedia('(min-width: 900px)').matches,
-  );
+  const [inspectorOpen, setInspectorOpen] = useState(false);
   const location = useLocation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -282,7 +280,7 @@ export function AppShell() {
           </button>
           <button
             aria-label={theme.resolved === 'dark' ? '使用浅色主题' : '使用深色主题'}
-            className="icon-button"
+            className="icon-button theme-toggle"
             onClick={() => theme.setMode(theme.resolved === 'dark' ? 'light' : 'dark')}
             type="button"
           >
@@ -308,15 +306,14 @@ export function AppShell() {
       <aside className="sidebar" data-open={navigationOpen}>
         <div className="sidebar-brand">
           <div className="sidebar-brand-mark" aria-hidden="true">
-            <span>I</span>
-            <span>A</span>
+            <span>IA</span>
           </div>
           <div>
             <strong>ImageAll</strong>
-            <span>Visual archive</span>
+            <span>Photo intelligence</span>
           </div>
         </div>
-        <p className="sidebar-edition">私人影像工作台 · WEB 02</p>
+        <p className="sidebar-edition">YOUR ENTIRE VISUAL LIFE · ONE PLACE</p>
         <nav aria-label="主导航">
           {navigationGroups.map((group, groupIndex) => (
             <section className="navigation-group" key={group.label}>

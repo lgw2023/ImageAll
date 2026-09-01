@@ -9,7 +9,7 @@ test('gallery supports virtual browsing, range selection, mutations, undo, and d
   await installSyntheticAuthenticatedHost(page);
   await page.goto('gallery');
 
-  await expect(page.getByRole('heading', { name: '图库', level: 2 })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '全部照片', level: 2 })).toBeVisible();
   await expect(page.getByRole('button', { name: '查看 IMG_0001.jpg' })).toBeVisible();
   expect(await page.getByRole('gridcell').count()).toBeLessThan(40);
   if (process.env.IMAGEALL_CAPTURE_EVIDENCE === '1') {
@@ -60,7 +60,7 @@ test('gallery supports virtual browsing, range selection, mutations, undo, and d
 test('gallery filters are URL-addressable and sent to the Host', async ({ page }, testInfo) => {
   await installSyntheticAuthenticatedHost(page);
   await page.goto('gallery');
-  await expect(page.getByRole('heading', { name: '图库', level: 2 })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '全部照片', level: 2 })).toBeVisible();
 
   const searchRequest = page.waitForRequest((request) => {
     const url = new URL(request.url());
@@ -84,7 +84,7 @@ test('gallery filters are URL-addressable and sent to the Host', async ({ page }
 
   await page.getByRole('link', { name: '收藏' }).click();
   await expect(page).toHaveURL(/\/gallery\/favorites/);
-  await expect(page.getByRole('heading', { name: '收藏图库', level: 2 })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '我的收藏', level: 2 })).toBeVisible();
 });
 
 test('gallery preserves source, folder, density, selection, and viewer return context', async ({
@@ -92,7 +92,7 @@ test('gallery preserves source, folder, density, selection, and viewer return co
 }, testInfo) => {
   await installSyntheticAuthenticatedHost(page);
   await page.goto('gallery');
-  await expect(page.getByRole('heading', { name: '图库', level: 2 })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '全部照片', level: 2 })).toBeVisible();
   if (testInfo.project.name === 'chromium-mobile') {
     await page.getByRole('button', { name: '筛选', exact: true }).click();
   }
@@ -194,6 +194,111 @@ test('gallery reports Host partial favorite failures without false success', asy
   await page.goto('gallery');
   await page.getByRole('button', { name: '收藏 IMG_0001.jpg' }).click();
   await expect(page.getByText('已更新 1 项；1 项同步失败，可稍后重试。')).toBeVisible();
+});
+
+test('gallery exposes a Host-authoritative retry for visible failed favorite sync', async ({
+  page,
+}, testInfo) => {
+  await installSyntheticAuthenticatedHost(page);
+  let retryOperationID: string | null = null;
+  let favoriteSyncStatus: 'synced' | 'failed' = 'synced';
+  await page.route(/\/v1\/assets\?.*/i, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        items: [
+          {
+            id: assetIDs[0],
+            sourceID,
+            sourceName: 'Synthetic Library',
+            fileName: 'IMG_0001.jpg',
+            mediaType: 'image/jpeg',
+            availability: 'available',
+            contentRevision: 1,
+            acceptedTagCount: 1,
+            rejectedTagCount: 0,
+            mediaCreatedAtMs: 1_787_820_000_000,
+            width: 1600,
+            height: 1200,
+            favorite: {
+              assetID: assetIDs[0],
+              isFavorite: favoriteSyncStatus === 'failed',
+              photosObservedValue: false,
+              syncStatus: favoriteSyncStatus,
+              lastErrorCode: favoriteSyncStatus === 'failed' ? 'syntheticFailure' : null,
+            },
+            relativePath: '2026/Synthetic/IMG_0001.jpg',
+            mediaModifiedAtMs: 1_787_820_000_000,
+            durationMs: null,
+          },
+        ],
+        nextCursor: null,
+      },
+    }),
+  );
+  await page.route('**/v1/favorites', async (route) => {
+    const body = route.request().postDataJSON() as { assetIDs: string[]; isFavorite: boolean };
+    favoriteSyncStatus = 'failed';
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        operationID: '2cba0aa1-e0c3-4421-bb0f-4f7edab5c3b0',
+        changedCount: 1,
+        localOnlyCount: 0,
+        syncedCount: 0,
+        pendingCount: 0,
+        failedCount: 1,
+        states: [
+          {
+            assetID: body.assetIDs[0],
+            isFavorite: body.isFavorite,
+            photosObservedValue: false,
+            syncStatus: 'failed',
+            lastErrorCode: 'syntheticFailure',
+          },
+        ],
+        replayed: false,
+      },
+    });
+  });
+  await page.route('**/v1/favorites/retry', (route) => {
+    const body = route.request().postDataJSON() as { operationID: string };
+    retryOperationID = body.operationID;
+    favoriteSyncStatus = 'synced';
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        operationID: body.operationID,
+        localOnlyCount: 0,
+        syncedCount: 1,
+        pendingCount: 0,
+        failedCount: 0,
+        replayed: false,
+      },
+    });
+  });
+
+  await page.goto('gallery');
+  await page.getByRole('button', { name: '收藏 IMG_0001.jpg' }).click();
+  const retry = page.getByRole('button', { name: '重试红心同步：1 项' });
+  await expect(retry).toBeVisible();
+  await page.getByRole('button', { name: '关闭消息' }).click();
+  const favoriteAccessibility = await new AxeBuilder({ page })
+    .withTags(['wcag2a', 'wcag2aa'])
+    .analyze();
+  expect(favoriteAccessibility.violations).toEqual([]);
+  if (process.env.IMAGEALL_CAPTURE_EVIDENCE === '1') {
+    await page.screenshot({
+      path: `../docs/web-companion-refactor/evidence/gallery/imageall-react-favorite-retry-${testInfo.project.name}.png`,
+      animations: 'disabled',
+    });
+  }
+  await retry.click();
+  await expect(page.getByText('Photos 红心同步已完成。')).toBeVisible();
+  expect(retryOperationID).toMatch(/^[0-9a-f-]{36}$/i);
 });
 
 test('gallery supports select-all, modifier selection, context menus, and explicit box selection', async ({
@@ -320,7 +425,7 @@ test('viewer only downloads an iCloud preview after an explicit user request', a
   });
 
   await page.goto('gallery');
-  await page.getByRole('button', { name: '查看 IMG_0001.jpg' }).dblclick();
+  await page.getByRole('button', { name: '查看 IMG_0001.jpg' }).click();
   await expect(page.getByRole('button', { name: '从 iCloud 获取预览' })).toBeVisible();
   expect(startCount).toBe(0);
 
@@ -574,4 +679,165 @@ test('viewer exposes all Host pending suggestions and applies a decision in plac
     assetIDs: [assetIDs[0]],
     action: 'accept',
   });
+});
+
+test('viewer runs Host local models for the current photo and decides personal results', async ({
+  page,
+}, testInfo) => {
+  await installSyntheticAuthenticatedHost(page, { extraCapabilities: ['assetLocalSuggestions'] });
+  const personalTagID = '30000000-0000-4000-8000-000000000001';
+  const localSuggestionRequests: { operationID: string; track: string }[] = [];
+  let decisionBody: { tagID: string; assetIDs: string[]; action: string } | null = null;
+
+  await page.route(/\/v1\/assets\/([0-9a-f-]+)\/local-suggestions$/i, async (route) => {
+    const body = route.request().postDataJSON() as { operationID: string; track: string };
+    localSuggestionRequests.push(body);
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        operationID: body.operationID,
+        assetID: assetIDs[0],
+        track: body.track,
+        state: 'results',
+        suggestions:
+          body.track === 'personal'
+            ? [
+                {
+                  id: 'personal:pet',
+                  track: 'personal',
+                  tagID: personalTagID,
+                  displayName: '我的猫',
+                  recommendation: 'suggested',
+                },
+              ]
+            : [
+                {
+                  id: 'standard:coast',
+                  track: 'standard',
+                  tagID: null,
+                  displayName: '海岸风景',
+                  recommendation: 'autoAssigned',
+                },
+              ],
+        replayed: false,
+      },
+    });
+  });
+  await page.route('**/v1/tag-decisions/batch', (route) => {
+    decisionBody = route.request().postDataJSON() as typeof decisionBody;
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        operationID: '2cba0aa1-e0c3-4421-bb0f-4f7edab5c3b0',
+        appliedAssetCount: 1,
+        replayed: false,
+        undoID: '9de47499-1ca0-4cc2-84bc-a881018e8b0c',
+      },
+    });
+  });
+
+  await page.goto('gallery');
+  expect(
+    await page.evaluate(async () => {
+      const response = await fetch('/v1/capabilities');
+      const payload = (await response.json()) as { capabilities: string[] };
+      return payload.capabilities.includes('assetLocalSuggestions');
+    }),
+  ).toBe(true);
+  await page.getByRole('button', { name: '查看 IMG_0001.jpg' }).dblclick();
+  await expect(page.getByRole('heading', { name: '当前照片模型' })).toBeVisible();
+  await page.getByRole('button', { name: '运行标准场景模型' }).click();
+  await expect(page.getByText('海岸风景')).toBeVisible();
+  await expect(page.getByText('自动匹配')).toBeVisible();
+  await page.getByRole('button', { name: '运行个人标签模型' }).click();
+  await expect(page.getByText('我的猫')).toBeVisible();
+  const localModelAccessibility = await new AxeBuilder({ page })
+    .withTags(['wcag2a', 'wcag2aa'])
+    .analyze();
+  expect(localModelAccessibility.violations).toEqual([]);
+  if (process.env.IMAGEALL_CAPTURE_EVIDENCE === '1') {
+    await page.screenshot({
+      path: `../docs/web-companion-refactor/evidence/gallery/imageall-react-local-model-${testInfo.project.name}.png`,
+      animations: 'disabled',
+    });
+  }
+  await page.getByRole('button', { name: '属于 我的猫', exact: true }).click();
+
+  expect(localSuggestionRequests.map((request) => request.track)).toEqual(['standard', 'personal']);
+  expect(decisionBody).toMatchObject({
+    tagID: personalTagID,
+    assetIDs: [assetIDs[0]],
+    action: 'accept',
+  });
+});
+
+test('single-photo and frozen multi-selection create and apply a tag inline', async ({
+  page,
+}, testInfo) => {
+  await installSyntheticAuthenticatedHost(page);
+  const requests: { operationID: string; name: string; assetIDs: string[] }[] = [];
+  let failFirst = true;
+  await page.route('**/v1/tags/create-and-apply', async (route) => {
+    const body = route.request().postDataJSON() as (typeof requests)[number];
+    requests.push(body);
+    if (failFirst) {
+      failFirst = false;
+      return route.fulfill({
+        status: 409,
+        contentType: 'application/json',
+        json: { code: 'conflict', message: '合成标签暂时冲突' },
+      });
+    }
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        operationID: body.operationID,
+        tagID: '40000000-0000-4000-8000-000000000001',
+        displayName: body.name,
+        appliedAssetCount: body.assetIDs.length,
+        replayed: false,
+        undoID: '9de47499-1ca0-4cc2-84bc-a881018e8b0c',
+      },
+    });
+  });
+
+  await page.goto('gallery');
+  await page.getByRole('button', { name: '查看 IMG_0001.jpg' }).click();
+  const singleInput = page.getByRole('textbox', { name: '为当前照片新建标签' });
+  await singleInput.fill('胶片感');
+  await singleInput.press('Enter');
+  await expect(page.getByText('合成标签暂时冲突')).toBeVisible();
+  await singleInput.press('Enter');
+  await expect(page.getByText('已新增标签“胶片感”并应用到 1 项。')).toBeVisible();
+  await expect(singleInput).toHaveValue('');
+  await expect(singleInput).toBeFocused();
+  expect(requests[0]?.operationID).toBe(requests[1]?.operationID);
+  expect(requests[1]?.assetIDs).toEqual([assetIDs[0]]);
+
+  await page.getByRole('button', { name: '关闭消息' }).click();
+  await page.getByRole('button', { name: '关闭照片详情' }).click();
+  await expect(page.getByRole('dialog')).toBeHidden();
+  await page.getByRole('button', { name: '选择 IMG_0001.jpg' }).click();
+  await page.getByRole('button', { name: '选择 IMG_0002.jpg' }).click({ modifiers: ['Shift'] });
+  const selectionInput = page.getByRole('textbox', { name: '为已选照片新建标签' });
+  await selectionInput.fill('周末散步');
+  const inlineTagAccessibility = await new AxeBuilder({ page })
+    .withTags(['wcag2a', 'wcag2aa'])
+    .analyze();
+  expect(inlineTagAccessibility.violations).toEqual([]);
+  if (process.env.IMAGEALL_CAPTURE_EVIDENCE === '1') {
+    await page.screenshot({
+      path: `../docs/web-companion-refactor/evidence/gallery/imageall-react-inline-tag-${testInfo.project.name}.png`,
+      animations: 'disabled',
+    });
+  }
+  await selectionInput.press('Enter');
+  await expect(page.getByText('已新增标签“周末散步”并应用到 2 项。')).toBeVisible();
+  await expect(page.getByText('已选择 2 项')).toBeVisible();
+  await expect(selectionInput).toBeFocused();
+  expect(requests[2]?.assetIDs).toEqual([assetIDs[0], assetIDs[1]]);
+  expect(requests[2]?.operationID).not.toBe(requests[1]?.operationID);
 });

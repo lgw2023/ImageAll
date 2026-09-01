@@ -69,15 +69,10 @@ Photos Library 或真实 iCloud，也没有启动生产 Host。
 - 源静态目录与构建 App 中 `WebCompanionV2` 的递归 diff 为空；`asset-manifest.json` SHA-256 为
   `1adf027e3d2dfe5ba807ce711c1957124ab7a79a99a88d98b99be4f07030c443`。
 
-## 继续审计出的高价值缺口
+## 后续进展
 
-以下项目在 Mac/旧 Web 与 Host 已有能力中存在，但新 React 默认入口仍需逐项建立同等闭环：
-
-1. 当前单图的即时本地模型建议：`POST /v1/assets/:id/local-suggestions` 尚未接入 React 查看器。
-2. 收藏同步失败后的精确重试：Host `/v1/favorites/retry` 尚未在新版错误状态中提供入口。
-3. 新建标签并立即应用到冻结选区：旧 Web `/v1/tags/create-and-apply` 尚未迁移。
-4. 继续按“Mac 表面 → Host 路由 → 旧 Web → 新 React → 自动化证据”粒度重审当前矩阵，避免
-   用页面级绿色状态掩盖表面级功能缺口。
-
-下一项最短端到端任务是“当前单图即时本地模型建议”：它与本轮新增的建议区共享检查器上下文和
-决定语义，可在不改变 Host 业务规则的前提下完成请求、加载、失败、结果、决定和焦点恢复闭环。
+这里列出的三个缺口已在
+[PROGRESS-2026-09-01-NOCTURNE-AND-GALLERY-WORKFLOWS.md](PROGRESS-2026-09-01-NOCTURNE-AND-GALLERY-WORKFLOWS.md)
+完成：当前单图即时模型、收藏同步精确重试，以及新建标签并原子应用到冻结选区。总目标仍需继续按
+“Mac 表面 → Host 路由 → 旧 Web → 新 React → 自动化证据”粒度审计，不能用页面级绿色状态替代
+表面级功能核对。

@@ -39,7 +39,7 @@ test('unauthenticated users get an accessible pairing and account entry point', 
 
 test('pairing, logout, and account login stay Host-authoritative without persisted secrets', async ({
   page,
-}, testInfo) => {
+}) => {
   await installSyntheticAuthenticatedHost(page);
   let authenticated = false;
   let pairingBody: Record<string, unknown> = {};
@@ -106,9 +106,7 @@ test('pairing, logout, and account login stay Host-authoritative without persist
   expect(pairingBody).toMatchObject({ pairingToken: 'pairing-secret' });
   expect(typeof pairingBody.clientID).toBe('string');
 
-  if (testInfo.project.name === 'chromium-mobile') {
-    await page.getByRole('button', { name: '显示检视器' }).click();
-  }
+  await page.getByRole('button', { name: '显示检视器' }).click();
   await page.getByRole('button', { name: '退出当前会话' }).click();
   await expect(page.getByRole('heading', { name: '连接你的 Mac 照片工作台' })).toBeVisible();
 
@@ -139,7 +137,11 @@ test('authenticated users get the responsive workbench shell', async ({ page }, 
   await page.goto('gallery');
   await expect(page.getByRole('heading', { name: '图库', level: 1 })).toBeVisible();
   await expect(page.getByRole('navigation', { name: '主导航' })).toBeVisible();
+  await page.getByRole('button', { name: '显示检视器' }).click();
   await expect(page.getByText('Synthetic Host')).toBeVisible();
+  if (testInfo.project.name === 'chromium-mobile') {
+    await page.getByRole('button', { name: '关闭检视器' }).click();
+  }
   await expectNoSeriousAccessibilityViolations(page);
 
   if (testInfo.project.name === 'chromium-mobile') {
@@ -193,7 +195,7 @@ test('command palette supports keyboard discovery, focus return, navigation, and
 }) => {
   await installSyntheticAuthenticatedHost(page);
   await page.goto('gallery');
-  await expect(page.getByRole('heading', { name: '图库', level: 2 })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '全部照片', level: 2 })).toBeVisible();
 
   await page.keyboard.press('Control+K');
   await expect(page.getByRole('dialog', { name: '命令面板' })).toBeVisible();
