@@ -2110,7 +2110,7 @@ actor RemoteCatalogFacade {
         let page = try review.fetchReviewQueue(
             mediaKind: Self.mapMediaKind(request.mediaKind),
             tagID: request.tagID,
-            sourceIDs: request.sourceIDs.isEmpty ? nil : request.sourceIDs,
+            sourceIDs: request.sourceFilterSpecified ? request.sourceIDs : nil,
             cursor: cursor,
             limit: max(1, min(request.limit, 200))
         )
@@ -2127,18 +2127,17 @@ actor RemoteCatalogFacade {
 
     func fetchReviewOverview(
         mediaKind: RemoteAssetMediaKind,
-        sourceIDs: [UUID]
+        sourceIDs: [UUID]?
     ) throws -> RemoteReviewOverview {
-        let resolvedSourceIDs: [UUID]? = sourceIDs.isEmpty ? nil : sourceIDs
         let mappedMediaKind = Self.mapMediaKind(mediaKind)
         return RemoteReviewOverview(
             totalPendingSuggestionCount: try review.totalPendingSuggestionCount(
                 mediaKind: mappedMediaKind,
-                sourceIDs: resolvedSourceIDs
+                sourceIDs: sourceIDs
             ),
             tags: try review.tagOverviews(
                 mediaKind: mappedMediaKind,
-                sourceIDs: resolvedSourceIDs
+                sourceIDs: sourceIDs
             ).map(Self.mapSuggestionOverview)
         )
     }

@@ -7,14 +7,26 @@ import {
   type ReviewDecisionAction,
 } from './contracts/review';
 
-export function fetchReviewOverview(signal?: AbortSignal) {
-  return requestJSON('/v1/review/overview?mediaKind=image', reviewOverviewSchema, {
+function appendSourceScope(parameters: URLSearchParams, sourceIDs: string[] | null) {
+  if (sourceIDs !== null) parameters.set('sourceIDs', sourceIDs.join(','));
+}
+
+export function fetchReviewOverview(sourceIDs: string[] | null, signal?: AbortSignal) {
+  const parameters = new URLSearchParams({ mediaKind: 'image' });
+  appendSourceScope(parameters, sourceIDs);
+  return requestJSON(`/v1/review/overview?${parameters.toString()}`, reviewOverviewSchema, {
     signal: signal ?? null,
   });
 }
 
-export function fetchReviewQueue(tagID: string, cursor: string | null, signal?: AbortSignal) {
+export function fetchReviewQueue(
+  tagID: string,
+  sourceIDs: string[] | null,
+  cursor: string | null,
+  signal?: AbortSignal,
+) {
   const parameters = new URLSearchParams({ tagID, mediaKind: 'image', limit: '40' });
+  appendSourceScope(parameters, sourceIDs);
   if (cursor) parameters.set('cursor', cursor);
   return requestJSON(`/v1/review/queue?${parameters.toString()}`, reviewQueuePageSchema, {
     signal: signal ?? null,

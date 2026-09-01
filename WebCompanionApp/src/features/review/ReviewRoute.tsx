@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, ChevronLeft, RotateCcw, ScanSearch, SkipForward, X } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
 
+import { fetchSources } from '@/api/assets';
 import type { ReviewDecisionAction } from '@/api/contracts/review';
 import { errorMessage } from '@/api/errors';
 import {
@@ -14,6 +15,7 @@ import {
 } from '@/api/review';
 
 import { ReviewSinglePhotoDialog } from './ReviewSinglePhotoDialog';
+import { ReviewSourceScope } from './ReviewSourceScope';
 
 const originLabels = {
   featurePrint: '视觉相似',
@@ -22,10 +24,61 @@ const originLabels = {
   personalAdamW: '个人 AdamW',
 } as const;
 
-function ReviewOverview() {
+const emptySelection = new Set<string>();
+
+function useScopedSet(scopeKey: string) {
+  const [state, setState] = useState({ scopeKey, values: new Set<string>() });
+  const values = state.scopeKey === scopeKey ? state.values : emptySelection;
+  const setValues = useCallback(
+    (update: Set<string> | ((current: Set<string>) => Set<string>)) => {
+      setState((current) => {
+        const currentValues = current.scopeKey === scopeKey ? current.values : emptySelection;
+        return {
+          scopeKey,
+          values: typeof update === 'function' ? update(currentValues) : update,
+        };
+      });
+    },
+    [scopeKey],
+  );
+  return [values, setValues] as const;
+}
+
+function reviewSourceIDs(parameters: URLSearchParams): string[] | null {
+  if (parameters.get('sourceScope') === 'none') return [];
+  const sourceIDs = [...new Set(parameters.getAll('source').filter(Boolean))];
+  return sourceIDs.length ? sourceIDs : null;
+}
+
+function scopeKey(sourceIDs: string[] | null) {
+  return sourceIDs === null ? 'all' : `sources:${sourceIDs.join(',')}`;
+}
+
+function queueHref(tagID: string, search: string) {
+  const parameters = new URLSearchParams(search);
+  parameters.set('tag', tagID);
+  return `/review/queue?${parameters.toString()}`;
+}
+
+function overviewHref(search: string) {
+  const parameters = new URLSearchParams(search);
+  parameters.delete('tag');
+  const query = parameters.toString();
+  return query ? `/review?${query}` : '/review';
+}
+
+type ReviewWorkspaceProps = {
+  sourceIDs: string[] | null;
+  sourceScope: ReactNode;
+  search: string;
+};
+
+function ReviewOverview({ sourceIDs, sourceScope, search }: ReviewWorkspaceProps) {
+  const sourceScopeKey = scopeKey(sourceIDs);
   const overview = useQuery({
-    queryKey: ['review-overview'],
-    queryFn: ({ signal }) => fetchReviewOverview(signal),
+    queryKey: ['review-overview', sourceScopeKey],
+    queryFn: ({ signal }) => fetchReviewOverview(sourceIDs, signal),
+    placeholderData: (previous) => previous,
   });
 
   if (overview.isPending)
@@ -54,9 +107,12 @@ function ReviewOverview() {
           <h2 id="review-title">审查</h2>
           <p>按标签处理 Host 生成的待确认建议。</p>
         </div>
-        <strong className="large-count">
-          {overview.data.totalPendingSuggestionCount.toLocaleString('zh-CN')} 待处理
-        </strong>
+        <div className="review-heading-actions">
+          {sourceScope}
+          <strong className="large-count">
+            {overview.data.totalPendingSuggestionCount.toLocaleString('zh-CN')} 待处理
+          </strong>
+        </div>
       </header>
 
       {overview.data.tags.length ? (
@@ -73,7 +129,7 @@ function ReviewOverview() {
                 {tag.rejectedSampleCount.toLocaleString('zh-CN')}
               </p>
               {tag.canReview && tag.pendingSuggestionCount > 0 ? (
-                <Link className="button button-primary" to={`/review/queue?tag=${tag.id}`}>
+                <Link className="button button-primary" to={queueHref(tag.id, search)}>
                   开始审查
                 </Link>
               ) : (
@@ -93,21 +149,28 @@ function ReviewOverview() {
   );
 }
 
-function ReviewQueue({ tagID }: { tagID: string }) {
+function ReviewQueue({
+  tagID,
+  sourceIDs,
+  sourceScope,
+  search,
+}: ReviewWorkspaceProps & { tagID: string }) {
   const queryClient = useQueryClient();
   const gridRef = useRef<HTMLDivElement>(null);
   const hasFocusedGrid = useRef(false);
-  const [selected, setSelected] = useState(new Set<string>());
-  const [dismissed, setDismissed] = useState(new Set<string>());
+  const sourceScopeKey = scopeKey(sourceIDs);
+  const [selected, setSelected] = useScopedSet(sourceScopeKey);
+  const [dismissed, setDismissed] = useScopedSet(sourceScopeKey);
   const [message, setMessage] = useState('');
   const [undoID, setUndoID] = useState<string | null>(null);
   const [activeAssetID, setActiveAssetID] = useState<string | null>(null);
   const [previewAssetID, setPreviewAssetID] = useState<string | null>(null);
   const queue = useInfiniteQuery({
-    queryKey: ['review-queue', tagID],
-    queryFn: ({ pageParam, signal }) => fetchReviewQueue(tagID, pageParam, signal),
+    queryKey: ['review-queue', tagID, sourceScopeKey],
+    queryFn: ({ pageParam, signal }) => fetchReviewQueue(tagID, sourceIDs, pageParam, signal),
     initialPageParam: null as string | null,
     getNextPageParam: (page) => page.nextCursor ?? undefined,
+    placeholderData: (previous) => previous,
   });
   const items = useMemo(
     () =>
@@ -238,7 +301,16 @@ function ReviewQueue({ tagID }: { tagID: string }) {
     }
     window.addEventListener('keydown', handleShortcut);
     return () => window.removeEventListener('keydown', handleShortcut);
-  }, [apply, deferAsset, items, moveActive, previewAssetID, resolvedActiveAssetID, selected]);
+  }, [
+    apply,
+    deferAsset,
+    items,
+    moveActive,
+    previewAssetID,
+    resolvedActiveAssetID,
+    selected,
+    setSelected,
+  ]);
 
   if (queue.isPending)
     return (
@@ -258,7 +330,8 @@ function ReviewQueue({ tagID }: { tagID: string }) {
     );
   }
 
-  const pending = decision.isPending || undo.isPending;
+  const refreshingScope = queue.isFetching && !queue.isFetchingNextPage;
+  const pending = decision.isPending || undo.isPending || refreshingScope;
   return (
     <section
       className="domain-workspace review-queue-workspace"
@@ -266,7 +339,7 @@ function ReviewQueue({ tagID }: { tagID: string }) {
     >
       <header className="domain-heading">
         <div>
-          <Link className="back-link" to="/review">
+          <Link className="back-link" to={overviewHref(search)}>
             <ChevronLeft aria-hidden="true" size={15} /> 审查概览
           </Link>
           <h2 id="review-queue-title">审查队列</h2>
@@ -274,8 +347,17 @@ function ReviewQueue({ tagID }: { tagID: string }) {
             <kbd>Space</kbd> 单图 · <kbd>P</kbd> 属于 · <kbd>X</kbd> 不属于 · <kbd>U</kbd> 稍后
           </p>
         </div>
-        <span>{items.length.toLocaleString('zh-CN')} 项已载入</span>
+        <div className="review-heading-actions">
+          {sourceScope}
+          <span>{items.length.toLocaleString('zh-CN')} 项已载入</span>
+        </div>
       </header>
+
+      {refreshingScope ? (
+        <p className="review-scope-refresh" role="status">
+          正在切换来源范围…
+        </p>
+      ) : null}
 
       {items.length ? (
         <div
@@ -466,7 +548,43 @@ function ReviewQueue({ tagID }: { tagID: string }) {
 }
 
 export function ReviewRoute() {
-  const [parameters] = useSearchParams();
+  const [parameters, setParameters] = useSearchParams();
+  const search = parameters.toString();
   const tagID = parameters.get('tag');
-  return tagID ? <ReviewQueue tagID={tagID} /> : <ReviewOverview />;
+  const sourceIDs = useMemo(() => reviewSourceIDs(new URLSearchParams(search)), [search]);
+  const sources = useQuery({
+    queryKey: ['sources'],
+    queryFn: ({ signal }) => fetchSources(signal),
+  });
+  const activeSources = useMemo(
+    () => (sources.data ?? []).filter((source) => source.state === 'active'),
+    [sources.data],
+  );
+
+  const changeSourceScope = useCallback(
+    (nextSourceIDs: string[] | null) => {
+      const next = new URLSearchParams(search);
+      next.delete('source');
+      next.delete('sourceScope');
+      if (nextSourceIDs?.length === 0) next.set('sourceScope', 'none');
+      else nextSourceIDs?.forEach((sourceID) => next.append('source', sourceID));
+      setParameters(next, { replace: true });
+    },
+    [search, setParameters],
+  );
+  const sourceScope = (
+    <ReviewSourceScope
+      isError={sources.isError}
+      isPending={sources.isPending}
+      onChange={changeSourceScope}
+      sourceIDs={sourceIDs}
+      sources={activeSources}
+    />
+  );
+
+  return tagID ? (
+    <ReviewQueue search={search} sourceIDs={sourceIDs} sourceScope={sourceScope} tagID={tagID} />
+  ) : (
+    <ReviewOverview search={search} sourceIDs={sourceIDs} sourceScope={sourceScope} />
+  );
 }

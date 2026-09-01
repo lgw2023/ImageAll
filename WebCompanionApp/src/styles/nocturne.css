@@ -660,6 +660,7 @@ body {
 .authentication-card .segment {
   color: #a8adab;
   background: transparent;
+  transition: none;
 }
 
 .authentication-card .segment[aria-selected='true'] {
@@ -764,6 +765,51 @@ body {
 .review-card > img,
 .review-card-copy {
   cursor: pointer;
+}
+
+.review-source-trigger {
+  border-color: rgb(217 255 67 / 26%);
+  background: linear-gradient(135deg, rgb(217 255 67 / 10%), transparent 58%), #151815;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 5%);
+}
+
+.review-source-trigger:hover {
+  border-color: rgb(217 255 67 / 52%);
+  background: linear-gradient(135deg, rgb(217 255 67 / 16%), transparent 60%), #191d18;
+}
+
+.review-source-menu {
+  border-color: #343a35;
+  background:
+    radial-gradient(circle at 86% -10%, rgb(217 255 67 / 10%), transparent 42%), rgb(17 19 21 / 97%);
+  backdrop-filter: blur(20px);
+}
+
+.review-source-options label {
+  border: 1px solid transparent;
+}
+
+.review-source-options label:has(input:checked) {
+  border-color: rgb(217 255 67 / 18%);
+  background: rgb(217 255 67 / 7%);
+}
+
+@media (max-width: 599px) {
+  .review-heading-actions {
+    width: 100%;
+    justify-items: stretch;
+  }
+
+  .review-source-scope,
+  .review-source-trigger {
+    width: 100%;
+  }
+
+  .review-source-menu {
+    right: auto;
+    left: 0;
+    width: min(100%, calc(100vw - 32px));
+  }
 }
 
 .review-single-photo {

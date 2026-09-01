@@ -3281,7 +3281,7 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         )
         let facade = makeFacade(catalog: RemoteCatalogServingStub(), review: review)
 
-        let result = try await facade.fetchReviewOverview(mediaKind: .image, sourceIDs: [])
+        let result = try await facade.fetchReviewOverview(mediaKind: .image, sourceIDs: nil)
 
         XCTAssertEqual(result.totalPendingSuggestionCount, 7)
         XCTAssertEqual(result.tags.first?.id, tagID)
@@ -3290,6 +3290,25 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         XCTAssertEqual(result.tags.first?.canGenerate, true)
         XCTAssertEqual(result.tags.first?.canUpdate, true)
         XCTAssertEqual(result.tags.first?.canGeneratePersonalModel, true)
+        XCTAssertNil(review.pendingCountSourceIDs)
+        XCTAssertNil(review.overviewSourceIDs)
+    }
+
+    func testReviewFacadePreservesExplicitEmptySourceScope() async throws {
+        let tagID = UUID()
+        let review = RemoteReviewPortStub(page: ReviewQueuePage(items: [], nextCursor: nil))
+        let facade = makeFacade(catalog: RemoteCatalogServingStub(), review: review)
+
+        _ = try await facade.fetchReviewOverview(mediaKind: .image, sourceIDs: [])
+        _ = try await facade.fetchReviewQueue(RemoteReviewQueueRequest(
+            tagID: tagID,
+            sourceIDs: [],
+            sourceFilterSpecified: true
+        ))
+
+        XCTAssertEqual(review.pendingCountSourceIDs, [])
+        XCTAssertEqual(review.overviewSourceIDs, [])
+        XCTAssertEqual(review.queueSourceIDs, [])
     }
 
     func testWorldMapSnapshotAndSelectionReuseCatalogAndInspectorProjection() async throws {
@@ -4254,6 +4273,9 @@ private final class RemoteReviewPortStub: PersonalizationReviewPort, @unchecked 
     private let standardSuggestionJobID: UUID?
     private let personalSuggestionJobID: UUID?
     private var storedLastRequestedTagID: UUID?
+    private var storedPendingCountSourceIDs: [UUID]?
+    private var storedOverviewSourceIDs: [UUID]?
+    private var storedQueueSourceIDs: [UUID]?
     private var storedLastResumedJobID: UUID?
     private var storedCandidateSourceIDs: [UUID]?
     private var storedCandidateExcludedTagID: UUID?
@@ -4274,6 +4296,9 @@ private final class RemoteReviewPortStub: PersonalizationReviewPort, @unchecked 
         defer { lock.unlock() }
         return storedLastRequestedTagID
     }
+    var pendingCountSourceIDs: [UUID]? { lock.withLock { storedPendingCountSourceIDs } }
+    var overviewSourceIDs: [UUID]? { lock.withLock { storedOverviewSourceIDs } }
+    var queueSourceIDs: [UUID]? { lock.withLock { storedQueueSourceIDs } }
 
     var lastResumedJobID: UUID? { lock.withLock { storedLastResumedJobID } }
     var candidateSourceIDs: [UUID]? { lock.withLock { storedCandidateSourceIDs } }
@@ -4326,8 +4351,14 @@ private final class RemoteReviewPortStub: PersonalizationReviewPort, @unchecked 
         self.personalSuggestionJobID = personalSuggestionJobID
     }
 
-    func totalPendingSuggestionCount(sourceIDs: [UUID]?) throws -> Int { totalPendingCount }
-    func tagOverviews(sourceIDs: [UUID]?) throws -> [SuggestionTagOverview] { overviews }
+    func totalPendingSuggestionCount(sourceIDs: [UUID]?) throws -> Int {
+        lock.withLock { storedPendingCountSourceIDs = sourceIDs }
+        return totalPendingCount
+    }
+    func tagOverviews(sourceIDs: [UUID]?) throws -> [SuggestionTagOverview] {
+        lock.withLock { storedOverviewSourceIDs = sourceIDs }
+        return overviews
+    }
     func enqueuePersonalModelRebuildIfReady() throws -> UUID? { nil }
 
     func personalTrainingSnapshot(
@@ -4349,11 +4380,11 @@ private final class RemoteReviewPortStub: PersonalizationReviewPort, @unchecked 
         cursor: ReviewQueueCursor?,
         limit: Int
     ) throws -> ReviewQueuePage {
-        _ = sourceIDs
         _ = cursor
         _ = limit
         lock.lock()
         storedLastRequestedTagID = tagID
+        storedQueueSourceIDs = sourceIDs
         lock.unlock()
         return page
     }

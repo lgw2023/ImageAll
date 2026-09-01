@@ -495,6 +495,25 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
         let request = try decoder.decode(RemoteReviewQueueRequest.self, from: payload)
 
         XCTAssertEqual(request.mediaKind, .image)
+        XCTAssertFalse(request.sourceFilterSpecified)
+    }
+
+    func testLegacyReviewQueueRequestWithSourcesInfersSpecifiedFilter() throws {
+        let sourceID = UUID(uuidString: "66666666-6666-4666-8666-666666666666")!
+        let payload = Data(
+            """
+            {
+              "tagID":"55555555-5555-4555-8555-555555555555",
+              "sourceIDs":["\(sourceID.uuidString)"],
+              "limit":40
+            }
+            """.utf8
+        )
+
+        let request = try decoder.decode(RemoteReviewQueueRequest.self, from: payload)
+
+        XCTAssertTrue(request.sourceFilterSpecified)
+        XCTAssertEqual(request.sourceIDs, [sourceID])
     }
 
     func testReviewQueueItemLayoutAndFavoriteRoundTripWithLegacyFallback() throws {

@@ -1040,12 +1040,9 @@ actor RemoteHTTPServer {
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             case ("GET", RemoteHTTPPaths.reviewOverview):
                 let mediaKind = RemoteAssetMediaKind(rawValue: query["mediaKind"] ?? "") ?? .image
-                let sourceIDs = (query["sourceIDs"] ?? "")
-                    .split(separator: ",")
-                    .compactMap { UUID(uuidString: String($0)) }
                 let payload = try await facade.fetchReviewOverview(
                     mediaKind: mediaKind,
-                    sourceIDs: sourceIDs
+                    sourceIDs: Self.parseReviewSourceIDs(query: query)
                 )
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             case ("GET", RemoteHTTPPaths.librarySuggestions):
@@ -2102,21 +2099,27 @@ actor RemoteHTTPServer {
         )
     }
 
-    private static func parseReviewQueueRequest(query: [String: String]) throws -> RemoteReviewQueueRequest {
+    static func parseReviewQueueRequest(query: [String: String]) throws -> RemoteReviewQueueRequest {
         guard let tagIDString = query["tagID"], let tagID = UUID(uuidString: tagIDString) else {
             throw RemoteAPIError(code: .badRequest, message: "tagID is required")
         }
-        let sourceIDs = (query["sourceIDs"] ?? "")
-            .split(separator: ",")
-            .compactMap { UUID(uuidString: String($0)) }
+        let sourceIDs = parseReviewSourceIDs(query: query)
         let limit = Int(query["limit"] ?? "40") ?? 40
         return RemoteReviewQueueRequest(
             tagID: tagID,
-            sourceIDs: sourceIDs,
+            sourceIDs: sourceIDs ?? [],
+            sourceFilterSpecified: sourceIDs != nil,
             mediaKind: RemoteAssetMediaKind(rawValue: query["mediaKind"] ?? "") ?? .image,
             limit: limit,
             cursor: query["cursor"]
         )
+    }
+
+    static func parseReviewSourceIDs(query: [String: String]) -> [UUID]? {
+        guard let sourceIDList = query["sourceIDs"] else { return nil }
+        return sourceIDList
+            .split(separator: ",")
+            .compactMap { UUID(uuidString: String($0)) }
     }
 
     private static func browserImageResponse(

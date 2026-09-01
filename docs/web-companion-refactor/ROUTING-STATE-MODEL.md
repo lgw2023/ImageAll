@@ -38,6 +38,15 @@ route entered
 选择集是 `Set<AssetID>` 语义，顺序与当前 query 分开。Shift 范围选择使用当前稳定排序和 anchor；数据刷新后
 不存在的 ID 被剪枝并向用户说明。“全选”必须区分已加载项与整个 server query 范围，不能用视觉错觉混淆。
 
+## Review 来源范围
+
+- 无 `source` / `sourceScope` 表示全部活跃来源。
+- 一个或多个重复 `source=<uuid>` 表示精确部分来源；`sourceScope=none` 表示明确零来源。
+- 概览进入队列时追加 `tag` 但保留来源参数；队列返回概览时只删除 `tag`，因此刷新、前进后退和
+  分享 URL 都能重建同一范围。
+- 来源变化会创建新的 overview/queue query key，并把网格选择集切到新 scope；旧投影仅作短暂视觉占位，
+  期间写操作禁用，避免对过期队列提交决定。
+
 ## 服务端缓存和事件
 
 - Query key 由 domain + versioned normalized parameters 构成，不把不稳定对象直接放入 key。

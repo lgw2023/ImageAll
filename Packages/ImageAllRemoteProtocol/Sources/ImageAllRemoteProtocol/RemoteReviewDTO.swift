@@ -220,6 +220,8 @@ public struct RemoteReviewQueuePage: Codable, Sendable, Equatable {
 public struct RemoteReviewQueueRequest: Codable, Sendable, Equatable {
     public var tagID: UUID
     public var sourceIDs: [UUID]
+    /// Distinguishes an omitted all-sources scope from an explicitly empty scope.
+    public var sourceFilterSpecified: Bool
     public var mediaKind: RemoteAssetMediaKind
     public var limit: Int
     public var cursor: String?
@@ -227,12 +229,14 @@ public struct RemoteReviewQueueRequest: Codable, Sendable, Equatable {
     public init(
         tagID: UUID,
         sourceIDs: [UUID] = [],
+        sourceFilterSpecified: Bool? = nil,
         mediaKind: RemoteAssetMediaKind = .image,
         limit: Int = 40,
         cursor: String? = nil
     ) {
         self.tagID = tagID
         self.sourceIDs = sourceIDs
+        self.sourceFilterSpecified = sourceFilterSpecified ?? !sourceIDs.isEmpty
         self.mediaKind = mediaKind
         self.limit = limit
         self.cursor = cursor
@@ -241,6 +245,7 @@ public struct RemoteReviewQueueRequest: Codable, Sendable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case tagID
         case sourceIDs
+        case sourceFilterSpecified
         case mediaKind
         case limit
         case cursor
@@ -250,6 +255,10 @@ public struct RemoteReviewQueueRequest: Codable, Sendable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         tagID = try container.decode(UUID.self, forKey: .tagID)
         sourceIDs = try container.decodeIfPresent([UUID].self, forKey: .sourceIDs) ?? []
+        sourceFilterSpecified = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .sourceFilterSpecified
+        ) ?? !sourceIDs.isEmpty
         mediaKind = try container.decodeIfPresent(RemoteAssetMediaKind.self, forKey: .mediaKind)
             ?? .image
         limit = try container.decodeIfPresent(Int.self, forKey: .limit) ?? 40
@@ -260,6 +269,7 @@ public struct RemoteReviewQueueRequest: Codable, Sendable, Equatable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(tagID, forKey: .tagID)
         try container.encode(sourceIDs, forKey: .sourceIDs)
+        try container.encode(sourceFilterSpecified, forKey: .sourceFilterSpecified)
         try container.encode(mediaKind, forKey: .mediaKind)
         try container.encode(limit, forKey: .limit)
         try container.encodeIfPresent(cursor, forKey: .cursor)

@@ -3,6 +3,31 @@ import { expect, test } from '@playwright/test';
 
 import { installSyntheticAuthenticatedHost } from './syntheticHost';
 
+const reviewArchiveSourceID = '8de47499-1ca0-4cc2-84bc-a881018e8b0c';
+
+function reviewSourceIDs(url: string): string[] | null {
+  const parameters = new URL(url).searchParams;
+  if (!parameters.has('sourceIDs')) return null;
+  const value = parameters.get('sourceIDs') ?? '';
+  return value ? value.split(',') : [];
+}
+
+function reviewQueueItem(index: number) {
+  return {
+    assetID: `10000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+    fileName: `REVIEW_${String(index + 1).padStart(3, '0')}.jpg`,
+    availability: 'available',
+    contentRevision: 1,
+    acceptedTagCount: 0,
+    rejectedTagCount: 0,
+    suggestionOrigin: index % 2 ? 'standardModel' : 'featurePrint',
+    score: 0.91 - index * 0.02,
+    width: 1600,
+    height: 1200,
+    favorite: null,
+  };
+}
+
 test('gallery overview exposes Host statistics and routes into filtered gallery', async ({
   page,
 }, testInfo) => {
@@ -110,6 +135,135 @@ test('review queue supports the Mac-style continuous single-photo workflow', asy
   await expect(reviewer).toBeHidden();
   await expect(page.getByText('REVIEW_002.jpg', { exact: true })).toBeHidden();
   await expect(page.locator('.review-card[aria-current="true"]')).toContainText('REVIEW_003.jpg');
+});
+
+test('review source scope stays authoritative across overview, queue, empty scope, and back', async ({
+  page,
+}, testInfo) => {
+  await installSyntheticAuthenticatedHost(page);
+  await page.route('**/v1/sources', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: [
+        {
+          id: '9de47499-1ca0-4cc2-84bc-a881018e8b0c',
+          kind: 'folder',
+          displayName: 'Synthetic Library',
+          state: 'active',
+        },
+        {
+          id: reviewArchiveSourceID,
+          kind: 'folder',
+          displayName: 'Archive Library',
+          state: 'active',
+        },
+      ],
+    }),
+  );
+  await page.route('**/v1/review/overview?*', (route) => {
+    const sourceIDs = reviewSourceIDs(route.request().url());
+    const pendingCount = sourceIDs === null ? 8 : sourceIDs.length === 0 ? 0 : 4;
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        totalPendingSuggestionCount: pendingCount,
+        tags: [
+          {
+            id: '10000000-0000-4000-8000-000000000001',
+            displayName: '风景',
+            acceptedSampleCount: 12,
+            rejectedSampleCount: 5,
+            pendingSuggestionCount: pendingCount,
+            pendingSuggestionCounts: {
+              featurePrint: pendingCount,
+              standardModel: 0,
+              personalModel: 0,
+              personalAdamW: 0,
+            },
+            taskStatus: 'ready',
+            checkedCount: 120,
+            totalCount: 120,
+            skippedCount: 0,
+            missingPositiveCount: 0,
+            missingNegativeCount: 0,
+            canGenerate: true,
+            canUpdate: true,
+            canGeneratePersonalModel: false,
+            canReview: pendingCount > 0,
+            canPause: false,
+            canResume: false,
+            canCancel: false,
+            activeJobID: null,
+          },
+        ],
+      },
+    });
+  });
+  await page.route('**/v1/review/queue?*', (route) => {
+    const sourceIDs = reviewSourceIDs(route.request().url());
+    const itemCount = sourceIDs === null ? 8 : sourceIDs.length === 0 ? 0 : 4;
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        items: Array.from({ length: itemCount }, (_, index) => reviewQueueItem(index)),
+        nextCursor: null,
+      },
+    });
+  });
+
+  await page.goto('review');
+  await expect(page.getByRole('heading', { name: '审查', level: 2 })).toBeVisible();
+  await expect(page.getByRole('button', { name: /全部 2 个来源/ })).toBeVisible();
+
+  await page.getByRole('button', { name: /全部 2 个来源/ }).click();
+  const narrowedOverviewRequest = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === '/v1/review/overview' &&
+      reviewSourceIDs(request.url())?.length === 1,
+  );
+  await page.getByRole('checkbox', { name: 'Archive Library' }).click();
+  expect(reviewSourceIDs((await narrowedOverviewRequest).url())).toEqual([
+    '9de47499-1ca0-4cc2-84bc-a881018e8b0c',
+  ]);
+  await expect(page).toHaveURL(/source=9de47499-1ca0-4cc2-84bc-a881018e8b0c/);
+  await expect(page.getByText('4 待处理')).toBeVisible();
+
+  const narrowedQueueRequest = page.waitForRequest(
+    (request) => new URL(request.url()).pathname === '/v1/review/queue',
+  );
+  await page.getByRole('link', { name: '开始审查' }).click();
+  expect(reviewSourceIDs((await narrowedQueueRequest).url())).toEqual([
+    '9de47499-1ca0-4cc2-84bc-a881018e8b0c',
+  ]);
+  await expect(page.getByText('4 项已载入')).toBeVisible();
+  await expect(page.getByRole('button', { name: /仅 Synthetic Library/ })).toBeVisible();
+
+  await page.getByRole('button', { name: /仅 Synthetic Library/ }).click();
+  const accessibility = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();
+  expect(accessibility.violations).toEqual([]);
+  if (process.env.IMAGEALL_CAPTURE_EVIDENCE === '1') {
+    await page.screenshot({
+      path: `../docs/web-companion-refactor/evidence/curation/imageall-react-review-source-scope-${testInfo.project.name}.png`,
+      animations: 'disabled',
+    });
+  }
+  const emptyQueueRequest = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === '/v1/review/queue' &&
+      new URL(request.url()).searchParams.has('sourceIDs') &&
+      reviewSourceIDs(request.url())?.length === 0,
+  );
+  await page.getByRole('checkbox', { name: 'Synthetic Library' }).click();
+  expect(reviewSourceIDs((await emptyQueueRequest).url())).toEqual([]);
+  await expect(page).toHaveURL(/sourceScope=none/);
+  await expect(page.getByText('当前队列已处理完')).toBeVisible();
+
+  await page.getByRole('link', { name: '审查概览' }).click();
+  await expect(page).toHaveURL(/review\?sourceScope=none/);
+  await expect(page.getByText('0 待处理')).toBeVisible();
 });
 
 test('tag library creates a group and moves a renamed tag through Host mutations', async ({

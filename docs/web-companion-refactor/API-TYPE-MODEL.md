@@ -68,3 +68,12 @@ src/api
 - 新增/改动 Swift DTO 时，同一提交更新 Zod schema、fixture 和契约测试。
 - 可选字段的原因必须明确（老 Host 兼容、业务可空或分页省略），不使用大面积 `.optional()` 消除错误。
 - protocol capability 不满足时显示有界限的不支持界面，不隐藏或假装成功。
+
+## Review 来源范围兼容契约
+
+- URL 查询未出现 `sourceIDs` 时表示全部活跃来源；出现非空列表时表示精确来源集合；出现空值
+  `sourceIDs=` 时表示明确不匹配任何来源。
+- `RemoteReviewQueueRequest.sourceFilterSpecified` 用来区分“未指定”和“明确空集合”。老版本 payload
+  缺少该字段时，非空 `sourceIDs` 推断为已指定，空数组保持旧语义“全部来源”。
+- Overview 没有请求 DTO，因此 Host parser 直接保留 `[UUID]?`：`nil` 为全部、`[]` 为零来源。
+- Web 查询键必须包含规范化来源范围，切换范围时可保留旧投影占位，但必须禁用决定写入直到新范围完成。

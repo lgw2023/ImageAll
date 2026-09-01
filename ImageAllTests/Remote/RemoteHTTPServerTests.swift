@@ -11,6 +11,36 @@ import XCTest
 final class RemoteHTTPServerTests: XCTestCase {
     private static let legacyDebugToken = "secret-token"
 
+    func testReviewSourceQueryDistinguishesAllPartialAndExplicitEmptyScopes() throws {
+        let sourceID = UUID(uuidString: "77777777-7777-4777-8777-777777777777")!
+
+        XCTAssertNil(RemoteHTTPServer.parseReviewSourceIDs(query: [:]))
+        XCTAssertEqual(
+            RemoteHTTPServer.parseReviewSourceIDs(query: ["sourceIDs": sourceID.uuidString]),
+            [sourceID]
+        )
+        XCTAssertEqual(
+            RemoteHTTPServer.parseReviewSourceIDs(query: ["sourceIDs": ""]),
+            []
+        )
+    }
+
+    func testReviewQueueQueryCarriesExplicitEmptySourceScope() throws {
+        let tagID = UUID(uuidString: "88888888-8888-4888-8888-888888888888")!
+
+        let allSources = try RemoteHTTPServer.parseReviewQueueRequest(query: [
+            "tagID": tagID.uuidString,
+        ])
+        let noSources = try RemoteHTTPServer.parseReviewQueueRequest(query: [
+            "tagID": tagID.uuidString,
+            "sourceIDs": "",
+        ])
+
+        XCTAssertFalse(allSources.sourceFilterSpecified)
+        XCTAssertTrue(noSources.sourceFilterSpecified)
+        XCTAssertEqual(noSources.sourceIDs, [])
+    }
+
     func testRemoteHostDefaultsEnabledUntilUserTurnsItOff() {
         let suiteName = "RemoteHTTPServerTests.RemoteHostDefaults.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
