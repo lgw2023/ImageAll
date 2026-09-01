@@ -5,6 +5,8 @@ import {
   Check,
   ChevronLeft,
   Grid3X3,
+  Minus,
+  Plus,
   Ratio,
   RotateCcw,
   ScanSearch,
@@ -16,6 +18,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { fetchSources } from '@/api/assets';
 import type { ReviewDecisionAction } from '@/api/contracts/review';
 import { errorMessage } from '@/api/errors';
+import { fetchGeneralSettings, updateGeneralSettings } from '@/api/management';
 import {
   applyReviewDecision,
   fetchReviewOverview,
@@ -102,12 +105,30 @@ type ReviewWorkspaceProps = {
 };
 
 function ReviewOverview({ sourceIDs, sourceScope, search }: ReviewWorkspaceProps) {
+  const queryClient = useQueryClient();
   const sourceScopeKey = scopeKey(sourceIDs);
   const overview = useQuery({
     queryKey: ['review-overview', sourceScopeKey],
     queryFn: ({ signal }) => fetchReviewOverview(sourceIDs, signal),
     placeholderData: (previous) => previous,
   });
+  const settings = useQuery({
+    queryKey: ['general-settings'],
+    queryFn: ({ signal }) => fetchGeneralSettings(signal),
+    staleTime: 60_000,
+  });
+  const updateLimit = useMutation({
+    mutationFn: (value: number) => updateGeneralSettings({ maxPendingSuggestionsPerTag: value }),
+    onSuccess: (response) => {
+      queryClient.setQueryData(['general-settings'], response.settings);
+    },
+  });
+  const suggestionLimit = settings.data?.maxPendingSuggestionsPerTag ?? null;
+  const adjustSuggestionLimit = (delta: number) => {
+    if (suggestionLimit === null || updateLimit.isPending) return;
+    const next = Math.min(10_000, Math.max(1, suggestionLimit + delta));
+    if (next !== suggestionLimit) updateLimit.mutate(next);
+  };
 
   if (overview.isPending)
     return (
@@ -137,6 +158,44 @@ function ReviewOverview({ sourceIDs, sourceScope, search }: ReviewWorkspaceProps
         </div>
         <div className="review-heading-actions">
           {sourceScope}
+          <div className="review-suggestion-limit-stack">
+            <div
+              aria-busy={settings.isPending || updateLimit.isPending}
+              aria-label="每标签上限"
+              className="review-suggestion-limit-control"
+              role="group"
+            >
+              <span className="review-suggestion-limit-label">每标签上限</span>
+              <button
+                aria-label="减少每标签上限"
+                className="icon-button"
+                disabled={suggestionLimit === null || suggestionLimit <= 1 || updateLimit.isPending}
+                onClick={() => adjustSuggestionLimit(-50)}
+                type="button"
+              >
+                <Minus aria-hidden="true" size={14} />
+              </button>
+              <output aria-live="polite">
+                {suggestionLimit ?? (settings.isPending ? '…' : '只读')}
+              </output>
+              <button
+                aria-label="增加每标签上限"
+                className="icon-button"
+                disabled={
+                  suggestionLimit === null || suggestionLimit >= 10_000 || updateLimit.isPending
+                }
+                onClick={() => adjustSuggestionLimit(50)}
+                type="button"
+              >
+                <Plus aria-hidden="true" size={14} />
+              </button>
+            </div>
+            {settings.isError || updateLimit.isError ? (
+              <span className="review-suggestion-limit-error" role="alert">
+                {errorMessage(updateLimit.error ?? settings.error)}
+              </span>
+            ) : null}
+          </div>
           <strong className="large-count">
             {overview.data.totalPendingSuggestionCount.toLocaleString('zh-CN')} 待处理
           </strong>

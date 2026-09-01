@@ -2045,6 +2045,52 @@
     gap: 10px;
   }
 
+  .review-suggestion-limit-stack {
+    display: grid;
+    justify-items: end;
+    gap: 5px;
+  }
+
+  .review-suggestion-limit-control {
+    display: grid;
+    min-height: 40px;
+    padding: 4px;
+    grid-template-columns: auto 32px minmax(42px, auto) 32px;
+    align-items: center;
+    gap: 4px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-control);
+    background: var(--color-surface-muted);
+  }
+
+  .review-suggestion-limit-label {
+    padding-inline: 7px 5px;
+    color: var(--color-text-muted);
+    font-size: 11px;
+    font-weight: 650;
+  }
+
+  .review-suggestion-limit-control .icon-button {
+    min-width: 32px;
+    min-height: 32px;
+  }
+
+  .review-suggestion-limit-control output {
+    min-width: 42px;
+    color: var(--color-text);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+  }
+
+  .review-suggestion-limit-error {
+    max-width: 260px;
+    color: var(--color-danger);
+    font-size: 11px;
+    text-align: right;
+  }
+
   .review-view-summary {
     display: flex;
     align-items: center;

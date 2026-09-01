@@ -860,6 +860,22 @@ body {
   background: rgb(217 255 67 / 7%);
 }
 
+.review-suggestion-limit-control {
+  border-color: #343a35;
+  background:
+    linear-gradient(135deg, rgb(217 255 67 / 8%), transparent 58%), var(--color-surface-raised);
+}
+
+.review-suggestion-limit-control output {
+  color: var(--color-accent);
+  font-weight: 760;
+}
+
+.review-suggestion-limit-control .icon-button:hover:not(:disabled) {
+  color: #0a0b0b;
+  background: var(--color-accent);
+}
+
 @media (max-width: 599px) {
   .review-heading-actions {
     width: 100%;
@@ -874,6 +890,20 @@ body {
   .review-source-scope,
   .review-source-trigger {
     width: 100%;
+  }
+
+  .review-suggestion-limit-stack {
+    width: 100%;
+    justify-items: stretch;
+  }
+
+  .review-suggestion-limit-control {
+    grid-template-columns: 1fr 40px 54px 40px;
+  }
+
+  .review-suggestion-limit-error {
+    max-width: none;
+    text-align: left;
   }
 
   .review-source-menu {
