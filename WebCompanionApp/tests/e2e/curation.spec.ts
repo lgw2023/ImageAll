@@ -266,6 +266,60 @@ test('review source scope stays authoritative across overview, queue, empty scop
   await expect(page.getByText('0 待处理')).toBeVisible();
 });
 
+test('review view controls preserve queue context while changing density and cached aspect', async ({
+  page,
+}, testInfo) => {
+  await installSyntheticAuthenticatedHost(page);
+  let queueRequestCount = 0;
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname === '/v1/review/queue') queueRequestCount += 1;
+  });
+
+  await page.goto('review');
+  await page.getByRole('link', { name: '开始审查' }).click();
+  const grid = page.getByRole('list', { name: '待审查照片' });
+  await expect(grid).toBeVisible();
+  await page.getByText('REVIEW_003.jpg', { exact: true }).click();
+  await expect(page.locator('.review-card[aria-current="true"]')).toContainText('REVIEW_003.jpg');
+
+  const density = page.getByRole('combobox', { name: '缩略图大小' });
+  await expect(density).toHaveValue('3');
+  const standardColumns = await grid.evaluate(
+    (element) => getComputedStyle(element).gridTemplateColumns.split(' ').length,
+  );
+  await density.selectOption('1');
+  await expect(page).toHaveURL(/density=1/);
+  await expect(grid).toHaveAttribute('data-density', '1');
+  const fineColumns = await grid.evaluate(
+    (element) => getComputedStyle(element).gridTemplateColumns.split(' ').length,
+  );
+  expect(fineColumns).toBeGreaterThan(standardColumns);
+  await expect(page.locator('.review-card[aria-current="true"]')).toContainText('REVIEW_003.jpg');
+
+  const squareThumbnail = page.locator('.review-card img').first();
+  await expect(squareThumbnail).not.toHaveAttribute('src', /aspect=original/);
+  await page.getByRole('button', { name: '缩略图比例：正方形' }).click();
+  await expect(page).toHaveURL(/aspect=original/);
+  await expect(grid).toHaveAttribute('data-aspect', 'original');
+  await expect(squareThumbnail).toHaveAttribute('src', /aspect=original/);
+  await expect(page.locator('.review-card[aria-current="true"]')).toContainText('REVIEW_003.jpg');
+  expect(queueRequestCount).toBe(1);
+
+  await page.reload();
+  await expect(density).toHaveValue('1');
+  await expect(grid).toHaveAttribute('data-aspect', 'original');
+  await expect(page.locator('.review-card img').first()).toHaveAttribute('src', /aspect=original/);
+
+  const accessibility = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();
+  expect(accessibility.violations).toEqual([]);
+  if (process.env.IMAGEALL_CAPTURE_EVIDENCE === '1') {
+    await page.screenshot({
+      path: `../docs/web-companion-refactor/evidence/curation/imageall-react-review-view-controls-${testInfo.project.name}.png`,
+      animations: 'disabled',
+    });
+  }
+});
+
 test('tag library creates a group and moves a renamed tag through Host mutations', async ({
   page,
 }, testInfo) => {

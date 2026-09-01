@@ -47,6 +47,15 @@ route entered
 - 来源变化会创建新的 overview/queue query key，并把网格选择集切到新 scope；旧投影仅作短暂视觉占位，
   期间写操作禁用，避免对过期队列提交决定。
 
+## Review 呈现上下文
+
+- `density=0...8` 对应 Mac 的微缩→巨大 9 档缩略图密度；缺省或无效值回退到 `3`
+  （标准）。`aspect=original` 表示优先使用 Host 已有的原比例缓存；缺省为正方形。
+- 两个参数都属于可分享、可刷新恢复的非敏感显示状态，概览↔队列链接保留它们。
+- 密度/比例不进入 review query key，切换时不重拉 Host 队列、不清空选择、不替换当前卡片。
+- 原比例模式只在缩略图 URL 追加 `aspect=original`。Host 先做 cache-only 查询，未命中、
+  损坏或读取失败均回退正方形主缩略图；显示切换不得读原图、请求 PhotoKit 或生成缓存。
+
 ## 服务端缓存和事件
 
 - Query key 由 domain + versioned normalized parameters 构成，不把不稳定对象直接放入 key。

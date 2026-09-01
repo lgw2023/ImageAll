@@ -767,6 +767,72 @@ body {
   cursor: pointer;
 }
 
+.review-view-summary {
+  color: #858b89;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.02em;
+}
+
+.review-view-controls {
+  border-color: #303534;
+  border-radius: 999px;
+  background: #0d0f10;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 4%);
+}
+
+.review-density-control,
+.review-aspect-control {
+  min-height: 34px;
+  border-radius: 999px;
+  color: #949a97;
+  transition:
+    color var(--transition-fast),
+    background var(--transition-fast);
+}
+
+.review-density-control:focus-within,
+.review-density-control:hover,
+.review-aspect-control:hover {
+  color: var(--color-text);
+  background: rgb(255 255 255 / 5%);
+}
+
+.review-density-control select {
+  cursor: pointer;
+}
+
+.review-aspect-control[aria-pressed='true'] {
+  color: #0b0d0b;
+  background: var(--color-accent);
+  box-shadow: 0 0 18px rgb(217 255 67 / 12%);
+}
+
+.review-queue-grid {
+  align-items: start;
+}
+
+.review-queue-grid[data-density='0'],
+.review-queue-grid[data-density='1'],
+.review-queue-grid[data-density='2'] {
+  gap: 5px;
+}
+
+.review-queue-grid[data-density='0'] .review-card-copy,
+.review-queue-grid[data-density='1'] .review-card-copy,
+.review-queue-grid[data-density='2'] .review-card-copy,
+.review-queue-grid[data-density='0'] .review-card-actions,
+.review-queue-grid[data-density='1'] .review-card-actions,
+.review-queue-grid[data-density='2'] .review-card-actions {
+  display: none;
+}
+
+.review-queue-grid[data-density='0'] .review-card,
+.review-queue-grid[data-density='1'] .review-card,
+.review-queue-grid[data-density='2'] .review-card {
+  border-radius: 7px;
+}
+
 .review-source-trigger {
   border-color: rgb(217 255 67 / 26%);
   background: linear-gradient(135deg, rgb(217 255 67 / 10%), transparent 58%), #151815;
@@ -798,6 +864,11 @@ body {
   .review-heading-actions {
     width: 100%;
     justify-items: stretch;
+  }
+
+  .review-view-summary {
+    flex-wrap: wrap;
+    justify-content: space-between;
   }
 
   .review-source-scope,

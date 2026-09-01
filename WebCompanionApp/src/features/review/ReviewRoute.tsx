@@ -1,7 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, ChevronLeft, RotateCcw, ScanSearch, SkipForward, X } from 'lucide-react';
+import {
+  Check,
+  ChevronLeft,
+  Grid3X3,
+  Ratio,
+  RotateCcw,
+  ScanSearch,
+  SkipForward,
+  X,
+} from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
 
 import { fetchSources } from '@/api/assets';
@@ -25,6 +34,25 @@ const originLabels = {
 } as const;
 
 const emptySelection = new Set<string>();
+
+const reviewDensityOptions = [
+  { value: 0, label: '微缩' },
+  { value: 1, label: '精细' },
+  { value: 2, label: '紧凑' },
+  { value: 3, label: '标准' },
+  { value: 4, label: '大图' },
+  { value: 5, label: '较大' },
+  { value: 6, label: '很大' },
+  { value: 7, label: '特大' },
+  { value: 8, label: '巨大' },
+] as const;
+
+function reviewDensity(parameters: URLSearchParams): number {
+  const rawValue = parameters.get('density');
+  if (rawValue === null) return 3;
+  const value = Number(rawValue);
+  return Number.isInteger(value) && value >= 0 && value <= 8 ? value : 3;
+}
 
 function useScopedSet(scopeKey: string) {
   const [state, setState] = useState({ scopeKey, values: new Set<string>() });
@@ -155,10 +183,13 @@ function ReviewQueue({
   sourceScope,
   search,
 }: ReviewWorkspaceProps & { tagID: string }) {
+  const [viewParameters, setViewParameters] = useSearchParams();
   const queryClient = useQueryClient();
   const gridRef = useRef<HTMLDivElement>(null);
   const hasFocusedGrid = useRef(false);
   const sourceScopeKey = scopeKey(sourceIDs);
+  const density = reviewDensity(viewParameters);
+  const aspect = viewParameters.get('aspect') === 'original' ? 'original' : 'square';
   const [selected, setSelected] = useScopedSet(sourceScopeKey);
   const [dismissed, setDismissed] = useScopedSet(sourceScopeKey);
   const [message, setMessage] = useState('');
@@ -332,6 +363,12 @@ function ReviewQueue({
 
   const refreshingScope = queue.isFetching && !queue.isFetchingNextPage;
   const pending = decision.isPending || undo.isPending || refreshingScope;
+  const updateView = (key: 'density' | 'aspect', value: string | null) => {
+    const next = new URLSearchParams(viewParameters);
+    if (value === null) next.delete(key);
+    else next.set(key, value);
+    setViewParameters(next, { replace: true });
+  };
   return (
     <section
       className="domain-workspace review-queue-workspace"
@@ -349,7 +386,43 @@ function ReviewQueue({
         </div>
         <div className="review-heading-actions">
           {sourceScope}
-          <span>{items.length.toLocaleString('zh-CN')} 项已载入</span>
+          <div className="review-view-summary">
+            <span>{items.length.toLocaleString('zh-CN')} 项已载入</span>
+            <div className="review-view-controls" role="group" aria-label="待审查网格显示">
+              <label className="review-density-control">
+                <Grid3X3 aria-hidden="true" size={15} />
+                <span className="visually-hidden">缩略图大小</span>
+                <select
+                  aria-label="缩略图大小"
+                  onChange={(event) =>
+                    updateView('density', event.target.value === '3' ? null : event.target.value)
+                  }
+                  value={String(density)}
+                >
+                  {reviewDensityOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                aria-label={`缩略图比例：${aspect === 'original' ? '原比例' : '正方形'}`}
+                aria-pressed={aspect === 'original'}
+                className="review-aspect-control"
+                onClick={() => updateView('aspect', aspect === 'original' ? null : 'original')}
+                title={
+                  aspect === 'original'
+                    ? '优先显示已手动缓存的原比例缩略图；未缓存项保持正方形'
+                    : '全部使用正方形缩略图'
+                }
+                type="button"
+              >
+                <Ratio aria-hidden="true" size={15} />
+                <span>{aspect === 'original' ? '原比例' : '正方形'}</span>
+              </button>
+            </div>
+          </div>
         </div>
       </header>
 
@@ -363,6 +436,8 @@ function ReviewQueue({
         <div
           aria-label="待审查照片"
           className="review-queue-grid"
+          data-aspect={aspect}
+          data-density={density}
           ref={gridRef}
           role="list"
           tabIndex={0}
@@ -404,7 +479,7 @@ function ReviewQueue({
                 </label>
                 <img
                   alt=""
-                  src={`/v1/assets/${item.assetID}/thumbnail?w=560&revision=${String(revision)}`}
+                  src={`/v1/assets/${encodeURIComponent(item.assetID)}/thumbnail?w=560&revision=${String(revision)}${aspect === 'original' ? '&aspect=original' : ''}`}
                 />
                 <div className="review-card-copy">
                   <strong>{title}</strong>
