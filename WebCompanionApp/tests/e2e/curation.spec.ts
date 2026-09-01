@@ -1,7 +1,7 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
 
-import { installSyntheticAuthenticatedHost, sourceID } from './syntheticHost';
+import { installSyntheticAuthenticatedHost, sourceID, tagIDs } from './syntheticHost';
 
 const reviewArchiveSourceID = '8de47499-1ca0-4cc2-84bc-a881018e8b0c';
 
@@ -93,6 +93,120 @@ test('review overview updates the shared per-tag suggestion limit without leavin
   if (process.env.IMAGEALL_CAPTURE_EVIDENCE === '1') {
     await page.screenshot({
       path: `../docs/web-companion-refactor/evidence/curation/imageall-react-review-limit-${testInfo.project.name}.png`,
+      animations: 'disabled',
+    });
+  }
+});
+
+test('review overview follows Host tag groups and preserves folding with keyboard navigation', async ({
+  page,
+}, testInfo) => {
+  await installSyntheticAuthenticatedHost(page);
+  const peopleGroupID = 'a0000000-0000-4000-8000-000000000001';
+  const natureGroupID = 'a0000000-0000-4000-8000-000000000005';
+  const otherGroupID = 'a0000000-0000-4000-8000-000000000007';
+  const unmatchedTagID = '7a000000-0000-4000-8000-000000000003';
+  const overviewTag = (id: string, displayName: string, pendingSuggestionCount: number) => ({
+    id,
+    displayName,
+    acceptedSampleCount: 12,
+    rejectedSampleCount: 5,
+    pendingSuggestionCount,
+    pendingSuggestionCounts: {
+      featurePrint: pendingSuggestionCount,
+      standardModel: 0,
+      personalModel: 0,
+      personalAdamW: 0,
+    },
+    taskStatus: 'ready',
+    checkedCount: 120,
+    totalCount: 120,
+    skippedCount: 0,
+    missingPositiveCount: 0,
+    missingNegativeCount: 0,
+    canGenerate: true,
+    canUpdate: true,
+    canGeneratePersonalModel: false,
+    canReview: true,
+    canPause: false,
+    canResume: false,
+    canCancel: false,
+    activeJobID: null,
+  });
+
+  await page.route('**/v1/tags', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: [
+        { id: tagIDs[1], displayName: '家人', state: 'active', groupID: peopleGroupID },
+        { id: tagIDs[0], displayName: '风景', state: 'active', groupID: natureGroupID },
+      ],
+    }),
+  );
+  await page.route('**/v1/tag-groups', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: [
+        { id: otherGroupID, displayName: '物品与其他', sortOrder: 6, isSystem: true },
+        { id: natureGroupID, displayName: '自然与动植物', sortOrder: 4, isSystem: true },
+        { id: peopleGroupID, displayName: '人物与关系', sortOrder: 0, isSystem: true },
+      ],
+    }),
+  );
+  await page.route('**/v1/review/overview?*', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        totalPendingSuggestionCount: 16,
+        tags: [
+          overviewTag(unmatchedTagID, '未归档', 3),
+          overviewTag(tagIDs[0], '风景', 8),
+          overviewTag(tagIDs[1], '家人', 5),
+        ],
+      },
+    }),
+  );
+
+  await page.goto('review');
+  const groups = page.getByRole('region', {
+    name: /^(人物与关系|自然与动植物|物品与其他)$/,
+  });
+  await expect(groups).toHaveCount(3);
+  await expect(groups.nth(0)).toHaveAccessibleName('人物与关系');
+  await expect(groups.nth(0)).toContainText('家人');
+  await expect(groups.nth(1)).toHaveAccessibleName('自然与动植物');
+  await expect(groups.nth(1)).toContainText('风景');
+  await expect(groups.nth(2)).toHaveAccessibleName('物品与其他');
+  await expect(groups.nth(2)).toContainText('未归档');
+
+  const peopleToggle = page.getByRole('button', { name: /人物与关系/ });
+  const natureToggle = page.getByRole('button', { name: /自然与动植物/ });
+  const otherToggle = page.getByRole('button', { name: /物品与其他/ });
+  await peopleToggle.focus();
+  await peopleToggle.press('ArrowDown');
+  await expect(natureToggle).toBeFocused();
+  await natureToggle.press('End');
+  await expect(otherToggle).toBeFocused();
+  await otherToggle.press('Home');
+  await expect(peopleToggle).toBeFocused();
+
+  await peopleToggle.click();
+  await expect(peopleToggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.getByRole('heading', { name: '家人' })).toBeHidden();
+  await page.reload();
+  await expect(page.getByRole('button', { name: /人物与关系/ })).toHaveAttribute(
+    'aria-expanded',
+    'false',
+  );
+  await expect(page.getByRole('heading', { name: '家人' })).toBeHidden();
+  const accessibility = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();
+  expect(accessibility.violations).toEqual([]);
+  if (process.env.IMAGEALL_CAPTURE_EVIDENCE === '1') {
+    await page.screenshot({
+      path: `../docs/web-companion-refactor/evidence/curation/imageall-react-review-groups-${testInfo.project.name}.png`,
       animations: 'disabled',
     });
   }

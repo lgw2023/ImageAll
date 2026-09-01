@@ -3,7 +3,9 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Check,
+  ChevronDown,
   ChevronLeft,
+  ChevronRight,
   Grid3X3,
   Minus,
   Plus,
@@ -26,8 +28,10 @@ import {
   fetchReviewQueue,
   undoReviewDecision,
 } from '@/api/review';
+import { fetchTagGroups, fetchTags } from '@/api/tags';
 
 import { ReviewLocalModelPanel } from './ReviewLocalModelPanel';
+import { buildReviewTagGroups } from './reviewGroups';
 import { ReviewSinglePhotoDialog } from './ReviewSinglePhotoDialog';
 import { ReviewSourceScope } from './ReviewSourceScope';
 
@@ -39,6 +43,7 @@ const originLabels = {
 } as const;
 
 const emptySelection = new Set<string>();
+const collapsedReviewGroupsKey = 'imageall-web-v2-collapsed-tag-groups';
 
 const reviewDensityOptions = [
   { value: 0, label: '微缩' },
@@ -114,6 +119,16 @@ function ReviewOverview({ sourceIDs, sourceScope, search }: ReviewWorkspaceProps
     queryFn: ({ signal }) => fetchReviewOverview(sourceIDs, signal),
     placeholderData: (previous) => previous,
   });
+  const tags = useQuery({
+    queryKey: ['tags'],
+    queryFn: ({ signal }) => fetchTags(signal),
+    staleTime: 60_000,
+  });
+  const tagGroups = useQuery({
+    queryKey: ['tag-groups'],
+    queryFn: ({ signal }) => fetchTagGroups(signal),
+    staleTime: 60_000,
+  });
   const settings = useQuery({
     queryKey: ['general-settings'],
     queryFn: ({ signal }) => fetchGeneralSettings(signal),
@@ -133,13 +148,57 @@ function ReviewOverview({ sourceIDs, sourceScope, search }: ReviewWorkspaceProps
   const suggestionLimit = settings.data?.maxPendingSuggestionsPerTag ?? null;
   const supportsLibrarySuggestions =
     capabilities.data?.capabilities.includes('librarySuggestions') === true;
+  const groupedTags = useMemo(
+    () => buildReviewTagGroups(tags.data ?? [], tagGroups.data ?? [], overview.data?.tags ?? []),
+    [overview.data?.tags, tagGroups.data, tags.data],
+  );
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => {
+    try {
+      const stored = localStorage.getItem(collapsedReviewGroupsKey);
+      const parsed: unknown = stored ? JSON.parse(stored) : [];
+      return new Set(
+        Array.isArray(parsed) ? parsed.filter((item) => typeof item === 'string') : [],
+      );
+    } catch {
+      return new Set();
+    }
+  });
+  const groupToggleRefs = useRef(new Map<string, HTMLButtonElement>());
+  const toggleGroup = (groupID: string) => {
+    setCollapsedGroups((current) => {
+      const next = new Set(current);
+      if (next.has(groupID)) next.delete(groupID);
+      else next.add(groupID);
+      try {
+        localStorage.setItem(collapsedReviewGroupsKey, JSON.stringify([...next]));
+      } catch {
+        // A blocked preference store must not make the in-memory disclosure unusable.
+      }
+      return next;
+    });
+  };
+  const moveGroupFocus = (groupID: string, event: React.KeyboardEvent<HTMLButtonElement>) => {
+    const currentIndex = groupedTags.findIndex(({ group }) => group.id === groupID);
+    if (currentIndex < 0) return;
+    let nextIndex: number | null = null;
+    if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
+      nextIndex = Math.min(currentIndex + 1, groupedTags.length - 1);
+    } else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') {
+      nextIndex = Math.max(currentIndex - 1, 0);
+    } else if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = groupedTags.length - 1;
+    if (nextIndex === null) return;
+    event.preventDefault();
+    const nextGroup = groupedTags[nextIndex];
+    if (nextGroup) groupToggleRefs.current.get(nextGroup.group.id)?.focus({ preventScroll: true });
+  };
   const adjustSuggestionLimit = (delta: number) => {
     if (suggestionLimit === null || updateLimit.isPending) return;
     const next = Math.min(10_000, Math.max(1, suggestionLimit + delta));
     if (next !== suggestionLimit) updateLimit.mutate(next);
   };
 
-  if (overview.isPending)
+  if (overview.isPending || tags.isPending || tagGroups.isPending)
     return (
       <div className="workspace-state" role="status">
         正在载入审查概览…
@@ -215,27 +274,63 @@ function ReviewOverview({ sourceIDs, sourceScope, search }: ReviewWorkspaceProps
         {supportsLibrarySuggestions ? <ReviewLocalModelPanel sourceIDs={sourceIDs} /> : null}
         <div className="review-overview-content">
           {overview.data.tags.length ? (
-            <div className="review-tag-grid">
-              {overview.data.tags.map((tag) => (
-                <article className="review-tag-card" key={tag.id}>
-                  <div>
-                    <h3>{tag.displayName}</h3>
-                    <span data-status={tag.taskStatus}>{tag.taskStatus}</span>
-                  </div>
-                  <strong>{tag.pendingSuggestionCount.toLocaleString('zh-CN')}</strong>
-                  <p>
-                    已确认 {tag.acceptedSampleCount.toLocaleString('zh-CN')} · 已拒绝{' '}
-                    {tag.rejectedSampleCount.toLocaleString('zh-CN')}
-                  </p>
-                  {tag.canReview && tag.pendingSuggestionCount > 0 ? (
-                    <Link className="button button-primary" to={queueHref(tag.id, search)}>
-                      开始审查
-                    </Link>
-                  ) : (
-                    <span className="muted-label">当前没有可审查项目</span>
-                  )}
-                </article>
-              ))}
+            <div className="review-tag-groups">
+              {groupedTags.map(({ group, tags: groupTags }) => {
+                const collapsed = collapsedGroups.has(group.id);
+                const contentID = `review-group-${group.id}`;
+                const headingID = `${contentID}-heading`;
+                const pendingCount = groupTags.reduce(
+                  (total, tag) => total + tag.pendingSuggestionCount,
+                  0,
+                );
+                return (
+                  <section aria-labelledby={headingID} className="review-tag-group" key={group.id}>
+                    <button
+                      aria-controls={contentID}
+                      aria-expanded={!collapsed}
+                      className="review-tag-group-toggle"
+                      onClick={() => toggleGroup(group.id)}
+                      onKeyDown={(event) => moveGroupFocus(group.id, event)}
+                      ref={(element) => {
+                        if (element) groupToggleRefs.current.set(group.id, element);
+                        else groupToggleRefs.current.delete(group.id);
+                      }}
+                      type="button"
+                    >
+                      {collapsed ? (
+                        <ChevronRight aria-hidden="true" size={17} />
+                      ) : (
+                        <ChevronDown aria-hidden="true" size={17} />
+                      )}
+                      <h3 id={headingID}>{group.displayName}</h3>
+                      <span>{groupTags.length.toLocaleString('zh-CN')} 个标签</span>
+                      <strong>{pendingCount.toLocaleString('zh-CN')} 条待审</strong>
+                    </button>
+                    <div className="review-tag-grid" hidden={collapsed} id={contentID}>
+                      {groupTags.map((tag) => (
+                        <article className="review-tag-card" key={tag.id}>
+                          <div>
+                            <h3>{tag.displayName}</h3>
+                            <span data-status={tag.taskStatus}>{tag.taskStatus}</span>
+                          </div>
+                          <strong>{tag.pendingSuggestionCount.toLocaleString('zh-CN')}</strong>
+                          <p>
+                            已确认 {tag.acceptedSampleCount.toLocaleString('zh-CN')} · 已拒绝{' '}
+                            {tag.rejectedSampleCount.toLocaleString('zh-CN')}
+                          </p>
+                          {tag.canReview && tag.pendingSuggestionCount > 0 ? (
+                            <Link className="button button-primary" to={queueHref(tag.id, search)}>
+                              开始审查
+                            </Link>
+                          ) : (
+                            <span className="muted-label">当前没有可审查项目</span>
+                          )}
+                        </article>
+                      ))}
+                    </div>
+                  </section>
+                );
+              })}
             </div>
           ) : (
             <div className="workspace-state">
