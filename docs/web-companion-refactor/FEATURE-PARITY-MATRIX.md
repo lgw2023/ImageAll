@@ -45,7 +45,7 @@
 | 精简 setup/阈值 | Mac 工作区 | 有 | 受控表单、Host 回读、变更证据 | 已有 | 无 | parity-proven | `slimming.spec.ts`：来源维护、阈值回读、目录/筛选/种子 launch、重试 | `evidence/slimming/` 桌面+移动 | 合成来源和任务；不证明真实扫描、阈值效果或相似度质量 |
 | 重复聚类审查 | Mac 有 | 有 | 图像对比、键盘、范围稳定 | 已有 | 无 | parity-proven | `slimming.spec.ts`：范围、代表/收藏保护、disposition、axe/无溢出 | `evidence/slimming/` 组内审查 | 合成 3 项单组；不证明真实缩略图或人工相似度正确性 |
 | 清理计划/移除/回收 | Mac 安全流程 | 有 | 预览、精确数量、不乐观成功、可追踪 | 已有 | 无 | parity-proven | `slimming.spec.ts`：冻结选择、两种确认、计划→执行→验证、恢复/永久清理 | `evidence/slimming/` 清理选择与保护 | 只验证合成 Host；不证明真实文件/Photos 变更，自动测试未读取 HDD2 |
-| 来源列表/管理 | Mac 侧栏/设置 | Web 有请求流 | 能力提示、审计反馈、精确作用域 | 已有 | 无 | parity-proven | `management.spec.ts`：来源刷新、Host 完成状态、axe | `evidence/management/` 来源桌面+移动 | 合成 source；不证明真实文件夹/Photos 授权 |
+| 来源列表/管理 | Mac 侧栏/设置包含连接、同步、修复、授权、预热、取消与移除 | 19 个 Host 来源动作全部可达，含批量维护和来源→图库 | 按来源类型/状态门控；活动请求锁定冲突写入；显示 Host 权威进度、计数、取消和 409 原位重试；应用内二次确认后再交给 Mac 原生确认 | 已有 | 无 | parity-proven | `management.spec.ts`：19 动作可达性、精确 `action/sourceID`、混合状态门控、批量授权、预热指标/取消、删除 Esc/焦点/零写入、来源链接、409 重试，桌面+移动、axe、无重叠 | `evidence/management/imageall-react-source-command-deck-chromium-{desktop,mobile}.png` | 只使用合成 source/request；不证明真实文件夹/Photos 授权、预热吞吐或磁盘/图库变更，自动测试未读取 HDD2 |
 | 存储与维护 | Mac 设置 | Web 有 | 容量、健康、操作请求和进度 | 已有 | 无 | parity-proven | `management.spec.ts`：容量、清理确认、Host 结果 | `evidence/management/` 存储桌面+移动 | 不证明真实磁盘回收、导出或 App 重启 |
 | 通知/工作区提示 | Mac 通知 | Web banner/overlay | 持久且不挡主路径，动作可追踪 | 已有 | 无 | parity-proven | `foundation.spec.ts`：Host 通知→回收站动作→投影刷新；可访问模式回归 | `evidence/foundation/` | 合成通知 |
 | 通用设置 | Mac Settings | Web 有 | 类型表单、dirty/reset/save、Host 回读 | 已有 | 无 | parity-proven | `management.spec.ts`：部分更新、Host 回读、409 冲突 | `evidence/management/` 设置桌面+移动 | 合成设置；不证明真实 Mac 设置持久化 |

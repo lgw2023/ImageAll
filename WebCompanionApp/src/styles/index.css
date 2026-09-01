@@ -1652,7 +1652,8 @@
     margin: 0;
   }
 
-  .asset-deletion-panel #asset-deletion-description {
+  .asset-deletion-panel #asset-deletion-description,
+  .asset-deletion-panel #source-deletion-description {
     color: var(--color-text-muted);
     font-size: 12px;
     line-height: 1.7;

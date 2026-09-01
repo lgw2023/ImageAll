@@ -570,6 +570,7 @@ test('review single-photo explicitly recovers an iCloud preview without losing q
 
   await page.goto('review');
   await page.getByRole('link', { name: '开始审查' }).click();
+  await expect(page.getByRole('heading', { name: '审查队列', level: 2 })).toBeVisible();
   await page.keyboard.press('Space');
   const reviewer = page.getByRole('dialog', { name: '单图审核' });
   await expect(reviewer.getByRole('button', { name: '从 iCloud 获取预览' })).toBeVisible();

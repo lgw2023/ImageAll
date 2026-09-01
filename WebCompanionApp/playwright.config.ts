@@ -4,6 +4,10 @@ export default defineConfig({
   testDir: './tests/e2e',
   outputDir: 'test-results',
   fullyParallel: true,
+  // Five concurrent browser processes distorted the in-suite 10k latency gate while the same
+  // production fixture stayed well below budget in isolation. Keep enough parallelism for speed
+  // without turning the performance contract into a host-contention measurement.
+  workers: 3,
   forbidOnly: true,
   retries: 0,
   reporter: [['list'], ['html', { open: 'never' }]],
