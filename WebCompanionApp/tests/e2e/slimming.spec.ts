@@ -113,7 +113,7 @@ test('cluster review protects representative and favorite members before Host re
   await expect(page.getByText('已确认此相似组。')).toBeVisible();
 });
 
-test('gallery selection drafts seed analysis and submits recoverable removal only after confirmation', async ({
+test('gallery selection drafts seed analysis and submits Host-authoritative deletion only after confirmation', async ({
   page,
 }) => {
   await installSyntheticAuthenticatedHost(page);
@@ -143,17 +143,28 @@ test('gallery selection drafts seed analysis and submits recoverable removal onl
       new URL(request.url()).pathname === '/v1/library-slimming/removals' &&
       request.method() === 'POST',
   );
-  page.once('dialog', (dialog) => void dialog.accept());
-  await page.getByRole('button', { name: '移至回收区' }).click();
+  const deleteSelection = page.getByRole('button', { name: '删除所选项目' });
+  await deleteSelection.click();
+  let deletion = page.getByRole('alertdialog', { name: '删除 1 个所选项目？' });
+  await expect(deletion).toBeVisible();
+  await deletion.getByRole('button', { name: '取消' }).click();
+  await expect(deletion).toBeHidden();
+  await expect(deleteSelection).toBeFocused();
+  await expect(page.getByText('已选择 1 项')).toBeVisible();
+
+  await deleteSelection.click();
+  deletion = page.getByRole('alertdialog', { name: '删除 1 个所选项目？' });
+  await expect(deletion).toBeVisible();
+  await deletion.getByRole('button', { name: '提交给 Mac 确认删除' }).click();
   expect((await recycleRequest).postDataJSON()).toMatchObject({
     scope: 'gallerySelection',
     jobID: null,
     clusterID: null,
     mediaKind: 'image',
     assetIDs: [assetIDs[0]],
-    mode: 'recoverableRecycle',
+    mode: 'releaseSourceSpace',
   });
-  await expect(page.getByText(/已冻结 1 项选择.*不代表移动已经完成/)).toBeVisible();
+  await expect(page.getByText(/已冻结 1 项选择.*不代表删除已完成/)).toBeVisible();
 });
 
 test('gallery current filter becomes an exact analysis request', async ({ page }) => {

@@ -238,6 +238,113 @@ test('single-photo inspector tag body supports Mac click, right-click, and keybo
   await expect.poll(() => actions.at(-1)).toMatchObject({ tagID: landscapeTagID, action: 'clear' });
 });
 
+test('single-photo viewer submits an exact Host-authoritative deletion only after confirmation', async ({
+  page,
+}, testInfo) => {
+  await installSyntheticAuthenticatedHost(page);
+  await page.goto('gallery');
+  await page.getByRole('button', { name: '查看 IMG_0001.jpg' }).dblclick();
+
+  await page.getByRole('button', { name: '删除当前照片' }).click();
+  const confirmation = page.getByRole('alertdialog', { name: '删除 IMG_0001.jpg？' });
+  await expect(confirmation).toBeVisible();
+  await expect(confirmation).toContainText('文件夹原始媒体可能永久删除');
+  await expect(confirmation).toContainText('Apple Photos 将移入“最近删除”');
+  const accessibility = await new AxeBuilder({ page })
+    .include('.asset-deletion-dialog')
+    .withTags(['wcag2a', 'wcag2aa'])
+    .analyze();
+  expect(accessibility.violations).toEqual([]);
+  if (process.env.IMAGEALL_CAPTURE_EVIDENCE === '1') {
+    await confirmation.screenshot({
+      path: `../docs/web-companion-refactor/evidence/gallery/imageall-react-deletion-confirmation-${testInfo.project.name}.png`,
+      animations: 'disabled',
+    });
+  }
+
+  const request = page.waitForRequest(
+    (candidate) =>
+      new URL(candidate.url()).pathname === '/v1/library-slimming/removals' &&
+      candidate.method() === 'POST',
+  );
+  await confirmation.getByRole('button', { name: '提交给 Mac 确认删除' }).click();
+  expect((await request).postDataJSON()).toMatchObject({
+    scope: 'gallerySelection',
+    jobID: null,
+    clusterID: null,
+    mediaKind: 'image',
+    assetIDs: [assetIDs[0]],
+    mode: 'releaseSourceSpace',
+  });
+  await expect(confirmation).toBeHidden();
+  await expect(page.getByText(/Mac 已冻结 1 项选择.*不代表删除已完成/)).toBeVisible();
+});
+
+test('single-photo deletion cancel and keyboard shortcut preserve focus without writing', async ({
+  page,
+}) => {
+  await installSyntheticAuthenticatedHost(page);
+  let deletionRequestCount = 0;
+  page.on('request', (request) => {
+    if (
+      new URL(request.url()).pathname === '/v1/library-slimming/removals' &&
+      request.method() === 'POST'
+    ) {
+      deletionRequestCount += 1;
+    }
+  });
+  await page.goto('gallery');
+  await page.getByRole('button', { name: '查看 IMG_0001.jpg' }).dblclick();
+  const deleteButton = page.getByRole('button', { name: '删除当前照片' });
+
+  await deleteButton.click();
+  let confirmation = page.getByRole('alertdialog', { name: '删除 IMG_0001.jpg？' });
+  await confirmation.getByRole('button', { name: '取消' }).click();
+  await expect(confirmation).toBeHidden();
+  await expect(deleteButton).toBeFocused();
+  expect(deletionRequestCount).toBe(0);
+
+  await page.keyboard.press('Delete');
+  confirmation = page.getByRole('alertdialog', { name: '删除 IMG_0001.jpg？' });
+  await expect(confirmation).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(confirmation).toBeHidden();
+  await expect(deleteButton).toBeFocused();
+  expect(deletionRequestCount).toBe(0);
+});
+
+test('single-photo deletion keeps a Host failure retryable inside the confirmation', async ({
+  page,
+}) => {
+  await installSyntheticAuthenticatedHost(page);
+  let attempts = 0;
+  await page.route('**/v1/library-slimming/removals', (route) => {
+    attempts += 1;
+    if (attempts === 1) {
+      return route.fulfill({
+        status: 409,
+        contentType: 'application/json',
+        json: { code: 'conflict', message: 'Mac 当前有另一个删除确认正在进行' },
+      });
+    }
+    return route.fallback();
+  });
+  await page.goto('gallery');
+  await page.getByRole('button', { name: '查看 IMG_0001.jpg' }).dblclick();
+  await page.getByRole('button', { name: '删除当前照片' }).click();
+  const confirmation = page.getByRole('alertdialog', { name: '删除 IMG_0001.jpg？' });
+  const submit = confirmation.getByRole('button', { name: '提交给 Mac 确认删除' });
+
+  await submit.click();
+  await expect(confirmation.getByRole('alert')).toHaveText('Mac 当前有另一个删除确认正在进行');
+  await expect(confirmation).toBeVisible();
+  await expect(submit).toBeEnabled();
+
+  await submit.click();
+  await expect(confirmation).toBeHidden();
+  await expect(page.getByText(/Mac 已冻结 1 项选择.*不代表删除已完成/)).toBeVisible();
+});
+
 test('gallery filters are URL-addressable and sent to the Host', async ({ page }, testInfo) => {
   await installSyntheticAuthenticatedHost(page);
   await page.goto('gallery');

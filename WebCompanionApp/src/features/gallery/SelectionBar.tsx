@@ -17,7 +17,7 @@ type SelectionBarProps = {
   onTagDecision: (action: 'accept' | 'reject' | 'clear') => void;
   onPrepareEmbeddings: () => void;
   onFindSimilar: () => void;
-  onRecycle: () => void;
+  onDelete: () => void;
   onClear: () => void;
 };
 
@@ -34,7 +34,7 @@ export function SelectionBar({
   onTagDecision,
   onPrepareEmbeddings,
   onFindSimilar,
-  onRecycle,
+  onDelete,
   onClear,
 }: SelectionBarProps) {
   return (
@@ -68,8 +68,13 @@ export function SelectionBar({
         <button className="button" disabled={pending} onClick={onFindSimilar} type="button">
           <ScanSearch aria-hidden="true" size={15} /> 查找相似项
         </button>
-        <button className="button" disabled={pending} onClick={onRecycle} type="button">
-          <Trash2 aria-hidden="true" size={15} /> 移至回收区
+        <button
+          className="button button-danger"
+          disabled={pending}
+          onClick={onDelete}
+          type="button"
+        >
+          <Trash2 aria-hidden="true" size={15} /> 删除所选项目
         </button>
         <label className="compact-field selection-tag-field">
           <span>标签</span>

@@ -1087,6 +1087,16 @@ export async function installSyntheticAuthenticatedHost(
       assetIDs: string[];
       mode: 'recoverableRecycle' | 'releaseSourceSpace';
     };
+    if (body.scope === 'gallerySelection' && body.mode !== 'releaseSourceSpace') {
+      return route.fulfill({
+        status: 422,
+        contentType: 'application/json',
+        json: {
+          code: 'invalidSelection',
+          message: '普通图库选区只能提交 Host 权威删除确认',
+        },
+      });
+    }
     const favoriteProtectedAssetIDs = body.assetIDs.filter((id) => id === assetIDs[2]);
     const request = {
       id: '55ba0aa1-e0c3-4421-bb0f-4f7edab5c355',

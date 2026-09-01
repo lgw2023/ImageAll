@@ -1445,6 +1445,83 @@
     background: rgb(10 10 10 / 58%);
   }
 
+  .asset-deletion-dialog {
+    width: min(500px, calc(100vw - 28px));
+    max-width: none;
+    padding: 0;
+    border: 1px solid color-mix(in srgb, var(--color-danger) 35%, var(--color-border-strong));
+    border-radius: var(--radius-panel);
+    color: var(--color-text);
+    background: var(--color-surface);
+    box-shadow: var(--shadow-float);
+  }
+
+  .asset-deletion-dialog::backdrop {
+    background: rgb(5 5 9 / 72%);
+  }
+
+  .asset-deletion-panel {
+    display: grid;
+    padding: 22px;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+    gap: 14px;
+  }
+
+  .asset-deletion-icon {
+    display: grid;
+    width: 42px;
+    height: 42px;
+    place-items: center;
+    border: 1px solid color-mix(in srgb, var(--color-danger) 32%, var(--color-border));
+    border-radius: 14px;
+    color: var(--color-danger);
+    background: color-mix(in srgb, var(--color-danger) 9%, var(--color-surface));
+  }
+
+  .asset-deletion-panel h2 {
+    margin: 2px 0 8px;
+    font-size: 20px;
+    line-height: 1.25;
+  }
+
+  .asset-deletion-panel p {
+    margin: 0;
+  }
+
+  .asset-deletion-panel #asset-deletion-description {
+    color: var(--color-text-muted);
+    font-size: 12px;
+    line-height: 1.7;
+  }
+
+  .asset-deletion-error {
+    padding: 9px 11px;
+    grid-column: 1 / -1;
+    border: 1px solid color-mix(in srgb, var(--color-danger) 38%, var(--color-border));
+    border-radius: var(--radius-control);
+    color: var(--color-danger);
+    background: color-mix(in srgb, var(--color-danger) 7%, var(--color-surface));
+    font-size: 12px;
+  }
+
+  .asset-deletion-actions {
+    display: flex;
+    padding-top: 4px;
+    grid-column: 1 / -1;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+
+  .asset-deletion-actions .button {
+    min-height: 38px;
+  }
+
+  .asset-deletion-actions .button-danger {
+    border-color: color-mix(in srgb, var(--color-danger) 45%, var(--color-border));
+    background: color-mix(in srgb, var(--color-danger) 8%, var(--color-surface-raised));
+  }
+
   .asset-viewer-panel {
     display: grid;
     height: 100%;
@@ -3870,6 +3947,20 @@
 @media (max-width: 599px) {
   body {
     font-size: 16px;
+  }
+
+  .asset-deletion-panel {
+    padding: 18px;
+    grid-template-columns: 1fr;
+  }
+
+  .asset-deletion-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .asset-deletion-actions .button-danger {
+    grid-row: 1;
   }
 
   .titlebar {

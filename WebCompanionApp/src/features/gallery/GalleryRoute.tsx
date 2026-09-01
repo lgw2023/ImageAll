@@ -34,6 +34,7 @@ import { submitSlimmingRemoval } from '@/api/slimming';
 
 import { AssetViewer } from './AssetViewer';
 import { ActionToast } from './ActionToast';
+import { AssetDeletionDialog } from './AssetDeletionDialog';
 import { GalleryToolbar, type GalleryFilters } from './GalleryToolbar';
 import { SelectionBar } from './SelectionBar';
 import { useThumbnailRecovery } from './useThumbnailRecovery';
@@ -189,6 +190,7 @@ export function GalleryRoute() {
   const [statusMessage, setStatusMessage] = useState('');
   const [undoID, setUndoID] = useState<string | null>(null);
   const [boxSelectionMode, setBoxSelectionMode] = useState(false);
+  const [selectionDeletionRequested, setSelectionDeletionRequested] = useState(false);
   const thumbnailRecovery = useThumbnailRecovery();
 
   useEffect(() => {
@@ -416,7 +418,7 @@ export function GalleryRoute() {
     return request;
   }
 
-  const recycleMutation = useMutation({
+  const deletionMutation = useMutation({
     mutationFn: async (assetIDs: string[]) => {
       const [mediaKind, ids] = selectedMediaScope(assetIDs);
       return submitSlimmingRemoval({
@@ -425,12 +427,12 @@ export function GalleryRoute() {
         clusterID: null,
         mediaKind,
         assetIDs: ids,
-        mode: 'recoverableRecycle',
+        mode: 'releaseSourceSpace',
       });
     },
     onSuccess: (request) => {
       setStatusMessage(
-        `Mac 已冻结 ${String(request.assetIDs.length)} 项选择并进入可恢复回收确认队列；这不代表移动已经完成。`,
+        `Mac 已冻结 ${String(request.assetIDs.length)} 项选择并进入删除确认队列；这不代表删除已完成。`,
       );
       setSelection({ signature: selectionSignature, ids: new Set() });
       selectionAnchor.current = null;
@@ -447,7 +449,7 @@ export function GalleryRoute() {
     createTagMutation.isPending ||
     undoMutation.isPending ||
     embeddingMutation.isPending ||
-    recycleMutation.isPending;
+    deletionMutation.isPending;
 
   function openCurrentFilterAnalysis() {
     if (!filters.mediaKind) {
@@ -793,18 +795,7 @@ export function GalleryRoute() {
               setStatusMessage(errorMessage(error));
             })
           }
-          onRecycle={() => {
-            if (
-              !window.confirm(
-                `将所选 ${String(selectedAssetIDs.length)} 项交给 Mac 放入可恢复回收区？`,
-              )
-            ) {
-              return;
-            }
-            void recycleMutation.mutateAsync(selectedAssetIDs).catch((error: unknown) => {
-              setStatusMessage(errorMessage(error));
-            });
-          }}
+          onDelete={() => setSelectionDeletionRequested(true)}
           onSelectedTagChange={setSelectedTagID}
           onTagDecision={(action) =>
             void applyDecision(effectiveSelectedTagID, selectedAssetIDs, action)
@@ -813,6 +804,16 @@ export function GalleryRoute() {
           selectedCount={selectedAssetIDs.length}
           selectedTagID={effectiveSelectedTagID}
           tags={activeTags}
+        />
+      ) : null}
+
+      {selectionDeletionRequested && selectedAssetIDs.length > 0 ? (
+        <AssetDeletionDialog
+          fileName={`${String(selectedAssetIDs.length)} 个所选项目`}
+          onCancel={() => setSelectionDeletionRequested(false)}
+          onConfirm={async () => {
+            await deletionMutation.mutateAsync(selectedAssetIDs);
+          }}
         />
       ) : null}
 
@@ -834,6 +835,9 @@ export function GalleryRoute() {
           mutationPending={mutationPending}
           onClose={closeViewer}
           onCreateTag={createAndApplyTag}
+          onDelete={async (id) => {
+            await deletionMutation.mutateAsync([id]);
+          }}
           onDismissStatus={() => setStatusMessage('')}
           onFavorite={(id, isFavorite) => applyFavorite([id], isFavorite)}
           onNavigate={navigateViewer}

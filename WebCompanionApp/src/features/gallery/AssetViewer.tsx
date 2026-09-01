@@ -15,6 +15,7 @@ import {
   Minimize2,
   Plus,
   RotateCcw,
+  Trash2,
   X,
 } from 'lucide-react';
 
@@ -30,6 +31,7 @@ import { useCollapsedTagGroups } from '@/features/tags/useCollapsedTagGroups';
 import { useAssetPreview } from './useAssetPreview';
 import { useCloudPreview } from './useCloudPreview';
 import { ActionToast } from './ActionToast';
+import { AssetDeletionDialog } from './AssetDeletionDialog';
 import { InlineTagCreateForm } from './InlineTagCreateForm';
 import { useLocalSuggestions } from './useLocalSuggestions';
 
@@ -39,6 +41,7 @@ type AssetViewerProps = {
   onClose: () => void;
   onFavorite: (assetID: string, isFavorite: boolean) => Promise<void>;
   onCreateTag: (name: string, assetIDs: string[], operationID: string) => Promise<void>;
+  onDelete: (assetID: string) => Promise<void>;
   onTagDecision: (tagID: string, assetIDs: string[], action: TagDecisionAction) => Promise<boolean>;
   previousAsset: AssetSummary | null;
   nextAsset: AssetSummary | null;
@@ -103,6 +106,7 @@ export function AssetViewer({
   onClose,
   onFavorite,
   onCreateTag,
+  onDelete,
   onTagDecision,
   previousAsset,
   nextAsset,
@@ -127,6 +131,7 @@ export function AssetViewer({
   const [fullscreen, setFullscreen] = useState(false);
   const [previewReloadGeneration, setPreviewReloadGeneration] = useState(0);
   const [expandedSuggestionAssetID, setExpandedSuggestionAssetID] = useState<string | null>(null);
+  const [deletionRequested, setDeletionRequested] = useState(false);
   const [tagFocusRequest, setTagFocusRequest] = useState<{
     tagID: string;
     target: InspectorTagFocusTarget;
@@ -228,6 +233,7 @@ export function AssetViewer({
 
   useEffect(() => {
     const handleNavigation = (event: globalThis.KeyboardEvent) => {
+      if (event.defaultPrevented) return;
       if (event.key === 'ArrowLeft' && previousAsset) {
         event.preventDefault();
         onNavigate(previousAsset.id);
@@ -240,11 +246,21 @@ export function AssetViewer({
       } else if (event.key === '-') {
         event.preventDefault();
         setZoom((value) => Math.max(1, value - 0.25));
+      } else if (event.key === 'Delete' && !deletionRequested) {
+        const target = event.target;
+        const editing =
+          target instanceof HTMLInputElement ||
+          target instanceof HTMLTextAreaElement ||
+          target instanceof HTMLSelectElement ||
+          (target instanceof HTMLElement && target.isContentEditable);
+        if (editing) return;
+        event.preventDefault();
+        setDeletionRequested(true);
       }
     };
     window.addEventListener('keydown', handleNavigation);
     return () => window.removeEventListener('keydown', handleNavigation);
-  }, [nextAsset, onNavigate, previousAsset]);
+  }, [deletionRequested, nextAsset, onNavigate, previousAsset]);
 
   async function requestOpenOriginal() {
     setOpeningOriginal(true);
@@ -541,6 +557,15 @@ export function AssetViewer({
                 >
                   <ExternalLink aria-hidden="true" size={16} />
                   {openingOriginal ? '正在请求…' : '在 Mac 打开'}
+                </button>
+                <button
+                  aria-label="删除当前照片"
+                  className="button button-danger"
+                  disabled={mutationPending}
+                  onClick={() => setDeletionRequested(true)}
+                  type="button"
+                >
+                  <Trash2 aria-hidden="true" size={16} /> 删除
                 </button>
               </div>
 
@@ -879,6 +904,13 @@ export function AssetViewer({
           onUndo={onUndo}
           undoAvailable={undoAvailable}
           undoPending={undoPending}
+        />
+      ) : null}
+      {deletionRequested && detail.data ? (
+        <AssetDeletionDialog
+          fileName={viewerTitle(detail.data)}
+          onCancel={() => setDeletionRequested(false)}
+          onConfirm={() => onDelete(detail.data.assetID)}
         />
       ) : null}
     </dialog>
