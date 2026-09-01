@@ -6,6 +6,7 @@ import { registerServiceWorker } from './app/registerServiceWorker';
 import './styles/index.css';
 import './styles/atelier.css';
 import './styles/nocturne.css';
+import './styles/helios.css';
 
 const root = document.getElementById('root');
 if (!root) throw new Error('Missing #root element');

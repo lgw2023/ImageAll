@@ -1497,6 +1497,475 @@ body {
   }
 }
 
+/* Storage — a quiet data vault, not a generic settings dashboard. */
+.storage-workspace {
+  --storage-cyan: #66d9ff;
+  --storage-coral: #ff9c7a;
+  --storage-amber: #ffcb75;
+
+  gap: 20px;
+}
+
+.storage-domain-heading {
+  padding-bottom: 4px;
+}
+
+.storage-vault {
+  position: relative;
+  display: grid;
+  padding: 20px;
+  gap: 18px;
+  border: 1px solid rgb(102 217 255 / 17%);
+  border-radius: 26px;
+  background:
+    radial-gradient(circle at 5% 0%, rgb(102 217 255 / 12%), transparent 34%),
+    linear-gradient(145deg, rgb(20 21 34 / 97%), rgb(9 10 18 / 97%));
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 7%),
+    0 28px 70px rgb(0 0 0 / 24%);
+  overflow: hidden;
+}
+
+.storage-vault::before {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgb(255 255 255 / 2%) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(255 255 255 / 2%) 1px, transparent 1px);
+  background-size: 32px 32px;
+  mask-image: linear-gradient(90deg, #000, transparent 76%);
+  content: '';
+  pointer-events: none;
+}
+
+.storage-vault > * {
+  position: relative;
+  z-index: 1;
+}
+
+.storage-vault-heading {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+}
+
+.storage-vault-heading h3,
+.storage-operations-heading h3,
+.storage-section-heading h3 {
+  margin: 1px 0 0;
+  font-size: 18px;
+  letter-spacing: -0.025em;
+}
+
+.storage-vault-heading > div:nth-child(2) > p:last-child,
+.storage-section-heading p {
+  margin: 5px 0 0;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.storage-vault-mark {
+  display: grid;
+  width: 46px;
+  height: 46px;
+  place-items: center;
+  border: 1px solid rgb(102 217 255 / 32%);
+  border-radius: 15px;
+  color: var(--storage-cyan);
+  background: rgb(102 217 255 / 8%);
+  box-shadow: inset 0 0 24px rgb(102 217 255 / 6%);
+}
+
+.storage-vault-lock {
+  display: inline-flex;
+  min-height: 28px;
+  padding: 5px 10px;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid rgb(89 225 189 / 24%);
+  border-radius: 999px;
+  color: var(--color-success);
+  background: rgb(89 225 189 / 7%);
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+
+.storage-vault-lock::before {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentcolor;
+  box-shadow: 0 0 10px currentcolor;
+  content: '';
+}
+
+.storage-vault-lock[data-active='true'] {
+  border-color: rgb(255 203 117 / 28%);
+  color: var(--storage-amber);
+  background: rgb(255 203 117 / 7%);
+}
+
+.storage-ledger {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.storage-ledger-card {
+  --ledger-accent: var(--storage-cyan);
+  position: relative;
+  display: grid;
+  min-width: 0;
+  min-height: 152px;
+  padding: 15px;
+  align-content: space-between;
+  gap: 9px;
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: 18px;
+  background: rgb(7 8 16 / 60%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 4%);
+  overflow: hidden;
+}
+
+.storage-ledger-card[data-accent='coral'] {
+  --ledger-accent: var(--storage-coral);
+}
+
+.storage-ledger-card[data-accent='amber'] {
+  --ledger-accent: var(--storage-amber);
+}
+
+.storage-ledger-card::after {
+  position: absolute;
+  right: 15px;
+  bottom: 0;
+  left: 15px;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: linear-gradient(90deg, var(--ledger-accent), transparent 84%);
+  opacity: 0.75;
+  content: '';
+}
+
+.storage-ledger-card > div {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ledger-accent);
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.storage-ledger-card > strong {
+  overflow: hidden;
+  font-size: clamp(22px, 2.4vw, 32px);
+  letter-spacing: -0.045em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.storage-ledger-card > small {
+  color: var(--color-text-muted);
+  font-size: 10px;
+}
+
+.storage-ledger-index {
+  position: absolute;
+  top: 10px;
+  right: 13px;
+  color: rgb(255 255 255 / 12%);
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.08em;
+}
+
+.storage-pending-root {
+  overflow: hidden;
+  color: var(--storage-amber);
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.storage-operations {
+  display: grid;
+  gap: 12px;
+}
+
+.storage-operations-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.storage-command-section,
+.storage-reclaim-zone,
+.storage-history-panel {
+  display: grid;
+  padding: 18px;
+  gap: 15px;
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: 20px;
+  background: linear-gradient(150deg, rgb(20 21 32 / 94%), rgb(12 13 21 / 94%));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 4%);
+}
+
+.storage-section-heading {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 92px minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+}
+
+.storage-section-heading > span {
+  padding-top: 4px;
+  color: var(--storage-cyan);
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  font-size: 8px;
+  letter-spacing: 0.12em;
+}
+
+.storage-command-grid,
+.storage-reclaim-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.storage-command-card {
+  --command-accent: var(--storage-cyan);
+  display: grid;
+  min-width: 0;
+  padding: 15px;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+  border: 1px solid color-mix(in srgb, var(--command-accent) 18%, var(--color-border));
+  border-radius: 17px;
+  background: color-mix(in srgb, var(--command-accent) 4%, rgb(7 8 15 / 72%));
+}
+
+.storage-command-card[data-accent='amber'] {
+  --command-accent: var(--storage-amber);
+}
+
+.storage-command-icon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--command-accent) 28%, var(--color-border));
+  border-radius: 13px;
+  color: var(--command-accent);
+  background: color-mix(in srgb, var(--command-accent) 7%, transparent);
+}
+
+.storage-command-card > div:nth-child(2),
+.storage-reclaim-card > div {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.storage-command-card span,
+.storage-reclaim-card > div > span {
+  color: var(--command-accent, var(--storage-coral));
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  font-size: 8px;
+  letter-spacing: 0.12em;
+}
+
+.storage-command-card h4,
+.storage-reclaim-card h4 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.storage-command-card p,
+.storage-reclaim-card p {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.storage-command-card > .button {
+  min-height: 38px;
+  grid-column: 1 / -1;
+  justify-content: center;
+  border-color: color-mix(in srgb, var(--command-accent) 24%, var(--color-border));
+  background: color-mix(in srgb, var(--command-accent) 6%, rgb(255 255 255 / 3%));
+}
+
+.storage-retention-note {
+  display: grid;
+  padding: 12px 14px;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  border: 1px solid rgb(89 225 189 / 18%);
+  border-radius: 15px;
+  color: var(--color-success);
+  background: rgb(89 225 189 / 5%);
+}
+
+.storage-retention-note p {
+  display: grid;
+  margin: 0;
+  gap: 2px;
+}
+
+.storage-retention-note strong {
+  color: var(--color-text);
+  font-size: 11px;
+}
+
+.storage-retention-note span {
+  color: var(--color-text-muted);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.storage-reclaim-card {
+  display: grid;
+  min-width: 0;
+  padding: 15px;
+  align-content: space-between;
+  gap: 12px;
+  border: 1px solid rgb(255 127 156 / 14%);
+  border-radius: 17px;
+  background: rgb(255 127 156 / 3%);
+}
+
+.storage-reclaim-card > .button {
+  min-height: 38px;
+  justify-content: center;
+}
+
+.storage-action-note {
+  margin: 0;
+  color: var(--storage-amber) !important;
+  font-size: 9px !important;
+}
+
+.storage-history-panel .storage-section-heading {
+  margin-bottom: 2px;
+}
+
+.storage-activity-row {
+  padding: 11px 0;
+}
+
+.storage-request-results {
+  display: flex !important;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.storage-request-results span {
+  display: inline-flex;
+  min-height: 24px;
+  max-width: 100%;
+  padding: 3px 8px;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: 999px;
+  color: var(--color-text-muted) !important;
+  background: rgb(255 255 255 / 3%);
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  font-size: 9px !important;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 1080px) {
+  .storage-ledger {
+    grid-template-columns: 1fr;
+  }
+
+  .storage-ledger-card {
+    min-height: 116px;
+  }
+
+  .storage-command-grid,
+  .storage-reclaim-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 680px) {
+  .storage-workspace .button {
+    min-height: 44px;
+  }
+
+  .storage-vault,
+  .storage-command-section,
+  .storage-reclaim-zone,
+  .storage-history-panel {
+    padding: 14px;
+    border-radius: 19px;
+  }
+
+  .storage-vault-heading {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .storage-vault-lock {
+    grid-column: 1 / -1;
+    justify-self: stretch;
+    justify-content: center;
+  }
+
+  .storage-operations-heading {
+    align-items: start;
+    flex-direction: column;
+  }
+
+  .storage-section-heading {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .storage-command-card {
+    grid-template-columns: 1fr;
+  }
+
+  .storage-command-icon {
+    width: 38px;
+    height: 38px;
+  }
+
+  .storage-command-card > .button {
+    grid-column: auto;
+  }
+
+  .storage-reclaim-card > .button,
+  .storage-command-card > .button {
+    width: 100%;
+  }
+
+  .storage-cleanup-dialog .asset-deletion-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .storage-cleanup-dialog .asset-deletion-actions {
+    display: grid;
+  }
+}
+
 .review-single-photo {
   width: min(1440px, calc(100vw - 28px));
   max-width: none;

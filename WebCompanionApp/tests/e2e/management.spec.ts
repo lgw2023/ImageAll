@@ -401,15 +401,37 @@ test('source card opens its exact addressable gallery scope without a mutation',
   expect(sourceMutations).toEqual([]);
 });
 
-test('storage maintenance confirms cleanup and renders the Host result', async ({
+test('storage cleanup uses an in-app safety confirmation and exact Host request', async ({
   page,
 }, testInfo) => {
   await installSyntheticAuthenticatedHost(page);
+  const submitted: string[] = [];
+  page.on('request', (request) => {
+    if (request.method() !== 'POST' || !request.url().endsWith('/v1/storage-maintenance/requests'))
+      return;
+    const body = request.postDataJSON() as { action: string };
+    submitted.push(body.action);
+  });
   await page.goto('storage');
   await expect(page.getByRole('heading', { name: '存储与维护', level: 2 })).toBeVisible();
   await expect(page.getByText('24.0 MiB')).toBeVisible();
-  page.once('dialog', (dialog) => dialog.accept());
-  await page.getByRole('button', { name: '清理预览缓存' }).click();
+  const cleanupButton = page.getByRole('button', { name: '清理预览缓存' });
+  await cleanupButton.click();
+  const dialog = page.getByRole('alertdialog', { name: '清理预览缓存？' });
+  await expect(dialog).toBeVisible();
+  await expect(
+    dialog.getByText(/原始照片、标签、Feature Print 与个人模型不会被删除/),
+  ).toBeVisible();
+  await expect(dialog.getByRole('button', { name: '取消' })).toBeFocused();
+
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(cleanupButton).toBeFocused();
+  expect(submitted).toEqual([]);
+
+  await cleanupButton.click();
+  await dialog.getByRole('button', { name: '提交给 Mac 确认清理' }).click();
+  await expect.poll(() => submitted).toEqual(['clearPreviewCache']);
   await expect(
     page.getByRole('status').getByText('Mac 已完成合成维护请求。', { exact: true }),
   ).toBeVisible();
@@ -419,6 +441,352 @@ test('storage maintenance confirms cleanup and renders the Host result', async (
       animations: 'disabled',
     });
   }
+  await expectAccessible(page);
+});
+
+test('storage maintenance locks conflicting commands while Mac owns an active request', async ({
+  page,
+}) => {
+  await installSyntheticAuthenticatedHost(page);
+  await page.route(/\/v1\/storage-maintenance$/, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        previewCache: { entryCount: 120, registeredBytes: 25_165_824 },
+        photosOriginals: { entryCount: 3, registeredBytes: 314_572_800 },
+        clearPreviewCacheAvailability: { isAvailable: true, reason: null },
+        clearPhotosOriginalsAvailability: { isAvailable: true, reason: null },
+        appStorage: {
+          kind: 'internalStorage',
+          requiresRestart: false,
+          pendingExternalRootName: null,
+        },
+        requests: [
+          {
+            id: '8cba0aa1-e0c3-4421-bb0f-4f7edab5c3c1',
+            operationID: '8cba0aa1-e0c3-4421-bb0f-4f7edab5c3c2',
+            action: 'exportPortableData',
+            phase: 'awaitingMac',
+            message: '请回到 Mac 选择用户数据导出位置',
+            updatedAtMs: 1_787_820_000_000,
+            result: null,
+          },
+        ],
+      },
+    }),
+  );
+
+  await page.goto('storage');
+  await expect(
+    page.getByRole('region', { name: '可用操作' }).getByText('等待 Mac 操作', { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText('请回到 Mac 选择用户数据导出位置')).toBeVisible();
+  for (const name of ['导出便携数据', '选择外部存储', '清理预览缓存', '清理原片缓存']) {
+    await expect(page.getByRole('button', { name })).toBeDisabled();
+  }
+});
+
+test('storage maintenance explains unavailable cleanup and pending external migration', async ({
+  page,
+}) => {
+  await installSyntheticAuthenticatedHost(page);
+  await page.route(/\/v1\/storage-maintenance$/, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        previewCache: { entryCount: 0, registeredBytes: 0 },
+        photosOriginals: { entryCount: 3, registeredBytes: 314_572_800 },
+        clearPreviewCacheAvailability: { isAvailable: false, reason: 'empty' },
+        clearPhotosOriginalsAvailability: {
+          isAvailable: false,
+          reason: 'librarySlimmingAnalysisInProgress',
+        },
+        appStorage: {
+          kind: 'externalStorage',
+          requiresRestart: true,
+          pendingExternalRootName: 'PhotoVault',
+        },
+        requests: [],
+      },
+    }),
+  );
+
+  await page.goto('storage');
+  await expect(page.getByText('没有可清理的预览缓存')).toBeVisible();
+  await expect(page.getByText('图库精简正在使用原片副本')).toBeVisible();
+  await expect(page.getByText('PhotoVault', { exact: true })).toBeVisible();
+  await expect(page.getByText(/重启 ImageAll 后迁移/)).toBeVisible();
+  await expect(page.getByRole('button', { name: '清理预览缓存' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '清理原片缓存' })).toBeDisabled();
+});
+
+test('storage history renders every Host result without hiding partial outcomes', async ({
+  page,
+}) => {
+  await installSyntheticAuthenticatedHost(page);
+  await page.route(/\/v1\/storage-maintenance$/, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        previewCache: { entryCount: 0, registeredBytes: 0 },
+        photosOriginals: { entryCount: 0, registeredBytes: 0 },
+        clearPreviewCacheAvailability: { isAvailable: false, reason: 'empty' },
+        clearPhotosOriginalsAvailability: { isAvailable: false, reason: 'empty' },
+        appStorage: {
+          kind: 'externalStorage',
+          requiresRestart: false,
+          pendingExternalRootName: null,
+        },
+        requests: [
+          {
+            id: '8cba0aa1-e0c3-4421-bb0f-4f7edab5c3d1',
+            operationID: '8cba0aa1-e0c3-4421-bb0f-4f7edab5c3d2',
+            action: 'exportPortableData',
+            phase: 'completed',
+            message: 'Mac 已完成便携数据导出。',
+            updatedAtMs: 1_787_820_000_000,
+            result: {
+              affectedEntryCount: null,
+              affectedBytes: null,
+              bundleName: 'ImageAll-Portable-2026-09-01',
+              totalRecordCount: 12_842,
+              requiresRestart: null,
+              partialReclaim: null,
+            },
+          },
+          {
+            id: '8cba0aa1-e0c3-4421-bb0f-4f7edab5c3d3',
+            operationID: '8cba0aa1-e0c3-4421-bb0f-4f7edab5c3d4',
+            action: 'clearPreviewCache',
+            phase: 'completed',
+            message: 'Mac 已完成预览缓存清理。',
+            updatedAtMs: 1_787_819_000_000,
+            result: {
+              affectedEntryCount: 120,
+              affectedBytes: 25_165_824,
+              bundleName: null,
+              totalRecordCount: null,
+              requiresRestart: null,
+              partialReclaim: true,
+            },
+          },
+          {
+            id: '8cba0aa1-e0c3-4421-bb0f-4f7edab5c3d5',
+            operationID: '8cba0aa1-e0c3-4421-bb0f-4f7edab5c3d6',
+            action: 'chooseExternalStorage',
+            phase: 'completed',
+            message: 'Mac 已选择新的外置存储。',
+            updatedAtMs: 1_787_818_000_000,
+            result: {
+              affectedEntryCount: null,
+              affectedBytes: null,
+              bundleName: null,
+              totalRecordCount: null,
+              requiresRestart: true,
+              partialReclaim: null,
+            },
+          },
+        ],
+      },
+    }),
+  );
+
+  await page.goto('storage');
+  const history = page.getByRole('region', { name: '最近请求' });
+  await expect(history.getByText('ImageAll-Portable-2026-09-01', { exact: true })).toBeVisible();
+  await expect(history.getByText('12,842 条记录', { exact: true })).toBeVisible();
+  await expect(history.getByText('120 项', { exact: true })).toBeVisible();
+  await expect(history.getByText('24.0 MiB', { exact: true })).toBeVisible();
+  await expect(history.getByText('部分空间待后续重试', { exact: true })).toBeVisible();
+  await expect(history.getByText('重启后生效', { exact: true })).toBeVisible();
+});
+
+test('storage cleanup keeps Host failure in the dialog and retries idempotently', async ({
+  page,
+}) => {
+  await installSyntheticAuthenticatedHost(page);
+  const submitted: { action: string; operationID: string }[] = [];
+  await page.route(/\/v1\/storage-maintenance\/requests$/, (route) => {
+    const body = route.request().postDataJSON() as { action: string; operationID: string };
+    submitted.push(body);
+    if (submitted.length === 1) {
+      return route.fulfill({
+        status: 409,
+        contentType: 'application/json',
+        json: { message: 'Mac 正在处理另一项维护，请稍后重试。' },
+      });
+    }
+    return route.fulfill({
+      status: 202,
+      contentType: 'application/json',
+      json: {
+        id: '8cba0aa1-e0c3-4421-bb0f-4f7edab5c3e1',
+        operationID: body.operationID,
+        action: body.action,
+        phase: 'completed',
+        message: 'Mac 已在重试后完成维护请求。',
+        updatedAtMs: 1_787_820_000_000,
+        result: {
+          affectedEntryCount: 120,
+          affectedBytes: 25_165_824,
+          bundleName: null,
+          totalRecordCount: null,
+          requiresRestart: null,
+          partialReclaim: false,
+        },
+      },
+    });
+  });
+
+  await page.goto('storage');
+  await page.getByRole('button', { name: '清理预览缓存' }).click();
+  const dialog = page.getByRole('alertdialog', { name: '清理预览缓存？' });
+  const confirm = dialog.getByRole('button', { name: '提交给 Mac 确认清理' });
+  await confirm.click();
+  await expect(dialog.getByRole('alert')).toHaveText(/Mac 正在处理另一项维护/);
+  await expect(dialog).toBeVisible();
+
+  await confirm.click();
+  await expect(dialog).toHaveCount(0);
+  expect(submitted).toHaveLength(2);
+  expect(submitted[0]?.operationID).toBe(submitted[1]?.operationID);
+  await expect(page.getByRole('status')).toHaveText(/Mac 已在重试后完成维护请求/);
+});
+
+test('storage export failure is announced and remains retryable in place', async ({ page }) => {
+  await installSyntheticAuthenticatedHost(page);
+  let attempts = 0;
+  await page.route(/\/v1\/storage-maintenance\/requests$/, (route) => {
+    attempts += 1;
+    const body = route.request().postDataJSON() as { action: string; operationID: string };
+    if (attempts === 1) {
+      return route.fulfill({
+        status: 409,
+        contentType: 'application/json',
+        json: { message: 'Mac 正在处理另一项维护，请稍后重试。' },
+      });
+    }
+    return route.fulfill({
+      status: 202,
+      contentType: 'application/json',
+      json: {
+        id: '8cba0aa1-e0c3-4421-bb0f-4f7edab5c3f1',
+        operationID: body.operationID,
+        action: body.action,
+        phase: 'completed',
+        message: 'Mac 已在重试后接受导出请求。',
+        updatedAtMs: 1_787_820_000_000,
+        result: {
+          affectedEntryCount: null,
+          affectedBytes: null,
+          bundleName: 'ImageAll-Portable-2026-09-01',
+          totalRecordCount: 12_842,
+          requiresRestart: null,
+          partialReclaim: null,
+        },
+      },
+    });
+  });
+
+  await page.goto('storage');
+  const exportButton = page.getByRole('button', { name: '导出便携数据' });
+  await exportButton.click();
+  await expect(page.getByRole('alert')).toHaveText(/Mac 正在处理另一项维护/);
+  await expect(exportButton).toBeEnabled();
+
+  await exportButton.click();
+  await expect(page.getByRole('status')).toHaveText(/Mac 已在重试后接受导出请求/);
+  expect(attempts).toBe(2);
+});
+
+test('storage command vault preserves hierarchy without desktop or mobile collisions', async ({
+  page,
+}, testInfo) => {
+  await installSyntheticAuthenticatedHost(page);
+  await page.goto('storage');
+
+  await expect(page.getByRole('region', { name: '存储命令台' })).toBeVisible();
+  await expect(page.getByRole('region', { name: '数据出口' })).toBeVisible();
+  await expect(page.getByRole('region', { name: '空间回收' })).toBeVisible();
+  await expect(page.getByText(/长期 Photos 原图默认保留/)).toBeVisible();
+
+  const collisions = await page.locator('.storage-workspace').evaluate((workspace) => {
+    const selectors = [
+      '.storage-vault-heading',
+      '.storage-ledger',
+      '.storage-command-grid',
+      '.storage-reclaim-grid',
+      '.storage-request-results',
+    ];
+    const overlaps: string[] = [];
+    for (const selector of selectors) {
+      for (const container of workspace.querySelectorAll<HTMLElement>(selector)) {
+        const children = [...container.children].filter((child): child is HTMLElement => {
+          if (!(child instanceof HTMLElement)) return false;
+          const style = getComputedStyle(child);
+          const box = child.getBoundingClientRect();
+          return (
+            style.display !== 'none' &&
+            style.visibility !== 'hidden' &&
+            box.width > 0 &&
+            box.height > 0
+          );
+        });
+        children.forEach((left, index) => {
+          const a = left.getBoundingClientRect();
+          children.slice(index + 1).forEach((right) => {
+            const b = right.getBoundingClientRect();
+            const overlapWidth = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+            const overlapHeight = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+            if (overlapWidth > 1 && overlapHeight > 1) {
+              overlaps.push(
+                `${selector}: ${left.textContent.trim().slice(0, 18)} <> ${right.textContent.trim().slice(0, 18)}`,
+              );
+            }
+          });
+        });
+      }
+    }
+    return overlaps;
+  });
+  expect(collisions).toEqual([]);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
+    true,
+  );
+  if (testInfo.project.name === 'chromium-mobile') {
+    const touchTargetHeights = await page
+      .locator('.storage-workspace button')
+      .evaluateAll((buttons) => buttons.map((button) => button.getBoundingClientRect().height));
+    expect(touchTargetHeights.every((height) => height >= 44)).toBe(true);
+  }
+  await expectAccessible(page);
+
+  if (process.env.IMAGEALL_CAPTURE_EVIDENCE === '1') {
+    await page.screenshot({
+      path: `../docs/web-companion-refactor/evidence/management/imageall-react-storage-vault-${testInfo.project.name}.png`,
+      animations: 'disabled',
+      fullPage: true,
+    });
+  }
+});
+
+test('storage command vault remains usable at the 1024 by 768 workbench boundary', async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== 'chromium-desktop');
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await installSyntheticAuthenticatedHost(page);
+  await page.goto('storage');
+
+  await expect(page.getByRole('region', { name: '数据出口' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '导出便携数据' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '清理原片缓存' })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
+    true,
+  );
   await expectAccessible(page);
 });
 

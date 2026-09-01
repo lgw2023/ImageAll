@@ -120,12 +120,54 @@ function detail(id: string) {
   };
 }
 
-const previewSVG = `
-<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480" viewBox="0 0 640 480">
-  <rect width="640" height="480" fill="#d7e5ef"/>
-  <path d="M0 360L170 210l96 88 92-112 282 248v46H0z" fill="#7194a9"/>
-  <circle cx="510" cy="105" r="45" fill="#f4c86b"/>
-</svg>`;
+function syntheticPreviewSVG(assetID: string) {
+  const index = Math.max(0, assetIDs.indexOf(assetID));
+  const palettes = [
+    ['#ff9c79', '#6b4df6', '#19152d', '#ffe86a'],
+    ['#79dbe7', '#147b98', '#102938', '#f5e6c8'],
+    ['#e7bdff', '#775ce8', '#2c1b4c', '#ff876d'],
+    ['#c8ec9e', '#408a6b', '#16312d', '#f7cf68'],
+    ['#ffd19a', '#ed6b58', '#5e2639', '#7ce5dc'],
+    ['#a9c8ff', '#496ec7', '#182448', '#e4ff84'],
+  ] as const;
+  const [sky, mid, deep, flare] = palettes[index % palettes.length] ?? palettes[0];
+  const shift = (index * 37) % 180;
+  const variant = index % 4;
+  const scenes = [
+    `<path d="M-40 430C90 ${String(250 - (shift % 50))} 166 370 296 236C408 119 512 188 700 54V520H-40Z" fill="url(#terrain)"/>
+     <path d="M-30 444C132 326 246 438 382 318C480 232 566 286 690 226V520H-30Z" fill="${deep}" opacity=".64"/>`,
+    `<rect x="${String(78 + (shift % 70))}" y="82" width="168" height="390" rx="84" fill="${flare}" opacity=".86"/>
+     <rect x="${String(292 + (shift % 54))}" y="-38" width="210" height="520" rx="105" fill="${deep}" opacity=".76" transform="rotate(19 397 222)"/>
+     <circle cx="505" cy="120" r="92" fill="none" stroke="white" stroke-opacity=".5" stroke-width="2"/>`,
+    `<path d="M0 290L126 184L230 274L352 122L640 374V480H0Z" fill="${mid}" opacity=".72"/>
+     <path d="M0 370L168 248L266 332L392 214L640 402V480H0Z" fill="${deep}" opacity=".72"/>
+     <circle cx="${String(470 - (shift % 110))}" cy="110" r="62" fill="${flare}"/>`,
+    `<ellipse cx="320" cy="520" rx="390" ry="270" fill="${deep}" opacity=".88"/>
+     <ellipse cx="${String(154 + (shift % 180))}" cy="244" rx="120" ry="180" fill="${mid}" opacity=".76" transform="rotate(-24 250 220)"/>
+     <circle cx="486" cy="130" r="74" fill="${flare}" opacity=".92"/>`,
+  ];
+  const scene = scenes[variant] ?? scenes[0] ?? '';
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480" viewBox="0 0 640 480">
+    <defs>
+      <linearGradient id="sky" x1="0" y1="0" x2="1" y2="1">
+        <stop stop-color="${sky}"/>
+        <stop offset="1" stop-color="${mid}"/>
+      </linearGradient>
+      <linearGradient id="terrain" x1="0" y1="0" x2="0" y2="1">
+        <stop stop-color="${mid}"/>
+        <stop offset="1" stop-color="${deep}"/>
+      </linearGradient>
+      <radialGradient id="glow">
+        <stop stop-color="white" stop-opacity=".58"/>
+        <stop offset="1" stop-color="white" stop-opacity="0"/>
+      </radialGradient>
+    </defs>
+    <rect width="640" height="480" fill="url(#sky)"/>
+    <circle cx="${String(110 + shift)}" cy="${String(70 + (shift % 100))}" r="190" fill="url(#glow)"/>
+    ${scene}
+    <path d="M0 1H640" stroke="white" stroke-opacity=".2"/>
+  </svg>`;
+}
 
 const syntheticWorldMapHTML = `<!doctype html>
 <html lang="zh-CN">
@@ -1832,12 +1874,22 @@ export async function installSyntheticAuthenticatedHost(
       },
     });
   });
-  await page.route(/\/v1\/assets\/[0-9a-f-]+\/thumbnail\?.*/i, (route) =>
-    route.fulfill({ status: 200, contentType: 'image/svg+xml', body: previewSVG }),
-  );
-  await page.route(/\/v1\/assets\/[0-9a-f-]+\/preview\?.*/i, (route) =>
-    route.fulfill({ status: 200, contentType: 'image/svg+xml', body: previewSVG }),
-  );
+  await page.route(/\/v1\/assets\/[0-9a-f-]+\/thumbnail\?.*/i, (route) => {
+    const assetID = new URL(route.request().url()).pathname.split('/').at(-2) ?? '';
+    return route.fulfill({
+      status: 200,
+      contentType: 'image/svg+xml',
+      body: syntheticPreviewSVG(assetID),
+    });
+  });
+  await page.route(/\/v1\/assets\/[0-9a-f-]+\/preview\?.*/i, (route) => {
+    const assetID = new URL(route.request().url()).pathname.split('/').at(-2) ?? '';
+    return route.fulfill({
+      status: 200,
+      contentType: 'image/svg+xml',
+      body: syntheticPreviewSVG(assetID),
+    });
+  });
   await page.route(/\/v1\/assets\/([0-9a-f-]+)$/i, (route) => {
     const id = new URL(route.request().url()).pathname.split('/').at(-1) ?? assetIDs[0] ?? '';
     const item = detail(id);

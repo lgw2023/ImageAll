@@ -32,10 +32,13 @@ export function fetchStorageMaintenance(signal?: AbortSignal) {
   });
 }
 
-export function submitStorageMaintenance(action: StorageMaintenanceAction) {
+export function submitStorageMaintenance(
+  action: StorageMaintenanceAction,
+  operationID: string = crypto.randomUUID(),
+) {
   return requestJSON('/v1/storage-maintenance/requests', storageRequestSchema, {
     method: 'POST',
-    body: JSON.stringify({ operationID: crypto.randomUUID(), action }),
+    body: JSON.stringify({ operationID, action }),
   });
 }
 

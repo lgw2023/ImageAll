@@ -39,6 +39,7 @@
 - [PROGRESS-2026-09-01-REVIEW-MODEL-CONTROL.md](PROGRESS-2026-09-01-REVIEW-MODEL-CONTROL.md)：交付 Review 本地模型服务状态、标准/个人双轨生成与任务控制。
 - [PROGRESS-2026-09-01-PRISM-REDESIGN.md](PROGRESS-2026-09-01-PRISM-REDESIGN.md)：基于行业调研重构独立的 Prism Web 视觉系统、图库画布与 Review AI 工作台。
 - [PROGRESS-2026-09-01-SOURCE-MANAGEMENT-COMMAND-DECK.md](PROGRESS-2026-09-01-SOURCE-MANAGEMENT-COMMAND-DECK.md)：以独立的暗房控制台视觉交付完整来源管理、状态门控、任务取消与安全移除闭环。
+- [PROGRESS-2026-09-01-HELIOS-WEB-REDESIGN.md](PROGRESS-2026-09-01-HELIOS-WEB-REDESIGN.md)：在功能对齐、视觉独立的边界下，交付 Helios 全站视觉系统、移动筛选抽屉与完整存储命令工作台。
 
 ## 状态词汇
 

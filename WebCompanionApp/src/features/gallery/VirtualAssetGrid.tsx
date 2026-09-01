@@ -145,7 +145,7 @@ export function VirtualAssetGrid({
     getScrollElement: () => scrollRef.current,
     estimateSize: () => rowHeight,
     initialOffset: initialScrollOffset,
-    overscan: 3,
+    overscan: 2,
   });
   const virtualRows = virtualizer.getVirtualItems();
 

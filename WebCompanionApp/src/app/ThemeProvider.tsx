@@ -36,6 +36,9 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     document.documentElement.dataset.theme = resolved;
     document.documentElement.style.colorScheme = resolved;
+    document
+      .querySelector<HTMLMetaElement>('meta[name="theme-color"]')
+      ?.setAttribute('content', resolved === 'dark' ? '#101013' : '#f3f2ed');
   }, [resolved]);
 
   const value = useMemo<ThemeContextValue>(

@@ -1,7 +1,12 @@
 import AxeBuilder from '@axe-core/playwright';
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
 import { assetIDs, installSyntheticAuthenticatedHost, sourceID, tagIDs } from './syntheticHost';
+
+async function openGalleryFilters(page: Page) {
+  const trigger = page.getByRole('button', { name: '筛选', exact: true });
+  if ((await trigger.getAttribute('aria-expanded')) !== 'true') await trigger.click();
+}
 
 test('gallery supports virtual browsing, range selection, mutations, undo, and detail', async ({
   page,
@@ -345,7 +350,7 @@ test('single-photo deletion keeps a Host failure retryable inside the confirmati
   await expect(page.getByText(/Mac 已冻结 1 项选择.*不代表删除已完成/)).toBeVisible();
 });
 
-test('gallery filters are URL-addressable and sent to the Host', async ({ page }, testInfo) => {
+test('gallery filters are URL-addressable and sent to the Host', async ({ page }) => {
   await installSyntheticAuthenticatedHost(page);
   await page.goto('gallery');
   await expect(page.getByRole('heading', { name: '全部照片', level: 2 })).toBeVisible();
@@ -359,9 +364,7 @@ test('gallery filters are URL-addressable and sent to the Host', async ({ page }
   await searchRequest;
   await expect.poll(() => new URL(page.url()).searchParams.get('q')).toBe('IMG_0007');
 
-  if (testInfo.project.name === 'chromium-mobile') {
-    await page.getByRole('button', { name: '筛选', exact: true }).click();
-  }
+  await openGalleryFilters(page);
   const mediaRequest = page.waitForRequest((request) => {
     const url = new URL(request.url());
     return url.pathname === '/v1/assets' && url.searchParams.get('mediaKinds') === 'video';
@@ -385,12 +388,10 @@ test('gallery filters are URL-addressable and sent to the Host', async ({ page }
 
 test('gallery composes accepted and rejected tag conditions with an addressable ANY relation', async ({
   page,
-}, testInfo) => {
+}) => {
   await installSyntheticAuthenticatedHost(page);
   await page.goto('gallery');
-  if (testInfo.project.name === 'chromium-mobile') {
-    await page.getByRole('button', { name: '筛选', exact: true }).click();
-  }
+  await openGalleryFilters(page);
 
   await page.getByLabel('添加标签').selectOption(tagIDs[0]);
   await page.getByLabel('标签决定').selectOption('accepted');
@@ -423,9 +424,7 @@ test('gallery composes accepted and rejected tag conditions with an addressable 
   expect(url.searchParams.get('tagMatch')).toBe('any');
 
   await page.reload();
-  if (testInfo.project.name === 'chromium-mobile') {
-    await page.getByRole('button', { name: '筛选', exact: true }).click();
-  }
+  await openGalleryFilters(page);
   await expect(page.getByText('风景 · 已确认')).toBeVisible();
   await expect(page.getByText('家人 · 已拒绝')).toBeVisible();
   await expect(page.getByRole('radio', { name: '满足任一' })).toBeChecked();
@@ -433,12 +432,10 @@ test('gallery composes accepted and rejected tag conditions with an addressable 
 
 test('gallery combines availability and media format filters without losing URL state', async ({
   page,
-}, testInfo) => {
+}) => {
   await installSyntheticAuthenticatedHost(page);
   await page.goto('gallery');
-  if (testInfo.project.name === 'chromium-mobile') {
-    await page.getByRole('button', { name: '筛选', exact: true }).click();
-  }
+  await openGalleryFilters(page);
 
   await page.getByRole('checkbox', { name: '文件缺失' }).click();
   await expect(page.getByRole('checkbox', { name: '文件缺失' })).toBeChecked();
@@ -458,9 +455,7 @@ test('gallery combines availability and media format filters without losing URL 
   expect(url.searchParams.get('availability')).toBe('missing');
   expect(url.searchParams.get('formats')).toBe('public.jpeg');
   await page.reload();
-  if (testInfo.project.name === 'chromium-mobile') {
-    await page.getByRole('button', { name: '筛选', exact: true }).click();
-  }
+  await openGalleryFilters(page);
   await expect(page.getByRole('checkbox', { name: '文件缺失' })).toBeChecked();
   await expect(page.getByRole('checkbox', { name: 'JPEG', exact: true })).toBeChecked();
 });
@@ -470,9 +465,7 @@ test('gallery clears every advanced condition in one action', async ({ page }, t
   await page.goto(
     `gallery?acceptedTags=${tagIDs[0]}&rejectedTags=${tagIDs[1]}&tagMatch=any&availability=missing&formats=public.jpeg`,
   );
-  if (testInfo.project.name === 'chromium-mobile') {
-    await page.getByRole('button', { name: '筛选', exact: true }).click();
-  }
+  await openGalleryFilters(page);
   await expect(page.getByText('风景 · 已确认')).toBeVisible();
   await expect(page.getByText('家人 · 已拒绝')).toBeVisible();
   await expect(page.getByRole('checkbox', { name: '文件缺失' })).toBeChecked();
@@ -506,14 +499,12 @@ test('gallery clears every advanced condition in one action', async ({ page }, t
   await expect(page.getByText('家人 · 已拒绝')).toBeHidden();
 });
 
-test('gallery advanced filters never overlap primary controls', async ({ page }, testInfo) => {
+test('gallery advanced filters never overlap primary controls', async ({ page }) => {
   await installSyntheticAuthenticatedHost(page);
   await page.goto(
     `gallery?acceptedTags=${tagIDs[0]}&rejectedTags=${tagIDs[1]}&tagMatch=any&availability=missing&formats=public.jpeg`,
   );
-  if (testInfo.project.name === 'chromium-mobile') {
-    await page.getByRole('button', { name: '筛选', exact: true }).click();
-  }
+  await openGalleryFilters(page);
 
   const overlaps = await page.locator('.gallery-toolbar').evaluate((toolbar) => {
     const controls = [
@@ -548,13 +539,11 @@ test('gallery advanced filters never overlap primary controls', async ({ page },
 
 test('gallery preserves source, folder, density, selection, and viewer return context', async ({
   page,
-}, testInfo) => {
+}) => {
   await installSyntheticAuthenticatedHost(page);
   await page.goto('gallery');
   await expect(page.getByRole('heading', { name: '全部照片', level: 2 })).toBeVisible();
-  if (testInfo.project.name === 'chromium-mobile') {
-    await page.getByRole('button', { name: '筛选', exact: true }).click();
-  }
+  await openGalleryFilters(page);
 
   const sourceRequest = page.waitForRequest((request) => {
     const url = new URL(request.url());
@@ -585,12 +574,13 @@ test('gallery preserves source, folder, density, selection, and viewer return co
   await page.getByLabel('选择子文件夹').selectOption('Trips/2026');
   await nestedRequest;
 
+  await page.getByLabel('视图').selectOption('compact');
+  await expect.poll(() => new URL(page.url()).searchParams.get('view')).toBe('compact');
+  await page.getByRole('button', { name: '筛选', exact: true }).click();
+
   const firstSelection = page.getByRole('button', { name: '选择 IMG_0001.jpg' });
   await firstSelection.click();
   await expect(page.getByText('已选择 1 项')).toBeVisible();
-  await page.getByLabel('视图').selectOption('compact');
-  await expect(page.getByText('已选择 1 项')).toBeVisible();
-  await expect.poll(() => new URL(page.url()).searchParams.get('view')).toBe('compact');
 
   const firstAsset = page.getByRole('button', { name: '查看 IMG_0001.jpg' });
   await firstAsset.click();

@@ -225,7 +225,7 @@ export function AppShell() {
   }, []);
 
   return (
-    <div className="app-frame">
+    <div className="app-frame" data-visual-system="helios">
       <a className="skip-link" href="#main-content">
         跳到主要内容
       </a>
@@ -323,6 +323,7 @@ export function AppShell() {
                 return (
                   <NavLink
                     className={({ isActive }) => `navigation-link${isActive ? ' active' : ''}`}
+                    data-label={item.label}
                     key={item.to}
                     onClick={() => setNavigationOpen(false)}
                     to={item.to}

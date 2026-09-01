@@ -6,8 +6,8 @@
   "start_url": "/web-v2/gallery",
   "scope": "/web-v2/",
   "display": "standalone",
-  "background_color": "#11110f",
-  "theme_color": "#11110f",
+  "background_color": "#f3f2ed",
+  "theme_color": "#f3f2ed",
   "icons": [
     {
       "src": "/web-v2/icon.svg",

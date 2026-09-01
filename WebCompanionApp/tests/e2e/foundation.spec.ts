@@ -160,6 +160,39 @@ test('authenticated users get the responsive workbench shell', async ({ page }, 
   }
 });
 
+test('desktop shell gives the visual archive priority over application chrome', async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== 'chromium-desktop', 'Desktop studio-layout contract');
+  await installSyntheticAuthenticatedHost(page);
+
+  await page.goto('gallery');
+  await expect(page.locator('.app-frame')).toHaveAttribute('data-visual-system', 'helios');
+
+  const [navigation, titlebar, workspace, firstAsset] = await Promise.all([
+    page.locator('.sidebar').boundingBox(),
+    page.locator('.titlebar').boundingBox(),
+    page.locator('.workspace').boundingBox(),
+    page.locator('.asset-card').first().boundingBox(),
+  ]);
+  expect(navigation).not.toBeNull();
+  expect(titlebar).not.toBeNull();
+  expect(workspace).not.toBeNull();
+  expect(firstAsset).not.toBeNull();
+  const viewport = page.viewportSize();
+  if (!viewport) throw new Error('Expected a configured desktop viewport');
+  expect(navigation?.width ?? 999).toBeLessThanOrEqual(96);
+  expect(titlebar?.y ?? 0).toBeGreaterThanOrEqual(12);
+  expect(workspace?.width ?? 0).toBeGreaterThan(viewport.width * 0.9);
+
+  const assetRadius = await page
+    .locator('.asset-card')
+    .first()
+    .evaluate((element) => Number.parseFloat(getComputedStyle(element).borderRadius));
+  expect(assetRadius).toBeGreaterThanOrEqual(18);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(viewport.width);
+});
+
 test('live Host events preserve context, refresh projections, and expose recoverable notices', async ({
   page,
 }) => {
@@ -209,6 +242,7 @@ test('command palette supports keyboard discovery, focus return, navigation, and
     .getByRole('button', { name: '使用深色主题' })
     .click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute('content', '#101013');
 
   await page.keyboard.press('Control+K');
   await page

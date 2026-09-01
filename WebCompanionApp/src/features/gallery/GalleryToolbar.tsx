@@ -161,6 +161,20 @@ export function GalleryToolbar({
       </button>
 
       <div className="gallery-filter-controls" data-open={filtersOpen}>
+        <div className="gallery-filter-drawer-heading">
+          <div>
+            <span>筛选工作台</span>
+            <strong>缩小你的视觉范围</strong>
+          </div>
+          <button
+            aria-label="关闭筛选"
+            className="icon-button gallery-filter-close"
+            onClick={() => setFiltersOpen(false)}
+            type="button"
+          >
+            ×
+          </button>
+        </div>
         <label className="compact-field">
           <span>来源</span>
           <select
