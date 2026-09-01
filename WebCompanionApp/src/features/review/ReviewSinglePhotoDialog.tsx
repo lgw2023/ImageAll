@@ -1,8 +1,21 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { Check, ChevronLeft, ChevronRight, SkipForward, X } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
+import {
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  CloudDownload,
+  ImageOff,
+  SkipForward,
+  X,
+} from 'lucide-react';
 
+import { fetchCapabilities } from '@/api/capabilities';
 import type { ReviewDecisionAction, ReviewQueueItem } from '@/api/contracts/review';
+import { useAssetPreview } from '@/features/gallery/useAssetPreview';
+import { useCloudPreview } from '@/features/gallery/useCloudPreview';
+import { useConnection } from '@/features/session/ConnectionContext';
 
 const originLabels = {
   featurePrint: '特征向量',
@@ -39,8 +52,31 @@ export function ReviewSinglePhotoDialog({
   total,
 }: ReviewSinglePhotoDialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const [previewReloadGeneration, setPreviewReloadGeneration] = useState(0);
+  const connection = useConnection();
   const title = item.fileName ?? `照片 ${item.assetID.slice(0, 8)}`;
   const revision = item.contentRevision ?? 0;
+  const preview = useAssetPreview(
+    item.assetID,
+    revision,
+    item.availability === 'available',
+    previewReloadGeneration,
+  );
+  const capabilities = useQuery({
+    queryKey: ['capabilities'],
+    queryFn: ({ signal }) => fetchCapabilities(signal),
+    staleTime: 60_000,
+  });
+  const handleCloudPreviewCompleted = useCallback(() => {
+    setPreviewReloadGeneration((value) => value + 1);
+  }, []);
+  const cloudPreview = useCloudPreview({
+    assetID: item.assetID,
+    active: preview.status === 'cloudRequired',
+    supportsLifecycle: capabilities.data?.capabilities.includes('cloudPreviewLifecycle') === true,
+    online: connection.phase === 'online',
+    onCompleted: handleCloudPreviewCompleted,
+  });
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -55,6 +91,7 @@ export function ReviewSinglePhotoDialog({
     function handleShortcut(event: KeyboardEvent) {
       const target = event.target as HTMLElement | null;
       if (target?.matches('input, select, textarea')) return;
+      if (target?.matches('button, a') && (event.key === ' ' || event.key === 'Enter')) return;
       const key = event.key.toLowerCase();
       if (key === 'p' && !pending) onDecision('accept');
       else if (key === 'x' && !pending) onDecision('reject');
@@ -99,15 +136,63 @@ export function ReviewSinglePhotoDialog({
         </header>
 
         <div className="review-single-photo-stage">
-          {item.availability === 'available' ? (
-            <img
-              alt={title}
-              src={`/v1/assets/${item.assetID}/preview?revision=${String(revision)}`}
-            />
-          ) : (
+          {item.availability !== 'available' ? (
             <div className="viewer-media-placeholder">
+              <ImageOff aria-hidden="true" size={30} />
               <span>当前照片不可在本机读取</span>
             </div>
+          ) : preview.status === 'cloudRequired' ? (
+            <div className="viewer-cloud-preview review-cloud-preview" role="status">
+              <CloudDownload aria-hidden="true" size={32} />
+              <strong>预览仍在 iCloud</strong>
+              <p>{cloudPreview.state.message}</p>
+              {cloudPreview.state.status === 'downloading' ||
+              cloudPreview.state.status === 'cancelling' ? (
+                <div className="viewer-cloud-progress">
+                  <progress
+                    aria-label="iCloud 预览下载进度"
+                    max="1"
+                    value={cloudPreview.state.progress}
+                  />
+                  <span aria-live="polite">{Math.round(cloudPreview.state.progress * 100)}%</span>
+                </div>
+              ) : null}
+              {cloudPreview.state.status === 'downloading' ||
+              cloudPreview.state.status === 'cancelling' ? (
+                <button
+                  className="button"
+                  disabled={cloudPreview.state.status === 'cancelling'}
+                  onClick={() => void cloudPreview.cancel()}
+                  type="button"
+                >
+                  {cloudPreview.state.status === 'cancelling'
+                    ? '正在停止…'
+                    : '取消获取 iCloud 预览'}
+                </button>
+              ) : (
+                <button
+                  className="button"
+                  disabled={connection.phase !== 'online'}
+                  onClick={() => void cloudPreview.start()}
+                  type="button"
+                >
+                  {cloudPreview.state.status === 'failed'
+                    ? '重新获取 iCloud 预览'
+                    : '从 iCloud 获取预览'}
+                </button>
+              )}
+            </div>
+          ) : preview.status === 'loading' ? (
+            <div className="viewer-media-placeholder" role="status">
+              <span>正在载入预览…</span>
+            </div>
+          ) : preview.status === 'failed' || !preview.url ? (
+            <div className="viewer-media-placeholder" role="alert">
+              <ImageOff aria-hidden="true" size={30} />
+              <span>{preview.message ?? '当前无法显示预览'}</span>
+            </div>
+          ) : (
+            <img alt={title} src={preview.url} />
           )}
           <button
             aria-label="上一条建议"

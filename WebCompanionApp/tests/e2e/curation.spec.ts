@@ -107,7 +107,7 @@ test('review queue supports the Mac-style continuous single-photo workflow', asy
   await page.keyboard.press('u');
   await expect(reviewer.getByText('REVIEW_002.jpg', { exact: true })).toBeVisible();
   await expect(page.getByText('REVIEW_001.jpg', { exact: true })).toBeVisible();
-  await expect(reviewer.getByRole('status')).toContainText('稍后处理');
+  await expect(reviewer.locator('.review-single-photo-feedback')).toContainText('稍后处理');
 
   const accessibility = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();
   expect(accessibility.violations).toEqual([]);
@@ -135,6 +135,132 @@ test('review queue supports the Mac-style continuous single-photo workflow', asy
   await expect(reviewer).toBeHidden();
   await expect(page.getByText('REVIEW_002.jpg', { exact: true })).toBeHidden();
   await expect(page.locator('.review-card[aria-current="true"]')).toContainText('REVIEW_003.jpg');
+});
+
+test('review single-photo explicitly recovers an iCloud preview without losing queue position', async ({
+  page,
+}, testInfo) => {
+  await installSyntheticAuthenticatedHost(page, {
+    extraCapabilities: ['previews', 'cloudPreviewLifecycle'],
+  });
+  const cloudAssetID = reviewQueueItem(0).assetID;
+  const localAssetID = reviewQueueItem(1).assetID;
+  const operationIDs: string[] = [];
+  let activeOperationID: string | null = null;
+  let cancelCount = 0;
+  let allowCompletion = false;
+
+  await page.route(/\/v1\/assets\/[0-9a-f-]+\/preview\?.*/i, (route) => {
+    const assetID = new URL(route.request().url()).pathname.split('/').at(-2);
+    if (assetID === cloudAssetID && !allowCompletion) {
+      return route.fulfill({
+        status: 409,
+        contentType: 'application/json',
+        json: { code: 'conflict', message: 'cloud preview required' },
+      });
+    }
+    return route.fulfill({
+      status: 200,
+      contentType: 'image/svg+xml',
+      body: `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480"><rect width="640" height="480" fill="${assetID === localAssetID ? '#7194a9' : '#d9ff43'}"/></svg>`,
+    });
+  });
+  await page.route(/\/v1\/assets\/[0-9a-f-]+\/cloud-preview-requests\/cancel$/i, (route) => {
+    cancelCount += 1;
+    const body = route.request().postDataJSON() as { operationID: string };
+    activeOperationID = null;
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        operationID: body.operationID,
+        assetID: cloudAssetID,
+        phase: 'cancelled',
+        progress: 0.42,
+        message: 'iCloud preview download cancelled',
+        updatedAtMs: 1_788_200_000_100,
+      },
+    });
+  });
+  await page.route(/\/v1\/assets\/[0-9a-f-]+\/cloud-preview-requests$/i, (route) => {
+    if (route.request().method() === 'POST') {
+      const body = route.request().postDataJSON() as { operationID: string };
+      operationIDs.push(body.operationID);
+      activeOperationID = body.operationID;
+      return route.fulfill({
+        status: 202,
+        contentType: 'application/json',
+        json: {
+          operationID: body.operationID,
+          assetID: cloudAssetID,
+          phase: 'downloading',
+          progress: 0.42,
+          message: null,
+          updatedAtMs: 1_788_200_000_000,
+        },
+      });
+    }
+    if (!activeOperationID) {
+      return route.fulfill({
+        status: 404,
+        contentType: 'application/json',
+        json: { code: 'notFound', message: 'cloud preview download not found' },
+      });
+    }
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        operationID: activeOperationID,
+        assetID: cloudAssetID,
+        phase: allowCompletion ? 'completed' : 'downloading',
+        progress: allowCompletion ? 1 : 0.42,
+        message: allowCompletion ? 'iCloud preview downloaded' : null,
+        updatedAtMs: 1_788_200_000_200,
+      },
+    });
+  });
+
+  await page.goto('review');
+  await page.getByRole('link', { name: '开始审查' }).click();
+  await page.keyboard.press('Space');
+  const reviewer = page.getByRole('dialog', { name: '单图审核' });
+  await expect(reviewer.getByRole('button', { name: '从 iCloud 获取预览' })).toBeVisible();
+  expect(operationIDs).toHaveLength(0);
+
+  await reviewer.getByRole('button', { name: '从 iCloud 获取预览' }).click();
+  await expect(reviewer.getByText('42%')).toBeVisible();
+  expect(operationIDs).toHaveLength(1);
+  if (process.env.IMAGEALL_CAPTURE_EVIDENCE === '1') {
+    await page.screenshot({
+      path: `../docs/web-companion-refactor/evidence/curation/imageall-react-review-cloud-preview-${testInfo.project.name}.png`,
+      animations: 'disabled',
+    });
+  }
+
+  const cancelled = page.waitForRequest(
+    (request) =>
+      request.method() === 'POST' &&
+      new URL(request.url()).pathname.endsWith('/cloud-preview-requests/cancel'),
+  );
+  await reviewer.getByRole('button', { name: '下一条建议' }).click();
+  await cancelled;
+  await expect(reviewer.getByRole('img', { name: 'REVIEW_002.jpg' })).toBeVisible();
+  expect(cancelCount).toBe(1);
+
+  await reviewer.getByRole('button', { name: '上一条建议' }).click();
+  await expect(reviewer.getByRole('button', { name: '从 iCloud 获取预览' })).toBeVisible();
+  await reviewer.getByRole('button', { name: '从 iCloud 获取预览' }).click();
+  await expect(reviewer.getByText('42%')).toBeVisible();
+  expect(operationIDs).toHaveLength(2);
+  expect(operationIDs[1]).not.toBe(operationIDs[0]);
+
+  const accessibility = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();
+  expect(accessibility.violations).toEqual([]);
+  allowCompletion = true;
+  await expect(reviewer.getByRole('img', { name: 'REVIEW_001.jpg' })).toBeVisible();
+  await expect(reviewer.getByText('REVIEW_001.jpg', { exact: true })).toBeVisible();
+  await expect(page.locator('.review-card[aria-current="true"]')).toContainText('REVIEW_001.jpg');
 });
 
 test('review source scope stays authoritative across overview, queue, empty scope, and back', async ({

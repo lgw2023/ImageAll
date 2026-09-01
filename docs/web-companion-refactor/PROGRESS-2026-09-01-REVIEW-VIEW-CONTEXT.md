@@ -42,5 +42,6 @@ PhotoKit，也不下载 iCloud 内容。
 自动化只使用虚构 UUID、合成审查队列和 SVG，没有读取或遍历 `/Volumes/HDD2`、真实 Photos Library
 或 iCloud。截图证明布局与控件状态，不证明真实 `gridOriginal` 命中、解码或色彩正确性。
 
-Review 总目标仍未完成：队列仍缺 iCloud-only 审核预览；概览仍缺每标签上限、本地模型状态、
-任务控制与分组折叠，因此功能矩阵保持 `in-progress`。
+队列的 iCloud-only 审核预览已由后续
+[Review 云预览纵切片](PROGRESS-2026-09-01-REVIEW-CLOUD-PREVIEW.md)补齐。Review 总目标仍未完成：
+概览仍缺每标签上限、本地模型状态、任务控制与分组折叠，因此审查概览保持 `in-progress`。
