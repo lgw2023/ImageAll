@@ -1011,6 +1011,32 @@ textarea {
   background: #070706;
 }
 
+.viewer-cloud-preview {
+  border-color: #4a473e;
+  border-radius: 2px;
+}
+
+.viewer-cloud-preview > svg {
+  color: var(--color-accent-strong);
+}
+
+.viewer-cloud-preview strong {
+  font-family: var(--font-editorial);
+  font-size: 23px;
+  font-weight: 500;
+}
+
+.viewer-cloud-preview p,
+.viewer-cloud-progress span {
+  font-family: var(--font-body);
+  font-size: 11px;
+}
+
+.viewer-cloud-preview .button {
+  border-color: #5a564b;
+  border-radius: 999px;
+}
+
 .asset-detail-sidebar {
   padding: 21px 18px;
   border-color: #d1cabd;
@@ -1049,6 +1075,41 @@ textarea {
   font-family: var(--font-editorial);
   font-size: 19px;
   font-weight: 500;
+}
+
+.asset-suggestions {
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.asset-suggestion-row {
+  border-color: #d1cabd;
+  border-radius: 2px;
+  background: #ebe6dc;
+}
+
+:root[data-theme='dark'] .asset-suggestion-row {
+  border-color: #35342f;
+  background: #20201c;
+}
+
+.asset-suggestion-row > div:first-child strong {
+  font-family: var(--font-editorial);
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.asset-suggestion-row > div:first-child span {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.asset-suggestion-row .button,
+.asset-suggestion-expand {
+  border-radius: 999px;
+  font-size: 9px;
 }
 
 .asset-tag-row {
@@ -1732,6 +1793,11 @@ textarea {
 
   .asset-viewer-media {
     padding: 12px;
+  }
+
+  .viewer-cloud-preview {
+    width: min(calc(100% - 104px), 280px);
+    padding: 22px;
   }
 
   .asset-detail-sidebar {

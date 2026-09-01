@@ -3,7 +3,7 @@
 ## 读取方法
 
 - “Mac 现状”和“旧 Web 现状”是阶段 0 对当前源码和合成浏览器 fixture 的盘点；不表示真实照片验收。
-- “新版目标”是验收契约；“迁移状态”和证据列记录 2026-08-31 当前结论。
+- “新版目标”是验收契约；“迁移状态”和证据列记录 2026-09-01 当前结论。
 - “API”只说明当前 Host 有相关能力；新 UI 还必须有类型解码、主/失败流程、回归和截图才能达到 `parity-proven`。
 - 状态必须用本目录 README 的受控词汇。必需纵切片已在合成 Host 范围达到 `parity-proven`，根入口
   已进入 `default`；真实 Photos/文件、模型质量、WebGL 和人工 VoiceOver 仍受各行证据限制约束，
@@ -22,6 +22,8 @@
 | 选择/范围/全选 | 原生 selection | 单选、Shift、批量 | 明确已载入范围，键盘/鼠标/触控可用 | 已有 | 无 | parity-proven | `gallery.spec.ts`：单选、Shift、Meta、已载入全选、右键、框选 | `evidence/gallery/` selection bar | 全选明确限制为已载入 72 项，避免无界隐式写操作 |
 | 收藏 | 有 | 批量、失败重试 | Host 结果对齐、部分失败不假成功 | 已有 | 无 | parity-proven | `gallery.spec.ts`：Host 调和、部分失败、详情/上下文动作 | `evidence/gallery/` 卡片/详情 | 合成 Host；不证明真实 Photos 收藏同步 |
 | 单图查看/Lightbox | 原生预览 | blob、全屏、相邻预取 | overlay route、焦点返回、取消与 revoke | 已有 | 无 | parity-proven | `gallery.spec.ts` + `thumbnailLoader.test.ts`：相邻预取、取消、回收、缩放/键盘 | `evidence/gallery/imageall-react-asset-detail-chromium-desktop.png` | 合成 SVG；不证明真实色彩/解码质量 |
+| iCloud-only 单图恢复 | Mac 显式获取有界预览 | 生命周期、进度、取消与旧 Host 回退 | 默认入口同样不隐式下载；Host 权威进度、取消、重试与完成后原位恢复 | 已有 | 无 | parity-proven | `gallery.spec.ts`：点击前零 POST、42% 进度、取消、重试完成、旧 Host 回退，桌面+移动、axe | `evidence/gallery/imageall-react-cloud-preview-chromium-{desktop,mobile}.png` | 只使用 409 与合成 SVG；未连接真实 Photos/iCloud，不证明真实下载吞吐 |
+| 单图待审 AI 建议 | Mac 检查器直接决定 | 最多 5 条后展开、显示建议轨道 | 新默认入口显示全部 Host 建议并复用原子标签决定 | 已有 | 无 | parity-proven | `gallery.spec.ts`：6 条四轨建议、渐进展开、精确 asset/tag 决定，桌面+移动、axe | `evidence/gallery/imageall-react-pending-suggestions-chromium-{desktop,mobile}.png` | 合成详情与决定响应；不证明真实模型建议质量 |
 | 视频/媒体 Range | 原生 | 支持 GET/HEAD Range | 保持浏览器媒体语义和会话边界 | 已有 | 无 | parity-proven | Swift GET/HEAD/单 Range 与 original route 选定回归；viewer 媒体分支 | `evidence/gallery/` | 合成媒体与直接 xctest；未播放受保护真实视频 |
 | 打开原片 | Mac 直接打开 | Web 请求 Host | 显示 Host 实际结果，不泄露本地路径 | 已有 | 无 | parity-proven | `gallery.spec.ts`：204 后可见确认 | `evidence/gallery/` detail | 合成 Host；不证明真实 Finder/Photos 打开 |
 | 标签应用 | 有 | 批量决策、undo | 预览范围、可撤销反馈、部分失败 | 已有 | 无 | parity-proven | `gallery.spec.ts`：选择汇总、批量决定、undo | `evidence/gallery/` selection/detail | 合成 Host；真实冲突/过期窗口取决于 Host |

@@ -29,6 +29,7 @@
 - [TEST-STRATEGY.md](TEST-STRATEGY.md)：分层测试、fixture、视觉/性能/可访问性和 Swift 包装验证。
 - [ACCEPTANCE-GATES.md](ACCEPTANCE-GATES.md)：切换默认入口和删除旧实现前的硬门。
 - [DELIVERY-2026-08-31.md](DELIVERY-2026-08-31.md)：本轮中文交付、验证结果、限制、提交与回滚。
+- [PROGRESS-2026-09-01-CLOUD-AND-SUGGESTIONS.md](PROGRESS-2026-09-01-CLOUD-AND-SUGGESTIONS.md)：持续功能对齐中的 iCloud 单图恢复、待审建议与下一批细粒度缺口。
 
 ## 状态词汇
 

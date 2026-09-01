@@ -1539,6 +1539,53 @@
     color: #aaa;
   }
 
+  .viewer-cloud-preview {
+    display: grid;
+    width: min(100%, 360px);
+    padding: 28px;
+    justify-items: start;
+    gap: 12px;
+    border: 1px solid rgb(255 255 255 / 20%);
+    color: #f3eee4;
+    background: #171714;
+  }
+
+  .viewer-cloud-preview strong {
+    font-size: 18px;
+  }
+
+  .viewer-cloud-preview p {
+    margin: 0;
+    color: #b9b3a8;
+    line-height: 1.5;
+  }
+
+  .viewer-cloud-preview .button {
+    min-height: 40px;
+    color: #f3eee4;
+    background: #292823;
+  }
+
+  .viewer-cloud-progress {
+    display: grid;
+    width: 100%;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .viewer-cloud-progress progress {
+    width: 100%;
+    accent-color: var(--color-accent-strong);
+  }
+
+  .viewer-cloud-progress span {
+    min-width: 3ch;
+    color: #f3eee4;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+
   .asset-detail-sidebar {
     min-height: 0;
     padding: 16px;
@@ -1579,6 +1626,59 @@
     align-items: baseline;
     justify-content: space-between;
     gap: 10px;
+  }
+
+  .asset-suggestions {
+    display: grid;
+    margin: 18px 0;
+    gap: 10px;
+  }
+
+  .asset-suggestion-list {
+    display: grid;
+    gap: 7px;
+  }
+
+  .asset-suggestion-row {
+    display: grid;
+    min-width: 0;
+    padding: 10px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    border: 1px solid var(--color-border);
+  }
+
+  .asset-suggestion-row > div:first-child {
+    display: grid;
+    min-width: 0;
+    gap: 2px;
+  }
+
+  .asset-suggestion-row strong,
+  .asset-suggestion-row span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .asset-suggestion-row span {
+    color: var(--color-text-muted);
+    font-size: 11px;
+  }
+
+  .asset-suggestion-row > div:last-child {
+    display: flex;
+    gap: 5px;
+  }
+
+  .asset-suggestion-row .button {
+    min-height: 32px;
+    padding: 0 9px;
+  }
+
+  .asset-suggestion-expand {
+    justify-self: start;
   }
 
   .asset-tags-heading h3 {

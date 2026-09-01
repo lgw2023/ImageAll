@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   assetDetailSchema,
   assetPageSchema,
+  cloudPreviewSnapshotSchema,
   favoriteMutationResponseSchema,
   sourceFolderPageSchema,
   sourceSummarySchema,
@@ -108,6 +109,36 @@ describe('gallery protocol contracts', () => {
             rejectedTagCount: 0,
           },
         ],
+      }),
+    ).toThrow();
+  });
+
+  it('decodes bounded Host cloud-preview lifecycle snapshots', () => {
+    const snapshot = cloudPreviewSnapshotSchema.parse({
+      operationID: groupID,
+      assetID,
+      phase: 'downloading',
+      progress: 0.42,
+      updatedAtMs: 1_787_820_000_000,
+    });
+
+    expect(snapshot).toMatchObject({
+      operationID: groupID,
+      assetID,
+      phase: 'downloading',
+      progress: 0.42,
+      message: null,
+    });
+    expect(() =>
+      cloudPreviewSnapshotSchema.parse({
+        ...snapshot,
+        phase: 'queued',
+      }),
+    ).toThrow();
+    expect(() =>
+      cloudPreviewSnapshotSchema.parse({
+        ...snapshot,
+        progress: 1.1,
       }),
     ).toThrow();
   });

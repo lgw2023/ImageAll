@@ -1,7 +1,8 @@
-import { requestEmpty, requestJSON } from './client';
+import { requestBlob, requestEmpty, requestJSON } from './client';
 import {
   assetDetailSchema,
   assetPageSchema,
+  cloudPreviewSnapshotSchema,
   favoriteMutationResponseSchema,
   sourceFolderPageSchema,
   sourceSummarySchema,
@@ -11,6 +12,7 @@ import {
   type AssetSummary,
   type FavoriteMutationResponse,
   type SourceFolderPage,
+  type CloudPreviewSnapshot,
 } from './contracts/asset';
 import { z } from 'zod';
 import type { WorldMapSelectionQuery } from './contracts/map';
@@ -96,6 +98,45 @@ export async function openOriginalAsset(assetID: string): Promise<void> {
   return requestEmpty(`/v1/assets/${encodeURIComponent(assetID)}/open-original`, {
     method: 'POST',
     body: '{}',
+  });
+}
+
+export function fetchCloudPreviewSnapshot(
+  assetID: string,
+  signal?: AbortSignal,
+): Promise<CloudPreviewSnapshot> {
+  return requestJSON(
+    `/v1/assets/${encodeURIComponent(assetID)}/cloud-preview-requests`,
+    cloudPreviewSnapshotSchema,
+    { signal: signal ?? null },
+  );
+}
+
+export function startCloudPreview(
+  assetID: string,
+  operationID: string,
+): Promise<CloudPreviewSnapshot> {
+  return requestJSON(
+    `/v1/assets/${encodeURIComponent(assetID)}/cloud-preview-requests`,
+    cloudPreviewSnapshotSchema,
+    { method: 'POST', body: JSON.stringify({ operationID }) },
+  );
+}
+
+export function cancelCloudPreview(
+  assetID: string,
+  operationID: string,
+): Promise<CloudPreviewSnapshot> {
+  return requestJSON(
+    `/v1/assets/${encodeURIComponent(assetID)}/cloud-preview-requests/cancel`,
+    cloudPreviewSnapshotSchema,
+    { method: 'POST', body: JSON.stringify({ operationID }) },
+  );
+}
+
+export function downloadLegacyCloudPreview(assetID: string): Promise<Blob> {
+  return requestBlob(`/v1/assets/${encodeURIComponent(assetID)}/cloud-preview`, undefined, {
+    method: 'POST',
   });
 }
 

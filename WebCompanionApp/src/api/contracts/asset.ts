@@ -110,6 +110,17 @@ export const favoriteMutationResponseSchema = z.object({
   replayed: z.boolean(),
 });
 
+export const cloudPreviewPhaseSchema = z.enum(['downloading', 'completed', 'cancelled', 'failed']);
+
+export const cloudPreviewSnapshotSchema = z.object({
+  operationID: uuidSchema,
+  assetID: uuidSchema,
+  phase: cloudPreviewPhaseSchema,
+  progress: z.number().min(0).max(1),
+  message: nullishToNull(z.string()),
+  updatedAtMs: z.int(),
+});
+
 export type AssetSort = z.infer<typeof assetSortSchema>;
 export type AssetMediaKind = z.infer<typeof assetMediaKindSchema>;
 export type AssetSummary = z.infer<typeof assetSummarySchema>;
@@ -120,3 +131,4 @@ export type FavoriteMutationResponse = z.infer<typeof favoriteMutationResponseSc
 export type SourceSummary = z.infer<typeof sourceSummarySchema>;
 export type SourceFolder = z.infer<typeof sourceFolderSchema>;
 export type SourceFolderPage = z.infer<typeof sourceFolderPageSchema>;
+export type CloudPreviewSnapshot = z.infer<typeof cloudPreviewSnapshotSchema>;
