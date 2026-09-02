@@ -137,6 +137,9 @@ enum LibraryWorkspaceNotice: Equatable, Sendable {
     case tagMutationFailed
     case tagSelectionRefreshFailed
     case sourceActionFailed
+    case assetAbsolutePathsCopied(copiedCount: Int, unavailableCount: Int)
+    case assetAbsolutePathsUnavailable(selectedCount: Int)
+    case assetAbsolutePathCopyFailed
     case sourceDeletionBlockedByRecycle(
         sourceID: UUID,
         displayName: String,
@@ -289,6 +292,29 @@ enum LibraryOriginalAssetOpenError: Error, Equatable, Sendable {
     case unavailable
     case unsafeLocator
     case previewUnavailable
+}
+
+struct LibraryAssetAbsolutePathResolution: Equatable, Sendable {
+    let absolutePaths: [String]
+    let unavailableAssetCount: Int
+}
+
+protocol LibraryAssetAbsolutePathResolving: Sendable {
+    func resolveAbsolutePaths(assetIDs: [UUID]) throws -> LibraryAssetAbsolutePathResolution
+}
+
+struct UnavailableLibraryAssetAbsolutePathResolver: LibraryAssetAbsolutePathResolving {
+    func resolveAbsolutePaths(assetIDs: [UUID]) throws -> LibraryAssetAbsolutePathResolution {
+        LibraryAssetAbsolutePathResolution(
+            absolutePaths: [],
+            unavailableAssetCount: Set(assetIDs).count
+        )
+    }
+}
+
+@MainActor
+protocol LibraryAssetPathClipboardWriting {
+    func writeAbsolutePaths(_ paths: [String]) -> Bool
 }
 
 @MainActor

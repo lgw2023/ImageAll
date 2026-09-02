@@ -3137,6 +3137,105 @@ struct ProductionLibraryWorkspaceService:
     }
 }
 
+private struct LibraryAssetAbsolutePathLocator: Sendable {
+    let assetID: UUID
+    let sourceID: UUID
+    let relativePath: String
+}
+
+struct LibraryAssetAbsolutePathResolver: LibraryAssetAbsolutePathResolving {
+    let database: CatalogDatabase
+    let folderAuthorization: FolderAuthorizationCoordinator
+
+    func resolveAbsolutePaths(assetIDs: [UUID]) throws -> LibraryAssetAbsolutePathResolution {
+        var seenAssetIDs: Set<UUID> = []
+        let orderedAssetIDs = assetIDs.filter { seenAssetIDs.insert($0).inserted }
+        guard !orderedAssetIDs.isEmpty else {
+            return LibraryAssetAbsolutePathResolution(
+                absolutePaths: [],
+                unavailableAssetCount: 0
+            )
+        }
+
+        let locatorByAssetID = try fetchLocators(assetIDs: orderedAssetIDs)
+        var sourceOrder: [UUID] = []
+        var locatorsBySourceID: [UUID: [LibraryAssetAbsolutePathLocator]] = [:]
+        for assetID in orderedAssetIDs {
+            guard let locator = locatorByAssetID[assetID] else { continue }
+            if locatorsBySourceID[locator.sourceID] == nil {
+                sourceOrder.append(locator.sourceID)
+            }
+            locatorsBySourceID[locator.sourceID, default: []].append(locator)
+        }
+
+        var absolutePathByAssetID: [UUID: String] = [:]
+        for sourceID in sourceOrder {
+            guard let locators = locatorsBySourceID[sourceID] else { continue }
+            do {
+                try folderAuthorization.accessFolderSource(sourceID: sourceID) { rootURL in
+                    for locator in locators {
+                        absolutePathByAssetID[locator.assetID] = rootURL
+                            .appendingPathComponent(locator.relativePath, isDirectory: false)
+                            .standardizedFileURL
+                            .path
+                    }
+                }
+            } catch {
+                // A stale/offline/unauthorized folder is reported as unavailable
+                // without preventing paths from other selected folder sources.
+            }
+        }
+
+        let absolutePaths = orderedAssetIDs.compactMap { absolutePathByAssetID[$0] }
+        return LibraryAssetAbsolutePathResolution(
+            absolutePaths: absolutePaths,
+            unavailableAssetCount: orderedAssetIDs.count - absolutePaths.count
+        )
+    }
+
+    private func fetchLocators(
+        assetIDs: [UUID]
+    ) throws -> [UUID: LibraryAssetAbsolutePathLocator] {
+        try database.pool.read { db in
+            var result: [UUID: LibraryAssetAbsolutePathLocator] = [:]
+            for chunk in assetIDs.favoriteChunks(size: 400) {
+                let placeholders = Array(repeating: "?", count: chunk.count)
+                    .joined(separator: ", ")
+                let rows = try Row.fetchAll(
+                    db,
+                    sql: """
+                    SELECT asset.id, asset.source_id, asset.relative_path
+                    FROM asset
+                    INNER JOIN source ON source.id = asset.source_id
+                    WHERE asset.id IN (\(placeholders))
+                      AND asset.locator_state = 'current'
+                      AND asset.locator_kind = 'file'
+                      AND source.kind = 'folder'
+                    """,
+                    arguments: StatementArguments(
+                        chunk.map { $0.uuidString.lowercased() }
+                    )
+                )
+                for row in rows {
+                    guard let assetID = UUID(uuidString: row["id"]),
+                          let sourceID = UUID(uuidString: row["source_id"]),
+                          let relativePath: String = row["relative_path"],
+                          case let .success(validatedPath) = RelativePathRules.validate(relativePath)
+                    else {
+                        continue
+                    }
+                    result[assetID] = LibraryAssetAbsolutePathLocator(
+                        assetID: assetID,
+                        sourceID: sourceID,
+                        relativePath: validatedPath
+                    )
+                }
+            }
+            return result
+        }
+    }
+}
+
 private struct LibraryOriginalAssetLocator: Sendable {
     let sourceID: UUID
     let sourceKind: SourceKind

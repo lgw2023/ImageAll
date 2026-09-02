@@ -524,6 +524,10 @@ struct CompositionRoot {
             appPersonalAdamWTagLibrarySuggester: appPersonalAdamWTagLibrarySuggester,
             suggestionThresholds: suggestionThresholds,
             pendingSuggestionCountPreferences: pendingSuggestionCountPreferences,
+            assetAbsolutePathResolver: LibraryAssetAbsolutePathResolver(
+                database: runtime.database,
+                folderAuthorization: authorization
+            ),
             originalAssetOpener: AppKitLibraryOriginalAssetOpener(
                 database: runtime.database,
                 folderAuthorization: authorization,

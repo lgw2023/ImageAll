@@ -9321,6 +9321,196 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.selectionAnchorIDForTesting, first.assetID)
     }
 
+    func testCopyGalleryAbsolutePathsUsesSelectedGridOrder() async {
+        let sourceID = UUID()
+        let first = Self.makeAsset(sourceID: sourceID, fileName: "first.jpg")
+        let second = Self.makeAsset(sourceID: sourceID, fileName: "second.jpg")
+        let third = Self.makeAsset(sourceID: sourceID, fileName: "third.jpg")
+        let resolver = RecordingLibraryAssetAbsolutePathResolver(
+            result: LibraryAssetAbsolutePathResolution(
+                absolutePaths: ["/fixture/first.jpg", "/fixture/third.jpg"],
+                unavailableAssetCount: 0
+            )
+        )
+        let clipboard = RecordingLibraryAssetPathClipboard()
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: [first, second, third],
+                initialItems: [first, second, third],
+                startsConnected: true,
+                hasPendingCatalogReconcileJobs: false
+            ),
+            assetAbsolutePathResolver: resolver,
+            assetPathClipboard: clipboard,
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.start()
+        await model.selectAssets([third.assetID, first.assetID])
+
+        XCTAssertEqual(
+            model.absolutePathCopyMenuTitle(
+                contextAssetID: third.assetID,
+                surface: .gallery,
+                mediaKind: .image
+            ),
+            "复制所选图片绝对路径（2）"
+        )
+        XCTAssertEqual(
+            model.absolutePathCopyMenuTitle(
+                contextAssetID: second.assetID,
+                surface: .gallery,
+                mediaKind: .image
+            ),
+            "复制该图片绝对路径"
+        )
+
+        await model.copyAbsolutePaths(
+            contextAssetID: third.assetID,
+            surface: .gallery
+        )
+
+        XCTAssertEqual(resolver.requests, [[first.assetID, third.assetID]])
+        XCTAssertEqual(
+            clipboard.writes,
+            [["/fixture/first.jpg", "/fixture/third.jpg"]]
+        )
+        XCTAssertEqual(
+            model.notice,
+            .assetAbsolutePathsCopied(copiedCount: 2, unavailableCount: 0)
+        )
+    }
+
+    func testCopyLibrarySlimmingAbsolutePathsUsesSelectedClusterOrderAndReportsPartialResult() async {
+        let sourceID = UUID()
+        let seed = Self.makeAsset(sourceID: sourceID, fileName: "seed.jpg")
+        let members = [UUID(), UUID(), UUID()]
+        let cluster = SlimmingCluster(
+            id: UUID(),
+            kind: .nearDuplicateScene,
+            memberAssetIDs: members,
+            representativeAssetID: members[0],
+            score: 0.95,
+            modelIdentity: .featurePrintOnly
+        )
+        let slimming = StubLibrarySlimmingScanPort()
+        slimming.seedClusters = [cluster]
+        let resolver = RecordingLibraryAssetAbsolutePathResolver(
+            result: LibraryAssetAbsolutePathResolution(
+                absolutePaths: ["/fixture/member-0.jpg"],
+                unavailableAssetCount: 1
+            )
+        )
+        let clipboard = RecordingLibraryAssetPathClipboard()
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: [seed],
+                initialItems: [seed],
+                startsConnected: true,
+                hasPendingCatalogReconcileJobs: false
+            ),
+            librarySlimming: slimming,
+            assetAbsolutePathResolver: resolver,
+            assetPathClipboard: clipboard,
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.start()
+        await model.selectAssets([seed.assetID])
+        await model.findLibrarySlimmingFromSelection()
+        await model.analyzeLibrarySlimming(mode: .seeds)
+        model.selectLibrarySlimmingMember(members[2], additive: false)
+        model.selectLibrarySlimmingMember(members[0], additive: true)
+
+        await model.copyAbsolutePaths(
+            contextAssetID: members[2],
+            surface: .librarySlimming
+        )
+
+        XCTAssertEqual(resolver.requests, [[members[0], members[2]]])
+        XCTAssertEqual(clipboard.writes, [["/fixture/member-0.jpg"]])
+        XCTAssertEqual(
+            model.notice,
+            .assetAbsolutePathsCopied(copiedCount: 1, unavailableCount: 1)
+        )
+    }
+
+    func testProductionAbsolutePathResolverUsesFolderBookmarkAndExcludesPhotosLocator() async throws {
+        let roots = FolderAuthorizationTestSupport.TempRootRegistry()
+        defer { roots.cleanup() }
+        let rootURL = try roots.makeRoot(label: "absolute-path-copy")
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let bookmarks = FolderAuthorizationTestSupport.MappingBookmarkPort()
+        let readBookmark = bookmarks.register(url: rootURL)
+        let folderSourceID = UUID()
+        let photosSourceID = UUID()
+        let folderAssetID = UUID()
+        let photosAssetID = UUID()
+        let (authorization, repository, _, _) = FolderAuthorizationTestSupport.makeCoordinator(
+            database: database,
+            picker: FolderAuthorizationTestSupport.FakeDirectoryPicker(),
+            bookmarkPort: bookmarks
+        )
+        try repository.connectFolder(
+            sourceID: folderSourceID,
+            displayName: "Fixture",
+            bookmark: readBookmark,
+            mutationBookmark: try bookmarks.createWritableBookmark(for: rootURL),
+            jobID: UUID(),
+            nowMs: FolderAuthorizationTestSupport.baseTimeMs
+        )
+        try FolderAuthorizationTestSupport.insertFolderAssetGraph(
+            database: database,
+            sourceID: folderSourceID,
+            assetID: folderAssetID,
+            tagID: UUID()
+        )
+        try FolderAuthorizationTestSupport.insertPhotosSource(
+            database: database,
+            sourceID: photosSourceID
+        )
+        try await database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO asset (
+                    id, source_id, locator_kind, relative_path, photos_local_identifier,
+                    locator_state, media_type, content_revision, availability,
+                    record_created_at_ms, record_updated_at_ms
+                ) VALUES (?, ?, 'photos', NULL, 'photos-fixture', 'current',
+                          'public.jpeg', 1, 'available', 1, 1)
+                """,
+                arguments: [
+                    photosAssetID.uuidString.lowercased(),
+                    photosSourceID.uuidString.lowercased(),
+                ]
+            )
+        }
+        let resolver = LibraryAssetAbsolutePathResolver(
+            database: database,
+            folderAuthorization: authorization
+        )
+
+        let result = try resolver.resolveAbsolutePaths(
+            assetIDs: [photosAssetID, folderAssetID]
+        )
+
+        XCTAssertEqual(
+            result.absolutePaths,
+            [rootURL.appendingPathComponent("photo.jpg").path]
+        )
+        XCTAssertEqual(result.unavailableAssetCount, 1)
+        XCTAssertEqual(bookmarks.startCount, 1)
+        XCTAssertEqual(bookmarks.stopCount, 1)
+    }
+
     func testReviewQueueShiftSelectionUsesReviewQueueOrder() async {
         let sourceID = UUID()
         let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
@@ -15736,6 +15926,38 @@ private final class RecordingPhotosLibraryMutationPort: PhotosLibraryMutationPor
 
     func presence(localIdentifier _: String) throws -> PhotosAssetPresence {
         .missing
+    }
+}
+
+private final class RecordingLibraryAssetAbsolutePathResolver:
+    LibraryAssetAbsolutePathResolving,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private let result: LibraryAssetAbsolutePathResolution
+    private var storedRequests: [[UUID]] = []
+
+    init(result: LibraryAssetAbsolutePathResolution) {
+        self.result = result
+    }
+
+    var requests: [[UUID]] {
+        lock.withLock { storedRequests }
+    }
+
+    func resolveAbsolutePaths(assetIDs: [UUID]) throws -> LibraryAssetAbsolutePathResolution {
+        lock.withLock { storedRequests.append(assetIDs) }
+        return result
+    }
+}
+
+@MainActor
+private final class RecordingLibraryAssetPathClipboard: LibraryAssetPathClipboardWriting {
+    private(set) var writes: [[String]] = []
+
+    func writeAbsolutePaths(_ paths: [String]) -> Bool {
+        writes.append(paths)
+        return true
     }
 }
 

@@ -378,6 +378,25 @@ enum LibraryBrowsingDestination: Equatable, Sendable {
     case folder(AssetFolderScope)
 }
 
+enum LibraryAssetPathCopySurface: Equatable, Sendable {
+    case gallery
+    case librarySlimming
+}
+
+@MainActor
+struct AppKitLibraryAssetPathClipboard: LibraryAssetPathClipboardWriting {
+    func writeAbsolutePaths(_ paths: [String]) -> Bool {
+        guard !paths.isEmpty,
+              paths.allSatisfy({ NSString(string: $0).isAbsolutePath })
+        else {
+            return false
+        }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        return pasteboard.setString(paths.joined(separator: "\n"), forType: .string)
+    }
+}
+
 struct LibraryFolderBreadcrumbItem: Identifiable, Equatable, Sendable {
     var id: String {
         "\(sourceID.uuidString.lowercased())|\(relativePath ?? "")"
@@ -1573,6 +1592,8 @@ final class LibraryWorkspaceModel: ObservableObject {
     private let appPersonalTagLibrarySuggester: (any AppPersonalTagLibrarySuggesting)?
     private let appPersonalAdamWTagLibrarySuggester: (any AppPersonalTagLibrarySuggesting)?
     private let suggestionThresholds: (any SuggestionThresholdPort)?
+    private let assetAbsolutePathResolver: any LibraryAssetAbsolutePathResolving
+    private let assetPathClipboard: any LibraryAssetPathClipboardWriting
     private let originalAssetOpener: any LibraryOriginalAssetOpening
     private let videoPlaybackProvider: any LibraryVideoPlaybackProviding
     private let sourceOrderPreferences: LibrarySourceOrderPreferences
@@ -1689,6 +1710,10 @@ final class LibraryWorkspaceModel: ObservableObject {
         suggestionThresholds: (any SuggestionThresholdPort)? = nil,
         pendingSuggestionCountPreferences: any PendingSuggestionCountPreferenceStore =
             UserDefaultsPendingSuggestionCountPreferenceStore(),
+        assetAbsolutePathResolver: any LibraryAssetAbsolutePathResolving =
+            UnavailableLibraryAssetAbsolutePathResolver(),
+        assetPathClipboard: any LibraryAssetPathClipboardWriting =
+            AppKitLibraryAssetPathClipboard(),
         originalAssetOpener: any LibraryOriginalAssetOpening = UnavailableLibraryOriginalAssetOpener(),
         videoPlaybackProvider: any LibraryVideoPlaybackProviding =
             UnavailableLibraryVideoPlaybackProvider(),
@@ -1741,6 +1766,8 @@ final class LibraryWorkspaceModel: ObservableObject {
         self.appPersonalAdamWTagLibrarySuggester = appPersonalAdamWTagLibrarySuggester
         self.suggestionThresholds = suggestionThresholds
         self.pendingSuggestionCountPreferences = pendingSuggestionCountPreferences
+        self.assetAbsolutePathResolver = assetAbsolutePathResolver
+        self.assetPathClipboard = assetPathClipboard
         self.originalAssetOpener = originalAssetOpener
         self.videoPlaybackProvider = videoPlaybackProvider
         self.sourceOrderPreferences = sourceOrderPreferences
@@ -7414,6 +7441,90 @@ final class LibraryWorkspaceModel: ObservableObject {
         await selectAssets(Set(displayedAssetIDsInGridOrder), additive: additive)
     }
 
+    func absolutePathCopyMenuTitle(
+        contextAssetID: UUID,
+        surface: LibraryAssetPathCopySurface,
+        mediaKind: MediaKind
+    ) -> String {
+        let targetCount = absolutePathCopyTargetAssetIDs(
+            contextAssetID: contextAssetID,
+            surface: surface
+        ).count
+        let noun = mediaKind == .video ? "视频" : "图片"
+        if targetCount > 1 {
+            return "复制所选\(noun)绝对路径（\(targetCount)）"
+        }
+        return "复制该\(noun)绝对路径"
+    }
+
+    func absolutePathCopyMenuHelp(
+        contextAssetID: UUID,
+        surface: LibraryAssetPathCopySurface
+    ) -> String {
+        let targetCount = absolutePathCopyTargetAssetIDs(
+            contextAssetID: contextAssetID,
+            surface: surface
+        ).count
+        if targetCount > 1 {
+            return "按当前显示顺序复制 \(targetCount) 个已选文件夹媒体的绝对路径；每行一个。Apple Photos 不提供稳定的原文件绝对路径。"
+        }
+        return "复制该文件夹媒体的绝对路径。Apple Photos 不提供稳定的原文件绝对路径。"
+    }
+
+    func copyAbsolutePaths(
+        contextAssetID: UUID,
+        surface: LibraryAssetPathCopySurface
+    ) async {
+        let assetIDs = absolutePathCopyTargetAssetIDs(
+            contextAssetID: contextAssetID,
+            surface: surface
+        )
+        guard !assetIDs.isEmpty else { return }
+        let resolver = assetAbsolutePathResolver
+        do {
+            let result = try await Self.offMain {
+                try resolver.resolveAbsolutePaths(assetIDs: assetIDs)
+            }
+            let unavailableCount = max(0, result.unavailableAssetCount)
+            guard !result.absolutePaths.isEmpty else {
+                notice = .assetAbsolutePathsUnavailable(selectedCount: assetIDs.count)
+                return
+            }
+            guard assetPathClipboard.writeAbsolutePaths(result.absolutePaths) else {
+                notice = .assetAbsolutePathCopyFailed
+                return
+            }
+            notice = .assetAbsolutePathsCopied(
+                copiedCount: result.absolutePaths.count,
+                unavailableCount: unavailableCount
+            )
+        } catch {
+            notice = .assetAbsolutePathCopyFailed
+        }
+    }
+
+    private func absolutePathCopyTargetAssetIDs(
+        contextAssetID: UUID,
+        surface: LibraryAssetPathCopySurface
+    ) -> [UUID] {
+        switch surface {
+        case .gallery:
+            guard displayedAssetIDsInGridOrder.contains(contextAssetID) else { return [] }
+            guard selectedAssetIDs.contains(contextAssetID) else { return [contextAssetID] }
+            return displayedAssetIDsInGridOrder.filter(selectedAssetIDs.contains)
+        case .librarySlimming:
+            guard let cluster = selectedLibrarySlimmingCluster,
+                  cluster.memberAssetIDs.contains(contextAssetID)
+            else {
+                return []
+            }
+            guard selectedLibrarySlimmingMemberIDs.contains(contextAssetID) else {
+                return [contextAssetID]
+            }
+            return cluster.memberAssetIDs.filter(selectedLibrarySlimmingMemberIDs.contains)
+        }
+    }
+
     private var displayedAssetIDsInGridOrder: [UUID] {
         if reviewMode != nil {
             reviewQueueItems.map(\.assetID)
@@ -10296,6 +10407,7 @@ extension LibraryWorkspaceModel: RemoteWorkspaceNoticePort, RemoteWorkspaceNotic
              .suggestionThresholdPruned,
              .tagBatchMutationApplied, .photosAlreadyConnected,
              .photosSyncQueued, .photosFullRepairQueued,
+             .assetAbsolutePathsCopied,
              .sourceDeleted:
             .success
         default:
@@ -15457,6 +15569,7 @@ struct LibraryWorkspaceView: View {
              .suggestionThresholdPruned,
              .tagBatchMutationApplied, .photosAlreadyConnected,
              .photosSyncQueued, .photosFullRepairQueued,
+             .assetAbsolutePathsCopied,
              .sourceDeleted:
             "checkmark.circle"
         default:
@@ -15477,6 +15590,14 @@ struct LibraryWorkspaceView: View {
         case .tagMutationFailed: "标签操作未保存，请重试。"
         case .tagSelectionRefreshFailed: "标签已保存，但当前选择刷新失败；请重新选择照片后继续。"
         case .sourceActionFailed: "来源操作未完成。原照片没有被修改，请重试。"
+        case let .assetAbsolutePathsCopied(copiedCount, unavailableCount):
+            unavailableCount > 0
+                ? "已复制 \(copiedCount) 条文件夹媒体绝对路径；另有 \(unavailableCount) 项没有可公开使用的绝对路径。"
+                : "已复制 \(copiedCount) 条媒体绝对路径。"
+        case let .assetAbsolutePathsUnavailable(selectedCount):
+            "所选 \(selectedCount) 项没有可复制的绝对路径。Apple Photos 不提供稳定的原文件绝对路径；文件夹来源请先恢复访问授权。"
+        case .assetAbsolutePathCopyFailed:
+            "绝对路径复制失败；原照片没有被修改。请重试或检查文件夹来源授权。"
         case let .sourceDeletionBlockedByRecycle(_, displayName, blockers):
             sourceDeletionBlockedNoticeText(
                 displayName: displayName,
@@ -16279,6 +16400,27 @@ private struct AssetThumbnailView: View, @MainActor Equatable {
             onOpen()
         }
         .contextMenu {
+            Button(
+                model.absolutePathCopyMenuTitle(
+                    contextAssetID: item.assetID,
+                    surface: .gallery,
+                    mediaKind: item.mediaKind
+                )
+            ) {
+                Task {
+                    await model.copyAbsolutePaths(
+                        contextAssetID: item.assetID,
+                        surface: .gallery
+                    )
+                }
+            }
+            .persistentHelp(
+                model.absolutePathCopyMenuHelp(
+                    contextAssetID: item.assetID,
+                    surface: .gallery
+                )
+            )
+            Divider()
             Button(state.favoriteState.isFavorite ? "取消红心" : "加入红心") {
                 Task { await model.toggleFavorite(assetID: item.assetID) }
             }

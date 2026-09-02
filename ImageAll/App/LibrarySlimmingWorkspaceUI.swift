@@ -1551,6 +1551,27 @@ struct LibrarySlimmingWorkspaceView: View {
         let moveCount = model.selectedLibrarySlimmingMemberIDs.contains(assetID)
             ? model.selectedLibrarySlimmingRemovalCandidateCount
             : (favoriteState.isDeletionProtected ? 0 : 1)
+        Button(
+            model.absolutePathCopyMenuTitle(
+                contextAssetID: assetID,
+                surface: .librarySlimming,
+                mediaKind: model.selectedLibrarySlimmingCluster?.mediaKind ?? .image
+            )
+        ) {
+            Task {
+                await model.copyAbsolutePaths(
+                    contextAssetID: assetID,
+                    surface: .librarySlimming
+                )
+            }
+        }
+        .persistentHelp(
+            model.absolutePathCopyMenuHelp(
+                contextAssetID: assetID,
+                surface: .librarySlimming
+            )
+        )
+        Divider()
         Button(favoriteState.isFavorite ? "取消红心" : "加入红心") {
             Task { await model.toggleFavorite(assetID: assetID) }
         }
