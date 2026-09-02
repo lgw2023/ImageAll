@@ -129,17 +129,33 @@ enum ContextualTagFeedSelectionLogic {
 enum ContextualTagFeedKeyboardShortcutAction: Equatable {
     case selectAll
     case clearSelection
+    case accept
+    case reject
+    case ignoreGroup
+    case later
 
     static func resolve(
         charactersIgnoringModifiers: String?,
         modifiers: NSEvent.ModifierFlags
     ) -> ContextualTagFeedKeyboardShortcutAction? {
-        guard charactersIgnoringModifiers?.lowercased() == "a",
-              modifiers.contains(.command),
-              !modifiers.contains(.control),
-              !modifiers.contains(.option)
-        else { return nil }
-        return modifiers.contains(.shift) ? .clearSelection : .selectAll
+        let characters = charactersIgnoringModifiers?.lowercased()
+        if characters == "a",
+           modifiers.contains(.command),
+           !modifiers.contains(.control),
+           !modifiers.contains(.option)
+        {
+            return modifiers.contains(.shift) ? .clearSelection : .selectAll
+        }
+
+        let disallowedModifiers: NSEvent.ModifierFlags = [.command, .control, .option]
+        guard modifiers.intersection(disallowedModifiers).isEmpty else { return nil }
+        switch characters {
+        case "p": return .accept
+        case "x": return .reject
+        case "i": return .ignoreGroup
+        case "u": return .later
+        default: return nil
+        }
     }
 }
 

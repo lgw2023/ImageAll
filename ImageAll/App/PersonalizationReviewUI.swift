@@ -35,6 +35,14 @@ struct ContextualTagFeedView: View {
                 model.selectAllContextualTagFeedCandidates()
             case .clearSelection:
                 model.clearContextualTagFeedSelection()
+            case .accept:
+                Task { await model.resolveCurrentContextualTagFeed(decision: .accepted) }
+            case .reject:
+                Task { await model.resolveCurrentContextualTagFeed(decision: .rejected) }
+            case .ignoreGroup:
+                Task { await model.dismissCurrentContextualTagFeed() }
+            case .later:
+                onLater()
             }
         }
     }
@@ -189,25 +197,27 @@ struct ContextualTagFeedView: View {
                         .lineLimit(2)
                 }
                 Spacer(minLength: 8)
-                Button("稍后处理", action: onLater)
+                Button("稍后处理 (U)", action: onLater)
                     .buttonStyle(.bordered)
-                Button("忽略该组") {
+                    .persistentHelp("保留当前组为待确认并返回图库；快捷键 U。")
+                Button("忽略该组 (I)") {
                     Task { await model.dismissCurrentContextualTagFeed() }
                 }
                 .buttonStyle(.bordered)
-                .persistentHelp("只忽略当前候选组，不会把照片写成“不属于”或训练负样本。")
+                .persistentHelp("只忽略当前候选组，不会把照片写成“不属于”或训练负样本；快捷键 I。")
                 Button(rejectButtonTitle(group), role: .destructive) {
                     Task { await model.resolveCurrentContextualTagFeed(decision: .rejected) }
                 }
                 .buttonStyle(.bordered)
                 .tint(.red)
                 .disabled(model.selectedContextualTagFeedAssetIDs.isEmpty)
-                .persistentHelp("明确把选中的照片标为不属于当前标签；不会处理未选照片。")
+                .persistentHelp("明确把选中的照片标为不属于当前标签；不会处理未选照片；快捷键 X。")
                 Button(confirmButtonTitle(group)) {
                     Task { await model.resolveCurrentContextualTagFeed(decision: .accepted) }
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(model.selectedContextualTagFeedAssetIDs.isEmpty)
+                .persistentHelp("确认所选照片属于当前标签并进入下一组；快捷键 P。")
             }
             .padding(12)
         }
@@ -230,11 +240,11 @@ struct ContextualTagFeedView: View {
     }
 
     private func confirmButtonTitle(_ group: ContextualTagFeedGroup) -> String {
-        "将选中的 \(model.selectedContextualTagFeedAssetIDs.count) 张标为“\(group.tagDisplayName)”"
+        "将选中的 \(model.selectedContextualTagFeedAssetIDs.count) 张标为“\(group.tagDisplayName)” (P)"
     }
 
     private func rejectButtonTitle(_ group: ContextualTagFeedGroup) -> String {
-        "将选中的 \(model.selectedContextualTagFeedAssetIDs.count) 张标为不属于“\(group.tagDisplayName)”"
+        "将选中的 \(model.selectedContextualTagFeedAssetIDs.count) 张标为不属于“\(group.tagDisplayName)” (X)"
     }
 
     private func groupEvidenceSummary(_ group: ContextualTagFeedGroup) -> String {

@@ -274,7 +274,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(extending.anchorAssetID, second)
     }
 
-    func testContextualTagFeedKeyboardShortcutRecognizesSelectAndClearAll() {
+    func testContextualTagFeedKeyboardShortcutRecognizesSelectionAndDecisionActions() {
         XCTAssertEqual(
             ContextualTagFeedKeyboardShortcutAction.resolve(
                 charactersIgnoringModifiers: "a",
@@ -289,6 +289,34 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             ),
             .clearSelection
         )
+        XCTAssertEqual(
+            ContextualTagFeedKeyboardShortcutAction.resolve(
+                charactersIgnoringModifiers: "p",
+                modifiers: []
+            ),
+            .accept
+        )
+        XCTAssertEqual(
+            ContextualTagFeedKeyboardShortcutAction.resolve(
+                charactersIgnoringModifiers: "X",
+                modifiers: [.shift]
+            ),
+            .reject
+        )
+        XCTAssertEqual(
+            ContextualTagFeedKeyboardShortcutAction.resolve(
+                charactersIgnoringModifiers: "i",
+                modifiers: []
+            ),
+            .ignoreGroup
+        )
+        XCTAssertEqual(
+            ContextualTagFeedKeyboardShortcutAction.resolve(
+                charactersIgnoringModifiers: "u",
+                modifiers: []
+            ),
+            .later
+        )
         XCTAssertNil(
             ContextualTagFeedKeyboardShortcutAction.resolve(
                 charactersIgnoringModifiers: "a",
@@ -299,6 +327,18 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             ContextualTagFeedKeyboardShortcutAction.resolve(
                 charactersIgnoringModifiers: "a",
                 modifiers: [.command, .option]
+            )
+        )
+        XCTAssertNil(
+            ContextualTagFeedKeyboardShortcutAction.resolve(
+                charactersIgnoringModifiers: "p",
+                modifiers: [.command]
+            )
+        )
+        XCTAssertNil(
+            ContextualTagFeedKeyboardShortcutAction.resolve(
+                charactersIgnoringModifiers: "i",
+                modifiers: [.control]
             )
         )
     }
