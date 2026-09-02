@@ -44,7 +44,7 @@ struct ContextualTagFeedView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("智能标签照片推流")
                     .font(.title2.weight(.semibold))
-                Text("只读取已入库的时间、位置、来源与文件名；不会自动写标签。")
+                Text("默认优先推送依赖时间、位置和事件上下文的标签；不会自动写标签。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -54,12 +54,50 @@ struct ContextualTagFeedView: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.tint)
             }
+            scopeMenu
             Button("刷新", systemImage: "arrow.clockwise") {
                 Task { await model.refreshContextualTagFeed(generateRecentAnchors: true) }
             }
             .disabled(model.isLoadingContextualTagFeed)
         }
         .padding(16)
+    }
+
+    private var scopeMenu: some View {
+        Menu {
+            Section("默认范围") {
+                Button {
+                    Task { await model.useRecommendedContextualTagFeedScope() }
+                } label: {
+                    if model.contextualTagFeedTagScope == .recommended {
+                        Label("智能推荐（上下文标签优先）", systemImage: "checkmark")
+                    } else {
+                        Text("智能推荐（上下文标签优先）")
+                    }
+                }
+            }
+            ForEach(model.tagGroupSections) { section in
+                Section(section.group.displayName) {
+                    ForEach(section.tags, id: \.id) { tag in
+                        Button {
+                            Task { await model.toggleContextualTagFeedScopeTag(tag.id) }
+                        } label: {
+                            if model.isInContextualTagFeedScope(tag.id) {
+                                Label(tag.displayName, systemImage: "checkmark")
+                            } else {
+                                Text(tag.displayName)
+                            }
+                        }
+                    }
+                }
+            }
+        } label: {
+            Label(model.contextualTagFeedScopeTitle, systemImage: "line.3.horizontal.decrease.circle")
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .disabled(model.isLoadingContextualTagFeed)
+        .persistentHelp("使用智能推荐排序，或只推送你选择的一个或多个标签。")
     }
 
     private func groupContent(_ group: ContextualTagFeedGroup) -> some View {

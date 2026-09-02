@@ -1299,41 +1299,143 @@ struct ContextualTagFeedService: ContextualTagFeedPort, Sendable {
 
     let database: CatalogDatabase
 
-    func pendingCount() throws -> Int {
-        try database.pool.read { db in
-            try Int.fetchOne(
+    private struct PendingFeedRank {
+        let id: UUID
+        let affinity: ContextualTagFeedAffinity
+        let hasImageModel: Bool
+        let acceptedCount: Int
+        let candidateCount: Int
+        let createdAtMs: Int64
+
+        static func precedes(_ lhs: Self, _ rhs: Self) -> Bool {
+            if lhs.affinity != rhs.affinity { return lhs.affinity < rhs.affinity }
+            if lhs.hasImageModel != rhs.hasImageModel { return !lhs.hasImageModel }
+            if lhs.acceptedCount != rhs.acceptedCount {
+                return lhs.acceptedCount < rhs.acceptedCount
+            }
+            if lhs.candidateCount != rhs.candidateCount {
+                return lhs.candidateCount > rhs.candidateCount
+            }
+            if lhs.createdAtMs != rhs.createdAtMs { return lhs.createdAtMs < rhs.createdAtMs }
+            return lhs.id.uuidString.lowercased() < rhs.id.uuidString.lowercased()
+        }
+    }
+
+    private func scopedTagFilter(
+        _ tagIDs: Set<UUID>?,
+        column: String
+    ) -> (sql: String, arguments: StatementArguments) {
+        guard let tagIDs else { return ("", StatementArguments()) }
+        let tokens = tagIDs.map(CatalogQuerySQLHelpers.lowercaseUUID).sorted()
+        let placeholders = Array(repeating: "?", count: tokens.count).joined(separator: ", ")
+        var arguments = StatementArguments()
+        for token in tokens { arguments += [token] }
+        return ("AND \(column) IN (\(placeholders))", arguments)
+    }
+
+    func pendingCount(tagIDs: Set<UUID>?) throws -> Int {
+        if let tagIDs, tagIDs.isEmpty { return 0 }
+        return try database.pool.read { db in
+            let filter = scopedTagFilter(tagIDs, column: "feed.tag_id")
+            return try Int.fetchOne(
                 db,
-                sql: "SELECT COUNT(*) FROM contextual_tag_feed WHERE state = 'pending'"
+                sql: """
+                SELECT COUNT(*)
+                FROM contextual_tag_feed feed
+                JOIN tag ON tag.id = feed.tag_id AND tag.state = 'active'
+                WHERE feed.state = 'pending' \(filter.sql)
+                """,
+                arguments: filter.arguments
             ) ?? 0
         }
     }
 
-    func fetchPendingGroups(limit: Int) throws -> [ContextualTagFeedGroup] {
+    func fetchPendingGroups(
+        limit: Int,
+        tagIDs: Set<UUID>?
+    ) throws -> [ContextualTagFeedGroup] {
         guard limit > 0, limit <= 100 else {
             throw ContextualTagFeedError.invalidSelection
         }
+        if let tagIDs, tagIDs.isEmpty { return [] }
         return try database.pool.read { db in
-            let ids = try String.fetchAll(
+            let filter = scopedTagFilter(tagIDs, column: "feed.tag_id")
+            var arguments = StatementArguments()
+            arguments += [CatalogQuerySQLHelpers.lowercaseUUID(TagGroupSeed.other.id)]
+            arguments += filter.arguments
+            let ranked = try Row.fetchAll(
                 db,
                 sql: """
-                SELECT id FROM contextual_tag_feed
-                WHERE state = 'pending'
-                ORDER BY created_at_ms, id
-                LIMIT ?
+                SELECT feed.id, feed.tag_id, feed.created_at_ms,
+                       coalesce(tag.group_id, ?) AS group_id,
+                       coalesce(tag_group.name, '') AS group_name,
+                       (
+                           EXISTS (
+                               SELECT 1 FROM tag_model
+                               WHERE media_kind = 'image' AND tag_id = feed.tag_id
+                           )
+                           OR EXISTS (
+                               SELECT 1 FROM personal_suggestion_model
+                               WHERE media_kind = 'image' AND tag_id = feed.tag_id
+                           )
+                       ) AS has_image_model,
+                       coalesce(decision_count.accepted_count, 0) AS accepted_count,
+                       coalesce(candidate_count.candidate_count, 0) AS candidate_count
+                FROM contextual_tag_feed feed
+                JOIN tag ON tag.id = feed.tag_id AND tag.state = 'active'
+                LEFT JOIN tag_group ON tag_group.id = tag.group_id
+                LEFT JOIN (
+                    SELECT tag_id, COUNT(*) AS accepted_count
+                    FROM asset_tag_decision
+                    WHERE decision = 'accepted'
+                    GROUP BY tag_id
+                ) decision_count ON decision_count.tag_id = feed.tag_id
+                LEFT JOIN (
+                    SELECT feed_id, COUNT(*) AS candidate_count
+                    FROM contextual_tag_feed_member
+                    WHERE role = 'candidate'
+                    GROUP BY feed_id
+                ) candidate_count ON candidate_count.feed_id = feed.id
+                WHERE feed.state = 'pending' \(filter.sql)
                 """,
-                arguments: [limit]
-            ).compactMap(UUID.init(uuidString:))
+                arguments: arguments
+            ).compactMap { row -> PendingFeedRank? in
+                guard let id = UUID(uuidString: row["id"]),
+                      let groupID = UUID(uuidString: row["group_id"])
+                else { return nil }
+                let groupName: String = row["group_name"]
+                return PendingFeedRank(
+                    id: id,
+                    affinity: TagGroupSeed.contextualFeedAffinity(
+                        groupID: groupID,
+                        groupDisplayName: groupName
+                    ),
+                    hasImageModel: row["has_image_model"],
+                    acceptedCount: row["accepted_count"],
+                    candidateCount: row["candidate_count"],
+                    createdAtMs: row["created_at_ms"]
+                )
+            }.sorted(by: PendingFeedRank.precedes)
+            let ids = ranked.prefix(limit).map(\.id)
             return try ids.compactMap { try fetchGroup(db, feedID: $0) }
         }
     }
 
     @discardableResult
-    func refreshRecentAcceptedAnchors(limit: Int, timestampMs: Int64) throws -> Int {
+    func refreshRecentAcceptedAnchors(
+        limit: Int,
+        tagIDs: Set<UUID>?,
+        timestampMs: Int64
+    ) throws -> Int {
         guard limit > 0, limit <= 1_000 else {
             throw ContextualTagFeedError.invalidSelection
         }
+        if let tagIDs, tagIDs.isEmpty { return 0 }
         let anchors: [(tagID: UUID, assetID: UUID)] = try database.pool.read { db in
-            try Row.fetchAll(
+            let filter = scopedTagFilter(tagIDs, column: "decision.tag_id")
+            var arguments = filter.arguments
+            arguments += [limit]
+            return try Row.fetchAll(
                 db,
                 sql: """
                 SELECT decision.tag_id, decision.asset_id
@@ -1345,11 +1447,12 @@ struct ContextualTagFeedService: ContextualTagFeedPort, Sendable {
                   AND asset.locator_state = 'current'
                   AND asset.availability = 'available'
                   AND source.state = 'active'
+                  \(filter.sql)
                 ORDER BY decision.updated_at_ms DESC, decision.tag_id, decision.asset_id
                 LIMIT ?
                 """,
-                arguments: [limit]
-            ).compactMap { row in
+                arguments: arguments
+            ).compactMap { row -> (tagID: UUID, assetID: UUID)? in
                 guard let tagID = UUID(uuidString: row["tag_id"]),
                       let assetID = UUID(uuidString: row["asset_id"])
                 else { return nil }
@@ -1363,7 +1466,7 @@ struct ContextualTagFeedService: ContextualTagFeedPort, Sendable {
                 timestampMs: timestampMs
             )
         }
-        return try pendingCount()
+        return try pendingCount(tagIDs: tagIDs)
     }
 
     func dismiss(feedID: UUID, revision: Int, timestampMs: Int64) throws {

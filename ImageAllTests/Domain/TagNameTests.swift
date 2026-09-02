@@ -123,6 +123,62 @@ final class TagNameTests: XCTestCase {
         XCTAssertFalse(trimmed.unicodeScalars.contains(where: { $0.value == 0x2000 }))
     }
 
+    func testContextualFeedAffinityUsesOwnedGroupMeaning() {
+        XCTAssertEqual(
+            TagGroupSeed.contextualFeedAffinity(
+                groupID: TagGroupSeed.activities.id,
+                groupDisplayName: TagGroupSeed.activities.displayName
+            ),
+            .contextDependent
+        )
+        XCTAssertEqual(
+            TagGroupSeed.contextualFeedAffinity(
+                groupID: UUID(),
+                groupDisplayName: "城市与景区"
+            ),
+            .contextDependent
+        )
+        XCTAssertEqual(
+            TagGroupSeed.contextualFeedAffinity(
+                groupID: TagGroupSeed.nature.id,
+                groupDisplayName: TagGroupSeed.nature.displayName
+            ),
+            .visuallyClassifiable
+        )
+        XCTAssertEqual(
+            TagGroupSeed.contextualFeedAffinity(
+                groupID: TagGroupSeed.other.id,
+                groupDisplayName: TagGroupSeed.other.displayName
+            ),
+            .unspecified
+        )
+    }
+
+    @MainActor
+    func testContextualFeedScopePersistsAndDropsArchivedTags() throws {
+        let suiteName = "ContextualTagFeedScopeTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let preferences = ContextualTagFeedScopePreferences(
+            defaults: defaults,
+            keyPrefix: "scope-test"
+        )
+        let firstTagID = UUID()
+        let archivedTagID = UUID()
+
+        XCTAssertEqual(preferences.load(), .recommended)
+        preferences.save(.selected([firstTagID, archivedTagID]))
+        XCTAssertEqual(preferences.load(), .selected([firstTagID, archivedTagID]))
+        XCTAssertEqual(
+            preferences.load().normalized(activeTagIDs: [firstTagID]),
+            .selected([firstTagID])
+        )
+        XCTAssertEqual(
+            preferences.load().normalized(activeTagIDs: []),
+            .recommended
+        )
+    }
+
     private func assertNormalizedName(_ input: String, expected: String, file: StaticString = #filePath, line: UInt = #line) {
         let result = TagNameNormalizer.validateAndNormalize(input)
         guard case let .success(parts) = result else {

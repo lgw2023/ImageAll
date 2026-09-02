@@ -649,6 +649,65 @@ struct LibraryTagGroupSection: Identifiable, Equatable, Sendable {
     }
 }
 
+enum ContextualTagFeedTagScope: Equatable, Sendable {
+    case recommended
+    case selected(Set<UUID>)
+
+    var tagIDs: Set<UUID>? {
+        switch self {
+        case .recommended: nil
+        case let .selected(tagIDs): tagIDs
+        }
+    }
+
+    func normalized(activeTagIDs: Set<UUID>) -> Self {
+        guard case let .selected(tagIDs) = self else { return self }
+        let remaining = tagIDs.intersection(activeTagIDs)
+        return remaining.isEmpty ? .recommended : .selected(remaining)
+    }
+}
+
+@MainActor
+final class ContextualTagFeedScopePreferences {
+    private static let defaultKeyPrefix = "library.contextual-tag-feed.scope.v1"
+    private let defaults: UserDefaults
+    private let modeKey: String
+    private let tagIDsKey: String
+
+    init(
+        defaults: UserDefaults = .standard,
+        keyPrefix: String = defaultKeyPrefix
+    ) {
+        self.defaults = defaults
+        modeKey = "\(keyPrefix).mode"
+        tagIDsKey = "\(keyPrefix).tag-ids"
+    }
+
+    func load() -> ContextualTagFeedTagScope {
+        guard defaults.string(forKey: modeKey) == "selected" else { return .recommended }
+        let tagIDs = Set((defaults.stringArray(forKey: tagIDsKey) ?? []).compactMap(UUID.init))
+        return tagIDs.isEmpty ? .recommended : .selected(tagIDs)
+    }
+
+    func save(_ scope: ContextualTagFeedTagScope) {
+        switch scope {
+        case .recommended:
+            defaults.set("recommended", forKey: modeKey)
+            defaults.removeObject(forKey: tagIDsKey)
+        case let .selected(tagIDs):
+            guard !tagIDs.isEmpty else {
+                save(.recommended)
+                return
+            }
+            defaults.set("selected", forKey: modeKey)
+            defaults.set(
+                tagIDs.map { $0.uuidString.lowercased() }.sorted(),
+                forKey: tagIDsKey
+            )
+        }
+    }
+}
+
 @MainActor
 final class LibraryTagGroupCollapsePreferences {
     private static let defaultKey = "library.sidebar.tag-group-collapse.v1"
@@ -1462,6 +1521,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var noticeRevision: UInt64 = 0
     @Published private(set) var pendingSuggestionTotal = 0
     @Published private(set) var contextualTagFeedPendingCount = 0
+    @Published private(set) var contextualTagFeedTagScope: ContextualTagFeedTagScope
     @Published private(set) var currentContextualTagFeed: ContextualTagFeedGroup?
     @Published private(set) var selectedContextualTagFeedAssetIDs: Set<UUID> = []
     @Published private(set) var isLoadingContextualTagFeed = false
@@ -1606,6 +1666,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private let sourceOrderPreferences: LibrarySourceOrderPreferences
     private let tagOrderPreferences: LibraryTagOrderPreferences
     private let tagGroupCollapsePreferences: LibraryTagGroupCollapsePreferences
+    private let contextualTagFeedScopePreferences: ContextualTagFeedScopePreferences
     private let clock: any JobClock
     private var lastTagMutation: LibraryTagUndoRecord?
     fileprivate var lastReviewMutation: ReviewMutationUndoRecord?
@@ -1729,6 +1790,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         sourceOrderPreferences: LibrarySourceOrderPreferences = LibrarySourceOrderPreferences(),
         tagOrderPreferences: LibraryTagOrderPreferences = LibraryTagOrderPreferences(),
         tagGroupCollapsePreferences: LibraryTagGroupCollapsePreferences = LibraryTagGroupCollapsePreferences(),
+        contextualTagFeedScopePreferences: ContextualTagFeedScopePreferences = ContextualTagFeedScopePreferences(),
         clock: any JobClock = SystemJobClock(),
         catalogProgressRefreshInterval: Duration = .milliseconds(750),
         searchDebounceInterval: Duration = .milliseconds(300),
@@ -1783,6 +1845,8 @@ final class LibraryWorkspaceModel: ObservableObject {
         self.sourceOrderPreferences = sourceOrderPreferences
         self.tagOrderPreferences = tagOrderPreferences
         self.tagGroupCollapsePreferences = tagGroupCollapsePreferences
+        self.contextualTagFeedScopePreferences = contextualTagFeedScopePreferences
+        contextualTagFeedTagScope = contextualTagFeedScopePreferences.load()
         self.clock = clock
         self.catalogProgressRefreshInterval = catalogProgressRefreshInterval
         self.searchDebounceInterval = searchDebounceInterval
@@ -10442,8 +10506,56 @@ extension LibraryWorkspaceModel: RemoteWorkspaceNoticePort, RemoteWorkspaceNotic
 extension LibraryWorkspaceModel {
     var isReviewMode: Bool { reviewMode != nil }
 
+    var contextualTagFeedScopeTitle: String {
+        switch contextualTagFeedTagScope {
+        case .recommended:
+            "范围：智能推荐"
+        case let .selected(tagIDs):
+            "范围：\(tagIDs.count) 个标签"
+        }
+    }
+
+    func isInContextualTagFeedScope(_ tagID: UUID) -> Bool {
+        guard case let .selected(tagIDs) = contextualTagFeedTagScope else { return false }
+        return tagIDs.contains(tagID)
+    }
+
+    func useRecommendedContextualTagFeedScope() async {
+        guard contextualTagFeedTagScope != .recommended else { return }
+        contextualTagFeedTagScope = .recommended
+        contextualTagFeedScopePreferences.save(.recommended)
+        await refreshContextualTagFeed(generateRecentAnchors: true)
+    }
+
+    func toggleContextualTagFeedScopeTag(_ tagID: UUID) async {
+        let nextScope: ContextualTagFeedTagScope
+        switch contextualTagFeedTagScope {
+        case .recommended:
+            nextScope = .selected([tagID])
+        case let .selected(currentTagIDs):
+            var tagIDs = currentTagIDs
+            if tagIDs.contains(tagID) {
+                tagIDs.remove(tagID)
+            } else {
+                tagIDs.insert(tagID)
+            }
+            nextScope = tagIDs.isEmpty ? .recommended : .selected(tagIDs)
+        }
+        contextualTagFeedTagScope = nextScope
+        contextualTagFeedScopePreferences.save(nextScope)
+        await refreshContextualTagFeed(generateRecentAnchors: true)
+    }
+
     func refreshContextualTagFeed(generateRecentAnchors: Bool = true) async {
         guard !isLoadingContextualTagFeed else { return }
+        let normalizedScope = contextualTagFeedTagScope.normalized(
+            activeTagIDs: Set(tags.filter { $0.state == .active }.map(\.id))
+        )
+        if normalizedScope != contextualTagFeedTagScope {
+            contextualTagFeedTagScope = normalizedScope
+            contextualTagFeedScopePreferences.save(normalizedScope)
+        }
+        let scopedTagIDs = normalizedScope.tagIDs
         isLoadingContextualTagFeed = true
         if generateRecentAnchors {
             contextualTagFeedStatusMessage = nil
@@ -10456,12 +10568,16 @@ extension LibraryWorkspaceModel {
                 if generateRecentAnchors {
                     _ = try feed.refreshRecentAcceptedAnchors(
                         limit: 200,
+                        tagIDs: scopedTagIDs,
                         timestampMs: timestampMs
                     )
                 }
                 return (
-                    count: try feed.pendingCount(),
-                    group: try feed.fetchPendingGroups(limit: 1).first
+                    count: try feed.pendingCount(tagIDs: scopedTagIDs),
+                    group: try feed.fetchPendingGroups(
+                        limit: 1,
+                        tagIDs: scopedTagIDs
+                    ).first
                 )
             }
             contextualTagFeedPendingCount = snapshot.count

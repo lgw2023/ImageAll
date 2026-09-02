@@ -90,10 +90,14 @@ enum ContextualTagFeedError: Error, Equatable, Sendable {
 protocol ContextualTagFeedPort: Sendable {
     func generate(tagID: UUID, anchorAssetID: UUID, timestampMs: Int64) throws
         -> ContextualTagFeedGroup?
-    func pendingCount() throws -> Int
-    func fetchPendingGroups(limit: Int) throws -> [ContextualTagFeedGroup]
+    func pendingCount(tagIDs: Set<UUID>?) throws -> Int
+    func fetchPendingGroups(limit: Int, tagIDs: Set<UUID>?) throws -> [ContextualTagFeedGroup]
     @discardableResult
-    func refreshRecentAcceptedAnchors(limit: Int, timestampMs: Int64) throws -> Int
+    func refreshRecentAcceptedAnchors(
+        limit: Int,
+        tagIDs: Set<UUID>?,
+        timestampMs: Int64
+    ) throws -> Int
     func dismiss(feedID: UUID, revision: Int, timestampMs: Int64) throws
     func resolve(
         feedID: UUID,
@@ -104,6 +108,21 @@ protocol ContextualTagFeedPort: Sendable {
     ) throws -> TagMutationPriorStateSnapshot
 }
 
+extension ContextualTagFeedPort {
+    func pendingCount() throws -> Int {
+        try pendingCount(tagIDs: nil)
+    }
+
+    func fetchPendingGroups(limit: Int) throws -> [ContextualTagFeedGroup] {
+        try fetchPendingGroups(limit: limit, tagIDs: nil)
+    }
+
+    @discardableResult
+    func refreshRecentAcceptedAnchors(limit: Int, timestampMs: Int64) throws -> Int {
+        try refreshRecentAcceptedAnchors(limit: limit, tagIDs: nil, timestampMs: timestampMs)
+    }
+}
+
 struct EmptyContextualTagFeedPort: ContextualTagFeedPort, Sendable {
     func generate(tagID _: UUID, anchorAssetID _: UUID, timestampMs _: Int64) throws
         -> ContextualTagFeedGroup?
@@ -111,9 +130,17 @@ struct EmptyContextualTagFeedPort: ContextualTagFeedPort, Sendable {
         nil
     }
 
-    func pendingCount() throws -> Int { 0 }
-    func fetchPendingGroups(limit _: Int) throws -> [ContextualTagFeedGroup] { [] }
-    func refreshRecentAcceptedAnchors(limit _: Int, timestampMs _: Int64) throws -> Int { 0 }
+    func pendingCount(tagIDs _: Set<UUID>?) throws -> Int { 0 }
+    func fetchPendingGroups(limit _: Int, tagIDs _: Set<UUID>?) throws
+        -> [ContextualTagFeedGroup]
+    {
+        []
+    }
+    func refreshRecentAcceptedAnchors(
+        limit _: Int,
+        tagIDs _: Set<UUID>?,
+        timestampMs _: Int64
+    ) throws -> Int { 0 }
     func dismiss(feedID _: UUID, revision _: Int, timestampMs _: Int64) throws {}
     func resolve(
         feedID _: UUID,

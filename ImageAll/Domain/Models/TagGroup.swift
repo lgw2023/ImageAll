@@ -7,6 +7,16 @@ struct TagGroup: Equatable, Sendable {
     let isSystem: Bool
 }
 
+enum ContextualTagFeedAffinity: Int, Comparable, Sendable {
+    case contextDependent
+    case unspecified
+    case visuallyClassifiable
+
+    static func < (lhs: Self, rhs: Self) -> Bool {
+        lhs.rawValue < rhs.rawValue
+    }
+}
+
 /// Stable seed IDs for the seven built-in sidebar groups. Migration and runtime share these UUIDs.
 enum TagGroupSeed: Int, CaseIterable, Identifiable, Sendable {
     case people
@@ -62,8 +72,8 @@ enum TagGroupSeed: Int, CaseIterable, Identifiable, Sendable {
                 "person", "people", "portrait", "selfie", "family", "friend", "child", "baby",
             ]),
             (.placesAndScenes, [
-                "旅行", "地点", "城市", "乡村", "街道", "户外", "室内", "环境", "场景", "风景", "海滩", "海边",
-                "山景", "水域", "建筑", "公园", "travel", "place", "city", "street", "outdoor", "indoor", "scene",
+                "旅行", "旅游", "地点", "城市", "景区", "景点", "地标", "古迹", "乡村", "街道", "户外", "室内", "环境",
+                "场景", "风景", "海滩", "海边", "山景", "水域", "建筑", "公园", "travel", "place", "city", "street", "outdoor", "indoor", "scene",
                 "landscape", "beach", "mountain", "water", "building", "architecture", "park",
             ]),
             (.activities, [
@@ -87,5 +97,24 @@ enum TagGroupSeed: Int, CaseIterable, Identifiable, Sendable {
         return keywordGroups.first { _, keywords in
             keywords.contains { normalized.localizedCaseInsensitiveContains($0) }
         }?.0 ?? .other
+    }
+
+    /// Feed priority follows the user's owned tag-group meaning, never an individual
+    /// tag name or the visual contents of its photos. Stable system IDs win; a
+    /// user-created group falls back to the same create-time name classifier.
+    static func contextualFeedAffinity(
+        groupID: UUID,
+        groupDisplayName: String
+    ) -> ContextualTagFeedAffinity {
+        let seed = allCases.first(where: { $0.id == groupID })
+            ?? classify(displayName: groupDisplayName)
+        switch seed {
+        case .placesAndScenes, .activities:
+            return .contextDependent
+        case .people, .food, .nature, .documents:
+            return .visuallyClassifiable
+        case .other:
+            return .unspecified
+        }
     }
 }

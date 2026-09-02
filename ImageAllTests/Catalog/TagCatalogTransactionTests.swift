@@ -1072,6 +1072,76 @@ final class TagCatalogTransactionTests: XCTestCase {
 }
 
 final class ContextualTagFeedTests: XCTestCase {
+    func testPendingGroupsPreferContextDependentTagsThenUntrainedModelsAndSupportCustomScope() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let service = ContextualTagFeedService(database: database)
+
+        let trainedVisual = try makePendingFeed(
+            named: "板栗",
+            group: .nature,
+            sequence: 100,
+            database: database,
+            service: service
+        )
+        try installImageModel(tagID: trainedVisual.tagID, database: database)
+        let untrainedVisual = try makePendingFeed(
+            named: "花",
+            group: .nature,
+            sequence: 200,
+            database: database,
+            service: service
+        )
+        let trainedContext = try makePendingFeed(
+            named: "旅游",
+            group: .activities,
+            sequence: 300,
+            database: database,
+            service: service
+        )
+        try installImageModel(tagID: trainedContext.tagID, database: database)
+        let untrainedContextWithManyLabels = try makePendingFeed(
+            named: "演唱会",
+            group: .activities,
+            sequence: 350,
+            additionalAcceptedSamples: 3,
+            database: database,
+            service: service
+        )
+        let untrainedContext = try makePendingFeed(
+            named: "城市",
+            group: .placesAndScenes,
+            sequence: 400,
+            database: database,
+            service: service
+        )
+
+        XCTAssertEqual(
+            try service.fetchPendingGroups(limit: 10).map(\.tagID),
+            [
+                untrainedContext.tagID,
+                untrainedContextWithManyLabels.tagID,
+                trainedContext.tagID,
+                untrainedVisual.tagID,
+                trainedVisual.tagID,
+            ]
+        )
+        XCTAssertEqual(
+            try service.fetchPendingGroups(
+                limit: 10,
+                tagIDs: [trainedVisual.tagID, untrainedContext.tagID]
+            ).map(\.tagID),
+            [untrainedContext.tagID, trainedVisual.tagID]
+        )
+        XCTAssertEqual(
+            try service.pendingCount(tagIDs: [trainedVisual.tagID, untrainedContext.tagID]),
+            2
+        )
+        try database.pool.read { db in
+            XCTAssertEqual(try String.fetchOne(db, sql: "PRAGMA quick_check"), "ok")
+            XCTAssertTrue(try Row.fetchAll(db, sql: "PRAGMA foreign_key_check").isEmpty)
+        }
+    }
+
     func testAcceptedAnchorGeneratesOneStableFilenameSequenceFeed() throws {
         let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
         let catalog = CatalogRepository(database: database)
@@ -1573,5 +1643,119 @@ final class ContextualTagFeedTests: XCTestCase {
             timestampMs: DatabaseTestSupport.timestampMs + 5
         )
         XCTAssertEqual(try service.pendingCount(), 0)
+    }
+
+    private func makePendingFeed(
+        named name: String,
+        group: TagGroupSeed,
+        sequence: Int,
+        additionalAcceptedSamples: Int = 0,
+        database: CatalogDatabase,
+        service: ContextualTagFeedService
+    ) throws -> ContextualTagFeedGroup {
+        let catalog = CatalogRepository(database: database)
+        let tags = GRDBTagCatalogRepository(database: database)
+        let sourceID = UUID()
+        let anchorAssetID = UUID()
+        let candidateAssetID = UUID()
+        let tag = try tags.createTag(
+            rawName: name,
+            timestampMs: DatabaseTestSupport.timestampMs + Int64(sequence)
+        )
+        _ = try tags.moveTag(
+            tagID: tag.id,
+            toGroupID: group.id,
+            timestampMs: DatabaseTestSupport.timestampMs + Int64(sequence) + 1
+        )
+        try catalog.createSourceWithAsset(
+            NewSourceWithAssetInput(
+                sourceID: sourceID,
+                sourceKind: .folder,
+                displayName: "Feed \(sequence)",
+                bookmark: DatabaseTestSupport.folderBookmark(),
+                assetID: anchorAssetID,
+                locatorKind: .file,
+                relativePath: "Feed-\(sequence)/IMG_\(sequence).JPG",
+                photosLocalIdentifier: nil,
+                mediaType: "public.jpeg",
+                timestampMs: DatabaseTestSupport.timestampMs + Int64(sequence)
+            )
+        )
+        try catalog.insertAsset(
+            NewAssetInput(
+                assetID: candidateAssetID,
+                sourceID: sourceID,
+                locatorKind: .file,
+                relativePath: "Feed-\(sequence)/IMG_\(sequence + 1).JPG",
+                photosLocalIdentifier: nil,
+                mediaType: "public.jpeg",
+                timestampMs: DatabaseTestSupport.timestampMs + Int64(sequence)
+            )
+        )
+        try database.pool.write { db in
+            for (assetID, fileName) in [
+                (anchorAssetID, "IMG_\(sequence).JPG"),
+                (candidateAssetID, "IMG_\(sequence + 1).JPG"),
+            ] {
+                try db.execute(
+                    sql: "UPDATE asset SET file_name = ? WHERE id = ?",
+                    arguments: [fileName, assetID.uuidString.lowercased()]
+                )
+            }
+        }
+        var additionalAcceptedAssetIDs: [UUID] = []
+        for offset in 0 ..< additionalAcceptedSamples {
+            let assetID = UUID()
+            try catalog.insertAsset(
+                NewAssetInput(
+                    assetID: assetID,
+                    sourceID: sourceID,
+                    locatorKind: .file,
+                    relativePath: "Feed-\(sequence)/Samples/SAMPLE_\(offset).JPG",
+                    photosLocalIdentifier: nil,
+                    mediaType: "public.jpeg",
+                    timestampMs: DatabaseTestSupport.timestampMs + Int64(sequence)
+                )
+            )
+            additionalAcceptedAssetIDs.append(assetID)
+        }
+        _ = try tags.batchAccept(
+            tagID: tag.id,
+            assetIDs: [anchorAssetID] + additionalAcceptedAssetIDs,
+            timestampMs: DatabaseTestSupport.timestampMs + Int64(sequence) + 2
+        )
+        return try XCTUnwrap(service.generate(
+            tagID: tag.id,
+            anchorAssetID: anchorAssetID,
+            timestampMs: DatabaseTestSupport.timestampMs + Int64(sequence) + 3
+        ))
+    }
+
+    private func installImageModel(tagID: UUID, database: CatalogDatabase) throws {
+        try database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO tag_model_revision (
+                    media_kind, tag_id, revision, provider, request_revision,
+                    preprocessing_revision, threshold, positive_count, negative_count,
+                    neighbor_count, sample_budget_per_role, created_at_ms
+                ) VALUES ('image', ?, 1, 'vision-feature-print', 1, 1, 0, 2, 2, 2, 2, ?)
+                """,
+                arguments: [
+                    tagID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs,
+                ]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO tag_model (media_kind, tag_id, current_revision, updated_at_ms)
+                VALUES ('image', ?, 1, ?)
+                """,
+                arguments: [
+                    tagID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs,
+                ]
+            )
+        }
     }
 }
