@@ -1103,6 +1103,35 @@ struct LibraryWorkspaceLayoutState: Equatable {
     }
 }
 
+struct LibraryWorkspaceColumnWidths: Equatable, Sendable {
+    let minimum: CGFloat
+    let ideal: CGFloat
+    let maximum: CGFloat
+}
+
+enum LibraryWorkspaceColumnLayout {
+    static let standardSidebar = LibraryWorkspaceColumnWidths(
+        minimum: 180,
+        ideal: 220,
+        maximum: 300
+    )
+    static let reviewOverviewSidebar = LibraryWorkspaceColumnWidths(
+        minimum: 180,
+        ideal: 220,
+        maximum: 240
+    )
+    static let standardInspector = LibraryWorkspaceColumnWidths(
+        minimum: 240,
+        ideal: 300,
+        maximum: 380
+    )
+    static let reviewOverviewInspector = LibraryWorkspaceColumnWidths(
+        minimum: 300,
+        ideal: 320,
+        maximum: 380
+    )
+}
+
 enum LibraryWorkspaceCommand: Hashable {
     case showAllPhotos
     case showReviewSuggestions
@@ -12741,9 +12770,16 @@ struct LibraryWorkspaceView: View {
     @FocusState private var commandSearchFieldFocused: Bool
 
     private var workspaceWithSourceControls: some View {
-        NavigationSplitView(columnVisibility: sidebarColumnVisibility) {
+        let sidebarWidths = selection == .reviewSuggestions
+            ? LibraryWorkspaceColumnLayout.reviewOverviewSidebar
+            : LibraryWorkspaceColumnLayout.standardSidebar
+        return NavigationSplitView(columnVisibility: sidebarColumnVisibility) {
             sidebar
-                .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 300)
+                .navigationSplitViewColumnWidth(
+                    min: sidebarWidths.minimum,
+                    ideal: sidebarWidths.ideal,
+                    max: sidebarWidths.maximum
+                )
         } detail: {
             keyboardEnabledContent
         }
@@ -12924,9 +12960,22 @@ struct LibraryWorkspaceView: View {
         if selection == .librarySlimming {
             workspaceInspector
                 .inspectorColumnWidth(min: 220, ideal: 260, max: 320)
-        } else {
+        } else if selection == .reviewSuggestions {
+            let widths = LibraryWorkspaceColumnLayout.reviewOverviewInspector
             workspaceInspector
-                .inspectorColumnWidth(min: 240, ideal: 300, max: 380)
+                .inspectorColumnWidth(
+                    min: widths.minimum,
+                    ideal: widths.ideal,
+                    max: widths.maximum
+                )
+        } else {
+            let widths = LibraryWorkspaceColumnLayout.standardInspector
+            workspaceInspector
+                .inspectorColumnWidth(
+                    min: widths.minimum,
+                    ideal: widths.ideal,
+                    max: widths.maximum
+                )
         }
     }
 
