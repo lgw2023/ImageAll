@@ -30,4 +30,3 @@ ImageAll 的文件夹资产只持久化安全书签根与相对路径；Apple Ph
 - 基础设施测试用合成临时目录、测试书签和测试数据库证明文件夹路径解析，并证明 Photos locator
   被排除。
 - 自动化测试不得读取或遍历 `docs/LOCAL-TEST-DATA-SAFETY.md` 指定的受保护真实照片路径。
-
