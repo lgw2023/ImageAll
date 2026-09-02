@@ -117,7 +117,7 @@ export function ReviewLocalModelPanel({ sourceIDs }: ReviewLocalModelPanelProps)
             <span>
               {track === 'personal'
                 ? snapshot.personalMode === 'sample'
-                  ? '抽检模式'
+                  ? '全量扫描'
                   : '全库模式'
                 : '全库扫描'}
             </span>

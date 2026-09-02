@@ -314,7 +314,7 @@ export async function installSyntheticAuthenticatedHost(
         },
       ],
     },
-    maxPendingSuggestionsPerTag: 200,
+    maxPendingSuggestionsPerTag: null,
   };
   let jobs = [
     {
@@ -768,7 +768,6 @@ export async function installSyntheticAuthenticatedHost(
       modelEnabled?: boolean;
       idleThumbnailPrewarmEnabled?: boolean;
       toolbarDisplayMode?: 'iconOnly' | 'iconAndTitle';
-      maxPendingSuggestionsPerTag?: number;
       suggestionThresholdMutation?: {
         action: 'setDefault' | 'setOverride' | 'clearOverride' | 'prune';
         method: 'featureKnn' | 'personalCentroid' | 'personalAdamW';
@@ -838,8 +837,6 @@ export async function installSyntheticAuthenticatedHost(
       idleThumbnailPrewarmEnabled:
         body.idleThumbnailPrewarmEnabled ?? settings.idleThumbnailPrewarmEnabled,
       toolbarDisplayMode: body.toolbarDisplayMode ?? settings.toolbarDisplayMode,
-      maxPendingSuggestionsPerTag:
-        body.maxPendingSuggestionsPerTag ?? settings.maxPendingSuggestionsPerTag,
       suggestionThresholds,
     };
     return route.fulfill({

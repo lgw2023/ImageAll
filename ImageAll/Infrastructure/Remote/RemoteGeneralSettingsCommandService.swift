@@ -34,6 +34,9 @@ final class RemoteGeneralSettingsCommandService:
         guard !update.isEmpty else {
             throw GeneralSettingsCommandError.emptyUpdate
         }
+        guard update.maxPendingSuggestionsPerTag == nil else {
+            throw GeneralSettingsCommandError.unsupportedSuggestionLimit
+        }
         if let modelEnabled = update.modelEnabled {
             await modelSettings.setEnabledAndWait(modelEnabled)
         }
@@ -46,9 +49,6 @@ final class RemoteGeneralSettingsCommandService:
         }
         if let mutation = update.suggestionThresholdMutation {
             try applySuggestionThresholdMutation(mutation)
-        }
-        if let maximumPendingCount = update.maxPendingSuggestionsPerTag {
-            workspace.setMaxPendingSuggestionsPerTag(maximumPendingCount)
         }
         return makeSnapshot()
     }
@@ -115,7 +115,7 @@ final class RemoteGeneralSettingsCommandService:
             idleThresholdSeconds: Int(IdleThumbnailPrewarmDefaults.idleThresholdSeconds),
             toolbarDisplayMode: Self.mapToolbarMode(toolbarDisplayModeSettings.displayMode),
             suggestionThresholds: makeSuggestionThresholdSnapshot(),
-            maxPendingSuggestionsPerTag: workspace.maxPendingSuggestionsPerTag
+            maxPendingSuggestionsPerTag: nil
         )
     }
 

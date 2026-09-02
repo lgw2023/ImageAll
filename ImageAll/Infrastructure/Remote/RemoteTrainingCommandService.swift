@@ -933,10 +933,7 @@ actor RemoteTrainingCommandService: RemoteTrainingCommandPort {
     }
 
     func sampleSuggestionMaximumCount() async -> Int {
-        min(
-            max(sampleSuggestionLimit(), PendingSuggestionGenerationLimits.minCount),
-            PendingSuggestionGenerationLimits.maxCount
-        )
+        max(sampleSuggestionLimit(), 1)
     }
 
     func generateSampleSuggestions(
@@ -963,10 +960,7 @@ actor RemoteTrainingCommandService: RemoteTrainingCommandPort {
         else {
             throw TrainingCommandError.activeConflict
         }
-        let limit = min(
-            max(sampleSuggestionLimit(), PendingSuggestionGenerationLimits.minCount),
-            PendingSuggestionGenerationLimits.maxCount
-        )
+        let limit = max(sampleSuggestionLimit(), 1)
         guard command.assetIDs.count <= limit,
               Set(command.assetIDs).count == command.assetIDs.count
         else {
@@ -1493,10 +1487,7 @@ actor RemoteTrainingCommandService: RemoteTrainingCommandPort {
     }
 
     private func sampleSuggestionMaximumCountValue() -> Int {
-        min(
-            max(sampleSuggestionLimit(), PendingSuggestionGenerationLimits.minCount),
-            PendingSuggestionGenerationLimits.maxCount
-        )
+        max(sampleSuggestionLimit(), 1)
     }
 
     private func executeEmbeddingPreparation(

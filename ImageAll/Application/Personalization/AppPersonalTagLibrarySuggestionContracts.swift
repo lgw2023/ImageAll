@@ -139,7 +139,6 @@ extension AppPersonalTagLibrarySuggesting {
 }
 
 enum AppPersonalTagLibrarySuggestionLimits {
-    static let maxPendingSuggestionsPerTag = FullLibrarySuggestionsJobFactory.maxPendingSuggestionsPerTag
     static let candidatePageSize = 500
     static let persistentBatchSize = 64
 }

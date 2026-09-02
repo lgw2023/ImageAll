@@ -199,7 +199,6 @@ struct SuggestionEnqueueConfirmation: Identifiable, Equatable, Sendable {
     let availableSources: [SuggestionEnqueueSourceOption]
     var selectedSourceIDs: Set<UUID>
     let effectiveMinScore: Double
-    let maxPendingSuggestionsPerTag: Int
 
     init(
         tagID: UUID,
@@ -209,8 +208,7 @@ struct SuggestionEnqueueConfirmation: Identifiable, Equatable, Sendable {
         method: SuggestionGenerationMethod = .featureKnn,
         availableSources: [SuggestionEnqueueSourceOption],
         selectedSourceIDs: Set<UUID>,
-        effectiveMinScore: Double = 0,
-        maxPendingSuggestionsPerTag: Int = PendingSuggestionGenerationLimits.defaultMaxCount
+        effectiveMinScore: Double = 0
     ) {
         self.tagID = tagID
         self.mediaKind = mediaKind
@@ -220,7 +218,6 @@ struct SuggestionEnqueueConfirmation: Identifiable, Equatable, Sendable {
         self.availableSources = availableSources
         self.selectedSourceIDs = selectedSourceIDs
         self.effectiveMinScore = effectiveMinScore
-        self.maxPendingSuggestionsPerTag = maxPendingSuggestionsPerTag
     }
 
     var id: String { "\(mediaKind.rawValue):\(tagID.uuidString.lowercased()):\(method)" }

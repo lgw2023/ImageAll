@@ -155,16 +155,14 @@ final class RemoteCatalogFacadeTests: XCTestCase {
             idleThumbnailPrewarmEnabled: true,
             idleThresholdSeconds: 180,
             toolbarDisplayMode: .iconOnly,
-            suggestionThresholds: initialThresholds,
-            maxPendingSuggestionsPerTag: 500
+            suggestionThresholds: initialThresholds
         )
         let updated = GeneralSettingsSnapshot(
             localModel: initial.localModel,
             idleThumbnailPrewarmEnabled: true,
             idleThresholdSeconds: 180,
             toolbarDisplayMode: .iconAndTitle,
-            suggestionThresholds: initialThresholds,
-            maxPendingSuggestionsPerTag: 550
+            suggestionThresholds: initialThresholds
         )
         let port = RemoteGeneralSettingsCommandPortStub(
             snapshot: initial,
@@ -179,7 +177,7 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         XCTAssertEqual(fetched.toolbarDisplayMode, .iconOnly)
         XCTAssertEqual(fetched.localModel.state, .disabled)
         XCTAssertEqual(fetched.idleThresholdSeconds, 180)
-        XCTAssertEqual(fetched.maxPendingSuggestionsPerTag, 500)
+        XCTAssertNil(fetched.maxPendingSuggestionsPerTag)
         XCTAssertEqual(fetched.suggestionThresholds?.tags.first?.displayName, "猫")
         XCTAssertEqual(
             fetched.suggestionThresholds?.tags.first?.methods.first?.reference?.minScore,
@@ -195,8 +193,7 @@ final class RemoteCatalogFacadeTests: XCTestCase {
                 method: .featureKnn,
                 tagID: tagID,
                 minScore: 0.55
-            ),
-            maxPendingSuggestionsPerTag: 550
+            )
         )
         let first = try await facade.updateGeneralSettings(request)
         let replay = try await facade.updateGeneralSettings(request)
@@ -205,7 +202,7 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         XCTAssertTrue(replay.replayed)
         XCTAssertEqual(port.updateCount, 1)
         XCTAssertEqual(port.lastUpdate?.toolbarDisplayMode, .iconAndTitle)
-        XCTAssertEqual(port.lastUpdate?.maxPendingSuggestionsPerTag, 550)
+        XCTAssertNil(port.lastUpdate?.maxPendingSuggestionsPerTag)
         XCTAssertEqual(port.lastUpdate?.suggestionThresholdMutation?.tagID, tagID)
         XCTAssertEqual(port.lastUpdate?.suggestionThresholdMutation?.minScore, 0.55)
 

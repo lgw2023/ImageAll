@@ -504,10 +504,10 @@ private struct ContextualTagFeedThumbnail: View {
 }
 
 enum ReviewOverviewLayout {
-    static let sectionSpacing: CGFloat = 12
-    static let cardSpacing: CGFloat = 8
-    static let cardMinimumWidth: CGFloat = 300
-    static let cardMaximumWidth: CGFloat = 420
+    static let sectionSpacing: CGFloat = 22
+    static let cardSpacing: CGFloat = 12
+    static let cardMinimumWidth: CGFloat = 310
+    static let cardMaximumWidth: CGFloat = 440
 }
 
 struct ReviewSuggestionGroupSection: Identifiable, Equatable, Sendable {
@@ -602,7 +602,7 @@ struct ReviewOverviewView: View {
                 HSplitView {
                     if showsLocalModelPanel {
                         ReviewLocalModelPanel(model: model)
-                            .frame(minWidth: 248, idealWidth: 288, maxWidth: 320)
+                            .frame(minWidth: 268, idealWidth: 300, maxWidth: 340)
                     }
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: ReviewOverviewLayout.sectionSpacing) {
@@ -614,9 +614,10 @@ struct ReviewOverviewView: View {
                                 )
                             }
                         }
-                        .padding(12)
+                        .padding(20)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
+                    .background(Color(nsColor: .underPageBackgroundColor).opacity(0.7))
                     .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
@@ -648,26 +649,36 @@ private struct ReviewSuggestionGroupView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             Button {
                 model.toggleTagGroupCollapsed(section.id)
             } label: {
-                HStack(spacing: 7) {
-                    Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 12)
-                    Text(section.group.displayName)
-                        .font(.headline)
-                    Text("\(section.overviews.count) 个标签")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                HStack(spacing: 10) {
+                    ZStack {
+                        Circle()
+                            .fill(Color.accentColor.opacity(0.12))
+                        Image(systemName: "square.grid.2x2")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.tint)
+                    }
+                    .frame(width: 28, height: 28)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(section.group.displayName)
+                            .font(.headline)
+                        Text("\(section.overviews.count) 个标签")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                     Spacer(minLength: 8)
                     if pendingCount > 0 {
                         Text("\(pendingCount) 条待审")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.tint)
                     }
+                    Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 12)
                 }
                 .contentShape(Rectangle())
             }
@@ -703,8 +714,7 @@ private struct ReviewSuggestionGroupView: View {
                 }
             }
         }
-        .padding(12)
-        .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: 12))
+        .padding(.bottom, 4)
     }
 }
 
@@ -713,49 +723,41 @@ private struct ReviewOverviewHeader: View {
     let onBack: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
-            Button("返回图库", systemImage: "photo.on.rectangle", action: onBack)
-                .persistentHelp(
-                    "退出待审核建议工作区并返回\(model.selectedMediaKind.displayName)图库。"
-                )
-
-            Divider()
-                .frame(height: 18)
-
-            ReviewSourceFilterMenu(model: model)
-
-            Spacer(minLength: 12)
-
-            HStack(spacing: 8) {
-                Text("每标签上限")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Stepper(
-                    value: Binding(
-                        get: { model.maxPendingSuggestionsPerTag },
-                        set: { model.setMaxPendingSuggestionsPerTag($0) }
-                    ),
-                    in: PendingSuggestionGenerationLimits.minCount
-                        ... PendingSuggestionGenerationLimits.maxCount,
-                    step: 50
-                ) {
-                    Text("\(model.maxPendingSuggestionsPerTag)")
-                        .font(.caption.monospacedDigit())
-                        .frame(minWidth: 40, alignment: .trailing)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                Button("返回图库", systemImage: "chevron.left", action: onBack)
+                    .buttonStyle(.bordered)
+                    .persistentHelp(
+                        "退出待审核建议工作区并返回\(model.selectedMediaKind.displayName)图库。"
+                    )
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("建议工作台")
+                        .font(.title2.weight(.semibold))
+                    Text("按标签生成、校准并审核模型建议")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                .persistentHelp("调整每个标签最多保留的待审核建议数；四种建议生成路径都使用这个上限。")
-            }
-
-            if model.pendingSuggestionTotal > 0 {
-                Text("\(model.pendingSuggestionTotal) 条待审")
-                    .font(.caption.weight(.semibold))
+                Spacer(minLength: 12)
+                Label("门槛以上全部保留", systemImage: "infinity")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
                     .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(.secondary.opacity(0.12), in: Capsule())
+                    .padding(.vertical, 6)
+                    .background(.secondary.opacity(0.1), in: Capsule())
+                if model.pendingSuggestionTotal > 0 {
+                    Label("\(model.pendingSuggestionTotal) 条待审", systemImage: "checklist")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tint)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Color.accentColor.opacity(0.12), in: Capsule())
+                }
             }
+            ReviewSourceFilterMenu(model: model)
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.vertical, 14)
+        .background(.bar)
     }
 }
 
@@ -807,9 +809,15 @@ private struct ReviewLocalModelPanel: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                Label("本地模型", systemImage: "cpu")
-                    .font(.headline)
+            VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("生成中心", systemImage: "sparkles.rectangle.stack")
+                        .font(.title3.weight(.semibold))
+                    Text("模型任务在后台运行，审核列表保持可操作。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
                 VStack(alignment: .leading, spacing: 8) {
                     Text(localModelServiceStatusText)
@@ -834,7 +842,11 @@ private struct ReviewLocalModelPanel: View {
                 }
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(.secondary.opacity(0.12))
+                }
 
                 if model.supportsStandardLibrarySuggestions {
                     localModelActionCard(
@@ -876,22 +888,27 @@ private struct ReviewLocalModelPanel: View {
                     )
                 }
             }
-            .padding(12)
+            .padding(16)
         }
+        .background(
+            LinearGradient(
+                colors: [Color.accentColor.opacity(0.08), Color.clear],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
     }
 
     private var personalLibraryActionTitle: String {
         if model.isGeneratingPersonalLibrarySuggestions {
-            return model.usesAppPersonalSampleSuggestionsPath ? "抽检中…" : "扫描中…"
+            return "扫描中…"
         }
-        return model.usesAppPersonalSampleSuggestionsPath
-            ? "抽 \(model.maxPendingSuggestionsPerTag) 张"
-            : "扫描全库"
+        return "扫描全部"
     }
 
     private var personalLibraryActionHelp: String {
         model.usesAppPersonalSampleSuggestionsPath
-            ? "有多选时用选中\(model.selectedMediaKind.displayName)；无多选时从库中抽样。仅用本机预览；云端未下载\(model.selectedMediaKind.displayName)会跳过"
+            ? "有多选时使用全部选中\(model.selectedMediaKind.displayName)；无多选时扫描全部可用照片。仅用本机预览；云端未下载\(model.selectedMediaKind.displayName)会跳过"
             : "按顶部来源筛选扫描；仅分析当前可本地读取的预览；iCloud 云端\(model.selectedMediaKind.displayName)会跳过"
     }
 
@@ -945,7 +962,11 @@ private struct ReviewLocalModelPanel: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(.secondary.opacity(0.12))
+        }
     }
 
     private var localModelServiceStatusText: String {
@@ -975,9 +996,7 @@ private struct ReviewLocalModelPanel: View {
     private var personalLibraryStatusText: String {
         switch model.personalLibrarySuggestionState {
         case .idle:
-            model.usesAppPersonalSampleSuggestionsPath
-                ? "抽检最多 \(model.maxPendingSuggestionsPerTag) 张加入审核队列。"
-                : "把当前个人模型建议加入审核队列。"
+            "扫描当前来源，并保留全部高于门槛的个人模型建议。"
         case let .waiting(checked, suggested, skipped):
             "等待 · 已检 \(checked) · 建议 \(suggested) · 跳过 \(skipped)"
         case let .running(checked, suggested, skipped):
@@ -1064,12 +1083,17 @@ private struct ReviewTagOverviewCard: View {
             HStack(spacing: 8) {
                 Label(reviewTagStatusText(overview), systemImage: reviewTagStatusIcon(overview))
                     .lineLimit(1)
+                    .foregroundStyle(reviewTagStatusColor(overview))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
+                    .background(reviewTagStatusColor(overview).opacity(0.1), in: Capsule())
                 Spacer(minLength: 4)
-                Text("确认 \(overview.acceptedSampleCount) · 拒绝 \(overview.rejectedSampleCount)")
-                    .monospacedDigit()
+                Label("\(overview.acceptedSampleCount)", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                Label("\(overview.rejectedSampleCount)", systemImage: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
             }
             .font(.caption)
-            .foregroundStyle(.secondary)
 
             if overview.pendingSuggestionCount > 0 {
                 ReviewOriginCountBadges(
@@ -1118,16 +1142,21 @@ private struct ReviewTagOverviewCard: View {
                 }
                 .padding(.top, 6)
             } label: {
-                Label("门槛与生成", systemImage: "slider.horizontal.3")
+                Label("调整门槛与生成", systemImage: "slider.horizontal.3")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(12)
+        .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.background, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(
+            overview.pendingSuggestionCount > 0
+                ? Color.accentColor.opacity(0.055)
+                : Color(nsColor: .controlBackgroundColor).opacity(0.72),
+            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+        )
         .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .strokeBorder(
                     overview.pendingSuggestionCount > 0
                         ? Color.accentColor.opacity(0.28)
@@ -1135,6 +1164,17 @@ private struct ReviewTagOverviewCard: View {
                     lineWidth: 1
                 )
         }
+    }
+}
+
+private func reviewTagStatusColor(_ overview: SuggestionTagOverview) -> Color {
+    switch overview.taskStatus {
+    case .running, .waiting: .blue
+    case .paused, .retryableFailure, .notReady: .orange
+    case .terminalFailure: .red
+    case .completed where overview.pendingSuggestionCount > 0: .accentColor
+    case .ready, .completed: .secondary
+    case .cancelled: .secondary
     }
 }
 
@@ -1187,7 +1227,7 @@ private struct ReviewTagGenerateActions: View {
             ) {
                 if overview.canGenerate {
                     generateButton(
-                        title: "特征向量 Top \(model.maxPendingSuggestionsPerTag)",
+                        title: "生成全部特征建议",
                         icon: "wand.and.stars",
                         method: .featureKnn,
                         mode: .generate
@@ -1203,7 +1243,7 @@ private struct ReviewTagGenerateActions: View {
                 }
                 if model.canGenerateAppPersonalTagLibrarySuggestions(for: overview) {
                     generateButton(
-                        title: "个人模型 Top \(model.maxPendingSuggestionsPerTag)",
+                        title: "生成全部个人建议",
                         icon: "brain.head.profile",
                         method: .personalModel,
                         mode: overview.canUpdate ? .update : .generate,
@@ -1213,7 +1253,7 @@ private struct ReviewTagGenerateActions: View {
                 }
                 if model.canGenerateAppPersonalAdamWTagLibrarySuggestions(for: overview) {
                     generateButton(
-                        title: "超级个人 Top \(model.maxPendingSuggestionsPerTag)",
+                        title: "生成全部超级个人建议",
                         icon: "brain.head.profile.fill",
                         method: .personalAdamW,
                         mode: overview.canUpdate ? .update : .generate,
@@ -1597,20 +1637,19 @@ struct SuggestionEnqueueConfirmationSheet: View {
 
     private var message: String {
         let thresholdText = String(format: "%.2f", pending.effectiveMinScore)
-        let limitText = String(pending.maxPendingSuggestionsPerTag)
         let mediaName = pending.mediaKind.displayName
         switch pending.method {
         case .featureKnn:
             switch pending.mode {
             case .generate:
-                return "将用特征向量近邻检查所选来源中已入库的\(mediaName)，只保留分数高于 \(thresholdText) 且最高的 \(limitText) 条待审核建议。训练样本仍来自全部来源；人工标签不会丢失。"
+                return "将用特征向量近邻检查所选来源中已入库的\(mediaName)，保留全部分数高于 \(thresholdText) 的待审核建议。训练样本仍来自全部来源；人工标签不会丢失。"
             case .update:
-                return "将用最新确认/拒绝样本重新扫描所选来源，只保留分数高于 \(thresholdText) 且最高的 \(limitText) 条；人工标签不会改变。"
+                return "将用最新确认/拒绝样本重新扫描所选来源，保留全部分数高于 \(thresholdText) 的建议；人工标签不会改变。"
             }
         case .personalModel:
-            return "将用当前人脑质心个人模型扫描所选来源，只保留分数高于 \(thresholdText) 且最高的 \(limitText) 条“\(pending.displayName)”待审核建议。需要该标签已在人脑模型中；不要求拒绝样本。人工标签不会丢失。"
+            return "将用当前人脑质心个人模型扫描所选来源，保留全部分数高于 \(thresholdText) 的“\(pending.displayName)”待审核建议。需要该标签已在人脑模型中；不要求拒绝样本。人工标签不会丢失。"
         case .personalAdamW:
-            return "将用当前超级人脑 AdamW 个人模型扫描所选来源，只保留分数高于 \(thresholdText) 且最高的 \(limitText) 条“\(pending.displayName)”待审核建议。需要该标签已在超级模型中；不要求拒绝样本。人工标签不会丢失。"
+            return "将用当前超级人脑 AdamW 个人模型扫描所选来源，保留全部分数高于 \(thresholdText) 的“\(pending.displayName)”待审核建议。需要该标签已在超级模型中；不要求拒绝样本。人工标签不会丢失。"
         }
     }
 }
@@ -1628,15 +1667,27 @@ struct ReviewQueueContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                ReviewSourceFilterMenu(model: model)
-                if let overview = model.suggestionOverviews.first(where: { $0.id == tagID }) {
-                    Text(statusHeader(overview))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Label(displayName, systemImage: "checklist")
+                        .font(.headline)
+                    if let overview = model.suggestionOverviews.first(where: { $0.id == tagID }) {
+                        Text(statusHeader(overview))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                 }
-                Spacer(minLength: 0)
+                Spacer(minLength: 8)
+                ReviewSourceFilterMenu(model: model)
+                if !model.reviewQueueItems.isEmpty {
+                    Text("已载入 \(model.reviewQueueItems.count)")
+                        .font(.caption.monospacedDigit().weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(.secondary.opacity(0.1), in: Capsule())
+                }
                 if !model.reviewQueueItems.isEmpty {
                     LibraryGridDensityPicker(
                         selection: Binding(
@@ -1653,8 +1704,9 @@ struct ReviewQueueContentView: View {
                     )
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(.bar)
             Divider()
             if model.reviewQueueItems.isEmpty {
                 ContentUnavailableView {
@@ -1712,13 +1764,23 @@ struct ReviewQueueContentView: View {
                         ) {
                             ForEach(model.reviewQueueItems) { item in
                                 ReviewThumbnailView(
-                                    item: item,
+                                    state: ReviewThumbnailPresentationState(
+                                        item: item,
+                                        isSelected: model.selectedReviewItemID == item.id
+                                            || (
+                                                model.selectedReviewItemID == nil
+                                                    && model.selectedAssetIDs.contains(item.assetID)
+                                            ),
+                                        favoriteState: model.favoriteState(for: item.assetID),
+                                        aspectMode: model.thumbnailAspectMode,
+                                        cacheVersion: model.thumbnailCacheVersion(for: item.assetID),
+                                        originalAspectGeneration: model.thumbnailAspectMode == .original
+                                            ? model.originalAspectThumbnailCacheGeneration
+                                            : 0,
+                                        recoveryGeneration: model.thumbnailRecoveryGeneration,
+                                        mediaKind: model.selectedMediaKind
+                                    ),
                                     model: model,
-                                    isSelected: model.selectedReviewItemID == item.id
-                                        || (
-                                            model.selectedReviewItemID == nil
-                                                && model.selectedAssetIDs.contains(item.assetID)
-                                        ),
                                     onSelect: {
                                         guard !isMarqueeSelecting else { return }
                                         contentFocused = true
@@ -1742,6 +1804,7 @@ struct ReviewQueueContentView: View {
                                         }
                                     }
                                 )
+                                .equatable()
                                 .libraryGridCellFrameReporter(assetID: item.assetID)
                                 .id(item.id)
                                 .task {
@@ -1892,14 +1955,27 @@ private extension ReviewQueueSuggestionOrigin {
 
 private struct ReviewThumbnailLoadID: Hashable {
     let assetID: UUID
+    let cacheVersion: Int
     let aspectMode: LibraryThumbnailAspectMode
     let originalAspectCacheGeneration: Int
+    let recoveryGeneration: Int
 }
 
-private struct ReviewThumbnailView: View {
+private struct ReviewThumbnailPresentationState: Equatable {
     let item: ReviewQueueItemProjection
-    @ObservedObject var model: LibraryWorkspaceModel
     let isSelected: Bool
+    let favoriteState: MediaFavoriteState
+    let aspectMode: LibraryThumbnailAspectMode
+    let cacheVersion: Int
+    let originalAspectGeneration: Int
+    let recoveryGeneration: Int
+    let mediaKind: MediaKind
+}
+
+@MainActor
+private struct ReviewThumbnailView: View, @MainActor Equatable {
+    let state: ReviewThumbnailPresentationState
+    let model: LibraryWorkspaceModel
     let onSelect: () -> Void
     let onOpen: () -> Void
     @State private var image: NSImage?
@@ -1913,7 +1989,7 @@ private struct ReviewThumbnailView: View {
                 if let image {
                     Image(nsImage: image)
                         .resizable()
-                        .aspectRatio(contentMode: model.thumbnailAspectMode.imageContentMode)
+                        .aspectRatio(contentMode: state.aspectMode.imageContentMode)
                         .frame(width: proxy.size.width, height: proxy.size.height)
                 } else {
                     Image(systemName: emptyThumbnailSymbol)
@@ -1949,7 +2025,7 @@ private struct ReviewThumbnailView: View {
             }
             .overlay(alignment: .topTrailing) {
                 MediaFavoriteButton(
-                    state: model.favoriteState(for: item.assetID),
+                    state: state.favoriteState,
                     isVisible: isHovered || isSelected
                 ) {
                     Task { await model.toggleFavorite(assetID: item.assetID) }
@@ -1958,7 +2034,7 @@ private struct ReviewThumbnailView: View {
             }
         }
         .aspectRatio(
-            model.thumbnailAspectMode.frameAspectRatio(imageSize: image?.size),
+            state.aspectMode.frameAspectRatio(imageSize: image?.size),
             contentMode: .fit
         )
         .contentShape(Rectangle())
@@ -1969,13 +2045,13 @@ private struct ReviewThumbnailView: View {
                     before: TapGesture().onEnded { onSelect() }
                 )
         )
-        .accessibilityLabel(item.fileName ?? model.selectedMediaKind.displayName)
+        .accessibilityLabel(item.fileName ?? state.mediaKind.displayName)
         .accessibilityAddTraits(.isButton)
         .accessibilityValue(
             "\(isSelected ? "已选择" : "未选择")，\(item.suggestionOrigin.reviewDisplayName)建议，分数 \(String(format: "%.2f", item.score))"
         )
         .accessibilityHint(
-            "选择待审核\(model.selectedMediaKind.displayName)；双击可预览，也可按 P、X 或 U 处理"
+            "选择待审核\(state.mediaKind.displayName)；双击可预览，也可按 P、X 或 U 处理"
         )
         .persistentHelp(LibraryAssetDetailText.reviewHoverText(item))
         .accessibilityAction {
@@ -1985,19 +2061,17 @@ private struct ReviewThumbnailView: View {
             onOpen()
         }
         .contextMenu {
-            let state = model.favoriteState(for: item.assetID)
-            Button(state.isFavorite ? "取消红心" : "加入红心") {
+            Button(state.favoriteState.isFavorite ? "取消红心" : "加入红心") {
                 Task { await model.toggleFavorite(assetID: item.assetID) }
             }
-        }
-        .task(id: item.assetID) {
-            await model.ensureFavoriteStatesLoaded(assetIDs: [item.assetID])
         }
         .onHover { isHovered = $0 }
         .task(id: ReviewThumbnailLoadID(
             assetID: item.assetID,
-            aspectMode: model.thumbnailAspectMode,
-            originalAspectCacheGeneration: model.originalAspectThumbnailCacheGeneration
+            cacheVersion: state.cacheVersion,
+            aspectMode: state.aspectMode,
+            originalAspectCacheGeneration: state.originalAspectGeneration,
+            recoveryGeneration: state.recoveryGeneration
         )) {
             await loadReviewThumbnailWhileVisible()
         }
@@ -2010,7 +2084,7 @@ private struct ReviewThumbnailView: View {
             return
         }
 
-        let aspectMode = model.thumbnailAspectMode
+        let aspectMode = state.aspectMode
         if let cachedImage = model.cachedThumbnailImage(
             for: item.assetID,
             aspectMode: aspectMode
@@ -2078,7 +2152,14 @@ private struct ReviewThumbnailView: View {
         if isCloudOnly {
             return "icloud.and.arrow.down"
         }
-        return model.selectedMediaKind == .video ? "play.rectangle" : "photo"
+        return state.mediaKind == .video ? "play.rectangle" : "photo"
+    }
+
+    private var item: ReviewQueueItemProjection { state.item }
+    private var isSelected: Bool { state.isSelected }
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.state == rhs.state
     }
 }
 

@@ -1,45 +1,10 @@
 import Foundation
 
-enum PendingSuggestionGenerationLimits {
-    static let defaultMaxCount = 500
-    static let minCount = 1
-    static let maxCount = 10_000
-}
-
-protocol PendingSuggestionCountPreferenceStore: Sendable {
-    var maxPendingSuggestionsPerTag: Int { get nonmutating set }
-}
-
-final class UserDefaultsPendingSuggestionCountPreferenceStore:
-    PendingSuggestionCountPreferenceStore,
-    @unchecked Sendable
-{
-    private static let key = "library.review.max-pending-suggestions-per-tag.v1"
-
-    private let defaults: UserDefaults
-
-    init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
-    }
-
-    var maxPendingSuggestionsPerTag: Int {
-        get {
-            guard defaults.object(forKey: Self.key) != nil else {
-                return PendingSuggestionGenerationLimits.defaultMaxCount
-            }
-            return Self.clamp(defaults.integer(forKey: Self.key))
-        }
-        set {
-            defaults.set(Self.clamp(newValue), forKey: Self.key)
-        }
-    }
-
-    private static func clamp(_ value: Int) -> Int {
-        min(
-            max(value, PendingSuggestionGenerationLimits.minCount),
-            PendingSuggestionGenerationLimits.maxCount
-        )
-    }
+enum PendingSuggestionGenerationPolicy {
+    /// Public generation paths retain every suggestion above the configured score threshold.
+    /// `Int.max` is used only at legacy Int-based seams; workers recognize it as unbounded
+    /// and must not build an in-memory Top-N collection of that size.
+    static let unlimitedCount = Int.max
 }
 
 enum FullLibrarySuggestionsJobFactory {
@@ -50,9 +15,6 @@ enum FullLibrarySuggestionsJobFactory {
     static let maxAttempts = 5
     static let priority = -1
     static let scanBatchSize = 100
-    /// Per-tag review queue keeps only the highest-scoring pending suggestions.
-    static let maxPendingSuggestionsPerTag = PendingSuggestionGenerationLimits.defaultMaxCount
-
     static func coalescingKey(tagID: UUID, mediaKind: MediaKind = .image) -> String {
         let base = "personalization:\(tagID.uuidString.lowercased())"
         return mediaKind == .image ? base : "\(base):\(mediaKind.rawValue)"

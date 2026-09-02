@@ -49,50 +49,22 @@ test('gallery overview exposes Host statistics and routes into filtered gallery'
   expect(accessibility.violations).toEqual([]);
 });
 
-test('review overview updates the shared per-tag suggestion limit without leaving context', async ({
-  page,
-}, testInfo) => {
+test('review overview communicates unbounded threshold retention', async ({ page }, testInfo) => {
   await installSyntheticAuthenticatedHost(page);
-  let failNextUpdate = true;
-  await page.route('**/v1/settings/general', (route) => {
-    if (route.request().method() !== 'PUT' || !failNextUpdate) return route.fallback();
-    failNextUpdate = false;
-    return route.fulfill({
-      status: 503,
-      contentType: 'application/json',
-      json: { code: 'unavailable', message: 'Mac 暂时无法保存上限' },
-    });
-  });
   await page.goto('review');
 
-  const limit = page.getByRole('group', { name: '每标签上限' });
-  await expect(limit.getByText('200', { exact: true })).toBeVisible();
-  await limit.getByRole('button', { name: '增加每标签上限' }).click();
-  await expect(page.getByRole('alert')).toContainText('Mac 暂时无法保存上限');
-  await expect(limit.getByText('200', { exact: true })).toBeVisible();
-
-  const updateRequest = page.waitForRequest(
-    (request) =>
-      request.method() === 'PUT' && new URL(request.url()).pathname === '/v1/settings/general',
-  );
-  await limit.getByRole('button', { name: '增加每标签上限' }).click();
-  const body = (await updateRequest).postDataJSON() as {
-    operationID: string;
-    maxPendingSuggestionsPerTag: number;
-  };
-  expect(body.operationID).toMatch(/^[0-9a-f-]{36}$/i);
-  expect(body.maxPendingSuggestionsPerTag).toBe(250);
-  await expect(limit.getByText('250', { exact: true })).toBeVisible();
+  await expect(page.getByText('门槛以上全部保留', { exact: true })).toBeVisible();
+  await expect(page.getByRole('group', { name: '每标签上限' })).toHaveCount(0);
 
   await page.getByRole('link', { name: '开始审查' }).click();
   await page.getByRole('link', { name: '审查概览' }).click();
-  await expect(page.getByRole('group', { name: '每标签上限' })).toContainText('250');
+  await expect(page.getByText('门槛以上全部保留', { exact: true })).toBeVisible();
 
   const accessibility = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();
   expect(accessibility.violations).toEqual([]);
   if (process.env.IMAGEALL_CAPTURE_EVIDENCE === '1') {
     await page.screenshot({
-      path: `../docs/web-companion-refactor/evidence/curation/imageall-react-review-limit-${testInfo.project.name}.png`,
+      path: `../docs/web-companion-refactor/evidence/curation/imageall-react-review-retention-${testInfo.project.name}.png`,
       animations: 'disabled',
     });
   }

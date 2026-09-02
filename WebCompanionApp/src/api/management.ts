@@ -51,7 +51,6 @@ export type GeneralSettingsPatch = {
   modelEnabled?: boolean;
   idleThumbnailPrewarmEnabled?: boolean;
   toolbarDisplayMode?: 'iconOnly' | 'iconAndTitle';
-  maxPendingSuggestionsPerTag?: number;
   suggestionThresholdMutation?: {
     action: 'setDefault' | 'setOverride' | 'clearOverride' | 'prune';
     method: SuggestionThresholdMethod;

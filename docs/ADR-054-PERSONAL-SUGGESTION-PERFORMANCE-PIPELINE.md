@@ -3,6 +3,8 @@
 > 状态：已决定并实施（2026-08-07，项目所有者要求按顺序落实五项性能优化）
 > 相关：`LOCAL-MODEL-MODULE-SPEC.md`、`ADR-044-LIBRARY-SLIMMING-AND-RECYCLE.md`、
 > `LOCAL-TEST-DATA-SAFETY.md`
+>
+> ADR-068 已取代本文“每标签上限 / 全局 Top-N 检查点”部分；64 条持久批次、缓存身份和恢复边界继续有效。
 
 ## 背景
 

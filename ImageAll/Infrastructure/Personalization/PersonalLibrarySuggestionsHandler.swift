@@ -329,6 +329,16 @@ private extension PersonalLibrarySuggestionsHandler {
                     excludingDecisionsForTagID: tagID
                 )
                 guard !assetIDs.isEmpty else {
+                    if maximumPendingCount == PendingSuggestionGenerationPolicy.unlimitedCount {
+                        return try settleUnboundedAppRuntime(
+                            lease: lease,
+                            payload: payload,
+                            state: state,
+                            total: total,
+                            leaseDurationMs: leaseDurationMs,
+                            review: review
+                        )
+                    }
                     return try publishAppRuntimeAndSettle(
                         lease: lease,
                         payload: payload,
@@ -416,6 +426,55 @@ private extension PersonalLibrarySuggestionsHandler {
                     guard suggestionBatch.capability == payload.capability else {
                         throw ModelFailure.mismatch
                     }
+                }
+
+                if maximumPendingCount == PendingSuggestionGenerationPolicy.unlimitedCount {
+                    let previous = state
+                    let checkedCount = previous.checkedCount + assetIDs.count
+                    let aboveThresholdCount = previous.aboveThresholdCount
+                        + suggestionBatch.aboveThresholdCount
+                    let skippedCount = previous.skippedCount
+                        + ineligibleCount + suggestionBatch.skippedCount
+                    let shouldComplete = checkedCount >= total
+                    let createdAtMs = dependencies.clock.nowMs
+                    let snapshot = try dependencies.queue.commitLeaseProtectedBatch(
+                        lease: lease
+                    ) { db in
+                        let inserted = try review.appendUnboundedPersonalTagLibrarySuggestions(
+                            tagID: tagID,
+                            hits: suggestionBatch.hits,
+                            expectedCapability: payload.capability,
+                            resetExisting: previous.checkedCount == 0 && previous.lastAssetID == nil,
+                            createdAtMs: createdAtMs,
+                            on: db
+                        )
+                        let committed = PersonalLibrarySuggestionsCheckpoint(
+                            lastAssetID: assetIDs.last,
+                            capability: payload.capability,
+                            checkedCount: checkedCount,
+                            suggestedCount: previous.suggestedCount + inserted,
+                            skippedCount: skippedCount,
+                            aboveThresholdCount: aboveThresholdCount,
+                            topHits: []
+                        )
+                        try dependencies.publishFailureInjector?()
+                        return SafeBatchCommitInput(
+                            lease: lease,
+                            outcome: shouldComplete ? .completed : .continue,
+                            checkpoint: try PersonalLibrarySuggestionsCodec.jobCheckpoint(
+                                from: committed
+                            ),
+                            progress: JobProgress(completed: committed.checkedCount, total: total),
+                            leaseDurationMs: leaseDurationMs
+                        )
+                    }
+                    state = try PersonalLibrarySuggestionsCodec.checkpoint(
+                        from: snapshot.checkpoint
+                    )
+                    if snapshot.state != .running {
+                        return settledResult(snapshot: snapshot)
+                    }
+                    continue
                 }
 
                 let next = appCheckpoint(
@@ -725,6 +784,55 @@ private extension PersonalLibrarySuggestionsHandler {
                 aboveThresholdCount: state.aboveThresholdCount,
                 topHits: state.topHits
             )
+            try dependencies.publishFailureInjector?()
+            return SafeBatchCommitInput(
+                lease: lease,
+                outcome: .completed,
+                checkpoint: try PersonalLibrarySuggestionsCodec.jobCheckpoint(from: finalized),
+                progress: JobProgress(completed: total, total: total),
+                leaseDurationMs: leaseDurationMs
+            )
+        }
+        return settledResult(snapshot: snapshot)
+    }
+
+    func settleUnboundedAppRuntime(
+        lease: JobLeaseToken,
+        payload: PersonalLibrarySuggestionsPayload,
+        state: PersonalLibrarySuggestionsCheckpoint,
+        total: Int,
+        leaseDurationMs: Int64,
+        review: GRDBPersonalizationReviewRepository
+    ) throws -> JobHandlerExecutionResult {
+        guard let tagID = payload.capability.tagIDs.first else {
+            return terminalFailure(
+                .personalizationPayloadInvalid,
+                checkpoint: try? PersonalLibrarySuggestionsCodec.jobCheckpoint(from: state),
+                progress: JobProgress(completed: state.checkedCount, total: total)
+            )
+        }
+        let unaccounted = max(0, total - state.checkedCount)
+        let finalized = PersonalLibrarySuggestionsCheckpoint(
+            lastAssetID: state.lastAssetID,
+            capability: state.capability,
+            checkedCount: total,
+            suggestedCount: state.suggestedCount,
+            skippedCount: state.skippedCount + unaccounted,
+            aboveThresholdCount: state.aboveThresholdCount,
+            topHits: []
+        )
+        let createdAtMs = dependencies.clock.nowMs
+        let snapshot = try dependencies.queue.commitLeaseProtectedBatch(lease: lease) { db in
+            if state.checkedCount == 0, state.lastAssetID == nil {
+                _ = try review.appendUnboundedPersonalTagLibrarySuggestions(
+                    tagID: tagID,
+                    hits: [],
+                    expectedCapability: payload.capability,
+                    resetExisting: true,
+                    createdAtMs: createdAtMs,
+                    on: db
+                )
+            }
             try dependencies.publishFailureInjector?()
             return SafeBatchCommitInput(
                 lease: lease,

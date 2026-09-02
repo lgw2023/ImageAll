@@ -12741,6 +12741,54 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.inspectorDetail?.assetID, first.assetID)
     }
 
+    func testReviewQueueLoadsPageFavoriteStatesInOneBatch() async {
+        let sourceID = UUID()
+        let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
+        let assets = (0 ..< 12).map {
+            Self.makeAsset(sourceID: sourceID, fileName: "review-favorite-\($0).jpg")
+        }
+        let favorite = assets[5]
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: assets,
+            tags: [tag],
+            favoriteStates: [
+                favorite.assetID: MediaFavoriteState(
+                    assetID: favorite.assetID,
+                    isFavorite: true,
+                    photosObservedValue: nil,
+                    syncStatus: .localOnly,
+                    intentRevision: 1,
+                    requestedAtMs: 1,
+                    photosObservedModifiedAtMs: nil,
+                    lastErrorCode: nil
+                ),
+            ]
+        )
+        let reviewItems = assets.map {
+            ReviewQueueItemProjection(
+                assetID: $0.assetID,
+                fileName: $0.fileName,
+                availability: $0.availability,
+                acceptedTagCount: 0,
+                rejectedTagCount: 0
+            )
+        }
+        let model = LibraryWorkspaceModel(
+            service: service,
+            review: FakePersonalizationReviewPort(queueItems: reviewItems)
+        )
+
+        await model.enterReviewQueue(tagID: tag.id, displayName: tag.displayName)
+
+        XCTAssertEqual(service.favoriteStateFetchCallCount, 1)
+        XCTAssertTrue(model.favoriteState(for: favorite.assetID).isFavorite)
+    }
+
     func testReviewQueueGridNavigationLoadsNextPageBeforeMovingDown() async {
         let sourceID = UUID()
         let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)

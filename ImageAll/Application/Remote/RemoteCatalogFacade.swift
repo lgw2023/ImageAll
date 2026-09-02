@@ -198,6 +198,8 @@ actor RemoteCatalogFacade {
             throw RemoteAPIError(code: .badRequest, message: "至少需要修改一项设置")
         } catch GeneralSettingsCommandError.invalidSuggestionMutation {
             throw RemoteAPIError(code: .badRequest, message: "建议阈值操作缺少必要参数")
+        } catch GeneralSettingsCommandError.unsupportedSuggestionLimit {
+            throw RemoteAPIError(code: .badRequest, message: "审核队列已改为保留门槛以上的全部建议，不再支持数量上限")
         } catch GeneralSettingsCommandError.unavailable {
             throw RemoteAPIError(code: .notFound, message: "建议阈值当前不可用")
         } catch RemoteIdempotencyStore.IdempotencyError.conflict {

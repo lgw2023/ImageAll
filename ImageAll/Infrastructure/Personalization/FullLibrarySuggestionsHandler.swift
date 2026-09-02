@@ -11,9 +11,9 @@ struct FullLibrarySuggestionsHandlerDependencies: Sendable {
     let featureLoader: any SyncFeatureVectorLoading
     let clock: any JobClock
     var minimumScoreForTag: (@Sendable (UUID) throws -> Double)? = nil
-    var maxPendingSuggestionsPerTag: @Sendable () -> Int = {
-        FullLibrarySuggestionsJobFactory.maxPendingSuggestionsPerTag
-    }
+    /// Optional bounded seam for focused retention tests. Production keeps every
+    /// above-threshold result and relies on paged review reads for presentation.
+    var pendingSuggestionRetentionLimit: @Sendable () -> Int? = { nil }
     var publishFailureInjector: (@Sendable () throws -> Void)?
     var beforeEachBatch: (@Sendable (Int) -> Void)?
 }
@@ -324,13 +324,15 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                                 on: db
                             )
                         }
-                        try catalog.retainTopPendingPredictions(
-                            mediaKind: decodedPayload.mediaKind,
-                            tagID: decodedPayload.tagID,
-                            modelRevision: modelRevision,
-                            limit: dependencies.maxPendingSuggestionsPerTag(),
-                            on: db
-                        )
+                        if let retentionLimit = dependencies.pendingSuggestionRetentionLimit() {
+                            try catalog.retainTopPendingPredictions(
+                                mediaKind: decodedPayload.mediaKind,
+                                tagID: decodedPayload.tagID,
+                                modelRevision: modelRevision,
+                                limit: retentionLimit,
+                                on: db
+                            )
+                        }
                         if completed {
                             try completeTrainingRun(
                                 jobID: lease.jobID,
@@ -367,13 +369,15 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                             createdAtMs: createdAtMs,
                             on: db
                         )
-                        try catalog.retainTopPendingPredictions(
-                            mediaKind: decodedPayload.mediaKind,
-                            tagID: decodedPayload.tagID,
-                            modelRevision: modelRevision,
-                            limit: dependencies.maxPendingSuggestionsPerTag(),
-                            on: db
-                        )
+                        if let retentionLimit = dependencies.pendingSuggestionRetentionLimit() {
+                            try catalog.retainTopPendingPredictions(
+                                mediaKind: decodedPayload.mediaKind,
+                                tagID: decodedPayload.tagID,
+                                modelRevision: modelRevision,
+                                limit: retentionLimit,
+                                on: db
+                            )
+                        }
                         if completed {
                             try completeTrainingRun(
                                 jobID: lease.jobID,

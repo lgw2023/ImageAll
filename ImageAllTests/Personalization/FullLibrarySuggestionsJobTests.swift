@@ -785,6 +785,72 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         XCTAssertEqual(try service.totalPendingSuggestionCount(), 5)
     }
 
+    func testAppRuntimeUnboundedJobStreamsEveryHitWithCompactCheckpoint() async throws {
+        // Four of the 134 synthetic assets are training decisions. The remaining
+        // 130 candidates cross three persistent batches (64 + 64 + 2).
+        let fixture = try makeLargeLibraryFixture(assetCount: 134)
+        let queue = JobTestSupport.makeQueue(
+            database: fixture.database,
+            nowMs: fixture.cutoffMs,
+            retryDelayMs: 0
+        )
+        let capability = try makePersonalCapability(
+            database: fixture.database,
+            tagIDs: [fixture.tagID],
+            bundleRevision: "app-runtime-unbounded-r1"
+        )
+        let embeddingCache = RecordingBatchAppEmbeddingCache()
+        let suggester = RecordingBatchAppPersonalSuggester(capability: capability)
+        let handler = PersonalLibrarySuggestionsHandler(
+            dependencies: PersonalLibrarySuggestionsHandlerDependencies(
+                database: fixture.database,
+                queue: queue,
+                images: StubPersonalLibrarySuggestionImages(),
+                client: nil,
+                catalogScopeID: try fixture.database.catalogScopeID(),
+                clock: FixedJobClock(nowMs: fixture.cutoffMs),
+                appSuggestersByBundleID: [capability.target.bundleID: suggester],
+                embeddingCache: embeddingCache
+            )
+        )
+        let coordinator = JobExecutionCoordinator(
+            queue: queue,
+            registry: MultiJobHandlerRegistry(handlers: [handler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: queue)
+        )
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: queue,
+            executionCoordinator: coordinator,
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: fixture.cutoffMs)
+        )
+        let jobID = try service.enqueuePersonalLibrarySuggestions(
+            capability: capability,
+            sourceIDs: [fixture.sourceID],
+            minimumScore: 0,
+            maximumPendingCount: PendingSuggestionGenerationPolicy.unlimitedCount
+        )
+
+        let didRun = try await service.runPendingSuggestionJobsAsync(maxSteps: 1)
+        XCTAssertTrue(didRun)
+
+        let completed = try queue.fetchJob(id: jobID)
+        let checkpoint = try PersonalLibrarySuggestionsCodec.checkpoint(
+            from: completed.checkpoint
+        )
+        XCTAssertEqual(completed.state, .completed)
+        XCTAssertEqual(checkpoint.checkedCount, 130)
+        XCTAssertEqual(checkpoint.aboveThresholdCount, 130)
+        XCTAssertEqual(checkpoint.suggestedCount, 130)
+        XCTAssertTrue(checkpoint.topHits.isEmpty)
+        let embeddingBatchSizes = await embeddingCache.batchSizes
+        let suggestionBatchSizes = await suggester.batchSizes
+        XCTAssertEqual(embeddingBatchSizes, [64, 64, 2])
+        XCTAssertEqual(suggestionBatchSizes, [64, 64, 2])
+        XCTAssertEqual(try service.totalPendingSuggestionCount(), 130)
+    }
+
     func testAppRuntimePersonalJobResumesFromCommittedBatchAfterRetryableFailure() async throws {
         let fixture = try makeLargeLibraryFixture(assetCount: 70)
         let queue = JobTestSupport.makeQueue(
@@ -3063,19 +3129,8 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         )
     }
 
-    func testPendingSuggestionCountPreferenceStoreDefaultsAndClamps() {
-        let suiteName = "PendingSuggestionCountPreferenceStore.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-        let store = UserDefaultsPendingSuggestionCountPreferenceStore(defaults: defaults)
-
-        XCTAssertEqual(store.maxPendingSuggestionsPerTag, PendingSuggestionGenerationLimits.defaultMaxCount)
-        store.maxPendingSuggestionsPerTag = 750
-        XCTAssertEqual(store.maxPendingSuggestionsPerTag, 750)
-        store.maxPendingSuggestionsPerTag = 0
-        XCTAssertEqual(store.maxPendingSuggestionsPerTag, PendingSuggestionGenerationLimits.minCount)
-        store.maxPendingSuggestionsPerTag = 999_999
-        XCTAssertEqual(store.maxPendingSuggestionsPerTag, PendingSuggestionGenerationLimits.maxCount)
+    func testPendingSuggestionGenerationPolicyIsUnbounded() {
+        XCTAssertEqual(PendingSuggestionGenerationPolicy.unlimitedCount, Int.max)
     }
 
     func testScansMoreThanFiveHundredAssetsInSingleRevisionWithoutDuplicateCursor() throws {
@@ -3092,10 +3147,6 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         drainPersonalizationJobs(coordinator: coordinator, maxSteps: 20)
         let facts = try revisionFacts(database: fixture.database, tagID: fixture.tagID)
         XCTAssertEqual(facts.revisionCount, 1)
-        XCTAssertEqual(
-            facts.predictionCount,
-            FullLibrarySuggestionsJobFactory.maxPendingSuggestionsPerTag
-        )
         XCTAssertEqual(facts.predictionCount, facts.positiveCandidateCount)
         // Decided training samples are excluded from the scan candidate pool.
         XCTAssertEqual(facts.checkedCount, 516)
@@ -3108,7 +3159,7 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
             database: fixture.database,
             loader: fixture.loader,
             queue: fixture.queue,
-            maxPendingSuggestionsPerTag: retentionLimit
+            pendingSuggestionRetentionLimit: retentionLimit
         )
         let coordinator = makeCoordinator(database: fixture.database, handler: handler, queue: fixture.queue)
         _ = try enqueueJob(
@@ -5345,14 +5396,14 @@ private func makeHandlerDependencies(
     database: CatalogDatabase,
     loader: any SyncFeatureVectorLoading,
     queue: GRDBJobQueue,
-    maxPendingSuggestionsPerTag: Int = FullLibrarySuggestionsJobFactory.maxPendingSuggestionsPerTag
+    pendingSuggestionRetentionLimit: Int? = nil
 ) -> FullLibrarySuggestionsHandlerDependencies {
     FullLibrarySuggestionsHandlerDependencies(
         database: database,
         queue: queue,
         featureLoader: loader,
         clock: FixedJobClock(nowMs: DatabaseTestSupport.timestampMs),
-        maxPendingSuggestionsPerTag: { maxPendingSuggestionsPerTag }
+        pendingSuggestionRetentionLimit: { pendingSuggestionRetentionLimit }
     )
 }
 
@@ -5360,13 +5411,13 @@ private func makeHandler(
     database: CatalogDatabase,
     loader: any SyncFeatureVectorLoading,
     queue: GRDBJobQueue,
-    maxPendingSuggestionsPerTag: Int = FullLibrarySuggestionsJobFactory.maxPendingSuggestionsPerTag
+    pendingSuggestionRetentionLimit: Int? = nil
 ) -> FullLibrarySuggestionsHandler {
     FullLibrarySuggestionsHandler(dependencies: makeHandlerDependencies(
         database: database,
         loader: loader,
         queue: queue,
-        maxPendingSuggestionsPerTag: maxPendingSuggestionsPerTag
+        pendingSuggestionRetentionLimit: pendingSuggestionRetentionLimit
     ))
 }
 

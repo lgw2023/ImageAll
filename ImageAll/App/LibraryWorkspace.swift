@@ -1567,7 +1567,6 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var isClearingPhotosOriginalStorage = false
     @Published private(set) var isChoosingAppStorageLocation = false
     @Published private(set) var isIdleThumbnailPrewarmEnabled: Bool
-    @Published private(set) var maxPendingSuggestionsPerTag: Int
     /// Bumped when suggestion thresholds change so SwiftUI re-reads effective values.
     @Published private(set) var suggestionThresholdEpoch = 0
     @Published private(set) var sourceThumbnailPrewarmProgress: SourceThumbnailPrewarmProgress?
@@ -1712,7 +1711,6 @@ final class LibraryWorkspaceModel: ObservableObject {
     private let thumbnailRecoveryInitialDelayNanoseconds: UInt64
     private let thumbnailRecoveryMaximumDelayNanoseconds: UInt64
     private let idleThumbnailPrewarmPreferenceStore: any IdleThumbnailPrewarmPreferenceStore
-    private let pendingSuggestionCountPreferences: any PendingSuggestionCountPreferenceStore
     private let idlePrewarmClock: any IdlePrewarmClock
     private let idlePrewarmThresholdSeconds: TimeInterval
     private let idlePrewarmMonitorTickSeconds: TimeInterval
@@ -1782,8 +1780,6 @@ final class LibraryWorkspaceModel: ObservableObject {
         appPersonalTagLibrarySuggester: (any AppPersonalTagLibrarySuggesting)? = nil,
         appPersonalAdamWTagLibrarySuggester: (any AppPersonalTagLibrarySuggesting)? = nil,
         suggestionThresholds: (any SuggestionThresholdPort)? = nil,
-        pendingSuggestionCountPreferences: any PendingSuggestionCountPreferenceStore =
-            UserDefaultsPendingSuggestionCountPreferenceStore(),
         assetAbsolutePathResolver: any LibraryAssetAbsolutePathResolving =
             UnavailableLibraryAssetAbsolutePathResolver(),
         assetPathClipboard: any LibraryAssetPathClipboardWriting =
@@ -1834,14 +1830,12 @@ final class LibraryWorkspaceModel: ObservableObject {
         self.idlePrewarmMonitorTickSeconds = idlePrewarmMonitorTickSeconds
         self.idlePrewarmInstallEventMonitor = idlePrewarmInstallEventMonitor
         isIdleThumbnailPrewarmEnabled = idleThumbnailPrewarmPreferenceStore.isEnabled
-        maxPendingSuggestionsPerTag = pendingSuggestionCountPreferences.maxPendingSuggestionsPerTag
         self.selectedAssetEmbeddingCache = selectedAssetEmbeddingCache
         self.idleFeaturePrintCache = idleFeaturePrintCache
         self.appPersonalSampleSuggester = appPersonalSampleSuggester
         self.appPersonalTagLibrarySuggester = appPersonalTagLibrarySuggester
         self.appPersonalAdamWTagLibrarySuggester = appPersonalAdamWTagLibrarySuggester
         self.suggestionThresholds = suggestionThresholds
-        self.pendingSuggestionCountPreferences = pendingSuggestionCountPreferences
         self.assetAbsolutePathResolver = assetAbsolutePathResolver
         self.assetPathClipboard = assetPathClipboard
         self.originalAssetOpener = originalAssetOpener
@@ -4864,11 +4858,6 @@ final class LibraryWorkspaceModel: ObservableObject {
             beforeID = targetID
         }
         moveSource(sourceID, before: beforeID)
-    }
-
-    func setMaxPendingSuggestionsPerTag(_ count: Int) {
-        pendingSuggestionCountPreferences.maxPendingSuggestionsPerTag = count
-        maxPendingSuggestionsPerTag = pendingSuggestionCountPreferences.maxPendingSuggestionsPerTag
     }
 
     func suggestionThresholdDefaults() -> SuggestionThresholdDefaults? {
@@ -8112,7 +8101,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                 tagID: tagID,
                 method: thresholdMethod
             )
-            let maximumPendingCount = maxPendingSuggestionsPerTag
+            let maximumPendingCount = PendingSuggestionGenerationPolicy.unlimitedCount
             let reviewPort = review
             let resolvedSourceIDs = sourceIDs ?? resolvedReviewSourceFilter
             _ = try await Self.offMain {
@@ -8153,7 +8142,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     private func resolveAppPersonalSampleCandidates() async throws -> [PersonalSuggestionCandidate] {
-        let limit = maxPendingSuggestionsPerTag
+        let limit = PendingSuggestionGenerationPolicy.unlimitedCount
         let selected = selectedAssetIDs
         if !selected.isEmpty {
             let orderedIDs = displayedAssetIDsInGridOrder.filter(selected.contains)
@@ -11189,17 +11178,24 @@ extension LibraryWorkspaceModel {
         let reviewPort = review
         let sourceFilter = resolvedReviewSourceFilter
         let mediaKind = selectedMediaKind
+        let service = service
         do {
-            let page = try await Self.offMain {
-                try reviewPort.fetchReviewQueue(
+            let result = try await Self.offMain {
+                let page = try reviewPort.fetchReviewQueue(
                     mediaKind: mediaKind,
                     tagID: tagID,
                     sourceIDs: sourceFilter,
                     cursor: nil,
                     limit: 100
                 )
+                let favorites = (try? service.fetchFavoriteStates(
+                    assetIDs: page.items.map(\.assetID)
+                )) ?? [:]
+                return (page, favorites)
             }
             guard reviewPageRequestID == requestID else { return }
+            let page = result.0
+            favoriteStates.merge(result.1) { _, newest in newest }
             let refreshedItems = page.items.filter {
                 !hiddenRecycledAssetIDs.contains($0.assetID)
             }
@@ -11245,17 +11241,24 @@ extension LibraryWorkspaceModel {
         let reviewPort = review
         let sourceFilter = resolvedReviewSourceFilter
         let mediaKind = selectedMediaKind
+        let service = service
         do {
-            let page = try await Self.offMain {
-                try reviewPort.fetchReviewQueue(
+            let result = try await Self.offMain {
+                let page = try reviewPort.fetchReviewQueue(
                     mediaKind: mediaKind,
                     tagID: tagID,
                     sourceIDs: sourceFilter,
                     cursor: cursor,
                     limit: 100
                 )
+                let favorites = (try? service.fetchFavoriteStates(
+                    assetIDs: page.items.map(\.assetID)
+                )) ?? [:]
+                return (page, favorites)
             }
             guard reviewPageRequestID == requestID else { return }
+            let page = result.0
+            favoriteStates.merge(result.1) { _, newest in newest }
             reviewQueueItems.append(
                 contentsOf: page.items.filter {
                     !hiddenRecycledAssetIDs.contains($0.assetID)
@@ -11403,8 +11406,7 @@ extension LibraryWorkspaceModel {
             effectiveMinScore: effectiveSuggestionMinScore(
                 tagID: tagID,
                 method: method.thresholdMethod
-            ),
-            maxPendingSuggestionsPerTag: maxPendingSuggestionsPerTag
+            )
         )
     }
 
@@ -15305,7 +15307,7 @@ struct LibraryWorkspaceView: View {
                         .controlSize(.small)
                 } else {
                     LibraryToolbarLabel(
-                        title: "抽 \(model.maxPendingSuggestionsPerTag) 张生成建议",
+                        title: "扫描全部并生成建议",
                         systemImage: "wand.and.stars",
                         displayMode: toolbarDisplayModeSettings.displayMode
                     )
@@ -15314,8 +15316,8 @@ struct LibraryWorkspaceView: View {
             .disabled(!model.canGenerateAppPersonalSampleSuggestions)
             .libraryToolbarHelp(
                 "生成建议",
-                detail: "有多选时：对选中照片（最多 \(model.maxPendingSuggestionsPerTag) 张）生成建议；"
-                    + "无多选时：从库中抽最多 \(model.maxPendingSuggestionsPerTag) 张。"
+                detail: "有多选时：对全部选中照片生成建议；"
+                    + "无多选时：扫描当前可用来源中的全部照片。"
                     + "写入待审核队列后可用 P 接受 / X 拒绝。"
             )
         }
@@ -16136,16 +16138,16 @@ struct LibraryWorkspaceView: View {
             "当前照片的本地模型缓存未生成；浏览和人工标签不受影响。"
         case let .personalSampleSuggestionsCompleted(checked, suggested, skipped):
             if suggested > 0 {
-                "已抽检 \(checked) 张照片：写入 \(suggested) 条待审核建议，跳过 \(skipped) 张。请打开「待审核建议」按 P 接受 / X 拒绝。"
+                "已扫描 \(checked) 张照片：写入 \(suggested) 条待审核建议，跳过 \(skipped) 张。请打开「待审核建议」按 P 接受 / X 拒绝。"
             } else {
-                "已抽检 \(checked) 张照片：没有新的待审核建议（命中照片此前已审核过），跳过 \(skipped) 张。"
+                "已扫描 \(checked) 张照片：没有新的待审核建议（命中照片此前已审核过），跳过 \(skipped) 张。"
             }
         case .personalSampleSuggestionsNotReady:
-            "当前没有可用的个人模型，或抽检候选为空；请先重建个人模型后再试。"
+            "当前没有可用的个人模型，或扫描范围为空；请先重建个人模型后再试。"
         case .personalSampleSuggestionsModelUnavailable:
             "App 内模型尚未启用或当前不可用；没有写入建议，浏览和人工标签不受影响。"
         case .personalSampleSuggestionsFailed:
-            "抽检建议未完成；现有审核队列保持不变，请稍后重试。"
+            "建议扫描未完成；现有审核队列保持不变，请稍后重试。"
         case let .featureKnnSuggestionsCompleted(
             tagName,
             candidates,

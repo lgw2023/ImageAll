@@ -1557,8 +1557,47 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         createdAtMs: Int64,
         on db: Database
     ) throws -> Int {
+        try writePersonalTagLibrarySuggestions(
+            tagID: tagID,
+            hits: hits,
+            expectedCapability: expectedCapability,
+            maximumPendingCount: maximumPendingCount,
+            resetExisting: true,
+            createdAtMs: createdAtMs,
+            on: db
+        )
+    }
+
+    func appendUnboundedPersonalTagLibrarySuggestions(
+        tagID: UUID,
+        hits: [AppPersonalTagLibrarySuggestionHit],
+        expectedCapability: PersonalModelSuggestionCapability,
+        resetExisting: Bool,
+        createdAtMs: Int64,
+        on db: Database
+    ) throws -> Int {
+        try writePersonalTagLibrarySuggestions(
+            tagID: tagID,
+            hits: hits,
+            expectedCapability: expectedCapability,
+            maximumPendingCount: nil,
+            resetExisting: resetExisting,
+            createdAtMs: createdAtMs,
+            on: db
+        )
+    }
+
+    private func writePersonalTagLibrarySuggestions(
+        tagID: UUID,
+        hits: [AppPersonalTagLibrarySuggestionHit],
+        expectedCapability: PersonalModelSuggestionCapability,
+        maximumPendingCount: Int?,
+        resetExisting: Bool,
+        createdAtMs: Int64,
+        on db: Database
+    ) throws -> Int {
         guard createdAtMs >= 0,
-              maximumPendingCount > 0,
+              maximumPendingCount.map({ $0 > 0 }) ?? true,
               expectedCapability.tagIDs.contains(tagID),
               Set(hits.map(\.candidate.assetID)).count == hits.count,
               hits.allSatisfy({
@@ -1575,7 +1614,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             return $0.score > $1.score
         }
         guard try personalCapabilityMatches(expectedCapability, in: db) else {
-                throw PersonalizationReviewError.persistenceFailure
+            throw PersonalizationReviewError.persistenceFailure
         }
         guard let method = PersonalSuggestionMethod(
             bundleID: expectedCapability.target.bundleID
@@ -1604,7 +1643,8 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             throw PersonalizationReviewError.persistenceFailure
         }
 
-        try db.execute(
+        if resetExisting {
+            try db.execute(
                 sql: """
                 DELETE FROM personal_prediction
                 WHERE media_kind = ? AND tag_id = ? AND method = ?
@@ -1615,76 +1655,77 @@ struct GRDBPersonalizationReviewRepository: Sendable {
                     method,
                 ]
             )
+        }
 
-            // Ranked hits may still include decided assets from callers that did not
-            // pre-filter; never let them consume Top-N slots.
+        // Ranked hits may still include decided assets from callers that did not
+        // pre-filter; never let them consume bounded slots or enter an unbounded stream.
         var inserted = 0
         for hit in rankedHits {
-            if inserted >= maximumPendingCount { break }
+            if let maximumPendingCount, inserted >= maximumPendingCount { break }
             let alreadyDecided = try Bool.fetchOne(
-                    db,
-                    sql: """
-                    SELECT EXISTS(
-                        SELECT 1 FROM asset_tag_decision
-                        WHERE asset_id = ? AND tag_id = ?
-                    )
-                    """,
-                    arguments: [uuid(hit.candidate.assetID), uuid(tagID)]
+                db,
+                sql: """
+                SELECT EXISTS(
+                    SELECT 1 FROM asset_tag_decision
+                    WHERE asset_id = ? AND tag_id = ?
+                )
+                """,
+                arguments: [uuid(hit.candidate.assetID), uuid(tagID)]
             ) ?? false
             if alreadyDecided { continue }
             let assetOK = try Bool.fetchOne(
-                    db,
-                    sql: """
-                    SELECT EXISTS(
-                        SELECT 1
-                        FROM asset a
-                        JOIN source s ON s.id = a.source_id AND s.state = 'active'
-                        WHERE a.id = ?
-                            AND a.media_kind = ?
-                            AND a.content_revision = ?
-                            AND a.locator_state = 'current'
-                            AND a.availability = 'available'
-                            AND (
-                                (s.kind = 'folder' AND a.locator_kind = 'file')
-                                OR (s.kind = 'photos' AND a.locator_kind = 'photos')
-                            )
-                    )
-                    """,
-                    arguments: [
-                        uuid(hit.candidate.assetID),
-                        expectedCapability.target.mediaKind.rawValue,
-                        hit.candidate.contentRevision,
-                    ]
+                db,
+                sql: """
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM asset a
+                    JOIN source s ON s.id = a.source_id AND s.state = 'active'
+                    WHERE a.id = ?
+                        AND a.media_kind = ?
+                        AND a.content_revision = ?
+                        AND a.locator_state = 'current'
+                        AND a.availability = 'available'
+                        AND (
+                            (s.kind = 'folder' AND a.locator_kind = 'file')
+                            OR (s.kind = 'photos' AND a.locator_kind = 'photos')
+                        )
+                )
+                """,
+                arguments: [
+                    uuid(hit.candidate.assetID),
+                    expectedCapability.target.mediaKind.rawValue,
+                    hit.candidate.contentRevision,
+                ]
             ) ?? false
             guard assetOK else { continue }
             try db.execute(
-                    sql: """
-                    INSERT INTO personal_prediction (
-                        media_kind, method, asset_id, tag_id,
-                        content_revision, score, state, created_at_ms
+                sql: """
+                INSERT INTO personal_prediction (
+                    media_kind, method, asset_id, tag_id,
+                    content_revision, score, state, created_at_ms
+                )
+                SELECT ?, ?, ?, pst.tag_id, ?, ?, 'pendingReview', ?
+                FROM personal_suggestion_tag pst
+                WHERE pst.media_kind = ?
+                    AND pst.method = ?
+                    AND pst.tag_id = ?
+                    AND NOT EXISTS (
+                        SELECT 1 FROM asset_tag_decision d
+                        WHERE d.asset_id = ? AND d.tag_id = pst.tag_id
                     )
-                    SELECT ?, ?, ?, pst.tag_id, ?, ?, 'pendingReview', ?
-                    FROM personal_suggestion_tag pst
-                    WHERE pst.media_kind = ?
-                        AND pst.method = ?
-                        AND pst.tag_id = ?
-                        AND NOT EXISTS (
-                            SELECT 1 FROM asset_tag_decision d
-                            WHERE d.asset_id = ? AND d.tag_id = pst.tag_id
-                        )
-                    """,
-                    arguments: [
-                        expectedCapability.target.mediaKind.rawValue,
-                        method,
-                        uuid(hit.candidate.assetID),
-                        hit.candidate.contentRevision,
-                        hit.score,
-                        createdAtMs,
-                        expectedCapability.target.mediaKind.rawValue,
-                        method,
-                        uuid(tagID),
-                        uuid(hit.candidate.assetID),
-                    ]
+                """,
+                arguments: [
+                    expectedCapability.target.mediaKind.rawValue,
+                    method,
+                    uuid(hit.candidate.assetID),
+                    hit.candidate.contentRevision,
+                    hit.score,
+                    createdAtMs,
+                    expectedCapability.target.mediaKind.rawValue,
+                    method,
+                    uuid(tagID),
+                    uuid(hit.candidate.assetID),
+                ]
             )
             inserted += db.changesCount
         }

@@ -4,6 +4,7 @@ enum GeneralSettingsCommandError: Error, Equatable, Sendable {
     case unavailable
     case emptyUpdate
     case invalidSuggestionMutation
+    case unsupportedSuggestionLimit
 }
 
 enum GeneralSettingsModelState: String, Equatable, Sendable {
@@ -81,7 +82,9 @@ struct GeneralSettingsSnapshot: Equatable, Sendable {
     let idleThresholdSeconds: Int
     let toolbarDisplayMode: GeneralSettingsToolbarDisplayMode
     let suggestionThresholds: GeneralSettingsSuggestionThresholds?
-    let maxPendingSuggestionsPerTag: Int
+    /// Retained only for wire compatibility with older companions. `nil` means
+    /// suggestions are no longer truncated by a per-tag count limit.
+    let maxPendingSuggestionsPerTag: Int?
 
     init(
         localModel: GeneralSettingsLocalModelSummary,
@@ -89,7 +92,7 @@ struct GeneralSettingsSnapshot: Equatable, Sendable {
         idleThresholdSeconds: Int,
         toolbarDisplayMode: GeneralSettingsToolbarDisplayMode,
         suggestionThresholds: GeneralSettingsSuggestionThresholds? = nil,
-        maxPendingSuggestionsPerTag: Int = PendingSuggestionGenerationLimits.defaultMaxCount
+        maxPendingSuggestionsPerTag: Int? = nil
     ) {
         self.localModel = localModel
         self.idleThumbnailPrewarmEnabled = idleThumbnailPrewarmEnabled

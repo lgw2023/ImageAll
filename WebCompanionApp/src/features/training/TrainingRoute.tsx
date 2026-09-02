@@ -644,9 +644,7 @@ export function TrainingRoute() {
           <div className="panel-title-row">
             <div>
               <h3 id="sample-title">个人建议抽检</h3>
-              <p>
-                从明确来源抽取最多 {samples.data?.maximumSampleCount ?? '—'} 项；结果进入审核队列。
-              </p>
+              <p>扫描明确来源中的全部可用项目；结果进入审核队列。</p>
             </div>
             <Sparkles aria-hidden="true" size={20} />
           </div>
@@ -924,10 +922,7 @@ export function TrainingRoute() {
           <div className="panel-title-row">
             <div>
               <h3 id="tag-suggestions-title">按标签生成建议</h3>
-              <p>
-                阈值和可用性来自 Mac；每标签最多保留{' '}
-                {tagSuggestions.data?.maximumPendingCount ?? '—'} 项。
-              </p>
+              <p>阈值和可用性来自 Mac；保留门槛以上的全部建议。</p>
             </div>
           </div>
           {tagSuggestions.isError ? (

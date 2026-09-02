@@ -146,13 +146,11 @@ function SettingsForm({
   const [modelEnabled, setModelEnabled] = useState(initial.localModel.isEnabled);
   const [prewarmEnabled, setPrewarmEnabled] = useState(initial.idleThumbnailPrewarmEnabled);
   const [toolbarMode, setToolbarMode] = useState(initial.toolbarDisplayMode);
-  const [maxPending, setMaxPending] = useState(initial.maxPendingSuggestionsPerTag ?? 200);
   const [saving, setSaving] = useState(false);
   const dirty =
     modelEnabled !== initial.localModel.isEnabled ||
     prewarmEnabled !== initial.idleThumbnailPrewarmEnabled ||
-    toolbarMode !== initial.toolbarDisplayMode ||
-    maxPending !== (initial.maxPendingSuggestionsPerTag ?? 200);
+    toolbarMode !== initial.toolbarDisplayMode;
 
   async function save(event: SyntheticEvent<HTMLFormElement, SubmitEvent>) {
     event.preventDefault();
@@ -164,13 +162,10 @@ function SettingsForm({
       if (prewarmEnabled !== initial.idleThumbnailPrewarmEnabled)
         patch.idleThumbnailPrewarmEnabled = prewarmEnabled;
       if (toolbarMode !== initial.toolbarDisplayMode) patch.toolbarDisplayMode = toolbarMode;
-      if (maxPending !== (initial.maxPendingSuggestionsPerTag ?? 200))
-        patch.maxPendingSuggestionsPerTag = maxPending;
       const response = await updateGeneralSettings(patch);
       setModelEnabled(response.settings.localModel.isEnabled);
       setPrewarmEnabled(response.settings.idleThumbnailPrewarmEnabled);
       setToolbarMode(response.settings.toolbarDisplayMode);
-      setMaxPending(response.settings.maxPendingSuggestionsPerTag ?? 200);
       queryClient.setQueryData(['general-settings'], response.settings);
       setMessage(
         response.replayed ? '设置请求已重放，Host 状态未重复写入。' : '设置已由 Mac 保存。',
@@ -234,16 +229,9 @@ function SettingsForm({
             <option value="iconAndTitle">图标与标题</option>
           </select>
         </label>
-        <label className="settings-field">
-          <span>每标签最多待处理建议</span>
-          <input
-            max={10000}
-            min={1}
-            onChange={(event) => setMaxPending(event.target.valueAsNumber)}
-            type="number"
-            value={maxPending}
-          />
-        </label>
+        <p className="panel-note">
+          建议队列保留门槛以上的全部结果；队列分页加载，不再设置数量上限。
+        </p>
       </section>
       <SuggestionThresholdPanel settings={initial} />
       <div className="form-actions">
@@ -254,17 +242,12 @@ function SettingsForm({
             setModelEnabled(initial.localModel.isEnabled);
             setPrewarmEnabled(initial.idleThumbnailPrewarmEnabled);
             setToolbarMode(initial.toolbarDisplayMode);
-            setMaxPending(initial.maxPendingSuggestionsPerTag ?? 200);
           }}
           type="button"
         >
           还原
         </button>
-        <button
-          className="button button-primary"
-          disabled={!dirty || saving || !Number.isInteger(maxPending) || maxPending < 1}
-          type="submit"
-        >
+        <button className="button button-primary" disabled={!dirty || saving} type="submit">
           {saving ? '正在保存…' : '保存设置'}
         </button>
       </div>

@@ -195,7 +195,6 @@ struct CompositionRoot {
             clock: clock
         )
         let suggestionThresholds = GRDBSuggestionThresholdRepository(database: runtime.database)
-        let pendingSuggestionCountPreferences = UserDefaultsPendingSuggestionCountPreferenceStore()
         let personalizationHandler = FullLibrarySuggestionsHandler(
             dependencies: FullLibrarySuggestionsHandlerDependencies(
                 database: runtime.database,
@@ -204,9 +203,6 @@ struct CompositionRoot {
                 clock: clock,
                 minimumScoreForTag: { tagID in
                     try suggestionThresholds.effectiveMinScore(tagID: tagID, method: .featureKnn)
-                },
-                maxPendingSuggestionsPerTag: {
-                    pendingSuggestionCountPreferences.maxPendingSuggestionsPerTag
                 }
             )
         )
@@ -407,9 +403,6 @@ struct CompositionRoot {
             centroidTagSuggester: appPersonalTagLibrarySuggester,
             adamWTagSuggester: appPersonalAdamWTagLibrarySuggester,
             localModelSuggestions: localModelSuggestions,
-            sampleSuggestionLimit: {
-                pendingSuggestionCountPreferences.maxPendingSuggestionsPerTag
-            },
             tagSuggestionMinimumScore: { tagID, method in
                 let thresholdMethod: SuggestionScoreThresholdMethod = switch method {
                 case .personalCentroid: .personalCentroid
@@ -524,7 +517,6 @@ struct CompositionRoot {
             appPersonalTagLibrarySuggester: appPersonalTagLibrarySuggester,
             appPersonalAdamWTagLibrarySuggester: appPersonalAdamWTagLibrarySuggester,
             suggestionThresholds: suggestionThresholds,
-            pendingSuggestionCountPreferences: pendingSuggestionCountPreferences,
             assetAbsolutePathResolver: LibraryAssetAbsolutePathResolver(
                 database: runtime.database,
                 folderAuthorization: authorization

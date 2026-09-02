@@ -20440,7 +20440,7 @@ function renderPersonalModelControls() {
     : Boolean(activeSampleSuggestion());
   elements.generatePersonalSuggestionsTitle.textContent = fullLibrary
     ? "使用个人模型扫描全库"
-    : `抽 ${state.sampleSuggestions.maximumSampleCount || 500} 张生成建议`;
+    : "扫描全部并生成建议";
   elements.toolbarGeneratePersonalSuggestionsLabel.textContent =
     elements.generatePersonalSuggestionsTitle.textContent;
   elements.toolbarGeneratePersonalSuggestionsButton.setAttribute(
@@ -20451,7 +20451,7 @@ function renderPersonalModelControls() {
     elements.generatePersonalSuggestionsTitle.textContent;
   elements.generatePersonalSuggestionsDetail.textContent = fullLibrary
     ? "按已确认标签扫描图库，结果进入待审核建议"
-    : "从当前审核来源抽样，结果进入待审核建议";
+    : "扫描当前审核来源，门槛以上的结果全部进入待审核建议";
   elements.generatePersonalSuggestionsButton.disabled = offline
     || operation.busy
     || state.mediaKind !== "image"
@@ -20483,11 +20483,8 @@ function renderPersonalModelControls() {
   elements.toolbarGeneratePersonalSuggestionsButton.dataset.helpDetail = fullLibrary
     ? "按顶部审核来源范围使用 Mac 本地个人模型扫描全库；结果进入待审核队列。"
     : state.selectedAssetIDs.size
-      ? `对当前选中的 ${Math.min(
-        state.selectedAssetIDs.size,
-        state.sampleSuggestions.maximumSampleCount || 500
-      )} 项${noun}生成建议；结果进入待审核队列，可用 P 接受、X 拒绝。`
-      : `从库中抽最多 ${state.sampleSuggestions.maximumSampleCount || 500} 张${noun}生成建议；结果进入待审核队列，可用 P 接受、X 拒绝。`;
+      ? `对当前选中的 ${state.selectedAssetIDs.size} 项${noun}生成建议；门槛以上的结果全部进入待审核队列，可用 P 接受、X 拒绝。`
+      : `扫描当前审核来源的全部${noun}；门槛以上的结果全部进入待审核队列，可用 P 接受、X 拒绝。`;
   const hasSelection = state.selectedAssetIDs.size > 0;
   const canPrepareSelection = hasSelection && state.embeddingPreparation.isAvailable;
   const canFindSelection = hasSelection && supportsLibrarySlimming();
@@ -25008,69 +25005,20 @@ async function selectAllReviewSources() {
   );
 }
 
-const reviewSuggestionLimitBounds = { minimum: 1, maximum: 10_000, step: 50 };
-
-function currentReviewSuggestionLimit() {
-  const configured = state.generalSettings.snapshot?.maxPendingSuggestionsPerTag;
-  if (Number.isInteger(configured)) return configured;
-  const projected = state.tagLibrarySuggestions.snapshot?.maximumPendingCount;
-  return Number.isInteger(projected) ? projected : 500;
-}
-
 function renderReviewSuggestionLimit() {
-  const value = currentReviewSuggestionLimit();
-  const writable = Number.isInteger(
-    state.generalSettings.snapshot?.maxPendingSuggestionsPerTag
-  );
-  const locked = state.generalSettings.loading
-    || state.generalSettings.submitting
-    || !state.online
-    || !writable;
-  elements.reviewSuggestionLimitValue.textContent = String(value);
-  elements.decreaseReviewSuggestionLimitButton.disabled = locked
-    || value <= reviewSuggestionLimitBounds.minimum;
-  elements.increaseReviewSuggestionLimitButton.disabled = locked
-    || value >= reviewSuggestionLimitBounds.maximum;
-  elements.reviewSuggestionLimitControl.title = writable
-    ? "调整每个标签最多保留的待审核建议数；四种建议生成路径共用。"
-    : "当前 Mac Host 只能读取每标签上限；升级 Host 后可在网页修改。";
+  elements.reviewSuggestionLimitValue.textContent = "不限";
+  elements.decreaseReviewSuggestionLimitButton.disabled = true;
+  elements.increaseReviewSuggestionLimitButton.disabled = true;
+  elements.reviewSuggestionLimitControl.title = "所有生成路径都会保留门槛以上的全部建议。";
   configurePersistentHelp(elements.reviewSuggestionLimitControl, {
-    title: `每标签上限 · ${value}`,
-    detail: writable
-      ? "调整每个标签最多保留的待审核建议数；特征向量、标准模型、个人模型和超级个人四条生成路径共用。"
-      : "当前 Host 只提供读取能力；升级 Mac App 后才能从网页修改每标签上限。",
-    kind: "review",
-  });
-  configurePersistentHelp(elements.decreaseReviewSuggestionLimitButton, {
-    title: "减少每标签上限",
-    detail: `把每标签上限从 ${value} 减少 ${reviewSuggestionLimitBounds.step}；不会立即生成或删除建议。`,
-    kind: "review",
-  });
-  configurePersistentHelp(elements.increaseReviewSuggestionLimitButton, {
-    title: "增加每标签上限",
-    detail: `把每标签上限从 ${value} 增加 ${reviewSuggestionLimitBounds.step}；不会立即生成或删除建议。`,
+    title: "审核队列 · 不限数量",
+    detail: "特征向量、标准模型、个人模型和超级个人四条生成路径都会保留门槛以上的全部建议。",
     kind: "review",
   });
 }
 
-async function adjustReviewSuggestionLimit(delta) {
-  const configured = state.generalSettings.snapshot?.maxPendingSuggestionsPerTag;
-  if (!Number.isInteger(configured)
-    || state.generalSettings.loading
-    || state.generalSettings.submitting) return;
-  const next = Math.min(
-    reviewSuggestionLimitBounds.maximum,
-    Math.max(reviewSuggestionLimitBounds.minimum, configured + delta)
-  );
-  if (next === configured) return;
-  const returnFocus = delta < 0
-    ? elements.decreaseReviewSuggestionLimitButton
-    : elements.increaseReviewSuggestionLimitButton;
-  await submitGeneralSettingsPatch({ maxPendingSuggestionsPerTag: next });
-  if (state.generalSettings.snapshot?.maxPendingSuggestionsPerTag === next) {
-    await loadTagLibrarySuggestions({ quiet: true });
-  }
-  restoreOverlayFocus(returnFocus);
+async function adjustReviewSuggestionLimit() {
+  return Promise.resolve();
 }
 
 function createTagSuggestionSourceOption() {
@@ -25127,8 +25075,7 @@ function renderTagSuggestionDialog() {
   elements.tagSuggestionDialogSubtitle.textContent =
     "使用这台 Mac 上已训练的个人模型扫描所选来源。";
   elements.tagSuggestionMethodSummary.textContent = tagLibrarySuggestionMethodText(dialog.method);
-  elements.tagSuggestionLimitSummary.textContent =
-    `Top ${suggestions.snapshot?.maximumPendingCount || 500}`;
+  elements.tagSuggestionLimitSummary.textContent = "门槛以上全部";
   elements.tagSuggestionThresholdSummary.textContent = Number.isFinite(threshold)
     ? threshold.toFixed(3)
     : "由 Mac 设置";
@@ -26681,7 +26628,7 @@ function configureReviewWorkspacePersistentHelp() {
   });
   configurePersistentHelp(elements.reviewBackButton, {
     title: "返回审核总览",
-    detail: "退出当前标签队列并返回标签总览；当前来源范围、每标签上限和后台任务保持不变。",
+    detail: "退出当前标签队列并返回标签总览；当前来源范围、门槛和后台任务保持不变。",
     kind: "review",
   });
   configurePersistentHelp(elements.reviewUndoButton, {
@@ -27418,7 +27365,7 @@ function renderReviewOverview({ preserveContent = false, reconcileContent = fals
             || suggestions.loading
             || suggestions.submitting
             || Boolean(activeTagLibrarySuggestion());
-          button.textContent = `${labelText} Top ${suggestions.snapshot?.maximumPendingCount || 500}`;
+          button.textContent = `${labelText} · 全部`;
           configurePersistentHelp(button, {
             title: `使用${labelText}生成建议`,
             detail: `打开来源确认，为“${overview.displayName}”创建${labelText}全库建议任务；结果进入待审核队列。`,
@@ -48759,10 +48706,10 @@ function bindEvents() {
   });
   elements.reviewSourceFilterButton.addEventListener("click", toggleReviewSourceFilter);
   elements.decreaseReviewSuggestionLimitButton.addEventListener("click", () => {
-    adjustReviewSuggestionLimit(-reviewSuggestionLimitBounds.step);
+    adjustReviewSuggestionLimit();
   });
   elements.increaseReviewSuggestionLimitButton.addEventListener("click", () => {
-    adjustReviewSuggestionLimit(reviewSuggestionLimitBounds.step);
+    adjustReviewSuggestionLimit();
   });
   elements.reviewSourceFilterPopover.addEventListener("focusin", (event) => {
     const source = event.target.closest?.("[data-review-source-id]");

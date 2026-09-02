@@ -471,11 +471,11 @@
             </button>
             <button id="toolbarGeneratePersonalSuggestionsButton"
               class="button toolbar-button library-toolbar-mode-button" type="button"
-              aria-label="抽 500 张生成建议" title="抽 500 张生成建议"
-              data-help-detail="有多选时对选中照片生成建议；无多选时从库中抽样。结果写入待审核队列，可用 P 接受、X 拒绝。">
+              aria-label="扫描全部并生成建议" title="扫描全部并生成建议"
+              data-help-detail="有多选时扫描选中照片；无多选时扫描当前审核来源。门槛以上的结果全部进入待审核队列。">
               <span class="library-toolbar-icon personal-model-suggestion-icon" aria-hidden="true">✦</span>
               <span id="toolbarGeneratePersonalSuggestionsLabel"
-                class="library-toolbar-label">抽 500 张生成建议</span>
+                class="library-toolbar-label">扫描全部并生成建议</span>
             </button>
             <button id="toolbarPrepareSelectedFeaturesButton"
               class="button toolbar-button library-toolbar-mode-button hidden" type="button"
@@ -595,7 +595,7 @@
             role="menuitem">
             <span class="personal-model-action-icon" aria-hidden="true">✦</span>
             <span>
-              <strong id="generatePersonalSuggestionsTitle">抽 500 张生成建议</strong>
+              <strong id="generatePersonalSuggestionsTitle">扫描全部并生成建议</strong>
               <small id="generatePersonalSuggestionsDetail">从当前审核来源抽样，结果进入待审核建议</small>
             </span>
           </button>
@@ -1577,11 +1577,11 @@
           </section>
         </div>
         <div id="reviewSuggestionLimitControl" class="review-suggestion-limit" role="group"
-          aria-label="每标签上限" title="调整每个标签最多保留的待审核建议数；四种建议生成路径共用">
-          <span class="review-suggestion-limit-label">每标签上限</span>
-          <button id="decreaseReviewSuggestionLimitButton" type="button" aria-label="减少每标签上限">−</button>
-          <output id="reviewSuggestionLimitValue" aria-live="polite">500</output>
-          <button id="increaseReviewSuggestionLimitButton" type="button" aria-label="增加每标签上限">＋</button>
+          aria-label="审核队列不限数量" title="所有生成路径都会保留门槛以上的全部建议">
+          <span class="review-suggestion-limit-label">门槛以上全部保留</span>
+          <button id="decreaseReviewSuggestionLimitButton" class="hidden" type="button" aria-label="数量不限" disabled>−</button>
+          <output id="reviewSuggestionLimitValue" aria-live="polite">不限</output>
+          <button id="increaseReviewSuggestionLimitButton" class="hidden" type="button" aria-label="数量不限" disabled>＋</button>
         </div>
         <div id="reviewThumbnailLayoutControls" class="review-thumbnail-layout-controls hidden"
           role="group" aria-label="待审核缩略图显示">
@@ -1667,10 +1667,10 @@
             class="review-local-model-card review-local-model-personal-card">
             <div class="review-local-model-card-heading">
               <strong>个人模型</strong>
-              <span id="personalLibrarySuggestionPath" class="review-local-model-path">App 内抽检</span>
+              <span id="personalLibrarySuggestionPath" class="review-local-model-path">App 内全量扫描</span>
             </div>
             <p id="sampleSuggestionReviewStatus" class="review-local-model-status" role="status">
-              最多抽取 500 张照片加入审核队列。
+              扫描全部可用照片，门槛以上的结果全部加入审核队列。
             </p>
             <div class="review-local-model-progress hidden" id="sampleSuggestionReviewProgress"
               role="progressbar" aria-label="个人建议抽检进度" aria-valuemin="0" aria-valuemax="100"
@@ -1864,7 +1864,7 @@
       </header>
       <section class="tag-suggestion-summary" aria-label="生成规则">
         <div><span>模型</span><strong id="tagSuggestionMethodSummary">个人模型</strong></div>
-        <div><span>保留数量</span><strong id="tagSuggestionLimitSummary">Top 500</strong></div>
+        <div><span>保留数量</span><strong id="tagSuggestionLimitSummary">门槛以上全部</strong></div>
         <div><span>最低分数</span><strong id="tagSuggestionThresholdSummary">由 Mac 设置</strong></div>
       </section>
       <p id="tagSuggestionNotice" class="training-setup-notice tag-suggestion-notice hidden"
