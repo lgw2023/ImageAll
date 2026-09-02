@@ -821,28 +821,44 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, St
         let uniqueAssetIDs = try validatedUniqueAssetIDs(assetIDs)
         return try CatalogQueryErrorMapping.perform {
             try database.pool.write { db in
-                let tagState = try fetchTagState(db, tagID: tagID)
-                guard tagState == .active else {
-                    throw CatalogQueryError.archivedTag
-                }
-                try validateAssetsExist(db, assetIDs: uniqueAssetIDs)
-
-                let priorStates = try fetchPriorStates(db, tagID: tagID, assetIDs: uniqueAssetIDs)
-                try writeDecisionChunks(
-                    db,
+                try applyBatchDecision(
+                    in: db,
                     tagID: tagID,
                     assetIDs: uniqueAssetIDs,
                     decision: decision,
                     timestampMs: timestampMs
                 )
-                try WorldMapPlaceResolutionService.refreshCanonicalLocations(
-                    db,
-                    assetIDs: uniqueAssetIDs,
-                    nowMs: timestampMs
-                )
-                return TagMutationResult(priorStates: priorStates)
             }
         }
+    }
+
+    func applyBatchDecision(
+        in db: Database,
+        tagID: UUID,
+        assetIDs: [UUID],
+        decision: PersistableTagDecision,
+        timestampMs: Int64
+    ) throws -> TagMutationResult {
+        let uniqueAssetIDs = try validatedUniqueAssetIDs(assetIDs)
+        let tagState = try fetchTagState(db, tagID: tagID)
+        guard tagState == .active else {
+            throw CatalogQueryError.archivedTag
+        }
+        try validateAssetsExist(db, assetIDs: uniqueAssetIDs)
+        let priorStates = try fetchPriorStates(db, tagID: tagID, assetIDs: uniqueAssetIDs)
+        try writeDecisionChunks(
+            db,
+            tagID: tagID,
+            assetIDs: uniqueAssetIDs,
+            decision: decision,
+            timestampMs: timestampMs
+        )
+        try WorldMapPlaceResolutionService.refreshCanonicalLocations(
+            db,
+            assetIDs: uniqueAssetIDs,
+            nowMs: timestampMs
+        )
+        return TagMutationResult(priorStates: priorStates)
     }
 
     private func writeDecisionChunks(
@@ -1274,6 +1290,808 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, St
             sql: "SELECT EXISTS(SELECT 1 FROM tag_group WHERE id = ?)",
             arguments: [CatalogQuerySQLHelpers.lowercaseUUID(groupID)]
         ) ?? false
+    }
+}
+
+struct ContextualTagFeedService: ContextualTagFeedPort, Sendable {
+    static let policyRevision = "context-event-v1"
+    static let maximumGroupSize = 24
+
+    let database: CatalogDatabase
+
+    func pendingCount() throws -> Int {
+        try database.pool.read { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM contextual_tag_feed WHERE state = 'pending'"
+            ) ?? 0
+        }
+    }
+
+    func fetchPendingGroups(limit: Int) throws -> [ContextualTagFeedGroup] {
+        guard limit > 0, limit <= 100 else {
+            throw ContextualTagFeedError.invalidSelection
+        }
+        return try database.pool.read { db in
+            let ids = try String.fetchAll(
+                db,
+                sql: """
+                SELECT id FROM contextual_tag_feed
+                WHERE state = 'pending'
+                ORDER BY created_at_ms, id
+                LIMIT ?
+                """,
+                arguments: [limit]
+            ).compactMap(UUID.init(uuidString:))
+            return try ids.compactMap { try fetchGroup(db, feedID: $0) }
+        }
+    }
+
+    @discardableResult
+    func refreshRecentAcceptedAnchors(limit: Int, timestampMs: Int64) throws -> Int {
+        guard limit > 0, limit <= 1_000 else {
+            throw ContextualTagFeedError.invalidSelection
+        }
+        let anchors: [(tagID: UUID, assetID: UUID)] = try database.pool.read { db in
+            try Row.fetchAll(
+                db,
+                sql: """
+                SELECT decision.tag_id, decision.asset_id
+                FROM asset_tag_decision decision
+                JOIN tag ON tag.id = decision.tag_id AND tag.state = 'active'
+                JOIN asset ON asset.id = decision.asset_id
+                JOIN source ON source.id = asset.source_id
+                WHERE decision.decision = 'accepted'
+                  AND asset.locator_state = 'current'
+                  AND asset.availability = 'available'
+                  AND source.state = 'active'
+                ORDER BY decision.updated_at_ms DESC, decision.tag_id, decision.asset_id
+                LIMIT ?
+                """,
+                arguments: [limit]
+            ).compactMap { row in
+                guard let tagID = UUID(uuidString: row["tag_id"]),
+                      let assetID = UUID(uuidString: row["asset_id"])
+                else { return nil }
+                return (tagID, assetID)
+            }
+        }
+        for anchor in anchors {
+            _ = try generate(
+                tagID: anchor.tagID,
+                anchorAssetID: anchor.assetID,
+                timestampMs: timestampMs
+            )
+        }
+        return try pendingCount()
+    }
+
+    func dismiss(feedID: UUID, revision: Int, timestampMs: Int64) throws {
+        try database.pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE contextual_tag_feed
+                SET state = 'dismissed', revision = revision + 1,
+                    updated_at_ms = ?, processed_at_ms = ?
+                WHERE id = ? AND revision = ? AND state = 'pending'
+                """,
+                arguments: [
+                    timestampMs,
+                    timestampMs,
+                    feedID.uuidString.lowercased(),
+                    revision,
+                ]
+            )
+            guard db.changesCount == 1 else {
+                throw ContextualTagFeedError.feedChanged
+            }
+        }
+    }
+
+    func resolve(
+        feedID: UUID,
+        revision: Int,
+        selectedAssetIDs: [UUID],
+        decision: PersistableTagDecision,
+        timestampMs: Int64
+    ) throws -> TagMutationPriorStateSnapshot {
+        let selected = Array(Set(selectedAssetIDs))
+        guard !selected.isEmpty, selected.count == selectedAssetIDs.count else {
+            throw ContextualTagFeedError.invalidSelection
+        }
+        return try database.pool.write { db in
+            guard let feed = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT tag_id, revision, state
+                FROM contextual_tag_feed
+                WHERE id = ?
+                """,
+                arguments: [feedID.uuidString.lowercased()]
+            ), let tagID = UUID(uuidString: feed["tag_id"]),
+               (feed["revision"] as Int) == revision,
+               (feed["state"] as String) == ContextualTagFeedState.pending.rawValue
+            else {
+                throw ContextualTagFeedError.feedChanged
+            }
+            let selectedTokens = Set(selected.map { $0.uuidString.lowercased() })
+            let candidateTokens = Set(try String.fetchAll(
+                db,
+                sql: """
+                SELECT asset_id FROM contextual_tag_feed_member
+                WHERE feed_id = ? AND role = 'candidate'
+                """,
+                arguments: [feedID.uuidString.lowercased()]
+            ))
+            guard selectedTokens.isSubset(of: candidateTokens) else {
+                throw ContextualTagFeedError.invalidSelection
+            }
+            for assetToken in selectedTokens {
+                let stillUndecided = try Bool.fetchOne(
+                    db,
+                    sql: """
+                    SELECT NOT EXISTS (
+                        SELECT 1 FROM asset_tag_decision
+                        WHERE tag_id = ? AND asset_id = ?
+                    )
+                    """,
+                    arguments: [tagID.uuidString.lowercased(), assetToken]
+                ) ?? false
+                guard stillUndecided else {
+                    throw ContextualTagFeedError.feedChanged
+                }
+            }
+
+            let mutation = try GRDBTagCatalogRepository(database: database)
+                .applyBatchDecision(
+                    in: db,
+                    tagID: tagID,
+                    assetIDs: selected,
+                    decision: decision,
+                    timestampMs: timestampMs
+                )
+            try db.execute(
+                sql: """
+                UPDATE contextual_tag_feed
+                SET state = 'resolved', revision = revision + 1,
+                    updated_at_ms = ?, processed_at_ms = ?
+                WHERE id = ? AND revision = ? AND state = 'pending'
+                """,
+                arguments: [
+                    timestampMs,
+                    timestampMs,
+                    feedID.uuidString.lowercased(),
+                    revision,
+                ]
+            )
+            guard db.changesCount == 1 else {
+                throw ContextualTagFeedError.feedChanged
+            }
+            return TagMutationPriorStateSnapshot(
+                tagID: tagID,
+                priorStates: mutation.priorStates
+            )
+        }
+    }
+
+    func generate(
+        tagID: UUID,
+        anchorAssetID: UUID,
+        timestampMs: Int64
+    ) throws -> ContextualTagFeedGroup? {
+        try database.pool.write { db in
+            try retireStalePendingFeeds(db, timestampMs: timestampMs)
+            guard let anchor = try fetchAnchor(
+                db,
+                tagID: tagID,
+                anchorAssetID: anchorAssetID
+            ) else {
+                return nil
+            }
+            let neighborhood = try fetchNeighborhood(db, anchor: anchor, tagID: tagID)
+            let ranked = rankedMembers(anchor: anchor, candidates: neighborhood)
+            guard ranked.count > 1 else { return nil }
+
+            let groupKey = stableGroupKey(
+                tagID: tagID,
+                sourceID: anchor.sourceID,
+                assetIDs: ranked.map(\.row.assetID)
+            )
+            if let existingIDRaw = try String.fetchOne(
+                db,
+                sql: """
+                SELECT id FROM contextual_tag_feed
+                WHERE tag_id = ? AND source_id = ? AND group_key = ? AND policy_revision = ?
+                """,
+                arguments: [
+                    tagID.uuidString.lowercased(),
+                    anchor.sourceID.uuidString.lowercased(),
+                    groupKey,
+                    Self.policyRevision,
+                ]
+            ), let existingID = UUID(uuidString: existingIDRaw) {
+                return try fetchGroup(db, feedID: existingID)
+            }
+            for candidate in ranked where candidate.row.assetID != anchorAssetID {
+                if let overlappingIDRaw = try String.fetchOne(
+                    db,
+                    sql: """
+                    SELECT feed.id
+                    FROM contextual_tag_feed feed
+                    JOIN contextual_tag_feed_member member ON member.feed_id = feed.id
+                    WHERE feed.tag_id = ?
+                      AND feed.source_id = ?
+                      AND feed.policy_revision = ?
+                      AND feed.state = 'pending'
+                      AND member.asset_id = ?
+                    ORDER BY feed.created_at_ms, feed.id
+                    LIMIT 1
+                    """,
+                    arguments: [
+                        tagID.uuidString.lowercased(),
+                        anchor.sourceID.uuidString.lowercased(),
+                        Self.policyRevision,
+                        candidate.row.assetID.uuidString.lowercased(),
+                    ]
+                ), let overlappingID = UUID(uuidString: overlappingIDRaw) {
+                    return try fetchGroup(db, feedID: overlappingID)
+                }
+            }
+
+            let feedID = UUID()
+            try db.execute(
+                sql: """
+                INSERT INTO contextual_tag_feed (
+                    id, tag_id, anchor_asset_id, source_id, group_key,
+                    policy_revision, state, revision, created_at_ms, updated_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, 'pending', 1, ?, ?)
+                """,
+                arguments: [
+                    feedID.uuidString.lowercased(),
+                    tagID.uuidString.lowercased(),
+                    anchorAssetID.uuidString.lowercased(),
+                    anchor.sourceID.uuidString.lowercased(),
+                    groupKey,
+                    Self.policyRevision,
+                    timestampMs,
+                    timestampMs,
+                ]
+            )
+            for (rank, candidate) in ranked.enumerated() {
+                let role: ContextualTagFeedMemberRole = candidate.row.assetID == anchorAssetID
+                    ? .anchor
+                    : .candidate
+                let evidenceMask = candidate.evidence.reduce(0) { $0 | $1.kind.bit }
+                try db.execute(
+                    sql: """
+                    INSERT INTO contextual_tag_feed_member (
+                        feed_id, asset_id, role, rank, evidence_mask
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    arguments: [
+                        feedID.uuidString.lowercased(),
+                        candidate.row.assetID.uuidString.lowercased(),
+                        role.rawValue,
+                        rank,
+                        evidenceMask,
+                    ]
+                )
+                for evidence in candidate.evidence {
+                    try db.execute(
+                        sql: """
+                        INSERT INTO contextual_tag_feed_evidence (
+                            feed_id, asset_id, kind, strength, delta_ms,
+                            distance_m, sequence_offset, provenance
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        arguments: [
+                            feedID.uuidString.lowercased(),
+                            candidate.row.assetID.uuidString.lowercased(),
+                            evidence.kind.rawValue,
+                            evidence.strength,
+                            evidence.deltaMs,
+                            evidence.distanceM,
+                            evidence.sequenceOffset,
+                            evidence.provenance,
+                        ]
+                    )
+                }
+            }
+            return try fetchGroup(db, feedID: feedID)
+        }
+    }
+
+    private func retireStalePendingFeeds(_ db: Database, timestampMs: Int64) throws {
+        try db.execute(
+            sql: """
+            UPDATE contextual_tag_feed
+            SET state = 'resolved', revision = revision + 1,
+                updated_at_ms = ?, processed_at_ms = ?
+            WHERE state = 'pending'
+              AND EXISTS (
+                  SELECT 1
+                  FROM contextual_tag_feed_member member
+                  JOIN asset_tag_decision decision
+                    ON decision.asset_id = member.asset_id
+                   AND decision.tag_id = contextual_tag_feed.tag_id
+                  WHERE member.feed_id = contextual_tag_feed.id
+                    AND member.role = 'candidate'
+              )
+            """,
+            arguments: [timestampMs, timestampMs]
+        )
+    }
+
+    private struct AssetContext: Sendable {
+        let assetID: UUID
+        let sourceID: UUID
+        let sourceKind: SourceKind
+        let locatorKind: AssetLocatorKind
+        let relativePath: String?
+        let fileName: String?
+        let mediaKind: MediaKind
+        let mediaCreatedAtMs: Int64?
+        let latitude: Double?
+        let longitude: Double?
+        let locationProvenance: String?
+
+        var parentRelativePath: String? {
+            guard let relativePath, locatorKind == .file else { return nil }
+            let components = relativePath.split(separator: "/", omittingEmptySubsequences: true)
+            guard components.count > 1 else { return "" }
+            return components.dropLast().joined(separator: "/")
+        }
+    }
+
+    private struct RankedContext {
+        let row: AssetContext
+        let evidence: [ContextualTagFeedEvidence]
+        let sequence: Int?
+    }
+
+    private struct FilenameSignature: Equatable {
+        let skeleton: String
+        let sequence: Int
+        let sequenceWidth: Int
+    }
+
+    private func fetchAnchor(
+        _ db: Database,
+        tagID: UUID,
+        anchorAssetID: UUID
+    ) throws -> AssetContext? {
+        guard let row = try Row.fetchOne(
+            db,
+            sql: """
+            SELECT asset.id, asset.source_id, source.kind AS source_kind,
+                   asset.locator_kind, asset.relative_path, asset.file_name,
+                   asset.media_kind, asset.media_created_at_ms,
+                   location.latitude, location.longitude,
+                   location.source_kind AS location_source_kind
+            FROM asset
+            JOIN source ON source.id = asset.source_id
+            JOIN asset_tag_decision decision
+              ON decision.asset_id = asset.id
+             AND decision.tag_id = ?
+             AND decision.decision = 'accepted'
+            JOIN tag ON tag.id = decision.tag_id AND tag.state = 'active'
+            LEFT JOIN asset_location location ON location.asset_id = asset.id
+            WHERE asset.id = ?
+              AND asset.locator_state = 'current'
+              AND asset.availability = 'available'
+              AND source.state = 'active'
+            """,
+            arguments: [tagID.uuidString.lowercased(), anchorAssetID.uuidString.lowercased()]
+        ) else {
+            return nil
+        }
+        return decodeAssetContext(row)
+    }
+
+    private func fetchNeighborhood(
+        _ db: Database,
+        anchor: AssetContext,
+        tagID: UUID
+    ) throws -> [AssetContext] {
+        var neighborhoodSQL = "0"
+        var neighborhoodArguments = StatementArguments()
+        if let parent = anchor.parentRelativePath {
+            if parent.isEmpty {
+                neighborhoodSQL = "(asset.locator_kind = 'file' AND instr(asset.relative_path, '/') = 0)"
+            } else {
+                let prefix = parent + "/"
+                neighborhoodSQL = """
+                (asset.locator_kind = 'file'
+                 AND substr(asset.relative_path, 1, ?) = ?
+                 AND instr(substr(asset.relative_path, ?), '/') = 0)
+                """
+                neighborhoodArguments += [prefix.count, prefix, prefix.count + 1]
+            }
+        }
+        if let createdAt = anchor.mediaCreatedAtMs {
+            if neighborhoodSQL == "0" {
+                neighborhoodSQL = "(asset.media_created_at_ms BETWEEN ? AND ?)"
+            } else {
+                neighborhoodSQL += " OR (asset.media_created_at_ms BETWEEN ? AND ?)"
+            }
+            neighborhoodArguments += [createdAt - 86_400_000, createdAt + 86_400_000]
+        }
+        guard neighborhoodSQL != "0" else { return [] }
+
+        var arguments = StatementArguments()
+        arguments += [anchor.sourceID.uuidString.lowercased(), anchor.assetID.uuidString.lowercased()]
+        arguments += neighborhoodArguments
+        arguments += [tagID.uuidString.lowercased()]
+        return try Row.fetchAll(
+            db,
+            sql: """
+            SELECT asset.id, asset.source_id, source.kind AS source_kind,
+                   asset.locator_kind, asset.relative_path, asset.file_name,
+                   asset.media_kind, asset.media_created_at_ms,
+                   location.latitude, location.longitude,
+                   location.source_kind AS location_source_kind
+            FROM asset
+            JOIN source ON source.id = asset.source_id
+            LEFT JOIN asset_location location ON location.asset_id = asset.id
+            WHERE asset.source_id = ?
+              AND asset.id != ?
+              AND asset.locator_state = 'current'
+              AND asset.availability = 'available'
+              AND source.state = 'active'
+              AND (\(neighborhoodSQL))
+              AND NOT EXISTS (
+                  SELECT 1 FROM asset_tag_decision decision
+                  WHERE decision.asset_id = asset.id AND decision.tag_id = ?
+              )
+            """,
+            arguments: arguments
+        ).compactMap(decodeAssetContext)
+    }
+
+    private func decodeAssetContext(_ row: Row) -> AssetContext? {
+        guard let assetID = UUID(uuidString: row["id"]),
+              let sourceID = UUID(uuidString: row["source_id"]),
+              let sourceKind = SourceKind(rawValue: row["source_kind"]),
+              let locatorKind = AssetLocatorKind(rawValue: row["locator_kind"])
+        else {
+            return nil
+        }
+        let mediaKindRaw: String? = row["media_kind"]
+        return AssetContext(
+            assetID: assetID,
+            sourceID: sourceID,
+            sourceKind: sourceKind,
+            locatorKind: locatorKind,
+            relativePath: row["relative_path"],
+            fileName: row["file_name"],
+            mediaKind: mediaKindRaw.flatMap(MediaKind.init(rawValue:)) ?? .image,
+            mediaCreatedAtMs: row["media_created_at_ms"],
+            latitude: row["latitude"],
+            longitude: row["longitude"],
+            locationProvenance: row["location_source_kind"]
+        )
+    }
+
+    private func rankedMembers(
+        anchor: AssetContext,
+        candidates: [AssetContext]
+    ) -> [RankedContext] {
+        let filenameComponent = filenameSequenceComponent(anchor: anchor, candidates: candidates)
+        var included: [RankedContext] = candidates.compactMap { candidate in
+            let sequence = filenameComponent[candidate.assetID]
+            let timeDelta = timeDelta(anchor.mediaCreatedAtMs, candidate.mediaCreatedAtMs)
+            let distance = distanceMeters(anchor: anchor, candidate: candidate)
+            let isFilenameSequence = sequence != nil
+            let matchesTimeAndSpace = timeDelta.map { $0 <= 30 * 60_000 } == true
+                && distance.map { $0 <= 5_000 } == true
+            let matchesTimeAndFolderSource = anchor.sourceKind == .folder
+                && timeDelta.map { $0 <= 10 * 60_000 } == true
+            let matchesDayAndNearby = sameUTCDay(
+                anchor.mediaCreatedAtMs,
+                candidate.mediaCreatedAtMs
+            ) && distance.map { $0 <= 500 } == true
+            guard isFilenameSequence
+                    || matchesTimeAndSpace
+                    || matchesTimeAndFolderSource
+                    || matchesDayAndNearby
+            else {
+                return nil
+            }
+
+            var evidence: [ContextualTagFeedEvidence] = []
+            if let sequence {
+                evidence.append(ContextualTagFeedEvidence(
+                    kind: .filenameSequence,
+                    strength: 1,
+                    deltaMs: nil,
+                    distanceM: nil,
+                    sequenceOffset: sequence,
+                    provenance: "catalogFileName"
+                ))
+            }
+            if let timeDelta, timeDelta <= 86_400_000 {
+                evidence.append(ContextualTagFeedEvidence(
+                    kind: .captureTime,
+                    strength: max(0, 1 - Double(timeDelta) / 86_400_000),
+                    deltaMs: timeDelta,
+                    distanceM: nil,
+                    sequenceOffset: nil,
+                    provenance: "mediaCreatedAt"
+                ))
+            }
+            if let distance, distance <= 5_000 {
+                evidence.append(ContextualTagFeedEvidence(
+                    kind: .spatialProximity,
+                    strength: max(0, 1 - distance / 5_000),
+                    deltaMs: nil,
+                    distanceM: distance,
+                    sequenceOffset: nil,
+                    provenance: candidate.locationProvenance
+                ))
+            }
+            evidence.append(ContextualTagFeedEvidence(
+                kind: .sourceContext,
+                strength: anchor.sourceKind == .folder ? 0.5 : 0.25,
+                deltaMs: nil,
+                distanceM: nil,
+                sequenceOffset: nil,
+                provenance: anchor.sourceKind.rawValue
+            ))
+            return RankedContext(row: candidate, evidence: evidence, sequence: sequence)
+        }
+
+        included.sort { lhs, rhs in
+            switch (lhs.row.mediaCreatedAtMs, rhs.row.mediaCreatedAtMs) {
+            case let (left?, right?) where left != right:
+                return left < right
+            default:
+                if let left = lhs.sequence, let right = rhs.sequence, left != right {
+                    return left < right
+                }
+                return lhs.row.assetID.uuidString.lowercased()
+                    < rhs.row.assetID.uuidString.lowercased()
+            }
+        }
+        let anchorRanked = RankedContext(row: anchor, evidence: [], sequence: 0)
+        included.append(anchorRanked)
+        included.sort { lhs, rhs in
+            switch (lhs.row.mediaCreatedAtMs, rhs.row.mediaCreatedAtMs) {
+            case let (left?, right?) where left != right:
+                return left < right
+            default:
+                if let left = lhs.sequence, let right = rhs.sequence, left != right {
+                    return left < right
+                }
+                return lhs.row.assetID.uuidString.lowercased()
+                    < rhs.row.assetID.uuidString.lowercased()
+            }
+        }
+        guard included.count > Self.maximumGroupSize else { return included }
+        let nearest = included.sorted {
+            let lhsTime = timeDelta(anchor.mediaCreatedAtMs, $0.row.mediaCreatedAtMs) ?? Int64.max
+            let rhsTime = timeDelta(anchor.mediaCreatedAtMs, $1.row.mediaCreatedAtMs) ?? Int64.max
+            if lhsTime != rhsTime { return lhsTime < rhsTime }
+            let lhsSequence = abs($0.sequence ?? Int.max)
+            let rhsSequence = abs($1.sequence ?? Int.max)
+            if lhsSequence != rhsSequence { return lhsSequence < rhsSequence }
+            return $0.row.assetID.uuidString.lowercased() < $1.row.assetID.uuidString.lowercased()
+        }.prefix(Self.maximumGroupSize)
+        return nearest.sorted { lhs, rhs in
+            let leftTime = lhs.row.mediaCreatedAtMs ?? Int64.max
+            let rightTime = rhs.row.mediaCreatedAtMs ?? Int64.max
+            if leftTime != rightTime { return leftTime < rightTime }
+            return (lhs.sequence ?? Int.max) < (rhs.sequence ?? Int.max)
+        }
+    }
+
+    private func filenameSequenceComponent(
+        anchor: AssetContext,
+        candidates: [AssetContext]
+    ) -> [UUID: Int] {
+        guard let anchorName = anchor.fileName,
+              let anchorSignature = filenameSignature(anchorName),
+              let parent = anchor.parentRelativePath
+        else {
+            return [:]
+        }
+        var entries: [(id: UUID, sequence: Int)] = [(anchor.assetID, anchorSignature.sequence)]
+        for candidate in candidates where candidate.parentRelativePath == parent {
+            guard let name = candidate.fileName,
+                  let signature = filenameSignature(name),
+                  signature.skeleton == anchorSignature.skeleton,
+                  signature.sequenceWidth == anchorSignature.sequenceWidth
+            else {
+                continue
+            }
+            entries.append((candidate.assetID, signature.sequence))
+        }
+        entries.sort {
+            if $0.sequence != $1.sequence { return $0.sequence < $1.sequence }
+            return $0.id.uuidString.lowercased() < $1.id.uuidString.lowercased()
+        }
+        guard let anchorIndex = entries.firstIndex(where: { $0.id == anchor.assetID }) else {
+            return [:]
+        }
+        var lower = anchorIndex
+        while lower > 0,
+              entries[lower].sequence - entries[lower - 1].sequence <= 3
+        {
+            lower -= 1
+        }
+        var upper = anchorIndex
+        while upper + 1 < entries.count,
+              entries[upper + 1].sequence - entries[upper].sequence <= 3
+        {
+            upper += 1
+        }
+        return Dictionary(uniqueKeysWithValues: entries[lower ... upper].map {
+            ($0.id, $0.sequence - anchorSignature.sequence)
+        })
+    }
+
+    private func filenameSignature(_ fileName: String) -> FilenameSignature? {
+        let baseName = (fileName as NSString).deletingPathExtension
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+        let characters = Array(baseName)
+        var digitRanges: [Range<Int>] = []
+        var index = 0
+        while index < characters.count {
+            if characters[index].isNumber {
+                let start = index
+                while index < characters.count, characters[index].isNumber {
+                    index += 1
+                }
+                digitRanges.append(start ..< index)
+            } else {
+                index += 1
+            }
+        }
+        guard let sequenceRange = digitRanges.last,
+              let sequence = Int(String(characters[sequenceRange]))
+        else {
+            return nil
+        }
+        var skeleton = ""
+        index = 0
+        while index < characters.count {
+            if characters[index].isNumber {
+                skeleton.append("#")
+                while index < characters.count, characters[index].isNumber { index += 1 }
+            } else {
+                let character = characters[index]
+                if character.isLetter { skeleton.append(character) }
+                index += 1
+            }
+        }
+        guard !skeleton.isEmpty else { return nil }
+        return FilenameSignature(
+            skeleton: skeleton,
+            sequence: sequence,
+            sequenceWidth: sequenceRange.count
+        )
+    }
+
+    private func timeDelta(_ lhs: Int64?, _ rhs: Int64?) -> Int64? {
+        guard let lhs, let rhs else { return nil }
+        let (delta, overflow) = lhs.subtractingReportingOverflow(rhs)
+        guard !overflow, delta != Int64.min else { return nil }
+        return abs(delta)
+    }
+
+    private func sameUTCDay(_ lhs: Int64?, _ rhs: Int64?) -> Bool {
+        guard let lhs, let rhs else { return false }
+        return lhs / 86_400_000 == rhs / 86_400_000
+    }
+
+    private func distanceMeters(anchor: AssetContext, candidate: AssetContext) -> Double? {
+        guard let latitude1 = anchor.latitude,
+              let longitude1 = anchor.longitude,
+              let latitude2 = candidate.latitude,
+              let longitude2 = candidate.longitude
+        else {
+            return nil
+        }
+        let degreesToRadians = Double.pi / 180
+        let phi1 = latitude1 * degreesToRadians
+        let phi2 = latitude2 * degreesToRadians
+        let deltaPhi = (latitude2 - latitude1) * degreesToRadians
+        let deltaLambda = (longitude2 - longitude1) * degreesToRadians
+        let a = sin(deltaPhi / 2) * sin(deltaPhi / 2)
+            + cos(phi1) * cos(phi2) * sin(deltaLambda / 2) * sin(deltaLambda / 2)
+        return 6_371_000 * 2 * atan2(sqrt(a), sqrt(max(0, 1 - a)))
+    }
+
+    private func stableGroupKey(tagID: UUID, sourceID: UUID, assetIDs: [UUID]) -> String {
+        let raw = ([
+            Self.policyRevision,
+            tagID.uuidString.lowercased(),
+            sourceID.uuidString.lowercased(),
+        ] + assetIDs.map { $0.uuidString.lowercased() }.sorted()).joined(separator: "|")
+        return SHA256.hash(data: Data(raw.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func fetchGroup(_ db: Database, feedID: UUID) throws -> ContextualTagFeedGroup? {
+        guard let feed = try Row.fetchOne(
+            db,
+            sql: """
+            SELECT feed.id, feed.tag_id, tag.name AS tag_name,
+                   feed.anchor_asset_id, feed.source_id, feed.state,
+                   feed.revision, feed.policy_revision
+            FROM contextual_tag_feed feed
+            JOIN tag ON tag.id = feed.tag_id
+            WHERE feed.id = ?
+            """,
+            arguments: [feedID.uuidString.lowercased()]
+        ), let tagID = UUID(uuidString: feed["tag_id"]),
+           let anchorAssetID = UUID(uuidString: feed["anchor_asset_id"]),
+           let sourceID = UUID(uuidString: feed["source_id"]),
+           let state = ContextualTagFeedState(rawValue: feed["state"])
+        else {
+            return nil
+        }
+        let memberRows = try Row.fetchAll(
+            db,
+            sql: """
+            SELECT member.asset_id, member.role, member.rank,
+                   asset.file_name, asset.media_kind, asset.media_created_at_ms
+            FROM contextual_tag_feed_member member
+            JOIN asset ON asset.id = member.asset_id
+            WHERE member.feed_id = ?
+            ORDER BY member.rank
+            """,
+            arguments: [feedID.uuidString.lowercased()]
+        )
+        let evidenceRows = try Row.fetchAll(
+            db,
+            sql: """
+            SELECT asset_id, kind, strength, delta_ms, distance_m,
+                   sequence_offset, provenance
+            FROM contextual_tag_feed_evidence
+            WHERE feed_id = ?
+            ORDER BY asset_id, kind
+            """,
+            arguments: [feedID.uuidString.lowercased()]
+        )
+        var evidenceByAssetID: [UUID: [ContextualTagFeedEvidence]] = [:]
+        for row in evidenceRows {
+            guard let assetID = UUID(uuidString: row["asset_id"]),
+                  let kind = ContextualTagFeedEvidenceKind(rawValue: row["kind"])
+            else { continue }
+            evidenceByAssetID[assetID, default: []].append(ContextualTagFeedEvidence(
+                kind: kind,
+                strength: row["strength"],
+                deltaMs: row["delta_ms"],
+                distanceM: row["distance_m"],
+                sequenceOffset: row["sequence_offset"],
+                provenance: row["provenance"]
+            ))
+        }
+        let members = memberRows.compactMap { row -> ContextualTagFeedMember? in
+            guard let assetID = UUID(uuidString: row["asset_id"]),
+                  let role = ContextualTagFeedMemberRole(rawValue: row["role"])
+            else { return nil }
+            let mediaKindRaw: String? = row["media_kind"]
+            return ContextualTagFeedMember(
+                assetID: assetID,
+                role: role,
+                rank: row["rank"],
+                fileName: row["file_name"],
+                mediaKind: mediaKindRaw.flatMap(MediaKind.init(rawValue:)) ?? .image,
+                mediaCreatedAtMs: row["media_created_at_ms"],
+                evidence: evidenceByAssetID[assetID] ?? []
+            )
+        }
+        return ContextualTagFeedGroup(
+            id: feedID,
+            tagID: tagID,
+            tagDisplayName: feed["tag_name"],
+            anchorAssetID: anchorAssetID,
+            sourceID: sourceID,
+            state: state,
+            revision: feed["revision"],
+            policyRevision: feed["policy_revision"],
+            members: members
+        )
     }
 }
 

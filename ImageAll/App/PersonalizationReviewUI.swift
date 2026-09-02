@@ -5,6 +5,252 @@ enum ReviewWorkspaceMode: Equatable {
     case tagQueue(tagID: UUID, displayName: String)
 }
 
+struct ContextualTagFeedView: View {
+    @ObservedObject var model: LibraryWorkspaceModel
+    let onLater: () -> Void
+
+    private var group: ContextualTagFeedGroup? { model.currentContextualTagFeed }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            if model.isLoadingContextualTagFeed, group == nil {
+                ProgressView("正在根据时间、位置和文件序列整理候选…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let group {
+                groupContent(group)
+            } else {
+                emptyState
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .navigationTitle("智能推流")
+    }
+
+    private var header: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("智能标签照片推流")
+                    .font(.title2.weight(.semibold))
+                Text("只读取已入库的时间、位置、来源与文件名；不会自动写标签。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 12)
+            if model.contextualTagFeedPendingCount > 0 {
+                Text("\(model.contextualTagFeedPendingCount) 组待确认")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tint)
+            }
+            Button("刷新", systemImage: "arrow.clockwise") {
+                Task { await model.refreshContextualTagFeed(generateRecentAnchors: true) }
+            }
+            .disabled(model.isLoadingContextualTagFeed)
+        }
+        .padding(16)
+    }
+
+    private func groupContent(_ group: ContextualTagFeedGroup) -> some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("这些照片也属于“\(group.tagDisplayName)”吗？")
+                        .font(.headline)
+                    Text(groupEvidenceSummary(group))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Text("锚点已经确认；候选默认选中，可点击排除少数无关照片。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 12)
+                Text("\(group.members.count) 张")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+
+            ScrollView {
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 170, maximum: 240), spacing: 10)],
+                    spacing: 10
+                ) {
+                    ForEach(group.members) { member in
+                        ContextualTagFeedThumbnail(
+                            member: member,
+                            model: model,
+                            isSelected: member.role == .anchor
+                                || model.selectedContextualTagFeedAssetIDs.contains(member.assetID),
+                            onToggle: {
+                                model.toggleContextualTagFeedCandidate(member.assetID)
+                            }
+                        )
+                    }
+                }
+                .padding(16)
+            }
+
+            Divider()
+            HStack(spacing: 10) {
+                if let message = model.contextualTagFeedStatusMessage {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                Spacer(minLength: 8)
+                Button("稍后处理", action: onLater)
+                    .buttonStyle(.bordered)
+                Button("忽略该组") {
+                    Task { await model.dismissCurrentContextualTagFeed() }
+                }
+                .buttonStyle(.bordered)
+                .persistentHelp("只忽略当前候选组，不会把照片写成“不属于”或训练负样本。")
+                Menu {
+                    Button("将选中的照片标为不属于", role: .destructive) {
+                        Task { await model.resolveCurrentContextualTagFeed(decision: .rejected) }
+                    }
+                } label: {
+                    Label("更多", systemImage: "ellipsis.circle")
+                }
+                .disabled(model.selectedContextualTagFeedAssetIDs.isEmpty)
+                Button(confirmButtonTitle(group)) {
+                    Task { await model.resolveCurrentContextualTagFeed(decision: .accepted) }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(model.selectedContextualTagFeedAssetIDs.isEmpty)
+            }
+            .padding(12)
+        }
+    }
+
+    private var emptyState: some View {
+        ContentUnavailableView {
+            Label("暂无智能推流", systemImage: "sparkles.rectangle.stack")
+        } description: {
+            Text("确认照片标签后，ImageAll 会从近期已确认记录中寻找时间、位置或文件序列共同支持的候选组。")
+        } actions: {
+            Button("检查近期标签") {
+                Task { await model.refreshContextualTagFeed(generateRecentAnchors: true) }
+            }
+            .buttonStyle(.borderedProminent)
+            Button("返回图库", action: onLater)
+                .buttonStyle(.bordered)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func confirmButtonTitle(_ group: ContextualTagFeedGroup) -> String {
+        "将选中的 \(model.selectedContextualTagFeedAssetIDs.count) 张标为“\(group.tagDisplayName)”"
+    }
+
+    private func groupEvidenceSummary(_ group: ContextualTagFeedGroup) -> String {
+        let evidenceKinds = Set(group.members.flatMap { $0.evidence.map(\.kind) })
+        let labels = [
+            evidenceKinds.contains(.captureTime) ? "拍摄时间相近" : nil,
+            evidenceKinds.contains(.spatialProximity) ? "拍摄位置相近" : nil,
+            evidenceKinds.contains(.filenameSequence) ? "文件名连续" : nil,
+            evidenceKinds.contains(.sourceContext) ? "来源上下文一致" : nil,
+        ].compactMap { $0 }
+        return labels.isEmpty ? "当前组缺少可显示的上下文证据" : labels.joined(separator: " · ")
+    }
+}
+
+private struct ContextualTagFeedThumbnail: View {
+    let member: ContextualTagFeedMember
+    @ObservedObject var model: LibraryWorkspaceModel
+    let isSelected: Bool
+    let onToggle: () -> Void
+    @State private var image: NSImage?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            ZStack {
+                Color(nsColor: .controlBackgroundColor)
+                if let image {
+                    Image(nsImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                } else {
+                    Image(systemName: member.mediaKind == .video ? "video" : "photo")
+                        .font(.title)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(height: 140)
+            .clipShape(RoundedRectangle(cornerRadius: 7))
+            .overlay {
+                RoundedRectangle(cornerRadius: 7)
+                    .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 3)
+            }
+            .overlay(alignment: .topLeading) {
+                if member.role == .anchor {
+                    Text("已确认锚点")
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 4)
+                        .background(.black.opacity(0.68), in: Capsule())
+                        .foregroundStyle(.white)
+                        .padding(7)
+                }
+            }
+            .overlay(alignment: .topTrailing) {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                    .padding(7)
+            }
+
+            Text(member.fileName ?? (member.mediaKind == .video ? "视频" : "照片"))
+                .font(.caption.weight(.medium))
+                .lineLimit(1)
+            Text(evidenceText)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+        }
+        .padding(8)
+        .background(.quaternary.opacity(0.16), in: RoundedRectangle(cornerRadius: 10))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard member.role == .candidate else { return }
+            onToggle()
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(member.fileName ?? "候选媒体")
+        .accessibilityValue(member.role == .anchor ? "已确认锚点" : (isSelected ? "已选择" : "未选择"))
+        .task(id: member.assetID) {
+            guard let data = await model.thumbnailData(assetID: member.assetID) else { return }
+            image = NSImage(data: data)
+        }
+    }
+
+    private var evidenceText: String {
+        let parts = member.evidence.compactMap { evidence -> String? in
+            switch evidence.kind {
+            case .filenameSequence:
+                guard let offset = evidence.sequenceOffset else { return "文件名连续" }
+                return offset == 0 ? "文件名连续" : "序号相差 \(abs(offset))"
+            case .captureTime:
+                guard let delta = evidence.deltaMs else { return "时间相近" }
+                return "相隔 \(max(1, delta / 60_000)) 分钟"
+            case .spatialProximity:
+                guard let distance = evidence.distanceM else { return "位置相近" }
+                return distance < 1_000
+                    ? "约 \(Int(distance.rounded())) 米"
+                    : String(format: "约 %.1f 公里", distance / 1_000)
+            case .sourceContext:
+                return "同一来源"
+            case .captureDevice:
+                return "同一设备"
+            }
+        }
+        return parts.isEmpty ? "锚点照片" : parts.joined(separator: " · ")
+    }
+}
+
 enum ReviewOverviewLayout {
     static let sectionSpacing: CGFloat = 12
     static let cardSpacing: CGFloat = 8

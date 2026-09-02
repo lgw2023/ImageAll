@@ -85,6 +85,9 @@ enum CatalogSchemaExpectations {
         "asset_similarity_fingerprint",
         "asset_tag_decision",
         "catalog_scope",
+        "contextual_tag_feed",
+        "contextual_tag_feed_evidence",
+        "contextual_tag_feed_member",
         "derived_image_cache_entry",
         "feature",
         "file_fingerprint",
@@ -140,6 +143,8 @@ enum CatalogSchemaExpectations {
         "asset_similarity_fingerprint_hash_idx",
         "asset_similarity_fingerprint_exact_idx",
         "asset_source_availability_idx",
+        "contextual_tag_feed_anchor_idx",
+        "contextual_tag_feed_pending_idx",
         "decision_tag_idx",
         "derived_image_cache_key_uq",
         "derived_image_cache_lru_idx",
@@ -327,6 +332,36 @@ enum CatalogSchemaExpectations {
             .init(name: "relative_path", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
             .init(name: "parent_relative_path", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "name", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+        ],
+        "contextual_tag_feed": [
+            .init(name: "id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "tag_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "anchor_asset_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "source_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "group_key", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "policy_revision", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "state", type: "TEXT", notNull: true, defaultValue: "'pending'", primaryKeyOrder: 0),
+            .init(name: "revision", type: "INTEGER", notNull: true, defaultValue: "1", primaryKeyOrder: 0),
+            .init(name: "created_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "updated_at_ms", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "processed_at_ms", type: "INTEGER", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+        ],
+        "contextual_tag_feed_member": [
+            .init(name: "feed_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "asset_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
+            .init(name: "role", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "rank", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "evidence_mask", type: "INTEGER", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+        ],
+        "contextual_tag_feed_evidence": [
+            .init(name: "feed_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
+            .init(name: "asset_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 2),
+            .init(name: "kind", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 3),
+            .init(name: "strength", type: "REAL", notNull: true, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "delta_ms", type: "INTEGER", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "distance_m", type: "REAL", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "sequence_offset", type: "INTEGER", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "provenance", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
         ],
         "source_mutation_authorization": [
             .init(name: "source_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
@@ -610,6 +645,19 @@ enum CatalogSchemaExpectations {
         "source_folder": [
             .init(from: "source_id", toTable: "source", to: "id", onDelete: "CASCADE"),
         ],
+        "contextual_tag_feed": [
+            .init(from: "tag_id", toTable: "tag", to: "id", onDelete: "CASCADE"),
+            .init(from: "anchor_asset_id", toTable: "asset", to: "id", onDelete: "CASCADE"),
+            .init(from: "source_id", toTable: "source", to: "id", onDelete: "CASCADE"),
+        ],
+        "contextual_tag_feed_member": [
+            .init(from: "feed_id", toTable: "contextual_tag_feed", to: "id", onDelete: "CASCADE"),
+            .init(from: "asset_id", toTable: "asset", to: "id", onDelete: "CASCADE"),
+        ],
+        "contextual_tag_feed_evidence": [
+            .init(from: "feed_id", toTable: "contextual_tag_feed_member", to: "feed_id", onDelete: "CASCADE"),
+            .init(from: "asset_id", toTable: "contextual_tag_feed_member", to: "asset_id", onDelete: "CASCADE"),
+        ],
         "source_mutation_authorization": [
             .init(from: "source_id", toTable: "source", to: "id", onDelete: "CASCADE"),
         ],
@@ -780,6 +828,8 @@ enum CatalogSchemaExpectations {
         "asset_similarity_fingerprint_hash_idx": "asset_similarity_fingerprint",
         "asset_similarity_fingerprint_exact_idx": "asset_similarity_fingerprint",
         "asset_source_availability_idx": "asset",
+        "contextual_tag_feed_anchor_idx": "contextual_tag_feed",
+        "contextual_tag_feed_pending_idx": "contextual_tag_feed",
         "tag_normalized_name_uq": "tag",
         "tag_group_id_idx": "tag",
         "tag_group_name_uq": "tag_group",
@@ -1243,6 +1293,24 @@ enum CatalogSchemaExpectations {
                 .init(name: "source_id", descending: false, collation: "BINARY"),
                 .init(name: "parent_relative_path", descending: false, collation: "BINARY"),
                 .init(name: "name", descending: false, collation: "NOCASE"),
+            ],
+            unique: false
+        ),
+        .init(
+            name: "contextual_tag_feed_pending_idx",
+            keyColumns: [
+                .init(name: "state", descending: false, collation: "BINARY"),
+                .init(name: "created_at_ms", descending: false, collation: "BINARY"),
+                .init(name: "id", descending: false, collation: "BINARY"),
+            ],
+            unique: false
+        ),
+        .init(
+            name: "contextual_tag_feed_anchor_idx",
+            keyColumns: [
+                .init(name: "tag_id", descending: false, collation: "BINARY"),
+                .init(name: "anchor_asset_id", descending: false, collation: "BINARY"),
+                .init(name: "policy_revision", descending: false, collation: "BINARY"),
             ],
             unique: false
         ),

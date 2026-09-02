@@ -60,6 +60,7 @@ final class FolderReconcilePrivacyRegressionTests: XCTestCase {
             CatalogMigrationID.v035AddAssetFavoriteState,
             CatalogMigrationID.v036AddTrainingRunSampleManifest,
             CatalogMigrationID.v037AddSourceFolderIndex,
+            CatalogMigrationID.v038AddContextualTagFeed,
         ])
     }
 }

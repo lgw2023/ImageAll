@@ -1070,3 +1070,508 @@ final class TagCatalogTransactionTests: XCTestCase {
         )
     }
 }
+
+final class ContextualTagFeedTests: XCTestCase {
+    func testAcceptedAnchorGeneratesOneStableFilenameSequenceFeed() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let catalog = CatalogRepository(database: database)
+        let tags = GRDBTagCatalogRepository(database: database)
+        let sourceID = UUID()
+        let tag = try tags.createTag(
+            rawName: "旅游",
+            timestampMs: DatabaseTestSupport.timestampMs
+        )
+        let orderedAssetIDs = (10_040 ... 10_047).map { _ in UUID() }
+        let anchorAssetID = orderedAssetIDs[3]
+
+        try catalog.createSourceWithAsset(
+            NewSourceWithAssetInput(
+                sourceID: sourceID,
+                sourceKind: .folder,
+                displayName: "Trip",
+                bookmark: DatabaseTestSupport.folderBookmark(),
+                assetID: orderedAssetIDs[0],
+                locatorKind: .file,
+                relativePath: "2026-Trip/IMG_01040.JPG",
+                photosLocalIdentifier: nil,
+                mediaType: "public.jpeg",
+                timestampMs: DatabaseTestSupport.timestampMs
+            )
+        )
+        for (offset, assetID) in orderedAssetIDs.dropFirst().enumerated() {
+            let sequence = 10_041 + offset
+            try catalog.insertAsset(
+                NewAssetInput(
+                    assetID: assetID,
+                    sourceID: sourceID,
+                    locatorKind: .file,
+                    relativePath: "2026-Trip/IMG_\(String(format: "%05d", sequence)).JPG",
+                    photosLocalIdentifier: nil,
+                    mediaType: "public.jpeg",
+                    timestampMs: DatabaseTestSupport.timestampMs
+                )
+            )
+        }
+        try database.pool.write { db in
+            for (offset, assetID) in orderedAssetIDs.enumerated() {
+                try db.execute(
+                    sql: "UPDATE asset SET file_name = ?, media_created_at_ms = ? WHERE id = ?",
+                    arguments: [
+                        "IMG_\(String(format: "%05d", 10_040 + offset)).JPG",
+                        DatabaseTestSupport.timestampMs + Int64(offset * 60_000),
+                        assetID.uuidString.lowercased(),
+                    ]
+                )
+            }
+        }
+        _ = try tags.batchAccept(
+            tagID: tag.id,
+            assetIDs: [anchorAssetID],
+            timestampMs: DatabaseTestSupport.timestampMs + 1
+        )
+
+        let feed = ContextualTagFeedService(database: database)
+        let first = try XCTUnwrap(
+            feed.generate(
+                tagID: tag.id,
+                anchorAssetID: anchorAssetID,
+                timestampMs: DatabaseTestSupport.timestampMs + 2
+            )
+        )
+        let second = try XCTUnwrap(
+            feed.generate(
+                tagID: tag.id,
+                anchorAssetID: anchorAssetID,
+                timestampMs: DatabaseTestSupport.timestampMs + 3
+            )
+        )
+
+        XCTAssertEqual(first.id, second.id)
+        XCTAssertEqual(first.members.map(\.assetID), orderedAssetIDs)
+        XCTAssertEqual(first.members.filter { $0.role == .candidate }.count, 7)
+        XCTAssertTrue(
+            first.members
+                .filter { $0.role == .candidate }
+                .allSatisfy { $0.evidence.contains { $0.kind == .filenameSequence } }
+        )
+        XCTAssertEqual(try feed.pendingCount(), 1)
+    }
+
+    func testPhotosAssetsRequireTimeAndSpatialEvidenceWithoutInventingMissingGPS() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let catalog = CatalogRepository(database: database)
+        let tags = GRDBTagCatalogRepository(database: database)
+        let sourceID = UUID()
+        let anchorAssetID = UUID()
+        let nearbyAssetID = UUID()
+        let missingGPSAssetID = UUID()
+        let tag = try tags.createTag(
+            rawName: "旅游",
+            timestampMs: DatabaseTestSupport.timestampMs
+        )
+        try catalog.createSourceWithAsset(
+            NewSourceWithAssetInput(
+                sourceID: sourceID,
+                sourceKind: .photos,
+                displayName: "Photos",
+                bookmark: nil,
+                assetID: anchorAssetID,
+                locatorKind: .photos,
+                relativePath: nil,
+                photosLocalIdentifier: "photos-anchor",
+                mediaType: "public.heic",
+                timestampMs: DatabaseTestSupport.timestampMs
+            )
+        )
+        for (assetID, identifier) in [
+            (nearbyAssetID, "photos-nearby"),
+            (missingGPSAssetID, "photos-missing-gps"),
+        ] {
+            try catalog.insertAsset(
+                NewAssetInput(
+                    assetID: assetID,
+                    sourceID: sourceID,
+                    locatorKind: .photos,
+                    relativePath: nil,
+                    photosLocalIdentifier: identifier,
+                    mediaType: "public.heic",
+                    timestampMs: DatabaseTestSupport.timestampMs
+                )
+            )
+        }
+        try database.pool.write { db in
+            for (assetID, deltaMs) in [
+                (anchorAssetID, Int64(0)),
+                (nearbyAssetID, Int64(20 * 60_000)),
+                (missingGPSAssetID, Int64(20 * 60_000)),
+            ] {
+                try db.execute(
+                    sql: "UPDATE asset SET media_created_at_ms = ? WHERE id = ?",
+                    arguments: [
+                        DatabaseTestSupport.timestampMs + deltaMs,
+                        assetID.uuidString.lowercased(),
+                    ]
+                )
+            }
+            for (assetID, latitude, longitude) in [
+                (anchorAssetID, 31.2304, 121.4737),
+                (nearbyAssetID, 31.2404, 121.4737),
+            ] {
+                try db.execute(
+                    sql: """
+                    INSERT INTO asset_location (
+                        asset_id, latitude, longitude, altitude_m, source_kind, updated_at_ms
+                    ) VALUES (?, ?, ?, NULL, 'photosGPS', ?)
+                    """,
+                    arguments: [
+                        assetID.uuidString.lowercased(),
+                        latitude,
+                        longitude,
+                        DatabaseTestSupport.timestampMs,
+                    ]
+                )
+            }
+        }
+        _ = try tags.batchAccept(
+            tagID: tag.id,
+            assetIDs: [anchorAssetID],
+            timestampMs: DatabaseTestSupport.timestampMs + 1
+        )
+
+        let group = try XCTUnwrap(
+            ContextualTagFeedService(database: database).generate(
+                tagID: tag.id,
+                anchorAssetID: anchorAssetID,
+                timestampMs: DatabaseTestSupport.timestampMs + 2
+            )
+        )
+
+        XCTAssertEqual(group.members.map(\.assetID), [anchorAssetID, nearbyAssetID])
+        let nearby = try XCTUnwrap(group.members.first { $0.assetID == nearbyAssetID })
+        XCTAssertEqual(
+            Set(nearby.evidence.map(\.kind)),
+            [.captureTime, .spatialProximity, .sourceContext]
+        )
+        XCTAssertFalse(group.members.contains { $0.assetID == missingGPSAssetID })
+    }
+
+    func testOverlappingAcceptedAnchorsReuseOnePendingFeed() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let catalog = CatalogRepository(database: database)
+        let tags = GRDBTagCatalogRepository(database: database)
+        let sourceID = UUID()
+        let firstAnchorID = UUID()
+        let secondAnchorID = UUID()
+        let candidateID = UUID()
+        let tag = try tags.createTag(
+            rawName: "旅游",
+            timestampMs: DatabaseTestSupport.timestampMs
+        )
+        try catalog.createSourceWithAsset(
+            NewSourceWithAssetInput(
+                sourceID: sourceID,
+                sourceKind: .folder,
+                displayName: "Trip",
+                bookmark: DatabaseTestSupport.folderBookmark(),
+                assetID: firstAnchorID,
+                locatorKind: .file,
+                relativePath: "Trip/IMG_0001.JPG",
+                photosLocalIdentifier: nil,
+                mediaType: "public.jpeg",
+                timestampMs: DatabaseTestSupport.timestampMs
+            )
+        )
+        for (assetID, fileName) in [
+            (secondAnchorID, "IMG_0002.JPG"),
+            (candidateID, "IMG_0003.JPG"),
+        ] {
+            try catalog.insertAsset(NewAssetInput(
+                assetID: assetID,
+                sourceID: sourceID,
+                locatorKind: .file,
+                relativePath: "Trip/\(fileName)",
+                photosLocalIdentifier: nil,
+                mediaType: "public.jpeg",
+                timestampMs: DatabaseTestSupport.timestampMs
+            ))
+        }
+        try database.pool.write { db in
+            for (assetID, fileName) in [
+                (firstAnchorID, "IMG_0001.JPG"),
+                (secondAnchorID, "IMG_0002.JPG"),
+                (candidateID, "IMG_0003.JPG"),
+            ] {
+                try db.execute(
+                    sql: "UPDATE asset SET file_name = ? WHERE id = ?",
+                    arguments: [fileName, assetID.uuidString.lowercased()]
+                )
+            }
+        }
+        _ = try tags.batchAccept(
+            tagID: tag.id,
+            assetIDs: [firstAnchorID, secondAnchorID],
+            timestampMs: DatabaseTestSupport.timestampMs + 1
+        )
+        let service = ContextualTagFeedService(database: database)
+
+        let first = try XCTUnwrap(service.generate(
+            tagID: tag.id,
+            anchorAssetID: firstAnchorID,
+            timestampMs: DatabaseTestSupport.timestampMs + 2
+        ))
+        let second = try XCTUnwrap(service.generate(
+            tagID: tag.id,
+            anchorAssetID: secondAnchorID,
+            timestampMs: DatabaseTestSupport.timestampMs + 3
+        ))
+
+        XCTAssertEqual(first.id, second.id)
+        XCTAssertEqual(try service.pendingCount(), 1)
+    }
+
+    func testDismissClosesOnlyTheFeedAndKeepsCandidateDecisionUnknown() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let catalog = CatalogRepository(database: database)
+        let tags = GRDBTagCatalogRepository(database: database)
+        let sourceID = UUID()
+        let anchorAssetID = UUID()
+        let candidateAssetID = UUID()
+        let tag = try tags.createTag(
+            rawName: "旅游",
+            timestampMs: DatabaseTestSupport.timestampMs
+        )
+        try catalog.createSourceWithAsset(
+            NewSourceWithAssetInput(
+                sourceID: sourceID,
+                sourceKind: .folder,
+                displayName: "Trip",
+                bookmark: DatabaseTestSupport.folderBookmark(),
+                assetID: anchorAssetID,
+                locatorKind: .file,
+                relativePath: "Trip/IMG_0001.JPG",
+                photosLocalIdentifier: nil,
+                mediaType: "public.jpeg",
+                timestampMs: DatabaseTestSupport.timestampMs
+            )
+        )
+        try catalog.insertAsset(
+            NewAssetInput(
+                assetID: candidateAssetID,
+                sourceID: sourceID,
+                locatorKind: .file,
+                relativePath: "Trip/IMG_0002.JPG",
+                photosLocalIdentifier: nil,
+                mediaType: "public.jpeg",
+                timestampMs: DatabaseTestSupport.timestampMs
+            )
+        )
+        try database.pool.write { db in
+            for (assetID, fileName) in [
+                (anchorAssetID, "IMG_0001.JPG"),
+                (candidateAssetID, "IMG_0002.JPG"),
+            ] {
+                try db.execute(
+                    sql: "UPDATE asset SET file_name = ? WHERE id = ?",
+                    arguments: [fileName, assetID.uuidString.lowercased()]
+                )
+            }
+        }
+        _ = try tags.batchAccept(
+            tagID: tag.id,
+            assetIDs: [anchorAssetID],
+            timestampMs: DatabaseTestSupport.timestampMs + 1
+        )
+        let service = ContextualTagFeedService(database: database)
+        let group = try XCTUnwrap(service.generate(
+            tagID: tag.id,
+            anchorAssetID: anchorAssetID,
+            timestampMs: DatabaseTestSupport.timestampMs + 2
+        ))
+
+        try service.dismiss(
+            feedID: group.id,
+            revision: group.revision,
+            timestampMs: DatabaseTestSupport.timestampMs + 3
+        )
+
+        XCTAssertEqual(try service.pendingCount(), 0)
+        let aggregate = try XCTUnwrap(tags.selectionAggregate(
+            tagIDs: [tag.id],
+            assetIDs: [candidateAssetID]
+        ).first)
+        XCTAssertEqual(aggregate.unknownCount, 1)
+        XCTAssertEqual(aggregate.rejectedCount, 0)
+    }
+
+    func testResolveAcceptsOnlySelectedCandidatesAndClosesTheFeed() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let catalog = CatalogRepository(database: database)
+        let tags = GRDBTagCatalogRepository(database: database)
+        let sourceID = UUID()
+        let anchorAssetID = UUID()
+        let selectedCandidateID = UUID()
+        let excludedCandidateID = UUID()
+        let tag = try tags.createTag(
+            rawName: "旅游",
+            timestampMs: DatabaseTestSupport.timestampMs
+        )
+        try catalog.createSourceWithAsset(
+            NewSourceWithAssetInput(
+                sourceID: sourceID,
+                sourceKind: .folder,
+                displayName: "Trip",
+                bookmark: DatabaseTestSupport.folderBookmark(),
+                assetID: anchorAssetID,
+                locatorKind: .file,
+                relativePath: "Trip/IMG_0001.JPG",
+                photosLocalIdentifier: nil,
+                mediaType: "public.jpeg",
+                timestampMs: DatabaseTestSupport.timestampMs
+            )
+        )
+        for (assetID, fileName) in [
+            (selectedCandidateID, "IMG_0002.JPG"),
+            (excludedCandidateID, "IMG_0003.JPG"),
+        ] {
+            try catalog.insertAsset(NewAssetInput(
+                assetID: assetID,
+                sourceID: sourceID,
+                locatorKind: .file,
+                relativePath: "Trip/\(fileName)",
+                photosLocalIdentifier: nil,
+                mediaType: "public.jpeg",
+                timestampMs: DatabaseTestSupport.timestampMs
+            ))
+        }
+        try database.pool.write { db in
+            for (assetID, fileName) in [
+                (anchorAssetID, "IMG_0001.JPG"),
+                (selectedCandidateID, "IMG_0002.JPG"),
+                (excludedCandidateID, "IMG_0003.JPG"),
+            ] {
+                try db.execute(
+                    sql: "UPDATE asset SET file_name = ? WHERE id = ?",
+                    arguments: [fileName, assetID.uuidString.lowercased()]
+                )
+            }
+        }
+        _ = try tags.batchAccept(
+            tagID: tag.id,
+            assetIDs: [anchorAssetID],
+            timestampMs: DatabaseTestSupport.timestampMs + 1
+        )
+        let service = ContextualTagFeedService(database: database)
+        let group = try XCTUnwrap(service.generate(
+            tagID: tag.id,
+            anchorAssetID: anchorAssetID,
+            timestampMs: DatabaseTestSupport.timestampMs + 2
+        ))
+
+        _ = try service.resolve(
+            feedID: group.id,
+            revision: group.revision,
+            selectedAssetIDs: [selectedCandidateID],
+            decision: .accepted,
+            timestampMs: DatabaseTestSupport.timestampMs + 3
+        )
+
+        XCTAssertEqual(try service.pendingCount(), 0)
+        let aggregates = try tags.selectionAggregate(
+            tagIDs: [tag.id],
+            assetIDs: [selectedCandidateID, excludedCandidateID]
+        )
+        let aggregate = try XCTUnwrap(aggregates.first)
+        XCTAssertEqual(aggregate.acceptedCount, 1)
+        XCTAssertEqual(aggregate.unknownCount, 1)
+        XCTAssertEqual(aggregate.rejectedCount, 0)
+    }
+
+    func testResolveRejectsStaleFeedWithoutOverwritingANewerDecision() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let catalog = CatalogRepository(database: database)
+        let tags = GRDBTagCatalogRepository(database: database)
+        let sourceID = UUID()
+        let anchorAssetID = UUID()
+        let candidateAssetID = UUID()
+        let tag = try tags.createTag(
+            rawName: "旅游",
+            timestampMs: DatabaseTestSupport.timestampMs
+        )
+        try catalog.createSourceWithAsset(
+            NewSourceWithAssetInput(
+                sourceID: sourceID,
+                sourceKind: .folder,
+                displayName: "Trip",
+                bookmark: DatabaseTestSupport.folderBookmark(),
+                assetID: anchorAssetID,
+                locatorKind: .file,
+                relativePath: "Trip/IMG_0001.JPG",
+                photosLocalIdentifier: nil,
+                mediaType: "public.jpeg",
+                timestampMs: DatabaseTestSupport.timestampMs
+            )
+        )
+        try catalog.insertAsset(
+            NewAssetInput(
+                assetID: candidateAssetID,
+                sourceID: sourceID,
+                locatorKind: .file,
+                relativePath: "Trip/IMG_0002.JPG",
+                photosLocalIdentifier: nil,
+                mediaType: "public.jpeg",
+                timestampMs: DatabaseTestSupport.timestampMs
+            )
+        )
+        try database.pool.write { db in
+            for (assetID, fileName) in [
+                (anchorAssetID, "IMG_0001.JPG"),
+                (candidateAssetID, "IMG_0002.JPG"),
+            ] {
+                try db.execute(
+                    sql: "UPDATE asset SET file_name = ? WHERE id = ?",
+                    arguments: [fileName, assetID.uuidString.lowercased()]
+                )
+            }
+        }
+        _ = try tags.batchAccept(
+            tagID: tag.id,
+            assetIDs: [anchorAssetID],
+            timestampMs: DatabaseTestSupport.timestampMs + 1
+        )
+        let service = ContextualTagFeedService(database: database)
+        let group = try XCTUnwrap(service.generate(
+            tagID: tag.id,
+            anchorAssetID: anchorAssetID,
+            timestampMs: DatabaseTestSupport.timestampMs + 2
+        ))
+        _ = try tags.batchAccept(
+            tagID: tag.id,
+            assetIDs: [candidateAssetID],
+            timestampMs: DatabaseTestSupport.timestampMs + 3
+        )
+
+        XCTAssertThrowsError(try service.resolve(
+            feedID: group.id,
+            revision: group.revision,
+            selectedAssetIDs: [candidateAssetID],
+            decision: .rejected,
+            timestampMs: DatabaseTestSupport.timestampMs + 4
+        )) { error in
+            XCTAssertEqual(error as? ContextualTagFeedError, .feedChanged)
+        }
+
+        XCTAssertEqual(try service.pendingCount(), 1)
+        let aggregate = try XCTUnwrap(tags.selectionAggregate(
+            tagIDs: [tag.id],
+            assetIDs: [candidateAssetID]
+        ).first)
+        XCTAssertEqual(aggregate.acceptedCount, 1)
+        XCTAssertEqual(aggregate.rejectedCount, 0)
+
+        _ = try service.refreshRecentAcceptedAnchors(
+            limit: 200,
+            timestampMs: DatabaseTestSupport.timestampMs + 5
+        )
+        XCTAssertEqual(try service.pendingCount(), 0)
+    }
+}

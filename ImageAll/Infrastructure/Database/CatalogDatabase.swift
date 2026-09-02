@@ -43,6 +43,7 @@ struct CatalogDatabase: Sendable {
         V035AddAssetFavoriteStateMigration.register(on: &migrator)
         V036AddTrainingRunSampleManifestMigration.register(on: &migrator)
         V037AddSourceFolderIndexMigration.register(on: &migrator)
+        V038AddContextualTagFeedMigration.register(on: &migrator)
         return migrator
     }
 
@@ -459,6 +460,81 @@ enum V037AddSourceFolderIndexMigration {
                 """
             )
             try SourceFolderIndex.rebuildAll(in: db)
+        }
+    }
+}
+
+enum V038AddContextualTagFeedMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v038AddContextualTagFeed) { db in
+            try db.execute(
+                sql: """
+                CREATE TABLE contextual_tag_feed (
+                    id TEXT NOT NULL PRIMARY KEY CHECK(
+                        length(id) = 36 AND id = lower(id) AND id GLOB '*-*-*-*-*'
+                    ),
+                    tag_id TEXT NOT NULL REFERENCES tag(id) ON DELETE CASCADE,
+                    anchor_asset_id TEXT NOT NULL REFERENCES asset(id) ON DELETE CASCADE,
+                    source_id TEXT NOT NULL REFERENCES source(id) ON DELETE CASCADE,
+                    group_key TEXT NOT NULL CHECK(length(group_key) = 64),
+                    policy_revision TEXT NOT NULL CHECK(length(policy_revision) > 0),
+                    state TEXT NOT NULL DEFAULT 'pending'
+                        CHECK(state IN ('pending', 'dismissed', 'resolved')),
+                    revision INTEGER NOT NULL DEFAULT 1 CHECK(revision > 0),
+                    created_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL,
+                    processed_at_ms INTEGER,
+                    UNIQUE(tag_id, source_id, group_key, policy_revision)
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE TABLE contextual_tag_feed_member (
+                    feed_id TEXT NOT NULL
+                        REFERENCES contextual_tag_feed(id) ON DELETE CASCADE,
+                    asset_id TEXT NOT NULL REFERENCES asset(id) ON DELETE CASCADE,
+                    role TEXT NOT NULL CHECK(role IN ('anchor', 'candidate')),
+                    rank INTEGER NOT NULL CHECK(rank >= 0),
+                    evidence_mask INTEGER NOT NULL CHECK(evidence_mask >= 0),
+                    PRIMARY KEY(feed_id, asset_id),
+                    UNIQUE(feed_id, rank)
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE TABLE contextual_tag_feed_evidence (
+                    feed_id TEXT NOT NULL,
+                    asset_id TEXT NOT NULL,
+                    kind TEXT NOT NULL CHECK(kind IN (
+                        'captureTime', 'spatialProximity',
+                        'filenameSequence', 'sourceContext', 'captureDevice'
+                    )),
+                    strength REAL NOT NULL CHECK(strength >= 0 AND strength <= 1),
+                    delta_ms INTEGER CHECK(delta_ms IS NULL OR delta_ms >= 0),
+                    distance_m REAL CHECK(distance_m IS NULL OR distance_m >= 0),
+                    sequence_offset INTEGER,
+                    provenance TEXT,
+                    PRIMARY KEY(feed_id, asset_id, kind),
+                    FOREIGN KEY(feed_id, asset_id)
+                        REFERENCES contextual_tag_feed_member(feed_id, asset_id)
+                        ON DELETE CASCADE
+                ) STRICT
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE INDEX contextual_tag_feed_pending_idx
+                ON contextual_tag_feed(state, created_at_ms, id)
+                """
+            )
+            try db.execute(
+                sql: """
+                CREATE INDEX contextual_tag_feed_anchor_idx
+                ON contextual_tag_feed(tag_id, anchor_asset_id, policy_revision)
+                """
+            )
         }
     }
 }

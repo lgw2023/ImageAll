@@ -21,7 +21,14 @@ final class CatalogMigrationTests: XCTestCase {
                     assetID.uuidString.lowercased(),
                 ]
             )
+            try db.execute(sql: "DROP TABLE contextual_tag_feed_evidence")
+            try db.execute(sql: "DROP TABLE contextual_tag_feed_member")
+            try db.execute(sql: "DROP TABLE contextual_tag_feed")
             try db.execute(sql: "DROP TABLE source_folder")
+            try db.execute(
+                sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
+                arguments: [CatalogMigrationID.v038AddContextualTagFeed]
+            )
             try db.execute(
                 sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
                 arguments: [CatalogMigrationID.v037AddSourceFolderIndex]
@@ -1236,9 +1243,16 @@ final class CatalogMigrationTests: XCTestCase {
     }
 
     private static func dropV035AndLaterTables(_ db: Database) throws {
+        try db.execute(sql: "DROP TABLE IF EXISTS contextual_tag_feed_evidence")
+        try db.execute(sql: "DROP TABLE IF EXISTS contextual_tag_feed_member")
+        try db.execute(sql: "DROP TABLE IF EXISTS contextual_tag_feed")
         try db.execute(sql: "DROP TABLE IF EXISTS source_folder")
         try db.execute(sql: "DROP TABLE IF EXISTS training_run_sample")
         try db.execute(sql: "DROP TABLE IF EXISTS asset_favorite_state")
+        try db.execute(
+            sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
+            arguments: [CatalogMigrationID.v038AddContextualTagFeed]
+        )
         try db.execute(
             sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
             arguments: [CatalogMigrationID.v037AddSourceFolderIndex]

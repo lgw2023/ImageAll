@@ -506,6 +506,7 @@ struct CompositionRoot {
         let workspaceModel = LibraryWorkspaceModel(
             service: service,
             review: personalizationReview,
+            contextualTagFeed: ContextualTagFeedService(database: runtime.database),
             trainingWorkspace: trainingWorkspace,
             librarySlimming: librarySlimming,
             librarySlimmingAnalysis: librarySlimmingAnalysis,

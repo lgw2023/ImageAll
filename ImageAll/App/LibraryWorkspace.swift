@@ -372,6 +372,7 @@ enum LibraryBrowsingDestination: Equatable, Sendable {
     case favorites
     case untagged
     case reviewSuggestions
+    case contextualTagFeed
     case trainingWorkspace
     case librarySlimming
     case source(UUID)
@@ -1460,6 +1461,11 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
     private var noticeRevision: UInt64 = 0
     @Published private(set) var pendingSuggestionTotal = 0
+    @Published private(set) var contextualTagFeedPendingCount = 0
+    @Published private(set) var currentContextualTagFeed: ContextualTagFeedGroup?
+    @Published private(set) var selectedContextualTagFeedAssetIDs: Set<UUID> = []
+    @Published private(set) var isLoadingContextualTagFeed = false
+    @Published private(set) var contextualTagFeedStatusMessage: String?
     @Published private(set) var isCatalogScanning = false
     @Published private(set) var catalogReconcileProgress: CatalogReconcileProgress?
     @Published private(set) var assetGridRevision = 0
@@ -1572,6 +1578,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var librarySlimmingSeedAnalyzeNavigationRequestID: UUID?
 
     fileprivate let review: any PersonalizationReviewPort
+    private let contextualTagFeed: any ContextualTagFeedPort
     private let service: any LibraryWorkspacePort
     private let trainingWorkspace: (any TrainingWorkspacePort)?
     private let librarySlimming: (any LibrarySlimmingScanPort)?
@@ -1688,6 +1695,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     init(
         service: any LibraryWorkspacePort,
         review: any PersonalizationReviewPort = EmptyPersonalizationReviewPort(),
+        contextualTagFeed: any ContextualTagFeedPort = EmptyContextualTagFeedPort(),
         trainingWorkspace: (any TrainingWorkspacePort)? = nil,
         librarySlimming: (any LibrarySlimmingScanPort)? = nil,
         librarySlimmingAnalysis: (any LibrarySlimmingAnalysisJobPort)? = nil,
@@ -1738,6 +1746,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     ) {
         self.service = service
         self.review = review
+        self.contextualTagFeed = contextualTagFeed
         self.trainingWorkspace = trainingWorkspace
         self.librarySlimming = librarySlimming
         self.librarySlimmingAnalysis = librarySlimmingAnalysis
@@ -5287,6 +5296,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         started = true
         startCatalogSourceMonitoring()
         await reload(runPendingJobs: false)
+        await refreshContextualTagFeed(generateRecentAnchors: false)
         await runLibrarySlimmingMaintenance()
         await restoreDefaultSourceAuthorizations()
         let favoriteService = service
@@ -6853,6 +6863,14 @@ final class LibraryWorkspaceModel: ObservableObject {
             // invalidated this request between the top guard and this case.
             guard browsingNavigationRequestID == requestID else { return }
             await enterReviewOverview()
+            guard browsingNavigationRequestID == requestID else { return }
+        case .contextualTagFeed:
+            isBrowsingFavorites = false
+            cancelPendingLibrarySlimmingSeedAnalyze()
+            clearReviewModeState()
+            worldMapGalleryScope = nil
+            guard browsingNavigationRequestID == requestID else { return }
+            await refreshContextualTagFeed(generateRecentAnchors: true)
             guard browsingNavigationRequestID == requestID else { return }
         case .trainingWorkspace:
             isBrowsingFavorites = false
@@ -9018,6 +9036,9 @@ final class LibraryWorkspaceModel: ObservableObject {
             }
             lastTagMutation = LibraryTagUndoRecord(snapshot: snapshot, appliedDecision: action.decision)
             applyGridDecision(snapshot: snapshot, newDecision: action.decision)
+            if action == .accept {
+                await generateContextualTagFeeds(tagID: tagID, anchorAssetIDs: assetIDs)
+            }
             await enqueueAutomaticPersonalModelRebuildIfReady()
             if mutationAffectsCurrentFilter(tagID: tagID) {
                 await loadFirstPage()
@@ -9082,6 +9103,7 @@ final class LibraryWorkspaceModel: ObservableObject {
                 groupID: TagGroupSeed.classify(displayName: result.displayName).id
             ))
             tags.sort { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
+            await generateContextualTagFeeds(tagID: result.tagID, anchorAssetIDs: assetIDs)
             await enqueueAutomaticPersonalModelRebuildIfReady()
             if tagPresence != .any || !TagNameNormalizer.trimUnicodeWhiteSpace(searchText).isEmpty {
                 await loadFirstPage()
@@ -10419,6 +10441,128 @@ extension LibraryWorkspaceModel: RemoteWorkspaceNoticePort, RemoteWorkspaceNotic
 extension LibraryWorkspaceModel {
     var isReviewMode: Bool { reviewMode != nil }
 
+    func refreshContextualTagFeed(generateRecentAnchors: Bool = true) async {
+        guard !isLoadingContextualTagFeed else { return }
+        isLoadingContextualTagFeed = true
+        if generateRecentAnchors {
+            contextualTagFeedStatusMessage = nil
+        }
+        defer { isLoadingContextualTagFeed = false }
+        let feed = contextualTagFeed
+        let timestampMs = clock.nowMs
+        do {
+            let snapshot = try await Self.offMain(priority: .utility) {
+                if generateRecentAnchors {
+                    _ = try feed.refreshRecentAcceptedAnchors(
+                        limit: 200,
+                        timestampMs: timestampMs
+                    )
+                }
+                return (
+                    count: try feed.pendingCount(),
+                    group: try feed.fetchPendingGroups(limit: 1).first
+                )
+            }
+            contextualTagFeedPendingCount = snapshot.count
+            let priorGroupID = currentContextualTagFeed?.id
+            let priorRevision = currentContextualTagFeed?.revision
+            currentContextualTagFeed = snapshot.group
+            if let group = snapshot.group {
+                let candidateIDs = Set(group.members.compactMap {
+                    $0.role == .candidate ? $0.assetID : nil
+                })
+                if priorGroupID != group.id || priorRevision != group.revision {
+                    selectedContextualTagFeedAssetIDs = candidateIDs
+                } else {
+                    selectedContextualTagFeedAssetIDs.formIntersection(candidateIDs)
+                }
+            } else {
+                selectedContextualTagFeedAssetIDs = []
+            }
+        } catch {
+            contextualTagFeedStatusMessage = "智能推流暂时无法刷新，请稍后重试。"
+        }
+    }
+
+    func toggleContextualTagFeedCandidate(_ assetID: UUID) {
+        guard currentContextualTagFeed?.members.contains(where: {
+            $0.assetID == assetID && $0.role == .candidate
+        }) == true else { return }
+        if selectedContextualTagFeedAssetIDs.contains(assetID) {
+            selectedContextualTagFeedAssetIDs.remove(assetID)
+        } else {
+            selectedContextualTagFeedAssetIDs.insert(assetID)
+        }
+    }
+
+    func resolveCurrentContextualTagFeed(decision: PersistableTagDecision) async {
+        guard let group = currentContextualTagFeed,
+              !selectedContextualTagFeedAssetIDs.isEmpty
+        else { return }
+        let feed = contextualTagFeed
+        let selected = Array(selectedContextualTagFeedAssetIDs)
+        let timestampMs = clock.nowMs
+        do {
+            _ = try await Self.offMain {
+                try feed.resolve(
+                    feedID: group.id,
+                    revision: group.revision,
+                    selectedAssetIDs: selected,
+                    decision: decision,
+                    timestampMs: timestampMs
+                )
+            }
+            contextualTagFeedStatusMessage = decision == .accepted
+                ? "已把选中的 \(selected.count) 张照片标为“\(group.tagDisplayName)”。"
+                : "已把选中的 \(selected.count) 张照片标为不属于“\(group.tagDisplayName)”。"
+            await enqueueAutomaticPersonalModelRebuildIfReady()
+            await refreshContextualTagFeed(generateRecentAnchors: false)
+            await refreshReviewState(reloadActiveQueue: false)
+        } catch ContextualTagFeedError.feedChanged {
+            contextualTagFeedStatusMessage = "这组照片已经变化，已为你刷新。"
+            await refreshContextualTagFeed(generateRecentAnchors: true)
+        } catch {
+            contextualTagFeedStatusMessage = "标签没有提交，请重试。"
+        }
+    }
+
+    func dismissCurrentContextualTagFeed() async {
+        guard let group = currentContextualTagFeed else { return }
+        let feed = contextualTagFeed
+        let timestampMs = clock.nowMs
+        do {
+            try await Self.offMain {
+                try feed.dismiss(
+                    feedID: group.id,
+                    revision: group.revision,
+                    timestampMs: timestampMs
+                )
+            }
+            contextualTagFeedStatusMessage = "已忽略这组；没有把任何照片写成负样本。"
+            await refreshContextualTagFeed(generateRecentAnchors: false)
+        } catch ContextualTagFeedError.feedChanged {
+            contextualTagFeedStatusMessage = "这组照片已经变化，已为你刷新。"
+            await refreshContextualTagFeed(generateRecentAnchors: false)
+        } catch {
+            contextualTagFeedStatusMessage = "没有忽略这组，请重试。"
+        }
+    }
+
+    private func generateContextualTagFeeds(tagID: UUID, anchorAssetIDs: [UUID]) async {
+        let feed = contextualTagFeed
+        let timestampMs = clock.nowMs
+        _ = try? await Self.offMain(priority: .utility) {
+            for assetID in anchorAssetIDs.prefix(200) {
+                _ = try feed.generate(
+                    tagID: tagID,
+                    anchorAssetID: assetID,
+                    timestampMs: timestampMs
+                )
+            }
+        }
+        await refreshContextualTagFeed(generateRecentAnchors: false)
+    }
+
     var canUndoReviewMutation: Bool { lastReviewMutation != nil }
 
     var personalLibrarySuggestionJobActivity: JobActivityItem? {
@@ -10655,7 +10799,7 @@ extension LibraryWorkspaceModel {
             selectedMediaKind = .image
             worldMapGalleryScope = nil
             applyReviewOverviewPresentation()
-        case .trainingWorkspace, .librarySlimming:
+        case .contextualTagFeed, .trainingWorkspace, .librarySlimming:
             isBrowsingFavorites = false
             selectedMediaKind = .image
             worldMapGalleryScope = nil
@@ -10743,7 +10887,7 @@ extension LibraryWorkspaceModel {
             selectedSourceID = scope.sourceID
             selectedFolderScope = scope
             tagPresence = .any
-        case .reviewSuggestions, .trainingWorkspace, .librarySlimming:
+        case .reviewSuggestions, .contextualTagFeed, .trainingWorkspace, .librarySlimming:
             isBrowsingFavorites = false
             worldMapGalleryScope = nil
             break
@@ -11294,6 +11438,9 @@ extension LibraryWorkspaceModel {
                 selectedAssetIDs = []
                 isSinglePhotoPresented = false
             }
+            if action == .accept {
+                await generateContextualTagFeeds(tagID: tagID, anchorAssetIDs: assetIDs)
+            }
             await enqueueAutomaticPersonalModelRebuildIfReady()
             // The local removal is the authoritative visible transition for this session.
             // Reloading page one here remounts/truncates a deeply paged LazyVGrid and jumps
@@ -11401,6 +11548,9 @@ extension LibraryWorkspaceModel {
                 try workspace.mutateTag(tagID: tagID, assetIDs: [assetID], action: action)
             }
             assetPendingSuggestions.removeAll { $0.tagID == tagID }
+            if action == .accept {
+                await generateContextualTagFeeds(tagID: tagID, anchorAssetIDs: [assetID])
+            }
             await enqueueAutomaticPersonalModelRebuildIfReady()
             await refreshInspector()
             await refreshReviewState()
@@ -11433,6 +11583,7 @@ private enum LibrarySidebarSelection: Hashable {
     case favorites
     case untagged
     case reviewSuggestions
+    case contextualTagFeed
     case trainingWorkspace
     case librarySlimming
     case source(UUID)
@@ -12146,7 +12297,10 @@ struct LibraryWorkspaceView: View {
         .toolbar {
             ToolbarItemGroup {
                 libraryToolbarLayoutItems
-                if selection != .galleryOverview, selection != .worldMap {
+                if selection != .galleryOverview,
+                   selection != .worldMap,
+                   selection != .contextualTagFeed
+                {
                     if selection == .librarySlimming {
                         librarySlimmingToolbarItems
                     } else {
@@ -12292,6 +12446,9 @@ struct LibraryWorkspaceView: View {
         } else if selection == .worldMap {
             content
                 .navigationTitle("照片世界")
+        } else if selection == .contextualTagFeed {
+            content
+                .navigationTitle("智能推流")
         } else if selection == .trainingWorkspace {
             content
                 .navigationTitle("训练工程")
@@ -12782,6 +12939,8 @@ struct LibraryWorkspaceView: View {
                 .untagged
             case .reviewSuggestions:
                 .reviewSuggestions
+            case .contextualTagFeed:
+                .contextualTagFeed
             case .trainingWorkspace:
                 .trainingWorkspace
             case .librarySlimming:
@@ -12794,7 +12953,10 @@ struct LibraryWorkspaceView: View {
             if case let .folder(scope) = destination {
                 expandFolderAncestors(scope)
             }
-            if destination == .galleryOverview || destination == .worldMap {
+            if destination == .galleryOverview
+                || destination == .worldMap
+                || destination == .contextualTagFeed
+            {
                 layoutState.setInspectorPresented(false)
             } else if case .worldMapGallery = destination {
                 layoutState.setInspectorPresented(true)
@@ -13081,6 +13243,16 @@ struct LibraryWorkspaceView: View {
                     }
                 }
                 .tag(LibrarySidebarSelection.reviewSuggestions)
+                HStack {
+                    Label("智能推流", systemImage: "sparkles.rectangle.stack")
+                    Spacer()
+                    if model.contextualTagFeedPendingCount > 0 {
+                        Text("\(model.contextualTagFeedPendingCount)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .tag(LibrarySidebarSelection.contextualTagFeed)
                 Label("训练工程", systemImage: "hammer")
                     .tag(LibrarySidebarSelection.trainingWorkspace)
                 Label("图库瘦身", systemImage: "square.stack.3d.up")
@@ -13911,6 +14083,11 @@ struct LibraryWorkspaceView: View {
                     searchText = ""
                     selection = .worldMapGallery
                 }
+            )
+        } else if selection == .contextualTagFeed {
+            ContextualTagFeedView(
+                model: model,
+                onLater: { selection = .all }
             )
         } else if selection == .trainingWorkspace {
             TrainingWorkspaceView(
@@ -14803,7 +14980,10 @@ struct LibraryWorkspaceView: View {
             detail: "显示或隐藏左侧边栏，包含来源、标签分组与导航。"
         )
 
-        if selection != .galleryOverview, selection != .worldMap {
+        if selection != .galleryOverview,
+           selection != .worldMap,
+           selection != .contextualTagFeed
+        {
             Button {
                 layoutState.toggleInspector()
             } label: {
