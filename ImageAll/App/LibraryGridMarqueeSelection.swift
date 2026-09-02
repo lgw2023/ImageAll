@@ -133,6 +133,7 @@ enum ContextualTagFeedKeyboardShortcutAction: Equatable {
     case reject
     case ignoreGroup
     case later
+    case undo
 
     static func resolve(
         charactersIgnoringModifiers: String?,
@@ -145,6 +146,14 @@ enum ContextualTagFeedKeyboardShortcutAction: Equatable {
            !modifiers.contains(.option)
         {
             return modifiers.contains(.shift) ? .clearSelection : .selectAll
+        }
+        if characters == "z",
+           modifiers.contains(.command),
+           !modifiers.contains(.shift),
+           !modifiers.contains(.control),
+           !modifiers.contains(.option)
+        {
+            return .undo
         }
 
         let disallowedModifiers: NSEvent.ModifierFlags = [.command, .control, .option]

@@ -317,6 +317,13 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             ),
             .later
         )
+        XCTAssertEqual(
+            ContextualTagFeedKeyboardShortcutAction.resolve(
+                charactersIgnoringModifiers: "z",
+                modifiers: [.command]
+            ),
+            .undo
+        )
         XCTAssertNil(
             ContextualTagFeedKeyboardShortcutAction.resolve(
                 charactersIgnoringModifiers: "a",
@@ -339,6 +346,12 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             ContextualTagFeedKeyboardShortcutAction.resolve(
                 charactersIgnoringModifiers: "i",
                 modifiers: [.control]
+            )
+        )
+        XCTAssertNil(
+            ContextualTagFeedKeyboardShortcutAction.resolve(
+                charactersIgnoringModifiers: "z",
+                modifiers: [.command, .shift]
             )
         )
     }

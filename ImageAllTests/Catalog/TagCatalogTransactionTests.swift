@@ -1473,7 +1473,7 @@ final class ContextualTagFeedTests: XCTestCase {
         XCTAssertEqual(aggregate.rejectedCount, 0)
     }
 
-    func testResolveAcceptsOnlySelectedCandidatesAndClosesTheFeed() throws {
+    func testResolveAndUndoRestoreOnlySelectedCandidatesAndProtectNewerDecisions() throws {
         let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
         let catalog = CatalogRepository(database: database)
         let tags = GRDBTagCatalogRepository(database: database)
@@ -1537,7 +1537,7 @@ final class ContextualTagFeedTests: XCTestCase {
             timestampMs: DatabaseTestSupport.timestampMs + 2
         ))
 
-        _ = try service.resolve(
+        let snapshot = try service.resolve(
             feedID: group.id,
             revision: group.revision,
             selectedAssetIDs: [selectedCandidateID],
@@ -1554,6 +1554,63 @@ final class ContextualTagFeedTests: XCTestCase {
         XCTAssertEqual(aggregate.acceptedCount, 1)
         XCTAssertEqual(aggregate.unknownCount, 1)
         XCTAssertEqual(aggregate.rejectedCount, 0)
+
+        try service.undoResolution(
+            ContextualTagFeedResolutionUndo(
+                feedID: group.id,
+                resolvedRevision: group.revision + 1,
+                resolvedAtMs: DatabaseTestSupport.timestampMs + 3,
+                appliedDecision: .accepted,
+                snapshot: snapshot
+            ),
+            timestampMs: DatabaseTestSupport.timestampMs + 4
+        )
+
+        XCTAssertEqual(try service.pendingCount(), 1)
+        let reopened = try XCTUnwrap(service.fetchPendingGroups(limit: 1).first)
+        XCTAssertEqual(reopened.id, group.id)
+        XCTAssertEqual(reopened.revision, group.revision + 2)
+        let restored = try XCTUnwrap(tags.selectionAggregate(
+            tagIDs: [tag.id],
+            assetIDs: [selectedCandidateID, excludedCandidateID]
+        ).first)
+        XCTAssertEqual(restored.acceptedCount, 0)
+        XCTAssertEqual(restored.unknownCount, 2)
+        XCTAssertEqual(restored.rejectedCount, 0)
+
+        let secondResolvedAt = DatabaseTestSupport.timestampMs + 5
+        let secondSnapshot = try service.resolve(
+            feedID: reopened.id,
+            revision: reopened.revision,
+            selectedAssetIDs: [selectedCandidateID],
+            decision: .rejected,
+            timestampMs: secondResolvedAt
+        )
+        _ = try tags.batchAccept(
+            tagID: tag.id,
+            assetIDs: [selectedCandidateID],
+            timestampMs: DatabaseTestSupport.timestampMs + 6
+        )
+
+        XCTAssertThrowsError(try service.undoResolution(
+            ContextualTagFeedResolutionUndo(
+                feedID: reopened.id,
+                resolvedRevision: reopened.revision + 1,
+                resolvedAtMs: secondResolvedAt,
+                appliedDecision: .rejected,
+                snapshot: secondSnapshot
+            ),
+            timestampMs: DatabaseTestSupport.timestampMs + 7
+        )) { error in
+            XCTAssertEqual(error as? ContextualTagFeedError, .feedChanged)
+        }
+        XCTAssertEqual(try service.pendingCount(), 0)
+        let newerDecision = try XCTUnwrap(tags.selectionAggregate(
+            tagIDs: [tag.id],
+            assetIDs: [selectedCandidateID]
+        ).first)
+        XCTAssertEqual(newerDecision.acceptedCount, 1)
+        XCTAssertEqual(newerDecision.rejectedCount, 0)
     }
 
     func testResolveRejectsStaleFeedWithoutOverwritingANewerDecision() throws {

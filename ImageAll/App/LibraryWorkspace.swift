@@ -91,6 +91,12 @@ private struct ReviewMutationUndoRecord {
     let affectedCount: Int
 }
 
+private struct ContextualTagFeedMutationUndoRecord {
+    let resolution: ContextualTagFeedResolutionUndo
+    let tagDisplayName: String
+    let affectedCount: Int
+}
+
 enum LibraryGridDensity: Int, CaseIterable, Sendable {
     case micro = 0
     case fine = 1
@@ -1673,6 +1679,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private let clock: any JobClock
     private var lastTagMutation: LibraryTagUndoRecord?
     fileprivate var lastReviewMutation: ReviewMutationUndoRecord?
+    private var lastContextualTagFeedMutation: ContextualTagFeedMutationUndoRecord?
     private var personalizationRunnerTask: Task<Void, Never>?
     private var librarySlimmingAnalysisRunnerTask: Task<Void, Never>?
     private var librarySlimmingAnalysisProgressMonitorTask: Task<Void, Never>?
@@ -5092,6 +5099,10 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     var canUndoTagMutation: Bool {
         lastTagMutation != nil
+    }
+
+    var canUndoContextualTagFeedMutation: Bool {
+        lastContextualTagFeedMutation != nil
     }
 
     var primarySelectedAssetID: UUID? {
@@ -10664,7 +10675,7 @@ extension LibraryWorkspaceModel {
         let selected = Array(selectedContextualTagFeedAssetIDs)
         let timestampMs = clock.nowMs
         do {
-            _ = try await Self.offMain {
+            let snapshot = try await Self.offMain {
                 try feed.resolve(
                     feedID: group.id,
                     revision: group.revision,
@@ -10673,6 +10684,17 @@ extension LibraryWorkspaceModel {
                     timestampMs: timestampMs
                 )
             }
+            lastContextualTagFeedMutation = ContextualTagFeedMutationUndoRecord(
+                resolution: ContextualTagFeedResolutionUndo(
+                    feedID: group.id,
+                    resolvedRevision: group.revision + 1,
+                    resolvedAtMs: timestampMs,
+                    appliedDecision: decision,
+                    snapshot: snapshot
+                ),
+                tagDisplayName: group.tagDisplayName,
+                affectedCount: selected.count
+            )
             contextualTagFeedStatusMessage = decision == .accepted
                 ? "已把选中的 \(selected.count) 张照片标为“\(group.tagDisplayName)”。"
                 : "已把选中的 \(selected.count) 张照片标为不属于“\(group.tagDisplayName)”。"
@@ -10684,6 +10706,28 @@ extension LibraryWorkspaceModel {
             await refreshContextualTagFeed(generateRecentAnchors: true)
         } catch {
             contextualTagFeedStatusMessage = "标签没有提交，请重试。"
+        }
+    }
+
+    func undoLastContextualTagFeedMutation() async {
+        guard let undo = lastContextualTagFeedMutation else { return }
+        let feed = contextualTagFeed
+        let timestampMs = clock.nowMs
+        do {
+            try await Self.offMain {
+                try feed.undoResolution(undo.resolution, timestampMs: timestampMs)
+            }
+            lastContextualTagFeedMutation = nil
+            contextualTagFeedStatusMessage =
+                "已撤销：恢复 \(undo.affectedCount) 张照片对“\(undo.tagDisplayName)”的原标签状态。"
+            await enqueueAutomaticPersonalModelRebuildIfReady()
+            await refreshContextualTagFeed(generateRecentAnchors: false)
+            await refreshReviewState(reloadActiveQueue: false)
+        } catch ContextualTagFeedError.feedChanged {
+            lastContextualTagFeedMutation = nil
+            contextualTagFeedStatusMessage = "无法撤销：相关照片或推流组已经发生变化。"
+        } catch {
+            contextualTagFeedStatusMessage = "撤销没有完成，请重试。"
         }
     }
 

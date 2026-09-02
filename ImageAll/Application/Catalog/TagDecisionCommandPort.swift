@@ -81,6 +81,14 @@ struct ContextualTagFeedGroup: Identifiable, Equatable, Sendable {
     let members: [ContextualTagFeedMember]
 }
 
+struct ContextualTagFeedResolutionUndo: Equatable, Sendable {
+    let feedID: UUID
+    let resolvedRevision: Int
+    let resolvedAtMs: Int64
+    let appliedDecision: PersistableTagDecision
+    let snapshot: TagMutationPriorStateSnapshot
+}
+
 enum ContextualTagFeedError: Error, Equatable, Sendable {
     case feedChanged
     case invalidSelection
@@ -106,6 +114,10 @@ protocol ContextualTagFeedPort: Sendable {
         decision: PersistableTagDecision,
         timestampMs: Int64
     ) throws -> TagMutationPriorStateSnapshot
+    func undoResolution(
+        _ undo: ContextualTagFeedResolutionUndo,
+        timestampMs: Int64
+    ) throws
 }
 
 extension ContextualTagFeedPort {
@@ -149,6 +161,12 @@ struct EmptyContextualTagFeedPort: ContextualTagFeedPort, Sendable {
         decision _: PersistableTagDecision,
         timestampMs _: Int64
     ) throws -> TagMutationPriorStateSnapshot {
+        throw ContextualTagFeedError.persistenceFailure
+    }
+    func undoResolution(
+        _: ContextualTagFeedResolutionUndo,
+        timestampMs _: Int64
+    ) throws {
         throw ContextualTagFeedError.persistenceFailure
     }
 }

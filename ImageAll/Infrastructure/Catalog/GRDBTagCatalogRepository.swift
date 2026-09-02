@@ -752,6 +752,18 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, St
     }
 
     func restorePriorStates(_ snapshot: TagMutationPriorStateSnapshot, timestampMs: Int64) throws {
+        try CatalogQueryErrorMapping.perform {
+            try database.pool.write { db in
+                try restorePriorStates(in: db, snapshot: snapshot, timestampMs: timestampMs)
+            }
+        }
+    }
+
+    func restorePriorStates(
+        in db: Database,
+        snapshot: TagMutationPriorStateSnapshot,
+        timestampMs: Int64
+    ) throws {
         let assetIDs = snapshot.priorStates.map(\.assetID)
         let uniqueAssetIDs = Array(Set(assetIDs))
         guard !uniqueAssetIDs.isEmpty else {
@@ -761,55 +773,51 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, St
             throw CatalogQueryError.selectionTooLarge
         }
 
-        try CatalogQueryErrorMapping.perform {
-            try database.pool.write { db in
-                let tagState = try fetchTagState(db, tagID: snapshot.tagID)
-                guard tagState == .active else {
-                    throw CatalogQueryError.archivedTag
-                }
-                try validateAssetsExist(db, assetIDs: uniqueAssetIDs)
+        let tagState = try fetchTagState(db, tagID: snapshot.tagID)
+        guard tagState == .active else {
+            throw CatalogQueryError.archivedTag
+        }
+        try validateAssetsExist(db, assetIDs: uniqueAssetIDs)
 
-                for chunk in snapshot.priorStates.chunked(size: CatalogQuerySQLHelpers.sqliteBindChunkSize) {
-                    for prior in chunk {
-                        switch prior.priorState {
-                        case .unknown:
-                            try db.execute(
-                                sql: """
-                                DELETE FROM asset_tag_decision
-                                WHERE asset_id = ? AND tag_id = ?
-                                """,
-                                arguments: [
-                                    CatalogQuerySQLHelpers.lowercaseUUID(prior.assetID),
-                                    CatalogQuerySQLHelpers.lowercaseUUID(snapshot.tagID),
-                                ]
-                            )
-                        case .accepted, .rejected:
-                            let decision = prior.priorState == .accepted ? "accepted" : "rejected"
-                            try db.execute(
-                                sql: """
-                                INSERT INTO asset_tag_decision (asset_id, tag_id, decision, updated_at_ms)
-                                VALUES (?, ?, ?, ?)
-                                ON CONFLICT(asset_id, tag_id) DO UPDATE SET
-                                    decision = excluded.decision,
-                                    updated_at_ms = excluded.updated_at_ms
-                                """,
-                                arguments: [
-                                    CatalogQuerySQLHelpers.lowercaseUUID(prior.assetID),
-                                    CatalogQuerySQLHelpers.lowercaseUUID(snapshot.tagID),
-                                    decision,
-                                    timestampMs,
-                                ]
-                            )
-                        }
-                    }
+        for chunk in snapshot.priorStates.chunked(size: CatalogQuerySQLHelpers.sqliteBindChunkSize) {
+            for prior in chunk {
+                switch prior.priorState {
+                case .unknown:
+                    try db.execute(
+                        sql: """
+                        DELETE FROM asset_tag_decision
+                        WHERE asset_id = ? AND tag_id = ?
+                        """,
+                        arguments: [
+                            CatalogQuerySQLHelpers.lowercaseUUID(prior.assetID),
+                            CatalogQuerySQLHelpers.lowercaseUUID(snapshot.tagID),
+                        ]
+                    )
+                case .accepted, .rejected:
+                    let decision = prior.priorState == .accepted ? "accepted" : "rejected"
+                    try db.execute(
+                        sql: """
+                        INSERT INTO asset_tag_decision (asset_id, tag_id, decision, updated_at_ms)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(asset_id, tag_id) DO UPDATE SET
+                            decision = excluded.decision,
+                            updated_at_ms = excluded.updated_at_ms
+                        """,
+                        arguments: [
+                            CatalogQuerySQLHelpers.lowercaseUUID(prior.assetID),
+                            CatalogQuerySQLHelpers.lowercaseUUID(snapshot.tagID),
+                            decision,
+                            timestampMs,
+                        ]
+                    )
                 }
-                try WorldMapPlaceResolutionService.refreshCanonicalLocations(
-                    db,
-                    assetIDs: uniqueAssetIDs,
-                    nowMs: timestampMs
-                )
             }
         }
+        try WorldMapPlaceResolutionService.refreshCanonicalLocations(
+            db,
+            assetIDs: uniqueAssetIDs,
+            nowMs: timestampMs
+        )
     }
 
     private func applyBatchDecision(
@@ -1574,6 +1582,89 @@ struct ContextualTagFeedService: ContextualTagFeedPort, Sendable {
                 tagID: tagID,
                 priorStates: mutation.priorStates
             )
+        }
+    }
+
+    func undoResolution(
+        _ undo: ContextualTagFeedResolutionUndo,
+        timestampMs: Int64
+    ) throws {
+        let assetIDs = undo.snapshot.priorStates.map(\.assetID)
+        let uniqueAssetIDs = Set(assetIDs)
+        guard !assetIDs.isEmpty, uniqueAssetIDs.count == assetIDs.count else {
+            throw ContextualTagFeedError.invalidSelection
+        }
+        try database.pool.write { db in
+            guard let feed = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT tag_id, revision, state, processed_at_ms
+                FROM contextual_tag_feed
+                WHERE id = ?
+                """,
+                arguments: [CatalogQuerySQLHelpers.lowercaseUUID(undo.feedID)]
+            ), let tagID = UUID(uuidString: feed["tag_id"]),
+               tagID == undo.snapshot.tagID,
+               (feed["revision"] as Int) == undo.resolvedRevision,
+               (feed["state"] as String) == ContextualTagFeedState.resolved.rawValue,
+               (feed["processed_at_ms"] as Int64?) == undo.resolvedAtMs
+            else {
+                throw ContextualTagFeedError.feedChanged
+            }
+
+            let candidateTokens = Set(try String.fetchAll(
+                db,
+                sql: """
+                SELECT asset_id FROM contextual_tag_feed_member
+                WHERE feed_id = ? AND role = 'candidate'
+                """,
+                arguments: [CatalogQuerySQLHelpers.lowercaseUUID(undo.feedID)]
+            ))
+            let selectedTokens = Set(uniqueAssetIDs.map(CatalogQuerySQLHelpers.lowercaseUUID))
+            guard selectedTokens.isSubset(of: candidateTokens) else {
+                throw ContextualTagFeedError.feedChanged
+            }
+
+            for assetToken in selectedTokens {
+                guard let decision = try Row.fetchOne(
+                    db,
+                    sql: """
+                    SELECT decision, updated_at_ms
+                    FROM asset_tag_decision
+                    WHERE tag_id = ? AND asset_id = ?
+                    """,
+                    arguments: [CatalogQuerySQLHelpers.lowercaseUUID(tagID), assetToken]
+                ),
+                    (decision["decision"] as String) == undo.appliedDecision.rawValue,
+                    (decision["updated_at_ms"] as Int64) == undo.resolvedAtMs
+                else {
+                    throw ContextualTagFeedError.feedChanged
+                }
+            }
+
+            try GRDBTagCatalogRepository(database: database).restorePriorStates(
+                in: db,
+                snapshot: undo.snapshot,
+                timestampMs: timestampMs
+            )
+            try db.execute(
+                sql: """
+                UPDATE contextual_tag_feed
+                SET state = 'pending', revision = revision + 1,
+                    updated_at_ms = ?, processed_at_ms = NULL
+                WHERE id = ? AND revision = ? AND state = 'resolved'
+                  AND processed_at_ms = ?
+                """,
+                arguments: [
+                    timestampMs,
+                    CatalogQuerySQLHelpers.lowercaseUUID(undo.feedID),
+                    undo.resolvedRevision,
+                    undo.resolvedAtMs,
+                ]
+            )
+            guard db.changesCount == 1 else {
+                throw ContextualTagFeedError.feedChanged
+            }
         }
     }
 

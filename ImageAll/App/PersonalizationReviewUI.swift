@@ -30,7 +30,9 @@ struct ContextualTagFeedView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .navigationTitle("智能推流")
-        .contextualTagFeedKeyboardShortcutHandling(isEnabled: group != nil) { action in
+        .contextualTagFeedKeyboardShortcutHandling(
+            isEnabled: group != nil || model.canUndoContextualTagFeedMutation
+        ) { action in
             switch action {
             case .selectAll:
                 model.selectAllContextualTagFeedCandidates()
@@ -44,6 +46,8 @@ struct ContextualTagFeedView: View {
                 Task { await model.dismissCurrentContextualTagFeed() }
             case .later:
                 onLater()
+            case .undo:
+                Task { await model.undoLastContextualTagFeedMutation() }
             }
         }
     }
@@ -169,6 +173,13 @@ struct ContextualTagFeedView: View {
                         .lineLimit(2)
                 }
                 Spacer(minLength: 8)
+                if model.canUndoContextualTagFeedMutation {
+                    Button("撤销上一步 (⌘Z)") {
+                        Task { await model.undoLastContextualTagFeedMutation() }
+                    }
+                    .buttonStyle(.bordered)
+                    .persistentHelp("撤销最近一次智能推流确认或拒绝，恢复照片原标签状态并重新打开该候选组。")
+                }
                 Button("稍后处理 (U)", action: onLater)
                     .buttonStyle(.bordered)
                     .persistentHelp("保留当前组为待确认并返回图库；快捷键 U。")
