@@ -510,6 +510,12 @@ enum ReviewOverviewLayout {
     static let cardMaximumWidth: CGFloat = 440
 }
 
+private enum ReviewWorkspacePalette {
+    static let canvas = Color(nsColor: .windowBackgroundColor)
+    static let card = Color(nsColor: .controlBackgroundColor)
+    static let separator = Color(nsColor: .separatorColor)
+}
+
 struct ReviewSuggestionGroupSection: Identifiable, Equatable, Sendable {
     let group: TagGroupListItem
     let overviews: [SuggestionTagOverview]
@@ -617,7 +623,7 @@ struct ReviewOverviewView: View {
                         .padding(20)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .background(Color(nsColor: .underPageBackgroundColor).opacity(0.7))
+                    .background(ReviewWorkspacePalette.canvas)
                     .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
@@ -842,10 +848,13 @@ private struct ReviewLocalModelPanel: View {
                 }
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .background(
+                    ReviewWorkspacePalette.card,
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                )
                 .overlay {
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(.secondary.opacity(0.12))
+                        .strokeBorder(ReviewWorkspacePalette.separator.opacity(0.55))
                 }
 
                 if model.supportsStandardLibrarySuggestions {
@@ -890,13 +899,7 @@ private struct ReviewLocalModelPanel: View {
             }
             .padding(16)
         }
-        .background(
-            LinearGradient(
-                colors: [Color.accentColor.opacity(0.08), Color.clear],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        )
+        .background(ReviewWorkspacePalette.canvas)
     }
 
     private var personalLibraryActionTitle: String {
@@ -962,10 +965,13 @@ private struct ReviewLocalModelPanel: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(
+            ReviewWorkspacePalette.card,
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        )
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(.secondary.opacity(0.12))
+                .strokeBorder(ReviewWorkspacePalette.separator.opacity(0.55))
         }
     }
 
@@ -1150,17 +1156,15 @@ private struct ReviewTagOverviewCard: View {
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            overview.pendingSuggestionCount > 0
-                ? Color.accentColor.opacity(0.055)
-                : Color(nsColor: .controlBackgroundColor).opacity(0.72),
+            ReviewWorkspacePalette.card,
             in: RoundedRectangle(cornerRadius: 14, style: .continuous)
         )
         .overlay {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .strokeBorder(
                     overview.pendingSuggestionCount > 0
-                        ? Color.accentColor.opacity(0.28)
-                        : Color.secondary.opacity(0.14),
+                        ? Color.accentColor.opacity(0.32)
+                        : ReviewWorkspacePalette.separator.opacity(0.55),
                     lineWidth: 1
                 )
         }
