@@ -9,6 +9,7 @@ enum ReviewWorkspaceMode: Equatable {
 struct ContextualTagFeedView: View {
     @ObservedObject var model: LibraryWorkspaceModel
     let onLater: () -> Void
+    let onShowScopeInspector: () -> Void
     @State private var cellFrames = LibraryGridCellFrameStore()
     @State private var isMarqueeSelecting = false
 
@@ -62,50 +63,21 @@ struct ContextualTagFeedView: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.tint)
             }
-            scopeMenu
+            Button(action: onShowScopeInspector) {
+                Label(
+                    model.contextualTagFeedScopeTitle,
+                    systemImage: "line.3.horizontal.decrease.circle"
+                )
+            }
+            .buttonStyle(.borderless)
+            .fixedSize()
+            .persistentHelp("在右侧推流范围面板中选择一个或多个标签。")
             Button("刷新", systemImage: "arrow.clockwise") {
                 Task { await model.refreshContextualTagFeed(generateRecentAnchors: true) }
             }
             .disabled(model.isLoadingContextualTagFeed)
         }
         .padding(16)
-    }
-
-    private var scopeMenu: some View {
-        Menu {
-            Section("默认范围") {
-                Button {
-                    Task { await model.useRecommendedContextualTagFeedScope() }
-                } label: {
-                    if model.contextualTagFeedTagScope == .recommended {
-                        Label("智能推荐（上下文标签优先）", systemImage: "checkmark")
-                    } else {
-                        Text("智能推荐（上下文标签优先）")
-                    }
-                }
-            }
-            ForEach(model.tagGroupSections) { section in
-                Section(section.group.displayName) {
-                    ForEach(section.tags, id: \.id) { tag in
-                        Button {
-                            Task { await model.toggleContextualTagFeedScopeTag(tag.id) }
-                        } label: {
-                            if model.isInContextualTagFeedScope(tag.id) {
-                                Label(tag.displayName, systemImage: "checkmark")
-                            } else {
-                                Text(tag.displayName)
-                            }
-                        }
-                    }
-                }
-            }
-        } label: {
-            Label(model.contextualTagFeedScopeTitle, systemImage: "line.3.horizontal.decrease.circle")
-        }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .disabled(model.isLoadingContextualTagFeed)
-        .persistentHelp("使用智能推荐排序，或只推送你选择的一个或多个标签。")
     }
 
     private func groupContent(_ group: ContextualTagFeedGroup) -> some View {
@@ -256,6 +228,184 @@ struct ContextualTagFeedView: View {
             evidenceKinds.contains(.sourceContext) ? "来源上下文一致" : nil,
         ].compactMap { $0 }
         return labels.isEmpty ? "当前组缺少可显示的上下文证据" : labels.joined(separator: " · ")
+    }
+}
+
+struct ContextualTagFeedScopeInspectorView: View {
+    @ObservedObject var model: LibraryWorkspaceModel
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("推流标签范围")
+                        .font(.headline)
+                    Text("直接点击标签加入或移出范围；分组折叠状态与图库标签面板一致。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                recommendedScopeButton
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("自选标签")
+                        .font(.headline)
+                    Text("选中一个或多个标签后，只生成、统计并显示这些标签的推流。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if model.tags.isEmpty {
+                    Text("尚无可用于智能推流的标签。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(model.tagGroupSections) { section in
+                        tagGroupSection(section)
+                    }
+                }
+
+                if model.isLoadingContextualTagFeed {
+                    HStack(spacing: 7) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("正在刷新推流范围…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .padding(16)
+        }
+        .scrollIndicators(.visible, axes: .vertical)
+        .navigationTitle("推流范围")
+        .accessibilityIdentifier("contextualTagFeedScopeInspector")
+    }
+
+    private var recommendedScopeButton: some View {
+        let isSelected = model.contextualTagFeedTagScope == .recommended
+        return Button {
+            Task { await model.useRecommendedContextualTagFeedScope() }
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: "sparkles")
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("智能推荐")
+                        .font(.callout.weight(.medium))
+                    Text("全部标签参与，上下文标签优先")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                if isSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(Color.accentColor)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+            .background {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(
+                        isSelected
+                            ? Color.accentColor.opacity(0.16)
+                            : Color(nsColor: .controlBackgroundColor).opacity(0.75)
+                    )
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(model.isLoadingContextualTagFeed || isSelected)
+        .accessibilityIdentifier("contextualTagFeedRecommendedScopeButton")
+        .persistentHelp("恢复智能推荐，让全部标签参与并优先显示依赖时间、位置和事件上下文的标签。")
+    }
+
+    private func tagGroupSection(_ section: LibraryTagGroupSection) -> some View {
+        let isCollapsed = model.isTagGroupCollapsed(section.group.id)
+        let selectedCount = section.tags.count { model.isInContextualTagFeedScope($0.id) }
+        return VStack(alignment: .leading, spacing: 6) {
+            Button {
+                model.toggleTagGroupCollapsed(section.group.id)
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 10)
+                    Text(section.group.displayName)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(
+                        selectedCount > 0
+                            ? "\(selectedCount)/\(section.tags.count)"
+                            : "\(section.tags.count)"
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(selectedCount > 0 ? Color.accentColor : Color.secondary)
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .persistentHelp(
+                isCollapsed
+                    ? "展开“\(section.group.displayName)”分组，显示其中标签。"
+                    : "折叠“\(section.group.displayName)”分组，暂时隐藏其中标签。"
+            )
+
+            if !isCollapsed {
+                LibraryTagFlowLayout {
+                    ForEach(section.tags, id: \.id) { tag in
+                        scopeTagChip(tag)
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 3)
+        .padding(4)
+    }
+
+    private func scopeTagChip(_ tag: TagListItem) -> some View {
+        let isSelected = model.isInContextualTagFeedScope(tag.id)
+        return Button {
+            Task { await model.toggleContextualTagFeedScopeTag(tag.id) }
+        } label: {
+            HStack(spacing: 5) {
+                Label {
+                    Text(tag.displayName)
+                        .lineLimit(1)
+                } icon: {
+                    Image(systemName: "tag")
+                }
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 28)
+            .frame(maxWidth: 180, alignment: .leading)
+            .fixedSize(horizontal: true, vertical: false)
+            .contentShape(Rectangle())
+            .background {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(
+                        isSelected
+                            ? Color.accentColor.opacity(0.18)
+                            : Color(nsColor: .controlBackgroundColor).opacity(0.75)
+                    )
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(model.isLoadingContextualTagFeed)
+        .accessibilityLabel(tag.displayName)
+        .accessibilityValue(isSelected ? "已加入推流范围" : "未加入推流范围")
+        .accessibilityIdentifier("contextualTagFeedScopeTag-\(tag.id.uuidString)")
+        .persistentHelp(isSelected ? "点击移出智能推流范围。" : "点击加入智能推流范围。")
     }
 }
 

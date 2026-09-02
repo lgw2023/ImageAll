@@ -1091,6 +1091,10 @@ struct LibraryWorkspaceLayoutState: Equatable {
     mutating func prepareForLibrarySlimming() {
         isInspectorPresented = false
     }
+
+    mutating func prepareForContextualTagFeed() {
+        isInspectorPresented = true
+    }
 }
 
 enum LibraryWorkspaceCommand: Hashable {
@@ -11969,7 +11973,7 @@ private struct LibraryMediaFormatFilterOption {
     let mediaTypes: [String]
 }
 
-private struct LibraryTagFlowLayout: Layout {
+struct LibraryTagFlowLayout: Layout {
     let horizontalSpacing: CGFloat = 6
     let verticalSpacing: CGFloat = 6
 
@@ -12588,6 +12592,8 @@ struct LibraryWorkspaceView: View {
             )
         } else if selection == .trainingWorkspace {
             TrainingWorkspaceInspectorView(model: model)
+        } else if selection == .contextualTagFeed {
+            ContextualTagFeedScopeInspectorView(model: model)
         } else if selection == .librarySlimming {
             LibrarySlimmingInspectorView(model: model)
         } else {
@@ -13121,11 +13127,10 @@ struct LibraryWorkspaceView: View {
             if case let .folder(scope) = destination {
                 expandFolderAncestors(scope)
             }
-            if destination == .galleryOverview
-                || destination == .worldMap
-                || destination == .contextualTagFeed
-            {
+            if destination == .galleryOverview || destination == .worldMap {
                 layoutState.setInspectorPresented(false)
+            } else if destination == .contextualTagFeed {
+                layoutState.prepareForContextualTagFeed()
             } else if case .worldMapGallery = destination {
                 layoutState.setInspectorPresented(true)
             } else if destination == .librarySlimming {
@@ -14255,7 +14260,10 @@ struct LibraryWorkspaceView: View {
         } else if selection == .contextualTagFeed {
             ContextualTagFeedView(
                 model: model,
-                onLater: { selection = .all }
+                onLater: { selection = .all },
+                onShowScopeInspector: {
+                    layoutState.setInspectorPresented(true)
+                }
             )
         } else if selection == .trainingWorkspace {
             TrainingWorkspaceView(
@@ -15148,10 +15156,7 @@ struct LibraryWorkspaceView: View {
             detail: "显示或隐藏左侧边栏，包含来源、标签分组与导航。"
         )
 
-        if selection != .galleryOverview,
-           selection != .worldMap,
-           selection != .contextualTagFeed
-        {
+        if selection != .galleryOverview, selection != .worldMap {
             Button {
                 layoutState.toggleInspector()
             } label: {
@@ -15165,6 +15170,8 @@ struct LibraryWorkspaceView: View {
                 layoutState.isInspectorPresented ? "隐藏检查器" : "显示检查器",
                 detail: selection == .librarySlimming
                     ? "按需显示或隐藏图库瘦身的任务、来源与技术详情。"
+                    : selection == .contextualTagFeed
+                    ? "显示或隐藏智能推流标签范围；可按分组直接选择一个或多个标签。"
                     : "显示或隐藏右侧检查器，查看选中照片的详情、标签与操作。"
             )
         }

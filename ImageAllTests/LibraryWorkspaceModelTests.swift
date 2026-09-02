@@ -11304,6 +11304,17 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertTrue(layout.isInspectorPresented)
     }
 
+    func testEnteringContextualTagFeedShowsScopeInspectorAndKeepsManualToggle() {
+        var layout = LibraryWorkspaceLayoutState()
+        layout.setInspectorPresented(false)
+
+        layout.prepareForContextualTagFeed()
+
+        XCTAssertTrue(layout.isInspectorPresented)
+        layout.toggleInspector()
+        XCTAssertFalse(layout.isInspectorPresented)
+    }
+
     func testLibrarySlimmingNavigatorUsesACompactBoundedWidth() {
         XCTAssertEqual(
             LibrarySlimmingWorkspaceLayout.navigatorWidth(availableWidth: 0),
