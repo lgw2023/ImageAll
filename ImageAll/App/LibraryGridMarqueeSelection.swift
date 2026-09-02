@@ -58,45 +58,52 @@ struct ContextualTagFeedSelectionResult: Equatable {
 }
 
 enum ContextualTagFeedSelectionLogic {
-    static func normalizedSelection(
+    static func normalizedMemberSelection(
         _ requestedAssetIDs: Set<UUID>,
+        orderedMemberIDs: [UUID]
+    ) -> Set<UUID> {
+        requestedAssetIDs.intersection(orderedMemberIDs)
+    }
+
+    static func candidateDecisionSelection(
+        _ selectedAssetIDs: Set<UUID>,
         orderedCandidateIDs: [UUID]
     ) -> Set<UUID> {
-        requestedAssetIDs.intersection(orderedCandidateIDs)
+        selectedAssetIDs.intersection(orderedCandidateIDs)
     }
 
     static func selectionAfterClick(
         currentSelection: Set<UUID>,
         anchorID: UUID?,
-        orderedCandidateIDs: [UUID],
+        orderedMemberIDs: [UUID],
         clickedID: UUID,
         additive: Bool,
         extendRange: Bool
     ) -> ContextualTagFeedSelectionResult {
-        guard orderedCandidateIDs.contains(clickedID) else {
+        guard orderedMemberIDs.contains(clickedID) else {
             return ContextualTagFeedSelectionResult(
-                selectedAssetIDs: normalizedSelection(
+                selectedAssetIDs: normalizedMemberSelection(
                     currentSelection,
-                    orderedCandidateIDs: orderedCandidateIDs
+                    orderedMemberIDs: orderedMemberIDs
                 ),
                 anchorAssetID: anchorID.flatMap {
-                    orderedCandidateIDs.contains($0) ? $0 : nil
+                    orderedMemberIDs.contains($0) ? $0 : nil
                 }
             )
         }
 
         if extendRange,
            let anchorID,
-           let anchorIndex = orderedCandidateIDs.firstIndex(of: anchorID),
-           let targetIndex = orderedCandidateIDs.firstIndex(of: clickedID)
+           let anchorIndex = orderedMemberIDs.firstIndex(of: anchorID),
+           let targetIndex = orderedMemberIDs.firstIndex(of: clickedID)
         {
             let range = min(anchorIndex, targetIndex) ... max(anchorIndex, targetIndex)
-            let rangeIDs = Set(range.map { orderedCandidateIDs[$0] })
+            let rangeIDs = Set(range.map { orderedMemberIDs[$0] })
             return ContextualTagFeedSelectionResult(
                 selectedAssetIDs: additive
-                    ? normalizedSelection(
+                    ? normalizedMemberSelection(
                         currentSelection,
-                        orderedCandidateIDs: orderedCandidateIDs
+                        orderedMemberIDs: orderedMemberIDs
                     ).union(rangeIDs)
                     : rangeIDs,
                 anchorAssetID: anchorID
@@ -104,9 +111,9 @@ enum ContextualTagFeedSelectionLogic {
         }
 
         if additive {
-            var selected = normalizedSelection(
+            var selected = normalizedMemberSelection(
                 currentSelection,
-                orderedCandidateIDs: orderedCandidateIDs
+                orderedMemberIDs: orderedMemberIDs
             )
             if selected.contains(clickedID) {
                 selected.remove(clickedID)

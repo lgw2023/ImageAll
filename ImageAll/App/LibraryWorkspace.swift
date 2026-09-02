@@ -1534,6 +1534,8 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var contextualTagFeedTagScope: ContextualTagFeedTagScope
     @Published private(set) var currentContextualTagFeed: ContextualTagFeedGroup?
     @Published private(set) var selectedContextualTagFeedAssetIDs: Set<UUID> = []
+    @Published private(set) var contextualTagFeedInspectorTags: [LibraryInspectorTagPresentation] = []
+    @Published private(set) var contextualTagFeedAnchorTargetDecision: LibraryInspectorTagDecisionState = .unknown
     @Published private(set) var isLoadingContextualTagFeed = false
     @Published private(set) var contextualTagFeedStatusMessage: String?
     @Published private(set) var isCatalogScanning = false
@@ -1734,6 +1736,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var browsingNavigationRequestID: UUID?
     private var selectionAnchorID: UUID?
     private var contextualTagFeedSelectionAnchorID: UUID?
+    private var contextualTagFeedInspectorRequestID: UUID?
     private var librarySlimmingSelectionAnchorID: UUID?
     private struct LibrarySlimmingOptimisticRecycleSnapshot {
         let clusters: [LibrarySlimmingClusterPresentation]
@@ -9143,6 +9146,9 @@ final class LibraryWorkspaceModel: ObservableObject {
                 await loadFirstPage()
             }
             await refreshInspector()
+            if currentContextualTagFeed != nil {
+                await refreshContextualTagFeedInspector()
+            }
         } catch {
             notice = .tagMutationFailed
             return
@@ -10589,6 +10595,7 @@ extension LibraryWorkspaceModel {
             let priorRevision = currentContextualTagFeed?.revision
             currentContextualTagFeed = snapshot.group
             if let group = snapshot.group {
+                let orderedMemberIDs = group.members.map(\.assetID)
                 let orderedCandidateIDs = group.members.compactMap {
                     $0.role == .candidate ? $0.assetID : nil
                 }
@@ -10597,14 +10604,14 @@ extension LibraryWorkspaceModel {
                     contextualTagFeedSelectionAnchorID = orderedCandidateIDs.first
                 } else {
                     selectedContextualTagFeedAssetIDs = ContextualTagFeedSelectionLogic
-                        .normalizedSelection(
+                        .normalizedMemberSelection(
                             selectedContextualTagFeedAssetIDs,
-                            orderedCandidateIDs: orderedCandidateIDs
+                            orderedMemberIDs: orderedMemberIDs
                         )
                     if contextualTagFeedSelectionAnchorID.map(
-                        orderedCandidateIDs.contains
+                        orderedMemberIDs.contains
                     ) != true {
-                        contextualTagFeedSelectionAnchorID = orderedCandidateIDs.first(where: {
+                        contextualTagFeedSelectionAnchorID = orderedMemberIDs.first(where: {
                             selectedContextualTagFeedAssetIDs.contains($0)
                         })
                     }
@@ -10613,9 +10620,14 @@ extension LibraryWorkspaceModel {
                 selectedContextualTagFeedAssetIDs = []
                 contextualTagFeedSelectionAnchorID = nil
             }
+            await refreshContextualTagFeedInspector()
         } catch {
             contextualTagFeedStatusMessage = "智能推流暂时无法刷新，请稍后重试。"
         }
+    }
+
+    var contextualTagFeedMemberAssetIDs: [UUID] {
+        currentContextualTagFeed?.members.map(\.assetID) ?? []
     }
 
     var contextualTagFeedCandidateAssetIDs: [UUID] {
@@ -10624,10 +10636,26 @@ extension LibraryWorkspaceModel {
         } ?? []
     }
 
+    var selectedContextualTagFeedCandidateAssetIDs: Set<UUID> {
+        ContextualTagFeedSelectionLogic.candidateDecisionSelection(
+            selectedContextualTagFeedAssetIDs,
+            orderedCandidateIDs: contextualTagFeedCandidateAssetIDs
+        )
+    }
+
+    var isContextualTagFeedAnchorSelected: Bool {
+        guard let anchorAssetID = currentContextualTagFeed?.anchorAssetID else { return false }
+        return selectedContextualTagFeedAssetIDs.contains(anchorAssetID)
+    }
+
+    var isCurrentContextualTagFeedAnchorValid: Bool {
+        contextualTagFeedAnchorTargetDecision == .accepted
+    }
+
     var areAllContextualTagFeedCandidatesSelected: Bool {
         let candidateIDs = contextualTagFeedCandidateAssetIDs
         return !candidateIDs.isEmpty
-            && selectedContextualTagFeedAssetIDs == Set(candidateIDs)
+            && selectedContextualTagFeedCandidateAssetIDs == Set(candidateIDs)
     }
 
     func selectContextualTagFeedCandidate(
@@ -10638,41 +10666,191 @@ extension LibraryWorkspaceModel {
         let result = ContextualTagFeedSelectionLogic.selectionAfterClick(
             currentSelection: selectedContextualTagFeedAssetIDs,
             anchorID: contextualTagFeedSelectionAnchorID,
-            orderedCandidateIDs: contextualTagFeedCandidateAssetIDs,
+            orderedMemberIDs: contextualTagFeedMemberAssetIDs,
             clickedID: assetID,
             additive: additive,
             extendRange: extendRange
         )
         selectedContextualTagFeedAssetIDs = result.selectedAssetIDs
         contextualTagFeedSelectionAnchorID = result.anchorAssetID
+        scheduleContextualTagFeedInspectorRefresh()
     }
 
     func selectContextualTagFeedCandidates(_ assetIDs: Set<UUID>) {
-        let candidateIDs = contextualTagFeedCandidateAssetIDs
+        let memberIDs = contextualTagFeedMemberAssetIDs
         selectedContextualTagFeedAssetIDs = ContextualTagFeedSelectionLogic
-            .normalizedSelection(assetIDs, orderedCandidateIDs: candidateIDs)
-        contextualTagFeedSelectionAnchorID = candidateIDs.first(where: {
+            .normalizedMemberSelection(assetIDs, orderedMemberIDs: memberIDs)
+        contextualTagFeedSelectionAnchorID = memberIDs.first(where: {
             selectedContextualTagFeedAssetIDs.contains($0)
         })
+        scheduleContextualTagFeedInspectorRefresh()
     }
 
     func selectAllContextualTagFeedCandidates() {
         let candidateIDs = contextualTagFeedCandidateAssetIDs
         selectedContextualTagFeedAssetIDs = Set(candidateIDs)
         contextualTagFeedSelectionAnchorID = candidateIDs.first
+        scheduleContextualTagFeedInspectorRefresh()
     }
 
     func clearContextualTagFeedSelection() {
         selectedContextualTagFeedAssetIDs = []
         contextualTagFeedSelectionAnchorID = nil
+        scheduleContextualTagFeedInspectorRefresh()
+    }
+
+    private func scheduleContextualTagFeedInspectorRefresh() {
+        Task { await refreshContextualTagFeedInspector() }
+    }
+
+    @discardableResult
+    func refreshContextualTagFeedInspector() async -> Bool {
+        let requestID = UUID()
+        contextualTagFeedInspectorRequestID = requestID
+        guard let group = currentContextualTagFeed else {
+            contextualTagFeedInspectorTags = []
+            contextualTagFeedAnchorTargetDecision = .unknown
+            return true
+        }
+        let memberIDs = Set(group.members.map(\.assetID))
+        let selectedIDs = selectedContextualTagFeedAssetIDs.intersection(memberIDs)
+        let availableTags = tags.filter { $0.state == .active }
+        let service = service
+        do {
+            let result = try await Self.offMain(priority: .high) {
+                let selectedAggregates = selectedIDs.isEmpty
+                    ? []
+                    : try service.selectionAggregate(
+                        tagIDs: availableTags.map(\.id),
+                        assetIDs: Array(selectedIDs)
+                    )
+                let anchorAggregate = try service.selectionAggregate(
+                    tagIDs: [group.tagID],
+                    assetIDs: [group.anchorAssetID]
+                ).first
+                return (selectedAggregates, anchorAggregate)
+            }
+            guard contextualTagFeedInspectorRequestID == requestID,
+                  currentContextualTagFeed?.id == group.id,
+                  currentContextualTagFeed?.revision == group.revision,
+                  selectedContextualTagFeedAssetIDs.intersection(memberIDs) == selectedIDs
+            else { return false }
+
+            if selectedIDs.isEmpty {
+                contextualTagFeedInspectorTags = []
+            } else {
+                let aggregateByTagID = Dictionary(
+                    uniqueKeysWithValues: result.0.map { ($0.tagID, $0) }
+                )
+                contextualTagFeedInspectorTags = availableTags.compactMap { tag in
+                    guard let aggregate = aggregateByTagID[tag.id] else { return nil }
+                    let decision: LibraryInspectorTagDecisionState
+                    if aggregate.acceptedCount == selectedIDs.count {
+                        decision = .accepted
+                    } else if aggregate.rejectedCount == selectedIDs.count {
+                        decision = .rejected
+                    } else if aggregate.unknownCount == selectedIDs.count {
+                        decision = .unknown
+                    } else {
+                        decision = .mixed
+                    }
+                    return LibraryInspectorTagPresentation(
+                        id: tag.id,
+                        displayName: tag.displayName,
+                        decision: decision
+                    )
+                }
+            }
+            if let anchorAggregate = result.1 {
+                contextualTagFeedAnchorTargetDecision = anchorAggregate.acceptedCount == 1
+                    ? .accepted
+                    : anchorAggregate.rejectedCount == 1 ? .rejected : .unknown
+            } else {
+                contextualTagFeedAnchorTargetDecision = .unknown
+            }
+            return true
+        } catch {
+            guard contextualTagFeedInspectorRequestID == requestID else { return false }
+            contextualTagFeedInspectorTags = []
+            contextualTagFeedAnchorTargetDecision = .unknown
+            return false
+        }
+    }
+
+    func requestContextualTagFeedTagDecision(
+        tagID: UUID,
+        action: LibraryTagDecisionAction
+    ) async {
+        guard let group = currentContextualTagFeed else { return }
+        let memberIDs = Set(group.members.map(\.assetID))
+        let assetIDs = Array(selectedContextualTagFeedAssetIDs.intersection(memberIDs))
+        guard !assetIDs.isEmpty else { return }
+        let service = service
+        do {
+            let snapshot = try await Self.offMain {
+                try service.mutateTag(tagID: tagID, assetIDs: assetIDs, action: action)
+            }
+            lastTagMutation = LibraryTagUndoRecord(
+                snapshot: snapshot,
+                appliedDecision: action.decision
+            )
+            applyGridDecision(snapshot: snapshot, newDecision: action.decision)
+            let displayName = tagDisplayName(for: tagID)
+            contextualTagFeedStatusMessage = switch action {
+            case .accept:
+                "已为选中的 \(assetIDs.count) 张照片打上“\(displayName)”标签。"
+            case .reject:
+                "已把选中的 \(assetIDs.count) 张照片标为不属于“\(displayName)”。"
+            case .clear:
+                "已取消选中的 \(assetIDs.count) 张照片对“\(displayName)”的标签决定。"
+            }
+            await enqueueAutomaticPersonalModelRebuildIfReady()
+            await refreshContextualTagFeedInspector()
+            await refreshReviewState(reloadActiveQueue: false)
+        } catch {
+            contextualTagFeedStatusMessage = "照片标签没有修改，请重试。"
+        }
+    }
+
+    func createAndAcceptContextualTagFeedTag(named rawName: String) async {
+        guard case let .success(name) = TagNameNormalizer.validateAndNormalize(rawName),
+              let group = currentContextualTagFeed
+        else { return }
+        let memberIDs = Set(group.members.map(\.assetID))
+        let assetIDs = Array(selectedContextualTagFeedAssetIDs.intersection(memberIDs))
+        guard !assetIDs.isEmpty else { return }
+        let service = service
+        do {
+            let result = try await Self.offMain {
+                try service.createTagAndAccept(rawName: name.displayName, assetIDs: assetIDs)
+            }
+            let snapshot = result.restoreSnapshot()
+            lastTagMutation = LibraryTagUndoRecord(snapshot: snapshot, appliedDecision: .accepted)
+            applyGridDecision(snapshot: snapshot, newDecision: .accepted)
+            tags.append(TagListItem(
+                id: result.tagID,
+                displayName: result.displayName,
+                state: .active,
+                groupID: TagGroupSeed.classify(displayName: result.displayName).id
+            ))
+            tags.sort { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
+            contextualTagFeedStatusMessage =
+                "已创建“\(result.displayName)”并应用到选中的 \(assetIDs.count) 张照片。"
+            await enqueueAutomaticPersonalModelRebuildIfReady()
+            await refreshContextualTagFeedInspector()
+            await refreshReviewState(reloadActiveQueue: false)
+        } catch {
+            contextualTagFeedStatusMessage = "新标签没有创建，请检查名称后重试。"
+        }
     }
 
     func resolveCurrentContextualTagFeed(decision: PersistableTagDecision) async {
         guard let group = currentContextualTagFeed,
-              !selectedContextualTagFeedAssetIDs.isEmpty
+              isCurrentContextualTagFeedAnchorValid,
+              !selectedContextualTagFeedCandidateAssetIDs.isEmpty
         else { return }
         let feed = contextualTagFeed
-        let selected = Array(selectedContextualTagFeedAssetIDs)
+        let selected = Array(selectedContextualTagFeedCandidateAssetIDs)
         let timestampMs = clock.nowMs
         do {
             let snapshot = try await Self.offMain {
@@ -12125,7 +12303,7 @@ private enum LibraryTagReorderSurface: Equatable {
 }
 
 /// Captures macOS right-clicks without stealing left-click / drag from SwiftUI.
-private struct LibraryRightClickCatcher: NSViewRepresentable {
+struct LibraryRightClickCatcher: NSViewRepresentable {
     var enabled: Bool
     var action: () -> Void
 
@@ -12180,6 +12358,100 @@ private struct LibraryRightClickCatcher: NSViewRepresentable {
 
     static func dismantleNSView(_ nsView: NSView, coordinator: ()) {
         (nsView as? RightClickNSView)?.removeMonitor()
+    }
+}
+
+struct LibraryInspectorTagDecisionChip: View {
+    let tag: TagListItem
+    let decision: LibraryInspectorTagDecisionState
+    let isEnabled: Bool
+    var supportsReordering = false
+    let onAccept: () -> Void
+    let onClear: () -> Void
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Label {
+                Text(tag.displayName)
+                    .lineLimit(1)
+            } icon: {
+                Image(systemName: "tag")
+            }
+            if decision == .accepted {
+                Image(systemName: "checkmark")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            } else if decision == .mixed {
+                Text("混")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 28)
+        .frame(maxWidth: 180, alignment: .leading)
+        .fixedSize(horizontal: true, vertical: false)
+        .contentShape(Rectangle())
+        .background {
+            if decision == .accepted {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.accentColor.opacity(0.18))
+            } else if decision == .mixed {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.accentColor.opacity(0.08))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6)
+                            .strokeBorder(
+                                Color.accentColor.opacity(0.55),
+                                style: StrokeStyle(lineWidth: 1, dash: [3, 2])
+                            )
+                    }
+            } else {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color(nsColor: .controlBackgroundColor).opacity(0.75))
+            }
+        }
+        .foregroundStyle(Color.primary)
+        .opacity(isEnabled ? 1 : 0.72)
+        .onTapGesture {
+            guard isEnabled else { return }
+            onAccept()
+        }
+        .background {
+            LibraryRightClickCatcher(enabled: isEnabled, action: onClear)
+        }
+        .persistentHelp(helpText)
+        .accessibilityLabel(tag.displayName)
+        .accessibilityValue(accessibilityValue)
+        .accessibilityHint(
+            isEnabled
+                ? "左键打上标签，右键取消标签"
+                : "先选择照片再打标签"
+        )
+    }
+
+    private var accessibilityValue: String {
+        switch decision {
+        case .accepted: "已打上标签"
+        case .rejected: "已明确不属于"
+        case .mixed: "所选照片状态不一致"
+        case .unknown: "未打上标签"
+        }
+    }
+
+    private var helpText: String {
+        let reorderSuffix = supportsReordering ? "；拖拽可调整顺序" : ""
+        guard isEnabled else {
+            return "选择照片后，左键打上标签，右键取消\(reorderSuffix)"
+        }
+        switch decision {
+        case .accepted:
+            return "已打上“\(tag.displayName)”；左键保持打上，右键取消\(reorderSuffix)"
+        case .mixed:
+            return "所选照片对该标签状态不一致；左键全部打上，右键全部取消\(reorderSuffix)"
+        case .rejected, .unknown:
+            return "左键打上“\(tag.displayName)”，右键取消\(reorderSuffix)"
+        }
     }
 }
 
@@ -12639,7 +12911,7 @@ struct LibraryWorkspaceView: View {
         } else if selection == .trainingWorkspace {
             TrainingWorkspaceInspectorView(model: model)
         } else if selection == .contextualTagFeed {
-            ContextualTagFeedScopeInspectorView(model: model)
+            ContextualTagFeedInspectorView(model: model)
         } else if selection == .librarySlimming {
             LibrarySlimmingInspectorView(model: model)
         } else {
@@ -15039,77 +15311,17 @@ struct LibraryWorkspaceView: View {
     private func inspectorTagChip(_ tag: TagListItem) -> some View {
         let decision = inspectorDecision(for: tag.id)
         let labelingEnabled = !model.selectedAssetIDs.isEmpty
-        let isAccepted = decision == .accepted
-        let isMixed = decision == .mixed
-
-        return HStack(spacing: 5) {
-            Label {
-                Text(tag.displayName)
-                    .lineLimit(1)
-            } icon: {
-                Image(systemName: "tag")
-            }
-            if isAccepted {
-                Image(systemName: "checkmark")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-            } else if isMixed {
-                Text("混")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(.horizontal, 8)
-        .frame(height: 28)
-        .frame(maxWidth: 180, alignment: .leading)
-        .fixedSize(horizontal: true, vertical: false)
-        .contentShape(Rectangle())
-        .background {
-            if isAccepted {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color.accentColor.opacity(0.18))
-            } else if isMixed {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color.accentColor.opacity(0.08))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 6)
-                            .strokeBorder(
-                                Color.accentColor.opacity(0.55),
-                                style: StrokeStyle(lineWidth: 1, dash: [3, 2])
-                            )
-                    }
-            } else {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color(nsColor: .controlBackgroundColor).opacity(0.75))
-            }
-        }
-        .foregroundStyle(Color.primary)
-        .opacity(labelingEnabled ? 1 : 0.72)
-        .onTapGesture {
-            guard labelingEnabled else { return }
-            Task { await model.requestTagDecision(tagID: tag.id, action: .accept) }
-        }
-        .background {
-            LibraryRightClickCatcher(enabled: labelingEnabled) {
+        return LibraryInspectorTagDecisionChip(
+            tag: tag,
+            decision: decision,
+            isEnabled: labelingEnabled,
+            supportsReordering: true,
+            onAccept: {
+                Task { await model.requestTagDecision(tagID: tag.id, action: .accept) }
+            },
+            onClear: {
                 Task { await model.requestTagDecision(tagID: tag.id, action: .clear) }
             }
-        }
-        .persistentHelp(
-            labelingEnabled
-                ? (
-                    isAccepted
-                        ? "已打上“\(tag.displayName)”；左键保持打上，右键取消；拖拽可调整顺序"
-                        : isMixed
-                            ? "所选照片对该标签状态不一致；左键全部打上，右键全部取消；拖拽可调整顺序"
-                            : "左键打上“\(tag.displayName)”，右键取消；拖拽可调整顺序"
-                )
-                : "选择照片后，左键打上标签，右键取消；拖拽仍可调整分组与顺序"
-        )
-        .accessibilityLabel(tag.displayName)
-        .accessibilityHint(
-            labelingEnabled
-                ? "左键打上标签，右键取消标签"
-                : "先选择照片再打标签"
         )
     }
 

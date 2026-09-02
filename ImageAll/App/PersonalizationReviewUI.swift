@@ -75,7 +75,7 @@ struct ContextualTagFeedView: View {
             }
             .buttonStyle(.borderless)
             .fixedSize()
-            .persistentHelp("在右侧推流范围面板中选择一个或多个标签。")
+            .persistentHelp("打开右侧检查器，为锚点或候选照片修改标签，并设置推流范围。")
             Button("刷新", systemImage: "arrow.clockwise") {
                 Task { await model.refreshContextualTagFeed(generateRecentAnchors: true) }
             }
@@ -93,13 +93,24 @@ struct ContextualTagFeedView: View {
                     Text(groupEvidenceSummary(group))
                         .font(.callout)
                         .foregroundStyle(.secondary)
-                    Text("锚点不可编辑；单击单选，⌘ 单击增减，Shift 单击连选，也可拖框多选。")
+                    Text("锚点与候选都可选择并在右侧修改标签；P/X 只处理所选候选照片。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    if !model.isCurrentContextualTagFeedAnchorValid {
+                        Label(
+                            "锚点已不再属于“\(group.tagDisplayName)”；请在右侧补充正确标签后舍弃这组。",
+                            systemImage: "exclamationmark.triangle.fill"
+                        )
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.orange)
+                    }
                 }
                 Spacer(minLength: 12)
                 VStack(alignment: .trailing, spacing: 6) {
-                    Text("\(group.members.count) 张 · 已选 \(model.selectedContextualTagFeedAssetIDs.count)")
+                    Text(
+                        "\(group.members.count) 张 · 已选 \(model.selectedContextualTagFeedAssetIDs.count)"
+                            + " · 可确认 \(model.selectedContextualTagFeedCandidateAssetIDs.count)"
+                    )
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                     HStack(spacing: 8) {
@@ -142,10 +153,9 @@ struct ContextualTagFeedView: View {
                                 ContextualTagFeedThumbnail(
                                     member: member,
                                     model: model,
-                                    isSelected: member.role == .anchor
-                                        || model.selectedContextualTagFeedAssetIDs.contains(
-                                            member.assetID
-                                        ),
+                                    isSelected: model.selectedContextualTagFeedAssetIDs.contains(
+                                        member.assetID
+                                    ),
                                     onSelect: { additive, extendRange in
                                         guard !isMarqueeSelecting else { return }
                                         model.selectContextualTagFeedCandidate(
@@ -193,13 +203,19 @@ struct ContextualTagFeedView: View {
                 }
                 .buttonStyle(.bordered)
                 .tint(.red)
-                .disabled(model.selectedContextualTagFeedAssetIDs.isEmpty)
+                .disabled(
+                    model.selectedContextualTagFeedCandidateAssetIDs.isEmpty ||
+                        !model.isCurrentContextualTagFeedAnchorValid
+                )
                 .persistentHelp("明确把选中的照片标为不属于当前标签；不会处理未选照片；快捷键 X。")
                 Button(confirmButtonTitle(group)) {
                     Task { await model.resolveCurrentContextualTagFeed(decision: .accepted) }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(model.selectedContextualTagFeedAssetIDs.isEmpty)
+                .disabled(
+                    model.selectedContextualTagFeedCandidateAssetIDs.isEmpty ||
+                        !model.isCurrentContextualTagFeedAnchorValid
+                )
                 .persistentHelp("确认所选照片属于当前标签并进入下一组；快捷键 P。")
             }
             .padding(12)
@@ -223,11 +239,11 @@ struct ContextualTagFeedView: View {
     }
 
     private func confirmButtonTitle(_ group: ContextualTagFeedGroup) -> String {
-        "将选中的 \(model.selectedContextualTagFeedAssetIDs.count) 张标为“\(group.tagDisplayName)” (P)"
+        "将选中的 \(model.selectedContextualTagFeedCandidateAssetIDs.count) 张标为“\(group.tagDisplayName)” (P)"
     }
 
     private func rejectButtonTitle(_ group: ContextualTagFeedGroup) -> String {
-        "将选中的 \(model.selectedContextualTagFeedAssetIDs.count) 张标为不属于“\(group.tagDisplayName)” (X)"
+        "将选中的 \(model.selectedContextualTagFeedCandidateAssetIDs.count) 张标为不属于“\(group.tagDisplayName)” (X)"
     }
 
     private func groupEvidenceSummary(_ group: ContextualTagFeedGroup) -> String {
@@ -242,39 +258,44 @@ struct ContextualTagFeedView: View {
     }
 }
 
-struct ContextualTagFeedScopeInspectorView: View {
+struct ContextualTagFeedInspectorView: View {
     @ObservedObject var model: LibraryWorkspaceModel
+    @State private var newTagName = ""
+    @State private var isScopeExpanded = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("推流标签范围")
-                        .font(.headline)
-                    Text("直接点击标签加入或移出范围；分组折叠状态与图库标签面板一致。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                recommendedScopeButton
+                photoTagEditor
 
                 Divider()
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("自选标签")
-                        .font(.headline)
-                    Text("选中一个或多个标签后，只生成、统计并显示这些标签的推流。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                DisclosureGroup(isExpanded: $isScopeExpanded) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("直接点击标签加入或移出范围；选中一个或多个标签后，只生成、统计并显示这些标签的推流。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
 
-                if model.tags.isEmpty {
-                    Text("尚无可用于智能推流的标签。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(model.tagGroupSections) { section in
-                        tagGroupSection(section)
+                        recommendedScopeButton
+
+                        if model.tags.isEmpty {
+                            Text("尚无可用于智能推流的标签。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(model.tagGroupSections) { section in
+                                tagGroupSection(section)
+                            }
+                        }
+                    }
+                    .padding(.top, 8)
+                } label: {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("推流标签范围")
+                            .font(.headline)
+                        Text(model.contextualTagFeedScopeTitle)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
 
@@ -291,8 +312,155 @@ struct ContextualTagFeedScopeInspectorView: View {
             .padding(16)
         }
         .scrollIndicators(.visible, axes: .vertical)
-        .navigationTitle("推流范围")
+        .navigationTitle("照片标签与推流范围")
         .accessibilityIdentifier("contextualTagFeedScopeInspector")
+    }
+
+    private var photoTagEditor: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("所选照片标签")
+                    .font(.headline)
+                Text(selectionSummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("与图库一致：左键打上标签，右键取消。锚点和候选照片都可以选择。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let group = model.currentContextualTagFeed,
+               !model.isCurrentContextualTagFeedAnchorValid
+            {
+                VStack(alignment: .leading, spacing: 7) {
+                    Label(
+                        "锚点已不再属于“\(group.tagDisplayName)”，当前推流依据已经失效。",
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    Text("可继续为锚点补充正确标签；完成后舍弃这组，不会产生负样本。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Button("舍弃错误锚点组") {
+                        Task { await model.dismissCurrentContextualTagFeed() }
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .padding(10)
+                .background(.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+            }
+
+            HStack(spacing: 6) {
+                TextField("新标签名称", text: $newTagName)
+                    .onSubmit { createTag() }
+                Button {
+                    createTag()
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .disabled(
+                    model.selectedContextualTagFeedAssetIDs.isEmpty ||
+                        TagNameNormalizer.trimUnicodeWhiteSpace(newTagName).isEmpty
+                )
+                .persistentHelp("创建新标签，并应用到当前选中的锚点或候选照片。")
+            }
+
+            if model.canUndoTagMutation {
+                Button("撤销最近标签修改", systemImage: "arrow.uturn.backward") {
+                    Task { await model.undoLastTagMutation() }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+
+            if model.tags.isEmpty {
+                Text("尚无标签。可在上方创建并应用。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(model.tagGroupSections) { section in
+                    photoTagGroupSection(section)
+                }
+            }
+        }
+    }
+
+    private var selectionSummary: String {
+        let count = model.selectedContextualTagFeedAssetIDs.count
+        guard count > 0 else { return "未选择照片；请先在左侧点选锚点或候选照片。" }
+        if model.isContextualTagFeedAnchorSelected {
+            return "已选择 \(count) 张，其中包含锚点照片。"
+        }
+        return "已选择 \(count) 张候选照片。"
+    }
+
+    private func photoTagGroupSection(_ section: LibraryTagGroupSection) -> some View {
+        let isCollapsed = model.isTagGroupCollapsed(section.group.id)
+        return VStack(alignment: .leading, spacing: 6) {
+            Button {
+                model.toggleTagGroupCollapsed(section.group.id)
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 10)
+                    Text(section.group.displayName)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text("\(section.tags.count)")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if !isCollapsed {
+                LibraryTagFlowLayout {
+                    ForEach(section.tags, id: \.id) { tag in
+                        photoTagChip(tag)
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 3)
+        .padding(4)
+    }
+
+    private func photoTagChip(_ tag: TagListItem) -> some View {
+        let decision = model.contextualTagFeedInspectorTags
+            .first(where: { $0.id == tag.id })?.decision ?? .unknown
+        return LibraryInspectorTagDecisionChip(
+            tag: tag,
+            decision: decision,
+            isEnabled: !model.selectedContextualTagFeedAssetIDs.isEmpty,
+            onAccept: {
+                Task {
+                    await model.requestContextualTagFeedTagDecision(
+                        tagID: tag.id,
+                        action: .accept
+                    )
+                }
+            },
+            onClear: {
+                Task {
+                    await model.requestContextualTagFeedTagDecision(
+                        tagID: tag.id,
+                        action: .clear
+                    )
+                }
+            }
+        )
+    }
+
+    private func createTag() {
+        let candidate = TagNameNormalizer.trimUnicodeWhiteSpace(newTagName)
+        guard !candidate.isEmpty, !model.selectedContextualTagFeedAssetIDs.isEmpty else { return }
+        newTagName = ""
+        Task { await model.createAndAcceptContextualTagFeedTag(named: candidate) }
     }
 
     private var recommendedScopeButton: some View {
@@ -477,13 +645,16 @@ private struct ContextualTagFeedThumbnail: View {
         .background(.quaternary.opacity(0.16), in: RoundedRectangle(cornerRadius: 10))
         .contentShape(Rectangle())
         .onTapGesture {
-            guard member.role == .candidate else { return }
             let flags = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
             onSelect(flags.contains(.command), flags.contains(.shift))
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(member.fileName ?? "候选媒体")
-        .accessibilityValue(member.role == .anchor ? "已确认锚点" : (isSelected ? "已选择" : "未选择"))
+        .accessibilityValue(
+            member.role == .anchor
+                ? "已确认锚点，\(isSelected ? "已选择" : "未选择")"
+                : (isSelected ? "已选择" : "未选择")
+        )
         .task(id: member.assetID) {
             guard let data = await model.thumbnailData(assetID: member.assetID) else { return }
             image = NSImage(data: data)

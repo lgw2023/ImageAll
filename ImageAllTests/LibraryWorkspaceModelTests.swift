@@ -207,7 +207,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         let result = ContextualTagFeedSelectionLogic.selectionAfterClick(
             currentSelection: [first, second],
             anchorID: first,
-            orderedCandidateIDs: [first, second, third],
+            orderedMemberIDs: [first, second, third],
             clickedID: third,
             additive: false,
             extendRange: false
@@ -225,7 +225,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         let adding = ContextualTagFeedSelectionLogic.selectionAfterClick(
             currentSelection: [first],
             anchorID: first,
-            orderedCandidateIDs: [first, second, third],
+            orderedMemberIDs: [first, second, third],
             clickedID: second,
             additive: true,
             extendRange: false
@@ -236,7 +236,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         let removing = ContextualTagFeedSelectionLogic.selectionAfterClick(
             currentSelection: adding.selectedAssetIDs,
             anchorID: adding.anchorAssetID,
-            orderedCandidateIDs: [first, second, third],
+            orderedMemberIDs: [first, second, third],
             clickedID: first,
             additive: true,
             extendRange: false
@@ -254,7 +254,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         let replacing = ContextualTagFeedSelectionLogic.selectionAfterClick(
             currentSelection: [first, fourth],
             anchorID: first,
-            orderedCandidateIDs: [first, second, third, fourth],
+            orderedMemberIDs: [first, second, third, fourth],
             clickedID: third,
             additive: false,
             extendRange: true
@@ -265,7 +265,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         let extending = ContextualTagFeedSelectionLogic.selectionAfterClick(
             currentSelection: [fourth],
             anchorID: second,
-            orderedCandidateIDs: [first, second, third, fourth],
+            orderedMemberIDs: [first, second, third, fourth],
             clickedID: third,
             additive: true,
             extendRange: true
@@ -356,18 +356,111 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
     }
 
-    func testContextualTagFeedSelectionNormalizationExcludesConfirmedAnchor() {
+    func testContextualTagFeedSelectionAllowsAnchorWhileDecisionSelectionExcludesIt() {
         let anchor = UUID()
         let first = UUID()
         let second = UUID()
 
         XCTAssertEqual(
-            ContextualTagFeedSelectionLogic.normalizedSelection(
+            ContextualTagFeedSelectionLogic.normalizedMemberSelection(
+                [anchor, first, second],
+                orderedMemberIDs: [anchor, first, second]
+            ),
+            [anchor, first, second]
+        )
+        XCTAssertEqual(
+            ContextualTagFeedSelectionLogic.candidateDecisionSelection(
                 [anchor, first, second],
                 orderedCandidateIDs: [first, second]
             ),
             [first, second]
         )
+    }
+
+    func testContextualTagFeedEditsAnchorAndCandidateTagsWithoutSubmittingAnchorAsCandidate() async throws {
+        let sourceID = UUID()
+        let anchorID = UUID()
+        let candidateID = UUID()
+        let wrongTag = TagListItem(id: UUID(), displayName: "平潭", state: .active)
+        let correctTag = TagListItem(id: UUID(), displayName: "海边旅行", state: .active)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [],
+            tags: [wrongTag, correctTag],
+            startsConnected: true
+        )
+        _ = try service.mutateTag(
+            tagID: wrongTag.id,
+            assetIDs: [anchorID],
+            action: .accept
+        )
+        let group = ContextualTagFeedGroup(
+            id: UUID(),
+            tagID: wrongTag.id,
+            tagDisplayName: wrongTag.displayName,
+            anchorAssetID: anchorID,
+            sourceID: sourceID,
+            state: .pending,
+            revision: 1,
+            policyRevision: "test",
+            members: [
+                ContextualTagFeedMember(
+                    assetID: anchorID,
+                    role: .anchor,
+                    rank: 0,
+                    fileName: "IMG_0001.HEIC",
+                    mediaKind: .image,
+                    mediaCreatedAtMs: 1,
+                    evidence: []
+                ),
+                ContextualTagFeedMember(
+                    assetID: candidateID,
+                    role: .candidate,
+                    rank: 1,
+                    fileName: "IMG_0002.HEIC",
+                    mediaKind: .image,
+                    mediaCreatedAtMs: 2,
+                    evidence: []
+                ),
+            ]
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            contextualTagFeed: FixedContextualTagFeedPort(group: group),
+            contextualTagFeedScopePreferences: ContextualTagFeedScopePreferences(
+                keyPrefix: "tests.contextual-tag-editor.\(UUID().uuidString)"
+            ),
+            idlePrewarmInstallEventMonitor: false
+        )
+
+        await model.start()
+        await model.refreshContextualTagFeed(generateRecentAnchors: false)
+
+        XCTAssertEqual(model.selectedContextualTagFeedAssetIDs, [candidateID])
+        model.selectContextualTagFeedCandidate(anchorID, additive: false)
+        for _ in 0 ..< 20 {
+            await Task.yield()
+        }
+        await model.refreshContextualTagFeedInspector()
+        XCTAssertEqual(model.selectedContextualTagFeedAssetIDs, [anchorID])
+        XCTAssertEqual(
+            model.contextualTagFeedInspectorTags.first(where: { $0.id == wrongTag.id })?.decision,
+            .accepted
+        )
+
+        await model.requestContextualTagFeedTagDecision(tagID: wrongTag.id, action: .clear)
+        XCTAssertFalse(service.decidedAssetIDs(tagID: wrongTag.id).contains(anchorID))
+        XCTAssertFalse(model.isCurrentContextualTagFeedAnchorValid)
+        XCTAssertEqual(model.currentContextualTagFeed?.id, group.id)
+
+        model.selectContextualTagFeedCandidate(candidateID, additive: true)
+        await model.requestContextualTagFeedTagDecision(tagID: correctTag.id, action: .accept)
+        XCTAssertEqual(service.decidedAssetIDs(tagID: correctTag.id), [anchorID, candidateID])
+        XCTAssertEqual(model.selectedContextualTagFeedCandidateAssetIDs, [candidateID])
     }
 
     func testLibraryStartsWithFileNameSort() async {
@@ -16207,6 +16300,52 @@ private final class LibraryWorkspaceIdlePrewarmPreference:
 
     init(isEnabled: Bool) {
         self.isEnabled = isEnabled
+    }
+}
+
+private struct FixedContextualTagFeedPort: ContextualTagFeedPort {
+    let group: ContextualTagFeedGroup
+
+    func generate(tagID _: UUID, anchorAssetID _: UUID, timestampMs _: Int64) throws
+        -> ContextualTagFeedGroup?
+    {
+        nil
+    }
+
+    func pendingCount(tagIDs: Set<UUID>?) throws -> Int {
+        tagIDs.map { $0.contains(group.tagID) ? 1 : 0 } ?? 1
+    }
+
+    func fetchPendingGroups(limit: Int, tagIDs: Set<UUID>?) throws -> [ContextualTagFeedGroup] {
+        guard limit > 0, tagIDs.map({ $0.contains(group.tagID) }) ?? true else { return [] }
+        return [group]
+    }
+
+    func refreshRecentAcceptedAnchors(
+        limit _: Int,
+        tagIDs _: Set<UUID>?,
+        timestampMs _: Int64
+    ) throws -> Int {
+        0
+    }
+
+    func dismiss(feedID _: UUID, revision _: Int, timestampMs _: Int64) throws {}
+
+    func resolve(
+        feedID _: UUID,
+        revision _: Int,
+        selectedAssetIDs _: [UUID],
+        decision _: PersistableTagDecision,
+        timestampMs _: Int64
+    ) throws -> TagMutationPriorStateSnapshot {
+        throw ContextualTagFeedError.persistenceFailure
+    }
+
+    func undoResolution(
+        _: ContextualTagFeedResolutionUndo,
+        timestampMs _: Int64
+    ) throws {
+        throw ContextualTagFeedError.persistenceFailure
     }
 }
 
