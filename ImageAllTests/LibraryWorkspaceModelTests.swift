@@ -199,6 +199,124 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
     }
 
+    func testContextualTagFeedOrdinaryClickReplacesSelection() {
+        let first = UUID()
+        let second = UUID()
+        let third = UUID()
+
+        let result = ContextualTagFeedSelectionLogic.selectionAfterClick(
+            currentSelection: [first, second],
+            anchorID: first,
+            orderedCandidateIDs: [first, second, third],
+            clickedID: third,
+            additive: false,
+            extendRange: false
+        )
+
+        XCTAssertEqual(result.selectedAssetIDs, [third])
+        XCTAssertEqual(result.anchorAssetID, third)
+    }
+
+    func testContextualTagFeedCommandClickTogglesWithoutDroppingOtherCandidates() {
+        let first = UUID()
+        let second = UUID()
+        let third = UUID()
+
+        let adding = ContextualTagFeedSelectionLogic.selectionAfterClick(
+            currentSelection: [first],
+            anchorID: first,
+            orderedCandidateIDs: [first, second, third],
+            clickedID: second,
+            additive: true,
+            extendRange: false
+        )
+        XCTAssertEqual(adding.selectedAssetIDs, [first, second])
+        XCTAssertEqual(adding.anchorAssetID, second)
+
+        let removing = ContextualTagFeedSelectionLogic.selectionAfterClick(
+            currentSelection: adding.selectedAssetIDs,
+            anchorID: adding.anchorAssetID,
+            orderedCandidateIDs: [first, second, third],
+            clickedID: first,
+            additive: true,
+            extendRange: false
+        )
+        XCTAssertEqual(removing.selectedAssetIDs, [second])
+        XCTAssertEqual(removing.anchorAssetID, first)
+    }
+
+    func testContextualTagFeedShiftClickSelectsContiguousCandidateRange() {
+        let first = UUID()
+        let second = UUID()
+        let third = UUID()
+        let fourth = UUID()
+
+        let replacing = ContextualTagFeedSelectionLogic.selectionAfterClick(
+            currentSelection: [first, fourth],
+            anchorID: first,
+            orderedCandidateIDs: [first, second, third, fourth],
+            clickedID: third,
+            additive: false,
+            extendRange: true
+        )
+        XCTAssertEqual(replacing.selectedAssetIDs, [first, second, third])
+        XCTAssertEqual(replacing.anchorAssetID, first)
+
+        let extending = ContextualTagFeedSelectionLogic.selectionAfterClick(
+            currentSelection: [fourth],
+            anchorID: second,
+            orderedCandidateIDs: [first, second, third, fourth],
+            clickedID: third,
+            additive: true,
+            extendRange: true
+        )
+        XCTAssertEqual(extending.selectedAssetIDs, [second, third, fourth])
+        XCTAssertEqual(extending.anchorAssetID, second)
+    }
+
+    func testContextualTagFeedKeyboardShortcutRecognizesSelectAndClearAll() {
+        XCTAssertEqual(
+            ContextualTagFeedKeyboardShortcutAction.resolve(
+                charactersIgnoringModifiers: "a",
+                modifiers: [.command]
+            ),
+            .selectAll
+        )
+        XCTAssertEqual(
+            ContextualTagFeedKeyboardShortcutAction.resolve(
+                charactersIgnoringModifiers: "A",
+                modifiers: [.command, .shift]
+            ),
+            .clearSelection
+        )
+        XCTAssertNil(
+            ContextualTagFeedKeyboardShortcutAction.resolve(
+                charactersIgnoringModifiers: "a",
+                modifiers: []
+            )
+        )
+        XCTAssertNil(
+            ContextualTagFeedKeyboardShortcutAction.resolve(
+                charactersIgnoringModifiers: "a",
+                modifiers: [.command, .option]
+            )
+        )
+    }
+
+    func testContextualTagFeedSelectionNormalizationExcludesConfirmedAnchor() {
+        let anchor = UUID()
+        let first = UUID()
+        let second = UUID()
+
+        XCTAssertEqual(
+            ContextualTagFeedSelectionLogic.normalizedSelection(
+                [anchor, first, second],
+                orderedCandidateIDs: [first, second]
+            ),
+            [first, second]
+        )
+    }
+
     func testLibraryStartsWithFileNameSort() async {
         let sourceID = UUID()
         let service = FakeLibraryWorkspaceService(

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 enum ReviewWorkspaceMode: Equatable {
@@ -8,6 +9,8 @@ enum ReviewWorkspaceMode: Equatable {
 struct ContextualTagFeedView: View {
     @ObservedObject var model: LibraryWorkspaceModel
     let onLater: () -> Void
+    @State private var cellFrames = LibraryGridCellFrameStore()
+    @State private var isMarqueeSelecting = false
 
     private var group: ContextualTagFeedGroup? { model.currentContextualTagFeed }
 
@@ -26,6 +29,14 @@ struct ContextualTagFeedView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .navigationTitle("智能推流")
+        .contextualTagFeedKeyboardShortcutHandling(isEnabled: group != nil) { action in
+            switch action {
+            case .selectAll:
+                model.selectAllContextualTagFeedCandidates()
+            case .clearSelection:
+                model.clearContextualTagFeedSelection()
+            }
+        }
     }
 
     private var header: some View {
@@ -60,36 +71,75 @@ struct ContextualTagFeedView: View {
                     Text(groupEvidenceSummary(group))
                         .font(.callout)
                         .foregroundStyle(.secondary)
-                    Text("锚点已经确认；候选默认选中，可点击排除少数无关照片。")
+                    Text("锚点不可编辑；单击单选，⌘ 单击增减，Shift 单击连选，也可拖框多选。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 12)
-                Text("\(group.members.count) 张")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .trailing, spacing: 6) {
+                    Text("\(group.members.count) 张 · 已选 \(model.selectedContextualTagFeedAssetIDs.count)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 8) {
+                        Button("全选") {
+                            model.selectAllContextualTagFeedCandidates()
+                        }
+                        .disabled(model.areAllContextualTagFeedCandidatesSelected)
+                        .persistentHelp("选择当前组的全部候选照片（⌘A）。")
+                        Button("清除选择") {
+                            model.clearContextualTagFeedSelection()
+                        }
+                        .disabled(model.selectedContextualTagFeedAssetIDs.isEmpty)
+                        .persistentHelp("取消当前组的全部候选选择（⇧⌘A）。")
+                    }
+                    .buttonStyle(.borderless)
+                }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
 
-            ScrollView {
-                LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 170, maximum: 240), spacing: 10)],
-                    spacing: 10
-                ) {
-                    ForEach(group.members) { member in
-                        ContextualTagFeedThumbnail(
-                            member: member,
-                            model: model,
-                            isSelected: member.role == .anchor
-                                || model.selectedContextualTagFeedAssetIDs.contains(member.assetID),
-                            onToggle: {
-                                model.toggleContextualTagFeedCandidate(member.assetID)
+            GeometryReader { proxy in
+                ScrollView {
+                    LibraryGridMarqueeContainer(
+                        cellFrames: cellFrames,
+                        isMarqueeSelecting: $isMarqueeSelecting,
+                        viewportHeight: proxy.size.height,
+                        contentWidth: proxy.size.width,
+                        currentSelection: model.selectedContextualTagFeedAssetIDs,
+                        onSelectionChange: { assetIDs, _ in
+                            model.selectContextualTagFeedCandidates(assetIDs)
+                        }
+                    ) {
+                        LazyVGrid(
+                            columns: [
+                                GridItem(.adaptive(minimum: 170, maximum: 240), spacing: 10),
+                            ],
+                            spacing: 10
+                        ) {
+                            ForEach(group.members) { member in
+                                ContextualTagFeedThumbnail(
+                                    member: member,
+                                    model: model,
+                                    isSelected: member.role == .anchor
+                                        || model.selectedContextualTagFeedAssetIDs.contains(
+                                            member.assetID
+                                        ),
+                                    onSelect: { additive, extendRange in
+                                        guard !isMarqueeSelecting else { return }
+                                        model.selectContextualTagFeedCandidate(
+                                            member.assetID,
+                                            additive: additive,
+                                            extendRange: extendRange
+                                        )
+                                    }
+                                )
+                                .libraryGridCellFrameReporter(assetID: member.assetID)
                             }
-                        )
+                        }
+                        .padding(16)
                     }
                 }
-                .padding(16)
+                .scrollDisabled(isMarqueeSelecting)
             }
 
             Divider()
@@ -108,14 +158,13 @@ struct ContextualTagFeedView: View {
                 }
                 .buttonStyle(.bordered)
                 .persistentHelp("只忽略当前候选组，不会把照片写成“不属于”或训练负样本。")
-                Menu {
-                    Button("将选中的照片标为不属于", role: .destructive) {
-                        Task { await model.resolveCurrentContextualTagFeed(decision: .rejected) }
-                    }
-                } label: {
-                    Label("更多", systemImage: "ellipsis.circle")
+                Button(rejectButtonTitle(group), role: .destructive) {
+                    Task { await model.resolveCurrentContextualTagFeed(decision: .rejected) }
                 }
+                .buttonStyle(.bordered)
+                .tint(.red)
                 .disabled(model.selectedContextualTagFeedAssetIDs.isEmpty)
+                .persistentHelp("明确把选中的照片标为不属于当前标签；不会处理未选照片。")
                 Button(confirmButtonTitle(group)) {
                     Task { await model.resolveCurrentContextualTagFeed(decision: .accepted) }
                 }
@@ -146,6 +195,10 @@ struct ContextualTagFeedView: View {
         "将选中的 \(model.selectedContextualTagFeedAssetIDs.count) 张标为“\(group.tagDisplayName)”"
     }
 
+    private func rejectButtonTitle(_ group: ContextualTagFeedGroup) -> String {
+        "将选中的 \(model.selectedContextualTagFeedAssetIDs.count) 张标为不属于“\(group.tagDisplayName)”"
+    }
+
     private func groupEvidenceSummary(_ group: ContextualTagFeedGroup) -> String {
         let evidenceKinds = Set(group.members.flatMap { $0.evidence.map(\.kind) })
         let labels = [
@@ -162,7 +215,7 @@ private struct ContextualTagFeedThumbnail: View {
     let member: ContextualTagFeedMember
     @ObservedObject var model: LibraryWorkspaceModel
     let isSelected: Bool
-    let onToggle: () -> Void
+    let onSelect: (_ additive: Bool, _ extendRange: Bool) -> Void
     @State private var image: NSImage?
 
     var body: some View {
@@ -216,7 +269,8 @@ private struct ContextualTagFeedThumbnail: View {
         .contentShape(Rectangle())
         .onTapGesture {
             guard member.role == .candidate else { return }
-            onToggle()
+            let flags = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            onSelect(flags.contains(.command), flags.contains(.shift))
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(member.fileName ?? "候选媒体")

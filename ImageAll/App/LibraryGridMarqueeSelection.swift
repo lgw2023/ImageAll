@@ -52,6 +52,97 @@ enum LibraryGridMarqueeSelectionLogic {
     }
 }
 
+struct ContextualTagFeedSelectionResult: Equatable {
+    let selectedAssetIDs: Set<UUID>
+    let anchorAssetID: UUID?
+}
+
+enum ContextualTagFeedSelectionLogic {
+    static func normalizedSelection(
+        _ requestedAssetIDs: Set<UUID>,
+        orderedCandidateIDs: [UUID]
+    ) -> Set<UUID> {
+        requestedAssetIDs.intersection(orderedCandidateIDs)
+    }
+
+    static func selectionAfterClick(
+        currentSelection: Set<UUID>,
+        anchorID: UUID?,
+        orderedCandidateIDs: [UUID],
+        clickedID: UUID,
+        additive: Bool,
+        extendRange: Bool
+    ) -> ContextualTagFeedSelectionResult {
+        guard orderedCandidateIDs.contains(clickedID) else {
+            return ContextualTagFeedSelectionResult(
+                selectedAssetIDs: normalizedSelection(
+                    currentSelection,
+                    orderedCandidateIDs: orderedCandidateIDs
+                ),
+                anchorAssetID: anchorID.flatMap {
+                    orderedCandidateIDs.contains($0) ? $0 : nil
+                }
+            )
+        }
+
+        if extendRange,
+           let anchorID,
+           let anchorIndex = orderedCandidateIDs.firstIndex(of: anchorID),
+           let targetIndex = orderedCandidateIDs.firstIndex(of: clickedID)
+        {
+            let range = min(anchorIndex, targetIndex) ... max(anchorIndex, targetIndex)
+            let rangeIDs = Set(range.map { orderedCandidateIDs[$0] })
+            return ContextualTagFeedSelectionResult(
+                selectedAssetIDs: additive
+                    ? normalizedSelection(
+                        currentSelection,
+                        orderedCandidateIDs: orderedCandidateIDs
+                    ).union(rangeIDs)
+                    : rangeIDs,
+                anchorAssetID: anchorID
+            )
+        }
+
+        if additive {
+            var selected = normalizedSelection(
+                currentSelection,
+                orderedCandidateIDs: orderedCandidateIDs
+            )
+            if selected.contains(clickedID) {
+                selected.remove(clickedID)
+            } else {
+                selected.insert(clickedID)
+            }
+            return ContextualTagFeedSelectionResult(
+                selectedAssetIDs: selected,
+                anchorAssetID: clickedID
+            )
+        }
+
+        return ContextualTagFeedSelectionResult(
+            selectedAssetIDs: [clickedID],
+            anchorAssetID: clickedID
+        )
+    }
+}
+
+enum ContextualTagFeedKeyboardShortcutAction: Equatable {
+    case selectAll
+    case clearSelection
+
+    static func resolve(
+        charactersIgnoringModifiers: String?,
+        modifiers: NSEvent.ModifierFlags
+    ) -> ContextualTagFeedKeyboardShortcutAction? {
+        guard charactersIgnoringModifiers?.lowercased() == "a",
+              modifiers.contains(.command),
+              !modifiers.contains(.control),
+              !modifiers.contains(.option)
+        else { return nil }
+        return modifiers.contains(.shift) ? .clearSelection : .selectAll
+    }
+}
+
 enum ReviewKeyboardShortcutAction: Equatable {
     case accept
     case reject
@@ -379,6 +470,108 @@ private struct ReviewKeyboardShortcutMonitor: NSViewRepresentable {
     }
 }
 
+private struct ContextualTagFeedKeyboardShortcutHandlingModifier: ViewModifier {
+    let isEnabled: Bool
+    let onShortcut: (ContextualTagFeedKeyboardShortcutAction) -> Void
+
+    func body(content: Content) -> some View {
+        content.background {
+            ContextualTagFeedKeyboardShortcutMonitor(
+                isEnabled: isEnabled,
+                onShortcut: onShortcut
+            )
+        }
+    }
+}
+
+private struct ContextualTagFeedKeyboardShortcutMonitor: NSViewRepresentable {
+    let isEnabled: Bool
+    let onShortcut: (ContextualTagFeedKeyboardShortcutAction) -> Void
+
+    func makeNSView(context: Context) -> ShortcutMonitorView {
+        ShortcutMonitorView()
+    }
+
+    func updateNSView(_ nsView: ShortcutMonitorView, context: Context) {
+        nsView.configure(isEnabled: isEnabled, onShortcut: onShortcut)
+    }
+
+    static func dismantleNSView(_ nsView: ShortcutMonitorView, coordinator: ()) {
+        nsView.stopMonitoring()
+    }
+
+    final class ShortcutMonitorView: NSView {
+        private var monitor: Any?
+        private var isEnabled = false
+        private var onShortcut: ((ContextualTagFeedKeyboardShortcutAction) -> Void)?
+
+        func configure(
+            isEnabled: Bool,
+            onShortcut: @escaping (ContextualTagFeedKeyboardShortcutAction) -> Void
+        ) {
+            self.isEnabled = isEnabled
+            self.onShortcut = onShortcut
+            if isEnabled {
+                installMonitorIfNeeded()
+            } else {
+                removeMonitor()
+            }
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window == nil {
+                removeMonitor()
+            } else if isEnabled {
+                installMonitorIfNeeded()
+            }
+        }
+
+        private func installMonitorIfNeeded() {
+            guard monitor == nil, window != nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self,
+                      self.isEnabled,
+                      !event.isARepeat,
+                      self.shouldHandle(event),
+                      let action = ContextualTagFeedKeyboardShortcutAction.resolve(
+                          charactersIgnoringModifiers: event.charactersIgnoringModifiers,
+                          modifiers: event.modifierFlags
+                      )
+                else {
+                    return event
+                }
+                self.onShortcut?(action)
+                return nil
+            }
+        }
+
+        func stopMonitoring() {
+            isEnabled = false
+            onShortcut = nil
+            removeMonitor()
+        }
+
+        private func removeMonitor() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+                self.monitor = nil
+            }
+        }
+
+        private func shouldHandle(_ event: NSEvent) -> Bool {
+            guard let eventWindow = event.window,
+                  let hostWindow = window,
+                  eventWindow === hostWindow
+            else { return false }
+            guard let responder = eventWindow.firstResponder else { return true }
+            return !(responder is NSTextView
+                || responder is NSTextField
+                || responder is NSSearchField)
+        }
+    }
+}
+
 extension View {
     func libraryGridPageKeyHandling(
         isEnabled: Bool,
@@ -398,6 +591,18 @@ extension View {
     ) -> some View {
         modifier(
             ReviewKeyboardShortcutHandlingModifier(
+                isEnabled: isEnabled,
+                onShortcut: onShortcut
+            )
+        )
+    }
+
+    func contextualTagFeedKeyboardShortcutHandling(
+        isEnabled: Bool,
+        onShortcut: @escaping (ContextualTagFeedKeyboardShortcutAction) -> Void
+    ) -> some View {
+        modifier(
+            ContextualTagFeedKeyboardShortcutHandlingModifier(
                 isEnabled: isEnabled,
                 onShortcut: onShortcut
             )

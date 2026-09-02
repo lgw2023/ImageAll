@@ -1663,6 +1663,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         (sourceIDs: [UUID], kind: SourceThumbnailPrewarmKind)?
     private var browsingNavigationRequestID: UUID?
     private var selectionAnchorID: UUID?
+    private var contextualTagFeedSelectionAnchorID: UUID?
     private var librarySlimmingSelectionAnchorID: UUID?
     private struct LibrarySlimmingOptimisticRecycleSnapshot {
         let clusters: [LibrarySlimmingClusterPresentation]
@@ -10468,31 +10469,82 @@ extension LibraryWorkspaceModel {
             let priorRevision = currentContextualTagFeed?.revision
             currentContextualTagFeed = snapshot.group
             if let group = snapshot.group {
-                let candidateIDs = Set(group.members.compactMap {
+                let orderedCandidateIDs = group.members.compactMap {
                     $0.role == .candidate ? $0.assetID : nil
-                })
+                }
                 if priorGroupID != group.id || priorRevision != group.revision {
-                    selectedContextualTagFeedAssetIDs = candidateIDs
+                    selectedContextualTagFeedAssetIDs = Set(orderedCandidateIDs)
+                    contextualTagFeedSelectionAnchorID = orderedCandidateIDs.first
                 } else {
-                    selectedContextualTagFeedAssetIDs.formIntersection(candidateIDs)
+                    selectedContextualTagFeedAssetIDs = ContextualTagFeedSelectionLogic
+                        .normalizedSelection(
+                            selectedContextualTagFeedAssetIDs,
+                            orderedCandidateIDs: orderedCandidateIDs
+                        )
+                    if contextualTagFeedSelectionAnchorID.map(
+                        orderedCandidateIDs.contains
+                    ) != true {
+                        contextualTagFeedSelectionAnchorID = orderedCandidateIDs.first(where: {
+                            selectedContextualTagFeedAssetIDs.contains($0)
+                        })
+                    }
                 }
             } else {
                 selectedContextualTagFeedAssetIDs = []
+                contextualTagFeedSelectionAnchorID = nil
             }
         } catch {
             contextualTagFeedStatusMessage = "智能推流暂时无法刷新，请稍后重试。"
         }
     }
 
-    func toggleContextualTagFeedCandidate(_ assetID: UUID) {
-        guard currentContextualTagFeed?.members.contains(where: {
-            $0.assetID == assetID && $0.role == .candidate
-        }) == true else { return }
-        if selectedContextualTagFeedAssetIDs.contains(assetID) {
-            selectedContextualTagFeedAssetIDs.remove(assetID)
-        } else {
-            selectedContextualTagFeedAssetIDs.insert(assetID)
-        }
+    var contextualTagFeedCandidateAssetIDs: [UUID] {
+        currentContextualTagFeed?.members.compactMap {
+            $0.role == .candidate ? $0.assetID : nil
+        } ?? []
+    }
+
+    var areAllContextualTagFeedCandidatesSelected: Bool {
+        let candidateIDs = contextualTagFeedCandidateAssetIDs
+        return !candidateIDs.isEmpty
+            && selectedContextualTagFeedAssetIDs == Set(candidateIDs)
+    }
+
+    func selectContextualTagFeedCandidate(
+        _ assetID: UUID,
+        additive: Bool,
+        extendRange: Bool = false
+    ) {
+        let result = ContextualTagFeedSelectionLogic.selectionAfterClick(
+            currentSelection: selectedContextualTagFeedAssetIDs,
+            anchorID: contextualTagFeedSelectionAnchorID,
+            orderedCandidateIDs: contextualTagFeedCandidateAssetIDs,
+            clickedID: assetID,
+            additive: additive,
+            extendRange: extendRange
+        )
+        selectedContextualTagFeedAssetIDs = result.selectedAssetIDs
+        contextualTagFeedSelectionAnchorID = result.anchorAssetID
+    }
+
+    func selectContextualTagFeedCandidates(_ assetIDs: Set<UUID>) {
+        let candidateIDs = contextualTagFeedCandidateAssetIDs
+        selectedContextualTagFeedAssetIDs = ContextualTagFeedSelectionLogic
+            .normalizedSelection(assetIDs, orderedCandidateIDs: candidateIDs)
+        contextualTagFeedSelectionAnchorID = candidateIDs.first(where: {
+            selectedContextualTagFeedAssetIDs.contains($0)
+        })
+    }
+
+    func selectAllContextualTagFeedCandidates() {
+        let candidateIDs = contextualTagFeedCandidateAssetIDs
+        selectedContextualTagFeedAssetIDs = Set(candidateIDs)
+        contextualTagFeedSelectionAnchorID = candidateIDs.first
+    }
+
+    func clearContextualTagFeedSelection() {
+        selectedContextualTagFeedAssetIDs = []
+        contextualTagFeedSelectionAnchorID = nil
     }
 
     func resolveCurrentContextualTagFeed(decision: PersistableTagDecision) async {
