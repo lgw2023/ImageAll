@@ -686,6 +686,9 @@ private struct ContextualTagFeedThumbnail: View {
 }
 
 enum ReviewOverviewLayout {
+    static let localModelPanelMinimumWidth: CGFloat = 248
+    static let localModelPanelIdealWidth: CGFloat = 288
+    static let localModelPanelMaximumWidth: CGFloat = 320
     static let sectionSpacing: CGFloat = 22
     static let cardSpacing: CGFloat = 12
     static let cardMinimumWidth: CGFloat = 310
@@ -790,7 +793,11 @@ struct ReviewOverviewView: View {
                 HSplitView {
                     if showsLocalModelPanel {
                         ReviewLocalModelPanel(model: model)
-                            .frame(minWidth: 268, idealWidth: 300, maxWidth: 340)
+                            .frame(
+                                minWidth: ReviewOverviewLayout.localModelPanelMinimumWidth,
+                                idealWidth: ReviewOverviewLayout.localModelPanelIdealWidth,
+                                maxWidth: ReviewOverviewLayout.localModelPanelMaximumWidth
+                            )
                     }
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: ReviewOverviewLayout.sectionSpacing) {

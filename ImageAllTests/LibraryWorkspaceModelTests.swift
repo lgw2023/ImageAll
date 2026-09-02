@@ -10840,6 +10840,16 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(grouped[1].overviews.map(\.id), [park.id])
     }
 
+    func testReviewOverviewKeepsGenerationPanelNarrowerThanSuggestionWorkspace() {
+        XCTAssertEqual(ReviewOverviewLayout.localModelPanelMinimumWidth, 248)
+        XCTAssertEqual(ReviewOverviewLayout.localModelPanelIdealWidth, 288)
+        XCTAssertEqual(ReviewOverviewLayout.localModelPanelMaximumWidth, 320)
+        XCTAssertLessThan(
+            ReviewOverviewLayout.localModelPanelMaximumWidth,
+            ReviewOverviewLayout.cardMinimumWidth + ReviewOverviewLayout.cardSpacing
+        )
+    }
+
     @MainActor
     func testTagGroupCollapsePreferencesPersistToggleState() {
         let suiteName = "ImageAllTests.TagGroupCollapse.\(UUID().uuidString)"
