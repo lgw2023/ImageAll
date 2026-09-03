@@ -132,22 +132,26 @@ struct ContextualTagFeedView: View {
             .padding(.vertical, 12)
 
             GeometryReader { proxy in
+                let layoutWidth = LibraryGridLayout.layoutWidth(
+                    containerWidth: proxy.size.width
+                )
                 ScrollView {
                     LibraryGridMarqueeContainer(
                         cellFrames: cellFrames,
                         isMarqueeSelecting: $isMarqueeSelecting,
                         viewportHeight: proxy.size.height,
-                        contentWidth: proxy.size.width,
+                        contentWidth: layoutWidth,
                         currentSelection: model.selectedContextualTagFeedAssetIDs,
                         onSelectionChange: { assetIDs, _ in
                             model.selectContextualTagFeedCandidates(assetIDs)
                         }
                     ) {
                         LazyVGrid(
-                            columns: [
-                                GridItem(.adaptive(minimum: 170, maximum: 240), spacing: 10),
-                            ],
-                            spacing: 10
+                            columns: LibraryGridLayout.gridItems(
+                                containerWidth: proxy.size.width,
+                                density: model.gridDensity
+                            ),
+                            spacing: LibraryGridLayout.spacing
                         ) {
                             ForEach(group.members) { member in
                                 ContextualTagFeedThumbnail(
@@ -168,7 +172,8 @@ struct ContextualTagFeedView: View {
                                 .libraryGridCellFrameReporter(assetID: member.assetID)
                             }
                         }
-                        .padding(16)
+                        .padding(.horizontal, LibraryGridLayout.horizontalPadding)
+                        .padding(.vertical, 12)
                     }
                 }
                 .scrollDisabled(isMarqueeSelecting)
@@ -594,44 +599,54 @@ private struct ContextualTagFeedThumbnail: View {
     let isSelected: Bool
     let onSelect: (_ additive: Bool, _ extendRange: Bool) -> Void
     @State private var image: NSImage?
+    @State private var loadState: ContextualTagFeedThumbnailLoadState = .loading
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            ZStack {
-                Color(nsColor: .controlBackgroundColor)
-                if let image {
-                    Image(nsImage: image)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                } else {
-                    Image(systemName: member.mediaKind == .video ? "video" : "photo")
-                        .font(.title)
-                        .foregroundStyle(.secondary)
+            GeometryReader { proxy in
+                ZStack {
+                    Color(nsColor: .controlBackgroundColor)
+                    if let image {
+                        Image(nsImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: model.thumbnailAspectMode.imageContentMode)
+                            .frame(width: proxy.size.width, height: proxy.size.height)
+                    } else {
+                        switch loadState {
+                        case .loading:
+                            ProgressView()
+                                .controlSize(.small)
+                        case let .placeholder(systemImage):
+                            Image(systemName: systemImage)
+                                .font(.title)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
-            }
-            .frame(height: 140)
-            .clipShape(RoundedRectangle(cornerRadius: 7))
-            .overlay {
-                RoundedRectangle(cornerRadius: 7)
-                    .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 3)
-            }
-            .overlay(alignment: .topLeading) {
-                if member.role == .anchor {
-                    Text("已确认锚点")
-                        .font(.caption2.weight(.semibold))
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 4)
-                        .background(.black.opacity(0.68), in: Capsule())
-                        .foregroundStyle(.white)
+                .clipShape(RoundedRectangle(cornerRadius: 7))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 7)
+                        .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 3)
+                }
+                .overlay(alignment: .topLeading) {
+                    if member.role == .anchor {
+                        Text("已确认锚点")
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 4)
+                            .background(.black.opacity(0.68), in: Capsule())
+                            .foregroundStyle(.white)
+                            .padding(7)
+                    }
+                }
+                .overlay(alignment: .topTrailing) {
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .font(.title3)
+                        .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
                         .padding(7)
                 }
             }
-            .overlay(alignment: .topTrailing) {
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .font(.title3)
-                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
-                    .padding(7)
-            }
+            .aspectRatio(thumbnailFrameAspectRatio, contentMode: .fit)
 
             Text(member.fileName ?? (member.mediaKind == .video ? "视频" : "照片"))
                 .font(.caption.weight(.medium))
@@ -655,10 +670,56 @@ private struct ContextualTagFeedThumbnail: View {
                 ? "已确认锚点，\(isSelected ? "已选择" : "未选择")"
                 : (isSelected ? "已选择" : "未选择")
         )
-        .task(id: member.assetID) {
-            guard let data = await model.thumbnailData(assetID: member.assetID) else { return }
-            image = NSImage(data: data)
+        .task(id: thumbnailLoadID) {
+            await loadThumbnail()
         }
+    }
+
+    private func loadThumbnail() async {
+        image = nil
+        loadState = .loading
+        switch await model.loadThumbnailResultWithRetry(
+            assetID: member.assetID,
+            aspectMode: model.thumbnailAspectMode
+        ) {
+        case let .loaded(data):
+            guard !Task.isCancelled else { return }
+            if let decoded = LibraryGridThumbnailImageFactory.image(from: data) {
+                image = decoded
+            } else {
+                loadState = .placeholder(systemImage: "exclamationmark.triangle")
+            }
+        case .cloudOnly:
+            guard !Task.isCancelled else { return }
+            loadState = .placeholder(systemImage: "icloud.and.arrow.down")
+        case .unavailable:
+            loadState = .placeholder(systemImage: mediaPlaceholderSystemImage)
+        case .failed:
+            loadState = .placeholder(systemImage: "exclamationmark.triangle")
+        case .cancelled:
+            guard !Task.isCancelled else { return }
+            loadState = .placeholder(systemImage: mediaPlaceholderSystemImage)
+        }
+    }
+
+    private var thumbnailLoadID: ContextualTagFeedThumbnailLoadID {
+        ContextualTagFeedThumbnailLoadID(
+            assetID: member.assetID,
+            aspectMode: model.thumbnailAspectMode,
+            cacheVersion: model.thumbnailCacheVersion(for: member.assetID),
+            originalAspectCacheGeneration: model.thumbnailAspectMode == .original
+                ? model.originalAspectThumbnailCacheGeneration
+                : 0,
+            recoveryGeneration: model.thumbnailRecoveryGeneration
+        )
+    }
+
+    private var thumbnailFrameAspectRatio: CGFloat {
+        model.thumbnailAspectMode.frameAspectRatio(imageSize: image?.size)
+    }
+
+    private var mediaPlaceholderSystemImage: String {
+        member.mediaKind == .video ? "video" : "photo"
     }
 
     private var evidenceText: String {
@@ -683,6 +744,19 @@ private struct ContextualTagFeedThumbnail: View {
         }
         return parts.isEmpty ? "锚点照片" : parts.joined(separator: " · ")
     }
+}
+
+private enum ContextualTagFeedThumbnailLoadState: Equatable {
+    case loading
+    case placeholder(systemImage: String)
+}
+
+private struct ContextualTagFeedThumbnailLoadID: Hashable {
+    let assetID: UUID
+    let aspectMode: LibraryThumbnailAspectMode
+    let cacheVersion: Int
+    let originalAspectCacheGeneration: Int
+    let recoveryGeneration: Int
 }
 
 enum ReviewOverviewLayout {

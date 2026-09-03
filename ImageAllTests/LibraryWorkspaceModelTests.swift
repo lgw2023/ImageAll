@@ -463,6 +463,87 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.selectedContextualTagFeedCandidateAssetIDs, [candidateID])
     }
 
+    func testContextualTagFeedGridPresentationChangesPreserveGroupAndSelection() async {
+        let sourceID = UUID()
+        let anchorID = UUID()
+        let firstCandidateID = UUID()
+        let secondCandidateID = UUID()
+        let tag = TagListItem(id: UUID(), displayName: "旅游", state: .active)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [],
+            tags: [tag],
+            startsConnected: true
+        )
+        let group = ContextualTagFeedGroup(
+            id: UUID(),
+            tagID: tag.id,
+            tagDisplayName: tag.displayName,
+            anchorAssetID: anchorID,
+            sourceID: sourceID,
+            state: .pending,
+            revision: 1,
+            policyRevision: "test",
+            members: [
+                ContextualTagFeedMember(
+                    assetID: anchorID,
+                    role: .anchor,
+                    rank: 0,
+                    fileName: "IMG_0001.HEIC",
+                    mediaKind: .image,
+                    mediaCreatedAtMs: 1,
+                    evidence: []
+                ),
+                ContextualTagFeedMember(
+                    assetID: firstCandidateID,
+                    role: .candidate,
+                    rank: 1,
+                    fileName: "IMG_0002.HEIC",
+                    mediaKind: .image,
+                    mediaCreatedAtMs: 2,
+                    evidence: []
+                ),
+                ContextualTagFeedMember(
+                    assetID: secondCandidateID,
+                    role: .candidate,
+                    rank: 2,
+                    fileName: "IMG_0003.HEIC",
+                    mediaKind: .image,
+                    mediaCreatedAtMs: 3,
+                    evidence: []
+                ),
+            ]
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            contextualTagFeed: FixedContextualTagFeedPort(group: group),
+            contextualTagFeedScopePreferences: ContextualTagFeedScopePreferences(
+                keyPrefix: "tests.contextual-feed-grid-presentation.\(UUID().uuidString)"
+            ),
+            idlePrewarmInstallEventMonitor: false
+        )
+
+        await model.start()
+        await model.refreshContextualTagFeed(generateRecentAnchors: false)
+        model.selectContextualTagFeedCandidate(firstCandidateID, additive: false)
+
+        model.setGridDensity(.giant)
+        model.setThumbnailAspectMode(.original)
+
+        XCTAssertEqual(model.gridDensity, .giant)
+        XCTAssertEqual(model.thumbnailAspectMode, .original)
+        XCTAssertEqual(model.currentContextualTagFeed?.id, group.id)
+        XCTAssertEqual(model.selectedContextualTagFeedAssetIDs, [firstCandidateID])
+        XCTAssertEqual(
+            model.contextualTagFeedCandidateAssetIDs,
+            [firstCandidateID, secondCandidateID]
+        )
+    }
+
     func testLibraryStartsWithFileNameSort() async {
         let sourceID = UUID()
         let service = FakeLibraryWorkspaceService(

@@ -12811,11 +12811,10 @@ struct LibraryWorkspaceView: View {
             ToolbarItemGroup {
                 libraryToolbarLayoutItems
                 if selection != .galleryOverview,
-                   selection != .worldMap,
-                   selection != .contextualTagFeed
+                   selection != .worldMap
                 {
-                    if selection == .librarySlimming {
-                        librarySlimmingToolbarItems
+                    if selection == .librarySlimming || selection == .contextualTagFeed {
+                        libraryGridPresentationToolbarItems
                     } else {
                         libraryToolbarPersonalizationItems
                         libraryToolbarBrowseAndActionItems
@@ -15522,7 +15521,7 @@ struct LibraryWorkspaceView: View {
     }
 
     @ViewBuilder
-    private var librarySlimmingToolbarItems: some View {
+    private var libraryGridPresentationToolbarItems: some View {
         LibraryGridDensityPicker(
             selection: Binding(
                 get: { model.gridDensity },
