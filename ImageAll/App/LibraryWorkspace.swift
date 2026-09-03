@@ -750,6 +750,37 @@ final class LibraryTagGroupCollapsePreferences {
 }
 
 @MainActor
+final class ContextualTagFeedScopeGroupExpansionPreferences {
+    private static let defaultKey = "library.contextual-tag-feed.scope-group-expansion.v1"
+    private let defaults: UserDefaults
+    private let key: String
+
+    init(defaults: UserDefaults = .standard, key: String = defaultKey) {
+        self.defaults = defaults
+        self.key = key
+    }
+
+    func isExpanded(_ groupID: UUID) -> Bool {
+        expandedIDs().contains(groupID.uuidString.lowercased())
+    }
+
+    func toggle(_ groupID: UUID) {
+        var ids = expandedIDs()
+        let token = groupID.uuidString.lowercased()
+        if ids.contains(token) {
+            ids.remove(token)
+        } else {
+            ids.insert(token)
+        }
+        defaults.set(Array(ids).sorted(), forKey: key)
+    }
+
+    private func expandedIDs() -> Set<String> {
+        Set(defaults.stringArray(forKey: key) ?? [])
+    }
+}
+
+@MainActor
 final class LibrarySourceOrderPreferences {
     private static let defaultKey = "library.sidebar.source-order.v1"
     private let defaults: UserDefaults
@@ -1555,6 +1586,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var pendingSuggestionTotal = 0
     @Published private(set) var contextualTagFeedPendingCount = 0
     @Published private(set) var contextualTagFeedTagScope: ContextualTagFeedTagScope
+    @Published private(set) var contextualTagFeedScopeGroupExpansionRevision = 0
     @Published private(set) var currentContextualTagFeed: ContextualTagFeedGroup?
     @Published private(set) var selectedContextualTagFeedAssetIDs: Set<UUID> = []
     @Published private(set) var contextualTagFeedInspectorTags: [LibraryInspectorTagPresentation] = []
@@ -1701,6 +1733,8 @@ final class LibraryWorkspaceModel: ObservableObject {
     private let tagOrderPreferences: LibraryTagOrderPreferences
     private let tagGroupCollapsePreferences: LibraryTagGroupCollapsePreferences
     private let contextualTagFeedScopePreferences: ContextualTagFeedScopePreferences
+    private let contextualTagFeedScopeGroupExpansionPreferences:
+        ContextualTagFeedScopeGroupExpansionPreferences
     private let clock: any JobClock
     private var lastTagMutation: LibraryTagUndoRecord?
     fileprivate var lastReviewMutation: ReviewMutationUndoRecord?
@@ -1824,6 +1858,9 @@ final class LibraryWorkspaceModel: ObservableObject {
         tagOrderPreferences: LibraryTagOrderPreferences = LibraryTagOrderPreferences(),
         tagGroupCollapsePreferences: LibraryTagGroupCollapsePreferences = LibraryTagGroupCollapsePreferences(),
         contextualTagFeedScopePreferences: ContextualTagFeedScopePreferences = ContextualTagFeedScopePreferences(),
+        contextualTagFeedScopeGroupExpansionPreferences:
+            ContextualTagFeedScopeGroupExpansionPreferences =
+            ContextualTagFeedScopeGroupExpansionPreferences(),
         clock: any JobClock = SystemJobClock(),
         catalogProgressRefreshInterval: Duration = .milliseconds(750),
         searchDebounceInterval: Duration = .milliseconds(300),
@@ -1877,6 +1914,8 @@ final class LibraryWorkspaceModel: ObservableObject {
         self.tagOrderPreferences = tagOrderPreferences
         self.tagGroupCollapsePreferences = tagGroupCollapsePreferences
         self.contextualTagFeedScopePreferences = contextualTagFeedScopePreferences
+        self.contextualTagFeedScopeGroupExpansionPreferences =
+            contextualTagFeedScopeGroupExpansionPreferences
         contextualTagFeedTagScope = contextualTagFeedScopePreferences.load()
         self.clock = clock
         self.catalogProgressRefreshInterval = catalogProgressRefreshInterval
@@ -4841,6 +4880,16 @@ final class LibraryWorkspaceModel: ObservableObject {
     func toggleTagGroupCollapsed(_ groupID: UUID) {
         tagGroupCollapsePreferences.toggle(groupID)
         tagGroupCollapseRevision &+= 1
+    }
+
+    func isContextualTagFeedScopeGroupExpanded(_ groupID: UUID) -> Bool {
+        _ = contextualTagFeedScopeGroupExpansionRevision
+        return contextualTagFeedScopeGroupExpansionPreferences.isExpanded(groupID)
+    }
+
+    func toggleContextualTagFeedScopeGroupExpanded(_ groupID: UUID) {
+        contextualTagFeedScopeGroupExpansionPreferences.toggle(groupID)
+        contextualTagFeedScopeGroupExpansionRevision &+= 1
     }
 
     func moveSource(_ sourceID: UUID, before targetID: UUID?) {

@@ -10983,6 +10983,35 @@ final class LibraryWorkspaceModelTests: XCTestCase {
     }
 
     @MainActor
+    func testContextualTagFeedScopeGroupExpansionIsIndependentFromPhotoTagGroups() {
+        let suiteName = "ImageAllTests.ContextualTagFeedScopeGroupExpansion.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let groupID = TagGroupSeed.people.id
+        let photoTagPreferences = LibraryTagGroupCollapsePreferences(
+            defaults: defaults,
+            key: "photo-tags"
+        )
+        let scopePreferences = ContextualTagFeedScopeGroupExpansionPreferences(
+            defaults: defaults,
+            key: "feed-scope"
+        )
+
+        photoTagPreferences.setCollapsed(groupID, collapsed: true)
+        XCTAssertFalse(scopePreferences.isExpanded(groupID))
+
+        scopePreferences.toggle(groupID)
+
+        XCTAssertTrue(scopePreferences.isExpanded(groupID))
+        XCTAssertTrue(photoTagPreferences.isCollapsed(groupID))
+        let reopenedScopePreferences = ContextualTagFeedScopeGroupExpansionPreferences(
+            defaults: defaults,
+            key: "feed-scope"
+        )
+        XCTAssertTrue(reopenedScopePreferences.isExpanded(groupID))
+    }
+
+    @MainActor
     func testMoveTagUpdatesPersistedGroupMembership() async {
         let source = LibrarySourceSummary(id: UUID(), displayName: "图库", state: .active)
         let tag = TagListItem(

@@ -516,14 +516,14 @@ struct ContextualTagFeedInspectorView: View {
     }
 
     private func tagGroupSection(_ section: LibraryTagGroupSection) -> some View {
-        let isCollapsed = model.isTagGroupCollapsed(section.group.id)
+        let isExpanded = model.isContextualTagFeedScopeGroupExpanded(section.group.id)
         let selectedCount = section.tags.count { model.isInContextualTagFeedScope($0.id) }
         return VStack(alignment: .leading, spacing: 6) {
             Button {
-                model.toggleTagGroupCollapsed(section.group.id)
+                model.toggleContextualTagFeedScopeGroupExpanded(section.group.id)
             } label: {
                 HStack(spacing: 4) {
-                    Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .frame(width: 10)
@@ -543,12 +543,12 @@ struct ContextualTagFeedInspectorView: View {
             }
             .buttonStyle(.plain)
             .persistentHelp(
-                isCollapsed
-                    ? "展开“\(section.group.displayName)”分组，显示其中标签。"
-                    : "折叠“\(section.group.displayName)”分组，暂时隐藏其中标签。"
+                isExpanded
+                    ? "折叠“\(section.group.displayName)”分组，暂时隐藏其中标签。"
+                    : "展开“\(section.group.displayName)”分组，显示其中标签。"
             )
 
-            if !isCollapsed {
+            if isExpanded {
                 LibraryTagFlowLayout {
                     ForEach(section.tags, id: \.id) { tag in
                         scopeTagChip(tag)
