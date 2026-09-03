@@ -9204,7 +9204,9 @@ final class LibraryWorkspaceModel: ObservableObject {
             }
             await enqueueAutomaticPersonalModelRebuildIfReady()
             if mutationAffectsCurrentFilter(tagID: tagID) {
-                await loadFirstPage()
+                // Keep the already-loaded window mounted. Replacing it with page one
+                // remounts a deeply paged LazyVGrid and moves the user's viewport.
+                await reloadLoadedAssetWindow()
             }
             await refreshInspector()
             await refreshReviewState()
@@ -9234,7 +9236,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             lastTagMutation = nil
             await enqueueAutomaticPersonalModelRebuildIfReady()
             if mutationAffectsCurrentFilter(tagID: undo.snapshot.tagID) {
-                await loadFirstPage()
+                await reloadLoadedAssetWindow()
             }
             await refreshInspector()
             if currentContextualTagFeed != nil {
@@ -9272,7 +9274,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             await generateContextualTagFeeds(tagID: result.tagID, anchorAssetIDs: assetIDs)
             await enqueueAutomaticPersonalModelRebuildIfReady()
             if tagPresence != .any || !TagNameNormalizer.trimUnicodeWhiteSpace(searchText).isEmpty {
-                await loadFirstPage()
+                await reloadLoadedAssetWindow()
             }
             let selectionRefreshed = await refreshInspector()
             if !selectionRefreshed {
@@ -9803,10 +9805,10 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
     }
 
-    /// Reconciles the currently loaded pagination depth after a background
-    /// source job completes. Unlike a first-page refresh, this preserves the
-    /// user's scrollable window while also removing assets that no longer
-    /// satisfy the active filter.
+    /// Reconciles the currently loaded pagination depth after catalog or tag
+    /// mutations. Unlike a first-page refresh, this preserves the user's
+    /// scrollable window while also removing assets that no longer satisfy the
+    /// active filter.
     private func reloadLoadedAssetWindow() async {
         let requestID = UUID()
         assetPageRequestID = requestID
@@ -9814,16 +9816,26 @@ final class LibraryWorkspaceModel: ObservableObject {
         let filter = currentFilter
         let sort = sort
         let minimumItemCount = max(items.count, 1)
+        let knownFavoriteAssetIDs = Set(favoriteStates.keys)
         do {
-            let page = try await Self.offMain {
-                try Self.fetchAssetWindow(
+            let result = try await Self.offMain {
+                let page = try Self.fetchAssetWindow(
                     service: service,
                     filter: filter,
                     sort: sort,
                     minimumItemCount: minimumItemCount
                 )
+                let missingFavoriteAssetIDs = page.items.lazy
+                    .map(\.assetID)
+                    .filter { !knownFavoriteAssetIDs.contains($0) }
+                let favorites: [UUID: MediaFavoriteState] = missingFavoriteAssetIDs.isEmpty
+                    ? [:]
+                    : try service.fetchFavoriteStates(assetIDs: Array(missingFavoriteAssetIDs))
+                return (page, favorites)
             }
             guard assetPageRequestID == requestID else { return }
+            let page = result.0
+            favoriteStates.merge(result.1) { _, newest in newest }
             let visibleItems = page.items.filter {
                 !hiddenRecycledAssetIDs.contains($0.assetID)
             }

@@ -5457,6 +5457,62 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(service.lastFilter.tagPresence, .untagged)
     }
 
+    func testAcceptingTagInDeepUntaggedWindowRemovesSelectionWithoutRemountingGrid() async {
+        let sourceID = UUID()
+        let tag = TagListItem(id: UUID(), displayName: "汕头", state: .active)
+        let assets = (0 ..< 260).map { index in
+            Self.makeAsset(
+                sourceID: sourceID,
+                fileName: String(format: "photo-%03d.jpg", index)
+            )
+        }
+        let selectedRange = 120 ..< 142
+        let selectedIDs = Set(selectedRange.map { assets[$0].assetID })
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "合成来源",
+                state: .active
+            ),
+            reconciledItems: assets,
+            tags: [tag],
+            initialItems: assets,
+            startsConnected: true,
+            assetPageSize: 100,
+            appliesTagPresenceFilter: true,
+            hasPendingCatalogReconcileJobs: false
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            idlePrewarmInstallEventMonitor: false
+        )
+
+        await model.start()
+        let requestID = model.beginBrowsingNavigation()
+        await model.navigate(to: .untagged, requestID: requestID)
+        while model.items.count < assets.count, let lastID = model.items.last?.assetID {
+            await model.loadMoreIfNeeded(currentAssetID: lastID)
+        }
+        await model.selectAssets(selectedIDs)
+        let revisionBeforeMutation = model.assetGridRevision
+
+        await model.requestTagDecision(tagID: tag.id, action: .accept)
+
+        let expected = assets.filter { !selectedIDs.contains($0.assetID) }.map(\.assetID)
+        XCTAssertEqual(model.items.map(\.assetID), expected)
+        XCTAssertEqual(
+            model.items.prefix(selectedRange.lowerBound).map(\.assetID),
+            assets.prefix(selectedRange.lowerBound).map(\.assetID)
+        )
+        XCTAssertEqual(
+            model.items[selectedRange.lowerBound].assetID,
+            assets[selectedRange.upperBound].assetID
+        )
+        XCTAssertEqual(model.assetGridRevision, revisionBeforeMutation)
+        XCTAssertTrue(model.selectedAssetIDs.isEmpty)
+        XCTAssertEqual(service.lastFilter.tagPresence, .untagged)
+    }
+
     func testImmediateWorldMapPresentationClearsGalleryRowsBeforeAsyncNavigate() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "mapped.jpg")
@@ -16729,6 +16785,7 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
     private let jobActivityItemsAfterFailedAction: [JobActivityItem]?
     private let blockedSearchText: String?
     private let assetPageSize: Int?
+    private let appliesTagPresenceFilter: Bool
     private let assetPageFetchGate = DispatchSemaphore(value: 0)
     private var storedHasStartedBlockedAssetPageFetch = false
     private var storedRestoreDefaultSourceAuthorizationsCallCount = 0
@@ -16780,6 +16837,7 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
         jobActivityItemsAfterFailedAction: [JobActivityItem]? = nil,
         blockedSearchText: String? = nil,
         assetPageSize: Int? = nil,
+        appliesTagPresenceFilter: Bool = false,
         photosLibrarySupportedImageCount: Int = 0,
         photosCatalogAssetCount: Int = 0,
         sourceIsReconcileClean: Bool = false,
@@ -16831,6 +16889,7 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
         self.jobActivityItemsAfterFailedAction = jobActivityItemsAfterFailedAction
         self.blockedSearchText = blockedSearchText
         self.assetPageSize = assetPageSize
+        self.appliesTagPresenceFilter = appliesTagPresenceFilter
         storedPhotosLibrarySupportedImageCount = photosLibrarySupportedImageCount
         storedPhotosCatalogAssetCount = photosCatalogAssetCount
         storedSourceIsReconcileClean = sourceIsReconcileClean
@@ -17514,6 +17573,22 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
                    storedFavoriteStates[item.assetID]?.isFavorite != true
                 {
                     return false
+                }
+                if appliesTagPresenceFilter {
+                    let acceptedDecisionCount = decisions[item.assetID]?.values.lazy
+                        .filter { $0 == .accepted }
+                        .count ?? 0
+                    let acceptedTagCount = item.acceptedTagCount + acceptedDecisionCount
+                    switch filter.tagPresence {
+                    case .any:
+                        break
+                    case .tagged where acceptedTagCount == 0:
+                        return false
+                    case .untagged where acceptedTagCount > 0:
+                        return false
+                    case .tagged, .untagged:
+                        break
+                    }
                 }
                 guard let search, !search.isEmpty else { return true }
                 return item.fileName?.lowercased().contains(search) == true
