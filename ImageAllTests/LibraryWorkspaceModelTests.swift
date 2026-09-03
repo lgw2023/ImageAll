@@ -10850,19 +10850,6 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
     }
 
-    func testReviewOverviewKeepsTagInspectorWiderThanNavigationSidebar() {
-        let sidebar = LibraryWorkspaceColumnLayout.reviewOverviewSidebar
-        let inspector = LibraryWorkspaceColumnLayout.reviewOverviewInspector
-
-        XCTAssertEqual(sidebar.minimum, 180)
-        XCTAssertEqual(sidebar.ideal, 220)
-        XCTAssertEqual(sidebar.maximum, 240)
-        XCTAssertEqual(inspector.minimum, 300)
-        XCTAssertEqual(inspector.ideal, 320)
-        XCTAssertEqual(inspector.maximum, 380)
-        XCTAssertLessThan(sidebar.maximum, inspector.minimum)
-    }
-
     @MainActor
     func testTagGroupCollapsePreferencesPersistToggleState() {
         let suiteName = "ImageAllTests.TagGroupCollapse.\(UUID().uuidString)"
@@ -11441,6 +11428,28 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         XCTAssertTrue(layout.isInspectorPresented)
         layout.toggleInspector()
+        XCTAssertFalse(layout.isInspectorPresented)
+    }
+
+    func testReviewOverviewHidesIdleInspectorAndQueueRestoresItTemporarily() {
+        var layout = LibraryWorkspaceLayoutState()
+
+        layout.prepareForReviewOverview()
+        XCTAssertFalse(layout.isInspectorPresented)
+
+        layout.prepareForReviewQueue()
+        XCTAssertTrue(layout.isInspectorPresented)
+
+        layout.prepareForReviewOverview()
+        XCTAssertFalse(layout.isInspectorPresented)
+
+        layout.finishReviewWorkspace()
+        XCTAssertTrue(layout.isInspectorPresented)
+
+        layout.setInspectorPresented(false)
+        layout.prepareForReviewOverview()
+        layout.prepareForReviewQueue()
+        layout.finishReviewWorkspace()
         XCTAssertFalse(layout.isInspectorPresented)
     }
 

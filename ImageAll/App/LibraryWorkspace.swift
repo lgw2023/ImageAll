@@ -1068,6 +1068,7 @@ struct LibraryWorkspaceLayoutState: Equatable {
     private(set) var isSidebarPresented = true
     private(set) var isInspectorPresented = true
     private var hasAppliedNarrowInspectorCollapse = false
+    private var inspectorPresentationBeforeReview: Bool?
 
     mutating func updateWindowWidth(_ width: CGFloat) {
         if width >= Self.inspectorCollapseWidth {
@@ -1101,35 +1102,28 @@ struct LibraryWorkspaceLayoutState: Equatable {
     mutating func prepareForContextualTagFeed() {
         isInspectorPresented = true
     }
-}
 
-struct LibraryWorkspaceColumnWidths: Equatable, Sendable {
-    let minimum: CGFloat
-    let ideal: CGFloat
-    let maximum: CGFloat
-}
+    mutating func prepareForReviewOverview() {
+        rememberInspectorPresentationBeforeReviewIfNeeded()
+        isInspectorPresented = false
+    }
 
-enum LibraryWorkspaceColumnLayout {
-    static let standardSidebar = LibraryWorkspaceColumnWidths(
-        minimum: 180,
-        ideal: 220,
-        maximum: 300
-    )
-    static let reviewOverviewSidebar = LibraryWorkspaceColumnWidths(
-        minimum: 180,
-        ideal: 220,
-        maximum: 240
-    )
-    static let standardInspector = LibraryWorkspaceColumnWidths(
-        minimum: 240,
-        ideal: 300,
-        maximum: 380
-    )
-    static let reviewOverviewInspector = LibraryWorkspaceColumnWidths(
-        minimum: 300,
-        ideal: 320,
-        maximum: 380
-    )
+    mutating func prepareForReviewQueue() {
+        rememberInspectorPresentationBeforeReviewIfNeeded()
+        isInspectorPresented = true
+    }
+
+    mutating func finishReviewWorkspace() {
+        guard let inspectorPresentationBeforeReview else { return }
+        isInspectorPresented = inspectorPresentationBeforeReview
+        self.inspectorPresentationBeforeReview = nil
+    }
+
+    private mutating func rememberInspectorPresentationBeforeReviewIfNeeded() {
+        if inspectorPresentationBeforeReview == nil {
+            inspectorPresentationBeforeReview = isInspectorPresented
+        }
+    }
 }
 
 enum LibraryWorkspaceCommand: Hashable {
@@ -12770,16 +12764,9 @@ struct LibraryWorkspaceView: View {
     @FocusState private var commandSearchFieldFocused: Bool
 
     private var workspaceWithSourceControls: some View {
-        let sidebarWidths = selection == .reviewSuggestions
-            ? LibraryWorkspaceColumnLayout.reviewOverviewSidebar
-            : LibraryWorkspaceColumnLayout.standardSidebar
-        return NavigationSplitView(columnVisibility: sidebarColumnVisibility) {
+        NavigationSplitView(columnVisibility: sidebarColumnVisibility) {
             sidebar
-                .navigationSplitViewColumnWidth(
-                    min: sidebarWidths.minimum,
-                    ideal: sidebarWidths.ideal,
-                    max: sidebarWidths.maximum
-                )
+                .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 300)
         } detail: {
             keyboardEnabledContent
         }
@@ -12960,22 +12947,9 @@ struct LibraryWorkspaceView: View {
         if selection == .librarySlimming {
             workspaceInspector
                 .inspectorColumnWidth(min: 220, ideal: 260, max: 320)
-        } else if selection == .reviewSuggestions {
-            let widths = LibraryWorkspaceColumnLayout.reviewOverviewInspector
-            workspaceInspector
-                .inspectorColumnWidth(
-                    min: widths.minimum,
-                    ideal: widths.ideal,
-                    max: widths.maximum
-                )
         } else {
-            let widths = LibraryWorkspaceColumnLayout.standardInspector
             workspaceInspector
-                .inspectorColumnWidth(
-                    min: widths.minimum,
-                    ideal: widths.ideal,
-                    max: widths.maximum
-                )
+                .inspectorColumnWidth(min: 240, ideal: 300, max: 380)
         }
     }
 
@@ -13494,6 +13468,11 @@ struct LibraryWorkspaceView: View {
             if case let .folder(scope) = destination {
                 expandFolderAncestors(scope)
             }
+            if destination == .reviewSuggestions {
+                layoutState.prepareForReviewOverview()
+            } else {
+                layoutState.finishReviewWorkspace()
+            }
             if destination == .galleryOverview || destination == .worldMap {
                 layoutState.setInspectorPresented(false)
             } else if destination == .contextualTagFeed {
@@ -13512,6 +13491,17 @@ struct LibraryWorkspaceView: View {
             }
             Task {
                 await model.navigate(to: destination, requestID: requestID)
+            }
+        }
+        .onChange(of: model.reviewMode) { _, newValue in
+            guard selection == .reviewSuggestions else { return }
+            switch newValue {
+            case .some(.overview):
+                layoutState.prepareForReviewOverview()
+            case .some(.tagQueue):
+                layoutState.prepareForReviewQueue()
+            case .none:
+                layoutState.finishReviewWorkspace()
             }
         }
         .onChange(of: model.librarySlimmingNavigationNonce) { _, _ in
