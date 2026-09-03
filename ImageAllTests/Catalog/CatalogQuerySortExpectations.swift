@@ -66,6 +66,9 @@ enum CatalogQuerySortExpectations {
             return currentAssetIDsNewestFirst
         case .oldest:
             return currentAssetIDsOldestFirst
+        case .embeddedTimeNewest, .embeddedTimeOldest,
+             .fileModifiedNewest, .fileModifiedOldest:
+            preconditionFailure("Dedicated dual-time sort tests define their own independent expectations")
         case .fileNameAscending:
             return currentAssetIDsFileNameAscending
         }

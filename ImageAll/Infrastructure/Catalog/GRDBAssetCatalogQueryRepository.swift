@@ -205,12 +205,17 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
                     asset.duration_ms AS duration_ms,
                     asset.media_created_at_ms AS media_created_at_ms,
                     asset.media_modified_at_ms AS media_modified_at_ms,
+                    asset.file_modified_at_ms AS file_modified_at_ms,
                     asset.width AS width,
                     asset.height AS height,
                     asset.availability AS availability,
                     asset.content_revision AS content_revision,
                     \(CatalogQuerySQLHelpers.timeEmptyMarkerSQL) AS time_empty_marker,
                     \(CatalogQuerySQLHelpers.coalescedMediaTimeSQL) AS coalesced_time_ms,
+                    \(CatalogQuerySQLHelpers.embeddedTimeEmptyMarkerSQL) AS embedded_time_empty_marker,
+                    asset.media_created_at_ms AS embedded_time_ms,
+                    \(CatalogQuerySQLHelpers.fileModifiedTimeEmptyMarkerSQL) AS file_modified_time_empty_marker,
+                    asset.file_modified_at_ms AS file_modified_time_ms,
                     (
                         SELECT COUNT(*)
                         FROM asset_tag_decision d
@@ -247,12 +252,17 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
                 asset.duration_ms AS duration_ms,
                 asset.media_created_at_ms AS media_created_at_ms,
                 asset.media_modified_at_ms AS media_modified_at_ms,
+                asset.file_modified_at_ms AS file_modified_at_ms,
                 asset.width AS width,
                 asset.height AS height,
                 asset.availability AS availability,
                 asset.content_revision AS content_revision,
                 \(CatalogQuerySQLHelpers.timeEmptyMarkerSQL) AS time_empty_marker,
                 \(CatalogQuerySQLHelpers.coalescedMediaTimeSQL) AS coalesced_time_ms,
+                \(CatalogQuerySQLHelpers.embeddedTimeEmptyMarkerSQL) AS embedded_time_empty_marker,
+                asset.media_created_at_ms AS embedded_time_ms,
+                \(CatalogQuerySQLHelpers.fileModifiedTimeEmptyMarkerSQL) AS file_modified_time_empty_marker,
+                asset.file_modified_at_ms AS file_modified_time_ms,
                 (
                     SELECT COUNT(*)
                     FROM asset_tag_decision d
@@ -429,6 +439,7 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
                     asset.duration_ms AS duration_ms,
                     asset.media_created_at_ms AS media_created_at_ms,
                     asset.media_modified_at_ms AS media_modified_at_ms,
+                    asset.file_modified_at_ms AS file_modified_at_ms,
                     asset.width AS width,
                     asset.height AS height,
                     asset.availability AS availability,
@@ -506,6 +517,7 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
                 durationMs: row["duration_ms"],
                 mediaCreatedAtMs: row["media_created_at_ms"],
                 mediaModifiedAtMs: row["media_modified_at_ms"],
+                fileModifiedAtMs: row["file_modified_at_ms"],
                 width: row["width"],
                 height: row["height"],
                 availability: AssetAvailability(rawValue: row["availability"]) ?? .available,
@@ -553,6 +565,7 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
                 durationMs: row["duration_ms"],
                 mediaCreatedAtMs: row["media_created_at_ms"],
                 mediaModifiedAtMs: row["media_modified_at_ms"],
+                fileModifiedAtMs: row["file_modified_at_ms"],
                 width: row["width"],
                 height: row["height"],
                 availability: AssetAvailability(rawValue: row["availability"]) ?? .available,
@@ -581,6 +594,28 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
                 sort: sort,
                 payload: .timeSort(timeEmptyMarker: marker, coalescedTimeMs: coalesced, assetID: assetID)
             )
+        case .embeddedTimeNewest, .embeddedTimeOldest:
+            let marker = row.intValue(named: "embedded_time_empty_marker")
+            let embedded: Int64? = row["embedded_time_ms"]
+            return AssetPageCursor(
+                sort: sort,
+                payload: .embeddedTimeSort(
+                    timeEmptyMarker: marker,
+                    embeddedTimeMs: embedded,
+                    assetID: assetID
+                )
+            )
+        case .fileModifiedNewest, .fileModifiedOldest:
+            let marker = row.intValue(named: "file_modified_time_empty_marker")
+            let modified: Int64? = row["file_modified_time_ms"]
+            return AssetPageCursor(
+                sort: sort,
+                payload: .fileModifiedTimeSort(
+                    timeEmptyMarker: marker,
+                    fileModifiedTimeMs: modified,
+                    assetID: assetID
+                )
+            )
         case .fileNameAscending:
             let fileName: String? = row["file_name"]
             let hasFileName = fileName == nil ? 1 : 0
@@ -605,6 +640,30 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
             \(CatalogQuerySQLHelpers.coalescedMediaTimeSQL) ASC,
             asset.id ASC
             """
+        case .embeddedTimeNewest:
+            return """
+            \(CatalogQuerySQLHelpers.embeddedTimeEmptyMarkerSQL) ASC,
+            asset.media_created_at_ms DESC,
+            asset.id DESC
+            """
+        case .embeddedTimeOldest:
+            return """
+            \(CatalogQuerySQLHelpers.embeddedTimeEmptyMarkerSQL) ASC,
+            asset.media_created_at_ms ASC,
+            asset.id ASC
+            """
+        case .fileModifiedNewest:
+            return """
+            \(CatalogQuerySQLHelpers.fileModifiedTimeEmptyMarkerSQL) ASC,
+            asset.file_modified_at_ms DESC,
+            asset.id DESC
+            """
+        case .fileModifiedOldest:
+            return """
+            \(CatalogQuerySQLHelpers.fileModifiedTimeEmptyMarkerSQL) ASC,
+            asset.file_modified_at_ms ASC,
+            asset.id ASC
+            """
         case .fileNameAscending:
             return """
             \(CatalogQuerySQLHelpers.fileNamePresenceSQL) ASC,
@@ -623,6 +682,14 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
             return "FROM asset INDEXED BY asset_current_time_desc_idx"
         case .oldest:
             return "FROM asset INDEXED BY asset_current_time_idx"
+        case .embeddedTimeNewest:
+            return "FROM asset INDEXED BY asset_current_embedded_time_desc_idx"
+        case .embeddedTimeOldest:
+            return "FROM asset INDEXED BY asset_current_embedded_time_idx"
+        case .fileModifiedNewest:
+            return "FROM asset INDEXED BY asset_current_file_modified_time_desc_idx"
+        case .fileModifiedOldest:
+            return "FROM asset INDEXED BY asset_current_file_modified_time_idx"
         case .fileNameAscending:
             return "FROM asset INDEXED BY asset_current_file_name_all_idx"
         }
@@ -631,75 +698,65 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
     private func buildCursorClause(cursor: AssetPageCursor, arguments: inout StatementArguments) throws -> String {
         switch (cursor.sort, cursor.payload) {
         case (.newest, .timeSort(let marker, let time, let assetID)):
-            if marker == 0, let time {
-                arguments += [
-                    marker,
-                    marker,
-                    time,
-                    time,
-                    CatalogQuerySQLHelpers.lowercaseUUID(assetID),
-                ]
-                return """
-                (
-                    \(CatalogQuerySQLHelpers.timeEmptyMarkerSQL) > ?
-                    OR (
-                        \(CatalogQuerySQLHelpers.timeEmptyMarkerSQL) = ?
-                        AND (
-                            \(CatalogQuerySQLHelpers.coalescedMediaTimeSQL) < ?
-                            OR (
-                                \(CatalogQuerySQLHelpers.coalescedMediaTimeSQL) = ?
-                                AND asset.id < ?
-                            )
-                        )
-                    )
-                )
-                """
-            }
-            arguments += [marker, marker, CatalogQuerySQLHelpers.lowercaseUUID(assetID)]
-            return """
-            (
-                \(CatalogQuerySQLHelpers.timeEmptyMarkerSQL) > ?
-                OR (
-                    \(CatalogQuerySQLHelpers.timeEmptyMarkerSQL) = ?
-                    AND asset.id < ?
-                )
+            return buildTimeCursorClause(
+                marker: marker,
+                time: time,
+                assetID: assetID,
+                markerSQL: CatalogQuerySQLHelpers.timeEmptyMarkerSQL,
+                timeSQL: CatalogQuerySQLHelpers.coalescedMediaTimeSQL,
+                descending: true,
+                arguments: &arguments
             )
-            """
         case (.oldest, .timeSort(let marker, let time, let assetID)):
-            if marker == 0, let time {
-                arguments += [
-                    marker,
-                    marker,
-                    time,
-                    time,
-                    CatalogQuerySQLHelpers.lowercaseUUID(assetID),
-                ]
-                return """
-                (
-                    \(CatalogQuerySQLHelpers.timeEmptyMarkerSQL) > ?
-                    OR (
-                        \(CatalogQuerySQLHelpers.timeEmptyMarkerSQL) = ?
-                        AND (
-                            \(CatalogQuerySQLHelpers.coalescedMediaTimeSQL) > ?
-                            OR (
-                                \(CatalogQuerySQLHelpers.coalescedMediaTimeSQL) = ?
-                                AND asset.id > ?
-                            )
-                        )
-                    )
-                )
-                """
-            }
-            arguments += [marker, marker, CatalogQuerySQLHelpers.lowercaseUUID(assetID)]
-            return """
-            (
-                \(CatalogQuerySQLHelpers.timeEmptyMarkerSQL) > ?
-                OR (
-                    \(CatalogQuerySQLHelpers.timeEmptyMarkerSQL) = ?
-                    AND asset.id > ?
-                )
+            return buildTimeCursorClause(
+                marker: marker,
+                time: time,
+                assetID: assetID,
+                markerSQL: CatalogQuerySQLHelpers.timeEmptyMarkerSQL,
+                timeSQL: CatalogQuerySQLHelpers.coalescedMediaTimeSQL,
+                descending: false,
+                arguments: &arguments
             )
-            """
+        case (.embeddedTimeNewest, .embeddedTimeSort(let marker, let time, let assetID)):
+            return buildTimeCursorClause(
+                marker: marker,
+                time: time,
+                assetID: assetID,
+                markerSQL: CatalogQuerySQLHelpers.embeddedTimeEmptyMarkerSQL,
+                timeSQL: "asset.media_created_at_ms",
+                descending: true,
+                arguments: &arguments
+            )
+        case (.embeddedTimeOldest, .embeddedTimeSort(let marker, let time, let assetID)):
+            return buildTimeCursorClause(
+                marker: marker,
+                time: time,
+                assetID: assetID,
+                markerSQL: CatalogQuerySQLHelpers.embeddedTimeEmptyMarkerSQL,
+                timeSQL: "asset.media_created_at_ms",
+                descending: false,
+                arguments: &arguments
+            )
+        case (.fileModifiedNewest, .fileModifiedTimeSort(let marker, let time, let assetID)):
+            return buildTimeCursorClause(
+                marker: marker,
+                time: time,
+                assetID: assetID,
+                markerSQL: CatalogQuerySQLHelpers.fileModifiedTimeEmptyMarkerSQL,
+                timeSQL: "asset.file_modified_at_ms",
+                descending: true,
+                arguments: &arguments
+            )
+        case (.fileModifiedOldest, .fileModifiedTimeSort(let marker, let time, let assetID)):
+            return buildTimeCursorClause(
+                marker: marker,
+                time: time,
+                assetID: assetID,
+                markerSQL: CatalogQuerySQLHelpers.fileModifiedTimeEmptyMarkerSQL,
+                timeSQL: "asset.file_modified_at_ms",
+                descending: false,
+                arguments: &arguments
+            )
         case (.fileNameAscending, .fileNameSort(let hasFileName, let fileName, let assetID)):
             if hasFileName == 0, let fileName {
                 arguments += [
@@ -738,6 +795,52 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
         default:
             throw CatalogQueryError.cursorSortMismatch
         }
+    }
+
+    private func buildTimeCursorClause(
+        marker: Int,
+        time: Int64?,
+        assetID: UUID,
+        markerSQL: String,
+        timeSQL: String,
+        descending: Bool,
+        arguments: inout StatementArguments
+    ) -> String {
+        let comparison = descending ? "<" : ">"
+        if marker == 0, let time {
+            arguments += [
+                marker,
+                marker,
+                time,
+                time,
+                CatalogQuerySQLHelpers.lowercaseUUID(assetID),
+            ]
+            return """
+            (
+                \(markerSQL) > ?
+                OR (
+                    \(markerSQL) = ?
+                    AND (
+                        \(timeSQL) \(comparison) ?
+                        OR (
+                            \(timeSQL) = ?
+                            AND asset.id \(comparison) ?
+                        )
+                    )
+                )
+            )
+            """
+        }
+        arguments += [marker, marker, CatalogQuerySQLHelpers.lowercaseUUID(assetID)]
+        return """
+        (
+            \(markerSQL) > ?
+            OR (
+                \(markerSQL) = ?
+                AND asset.id \(comparison) ?
+            )
+        )
+        """
     }
 
     private func buildWhereClause(

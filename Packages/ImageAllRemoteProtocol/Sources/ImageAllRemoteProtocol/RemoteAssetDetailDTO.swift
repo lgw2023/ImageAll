@@ -14,6 +14,7 @@ public struct RemoteAssetDetail: Codable, Sendable, Equatable, Identifiable {
     public let rejectedTagCount: Int
     public let mediaCreatedAtMs: Int64?
     public let mediaModifiedAtMs: Int64?
+    public let fileModifiedAtMs: Int64?
     public let width: Int?
     public let height: Int?
     public let durationMs: Int64?
@@ -37,6 +38,7 @@ public struct RemoteAssetDetail: Codable, Sendable, Equatable, Identifiable {
         rejectedTagCount: Int,
         mediaCreatedAtMs: Int64?,
         mediaModifiedAtMs: Int64?,
+        fileModifiedAtMs: Int64? = nil,
         width: Int?,
         height: Int?,
         durationMs: Int64? = nil,
@@ -57,6 +59,7 @@ public struct RemoteAssetDetail: Codable, Sendable, Equatable, Identifiable {
         self.rejectedTagCount = rejectedTagCount
         self.mediaCreatedAtMs = mediaCreatedAtMs
         self.mediaModifiedAtMs = mediaModifiedAtMs
+        self.fileModifiedAtMs = fileModifiedAtMs
         self.width = width
         self.height = height
         self.durationMs = durationMs

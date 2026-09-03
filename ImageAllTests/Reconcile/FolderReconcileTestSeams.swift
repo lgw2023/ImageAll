@@ -229,6 +229,7 @@ struct AssetFactRow: Equatable {
     let height: Int?
     let mediaCreatedAtMs: Int64?
     let mediaModifiedAtMs: Int64?
+    let fileModifiedAtMs: Int64?
     let contentRevision: Int
     let lastSeenGeneration: Int?
     let availability: String
@@ -310,6 +311,7 @@ enum ReconcileDatabaseFactCapture {
                 sql: """
                 SELECT id, source_id, locator_kind, relative_path, file_name, photos_local_identifier,
                        locator_state, media_type, width, height, media_created_at_ms, media_modified_at_ms,
+                       file_modified_at_ms,
                        content_revision, last_seen_generation, availability,
                        record_created_at_ms, record_updated_at_ms
                 FROM asset WHERE source_id = ?
@@ -331,6 +333,7 @@ enum ReconcileDatabaseFactCapture {
                     height: row["height"],
                     mediaCreatedAtMs: row["media_created_at_ms"],
                     mediaModifiedAtMs: row["media_modified_at_ms"],
+                    fileModifiedAtMs: row["file_modified_at_ms"],
                     contentRevision: row["content_revision"],
                     lastSeenGeneration: row["last_seen_generation"],
                     availability: row["availability"],

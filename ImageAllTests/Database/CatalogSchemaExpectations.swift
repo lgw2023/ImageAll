@@ -58,6 +58,10 @@ enum CatalogSchemaExpectations {
         """
 
     static let assetCoalescedMediaTimeExpression = "coalesce(media_created_at_ms, media_modified_at_ms)"
+    static let assetEmbeddedTimeEmptyMarkerExpression =
+        "(CASE WHEN media_created_at_ms IS NOT NULL THEN 0 ELSE 1 END)"
+    static let assetFileModifiedTimeEmptyMarkerExpression =
+        "(CASE WHEN file_modified_at_ms IS NOT NULL THEN 0 ELSE 1 END)"
 
     static let infrastructureTables = [
         "asset_search",
@@ -128,6 +132,10 @@ enum CatalogSchemaExpectations {
 
     static let businessIndexes = [
         "asset_current_file_locator_uq",
+        "asset_current_embedded_time_desc_idx",
+        "asset_current_embedded_time_idx",
+        "asset_current_file_modified_time_desc_idx",
+        "asset_current_file_modified_time_idx",
         "asset_current_file_name_idx",
         "asset_current_file_name_all_idx",
         "asset_current_photos_locator_uq",
@@ -388,6 +396,7 @@ enum CatalogSchemaExpectations {
             .init(name: "file_name", type: "TEXT", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
             .init(name: "media_kind", type: "TEXT", notNull: true, defaultValue: "'image'", primaryKeyOrder: 0),
             .init(name: "duration_ms", type: "INTEGER", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
+            .init(name: "file_modified_at_ms", type: "INTEGER", notNull: false, defaultValue: nil, primaryKeyOrder: 0),
         ],
         "asset_location": [
             .init(name: "asset_id", type: "TEXT", notNull: true, defaultValue: nil, primaryKeyOrder: 1),
@@ -814,6 +823,10 @@ enum CatalogSchemaExpectations {
         "asset_favorite_state_favorite_idx": "asset_favorite_state",
         "asset_favorite_state_pending_idx": "asset_favorite_state",
         "asset_current_file_locator_uq": "asset",
+        "asset_current_embedded_time_desc_idx": "asset",
+        "asset_current_embedded_time_idx": "asset",
+        "asset_current_file_modified_time_desc_idx": "asset",
+        "asset_current_file_modified_time_idx": "asset",
         "asset_current_file_name_idx": "asset",
         "asset_current_file_name_all_idx": "asset",
         "asset_current_photos_locator_uq": "asset",
@@ -970,6 +983,74 @@ enum CatalogSchemaExpectations {
             ],
             keyListSQL: """
                 \(assetCurrentTimeEmptyMarkerExpression), \(assetCoalescedMediaTimeExpression) DESC, id DESC
+                """
+        ),
+        .init(
+            name: "asset_current_embedded_time_idx",
+            keyColumns: [
+                .init(name: "media_created_at_ms", descending: false, collation: "BINARY"),
+                .init(name: "id", descending: false, collation: "BINARY"),
+            ],
+            unique: false,
+            partialPredicateSQL: "locator_state = 'current'",
+            orderedKeyEntries: [
+                .init(name: nil, descending: false, collation: "BINARY"),
+                .init(name: "media_created_at_ms", descending: false, collation: "BINARY"),
+                .init(name: "id", descending: false, collation: "BINARY"),
+            ],
+            keyListSQL: """
+                \(assetEmbeddedTimeEmptyMarkerExpression), media_created_at_ms, id
+                """
+        ),
+        .init(
+            name: "asset_current_embedded_time_desc_idx",
+            keyColumns: [
+                .init(name: "media_created_at_ms", descending: true, collation: "BINARY"),
+                .init(name: "id", descending: true, collation: "BINARY"),
+            ],
+            unique: false,
+            partialPredicateSQL: "locator_state = 'current'",
+            orderedKeyEntries: [
+                .init(name: nil, descending: false, collation: "BINARY"),
+                .init(name: "media_created_at_ms", descending: true, collation: "BINARY"),
+                .init(name: "id", descending: true, collation: "BINARY"),
+            ],
+            keyListSQL: """
+                \(assetEmbeddedTimeEmptyMarkerExpression), media_created_at_ms DESC, id DESC
+                """
+        ),
+        .init(
+            name: "asset_current_file_modified_time_idx",
+            keyColumns: [
+                .init(name: "file_modified_at_ms", descending: false, collation: "BINARY"),
+                .init(name: "id", descending: false, collation: "BINARY"),
+            ],
+            unique: false,
+            partialPredicateSQL: "locator_state = 'current'",
+            orderedKeyEntries: [
+                .init(name: nil, descending: false, collation: "BINARY"),
+                .init(name: "file_modified_at_ms", descending: false, collation: "BINARY"),
+                .init(name: "id", descending: false, collation: "BINARY"),
+            ],
+            keyListSQL: """
+                \(assetFileModifiedTimeEmptyMarkerExpression), file_modified_at_ms, id
+                """
+        ),
+        .init(
+            name: "asset_current_file_modified_time_desc_idx",
+            keyColumns: [
+                .init(name: "file_modified_at_ms", descending: true, collation: "BINARY"),
+                .init(name: "id", descending: true, collation: "BINARY"),
+            ],
+            unique: false,
+            partialPredicateSQL: "locator_state = 'current'",
+            orderedKeyEntries: [
+                .init(name: nil, descending: false, collation: "BINARY"),
+                .init(name: "file_modified_at_ms", descending: true, collation: "BINARY"),
+                .init(name: "id", descending: true, collation: "BINARY"),
+            ],
+            keyListSQL: """
+                \(assetFileModifiedTimeEmptyMarkerExpression), file_modified_at_ms DESC, id DESC
                 """
         ),
         .init(

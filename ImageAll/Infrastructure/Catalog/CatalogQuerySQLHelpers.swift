@@ -6,6 +6,10 @@ enum CatalogQuerySQLHelpers {
         """
 
     static let coalescedMediaTimeSQL = "coalesce(asset.media_created_at_ms, asset.media_modified_at_ms)"
+    static let embeddedTimeEmptyMarkerSQL =
+        "(CASE WHEN asset.media_created_at_ms IS NOT NULL THEN 0 ELSE 1 END)"
+    static let fileModifiedTimeEmptyMarkerSQL =
+        "(CASE WHEN asset.file_modified_at_ms IS NOT NULL THEN 0 ELSE 1 END)"
 
     static let fileNamePresenceSQL = "(CASE WHEN asset.file_name IS NOT NULL THEN 0 ELSE 1 END)"
 

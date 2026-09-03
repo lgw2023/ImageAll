@@ -169,7 +169,15 @@ final class AssetCatalogQueryTests: XCTestCase {
             }
         }
 
-        for sort in [AssetPageSort.newest, .oldest, .fileNameAscending] {
+        for sort in [
+            AssetPageSort.newest,
+            .oldest,
+            .embeddedTimeNewest,
+            .embeddedTimeOldest,
+            .fileModifiedNewest,
+            .fileModifiedOldest,
+            .fileNameAscending,
+        ] {
             _ = try fixture.query.fetchAssetPage(
                 AssetPageRequest(
                     filter: AssetPageFilter(),
@@ -180,10 +188,14 @@ final class AssetCatalogQueryTests: XCTestCase {
             )
         }
 
-        XCTAssertEqual(statements.count, 3)
+        XCTAssertEqual(statements.count, 7)
         XCTAssertTrue(statements[0].contains("INDEXED BY asset_current_time_desc_idx"))
         XCTAssertTrue(statements[1].contains("INDEXED BY asset_current_time_idx"))
-        XCTAssertTrue(statements[2].contains("INDEXED BY asset_current_file_name_all_idx"))
+        XCTAssertTrue(statements[2].contains("INDEXED BY asset_current_embedded_time_desc_idx"))
+        XCTAssertTrue(statements[3].contains("INDEXED BY asset_current_embedded_time_idx"))
+        XCTAssertTrue(statements[4].contains("INDEXED BY asset_current_file_modified_time_desc_idx"))
+        XCTAssertTrue(statements[5].contains("INDEXED BY asset_current_file_modified_time_idx"))
+        XCTAssertTrue(statements[6].contains("INDEXED BY asset_current_file_name_all_idx"))
     }
 
     func testGalleryOverviewExecutesAsOneAggregateStatement() throws {
@@ -1019,6 +1031,73 @@ final class AssetCatalogQueryTests: XCTestCase {
                 "Pagination mismatch for \(sort)"
             )
         }
+    }
+
+    func testEmbeddedAndFileModifiedTimeSortsKeepKnownValuesAheadOfUnknownsAndPaginate() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+        let newestID = fixture.ids.assetNewest.uuidString.lowercased()
+        let middleID = fixture.ids.assetMiddle.uuidString.lowercased()
+        let oldestID = fixture.ids.assetOldest.uuidString.lowercased()
+        try fixture.database.pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE asset
+                SET media_created_at_ms = NULL, file_modified_at_ms = NULL
+                WHERE locator_state = 'current'
+                """
+            )
+            try db.execute(
+                sql: """
+                UPDATE asset
+                SET media_created_at_ms = CASE id
+                        WHEN ? THEN 300
+                        WHEN ? THEN 100
+                        WHEN ? THEN 200
+                    END,
+                    file_modified_at_ms = CASE id
+                        WHEN ? THEN 100
+                        WHEN ? THEN 300
+                        WHEN ? THEN 200
+                    END
+                WHERE id IN (?, ?, ?)
+                """,
+                arguments: [
+                    newestID, middleID, oldestID,
+                    newestID, middleID, oldestID,
+                    newestID, middleID, oldestID,
+                ]
+            )
+        }
+
+        let allIDs = CatalogQuerySortExpectations.currentAssetIDsNewestFirst
+        let knownIDs = Set([fixture.ids.assetNewest, fixture.ids.assetMiddle, fixture.ids.assetOldest])
+        let unknownAscending = allIDs
+            .filter { !knownIDs.contains($0) }
+            .sorted { $0.uuidString < $1.uuidString }
+        let unknownDescending = Array(unknownAscending.reversed())
+        let expectations: [(AssetPageSort, [UUID])] = [
+            (.embeddedTimeNewest, [fixture.ids.assetNewest, fixture.ids.assetOldest, fixture.ids.assetMiddle] + unknownDescending),
+            (.embeddedTimeOldest, [fixture.ids.assetMiddle, fixture.ids.assetOldest, fixture.ids.assetNewest] + unknownAscending),
+            (.fileModifiedNewest, [fixture.ids.assetMiddle, fixture.ids.assetOldest, fixture.ids.assetNewest] + unknownDescending),
+            (.fileModifiedOldest, [fixture.ids.assetNewest, fixture.ids.assetOldest, fixture.ids.assetMiddle] + unknownAscending),
+        ]
+
+        for (sort, expected) in expectations {
+            var actual: [UUID] = []
+            var cursor: AssetPageCursor?
+            repeat {
+                let page = try fixture.query.fetchAssetPage(
+                    AssetPageRequest(filter: AssetPageFilter(), sort: sort, cursor: cursor, limit: 2)
+                )
+                actual.append(contentsOf: page.items.map(\.assetID))
+                cursor = page.nextCursor
+            } while cursor != nil
+            XCTAssertEqual(actual, expected, "Pagination mismatch for \(sort)")
+        }
+
+        let detail = try fixture.query.fetchInspectorDetail(assetID: fixture.ids.assetMiddle)
+        XCTAssertEqual(detail.mediaCreatedAtMs, 100)
+        XCTAssertEqual(detail.fileModifiedAtMs, 300)
     }
 
     func testNewestOldestAndFileNameSortOrdersAreStable() throws {

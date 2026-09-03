@@ -54,6 +54,10 @@ struct WorldMapLocationBackfillSnapshot: Identifiable, Sendable, Equatable {
 enum AssetPageSort: String, Sendable, Equatable, Codable {
     case newest
     case oldest
+    case embeddedTimeNewest
+    case embeddedTimeOldest
+    case fileModifiedNewest
+    case fileModifiedOldest
     case fileNameAscending
 }
 
@@ -196,6 +200,8 @@ struct AssetPageFilter: Sendable, Equatable {
 
 enum AssetPageCursorPayload: Sendable, Equatable, Codable {
     case timeSort(timeEmptyMarker: Int, coalescedTimeMs: Int64?, assetID: UUID)
+    case embeddedTimeSort(timeEmptyMarker: Int, embeddedTimeMs: Int64?, assetID: UUID)
+    case fileModifiedTimeSort(timeEmptyMarker: Int, fileModifiedTimeMs: Int64?, assetID: UUID)
     case fileNameSort(hasFileName: Int, fileName: String?, assetID: UUID)
 }
 
@@ -223,6 +229,7 @@ struct AssetGridItemProjection: Sendable, Equatable {
     let durationMs: Int64?
     let mediaCreatedAtMs: Int64?
     let mediaModifiedAtMs: Int64?
+    let fileModifiedAtMs: Int64?
     let width: Int?
     let height: Int?
     let availability: AssetAvailability
@@ -242,6 +249,7 @@ struct AssetGridItemProjection: Sendable, Equatable {
         durationMs: Int64? = nil,
         mediaCreatedAtMs: Int64?,
         mediaModifiedAtMs: Int64?,
+        fileModifiedAtMs: Int64? = nil,
         width: Int?,
         height: Int?,
         availability: AssetAvailability,
@@ -260,6 +268,7 @@ struct AssetGridItemProjection: Sendable, Equatable {
         self.durationMs = durationMs
         self.mediaCreatedAtMs = mediaCreatedAtMs
         self.mediaModifiedAtMs = mediaModifiedAtMs
+        self.fileModifiedAtMs = fileModifiedAtMs
         self.width = width
         self.height = height
         self.availability = availability
@@ -401,6 +410,7 @@ struct AssetInspectorDetail: Sendable, Equatable {
     let durationMs: Int64?
     let mediaCreatedAtMs: Int64?
     let mediaModifiedAtMs: Int64?
+    let fileModifiedAtMs: Int64?
     let width: Int?
     let height: Int?
     let availability: AssetAvailability
@@ -423,6 +433,7 @@ struct AssetInspectorDetail: Sendable, Equatable {
         durationMs: Int64? = nil,
         mediaCreatedAtMs: Int64?,
         mediaModifiedAtMs: Int64?,
+        fileModifiedAtMs: Int64? = nil,
         width: Int?,
         height: Int?,
         availability: AssetAvailability,
@@ -444,6 +455,7 @@ struct AssetInspectorDetail: Sendable, Equatable {
         self.durationMs = durationMs
         self.mediaCreatedAtMs = mediaCreatedAtMs
         self.mediaModifiedAtMs = mediaModifiedAtMs
+        self.fileModifiedAtMs = fileModifiedAtMs
         self.width = width
         self.height = height
         self.availability = availability

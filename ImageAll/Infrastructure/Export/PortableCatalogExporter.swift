@@ -151,7 +151,7 @@ struct NoPortableExportFaultInjector: PortableExportFaultInjecting {
 }
 
 struct PortableCatalogExporter: Sendable {
-    static let currentFormatVersion = 2
+    static let currentFormatVersion = 3
 
     let database: CatalogDatabase
 
@@ -495,7 +495,7 @@ private struct PortableExportFileSpec {
             sql: """
                 SELECT id, source_id, locator_kind, relative_path, photos_local_identifier,
                        locator_state, file_name, media_kind, media_type, width, height, duration_ms,
-                       media_created_at_ms, media_modified_at_ms, content_revision,
+                       media_created_at_ms, media_modified_at_ms, file_modified_at_ms, content_revision,
                        availability, record_created_at_ms, record_updated_at_ms
                 FROM asset ORDER BY id
                 """,
@@ -510,6 +510,7 @@ private struct PortableExportFileSpec {
                 + [Field(name: "duration_ms", kind: .optionalInteger)]
                 + [Field(name: "media_created_at_ms", kind: .optionalInteger)]
                 + [Field(name: "media_modified_at_ms", kind: .optionalInteger)]
+                + [Field(name: "file_modified_at_ms", kind: .optionalInteger)]
                 + integers("content_revision")
                 + strings("availability")
                 + integers("record_created_at_ms", "record_updated_at_ms")

@@ -19,7 +19,15 @@ const WORKSPACE_HISTORY_ROUTES = new Set([
   "galleryOverview",
 ]);
 const GALLERY_HISTORY_LOADED_LIMIT = 5_000;
-const GALLERY_HISTORY_SORTS = new Set(["newest", "oldest", "fileNameAscending"]);
+const GALLERY_HISTORY_SORTS = new Set([
+  "newest",
+  "oldest",
+  "embeddedTimeNewest",
+  "embeddedTimeOldest",
+  "fileModifiedNewest",
+  "fileModifiedOldest",
+  "fileNameAscending",
+]);
 const GALLERY_HISTORY_AVAILABILITIES = new Set([
   "available",
   "missing",
@@ -9891,8 +9899,12 @@ function assetCardHelpDetail(asset) {
     width > 0 && height > 0 ? `尺寸：${width} × ${height}` : "",
     asset.durationMs != null ? `时长：${formatDuration(asset.durationMs)}` : "",
     `格式：${asset.mediaType || "—"}`,
-    asset.mediaCreatedAtMs != null ? `拍摄时间：${formatDate(asset.mediaCreatedAtMs)}` : "",
-    asset.mediaModifiedAtMs != null ? `修改时间：${formatDate(asset.mediaModifiedAtMs)}` : "",
+    asset.mediaCreatedAtMs != null ? `媒体内嵌时间：${formatDate(asset.mediaCreatedAtMs)}` : "",
+    asset.fileModifiedAtMs != null
+      ? `文件修改时间：${formatDate(asset.fileModifiedAtMs)}`
+      : asset.mediaModifiedAtMs != null
+        ? `媒体修改时间：${formatDate(asset.mediaModifiedAtMs)}`
+        : "",
     `标签：已确认 ${asset.acceptedTagCount} · 已拒绝 ${asset.rejectedTagCount}`,
     `状态：${availabilityText(asset.availability)}`,
     "方向键移动 · Shift 扩展选择 · Space 打开单图",
@@ -19702,8 +19714,8 @@ function renderInspector(detail) {
     metadataRow("尺寸", detail.width && detail.height ? `${detail.width} × ${detail.height}` : "—"),
     ...(isVideo ? [metadataRow("时长", formatDuration(detail.durationMs))] : []),
     metadataRow("文件大小", formatFileSize(detail.fingerprintSizeBytes)),
-    metadataRow("拍摄时间", formatDate(detail.mediaCreatedAtMs)),
-    metadataRow("修改时间", formatDate(detail.mediaModifiedAtMs)),
+    metadataRow("媒体内嵌时间", formatDate(detail.mediaCreatedAtMs)),
+    metadataRow("文件修改时间", formatDate(detail.fileModifiedAtMs)),
     metadataRow("格式", detail.mediaType),
     metadataRow("状态", availabilityText(detail.availability)),
   ];
@@ -19872,8 +19884,8 @@ function renderSelectionPrimary() {
       : []),
     ...(detail ? [
       metadataRow("文件大小", formatFileSize(detail.fingerprintSizeBytes)),
-      metadataRow("拍摄时间", formatDate(detail.mediaCreatedAtMs)),
-      metadataRow("修改时间", formatDate(detail.mediaModifiedAtMs)),
+      metadataRow("媒体内嵌时间", formatDate(detail.mediaCreatedAtMs)),
+      metadataRow("文件修改时间", formatDate(detail.fileModifiedAtMs)),
       metadataRow("格式", detail.mediaType),
       metadataRow("状态", availabilityText(detail.availability)),
     ] : []),
@@ -28161,8 +28173,8 @@ function renderReviewInspectorMetadata(item, detail) {
       ),
       ...(isVideo ? [metadataRow("时长", formatDuration(detail.durationMs))] : []),
       metadataRow("文件大小", formatFileSize(detail.fingerprintSizeBytes)),
-      metadataRow("拍摄时间", formatDate(detail.mediaCreatedAtMs)),
-      metadataRow("修改时间", formatDate(detail.mediaModifiedAtMs)),
+      metadataRow("媒体内嵌时间", formatDate(detail.mediaCreatedAtMs)),
+      metadataRow("文件修改时间", formatDate(detail.fileModifiedAtMs)),
       metadataRow("格式", detail.mediaType),
       metadataRow("状态", availabilityText(detail.availability)),
     ];
@@ -41730,6 +41742,10 @@ async function selectFolder(
 const LIBRARY_SORT_OPTIONS = [
   { value: "newest", title: "最新优先" },
   { value: "oldest", title: "最早优先" },
+  { value: "embeddedTimeNewest", title: "媒体内嵌时间：新到旧" },
+  { value: "embeddedTimeOldest", title: "媒体内嵌时间：旧到新" },
+  { value: "fileModifiedNewest", title: "文件修改时间：新到旧" },
+  { value: "fileModifiedOldest", title: "文件修改时间：旧到新" },
   { value: "fileNameAscending", title: "文件名升序" },
 ];
 
@@ -41746,7 +41762,7 @@ function renderSortControls() {
   elements.sortButton.title = `排序：${title}`;
   configurePersistentHelp(elements.sortButton, {
     title: `排序：${title}`,
-    detail: "更改照片列表的排序方式：最新优先、最早优先或文件名升序。",
+    detail: "可分别按媒体内嵌时间、文件修改时间或文件名排列照片；原有综合时间排序保持兼容。",
   });
   for (const button of elements.sortPopover.querySelectorAll("[data-sort]")) {
     const option = LIBRARY_SORT_OPTIONS.find(

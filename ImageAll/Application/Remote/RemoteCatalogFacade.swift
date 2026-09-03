@@ -2826,6 +2826,7 @@ actor RemoteCatalogFacade {
             favorite: mapFavorite(favorite),
             relativePath: item.relativePath,
             mediaModifiedAtMs: item.mediaModifiedAtMs,
+            fileModifiedAtMs: item.fileModifiedAtMs,
             durationMs: item.durationMs
         )
     }
@@ -2848,6 +2849,7 @@ actor RemoteCatalogFacade {
             rejectedTagCount: detail.rejectedTagCount,
             mediaCreatedAtMs: detail.mediaCreatedAtMs,
             mediaModifiedAtMs: detail.mediaModifiedAtMs,
+            fileModifiedAtMs: detail.fileModifiedAtMs,
             width: detail.width,
             height: detail.height,
             durationMs: detail.durationMs,
@@ -4515,6 +4517,10 @@ actor RemoteCatalogFacade {
         switch sort {
         case .newest: .newest
         case .oldest: .oldest
+        case .embeddedTimeNewest: .embeddedTimeNewest
+        case .embeddedTimeOldest: .embeddedTimeOldest
+        case .fileModifiedNewest: .fileModifiedNewest
+        case .fileModifiedOldest: .fileModifiedOldest
         case .fileNameAscending: .fileNameAscending
         }
     }

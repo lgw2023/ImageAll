@@ -3,6 +3,10 @@ import Foundation
 public enum RemoteAssetSort: String, Codable, Sendable, Equatable {
     case newest
     case oldest
+    case embeddedTimeNewest
+    case embeddedTimeOldest
+    case fileModifiedNewest
+    case fileModifiedOldest
     case fileNameAscending
 }
 
@@ -97,6 +101,7 @@ public struct RemoteAssetSummary: Codable, Sendable, Equatable, Identifiable {
     /// Missing values remain compatible with older Hosts.
     public let relativePath: String?
     public let mediaModifiedAtMs: Int64?
+    public let fileModifiedAtMs: Int64?
     public let durationMs: Int64?
 
     public init(
@@ -115,6 +120,7 @@ public struct RemoteAssetSummary: Codable, Sendable, Equatable, Identifiable {
         favorite: RemoteAssetFavoriteState? = nil,
         relativePath: String? = nil,
         mediaModifiedAtMs: Int64? = nil,
+        fileModifiedAtMs: Int64? = nil,
         durationMs: Int64? = nil
     ) {
         self.id = id
@@ -132,6 +138,7 @@ public struct RemoteAssetSummary: Codable, Sendable, Equatable, Identifiable {
         self.favorite = favorite
         self.relativePath = relativePath
         self.mediaModifiedAtMs = mediaModifiedAtMs
+        self.fileModifiedAtMs = fileModifiedAtMs
         self.durationMs = durationMs
     }
 }

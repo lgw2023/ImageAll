@@ -60,7 +60,15 @@ const EMPTY_SELECTION = new Set<string>();
 const galleryViewCache = new Map<string, { ids: Set<string>; scrollOffset: number }>();
 
 function parseSort(value: string | null): AssetSort {
-  if (value === 'oldest' || value === 'fileNameAscending') return value;
+  if (
+    value === 'oldest' ||
+    value === 'embeddedTimeNewest' ||
+    value === 'embeddedTimeOldest' ||
+    value === 'fileModifiedNewest' ||
+    value === 'fileModifiedOldest' ||
+    value === 'fileNameAscending'
+  )
+    return value;
   return 'newest';
 }
 

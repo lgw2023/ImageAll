@@ -63,6 +63,8 @@ enum CatalogMigrationID {
         "v037_add_source_folder_index"
     static let v038AddContextualTagFeed =
         "v038_add_contextual_tag_feed"
+    static let v039AddFileModifiedTimeSort =
+        "v039_add_file_modified_time_sort"
 
     static let knownOrdered: [String] = [
         v001CreateCatalogCore,
@@ -103,5 +105,6 @@ enum CatalogMigrationID {
         v036AddTrainingRunSampleManifest,
         v037AddSourceFolderIndex,
         v038AddContextualTagFeed,
+        v039AddFileModifiedTimeSort,
     ]
 }

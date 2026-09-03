@@ -524,10 +524,12 @@ enum LibraryAssetDetailText {
         }
         lines.append("格式：\(item.mediaType)")
         if let createdAt = item.mediaCreatedAtMs {
-            lines.append("拍摄时间：\(formattedDate(milliseconds: createdAt))")
+            lines.append("媒体内嵌时间：\(formattedDate(milliseconds: createdAt))")
         }
-        if let modifiedAt = item.mediaModifiedAtMs {
-            lines.append("修改时间：\(formattedDate(milliseconds: modifiedAt))")
+        if let fileModifiedAt = item.fileModifiedAtMs {
+            lines.append("文件修改时间：\(formattedDate(milliseconds: fileModifiedAt))")
+        } else if let modifiedAt = item.mediaModifiedAtMs {
+            lines.append("媒体修改时间：\(formattedDate(milliseconds: modifiedAt))")
         }
         lines.append("标签：已确认 \(item.acceptedTagCount) · 已拒绝 \(item.rejectedTagCount)")
         lines.append("状态：\(availabilityText(item.availability))")
@@ -15446,14 +15448,20 @@ struct LibraryWorkspaceView: View {
             }
             if let createdAt = detail.mediaCreatedAtMs {
                 LabeledContent(
-                    "拍摄时间",
+                    "媒体内嵌时间",
                     value: Date(timeIntervalSince1970: TimeInterval(createdAt) / 1_000)
                         .formatted(date: .abbreviated, time: .shortened)
                 )
             }
-            if let modifiedAt = detail.mediaModifiedAtMs {
+            if let fileModifiedAt = detail.fileModifiedAtMs {
                 LabeledContent(
-                    "修改时间",
+                    "文件修改时间",
+                    value: Date(timeIntervalSince1970: TimeInterval(fileModifiedAt) / 1_000)
+                        .formatted(date: .abbreviated, time: .shortened)
+                )
+            } else if let modifiedAt = detail.mediaModifiedAtMs {
+                LabeledContent(
+                    "媒体修改时间",
                     value: Date(timeIntervalSince1970: TimeInterval(modifiedAt) / 1_000)
                         .formatted(date: .abbreviated, time: .shortened)
                 )
@@ -16077,6 +16085,12 @@ struct LibraryWorkspaceView: View {
         Menu {
             sortButton(.newest, title: "最新优先")
             sortButton(.oldest, title: "最早优先")
+            Divider()
+            sortButton(.embeddedTimeNewest, title: "媒体内嵌时间：新到旧")
+            sortButton(.embeddedTimeOldest, title: "媒体内嵌时间：旧到新")
+            sortButton(.fileModifiedNewest, title: "文件修改时间：新到旧")
+            sortButton(.fileModifiedOldest, title: "文件修改时间：旧到新")
+            Divider()
             sortButton(.fileNameAscending, title: "文件名升序")
         } label: {
             switch toolbarDisplayModeSettings.displayMode {
@@ -16088,7 +16102,7 @@ struct LibraryWorkspaceView: View {
         }
         .libraryToolbarHelp(
             "排序",
-            detail: "更改照片列表的排序方式：最新优先、最早优先或文件名升序。"
+            detail: "可分别按媒体内嵌时间、文件修改时间或文件名排列照片；原有综合时间排序保持兼容。"
         )
     }
 
@@ -16105,6 +16119,10 @@ struct LibraryWorkspaceView: View {
         switch sort {
         case .newest: "最新优先"
         case .oldest: "最早优先"
+        case .embeddedTimeNewest: "媒体时间↓"
+        case .embeddedTimeOldest: "媒体时间↑"
+        case .fileModifiedNewest: "文件时间↓"
+        case .fileModifiedOldest: "文件时间↑"
         case .fileNameAscending: "文件名升序"
         }
     }

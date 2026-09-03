@@ -403,6 +403,10 @@ export function GalleryToolbar({
           >
             <option value="newest">最新优先</option>
             <option value="oldest">最早优先</option>
+            <option value="embeddedTimeNewest">媒体内嵌时间：新到旧</option>
+            <option value="embeddedTimeOldest">媒体内嵌时间：旧到新</option>
+            <option value="fileModifiedNewest">文件修改时间：新到旧</option>
+            <option value="fileModifiedOldest">文件修改时间：旧到新</option>
             <option value="fileNameAscending">文件名</option>
           </select>
         </label>

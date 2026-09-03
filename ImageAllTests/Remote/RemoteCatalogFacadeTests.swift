@@ -257,6 +257,7 @@ final class RemoteCatalogFacadeTests: XCTestCase {
                     durationMs: 12_345,
                     mediaCreatedAtMs: 100,
                     mediaModifiedAtMs: 100,
+                    fileModifiedAtMs: 200,
                     width: 10,
                     height: 20,
                     availability: .available,
@@ -298,7 +299,18 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         XCTAssertEqual(page.items[0].acceptedTagCount, 1)
         XCTAssertEqual(page.items[0].relativePath, "a.jpg")
         XCTAssertEqual(page.items[0].mediaModifiedAtMs, 100)
+        XCTAssertEqual(page.items[0].fileModifiedAtMs, 200)
         XCTAssertEqual(page.items[0].durationMs, 12_345)
+
+        for (remoteSort, catalogSort) in [
+            (RemoteAssetSort.embeddedTimeNewest, AssetPageSort.embeddedTimeNewest),
+            (.embeddedTimeOldest, .embeddedTimeOldest),
+            (.fileModifiedNewest, .fileModifiedNewest),
+            (.fileModifiedOldest, .fileModifiedOldest),
+        ] {
+            _ = try await facade.fetchAssets(RemoteAssetPageRequest(sort: remoteSort, limit: 10))
+            XCTAssertEqual(catalog.lastRequestedSort, catalogSort)
+        }
     }
 
     func testFolderHierarchyUsesBoundedHostQueriesAndRecursiveAssetScope() async throws {
@@ -3788,6 +3800,7 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
     private var storedLastCreateTagAssetIDs: [UUID]?
     private var storedLastRequestedLimit: Int?
     private var storedLastRequestedFilter: AssetPageFilter?
+    private var storedLastRequestedSort: AssetPageSort?
     private var storedAssetPageError: CatalogQueryError?
     private var storedLastJobAction: JobActivityAction?
     private var storedLastJobActionID: UUID?
@@ -3908,6 +3921,10 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
         lock.lock()
         defer { lock.unlock() }
         return storedLastRequestedFilter
+    }
+
+    var lastRequestedSort: AssetPageSort? {
+        lock.withLock { storedLastRequestedSort }
     }
 
     func setAssetPageError(_ error: CatalogQueryError?) {
@@ -4061,9 +4078,9 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
         let assetPageError = storedAssetPageError
         storedLastRequestedLimit = limit
         storedLastRequestedFilter = filter
+        storedLastRequestedSort = sort
         lock.unlock()
         if let assetPageError { throw assetPageError }
-        _ = sort
         _ = cursor
         return AssetPageResult(items: items, nextCursor: nil)
     }

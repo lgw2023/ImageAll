@@ -201,12 +201,12 @@ export function GallerySelectionInspector({
                 <dd>{formatBytes(detail.data.fingerprintSizeBytes)}</dd>
               </div>
               <div>
-                <dt>拍摄时间</dt>
+                <dt>媒体内嵌时间</dt>
                 <dd>{formatDate(detail.data.mediaCreatedAtMs)}</dd>
               </div>
               <div>
-                <dt>修改时间</dt>
-                <dd>{formatDate(detail.data.mediaModifiedAtMs)}</dd>
+                <dt>文件修改时间</dt>
+                <dd>{formatDate(detail.data.fileModifiedAtMs)}</dd>
               </div>
               <div>
                 <dt>状态</dt>

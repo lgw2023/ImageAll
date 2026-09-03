@@ -838,10 +838,10 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
             INSERT INTO asset (
                 id, source_id, locator_kind, relative_path, file_name, locator_state,
                 media_kind, media_type, duration_ms, width, height,
-                media_created_at_ms, media_modified_at_ms,
+                media_created_at_ms, media_modified_at_ms, file_modified_at_ms,
                 content_revision, last_seen_generation, availability,
                 record_created_at_ms, record_updated_at_ms
-            ) VALUES (?, ?, 'file', ?, ?, 'current', ?, ?, ?, ?, ?, ?, NULL, 1, ?, ?, ?, ?)
+            ) VALUES (?, ?, 'file', ?, ?, 'current', ?, ?, ?, ?, ?, ?, NULL, ?, 1, ?, ?, ?, ?)
             """,
             arguments: [
                 assetID.uuidString.lowercased(),
@@ -854,6 +854,7 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
                 observation.width,
                 observation.height,
                 observation.mediaCreatedAtMs,
+                observation.modifiedAtNs.map { $0 / 1_000_000 },
                 generation,
                 observation.availability.rawValue,
                 nowMs,
@@ -888,6 +889,7 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
                 width = ?,
                 height = ?,
                 media_created_at_ms = ?,
+                file_modified_at_ms = ?,
                 content_revision = ?,
                 last_seen_generation = ?,
                 availability = ?,
@@ -902,6 +904,7 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
                 observation.width,
                 observation.height,
                 observation.mediaCreatedAtMs,
+                observation.modifiedAtNs.map { $0 / 1_000_000 },
                 contentRevision,
                 generation,
                 observation.availability.rawValue,
@@ -1093,6 +1096,7 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
                 width = ?,
                 height = ?,
                 media_created_at_ms = ?,
+                file_modified_at_ms = ?,
                 content_revision = ?,
                 last_seen_generation = ?,
                 availability = ?,
@@ -1108,6 +1112,7 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
                 observation.width,
                 observation.height,
                 observation.mediaCreatedAtMs,
+                observation.modifiedAtNs.map { $0 / 1_000_000 },
                 newRevision,
                 generation,
                 observation.availability.rawValue,

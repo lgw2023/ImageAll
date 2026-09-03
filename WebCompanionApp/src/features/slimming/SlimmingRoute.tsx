@@ -303,7 +303,15 @@ export function SlimmingRoute() {
     return {
       sourceIDs: sourceID ? [sourceID] : [],
       searchText: searchParameters.get('filterQ'),
-      sort: sort === 'oldest' || sort === 'fileNameAscending' ? sort : 'newest',
+      sort:
+        sort === 'oldest' ||
+        sort === 'embeddedTimeNewest' ||
+        sort === 'embeddedTimeOldest' ||
+        sort === 'fileModifiedNewest' ||
+        sort === 'fileModifiedOldest' ||
+        sort === 'fileNameAscending'
+          ? sort
+          : 'newest',
       limit: 200,
       cursor: null,
       tagDecisionFilters: [

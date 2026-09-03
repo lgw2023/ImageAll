@@ -430,12 +430,16 @@
             <select id="sortSelect" class="sort-native-proxy" tabindex="-1" aria-hidden="true">
               <option value="newest">最新优先</option>
               <option value="oldest">最早优先</option>
+              <option value="embeddedTimeNewest">媒体内嵌时间：新到旧</option>
+              <option value="embeddedTimeOldest">媒体内嵌时间：旧到新</option>
+              <option value="fileModifiedNewest">文件修改时间：新到旧</option>
+              <option value="fileModifiedOldest">文件修改时间：旧到新</option>
               <option value="fileNameAscending" selected>文件名升序</option>
             </select>
             <button id="sortButton" class="button toolbar-button sort-button" type="button"
               aria-haspopup="menu" aria-expanded="false" aria-controls="sortPopover"
               aria-label="排序：文件名升序" title="排序"
-              data-help-detail="更改照片列表的排序方式：最新优先、最早优先或文件名升序。">
+              data-help-detail="可分别按媒体内嵌时间、文件修改时间或文件名排列照片；原有综合时间排序保持兼容。">
               <span class="sort-button-icon" aria-hidden="true">↕</span>
               <span id="sortButtonLabel" class="sort-button-label">文件名升序</span>
             </button>
@@ -702,6 +706,22 @@
           <button type="button" role="menuitemradio" data-sort="oldest" aria-checked="false">
             <span class="sort-option-check" aria-hidden="true">✓</span>
             <span>最早优先</span>
+          </button>
+          <button type="button" role="menuitemradio" data-sort="embeddedTimeNewest" aria-checked="false">
+            <span class="sort-option-check" aria-hidden="true">✓</span>
+            <span>媒体内嵌时间：新到旧</span>
+          </button>
+          <button type="button" role="menuitemradio" data-sort="embeddedTimeOldest" aria-checked="false">
+            <span class="sort-option-check" aria-hidden="true">✓</span>
+            <span>媒体内嵌时间：旧到新</span>
+          </button>
+          <button type="button" role="menuitemradio" data-sort="fileModifiedNewest" aria-checked="false">
+            <span class="sort-option-check" aria-hidden="true">✓</span>
+            <span>文件修改时间：新到旧</span>
+          </button>
+          <button type="button" role="menuitemradio" data-sort="fileModifiedOldest" aria-checked="false">
+            <span class="sort-option-check" aria-hidden="true">✓</span>
+            <span>文件修改时间：旧到新</span>
           </button>
           <button type="button" role="menuitemradio" data-sort="fileNameAscending"
             aria-checked="true">

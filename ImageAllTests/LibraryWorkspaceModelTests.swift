@@ -10796,6 +10796,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             mediaType: "public.jpeg",
             mediaCreatedAtMs: 1_752_854_400_000,
             mediaModifiedAtMs: 1_752_940_800_000,
+            fileModifiedAtMs: 1_753_027_200_000,
             width: 4_032,
             height: 3_024,
             availability: .available,
@@ -10809,8 +10810,9 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertTrue(text.contains("海边.jpg"))
         XCTAssertTrue(text.contains("家庭相册"))
         XCTAssertTrue(text.contains("4,032 × 3,024"))
-        XCTAssertTrue(text.contains("已确认 2 · 已拒绝 1"))
-        XCTAssertTrue(text.contains("拍摄时间"))
+        XCTAssertTrue(text.contains("已确认 2 · 已拒绝 1"), text)
+        XCTAssertTrue(text.contains("媒体内嵌时间"), text)
+        XCTAssertTrue(text.contains("文件修改时间"), text)
         XCTAssertTrue(text.contains("状态：可用"))
     }
 
@@ -17457,7 +17459,10 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
             }
             let cursorAssetID: UUID? = cursor.map {
                 switch $0.payload {
-                case let .timeSort(_, _, assetID), let .fileNameSort(_, _, assetID):
+                case let .timeSort(_, _, assetID),
+                     let .embeddedTimeSort(_, _, assetID),
+                     let .fileModifiedTimeSort(_, _, assetID),
+                     let .fileNameSort(_, _, assetID):
                     assetID
                 }
             }

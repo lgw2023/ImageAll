@@ -161,7 +161,7 @@ final class PortableCatalogExportTests: XCTestCase {
         let manifestData = try Data(contentsOf: result.bundleURL.appendingPathComponent("manifest.json"))
         let manifest = try JSONDecoder().decode(PortableExportManifest.self, from: manifestData)
         XCTAssertEqual(manifest.format, "imageall-portable-export")
-        XCTAssertEqual(manifest.formatVersion, 2)
+        XCTAssertEqual(manifest.formatVersion, 3)
         XCTAssertEqual(manifest.createdAtMs, 1_752_695_723_000)
         XCTAssertEqual(manifest.appVersion, "1.0-test")
         XCTAssertEqual(manifest.appliedMigrations, CatalogMigrationID.knownOrdered)
@@ -210,6 +210,8 @@ final class PortableCatalogExportTests: XCTestCase {
         XCTAssertTrue(assets[1]["relative_path"] is NSNull)
         XCTAssertEqual(assets[0]["media_kind"] as? String, "image")
         XCTAssertTrue(assets[0]["duration_ms"] is NSNull)
+        XCTAssertEqual(assets[0]["file_modified_at_ms"] as? Int, 24)
+        XCTAssertTrue(assets[1]["file_modified_at_ms"] is NSNull)
 
         let tags = try jsonLines(at: result.bundleURL.appendingPathComponent("tags.jsonl"))
         XCTAssertEqual(tags[0]["kind"] as? String, "personal")
@@ -450,13 +452,13 @@ final class PortableCatalogExportTests: XCTestCase {
                 INSERT INTO asset (
                     id, source_id, locator_kind, relative_path, photos_local_identifier,
                     locator_state, file_name, media_type, width, height,
-                    media_created_at_ms, media_modified_at_ms, content_revision,
+                    media_created_at_ms, media_modified_at_ms, file_modified_at_ms, content_revision,
                     last_seen_generation, availability, record_created_at_ms, record_updated_at_ms
                 ) VALUES
                     (?, ?, 'file', 'album/photo.jpg', NULL, 'current', 'photo.jpg',
-                     'public.jpeg', 100, 80, 20, 21, 1, 0, 'available', 30, 31),
+                     'public.jpeg', 100, 80, 20, 21, 24, 1, 0, 'available', 30, 31),
                     (?, ?, 'photos', NULL, 'photos-local-identifier', 'current', NULL,
-                     'public.heic', 200, 160, 22, 23, 2, 0, 'available', 32, 33)
+                     'public.heic', 200, 160, 22, 23, NULL, 2, 0, 'available', 32, 33)
                 """,
                 arguments: [folderAsset, folderSource, photosAsset, photosSource]
             )

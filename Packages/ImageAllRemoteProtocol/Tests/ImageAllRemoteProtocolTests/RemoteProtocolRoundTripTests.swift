@@ -604,6 +604,7 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
             ),
             relativePath: "Trips/CAT_0001.JPG",
             mediaModifiedAtMs: 1_700_000_100_000,
+            fileModifiedAtMs: 1_700_000_200_000,
             durationMs: 12_345
         )
         let original = RemoteAssetPage(items: [item], nextCursor: "cursor-1")
@@ -634,6 +635,7 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
         let legacy = try decoder.decode(RemoteAssetSummary.self, from: payload)
         XCTAssertNil(legacy.relativePath)
         XCTAssertNil(legacy.mediaModifiedAtMs)
+        XCTAssertNil(legacy.fileModifiedAtMs)
         XCTAssertNil(legacy.durationMs)
     }
 
@@ -764,6 +766,7 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
             rejectedTagCount: 1,
             mediaCreatedAtMs: 1_700_000_000_000,
             mediaModifiedAtMs: 1_700_000_100_000,
+            fileModifiedAtMs: 1_700_000_200_000,
             width: 1920,
             height: 1080,
             durationMs: 12_345,

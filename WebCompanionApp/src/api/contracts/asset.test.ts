@@ -49,6 +49,7 @@ describe('gallery protocol contracts', () => {
       fileName: null,
       relativePath: null,
       mediaCreatedAtMs: null,
+      fileModifiedAtMs: null,
       width: null,
       height: null,
     });

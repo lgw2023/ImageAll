@@ -3,6 +3,61 @@ import XCTest
 @testable import ImageAll
 
 final class CatalogMigrationTests: XCTestCase {
+    func testV039BackfillsFileModificationTimeAndCreatesDualTimeIndexes() throws {
+        let url = try makeTempDatabaseURL()
+        var configuration = Configuration()
+        configuration.prepareDatabase { db in
+            try db.execute(sql: "PRAGMA foreign_keys = ON")
+        }
+        let pool = try DatabasePool(path: url.path, configuration: configuration)
+        try CatalogDatabase.makeMigrator().migrate(
+            pool,
+            upTo: CatalogMigrationID.v038AddContextualTagFeed
+        )
+
+        let database = CatalogDatabase(pool: pool)
+        let sourceID = UUID()
+        let assetID = UUID()
+        let repository = CatalogRepository(database: database)
+        try DatabaseTestSupport.makeFolderSourceWithFileAsset(
+            repository: repository,
+            sourceID: sourceID,
+            assetID: assetID
+        )
+        try repository.upsertFileFingerprint(
+            FileFingerprintInput(
+                assetID: assetID,
+                sizeBytes: 42,
+                modifiedAtNs: 1_700_000_123_456_789_000,
+                resourceID: nil,
+                sha256: nil
+            )
+        )
+
+        try database.migrate()
+
+        try pool.read { db in
+            XCTAssertEqual(
+                try Int64.fetchOne(
+                    db,
+                    sql: "SELECT file_modified_at_ms FROM asset WHERE id = ?",
+                    arguments: [assetID.uuidString.lowercased()]
+                ),
+                1_700_000_123_456
+            )
+            let indexNames = Set(
+                try String.fetchAll(
+                    db,
+                    sql: "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'asset'"
+                )
+            )
+            XCTAssertTrue(indexNames.contains("asset_current_embedded_time_idx"))
+            XCTAssertTrue(indexNames.contains("asset_current_embedded_time_desc_idx"))
+            XCTAssertTrue(indexNames.contains("asset_current_file_modified_time_idx"))
+            XCTAssertTrue(indexNames.contains("asset_current_file_modified_time_desc_idx"))
+        }
+    }
+
     func testV037BackfillsMediaBearingFoldersAndAncestorsFromExistingAssets() throws {
         let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
         let sourceID = UUID()

@@ -2,7 +2,15 @@ import { z } from 'zod';
 
 import { nullishToNull, uuidSchema } from './common';
 
-export const assetSortSchema = z.enum(['newest', 'oldest', 'fileNameAscending']);
+export const assetSortSchema = z.enum([
+  'newest',
+  'oldest',
+  'embeddedTimeNewest',
+  'embeddedTimeOldest',
+  'fileModifiedNewest',
+  'fileModifiedOldest',
+  'fileNameAscending',
+]);
 export const assetAvailabilitySchema = z.enum([
   'available',
   'missing',
@@ -36,6 +44,7 @@ export const assetSummarySchema = z.object({
   favorite: nullishToNull(favoriteStateSchema),
   relativePath: nullishToNull(z.string()),
   mediaModifiedAtMs: nullishToNull(z.int()),
+  fileModifiedAtMs: nullishToNull(z.int()),
   durationMs: nullishToNull(z.int().nonnegative()),
 });
 
@@ -90,6 +99,7 @@ export const assetDetailSchema = z.object({
   rejectedTagCount: z.int().nonnegative(),
   mediaCreatedAtMs: nullishToNull(z.int()),
   mediaModifiedAtMs: nullishToNull(z.int()),
+  fileModifiedAtMs: nullishToNull(z.int()),
   width: nullishToNull(z.int().nonnegative()),
   height: nullishToNull(z.int().nonnegative()),
   durationMs: nullishToNull(z.int().nonnegative()),

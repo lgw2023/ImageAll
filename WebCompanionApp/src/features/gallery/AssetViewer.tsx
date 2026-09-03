@@ -587,8 +587,12 @@ export function AssetViewer({
                   </dd>
                 </div>
                 <div>
-                  <dt>拍摄时间</dt>
+                  <dt>媒体内嵌时间</dt>
                   <dd>{formatDate(detail.data.mediaCreatedAtMs)}</dd>
+                </div>
+                <div>
+                  <dt>文件修改时间</dt>
+                  <dd>{formatDate(detail.data.fileModifiedAtMs)}</dd>
                 </div>
                 <div>
                   <dt>指纹占用</dt>

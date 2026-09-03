@@ -75,7 +75,7 @@ macOS 目录库中已经成为用户事实的媒体域、标签分组、阈值�
 | 文件 | 字段与 JSON 类型 |
 |---|---|
 | `sources.jsonl` | `id:string`, `kind:string(folder\|photos)`, `display_name:string`, `state:string(active\|disabled\|unavailable\|authorizationRequired)`, `created_at_ms:integer`, `updated_at_ms:integer` |
-| `assets.jsonl` | `id:string`, `source_id:string`, `locator_kind:string(file\|photos)`, `relative_path:string|null`, `photos_local_identifier:string|null`, `locator_state:string(current\|historical)`, `file_name:string|null`, `media_type:string`, `width:integer|null`, `height:integer|null`, `media_created_at_ms:integer|null`, `media_modified_at_ms:integer|null`, `content_revision:integer`, `availability:string(available\|missing\|unreadable\|unsupported)`, `record_created_at_ms:integer`, `record_updated_at_ms:integer` |
+| `assets.jsonl` | `id:string`, `source_id:string`, `locator_kind:string(file\|photos)`, `relative_path:string|null`, `photos_local_identifier:string|null`, `locator_state:string(current\|historical)`, `file_name:string|null`, `media_type:string`, `width:integer|null`, `height:integer|null`, `media_created_at_ms:integer|null`, `media_modified_at_ms:integer|null`, `file_modified_at_ms:integer|null`, `content_revision:integer`, `availability:string(available\|missing\|unreadable\|unsupported)`, `record_created_at_ms:integer`, `record_updated_at_ms:integer` |
 | `file_fingerprints.jsonl` | `asset_id:string`, `size_bytes:integer`, `modified_at_ns:integer`, `sha256:string|null` |
 | `tags.jsonl` | `id:string`, `name:string`, `normalized_name:string`, `state:string(active\|archived)`, `created_at_ms:integer`, `updated_at_ms:integer` |
 | `decisions.jsonl` | `asset_id:string`, `tag_id:string`, `decision:string(accepted\|rejected)`, `updated_at_ms:integer` |
@@ -86,6 +86,7 @@ macOS 目录库中已经成为用户事实的媒体域、标签分组、阈值�
 v2 在 `assets.jsonl` 增加 `media_kind` 和 `duration_ms`，在 `tags.jsonl` 增加 `kind` 和 `group_id`，
 并在 `tag_models.jsonl`、`model_revisions.jsonl`、`model_samples.jsonl` 增加 `media_kind`。上表新增的
 七类事实文件与既有 `favorites.jsonl` 一并纳入 manifest；当前 manifest 共列出 16 个 JSONL。
+v3 在 `assets.jsonl` 增加 `file_modified_at_ms`，用于和媒体内嵌时间分开恢复文件系统时间事实。
 `training_runs.jsonl` 不导出内部 `job_id` 或 artifact 路径，只导出 artifact 种类与 SHA-256；其中
 `sample_summary`、`config`、`metrics`、`result_summary` 重新编码为结构化 JSON，并递归移除授权、bookmark、
 credential、password、path、secret、token 键以及绝对路径值。

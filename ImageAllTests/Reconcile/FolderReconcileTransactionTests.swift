@@ -176,6 +176,66 @@ final class FolderReconcileTransactionTests: XCTestCase {
         )
     }
 
+    func testCommittedObservationPersistsFileModificationTimeInMilliseconds() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let queue = FolderReconcileTestSupport.makeQueue(database: database)
+        let repository = GRDBFolderReconcileRepository(queue: queue)
+        let sourceID = UUID()
+        try FolderReconcileTestSupport.seedActiveFolderSource(
+            database: database,
+            sourceID: sourceID,
+            bookmark: Data("bookmark".utf8)
+        )
+        _ = try FolderReconcileTestSupport.enqueueReconcileJob(queue: queue, sourceID: sourceID)
+        let lease = try XCTUnwrap(
+            try queue.claimNext(ClaimNextInput(owner: "file-time", leaseDurationMs: 1_000))
+        )
+        let begin = try repository.beginGeneration(
+            FolderReconcileTestSupport.beginGenerationInput(
+                lease: lease,
+                sourceID: sourceID,
+                leaseDurationMs: 1_000
+            )
+        )
+
+        _ = try repository.commitAssetBatch(
+            FolderAssetBatchInput(
+                lease: lease,
+                sourceID: sourceID,
+                generation: begin.generation,
+                startedDirtyEpoch: begin.startedDirtyEpoch,
+                checkpoint: begin.checkpoint,
+                observations: [
+                    FolderReconcileAssetObservation(
+                        relativePath: "capture.jpg",
+                        fileName: "capture.jpg",
+                        mediaType: UTType.jpeg.identifier,
+                        width: 2,
+                        height: 1,
+                        mediaCreatedAtMs: 1_600_000_000_000,
+                        availability: .available,
+                        sizeBytes: 100,
+                        modifiedAtNs: 1_700_000_123_456_789_000,
+                        resourceID: nil,
+                        movePathProbe: nil
+                    ),
+                ],
+                leaseDurationMs: 1_000,
+                outcome: .continue
+            )
+        )
+
+        let times: (Int64?, Int64?) = try database.pool.read { db in
+            let row = try Row.fetchOne(
+                db,
+                sql: "SELECT media_created_at_ms, file_modified_at_ms FROM asset WHERE relative_path = 'capture.jpg'"
+            )
+            return (row?["media_created_at_ms"], row?["file_modified_at_ms"])
+        }
+        XCTAssertEqual(times.0, 1_600_000_000_000)
+        XCTAssertEqual(times.1, 1_700_000_123_456)
+    }
+
     func testCompleteGenerationDoesNotOverwriteRecycledAvailability() throws {
         let url = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: url)

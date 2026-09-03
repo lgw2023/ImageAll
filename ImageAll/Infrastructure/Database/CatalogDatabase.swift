@@ -44,6 +44,7 @@ struct CatalogDatabase: Sendable {
         V036AddTrainingRunSampleManifestMigration.register(on: &migrator)
         V037AddSourceFolderIndexMigration.register(on: &migrator)
         V038AddContextualTagFeedMigration.register(on: &migrator)
+        V039AddFileModifiedTimeSortMigration.register(on: &migrator)
         return migrator
     }
 
@@ -537,6 +538,73 @@ enum V038AddContextualTagFeedMigration {
             )
         }
     }
+}
+
+enum V039AddFileModifiedTimeSortMigration {
+    static let embeddedTimeEmptyMarkerExpression =
+        "(CASE WHEN media_created_at_ms IS NOT NULL THEN 0 ELSE 1 END)"
+    static let fileModifiedTimeEmptyMarkerExpression =
+        "(CASE WHEN file_modified_at_ms IS NOT NULL THEN 0 ELSE 1 END)"
+
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v039AddFileModifiedTimeSort) { db in
+            try db.execute(
+                sql: """
+                ALTER TABLE asset ADD COLUMN file_modified_at_ms INTEGER
+                CHECK(file_modified_at_ms IS NULL OR file_modified_at_ms >= 0)
+                """
+            )
+            try db.execute(
+                sql: """
+                UPDATE asset
+                SET file_modified_at_ms = (
+                    SELECT CAST(file_fingerprint.modified_at_ns / 1000000 AS INTEGER)
+                    FROM file_fingerprint
+                    WHERE file_fingerprint.asset_id = asset.id
+                )
+                WHERE locator_kind = 'file'
+                    AND EXISTS(
+                        SELECT 1 FROM file_fingerprint
+                        WHERE file_fingerprint.asset_id = asset.id
+                    )
+                """
+            )
+            for statement in indexStatements {
+                try db.execute(sql: statement)
+            }
+        }
+    }
+
+    private static let indexStatements = [
+        """
+        CREATE INDEX asset_current_embedded_time_idx ON asset (
+            \(embeddedTimeEmptyMarkerExpression),
+            media_created_at_ms,
+            id
+        ) WHERE locator_state = 'current'
+        """,
+        """
+        CREATE INDEX asset_current_embedded_time_desc_idx ON asset (
+            \(embeddedTimeEmptyMarkerExpression),
+            media_created_at_ms DESC,
+            id DESC
+        ) WHERE locator_state = 'current'
+        """,
+        """
+        CREATE INDEX asset_current_file_modified_time_idx ON asset (
+            \(fileModifiedTimeEmptyMarkerExpression),
+            file_modified_at_ms,
+            id
+        ) WHERE locator_state = 'current'
+        """,
+        """
+        CREATE INDEX asset_current_file_modified_time_desc_idx ON asset (
+            \(fileModifiedTimeEmptyMarkerExpression),
+            file_modified_at_ms DESC,
+            id DESC
+        ) WHERE locator_state = 'current'
+        """,
+    ]
 }
 
 /// A committed, media-bearing view of folder-source paths. Rebuilding happens
