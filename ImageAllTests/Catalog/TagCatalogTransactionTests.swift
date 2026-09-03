@@ -1473,14 +1473,14 @@ final class ContextualTagFeedTests: XCTestCase {
         XCTAssertEqual(aggregate.rejectedCount, 0)
     }
 
-    func testResolveAndUndoRestoreOnlySelectedCandidatesAndProtectNewerDecisions() throws {
+    func testResolveAndUndoPartitionsAllCandidatesAndProtectsNewerDecisions() throws {
         let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
         let catalog = CatalogRepository(database: database)
         let tags = GRDBTagCatalogRepository(database: database)
         let sourceID = UUID()
         let anchorAssetID = UUID()
         let selectedCandidateID = UUID()
-        let excludedCandidateID = UUID()
+        let remainingCandidateID = UUID()
         let tag = try tags.createTag(
             rawName: "旅游",
             timestampMs: DatabaseTestSupport.timestampMs
@@ -1501,7 +1501,7 @@ final class ContextualTagFeedTests: XCTestCase {
         )
         for (assetID, fileName) in [
             (selectedCandidateID, "IMG_0002.JPG"),
-            (excludedCandidateID, "IMG_0003.JPG"),
+            (remainingCandidateID, "IMG_0003.JPG"),
         ] {
             try catalog.insertAsset(NewAssetInput(
                 assetID: assetID,
@@ -1517,7 +1517,7 @@ final class ContextualTagFeedTests: XCTestCase {
             for (assetID, fileName) in [
                 (anchorAssetID, "IMG_0001.JPG"),
                 (selectedCandidateID, "IMG_0002.JPG"),
-                (excludedCandidateID, "IMG_0003.JPG"),
+                (remainingCandidateID, "IMG_0003.JPG"),
             ] {
                 try db.execute(
                     sql: "UPDATE asset SET file_name = ? WHERE id = ?",
@@ -1546,21 +1546,26 @@ final class ContextualTagFeedTests: XCTestCase {
         )
 
         XCTAssertEqual(try service.pendingCount(), 0)
+        XCTAssertEqual(Set(snapshot.priorStates.map(\.assetID)), [
+            selectedCandidateID,
+            remainingCandidateID,
+        ])
         let aggregates = try tags.selectionAggregate(
             tagIDs: [tag.id],
-            assetIDs: [selectedCandidateID, excludedCandidateID]
+            assetIDs: [selectedCandidateID, remainingCandidateID]
         )
         let aggregate = try XCTUnwrap(aggregates.first)
         XCTAssertEqual(aggregate.acceptedCount, 1)
-        XCTAssertEqual(aggregate.unknownCount, 1)
-        XCTAssertEqual(aggregate.rejectedCount, 0)
+        XCTAssertEqual(aggregate.unknownCount, 0)
+        XCTAssertEqual(aggregate.rejectedCount, 1)
 
         try service.undoResolution(
             ContextualTagFeedResolutionUndo(
                 feedID: group.id,
                 resolvedRevision: group.revision + 1,
                 resolvedAtMs: DatabaseTestSupport.timestampMs + 3,
-                appliedDecision: .accepted,
+                selectedAssetIDs: [selectedCandidateID],
+                selectedDecision: .accepted,
                 snapshot: snapshot
             ),
             timestampMs: DatabaseTestSupport.timestampMs + 4
@@ -1572,7 +1577,7 @@ final class ContextualTagFeedTests: XCTestCase {
         XCTAssertEqual(reopened.revision, group.revision + 2)
         let restored = try XCTUnwrap(tags.selectionAggregate(
             tagIDs: [tag.id],
-            assetIDs: [selectedCandidateID, excludedCandidateID]
+            assetIDs: [selectedCandidateID, remainingCandidateID]
         ).first)
         XCTAssertEqual(restored.acceptedCount, 0)
         XCTAssertEqual(restored.unknownCount, 2)
@@ -1586,6 +1591,13 @@ final class ContextualTagFeedTests: XCTestCase {
             decision: .rejected,
             timestampMs: secondResolvedAt
         )
+        let inverted = try XCTUnwrap(tags.selectionAggregate(
+            tagIDs: [tag.id],
+            assetIDs: [selectedCandidateID, remainingCandidateID]
+        ).first)
+        XCTAssertEqual(inverted.acceptedCount, 1)
+        XCTAssertEqual(inverted.rejectedCount, 1)
+        XCTAssertEqual(inverted.unknownCount, 0)
         _ = try tags.batchAccept(
             tagID: tag.id,
             assetIDs: [selectedCandidateID],
@@ -1597,7 +1609,8 @@ final class ContextualTagFeedTests: XCTestCase {
                 feedID: reopened.id,
                 resolvedRevision: reopened.revision + 1,
                 resolvedAtMs: secondResolvedAt,
-                appliedDecision: .rejected,
+                selectedAssetIDs: [selectedCandidateID],
+                selectedDecision: .rejected,
                 snapshot: secondSnapshot
             ),
             timestampMs: DatabaseTestSupport.timestampMs + 7
@@ -1619,7 +1632,8 @@ final class ContextualTagFeedTests: XCTestCase {
         let tags = GRDBTagCatalogRepository(database: database)
         let sourceID = UUID()
         let anchorAssetID = UUID()
-        let candidateAssetID = UUID()
+        let selectedCandidateID = UUID()
+        let staleRemainingCandidateID = UUID()
         let tag = try tags.createTag(
             rawName: "旅游",
             timestampMs: DatabaseTestSupport.timestampMs
@@ -1638,21 +1652,25 @@ final class ContextualTagFeedTests: XCTestCase {
                 timestampMs: DatabaseTestSupport.timestampMs
             )
         )
-        try catalog.insertAsset(
-            NewAssetInput(
-                assetID: candidateAssetID,
+        for (assetID, fileName) in [
+            (selectedCandidateID, "IMG_0002.JPG"),
+            (staleRemainingCandidateID, "IMG_0003.JPG"),
+        ] {
+            try catalog.insertAsset(NewAssetInput(
+                assetID: assetID,
                 sourceID: sourceID,
                 locatorKind: .file,
-                relativePath: "Trip/IMG_0002.JPG",
+                relativePath: "Trip/\(fileName)",
                 photosLocalIdentifier: nil,
                 mediaType: "public.jpeg",
                 timestampMs: DatabaseTestSupport.timestampMs
-            )
-        )
+            ))
+        }
         try database.pool.write { db in
             for (assetID, fileName) in [
                 (anchorAssetID, "IMG_0001.JPG"),
-                (candidateAssetID, "IMG_0002.JPG"),
+                (selectedCandidateID, "IMG_0002.JPG"),
+                (staleRemainingCandidateID, "IMG_0003.JPG"),
             ] {
                 try db.execute(
                     sql: "UPDATE asset SET file_name = ? WHERE id = ?",
@@ -1673,14 +1691,14 @@ final class ContextualTagFeedTests: XCTestCase {
         ))
         _ = try tags.batchAccept(
             tagID: tag.id,
-            assetIDs: [candidateAssetID],
+            assetIDs: [staleRemainingCandidateID],
             timestampMs: DatabaseTestSupport.timestampMs + 3
         )
 
         XCTAssertThrowsError(try service.resolve(
             feedID: group.id,
             revision: group.revision,
-            selectedAssetIDs: [candidateAssetID],
+            selectedAssetIDs: [selectedCandidateID],
             decision: .rejected,
             timestampMs: DatabaseTestSupport.timestampMs + 4
         )) { error in
@@ -1690,16 +1708,17 @@ final class ContextualTagFeedTests: XCTestCase {
         XCTAssertEqual(try service.pendingCount(), 1)
         let aggregate = try XCTUnwrap(tags.selectionAggregate(
             tagIDs: [tag.id],
-            assetIDs: [candidateAssetID]
+            assetIDs: [selectedCandidateID, staleRemainingCandidateID]
         ).first)
         XCTAssertEqual(aggregate.acceptedCount, 1)
         XCTAssertEqual(aggregate.rejectedCount, 0)
+        XCTAssertEqual(aggregate.unknownCount, 1)
 
         _ = try service.refreshRecentAcceptedAnchors(
             limit: 200,
             timestampMs: DatabaseTestSupport.timestampMs + 5
         )
-        XCTAssertEqual(try service.pendingCount(), 0)
+        XCTAssertEqual(try service.pendingCount(), 1)
     }
 
     private func makePendingFeed(

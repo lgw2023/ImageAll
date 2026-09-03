@@ -85,8 +85,46 @@ struct ContextualTagFeedResolutionUndo: Equatable, Sendable {
     let feedID: UUID
     let resolvedRevision: Int
     let resolvedAtMs: Int64
-    let appliedDecision: PersistableTagDecision
+    let selectedAssetIDs: [UUID]
+    let selectedDecision: PersistableTagDecision
     let snapshot: TagMutationPriorStateSnapshot
+}
+
+struct ContextualTagFeedResolutionPlan: Equatable, Sendable {
+    let selectedAssetIDs: [UUID]
+    let remainingAssetIDs: [UUID]
+    let selectedDecision: PersistableTagDecision
+
+    var acceptedAssetIDs: [UUID] {
+        selectedDecision == .accepted ? selectedAssetIDs : remainingAssetIDs
+    }
+
+    var rejectedAssetIDs: [UUID] {
+        selectedDecision == .rejected ? selectedAssetIDs : remainingAssetIDs
+    }
+
+    var affectedCount: Int {
+        selectedAssetIDs.count + remainingAssetIDs.count
+    }
+
+    static func make(
+        orderedCandidateAssetIDs: [UUID],
+        selectedAssetIDs: [UUID],
+        selectedDecision: PersistableTagDecision
+    ) -> Self? {
+        let candidateSet = Set(orderedCandidateAssetIDs)
+        let selectedSet = Set(selectedAssetIDs)
+        guard !selectedAssetIDs.isEmpty,
+              candidateSet.count == orderedCandidateAssetIDs.count,
+              selectedSet.count == selectedAssetIDs.count,
+              selectedSet.isSubset(of: candidateSet)
+        else { return nil }
+        return Self(
+            selectedAssetIDs: orderedCandidateAssetIDs.filter(selectedSet.contains),
+            remainingAssetIDs: orderedCandidateAssetIDs.filter { !selectedSet.contains($0) },
+            selectedDecision: selectedDecision
+        )
+    }
 }
 
 enum ContextualTagFeedError: Error, Equatable, Sendable {

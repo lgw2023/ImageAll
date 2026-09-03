@@ -10870,17 +10870,20 @@ extension LibraryWorkspaceModel {
     func resolveCurrentContextualTagFeed(decision: PersistableTagDecision) async {
         guard let group = currentContextualTagFeed,
               isCurrentContextualTagFeedAnchorValid,
-              !selectedContextualTagFeedCandidateAssetIDs.isEmpty
+              let plan = ContextualTagFeedResolutionPlan.make(
+                  orderedCandidateAssetIDs: contextualTagFeedCandidateAssetIDs,
+                  selectedAssetIDs: Array(selectedContextualTagFeedCandidateAssetIDs),
+                  selectedDecision: decision
+              )
         else { return }
         let feed = contextualTagFeed
-        let selected = Array(selectedContextualTagFeedCandidateAssetIDs)
         let timestampMs = clock.nowMs
         do {
             let snapshot = try await Self.offMain {
                 try feed.resolve(
                     feedID: group.id,
                     revision: group.revision,
-                    selectedAssetIDs: selected,
+                    selectedAssetIDs: plan.selectedAssetIDs,
                     decision: decision,
                     timestampMs: timestampMs
                 )
@@ -10890,15 +10893,16 @@ extension LibraryWorkspaceModel {
                     feedID: group.id,
                     resolvedRevision: group.revision + 1,
                     resolvedAtMs: timestampMs,
-                    appliedDecision: decision,
+                    selectedAssetIDs: plan.selectedAssetIDs,
+                    selectedDecision: decision,
                     snapshot: snapshot
                 ),
                 tagDisplayName: group.tagDisplayName,
-                affectedCount: selected.count
+                affectedCount: plan.affectedCount
             )
-            contextualTagFeedStatusMessage = decision == .accepted
-                ? "已把选中的 \(selected.count) 张照片标为“\(group.tagDisplayName)”。"
-                : "已把选中的 \(selected.count) 张照片标为不属于“\(group.tagDisplayName)”。"
+            contextualTagFeedStatusMessage =
+                "已处理本组：\(plan.acceptedAssetIDs.count) 张属于“\(group.tagDisplayName)”，"
+                    + "\(plan.rejectedAssetIDs.count) 张不属于。"
             await enqueueAutomaticPersonalModelRebuildIfReady()
             await refreshContextualTagFeed(generateRecentAnchors: false)
             await refreshReviewState(reloadActiveQueue: false)

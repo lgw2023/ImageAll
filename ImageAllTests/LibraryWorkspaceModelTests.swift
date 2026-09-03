@@ -377,6 +377,43 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
     }
 
+    func testContextualTagFeedResolutionPlanAssignsTheOppositeDecisionToRemainingCandidates() throws {
+        let first = UUID()
+        let second = UUID()
+        let third = UUID()
+        let candidates = [first, second, third]
+
+        let accepting = try XCTUnwrap(ContextualTagFeedResolutionPlan.make(
+            orderedCandidateAssetIDs: candidates,
+            selectedAssetIDs: [third, first],
+            selectedDecision: .accepted
+        ))
+        XCTAssertEqual(accepting.selectedAssetIDs, [first, third])
+        XCTAssertEqual(accepting.remainingAssetIDs, [second])
+        XCTAssertEqual(accepting.acceptedAssetIDs, [first, third])
+        XCTAssertEqual(accepting.rejectedAssetIDs, [second])
+        XCTAssertEqual(accepting.affectedCount, 3)
+
+        let rejecting = try XCTUnwrap(ContextualTagFeedResolutionPlan.make(
+            orderedCandidateAssetIDs: candidates,
+            selectedAssetIDs: [second],
+            selectedDecision: .rejected
+        ))
+        XCTAssertEqual(rejecting.acceptedAssetIDs, [first, third])
+        XCTAssertEqual(rejecting.rejectedAssetIDs, [second])
+
+        XCTAssertNil(ContextualTagFeedResolutionPlan.make(
+            orderedCandidateAssetIDs: candidates,
+            selectedAssetIDs: [],
+            selectedDecision: .accepted
+        ))
+        XCTAssertNil(ContextualTagFeedResolutionPlan.make(
+            orderedCandidateAssetIDs: candidates,
+            selectedAssetIDs: [UUID()],
+            selectedDecision: .accepted
+        ))
+    }
+
     func testContextualTagFeedEditsAnchorAndCandidateTagsWithoutSubmittingAnchorAsCandidate() async throws {
         let sourceID = UUID()
         let anchorID = UUID()

@@ -93,7 +93,7 @@ struct ContextualTagFeedView: View {
                     Text(groupEvidenceSummary(group))
                         .font(.callout)
                         .foregroundStyle(.secondary)
-                    Text("锚点与候选都可选择并在右侧修改标签；P/X 只处理所选候选照片。")
+                    Text("锚点与候选都可在右侧修改标签；P/X 会给未选候选写入与选中候选相反的决定，一次完成整组。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     if !model.isCurrentContextualTagFeedAnchorValid {
@@ -212,7 +212,9 @@ struct ContextualTagFeedView: View {
                     model.selectedContextualTagFeedCandidateAssetIDs.isEmpty ||
                         !model.isCurrentContextualTagFeedAnchorValid
                 )
-                .persistentHelp("明确把选中的照片标为不属于当前标签；不会处理未选照片；快捷键 X。")
+                .persistentHelp(
+                    "把选中候选标为不属于当前标签，并把其余候选标为属于；一次完成整组。快捷键 X。"
+                )
                 Button(confirmButtonTitle(group)) {
                     Task { await model.resolveCurrentContextualTagFeed(decision: .accepted) }
                 }
@@ -221,7 +223,9 @@ struct ContextualTagFeedView: View {
                     model.selectedContextualTagFeedCandidateAssetIDs.isEmpty ||
                         !model.isCurrentContextualTagFeedAnchorValid
                 )
-                .persistentHelp("确认所选照片属于当前标签并进入下一组；快捷键 P。")
+                .persistentHelp(
+                    "把选中候选标为属于当前标签，并把其余候选标为不属于；一次完成整组。快捷键 P。"
+                )
             }
             .padding(12)
         }
@@ -244,11 +248,15 @@ struct ContextualTagFeedView: View {
     }
 
     private func confirmButtonTitle(_ group: ContextualTagFeedGroup) -> String {
-        "将选中的 \(model.selectedContextualTagFeedCandidateAssetIDs.count) 张标为“\(group.tagDisplayName)” (P)"
+        let selectedCount = model.selectedContextualTagFeedCandidateAssetIDs.count
+        let remainingCount = max(0, model.contextualTagFeedCandidateAssetIDs.count - selectedCount)
+        return "选中 \(selectedCount) 张属于“\(group.tagDisplayName)”，其余 \(remainingCount) 张不属于 (P)"
     }
 
     private func rejectButtonTitle(_ group: ContextualTagFeedGroup) -> String {
-        "将选中的 \(model.selectedContextualTagFeedCandidateAssetIDs.count) 张标为不属于“\(group.tagDisplayName)” (X)"
+        let selectedCount = model.selectedContextualTagFeedCandidateAssetIDs.count
+        let remainingCount = max(0, model.contextualTagFeedCandidateAssetIDs.count - selectedCount)
+        return "选中 \(selectedCount) 张不属于“\(group.tagDisplayName)”，其余 \(remainingCount) 张属于 (X)"
     }
 
     private func groupEvidenceSummary(_ group: ContextualTagFeedGroup) -> String {

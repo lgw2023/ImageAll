@@ -1506,10 +1506,6 @@ struct ContextualTagFeedService: ContextualTagFeedPort, Sendable {
         decision: PersistableTagDecision,
         timestampMs: Int64
     ) throws -> TagMutationPriorStateSnapshot {
-        let selected = Array(Set(selectedAssetIDs))
-        guard !selected.isEmpty, selected.count == selectedAssetIDs.count else {
-            throw ContextualTagFeedError.invalidSelection
-        }
         return try database.pool.write { db in
             guard let feed = try Row.fetchOne(
                 db,
@@ -1525,19 +1521,26 @@ struct ContextualTagFeedService: ContextualTagFeedPort, Sendable {
             else {
                 throw ContextualTagFeedError.feedChanged
             }
-            let selectedTokens = Set(selected.map { $0.uuidString.lowercased() })
-            let candidateTokens = Set(try String.fetchAll(
+            let candidateTokens = try String.fetchAll(
                 db,
                 sql: """
                 SELECT asset_id FROM contextual_tag_feed_member
                 WHERE feed_id = ? AND role = 'candidate'
+                ORDER BY rank
                 """,
                 arguments: [feedID.uuidString.lowercased()]
-            ))
-            guard selectedTokens.isSubset(of: candidateTokens) else {
+            )
+            let candidateAssetIDs = candidateTokens.compactMap { UUID(uuidString: $0) }
+            guard candidateAssetIDs.count == candidateTokens.count,
+                  let plan = ContextualTagFeedResolutionPlan.make(
+                      orderedCandidateAssetIDs: candidateAssetIDs,
+                      selectedAssetIDs: selectedAssetIDs,
+                      selectedDecision: decision
+                  )
+            else {
                 throw ContextualTagFeedError.invalidSelection
             }
-            for assetToken in selectedTokens {
+            for assetToken in candidateTokens {
                 let stillUndecided = try Bool.fetchOne(
                     db,
                     sql: """
@@ -1553,14 +1556,28 @@ struct ContextualTagFeedService: ContextualTagFeedPort, Sendable {
                 }
             }
 
-            let mutation = try GRDBTagCatalogRepository(database: database)
-                .applyBatchDecision(
+            let repository = GRDBTagCatalogRepository(database: database)
+            var priorStates: [TagMutationPriorState] = []
+            if !plan.acceptedAssetIDs.isEmpty {
+                let accepted = try repository.applyBatchDecision(
                     in: db,
                     tagID: tagID,
-                    assetIDs: selected,
-                    decision: decision,
+                    assetIDs: plan.acceptedAssetIDs,
+                    decision: .accepted,
                     timestampMs: timestampMs
                 )
+                priorStates.append(contentsOf: accepted.priorStates)
+            }
+            if !plan.rejectedAssetIDs.isEmpty {
+                let rejected = try repository.applyBatchDecision(
+                    in: db,
+                    tagID: tagID,
+                    assetIDs: plan.rejectedAssetIDs,
+                    decision: .rejected,
+                    timestampMs: timestampMs
+                )
+                priorStates.append(contentsOf: rejected.priorStates)
+            }
             try db.execute(
                 sql: """
                 UPDATE contextual_tag_feed
@@ -1580,7 +1597,7 @@ struct ContextualTagFeedService: ContextualTagFeedPort, Sendable {
             }
             return TagMutationPriorStateSnapshot(
                 tagID: tagID,
-                priorStates: mutation.priorStates
+                priorStates: priorStates
             )
         }
     }
@@ -1591,7 +1608,13 @@ struct ContextualTagFeedService: ContextualTagFeedPort, Sendable {
     ) throws {
         let assetIDs = undo.snapshot.priorStates.map(\.assetID)
         let uniqueAssetIDs = Set(assetIDs)
-        guard !assetIDs.isEmpty, uniqueAssetIDs.count == assetIDs.count else {
+        let selectedAssetIDs = Set(undo.selectedAssetIDs)
+        guard !assetIDs.isEmpty,
+              uniqueAssetIDs.count == assetIDs.count,
+              !selectedAssetIDs.isEmpty,
+              selectedAssetIDs.count == undo.selectedAssetIDs.count,
+              selectedAssetIDs.isSubset(of: uniqueAssetIDs)
+        else {
             throw ContextualTagFeedError.invalidSelection
         }
         try database.pool.write { db in
@@ -1620,12 +1643,16 @@ struct ContextualTagFeedService: ContextualTagFeedPort, Sendable {
                 """,
                 arguments: [CatalogQuerySQLHelpers.lowercaseUUID(undo.feedID)]
             ))
-            let selectedTokens = Set(uniqueAssetIDs.map(CatalogQuerySQLHelpers.lowercaseUUID))
-            guard selectedTokens.isSubset(of: candidateTokens) else {
+            let mutationTokens = Set(uniqueAssetIDs.map(CatalogQuerySQLHelpers.lowercaseUUID))
+            let selectedTokens = Set(selectedAssetIDs.map(CatalogQuerySQLHelpers.lowercaseUUID))
+            guard mutationTokens == candidateTokens else {
                 throw ContextualTagFeedError.feedChanged
             }
 
-            for assetToken in selectedTokens {
+            for assetToken in mutationTokens {
+                let expectedDecision = selectedTokens.contains(assetToken)
+                    ? undo.selectedDecision
+                    : oppositeDecision(undo.selectedDecision)
                 guard let decision = try Row.fetchOne(
                     db,
                     sql: """
@@ -1635,7 +1662,7 @@ struct ContextualTagFeedService: ContextualTagFeedPort, Sendable {
                     """,
                     arguments: [CatalogQuerySQLHelpers.lowercaseUUID(tagID), assetToken]
                 ),
-                    (decision["decision"] as String) == undo.appliedDecision.rawValue,
+                    (decision["decision"] as String) == expectedDecision.rawValue,
                     (decision["updated_at_ms"] as Int64) == undo.resolvedAtMs
                 else {
                     throw ContextualTagFeedError.feedChanged
@@ -1665,6 +1692,13 @@ struct ContextualTagFeedService: ContextualTagFeedPort, Sendable {
             guard db.changesCount == 1 else {
                 throw ContextualTagFeedError.feedChanged
             }
+        }
+    }
+
+    private func oppositeDecision(_ decision: PersistableTagDecision) -> PersistableTagDecision {
+        switch decision {
+        case .accepted: .rejected
+        case .rejected: .accepted
         }
     }
 
