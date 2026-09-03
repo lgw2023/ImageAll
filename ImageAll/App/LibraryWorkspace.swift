@@ -12395,6 +12395,9 @@ struct LibraryInspectorTagDecisionChip: View {
     var supportsReordering = false
     let onAccept: () -> Void
     let onClear: () -> Void
+    var helpTextOverride: String? = nil
+    var accessibilityValueOverride: String? = nil
+    var accessibilityHintOverride: String? = nil
 
     var body: some View {
         HStack(spacing: 5) {
@@ -12447,13 +12450,14 @@ struct LibraryInspectorTagDecisionChip: View {
         .background {
             LibraryRightClickCatcher(enabled: isEnabled, action: onClear)
         }
-        .persistentHelp(helpText)
+        .persistentHelp(helpTextOverride ?? helpText)
         .accessibilityLabel(tag.displayName)
-        .accessibilityValue(accessibilityValue)
+        .accessibilityValue(accessibilityValueOverride ?? accessibilityValue)
         .accessibilityHint(
-            isEnabled
-                ? "左键打上标签，右键取消标签"
-                : "先选择照片再打标签"
+            accessibilityHintOverride
+                ?? (isEnabled
+                    ? "左键打上标签，右键取消标签"
+                    : "先选择照片再打标签")
         )
     }
 

@@ -12772,6 +12772,33 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
     }
 
+    func testTrainingWorkspaceTagSelectionUsesInspectorChipsWithExplicitCardinality() {
+        XCTAssertEqual(
+            TrainingWorkspaceTagSelectionPresentation(method: .featureKnn),
+            TrainingWorkspaceTagSelectionPresentation(
+                title: "要寻找哪种标签的相似照片？",
+                detail: "与图库右侧一致：左键选择，右键取消；一次选择一个标签。",
+                style: .singleSelectionTagChips
+            )
+        )
+        XCTAssertEqual(
+            TrainingWorkspaceTagSelectionPresentation(method: .personalCentroid),
+            TrainingWorkspaceTagSelectionPresentation(
+                title: "要训练哪些标签？",
+                detail: "与图库右侧一致：左键选择，右键取消；可选择多个标签，各自独立训练和发布。",
+                style: .multipleSelectionTagChips
+            )
+        )
+        XCTAssertEqual(
+            TrainingWorkspaceTagSelectionPresentation(method: .personalAdamW),
+            TrainingWorkspaceTagSelectionPresentation(
+                title: "要训练哪些标签？",
+                detail: "与图库右侧一致：左键选择，右键取消；可选择多个标签，各自独立训练和发布。",
+                style: .multipleSelectionTagChips
+            )
+        )
+    }
+
     func testTrainingWorkspaceLaunchSummaryConfirmsMethodTagsAndPhotoScope() {
         let summary = TrainingWorkspaceLaunchSummary(
             method: .personalCentroid,

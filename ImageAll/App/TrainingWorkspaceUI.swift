@@ -530,6 +530,10 @@ private struct TrainingWorkspaceLaunchSheet: View {
         model.suggestionOverviews.filter(\.canGeneratePersonalModel)
     }
 
+    private var selectedFeatureTagIDs: Set<UUID> {
+        selectedFeatureTagID.map { Set([$0]) } ?? []
+    }
+
     private var selectedTagNames: [String] {
         switch selectedMethod {
         case .featureKnn:
@@ -756,21 +760,27 @@ private struct TrainingWorkspaceLaunchSheet: View {
     private var configuration: some View {
         switch selectedMethod {
         case .featureKnn:
+            let presentation = TrainingWorkspaceTagSelectionPresentation(
+                method: selectedMethod,
+                mediaKind: model.selectedMediaKind
+            )
             VStack(alignment: .leading, spacing: 12) {
-                Picker(
-                    "要寻找哪种标签的相似\(model.selectedMediaKind.displayName)？",
-                    selection: $selectedFeatureTagID
-                ) {
-                    ForEach(featureOptions) { overview in
-                        Text(
-                            "\(overview.displayName)（属于 \(overview.acceptedSampleCount) / 不属于 \(overview.rejectedSampleCount)）"
-                        )
-                        .tag(Optional(overview.id))
+                Text(presentation.title)
+                    .font(.subheadline.weight(.semibold))
+                Text(presentation.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TrainingWorkspaceTagChooser(
+                    model: model,
+                    overviews: featureOptions,
+                    selectedTagIDs: selectedFeatureTagIDs,
+                    style: presentation.style,
+                    onSelect: { selectedFeatureTagID = $0 },
+                    onClear: { tagID in
+                        if selectedFeatureTagID == tagID {
+                            selectedFeatureTagID = nil
+                        }
                     }
-                }
-                .pickerStyle(.menu)
-                .persistentHelp(
-                    "选择要为哪个标签寻找相似\(model.selectedMediaKind.displayName)；列表同时显示现有正反样本数。"
                 )
                 Text(
                     "下一步可以选择要扫描的\(model.selectedMediaKind.displayName)来源，并确认建议阈值。"
@@ -779,65 +789,24 @@ private struct TrainingWorkspaceLaunchSheet: View {
                     .foregroundStyle(.secondary)
             }
         case .personalCentroid, .personalAdamW:
+            let presentation = TrainingWorkspaceTagSelectionPresentation(
+                method: selectedMethod,
+                mediaKind: model.selectedMediaKind
+            )
             VStack(alignment: .leading, spacing: 12) {
-                Text("要训练哪些标签？")
+                Text(presentation.title)
                     .font(.subheadline.weight(.semibold))
-                Text("每个标签会独立训练、独立发布；多选即启动多次互不影响的训练。")
+                Text(presentation.detail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                if personalOptions.isEmpty {
-                    Label(
-                        "还没有达到最低样本要求的标签。",
-                        systemImage: "exclamationmark.triangle"
-                    )
-                    .foregroundStyle(.orange)
-                } else {
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 6) {
-                            ForEach(personalOptions) { overview in
-                                Toggle(
-                                    isOn: Binding(
-                                        get: {
-                                            selectedPersonalTagIDs.contains(overview.id)
-                                        },
-                                        set: { isSelected in
-                                            if isSelected {
-                                                selectedPersonalTagIDs.insert(overview.id)
-                                            } else {
-                                                selectedPersonalTagIDs.remove(overview.id)
-                                            }
-                                        }
-                                    )
-                                ) {
-                                    HStack(spacing: 12) {
-                                        Text(overview.displayName)
-                                            .frame(minWidth: 120, alignment: .leading)
-                                        Spacer()
-                                        Text("已确认 \(overview.acceptedSampleCount) 张")
-                                            .foregroundStyle(.secondary)
-                                            .monospacedDigit()
-                                    }
-                                }
-                                .toggleStyle(.checkbox)
-                                .padding(.vertical, 4)
-                                .padding(.horizontal, 8)
-                                .background(
-                                    selectedPersonalTagIDs.contains(overview.id)
-                                        ? Color.accentColor.opacity(0.08)
-                                        : Color.clear,
-                                    in: RoundedRectangle(cornerRadius: 6)
-                                )
-                            }
-                        }
-                        .padding(.vertical, 4)
-                    }
-                    .frame(minHeight: 220, maxHeight: 260)
-                    .background(Color.secondary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(Color.secondary.opacity(0.15), lineWidth: 1)
-                    }
-                }
+                TrainingWorkspaceTagChooser(
+                    model: model,
+                    overviews: personalOptions,
+                    selectedTagIDs: selectedPersonalTagIDs,
+                    style: presentation.style,
+                    onSelect: { selectedPersonalTagIDs.insert($0) },
+                    onClear: { selectedPersonalTagIDs.remove($0) }
+                )
 
                 Divider()
                 Picker(
@@ -942,6 +911,177 @@ private struct TrainingWorkspaceLaunchSheet: View {
                 )
             )
         }
+    }
+}
+
+private struct TrainingWorkspaceTagChooser: View {
+    @ObservedObject var model: LibraryWorkspaceModel
+    let overviews: [SuggestionTagOverview]
+    let selectedTagIDs: Set<UUID>
+    let style: TrainingWorkspaceTagSelectionStyle
+    let onSelect: (UUID) -> Void
+    let onClear: (UUID) -> Void
+
+    private var overviewsByID: [UUID: SuggestionTagOverview] {
+        Dictionary(uniqueKeysWithValues: overviews.map { ($0.id, $0) })
+    }
+
+    private var optionSections: [LibraryTagGroupSection] {
+        let eligibleIDs = Set(overviews.map(\.id))
+        var sections = model.tagGroupSections.compactMap { section in
+            let tags = section.tags.filter { eligibleIDs.contains($0.id) }
+            return tags.isEmpty
+                ? nil
+                : LibraryTagGroupSection(group: section.group, tags: tags)
+        }
+
+        let representedIDs = Set(sections.flatMap { $0.tags.map(\.id) })
+        let missingTags = overviews
+            .filter { !representedIDs.contains($0.id) }
+            .map {
+                TagListItem(
+                    id: $0.id,
+                    displayName: $0.displayName,
+                    state: .active,
+                    groupID: TagGroupSeed.other.id
+                )
+            }
+        guard !missingTags.isEmpty else { return sections }
+
+        let fallbackGroup = model.tagGroups.first { $0.id == TagGroupSeed.other.id }
+            ?? TagGroupListItem(
+                id: TagGroupSeed.other.id,
+                displayName: TagGroupSeed.other.displayName,
+                sortOrder: TagGroupSeed.other.sortOrder,
+                isSystem: true
+            )
+        if let index = sections.firstIndex(where: { $0.group.id == fallbackGroup.id }) {
+            sections[index] = LibraryTagGroupSection(
+                group: fallbackGroup,
+                tags: (sections[index].tags + missingTags).sorted(by: Self.alphabetical)
+            )
+        } else {
+            sections.append(
+                LibraryTagGroupSection(
+                    group: fallbackGroup,
+                    tags: missingTags.sorted(by: Self.alphabetical)
+                )
+            )
+        }
+        return sections
+    }
+
+    var body: some View {
+        Group {
+            if overviews.isEmpty {
+                Label(
+                    "还没有达到当前任务最低样本要求的标签。",
+                    systemImage: "exclamationmark.triangle"
+                )
+                .foregroundStyle(.orange)
+                .frame(maxWidth: .infinity, minHeight: 96, alignment: .center)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        ForEach(optionSections) { section in
+                            tagGroupSection(section)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+                .scrollIndicators(.visible, axes: .vertical)
+            }
+        }
+        .frame(minHeight: 220, maxHeight: 280)
+        .padding(.horizontal, 8)
+        .background(Color.secondary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.secondary.opacity(0.15), lineWidth: 1)
+        }
+        .accessibilityIdentifier("trainingTagChipSelector")
+    }
+
+    private func tagGroupSection(_ section: LibraryTagGroupSection) -> some View {
+        let isCollapsed = model.isTagGroupCollapsed(section.group.id)
+        return VStack(alignment: .leading, spacing: 6) {
+            Button {
+                model.toggleTagGroupCollapsed(section.group.id)
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 10)
+                    Text(section.group.displayName)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text("\(section.tags.count)")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .persistentHelp(
+                isCollapsed
+                    ? "展开“\(section.group.displayName)”分组，显示可用于当前任务的标签。"
+                    : "折叠“\(section.group.displayName)”分组。"
+            )
+
+            if !isCollapsed {
+                LibraryTagFlowLayout {
+                    ForEach(section.tags, id: \.id) { tag in
+                        tagChip(tag)
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 3)
+        .padding(4)
+    }
+
+    private func tagChip(_ tag: TagListItem) -> some View {
+        let isSelected = selectedTagIDs.contains(tag.id)
+        let sampleText = sampleDescription(for: tag.id)
+        let cardinalityText = style == .singleSelectionTagChips
+            ? "一次只能选择一个标签。"
+            : "可以选择多个标签。"
+        return LibraryInspectorTagDecisionChip(
+            tag: tag,
+            decision: isSelected ? .accepted : .unknown,
+            isEnabled: true,
+            onAccept: { onSelect(tag.id) },
+            onClear: { onClear(tag.id) },
+            helpTextOverride: isSelected
+                ? "已选择“\(tag.displayName)”；右键取消。\(sampleText) \(cardinalityText)"
+                : "左键选择“\(tag.displayName)”。\(sampleText) \(cardinalityText)",
+            accessibilityValueOverride: isSelected
+                ? "已选择；\(sampleText)"
+                : "未选择；\(sampleText)",
+            accessibilityHintOverride: "左键选择，右键取消。\(cardinalityText)"
+        )
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityIdentifier("trainingTagOption-\(tag.id.uuidString)")
+    }
+
+    private func sampleDescription(for tagID: UUID) -> String {
+        guard let overview = overviewsByID[tagID] else { return "样本数暂不可用。" }
+        switch style {
+        case .singleSelectionTagChips:
+            return "现有样本：属于 \(overview.acceptedSampleCount) 张，不属于 \(overview.rejectedSampleCount) 张。"
+        case .multipleSelectionTagChips:
+            return "已确认 \(overview.acceptedSampleCount) 张。"
+        }
+    }
+
+    private static func alphabetical(_ lhs: TagListItem, _ rhs: TagListItem) -> Bool {
+        let comparison = lhs.displayName.localizedStandardCompare(rhs.displayName)
+        if comparison == .orderedSame {
+            return lhs.id.uuidString.lowercased() < rhs.id.uuidString.lowercased()
+        }
+        return comparison == .orderedAscending
     }
 }
 
@@ -1069,6 +1209,44 @@ struct TrainingWorkspaceMethodPresentation: Equatable {
         self.detail = detail
         self.requirement = requirement
         self.systemImage = systemImage
+    }
+}
+
+enum TrainingWorkspaceTagSelectionStyle: Equatable {
+    case singleSelectionTagChips
+    case multipleSelectionTagChips
+}
+
+struct TrainingWorkspaceTagSelectionPresentation: Equatable {
+    let title: String
+    let detail: String
+    let style: TrainingWorkspaceTagSelectionStyle
+
+    init(method: TrainingRunMethod, mediaKind: MediaKind = .image) {
+        self = switch method {
+        case .featureKnn:
+            Self(
+                title: "要寻找哪种标签的相似\(mediaKind.displayName)？",
+                detail: "与图库右侧一致：左键选择，右键取消；一次选择一个标签。",
+                style: .singleSelectionTagChips
+            )
+        case .personalCentroid, .personalAdamW:
+            Self(
+                title: "要训练哪些标签？",
+                detail: "与图库右侧一致：左键选择，右键取消；可选择多个标签，各自独立训练和发布。",
+                style: .multipleSelectionTagChips
+            )
+        }
+    }
+
+    init(
+        title: String,
+        detail: String,
+        style: TrainingWorkspaceTagSelectionStyle
+    ) {
+        self.title = title
+        self.detail = detail
+        self.style = style
     }
 }
 
