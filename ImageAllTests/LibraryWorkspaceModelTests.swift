@@ -5396,6 +5396,67 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertFalse(model.isSinglePhotoPresented)
     }
 
+    func testUntaggedBrowsingCanNarrowToOneSourceWithoutLeavingUntaggedScope() async {
+        let firstSourceID = UUID()
+        let secondSourceID = UUID()
+        let firstAsset = Self.makeAsset(
+            sourceID: firstSourceID,
+            fileName: "first.jpg",
+            sourceDisplayName: "第一来源"
+        )
+        let secondAsset = Self.makeAsset(
+            sourceID: secondSourceID,
+            fileName: "second.jpg",
+            sourceDisplayName: "第二来源"
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: firstSourceID,
+                displayName: "第一来源",
+                state: .active
+            ),
+            reconciledItems: [firstAsset, secondAsset],
+            initialItems: [firstAsset, secondAsset],
+            startsConnected: true,
+            additionalSources: [
+                LibrarySourceSummary(
+                    id: secondSourceID,
+                    displayName: "第二来源",
+                    state: .active
+                ),
+            ],
+            hasPendingCatalogReconcileJobs: false
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            idlePrewarmInstallEventMonitor: false
+        )
+
+        await model.start()
+        let requestID = model.beginBrowsingNavigation()
+        await model.navigate(to: .untagged, requestID: requestID)
+        await model.selectSource(secondSourceID)
+
+        XCTAssertEqual(model.selectedBrowsingSourceID, secondSourceID)
+        XCTAssertEqual(model.selectedBrowsingSourceTitle, "第二来源")
+        XCTAssertEqual(model.browsingTitle, "无标签照片 · 第二来源")
+        XCTAssertEqual(model.items.map(\.assetID), [secondAsset.assetID])
+        XCTAssertEqual(service.lastFilter.sourceIDs, [secondSourceID])
+        XCTAssertEqual(service.lastFilter.tagPresence, .untagged)
+
+        await model.selectSource(nil)
+
+        XCTAssertNil(model.selectedBrowsingSourceID)
+        XCTAssertEqual(model.selectedBrowsingSourceTitle, "全部来源")
+        XCTAssertEqual(model.browsingTitle, "无标签照片")
+        XCTAssertEqual(
+            Set(model.items.map(\.assetID)),
+            Set([firstAsset.assetID, secondAsset.assetID])
+        )
+        XCTAssertTrue(service.lastFilter.sourceIDs.isEmpty)
+        XCTAssertEqual(service.lastFilter.tagPresence, .untagged)
+    }
+
     func testImmediateWorldMapPresentationClearsGalleryRowsBeforeAsyncNavigate() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "mapped.jpg")

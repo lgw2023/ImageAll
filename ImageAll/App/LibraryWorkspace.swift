@@ -5229,6 +5229,19 @@ final class LibraryWorkspaceModel: ObservableObject {
         return isPhotosSource(selectedSourceID)
     }
 
+    var selectedBrowsingSourceID: UUID? {
+        selectedSourceID
+    }
+
+    var selectedBrowsingSourceTitle: String {
+        guard let selectedSourceID,
+              let source = sources.first(where: { $0.id == selectedSourceID })
+        else {
+            return "全部来源"
+        }
+        return source.displayName
+    }
+
     var browsingTitle: String {
         if reviewMode != nil {
             return "待审核建议"
@@ -5239,13 +5252,17 @@ final class LibraryWorkspaceModel: ObservableObject {
         if selectedFolderScope != nil {
             return folderBreadcrumb.map(\.title).joined(separator: " › ")
         }
+        if tagPresence == .untagged {
+            let baseTitle = selectedMediaKind == .image ? "无标签照片" : "无标签视频"
+            if selectedSourceID != nil {
+                return "\(baseTitle) · \(selectedBrowsingSourceTitle)"
+            }
+            return baseTitle
+        }
         if let selectedSourceID,
            let source = sources.first(where: { $0.id == selectedSourceID })
         {
             return source.displayName
-        }
-        if tagPresence == .untagged {
-            return selectedMediaKind == .image ? "无标签照片" : "无标签视频"
         }
         if isBrowsingFavorites {
             return selectedMediaKind == .image ? "红心照片" : "红心视频"
@@ -14707,6 +14724,9 @@ struct LibraryWorkspaceView: View {
             } else {
                 mediaKindTabs
             }
+            if selection == .untagged {
+                untaggedSourceScopeBar
+            }
             if !model.folderBreadcrumb.isEmpty {
                 Divider()
                 folderBreadcrumbBar
@@ -14796,6 +14816,48 @@ struct LibraryWorkspaceView: View {
         ) { mediaKind in
             Task { await model.setMediaKind(mediaKind) }
         }
+    }
+
+    private var untaggedSourceScopeBar: some View {
+        HStack(spacing: 10) {
+            Label("无标签范围", systemImage: "externaldrive")
+                .font(.callout.weight(.medium))
+            Picker(
+                "来源",
+                selection: Binding<UUID?>(
+                    get: { model.selectedBrowsingSourceID },
+                    set: { sourceID in
+                        Task { await model.selectSource(sourceID) }
+                    }
+                )
+            ) {
+                Label("全部来源", systemImage: "square.stack.3d.up")
+                    .tag(Optional<UUID>.none)
+                Divider()
+                ForEach(model.orderedSources) { source in
+                    Label(
+                        source.displayName,
+                        systemImage: source.kind == .photos ? "photo.stack" : "folder"
+                    )
+                    .tag(Optional(source.id))
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .disabled(model.sources.isEmpty)
+            .accessibilityIdentifier("untaggedSourcePicker")
+            .accessibilityLabel("无标签\(model.selectedMediaKind.displayName)来源")
+            .accessibilityValue(model.selectedBrowsingSourceTitle)
+            .persistentHelp("选择只查看某个来源中的无标签项目，或恢复查看全部来源。")
+
+            Text("只显示所选来源中尚未确认任何标签的\(model.selectedMediaKind.displayName)。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Spacer(minLength: 8)
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 10)
     }
 
     @ViewBuilder
@@ -14900,7 +14962,24 @@ struct LibraryWorkspaceView: View {
                     .buttonStyle(.bordered)
                 }
             } else if model.items.isEmpty {
-                if model.hasAssetPropertyFilters {
+                if selection == .untagged {
+                    ContentUnavailableView {
+                        Label(
+                            "当前范围没有无标签\(model.selectedMediaKind.displayName)",
+                            systemImage: "tag.slash"
+                        )
+                    } description: {
+                        Text("当前范围：\(model.selectedBrowsingSourceTitle)。可在上方切换来源。")
+                    } actions: {
+                        if model.selectedBrowsingSourceID != nil {
+                            Button("查看全部来源") {
+                                Task { await model.selectSource(nil) }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .persistentHelp("保留无标签条件，恢复查看全部来源。")
+                        }
+                    }
+                } else if model.hasAssetPropertyFilters {
                     ContentUnavailableView {
                             Label(
                                 "没有符合筛选的\(model.selectedMediaKind.displayName)",
