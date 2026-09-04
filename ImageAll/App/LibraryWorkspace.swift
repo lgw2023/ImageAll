@@ -14490,93 +14490,119 @@ struct LibraryWorkspaceView: View {
         let isExcluded = model.isTagFilterExcluded(tag.id)
         let usesIntersection = isIncluded && model.tagMatchMode == .all
 
-        return HStack(spacing: 5) {
-            Label {
-                Text(tag.displayName)
-                    .lineLimit(1)
-            } icon: {
-                Image(systemName: isExcluded ? "tag.slash" : "tag")
-            }
-            if isIncluded {
-                if usesIntersection {
-                    Text("∩")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(.secondary)
-                } else {
-                    Image(systemName: "checkmark")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+        return HStack(spacing: 2) {
+            HStack(spacing: 5) {
+                Label {
+                    Text(tag.displayName)
+                        .lineLimit(1)
+                } icon: {
+                    Image(systemName: isExcluded ? "tag.slash" : "tag")
                 }
-            } else if isExcluded {
-                Image(systemName: "minus.circle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            }
-        }
-        .padding(.horizontal, 8)
-        .frame(height: 28)
-        .frame(maxWidth: 180, alignment: .leading)
-        .fixedSize(horizontal: true, vertical: false)
-        .contentShape(Rectangle())
-        .background {
-            if isIncluded {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(
-                        usesIntersection
-                            ? Color.orange.opacity(0.18)
-                            : Color.accentColor.opacity(0.18)
-                    )
-            } else if isExcluded {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color.red.opacity(0.12))
-            } else {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color(nsColor: .controlBackgroundColor).opacity(0.75))
-            }
-        }
-        .foregroundStyle(isExcluded ? Color.red : Color.primary)
-        .onTapGesture {
-            let flags = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            Task {
-                if flags.contains(.command), flags.contains(.option) {
-                    await model.toggleExcludedTagFilter(tag.id)
-                } else if flags.contains(.command) {
-                    await model.toggleIncludedTagFilter(tag.id, matchMode: .all)
-                } else {
-                    await model.toggleIncludedTagFilter(tag.id, matchMode: .any)
+                if isIncluded {
+                    if usesIntersection {
+                        Text("∩")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Image(systemName: "checkmark")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                } else if isExcluded {
+                    Image(systemName: "minus.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.red)
                 }
             }
-        }
-        .persistentHelp(
-            isExcluded
-                ? "⌘⌥点击取消排除；拖拽可调整顺序"
-                : isIncluded
-                    ? (usesIntersection
-                        ? "交集筛选；⌘点击切换；⌘⌥点击排除；拖拽可调整顺序"
-                        : "并集筛选；⌘点击改为交集；⌘⌥点击排除；拖拽可调整顺序")
-                    : "点击并集筛选；⌘点击交集筛选；⌘⌥点击排除；拖拽可调整顺序"
-        )
-        .contextMenu {
-            Button("仅筛选此标签") {
-                Task { await model.filterToSingleIncludedTag(tag.id) }
+            .padding(.horizontal, 8)
+            .frame(height: 28)
+            .frame(maxWidth: 180, alignment: .leading)
+            .fixedSize(horizontal: true, vertical: false)
+            .contentShape(Rectangle())
+            .background {
+                if isIncluded {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(
+                            usesIntersection
+                                ? Color.orange.opacity(0.18)
+                                : Color.accentColor.opacity(0.18)
+                        )
+                } else if isExcluded {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.red.opacity(0.12))
+                } else {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color(nsColor: .controlBackgroundColor).opacity(0.75))
+                }
             }
-            .persistentHelp("清除其他标签条件，只显示符合“\(tag.displayName)”的照片。")
-            Button("排除此标签") {
-                Task { await model.toggleExcludedTagFilter(tag.id) }
+            .foregroundStyle(isExcluded ? Color.red : Color.primary)
+            .onTapGesture {
+                let flags = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                Task {
+                    if flags.contains(.command), flags.contains(.option) {
+                        await model.toggleExcludedTagFilter(tag.id)
+                    } else if flags.contains(.command) {
+                        await model.toggleIncludedTagFilter(tag.id, matchMode: .all)
+                    } else {
+                        await model.toggleIncludedTagFilter(tag.id, matchMode: .any)
+                    }
+                }
             }
-            .persistentHelp("在当前筛选中排除带有“\(tag.displayName)”的照片。")
-            Button("重命名…") {
-                renamedTagName = tag.displayName
-                tagPendingRename = tag
+            .background {
+                LibraryRightClickCatcher(enabled: true) {
+                    Task { await model.toggleExcludedTagFilter(tag.id) }
+                }
             }
-            .persistentHelp("打开重命名窗口，修改这个标签的显示名称。")
+            .persistentHelp(
+                isExcluded
+                    ? "非筛选；右键取消排除；拖拽可调整顺序"
+                    : isIncluded
+                        ? (usesIntersection
+                            ? "且筛选；左键切换“或”；右键改为“非”；拖拽可调整顺序"
+                            : "或筛选；⌘左键改为“且”；右键改为“非”；拖拽可调整顺序")
+                        : "左键加入“或”；⌘左键加入“且”；右键加入“非”；拖拽可调整顺序"
+            )
+            .accessibilityLabel(tag.displayName)
+            .accessibilityValue(
+                isExcluded
+                    ? "非筛选"
+                    : isIncluded
+                        ? (usesIntersection ? "且筛选" : "或筛选")
+                        : "未筛选"
+            )
+            .accessibilityHint("左键切换包含筛选，右键切换非筛选。")
 
-            Divider()
+            Menu {
+                Button("仅筛选此标签") {
+                    Task { await model.filterToSingleIncludedTag(tag.id) }
+                }
+                .persistentHelp("清除其他标签条件，只显示符合“\(tag.displayName)”的照片。")
+                Button(isExcluded ? "取消排除此标签" : "排除此标签") {
+                    Task { await model.toggleExcludedTagFilter(tag.id) }
+                }
+                .persistentHelp("切换是否在当前筛选中排除带有“\(tag.displayName)”的照片。")
+                Button("重命名…") {
+                    renamedTagName = tag.displayName
+                    tagPendingRename = tag
+                }
+                .persistentHelp("打开重命名窗口，修改这个标签的显示名称。")
 
-            Button("归档标签", role: .destructive) {
-                tagPendingArchive = tag
+                Divider()
+
+                Button("归档标签", role: .destructive) {
+                    tagPendingArchive = tag
+                }
+                .persistentHelp("打开归档确认；标签会隐藏，但人工决定和历史会保留。")
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.caption.weight(.semibold))
+                    .frame(width: 20, height: 28)
+                    .contentShape(Rectangle())
             }
-            .persistentHelp("打开归档确认；标签会隐藏，但人工决定和历史会保留。")
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .accessibilityLabel("管理标签“\(tag.displayName)”")
+            .persistentHelp("打开“\(tag.displayName)”的筛选、重命名和归档操作。")
         }
     }
 

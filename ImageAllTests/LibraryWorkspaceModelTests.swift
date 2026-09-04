@@ -9562,10 +9562,11 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "photo.jpg")
         let family = TagListItem(id: UUID(), displayName: "Family", state: .active)
         let work = TagListItem(id: UUID(), displayName: "Work", state: .active)
+        let vacation = TagListItem(id: UUID(), displayName: "Vacation", state: .active)
         let service = FakeLibraryWorkspaceService(
             connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
             reconciledItems: [asset],
-            tags: [family, work]
+            tags: [family, work, vacation]
         )
         let model = LibraryWorkspaceModel(service: service)
 
@@ -9575,17 +9576,22 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         await model.toggleIncludedTagFilter(family.id, matchMode: .any)
         await model.toggleIncludedTagFilter(work.id, matchMode: .all)
-        await model.toggleExcludedTagFilter(work.id)
+        await model.toggleExcludedTagFilter(vacation.id)
 
         XCTAssertTrue(model.isTagFilterIncluded(family.id))
-        XCTAssertFalse(model.isTagFilterIncluded(work.id))
-        XCTAssertTrue(model.isTagFilterExcluded(work.id))
+        XCTAssertTrue(model.isTagFilterIncluded(work.id))
+        XCTAssertFalse(model.isTagFilterIncluded(vacation.id))
+        XCTAssertTrue(model.isTagFilterExcluded(vacation.id))
         XCTAssertEqual(model.tagMatchMode, .all)
         XCTAssertEqual(
             Set(service.lastFilter.tagDecisionFilters.map(\.tagID)),
-            Set([family.id])
+            Set([family.id, work.id])
         )
-        XCTAssertEqual(service.lastFilter.excludedTagIDs, [work.id])
+        XCTAssertEqual(service.lastFilter.excludedTagIDs, [vacation.id])
+        XCTAssertEqual(
+            model.tagFilterSummaryText(),
+            "Family 且 Work · 排除 Vacation"
+        )
     }
 
     func testSetTagDecisionFilterClearsExcludedStateForSameTag() async {
