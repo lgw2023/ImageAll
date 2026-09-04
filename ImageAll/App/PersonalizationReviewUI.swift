@@ -272,9 +272,17 @@ struct ContextualTagFeedView: View {
 }
 
 struct ContextualTagFeedInspectorView: View {
+    private enum ScopeTagAction: String, CaseIterable, Identifiable {
+        case include
+        case exclude
+
+        var id: Self { self }
+    }
+
     @ObservedObject var model: LibraryWorkspaceModel
     @State private var newTagName = ""
     @State private var isScopeExpanded = false
+    @State private var scopeTagAction: ScopeTagAction = .include
 
     var body: some View {
         ScrollView {
@@ -285,11 +293,32 @@ struct ContextualTagFeedInspectorView: View {
 
                 DisclosureGroup(isExpanded: $isScopeExpanded) {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("直接点击标签加入或移出范围；选中一个或多个标签后，只生成、统计并显示这些标签的推流。")
+                        Text("选择点击操作后再点标签；也可随时用 ⌘⌥ 点击反选排除。反选标签不会参与智能推荐、自选生成、统计或展示。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
 
                         recommendedScopeButton
+
+                        HStack(spacing: 8) {
+                            Picker("标签点击操作", selection: $scopeTagAction) {
+                                Label("加入范围", systemImage: "checkmark.circle")
+                                    .tag(ScopeTagAction.include)
+                                Label("反选排除", systemImage: "minus.circle")
+                                    .tag(ScopeTagAction.exclude)
+                            }
+                            .pickerStyle(.segmented)
+                            .accessibilityIdentifier("contextualTagFeedScopeTagAction")
+
+                            if !model.excludedContextualTagFeedTagIDs.isEmpty {
+                                Button("清除反选") {
+                                    Task { await model.clearExcludedContextualTagFeedTags() }
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                .disabled(model.isLoadingContextualTagFeed)
+                                .persistentHelp("让所有标签重新参与智能推荐；不改变自选标签范围。")
+                            }
+                        }
 
                         if model.tags.isEmpty {
                             Text("尚无可用于智能推流的标签。")
@@ -487,7 +516,7 @@ struct ContextualTagFeedInspectorView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("智能推荐")
                         .font(.callout.weight(.medium))
-                    Text("全部标签参与，上下文标签优先")
+                    Text(recommendedScopeSubtitle)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -512,12 +541,22 @@ struct ContextualTagFeedInspectorView: View {
         .buttonStyle(.plain)
         .disabled(model.isLoadingContextualTagFeed || isSelected)
         .accessibilityIdentifier("contextualTagFeedRecommendedScopeButton")
-        .persistentHelp("恢复智能推荐，让全部标签参与并优先显示依赖时间、位置和事件上下文的标签。")
+        .persistentHelp("恢复智能推荐，让未被反选的标签参与并优先显示依赖时间、位置和事件上下文的标签。")
+    }
+
+    private var recommendedScopeSubtitle: String {
+        let excludedCount = model.excludedContextualTagFeedTagIDs.count
+        return excludedCount == 0
+            ? "全部标签参与，上下文标签优先"
+            : "已反选排除 \(excludedCount) 个标签，其余按上下文优先"
     }
 
     private func tagGroupSection(_ section: LibraryTagGroupSection) -> some View {
         let isExpanded = model.isContextualTagFeedScopeGroupExpanded(section.group.id)
         let selectedCount = section.tags.count { model.isInContextualTagFeedScope($0.id) }
+        let excludedCount = section.tags.count {
+            model.isExcludedFromContextualTagFeed($0.id)
+        }
         return VStack(alignment: .leading, spacing: 6) {
             Button {
                 model.toggleContextualTagFeedScopeGroupExpanded(section.group.id)
@@ -530,13 +569,17 @@ struct ContextualTagFeedInspectorView: View {
                     Text(section.group.displayName)
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
-                    Text(
-                        selectedCount > 0
-                            ? "\(selectedCount)/\(section.tags.count)"
-                            : "\(section.tags.count)"
-                    )
+                    Text(scopeGroupCountText(
+                        selectedCount: selectedCount,
+                        excludedCount: excludedCount,
+                        totalCount: section.tags.count
+                    ))
                     .font(.caption2)
-                    .foregroundStyle(selectedCount > 0 ? Color.accentColor : Color.secondary)
+                    .foregroundStyle(
+                        excludedCount > 0
+                            ? Color.red
+                            : selectedCount > 0 ? Color.accentColor : Color.secondary
+                    )
                     Spacer(minLength: 0)
                 }
                 .contentShape(Rectangle())
@@ -562,20 +605,25 @@ struct ContextualTagFeedInspectorView: View {
 
     private func scopeTagChip(_ tag: TagListItem) -> some View {
         let isSelected = model.isInContextualTagFeedScope(tag.id)
+        let isExcluded = model.isExcludedFromContextualTagFeed(tag.id)
         return Button {
-            Task { await model.toggleContextualTagFeedScopeTag(tag.id) }
+            applyScopeTagAction(tag)
         } label: {
             HStack(spacing: 5) {
                 Label {
                     Text(tag.displayName)
                         .lineLimit(1)
                 } icon: {
-                    Image(systemName: "tag")
+                    Image(systemName: isExcluded ? "tag.slash" : "tag")
                 }
                 if isSelected {
                     Image(systemName: "checkmark")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
+                } else if isExcluded {
+                    Image(systemName: "minus.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.red)
                 }
             }
             .padding(.horizontal, 8)
@@ -588,16 +636,70 @@ struct ContextualTagFeedInspectorView: View {
                     .fill(
                         isSelected
                             ? Color.accentColor.opacity(0.18)
+                            : isExcluded
+                                ? Color.red.opacity(0.12)
                             : Color(nsColor: .controlBackgroundColor).opacity(0.75)
                     )
             }
         }
         .buttonStyle(.plain)
+        .foregroundStyle(isExcluded ? Color.red : Color.primary)
         .disabled(model.isLoadingContextualTagFeed)
         .accessibilityLabel(tag.displayName)
-        .accessibilityValue(isSelected ? "已加入推流范围" : "未加入推流范围")
+        .accessibilityValue(
+            isSelected
+                ? "已加入推流范围"
+                : isExcluded ? "已反选排除" : "未加入推流范围"
+        )
         .accessibilityIdentifier("contextualTagFeedScopeTag-\(tag.id.uuidString)")
-        .persistentHelp(isSelected ? "点击移出智能推流范围。" : "点击加入智能推流范围。")
+        .persistentHelp(scopeTagHelp(isSelected: isSelected, isExcluded: isExcluded))
+        .contextMenu {
+            Button(isSelected ? "移出自选范围" : "加入自选范围") {
+                Task { await model.toggleContextualTagFeedScopeTag(tag.id) }
+            }
+            Button(isExcluded ? "取消反选" : "反选排除此标签") {
+                Task { await model.toggleExcludedContextualTagFeedTag(tag.id) }
+            }
+        }
+    }
+
+    private func applyScopeTagAction(_ tag: TagListItem) {
+        let flags = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let action: ScopeTagAction = flags.contains(.command) && flags.contains(.option)
+            ? .exclude
+            : scopeTagAction
+        Task {
+            switch action {
+            case .include:
+                await model.toggleContextualTagFeedScopeTag(tag.id)
+            case .exclude:
+                await model.toggleExcludedContextualTagFeedTag(tag.id)
+            }
+        }
+    }
+
+    private func scopeTagHelp(isSelected: Bool, isExcluded: Bool) -> String {
+        if scopeTagAction == .exclude {
+            return isExcluded
+                ? "点击取消反选；该标签将重新参与推流。"
+                : "点击反选排除；智能推荐也不会再推送该标签。"
+        }
+        if isExcluded {
+            return "点击改为只推此标签；⌘⌥ 点击可取消反选。"
+        }
+        return isSelected
+            ? "点击移出自选范围；⌘⌥ 点击反选排除。"
+            : "点击加入自选范围；⌘⌥ 点击反选排除。"
+    }
+
+    private func scopeGroupCountText(
+        selectedCount: Int,
+        excludedCount: Int,
+        totalCount: Int
+    ) -> String {
+        let selectedText = selectedCount > 0 ? "已选 \(selectedCount) · " : ""
+        let excludedText = excludedCount > 0 ? "反选 \(excludedCount) · " : ""
+        return "\(selectedText)\(excludedText)共 \(totalCount)"
     }
 }
 

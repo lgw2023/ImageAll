@@ -673,6 +673,12 @@ enum ContextualTagFeedTagScope: Equatable, Sendable {
         let remaining = tagIDs.intersection(activeTagIDs)
         return remaining.isEmpty ? .recommended : .selected(remaining)
     }
+
+    func excluding(_ excludedTagIDs: Set<UUID>) -> Self {
+        guard case let .selected(tagIDs) = self else { return self }
+        let remaining = tagIDs.subtracting(excludedTagIDs)
+        return remaining.isEmpty ? .recommended : .selected(remaining)
+    }
 }
 
 @MainActor
@@ -681,6 +687,7 @@ final class ContextualTagFeedScopePreferences {
     private let defaults: UserDefaults
     private let modeKey: String
     private let tagIDsKey: String
+    private let excludedTagIDsKey: String
 
     init(
         defaults: UserDefaults = .standard,
@@ -689,6 +696,7 @@ final class ContextualTagFeedScopePreferences {
         self.defaults = defaults
         modeKey = "\(keyPrefix).mode"
         tagIDsKey = "\(keyPrefix).tag-ids"
+        excludedTagIDsKey = "\(keyPrefix).excluded-tag-ids"
     }
 
     func load() -> ContextualTagFeedTagScope {
@@ -713,6 +721,21 @@ final class ContextualTagFeedScopePreferences {
                 forKey: tagIDsKey
             )
         }
+    }
+
+    func loadExcludedTagIDs() -> Set<UUID> {
+        Set((defaults.stringArray(forKey: excludedTagIDsKey) ?? []).compactMap(UUID.init))
+    }
+
+    func saveExcludedTagIDs(_ tagIDs: Set<UUID>) {
+        guard !tagIDs.isEmpty else {
+            defaults.removeObject(forKey: excludedTagIDsKey)
+            return
+        }
+        defaults.set(
+            tagIDs.map { $0.uuidString.lowercased() }.sorted(),
+            forKey: excludedTagIDsKey
+        )
     }
 }
 
@@ -1588,6 +1611,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var pendingSuggestionTotal = 0
     @Published private(set) var contextualTagFeedPendingCount = 0
     @Published private(set) var contextualTagFeedTagScope: ContextualTagFeedTagScope
+    @Published private(set) var excludedContextualTagFeedTagIDs: Set<UUID>
     @Published private(set) var contextualTagFeedScopeGroupExpansionRevision = 0
     @Published private(set) var currentContextualTagFeed: ContextualTagFeedGroup?
     @Published private(set) var selectedContextualTagFeedAssetIDs: Set<UUID> = []
@@ -1919,6 +1943,8 @@ final class LibraryWorkspaceModel: ObservableObject {
         self.contextualTagFeedScopeGroupExpansionPreferences =
             contextualTagFeedScopeGroupExpansionPreferences
         contextualTagFeedTagScope = contextualTagFeedScopePreferences.load()
+        excludedContextualTagFeedTagIDs =
+            contextualTagFeedScopePreferences.loadExcludedTagIDs()
         self.clock = clock
         self.catalogProgressRefreshInterval = catalogProgressRefreshInterval
         self.searchDebounceInterval = searchDebounceInterval
@@ -9350,10 +9376,23 @@ final class LibraryWorkspaceModel: ObservableObject {
             selectedTagFilterDecisions.removeValue(forKey: tagID)
             selectedTagFilterIDs.remove(tagID)
             excludedTagFilterIDs.remove(tagID)
+            if excludedContextualTagFeedTagIDs.remove(tagID) != nil {
+                contextualTagFeedScopePreferences.saveExcludedTagIDs(
+                    excludedContextualTagFeedTagIDs
+                )
+            }
+            let normalizedScope = contextualTagFeedTagScope
+                .normalized(activeTagIDs: Set(tags.map(\.id)))
+                .excluding(excludedContextualTagFeedTagIDs)
+            if normalizedScope != contextualTagFeedTagScope {
+                contextualTagFeedTagScope = normalizedScope
+                contextualTagFeedScopePreferences.save(normalizedScope)
+            }
             lastTagMutation = nil
             await enqueueAutomaticPersonalModelRebuildIfReady()
             await loadFirstPage()
             await refreshInspector()
+            await refreshContextualTagFeed(generateRecentAnchors: false)
             return true
         } catch {
             notice = tagNotice(for: error)
@@ -10620,17 +10659,24 @@ extension LibraryWorkspaceModel {
     var isReviewMode: Bool { reviewMode != nil }
 
     var contextualTagFeedScopeTitle: String {
-        switch contextualTagFeedTagScope {
+        let excludedSuffix = excludedContextualTagFeedTagIDs.isEmpty
+            ? ""
+            : " · 反选 \(excludedContextualTagFeedTagIDs.count)"
+        return switch contextualTagFeedTagScope {
         case .recommended:
-            "范围：智能推荐"
+            "范围：智能推荐\(excludedSuffix)"
         case let .selected(tagIDs):
-            "范围：\(tagIDs.count) 个标签"
+            "范围：\(tagIDs.count) 个标签\(excludedSuffix)"
         }
     }
 
     func isInContextualTagFeedScope(_ tagID: UUID) -> Bool {
         guard case let .selected(tagIDs) = contextualTagFeedTagScope else { return false }
         return tagIDs.contains(tagID)
+    }
+
+    func isExcludedFromContextualTagFeed(_ tagID: UUID) -> Bool {
+        excludedContextualTagFeedTagIDs.contains(tagID)
     }
 
     func useRecommendedContextualTagFeedScope() async {
@@ -10641,6 +10687,11 @@ extension LibraryWorkspaceModel {
     }
 
     func toggleContextualTagFeedScopeTag(_ tagID: UUID) async {
+        if excludedContextualTagFeedTagIDs.remove(tagID) != nil {
+            contextualTagFeedScopePreferences.saveExcludedTagIDs(
+                excludedContextualTagFeedTagIDs
+            )
+        }
         let nextScope: ContextualTagFeedTagScope
         switch contextualTagFeedTagScope {
         case .recommended:
@@ -10659,16 +10710,57 @@ extension LibraryWorkspaceModel {
         await refreshContextualTagFeed(generateRecentAnchors: true)
     }
 
+    func toggleExcludedContextualTagFeedTag(_ tagID: UUID) async {
+        var nextScope = contextualTagFeedTagScope
+        if excludedContextualTagFeedTagIDs.contains(tagID) {
+            excludedContextualTagFeedTagIDs.remove(tagID)
+        } else {
+            excludedContextualTagFeedTagIDs.insert(tagID)
+            if case var .selected(tagIDs) = nextScope, tagIDs.remove(tagID) != nil {
+                nextScope = tagIDs.isEmpty ? .recommended : .selected(tagIDs)
+            }
+        }
+        contextualTagFeedTagScope = nextScope
+        contextualTagFeedScopePreferences.save(nextScope)
+        contextualTagFeedScopePreferences.saveExcludedTagIDs(
+            excludedContextualTagFeedTagIDs
+        )
+        await refreshContextualTagFeed(generateRecentAnchors: false)
+    }
+
+    func clearExcludedContextualTagFeedTags() async {
+        guard !excludedContextualTagFeedTagIDs.isEmpty else { return }
+        excludedContextualTagFeedTagIDs = []
+        contextualTagFeedScopePreferences.saveExcludedTagIDs([])
+        await refreshContextualTagFeed(generateRecentAnchors: false)
+    }
+
     func refreshContextualTagFeed(generateRecentAnchors: Bool = true) async {
         guard !isLoadingContextualTagFeed else { return }
-        let normalizedScope = contextualTagFeedTagScope.normalized(
-            activeTagIDs: Set(tags.filter { $0.state == .active }.map(\.id))
-        )
+        let activeTagIDs = Set(tags.filter { $0.state == .active }.map(\.id))
+        let normalizedExcludedTagIDs = excludedContextualTagFeedTagIDs
+            .intersection(activeTagIDs)
+        if normalizedExcludedTagIDs != excludedContextualTagFeedTagIDs {
+            excludedContextualTagFeedTagIDs = normalizedExcludedTagIDs
+            contextualTagFeedScopePreferences.saveExcludedTagIDs(
+                normalizedExcludedTagIDs
+            )
+        }
+        let normalizedScope = contextualTagFeedTagScope
+            .normalized(activeTagIDs: activeTagIDs)
+            .excluding(normalizedExcludedTagIDs)
         if normalizedScope != contextualTagFeedTagScope {
             contextualTagFeedTagScope = normalizedScope
             contextualTagFeedScopePreferences.save(normalizedScope)
         }
-        let scopedTagIDs = normalizedScope.tagIDs
+        let scopedTagIDs: Set<UUID>? = switch normalizedScope {
+        case .recommended:
+            normalizedExcludedTagIDs.isEmpty
+                ? nil
+                : activeTagIDs.subtracting(normalizedExcludedTagIDs)
+        case let .selected(tagIDs):
+            tagIDs.subtracting(normalizedExcludedTagIDs)
+        }
         isLoadingContextualTagFeed = true
         if generateRecentAnchors {
             contextualTagFeedStatusMessage = nil
@@ -11039,6 +11131,9 @@ extension LibraryWorkspaceModel {
     }
 
     private func generateContextualTagFeeds(tagID: UUID, anchorAssetIDs: [UUID]) async {
+        guard !excludedContextualTagFeedTagIDs.contains(tagID),
+              contextualTagFeedTagScope.tagIDs?.contains(tagID) ?? true
+        else { return }
         let feed = contextualTagFeed
         let timestampMs = clock.nowMs
         _ = try? await Self.offMain(priority: .utility) {

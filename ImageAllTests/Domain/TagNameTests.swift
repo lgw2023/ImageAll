@@ -165,6 +165,7 @@ final class TagNameTests: XCTestCase {
         )
         let firstTagID = UUID()
         let archivedTagID = UUID()
+        let excludedTagID = UUID()
 
         XCTAssertEqual(preferences.load(), .recommended)
         preferences.save(.selected([firstTagID, archivedTagID]))
@@ -177,6 +178,14 @@ final class TagNameTests: XCTestCase {
             preferences.load().normalized(activeTagIDs: []),
             .recommended
         )
+        XCTAssertEqual(preferences.loadExcludedTagIDs(), [])
+        preferences.saveExcludedTagIDs([excludedTagID, archivedTagID])
+        XCTAssertEqual(
+            preferences.loadExcludedTagIDs(),
+            [excludedTagID, archivedTagID]
+        )
+        preferences.saveExcludedTagIDs([])
+        XCTAssertEqual(preferences.loadExcludedTagIDs(), [])
     }
 
     private func assertNormalizedName(_ input: String, expected: String, file: StaticString = #filePath, line: UInt = #line) {

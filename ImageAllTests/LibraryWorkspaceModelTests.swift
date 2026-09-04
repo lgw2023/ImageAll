@@ -581,6 +581,122 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
     }
 
+    func testContextualTagFeedExcludedTagIsHiddenFromRecommendedScopeAndCanReturn() async {
+        let sourceID = UUID()
+        let anchorID = UUID()
+        let candidateID = UUID()
+        let excludedTag = TagListItem(id: UUID(), displayName: "食物", state: .active)
+        let otherTag = TagListItem(id: UUID(), displayName: "旅游", state: .active)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [],
+            tags: [excludedTag, otherTag],
+            startsConnected: true
+        )
+        let group = ContextualTagFeedGroup(
+            id: UUID(),
+            tagID: excludedTag.id,
+            tagDisplayName: excludedTag.displayName,
+            anchorAssetID: anchorID,
+            sourceID: sourceID,
+            state: .pending,
+            revision: 1,
+            policyRevision: "test",
+            members: [
+                ContextualTagFeedMember(
+                    assetID: anchorID,
+                    role: .anchor,
+                    rank: 0,
+                    fileName: "IMG_0001.HEIC",
+                    mediaKind: .image,
+                    mediaCreatedAtMs: 1,
+                    evidence: []
+                ),
+                ContextualTagFeedMember(
+                    assetID: candidateID,
+                    role: .candidate,
+                    rank: 1,
+                    fileName: "IMG_0002.HEIC",
+                    mediaKind: .image,
+                    mediaCreatedAtMs: 2,
+                    evidence: []
+                ),
+            ]
+        )
+        let preferences = ContextualTagFeedScopePreferences(
+            keyPrefix: "tests.contextual-feed-excluded-tag.\(UUID().uuidString)"
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            contextualTagFeed: FixedContextualTagFeedPort(group: group),
+            contextualTagFeedScopePreferences: preferences,
+            idlePrewarmInstallEventMonitor: false
+        )
+
+        await model.start()
+        XCTAssertEqual(model.currentContextualTagFeed?.tagID, excludedTag.id)
+
+        await model.toggleContextualTagFeedScopeTag(excludedTag.id)
+        XCTAssertEqual(model.contextualTagFeedTagScope, .selected([excludedTag.id]))
+
+        await model.toggleExcludedContextualTagFeedTag(excludedTag.id)
+
+        XCTAssertEqual(model.contextualTagFeedTagScope, .recommended)
+        XCTAssertEqual(model.excludedContextualTagFeedTagIDs, [excludedTag.id])
+        XCTAssertEqual(model.contextualTagFeedPendingCount, 0)
+        XCTAssertNil(model.currentContextualTagFeed)
+        XCTAssertEqual(preferences.loadExcludedTagIDs(), [excludedTag.id])
+
+        await model.toggleExcludedContextualTagFeedTag(excludedTag.id)
+
+        XCTAssertTrue(model.excludedContextualTagFeedTagIDs.isEmpty)
+        XCTAssertEqual(model.contextualTagFeedPendingCount, 1)
+        XCTAssertEqual(model.currentContextualTagFeed?.tagID, excludedTag.id)
+    }
+
+    func testContextualTagFeedExcludedTagDoesNotGenerateFromNewAcceptedDecisions() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID)
+        let tag = TagListItem(id: UUID(), displayName: "食物", state: .active)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Fixture",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            tags: [tag],
+            startsConnected: true
+        )
+        let feed = RecordingContextualTagFeedPort()
+        let model = LibraryWorkspaceModel(
+            service: service,
+            contextualTagFeed: feed,
+            contextualTagFeedScopePreferences: ContextualTagFeedScopePreferences(
+                keyPrefix: "tests.contextual-feed-excluded-generation.\(UUID().uuidString)"
+            ),
+            idlePrewarmInstallEventMonitor: false
+        )
+
+        await model.start()
+        await model.selectAsset(asset.assetID)
+        await model.toggleExcludedContextualTagFeedTag(tag.id)
+        await model.applyTagDecision(tagID: tag.id, action: .accept)
+
+        XCTAssertTrue(feed.generatedTagIDs().isEmpty)
+        XCTAssertEqual(feed.refreshRecentCallCount(), 0)
+
+        await model.toggleExcludedContextualTagFeedTag(tag.id)
+        await model.applyTagDecision(tagID: tag.id, action: .accept)
+
+        XCTAssertEqual(feed.generatedTagIDs(), [tag.id])
+        XCTAssertEqual(feed.refreshRecentCallCount(), 0)
+    }
+
     func testLibraryStartsWithFileNameSort() async {
         let sourceID = UUID()
         let service = FakeLibraryWorkspaceService(
@@ -10541,12 +10657,15 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         await waitForCatalogScanToFinish(model)
         await model.selectAsset(asset.assetID)
         await model.showAcceptedTag(tag.id)
+        await model.toggleExcludedContextualTagFeedTag(tag.id)
+        XCTAssertEqual(model.excludedContextualTagFeedTagIDs, [tag.id])
 
         let succeeded = await model.archiveTag(tag.id)
 
         XCTAssertTrue(succeeded)
         XCTAssertTrue(model.tags.isEmpty)
         XCTAssertTrue(model.selectedTagFilterIDs.isEmpty)
+        XCTAssertTrue(model.excludedContextualTagFeedTagIDs.isEmpty)
         XCTAssertTrue(service.lastFilter.tagDecisionFilters.isEmpty)
         XCTAssertEqual(model.items.map(\.assetID), [asset.assetID])
         XCTAssertTrue(model.inspectorTags.isEmpty)
@@ -16652,6 +16771,63 @@ private struct FixedContextualTagFeedPort: ContextualTagFeedPort {
         timestampMs _: Int64
     ) throws -> Int {
         0
+    }
+
+    func dismiss(feedID _: UUID, revision _: Int, timestampMs _: Int64) throws {}
+
+    func resolve(
+        feedID _: UUID,
+        revision _: Int,
+        selectedAssetIDs _: [UUID],
+        decision _: PersistableTagDecision,
+        timestampMs _: Int64
+    ) throws -> TagMutationPriorStateSnapshot {
+        throw ContextualTagFeedError.persistenceFailure
+    }
+
+    func undoResolution(
+        _: ContextualTagFeedResolutionUndo,
+        timestampMs _: Int64
+    ) throws {
+        throw ContextualTagFeedError.persistenceFailure
+    }
+}
+
+private final class RecordingContextualTagFeedPort: ContextualTagFeedPort, @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedGeneratedTagIDs: [UUID] = []
+    private var storedRefreshRecentCallCount = 0
+
+    func generatedTagIDs() -> [UUID] {
+        lock.withLock { storedGeneratedTagIDs }
+    }
+
+    func refreshRecentCallCount() -> Int {
+        lock.withLock { storedRefreshRecentCallCount }
+    }
+
+    func generate(tagID: UUID, anchorAssetID _: UUID, timestampMs _: Int64) throws
+        -> ContextualTagFeedGroup?
+    {
+        lock.withLock { storedGeneratedTagIDs.append(tagID) }
+        return nil
+    }
+
+    func pendingCount(tagIDs _: Set<UUID>?) throws -> Int { 0 }
+
+    func fetchPendingGroups(limit _: Int, tagIDs _: Set<UUID>?) throws
+        -> [ContextualTagFeedGroup]
+    {
+        []
+    }
+
+    func refreshRecentAcceptedAnchors(
+        limit _: Int,
+        tagIDs _: Set<UUID>?,
+        timestampMs _: Int64
+    ) throws -> Int {
+        lock.withLock { storedRefreshRecentCallCount += 1 }
+        return 0
     }
 
     func dismiss(feedID _: UUID, revision _: Int, timestampMs _: Int64) throws {}
