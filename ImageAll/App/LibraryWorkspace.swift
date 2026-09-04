@@ -9506,6 +9506,64 @@ final class LibraryWorkspaceModel: ObservableObject {
         }
     }
 
+    func moveTagGroups(
+        fromOffsets sourceOffsets: IndexSet,
+        toOffset destination: Int
+    ) async -> Bool {
+        let previous = tagGroups
+        let validOffsets = sourceOffsets.filter { previous.indices.contains($0) }.sorted()
+        guard !validOffsets.isEmpty else { return false }
+
+        var reordered = previous
+        let movedGroups = validOffsets.map { reordered[$0] }
+        for offset in validOffsets.reversed() {
+            reordered.remove(at: offset)
+        }
+        let removedBeforeDestination = validOffsets.filter { $0 < destination }.count
+        let insertionIndex = min(
+            max(destination - removedBeforeDestination, 0),
+            reordered.endIndex
+        )
+        reordered.insert(contentsOf: movedGroups, at: insertionIndex)
+        guard reordered.map(\.id) != previous.map(\.id) else { return false }
+
+        notice = nil
+        tagGroups = reordered.enumerated().map { offset, group in
+            TagGroupListItem(
+                id: group.id,
+                displayName: group.displayName,
+                sortOrder: offset,
+                isSystem: group.isSystem
+            )
+        }
+        let requestedGroupIDs = reordered.map(\.id)
+
+        let service = service
+        do {
+            tagGroups = try await Self.offMain {
+                try service.reorderTagGroups(groupIDs: requestedGroupIDs)
+            }
+            return true
+        } catch {
+            tagGroups = previous
+            notice = tagGroupNotice(for: error)
+            return false
+        }
+    }
+
+    func moveTagGroup(_ groupID: UUID, by offset: Int) async -> Bool {
+        guard offset != 0,
+              let sourceOffset = tagGroups.firstIndex(where: { $0.id == groupID })
+        else { return false }
+        let targetOffset = sourceOffset + offset
+        guard tagGroups.indices.contains(targetOffset) else { return false }
+        let destination = targetOffset < sourceOffset ? targetOffset : targetOffset + 1
+        return await moveTagGroups(
+            fromOffsets: IndexSet(integer: sourceOffset),
+            toOffset: destination
+        )
+    }
+
     func deleteTagGroup(_ groupID: UUID) async -> Bool {
         let service = service
         do {
@@ -12933,6 +12991,9 @@ struct LibraryWorkspaceView: View {
     @State private var draggedTagID: UUID?
     @State private var draggedTagGroupID: UUID?
     @State private var activeTagReorderSurface: LibraryTagReorderSurface?
+    @State private var draggedReorderingTagGroupID: UUID?
+    @State private var tagGroupInsertionOffset: Int?
+    @State private var activeTagGroupReorderSurface: LibraryTagReorderSurface?
     @State private var tagChipFrames: [UUID: CGRect] = [:]
     @State private var tagGroupContainerFrames: [UUID: CGRect] = [:]
     @State private var inspectorTagChipFrames: [UUID: CGRect] = [:]
@@ -14044,46 +14105,7 @@ struct LibraryWorkspaceView: View {
                 ForEach(model.tagGroupSections) { section in
                     let isCollapsed = model.isTagGroupCollapsed(section.group.id)
                     VStack(alignment: .leading, spacing: 6) {
-                        Button {
-                            model.toggleTagGroupCollapsed(section.group.id)
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 10)
-                                Text(section.group.displayName)
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                                    .textCase(nil)
-                                if !section.tags.isEmpty {
-                                    Text("\(section.tags.count)")
-                                        .font(.caption2)
-                                        .foregroundStyle(.tertiary)
-                                }
-                                Spacer(minLength: 0)
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .persistentHelp(
-                            isCollapsed
-                                ? "展开“\(section.group.displayName)”分组，显示其中标签。"
-                                : "折叠“\(section.group.displayName)”分组，暂时隐藏其中标签。"
-                        )
-                        .contextMenu {
-                            if !section.group.isSystem {
-                                Button("重命名分组…") {
-                                    renamedTagGroupName = section.group.displayName
-                                    tagGroupPendingRename = section.group
-                                }
-                                .persistentHelp("打开重命名窗口，修改这个分组的显示名称。")
-                                Button("删除分组", role: .destructive) {
-                                    tagGroupPendingDelete = section.group
-                                }
-                                .persistentHelp("打开删除确认；组内标签会移到“其他”。")
-                            }
-                        }
+                        tagGroupHeader(section, surface: .sidebar)
 
                         if !isCollapsed {
                             LibraryTagFlowLayout {
@@ -14149,6 +14171,19 @@ struct LibraryWorkspaceView: View {
                                 }
                         }
                     }
+                    .overlay {
+                        tagGroupInsertionIndicator(
+                            for: section.group.id,
+                            sections: model.tagGroupSections,
+                            surface: .sidebar
+                        )
+                    }
+                    .opacity(
+                        draggedReorderingTagGroupID == section.group.id &&
+                            activeTagGroupReorderSurface == .sidebar
+                            ? 0.65
+                            : 1
+                    )
                 }
                 Button {
                     newTagGroupName = ""
@@ -14279,6 +14314,99 @@ struct LibraryWorkspaceView: View {
             .foregroundStyle(.secondary)
     }
 
+    private func tagGroupHeader(
+        _ section: LibraryTagGroupSection,
+        surface: LibraryTagReorderSurface
+    ) -> some View {
+        let isCollapsed = model.isTagGroupCollapsed(section.group.id)
+        return HStack(spacing: 4) {
+            Button {
+                model.toggleTagGroupCollapsed(section.group.id)
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 10)
+                    Text(section.group.displayName)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .textCase(nil)
+                    if !section.tags.isEmpty {
+                        Text("\(section.tags.count)")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .simultaneousGesture(
+                tagGroupReorderGesture(groupID: section.group.id, surface: surface)
+            )
+            .persistentHelp(
+                isCollapsed
+                    ? "展开“\(section.group.displayName)”分组；拖拽标题可调整分组顺序。"
+                    : "折叠“\(section.group.displayName)”分组；拖拽标题可调整分组顺序。"
+            )
+
+            Menu {
+                tagGroupActionItems(section)
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.caption2.weight(.semibold))
+                    .frame(width: 18, height: 18)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .accessibilityLabel("“\(section.group.displayName)”分组操作")
+            .persistentHelp(
+                section.group.isSystem
+                    ? "重命名或移动这个内置标签分组。"
+                    : "重命名、移动或删除这个标签分组。"
+            )
+        }
+        .contentShape(Rectangle())
+        .contextMenu {
+            tagGroupActionItems(section)
+        }
+    }
+
+    @ViewBuilder
+    private func tagGroupActionItems(_ section: LibraryTagGroupSection) -> some View {
+        let sections = model.tagGroupSections
+        let groupIndex = sections.firstIndex(where: { $0.group.id == section.group.id })
+
+        Button("重命名分组…") {
+            renamedTagGroupName = section.group.displayName
+            tagGroupPendingRename = section.group
+        }
+        .persistentHelp("打开重命名窗口；内置分组也可以修改显示名称。")
+
+        Divider()
+
+        Button("上移分组") {
+            Task { _ = await model.moveTagGroup(section.group.id, by: -1) }
+        }
+        .disabled(groupIndex == nil || groupIndex == sections.startIndex)
+        .persistentHelp("将这个分组向上移动一位并保存顺序。")
+
+        Button("下移分组") {
+            Task { _ = await model.moveTagGroup(section.group.id, by: 1) }
+        }
+        .disabled(groupIndex == nil || groupIndex == sections.index(before: sections.endIndex))
+        .persistentHelp("将这个分组向下移动一位并保存顺序。")
+
+        if !section.group.isSystem {
+            Divider()
+            Button("删除分组", role: .destructive) {
+                tagGroupPendingDelete = section.group
+            }
+            .persistentHelp("打开删除确认；组内标签会移到默认兜底分组。")
+        }
+    }
+
     private func sourceReorderGesture(for sourceID: UUID) -> some Gesture {
         DragGesture(
             minimumDistance: 12,
@@ -14312,6 +14440,51 @@ struct LibraryWorkspaceView: View {
                 fromOffsets: IndexSet(integer: move.sourceOffset),
                 toOffset: move.destinationOffset
             )
+        }
+    }
+
+    private func tagGroupReorderGesture(
+        groupID: UUID,
+        surface: LibraryTagReorderSurface
+    ) -> some Gesture {
+        DragGesture(
+            minimumDistance: 12,
+            coordinateSpace: .local
+        )
+        .onChanged { value in
+            let sections = model.tagGroupSections
+            let frames = groupContainerFrames(for: surface)
+            let visibleFrames = frames.values.sorted { $0.minY < $1.minY }
+            guard visibleFrames.count == sections.count,
+                  let sourceOffset = sections.firstIndex(where: { $0.group.id == groupID })
+            else { return }
+            draggedReorderingTagGroupID = groupID
+            activeTagGroupReorderSurface = surface
+            tagGroupInsertionOffset = LibrarySourceReorderLayout.destinationOffset(
+                pointerY: visibleFrames[sourceOffset].minY + value.location.y,
+                rowFrames: visibleFrames
+            )
+        }
+        .onEnded { value in
+            defer {
+                draggedReorderingTagGroupID = nil
+                activeTagGroupReorderSurface = nil
+                tagGroupInsertionOffset = nil
+            }
+            let sections = model.tagGroupSections
+            let frames = groupContainerFrames(for: surface)
+            guard let move = LibrarySourceReorderLayout.moveRequest(
+                sourceID: groupID,
+                localPointerY: value.location.y,
+                sourceIDs: sections.map(\.group.id),
+                rowFrames: Array(frames.values)
+            ) else { return }
+            Task {
+                _ = await model.moveTagGroups(
+                    fromOffsets: IndexSet(integer: move.sourceOffset),
+                    toOffset: move.destinationOffset
+                )
+            }
         }
     }
 
@@ -14421,6 +14594,36 @@ struct LibraryWorkspaceView: View {
             x: sourceFrame.minX + location.x,
             y: sourceFrame.minY + location.y
         )
+    }
+
+    @ViewBuilder
+    private func tagGroupInsertionIndicator(
+        for groupID: UUID,
+        sections: [LibraryTagGroupSection],
+        surface: LibraryTagReorderSurface
+    ) -> some View {
+        if activeTagGroupReorderSurface == surface,
+           let insertionOffset = tagGroupInsertionOffset,
+           let groupIndex = sections.firstIndex(where: { $0.group.id == groupID })
+        {
+            VStack(spacing: 0) {
+                if insertionOffset == groupIndex {
+                    Capsule()
+                        .fill(Color.accentColor)
+                        .frame(height: 3)
+                }
+                Spacer(minLength: 0)
+                if groupIndex == sections.count - 1,
+                   insertionOffset == sections.count
+                {
+                    Capsule()
+                        .fill(Color.accentColor)
+                        .frame(height: 3)
+                }
+            }
+            .padding(.horizontal, 4)
+            .allowsHitTesting(false)
+        }
     }
 
     @ViewBuilder
@@ -15506,46 +15709,7 @@ struct LibraryWorkspaceView: View {
     private func inspectorTagGroupSection(_ section: LibraryTagGroupSection) -> some View {
         let isCollapsed = model.isTagGroupCollapsed(section.group.id)
         return VStack(alignment: .leading, spacing: 6) {
-            Button {
-                model.toggleTagGroupCollapsed(section.group.id)
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 10)
-                    Text(section.group.displayName)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .textCase(nil)
-                    if !section.tags.isEmpty {
-                        Text("\(section.tags.count)")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
-                    Spacer(minLength: 0)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .persistentHelp(
-                isCollapsed
-                    ? "展开“\(section.group.displayName)”分组，显示其中标签。"
-                    : "折叠“\(section.group.displayName)”分组，暂时隐藏其中标签。"
-            )
-            .contextMenu {
-                if !section.group.isSystem {
-                    Button("重命名分组…") {
-                        renamedTagGroupName = section.group.displayName
-                        tagGroupPendingRename = section.group
-                    }
-                    .persistentHelp("打开重命名窗口，修改这个分组的显示名称。")
-                    Button("删除分组", role: .destructive) {
-                        tagGroupPendingDelete = section.group
-                    }
-                    .persistentHelp("打开删除确认；组内标签会移到“其他”。")
-                }
-            }
+            tagGroupHeader(section, surface: .inspector)
 
             if !isCollapsed {
                 LibraryTagFlowLayout {
@@ -15611,6 +15775,19 @@ struct LibraryWorkspaceView: View {
                     }
             }
         }
+        .overlay {
+            tagGroupInsertionIndicator(
+                for: section.group.id,
+                sections: model.tagGroupSections,
+                surface: .inspector
+            )
+        }
+        .opacity(
+            draggedReorderingTagGroupID == section.group.id &&
+                activeTagGroupReorderSurface == .inspector
+                ? 0.65
+                : 1
+        )
     }
 
     private func inspectorDecision(for tagID: UUID) -> LibraryInspectorTagDecisionState {
@@ -16524,7 +16701,7 @@ struct LibraryWorkspaceView: View {
         case .duplicateTag: "已有同名标签。"
         case .invalidTagGroupName: "分组名称无效。"
         case .duplicateTagGroup: "已有同名分组。"
-        case .systemTagGroupProtected: "系统默认分组不可修改或删除。"
+        case .systemTagGroupProtected: "系统默认分组不可删除。"
         case .tagMutationFailed: "标签操作未保存，请重试。"
         case .tagSelectionRefreshFailed: "标签已保存，但当前选择刷新失败；请重新选择照片后继续。"
         case .sourceActionFailed: "来源操作未完成。原照片没有被修改，请重试。"

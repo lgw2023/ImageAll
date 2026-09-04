@@ -3132,6 +3132,10 @@ struct ProductionLibraryWorkspaceService:
         try tags.renameTagGroup(groupID: groupID, rawName: rawName, timestampMs: clock.nowMs)
     }
 
+    func reorderTagGroups(groupIDs: [UUID]) throws -> [TagGroupListItem] {
+        try tags.reorderTagGroups(groupIDs: groupIDs, timestampMs: clock.nowMs)
+    }
+
     func deleteTagGroup(groupID: UUID) throws {
         try tags.deleteTagGroup(groupID: groupID, timestampMs: clock.nowMs)
     }

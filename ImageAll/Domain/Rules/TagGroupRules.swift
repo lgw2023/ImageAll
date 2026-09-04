@@ -36,10 +36,6 @@ enum TagGroupRules {
         rawName: String,
         existingGroups: [TagGroup]
     ) -> Result<TagGroup, DomainError> {
-        guard !group.isSystem else {
-            return .failure(.invalidStateTransition)
-        }
-
         let nameParts: TagNameParts
         switch TagNameNormalizer.validateAndNormalize(rawName) {
         case let .success(parts):

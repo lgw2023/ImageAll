@@ -550,6 +550,7 @@ protocol LibraryWorkspacePort: Sendable {
     func moveTag(tagID: UUID, toGroupID: UUID) throws -> TagListItem
     func createTagGroup(rawName: String) throws -> TagGroupListItem
     func renameTagGroup(groupID: UUID, rawName: String) throws -> TagGroupListItem
+    func reorderTagGroups(groupIDs: [UUID]) throws -> [TagGroupListItem]
     func deleteTagGroup(groupID: UUID) throws
 }
 

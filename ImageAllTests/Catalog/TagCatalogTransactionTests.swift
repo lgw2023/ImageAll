@@ -12,6 +12,48 @@ final class TagCatalogTransactionTests: XCTestCase {
         XCTAssertEqual(all.map(\.displayName), ["Family", "Legacy", "Work"])
     }
 
+    func testSystemTagGroupCanBeRenamedAndAllGroupsCanBeReordered() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+        let renamed = try fixture.tags.renameTagGroup(
+            groupID: TagGroupSeed.food.id,
+            rawName: "餐桌记忆",
+            timestampMs: DatabaseTestSupport.timestampMs
+        )
+        XCTAssertEqual(renamed.displayName, "餐桌记忆")
+        XCTAssertTrue(renamed.isSystem)
+
+        let original = try fixture.tags.listTagGroups()
+        let requestedIDs = original.map(\.id).reversed()
+        let reordered = try fixture.tags.reorderTagGroups(
+            groupIDs: Array(requestedIDs),
+            timestampMs: DatabaseTestSupport.timestampMs + 1
+        )
+
+        XCTAssertEqual(reordered.map(\.id), Array(requestedIDs))
+        XCTAssertEqual(reordered.map(\.sortOrder), Array(reordered.indices))
+        XCTAssertEqual(try fixture.tags.listTagGroups(), reordered)
+        XCTAssertEqual(
+            reordered.first(where: { $0.id == TagGroupSeed.food.id })?.displayName,
+            "餐桌记忆"
+        )
+    }
+
+    func testInvalidTagGroupOrderDoesNotPartiallyPersist() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+        let original = try fixture.tags.listTagGroups()
+
+        XCTAssertThrowsError(
+            try fixture.tags.reorderTagGroups(
+                groupIDs: Array(original.dropLast().map(\.id)),
+                timestampMs: DatabaseTestSupport.timestampMs
+            )
+        ) { error in
+            XCTAssertEqual(error as? CatalogQueryError, .persistenceFailure)
+        }
+
+        XCTAssertEqual(try fixture.tags.listTagGroups(), original)
+    }
+
     func testSelectionAggregateCountsSumToSelectionSize() throws {
         let fixture = try CatalogQueryTestSupport.openQueryDatabase()
         let selection = [fixture.ids.assetNewest, fixture.ids.assetMiddle, fixture.ids.assetOldest]

@@ -16,6 +16,7 @@ protocol TagDecisionCommandPort: Sendable {
     func moveTag(tagID: UUID, toGroupID: UUID, timestampMs: Int64) throws -> TagListItem
     func createTagGroup(rawName: String, timestampMs: Int64) throws -> TagGroupListItem
     func renameTagGroup(groupID: UUID, rawName: String, timestampMs: Int64) throws -> TagGroupListItem
+    func reorderTagGroups(groupIDs: [UUID], timestampMs: Int64) throws -> [TagGroupListItem]
     func deleteTagGroup(groupID: UUID, timestampMs: Int64) throws
 }
 

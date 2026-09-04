@@ -610,6 +610,59 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, St
         }
     }
 
+    func reorderTagGroups(groupIDs: [UUID], timestampMs: Int64) throws -> [TagGroupListItem] {
+        try CatalogQueryErrorMapping.perform {
+            try database.pool.write { db in
+                let existing = try fetchExistingGroups(db)
+                let existingIDs = Set(existing.map(\.id))
+                guard groupIDs.count == existing.count,
+                      Set(groupIDs).count == groupIDs.count,
+                      Set(groupIDs) == existingIDs
+                else {
+                    throw CatalogQueryError.persistenceFailure
+                }
+
+                let groupsByID = Dictionary(uniqueKeysWithValues: existing.map { ($0.id, $0) })
+                let reordered = groupIDs.enumerated().compactMap { offset, groupID -> TagGroup? in
+                    guard let group = groupsByID[groupID] else { return nil }
+                    return TagGroup(
+                        id: group.id,
+                        displayName: group.displayName,
+                        sortOrder: offset,
+                        isSystem: group.isSystem
+                    )
+                }
+                guard reordered.count == existing.count else {
+                    throw CatalogQueryError.persistenceFailure
+                }
+
+                for group in reordered {
+                    try db.execute(
+                        sql: """
+                        UPDATE tag_group
+                        SET sort_order = ?, updated_at_ms = ?
+                        WHERE id = ?
+                        """,
+                        arguments: [
+                            group.sortOrder,
+                            timestampMs,
+                            CatalogQuerySQLHelpers.lowercaseUUID(group.id),
+                        ]
+                    )
+                }
+
+                return reordered.map {
+                    TagGroupListItem(
+                        id: $0.id,
+                        displayName: $0.displayName,
+                        sortOrder: $0.sortOrder,
+                        isSystem: $0.isSystem
+                    )
+                }
+            }
+        }
+    }
+
     func deleteTagGroup(groupID: UUID, timestampMs: Int64) throws {
         try CatalogQueryErrorMapping.perform {
             try database.pool.write { db in

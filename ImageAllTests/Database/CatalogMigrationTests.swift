@@ -857,15 +857,13 @@ final class CatalogMigrationTests: XCTestCase {
         ) { error in
             XCTAssertEqual(error as? CatalogQueryError, .systemGroupProtected)
         }
-        XCTAssertThrowsError(
-            try tags.renameTagGroup(
-                groupID: TagGroupSeed.food.id,
-                rawName: "不可改",
-                timestampMs: DatabaseTestSupport.timestampMs
-            )
-        ) { error in
-            XCTAssertEqual(error as? CatalogQueryError, .systemGroupProtected)
-        }
+        let renamedSystemGroup = try tags.renameTagGroup(
+            groupID: TagGroupSeed.food.id,
+            rawName: "餐饮记忆",
+            timestampMs: DatabaseTestSupport.timestampMs
+        )
+        XCTAssertEqual(renamedSystemGroup.displayName, "餐饮记忆")
+        XCTAssertTrue(renamedSystemGroup.isSystem)
     }
 
     func testCurrentCatalogScopeIdentityIsCanonicalAndStableAcrossReopen() throws {
@@ -1298,12 +1296,23 @@ final class CatalogMigrationTests: XCTestCase {
     }
 
     private static func dropV035AndLaterTables(_ db: Database) throws {
+        try db.execute(sql: "DROP INDEX IF EXISTS asset_current_embedded_time_idx")
+        try db.execute(sql: "DROP INDEX IF EXISTS asset_current_embedded_time_desc_idx")
+        try db.execute(sql: "DROP INDEX IF EXISTS asset_current_file_modified_time_idx")
+        try db.execute(sql: "DROP INDEX IF EXISTS asset_current_file_modified_time_desc_idx")
+        if try db.columns(in: "asset").contains(where: { $0.name == "file_modified_at_ms" }) {
+            try db.execute(sql: "ALTER TABLE asset DROP COLUMN file_modified_at_ms")
+        }
         try db.execute(sql: "DROP TABLE IF EXISTS contextual_tag_feed_evidence")
         try db.execute(sql: "DROP TABLE IF EXISTS contextual_tag_feed_member")
         try db.execute(sql: "DROP TABLE IF EXISTS contextual_tag_feed")
         try db.execute(sql: "DROP TABLE IF EXISTS source_folder")
         try db.execute(sql: "DROP TABLE IF EXISTS training_run_sample")
         try db.execute(sql: "DROP TABLE IF EXISTS asset_favorite_state")
+        try db.execute(
+            sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
+            arguments: [CatalogMigrationID.v039AddFileModifiedTimeSort]
+        )
         try db.execute(
             sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
             arguments: [CatalogMigrationID.v038AddContextualTagFeed]

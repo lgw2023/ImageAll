@@ -11343,9 +11343,58 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertNil(model.tagGroups.first(where: { $0.id == customID }))
         XCTAssertEqual(model.tags.first?.groupID, TagGroupSeed.other.id)
 
-        let renameSystem = await model.renameTagGroup(TagGroupSeed.food.id, to: "不可改")
-        XCTAssertFalse(renameSystem)
-        XCTAssertEqual(model.notice, .systemTagGroupProtected)
+        let renameSystem = await model.renameTagGroup(TagGroupSeed.food.id, to: "餐饮记忆")
+        XCTAssertTrue(renameSystem)
+        XCTAssertEqual(
+            model.tagGroups.first(where: { $0.id == TagGroupSeed.food.id })?.displayName,
+            "餐饮记忆"
+        )
+        XCTAssertNil(model.notice)
+    }
+
+    @MainActor
+    func testMoveTagGroupPersistsSharedGroupOrder() async {
+        let source = LibrarySourceSummary(id: UUID(), displayName: "图库", state: .active)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: source,
+            reconciledItems: [],
+            startsConnected: true
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        await model.start()
+
+        let originalIDs = model.tagGroups.map(\.id)
+        XCTAssertGreaterThanOrEqual(originalIDs.count, 3)
+        let movedID = originalIDs[2]
+
+        let moved = await model.moveTagGroup(movedID, by: -1)
+        XCTAssertTrue(moved)
+
+        var expectedIDs = originalIDs
+        expectedIDs.swapAt(1, 2)
+        XCTAssertEqual(model.tagGroups.map(\.id), expectedIDs)
+        XCTAssertEqual(model.tagGroups.map(\.sortOrder), Array(expectedIDs.indices))
+        XCTAssertEqual(try? service.listTagGroups().map(\.id), expectedIDs)
+    }
+
+    @MainActor
+    func testMoveTagGroupRestoresPreviousOrderWhenPersistenceFails() async {
+        let source = LibrarySourceSummary(id: UUID(), displayName: "图库", state: .active)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: source,
+            reconciledItems: [],
+            tagMutationFails: true,
+            startsConnected: true
+        )
+        let model = LibraryWorkspaceModel(service: service)
+        await model.start()
+
+        let original = model.tagGroups
+        let moved = await model.moveTagGroup(original[1].id, by: -1)
+
+        XCTAssertFalse(moved)
+        XCTAssertEqual(model.tagGroups, original)
+        XCTAssertEqual(model.notice, .tagMutationFailed)
     }
 
     func testSourceOrderPreferencesPersistManualDragOrderAndAppendNewSources() {
@@ -18252,9 +18301,6 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
                 throw FakeWorkspaceError.notFound
             }
             let current = storedTagGroups[index]
-            guard !current.isSystem else {
-                throw CatalogQueryError.systemGroupProtected
-            }
             let renamed = TagGroupListItem(
                 id: current.id,
                 displayName: rawName,
@@ -18263,6 +18309,31 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
             )
             storedTagGroups[index] = renamed
             return renamed
+        }
+    }
+
+    func reorderTagGroups(groupIDs: [UUID]) throws -> [TagGroupListItem] {
+        if tagMutationFails {
+            throw FakeWorkspaceError.tagMutationFailed
+        }
+        return try lock.withLock {
+            let groupsByID = Dictionary(uniqueKeysWithValues: storedTagGroups.map { ($0.id, $0) })
+            guard groupIDs.count == storedTagGroups.count,
+                  Set(groupIDs).count == groupIDs.count,
+                  Set(groupIDs) == Set(storedTagGroups.map(\.id))
+            else {
+                throw FakeWorkspaceError.notFound
+            }
+            storedTagGroups = groupIDs.enumerated().compactMap { offset, groupID in
+                guard let group = groupsByID[groupID] else { return nil }
+                return TagGroupListItem(
+                    id: group.id,
+                    displayName: group.displayName,
+                    sortOrder: offset,
+                    isSystem: group.isSystem
+                )
+            }
+            return storedTagGroups
         }
     }
 
