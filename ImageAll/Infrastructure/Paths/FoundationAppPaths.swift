@@ -484,6 +484,196 @@ final class UserDefaultsAppStorageLocationStore: @unchecked Sendable {
     }
 }
 
+struct PhotosOriginalStorageLocationResolution: Sendable {
+    let writeRootURL: URL?
+    let readRootURLs: [URL]
+    let accessLease: (any AppStorageAccessLease)?
+}
+
+struct PhotosOriginalStorageExternalPreference: Equatable, Sendable {
+    let parentURL: URL
+    let bookmark: Data
+}
+
+/// Persists only user-selected locations. Absence of this preference means
+/// full Photos originals may be read for analysis but must not be retained.
+final class UserDefaultsPhotosOriginalStorageLocationStore: @unchecked Sendable {
+    private struct PersistedPreference: Codable, Equatable {
+        let parentPath: String
+        let bookmark: Data
+    }
+
+    private static let preferencesKey = "photos-original-storage.locations.v1"
+    private let defaults: UserDefaults
+    private let bookmarks: any AppStorageBookmarkPort
+    private let fileManager: FileManager
+    private let operationIDProvider: @Sendable () -> UUID
+
+    init(
+        defaults: UserDefaults = .standard,
+        bookmarks: any AppStorageBookmarkPort,
+        fileManager: FileManager = .default,
+        operationIDProvider: @escaping @Sendable () -> UUID = { UUID() }
+    ) {
+        self.defaults = defaults
+        self.bookmarks = bookmarks
+        self.fileManager = fileManager
+        self.operationIDProvider = operationIDProvider
+    }
+
+    var configuredRootURL: URL? {
+        guard let path = persistedPreferences.first?.parentPath else { return nil }
+        return Self.storageDirectory(
+            under: URL(fileURLWithPath: path, isDirectory: true)
+        )
+    }
+
+    func prepareExternalRoot(_ parentURL: URL) throws -> PhotosOriginalStorageExternalPreference {
+        let parent = parentURL.standardizedFileURL
+        try validateDirectory(parent)
+        guard bookmarks.startAccessing(parent) else {
+            throw AppStorageLocationError.authorizationUnavailable
+        }
+        defer { bookmarks.stopAccessing(parent) }
+
+        do {
+            let probe = parent.appendingPathComponent(
+                ".imageall-photos-original-write-probe-\(operationIDProvider().uuidString.lowercased())"
+            )
+            try Data().write(to: probe, options: .atomic)
+            try fileManager.removeItem(at: probe)
+        } catch {
+            throw AppStorageLocationError.directoryCreationFailed
+        }
+
+        do {
+            return PhotosOriginalStorageExternalPreference(
+                parentURL: parent,
+                bookmark: try bookmarks.createWriteBookmark(for: parent)
+            )
+        } catch {
+            throw AppStorageLocationError.bookmarkCreationFailed
+        }
+    }
+
+    func commit(_ preference: PhotosOriginalStorageExternalPreference) {
+        let selected = PersistedPreference(
+            parentPath: preference.parentURL.standardizedFileURL.path,
+            bookmark: preference.bookmark
+        )
+        let retained = persistedPreferences.filter { $0.parentPath != selected.parentPath }
+        let preferences = [selected] + retained
+        if let data = try? PropertyListEncoder().encode(preferences) {
+            defaults.set(data, forKey: Self.preferencesKey)
+        }
+    }
+
+    /// Resolves every previously selected root so objects written before a path
+    /// change remain visible and removable. Only the newest root accepts writes.
+    func resolve() -> PhotosOriginalStorageLocationResolution {
+        let preferences = persistedPreferences
+        var roots: [URL] = []
+        var activeURLs: [URL] = []
+        var writeRootURL: URL?
+
+        for (index, preference) in preferences.enumerated() {
+            guard let resolved = try? bookmarks.resolveBookmark(preference.bookmark),
+                  !resolved.isStale
+            else { continue }
+            let parent = resolved.url.standardizedFileURL
+            guard (try? validateDirectory(parent)) != nil,
+                  bookmarks.startAccessing(parent)
+            else { continue }
+            activeURLs.append(parent)
+            let root = Self.storageDirectory(under: parent)
+            if !roots.contains(root) { roots.append(root) }
+            if index == 0 { writeRootURL = root }
+        }
+
+        let lease: (any AppStorageAccessLease)? = activeURLs.isEmpty
+            ? nil
+            : MultipleAppStorageAccessLease(
+                bookmarks: bookmarks,
+                urls: activeURLs
+            )
+        return PhotosOriginalStorageLocationResolution(
+            writeRootURL: writeRootURL,
+            readRootURLs: roots,
+            accessLease: lease
+        )
+    }
+
+    static func storageDirectory(under parentURL: URL) -> URL {
+        parentURL
+            .appendingPathComponent("ImageAll Photos Originals", isDirectory: true)
+            .appendingPathComponent("v1", isDirectory: true)
+            .standardizedFileURL
+    }
+
+    private var persistedPreferences: [PersistedPreference] {
+        guard let data = defaults.data(forKey: Self.preferencesKey),
+              let preferences = try? PropertyListDecoder().decode(
+                  [PersistedPreference].self,
+                  from: data
+              )
+        else { return [] }
+        return preferences
+    }
+
+    private func validateDirectory(_ url: URL) throws {
+        guard url.isFileURL,
+              url.path.hasPrefix("/"),
+              url.standardizedFileURL.path != "/"
+        else {
+            throw AppStorageLocationError.invalidRoot
+        }
+        let values: URLResourceValues
+        do {
+            values = try url.resourceValues(
+                forKeys: [
+                    .isDirectoryKey,
+                    .isSymbolicLinkKey,
+                    .isAliasFileKey,
+                    .isPackageKey,
+                ]
+            )
+        } catch {
+            throw AppStorageLocationError.invalidRoot
+        }
+        guard values.isDirectory == true,
+              values.isSymbolicLink != true,
+              values.isAliasFile != true,
+              values.isPackage != true
+        else {
+            throw AppStorageLocationError.invalidRoot
+        }
+    }
+}
+
+private final class MultipleAppStorageAccessLease: AppStorageAccessLease, @unchecked Sendable {
+    private let bookmarks: any AppStorageBookmarkPort
+    private let urls: [URL]
+    private let lock = NSLock()
+    private var isActive = true
+
+    init(bookmarks: any AppStorageBookmarkPort, urls: [URL]) {
+        self.bookmarks = bookmarks
+        self.urls = urls
+    }
+
+    deinit { stop() }
+
+    func stop() {
+        let shouldStop = lock.withLock {
+            guard isActive else { return false }
+            isActive = false
+            return true
+        }
+        guard shouldStop else { return }
+        for url in urls { bookmarks.stopAccessing(url) }
+    }
+}
+
 private struct ExternalAppStorageLayout {
     let applicationSupportDirectory: URL
     let cachesDirectory: URL

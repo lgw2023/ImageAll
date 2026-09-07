@@ -93,10 +93,18 @@ struct CompositionRoot {
         let quarantineRootURL = QuarantinePathLayout.rootURL(
             applicationSupportDirectory: runtime.paths.applicationSupportDirectory
         )
+        let legacyPhotosOriginalRootURL = runtime.paths.applicationSupportDirectory
+            .appendingPathComponent("Photos Originals/v1", isDirectory: true)
+        let photosOriginalStorageResolution =
+            UserDefaultsPhotosOriginalStorageLocationStore(
+                bookmarks: FoundationAppStorageBookmarkAdapter()
+            ).resolve()
         let photosOriginalCache = PhotosOriginalCacheService(
             database: runtime.database,
-            rootURL: runtime.paths.applicationSupportDirectory
-                .appendingPathComponent("Photos Originals/v1", isDirectory: true),
+            configuredRootURL: photosOriginalStorageResolution.writeRootURL,
+            legacyRootURLs: photosOriginalStorageResolution.readRootURLs
+                + [legacyPhotosOriginalRootURL],
+            accessLease: photosOriginalStorageResolution.accessLease,
             clock: clock
         )
         let interactiveIOGate = InteractiveIOPriorityGate()

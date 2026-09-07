@@ -17435,7 +17435,7 @@ function requestStorageMaintenanceAction(action) {
     clearPhotosOriginals: {
       eyebrow: "PHOTOS ORIGINALS",
       title: "清理全部长期原图副本？",
-      message: "只删除 ImageAll 在 Application Support 中长期保存的 Photos 原图副本及其缓存索引。不会修改 Apple Photos、人工标签或已计算的相同检测结果；以后再次需要原图时，“相同”检测可能重新从 iCloud 下载。",
+      message: "只删除 ImageAll 在用户配置位置或旧版 Application Support 中保存的 Photos 原图副本及其缓存索引。不会修改 Apple Photos、人工标签或已计算的相同检测结果；以后再次需要原图时，“相同”检测可能重新从 iCloud 下载。",
       actionLabel: "清理全部长期原图副本",
     },
   };

@@ -13135,7 +13135,7 @@ struct LibraryWorkspaceView: View {
             Button("取消", role: .cancel) {}
                 .persistentHelp("关闭说明窗口，不请求照片访问权限。")
         } message: {
-            Text("ImageAll 平时只读访问静态照片和元数据，在自身容器保存索引、标签和缓存；只有你在“图库瘦身”、普通图库检查器或单图查看中明确确认删除时，才会经系统 Photos 将所选照片移入“最近删除”。普通浏览不会自动下载 iCloud 原图；“相同”检测需要时会下载并长期保留 App 自有副本。")
+            Text("ImageAll 平时只读访问静态照片和元数据，在自身容器保存索引、标签和缓存；只有你在“图库瘦身”、普通图库检查器或单图查看中明确确认删除时，才会经系统 Photos 将所选照片移入“最近删除”。普通浏览不会自动下载 iCloud 原图；“相同”检测可能按需读取或下载原图，只有你在 App 设置中选择保存位置后才会长期保留完整副本。")
         }
         .confirmationDialog(
             photosSourcePendingFullRepair.map { "对“\($0.displayName)”执行完整修复扫描？" } ?? "完整修复扫描？",
@@ -13301,10 +13301,12 @@ struct LibraryWorkspaceView: View {
                     UInt64(max(0, model.photosOriginalStorageUsage.registeredBytes))
                 )
             )
-            Text("保留策略：默认长期保留，不自动过期或按容量淘汰；仅由你在这里手动清理。")
+            Text("保留策略：默认不写入完整副本；只有在 App 设置中选择保存位置后才长期保留。这里的统计也包含旧版本留下的副本。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            Text("其他应用资料与缓存位置")
+                .font(.subheadline)
             if let location = model.appStorageLocation {
                 LabeledContent(
                     "存储位置",
@@ -13427,7 +13429,7 @@ struct LibraryWorkspaceView: View {
             Button("取消", role: .cancel) {}
                 .persistentHelp("关闭确认窗口并保留长期原图副本。")
         } message: {
-            Text("只删除 ImageAll 在 Application Support 中长期保存的 Photos 原图副本及其缓存索引。不会修改 Apple Photos、人工标签或已计算的相同检测结果；以后再次需要原图时，“相同”检测可能重新从 iCloud 下载。")
+            Text("只删除 ImageAll 在用户配置位置或旧版 Application Support 中保存的 Photos 原图副本及其缓存索引。不会修改 Apple Photos、人工标签或已计算的相同检测结果；以后再次需要原图时，“相同”检测可能重新从 iCloud 下载。")
         }
     }
 

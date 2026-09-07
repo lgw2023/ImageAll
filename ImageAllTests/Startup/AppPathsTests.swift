@@ -335,6 +335,57 @@ final class AppPathsTests: XCTestCase {
         )
     }
 
+    func testPhotosOriginalStorageHasNoWriteRootBeforeExplicitSelection() throws {
+        let suiteName = "AppPathsTests.photos-original-default.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = UserDefaultsPhotosOriginalStorageLocationStore(
+            defaults: defaults,
+            bookmarks: FakeAppStorageBookmarkPort()
+        )
+
+        XCTAssertNil(store.configuredRootURL)
+        let resolution = store.resolve()
+        XCTAssertNil(resolution.writeRootURL)
+        XCTAssertTrue(resolution.readRootURLs.isEmpty)
+        XCTAssertNil(resolution.accessLease)
+    }
+
+    @MainActor
+    func testPhotosOriginalStorageSelectionUsesNewestRootAndRetainsOlderRootForCleanup() throws {
+        let root = try StartupTestSupport.makeTempRoot(testCase: self)
+        let firstParent = root.appendingPathComponent("HDD-A", isDirectory: true)
+        let secondParent = root.appendingPathComponent("HDD-B", isDirectory: true)
+        try FileManager.default.createDirectory(at: firstParent, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: secondParent, withIntermediateDirectories: true)
+        let suiteName = "AppPathsTests.photos-original-selection.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let bookmarks = FakeAppStorageBookmarkPort()
+        let store = UserDefaultsPhotosOriginalStorageLocationStore(
+            defaults: defaults,
+            bookmarks: bookmarks
+        )
+        store.commit(try store.prepareExternalRoot(firstParent))
+        let settings = PhotosOriginalStorageSettingsModel(
+            store: store,
+            picker: FakeAppStorageRootPicker(selectedURL: secondParent)
+        )
+
+        settings.chooseLocation()
+
+        let secondRoot = UserDefaultsPhotosOriginalStorageLocationStore
+            .storageDirectory(under: secondParent)
+        let firstRoot = UserDefaultsPhotosOriginalStorageLocationStore
+            .storageDirectory(under: firstParent)
+        XCTAssertEqual(settings.configuredRootURL, secondRoot)
+        XCTAssertTrue(settings.requiresRestart)
+        let resolution = store.resolve()
+        XCTAssertEqual(resolution.writeRootURL, secondRoot)
+        XCTAssertEqual(resolution.readRootURLs, [secondRoot, firstRoot])
+        resolution.accessLease?.stop()
+    }
+
     func testTemporaryRootProducesExactLayoutAndRequiredDirectories() throws {
         let root = try StartupTestSupport.makeTempRoot(testCase: self)
         let resolver = StartupTestSupport.makePathsResolver(root: root)

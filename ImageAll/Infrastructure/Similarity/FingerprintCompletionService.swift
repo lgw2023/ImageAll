@@ -838,15 +838,42 @@ enum PhotosOriginalCacheError: Error, Equatable {
     case persistenceFailed
     case assetChanged
     case previewWriteRejected
+    case storageNotConfigured
 }
 
-/// App-owned, non-evicting cache for full Photos still bytes used by exact
-/// detection. It lives under Application Support rather than the disposable
-/// preview cache.
+/// App-owned, non-evicting storage for full Photos still bytes used by exact
+/// detection. Production writes are enabled only when the user selected a
+/// location; legacy roots remain readable and clearable after an upgrade.
 struct PhotosOriginalCacheService: Sendable {
     let database: CatalogDatabase
-    let rootURL: URL
+    let rootURL: URL?
+    let legacyRootURLs: [URL]
+    let accessLease: (any AppStorageAccessLease)?
     let clock: any JobClock
+
+    init(database: CatalogDatabase, rootURL: URL, clock: any JobClock) {
+        self.init(
+            database: database,
+            configuredRootURL: rootURL,
+            legacyRootURLs: [],
+            accessLease: nil,
+            clock: clock
+        )
+    }
+
+    init(
+        database: CatalogDatabase,
+        configuredRootURL: URL?,
+        legacyRootURLs: [URL],
+        accessLease: (any AppStorageAccessLease)?,
+        clock: any JobClock
+    ) {
+        self.database = database
+        self.rootURL = configuredRootURL?.standardizedFileURL
+        self.legacyRootURLs = legacyRootURLs.map(\.standardizedFileURL)
+        self.accessLease = accessLease
+        self.clock = clock
+    }
 
     func storageUsage() throws -> PhotosOriginalStorageUsage {
         try database.pool.read { db in
@@ -887,10 +914,10 @@ struct PhotosOriginalCacheService: Sendable {
         }
 
         let fileManager = FileManager.default
-        if fileManager.fileExists(atPath: rootURL.path) {
+        for root in readableRoots where fileManager.fileExists(atPath: root.path) {
             let rootValues: URLResourceValues
             do {
-                rootValues = try rootURL.resourceValues(
+                rootValues = try root.resourceValues(
                     forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
                 )
             } catch {
@@ -905,30 +932,39 @@ struct PhotosOriginalCacheService: Sendable {
         var removedBytes: Int64 = 0
         var partialReclaim = false
         for entry in entries {
-            let objectURL: URL
+            let objectURLs: [URL]
             do {
-                objectURL = try validatedObjectURL(objectName: entry.objectName)
+                objectURLs = try readableRoots.map {
+                    try validatedObjectURL(objectName: entry.objectName, rootURL: $0)
+                }
             } catch {
                 partialReclaim = true
                 continue
             }
 
-            if fileManager.fileExists(atPath: objectURL.path) {
+            var removedObject = false
+            var objectRemovalFailed = false
+            for objectURL in objectURLs where fileManager.fileExists(atPath: objectURL.path) {
                 do {
                     let values = try objectURL.resourceValues(
                         forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
                     )
                     guard values.isRegularFile == true, values.isSymbolicLink != true else {
-                        partialReclaim = true
+                        objectRemovalFailed = true
                         continue
                     }
                     try fileManager.removeItem(at: objectURL)
-                    removedBytes += entry.byteSize
+                    removedObject = true
                 } catch {
-                    partialReclaim = true
+                    objectRemovalFailed = true
                     continue
                 }
             }
+            if objectRemovalFailed {
+                partialReclaim = true
+                continue
+            }
+            if removedObject { removedBytes += entry.byteSize }
 
             do {
                 let deleted = try database.pool.write { db in
@@ -966,8 +1002,10 @@ struct PhotosOriginalCacheService: Sendable {
             return
         }
 
-        let objectURL = try validatedObjectURL(objectName: objectName)
-        if FileManager.default.fileExists(atPath: objectURL.path) {
+        let objectURLs = try readableRoots.map {
+            try validatedObjectURL(objectName: objectName, rootURL: $0)
+        }
+        for objectURL in objectURLs where FileManager.default.fileExists(atPath: objectURL.path) {
             let values: URLResourceValues
             do {
                 values = try objectURL.resourceValues(
@@ -1040,15 +1078,20 @@ struct PhotosOriginalCacheService: Sendable {
         let objectName: String = row["object_name"]
         let expectedSize: Int64 = row["byte_size"]
         let expectedSHA: Data = row["encoded_sha256"]
-        let objectURL = try validatedObjectURL(objectName: objectName)
-        guard let bytes = try? Data(contentsOf: objectURL),
-              Int64(bytes.count) == expectedSize,
-              Data(SHA256.hash(data: bytes)) == expectedSHA
-        else {
-            try invalidate(assetID: assetID, objectURL: objectURL)
-            return nil
+        let objectURLs = try readableRoots.map {
+            try validatedObjectURL(objectName: objectName, rootURL: $0)
         }
-        return bytes
+        for objectURL in objectURLs {
+            guard isSafeRegularObject(at: objectURL) else { continue }
+            guard let bytes = try? Data(contentsOf: objectURL) else { continue }
+            if Int64(bytes.count) == expectedSize,
+               Data(SHA256.hash(data: bytes)) == expectedSHA
+            {
+                return bytes
+            }
+        }
+        try invalidate(assetID: assetID, objectURLs: objectURLs)
+        return nil
     }
 
     func store(
@@ -1061,9 +1104,12 @@ struct PhotosOriginalCacheService: Sendable {
         guard !sourceBytes.isEmpty else {
             throw PhotosOriginalCacheError.persistenceFailed
         }
+        guard let rootURL else {
+            throw PhotosOriginalCacheError.storageNotConfigured
+        }
         try ensureRoot()
         let objectName = UUID().uuidString.lowercased()
-        let objectURL = try validatedObjectURL(objectName: objectName)
+        let objectURL = try validatedObjectURL(objectName: objectName, rootURL: rootURL)
         do {
             try sourceBytes.write(to: objectURL, options: [.atomic])
         } catch {
@@ -1139,15 +1185,23 @@ struct PhotosOriginalCacheService: Sendable {
             try? FileManager.default.removeItem(at: objectURL)
             throw error
         }
-        if let replacedObjectName, replacedObjectName != objectName,
-           let oldURL = try? validatedObjectURL(objectName: replacedObjectName)
-        {
-            try? FileManager.default.removeItem(at: oldURL)
+        if let replacedObjectName, replacedObjectName != objectName {
+            for oldRoot in readableRoots {
+                if let oldURL = try? validatedObjectURL(
+                    objectName: replacedObjectName,
+                    rootURL: oldRoot
+                ) {
+                    removeRegularObjectIfPresent(at: oldURL)
+                }
+            }
         }
         return sourceBytes
     }
 
     private func ensureRoot() throws {
+        guard let rootURL else {
+            throw PhotosOriginalCacheError.storageNotConfigured
+        }
         do {
             try FileManager.default.createDirectory(
                 at: rootURL,
@@ -1164,7 +1218,16 @@ struct PhotosOriginalCacheService: Sendable {
         }
     }
 
-    private func validatedObjectURL(objectName: String) throws -> URL {
+    private var readableRoots: [URL] {
+        var roots: [URL] = []
+        for root in ([rootURL].compactMap { $0 } + legacyRootURLs) {
+            let standardized = root.standardizedFileURL
+            if !roots.contains(standardized) { roots.append(standardized) }
+        }
+        return roots
+    }
+
+    private func validatedObjectURL(objectName: String, rootURL: URL) throws -> URL {
         guard let uuid = UUID(uuidString: objectName),
               objectName == uuid.uuidString.lowercased()
         else {
@@ -1179,14 +1242,35 @@ struct PhotosOriginalCacheService: Sendable {
         return candidate
     }
 
-    private func invalidate(assetID: UUID, objectURL: URL) throws {
+    private func invalidate(assetID: UUID, objectURLs: [URL]) throws {
         try database.pool.write { db in
             try db.execute(
                 sql: "DELETE FROM photos_original_cache_entry WHERE asset_id = ?",
                 arguments: [assetID.uuidString.lowercased()]
             )
         }
-        try? FileManager.default.removeItem(at: objectURL)
+        for objectURL in objectURLs {
+            removeRegularObjectIfPresent(at: objectURL)
+        }
+    }
+
+    private func isSafeRegularObject(at url: URL) -> Bool {
+        guard FileManager.default.fileExists(atPath: url.path),
+              let rootValues = try? url.deletingLastPathComponent().resourceValues(
+                  forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+              ),
+              rootValues.isDirectory == true,
+              rootValues.isSymbolicLink != true,
+              let values = try? url.resourceValues(
+                  forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+              )
+        else { return false }
+        return values.isRegularFile == true && values.isSymbolicLink != true
+    }
+
+    private func removeRegularObjectIfPresent(at url: URL) {
+        guard isSafeRegularObject(at: url) else { return }
+        try? FileManager.default.removeItem(at: url)
     }
 }
 

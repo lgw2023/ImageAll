@@ -7,6 +7,7 @@ struct ImageAllApp: App {
     @StateObject private var modelSettingsModel: AppModelSettingsModel
     @StateObject private var idlePrewarmSettingsModel: IdleThumbnailPrewarmSettingsModel
     @StateObject private var toolbarDisplayModeSettingsModel: ToolbarDisplayModeSettingsModel
+    @StateObject private var photosOriginalStorageSettingsModel: PhotosOriginalStorageSettingsModel
 
     init() {
         let root = CompositionRoot()
@@ -16,9 +17,13 @@ struct ImageAllApp: App {
         )
         let idlePrewarmSettings = IdleThumbnailPrewarmSettingsModel()
         let toolbarDisplayModeSettings = ToolbarDisplayModeSettingsModel()
+        let photosOriginalStorageSettings = PhotosOriginalStorageSettingsModel()
         _modelSettingsModel = StateObject(wrappedValue: modelSettings)
         _idlePrewarmSettingsModel = StateObject(wrappedValue: idlePrewarmSettings)
         _toolbarDisplayModeSettingsModel = StateObject(wrappedValue: toolbarDisplayModeSettings)
+        _photosOriginalStorageSettingsModel = StateObject(
+            wrappedValue: photosOriginalStorageSettings
+        )
         _startupModel = StateObject(
             wrappedValue: root.makeStartupModel(
                 modelActivationCoordinator: modelActivationCoordinator,
@@ -61,7 +66,8 @@ struct ImageAllApp: App {
             AppModelSettingsView(
                 model: modelSettingsModel,
                 idlePrewarmSettings: idlePrewarmSettingsModel,
-                toolbarDisplayModeSettings: toolbarDisplayModeSettingsModel
+                toolbarDisplayModeSettings: toolbarDisplayModeSettingsModel,
+                photosOriginalStorageSettings: photosOriginalStorageSettingsModel
             )
             .onAppear { attachSettingsPortsIfReady() }
             .onChange(of: startupModel.workspaceModel != nil) { _, _ in

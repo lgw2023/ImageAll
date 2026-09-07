@@ -367,6 +367,33 @@ final class IdenticalDuplicateDetectionTests: XCTestCase {
         )
     }
 
+    func testPhotosExactAnalysisDoesNotPersistOriginalWithoutConfiguredLocation() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+        let photosAssetID = try env.seedPhotosAsset()
+        let bytes = try XCTUnwrap(SimilarityTestSupport.patternedImageData(seed: 79, uti: .png))
+        let photos = SimilarityPhotosOriginalStub(bytes: bytes)
+        let completion = env.makeCompletionService(
+            photosOriginals: photos,
+            retainsPhotosOriginals: false
+        )
+
+        let fingerprint = try completion.completeAsset(assetID: photosAssetID)
+
+        XCTAssertEqual(fingerprint.sha256, Data(SHA256.hash(data: bytes)))
+        XCTAssertEqual(fingerprint.digestOrigin, .verifiedOriginalBytes)
+        XCTAssertEqual(photos.requestCount, 1)
+        let cacheRows = try env.database.pool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM photos_original_cache_entry") ?? 0
+        }
+        XCTAssertEqual(cacheRows, 0)
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: env.root.appendingPathComponent("Photos Originals").path
+            )
+        )
+    }
+
     func testPhotosFingerprintSkipsWhenNoLocalBytesAvailable() throws {
         let env = try SimilarityTestSupport.Environment(label: #function)
         defer { env.cleanup() }
@@ -451,6 +478,56 @@ final class IdenticalDuplicateDetectionTests: XCTestCase {
                 entryCount: 1,
                 registeredBytes: Int64(original.count)
             )
+        )
+    }
+
+    func testUnconfiguredUpgradeCanReadAndClearLegacyPhotosOriginal() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+        let photosAssetID = try env.seedPhotosAsset()
+        let legacyRoot = env.root.appendingPathComponent("Legacy Photos Originals", isDirectory: true)
+        let legacyCache = PhotosOriginalCacheService(
+            database: env.database,
+            rootURL: legacyRoot,
+            clock: FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs)
+        )
+        let original = Data("legacy-full-original".utf8)
+        let localIdentifier = "LOCAL-\(photosAssetID.uuidString.lowercased())"
+        _ = try legacyCache.store(
+            assetID: photosAssetID,
+            contentRevision: 1,
+            localIdentifier: localIdentifier,
+            mediaType: "public.jpeg",
+            sourceBytes: original
+        )
+        let upgradedCache = PhotosOriginalCacheService(
+            database: env.database,
+            configuredRootURL: nil,
+            legacyRootURLs: [legacyRoot],
+            accessLease: nil,
+            clock: FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs)
+        )
+
+        XCTAssertEqual(
+            try upgradedCache.load(
+                assetID: photosAssetID,
+                contentRevision: 1,
+                localIdentifier: localIdentifier
+            ),
+            original
+        )
+        XCTAssertEqual(
+            try upgradedCache.clearAll(),
+            PhotosOriginalStorageClearResult(
+                removedEntries: 1,
+                removedBytes: Int64(original.count),
+                partialReclaim: false
+            )
+        )
+        XCTAssertEqual(try upgradedCache.storageUsage(), .zero)
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: legacyRoot.path),
+            []
         )
     }
 
@@ -1143,6 +1220,7 @@ enum SimilarityTestSupport {
             photosOriginals: (any PhotosOriginalContentPort)? = nil,
             photosFeatureImages: (any PhotosFeaturePrintImagePort)? = nil,
             downloadedPreviews: (any DownloadedPreviewCachePort)? = nil,
+            retainsPhotosOriginals: Bool = true,
             videoPosterGenerator: any DerivedVideoPosterGenerating =
                 AVFoundationDerivedVideoPosterGenerator()
         ) -> FingerprintCompletionService {
@@ -1161,7 +1239,11 @@ enum SimilarityTestSupport {
                 photosOriginals: photosOriginals,
                 photosOriginalCache: PhotosOriginalCacheService(
                     database: database,
-                    rootURL: root.appendingPathComponent("Photos Originals", isDirectory: true),
+                    configuredRootURL: retainsPhotosOriginals
+                        ? root.appendingPathComponent("Photos Originals", isDirectory: true)
+                        : nil,
+                    legacyRootURLs: [],
+                    accessLease: nil,
                     clock: FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs)
                 ),
                 photosFeatureImages: photosFeatureImages,

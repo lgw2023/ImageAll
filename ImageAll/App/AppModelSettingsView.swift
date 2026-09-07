@@ -239,10 +239,54 @@ final class AppModelSettingsModel: ObservableObject {
     }
 }
 
+@MainActor
+final class PhotosOriginalStorageSettingsModel: ObservableObject {
+    @Published private(set) var configuredRootURL: URL?
+    @Published private(set) var requiresRestart = false
+    @Published private(set) var isChoosingLocation = false
+    @Published private(set) var statusMessage: String?
+
+    private let store: UserDefaultsPhotosOriginalStorageLocationStore
+    private let picker: any AppStorageRootPicking
+
+    init(
+        store: UserDefaultsPhotosOriginalStorageLocationStore =
+            UserDefaultsPhotosOriginalStorageLocationStore(
+                bookmarks: FoundationAppStorageBookmarkAdapter()
+            ),
+        picker: any AppStorageRootPicking = AppKitFolderDirectoryPicker()
+    ) {
+        self.store = store
+        self.picker = picker
+        configuredRootURL = store.configuredRootURL
+    }
+
+    func chooseLocation() {
+        guard !isChoosingLocation else { return }
+        guard let selectedParent = picker.pickCacheRoot() else { return }
+        isChoosingLocation = true
+        defer { isChoosingLocation = false }
+        do {
+            let preference = try store.prepareExternalRoot(selectedParent)
+            store.commit(preference)
+            configuredRootURL = store.configuredRootURL
+            requiresRestart = true
+            statusMessage = "设置已保存；重新启动 ImageAll 后生效。"
+        } catch {
+            statusMessage = "无法使用所选位置。请确认磁盘已连接且文件夹可写。"
+        }
+    }
+
+    func refresh() {
+        configuredRootURL = store.configuredRootURL
+    }
+}
+
 struct AppModelSettingsView: View {
     @ObservedObject var model: AppModelSettingsModel
     @ObservedObject var idlePrewarmSettings: IdleThumbnailPrewarmSettingsModel
     @ObservedObject var toolbarDisplayModeSettings: ToolbarDisplayModeSettingsModel
+    @ObservedObject var photosOriginalStorageSettings: PhotosOriginalStorageSettingsModel
     @State private var showingOverrides = false
 
     var body: some View {
@@ -301,6 +345,48 @@ struct AppModelSettingsView: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                Section("Photos 原图副本") {
+                    if let root = photosOriginalStorageSettings.configuredRootURL {
+                        LabeledContent("保存位置") {
+                            Text(root.path)
+                                .multilineTextAlignment(.trailing)
+                                .textSelection(.enabled)
+                        }
+                    } else {
+                        LabeledContent("保存位置", value: "未设置")
+                    }
+                    Text(
+                        photosOriginalStorageSettings.configuredRootURL == nil
+                            ? "默认不长期保存完整原图。“图库瘦身”的相同检测仍可按需读取 PhotoKit 原图并计算结果，但不会把完整副本写入磁盘。"
+                            : "只有你手动选择位置后，ImageAll 才会长期保存相同检测取得的完整原图副本。旧位置中的已有副本仍可在“应用存储与预览缓存”面板查看和清理。"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    Button {
+                        photosOriginalStorageSettings.chooseLocation()
+                    } label: {
+                        Label(
+                            photosOriginalStorageSettings.configuredRootURL == nil
+                                ? "选择保存位置…"
+                                : "更改保存位置…",
+                            systemImage: "externaldrive.badge.plus"
+                        )
+                    }
+                    .disabled(photosOriginalStorageSettings.isChoosingLocation)
+                    .accessibilityIdentifier("photosOriginalStorageLocationButton")
+                    .persistentHelp("选择父文件夹；ImageAll 会在其中使用“ImageAll Photos Originals/v1”，重启后生效。")
+                    if photosOriginalStorageSettings.requiresRestart {
+                        Text("需要重新启动 ImageAll 才会切换写入位置。")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                    if let message = photosOriginalStorageSettings.statusMessage {
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 if model.hasSuggestionThresholdPort {
                     Section("建议阈值") {
                         Text("三轨分数含义不同，请分别调节；默认 0 表示只要正分就可进队。分数不可横向比较。")
@@ -337,6 +423,7 @@ struct AppModelSettingsView: View {
             model.refreshSuggestionThresholds()
             idlePrewarmSettings.refresh()
             toolbarDisplayModeSettings.refresh()
+            photosOriginalStorageSettings.refresh()
         }
     }
 
