@@ -306,14 +306,18 @@ struct GRDBDerivedImageCacheRepository: Sendable {
         }
     }
 
-    func lruEntries() throws -> [DerivedImageCacheEntryRow] {
+    func lruEntries(limit: Int? = nil) throws -> [DerivedImageCacheEntryRow] {
         try database.pool.read { db in
+            let limitSQL = limit == nil ? "" : "LIMIT ?"
+            let arguments = limit.map { StatementArguments([$0]) } ?? StatementArguments()
             let rows = try Row.fetchAll(
                 db,
                 sql: """
                 SELECT * FROM derived_image_cache_entry
                 ORDER BY last_accessed_at_ms ASC, id ASC
-                """
+                \(limitSQL)
+                """,
+                arguments: arguments
             )
             return try rows.map(mapEntry)
         }
@@ -336,8 +340,10 @@ struct GRDBDerivedImageCacheRepository: Sendable {
         }
     }
 
-    func downloadedPreviewLRUEntries() throws -> [DerivedImageCacheEntryRow] {
+    func downloadedPreviewLRUEntries(limit: Int? = nil) throws -> [DerivedImageCacheEntryRow] {
         try database.pool.read { db in
+            let limitSQL = limit == nil ? "" : "LIMIT ?"
+            let arguments = limit.map { StatementArguments([$0]) } ?? StatementArguments()
             let rows = try Row.fetchAll(
                 db,
                 sql: """
@@ -347,7 +353,9 @@ struct GRDBDerivedImageCacheRepository: Sendable {
                 JOIN source s ON s.id = a.source_id
                 WHERE e.variant = 'preview' AND s.kind = 'photos'
                 ORDER BY e.last_accessed_at_ms ASC, e.id ASC
-                """
+                \(limitSQL)
+                """,
+                arguments: arguments
             )
             return try rows.map(mapEntry)
         }

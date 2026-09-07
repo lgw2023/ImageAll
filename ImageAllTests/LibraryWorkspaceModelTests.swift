@@ -5508,6 +5508,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertNil(model.reviewMode)
         XCTAssertEqual(model.browsingTitle, "无标签照片")
         XCTAssertTrue(model.items.isEmpty)
+        XCTAssertEqual(model.phase, .loading)
         XCTAssertTrue(model.selectedAssetIDs.isEmpty)
         XCTAssertFalse(model.isSinglePhotoPresented)
     }
@@ -5764,6 +5765,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertNil(model.reviewMode)
         XCTAssertEqual(model.browsingTitle, "Fixture")
         XCTAssertTrue(model.items.isEmpty)
+        XCTAssertEqual(model.phase, .loading)
     }
 
     func testImmediateBrowsingPresentationForLibrarySlimmingClearsReviewWithoutGalleryFilter() async {

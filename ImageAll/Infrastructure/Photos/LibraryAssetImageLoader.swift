@@ -107,7 +107,9 @@ struct LibraryAssetImageLoader: Sendable {
     func loadOriginalAspectThumbnailIfCached(assetID: UUID) async throws -> Data? {
         let locator = try await locator(assetID: assetID)
         if locator.kind == AssetLocatorKind.photos.rawValue {
-            return try photoThumbnails?.loadPhotoOriginalAspectThumbnail(assetID: assetID)
+            return try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try photoThumbnails?.loadPhotoOriginalAspectThumbnail(assetID: assetID)
+            }
         }
         return try await fileImages.loadCached(
             DerivedImageRequest(
@@ -121,7 +123,9 @@ struct LibraryAssetImageLoader: Sendable {
     func loadThumbnailIfCached(assetID: UUID) async throws -> Data? {
         let locator = try await locator(assetID: assetID)
         if locator.kind == AssetLocatorKind.photos.rawValue {
-            return try photoThumbnails?.loadPhotoThumbnail(assetID: assetID)
+            return try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try photoThumbnails?.loadPhotoThumbnail(assetID: assetID)
+            }
         }
         return try await fileImages.loadCached(
             DerivedImageRequest(
@@ -182,14 +186,18 @@ struct LibraryAssetImageLoader: Sendable {
                 guard let photoThumbnails else {
                     throw PhotosLibraryError.libraryUnavailable
                 }
-                if let cached = try? photoThumbnails.loadPhotoOriginalAspectThumbnail(
-                    assetID: assetID
+                if let cached = try? await CatalogBlockingExecutor.shared.run(
+                    priority: .utility,
+                    { try photoThumbnails.loadPhotoOriginalAspectThumbnail(assetID: assetID) }
                 )
                 {
                     return cached
                 }
                 if let downloadedPreviews,
-                   let sourceBytes = try downloadedPreviews.loadDownloadedPreview(assetID: assetID)
+                   let sourceBytes = try await CatalogBlockingExecutor.shared.run(
+                       priority: .utility,
+                       { try downloadedPreviews.loadDownloadedPreview(assetID: assetID) }
+                   )
                 {
                     return try await photoThumbnails.storePhotoOriginalAspectThumbnail(
                         assetID: assetID,
@@ -199,12 +207,18 @@ struct LibraryAssetImageLoader: Sendable {
             }
             if variant == .grid,
                let photoThumbnails,
-               let cached = try? photoThumbnails.loadPhotoThumbnail(assetID: assetID)
+               let cached = try? await CatalogBlockingExecutor.shared.run(
+                   priority: .utility,
+                   { try photoThumbnails.loadPhotoThumbnail(assetID: assetID) }
+               )
             {
                 return cached
             }
             if let downloadedPreviews,
-               let cached = try downloadedPreviews.loadDownloadedPreview(assetID: assetID)
+               let cached = try await CatalogBlockingExecutor.shared.run(
+                   priority: .utility,
+                   { try downloadedPreviews.loadDownloadedPreview(assetID: assetID) }
+               )
             {
                 if variant == .grid, let photoThumbnails {
                     return (try? await photoThumbnails.storePhotoThumbnail(

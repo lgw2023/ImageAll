@@ -3414,9 +3414,11 @@ final class LibraryWorkspaceModel: ObservableObject {
                 || !outcome.durabilityPendingAssetIDs.isEmpty
             {
                 let cleanupNowMs = Int64(Date().timeIntervalSince1970 * 1_000)
-                Task.detached(priority: .utility) {
-                    _ = try? recycle.recoverInterruptedOperations()
-                    _ = try? recycle.purgeExpired(nowMs: cleanupNowMs)
+                Task(priority: .utility) {
+                    try? await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                        _ = try? recycle.recoverInterruptedOperations()
+                        _ = try? recycle.purgeExpired(nowMs: cleanupNowMs)
+                    }
                 }
             }
         } catch {
@@ -5508,12 +5510,15 @@ final class LibraryWorkspaceModel: ObservableObject {
     private func startCatalogSourceMonitoring() {
         guard catalogSourceMonitoringTask == nil else { return }
         let service = service
-        catalogSourceMonitoringTask = Task.detached(priority: .utility) { [weak self] in
+        let onCatalogChange: @Sendable () -> Void = { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.startCatalogReconcileRunnerIfNeeded()
+            }
+        }
+        catalogSourceMonitoringTask = Task(priority: .utility) { [weak self] in
             do {
-                try service.startCatalogSourceMonitoring { [weak self] in
-                    Task { @MainActor [weak self] in
-                        self?.startCatalogReconcileRunnerIfNeeded()
-                    }
+                try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                    try service.startCatalogSourceMonitoring(onChange: onCatalogChange)
                 }
                 if Task.isCancelled {
                     service.stopCatalogSourceMonitoring()
@@ -10553,24 +10558,22 @@ final class LibraryWorkspaceModel: ObservableObject {
         priority: TaskPriority = .userInitiated,
         _ operation: @escaping @Sendable () throws -> T
     ) async throws -> T {
-        try await Task.detached(priority: priority, operation: operation).value
+        try await CatalogBlockingExecutor.shared.run(
+            priority: priority,
+            operation
+        )
     }
 
-    /// Child task that cancels with the caller, unlike `offMain`'s detached work.
+    /// Cancellation is observed before and after the synchronous operation. A
+    /// running legacy operation cannot be interrupted safely midway through.
     private static func cancellableOffMain<T: Sendable>(
         priority: TaskPriority = .utility,
         _ operation: @escaping @Sendable () throws -> T
     ) async throws -> T {
-        try await withThrowingTaskGroup(of: T.self) { group in
-            group.addTask(priority: priority) {
-                try operation()
-            }
-            guard let result = try await group.next() else {
-                throw CancellationError()
-            }
-            group.cancelAll()
-            return result
-        }
+        try Task.checkCancellation()
+        let result = try await offMain(priority: priority, operation)
+        try Task.checkCancellation()
+        return result
     }
 
     private func resetCloudPreviewIfSelectionChanged() {
@@ -11459,6 +11462,7 @@ extension LibraryWorkspaceModel {
             isSinglePhotoPresented = false
             inspectorDetail = nil
             inspectorTags = []
+            phase = .loading
         }
     }
 

@@ -196,6 +196,71 @@ final class DerivedImageQuotaTests: XCTestCase {
 
     // MARK: - 4. Low-space eviction requery
 
+    func testConcurrentEvictionRequestsShareOneActiveReclaimPass() async throws {
+        let coordinator = DerivedImageEvictionCoordinator()
+        let gate = DerivedImageEvictionTestGate()
+        let counter = DerivedImageEvictionTestCounter()
+
+        let first = Task {
+            try await coordinator.run {
+                counter.increment()
+                await gate.wait()
+            }
+        }
+        while !(await gate.isWaiting) {
+            await Task.yield()
+        }
+        let second = Task {
+            try await coordinator.run {
+                counter.increment()
+            }
+        }
+        while await coordinator.waitingRequestCount == 0 {
+            await Task.yield()
+        }
+
+        XCTAssertEqual(counter.value, 1)
+        await gate.release()
+        let firstPerformedReclaim = try await first.value
+        let secondPerformedReclaim = try await second.value
+        XCTAssertTrue(firstPerformedReclaim)
+        XCTAssertFalse(secondPerformedReclaim)
+        XCTAssertEqual(counter.value, 1)
+    }
+
+    func testLRUCandidateBatchIsBoundedAndOrdered() async throws {
+        let env = try DerivedImageTestSupport.TempEnvironment(label: "lru-batch")
+        defer { env.cleanup() }
+        _ = try env.seedAvailableAsset()
+        let (service, _) = env.makeService(volumeReader: DerivedImageTestSupport.generousVolume)
+        let first = try await service.loadOrGenerate(
+            DerivedImageRequest(assetID: env.assetID, variant: .gridSmall)
+        )
+        let second = try await service.loadOrGenerate(
+            DerivedImageRequest(assetID: env.assetID, variant: .gridRegular)
+        )
+        let third = try await service.loadOrGenerate(
+            DerivedImageRequest(assetID: env.assetID, variant: .gridOriginal)
+        )
+        try await env.database.pool.write { db in
+            for (entryID, accessTime) in [
+                (first.entryID, Int64(300)),
+                (second.entryID, Int64(100)),
+                (third.entryID, Int64(200)),
+            ] {
+                try db.execute(
+                    sql: "UPDATE derived_image_cache_entry SET last_accessed_at_ms = ? WHERE id = ?",
+                    arguments: [accessTime, entryID.uuidString.lowercased()]
+                )
+            }
+        }
+
+        let repository = GRDBDerivedImageCacheRepository(database: env.database)
+        let candidates = try repository.lruEntries(limit: 2)
+
+        XCTAssertEqual(candidates.map(\.id), [second.entryID, third.entryID])
+    }
+
     func testEvictionRequeriesVolumeAfterObjectDeleteAndThenAdmits() async throws {
         let env = try DerivedImageTestSupport.TempEnvironment(label: "evict-requery-ok")
         defer { env.cleanup() }
@@ -768,6 +833,34 @@ final class DerivedImageQuotaTests: XCTestCase {
 }
 
 // MARK: - Shared helpers
+
+private final class DerivedImageEvictionTestCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValue = 0
+
+    var value: Int {
+        lock.withLock { storedValue }
+    }
+
+    func increment() {
+        lock.withLock { storedValue += 1 }
+    }
+}
+
+private actor DerivedImageEvictionTestGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    var isWaiting: Bool { continuation != nil }
+
+    func wait() async {
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func release() {
+        continuation?.resume()
+        continuation = nil
+    }
+}
 
 private extension DerivedImageQuotaTests {
     func seedVictimWithInflatedQuotaEntry(

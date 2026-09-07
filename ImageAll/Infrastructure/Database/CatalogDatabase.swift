@@ -1,6 +1,55 @@
 import Foundation
 import GRDB
 
+/// Bridges legacy synchronous catalog work onto GCD workers. Waiting for a
+/// GRDB pool connection here does not consume a Swift cooperative-executor
+/// thread, so async readers can resume and return their connections.
+final class CatalogBlockingExecutor: @unchecked Sendable {
+    static let shared = CatalogBlockingExecutor()
+
+    private let userInitiatedQueue: OperationQueue
+    private let utilityQueue: OperationQueue
+
+    private init() {
+        userInitiatedQueue = Self.makeQueue(
+            name: "com.imageall.catalog.blocking.user-initiated",
+            qualityOfService: .userInitiated,
+            maximumConcurrentOperationCount: 8
+        )
+        utilityQueue = Self.makeQueue(
+            name: "com.imageall.catalog.blocking.utility",
+            qualityOfService: .utility,
+            maximumConcurrentOperationCount: 4
+        )
+    }
+
+    func run<T: Sendable>(
+        priority: TaskPriority = .userInitiated,
+        _ operation: @escaping @Sendable () throws -> T
+    ) async throws -> T {
+        let queue = priority == .utility || priority == .background
+            ? utilityQueue
+            : userInitiatedQueue
+        return try await withCheckedThrowingContinuation { continuation in
+            queue.addOperation {
+                continuation.resume(with: Result(catching: operation))
+            }
+        }
+    }
+
+    private static func makeQueue(
+        name: String,
+        qualityOfService: QualityOfService,
+        maximumConcurrentOperationCount: Int
+    ) -> OperationQueue {
+        let queue = OperationQueue()
+        queue.name = name
+        queue.qualityOfService = qualityOfService
+        queue.maxConcurrentOperationCount = maximumConcurrentOperationCount
+        return queue
+    }
+}
+
 struct CatalogDatabase: Sendable {
     let pool: DatabasePool
 

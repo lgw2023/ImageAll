@@ -2982,7 +2982,7 @@ struct ProductionLibraryWorkspaceService:
         variant: DerivedImageVariant
     ) async throws -> Set<UUID> {
         let database = queue.database
-        return try await Task.detached(priority: .utility) {
+        return try await CatalogBlockingExecutor.shared.run(priority: .utility) {
             try database.pool.read { db in
                 let rows = try String.fetchAll(
                     db,
@@ -3006,7 +3006,7 @@ struct ProductionLibraryWorkspaceService:
                 )
                 return Set(rows.compactMap(UUID.init(uuidString:)))
             }
-        }.value
+        }
     }
 
     func prewarmOriginalAspectThumbnail(assetID: UUID) async throws -> Data {

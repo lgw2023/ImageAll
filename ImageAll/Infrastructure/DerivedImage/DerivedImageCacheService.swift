@@ -98,81 +98,131 @@ actor DerivedImageInFlightCoordinator {
     }
 }
 
-final class DerivedImageOperationGate: @unchecked Sendable {
-    private struct GateState {
-        var maintenanceRunning = false
-        var activeGenerations = 0
-        var protectedStagingNames: Set<String> = []
-    }
+/// Coalesces cache-pressure work. Concurrent image requests share one reclaim
+/// pass, then each request rechecks live volume facts before publishing.
+actor DerivedImageEvictionCoordinator {
+    private var activeTask: Task<Void, Error>?
+    private(set) var waitingRequestCount = 0
 
-    private let state = OSAllocatedUnfairLock(initialState: GateState())
+    func run(
+        operation: @Sendable @escaping () async throws -> Void
+    ) async throws -> Bool {
+        if let activeTask {
+            waitingRequestCount += 1
+            defer { waitingRequestCount = max(0, waitingRequestCount - 1) }
+            try await activeTask.value
+            return false
+        }
+        let task = Task {
+            try await operation()
+        }
+        activeTask = task
+        defer { activeTask = nil }
+        try await task.value
+        return true
+    }
+}
+
+final class DerivedImageOperationGate: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var maintenanceRunning = false
+    private var activeAccesses = 0
+    private var protectedStagingNames: Set<String> = []
+    private var accessWaiters: [CheckedContinuation<Void, Never>] = []
+    private var maintenanceWaiters: [CheckedContinuation<Void, Never>] = []
 
     func beginGeneration(stagingName: String) {
-        while true {
-            let blocked = state.withLock { gate -> Bool in
-                if gate.maintenanceRunning {
-                    return true
-                }
-                gate.activeGenerations += 1
-                gate.protectedStagingNames.insert(stagingName)
-                return false
+        condition.lock()
+        protectedStagingNames.insert(stagingName)
+        condition.unlock()
+    }
+
+    func beginAccess() async {
+        await withCheckedContinuation { continuation in
+            condition.lock()
+            if maintenanceRunning || !maintenanceWaiters.isEmpty {
+                accessWaiters.append(continuation)
+                condition.unlock()
+            } else {
+                activeAccesses += 1
+                condition.unlock()
+                continuation.resume()
             }
-            if !blocked {
-                return
-            }
-            Thread.sleep(forTimeInterval: 0.001)
         }
     }
 
-    func beginAccess() {
-        while true {
-            let blocked = state.withLock { gate -> Bool in
-                if gate.maintenanceRunning {
-                    return true
-                }
-                gate.activeGenerations += 1
-                return false
-            }
-            if !blocked { return }
-            Thread.sleep(forTimeInterval: 0.001)
+    func beginSynchronousAccess() {
+        condition.lock()
+        while maintenanceRunning || !maintenanceWaiters.isEmpty {
+            condition.wait()
         }
+        activeAccesses += 1
+        condition.unlock()
     }
 
     func endAccess() {
-        state.withLock { gate in
-            gate.activeGenerations = max(0, gate.activeGenerations - 1)
+        var maintenanceWaiter: CheckedContinuation<Void, Never>?
+        condition.lock()
+        activeAccesses = max(0, activeAccesses - 1)
+        if activeAccesses == 0, !maintenanceRunning, !maintenanceWaiters.isEmpty {
+            maintenanceRunning = true
+            maintenanceWaiter = maintenanceWaiters.removeFirst()
         }
+        condition.unlock()
+        maintenanceWaiter?.resume()
     }
 
     func endGeneration(stagingName: String) {
-        state.withLock { gate in
-            gate.protectedStagingNames.remove(stagingName)
-            gate.activeGenerations = max(0, gate.activeGenerations - 1)
-        }
+        condition.lock()
+        protectedStagingNames.remove(stagingName)
+        condition.unlock()
     }
 
     func protectedStagingSnapshot() -> Set<String> {
-        state.withLock { $0.protectedStagingNames }
+        condition.lock()
+        defer { condition.unlock() }
+        return protectedStagingNames
     }
 
     func withMaintenance<T: Sendable>(_ body: @Sendable () async throws -> T) async throws -> T {
-        while true {
-            let acquired = state.withLock { gate -> Bool in
-                if gate.activeGenerations == 0 && !gate.maintenanceRunning {
-                    gate.maintenanceRunning = true
-                    return true
-                }
-                return false
-            }
-            if acquired {
-                break
-            }
-            try await Task.sleep(nanoseconds: 1_000_000)
-        }
-        defer {
-            state.withLock { $0.maintenanceRunning = false }
-        }
+        await acquireMaintenance()
+        defer { releaseMaintenance() }
         return try await body()
+    }
+
+    private func acquireMaintenance() async {
+        await withCheckedContinuation { continuation in
+            condition.lock()
+            if activeAccesses == 0, !maintenanceRunning {
+                maintenanceRunning = true
+                condition.unlock()
+                continuation.resume()
+            } else {
+                maintenanceWaiters.append(continuation)
+                condition.unlock()
+            }
+        }
+    }
+
+    private func releaseMaintenance() {
+        var maintenanceWaiter: CheckedContinuation<Void, Never>?
+        var waitingAccesses: [CheckedContinuation<Void, Never>] = []
+        condition.lock()
+        maintenanceRunning = false
+        if activeAccesses == 0, !maintenanceWaiters.isEmpty {
+            maintenanceRunning = true
+            maintenanceWaiter = maintenanceWaiters.removeFirst()
+        } else {
+            waitingAccesses = accessWaiters
+            accessWaiters.removeAll(keepingCapacity: true)
+            activeAccesses += waitingAccesses.count
+            condition.broadcast()
+        }
+        condition.unlock()
+        maintenanceWaiter?.resume()
+        for waiter in waitingAccesses {
+            waiter.resume()
+        }
     }
 }
 
@@ -199,6 +249,7 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
     private let maintenanceCheckpoint: any DerivedImageMaintenanceCheckpointing
     private let downloadedPreviewQuotaBytes: UInt64
     private let inFlight = DerivedImageInFlightCoordinator()
+    private let evictionCoordinator = DerivedImageEvictionCoordinator()
     private let operationGate = DerivedImageOperationGate()
 
     init(
@@ -242,14 +293,16 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
     }
 
     func loadOrGenerate(_ request: DerivedImageRequest) async throws -> DerivedImagePayload {
-        operationGate.beginAccess()
+        await operationGate.beginAccess()
         defer { operationGate.endAccess() }
         do {
-            guard let snapshot = try repository.fetchLoadSnapshot(
-                assetID: request.assetID,
-                representationVersion: DerivedImageRepresentationVersion.production,
-                variant: request.variant
-            ) else {
+            guard let snapshot = try await catalogBlocking({
+                try self.repository.fetchLoadSnapshot(
+                    assetID: request.assetID,
+                    representationVersion: DerivedImageRepresentationVersion.production,
+                    variant: request.variant
+                )
+            }) else {
                 throw DerivedImageError.derivedAssetNotFound
             }
 
@@ -280,12 +333,14 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
         assetID: UUID,
         quarantineRootURL: URL
     ) async throws -> Data {
-        operationGate.beginAccess()
+        await operationGate.beginAccess()
         defer { operationGate.endAccess() }
         do {
-            guard let context = try repository.fetchRecycledFileThumbnailGenerationContext(
-                assetID: assetID
-            ), context.isEligibleForGeneration else {
+            guard let context = try await catalogBlocking({
+                try self.repository.fetchRecycledFileThumbnailGenerationContext(
+                    assetID: assetID
+                )
+            }), context.isEligibleForGeneration else {
                 throw DerivedImageError.derivedAssetIneligible
             }
             let request = DerivedImageRequest(
@@ -318,24 +373,26 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
     }
 
     func loadCached(_ request: DerivedImageRequest) async throws -> DerivedImagePayload? {
-        operationGate.beginAccess()
+        await operationGate.beginAccess()
         defer { operationGate.endAccess() }
         do {
-            guard let snapshot = try repository.fetchLoadSnapshot(
-                assetID: request.assetID,
-                representationVersion: DerivedImageRepresentationVersion.production,
-                variant: request.variant
-            ), let entry = snapshot.entry
+            guard let snapshot = try await catalogBlocking({
+                try self.repository.fetchLoadSnapshot(
+                    assetID: request.assetID,
+                    representationVersion: DerivedImageRepresentationVersion.production,
+                    variant: request.variant
+                )
+            }), let entry = snapshot.entry
             else {
                 return nil
             }
             let session = try store.ensureLayout()
             defer { session.closeHandles() }
-            switch try validateHit(entry: entry, session: session) {
+            switch try await validateHitAsync(entry: entry, session: session) {
             case let .valid(payload):
                 return payload
             case let .invalid(candidate):
-                try repository.deleteEntry(id: candidate.id)
+                try await catalogBlocking { try self.repository.deleteEntry(id: candidate.id) }
                 _ = try? store.deleteObjectDuringEviction(
                     entryID: candidate.id,
                     format: candidate.storageFormat,
@@ -368,7 +425,7 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
         assetID: UUID,
         variant: DerivedImageVariant
     ) throws -> Data? {
-        operationGate.beginAccess()
+        operationGate.beginSynchronousAccess()
         defer { operationGate.endAccess() }
         do {
             guard let snapshot = try repository.fetchLoadSnapshot(
@@ -445,10 +502,12 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
         variant: DerivedImageVariant,
         usesDownloadedPreviewQuota: Bool
     ) async throws -> Data {
-        operationGate.beginAccess()
+        await operationGate.beginAccess()
         defer { operationGate.endAccess() }
         do {
-            guard let lookup = try repository.fetchCacheLookupContext(assetID: assetID) else {
+            guard let lookup = try await catalogBlocking({
+                try self.repository.fetchCacheLookupContext(assetID: assetID)
+            }) else {
                 throw DerivedImageError.derivedAssetNotFound
             }
             guard lookup.isEligibleForDownloadedPreview else {
@@ -500,7 +559,7 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
 
         var replacementCandidate: DerivedImageCacheEntryRow?
         if let entry = snapshot.entry {
-            switch try validateHit(entry: entry, session: session) {
+            switch try await validateHitAsync(entry: entry, session: session) {
             case let .valid(payload):
                 return payload
             case let .invalid(candidate):
@@ -508,10 +567,12 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
             }
         }
 
-        guard let generation = try repository.fetchGenerationSnapshot(
-            assetID: request.assetID,
-            representationVersion: DerivedImageRepresentationVersion.production
-        ) else {
+        guard let generation = try await catalogBlocking({
+            try self.repository.fetchGenerationSnapshot(
+                assetID: request.assetID,
+                representationVersion: DerivedImageRepresentationVersion.production
+            )
+        }) else {
             throw DerivedImageError.derivedAssetIneligible
         }
         // A previous identical request can publish after this caller captured
@@ -521,7 +582,7 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
         if let refreshedEntry = generation.entry(for: request.variant),
            refreshedEntry.id != snapshot.entry?.id
         {
-            switch try validateHit(entry: refreshedEntry, session: session) {
+            switch try await validateHitAsync(entry: refreshedEntry, session: session) {
             case let .valid(payload):
                 return payload
             case let .invalid(candidate):
@@ -564,13 +625,15 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
         defer { session.closeHandles() }
 
         var replacementCandidate: DerivedImageCacheEntryRow?
-        if let entry = try repository.fetchEntry(
-            assetID: context.assetID,
-            contentRevision: context.contentRevision,
-            representationVersion: DerivedImageRepresentationVersion.production,
-            variant: request.variant
-        ) {
-            switch try validateHit(entry: entry, session: session) {
+        if let entry = try await catalogBlocking({
+            try self.repository.fetchEntry(
+                assetID: context.assetID,
+                contentRevision: context.contentRevision,
+                representationVersion: DerivedImageRepresentationVersion.production,
+                variant: request.variant
+            )
+        }) {
+            switch try await validateHitAsync(entry: entry, session: session) {
             case let .valid(payload):
                 return payload
             case let .invalid(candidate):
@@ -613,7 +676,7 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
                 continue
             }
 
-            switch try validateHit(entry: entry, session: session) {
+            switch try await validateHitAsync(entry: entry, session: session) {
             case let .valid(payload):
                 return try await publishRenderedVariant(
                     sourceBytes: payload.encodedBytes,
@@ -623,7 +686,7 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
                     replacementCandidate: replacementCandidate
                 )
             case let .invalid(candidate):
-                try repository.deleteEntry(id: candidate.id)
+                try await catalogBlocking { try self.repository.deleteEntry(id: candidate.id) }
                 _ = try? store.deleteObjectDuringEviction(
                     entryID: candidate.id,
                     format: candidate.storageFormat,
@@ -720,11 +783,13 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
             lastAccessedAtMs: nowMs
         )
 
-        let outcome = try repository.publishEntryReplacingKey(
-            entry: entry,
-            expected: context,
-            replacementCandidateID: replacementCandidate?.id
-        )
+        let outcome = try await catalogBlocking {
+            try self.repository.publishEntryReplacingKey(
+                entry: entry,
+                expected: context,
+                replacementCandidateID: replacementCandidate?.id
+            )
+        }
         switch outcome {
         case .sourceChanged:
             _ = try? store.deleteObjectDuringEviction(
@@ -739,7 +804,7 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
                 format: artifact.storageFormat,
                 session: session
             )
-            switch try validateHit(entry: winner, session: session) {
+            switch try await validateHitAsync(entry: winner, session: session) {
             case let .valid(payload):
                 return payload
             case let .invalid(candidate):
@@ -786,13 +851,15 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
         defer { session.closeHandles() }
 
         var replacementCandidate: DerivedImageCacheEntryRow?
-        if let entry = try repository.fetchEntry(
-            assetID: lookup.assetID,
-            contentRevision: lookup.contentRevision,
-            representationVersion: DerivedImageRepresentationVersion.production,
-            variant: variant
-        ) {
-            switch try validateHit(entry: entry, session: session) {
+        if let entry = try await catalogBlocking({
+            try self.repository.fetchEntry(
+                assetID: lookup.assetID,
+                contentRevision: lookup.contentRevision,
+                representationVersion: DerivedImageRepresentationVersion.production,
+                variant: variant
+            )
+        }) {
+            switch try await validateHitAsync(entry: entry, session: session) {
             case let .valid(payload):
                 return payload.encodedBytes
             case let .invalid(candidate):
@@ -813,14 +880,14 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
 
         do {
             if usesDownloadedPreviewQuota {
-                try evictDownloadedPreviewsIfNeeded(incomingBytes: incomingBytes, session: session)
+                try await evictDownloadedPreviewsIfNeeded(incomingBytes: incomingBytes, session: session)
             }
             try await evictIfNeeded(incomingBytes: incomingBytes, session: session)
         } catch DerivedImageError.derivedInsufficientSpace {
             return artifact.bytes
         }
 
-        return try publishPhotoImage(
+        return try await publishPhotoImage(
             artifact: artifact,
             lookup: lookup,
             variant: variant,
@@ -835,7 +902,7 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
         variant: DerivedImageVariant,
         session: DerivedImageAnchoredCacheSession,
         replacementCandidate: DerivedImageCacheEntryRow?
-    ) throws -> Data {
+    ) async throws -> Data {
         let stagingName = DerivedImageCachePathLayout.stagingFileName()
         operationGate.beginGeneration(stagingName: stagingName)
         defer { operationGate.endGeneration(stagingName: stagingName) }
@@ -872,11 +939,13 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
             createdAtMs: nowMs,
             lastAccessedAtMs: nowMs
         )
-        let outcome = try repository.publishEntryReplacingKey(
-            entry: entry,
-            expected: lookup,
-            replacementCandidateID: replacementCandidate?.id
-        )
+        let outcome = try await catalogBlocking {
+            try self.repository.publishEntryReplacingKey(
+                entry: entry,
+                expected: lookup,
+                replacementCandidateID: replacementCandidate?.id
+            )
+        }
         switch outcome {
         case .sourceChanged:
             _ = try? store.deleteObjectDuringEviction(
@@ -891,11 +960,11 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
                 format: artifact.storageFormat,
                 session: session
             )
-            switch try validateHit(entry: winner, session: session) {
+            switch try await validateHitAsync(entry: winner, session: session) {
             case let .valid(payload):
                 return payload.encodedBytes
             case let .invalid(candidate):
-                return try publishPhotoImage(
+                return try await publishPhotoImage(
                     artifact: artifact,
                     lookup: lookup,
                     variant: variant,
@@ -943,6 +1012,24 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
                 encodedBytes: bytes,
                 origin: .cacheHit
             )
+        )
+    }
+
+    private func validateHitAsync(
+        entry: DerivedImageCacheEntryRow,
+        session: DerivedImageAnchoredCacheSession
+    ) async throws -> HitValidationResult {
+        try await catalogBlocking {
+            try self.validateHit(entry: entry, session: session)
+        }
+    }
+
+    private func catalogBlocking<T: Sendable>(
+        _ operation: @escaping @Sendable () throws -> T
+    ) async throws -> T {
+        try await CatalogBlockingExecutor.shared.run(
+            priority: .utility,
+            operation
         )
     }
 
@@ -1078,11 +1165,13 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
             createdAtMs: nowMs,
             lastAccessedAtMs: nowMs
         )
-        let outcome = try repository.publishEntryReplacingKey(
-            entry: entry,
-            expected: context,
-            replacementCandidateID: replacementCandidate?.id
-        )
+        let outcome = try await catalogBlocking {
+            try self.repository.publishEntryReplacingKey(
+                entry: entry,
+                expected: context,
+                replacementCandidateID: replacementCandidate?.id
+            )
+        }
         switch outcome {
         case .sourceChanged:
             _ = try? store.deleteObjectDuringEviction(
@@ -1097,7 +1186,7 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
                 format: artifact.storageFormat,
                 session: session
             )
-            switch try validateHit(entry: winner, session: session) {
+            switch try await validateHitAsync(entry: winner, session: session) {
             case let .valid(payload):
                 return payload
             case let .invalid(candidate):
@@ -1309,18 +1398,20 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
             lastAccessedAtMs: nowMs
         )
 
-        let outcome = try repository.publishEntryReplacingKey(
-            entry: entry,
-            expected: context,
-            replacementCandidateID: replacementCandidate?.id
-        )
+        let outcome = try await catalogBlocking {
+            try self.repository.publishEntryReplacingKey(
+                entry: entry,
+                expected: context,
+                replacementCandidateID: replacementCandidate?.id
+            )
+        }
         switch outcome {
         case .sourceChanged:
             try? store.deleteObjectDuringEviction(entryID: entryID, format: artifact.storageFormat, session: session)
             throw DerivedImageError.derivedSourceChanged
         case let .lostRaceToExisting(winner):
             try? store.deleteObjectDuringEviction(entryID: entryID, format: artifact.storageFormat, session: session)
-            switch try validateHit(entry: winner, session: session) {
+            switch try await validateHitAsync(entry: winner, session: session) {
             case let .valid(payload):
                 return payload
             case let .invalid(candidate):
@@ -1353,54 +1444,76 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
         }
     }
 
-    private func evictIfNeeded(incomingBytes: UInt64, session: DerivedImageAnchoredCacheSession) async throws {
-        let facts = try requireVolumeFacts(at: store.versionRoot)
-        guard let reserve = DerivedImageQuotaPolicy.reserveBytes(totalVolumeBytes: facts.totalBytes) else {
-            throw DerivedImageError.derivedCapacityUnavailable
-        }
-
-        var available = facts.availableBytes
-        var lastAvailableAfterSuccessfulDelete = available
-
+    private func evictIfNeeded(
+        incomingBytes: UInt64,
+        session: DerivedImageAnchoredCacheSession
+    ) async throws {
         while true {
-            let needsReserveEviction: Bool
-            if let required = DerivedImageQuotaPolicy.adding(reserve, incomingBytes) {
-                needsReserveEviction = available < required
-            } else {
-                throw DerivedImageError.derivedCapacityUnavailable
-            }
-
-            if !needsReserveEviction {
+            let facts = try requireVolumeFacts(at: store.versionRoot)
+            if try hasCapacity(facts: facts, incomingBytes: incomingBytes) {
                 return
             }
+            let performedReclaim = try await evictionCoordinator.run { [self] in
+                try await evictUntilCapacityAvailable(
+                    incomingBytes: incomingBytes,
+                    initialFacts: facts,
+                    session: session
+                )
+            }
+            if performedReclaim { return }
+        }
+    }
 
-            let candidates = try repository.lruEntries()
-            guard let victim = candidates.first else {
+    private func evictUntilCapacityAvailable(
+        incomingBytes: UInt64,
+        initialFacts: DerivedImageVolumeFacts,
+        session: DerivedImageAnchoredCacheSession
+    ) async throws {
+        var facts = initialFacts
+        while !(try hasCapacity(facts: facts, incomingBytes: incomingBytes)) {
+            let candidates = try await catalogBlocking {
+                try self.repository.lruEntries(limit: 128)
+            }
+            guard !candidates.isEmpty else {
                 throw DerivedImageError.derivedInsufficientSpace
             }
 
-            try repository.deleteEntry(id: victim.id)
-            let objectDeleted = (try? store.deleteObjectDuringEviction(
-                entryID: victim.id,
-                format: victim.storageFormat,
-                session: session
-            )) ?? false
-
-            if objectDeleted {
-                let refreshed = try requireVolumeFacts(at: store.versionRoot)
-                available = refreshed.availableBytes
-                lastAvailableAfterSuccessfulDelete = available
-            } else {
-                available = lastAvailableAfterSuccessfulDelete
+            for victim in candidates {
+                try await catalogBlocking { try self.repository.deleteEntry(id: victim.id) }
+                let objectDeleted = (try? store.deleteObjectDuringEviction(
+                    entryID: victim.id,
+                    format: victim.storageFormat,
+                    session: session
+                )) ?? false
+                if objectDeleted {
+                    facts = try requireVolumeFacts(at: store.versionRoot)
+                    if try hasCapacity(facts: facts, incomingBytes: incomingBytes) {
+                        return
+                    }
+                }
             }
         }
+    }
+
+    private func hasCapacity(
+        facts: DerivedImageVolumeFacts,
+        incomingBytes: UInt64
+    ) throws -> Bool {
+        guard let reserve = DerivedImageQuotaPolicy.reserveBytes(
+            totalVolumeBytes: facts.totalBytes
+        ), let required = DerivedImageQuotaPolicy.adding(reserve, incomingBytes) else {
+            throw DerivedImageError.derivedCapacityUnavailable
+        }
+        return facts.availableBytes >= required
     }
 
     private func evictDownloadedPreviewsIfNeeded(
         incomingBytes: UInt64,
         session: DerivedImageAnchoredCacheSession
-    ) throws {
-        var published = try repository.downloadedPreviewByteTotal()
+    ) async throws {
+        var published = try await catalogBlocking {
+            try self.repository.downloadedPreviewByteTotal()
+        }
         while true {
             guard let combined = DerivedImageQuotaPolicy.adding(published, incomingBytes) else {
                 throw DerivedImageError.derivedInsufficientSpace
@@ -1408,20 +1521,29 @@ final class DerivedImageCacheService: DerivedImageCachePort, DownloadedPreviewCa
             if combined <= downloadedPreviewQuotaBytes {
                 return
             }
-            guard let victim = try repository.downloadedPreviewLRUEntries().first else {
+            let candidates = try await catalogBlocking {
+                try self.repository.downloadedPreviewLRUEntries(limit: 128)
+            }
+            guard !candidates.isEmpty else {
                 throw DerivedImageError.derivedInsufficientSpace
             }
-            try repository.deleteEntry(id: victim.id)
-            if let victimBytes = UInt64(exactly: victim.byteSize),
-               let reduced = DerivedImageQuotaPolicy.subtracting(published, victimBytes)
-            {
-                published = reduced
+            for victim in candidates {
+                try await catalogBlocking { try self.repository.deleteEntry(id: victim.id) }
+                if let victimBytes = UInt64(exactly: victim.byteSize),
+                   let reduced = DerivedImageQuotaPolicy.subtracting(published, victimBytes)
+                {
+                    published = reduced
+                }
+                _ = try? store.deleteObjectDuringEviction(
+                    entryID: victim.id,
+                    format: victim.storageFormat,
+                    session: session
+                )
+                guard let combined = DerivedImageQuotaPolicy.adding(published, incomingBytes) else {
+                    throw DerivedImageError.derivedInsufficientSpace
+                }
+                if combined <= downloadedPreviewQuotaBytes { return }
             }
-            _ = try? store.deleteObjectDuringEviction(
-                entryID: victim.id,
-                format: victim.storageFormat,
-                session: session
-            )
         }
     }
 
