@@ -6,6 +6,7 @@ enum LibrarySlimmingCommandError: Error, Equatable, Sendable {
     case activeConflict
     case jobNotFound
     case invalidAction
+    case photosOriginalStorageNotConfigured
     case recycleEntryNotFound
     case operationConflict
     case cleanupPlanNotFound

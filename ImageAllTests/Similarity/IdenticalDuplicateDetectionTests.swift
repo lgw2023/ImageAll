@@ -367,7 +367,7 @@ final class IdenticalDuplicateDetectionTests: XCTestCase {
         )
     }
 
-    func testPhotosExactAnalysisDoesNotPersistOriginalWithoutConfiguredLocation() throws {
+    func testPhotosExactAnalysisRequiresConfiguredLocationBeforePhotoKitRequest() throws {
         let env = try SimilarityTestSupport.Environment(label: #function)
         defer { env.cleanup() }
         let photosAssetID = try env.seedPhotosAsset()
@@ -378,11 +378,22 @@ final class IdenticalDuplicateDetectionTests: XCTestCase {
             retainsPhotosOriginals: false
         )
 
-        let fingerprint = try completion.completeAsset(assetID: photosAssetID)
+        XCTAssertThrowsError(
+            try completion.validatePrerequisites(assetIDs: [photosAssetID])
+        ) { error in
+            XCTAssertEqual(
+                error as? FingerprintCompletionError,
+                .photosOriginalStorageNotConfigured
+            )
+        }
+        XCTAssertThrowsError(try completion.completeAsset(assetID: photosAssetID)) { error in
+            XCTAssertEqual(
+                error as? FingerprintCompletionError,
+                .photosOriginalStorageNotConfigured
+            )
+        }
 
-        XCTAssertEqual(fingerprint.sha256, Data(SHA256.hash(data: bytes)))
-        XCTAssertEqual(fingerprint.digestOrigin, .verifiedOriginalBytes)
-        XCTAssertEqual(photos.requestCount, 1)
+        XCTAssertEqual(photos.requestCount, 0)
         let cacheRows = try env.database.pool.read { db in
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM photos_original_cache_entry") ?? 0
         }
@@ -392,6 +403,48 @@ final class IdenticalDuplicateDetectionTests: XCTestCase {
                 atPath: env.root.appendingPathComponent("Photos Originals").path
             )
         )
+    }
+
+    func testLibraryAnalysisJobIsNotCreatedWhenPhotosOriginalStorageIsUnconfigured() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+        let photosAssetID = try env.seedPhotosAsset()
+        let completion = env.makeCompletionService(
+            photosOriginals: SimilarityPhotosOriginalStub(bytes: Data([1, 2, 3])),
+            retainsPhotosOriginals: false
+        )
+        let featureLoader = DictionarySlimmingFeatureLoader(vectors: [:])
+        let embeddingLoader = DictionarySlimmingEmbeddingLoader(vectors: [:])
+        let scanner = LibrarySlimmingScanService(
+            database: env.database,
+            identicalScan: IdenticalDuplicateClusterService(database: env.database),
+            fingerprintCompletion: completion,
+            featureLoader: featureLoader,
+            embeddingLoader: embeddingLoader
+        )
+        let analysis = LibrarySlimmingAnalysisService(
+            database: env.database,
+            queue: JobTestSupport.makeQueue(database: env.database),
+            fingerprintCompletion: completion,
+            featureLoader: featureLoader,
+            embeddingLoader: embeddingLoader,
+            scanner: scanner,
+            clock: FixedJobClock(nowMs: JobTestSupport.baseTimeMs)
+        )
+
+        XCTAssertThrowsError(
+            try analysis.enqueue(
+                mode: .catalog,
+                assetIDs: [photosAssetID],
+                seedAssetIDs: []
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? FingerprintCompletionError,
+                .photosOriginalStorageNotConfigured
+            )
+        }
+        XCTAssertTrue(try analysis.listJobs().isEmpty)
     }
 
     func testPhotosFingerprintSkipsWhenNoLocalBytesAvailable() throws {

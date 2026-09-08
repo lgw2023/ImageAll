@@ -7627,6 +7627,66 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertTrue(model.hasCompletedLibrarySlimmingScan)
     }
 
+    func testAnalyzeLibrarySlimmingPromptsForPhotosOriginalStorageBeforeCreatingJob() async {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "photo.jpg")
+        let jobID = UUID()
+        let analysis = FakeLibrarySlimmingAnalysisJobPort(
+            snapshot: LibrarySlimmingAnalysisJobSnapshot(
+                jobID: jobID,
+                state: .pending,
+                controlRequest: .none,
+                progress: JobProgress(completed: 0, total: 1),
+                result: nil
+            ),
+            summary: LibrarySlimmingAnalysisJobSummary(
+                jobID: jobID,
+                mode: .currentFilter,
+                state: .pending,
+                controlRequest: .none,
+                progress: JobProgress(completed: 0, total: 1),
+                attempts: 0,
+                maxAttempts: 10,
+                memberCount: 1,
+                seedCount: 0,
+                clusterCount: 0,
+                hasResult: false,
+                createdAtMs: 1,
+                updatedAtMs: 1
+            ),
+            enqueueError: .photosOriginalStorageNotConfigured
+        )
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                displayName: "Apple Photos",
+                state: .active
+            ),
+            reconciledItems: [asset],
+            initialItems: [asset],
+            startsConnected: true,
+            hasPendingCatalogReconcileJobs: false
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            librarySlimming: StubLibrarySlimmingScanPort(),
+            librarySlimmingAnalysis: analysis
+        )
+        await model.start()
+
+        await model.analyzeLibrarySlimming(mode: .currentFilter)
+
+        XCTAssertTrue(model.showsPhotosOriginalStorageConfigurationPrompt)
+        XCTAssertEqual(
+            model.librarySlimmingStatusMessage,
+            "需要先在设置中选择 Photos 原图副本的保存位置。"
+        )
+        XCTAssertNil(model.librarySlimmingAnalysisJobID)
+
+        model.dismissPhotosOriginalStorageConfigurationPrompt()
+        XCTAssertFalse(model.showsPhotosOriginalStorageConfigurationPrompt)
+    }
+
     func testResumableLibrarySlimmingCatalogJobUsesSelectedSourceIDs() async {
         let firstSourceID = UUID()
         let secondSourceID = UUID()
@@ -16193,6 +16253,7 @@ private final class FakeLibrarySlimmingAnalysisJobPort:
     private let lock = NSLock()
     private let snapshotValue: LibrarySlimmingAnalysisJobSnapshot
     private let summaryValue: LibrarySlimmingAnalysisJobSummary
+    private let enqueueError: FingerprintCompletionError?
     private var storedEnqueuedAssetIDs: [UUID] = []
     private var storedReviewDispositions:
         [UUID: LibrarySlimmingClusterReviewDisposition] = [:]
@@ -16200,10 +16261,12 @@ private final class FakeLibrarySlimmingAnalysisJobPort:
     init(
         snapshot: LibrarySlimmingAnalysisJobSnapshot,
         summary: LibrarySlimmingAnalysisJobSummary,
-        reviewDispositions: [UUID: LibrarySlimmingClusterReviewDisposition] = [:]
+        reviewDispositions: [UUID: LibrarySlimmingClusterReviewDisposition] = [:],
+        enqueueError: FingerprintCompletionError? = nil
     ) {
         snapshotValue = snapshot
         summaryValue = summary
+        self.enqueueError = enqueueError
         storedReviewDispositions = reviewDispositions
     }
 
@@ -16220,6 +16283,7 @@ private final class FakeLibrarySlimmingAnalysisJobPort:
         assetIDs: [UUID],
         seedAssetIDs _: [UUID]
     ) throws -> LibrarySlimmingAnalysisJobSnapshot {
+        if let enqueueError { throw enqueueError }
         lock.withLock {
             storedEnqueuedAssetIDs = assetIDs
         }

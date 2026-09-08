@@ -1696,6 +1696,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var librarySlimmingPendingCount = 0
     @Published private(set) var isAnalyzingLibrarySlimming = false
     @Published private(set) var librarySlimmingStatusMessage: String?
+    @Published private(set) var showsPhotosOriginalStorageConfigurationPrompt = false
     @Published private(set) var librarySlimmingRecycleActionMessage: String?
     @Published private(set) var librarySlimmingScanProgress: LibrarySlimmingScanProgress?
     @Published private(set) var librarySlimmingAnalyzeMode: LibrarySlimmingAnalyzeMode = .catalog
@@ -4154,6 +4155,10 @@ final class LibraryWorkspaceModel: ObservableObject {
                 }
             }
             applyLibrarySlimmingResult(result)
+        } catch FingerprintCompletionError.photosOriginalStorageNotConfigured {
+            showsPhotosOriginalStorageConfigurationPrompt = true
+            librarySlimmingStatusMessage =
+                "需要先在设置中选择 Photos 原图副本的保存位置。"
         } catch {
             librarySlimmingStatusMessage = "分析失败：\(error.localizedDescription)"
         }
@@ -4232,10 +4237,19 @@ final class LibraryWorkspaceModel: ObservableObject {
             librarySlimmingStatusMessage = "后台自动补全内容指纹与相似度向量…"
             librarySlimmingAnalysisJobState = .running
             startLibrarySlimmingAnalysisAutoRunner()
+        } catch FingerprintCompletionError.photosOriginalStorageNotConfigured {
+            isAnalyzingLibrarySlimming = false
+            showsPhotosOriginalStorageConfigurationPrompt = true
+            librarySlimmingStatusMessage =
+                "需要先在设置中选择 Photos 原图副本的保存位置。"
         } catch {
             isAnalyzingLibrarySlimming = false
             librarySlimmingStatusMessage = "分析失败：\(error.localizedDescription)"
         }
+    }
+
+    func dismissPhotosOriginalStorageConfigurationPrompt() {
+        showsPhotosOriginalStorageConfigurationPrompt = false
     }
 
     func pauseLibrarySlimmingAnalysis() async {
@@ -13301,7 +13315,7 @@ struct LibraryWorkspaceView: View {
                     UInt64(max(0, model.photosOriginalStorageUsage.registeredBytes))
                 )
             )
-            Text("保留策略：默认不写入完整副本；只有在 App 设置中选择保存位置后才长期保留。这里的统计也包含旧版本留下的副本。")
+            Text("保留策略：涉及 Apple Photos 原图的相同检测会先要求在 App 设置中选择保存位置。这里的统计也包含旧版本留下的副本。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -13543,6 +13557,26 @@ struct LibraryWorkspaceView: View {
         }
         .onDisappear {
             model.stopVideoHoverPlayback()
+        }
+        .alert(
+            "需要设置 Photos 原图副本位置",
+            isPresented: Binding(
+                get: { model.showsPhotosOriginalStorageConfigurationPrompt },
+                set: { showing in
+                    if !showing {
+                        model.dismissPhotosOriginalStorageConfigurationPrompt()
+                    }
+                }
+            )
+        ) {
+            SettingsLink {
+                Text("打开设置")
+            }
+            Button("暂不分析", role: .cancel) {
+                model.dismissPhotosOriginalStorageConfigurationPrompt()
+            }
+        } message: {
+            Text("相同检测需要读取并保存 Apple Photos 的完整原图。请在“设置 → 通用 → Photos 原图副本”选择保存位置，重新启动 ImageAll 后再分析。当前分析尚未开始。")
         }
         .alert(
             "重命名标签",

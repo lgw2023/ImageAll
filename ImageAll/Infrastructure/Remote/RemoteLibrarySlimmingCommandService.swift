@@ -1832,6 +1832,8 @@ actor RemoteLibrarySlimmingCommandService: RemoteLibrarySlimmingCommandPort {
             switch completionError {
             case .notFound, .ineligible:
                 return LibrarySlimmingCommandError.invalidSelection
+            case .photosOriginalStorageNotConfigured:
+                return LibrarySlimmingCommandError.photosOriginalStorageNotConfigured
             default:
                 break
             }

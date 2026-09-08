@@ -3269,6 +3269,11 @@ actor RemoteCatalogFacade {
             return RemoteAPIError(code: .notFound, message: "图库瘦身分析记录不存在")
         case .invalidAction:
             return RemoteAPIError(code: .conflict, message: "当前任务状态不允许此操作")
+        case .photosOriginalStorageNotConfigured:
+            return RemoteAPIError(
+                code: .conflict,
+                message: "请先在 Mac App 设置中选择 Photos 原图副本保存位置并重启 ImageAll"
+            )
         case .recycleEntryNotFound:
             return RemoteAPIError(code: .notFound, message: "回收站项目不存在")
         case .operationConflict:

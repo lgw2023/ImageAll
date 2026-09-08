@@ -117,7 +117,7 @@ flowchart LR
     Photos["Apple Photos / iCloud Photos"] -->|"PhotoKit"| App
     App --> Catalog["应用目录库 SQLite"]
     App --> Cache["可重建缓存"]
-    App -. "ADR-044 窄例外" .-> Originals["长期 Photos 原图\nApplication Support"]
+    App -. "ADR-071 用户显式配置" .-> Originals["长期 Photos 原图\n用户选择的位置"]
     App --> Export["标签与配置导出文件"]
     App -. "可选；Swift 直接加载 Core ML" .-> Models["App 容器内模型\n标准标签 / 个人标签"]
 
@@ -130,7 +130,7 @@ flowchart LR
 - 文件资产通过来源根目录与相对路径定位，并用资源标识符和内容指纹判定身份；
 - Photos 资产通过 `PHAsset.localIdentifier` 定位；
 - 两种资产都映射成统一的 `Asset`；
-- 文件夹原图留在原来源；Photos 原图也默认留在原来源。ADR-044 相同检测是唯一长期副本例外。
+- 文件夹原图留在原来源；Photos 原图也默认留在原来源。用户按 ADR-071 选择保存位置后，相同检测才可建立长期副本。
 
 ## 6. 总体架构
 
@@ -485,12 +485,14 @@ MVP 已冻结为 macOS 15+ 并采用 persistent change history；change token �
 
 单图请求的界面状态区分可获取、下载中、失败和已下载，并支持进度、取消与重试。成功结果进入 512 MiB LRU 下载预览子配额，随后供 Inspector、网格、Feature Print、全库建议和 Review Queue 复用，缓存命中不再读取 PhotoKit。该子配额不是额外磁盘预算：条目仍计入统一派生缓存配额，并受磁盘安全余量约束。
 
-ADR-044 增加一个窄例外：Photos「相同」检测遇到 iCloud-only 资产时，分析 Job 可隐式请求 `.original`
-高质量原始内容，并原子保存到 Application Support 的 `Photos Originals/v1` 作为长期可用产品数据。
+ADR-071 收紧 ADR-044 的窄例外：Photos「相同」检测需要补全原始字节指纹且没有可读旧副本时，必须先确认
+用户已经在设置中选择保存位置；未配置则在创建分析 Job 和访问 PhotoKit 前停止，并显示打开设置的提示。
+配置并重启后，分析 Job 遇到 iCloud-only 资产时可隐式请求 `.original` 高质量原始内容，并原子保存到用户
+选择父目录下的 `ImageAll Photos Originals/v1`。
 长期对象不进入派生预览 LRU，索引绑定 asset、content revision、Photos local identifier、字节数和
 SHA-256；内容摘要另记录 `verifiedOriginalBytes` / `visualDerivative` / `unverifiedLegacy` provenance，
 只有第一类可以生成删除级 `byteIdentical`。身份或校验不一致即 fail closed。该授权不扩展到普通建议、批量预览或其它分析任务，也不授权
-写回 Photos 原图或其它元数据；ADR-055 的红心属性除外。长期对象默认无限期保留，不按 TTL 或容量自动淘汰；用户可在存储面板查看独立用量并经
+写回 Photos 原图或其它元数据；ADR-055 的红心属性除外。已配置位置中的长期对象默认无限期保留，不按 TTL 或容量自动淘汰；用户可在存储面板查看独立用量并经
 二次确认清除全部，运行中或待运行分析拒绝清理。清理只删除安全校验通过的 App 副本与索引，不删除
 Photos 资产、人工标签、指纹或分析结果；以后分析可重新下载。受保护真实图库上的云下载 smoke 仍需
 `LOCAL-TEST-DATA-SAFETY.md` 规定的单次授权。
@@ -1261,7 +1263,8 @@ revision 门；cache-only 自动个人重训和独立服务启动已经验收，
 | ADR-040 | 三条个人建议路径的进队门槛升级为用户可调的方法默认 + 标签覆盖；训练/重建不自动改阈值 | ST1–ST4 已实现 | 权威细节见 `SUGGESTION-THRESHOLD-SPEC.md`；`effectiveMinScore = override ?? default`；生成过滤 `score > effectiveMinScore` 后再 Top 100；Review 行展示原始 score；同标签同方法的近期拒绝分数只生成需人工采用的参考值，三轨完成通知展示高于阈值数与候选数 |
 | ADR-042 | 正式拒绝 Places365 ResNet18 作为生产 standard 包候选 | 已决定（2026-07-24） | 未标版本 CC BY 与 academic research/education 用途冲突；不伪造 CC-BY-4.0；公开验证门永久不适用；归档 `research` 证据；下一标准场景包须另选许可清晰的新候选 |
 | ADR-043 | Mac Host + 原生 iOS Companion；R0 Host 仅 Debug 可启用 | R0 已加固，R1+ 待实施 | Mac 保持唯一权威；协议同仓；当前请求上限、鉴权和内存幂等只服务开发，Release 在配对、TLS 与持久幂等完成前硬关闭 |
-| ADR-044 | 图库瘦身双轨回收、普通图库显式删除、跨来源相同检测、Photos 原图长期保存与可恢复大库分析 | S0–S8 与普通图库 Inspector/单图删除已交付；授权真实云下载 smoke 已通过（2026-07-27） | 只有用户显式确认才处置；普通图库与瘦身共用强制确认、红心保护和来源分轨；iCloud-only 相同检测可隐式下载原始内容；长期副本默认无限期保留并可手动全量清理 |
+| ADR-044 | 图库瘦身双轨回收、普通图库显式删除、跨来源相同检测与可恢复大库分析 | S0–S8 与普通图库 Inspector/单图删除已交付；原图存储策略由 ADR-071 收紧 | 只有用户显式确认才处置；普通图库与瘦身共用强制确认、红心保护和来源分轨；原图副本路径与未配置行为以 ADR-071 为准 |
+| ADR-071 | Photos 原图副本仅写入用户选择的位置；缺少位置时先提示 | 已实现 | 未配置时在任务创建和 PhotoKit 请求前停止；设置页保存安全作用域书签；当前、历史与旧版根保持可读和可清理 |
 | ADR-049 | 删除来源即删除其 ImageAll 目录事实 | 已决定（2026-08-02） | 删除来源、关联 Asset/标签决定/任务和 App 缓存，不修改原照片；未完成回收项目必须先恢复或清理 |
 | ADR-053 | 来源区提供安全的全部来源批量操作 | 已决定并实施（2026-08-06） | 全部来源刷新与两类缩略图缓存可一键排队；权限逐个显示系统窗口且取消即停；删除仍逐来源预检确认 |
 | ADR-055 | 红心是跨全 App 生命周期的独立资产事实，并与 Apple Photos 收藏双向同步 | 已决定并实施（2026-08-08） | desired/observed 与单调 intent revision 解决离线和并发；自动清理保护任一仍为红心的状态；Photos 只写公开收藏属性且不读取原图 |

@@ -51,6 +51,63 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
         }
     }
 
+    func validatePrerequisites(assetIDs: [UUID]) throws {
+        guard photosOriginalCache?.isStorageConfigured == false else { return }
+        let normalizedIDs = Array(Set(assetIDs)).map { $0.uuidString.lowercased() }
+        guard !normalizedIDs.isEmpty else { return }
+
+        // Keep below SQLite's conservative host-parameter limit. A registered
+        // durable original can still satisfy the work from a legacy read root.
+        for start in stride(from: 0, to: normalizedIDs.count, by: 400) {
+            let ids = Array(normalizedIDs[start..<min(start + 400, normalizedIDs.count)])
+            let placeholders = Array(repeating: "?", count: ids.count).joined(separator: ", ")
+            let needsStorage = try database.pool.read { db in
+                return try Bool.fetchOne(
+                    db,
+                    sql: """
+                    SELECT EXISTS(
+                        SELECT 1
+                        FROM asset a
+                        JOIN source s ON s.id = a.source_id
+                        LEFT JOIN asset_similarity_fingerprint p
+                            ON p.asset_id = a.id
+                            AND p.content_revision = a.content_revision
+                            AND p.algo_version = ?
+                        LEFT JOIN photos_original_cache_entry c
+                            ON c.asset_id = a.id
+                            AND c.content_revision = a.content_revision
+                            AND c.photos_local_identifier = a.photos_local_identifier
+                        WHERE a.id IN (\(placeholders))
+                          AND a.locator_kind = 'photos'
+                          AND a.locator_state = 'current'
+                          AND a.availability = 'available'
+                          AND a.media_kind = 'image'
+                          AND s.kind = 'photos'
+                          AND s.state = 'active'
+                          AND c.asset_id IS NULL
+                          AND (
+                            p.asset_id IS NULL
+                            OR p.content_sha256 IS NULL
+                            OR p.verification_signature IS NULL
+                            OR p.content_digest_origin IS NULL
+                            OR p.content_digest_origin != ?
+                          )
+                        LIMIT 1
+                    )
+                    """,
+                    arguments: StatementArguments(
+                        [IdenticalDuplicatePolicy.perceptualAlgoVersion]
+                            + ids
+                            + [AssetContentDigestOrigin.verifiedOriginalBytes.rawValue]
+                    )
+                ) ?? false
+            }
+            if needsStorage {
+                throw FingerprintCompletionError.photosOriginalStorageNotConfigured
+            }
+        }
+    }
+
     func completeFolderAsset(assetID: UUID) throws -> AssetContentFingerprint {
         guard let context = try assetRepository.fetchGenerationContext(assetID: assetID) else {
             throw FingerprintCompletionError.notFound
@@ -409,21 +466,34 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
         }
 
         let loaded: (bytes: Data, origin: PhotosSourceBytesOrigin)
-        do {
-            loaded = try withBackgroundIO {
-                try loadPhotosSourceBytes(assetID: assetID, context: context)
+        if let photosOriginalCache,
+           let cached = try photosOriginalCache.load(
+               assetID: assetID,
+               contentRevision: context.contentRevision,
+               localIdentifier: context.localIdentifier
+           )
+        {
+            loaded = (cached, .durableCache)
+        } else {
+            guard photosOriginalCache?.isStorageConfigured != false else {
+                throw FingerprintCompletionError.photosOriginalStorageNotConfigured
             }
-        } catch let error as FingerprintCompletionError {
-            throw error
-        } catch let error as PhotosLibraryError {
-            switch error {
-            case .authorizationDenied, .authorizationRestricted:
-                throw FingerprintCompletionError.authorizationRequired
-            case .libraryUnavailable, .cloudOnly, .changeTokenInvalid, .persistenceFailure:
-                throw FingerprintCompletionError.sourceUnavailable
+            do {
+                loaded = try withBackgroundIO {
+                    try loadPhotosSourceBytes(assetID: assetID, context: context)
+                }
+            } catch let error as FingerprintCompletionError {
+                throw error
+            } catch let error as PhotosLibraryError {
+                switch error {
+                case .authorizationDenied, .authorizationRestricted:
+                    throw FingerprintCompletionError.authorizationRequired
+                case .libraryUnavailable, .cloudOnly, .changeTokenInvalid, .persistenceFailure:
+                    throw FingerprintCompletionError.sourceUnavailable
+                }
+            } catch {
+                throw FingerprintCompletionError.persistenceFailed
             }
-        } catch {
-            throw FingerprintCompletionError.persistenceFailed
         }
         let bytes = loaded.bytes
         guard !bytes.isEmpty else {
@@ -432,13 +502,19 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
         if loaded.origin == .localOriginal,
            let photosOriginalCache
         {
-            _ = try? photosOriginalCache.store(
-                assetID: assetID,
-                contentRevision: context.contentRevision,
-                localIdentifier: context.localIdentifier,
-                mediaType: context.mediaType,
-                sourceBytes: bytes
-            )
+            do {
+                _ = try photosOriginalCache.store(
+                    assetID: assetID,
+                    contentRevision: context.contentRevision,
+                    localIdentifier: context.localIdentifier,
+                    mediaType: context.mediaType,
+                    sourceBytes: bytes
+                )
+            } catch PhotosOriginalCacheError.storageNotConfigured {
+                throw FingerprintCompletionError.photosOriginalStorageNotConfigured
+            } catch {
+                throw FingerprintCompletionError.persistenceFailed
+            }
         }
 
         let sha256 = Data(SHA256.hash(data: bytes))
@@ -850,6 +926,8 @@ struct PhotosOriginalCacheService: Sendable {
     let legacyRootURLs: [URL]
     let accessLease: (any AppStorageAccessLease)?
     let clock: any JobClock
+
+    var isStorageConfigured: Bool { rootURL != nil }
 
     init(database: CatalogDatabase, rootURL: URL, clock: any JobClock) {
         self.init(

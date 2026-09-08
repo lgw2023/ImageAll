@@ -357,7 +357,7 @@ struct AppModelSettingsView: View {
                     }
                     Text(
                         photosOriginalStorageSettings.configuredRootURL == nil
-                            ? "默认不长期保存完整原图。“图库瘦身”的相同检测仍可按需读取 PhotoKit 原图并计算结果，但不会把完整副本写入磁盘。"
+                            ? "尚未设置时，涉及 Apple Photos 原图的“相同”检测不会开始；ImageAll 会先提醒你选择保存位置。"
                             : "只有你手动选择位置后，ImageAll 才会长期保存相同检测取得的完整原图副本。旧位置中的已有副本仍可在“应用存储与预览缓存”面板查看和清理。"
                     )
                     .font(.caption)

@@ -449,6 +449,7 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
         onProgress: LibrarySlimmingScanProgressHandler?
     ) throws {
         guard let fingerprintCompletion else { return }
+        try fingerprintCompletion.validatePrerequisites(assetIDs: assetIDs)
         let total = assetIDs.count
         for (index, assetID) in assetIDs.enumerated() {
             onProgress?(
@@ -460,6 +461,8 @@ struct LibrarySlimmingScanService: LibrarySlimmingScanPort {
             )
             do {
                 _ = try fingerprintCompletion.completeAsset(assetID: assetID)
+            } catch FingerprintCompletionError.photosOriginalStorageNotConfigured {
+                throw FingerprintCompletionError.photosOriginalStorageNotConfigured
             } catch FingerprintCompletionError.ineligible,
                     FingerprintCompletionError.notFound,
                     FingerprintCompletionError.sourceUnavailable,
@@ -934,6 +937,7 @@ struct LibrarySlimmingAnalysisService: LibrarySlimmingAnalysisJobPort {
     let clock: any JobClock
     private let leaseDurationMs: Int64
     private let coordinator: JobExecutionCoordinator
+    private let fingerprintCompletion: any FingerprintCompletionPort
 
     init(
         database: CatalogDatabase,
@@ -949,6 +953,7 @@ struct LibrarySlimmingAnalysisService: LibrarySlimmingAnalysisJobPort {
         self.queue = queue
         self.clock = clock
         self.leaseDurationMs = leaseDurationMs
+        self.fingerprintCompletion = fingerprintCompletion
         let handler = LibrarySlimmingAnalysisHandler(
             database: database,
             queue: queue,
@@ -992,6 +997,7 @@ struct LibrarySlimmingAnalysisService: LibrarySlimmingAnalysisJobPort {
         guard !members.isEmpty else {
             throw FingerprintCompletionError.notFound
         }
+        try fingerprintCompletion.validatePrerequisites(assetIDs: members)
         let normalizedMembers = members.map { $0.uuidString.lowercased() }
         let placeholders = Array(repeating: "?", count: normalizedMembers.count)
             .joined(separator: ", ")
@@ -1486,7 +1492,13 @@ private struct LibrarySlimmingAnalysisHandler: LeaseBoundJobHandler {
                         continue
                     }
                     for member in batch {
-                        _ = try? fingerprintCompletion.completeAsset(assetID: member.assetID)
+                        do {
+                            _ = try fingerprintCompletion.completeAsset(assetID: member.assetID)
+                        } catch FingerprintCompletionError.photosOriginalStorageNotConfigured {
+                            throw FingerprintCompletionError.photosOriginalStorageNotConfigured
+                        } catch {
+                            continue
+                        }
                     }
                     state.nextOrdinal = (batch.last?.ordinal ?? state.nextOrdinal) + 1
                     if let settled = try commitProgress(

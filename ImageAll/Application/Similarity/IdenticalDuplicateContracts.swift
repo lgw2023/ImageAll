@@ -44,6 +44,7 @@ enum FingerprintCompletionError: Error, Equatable, Sendable {
     case authorizationRequired
     case decodeFailed
     case persistenceFailed
+    case photosOriginalStorageNotConfigured
 }
 
 /// Provenance of the bytes represented by `content_sha256`.
@@ -69,8 +70,12 @@ struct AssetContentFingerprint: Sendable, Equatable {
 }
 
 protocol FingerprintCompletionPort: Sendable {
+    /// Fails before an analysis job is created when Photos still images in the
+    /// requested scope need durable original storage but no write location is configured.
+    func validatePrerequisites(assetIDs: [UUID]) throws
+
     /// Completes durable content + perceptual verification for one folder or
-    /// Photos asset. Photos originals are implicitly materialized and cached.
+    /// Photos asset. Missing Photos originals require a user-configured durable root.
     func completeAsset(assetID: UUID) throws -> AssetContentFingerprint
 
     /// Backward-compatible folder-only entry point.
@@ -81,6 +86,10 @@ protocol FingerprintCompletionPort: Sendable {
 
     /// Backward-compatible folder-only batch entry point.
     func completePendingFolderAssets(limit: Int) throws -> [AssetContentFingerprint]
+}
+
+extension FingerprintCompletionPort {
+    func validatePrerequisites(assetIDs _: [UUID]) throws {}
 }
 
 protocol IdenticalDuplicateScanPort: Sendable {

@@ -50,7 +50,7 @@
 - 受保护真实图库的默认 smoke 不调用删除、编辑、导入、关键词写入或其他 Photos 写入 API；ADR-044
   已实现的用户确认软删除能力不构成在该图库上运行删除 smoke 的授权；
 - 对受保护真实图库的 smoke 默认禁止触发 iCloud 网络下载；如某项验收必须下载 iCloud-only 资源，须取得单独的 `CloudDownloadGrant` 和用户确认，并在开始前说明 Photos 可能产生系统管理的本地缓存，
-  且 ImageAll「相同检测」会在 App Application Support 长期保留一份校验过的原始图像及占用磁盘；
+  且 ImageAll「相同检测」会要求先配置用户选择的长期原图副本位置，并在那里保留校验过的原始图像及占用磁盘；
 - 项目所有者批准的“相同检测隐式下载并长期保存”是**产品行为决策**，不自动授权当前开发任务对
   HDD2 真实图库执行或验证该行为；每次真实 smoke 仍需单独的 `CloudDownloadGrant`；
 - PhotoKit 没有供本产品使用的独立只读 access level，因此 `.readWrite` 授权不等于本次测试的写入许可；
@@ -103,7 +103,7 @@ ImageAll 解码/索引流程
         |
         +--> App 容器内事实库
         +--> App Caches 内可重建派生数据
-        +--> 经单次 CloudDownloadGrant 后，App Application Support 内的长期 Photos 原图
+        +--> 经单次 CloudDownloadGrant 后，用户明确选择位置中的长期 Photos 原图
         +--> 聚合测试证据
 
 禁止任何反向写入受保护来源
