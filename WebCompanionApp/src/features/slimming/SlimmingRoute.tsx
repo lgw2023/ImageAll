@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -27,7 +27,7 @@ import type {
   SlimmingRemovalMode,
   SlimmingThresholds,
 } from '@/api/contracts/slimming';
-import { errorMessage } from '@/api/errors';
+import { APIError, errorMessage } from '@/api/errors';
 import {
   applySlimmingJobAction,
   fetchIdenticalCleanup,
@@ -44,6 +44,8 @@ import {
   submitSlimmingRemoval,
   updateSlimmingThresholds,
 } from '@/api/slimming';
+
+import { PhotosOriginalStorageDialog } from './PhotosOriginalStorageDialog';
 
 type SlimmingSection = 'analyze' | 'review' | 'cleanup' | 'recycle';
 type RecycleScope = 'all' | 'photos' | 'files' | 'attention';
@@ -86,6 +88,18 @@ const removalModeLabels: Record<SlimmingRemovalMode, string> = {
   recoverableRecycle: '可恢复回收',
   releaseSourceSpace: '释放来源空间',
 };
+
+const photosOriginalStorageConfigurationMessage =
+  '请先在 Mac App 设置中选择 Photos 原图副本保存位置并重启 ImageAll';
+
+function isPhotosOriginalStorageConfigurationError(error: unknown) {
+  return (
+    error instanceof APIError &&
+    error.status === 409 &&
+    error.code === 'conflict' &&
+    error.message === photosOriginalStorageConfigurationMessage
+  );
+}
 
 function dateTime(value: number) {
   return new Intl.DateTimeFormat('zh-CN', {
@@ -164,6 +178,8 @@ export function SlimmingRoute() {
   const [recycleSearch, setRecycleSearch] = useState('');
   const [pending, setPending] = useState('');
   const [message, setMessage] = useState('');
+  const [showsPhotosOriginalStoragePrompt, setShowsPhotosOriginalStoragePrompt] = useState(false);
+  const launchButtonRef = useRef<HTMLButtonElement>(null);
 
   const seedAssetIDs = useMemo(
     () =>
@@ -371,7 +387,12 @@ export function SlimmingRoute() {
       setMessage(`Mac 已接受 ${response.memberCount.toLocaleString('zh-CN')} 项分析范围。`);
       await queryClient.invalidateQueries({ queryKey: ['slimming-workspace'] });
     } catch (error) {
-      setMessage(errorMessage(error));
+      if (isPhotosOriginalStorageConfigurationError(error)) {
+        setMessage('需要先在 Mac App 设置中选择 Photos 原图副本的保存位置。');
+        setShowsPhotosOriginalStoragePrompt(true);
+      } else {
+        setMessage(errorMessage(error));
+      }
     } finally {
       setPending('');
     }
@@ -498,11 +519,19 @@ export function SlimmingRoute() {
         </div>
       ) : null}
 
+      {showsPhotosOriginalStoragePrompt ? (
+        <PhotosOriginalStorageDialog
+          onDismiss={() => setShowsPhotosOriginalStoragePrompt(false)}
+          returnFocus={launchButtonRef}
+        />
+      ) : null}
+
       {section === 'analyze' ? (
         <AnalyzeSection
           analyzeMode={analyzeMode}
           effectiveSourceIDs={effectiveSourceIDs}
           launch={() => void launchAnalysis()}
+          launchButtonRef={launchButtonRef}
           mediaKind={mediaKind}
           pending={pending}
           seedAssetIDs={seedAssetIDs}
@@ -590,6 +619,7 @@ function AnalyzeSection({
   analyzeMode,
   effectiveSourceIDs,
   launch,
+  launchButtonRef,
   mediaKind,
   pending,
   seedAssetIDs,
@@ -605,6 +635,7 @@ function AnalyzeSection({
   analyzeMode: SlimmingAnalyzeMode;
   effectiveSourceIDs: string[];
   launch: () => void;
+  launchButtonRef: React.RefObject<HTMLButtonElement | null>;
   mediaKind: AssetMediaKind;
   pending: string;
   seedAssetIDs: string[];
@@ -750,6 +781,7 @@ function AnalyzeSection({
             className="button button-primary"
             disabled={Boolean(pending)}
             onClick={launch}
+            ref={launchButtonRef}
             type="button"
           >
             <Search aria-hidden="true" size={15} /> 开始分析

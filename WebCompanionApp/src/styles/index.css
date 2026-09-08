@@ -1654,10 +1654,21 @@
 
   .asset-deletion-panel #asset-deletion-description,
   .asset-deletion-panel #source-deletion-description,
-  .asset-deletion-panel #storage-cleanup-description {
+  .asset-deletion-panel #storage-cleanup-description,
+  .asset-deletion-panel #photos-original-storage-description {
     color: var(--color-text-muted);
     font-size: 12px;
     line-height: 1.7;
+  }
+
+  .photos-original-storage-dialog {
+    border-color: color-mix(in srgb, var(--color-warning) 45%, var(--color-border-strong));
+  }
+
+  .photos-original-storage-icon {
+    border-color: color-mix(in srgb, var(--color-warning) 40%, var(--color-border));
+    color: var(--color-warning);
+    background: color-mix(in srgb, var(--color-warning) 9%, var(--color-surface));
   }
 
   .asset-deletion-error {

@@ -66,6 +66,57 @@ test('slimming saves Host thresholds, maintains selected sources, and launches a
   await expect(page.locator('.slimming-job-card').first()).toContainText('进行中');
 });
 
+test('Photos original storage prerequisite stops analysis with Mac setup guidance and stable retry', async ({
+  page,
+}, testInfo) => {
+  await installSyntheticAuthenticatedHost(page);
+  let launchAttempts = 0;
+  await page.route('**/v1/library-slimming/launch', async (route) => {
+    launchAttempts += 1;
+    if (launchAttempts === 1) {
+      return route.fulfill({
+        status: 409,
+        contentType: 'application/json',
+        json: {
+          code: 'conflict',
+          message: '请先在 Mac App 设置中选择 Photos 原图副本保存位置并重启 ImageAll',
+        },
+      });
+    }
+    return route.fallback();
+  });
+  await page.goto('slimming');
+
+  const launch = page.getByRole('button', { name: '开始分析' });
+  await launch.click();
+  const prompt = page.getByRole('alertdialog', { name: '需要设置 Photos 原图副本位置' });
+  await expect(prompt).toBeVisible();
+  await expect(prompt).toContainText('当前分析尚未开始');
+  await expect(prompt).toContainText('设置 → 通用 → Photos 原图副本');
+  await expect(prompt.getByRole('button', { name: '暂不分析' })).toBeFocused();
+  await expectNoHorizontalOverflow(page);
+  await expectAccessible(page);
+  if (process.env.IMAGEALL_CAPTURE_EVIDENCE === '1') {
+    await page.screenshot({
+      path: `../docs/web-companion-refactor/evidence/slimming/imageall-react-photos-original-storage-prompt-${testInfo.project.name}.png`,
+      animations: 'disabled',
+    });
+  }
+  expect(launchAttempts).toBe(1);
+
+  await page.keyboard.press('Escape');
+  await expect(prompt).toBeHidden();
+  await expect(launch).toBeFocused();
+  await expect(
+    page.getByText('需要先在 Mac App 设置中选择 Photos 原图副本的保存位置。'),
+  ).toBeVisible();
+
+  await launch.click();
+  await expect(page.getByText('Mac 已接受 120 项分析范围。')).toBeVisible();
+  await expect(page.locator('.slimming-job-card').first()).toContainText('进行中');
+  expect(launchAttempts).toBe(2);
+});
+
 test('cluster review protects representative and favorite members before Host removal', async ({
   page,
 }, testInfo) => {

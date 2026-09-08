@@ -72,6 +72,11 @@ Host 依然是权威业务层。路径由
 | 图库精简 | workspace、setup、source-maintenance、launch、thresholds、cluster-review | `RemoteLibrarySlimmingDTO.swift` |
 | 精简清理 | recycle 读/请求、removals 读/写、identical cleanup plan/request、job action | `RemoteLibrarySlimmingDTO.swift` |
 
+`POST /v1/library-slimming/launch` 在需要补全 Apple Photos 原图指纹、但 Mac 尚未配置原图副本
+位置时，以 HTTP 409、`code=conflict` 和“请先在 Mac App 设置中选择 Photos 原图副本保存位置并重启
+ImageAll”返回；不会创建分析 Job。当前协议没有更细的机器可读 reason，Web 只在该端点、状态、code
+和完整 Host 文案同时匹配时显示专用提示，其他 409 继续走通用冲突路径。
+
 ## 来源、存储、通知与设置
 
 | Method | Path | 类型源 |
