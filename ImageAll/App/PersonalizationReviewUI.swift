@@ -1476,9 +1476,7 @@ private struct ReviewTagOverviewCard: View {
 
             if overview.pendingSuggestionCount > 0 {
                 ReviewOriginCountBadges(
-                    counts: overview.pendingSuggestionCounts,
-                    mediaKind: model.selectedMediaKind,
-                    onOpenQueue: { onOpenQueue(overview.id, overview.displayName) }
+                    counts: overview.pendingSuggestionCounts
                 )
             }
 
@@ -1557,8 +1555,6 @@ private func reviewTagStatusColor(_ overview: SuggestionTagOverview) -> Color {
 
 private struct ReviewOriginCountBadges: View {
     let counts: SuggestionOriginCounts
-    let mediaKind: MediaKind
-    let onOpenQueue: () -> Void
 
     var body: some View {
         HStack(spacing: 6) {
@@ -1572,16 +1568,13 @@ private struct ReviewOriginCountBadges: View {
     @ViewBuilder
     private func originBadge(_ title: String, count: Int) -> some View {
         if count > 0 {
-            Button(action: onOpenQueue) {
-                Text("\(title) \(count)")
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(.secondary.opacity(0.1), in: Capsule())
-            }
-            .buttonStyle(.plain)
-            .persistentHelp("打开这个标签的待审核\(mediaKind.displayName)队列。")
+            Text("\(title) \(count)")
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(.secondary.opacity(0.1), in: Capsule())
+                .accessibilityLabel("\(title)来源 \(count) 条待审建议")
         }
     }
 }
@@ -1765,6 +1758,20 @@ private func reviewTagStatusIcon(_ overview: SuggestionTagOverview) -> String {
 }
 
 
+enum TagSuggestionThresholdEditorPolicy {
+    static func initialDraft(
+        effectiveMinScore: Double,
+        reference _: SuggestionThresholdReference?
+    ) -> Double {
+        // References are presentation-only until the user explicitly chooses “采用”.
+        return effectiveMinScore
+    }
+
+    static func shouldPersist(draft: Double, effectiveMinScore: Double) -> Bool {
+        draft.isFinite && abs(draft - effectiveMinScore) >= 0.000_001
+    }
+}
+
 struct TagSuggestionThresholdControls: View {
     @ObservedObject var model: LibraryWorkspaceModel
     let tagID: UUID
@@ -1831,6 +1838,25 @@ struct TagSuggestionThresholdControls: View {
                         }
                         .font(.caption2)
                     }
+                    HStack(spacing: 4) {
+                        if model.suggestionThresholdOverride(tagID: tagID, method: method) == nil {
+                            Text("继承全局默认")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("使用标签覆盖")
+                                .foregroundStyle(.secondary)
+                            Button("恢复继承") {
+                                model.clearSuggestionThresholdOverride(
+                                    tagID: tagID,
+                                    method: method
+                                )
+                                syncDraft(for: method)
+                            }
+                            .buttonStyle(.borderless)
+                            .persistentHelp("清除这个标签的覆盖值，重新继承全局默认门槛。")
+                        }
+                    }
+                    .font(.caption2)
                 }
             }
         }
@@ -1893,6 +1919,15 @@ struct TagSuggestionThresholdControls: View {
             draftTexts[method] = String(format: "%.2f", current)
             return
         }
+        let current = model.effectiveSuggestionMinScore(tagID: tagID, method: method)
+        guard TagSuggestionThresholdEditorPolicy.shouldPersist(
+            draft: value,
+            effectiveMinScore: current
+        ) else {
+            drafts[method] = current
+            draftTexts[method] = String(format: "%.2f", current)
+            return
+        }
         apply(method: method, minScore: value)
     }
 
@@ -1909,38 +1944,25 @@ struct TagSuggestionThresholdControls: View {
 
     private func syncDraftsFromModel() {
         for method in SuggestionScoreThresholdMethod.allCases {
-            let value = model.effectiveSuggestionMinScore(tagID: tagID, method: method)
-            drafts[method] = value
-            // Keep in-progress typing unless the field matches the previous draft.
-            if draftTexts[method] == nil
-                || Double(draftTexts[method] ?? "") == nil
-                || abs((Double(draftTexts[method] ?? "") ?? value) - value) < 0.000_001
-            {
-                draftTexts[method] = String(format: "%.2f", value)
-            }
+            syncDraft(for: method)
         }
+    }
+
+    private func syncDraft(for method: SuggestionScoreThresholdMethod) {
+        let value = TagSuggestionThresholdEditorPolicy.initialDraft(
+            effectiveMinScore: model.effectiveSuggestionMinScore(tagID: tagID, method: method),
+            reference: references[method]
+        )
+        drafts[method] = value
+        guard focusedMethodRaw != method.rawValue else { return }
+        draftTexts[method] = String(format: "%.2f", value)
     }
 
     private func reloadThresholdDrafts() async {
         let loaded = await model.suggestionThresholdReferences(tagID: tagID)
         references = loaded
         for method in SuggestionScoreThresholdMethod.allCases {
-            if model.suggestionThresholdOverride(tagID: tagID, method: method) == nil,
-               let reference = loaded[method]
-            {
-                // No tag override yet: seed from sample-based reference as the default.
-                model.setSuggestionThresholdOverride(
-                    tagID: tagID,
-                    method: method,
-                    minScore: reference.minScore
-                )
-                drafts[method] = reference.minScore
-                draftTexts[method] = String(format: "%.2f", reference.minScore)
-            } else {
-                let value = model.effectiveSuggestionMinScore(tagID: tagID, method: method)
-                drafts[method] = value
-                draftTexts[method] = String(format: "%.2f", value)
-            }
+            syncDraft(for: method)
         }
     }
 }

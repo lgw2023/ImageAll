@@ -235,7 +235,7 @@ export const tagLibrarySuggestionActivitySchema = z.object({
 });
 export const tagLibrarySuggestionSnapshotSchema = z.object({
   mediaKind: assetMediaKindSchema,
-  maximumPendingCount: z.int().positive(),
+  pendingCountPolicy: z.literal('unbounded').default('unbounded'),
   personalCentroidAvailable: z.boolean(),
   personalAdamWAvailable: z.boolean(),
   tags: z.array(
@@ -263,4 +263,5 @@ export type TrainingWorkspace = z.infer<typeof trainingWorkspaceSchema>;
 export type EmbeddingPreparationActivity = z.infer<typeof embeddingPreparationActivitySchema>;
 export type SampleSuggestionActivity = z.infer<typeof sampleSuggestionActivitySchema>;
 export type LibrarySuggestionSnapshot = z.infer<typeof librarySuggestionSnapshotSchema>;
+export type TagLibrarySuggestionSnapshot = z.infer<typeof tagLibrarySuggestionSnapshotSchema>;
 export type TagLibrarySuggestionActivity = z.infer<typeof tagLibrarySuggestionActivitySchema>;

@@ -17,12 +17,7 @@ import { useAssetPreview } from '@/features/gallery/useAssetPreview';
 import { useCloudPreview } from '@/features/gallery/useCloudPreview';
 import { useConnection } from '@/features/session/ConnectionContext';
 
-const originLabels = {
-  featurePrint: '特征向量',
-  standardModel: '标准模型',
-  personalModel: '个人模型',
-  personalAdamW: '超级个人模型',
-} as const;
+import { formatSuggestionScore, reviewOriginLabels } from './reviewPresentation';
 
 type ReviewSinglePhotoDialogProps = {
   canMoveNext: boolean;
@@ -126,8 +121,8 @@ export function ReviewSinglePhotoDialog({
             <h2>{title}</h2>
             <p aria-label={`第 ${String(position)} 张，共 ${String(total)} 张`}>
               {position.toLocaleString('zh-CN')} / {total.toLocaleString('zh-CN')} ·{' '}
-              {originLabels[item.suggestionOrigin]}
-              {item.score === null ? '' : ` · ${(item.score * 100).toFixed(1)}%`}
+              {reviewOriginLabels[item.suggestionOrigin]}
+              {formatSuggestionScore(item.score)}
             </p>
           </div>
           <button aria-label="关闭单图审核" className="icon-button" onClick={onClose} type="button">

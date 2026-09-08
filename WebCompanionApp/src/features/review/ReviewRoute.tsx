@@ -19,6 +19,7 @@ import { fetchSources } from '@/api/assets';
 import { fetchCapabilities } from '@/api/capabilities';
 import type { ReviewDecisionAction } from '@/api/contracts/review';
 import { errorMessage } from '@/api/errors';
+import { fetchGeneralSettings } from '@/api/management';
 import {
   applyReviewDecision,
   fetchReviewOverview,
@@ -26,19 +27,20 @@ import {
   undoReviewDecision,
 } from '@/api/review';
 import { fetchTagGroups, fetchTags } from '@/api/tags';
+import { fetchTagLibrarySuggestions } from '@/api/training';
 import { useCollapsedTagGroups } from '@/features/tags/useCollapsedTagGroups';
 
 import { ReviewLocalModelPanel } from './ReviewLocalModelPanel';
 import { buildReviewTagGroups } from './reviewGroups';
+import {
+  formatSuggestionScore,
+  reviewItemKey,
+  reviewOriginLabels,
+  reviewTaskStatusText,
+} from './reviewPresentation';
 import { ReviewSinglePhotoDialog } from './ReviewSinglePhotoDialog';
 import { ReviewSourceScope } from './ReviewSourceScope';
-
-const originLabels = {
-  featurePrint: '视觉相似',
-  standardModel: '标准模型',
-  personalModel: '个人模型',
-  personalAdamW: '个人 AdamW',
-} as const;
+import { ReviewTagControls } from './ReviewTagControls';
 
 const emptySelection = new Set<string>();
 const reviewDensityOptions = [
@@ -102,12 +104,18 @@ function overviewHref(search: string) {
 }
 
 type ReviewWorkspaceProps = {
+  availableSourceIDs: string[];
   sourceIDs: string[] | null;
   sourceScope: ReactNode;
   search: string;
 };
 
-function ReviewOverview({ sourceIDs, sourceScope, search }: ReviewWorkspaceProps) {
+function ReviewOverview({
+  availableSourceIDs,
+  sourceIDs,
+  sourceScope,
+  search,
+}: ReviewWorkspaceProps) {
   const sourceScopeKey = scopeKey(sourceIDs);
   const overview = useQuery({
     queryKey: ['review-overview', sourceScopeKey],
@@ -131,6 +139,25 @@ function ReviewOverview({ sourceIDs, sourceScope, search }: ReviewWorkspaceProps
   });
   const supportsLibrarySuggestions =
     capabilities.data?.capabilities.includes('librarySuggestions') === true;
+  const supportsGeneralSettings =
+    capabilities.data?.capabilities.includes('generalSettings') === true;
+  const settings = useQuery({
+    queryKey: ['general-settings'],
+    queryFn: ({ signal }) => fetchGeneralSettings(signal),
+    enabled: supportsGeneralSettings,
+  });
+  const tagSuggestions = useQuery({
+    queryKey: ['tag-library-suggestions', 'image'],
+    queryFn: ({ signal }) => fetchTagLibrarySuggestions('image', signal),
+    enabled: supportsLibrarySuggestions,
+    refetchInterval: (query) =>
+      query.state.data?.activities.some((activity) =>
+        ['preparingCandidates', 'scoring', 'publishing'].includes(activity.phase),
+      )
+        ? 1_500
+        : false,
+  });
+  const effectiveSourceIDs = sourceIDs ?? availableSourceIDs;
   const groupedTags = useMemo(
     () => buildReviewTagGroups(tags.data ?? [], tagGroups.data ?? [], overview.data?.tags ?? []),
     [overview.data?.tags, tagGroups.data, tags.data],
@@ -228,13 +255,25 @@ function ReviewOverview({ sourceIDs, sourceScope, search }: ReviewWorkspaceProps
                         <article className="review-tag-card" key={tag.id}>
                           <div>
                             <h3>{tag.displayName}</h3>
-                            <span data-status={tag.taskStatus}>{tag.taskStatus}</span>
+                            <span data-status={tag.taskStatus}>{reviewTaskStatusText(tag)}</span>
                           </div>
                           <strong>{tag.pendingSuggestionCount.toLocaleString('zh-CN')}</strong>
                           <p>
                             已确认 {tag.acceptedSampleCount.toLocaleString('zh-CN')} · 已拒绝{' '}
                             {tag.rejectedSampleCount.toLocaleString('zh-CN')}
                           </p>
+                          {tag.missingPositiveCount > 0 || tag.missingNegativeCount > 0 ? (
+                            <p>
+                              还需确认 {tag.missingPositiveCount.toLocaleString('zh-CN')} · 拒绝{' '}
+                              {tag.missingNegativeCount.toLocaleString('zh-CN')}
+                            </p>
+                          ) : null}
+                          <ReviewTagControls
+                            settings={settings.data}
+                            sourceIDs={effectiveSourceIDs}
+                            suggestions={tagSuggestions.data}
+                            tag={tag}
+                          />
                           {tag.canReview && tag.pendingSuggestionCount > 0 ? (
                             <Link className="button button-primary" to={queueHref(tag.id, search)}>
                               开始审查
@@ -273,14 +312,20 @@ function ReviewQueue({
   const gridRef = useRef<HTMLDivElement>(null);
   const hasFocusedGrid = useRef(false);
   const sourceScopeKey = scopeKey(sourceIDs);
+  const queueScopeKey = `${tagID}:${sourceScopeKey}`;
   const density = reviewDensity(viewParameters);
   const aspect = viewParameters.get('aspect') === 'original' ? 'original' : 'square';
-  const [selected, setSelected] = useScopedSet(sourceScopeKey);
-  const [dismissed, setDismissed] = useScopedSet(sourceScopeKey);
+  const [selected, setSelected] = useScopedSet(queueScopeKey);
+  const [dismissed, setDismissed] = useScopedSet(queueScopeKey);
   const [message, setMessage] = useState('');
   const [undoID, setUndoID] = useState<string | null>(null);
-  const [activeAssetID, setActiveAssetID] = useState<string | null>(null);
-  const [previewAssetID, setPreviewAssetID] = useState<string | null>(null);
+  const [activeItemKey, setActiveItemKey] = useState<string | null>(null);
+  const [previewItemKey, setPreviewItemKey] = useState<string | null>(null);
+  const overview = useQuery({
+    queryKey: ['review-overview', sourceScopeKey],
+    queryFn: ({ signal }) => fetchReviewOverview(sourceIDs, signal),
+    placeholderData: (previous) => previous,
+  });
   const queue = useInfiniteQuery({
     queryKey: ['review-queue', tagID, sourceScopeKey],
     queryFn: ({ pageParam, signal }) => fetchReviewQueue(tagID, sourceIDs, pageParam, signal),
@@ -295,16 +340,19 @@ function ReviewQueue({
       ),
     [dismissed, queue.data],
   );
-  const resolvedActiveAssetID = items.some((item) => item.assetID === activeAssetID)
-    ? activeAssetID
-    : (items[0]?.assetID ?? null);
-  const activeIndex = resolvedActiveAssetID
-    ? items.findIndex((item) => item.assetID === resolvedActiveAssetID)
+  const resolvedActiveItemKey = items.some((item) => reviewItemKey(item) === activeItemKey)
+    ? activeItemKey
+    : items[0]
+      ? reviewItemKey(items[0])
+      : null;
+  const activeIndex = resolvedActiveItemKey
+    ? items.findIndex((item) => reviewItemKey(item) === resolvedActiveItemKey)
     : -1;
-  const previewIndex = previewAssetID
-    ? items.findIndex((item) => item.assetID === previewAssetID)
+  const previewIndex = previewItemKey
+    ? items.findIndex((item) => reviewItemKey(item) === previewItemKey)
     : -1;
   const previewItem = previewIndex >= 0 ? items[previewIndex] : null;
+  const tagOverview = overview.data?.tags.find((tag) => tag.id === tagID) ?? null;
   const decision = useMutation({
     mutationFn: ({ assetIDs, action }: { assetIDs: string[]; action: ReviewDecisionAction }) =>
       applyReviewDecision(tagID, assetIDs, action),
@@ -331,26 +379,28 @@ function ReviewQueue({
     async (
       assetIDs: string[],
       action: ReviewDecisionAction,
-      continueFromAssetID: string | null = null,
+      continueFromItemKey: string | null = null,
       keepPreviewOpen = false,
     ) => {
       if (!assetIDs.length) return;
-      const currentIndex = continueFromAssetID
-        ? items.findIndex((item) => item.assetID === continueFromAssetID)
+      const uniqueAssetIDs = [...new Set(assetIDs)];
+      const currentIndex = continueFromItemKey
+        ? items.findIndex((item) => reviewItemKey(item) === continueFromItemKey)
         : -1;
-      const remaining = items.filter((item) => !assetIDs.includes(item.assetID));
+      const remaining = items.filter((item) => !uniqueAssetIDs.includes(item.assetID));
       const continuation =
         currentIndex >= 0
-          ? (items.slice(currentIndex + 1).find((item) => !assetIDs.includes(item.assetID)) ??
-            items.slice(0, currentIndex).find((item) => !assetIDs.includes(item.assetID)) ??
+          ? (items.slice(currentIndex + 1).find((item) => !uniqueAssetIDs.includes(item.assetID)) ??
+            items.slice(0, currentIndex).find((item) => !uniqueAssetIDs.includes(item.assetID)) ??
             null)
           : null;
       setMessage('');
       try {
-        await decision.mutateAsync({ assetIDs, action });
-        const nextAssetID = continuation?.assetID ?? remaining[0]?.assetID ?? null;
-        setActiveAssetID(nextAssetID);
-        if (keepPreviewOpen) setPreviewAssetID(nextAssetID);
+        await decision.mutateAsync({ assetIDs: uniqueAssetIDs, action });
+        const nextItem = continuation ?? remaining[0] ?? null;
+        const nextItemKey = nextItem ? reviewItemKey(nextItem) : null;
+        setActiveItemKey(nextItemKey);
+        if (keepPreviewOpen) setPreviewItemKey(nextItemKey);
       } catch (error) {
         setMessage(errorMessage(error));
       }
@@ -364,23 +414,25 @@ function ReviewQueue({
       const currentIndex = showPreview ? previewIndex : activeIndex;
       const start = currentIndex >= 0 ? currentIndex : 0;
       const nextIndex = Math.min(Math.max(start + offset, 0), items.length - 1);
-      const nextAssetID = items[nextIndex]?.assetID ?? null;
-      setActiveAssetID(nextAssetID);
-      if (showPreview) setPreviewAssetID(nextAssetID);
+      const nextItem = items[nextIndex];
+      const nextItemKey = nextItem ? reviewItemKey(nextItem) : null;
+      setActiveItemKey(nextItemKey);
+      if (showPreview) setPreviewItemKey(nextItemKey);
     },
     [activeIndex, items, previewIndex],
   );
 
   const deferAsset = useCallback(
-    (assetID: string | null, showPreview = false) => {
+    (itemKey: string | null, showPreview = false) => {
       if (!items.length) return;
-      const currentIndex = assetID
-        ? items.findIndex((item) => item.assetID === assetID)
+      const currentIndex = itemKey
+        ? items.findIndex((item) => reviewItemKey(item) === itemKey)
         : activeIndex;
       const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % items.length : 0;
-      const nextAssetID = items[nextIndex]?.assetID ?? null;
-      setActiveAssetID(nextAssetID);
-      if (showPreview) setPreviewAssetID(nextAssetID);
+      const nextItem = items[nextIndex];
+      const nextItemKey = nextItem ? reviewItemKey(nextItem) : null;
+      setActiveItemKey(nextItemKey);
+      if (showPreview) setPreviewItemKey(nextItemKey);
       setMessage('已将当前项目留到稍后处理。');
     },
     [activeIndex, items],
@@ -394,24 +446,25 @@ function ReviewQueue({
 
   useEffect(() => {
     function handleShortcut(event: KeyboardEvent) {
-      if (previewAssetID) return;
+      if (previewItemKey) return;
       const target = event.target as HTMLElement | null;
       if (target?.matches('input, select, textarea, button, a')) return;
       const key = event.key.toLowerCase();
       const current =
-        items.find((item) => item.assetID === resolvedActiveAssetID) ?? items[0] ?? null;
+        items.find((item) => reviewItemKey(item) === resolvedActiveItemKey) ?? items[0] ?? null;
+      const currentItemKey = current ? reviewItemKey(current) : null;
       const currentIDs = selected.size ? [...selected] : current ? [current.assetID] : [];
-      if ((key === 'p' || key === 'a') && !event.metaKey && !event.ctrlKey) {
-        void apply(currentIDs, 'accept', current?.assetID ?? null);
-      } else if (key === 'x' || key === 'r') {
-        void apply(currentIDs, 'reject', current?.assetID ?? null);
-      } else if (key === 'u' || key === 's') deferAsset(current?.assetID ?? null);
-      else if ((event.metaKey || event.ctrlKey) && key === 'a') {
+      if ((event.metaKey || event.ctrlKey) && key === 'a') {
         setSelected(new Set(items.map((item) => item.assetID)));
-      } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') moveActive(-1);
+      } else if (key === 'p') {
+        void apply(currentIDs, 'accept', currentItemKey);
+      } else if (key === 'x') {
+        void apply(currentIDs, 'reject', currentItemKey);
+      } else if (key === 'u') deferAsset(currentItemKey);
+      else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') moveActive(-1);
       else if (event.key === 'ArrowRight' || event.key === 'ArrowDown') moveActive(1);
       else if ((event.key === ' ' || event.key === 'Enter') && current) {
-        setPreviewAssetID(current.assetID);
+        setPreviewItemKey(reviewItemKey(current));
       } else return;
       event.preventDefault();
     }
@@ -422,8 +475,8 @@ function ReviewQueue({
     deferAsset,
     items,
     moveActive,
-    previewAssetID,
-    resolvedActiveAssetID,
+    previewItemKey,
+    resolvedActiveItemKey,
     selected,
     setSelected,
   ]);
@@ -464,15 +517,23 @@ function ReviewQueue({
           <Link className="back-link" to={overviewHref(search)}>
             <ChevronLeft aria-hidden="true" size={15} /> 审查概览
           </Link>
-          <h2 id="review-queue-title">审查队列</h2>
+          <h2 id="review-queue-title">
+            {tagOverview ? `${tagOverview.displayName} · 审查队列` : '审查队列'}
+          </h2>
           <p>
             <kbd>Space</kbd> 单图 · <kbd>P</kbd> 属于 · <kbd>X</kbd> 不属于 · <kbd>U</kbd> 稍后
           </p>
+          {tagOverview ? <p>{reviewTaskStatusText(tagOverview)}</p> : null}
         </div>
         <div className="review-heading-actions">
           {sourceScope}
           <div className="review-view-summary">
-            <span>{items.length.toLocaleString('zh-CN')} 项已载入</span>
+            <span>
+              {tagOverview
+                ? `${tagOverview.pendingSuggestionCount.toLocaleString('zh-CN')} 条待审 · `
+                : ''}
+              {items.length.toLocaleString('zh-CN')} 行已载入
+            </span>
             <div className="review-view-controls" role="group" aria-label="待审查网格显示">
               <label className="review-density-control">
                 <Grid3X3 aria-hidden="true" size={15} />
@@ -531,19 +592,20 @@ function ReviewQueue({
             const title = item.fileName ?? `照片 ${item.assetID.slice(0, 8)}`;
             const checked = selected.has(item.assetID);
             const revision = item.contentRevision ?? 0;
+            const itemKey = reviewItemKey(item);
             return (
               <article
-                aria-current={resolvedActiveAssetID === item.assetID ? 'true' : undefined}
+                aria-current={resolvedActiveItemKey === itemKey ? 'true' : undefined}
                 className="review-card"
-                key={`${item.assetID}:${item.suggestionOrigin}`}
+                key={itemKey}
                 onClick={(event) => {
                   if ((event.target as Element).closest('button, input, label, a')) return;
-                  setActiveAssetID(item.assetID);
+                  setActiveItemKey(itemKey);
                 }}
                 onDoubleClick={(event) => {
                   if ((event.target as Element).closest('button, input, label, a')) return;
-                  setActiveAssetID(item.assetID);
-                  setPreviewAssetID(item.assetID);
+                  setActiveItemKey(itemKey);
+                  setPreviewItemKey(itemKey);
                 }}
                 role="listitem"
               >
@@ -569,8 +631,8 @@ function ReviewQueue({
                 <div className="review-card-copy">
                   <strong>{title}</strong>
                   <span>
-                    {originLabels[item.suggestionOrigin]}
-                    {item.score === null ? '' : ` · ${(item.score * 100).toFixed(1)}%`}
+                    {reviewOriginLabels[item.suggestionOrigin]}
+                    {formatSuggestionScore(item.score)}
                   </span>
                 </div>
                 <div className="review-card-actions">
@@ -578,7 +640,7 @@ function ReviewQueue({
                     aria-label={`接受 ${title}`}
                     className="icon-button decision-accept"
                     disabled={pending}
-                    onClick={() => void apply([item.assetID], 'accept')}
+                    onClick={() => void apply([item.assetID], 'accept', itemKey)}
                     type="button"
                   >
                     <Check aria-hidden="true" size={16} />
@@ -587,7 +649,7 @@ function ReviewQueue({
                     aria-label={`拒绝 ${title}`}
                     className="icon-button decision-reject"
                     disabled={pending}
-                    onClick={() => void apply([item.assetID], 'reject')}
+                    onClick={() => void apply([item.assetID], 'reject', itemKey)}
                     type="button"
                   >
                     <X aria-hidden="true" size={16} />
@@ -596,7 +658,7 @@ function ReviewQueue({
                     aria-label={`稍后处理 ${title}`}
                     className="icon-button"
                     disabled={pending}
-                    onClick={() => deferAsset(item.assetID)}
+                    onClick={() => deferAsset(itemKey)}
                     type="button"
                   >
                     <SkipForward aria-hidden="true" size={15} />
@@ -608,9 +670,27 @@ function ReviewQueue({
         </div>
       ) : (
         <div className="workspace-state">
-          <Check aria-hidden="true" size={26} />
-          <strong>当前队列已处理完</strong>
-          <p>返回概览选择其他标签，或刷新 Host 状态。</p>
+          {tagOverview?.taskStatus === 'running' || tagOverview?.taskStatus === 'waiting' ? (
+            <ScanSearch aria-hidden="true" size={26} />
+          ) : (
+            <Check aria-hidden="true" size={26} />
+          )}
+          <strong>
+            {overview.isPending
+              ? '正在确认队列状态'
+              : tagOverview?.taskStatus === 'running' || tagOverview?.taskStatus === 'waiting'
+                ? '建议仍在生成'
+                : tagOverview?.pendingSuggestionCount
+                  ? '当前已载入页面没有可见项目'
+                  : '当前没有待审建议'}
+          </strong>
+          <p>
+            {overview.isError
+              ? 'Host 状态暂时不可用；可重试队列或返回概览。'
+              : tagOverview?.taskStatus === 'running' || tagOverview?.taskStatus === 'waiting'
+                ? '任务继续运行时，新建议会进入待审队列。'
+                : '返回概览选择其他标签，或等待下一次建议任务。'}
+          </p>
         </div>
       )}
 
@@ -643,14 +723,6 @@ function ReviewQueue({
             type="button"
           >
             <X aria-hidden="true" size={15} /> 拒绝
-          </button>
-          <button
-            className="button"
-            disabled={pending}
-            onClick={() => void apply([...selected], 'clear')}
-            type="button"
-          >
-            清除决定
           </button>
           <button className="button" onClick={() => setSelected(new Set())} type="button">
             取消选择
@@ -692,11 +764,11 @@ function ReviewQueue({
           canMovePrevious={previewIndex > 0}
           item={previewItem}
           message={message}
-          onClose={() => setPreviewAssetID(null)}
+          onClose={() => setPreviewItemKey(null)}
           onDecision={(action) =>
-            void apply([previewItem.assetID], action, previewItem.assetID, true)
+            void apply([previewItem.assetID], action, reviewItemKey(previewItem), true)
           }
-          onDefer={() => deferAsset(previewItem.assetID, true)}
+          onDefer={() => deferAsset(reviewItemKey(previewItem), true)}
           onMove={(offset) => moveActive(offset, true)}
           pending={pending}
           position={previewIndex + 1}
@@ -743,8 +815,19 @@ export function ReviewRoute() {
   );
 
   return tagID ? (
-    <ReviewQueue search={search} sourceIDs={sourceIDs} sourceScope={sourceScope} tagID={tagID} />
+    <ReviewQueue
+      availableSourceIDs={activeSources.map((source) => source.id)}
+      search={search}
+      sourceIDs={sourceIDs}
+      sourceScope={sourceScope}
+      tagID={tagID}
+    />
   ) : (
-    <ReviewOverview search={search} sourceIDs={sourceIDs} sourceScope={sourceScope} />
+    <ReviewOverview
+      availableSourceIDs={activeSources.map((source) => source.id)}
+      search={search}
+      sourceIDs={sourceIDs}
+      sourceScope={sourceScope}
+    />
   );
 }

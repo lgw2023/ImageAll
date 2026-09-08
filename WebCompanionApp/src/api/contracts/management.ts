@@ -137,7 +137,6 @@ export const generalSettingsSchema = z.object({
       ),
     }),
   ),
-  maxPendingSuggestionsPerTag: nullishToNull(z.int().positive()),
 });
 export const generalSettingsUpdateResponseSchema = z.object({
   settings: generalSettingsSchema,

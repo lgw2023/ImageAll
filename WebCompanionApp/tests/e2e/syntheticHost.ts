@@ -314,7 +314,6 @@ export async function installSyntheticAuthenticatedHost(
         },
       ],
     },
-    maxPendingSuggestionsPerTag: null,
   };
   let jobs = [
     {

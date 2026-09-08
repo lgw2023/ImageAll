@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   librarySuggestionSnapshotSchema,
+  tagLibrarySuggestionSnapshotSchema,
   trainingActivitySchema,
   trainingSetupSchema,
 } from './training';
@@ -57,5 +58,18 @@ describe('training contracts', () => {
       },
     });
     expect(result.success).toBe(false);
+  });
+
+  it('treats legacy tag suggestion snapshots as unbounded without exposing a fake cap', () => {
+    const snapshot = tagLibrarySuggestionSnapshotSchema.parse({
+      mediaKind: 'image',
+      maximumPendingCount: 2_147_483_647,
+      personalCentroidAvailable: true,
+      personalAdamWAvailable: false,
+      tags: [],
+      activities: [],
+    });
+    expect(snapshot.pendingCountPolicy).toBe('unbounded');
+    expect(snapshot).not.toHaveProperty('maximumPendingCount');
   });
 });

@@ -2,6 +2,37 @@ import XCTest
 @testable import ImageAll
 
 final class SuggestionThresholdTests: XCTestCase {
+    func testThresholdEditorKeepsReferencesReadOnlyUntilExplicitAdoption() {
+        let reference = SuggestionThresholdReference(
+            minScore: 0.82,
+            acceptedSampleCount: 8,
+            rejectedSampleCount: 6
+        )
+
+        XCTAssertEqual(
+            TagSuggestionThresholdEditorPolicy.initialDraft(
+                effectiveMinScore: 0.25,
+                reference: reference
+            ),
+            0.25
+        )
+    }
+
+    func testThresholdEditorDoesNotPersistUnchangedEffectiveValueOnBlur() {
+        XCTAssertFalse(
+            TagSuggestionThresholdEditorPolicy.shouldPersist(
+                draft: 0.25,
+                effectiveMinScore: 0.25
+            )
+        )
+        XCTAssertTrue(
+            TagSuggestionThresholdEditorPolicy.shouldPersist(
+                draft: 0.30,
+                effectiveMinScore: 0.25
+            )
+        )
+    }
+
     func testV015SeedsThreeDefaultThresholdsAtZero() throws {
         let url = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: url)

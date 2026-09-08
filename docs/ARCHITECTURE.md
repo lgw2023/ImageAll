@@ -1260,7 +1260,7 @@ revision 门；cache-only 自动个人重训和独立服务启动已经验收，
 | ADR-037 | 新 embedding 只由用户对当前选中单资产的显式 App 内动作生成并验证持久化 | 已实现 | 先确认共享 Core ML service ready，再复用既有受控 preview；key 绑定精确 catalog/asset/content revision 与完整 identity，发布后 cache-only 回读复核。未启用、iCloud-only 或持久化失败安全停止，不扫描图库、不批量预热；真实 `2 + 2` 人工验证仍需新授权 |
 | ADR-038 | 个人标签三条训练路径统一为可审计 `training_run`，并提供独立「训练工程」工作区 | T1–T4 已实现 | 每次训练记录数据摘要、配置、过程指标与产物指针；AdamW epoch/loss 落盘并声明 validation / trainFallback 口径；侧栏工作台提供统一 Run 列表、三槽状态和详情；权威细节见 `TRAINING-WORKSPACE-SPEC.md` |
 | ADR-039 | 三轨建议全并行进入 Review Queue；个人质心与 AdamW 多槽激活并存，禁止 singleton 互顶 | T1–T3 已实现 | 队列行身份为 `(asset_id, tag_id, suggestion_origin)`；徽章区分来源；人工决定仍唯一且一次清除该标签全部 origin；磁盘 LinearHead/AdamWHead 与 DB 槽一一对应 |
-| ADR-040 | 三条个人建议路径的进队门槛升级为用户可调的方法默认 + 标签覆盖；训练/重建不自动改阈值 | ST1–ST4 已实现 | 权威细节见 `SUGGESTION-THRESHOLD-SPEC.md`；`effectiveMinScore = override ?? default`；生成过滤 `score > effectiveMinScore` 后再 Top 100；Review 行展示原始 score；同标签同方法的近期拒绝分数只生成需人工采用的参考值，三轨完成通知展示高于阈值数与候选数 |
+| ADR-040 | 三条个人建议路径的进队门槛升级为用户可调的方法默认 + 标签覆盖；训练/重建不自动改阈值 | ST1–ST4 已实现 | 权威细节见 `SUGGESTION-THRESHOLD-SPEC.md`；`effectiveMinScore = override ?? default`；生产生成保留所有 `score > effectiveMinScore` 的有限结果并按技术批次写入；Review 行展示原始 score；同标签同方法的近期拒绝分数只生成需人工采用的参考值，三轨完成通知展示高于阈值数与候选数；数量语义由 ADR-068 覆盖 |
 | ADR-042 | 正式拒绝 Places365 ResNet18 作为生产 standard 包候选 | 已决定（2026-07-24） | 未标版本 CC BY 与 academic research/education 用途冲突；不伪造 CC-BY-4.0；公开验证门永久不适用；归档 `research` 证据；下一标准场景包须另选许可清晰的新候选 |
 | ADR-043 | Mac Host + 原生 iOS Companion；R0 Host 仅 Debug 可启用 | R0 已加固，R1+ 待实施 | Mac 保持唯一权威；协议同仓；当前请求上限、鉴权和内存幂等只服务开发，Release 在配对、TLS 与持久幂等完成前硬关闭 |
 | ADR-044 | 图库瘦身双轨回收、普通图库显式删除、跨来源相同检测与可恢复大库分析 | S0–S8 与普通图库 Inspector/单图删除已交付；原图存储策略由 ADR-071 收紧 | 只有用户显式确认才处置；普通图库与瘦身共用强制确认、红心保护和来源分轨；原图副本路径与未配置行为以 ADR-071 为准 |

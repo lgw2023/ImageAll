@@ -1004,17 +1004,34 @@ public struct RemoteTagLibrarySuggestionTagOption: Codable, Equatable, Identifia
     }
 }
 
+public enum RemotePendingSuggestionCountPolicy: String, Codable, Equatable, Sendable {
+    case unbounded
+}
+
 public struct RemoteTagLibrarySuggestionSnapshot: Codable, Equatable, Sendable {
     public let mediaKind: RemoteAssetMediaKind
+    /// Legacy compatibility field. New clients should use `pendingCountPolicy`.
     public let maximumPendingCount: Int
+    public let pendingCountPolicy: RemotePendingSuggestionCountPolicy
     public let personalCentroidAvailable: Bool
     public let personalAdamWAvailable: Bool
     public let tags: [RemoteTagLibrarySuggestionTagOption]
     public let activities: [RemoteTagLibrarySuggestionActivity]
 
+    private enum CodingKeys: String, CodingKey {
+        case mediaKind
+        case maximumPendingCount
+        case pendingCountPolicy
+        case personalCentroidAvailable
+        case personalAdamWAvailable
+        case tags
+        case activities
+    }
+
     public init(
         mediaKind: RemoteAssetMediaKind,
         maximumPendingCount: Int,
+        pendingCountPolicy: RemotePendingSuggestionCountPolicy = .unbounded,
         personalCentroidAvailable: Bool,
         personalAdamWAvailable: Bool,
         tags: [RemoteTagLibrarySuggestionTagOption] = [],
@@ -1022,10 +1039,37 @@ public struct RemoteTagLibrarySuggestionSnapshot: Codable, Equatable, Sendable {
     ) {
         self.mediaKind = mediaKind
         self.maximumPendingCount = maximumPendingCount
+        self.pendingCountPolicy = pendingCountPolicy
         self.personalCentroidAvailable = personalCentroidAvailable
         self.personalAdamWAvailable = personalAdamWAvailable
         self.tags = tags
         self.activities = activities
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        mediaKind = try container.decode(RemoteAssetMediaKind.self, forKey: .mediaKind)
+        maximumPendingCount = try container.decode(Int.self, forKey: .maximumPendingCount)
+        pendingCountPolicy = try container.decodeIfPresent(
+            RemotePendingSuggestionCountPolicy.self,
+            forKey: .pendingCountPolicy
+        ) ?? .unbounded
+        personalCentroidAvailable = try container.decode(
+            Bool.self,
+            forKey: .personalCentroidAvailable
+        )
+        personalAdamWAvailable = try container.decode(
+            Bool.self,
+            forKey: .personalAdamWAvailable
+        )
+        tags = try container.decode(
+            [RemoteTagLibrarySuggestionTagOption].self,
+            forKey: .tags
+        )
+        activities = try container.decode(
+            [RemoteTagLibrarySuggestionActivity].self,
+            forKey: .activities
+        )
     }
 }
 

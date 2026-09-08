@@ -1897,6 +1897,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         )
         XCTAssertTrue(snapshot.personalCentroidAvailable)
         XCTAssertFalse(snapshot.personalAdamWAvailable)
+        XCTAssertEqual(snapshot.pendingCountPolicy, .unbounded)
         XCTAssertEqual(snapshot.tags.first?.personalCentroidMinScore, 0.42)
         XCTAssertEqual(snapshot.activities.first?.availableActions, [.cancel])
 

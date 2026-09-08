@@ -70,6 +70,37 @@ test('review overview communicates unbounded threshold retention', async ({ page
   }
 });
 
+test('review tag controls stay read-only until an explicit threshold action', async ({ page }) => {
+  await installSyntheticAuthenticatedHost(page);
+  let settingWrites = 0;
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname === '/v1/settings/general' && request.method() === 'PUT') {
+      settingWrites += 1;
+    }
+  });
+
+  await page.goto('review');
+  const tagCard = page.getByRole('article').filter({ hasText: '风景' });
+  await tagCard.getByText('调整门槛与生成', { exact: true }).click();
+  await expect(tagCard.getByText('继承默认 0.74', { exact: true })).toBeVisible();
+  expect(settingWrites).toBe(0);
+
+  await tagCard.getByRole('button', { name: '采用参考 0.69' }).click();
+  await expect(tagCard.getByText('当前覆盖 0.69', { exact: true })).toBeVisible();
+  expect(settingWrites).toBe(1);
+
+  const launchRequest = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === '/v1/training/launch' && request.method() === 'POST',
+  );
+  await tagCard.getByRole('button', { name: '更新特征建议' }).click();
+  expect((await launchRequest).postDataJSON()).toMatchObject({
+    mediaKind: 'image',
+    method: 'featureKnn',
+    tagIDs: [tagIDs[0]],
+  });
+});
+
 test('review overview follows Host tag groups and preserves folding with keyboard navigation', async ({
   page,
 }, testInfo) => {
@@ -404,6 +435,8 @@ test('review queue applies an authoritative decision and supports undo', async (
   await expect(page.getByText('已撤销并恢复 2 项。')).toBeVisible();
 
   await page.keyboard.press('a');
+  await expect(page.getByText('已处理 1 项建议。')).toHaveCount(0);
+  await page.keyboard.press('p');
   await expect(page.getByText('已处理 1 项建议。')).toBeVisible();
 
   const accessibility = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();
@@ -454,6 +487,42 @@ test('review queue supports the Mac-style continuous single-photo workflow', asy
   await expect(reviewer).toBeHidden();
   await expect(page.getByText('REVIEW_002.jpg', { exact: true })).toBeHidden();
   await expect(page.locator('.review-card[aria-current="true"]')).toContainText('REVIEW_003.jpg');
+});
+
+test('review queue keeps duplicate-origin rows distinct and renders raw model scores', async ({
+  page,
+}) => {
+  await installSyntheticAuthenticatedHost(page);
+  const shared = reviewQueueItem(0);
+  await page.route('**/v1/review/queue?*', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: {
+        items: [
+          { ...shared, suggestionOrigin: 'featurePrint', score: 1.75 },
+          { ...shared, suggestionOrigin: 'personalAdamW', score: 3.25 },
+          reviewQueueItem(1),
+        ],
+        nextCursor: null,
+      },
+    }),
+  );
+
+  await page.goto(`review/queue?tag=${tagIDs[0]}`);
+  const cards = page.getByRole('listitem');
+  await expect(cards).toHaveCount(3);
+  await expect(cards.nth(0)).toHaveAttribute('aria-current', 'true');
+  await expect(cards.nth(0)).toContainText('特征向量 · 分数 1.75');
+  await expect(page.getByText('175.0%')).toHaveCount(0);
+
+  await page.keyboard.press('u');
+  await expect(cards.nth(1)).toHaveAttribute('aria-current', 'true');
+  await expect(cards.nth(1)).toContainText('超级个人模型 · 分数 3.25');
+
+  await page.keyboard.press('Space');
+  const reviewer = page.getByRole('dialog', { name: '单图审核' });
+  await expect(reviewer).toContainText('超级个人模型 · 分数 3.25');
 });
 
 test('review single-photo explicitly recovers an iCloud preview without losing queue position', async ({
@@ -684,7 +753,7 @@ test('review source scope stays authoritative across overview, queue, empty scop
   expect(reviewSourceIDs((await narrowedQueueRequest).url())).toEqual([
     '9de47499-1ca0-4cc2-84bc-a881018e8b0c',
   ]);
-  await expect(page.getByText('4 项已载入')).toBeVisible();
+  await expect(page.getByText('4 条待审 · 4 行已载入')).toBeVisible();
   await expect(page.getByRole('button', { name: /仅 Synthetic Library/ })).toBeVisible();
 
   await page.getByRole('button', { name: /仅 Synthetic Library/ }).click();
@@ -705,7 +774,7 @@ test('review source scope stays authoritative across overview, queue, empty scop
   await page.getByRole('checkbox', { name: 'Synthetic Library' }).click();
   expect(reviewSourceIDs((await emptyQueueRequest).url())).toEqual([]);
   await expect(page).toHaveURL(/sourceScope=none/);
-  await expect(page.getByText('当前队列已处理完')).toBeVisible();
+  await expect(page.getByText('当前没有待审建议')).toBeVisible();
 
   await page.getByRole('link', { name: '审查概览' }).click();
   await expect(page).toHaveURL(/review\?sourceScope=none/);

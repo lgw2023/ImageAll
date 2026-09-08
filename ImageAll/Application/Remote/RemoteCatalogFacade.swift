@@ -1987,6 +1987,7 @@ actor RemoteCatalogFacade {
         return RemoteTagLibrarySuggestionSnapshot(
             mediaKind: mediaKind,
             maximumPendingCount: await trainingCommands.sampleSuggestionMaximumCount(),
+            pendingCountPolicy: .unbounded,
             personalCentroidAvailable: await trainingCommands.tagLibrarySuggestionsAvailable(
                 mediaKind: mappedMediaKind,
                 method: .personalCentroid

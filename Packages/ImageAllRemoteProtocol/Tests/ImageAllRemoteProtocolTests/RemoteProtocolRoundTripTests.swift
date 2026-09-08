@@ -1145,7 +1145,7 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
             skippedCount: 1,
             availableActions: [.cancel]
         )
-        try assertRoundTrip(RemoteTagLibrarySuggestionSnapshot(
+        let snapshot = RemoteTagLibrarySuggestionSnapshot(
             mediaKind: .image,
             maximumPendingCount: 500,
             personalCentroidAvailable: true,
@@ -1159,7 +1159,23 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
                 ),
             ],
             activities: [activity]
-        ))
+        )
+        XCTAssertEqual(snapshot.pendingCountPolicy, .unbounded)
+        try assertRoundTrip(snapshot)
+
+        let legacyData = try JSONSerialization.data(withJSONObject: [
+            "mediaKind": "image",
+            "maximumPendingCount": 500,
+            "personalCentroidAvailable": true,
+            "personalAdamWAvailable": true,
+            "tags": [],
+            "activities": [],
+        ])
+        let legacySnapshot = try JSONDecoder().decode(
+            RemoteTagLibrarySuggestionSnapshot.self,
+            from: legacyData
+        )
+        XCTAssertEqual(legacySnapshot.pendingCountPolicy, .unbounded)
         try assertRoundTrip(RemoteTagLibrarySuggestionResponse(
             activity: activity,
             replayed: false
