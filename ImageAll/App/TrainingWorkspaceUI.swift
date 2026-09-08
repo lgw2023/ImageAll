@@ -476,6 +476,40 @@ private enum TrainingWorkspaceLaunchRequest {
     )
 }
 
+struct TrainingWorkspaceAutomaticTrainingPlan: Equatable {
+    let method: TrainingRunMethod
+    let tagIDs: Set<UUID>
+    let assetIDs: Set<UUID>
+
+    init?(
+        method: TrainingRunMethod,
+        overviews: [SuggestionTagOverview]
+    ) {
+        guard method == .personalCentroid || method == .personalAdamW else {
+            return nil
+        }
+        let eligibleTagIDs = Set(
+            overviews
+                .filter(\.canGeneratePersonalModel)
+                .map(\.id)
+        )
+        guard !eligibleTagIDs.isEmpty else { return nil }
+        self.method = method
+        tagIDs = eligibleTagIDs
+        // Automatic training deliberately uses the authoritative all-source
+        // eligibility counts shown in the setup sheet.
+        assetIDs = []
+    }
+
+    var tagCount: Int {
+        tagIDs.count
+    }
+
+    var buttonTitle: String {
+        "自动训练全部 \(tagCount) 个达标标签"
+    }
+}
+
 private enum TrainingWorkspacePhotoScopeChoice: Hashable {
     case allSources
     case currentSelection
@@ -549,6 +583,13 @@ private struct TrainingWorkspaceLaunchSheet: View {
 
     private var selectedAssetIDs: Set<UUID> {
         photoScopeChoice == .currentSelection ? model.selectedAssetIDs : []
+    }
+
+    private var automaticTrainingPlan: TrainingWorkspaceAutomaticTrainingPlan? {
+        TrainingWorkspaceAutomaticTrainingPlan(
+            method: selectedMethod,
+            overviews: model.suggestionOverviews
+        )
     }
 
     private var launchSummary: TrainingWorkspaceLaunchSummary {
@@ -799,6 +840,9 @@ private struct TrainingWorkspaceLaunchSheet: View {
                 Text(presentation.detail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if let automaticTrainingPlan {
+                    automaticTrainingCallout(automaticTrainingPlan)
+                }
                 TrainingWorkspaceTagChooser(
                     model: model,
                     overviews: personalOptions,
@@ -830,6 +874,45 @@ private struct TrainingWorkspaceLaunchSheet: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    private func automaticTrainingCallout(
+        _ plan: TrainingWorkspaceAutomaticTrainingPlan
+    ) -> some View {
+        HStack(alignment: .center, spacing: 14) {
+            Image(systemName: "bolt.fill")
+                .font(.title3)
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 24)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("一键自动训练")
+                    .font(.subheadline.weight(.semibold))
+                Text(
+                    "自动使用所有来源中的已确认\(model.selectedMediaKind.displayName)，按标签逐个串行训练；单个标签失败不阻断后续任务。"
+                )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 8)
+
+            Button(plan.buttonTitle) {
+                launchAutomaticTraining(plan)
+            }
+            .buttonStyle(.bordered)
+            .accessibilityIdentifier("automaticTrainingAllEligibleButton")
+            .persistentHelp(
+                "使用当前训练方法，自动选择全部达到样本门槛的标签；使用所有来源并按标签串行排队。"
+            )
+        }
+        .padding(12)
+        .background(Color.accentColor.opacity(0.07), in: RoundedRectangle(cornerRadius: 10))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.accentColor.opacity(0.25), lineWidth: 1)
         }
     }
 
@@ -911,6 +994,21 @@ private struct TrainingWorkspaceLaunchSheet: View {
                 )
             )
         }
+    }
+
+    private func launchAutomaticTraining(
+        _ plan: TrainingWorkspaceAutomaticTrainingPlan
+    ) {
+        guard plan.method == selectedMethod, isMethodAvailable(plan.method) else {
+            return
+        }
+        onLaunch(
+            .personal(
+                method: plan.method,
+                tagIDs: plan.tagIDs,
+                assetIDs: plan.assetIDs
+            )
+        )
     }
 }
 
