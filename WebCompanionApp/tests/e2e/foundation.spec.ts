@@ -44,6 +44,7 @@ test('pairing, logout, and account login stay Host-authoritative without persist
   let authenticated = false;
   let pairingBody: Record<string, unknown> = {};
   let accountAuthorization = '';
+  let accountAttempts = 0;
 
   await page.route('**/web/session', (route) =>
     route.fulfill({
@@ -54,7 +55,6 @@ test('pairing, logout, and account login stay Host-authoritative without persist
             authenticated: true,
             deviceID: '8bc2a920-f281-413b-8c4c-33c8ed7f78ca',
             authMode: 'pairedDevice',
-            username: null,
           }
         : { error: 'unauthorized' },
     }),
@@ -76,7 +76,6 @@ test('pairing, logout, and account login stay Host-authoritative without persist
         authenticated: true,
         deviceID: '8bc2a920-f281-413b-8c4c-33c8ed7f78ca',
         authMode: 'pairedDevice',
-        username: null,
       },
     });
   });
@@ -85,6 +84,15 @@ test('pairing, logout, and account login stay Host-authoritative without persist
     await route.fulfill({ status: 204 });
   });
   await page.route('**/web/account/login', async (route) => {
+    accountAttempts += 1;
+    if (accountAttempts === 1) {
+      await route.fulfill({
+        status: 401,
+        contentType: 'application/json',
+        json: { code: 'unauthorized', message: 'invalid account credentials' },
+      });
+      return;
+    }
     accountAuthorization = route.request().headers().authorization ?? '';
     authenticated = true;
     await route.fulfill({
@@ -92,7 +100,6 @@ test('pairing, logout, and account login stay Host-authoritative without persist
       contentType: 'application/json',
       json: {
         authenticated: true,
-        deviceID: null,
         authMode: 'account',
         username: 'reader',
       },
@@ -114,7 +121,11 @@ test('pairing, logout, and account login stay Host-authoritative without persist
   await page.getByRole('textbox', { name: '账户名' }).fill('reader');
   await page.getByLabel('密码').fill('account-secret');
   await page.getByRole('button', { name: '登录图库' }).click();
+  await expect(page.getByText('invalid account credentials')).toBeVisible();
+  await expect(page.getByRole('heading', { name: '连接你的 Mac 照片工作台' })).toBeVisible();
+  await page.getByRole('button', { name: '登录图库' }).click();
   await expect(page.getByRole('heading', { name: '图库', level: 1 })).toBeVisible();
+  expect(accountAttempts).toBe(2);
   expect(accountAuthorization).toMatch(/^Basic /);
 
   const persistedValues = await page.evaluate(() => {

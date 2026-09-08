@@ -16,7 +16,6 @@ const session = {
   authenticated: true,
   deviceID: '8bc2a920-f281-413b-8c4c-33c8ed7f78ca',
   authMode: 'pairedDevice',
-  username: null,
 };
 
 const capabilities = {

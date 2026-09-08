@@ -11,6 +11,10 @@
 
 ## 矩阵
 
+2026-09-08 登录修订：此前合成会话显式填入 null，未覆盖 Swift Codable 省略 nil 字段的真实响应，
+账户/配对登录存在解码失败。现已修复 schema 并通过省略字段的完整登录回归；
+见 [登录响应修复记录](PROGRESS-2026-09-08-SESSION-OPTIONALS.md)。日常 8788 尚待发布验证。
+
 | 能力 | Mac 现状 | 旧 Web 现状 | 新版目标 | API | 服务端缺口 | 迁移状态 | 测试证据 | 截图证据 | 证据限制 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 会话恢复 | 原生 Host | pair/login/refresh/logout | 单次 refresh、可解释错误、不循环 | 已有 | 无 | parity-proven | `client.test.ts`：并发 401 单次 refresh；`foundation.spec.ts`：断线恢复 | `evidence/foundation/` | 合成 401/WebSocket；不证明真实弱网时序 |
