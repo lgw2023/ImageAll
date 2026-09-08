@@ -1,5 +1,13 @@
 # ImageAll 项目协作约束
 
+## 网页独立开发工作区
+
+网页开发使用 `/Volumes/SSD1/ImageAll-Web-Dev` 的 `lgw/imageall-web-dev` 分支。
+每轮修改前后核对 cwd、分支和主工作区状态。启动方式见 `WebCompanionApp/DEVELOPMENT.md`。
+`npm run dev` 仅运行 Vite 和合成 Host 浏览器窗口；禁止自动连接日常图库、覆盖或重启日常 App。
+网页构建产物只留在本 worktree。若需运行 Swift Host，必须先满足 ADR-072 的数据、应用身份、
+端口和构建目录隔离；不能直接运行生产 composition root。主分支集成与日常 App 替换分别处理。
+
 ## 代理职责
 
 本项目中的 AI 代理（不论 Cursor、Codex 或其他会话）职责等同：可同时负责产品决策、架构、

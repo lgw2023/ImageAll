@@ -7,7 +7,8 @@
     "node": ">=22.12.0"
   },
   "scripts": {
-    "dev": "vite --host 127.0.0.1",
+    "dev": "node scripts/dev-sandbox.mjs",
+    "test:dev-sandbox": "node scripts/test-dev-sandbox.mjs",
     "build": "vite build && node scripts/create-static-manifests.mjs",
     "typecheck": "tsc -b --pretty false",
     "lint": "eslint . --max-warnings 0",
