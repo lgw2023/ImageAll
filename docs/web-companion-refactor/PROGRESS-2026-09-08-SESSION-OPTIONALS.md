@@ -30,5 +30,21 @@
 
 ## 交付边界
 
-修复和生成资源仅位于 `lgw/imageall-web-dev`。未修改 Swift 或启动真实 Host，未读取用户密码、
-日常图库、数据库或配对数据。当前 8788 日常 Host 尚未部署此修复，仍待用户授权发布及实际登录验证。
+修复未修改 Swift 或启动真实 Host，未读取用户密码、日常图库、数据库或配对数据。
+
+## 授权发布（2026-09-08）
+
+用户退出 App 后明确授权发布及同步代码主干，并要求自行重启。
+开发分支先合入 main `c64ade5e`，保留其自动标签训练改动；网页分支已有的隔离开发入口、
+Photos 原片目录提示和本次登录修复一并集成本地 main，不 push。
+
+- 集成后重新通过 36 项单元测试、typecheck、生产构建及桌面/移动登录 E2E 2/2。
+- 在开发 worktree `.build/web-release-QnERXAqR` 复制日常 App，先验证 159 个文件/符号链接
+  与原副本一致，只替换 `Contents/Resources/WebCompanionV2`，不重新构建原生 Host。
+- 使用原 Apple Development 签名身份重新签名，保留 identifier、entitlements、requirements、
+  flags、runtime；发布前后 `codesign --verify --deep --strict` 均通过。
+- 已发布到 `/Volumes/SSD1/ImageAll-Daily/ImageAll.app`；网页资源 SHA-256 清单与本次构建一致，
+  其他变化仅限应用签名及可执行文件签名。
+- 完整旧版保留在 `/Volumes/SSD1/ImageAll-Daily/ImageAll-before-web-login-fix-20260908-1510.app`。
+  未自动启动任何 App；实际 Host 登录仍待用户重启后人工验证。代码主干集成不代表重新发布
+  main 的原生二进制，本次仅发布网页修复资源。
