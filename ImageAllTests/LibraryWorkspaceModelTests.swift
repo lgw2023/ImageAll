@@ -3976,12 +3976,17 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         let sourceID = UUID()
         let readyTagID = UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!
         let unreadyTagID = UUID(uuidString: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")!
+        let secondReadyTagID = UUID(uuidString: "cccccccc-cccc-4ccc-8ccc-cccccccccccc")!
         let readyAssets = [
             UUID(uuidString: "11111111-1111-4111-8111-111111111111")!,
             UUID(uuidString: "22222222-2222-4222-8222-222222222222")!,
         ]
         let unreadyAsset = UUID(uuidString: "33333333-3333-4333-8333-333333333333")!
-        let items = (readyAssets + [unreadyAsset]).enumerated().map { index, assetID in
+        let secondReadyAssets = [
+            UUID(uuidString: "44444444-4444-4444-8444-444444444444")!,
+            UUID(uuidString: "55555555-5555-4555-8555-555555555555")!,
+        ]
+        let items = (readyAssets + [unreadyAsset] + secondReadyAssets).enumerated().map { index, assetID in
             Self.makeAsset(
                 sourceID: sourceID,
                 assetID: assetID,
@@ -3991,7 +3996,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         let catalogScopeID = UUID().uuidString.lowercased()
         let snapshot = PersonalTrainingSnapshot(
             catalogScopeID: catalogScopeID,
-            personalTagIDs: [readyTagID, unreadyTagID],
+            personalTagIDs: [readyTagID, unreadyTagID, secondReadyTagID],
             decisions: [
                 PersonalTrainingDecision(
                     assetID: readyAssets[0],
@@ -4009,6 +4014,18 @@ final class LibraryWorkspaceModelTests: XCTestCase {
                     assetID: unreadyAsset,
                     contentRevision: 1,
                     tagID: unreadyTagID,
+                    state: .manualAccepted
+                ),
+                PersonalTrainingDecision(
+                    assetID: secondReadyAssets[0],
+                    contentRevision: 1,
+                    tagID: secondReadyTagID,
+                    state: .manualAccepted
+                ),
+                PersonalTrainingDecision(
+                    assetID: secondReadyAssets[1],
+                    contentRevision: 1,
+                    tagID: secondReadyTagID,
                     state: .manualAccepted
                 ),
             ]
@@ -4051,6 +4068,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
                 tags: [
                     TagListItem(id: readyTagID, displayName: "板栗", state: .active),
                     TagListItem(id: unreadyTagID, displayName: "旅行", state: .active),
+                    TagListItem(id: secondReadyTagID, displayName: "猫", state: .active),
                 ],
                 initialItems: items,
                 startsConnected: true
@@ -4059,18 +4077,23 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             appPersonalModelRebuilder: rebuilder
         )
         await model.start()
-        await model.toggleIncludedTagFilter(readyTagID)
-        await model.toggleIncludedTagFilter(unreadyTagID)
 
-        await model.rebuildPersonalModel()
+        await model.rebuildPersonalModel(
+            tagIDs: Set([readyTagID, unreadyTagID, secondReadyTagID]),
+            assetIDs: []
+        )
 
         let rebuildCallCount = await rebuilder.callCount()
         let snapshots = await rebuilder.snapshots()
-        XCTAssertEqual(rebuildCallCount, 1)
-        XCTAssertEqual(snapshots.map(\.personalTagIDs), [[readyTagID]])
+        XCTAssertEqual(rebuildCallCount, 2)
+        XCTAssertEqual(
+            snapshots.map(\.personalTagIDs),
+            [[readyTagID], [secondReadyTagID]],
+            "每次只提交一个标签，并按稳定顺序串行完成后再进入下一个"
+        )
         XCTAssertEqual(
             model.notice,
-            .personalModelRebuildCompleted(tagCount: 1, sampleCount: 2)
+            .personalModelRebuildCompleted(tagCount: 2, sampleCount: 4)
         )
     }
 
@@ -13179,6 +13202,64 @@ final class LibraryWorkspaceModelTests: XCTestCase {
                 title: "要训练哪些标签？",
                 detail: "与图库右侧一致：左键选择，右键取消；可选择多个标签，各自独立训练和发布。",
                 style: .multipleSelectionTagChips
+            )
+        )
+    }
+
+    func testTrainingWorkspaceAutomaticPlanSelectsOnlyEligiblePersonalTags() throws {
+        let readyTagA = UUID(uuidString: "81000000-0000-4000-8000-000000000001")!
+        let unreadyTag = UUID(uuidString: "82000000-0000-4000-8000-000000000002")!
+        let readyTagB = UUID(uuidString: "83000000-0000-4000-8000-000000000003")!
+
+        func overview(
+            id: UUID,
+            name: String,
+            accepted: Int,
+            isEligible: Bool
+        ) -> SuggestionTagOverview {
+            SuggestionTagOverview(
+                id: id,
+                displayName: name,
+                acceptedSampleCount: accepted,
+                rejectedSampleCount: 0,
+                pendingSuggestionCount: 0,
+                taskStatus: isEligible ? .ready : .notReady,
+                checkedCount: 0,
+                totalCount: nil,
+                skippedCount: 0,
+                missingPositiveCount: max(0, 2 - accepted),
+                missingNegativeCount: 2,
+                canGenerate: false,
+                canUpdate: false,
+                canGeneratePersonalModel: isEligible,
+                canReview: false,
+                canPause: false,
+                canResume: false,
+                canCancel: false,
+                activeJobID: nil
+            )
+        }
+
+        let overviews = [
+            overview(id: readyTagA, name: "板栗", accepted: 2, isEligible: true),
+            overview(id: unreadyTag, name: "旅行", accepted: 1, isEligible: false),
+            overview(id: readyTagB, name: "猫", accepted: 8, isEligible: true),
+        ]
+        let plan = try XCTUnwrap(
+            TrainingWorkspaceAutomaticTrainingPlan(
+                method: .personalAdamW,
+                overviews: overviews
+            )
+        )
+
+        XCTAssertEqual(plan.tagIDs, Set([readyTagA, readyTagB]))
+        XCTAssertEqual(plan.tagCount, 2)
+        XCTAssertEqual(plan.buttonTitle, "自动训练全部 2 个达标标签")
+        XCTAssertEqual(plan.assetIDs, [])
+        XCTAssertNil(
+            TrainingWorkspaceAutomaticTrainingPlan(
+                method: .featureKnn,
+                overviews: overviews
             )
         )
     }
