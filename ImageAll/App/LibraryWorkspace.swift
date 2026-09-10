@@ -16411,11 +16411,11 @@ struct LibraryWorkspaceView: View {
                     Task { await model.clearAvailabilityFilters() }
                 } label: {
                     Label(
-                        "全部状态",
+                        "默认（隐藏缺失）",
                         systemImage: model.selectedAvailabilities.isEmpty ? "checkmark" : "circle"
                     )
                 }
-                .persistentHelp("清除照片可用状态条件，显示所有状态。")
+                .persistentHelp("清除照片可用状态条件；普通浏览隐藏已确认缺失的文件。")
                 Divider()
                 availabilityFilterButton(.available, title: "可用")
                 availabilityFilterButton(.missing, title: "文件缺失")

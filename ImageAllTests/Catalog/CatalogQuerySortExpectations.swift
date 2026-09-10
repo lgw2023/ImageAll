@@ -18,12 +18,10 @@ enum CatalogQuerySortExpectations {
         UUID(uuidString: "20000000-0000-4000-8000-000000000011")!,
         UUID(uuidString: "20000000-0000-4000-8000-000000000006")!,
         UUID(uuidString: "20000000-0000-4000-8000-000000000007")!,
-        UUID(uuidString: "20000000-0000-4000-8000-000000000003")!,
         UUID(uuidString: "20000000-0000-4000-8000-000000000004")!,
     ]
 
     static let currentAssetIDsOldestFirst: [UUID] = [
-        UUID(uuidString: "20000000-0000-4000-8000-000000000003")!,
         UUID(uuidString: "20000000-0000-4000-8000-000000000007")!,
         UUID(uuidString: "20000000-0000-4000-8000-000000000006")!,
         UUID(uuidString: "20000000-0000-4000-8000-000000000011")!,
@@ -51,7 +49,6 @@ enum CatalogQuerySortExpectations {
         UUID(uuidString: "20000000-0000-4000-8000-000000000009")!,
         UUID(uuidString: "20000000-0000-4000-8000-000000000001")!,
         UUID(uuidString: "20000000-0000-4000-8000-000000000002")!,
-        UUID(uuidString: "20000000-0000-4000-8000-000000000003")!,
         UUID(uuidString: "20000000-0000-4000-8000-000000000010")!,
         UUID(uuidString: "20000000-0000-4000-8000-000000000004")!,
         UUID(uuidString: "20000000-0000-4000-8000-000000000006")!,

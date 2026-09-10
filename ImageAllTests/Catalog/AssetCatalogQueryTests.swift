@@ -360,7 +360,7 @@ final class AssetCatalogQueryTests: XCTestCase {
         XCTAssertEqual(recyclePage.items.map(\.assetID), [fixture.ids.assetNewest])
     }
 
-    func testMissingPhotosAssetsAreSoftRemovedFromBrowseQueriesWhileMissingFilesRemainDiagnosable() throws {
+    func testMissingAssetsAreSoftRemovedFromDefaultBrowseWhileMissingFolderFilesRemainDiagnosable() throws {
         let fixture = try CatalogQueryTestSupport.openQueryDatabase()
         try fixture.database.pool.write { db in
             try db.execute(
@@ -373,6 +373,7 @@ final class AssetCatalogQueryTests: XCTestCase {
             AssetPageRequest(filter: AssetPageFilter(), sort: .newest, cursor: nil, limit: 200)
         )
         XCTAssertFalse(defaultPage.items.contains { $0.assetID == fixture.ids.assetAuthRequired })
+        XCTAssertFalse(defaultPage.items.contains { $0.assetID == fixture.ids.assetOldest })
 
         let missingPage = try fixture.query.fetchAssetPage(
             AssetPageRequest(
@@ -792,7 +793,7 @@ final class AssetCatalogQueryTests: XCTestCase {
         let excludeFamilyIDs = Set(excludeFamilyPage.items.map(\.assetID))
         XCTAssertFalse(excludeFamilyIDs.contains(fixture.ids.assetNewest))
         XCTAssertFalse(excludeFamilyIDs.contains(fixture.ids.assetMiddle))
-        XCTAssertTrue(excludeFamilyIDs.contains(fixture.ids.assetOldest))
+        XCTAssertFalse(excludeFamilyIDs.contains(fixture.ids.assetOldest))
 
         let taggedExcludeFamilyPage = try fixture.query.fetchAssetPage(
             AssetPageRequest(
@@ -847,7 +848,7 @@ final class AssetCatalogQueryTests: XCTestCase {
             )
         )
         XCTAssertTrue(untagged.items.allSatisfy { $0.acceptedTagCount == 0 })
-        XCTAssertTrue(untagged.items.contains { $0.assetID == fixture.ids.assetOldest })
+        XCTAssertFalse(untagged.items.contains { $0.assetID == fixture.ids.assetOldest })
     }
 
     func testSearchMatchesFourFieldsAndEscapesWildcards() throws {
@@ -865,7 +866,7 @@ final class AssetCatalogQueryTests: XCTestCase {
         XCTAssertEqual(
             Set(byPath.items.map(\.assetID)),
             Set([
-                ids.assetNewest, ids.assetMiddle, ids.assetOldest, ids.assetNoTime,
+                ids.assetNewest, ids.assetMiddle, ids.assetNoTime,
                 ids.assetDuplicateTimeA, ids.assetDuplicateTimeB, ids.assetNocaseLower, ids.assetNocaseUpper,
                 ids.assetLiteralWildcard, ids.assetLiteralBackslash, ids.assetDecoyWildcard,
                 ids.assetDecoyUnderscore, ids.assetDecoyBackslash,
@@ -878,7 +879,7 @@ final class AssetCatalogQueryTests: XCTestCase {
         XCTAssertEqual(
             Set(bySource.items.map(\.assetID)),
             Set([
-                ids.assetNewest, ids.assetMiddle, ids.assetOldest, ids.assetNoTime,
+                ids.assetNewest, ids.assetMiddle, ids.assetNoTime,
                 ids.assetDuplicateTimeA, ids.assetDuplicateTimeB, ids.assetNocaseLower, ids.assetNocaseUpper,
                 ids.assetLiteralWildcard, ids.assetLiteralBackslash, ids.assetDecoyWildcard,
                 ids.assetDecoyUnderscore, ids.assetDecoyBackslash,
@@ -1070,16 +1071,16 @@ final class AssetCatalogQueryTests: XCTestCase {
         }
 
         let allIDs = CatalogQuerySortExpectations.currentAssetIDsNewestFirst
-        let knownIDs = Set([fixture.ids.assetNewest, fixture.ids.assetMiddle, fixture.ids.assetOldest])
+        let knownIDs = Set([fixture.ids.assetNewest, fixture.ids.assetMiddle])
         let unknownAscending = allIDs
             .filter { !knownIDs.contains($0) }
             .sorted { $0.uuidString < $1.uuidString }
         let unknownDescending = Array(unknownAscending.reversed())
         let expectations: [(AssetPageSort, [UUID])] = [
-            (.embeddedTimeNewest, [fixture.ids.assetNewest, fixture.ids.assetOldest, fixture.ids.assetMiddle] + unknownDescending),
-            (.embeddedTimeOldest, [fixture.ids.assetMiddle, fixture.ids.assetOldest, fixture.ids.assetNewest] + unknownAscending),
-            (.fileModifiedNewest, [fixture.ids.assetMiddle, fixture.ids.assetOldest, fixture.ids.assetNewest] + unknownDescending),
-            (.fileModifiedOldest, [fixture.ids.assetNewest, fixture.ids.assetOldest, fixture.ids.assetMiddle] + unknownAscending),
+            (.embeddedTimeNewest, [fixture.ids.assetNewest, fixture.ids.assetMiddle] + unknownDescending),
+            (.embeddedTimeOldest, [fixture.ids.assetMiddle, fixture.ids.assetNewest] + unknownAscending),
+            (.fileModifiedNewest, [fixture.ids.assetMiddle, fixture.ids.assetNewest] + unknownDescending),
+            (.fileModifiedOldest, [fixture.ids.assetNewest, fixture.ids.assetMiddle] + unknownAscending),
         ]
 
         for (sort, expected) in expectations {

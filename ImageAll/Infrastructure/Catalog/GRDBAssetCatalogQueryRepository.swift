@@ -891,8 +891,20 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
                 arguments += [availability.rawValue]
             }
         } else {
+            // A completed reconcile keeps missing rows as catalog history, but
+            // ordinary browsing should reflect the files that still exist.
+            // An explicit `.missing` filter remains the diagnostic path for
+            // folder sources; missing Photos rows stay hidden below.
+            // Keep these as two scalar comparisons instead of `NOT IN`: the
+            // broad keyset and text-search paths may inspect a large ordered
+            // index, and SQLite's nullable `NOT IN` machinery is measurably
+            // more expensive per candidate.
             clauses.append("asset.availability != ?")
-            arguments += [AssetAvailability.recycled.rawValue]
+            clauses.append("asset.availability != ?")
+            arguments += [
+                AssetAvailability.missing.rawValue,
+                AssetAvailability.recycled.rawValue,
+            ]
         }
 
         clauses.append(Self.missingPhotosBrowseExclusionSQL)
@@ -1181,7 +1193,8 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
     /// Apple Photos asset remains browseable. Keep the catalog row so a later
     /// PhotoKit upsert can restore its stable ImageAll identity, tags, and
     /// favorite state, but do not expose an unresolvable item as a broken tile.
-    /// Folder-source `missing` rows remain browseable for path diagnostics.
+    /// Folder-source `missing` rows remain explicitly queryable for path
+    /// diagnostics, while the default availability scope hides them.
     private static let missingPhotosBrowseExclusionSQL = """
     NOT (
         source.kind = 'photos'
