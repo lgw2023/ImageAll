@@ -12,7 +12,6 @@ enum ApprovedSourceMediaTypes: Sendable {
         "public.jpeg-2000",
         UTType.gif.identifier,
         "public.svg-image",
-        UTType.pdf.identifier,
         "com.adobe.illustrator.ai-image",
         "com.fuji.raw-image",
         "com.adobe.raw-image",
@@ -77,7 +76,7 @@ enum ApprovedSourceMediaTypes: Sendable {
 
     static func isVectorDocumentMediaType(_ mediaType: String) -> Bool {
         switch mediaType.lowercased() {
-        case svgIdentifier, pdfIdentifier, illustratorIdentifier:
+        case svgIdentifier, illustratorIdentifier:
             return true
         default:
             return false
@@ -86,7 +85,7 @@ enum ApprovedSourceMediaTypes: Sendable {
 
     static func isPDFCompatibleVectorMediaType(_ mediaType: String) -> Bool {
         switch mediaType.lowercased() {
-        case pdfIdentifier, illustratorIdentifier:
+        case illustratorIdentifier:
             return true
         default:
             return false

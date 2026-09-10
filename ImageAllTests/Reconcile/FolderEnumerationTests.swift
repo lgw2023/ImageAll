@@ -162,7 +162,7 @@ final class FolderEnumerationTests: XCTestCase {
         XCTAssertEqual(candidates, ["real.png"])
     }
 
-    func testVideoAndSupportedVectorFilesBecomeCandidatesWhileOtherNonImagesStayIgnored() throws {
+    func testVideoAndSupportedImageFilesBecomeCandidatesWhilePDFAndOtherNonImagesStayIgnored() throws {
         let fixture = FolderReconcileTestSupport.TempFixtureRoot()
         defer { fixture.cleanup() }
         let root = try fixture.makeRoot(label: "nonimage")
@@ -192,9 +192,9 @@ final class FolderEnumerationTests: XCTestCase {
         }
         XCTAssertEqual(
             Set(candidates),
-            ["clip.mov", "clip.mp4", "diagram.svg", "document.pdf", "drawing.ai", "keep.png"]
+            ["clip.mov", "clip.mp4", "diagram.svg", "drawing.ai", "keep.png"]
         )
-        XCTAssertGreaterThanOrEqual(ignored, 1)
+        XCTAssertGreaterThanOrEqual(ignored, 2)
     }
 
     func testScopeStartStopPairedOnSuccess() throws {

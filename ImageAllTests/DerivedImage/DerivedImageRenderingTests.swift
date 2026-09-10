@@ -100,18 +100,16 @@ final class DerivedImageRenderingTests: XCTestCase {
         XCTAssertEqual(cached.encodedBytes, generated.encodedBytes)
     }
 
-    func testSinglePagePDFPreviewRasterizesAtPageDimensions() throws {
+    func testPDFDocumentIsRejectedByDerivedImageRenderer() throws {
         let pdf = try XCTUnwrap(FolderReconcileTestSupport.minimalPDFData())
 
-        let artifact = try renderer.render(
-            sourceBytes: pdf,
-            variant: .preview,
-            expectedMediaType: ApprovedSourceMediaTypes.pdfIdentifier
+        XCTAssertThrowsError(
+            try renderer.render(
+                sourceBytes: pdf,
+                variant: .preview,
+                expectedMediaType: ApprovedSourceMediaTypes.pdfIdentifier
+            )
         )
-
-        try Fixtures.assertArtifactSelfConsistent(artifact)
-        XCTAssertEqual(artifact.pixelWidth, 200)
-        XCTAssertEqual(artifact.pixelHeight, 100)
     }
 
     func testPDFCompatibleAIPreviewUsesVectorRasterizer() throws {

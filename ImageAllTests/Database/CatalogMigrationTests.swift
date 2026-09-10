@@ -3,6 +3,96 @@ import XCTest
 @testable import ImageAll
 
 final class CatalogMigrationTests: XCTestCase {
+    func testV040RetiresPDFDocumentsWithoutDeletingCatalogKnowledge() throws {
+        let url = try makeTempDatabaseURL()
+        var configuration = Configuration()
+        configuration.prepareDatabase { db in
+            try db.execute(sql: "PRAGMA foreign_keys = ON")
+        }
+        let pool = try DatabasePool(path: url.path, configuration: configuration)
+        try CatalogDatabase.makeMigrator().migrate(
+            pool,
+            upTo: CatalogMigrationID.v039AddFileModifiedTimeSort
+        )
+
+        let database = CatalogDatabase(pool: pool)
+        let repository = CatalogRepository(database: database)
+        let sourceID = UUID()
+        let assetID = UUID()
+        try DatabaseTestSupport.makeFolderSourceWithFileAsset(
+            repository: repository,
+            sourceID: sourceID,
+            assetID: assetID
+        )
+        try repository.upsertFileFingerprint(
+            FileFingerprintInput(
+                assetID: assetID,
+                sizeBytes: 1_024,
+                modifiedAtNs: 1_700_000_000_000_000_000,
+                resourceID: Data([0x01, 0x02]),
+                sha256: nil
+            )
+        )
+        try database.pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE asset
+                SET relative_path = 'documents/paper.pdf',
+                    file_name = 'paper.pdf',
+                    media_type = ?
+                WHERE id = ?
+                """,
+                arguments: [
+                    ApprovedSourceMediaTypes.pdfIdentifier,
+                    assetID.uuidString.lowercased(),
+                ]
+            )
+            try SourceFolderIndex.rebuildAll(in: db)
+        }
+
+        XCTAssertEqual(
+            try database.pool.read { db in
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM source_folder") ?? 0
+            },
+            1
+        )
+
+        try database.migrate()
+
+        try database.pool.read { db in
+            let row = try XCTUnwrap(
+                Row.fetchOne(
+                    db,
+                    sql: """
+                    SELECT locator_state, media_type, relative_path
+                    FROM asset WHERE id = ?
+                    """,
+                    arguments: [assetID.uuidString.lowercased()]
+                )
+            )
+            XCTAssertEqual(row["locator_state"] as String, "historical")
+            XCTAssertEqual(row["media_type"] as String, ApprovedSourceMediaTypes.pdfIdentifier)
+            XCTAssertEqual(row["relative_path"] as String, "documents/paper.pdf")
+            XCTAssertEqual(
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM file_fingerprint WHERE asset_id = ?",
+                    arguments: [assetID.uuidString.lowercased()]
+                ),
+                1
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM source_folder"),
+                0
+            )
+        }
+
+        let page = try GRDBAssetCatalogQueryRepository(database: database).fetchAssetPage(
+            AssetPageRequest(filter: AssetPageFilter(), sort: .newest, cursor: nil, limit: 50)
+        )
+        XCTAssertTrue(page.items.isEmpty)
+    }
+
     func testV039BackfillsFileModificationTimeAndCreatesDualTimeIndexes() throws {
         let url = try makeTempDatabaseURL()
         var configuration = Configuration()
@@ -1309,6 +1399,10 @@ final class CatalogMigrationTests: XCTestCase {
         try db.execute(sql: "DROP TABLE IF EXISTS source_folder")
         try db.execute(sql: "DROP TABLE IF EXISTS training_run_sample")
         try db.execute(sql: "DROP TABLE IF EXISTS asset_favorite_state")
+        try db.execute(
+            sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
+            arguments: [CatalogMigrationID.v040RetirePDFDocuments]
+        )
         try db.execute(
             sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
             arguments: [CatalogMigrationID.v039AddFileModifiedTimeSort]

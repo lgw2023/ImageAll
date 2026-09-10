@@ -12956,11 +12956,8 @@ struct LibraryWorkspaceView: View {
         LibraryMediaFormatFilterOption(title: "GIF", mediaTypes: [UTType.gif.identifier]),
         LibraryMediaFormatFilterOption(title: "SVG", mediaTypes: [ApprovedSourceMediaTypes.svgIdentifier]),
         LibraryMediaFormatFilterOption(
-            title: "PDF / AI",
-            mediaTypes: [
-                ApprovedSourceMediaTypes.pdfIdentifier,
-                ApprovedSourceMediaTypes.illustratorIdentifier,
-            ]
+            title: "AI",
+            mediaTypes: [ApprovedSourceMediaTypes.illustratorIdentifier]
         ),
         LibraryMediaFormatFilterOption(
             title: "RAW",
@@ -15431,7 +15428,7 @@ struct LibraryWorkspaceView: View {
                             )
                         } description: {
                             if model.selectedMediaKind == .image {
-                                Text("支持常用静态图片、RAW、SVG，以及单页 PDF / PDF 兼容 AI。")
+                                Text("支持常用静态图片、RAW、SVG，以及 PDF 兼容 AI 图像；PDF 文档不会进入图库。")
                             } else {
                                 Text("支持系统可读取的 MOV、MP4、M4V 等视频；视频以代表缩略图显示。")
                             }

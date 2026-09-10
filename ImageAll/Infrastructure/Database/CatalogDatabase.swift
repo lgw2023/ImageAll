@@ -94,6 +94,7 @@ struct CatalogDatabase: Sendable {
         V037AddSourceFolderIndexMigration.register(on: &migrator)
         V038AddContextualTagFeedMigration.register(on: &migrator)
         V039AddFileModifiedTimeSortMigration.register(on: &migrator)
+        V040RetirePDFDocumentsMigration.register(on: &migrator)
         return migrator
     }
 
@@ -654,6 +655,27 @@ enum V039AddFileModifiedTimeSortMigration {
         ) WHERE locator_state = 'current'
         """,
     ]
+}
+
+/// PDF files are documents, not ImageAll library media. Retain prior catalog
+/// knowledge for audit and tag integrity, but retire every PDF locator from
+/// current browse surfaces. This migration never reads, moves, or deletes the
+/// source document.
+enum V040RetirePDFDocumentsMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v040RetirePDFDocuments) { db in
+            try db.execute(
+                sql: """
+                UPDATE asset
+                SET locator_state = 'historical'
+                WHERE locator_state = 'current'
+                  AND lower(media_type) = ?
+                """,
+                arguments: [ApprovedSourceMediaTypes.pdfIdentifier]
+            )
+            try SourceFolderIndex.rebuildAll(in: db)
+        }
+    }
 }
 
 /// A committed, media-bearing view of folder-source paths. Rebuilding happens

@@ -4,14 +4,14 @@ import XCTest
 @testable import ImageAll
 
 final class MediaDecodeCascadeTests: XCTestCase {
-    func testApprovedTypesIncludeRasterRawAndSupportedVectorDocuments() {
+    func testApprovedTypesIncludeRasterRawAndSupportedVectorImagesButNotPDFDocuments() {
         XCTAssertTrue(ApprovedSourceMediaTypes.contains(ApprovedSourceMediaTypes.fujiRawIdentifier))
         XCTAssertTrue(ApprovedSourceMediaTypes.contains(ApprovedSourceMediaTypes.adobeRawIdentifier))
         XCTAssertTrue(ApprovedSourceMediaTypes.contains(ApprovedSourceMediaTypes.jpeg2000Identifier))
         XCTAssertTrue(ApprovedSourceMediaTypes.contains(UTType.gif.identifier))
         XCTAssertTrue(ApprovedSourceMediaTypes.isCameraRaw(ApprovedSourceMediaTypes.fujiRawIdentifier))
         XCTAssertTrue(ApprovedSourceMediaTypes.contains(ApprovedSourceMediaTypes.svgIdentifier))
-        XCTAssertTrue(ApprovedSourceMediaTypes.contains(ApprovedSourceMediaTypes.pdfIdentifier))
+        XCTAssertFalse(ApprovedSourceMediaTypes.contains(ApprovedSourceMediaTypes.pdfIdentifier))
         XCTAssertTrue(ApprovedSourceMediaTypes.contains(ApprovedSourceMediaTypes.illustratorIdentifier))
     }
 
@@ -57,41 +57,30 @@ final class MediaDecodeCascadeTests: XCTestCase {
         XCTAssertNil(metadata.classificationFailureReason)
     }
 
-    func testSinglePagePDFIsAvailableWithPageDimensions() throws {
+    func testSinglePagePDFIsIgnoredAsDocument() throws {
         let fixture = FolderReconcileTestSupport.TempFixtureRoot()
         defer { fixture.cleanup() }
         let root = try fixture.makeRoot(label: "pdf")
         let data = try XCTUnwrap(FolderReconcileTestSupport.minimalPDFData())
         let file = try fixture.writeFile(root: root, relativePath: "document.pdf", contents: data)
 
-        guard case let .available(metadata) = FolderMediaClassifier().classify(
-            fileURL: file,
-            fileName: "document.pdf"
-        ) else {
-            return XCTFail("single-page PDF must be available")
-        }
-        XCTAssertEqual(metadata.mediaType, UTType.pdf.identifier)
-        XCTAssertEqual(metadata.width, 200)
-        XCTAssertEqual(metadata.height, 100)
-        XCTAssertNil(metadata.classificationFailureReason)
+        XCTAssertEqual(
+            FolderMediaClassifier().classify(fileURL: file, fileName: "document.pdf"),
+            .ignored
+        )
     }
 
-    func testMultiPagePDFIsUnsupportedInsteadOfSilentlyUsingFirstPage() throws {
+    func testMultiPagePDFIsIgnoredAsDocument() throws {
         let fixture = FolderReconcileTestSupport.TempFixtureRoot()
         defer { fixture.cleanup() }
         let root = try fixture.makeRoot(label: "multi-page-pdf")
         let data = try XCTUnwrap(FolderReconcileTestSupport.minimalPDFData(pageCount: 2))
         let file = try fixture.writeFile(root: root, relativePath: "document.pdf", contents: data)
 
-        guard case let .unsupported(metadata) = FolderMediaClassifier().classify(
-            fileURL: file,
-            fileName: "document.pdf"
-        ) else {
-            return XCTFail("multi-page PDF must be explicitly unsupported")
-        }
-        XCTAssertEqual(metadata.mediaType, UTType.pdf.identifier)
-        XCTAssertNil(metadata.width)
-        XCTAssertNil(metadata.height)
+        XCTAssertEqual(
+            FolderMediaClassifier().classify(fileURL: file, fileName: "document.pdf"),
+            .ignored
+        )
     }
 
     func testPDFCompatibleSinglePageAIIsAvailableAsIllustratorMedia() throws {
