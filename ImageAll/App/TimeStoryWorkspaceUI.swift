@@ -1,6 +1,5 @@
 import AppKit
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct TimeStoryCreationButton: View {
     let tag: TagListItem
@@ -723,13 +722,23 @@ struct TimeStoryWorkspaceView: View {
 
     private func choosePackageDestination(aspect: TimeStoryPackageAspect) {
         guard let project = model.project else { return }
-        let panel = NSSavePanel()
-        panel.title = "导出时光故事包（\(aspect.displayName)）"
-        panel.allowedContentTypes = [UTType(exportedAs: "com.gwlee.imageall.story-render-package")]
-        panel.nameFieldStringValue = "\(project.subjectTagDisplayName)-时光故事-\(aspect.rawValue).storyrenderpackage"
-        panel.message = "故事包包含已选素材与制作方案，供外部制作工具使用。"
-        if panel.runModal() == .OK, let url = panel.url {
-            model.exportPackage(to: url, aspect: aspect)
+        let panel = NSOpenPanel()
+        panel.title = "选择故事包保存位置（\(aspect.displayName)）"
+        panel.message = "将在所选文件夹内生成供外部制作工具使用的故事包。"
+        panel.prompt = "选择文件夹"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK, let directory = panel.url {
+            let safeSubject = project.subjectTagDisplayName
+                .replacingOccurrences(of: "/", with: "-")
+                .replacingOccurrences(of: ":", with: "-")
+            let name = "\(safeSubject)-时光故事-\(aspect.rawValue).storyrenderpackage"
+            model.exportPackage(
+                to: directory.appendingPathComponent(name, isDirectory: true),
+                aspect: aspect
+            )
         }
     }
 
