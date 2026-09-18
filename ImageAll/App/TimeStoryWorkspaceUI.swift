@@ -270,10 +270,6 @@ final class TimeStoryWorkspaceModel: ObservableObject {
             }
         }
         exportTask = Task { [weak self] in
-            defer {
-                progressContinuation.finish()
-                progressTask.cancel()
-            }
             do {
                 let issues = try await Task.detached {
                     try runtime.validator.validate(project)
@@ -299,6 +295,9 @@ final class TimeStoryWorkspaceModel: ObservableObject {
             } catch {
                 self?.message = error.localizedDescription
             }
+            progressContinuation.finish()
+            progressTask.cancel()
+            await progressTask.value
             self?.exportProgress = nil
             self?.exportTask = nil
         }
@@ -320,10 +319,6 @@ final class TimeStoryWorkspaceModel: ObservableObject {
             }
         }
         packageExportTask = Task { [weak self] in
-            defer {
-                progressContinuation.finish()
-                progressTask.cancel()
-            }
             do {
                 let result = try await exporter.export(
                     project: project,
@@ -344,6 +339,9 @@ final class TimeStoryWorkspaceModel: ObservableObject {
             } catch {
                 self?.message = error.localizedDescription
             }
+            progressContinuation.finish()
+            progressTask.cancel()
+            await progressTask.value
             self?.packageExportProgress = nil
             self?.packageExportTask = nil
         }
