@@ -4,7 +4,7 @@ import Foundation
 import ImageIO
 import UniformTypeIdentifiers
 
-enum TimeStoryPackageAspect: String, CaseIterable, Identifiable, Sendable {
+enum TimeStoryPackageAspect: String, Codable, CaseIterable, Equatable, Identifiable, Sendable {
     case landscape
     case portrait
 
@@ -28,6 +28,7 @@ struct TimeStoryPackageProgress: Sendable, Equatable {
 
 struct TimeStoryPackageExportResult: Sendable, Equatable {
     let packageURL: URL
+    let projectID: String
     let projectRevision: String
     let totalFrames: Int
     let assetCount: Int
@@ -176,7 +177,7 @@ struct StoryRenderPackageExporter: TimeStoryPackageExporting, Sendable {
         )
         var document = StoryRenderPackageDocument(
             schemaVersion: Self.schemaVersion,
-            projectID: Self.opaqueID(prefix: "story", components: [project.id.uuidString]),
+            projectID: Self.packageProjectID(for: project.id),
             projectRevision: "pending",
             export: .init(
                 width: aspect.width,
@@ -224,6 +225,7 @@ struct StoryRenderPackageExporter: TimeStoryPackageExporting, Sendable {
         onProgress(.init(phase: .publishing, fraction: 1))
         return TimeStoryPackageExportResult(
             packageURL: destinationURL,
+            projectID: document.projectID,
             projectRevision: document.projectRevision,
             totalFrames: timeline.totalFrames,
             assetCount: document.assets.count
@@ -438,6 +440,10 @@ struct StoryRenderPackageExporter: TimeStoryPackageExporting, Sendable {
         } catch {
             throw TimeStoryError.storyPackageExportFailed("无法重新取得配乐文件访问权限")
         }
+    }
+
+    static func packageProjectID(for projectID: UUID) -> String {
+        opaqueID(prefix: "story", components: [projectID.uuidString])
     }
 
     private static func opaqueID(prefix: String, components: [String]) -> String {

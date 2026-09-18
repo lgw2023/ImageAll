@@ -40,6 +40,8 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     @Published private(set) var isBusy = false
     @Published private(set) var exportProgress: TimeStoryRenderProgress?
     @Published private(set) var packageExportProgress: TimeStoryPackageProgress?
+    @Published private(set) var openMontageCapability: OpenMontageExecutorCapability?
+    @Published private(set) var openMontageTask: OpenMontageStoryTaskSnapshot?
     @Published private(set) var lastExportURL: URL?
     @Published private(set) var lastPackageURL: URL?
     @Published var message: String?
@@ -48,6 +50,8 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     private let initialTag: TagListItem
     private var exportTask: Task<Void, Never>?
     private var packageExportTask: Task<Void, Never>?
+    private var openMontageSubmissionTask: Task<Void, Never>?
+    private var openMontagePollingTask: Task<Void, Never>?
 
     init(runtime: TimeStoryFeatureRuntime, tag: TagListItem) {
         self.runtime = runtime
@@ -72,12 +76,18 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     deinit {
         exportTask?.cancel()
         packageExportTask?.cancel()
+        openMontageSubmissionTask?.cancel()
+        openMontagePollingTask?.cancel()
     }
 
     func start() async {
-        guard project == nil, !isBusy else { return }
+        guard !isBusy else { return }
         await refreshProjects()
-        await createDraft(for: initialTag)
+        if project == nil {
+            await createDraft(for: initialTag)
+        }
+        await refreshOpenMontageCapability()
+        await recoverOpenMontageTask()
     }
 
     func createDraft(for tag: TagListItem) async {
@@ -351,6 +361,204 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         packageExportTask?.cancel()
     }
 
+    func submitToOpenMontage(aspect: TimeStoryPackageAspect) {
+        guard let project,
+              openMontageSubmissionTask == nil,
+              openMontageTask?.phase.isTerminal != false
+        else {
+            if openMontageTask?.phase.isTerminal == false {
+                message = OpenMontageTaskError.taskAlreadyActive.localizedDescription
+            }
+            return
+        }
+        let frozenProject = project
+        let client = runtime.openMontageTasks
+        message = "正在准备素材并发布 OpenMontage 制作任务…"
+        let (progressStream, progressContinuation) =
+            AsyncStream<OpenMontageStoryTaskSnapshot>.makeStream()
+        let progressTask = Task { @MainActor [weak self] in
+            for await snapshot in progressStream {
+                guard self?.openMontageTask?.taskID == nil
+                        || self?.openMontageTask?.taskID == snapshot.taskID
+                else { continue }
+                self?.openMontageTask = snapshot
+            }
+        }
+        openMontageSubmissionTask = Task { [weak self] in
+            do {
+                let snapshot = try await client.submit(
+                    project: frozenProject,
+                    aspect: aspect,
+                    onProgress: { progressContinuation.yield($0) }
+                )
+                guard !Task.isCancelled else { return }
+                self?.openMontageTask = snapshot
+                self?.message = "任务已发布，正在等待 OpenMontage 制作。"
+                self?.startOpenMontagePolling(taskID: snapshot.taskID)
+            } catch is CancellationError {
+                self?.message = "任务发布已取消；未发布可执行的半成品任务。"
+            } catch {
+                self?.message = error.localizedDescription
+            }
+            progressContinuation.finish()
+            progressTask.cancel()
+            await progressTask.value
+            self?.openMontageSubmissionTask = nil
+        }
+    }
+
+    func cancelOpenMontageTask() {
+        guard let taskID = openMontageTask?.taskID,
+              openMontageTask?.phase.isTerminal == false
+        else { return }
+        let client = runtime.openMontageTasks
+        Task { [weak self] in
+            do {
+                let snapshot = try await client.requestCancellation(taskID: taskID)
+                guard self?.openMontageTask?.taskID == taskID else { return }
+                self?.openMontageTask = snapshot
+                self?.message = "已请求 OpenMontage 取消这次制作。"
+            } catch {
+                self?.message = error.localizedDescription
+            }
+        }
+    }
+
+    func refreshOpenMontageCapability() async {
+        openMontageCapability = await runtime.openMontageTasks.capability()
+    }
+
+    func openOpenMontageResult() {
+        withVerifiedOpenMontageResult { result in
+            NSWorkspace.shared.open(result.fileURL)
+        }
+    }
+
+    func revealOpenMontageResult() {
+        withVerifiedOpenMontageResult { result in
+            NSWorkspace.shared.activateFileViewerSelecting([result.fileURL])
+        }
+    }
+
+    func saveOpenMontageResult(to destination: URL) {
+        withVerifiedOpenMontageResult { [weak self] result in
+            do {
+                try Self.copyVerifiedResult(result, to: destination)
+                self?.message = "成片已另存为：\(destination.lastPathComponent)"
+            } catch {
+                self?.message = error.localizedDescription
+            }
+        }
+    }
+
+    private func recoverOpenMontageTask() async {
+        guard let project else { return }
+        do {
+            guard let snapshot = try await runtime.openMontageTasks.latestTask(projectID: project.id)
+            else { return }
+            openMontageTask = snapshot
+            if !snapshot.phase.isTerminal {
+                startOpenMontagePolling(taskID: snapshot.taskID)
+            }
+        } catch OpenMontageTaskError.taskRootNotConfigured {
+            // Configuration is optional; the capability panel explains how to enable it.
+        } catch {
+            message = error.localizedDescription
+        }
+    }
+
+    private func startOpenMontagePolling(taskID: String) {
+        openMontagePollingTask?.cancel()
+        let client = runtime.openMontageTasks
+        openMontagePollingTask = Task { [weak self] in
+            defer { self?.openMontagePollingTask = nil }
+            while !Task.isCancelled {
+                do {
+                    let snapshot = try await client.task(taskID: taskID)
+                    guard self?.openMontageTask?.taskID == taskID else { return }
+                    self?.openMontageTask = snapshot
+                    if snapshot.phase.isTerminal {
+                        self?.message = Self.openMontageTerminalMessage(snapshot)
+                        return
+                    }
+                } catch {
+                    guard self?.openMontageTask?.taskID == taskID else { return }
+                    self?.message = error.localizedDescription
+                }
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
+    }
+
+    private func withVerifiedOpenMontageResult(
+        perform: @escaping @MainActor (OpenMontageVerifiedResult) -> Void
+    ) {
+        guard let taskID = openMontageTask?.taskID else { return }
+        let client = runtime.openMontageTasks
+        Task { [weak self] in
+            do {
+                let result = try await client.verifiedResult(taskID: taskID)
+                guard self?.openMontageTask?.taskID == taskID else { return }
+                let didAccess = result.authorizedRootURL.startAccessingSecurityScopedResource()
+                guard didAccess else {
+                    throw OpenMontageTaskError.taskRootAuthorizationRequired
+                }
+                defer { result.authorizedRootURL.stopAccessingSecurityScopedResource() }
+                perform(result)
+            } catch {
+                self?.message = error.localizedDescription
+            }
+        }
+    }
+
+    private static func copyVerifiedResult(
+        _ result: OpenMontageVerifiedResult,
+        to destination: URL
+    ) throws {
+        let fileManager = FileManager.default
+        let parent = destination.deletingLastPathComponent()
+        guard fileManager.fileExists(atPath: parent.path) else {
+            throw TimeStoryError.invalidDestination
+        }
+        let staging = parent.appendingPathComponent(
+            ".imageall-openmontage-\(UUID().uuidString).tmp.mp4"
+        )
+        let backupName = ".imageall-openmontage-\(UUID().uuidString).backup.mp4"
+        defer { try? fileManager.removeItem(at: staging) }
+        try fileManager.copyItem(at: result.fileURL, to: staging)
+        guard try OpenMontageTaskFileValidation.sha256(staging) == result.fileSHA256 else {
+            throw OpenMontageTaskError.resultValidationFailed("另存前文件哈希发生变化。")
+        }
+        if fileManager.fileExists(atPath: destination.path) {
+            _ = try fileManager.replaceItemAt(
+                destination,
+                withItemAt: staging,
+                backupItemName: backupName,
+                options: .usingNewMetadataOnly
+            )
+            try? fileManager.removeItem(at: parent.appendingPathComponent(backupName))
+        } else {
+            try fileManager.moveItem(at: staging, to: destination)
+        }
+    }
+
+    private static func openMontageTerminalMessage(
+        _ snapshot: OpenMontageStoryTaskSnapshot
+    ) -> String {
+        switch snapshot.phase {
+        case .succeeded:
+            "OpenMontage 已完成并验证成片。"
+        case .failed:
+            "OpenMontage 制作失败。\(snapshot.detail ?? "可在设置中检查执行器状态。")"
+        case .cancelled:
+            "这次 OpenMontage 制作已取消，没有发布成功成片。"
+        case .interrupted:
+            "执行器中断，任务状态无法确认；不会自动重新提交。"
+        case .preparingAssets, .waitingForExecutor, .rendering, .verifyingResult:
+            "OpenMontage 正在制作。"
+        }
+    }
+
     private func refreshProjects() async {
         let store = runtime.store
         do {
@@ -412,7 +620,20 @@ struct TimeStoryWorkspaceView: View {
                             || model.packageExportProgress != nil
                     )
                     .accessibilityIdentifier("timeStoryExportButton")
-                Menu("导出故事包") {
+                Menu("OpenMontage 本地制作") {
+                    ForEach(TimeStoryPackageAspect.allCases) { aspect in
+                        Button(aspect.displayName) { model.submitToOpenMontage(aspect: aspect) }
+                    }
+                }
+                .disabled(
+                    model.project?.shots.isEmpty != false
+                        || model.exportProgress != nil
+                        || model.packageExportProgress != nil
+                        || model.openMontageTask?.phase.isTerminal == false
+                )
+                .persistentHelp("将本次故事冻结后发布给用户已启动的 OpenMontage 本地执行器。")
+                .accessibilityIdentifier("timeStoryOpenMontageButton")
+                Menu("导出独立故事包") {
                     ForEach(TimeStoryPackageAspect.allCases) { aspect in
                         Button(aspect.displayName + "…") { choosePackageDestination(aspect: aspect) }
                     }
@@ -677,6 +898,51 @@ struct TimeStoryWorkspaceView: View {
                     Button("取消故事包导出") { model.cancelPackageExport() }
                 }
             }
+            if let task = model.openMontageTask {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        if !task.phase.isTerminal {
+                            ProgressView(value: task.progress)
+                                .frame(maxWidth: 220)
+                        }
+                        Label(openMontagePhaseName(task.phase), systemImage: openMontagePhaseIcon(task.phase))
+                            .font(.caption.weight(.semibold))
+                        Text(task.aspect.displayName)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        if !task.phase.isTerminal {
+                            Button("取消制作") { model.cancelOpenMontageTask() }
+                        }
+                        if task.phase == .succeeded {
+                            Button("打开成片") { model.openOpenMontageResult() }
+                            Button("在 Finder 中显示") { model.revealOpenMontageResult() }
+                            Button("另存…") { chooseOpenMontageResultDestination() }
+                        }
+                    }
+                    Text("任务 \(task.taskID.prefix(8))… · 本次内容已冻结；之后的项目编辑不会改变该任务。")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    if let detail = task.detail, !detail.isEmpty {
+                        Text(detail)
+                            .font(.caption)
+                            .foregroundStyle(task.phase == .failed ? .red : .secondary)
+                    }
+                }
+                .accessibilityIdentifier("timeStoryOpenMontageStatus")
+            } else if let capability = model.openMontageCapability,
+                      capability.state != .ready
+            {
+                HStack {
+                    Label("OpenMontage 未连接", systemImage: "bolt.slash")
+                        .font(.caption.weight(.semibold))
+                    Text(capability.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("刷新") { Task { await model.refreshOpenMontageCapability() } }
+                }
+            }
             if let message = model.message {
                 Text(message)
                     .font(.caption)
@@ -746,6 +1012,43 @@ struct TimeStoryWorkspaceView: View {
         case .writingPlan: "写入制作方案"
         case .verifying: "完整校验"
         case .publishing: "发布故事包"
+        }
+    }
+
+    private func chooseOpenMontageResultDestination() {
+        guard let project = model.project else { return }
+        let panel = NSSavePanel()
+        panel.title = "另存 OpenMontage 成片"
+        panel.allowedContentTypes = [.mpeg4Movie]
+        panel.nameFieldStringValue = "\(project.subjectTagDisplayName)-OpenMontage.mp4"
+        if panel.runModal() == .OK, let url = panel.url {
+            model.saveOpenMontageResult(to: url)
+        }
+    }
+
+    private func openMontagePhaseName(_ phase: OpenMontageStoryTaskPhase) -> String {
+        switch phase {
+        case .preparingAssets: "正在准备素材"
+        case .waitingForExecutor: "等待 OpenMontage"
+        case .rendering: "正在制作成片"
+        case .verifyingResult: "正在检查成片"
+        case .succeeded: "制作完成"
+        case .failed: "制作失败"
+        case .cancelled: "已取消"
+        case .interrupted: "制作已中断"
+        }
+    }
+
+    private func openMontagePhaseIcon(_ phase: OpenMontageStoryTaskPhase) -> String {
+        switch phase {
+        case .preparingAssets: "square.and.arrow.up"
+        case .waitingForExecutor: "hourglass"
+        case .rendering: "film.stack"
+        case .verifyingResult: "checkmark.shield"
+        case .succeeded: "checkmark.circle.fill"
+        case .failed: "exclamationmark.triangle.fill"
+        case .cancelled: "xmark.circle"
+        case .interrupted: "bolt.slash"
         }
     }
 

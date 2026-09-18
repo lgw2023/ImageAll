@@ -525,6 +525,214 @@ final class TimeStoryFeatureTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: changedURL.path))
     }
 
+    func testOpenMontageSubmissionPublishesFrozenV11EnvelopeAndRejectsDuplicate() async throws {
+        let root = try temporaryDirectory("openmontage-submit")
+        let fixedNow = Date(timeIntervalSince1970: 1_789_747_200)
+        try writeOpenMontageExecutorFixture(at: root, now: fixedNow)
+        let first = UUID()
+        let second = UUID()
+        let project = renderProject(first: first, second: second)
+        let client = makeOpenMontageClient(
+            root: root,
+            projectAssetImages: [
+                first: try edgeMarkedPNG(width: 1_200, height: 700),
+                second: try edgeMarkedPNG(width: 700, height: 1_200),
+            ],
+            now: fixedNow
+        )
+
+        let snapshot = try await client.submit(project: project, aspect: .landscape) { _ in }
+        let submission = root.appendingPathComponent("tasks/\(snapshot.taskID)/submission")
+        let task = try jsonObject(at: submission.appendingPathComponent("task.json"))
+        let completion = try jsonObject(at: submission.appendingPathComponent("complete.json"))
+
+        XCTAssertEqual(task["protocolVersion"] as? String, "1.1")
+        XCTAssertEqual(task["taskID"] as? String, snapshot.taskID)
+        XCTAssertNil(task["command"])
+        XCTAssertNil(task["executable"])
+        XCTAssertNil(task["interpreter"])
+        XCTAssertEqual(completion["protocolVersion"] as? String, "1.1")
+        XCTAssertEqual(completion["deliveryID"] as? String, snapshot.taskID)
+        XCTAssertEqual(completion["taskID"] as? String, snapshot.taskID)
+        XCTAssertEqual(completion["projectID"] as? String, snapshot.projectID)
+        XCTAssertEqual(completion["projectRevision"] as? String, snapshot.projectRevision)
+        XCTAssertEqual(completion["status"] as? String, "complete")
+        XCTAssertEqual(
+            (completion["producer"] as? [String: Any])?["application"] as? String,
+            "ImageAll"
+        )
+        XCTAssertEqual(
+            (completion["storyPackage"] as? [String: Any])?["entrypoint"] as? String,
+            "package/story.json"
+        )
+        XCTAssertEqual(
+            (completion["storyPackage"] as? [String: Any])?["schemaSHA256"] as? String,
+            StoryRenderPackageExporter.schemaSHA256
+        )
+        let entries = try XCTUnwrap(completion["files"] as? [[String: Any]])
+        let manifest = try entries.map { entry -> String in
+            let path = try XCTUnwrap(entry["path"] as? String)
+            let size = try XCTUnwrap(entry["sizeBytes"] as? Int)
+            let sha256 = try XCTUnwrap(entry["sha256"] as? String)
+            let file = submission.appendingPathComponent(path)
+            XCTAssertEqual(try Data(contentsOf: file).count, size)
+            XCTAssertEqual(try fileSHA256(file), sha256)
+            return "\(sha256)  \(size)  \(path)\n"
+        }.joined()
+        XCTAssertEqual(
+            SHA256.hash(data: Data(manifest.utf8)).map { String(format: "%02x", $0) }.joined(),
+            completion["manifestSHA256"] as? String
+        )
+        XCTAssertFalse(entries.contains { ($0["path"] as? String) == "complete.json" })
+
+        do {
+            _ = try await client.submit(project: project, aspect: .portrait) { _ in }
+            XCTFail("a second click must not publish another unfinished task")
+        } catch let error as OpenMontageTaskError {
+            XCTAssertEqual(error, .taskAlreadyActive)
+        }
+        let taskDirectories = try FileManager.default.contentsOfDirectory(
+            at: root.appendingPathComponent("tasks"),
+            includingPropertiesForKeys: nil
+        )
+        XCTAssertEqual(taskDirectories.count, 1)
+    }
+
+    func testOpenMontageLifecycleCancelRecoveryAndRevisionIsolation() async throws {
+        let root = try temporaryDirectory("openmontage-lifecycle")
+        let fixedNow = Date(timeIntervalSince1970: 1_789_747_200)
+        try writeOpenMontageExecutorFixture(at: root, now: fixedNow)
+        let first = UUID()
+        let second = UUID()
+        let images = [
+            first: try edgeMarkedPNG(width: 1_200, height: 700),
+            second: try edgeMarkedPNG(width: 700, height: 1_200),
+        ]
+        let project = renderProject(first: first, second: second)
+        let client = makeOpenMontageClient(
+            root: root,
+            projectAssetImages: images,
+            now: fixedNow
+        )
+        let submitted = try await client.submit(project: project, aspect: .landscape) { _ in }
+        let taskRoot = root.appendingPathComponent("tasks/\(submitted.taskID)")
+        let completion = try jsonObject(at: taskRoot.appendingPathComponent("submission/complete.json"))
+        let digest = try XCTUnwrap(completion["manifestSHA256"] as? String)
+        try writeOpenMontageStatus(
+            at: taskRoot,
+            snapshot: submitted,
+            digest: digest,
+            sequence: 1,
+            state: "running",
+            stage: "rendering",
+            progress: 0.4,
+            terminal: false,
+            now: fixedNow
+        )
+        let running = try await client.task(taskID: submitted.taskID)
+        XCTAssertEqual(running.phase, .rendering)
+        XCTAssertEqual(running.progress, 0.4)
+
+        _ = try await client.requestCancellation(taskID: submitted.taskID)
+        let cancel = try jsonObject(at: taskRoot.appendingPathComponent("requests/cancel.json"))
+        XCTAssertEqual(cancel["taskID"] as? String, submitted.taskID)
+        XCTAssertNotNil(cancel["requestID"] as? String)
+        try writeOpenMontageStatus(
+            at: taskRoot,
+            snapshot: submitted,
+            digest: digest,
+            sequence: 2,
+            state: "cancelled",
+            stage: "terminal",
+            progress: 0.4,
+            terminal: true,
+            now: fixedNow
+        )
+        let cancelled = try await client.task(taskID: submitted.taskID)
+        XCTAssertEqual(cancelled.phase, .cancelled)
+        XCTAssertNil(cancelled.result)
+
+        let recoveredClient = makeOpenMontageClient(
+            root: root,
+            projectAssetImages: images,
+            now: fixedNow
+        )
+        let recovered = try await recoveredClient.latestTask(projectID: project.id)
+        XCTAssertEqual(recovered?.taskID, submitted.taskID)
+        XCTAssertEqual(recovered?.phase, .cancelled)
+
+        try writeOpenMontageStatus(
+            at: taskRoot,
+            snapshot: submitted,
+            digest: digest,
+            sequence: 3,
+            state: "running",
+            stage: "rendering",
+            progress: 0.9,
+            terminal: false,
+            now: fixedNow
+        )
+        let afterLateProgress = try await client.task(taskID: submitted.taskID)
+        XCTAssertEqual(afterLateProgress.phase, .cancelled)
+
+        // Restore the executor-owned terminal status before publishing a new revision.
+        try writeOpenMontageStatus(
+            at: taskRoot,
+            snapshot: submitted,
+            digest: digest,
+            sequence: 2,
+            state: "cancelled",
+            stage: "terminal",
+            progress: 0.4,
+            terminal: true,
+            now: fixedNow
+        )
+        let oldCompletionHash = try fileSHA256(taskRoot.appendingPathComponent("submission/complete.json"))
+        var edited = project
+        edited.title = "编辑后的新版本"
+        edited.updatedAtMs += 1
+        let newer = try await client.submit(project: edited, aspect: .portrait) { _ in }
+        XCTAssertNotEqual(newer.taskID, submitted.taskID)
+        XCTAssertNotEqual(newer.projectRevision, submitted.projectRevision)
+        XCTAssertEqual(
+            try fileSHA256(taskRoot.appendingPathComponent("submission/complete.json")),
+            oldCompletionHash,
+            "new task publication must not overwrite the old task"
+        )
+    }
+
+    func testOpenMontageStaleExecutorDoesNotPublishPartialTask() async throws {
+        let root = try temporaryDirectory("openmontage-offline")
+        let fixedNow = Date(timeIntervalSince1970: 1_789_747_200)
+        try writeOpenMontageExecutorFixture(
+            at: root,
+            now: fixedNow.addingTimeInterval(-30)
+        )
+        let first = UUID()
+        let second = UUID()
+        let project = renderProject(first: first, second: second)
+        let client = makeOpenMontageClient(
+            root: root,
+            projectAssetImages: [
+                first: try edgeMarkedPNG(width: 1_200, height: 700),
+                second: try edgeMarkedPNG(width: 700, height: 1_200),
+            ],
+            now: fixedNow
+        )
+
+        let capability = await client.capability()
+        XCTAssertEqual(capability.state, .offline)
+        do {
+            _ = try await client.submit(project: project, aspect: .landscape) { _ in }
+            XCTFail("stale executor unexpectedly accepted a task")
+        } catch let error as OpenMontageTaskError {
+            guard case .executorOffline = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("tasks").path))
+    }
+
     /// Opt-in delivery generator. It deliberately goes through the production
     /// package exporter and native renderer; no package JSON is post-processed.
     /// Set IMAGEALL_STORY_PHASE2_DELIVERY_ROOT to a new, non-existent directory.
@@ -1224,6 +1432,109 @@ final class TimeStoryFeatureTests: XCTestCase {
         }
     }
 
+    private func makeOpenMontageClient(
+        root: URL,
+        projectAssetImages: [UUID: Data],
+        now: Date
+    ) -> FileOpenMontageStoryTaskClient {
+        FileOpenMontageStoryTaskClient(
+            rootProvider: FixtureOpenMontageRootProvider(root: root),
+            packageExporter: StoryRenderPackageExporter(
+                media: FixtureStoryMediaLoader(images: projectAssetImages),
+                validator: PassingStoryValidator()
+            ),
+            installationID: "imageall-test-installation",
+            applicationVersion: "tests",
+            now: { now }
+        )
+    }
+
+    private func writeOpenMontageExecutorFixture(at root: URL, now: Date) throws {
+        let executor = root.appendingPathComponent("executor", isDirectory: true)
+        try FileManager.default.createDirectory(at: executor, withIntermediateDirectories: true)
+        try writeJSON([
+            "documentType": "story-executor-capabilities",
+            "protocolVersion": FileOpenMontageStoryTaskClient.protocolVersion,
+            "executorName": "openmontage-story-executor",
+            "executorVersion": "tests",
+            "instanceID": "fixture-instance",
+            "taskProtocolSchemaSHA256": FileOpenMontageStoryTaskClient.protocolSchemaSHA256,
+            "storyPackageSchemas": [[
+                "version": StoryRenderPackageExporter.schemaVersion,
+                "sha256": StoryRenderPackageExporter.schemaSHA256,
+            ]],
+            "taskTypes": ["story-render"],
+            "maxConcurrentTasks": 1,
+            "features": [
+                "cancellation": true,
+                "restartRecovery": true,
+                "atomicResultPublication": true,
+                "remoteAPI": false,
+            ],
+            "readiness": ["ready": true, "checks": []],
+            "generatedAt": iso8601(now),
+        ], to: executor.appendingPathComponent("capabilities.json"))
+        try writeJSON([
+            "documentType": "story-executor-heartbeat",
+            "protocolVersion": FileOpenMontageStoryTaskClient.protocolVersion,
+            "executorVersion": "tests",
+            "instanceID": "fixture-instance",
+            "pid": 1,
+            "sequence": 1,
+            "availability": "ready",
+            "activeTaskID": NSNull(),
+            "startedAt": iso8601(now),
+            "updatedAt": iso8601(now),
+        ], to: executor.appendingPathComponent("heartbeat.json"))
+    }
+
+    private func writeOpenMontageStatus(
+        at taskRoot: URL,
+        snapshot: OpenMontageStoryTaskSnapshot,
+        digest: String,
+        sequence: Int,
+        state: String,
+        stage: String,
+        progress: Double,
+        terminal: Bool,
+        now: Date
+    ) throws {
+        let stateRoot = taskRoot.appendingPathComponent("state", isDirectory: true)
+        try FileManager.default.createDirectory(at: stateRoot, withIntermediateDirectories: true)
+        try writeJSON([
+            "documentType": "story-task-status",
+            "protocolVersion": FileOpenMontageStoryTaskClient.protocolVersion,
+            "taskID": snapshot.taskID,
+            "projectID": snapshot.projectID,
+            "projectRevision": try XCTUnwrap(snapshot.projectRevision),
+            "submissionDigestSHA256": digest,
+            "eventSequence": sequence,
+            "state": state,
+            "stage": stage,
+            "progress": progress,
+            "terminal": terminal,
+            "updatedAt": iso8601(now),
+            "error": NSNull(),
+        ], to: stateRoot.appendingPathComponent("status.json"))
+    }
+
+    private func writeJSON(_ object: Any, to url: URL) throws {
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+        try data.write(to: url, options: .atomic)
+    }
+
+    private func jsonObject(at url: URL) throws -> [String: Any] {
+        try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
+        )
+    }
+
+    private func iso8601(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.string(from: date)
+    }
+
     private func appendUInt16(_ value: UInt16, to data: inout Data) {
         var little = value.littleEndian
         withUnsafeBytes(of: &little) { data.append(contentsOf: $0) }
@@ -1291,6 +1602,14 @@ private struct FixtureStoryMediaLoader: TimeStoryMediaLoading {
         guard let data = images[assetID] else { throw TimeStoryError.noCandidates }
         return data
     }
+}
+
+private struct FixtureOpenMontageRootProvider: OpenMontageTaskRootProviding {
+    let root: URL
+
+    func resolveTaskRoot() throws -> URL { root }
+    func startAccessing(_: URL) -> Bool { true }
+    func stopAccessing(_: URL) {}
 }
 
 private struct PassingStoryValidator: TimeStoryMediaValidating {

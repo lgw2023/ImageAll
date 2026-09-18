@@ -48,12 +48,17 @@ struct TimeStoryVerificationContainer: View {
             .appendingPathComponent("ImageAll-TimeStory-UI-Verification-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let database = try CatalogDatabase.open(at: root.appendingPathComponent("catalog.sqlite"))
-        let tag = TagListItem(id: UUID(), displayName: "合成主体", state: .active)
+        let tag = TagListItem(
+            id: UUID(uuidString: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")!,
+            displayName: "合成主体",
+            state: .active
+        )
         let specs: [(String, Int64, String?, NSColor, Bool)] = [
             ("10000000-0000-0000-0000-000000000001", 1_514_764_800_000, nil, .systemOrange, true),
             ("10000000-0000-0000-0000-000000000002", 1_609_459_200_000, "上海", .systemRed, false),
             ("10000000-0000-0000-0000-000000000003", 1_672_531_200_000, "杭州", .systemBlue, true),
             ("10000000-0000-0000-0000-000000000004", 1_735_689_600_000, "上海", .systemPurple, false),
+            ("10000000-0000-0000-0000-000000000005", 1_767_225_600_000, "北京", .systemGreen, true),
         ]
         let sourceID = UUID()
         let candidates = specs.map { rawID, time, place, _, _ in
@@ -98,7 +103,32 @@ struct TimeStoryVerificationContainer: View {
             tagDisplayName: tag.displayName,
             candidates: candidates
         )
-        let project = try TimeStoryPlanner().makeProject(snapshot: snapshot, nowMs: 1_757_808_000_000)
+        let planned = try TimeStoryPlanner().makeProject(snapshot: snapshot, nowMs: 1_757_808_000_000)
+        var project = TimeStoryProject(
+            schemaVersion: planned.schemaVersion,
+            id: UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!,
+            createdAtMs: planned.createdAtMs,
+            updatedAtMs: planned.updatedAtMs,
+            subjectTagID: planned.subjectTagID,
+            subjectTagDisplayName: planned.subjectTagDisplayName,
+            templateVersion: planned.templateVersion,
+            strategyVersion: planned.strategyVersion,
+            title: planned.title,
+            candidateSnapshot: planned.candidateSnapshot,
+            readiness: planned.readiness,
+            chapters: planned.chapters,
+            shots: planned.shots,
+            excludedAssetIDs: planned.excludedAssetIDs,
+            music: planned.music
+        )
+        if ProcessInfo.processInfo.environment["IMAGEALL_TIME_STORY_UI_VERIFICATION_FULL"] == "1" {
+            for index in project.shots.indices {
+                project.shots[index].durationSeconds = 10
+                project.shots[index].isUserEdited = true
+            }
+            project.title = "合成主体 · 约 60 秒完整联调"
+            project.updatedAtMs += 1
+        }
         var mediaData: [UUID: Data] = [:]
         var thumbnails: [UUID: NSImage] = [:]
         for (rawID, _, _, color, portrait) in specs {
@@ -110,6 +140,11 @@ struct TimeStoryVerificationContainer: View {
             }
         }
         let media = TimeStoryVerificationMedia(images: mediaData)
+        let packageExporter = StoryRenderPackageExporter(
+            media: media,
+            validator: TimeStoryVerificationValidator()
+        )
+        let taskRootStore = UserDefaultsOpenMontageTaskRootStore()
         let runtime = TimeStoryFeatureRuntime(
             candidates: TimeStoryCandidateProvider(database: database, query: TimeStoryVerificationQuery()),
             planner: TimeStoryPlanner(),
@@ -119,9 +154,11 @@ struct TimeStoryVerificationContainer: View {
                 media: media,
                 temporaryDirectory: root.appendingPathComponent("render", isDirectory: true)
             ),
-            packageExporter: StoryRenderPackageExporter(
-                media: media,
-                validator: TimeStoryVerificationValidator()
+            packageExporter: packageExporter,
+            openMontageTasks: FileOpenMontageStoryTaskClient(
+                rootProvider: taskRootStore,
+                packageExporter: packageExporter,
+                installationID: taskRootStore.installationID
             ),
             media: media,
             clock: SystemJobClock()

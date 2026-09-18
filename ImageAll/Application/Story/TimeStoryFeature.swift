@@ -1383,6 +1383,7 @@ struct TimeStoryFeatureRuntime: Sendable {
     let validator: any TimeStoryMediaValidating
     let renderer: any TimeStoryRendering
     let packageExporter: any TimeStoryPackageExporting
+    let openMontageTasks: any OpenMontageStoryTasking
     let media: any TimeStoryMediaLoading
     let clock: any JobClock
 }

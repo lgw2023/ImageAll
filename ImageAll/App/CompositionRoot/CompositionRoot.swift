@@ -551,28 +551,37 @@ struct CompositionRoot {
                 folderAuthorization: authorization,
                 photosLibrary: photosAccess
             ),
-            timeStoryRuntime: TimeStoryFeatureRuntime(
-                candidates: TimeStoryCandidateProvider(
-                    database: runtime.database,
-                    query: GRDBAssetCatalogQueryRepository(database: runtime.database)
-                ),
-                planner: TimeStoryPlanner(),
-                store: TimeStoryProjectStore(
-                    applicationSupportDirectory: runtime.paths.applicationSupportDirectory
-                ),
-                validator: TimeStoryMediaValidator(database: runtime.database),
-                renderer: AVFoundationTimeStoryRenderer(
-                    media: assetImages,
-                    temporaryDirectory: runtime.paths.cachesDirectory
-                        .appendingPathComponent("TimeStoryRendering", isDirectory: true)
-                ),
-                packageExporter: StoryRenderPackageExporter(
+            timeStoryRuntime: {
+                let packageExporter = StoryRenderPackageExporter(
                     media: assetImages,
                     validator: TimeStoryMediaValidator(database: runtime.database)
-                ),
-                media: assetImages,
-                clock: clock
-            ),
+                )
+                let taskRootStore = UserDefaultsOpenMontageTaskRootStore()
+                return TimeStoryFeatureRuntime(
+                    candidates: TimeStoryCandidateProvider(
+                        database: runtime.database,
+                        query: GRDBAssetCatalogQueryRepository(database: runtime.database)
+                    ),
+                    planner: TimeStoryPlanner(),
+                    store: TimeStoryProjectStore(
+                        applicationSupportDirectory: runtime.paths.applicationSupportDirectory
+                    ),
+                    validator: TimeStoryMediaValidator(database: runtime.database),
+                    renderer: AVFoundationTimeStoryRenderer(
+                        media: assetImages,
+                        temporaryDirectory: runtime.paths.cachesDirectory
+                            .appendingPathComponent("TimeStoryRendering", isDirectory: true)
+                    ),
+                    packageExporter: packageExporter,
+                    openMontageTasks: FileOpenMontageStoryTaskClient(
+                        rootProvider: taskRootStore,
+                        packageExporter: packageExporter,
+                        installationID: taskRootStore.installationID
+                    ),
+                    media: assetImages,
+                    clock: clock
+                )
+            }(),
             clock: clock
         )
         let generalSettingsCommands: (any RemoteGeneralSettingsCommandPort)? = {

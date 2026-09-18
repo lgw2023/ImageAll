@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 enum AppModelSettingsMutationError: Error, Equatable, Sendable {
@@ -282,11 +283,84 @@ final class PhotosOriginalStorageSettingsModel: ObservableObject {
     }
 }
 
+@MainActor
+final class OpenMontageSettingsModel: ObservableObject {
+    @Published private(set) var configuredRootURL: URL?
+    @Published private(set) var capability = OpenMontageExecutorCapability(
+        state: .unconfigured,
+        protocolVersion: nil,
+        executorVersion: nil,
+        schemaSHA256: nil,
+        heartbeatAtMs: nil,
+        detail: "尚未选择任务目录。"
+    )
+    @Published private(set) var isChecking = false
+    @Published var message: String?
+
+    private let store: UserDefaultsOpenMontageTaskRootStore
+    private let inspector: OpenMontageTaskDirectoryInspector
+
+    init(store: UserDefaultsOpenMontageTaskRootStore = UserDefaultsOpenMontageTaskRootStore()) {
+        self.store = store
+        inspector = OpenMontageTaskDirectoryInspector(rootProvider: store)
+        configuredRootURL = store.configuredRootURL
+    }
+
+    func chooseTaskRoot() {
+        let panel = NSOpenPanel()
+        panel.title = "选择 OpenMontage 任务目录"
+        panel.message = "ImageAll 只会在这个目录中发布任务、读取状态和取得已验证成片。"
+        panel.prompt = "授权任务目录"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try store.saveTaskRoot(url)
+            configuredRootURL = store.configuredRootURL
+            message = "任务目录已授权。请启动 OpenMontage 执行器后刷新状态。"
+            Task { await refresh() }
+        } catch {
+            message = error.localizedDescription
+        }
+    }
+
+    func refresh() async {
+        guard !isChecking else { return }
+        isChecking = true
+        configuredRootURL = store.configuredRootURL
+        capability = await inspector.capability()
+        isChecking = false
+    }
+
+    var statusTitle: String {
+        switch capability.state {
+        case .unconfigured: "未配置"
+        case .offline: "未连接"
+        case .incompatible: "版本不兼容"
+        case .dependenciesUnavailable: "本地依赖未就绪"
+        case .ready: "已连接"
+        }
+    }
+
+    var statusSymbol: String {
+        switch capability.state {
+        case .ready: "checkmark.circle.fill"
+        case .unconfigured: "folder.badge.questionmark"
+        case .offline: "bolt.slash"
+        case .incompatible: "arrow.triangle.2.circlepath"
+        case .dependenciesUnavailable: "wrench.and.screwdriver"
+        }
+    }
+}
+
 struct AppModelSettingsView: View {
     @ObservedObject var model: AppModelSettingsModel
     @ObservedObject var idlePrewarmSettings: IdleThumbnailPrewarmSettingsModel
     @ObservedObject var toolbarDisplayModeSettings: ToolbarDisplayModeSettingsModel
     @ObservedObject var photosOriginalStorageSettings: PhotosOriginalStorageSettingsModel
+    @StateObject private var openMontageSettings = OpenMontageSettingsModel()
     @State private var showingOverrides = false
 
     var body: some View {
@@ -416,6 +490,78 @@ struct AppModelSettingsView: View {
 
             RemoteHostSettingsView()
                 .tabItem { Label("移动 Host", systemImage: "iphone") }
+
+            Form {
+                Section("任务目录") {
+                    if let root = openMontageSettings.configuredRootURL {
+                        LabeledContent("已授权目录") {
+                            Text(root.path)
+                                .multilineTextAlignment(.trailing)
+                                .textSelection(.enabled)
+                        }
+                    } else {
+                        LabeledContent("已授权目录", value: "未选择")
+                    }
+                    Text("目录由你通过系统选择器授权。ImageAll 不启动外部解释器，也不会扫描其他位置。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button {
+                        openMontageSettings.chooseTaskRoot()
+                    } label: {
+                        Label(
+                            openMontageSettings.configuredRootURL == nil
+                                ? "选择任务目录…"
+                                : "重新授权任务目录…",
+                            systemImage: "folder.badge.plus"
+                        )
+                    }
+                    .accessibilityIdentifier("openMontageTaskRootButton")
+                }
+                Section("连接状态") {
+                    LabeledContent("OpenMontage") {
+                        HStack(spacing: 8) {
+                            if openMontageSettings.isChecking {
+                                ProgressView().controlSize(.small)
+                            }
+                            Label(
+                                openMontageSettings.statusTitle,
+                                systemImage: openMontageSettings.statusSymbol
+                            )
+                        }
+                    }
+                    if let version = openMontageSettings.capability.executorVersion {
+                        LabeledContent("执行器版本", value: version)
+                    }
+                    if let version = openMontageSettings.capability.protocolVersion {
+                        LabeledContent("任务协议", value: version)
+                    }
+                    Text(openMontageSettings.capability.detail)
+                        .font(.callout)
+                        .foregroundStyle(
+                            openMontageSettings.capability.state == .ready
+                                ? Color.secondary
+                                : Color.orange
+                        )
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("刷新状态") { Task { await openMontageSettings.refresh() } }
+                        .disabled(openMontageSettings.isChecking)
+                        .accessibilityIdentifier("openMontageRefreshButton")
+                    if let message = openMontageSettings.message {
+                        Text(message).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Section("运行边界") {
+                    Text("OpenMontage 是可选的本地制作方式。失败或离线时，原生 MP4 和独立故事包导出仍可使用；ImageAll 不会静默切换引擎重做。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .formStyle(.grouped)
+            .padding(12)
+            .tabItem { Label("OpenMontage", systemImage: "film.stack") }
+            .task { await openMontageSettings.refresh() }
         }
         .frame(minWidth: 520, minHeight: 420)
         .sheet(isPresented: $showingOverrides) { SuggestionThresholdOverridesSheet(model: model) }
