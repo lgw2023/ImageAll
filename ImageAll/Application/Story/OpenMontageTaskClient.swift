@@ -1138,7 +1138,12 @@ actor FileOpenMontageStoryTaskClient: OpenMontageStoryTasking {
     }
 
     private static func parseTimestamp(_ value: String) -> Date? {
-        ISO8601DateFormatter().date(from: value)
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractional.date(from: value) { return date }
+        let wholeSeconds = ISO8601DateFormatter()
+        wholeSeconds.formatOptions = [.withInternetDateTime]
+        return wholeSeconds.date(from: value)
     }
 
     private static func milliseconds(_ date: Date) -> Int64 {
