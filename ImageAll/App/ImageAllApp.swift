@@ -36,6 +36,31 @@ struct ImageAllApp: App {
 
     var body: some Scene {
         WindowGroup {
+#if DEBUG
+            if ProcessInfo.processInfo.environment["IMAGEALL_TIME_STORY_UI_VERIFICATION"] == "1" {
+                TimeStoryVerificationContainer()
+            } else {
+                productionRoot
+            }
+#else
+            productionRoot
+#endif
+        }
+        Settings {
+            AppModelSettingsView(
+                model: modelSettingsModel,
+                idlePrewarmSettings: idlePrewarmSettingsModel,
+                toolbarDisplayModeSettings: toolbarDisplayModeSettingsModel,
+                photosOriginalStorageSettings: photosOriginalStorageSettingsModel
+            )
+            .onAppear { attachSettingsPortsIfReady() }
+            .onChange(of: startupModel.workspaceModel != nil) { _, _ in
+                attachSettingsPortsIfReady()
+            }
+        }
+    }
+
+    private var productionRoot: some View {
             RootView(
                 presentation: startupModel.presentation,
                 workspaceModel: startupModel.workspaceModel,
@@ -61,19 +86,6 @@ struct ImageAllApp: App {
                     await startupModel.workspaceModel?.applicationDidBecomeActive()
                 }
             }
-        }
-        Settings {
-            AppModelSettingsView(
-                model: modelSettingsModel,
-                idlePrewarmSettings: idlePrewarmSettingsModel,
-                toolbarDisplayModeSettings: toolbarDisplayModeSettingsModel,
-                photosOriginalStorageSettings: photosOriginalStorageSettingsModel
-            )
-            .onAppear { attachSettingsPortsIfReady() }
-            .onChange(of: startupModel.workspaceModel != nil) { _, _ in
-                attachSettingsPortsIfReady()
-            }
-        }
     }
 
     private func attachSettingsPortsIfReady() {

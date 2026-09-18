@@ -1771,6 +1771,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private let assetPathClipboard: any LibraryAssetPathClipboardWriting
     private let originalAssetOpener: any LibraryOriginalAssetOpening
     private let videoPlaybackProvider: any LibraryVideoPlaybackProviding
+    private let timeStoryRuntime: TimeStoryFeatureRuntime?
     private let sourceOrderPreferences: LibrarySourceOrderPreferences
     private let tagOrderPreferences: LibraryTagOrderPreferences
     private let tagGroupCollapsePreferences: LibraryTagGroupCollapsePreferences
@@ -1899,6 +1900,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         originalAssetOpener: any LibraryOriginalAssetOpening = UnavailableLibraryOriginalAssetOpener(),
         videoPlaybackProvider: any LibraryVideoPlaybackProviding =
             UnavailableLibraryVideoPlaybackProvider(),
+        timeStoryRuntime: TimeStoryFeatureRuntime? = nil,
         sourceOrderPreferences: LibrarySourceOrderPreferences = LibrarySourceOrderPreferences(),
         tagOrderPreferences: LibraryTagOrderPreferences = LibraryTagOrderPreferences(),
         tagGroupCollapsePreferences: LibraryTagGroupCollapsePreferences = LibraryTagGroupCollapsePreferences(),
@@ -1955,6 +1957,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         self.assetPathClipboard = assetPathClipboard
         self.originalAssetOpener = originalAssetOpener
         self.videoPlaybackProvider = videoPlaybackProvider
+        self.timeStoryRuntime = timeStoryRuntime
         self.sourceOrderPreferences = sourceOrderPreferences
         self.tagOrderPreferences = tagOrderPreferences
         self.tagGroupCollapsePreferences = tagGroupCollapsePreferences
@@ -1983,6 +1986,11 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     var suggestionThresholdPortForSettings: (any SuggestionThresholdPort)? {
         suggestionThresholds
+    }
+
+    func makeTimeStoryWorkspaceModel(for tag: TagListItem) -> TimeStoryWorkspaceModel? {
+        guard let timeStoryRuntime else { return nil }
+        return TimeStoryWorkspaceModel(runtime: timeStoryRuntime, tag: tag)
     }
 
     var selectedTrainingRun: TrainingRunRecord? {
@@ -13290,6 +13298,7 @@ struct LibraryWorkspaceView: View {
     @State private var tagPendingRename: TagListItem?
     @State private var renamedTagName = ""
     @State private var tagPendingArchive: TagListItem?
+    @State private var timeStoryTag: TagListItem?
     @State private var tagGroupPendingRename: TagGroupListItem?
     @State private var renamedTagGroupName = ""
     @State private var tagGroupPendingDelete: TagGroupListItem?
@@ -13381,6 +13390,7 @@ struct LibraryWorkspaceView: View {
                 }
             )
         }
+        .modifier(TimeStorySheetModifier(model: model, tag: $timeStoryTag))
         .toolbar {
             ToolbarItemGroup {
                 libraryToolbarLayoutItems
@@ -15150,6 +15160,12 @@ struct LibraryWorkspaceView: View {
             .accessibilityHint("左键切换包含筛选，右键切换非筛选。")
 
             Menu {
+                TimeStoryCreationButton(tag: tag) { selectedTag in
+                    timeStoryTag = selectedTag
+                }
+
+                Divider()
+
                 Button("仅筛选此标签") {
                     Task { await model.filterToSingleIncludedTag(tag.id) }
                 }

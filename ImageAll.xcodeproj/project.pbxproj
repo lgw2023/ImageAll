@@ -7,6 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		TS0000010000000000000001 /* TimeStoryFeature.swift in Sources */ = {isa = PBXBuildFile; fileRef = TS0001010000000000000001 /* TimeStoryFeature.swift */; };
+		TS0000010000000000000002 /* TimeStoryWorkspaceUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = TS0001010000000000000002 /* TimeStoryWorkspaceUI.swift */; };
+		TS0000010000000000000003 /* TimeStoryVerificationSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = TS0001010000000000000003 /* TimeStoryVerificationSupport.swift */; };
+		TS0000010000000000000101 /* TimeStoryFeatureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TS0001010000000000000101 /* TimeStoryFeatureTests.swift */; };
 
 		RH0000010000000000000001 /* RemoteCatalogServing.swift in Sources */ = {isa = PBXBuildFile; fileRef = RH0001010000000000000001 /* RemoteCatalogServing.swift */; };
 		TRC000010000000000000001 /* RemoteTrainingCommandPort.swift in Sources */ = {isa = PBXBuildFile; fileRef = TRC000020000000000000001 /* RemoteTrainingCommandPort.swift */; };
@@ -343,6 +347,10 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		TS0001010000000000000001 /* TimeStoryFeature.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Story/TimeStoryFeature.swift; sourceTree = "<group>"; };
+		TS0001010000000000000002 /* TimeStoryWorkspaceUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimeStoryWorkspaceUI.swift; sourceTree = "<group>"; };
+		TS0001010000000000000003 /* TimeStoryVerificationSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimeStoryVerificationSupport.swift; sourceTree = "<group>"; };
+		TS0001010000000000000101 /* TimeStoryFeatureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimeStoryFeatureTests.swift; sourceTree = "<group>"; };
 
 		MD0001010000000000000001 /* ApprovedSourceMediaTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApprovedSourceMediaTypes.swift; sourceTree = "<group>"; };
 		MD0001010000000000000002 /* MediaDecodeCascade.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaDecodeCascade.swift; sourceTree = "<group>"; };
@@ -719,6 +727,7 @@
 		AA0006010000000000000003 /* ImageAllTests */ = {
 			isa = PBXGroup;
 			children = (
+				TS0001010000000000000101 /* TimeStoryFeatureTests.swift */,
 				RH0006010000000000000003 /* Remote */,
 				SL0006010000000000000003 /* Similarity */,
 				EX0001010000000000000101 /* PortableCatalogExportTests.swift */,
@@ -814,6 +823,8 @@
 		AA0006010000000000000005 /* App */ = {
 			isa = PBXGroup;
 			children = (
+				TS0001010000000000000002 /* TimeStoryWorkspaceUI.swift */,
+				TS0001010000000000000003 /* TimeStoryVerificationSupport.swift */,
 				AA0001010000000000000001 /* ImageAllApp.swift */,
 				RH000101000000000000000B /* RemoteHostSettingsView.swift */,
 				CM0001010000000000000005 /* AppModelSettingsView.swift */,
@@ -837,6 +848,7 @@
 		AA0006010000000000000006 /* Application */ = {
 			isa = PBXGroup;
 			children = (
+				TS0001010000000000000001 /* TimeStoryFeature.swift */,
 				RH0006010000000000000001 /* Remote */,
 				SL0006010000000000000001 /* Similarity */,
 				OO0006010000000000000001 /* Photos */,
@@ -1536,6 +1548,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				TS0000010000000000000001 /* TimeStoryFeature.swift in Sources */,
+				TS0000010000000000000002 /* TimeStoryWorkspaceUI.swift in Sources */,
+				TS0000010000000000000003 /* TimeStoryVerificationSupport.swift in Sources */,
 				CM0000010000000000000005 /* AppModelSettingsView.swift in Sources */,
 				IP0000010000000000000003 /* IdleThumbnailPrewarmController.swift in Sources */,
 				IP0000010000000000000004 /* IdleThumbnailPrewarmSettingsModel.swift in Sources */,
@@ -1740,6 +1755,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				TS0000010000000000000101 /* TimeStoryFeatureTests.swift in Sources */,
 				CM0000010000000000000101 /* AppCoreMLEmbeddingServiceTests.swift in Sources */,
 				CM0000010000000000000104 /* AppCoreMLEmbeddingCacheTests.swift in Sources */,
 				CM0000010000000000000105 /* AppPersonalLinearHeadTests.swift in Sources */,

@@ -22,7 +22,7 @@ enum AssetLocatorState: String, Equatable, Sendable {
     case historical
 }
 
-enum AssetAvailability: String, Equatable, Sendable {
+enum AssetAvailability: String, Equatable, Sendable, Codable {
     case available
     case missing
     case unreadable

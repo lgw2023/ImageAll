@@ -1,6 +1,6 @@
 import Foundation
 
-struct TagListItem: Sendable, Equatable {
+struct TagListItem: Sendable, Equatable, Identifiable {
     let id: UUID
     let displayName: String
     let state: TagState

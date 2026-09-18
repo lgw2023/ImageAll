@@ -9,10 +9,14 @@ struct CompositionRoot {
         toolbarDisplayModeSettings: ToolbarDisplayModeSettingsModel? = nil,
         dependencies: CatalogBootstrapDependencies = Self.makeProductionDependencies()
     ) -> CatalogStartupModel {
-        CatalogStartupModel(
+        let environment = ProcessInfo.processInfo.environment
+        let isolatesTestHost = environment["IMAGEALL_TEST_HOST_ISOLATION"] == "1"
+            || environment.keys.contains("XCTestConfigurationFilePath")
+        return CatalogStartupModel(
             dependencies: dependencies,
             workspaceFactory: { token in
-                Self.makeWorkspaceModel(
+                guard !isolatesTestHost else { return nil }
+                return Self.makeWorkspaceModel(
                     runtime: token.runtime,
                     modelActivationCoordinator: modelActivationCoordinator,
                     modelSettings: modelSettings,
@@ -40,6 +44,14 @@ struct CompositionRoot {
             } else {
                 pathsResolver = RejectedDevelopmentAppPathsResolver()
             }
+        } else if environment.keys.contains("XCTestConfigurationFilePath") {
+            pathsResolver = TemporaryAppPathsResolver(
+                rootURL: FileManager.default.temporaryDirectory
+                    .appendingPathComponent(
+                        "ImageAll-XCTest-Host-\(ProcessInfo.processInfo.processIdentifier)",
+                        isDirectory: true
+                    )
+            )
         } else {
             pathsResolver = FoundationAppPathsResolver()
         }
@@ -538,6 +550,24 @@ struct CompositionRoot {
                 database: runtime.database,
                 folderAuthorization: authorization,
                 photosLibrary: photosAccess
+            ),
+            timeStoryRuntime: TimeStoryFeatureRuntime(
+                candidates: TimeStoryCandidateProvider(
+                    database: runtime.database,
+                    query: GRDBAssetCatalogQueryRepository(database: runtime.database)
+                ),
+                planner: TimeStoryPlanner(),
+                store: TimeStoryProjectStore(
+                    applicationSupportDirectory: runtime.paths.applicationSupportDirectory
+                ),
+                validator: TimeStoryMediaValidator(database: runtime.database),
+                renderer: AVFoundationTimeStoryRenderer(
+                    media: assetImages,
+                    temporaryDirectory: runtime.paths.cachesDirectory
+                        .appendingPathComponent("TimeStoryRendering", isDirectory: true)
+                ),
+                media: assetImages,
+                clock: clock
             ),
             clock: clock
         )
