@@ -40,12 +40,15 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     @Published private(set) var thumbnails: [UUID: NSImage] = [:]
     @Published private(set) var isBusy = false
     @Published private(set) var exportProgress: TimeStoryRenderProgress?
+    @Published private(set) var packageExportProgress: TimeStoryPackageProgress?
     @Published private(set) var lastExportURL: URL?
+    @Published private(set) var lastPackageURL: URL?
     @Published var message: String?
 
     private let runtime: TimeStoryFeatureRuntime
     private let initialTag: TagListItem
     private var exportTask: Task<Void, Never>?
+    private var packageExportTask: Task<Void, Never>?
 
     init(runtime: TimeStoryFeatureRuntime, tag: TagListItem) {
         self.runtime = runtime
@@ -67,7 +70,10 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     }
 #endif
 
-    deinit { exportTask?.cancel() }
+    deinit {
+        exportTask?.cancel()
+        packageExportTask?.cancel()
+    }
 
     func start() async {
         guard project == nil, !isBusy else { return }
@@ -150,8 +156,25 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         guard var project,
               let index = project.chapters.firstIndex(where: { $0.id == chapterID })
         else { return }
-        project.chapters[index].title = title
+        project.chapters[index].title = String(title.prefix(240))
         project.chapters[index].isUserEdited = true
+        project.updatedAtMs = runtime.clock.nowMs
+        self.project = project
+    }
+
+    func setProjectTitle(_ title: String) {
+        guard var project else { return }
+        project.title = String(title.prefix(240))
+        project.updatedAtMs = runtime.clock.nowMs
+        self.project = project
+    }
+
+    func setCaption(_ shotID: UUID, caption: String) {
+        guard var project,
+              let index = project.shots.firstIndex(where: { $0.id == shotID })
+        else { return }
+        project.shots[index].caption = String(caption.prefix(240))
+        project.shots[index].isUserEdited = true
         project.updatedAtMs = runtime.clock.nowMs
         self.project = project
     }
@@ -286,6 +309,51 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         exportTask?.cancel()
     }
 
+    func exportPackage(to destination: URL, aspect: TimeStoryPackageAspect) {
+        guard let project, packageExportTask == nil else { return }
+        packageExportProgress = TimeStoryPackageProgress(phase: .preparingAssets, fraction: 0)
+        message = "正在导出供外部制作工具使用的素材与制作方案…"
+        let exporter = runtime.packageExporter
+        let (progressStream, progressContinuation) = AsyncStream<TimeStoryPackageProgress>.makeStream()
+        let progressTask = Task { @MainActor [weak self] in
+            for await progress in progressStream {
+                self?.packageExportProgress = progress
+            }
+        }
+        packageExportTask = Task { [weak self] in
+            defer {
+                progressContinuation.finish()
+                progressTask.cancel()
+            }
+            do {
+                let result = try await exporter.export(
+                    project: project,
+                    aspect: aspect,
+                    destinationURL: destination,
+                    onProgress: { progressContinuation.yield($0) }
+                )
+                try Task.checkCancellation()
+                self?.lastPackageURL = result.packageURL
+                self?.message = "故事包已导出：\(destination.lastPathComponent)（\(result.totalFrames) 帧）"
+            } catch is CancellationError {
+                self?.message = "故事包导出已取消；既有故事包没有被修改。"
+            } catch let TimeStoryError.mediaValidationFailed(issues) {
+                let detail = issues.prefix(3).map {
+                    "镜头 \($0.shotIndex)（\($0.assetID.uuidString.prefix(8))…）：\($0.kind.rawValue)"
+                }.joined(separator: "；")
+                self?.message = "导出前后素材版本检查未通过：\(detail)"
+            } catch {
+                self?.message = error.localizedDescription
+            }
+            self?.packageExportProgress = nil
+            self?.packageExportTask = nil
+        }
+    }
+
+    func cancelPackageExport() {
+        packageExportTask?.cancel()
+    }
+
     private func refreshProjects() async {
         let store = runtime.store
         do {
@@ -341,8 +409,24 @@ struct TimeStoryWorkspaceView: View {
                     .accessibilityIdentifier("timeStoryRegenerateButton")
                 musicMenu
                 Button("导出 MP4…") { chooseExportDestination() }
-                    .disabled(model.project?.shots.isEmpty != false || model.exportProgress != nil)
+                    .disabled(
+                        model.project?.shots.isEmpty != false
+                            || model.exportProgress != nil
+                            || model.packageExportProgress != nil
+                    )
                     .accessibilityIdentifier("timeStoryExportButton")
+                Menu("导出故事包") {
+                    ForEach(TimeStoryPackageAspect.allCases) { aspect in
+                        Button(aspect.displayName + "…") { choosePackageDestination(aspect: aspect) }
+                    }
+                }
+                .disabled(
+                    model.project?.shots.isEmpty != false
+                        || model.exportProgress != nil
+                        || model.packageExportProgress != nil
+                )
+                .persistentHelp("导出供外部制作工具使用的素材与制作方案。")
+                .accessibilityIdentifier("timeStoryPackageExportButton")
                 Button("关闭") { dismiss() }
             }
         }
@@ -427,6 +511,18 @@ struct TimeStoryWorkspaceView: View {
                 Text("实际时长 \(formattedDuration(project.timelineDurationSeconds))")
                     .font(.headline.monospacedDigit())
             }
+            TextField(
+                "项目标题",
+                text: Binding(
+                    get: { model.project?.title ?? project.title },
+                    set: { model.setProjectTitle($0) }
+                )
+            )
+            .font(.title2.weight(.semibold))
+            .accessibilityIdentifier("timeStoryProjectTitle")
+            Text("成片中项目标题显示为片头卡；章节标题显示为各章节卡；镜头字幕只显示在对应照片底部。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             HStack(spacing: 16) {
                 summaryPill("匹配", value: "\(summary.matchingCount)")
                 summaryPill("可靠时间", value: "\(summary.matchingCount - summary.unknownTimeCount)")
@@ -510,7 +606,15 @@ struct TimeStoryWorkspaceView: View {
             .clipShape(RoundedRectangle(cornerRadius: 8))
 
             VStack(alignment: .leading, spacing: 6) {
-                Text(shot.caption).font(.headline).lineLimit(1)
+                TextField(
+                    "镜头字幕",
+                    text: Binding(
+                        get: { model.project?.shots.first(where: { $0.id == shot.id })?.caption ?? shot.caption },
+                        set: { model.setCaption(shot.id, caption: $0) }
+                    )
+                )
+                .font(.headline)
+                .accessibilityIdentifier("timeStoryShotCaption")
                 Text(shot.reasons.joined(separator: " · "))
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -568,6 +672,14 @@ struct TimeStoryWorkspaceView: View {
                     Button("取消导出") { model.cancelExport() }
                 }
             }
+            if let progress = model.packageExportProgress {
+                HStack {
+                    ProgressView(value: progress.fraction)
+                    Text(packagePhaseName(progress.phase))
+                        .font(.caption.monospacedDigit())
+                    Button("取消故事包导出") { model.cancelPackageExport() }
+                }
+            }
             if let message = model.message {
                 Text(message)
                     .font(.caption)
@@ -609,6 +721,27 @@ struct TimeStoryWorkspaceView: View {
         if panel.runModal() == .OK, let url = panel.url { model.export(to: url) }
     }
 
+    private func choosePackageDestination(aspect: TimeStoryPackageAspect) {
+        guard let project = model.project else { return }
+        let panel = NSSavePanel()
+        panel.title = "导出时光故事包（\(aspect.displayName)）"
+        panel.allowedContentTypes = [UTType(exportedAs: "com.gwlee.imageall.story-render-package")]
+        panel.nameFieldStringValue = "\(project.subjectTagDisplayName)-时光故事-\(aspect.rawValue).storyrenderpackage"
+        panel.message = "故事包包含已选素材与制作方案，供外部制作工具使用。"
+        if panel.runModal() == .OK, let url = panel.url {
+            model.exportPackage(to: url, aspect: aspect)
+        }
+    }
+
+    private func packagePhaseName(_ phase: TimeStoryPackageProgress.Phase) -> String {
+        switch phase {
+        case .preparingAssets: "准备素材"
+        case .writingPlan: "写入制作方案"
+        case .verifying: "完整校验"
+        case .publishing: "发布故事包"
+        }
+    }
+
     private func formattedDuration(_ seconds: Double) -> String {
         let total = max(0, Int(seconds.rounded()))
         return String(format: "%d:%02d", total / 60, total % 60)
@@ -635,30 +768,24 @@ private struct TimeStoryTimelinePreview: View {
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !isPlaying)) { context in
-            let duration = project.timelineDurationSeconds
+            let timeline = try? TimeStoryTimeline.normalize(project: project)
+            let duration = timeline?.durationSeconds ?? 0
             let elapsed = max(0, context.date.timeIntervalSince(playbackStartedAt))
             let seconds = isPlaying && duration > 0 ? elapsed.truncatingRemainder(dividingBy: duration) : 0
-            let state = TimeStoryTimeline.state(
-                at: seconds,
-                shots: project.shots,
-                transitionSeconds: TimeStoryConstants.transitionDurationSeconds
-            )
+            let frame = Int((seconds * Double(timeline?.fps ?? 30)).rounded(.down))
+            let state = timeline?.state(atFrame: frame)
             HStack(spacing: 14) {
                 ZStack(alignment: .bottom) {
                     Color.black
                     if let state {
-                        previewImage(state.current, opacity: 1 - state.blend, scale: 1 + 0.015 * state.progress)
+                        previewContent(
+                            state.current,
+                            opacity: 1 - state.blend,
+                            scale: 0.985 + 0.015 * state.progress
+                        )
                         if let next = state.next {
-                            previewImage(next, opacity: state.blend, scale: 1)
+                            previewContent(next, opacity: state.blend, scale: 0.985)
                         }
-                        Text(state.current.caption)
-                            .font(.headline)
-                            .foregroundStyle(.white)
-                            .shadow(color: .black, radius: 3)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 7)
-                            .background(.black.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
-                            .padding(12)
                     }
                 }
                 .aspectRatio(16 / 9, contentMode: .fit)
@@ -668,7 +795,7 @@ private struct TimeStoryTimelinePreview: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("时间线预览")
                         .font(.headline)
-                    Text("与导出共用镜头时长和转场重叠")
+                    Text("预览、MP4 与故事包共用整数帧边界")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Button {
@@ -687,14 +814,51 @@ private struct TimeStoryTimelinePreview: View {
     }
 
     @ViewBuilder
-    private func previewImage(_ shot: TimeStoryShot, opacity: Double, scale: Double) -> some View {
-        if let image = thumbnails[shot.id] {
-            Image(nsImage: image)
-                .resizable()
-                .scaledToFit()
-                .scaleEffect(scale)
-                .opacity(opacity)
+    private func previewContent(
+        _ segment: TimeStoryFrameSegment,
+        opacity: Double,
+        scale: Double
+    ) -> some View {
+        Group {
+            switch segment.kind {
+            case .projectTitle, .chapterTitle:
+                ZStack {
+                    Color(red: 0.055, green: 0.082, blue: 0.12)
+                    VStack(spacing: 10) {
+                        Text(segment.title ?? "")
+                            .font(segment.kind == .projectTitle ? .title.bold() : .title2.bold())
+                            .multilineTextAlignment(.center)
+                            .foregroundStyle(.white)
+                        Rectangle()
+                            .fill(Color(red: 0.95, green: 0.78, blue: 0.47))
+                            .frame(width: 72, height: 3)
+                    }
+                    .padding(24)
+                }
+            case .photo:
+                ZStack(alignment: .bottom) {
+                    if let shotID = segment.shotID, let image = thumbnails[shotID] {
+                        Image(nsImage: image)
+                            .resizable()
+                            .scaledToFit()
+                            .scaleEffect(scale)
+                    }
+                    if let caption = segment.caption,
+                       !caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    {
+                        Text(caption)
+                            .font(.headline)
+                            .foregroundStyle(.white)
+                            .shadow(color: .black, radius: 3)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 7)
+                            .background(.black.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+                            .padding(12)
+                    }
+                }
+            }
         }
+        .opacity(opacity)
     }
 
     private func formatted(_ seconds: Double) -> String {

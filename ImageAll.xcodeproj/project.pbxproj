@@ -10,6 +10,7 @@
 		TS0000010000000000000001 /* TimeStoryFeature.swift in Sources */ = {isa = PBXBuildFile; fileRef = TS0001010000000000000001 /* TimeStoryFeature.swift */; };
 		TS0000010000000000000002 /* TimeStoryWorkspaceUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = TS0001010000000000000002 /* TimeStoryWorkspaceUI.swift */; };
 		TS0000010000000000000003 /* TimeStoryVerificationSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = TS0001010000000000000003 /* TimeStoryVerificationSupport.swift */; };
+		TS0000010000000000000004 /* StoryRenderPackage.swift in Sources */ = {isa = PBXBuildFile; fileRef = TS0001010000000000000004 /* StoryRenderPackage.swift */; };
 		TS0000010000000000000101 /* TimeStoryFeatureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TS0001010000000000000101 /* TimeStoryFeatureTests.swift */; };
 
 		RH0000010000000000000001 /* RemoteCatalogServing.swift in Sources */ = {isa = PBXBuildFile; fileRef = RH0001010000000000000001 /* RemoteCatalogServing.swift */; };
@@ -350,6 +351,7 @@
 		TS0001010000000000000001 /* TimeStoryFeature.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Story/TimeStoryFeature.swift; sourceTree = "<group>"; };
 		TS0001010000000000000002 /* TimeStoryWorkspaceUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimeStoryWorkspaceUI.swift; sourceTree = "<group>"; };
 		TS0001010000000000000003 /* TimeStoryVerificationSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimeStoryVerificationSupport.swift; sourceTree = "<group>"; };
+		TS0001010000000000000004 /* StoryRenderPackage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Story/StoryRenderPackage.swift; sourceTree = "<group>"; };
 		TS0001010000000000000101 /* TimeStoryFeatureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimeStoryFeatureTests.swift; sourceTree = "<group>"; };
 
 		MD0001010000000000000001 /* ApprovedSourceMediaTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApprovedSourceMediaTypes.swift; sourceTree = "<group>"; };
@@ -849,6 +851,7 @@
 			isa = PBXGroup;
 			children = (
 				TS0001010000000000000001 /* TimeStoryFeature.swift */,
+				TS0001010000000000000004 /* StoryRenderPackage.swift */,
 				RH0006010000000000000001 /* Remote */,
 				SL0006010000000000000001 /* Similarity */,
 				OO0006010000000000000001 /* Photos */,
@@ -1549,6 +1552,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				TS0000010000000000000001 /* TimeStoryFeature.swift in Sources */,
+				TS0000010000000000000004 /* StoryRenderPackage.swift in Sources */,
 				TS0000010000000000000002 /* TimeStoryWorkspaceUI.swift in Sources */,
 				TS0000010000000000000003 /* TimeStoryVerificationSupport.swift in Sources */,
 				CM0000010000000000000005 /* AppModelSettingsView.swift in Sources */,

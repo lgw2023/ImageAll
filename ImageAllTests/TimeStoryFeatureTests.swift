@@ -1,5 +1,6 @@
 import AppKit
 @preconcurrency import AVFoundation
+import CryptoKit
 import GRDB
 @testable import ImageAll
 import XCTest
@@ -104,26 +105,48 @@ final class TimeStoryFeatureTests: XCTestCase {
     func testTimelineStateRepresentsTheTransitionOverlap() throws {
         let first = candidate("02000000-0000-0000-0000-000000000001", time: timestamp(2020, 1, 1))
         let second = candidate("02000000-0000-0000-0000-000000000002", time: timestamp(2024, 1, 1))
-        let shots = [makeShot(asset: first, index: 0), makeShot(asset: second, index: 1)]
-        let transitionStart = shots[0].durationSeconds - TimeStoryConstants.transitionDurationSeconds
-        let overlapping = try XCTUnwrap(TimeStoryTimeline.state(
-            at: transitionStart + 0.1,
-            shots: shots,
-            transitionSeconds: TimeStoryConstants.transitionDurationSeconds
-        ))
+        let project = renderProject(first: first.assetID, second: second.assetID)
+        let timeline = try TimeStoryTimeline.normalize(project: project)
+        XCTAssertEqual(timeline.fps, 30)
+        XCTAssertEqual(timeline.segments.map(\.kind), [.projectTitle, .chapterTitle, .photo, .photo])
+        XCTAssertEqual(timeline.segments.map(\.durationFrames), [90, 60, 45, 45])
+        XCTAssertEqual(timeline.segments.map(\.transitionInFrames), [0, 14, 14, 14])
+        XCTAssertEqual(timeline.segments.map(\.startFrame), [0, 76, 122, 153])
+        XCTAssertEqual(timeline.totalFrames, 198)
 
-        XCTAssertEqual(overlapping.current.id, shots[0].id)
-        XCTAssertEqual(overlapping.next?.id, shots[1].id)
+        let overlapping = try XCTUnwrap(timeline.state(atFrame: 156))
+
+        XCTAssertEqual(overlapping.current.shotID, project.shots[0].id)
+        XCTAssertEqual(overlapping.next?.shotID, project.shots[1].id)
         XCTAssertGreaterThan(overlapping.blend, 0)
         XCTAssertLessThan(overlapping.blend, 1)
 
-        let afterTransition = try XCTUnwrap(TimeStoryTimeline.state(
-            at: shots[0].durationSeconds + 0.01,
-            shots: shots,
-            transitionSeconds: TimeStoryConstants.transitionDurationSeconds
-        ))
-        XCTAssertEqual(afterTransition.current.id, shots[1].id)
+        let afterTransition = try XCTUnwrap(timeline.state(atFrame: 167))
+        XCTAssertEqual(afterTransition.current.shotID, project.shots[1].id)
         XCTAssertNil(afterTransition.next)
+    }
+
+    func testTimelineQuantizesLegacySecondsOnceAndBoundsShortTransitions() throws {
+        let first = UUID()
+        let second = UUID()
+        var project = renderProject(first: first, second: second)
+        project.shots[0].durationSeconds = 1.0 / 30.0
+        project.shots[1].durationSeconds = 0.1
+
+        let timeline = try TimeStoryTimeline.normalize(project: project)
+        let photos = timeline.segments.filter { $0.kind == .photo }
+
+        XCTAssertEqual(photos.map(\.durationFrames), [1, 3])
+        XCTAssertEqual(photos[0].transitionInFrames, 0, "one-frame photo cannot overlap its predecessor")
+        XCTAssertEqual(photos[1].transitionInFrames, 0, "previous one-frame photo leaves no overlap budget")
+        XCTAssertEqual(project.shots[0].durationSeconds, 1.0 / 30.0, "normalization must not rewrite a v1 project")
+    }
+
+    func testTimelineRejectsIllegalLegacyDurationWithoutRewritingProject() throws {
+        var project = renderProject(first: UUID(), second: UUID())
+        project.shots[0].durationSeconds = -.infinity
+        XCTAssertThrowsError(try TimeStoryTimeline.normalize(project: project))
+        XCTAssertEqual(project.shots[0].durationSeconds, -.infinity)
     }
 
     func testRegeneratePreservesLocksExclusionsAndExplicitEdits() throws {
@@ -228,8 +251,8 @@ final class TimeStoryFeatureTests: XCTestCase {
         let first = UUID()
         let second = UUID()
         let loader = FixtureStoryMediaLoader(images: [
-            first: try pngData(color: .systemRed, portrait: false),
-            second: try pngData(color: .systemBlue, portrait: true),
+            first: try edgeMarkedPNG(width: 1_200, height: 700),
+            second: try edgeMarkedPNG(width: 700, height: 1_200),
         ])
         let renderer = AVFoundationTimeStoryRenderer(
             media: loader,
@@ -255,6 +278,7 @@ final class TimeStoryFeatureTests: XCTestCase {
         let silent = root.appendingPathComponent("silent.mp4")
         try await renderer.render(project: project, destinationURL: silent) { _ in }
         try await assertPlayableVideo(silent, expectsAudio: false, expectedDuration: project.timelineDurationSeconds)
+        try await assertFourEdgesVisibleThroughoutPhotos(silent, project: project)
 
         let music = root.appendingPathComponent("tone.wav")
         try writeSineWave(to: music, seconds: 1)
@@ -307,6 +331,300 @@ final class TimeStoryFeatureTests: XCTestCase {
         XCTAssertEqual(cancellableProject.shots.count, 2)
     }
 
+    func testStoryPackageExporterUsesCanonicalTimelineAndOnlyReferencedAssets() async throws {
+        let root = try temporaryDirectory("story-package")
+        let first = UUID()
+        let second = UUID()
+        let unused = candidate(UUID().uuidString, time: timestamp(2025, 1, 1))
+        var project = renderProject(first: first, second: second)
+        project.title = "用户修改的项目标题"
+        project.chapters[0].title = "用户修改的章节标题"
+        project.shots[0].caption = "用户修改的镜头字幕"
+        project.candidateSnapshot = makeSnapshot(
+            project.candidateSnapshot.candidates + [unused]
+        )
+        let loader = FixtureStoryMediaLoader(images: [
+            first: try edgeMarkedPNG(width: 1_200, height: 700),
+            second: try edgeMarkedPNG(width: 700, height: 1_200),
+            unused.assetID: try pngData(color: .gray, portrait: false),
+        ])
+        let exporter = StoryRenderPackageExporter(media: loader, validator: PassingStoryValidator())
+        let landscape = root.appendingPathComponent("landscape.storyrenderpackage")
+        let portrait = root.appendingPathComponent("portrait.storyrenderpackage")
+        let repeated = root.appendingPathComponent("repeated.storyrenderpackage")
+
+        let landscapeResult = try await exporter.export(
+            project: project,
+            aspect: .landscape,
+            destinationURL: landscape,
+            onProgress: { _ in }
+        )
+        let portraitResult = try await exporter.export(
+            project: project,
+            aspect: .portrait,
+            destinationURL: portrait,
+            onProgress: { _ in }
+        )
+        let repeatedResult = try await exporter.export(
+            project: project,
+            aspect: .landscape,
+            destinationURL: repeated,
+            onProgress: { _ in }
+        )
+        let replacedInPlaceResult = try await exporter.export(
+            project: project,
+            aspect: .landscape,
+            destinationURL: landscape,
+            onProgress: { _ in }
+        )
+        let landscapeDocument = try packageDocument(at: landscape)
+        var portraitDocument = try packageDocument(at: portrait)
+        let repeatedDocument = try packageDocument(at: repeated)
+
+        XCTAssertEqual(landscapeDocument.assets.count, 2, "unused candidate must not be exported")
+        XCTAssertEqual(landscapeDocument.export.totalFrames, try TimeStoryTimeline.normalize(project: project).totalFrames)
+        XCTAssertEqual(landscapeResult.totalFrames, project.timelineFrameCount)
+        XCTAssertEqual(landscapeResult.projectRevision, repeatedResult.projectRevision)
+        XCTAssertEqual(landscapeResult.projectRevision, replacedInPlaceResult.projectRevision)
+        XCTAssertEqual(landscapeDocument, repeatedDocument)
+        XCTAssertNotEqual(landscapeResult.projectRevision, portraitResult.projectRevision)
+        XCTAssertEqual(landscapeDocument.export.width, 1_920)
+        XCTAssertEqual(portraitDocument.export.width, 1_080)
+        XCTAssertEqual(landscapeDocument.chapters.flatMap(\.shots).map(\.startFrame),
+                       portraitDocument.chapters.flatMap(\.shots).map(\.startFrame))
+        XCTAssertEqual(landscapeDocument.chapters.flatMap(\.shots).map(\.durationFrames),
+                       portraitDocument.chapters.flatMap(\.shots).map(\.durationFrames))
+        XCTAssertEqual(landscapeDocument.chapters.flatMap(\.shots).map(\.kind),
+                       ["title", "chapter-title", "photo", "photo"])
+        XCTAssertEqual(landscapeDocument.export.template.title, "用户修改的项目标题")
+        XCTAssertEqual(landscapeDocument.chapters[0].title, "用户修改的章节标题")
+        XCTAssertEqual(landscapeDocument.chapters[0].shots[2].caption?.body, "用户修改的镜头字幕")
+        let json = try String(contentsOf: landscape.appendingPathComponent("story.json"), encoding: .utf8)
+        XCTAssertFalse(json.contains(first.uuidString))
+        XCTAssertFalse(json.contains(second.uuidString))
+        XCTAssertFalse(json.contains(unused.assetID.uuidString))
+        XCTAssertFalse(json.contains(project.subjectTagID.uuidString))
+
+        portraitDocument.projectRevision = landscapeDocument.projectRevision
+        portraitDocument.export.width = landscapeDocument.export.width
+        portraitDocument.export.height = landscapeDocument.export.height
+        XCTAssertEqual(portraitDocument, landscapeDocument, "orientation may only change canvas and content revision")
+    }
+
+    func testStoryPackageReplacementChangesOnlyRequestedAssetCaptionAndRevision() async throws {
+        let root = try temporaryDirectory("story-package-modified")
+        let first = UUID()
+        let second = UUID()
+        let replacement = UUID()
+        let project = renderProject(first: first, second: second)
+        var modified = project
+        modified.shots[0].assetID = replacement
+        modified.shots[0].contentRevision = 2
+        modified.shots[0].caption = "只修改这一条字幕"
+        modified.shots[0].isUserEdited = true
+        let replacementCandidate = candidate(replacement.uuidString, time: timestamp(2020, 1, 1))
+        modified.candidateSnapshot = makeSnapshot(
+            project.candidateSnapshot.candidates + [replacementCandidate]
+        )
+        let loader = FixtureStoryMediaLoader(images: [
+            first: try edgeMarkedPNG(width: 1_200, height: 700),
+            second: try edgeMarkedPNG(width: 700, height: 1_200),
+            replacement: try replacementPNG(width: 1_200, height: 700),
+        ])
+        let exporter = StoryRenderPackageExporter(media: loader, validator: PassingStoryValidator())
+        let baselineURL = root.appendingPathComponent("baseline.storyrenderpackage")
+        let modifiedURL = root.appendingPathComponent("modified.storyrenderpackage")
+        _ = try await exporter.export(project: project, aspect: .landscape, destinationURL: baselineURL) { _ in }
+        _ = try await exporter.export(project: modified, aspect: .landscape, destinationURL: modifiedURL) { _ in }
+        let baseline = try packageDocument(at: baselineURL)
+        let changed = try packageDocument(at: modifiedURL)
+
+        XCTAssertNotEqual(baseline.projectRevision, changed.projectRevision)
+        let baselineShots = baseline.chapters.flatMap(\.shots)
+        let changedShots = changed.chapters.flatMap(\.shots)
+        XCTAssertEqual(baselineShots.map(\.shotID), changedShots.map(\.shotID))
+        XCTAssertEqual(baselineShots.map(\.startFrame), changedShots.map(\.startFrame))
+        XCTAssertEqual(baselineShots.map(\.durationFrames), changedShots.map(\.durationFrames))
+        XCTAssertEqual(baselineShots.map(\.transitionIn), changedShots.map(\.transitionIn))
+        XCTAssertNotEqual(baselineShots[2].assetID, changedShots[2].assetID)
+        XCTAssertNotEqual(baselineShots[2].caption, changedShots[2].caption)
+        XCTAssertEqual(Array(baselineShots.dropFirst(3)), Array(changedShots.dropFirst(3)))
+        XCTAssertEqual(baseline.assets[1], changed.assets[1], "unmodified second asset must stay byte-identical")
+    }
+
+    func testStoryPackageCancellationMissingMediaAndVersionChangeDoNotPublish() async throws {
+        let root = try temporaryDirectory("story-package-failures")
+        let first = UUID()
+        let second = UUID()
+        let project = renderProject(first: first, second: second)
+        let existing = root.appendingPathComponent("existing.storyrenderpackage", isDirectory: true)
+        try FileManager.default.createDirectory(at: existing, withIntermediateDirectories: false)
+        let sentinel = existing.appendingPathComponent("sentinel.txt")
+        try Data("existing-good-package".utf8).write(to: sentinel)
+        let slowExporter = StoryRenderPackageExporter(
+            media: SlowStoryMediaLoader(data: try edgeMarkedPNG(width: 1_200, height: 700)),
+            validator: PassingStoryValidator()
+        )
+        let task = Task {
+            try await slowExporter.export(
+                project: project,
+                aspect: .landscape,
+                destinationURL: existing,
+                onProgress: { _ in }
+            )
+        }
+        try await Task.sleep(for: .milliseconds(40))
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("cancelled package export unexpectedly completed")
+        } catch is CancellationError {
+            // Expected.
+        }
+        XCTAssertEqual(try String(contentsOf: sentinel, encoding: .utf8), "existing-good-package")
+
+        let missingURL = root.appendingPathComponent("missing.storyrenderpackage")
+        let missingExporter = StoryRenderPackageExporter(
+            media: FixtureStoryMediaLoader(images: [
+                first: try edgeMarkedPNG(width: 1_200, height: 700),
+            ]),
+            validator: PassingStoryValidator()
+        )
+        do {
+            _ = try await missingExporter.export(
+                project: project,
+                aspect: .landscape,
+                destinationURL: missingURL,
+                onProgress: { _ in }
+            )
+            XCTFail("missing media export unexpectedly completed")
+        } catch {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: missingURL.path))
+        }
+
+        let changedURL = root.appendingPathComponent("changed.storyrenderpackage")
+        let changingValidator = ChangingStoryValidator(assetID: first)
+        let changingExporter = StoryRenderPackageExporter(
+            media: FixtureStoryMediaLoader(images: [
+                first: try edgeMarkedPNG(width: 1_200, height: 700),
+                second: try edgeMarkedPNG(width: 700, height: 1_200),
+            ]),
+            validator: changingValidator
+        )
+        do {
+            _ = try await changingExporter.export(
+                project: project,
+                aspect: .landscape,
+                destinationURL: changedURL,
+                onProgress: { _ in }
+            )
+            XCTFail("version-changing export unexpectedly completed")
+        } catch let TimeStoryError.mediaValidationFailed(issues) {
+            XCTAssertEqual(issues.map(\.kind), [.versionChanged])
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: changedURL.path))
+    }
+
+    /// Opt-in delivery generator. It deliberately goes through the production
+    /// package exporter and native renderer; no package JSON is post-processed.
+    /// Set IMAGEALL_STORY_PHASE2_DELIVERY_ROOT to a new, non-existent directory.
+    func testGeneratePhase2DeliverablesWhenRequested() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let rootPath = environment["IMAGEALL_STORY_PHASE2_DELIVERY_ROOT"], !rootPath.isEmpty else {
+            throw XCTSkip("Set IMAGEALL_STORY_PHASE2_DELIVERY_ROOT to generate phase-2 delivery artifacts")
+        }
+        guard let schemaPath = environment["IMAGEALL_STORY_PHASE2_SCHEMA_PATH"], !schemaPath.isEmpty else {
+            XCTFail("IMAGEALL_STORY_PHASE2_SCHEMA_PATH is required")
+            return
+        }
+        let imageAllCommit = try XCTUnwrap(environment["IMAGEALL_STORY_PHASE2_IMAGEALL_COMMIT"])
+        let root = URL(fileURLWithPath: rootPath, isDirectory: true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.path), "delivery root must be new")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let packages = root.appendingPathComponent("packages", isDirectory: true)
+        let contract = root.appendingPathComponent("contract", isDirectory: true)
+        let evidence = root.appendingPathComponent("evidence", isDirectory: true)
+        try FileManager.default.createDirectory(at: packages, withIntermediateDirectories: false)
+        try FileManager.default.createDirectory(at: contract, withIntermediateDirectories: false)
+        try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: false)
+
+        let schemaSource = URL(fileURLWithPath: schemaPath)
+        XCTAssertEqual(try fileSHA256(schemaSource), StoryRenderPackageExporter.schemaSHA256)
+        let schemaCopy = contract.appendingPathComponent("story_render_package_v0_1.schema.json")
+        try FileManager.default.copyItem(at: schemaSource, to: schemaCopy)
+
+        let fixture = try phase2DeliveryFixture(in: evidence)
+        let loader = FixtureStoryMediaLoader(images: fixture.images)
+        let exporter = StoryRenderPackageExporter(media: loader, validator: PassingStoryValidator())
+        let shortURL = packages.appendingPathComponent("01-short-landscape.storyrenderpackage", isDirectory: true)
+        let fullLandscapeURL = packages.appendingPathComponent("02-full-60s-landscape.storyrenderpackage", isDirectory: true)
+        let fullPortraitURL = packages.appendingPathComponent("03-full-60s-portrait.storyrenderpackage", isDirectory: true)
+        let modifiedURL = packages.appendingPathComponent("04-full-60s-modified.storyrenderpackage", isDirectory: true)
+
+        _ = try await exporter.export(project: fixture.short, aspect: .landscape, destinationURL: shortURL) { _ in }
+        _ = try await exporter.export(project: fixture.full, aspect: .landscape, destinationURL: fullLandscapeURL) { _ in }
+        _ = try await exporter.export(project: fixture.full, aspect: .portrait, destinationURL: fullPortraitURL) { _ in }
+        _ = try await exporter.export(project: fixture.modified, aspect: .landscape, destinationURL: modifiedURL) { _ in }
+
+        let shortDocument = try packageDocument(at: shortURL)
+        let fullLandscape = try packageDocument(at: fullLandscapeURL)
+        let fullPortrait = try packageDocument(at: fullPortraitURL)
+        let modified = try packageDocument(at: modifiedURL)
+        XCTAssertEqual(shortDocument.export.totalFrames, 198)
+        XCTAssertEqual(fullLandscape.export.totalFrames, 1_800)
+        XCTAssertEqual(fullPortrait.export.totalFrames, 1_800)
+        XCTAssertEqual(modified.export.totalFrames, 1_800)
+        XCTAssertEqual(fullLandscape.chapters.flatMap(\.shots).map(\.startFrame), fullPortrait.chapters.flatMap(\.shots).map(\.startFrame))
+        XCTAssertEqual(fullLandscape.chapters.flatMap(\.shots).map(\.durationFrames), fullPortrait.chapters.flatMap(\.shots).map(\.durationFrames))
+
+        let nativeVideo = evidence.appendingPathComponent("native-full-60s-landscape.mp4")
+        let renderer = AVFoundationTimeStoryRenderer(
+            media: loader,
+            temporaryDirectory: evidence.appendingPathComponent("native-render-staging", isDirectory: true)
+        )
+        try await renderer.render(project: fixture.full, destinationURL: nativeVideo) { _ in }
+        try await assertPlayableVideo(nativeVideo, expectsAudio: true, expectedDuration: 60)
+
+        let packageRows = try [
+            deliveryPackageRow(name: "short-landscape", url: shortURL, document: shortDocument),
+            deliveryPackageRow(name: "full-60s-landscape", url: fullLandscapeURL, document: fullLandscape),
+            deliveryPackageRow(name: "full-60s-portrait", url: fullPortraitURL, document: fullPortrait),
+            deliveryPackageRow(name: "full-60s-modified", url: modifiedURL, document: modified),
+        ]
+        let handoffObject: [String: Any] = [
+            "schemaVersion": StoryRenderPackageExporter.schemaVersion,
+            "schemaCommit": StoryRenderPackageExporter.schemaCommit,
+            "schemaSHA256": StoryRenderPackageExporter.schemaSHA256,
+            "imageAllCommit": imageAllCommit,
+            "generator": "TimeStoryFeatureTests/testGeneratePhase2DeliverablesWhenRequested",
+            "packages": packageRows,
+            "nativeVideo": [
+                "relativePath": relativePath(nativeVideo, under: root),
+                "sha256": try fileSHA256(nativeVideo),
+                "fps": 30,
+                "totalFrames": 1_800,
+                "durationSeconds": 60,
+            ],
+            "scope": "synthetic fixtures only; generated by ImageAll exporter and native renderer",
+        ]
+        let handoffJSON = try JSONSerialization.data(withJSONObject: handoffObject, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+        try handoffJSON.write(to: root.appendingPathComponent("handoff.json"), options: .atomic)
+        let handoffMarkdown = deliveryHandoffMarkdown(
+            imageAllCommit: imageAllCommit,
+            rows: packageRows,
+            nativeVideo: nativeVideo,
+            root: root
+        )
+        try Data(handoffMarkdown.utf8).write(to: root.appendingPathComponent("HANDOFF.md"), options: .atomic)
+
+        let manifestLines = try regularFiles(under: root)
+            .filter { $0.lastPathComponent != "FILE_HASHES.sha256" }
+            .map { "\(try fileSHA256($0))  \(relativePath($0, under: root))" }
+            .sorted()
+        try Data((manifestLines.joined(separator: "\n") + "\n").utf8)
+            .write(to: root.appendingPathComponent("FILE_HASHES.sha256"), options: .atomic)
+    }
+
     private func makeSnapshot(_ candidates: [TimeStoryCandidate]) -> TimeStoryCandidateSnapshot {
         TimeStoryCandidateSnapshot(
             id: "fixture-v1",
@@ -315,6 +633,260 @@ final class TimeStoryFeatureTests: XCTestCase {
             tagDisplayName: "测试主体",
             candidates: candidates
         )
+    }
+
+    private struct Phase2DeliveryFixture {
+        let short: TimeStoryProject
+        let full: TimeStoryProject
+        let modified: TimeStoryProject
+        let images: [UUID: Data]
+    }
+
+    private func phase2DeliveryFixture(in evidence: URL) throws -> Phase2DeliveryFixture {
+        let assetIDs = (1 ... 6).map {
+            UUID(uuidString: String(format: "10000000-0000-0000-0000-%012d", $0))!
+        }
+        let replacementID = UUID(uuidString: "10000000-0000-0000-0000-000000000099")!
+        let chapterIDs = (1 ... 3).map {
+            UUID(uuidString: String(format: "20000000-0000-0000-0000-%012d", $0))!
+        }
+        let shotIDs = (1 ... 6).map {
+            UUID(uuidString: String(format: "30000000-0000-0000-0000-%012d", $0))!
+        }
+        let sizes: [(CGFloat, CGFloat)] = [
+            (1_200, 700), (700, 1_200), (900, 900), (1_600, 500), (640, 1_100), (1_300, 760),
+        ]
+        let candidates = zip(assetIDs, sizes).enumerated().map { index, pair in
+            deliveryCandidate(
+                assetID: pair.0,
+                revision: 1,
+                width: Int(pair.1.0),
+                height: Int(pair.1.1),
+                time: timestamp(2018 + index, 1, 1)
+            )
+        }
+        let shots = candidates.enumerated().map { index, candidate in
+            TimeStoryShot(
+                id: shotIDs[index],
+                assetID: candidate.assetID,
+                contentRevision: 1,
+                chapterID: chapterIDs[index / 2],
+                caption: "合成字幕 \(index + 1)",
+                durationSeconds: 9.2,
+                presentationMode: .fullFrameWithBackground,
+                reasons: ["第二阶段合成交付"],
+                isLocked: true,
+                isUserEdited: true
+            )
+        }
+        let chapters = chapterIDs.enumerated().map { index, chapterID in
+            TimeStoryChapter(
+                id: chapterID,
+                title: ["童年片段", "求学足迹", "近年时光"][index],
+                shotIDs: Array(shots[(index * 2) ... (index * 2 + 1)].map(\.id)),
+                isUserEdited: true
+            )
+        }
+        let music = evidence.appendingPathComponent("synthetic-tone.wav")
+        try writeSineWave(to: music, seconds: 2)
+        let readiness = TimeStoryReadinessSummary(
+            matchingCount: candidates.count,
+            reliableTimeStartMs: candidates.first?.mediaCreatedAtMs,
+            reliableTimeEndMs: candidates.last?.mediaCreatedAtMs,
+            unknownTimeCount: 0,
+            namedPlaceCount: 0,
+            coordinateOnlyCount: 0,
+            noLocationCount: 0,
+            locationMetadataUnconfirmedCount: candidates.count,
+            unavailableCount: 0,
+            similarityFilteringState: .unavailable,
+            selectionTradeoff: nil
+        )
+        let full = TimeStoryProject(
+            schemaVersion: 1,
+            id: UUID(uuidString: "40000000-0000-0000-0000-000000000001")!,
+            createdAtMs: 1,
+            updatedAtMs: 1,
+            subjectTagID: UUID(uuidString: "50000000-0000-0000-0000-000000000001")!,
+            subjectTagDisplayName: "合成测试人物",
+            templateVersion: TimeStoryConstants.templateVersion,
+            strategyVersion: TimeStoryConstants.strategyVersion,
+            title: "合成测试人物 · 六年时光",
+            candidateSnapshot: TimeStoryCandidateSnapshot(
+                id: "phase2-delivery-fixture-v1",
+                createdAtMs: 1,
+                tagID: UUID(uuidString: "50000000-0000-0000-0000-000000000001")!,
+                tagDisplayName: "合成测试人物",
+                candidates: candidates
+            ),
+            readiness: readiness,
+            chapters: chapters,
+            shots: shots,
+            excludedAssetIDs: [],
+            music: TimeStoryMusicSelection(displayName: music.lastPathComponent, filePath: music.path, securityScopedBookmark: nil)
+        )
+        var modified = full
+        let replacement = deliveryCandidate(
+            assetID: replacementID,
+            revision: 2,
+            width: 1_200,
+            height: 700,
+            time: timestamp(2018, 1, 1)
+        )
+        modified.shots[0].assetID = replacementID
+        modified.shots[0].contentRevision = 2
+        modified.shots[0].caption = "仅这一条字幕已修改"
+        modified.candidateSnapshot = TimeStoryCandidateSnapshot(
+            id: "phase2-delivery-fixture-v2-one-replacement",
+            createdAtMs: 2,
+            tagID: full.candidateSnapshot.tagID,
+            tagDisplayName: full.candidateSnapshot.tagDisplayName,
+            candidates: [replacement] + Array(candidates.dropFirst())
+        )
+        var short = full
+        short = TimeStoryProject(
+            schemaVersion: short.schemaVersion,
+            id: UUID(uuidString: "40000000-0000-0000-0000-000000000002")!,
+            createdAtMs: 1,
+            updatedAtMs: 1,
+            subjectTagID: short.subjectTagID,
+            subjectTagDisplayName: short.subjectTagDisplayName,
+            templateVersion: short.templateVersion,
+            strategyVersion: short.strategyVersion,
+            title: "合成短故事",
+            candidateSnapshot: TimeStoryCandidateSnapshot(
+                id: "phase2-short-fixture-v1",
+                createdAtMs: 1,
+                tagID: short.subjectTagID,
+                tagDisplayName: short.subjectTagDisplayName,
+                candidates: Array(candidates.prefix(2))
+            ),
+            readiness: readiness,
+            chapters: [TimeStoryChapter(
+                id: chapterIDs[0],
+                title: "短故事章节",
+                shotIDs: Array(shotIDs.prefix(2)),
+                isUserEdited: true
+            )],
+            shots: Array(shots.prefix(2)).map { shot in
+                var adjusted = shot
+                adjusted.durationSeconds = 1.5
+                adjusted.chapterID = chapterIDs[0]
+                return adjusted
+            },
+            excludedAssetIDs: [],
+            music: nil
+        )
+        var images: [UUID: Data] = [:]
+        for (index, assetID) in assetIDs.enumerated() {
+            images[assetID] = try edgeMarkedPNG(width: sizes[index].0, height: sizes[index].1)
+        }
+        images[replacementID] = try replacementPNG(width: 1_200, height: 700)
+        return Phase2DeliveryFixture(short: short, full: full, modified: modified, images: images)
+    }
+
+    private func deliveryCandidate(
+        assetID: UUID,
+        revision: Int,
+        width: Int,
+        height: Int,
+        time: Int64
+    ) -> TimeStoryCandidate {
+        TimeStoryCandidate(
+            assetID: assetID,
+            contentRevision: revision,
+            sourceID: UUID(uuidString: "60000000-0000-0000-0000-000000000001")!,
+            fileName: nil,
+            mediaCreatedAtMs: time,
+            width: width,
+            height: height,
+            availability: .available,
+            isFavorite: false,
+            locationState: .unconfirmed,
+            placeName: nil,
+            locationSource: nil,
+            similarityClusterID: nil,
+            similarityState: .unavailable
+        )
+    }
+
+    private func deliveryPackageRow(
+        name: String,
+        url: URL,
+        document: StoryRenderPackageDocument
+    ) throws -> [String: Any] {
+        [
+            "name": name,
+            "relativePath": url.lastPathComponent,
+            "storyJSONSHA256": try fileSHA256(url.appendingPathComponent("story.json")),
+            "projectRevision": document.projectRevision,
+            "canvas": "\(document.export.width)x\(document.export.height)",
+            "fps": document.export.fps,
+            "totalFrames": document.export.totalFrames,
+            "chapterCount": document.chapters.count,
+            "renderSegmentCount": document.chapters.flatMap(\.shots).count,
+            "photoShotCount": document.chapters.flatMap(\.shots).filter { $0.kind == "photo" }.count,
+            "assetCount": document.assets.count,
+        ]
+    }
+
+    private func deliveryHandoffMarkdown(
+        imageAllCommit: String,
+        rows: [[String: Any]],
+        nativeVideo: URL,
+        root: URL
+    ) -> String {
+        let tableRows = rows.map { row in
+            "| \(row["name"]!) | `packages/\(row["relativePath"]!)` | \(row["canvas"]!) | \(row["chapterCount"]!)/\(row["photoShotCount"]!)/\(row["renderSegmentCount"]!)/\(row["totalFrames"]!) | `\(row["storyJSONSHA256"]!)` |"
+        }.joined(separator: "\n")
+        return """
+        # ImageAll StoryRenderPackage phase 2 handoff
+
+        - Schema: StoryRenderPackage v\(StoryRenderPackageExporter.schemaVersion)
+        - Schema commit: `\(StoryRenderPackageExporter.schemaCommit)`
+        - Schema SHA-256: `\(StoryRenderPackageExporter.schemaSHA256)`
+        - ImageAll commit: `\(imageAllCommit)`
+        - Generator: `TimeStoryFeatureTests/testGeneratePhase2DeliverablesWhenRequested`
+        - Data boundary: synthetic fixtures only
+
+        | Package | Relative path | Canvas | Chapters/photos/segments/frames | story.json SHA-256 |
+        | --- | --- | --- | --- | --- |
+        \(tableRows)
+
+        Native 60-second evidence: `\(relativePath(nativeVideo, under: root))` (`\((try? fileSHA256(nativeVideo)) ?? "hash-error")`).
+
+        `FILE_HASHES.sha256` records every delivered file. Package JSON and normalized media were emitted by the actual ImageAll exporter and were not edited after export.
+        """
+    }
+
+    private func fileSHA256(_ url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while true {
+            let chunk = try handle.read(upToCount: 1_048_576) ?? Data()
+            if chunk.isEmpty { break }
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func regularFiles(under root: URL) throws -> [URL] {
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+        return try enumerator.compactMap { item in
+            guard let url = item as? URL,
+                  try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true
+            else { return nil }
+            return url
+        }
+    }
+
+    private func relativePath(_ url: URL, under root: URL) -> String {
+        String(url.path.dropFirst(root.path.count + 1))
     }
 
     private func candidate(
@@ -457,6 +1029,44 @@ final class TimeStoryFeatureTests: XCTestCase {
         return data
     }
 
+    private func edgeMarkedPNG(width: CGFloat, height: CGFloat) throws -> Data {
+        try markedPNG(width: width, height: height, replacement: false)
+    }
+
+    private func replacementPNG(width: CGFloat, height: CGFloat) throws -> Data {
+        try markedPNG(width: width, height: height, replacement: true)
+    }
+
+    private func markedPNG(width: CGFloat, height: CGFloat, replacement: Bool) throws -> Data {
+        let size = NSSize(width: width, height: height)
+        let image = NSImage(size: size)
+        image.lockFocus()
+        (replacement ? NSColor.systemPink : NSColor.white).setFill()
+        NSBezierPath(rect: NSRect(origin: .zero, size: size)).fill()
+        let border = max(18, min(width, height) * 0.06)
+        NSColor.systemRed.setFill()
+        NSBezierPath(rect: NSRect(x: 0, y: height - border, width: width, height: border)).fill()
+        NSColor.systemBlue.setFill()
+        NSBezierPath(rect: NSRect(x: 0, y: 0, width: width, height: border)).fill()
+        NSColor.systemGreen.setFill()
+        NSBezierPath(rect: NSRect(x: 0, y: 0, width: border, height: height)).fill()
+        NSColor.systemYellow.setFill()
+        NSBezierPath(rect: NSRect(x: width - border, y: 0, width: border, height: height)).fill()
+        image.unlockFocus()
+        guard let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let data = rep.representation(using: .png, properties: [:])
+        else { throw XCTSkip("Unable to create edge-marked PNG") }
+        return data
+    }
+
+    private func packageDocument(at root: URL) throws -> StoryRenderPackageDocument {
+        try JSONDecoder().decode(
+            StoryRenderPackageDocument.self,
+            from: Data(contentsOf: root.appendingPathComponent("story.json"))
+        )
+    }
+
     private func assertPlayableVideo(
         _ url: URL,
         expectsAudio: Bool,
@@ -506,6 +1116,68 @@ final class TimeStoryFeatureTests: XCTestCase {
             index += stride
         }
         return samples > 0 && total / samples > 20
+    }
+
+    private func assertFourEdgesVisibleThroughoutPhotos(
+        _ videoURL: URL,
+        project: TimeStoryProject
+    ) async throws {
+        let timeline = try TimeStoryTimeline.normalize(project: project)
+        let asset = AVURLAsset(url: videoURL)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .zero
+        for (index, segment) in timeline.segments.enumerated() where segment.kind == .photo {
+            let previousEnd = index > 0 ? timeline.segments[index - 1].endFrame : segment.startFrame
+            let nextStart = index + 1 < timeline.segments.count
+                ? timeline.segments[index + 1].startFrame
+                : segment.endFrame
+            let visibleStart = max(segment.startFrame, previousEnd)
+            let visibleEnd = min(segment.endFrame, nextStart)
+            XCTAssertGreaterThan(visibleEnd - visibleStart, 4)
+            for frame in [visibleStart + 1, (visibleStart + visibleEnd) / 2, visibleEnd - 2] {
+                let time = CMTime(value: CMTimeValue(frame * 1_000 + 500), timescale: 30_000)
+                let image = try await generator.image(at: time).image
+                let counts = edgeMarkerCounts(image)
+                XCTAssertGreaterThan(counts.red, 50, "top/red edge missing at frame \(frame)")
+                XCTAssertGreaterThan(counts.green, 50, "left/green edge missing at frame \(frame)")
+                XCTAssertGreaterThan(counts.blue, 50, "bottom/blue edge missing at frame \(frame)")
+                XCTAssertGreaterThan(counts.yellow, 50, "right/yellow edge missing at frame \(frame)")
+            }
+        }
+    }
+
+    private func edgeMarkerCounts(_ image: CGImage) -> (red: Int, green: Int, blue: Int, yellow: Int) {
+        let width = image.width
+        let height = image.height
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
+        guard let context = CGContext(
+            data: &pixels,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: bitmapInfo
+        ) else { return (0, 0, 0, 0) }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        var counts = (red: 0, green: 0, blue: 0, yellow: 0)
+        for y in stride(from: 0, to: height, by: 8) {
+            for x in stride(from: 0, to: width, by: 8) {
+                let offset = (y * width + x) * 4
+                let red = Int(pixels[offset])
+                let green = Int(pixels[offset + 1])
+                let blue = Int(pixels[offset + 2])
+                if red > 140, green < 135, blue < 135 { counts.red += 1 }
+                if green > 110, red < 135, blue < 145 { counts.green += 1 }
+                if blue > 140, red < 135, green < 170 { counts.blue += 1 }
+                if red > 140, green > 140, blue < 135 { counts.yellow += 1 }
+            }
+        }
+        return counts
     }
 
     private func writeSineWave(to url: URL, seconds: Int) throws {
@@ -618,5 +1290,41 @@ private struct FixtureStoryMediaLoader: TimeStoryMediaLoading {
     func loadStoryImage(assetID: UUID) async throws -> Data {
         guard let data = images[assetID] else { throw TimeStoryError.noCandidates }
         return data
+    }
+}
+
+private struct PassingStoryValidator: TimeStoryMediaValidating {
+    func validate(_ project: TimeStoryProject) throws -> [TimeStoryMediaValidationIssue] { [] }
+}
+
+private struct SlowStoryMediaLoader: TimeStoryMediaLoading {
+    let data: Data
+
+    func loadStoryImage(assetID: UUID) async throws -> Data {
+        try await Task.sleep(for: .seconds(5))
+        return data
+    }
+}
+
+private final class ChangingStoryValidator: TimeStoryMediaValidating, @unchecked Sendable {
+    private let lock = NSLock()
+    private var callCount = 0
+    private let assetID: UUID
+
+    init(assetID: UUID) { self.assetID = assetID }
+
+    func validate(_ project: TimeStoryProject) throws -> [TimeStoryMediaValidationIssue] {
+        let call = lock.withLock {
+            callCount += 1
+            return callCount
+        }
+        guard call > 1 else { return [] }
+        return [TimeStoryMediaValidationIssue(
+            shotIndex: 1,
+            assetID: assetID,
+            kind: .versionChanged,
+            expectedRevision: 1,
+            actualRevision: 2
+        )]
     }
 }

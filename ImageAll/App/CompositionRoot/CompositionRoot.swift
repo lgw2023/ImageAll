@@ -566,6 +566,10 @@ struct CompositionRoot {
                     temporaryDirectory: runtime.paths.cachesDirectory
                         .appendingPathComponent("TimeStoryRendering", isDirectory: true)
                 ),
+                packageExporter: StoryRenderPackageExporter(
+                    media: assetImages,
+                    validator: TimeStoryMediaValidator(database: runtime.database)
+                ),
                 media: assetImages,
                 clock: clock
             ),

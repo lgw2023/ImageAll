@@ -119,6 +119,10 @@ struct TimeStoryVerificationContainer: View {
                 media: media,
                 temporaryDirectory: root.appendingPathComponent("render", isDirectory: true)
             ),
+            packageExporter: StoryRenderPackageExporter(
+                media: media,
+                validator: TimeStoryVerificationValidator()
+            ),
             media: media,
             clock: SystemJobClock()
         )

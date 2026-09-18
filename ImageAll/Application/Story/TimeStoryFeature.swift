@@ -16,6 +16,9 @@ enum TimeStoryConstants {
     static let targetDurationSeconds = 60.0
     static let maximumShots = 18
     static let framesPerSecond: Int32 = 30
+    static let preferredTransitionFrames = 14
+    static let projectTitleFrames = 90
+    static let chapterTitleFrames = 60
     static let outputWidth = 1_920
     static let outputHeight = 1_080
 }
@@ -121,10 +124,11 @@ struct TimeStoryProject: Codable, Sendable, Equatable, Identifiable {
     var music: TimeStoryMusicSelection?
 
     var timelineDurationSeconds: Double {
-        TimeStoryTimeline.duration(
-            shots: shots,
-            transitionSeconds: TimeStoryConstants.transitionDurationSeconds
-        )
+        (try? TimeStoryTimeline.normalize(project: self).durationSeconds) ?? 0
+    }
+
+    var timelineFrameCount: Int {
+        (try? TimeStoryTimeline.normalize(project: self).totalFrames) ?? 0
     }
 }
 
@@ -145,6 +149,8 @@ enum TimeStoryError: Error, Sendable, Equatable, LocalizedError {
     case persistenceFailed
     case noSelectedShots
     case invalidDestination
+    case invalidTimeline(String)
+    case storyPackageExportFailed(String)
     case renderingFailed(String)
     case mediaValidationFailed([TimeStoryMediaValidationIssue])
 
@@ -158,6 +164,8 @@ enum TimeStoryError: Error, Sendable, Equatable, LocalizedError {
         case .persistenceFailed: "故事项目未能保存。"
         case .noSelectedShots: "故事中没有可导出的镜头。"
         case .invalidDestination: "导出位置不可用。"
+        case let .invalidTimeline(message): "故事时间线无效：\(message)"
+        case let .storyPackageExportFailed(message): "故事包导出失败：\(message)"
         case let .renderingFailed(message): "视频导出失败：\(message)"
         case let .mediaValidationFailed(issues):
             "有 \(issues.count) 个镜头的素材已变化或不可用。"
@@ -180,61 +188,184 @@ struct TimeStoryMediaValidationIssue: Codable, Sendable, Equatable, Identifiable
     let actualRevision: Int?
 }
 
-enum TimeStoryTimeline {
-    static func duration(shots: [TimeStoryShot], transitionSeconds: Double) -> Double {
-        guard !shots.isEmpty else { return 0 }
-        let raw = shots.reduce(0) { $0 + max(0, $1.durationSeconds) }
-        return max(0, raw - transitionSeconds * Double(max(0, shots.count - 1)))
-    }
+enum TimeStoryFrameSegmentKind: String, Sendable, Equatable {
+    case projectTitle
+    case chapterTitle
+    case photo
+}
 
-    static func startTimes(shots: [TimeStoryShot], transitionSeconds: Double) -> [Double] {
-        var current = 0.0
-        return shots.map { shot in
-            defer { current += max(0, shot.durationSeconds - transitionSeconds) }
-            return current
-        }
-    }
+struct TimeStoryFrameSegment: Sendable, Equatable, Identifiable {
+    let id: UUID
+    let kind: TimeStoryFrameSegmentKind
+    let chapterID: UUID
+    let shotID: UUID?
+    let assetID: UUID?
+    let title: String?
+    let caption: String?
+    let startFrame: Int
+    let durationFrames: Int
+    let transitionInFrames: Int
 
-    static func state(
-        at seconds: Double,
-        shots: [TimeStoryShot],
-        transitionSeconds: Double
-    ) -> TimeStoryTimelineState? {
-        guard !shots.isEmpty else { return nil }
-        let starts = startTimes(shots: shots, transitionSeconds: transitionSeconds)
-        let boundedSeconds = min(max(0, seconds), duration(shots: shots, transitionSeconds: transitionSeconds))
-        var index = shots.count - 1
-        for candidate in shots.indices {
-            let end = starts[candidate] + max(0, shots[candidate].durationSeconds)
-            if boundedSeconds < end || candidate == shots.count - 1 {
+    var endFrame: Int { startFrame + durationFrames }
+}
+
+struct TimeStoryFrameTimeline: Sendable, Equatable {
+    let fps: Int
+    let segments: [TimeStoryFrameSegment]
+    let totalFrames: Int
+
+    var durationSeconds: Double { Double(totalFrames) / Double(fps) }
+
+    func state(atFrame requestedFrame: Int) -> TimeStoryTimelineState? {
+        guard !segments.isEmpty else { return nil }
+        let frame = min(max(0, requestedFrame), max(0, totalFrames - 1))
+        var index = segments.count - 1
+        for candidate in segments.indices {
+            if frame < segments[candidate].endFrame || candidate == segments.count - 1 {
                 index = candidate
                 break
             }
         }
-        let shot = shots[index]
-        let local = max(0, boundedSeconds - starts[index])
-        let transitionStart = max(0, shot.durationSeconds - transitionSeconds)
+        let segment = segments[index]
+        let localFrame = max(0, frame - segment.startFrame)
+        let next = index + 1 < segments.count ? segments[index + 1] : nil
+        let overlap = next?.transitionInFrames ?? 0
+        let transitionStart = max(0, segment.durationFrames - overlap)
         let blend: Double
-        let next: TimeStoryShot?
-        if transitionSeconds > 0, index + 1 < shots.count, local >= transitionStart {
-            blend = min(1, (local - transitionStart) / transitionSeconds)
-            next = shots[index + 1]
+        let transitioningTo: TimeStoryFrameSegment?
+        if let next, overlap > 0, localFrame >= transitionStart {
+            blend = min(1, Double(localFrame - transitionStart) / Double(overlap))
+            transitioningTo = next
         } else {
             blend = 0
-            next = nil
+            transitioningTo = nil
         }
         return TimeStoryTimelineState(
-            current: shot,
-            next: next,
+            current: segment,
+            next: transitioningTo,
             blend: blend,
-            progress: min(1, local / max(0.001, shot.durationSeconds))
+            progress: Double(localFrame) / Double(max(1, segment.durationFrames - 1))
+        )
+    }
+}
+
+enum TimeStoryTimeline {
+    /// Converts the persisted v1 second-based project into the sole authoritative
+    /// render timeline. Persisted values are never rewritten by this operation.
+    static func normalize(project: TimeStoryProject) throws -> TimeStoryFrameTimeline {
+        guard !project.shots.isEmpty else { throw TimeStoryError.noSelectedShots }
+        guard !project.chapters.isEmpty else {
+            throw TimeStoryError.invalidTimeline("没有章节")
+        }
+
+        let flattenedShotIDs = project.chapters.flatMap(\.shotIDs)
+        let orderedShotIDs = project.shots.map(\.id)
+        guard flattenedShotIDs == orderedShotIDs,
+              Set(flattenedShotIDs).count == flattenedShotIDs.count
+        else {
+            throw TimeStoryError.invalidTimeline("章节镜头顺序与项目镜头顺序不一致")
+        }
+
+        var drafts: [(kind: TimeStoryFrameSegmentKind, id: UUID, chapterID: UUID, shotID: UUID?, assetID: UUID?, title: String?, caption: String?, duration: Int)] = []
+        guard let firstChapterID = project.chapters.first?.id else {
+            throw TimeStoryError.invalidTimeline("没有可呈现的章节")
+        }
+        let projectTitle = project.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        drafts.append((
+            .projectTitle,
+            TimeStoryStableID.uuid("render-title|\(project.id.uuidString.lowercased())"),
+            firstChapterID,
+            nil,
+            nil,
+            projectTitle.isEmpty ? project.subjectTagDisplayName : projectTitle,
+            nil,
+            TimeStoryConstants.projectTitleFrames
+        ))
+
+        for chapter in project.chapters {
+            let chapterTitle = chapter.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !chapterTitle.isEmpty else {
+                throw TimeStoryError.invalidTimeline("章节标题不能为空")
+            }
+            drafts.append((
+                .chapterTitle,
+                TimeStoryStableID.uuid("render-chapter|\(project.id.uuidString.lowercased())|\(chapter.id.uuidString.lowercased())"),
+                chapter.id,
+                nil,
+                nil,
+                chapterTitle,
+                nil,
+                TimeStoryConstants.chapterTitleFrames
+            ))
+            for shotID in chapter.shotIDs {
+                guard let shot = project.shots.first(where: { $0.id == shotID }),
+                      shot.chapterID == chapter.id
+                else {
+                    throw TimeStoryError.invalidTimeline("章节包含未知镜头")
+                }
+                guard shot.durationSeconds.isFinite, shot.durationSeconds > 0 else {
+                    throw TimeStoryError.invalidTimeline("镜头时长必须为有限正数")
+                }
+                let quantized = Int((shot.durationSeconds * Double(TimeStoryConstants.framesPerSecond)).rounded(.toNearestOrAwayFromZero))
+                guard quantized > 0 else {
+                    throw TimeStoryError.invalidTimeline("镜头时长短于一个 30 fps 帧")
+                }
+                drafts.append((
+                    .photo,
+                    TimeStoryStableID.uuid("render-photo|\(project.id.uuidString.lowercased())|\(shot.id.uuidString.lowercased())"),
+                    chapter.id,
+                    shot.id,
+                    shot.assetID,
+                    nil,
+                    shot.caption,
+                    quantized
+                ))
+            }
+        }
+
+        var segments: [TimeStoryFrameSegment] = []
+        for draft in drafts {
+            let overlap: Int
+            let start: Int
+            if let previous = segments.last {
+                overlap = min(
+                    TimeStoryConstants.preferredTransitionFrames,
+                    max(0, previous.durationFrames - 1),
+                    max(0, draft.duration - 1),
+                    90
+                )
+                start = previous.endFrame - overlap
+            } else {
+                overlap = 0
+                start = 0
+            }
+            segments.append(TimeStoryFrameSegment(
+                id: draft.id,
+                kind: draft.kind,
+                chapterID: draft.chapterID,
+                shotID: draft.shotID,
+                assetID: draft.assetID,
+                title: draft.title,
+                caption: draft.caption,
+                startFrame: start,
+                durationFrames: draft.duration,
+                transitionInFrames: overlap
+            ))
+        }
+        guard let totalFrames = segments.map(\.endFrame).max(), totalFrames > 0 else {
+            throw TimeStoryError.invalidTimeline("总帧数无效")
+        }
+        return TimeStoryFrameTimeline(
+            fps: Int(TimeStoryConstants.framesPerSecond),
+            segments: segments,
+            totalFrames: totalFrames
         )
     }
 }
 
 struct TimeStoryTimelineState: Sendable, Equatable {
-    let current: TimeStoryShot
-    let next: TimeStoryShot?
+    let current: TimeStoryFrameSegment
+    let next: TimeStoryFrameSegment?
     let blend: Double
     let progress: Double
 }
@@ -646,7 +777,7 @@ struct TimeStoryPlanner: Sendable {
     }
 }
 
-private enum TimeStoryStableID {
+enum TimeStoryStableID {
     static func uuid(_ text: String) -> UUID {
         let bytes = Array(SHA256.hash(data: Data(text.utf8)).prefix(16))
         let uuid = bytes.withUnsafeBytes { raw in raw.load(as: uuid_t.self) }
@@ -836,6 +967,7 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
         onProgress: @escaping @Sendable (TimeStoryRenderProgress) -> Void
     ) async throws {
         guard !project.shots.isEmpty else { throw TimeStoryError.noSelectedShots }
+        let timeline = try TimeStoryTimeline.normalize(project: project)
         guard destinationURL.pathExtension.lowercased() == "mp4" else {
             throw TimeStoryError.invalidDestination
         }
@@ -849,19 +981,27 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
         onProgress(TimeStoryRenderProgress(phase: .preparing, fraction: 0))
 
         var images: [UUID: CGImage] = [:]
-        for (index, shot) in project.shots.enumerated() {
+        let uniqueAssetIDs = project.shots.reduce(into: [UUID]()) { result, shot in
+            if !result.contains(shot.assetID) { result.append(shot.assetID) }
+        }
+        for (index, assetID) in uniqueAssetIDs.enumerated() {
             try Task.checkCancellation()
-            let data = try await media.loadStoryImage(assetID: shot.assetID)
+            let data = try await media.loadStoryImage(assetID: assetID)
             guard let image = Self.decodeImage(data) else {
-                throw TimeStoryError.renderingFailed("镜头 \(index + 1) 无法解码")
+                throw TimeStoryError.renderingFailed("素材 \(index + 1) 无法解码")
             }
-            images[shot.id] = image
+            images[assetID] = image
             onProgress(TimeStoryRenderProgress(
                 phase: .preparing,
-                fraction: Double(index + 1) / Double(project.shots.count)
+                fraction: Double(index + 1) / Double(uniqueAssetIDs.count)
             ))
         }
-        try await renderVideo(project: project, images: images, outputURL: silentURL, onProgress: onProgress)
+        try await renderVideo(
+            timeline: timeline,
+            images: images,
+            outputURL: silentURL,
+            onProgress: onProgress
+        )
         let finalWorkingURL: URL
         if let music = project.music {
             onProgress(TimeStoryRenderProgress(phase: .addingMusic, fraction: 0))
@@ -887,7 +1027,7 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
     }
 
     private func renderVideo(
-        project: TimeStoryProject,
+        timeline: TimeStoryFrameTimeline,
         images: [UUID: CGImage],
         outputURL: URL,
         onProgress: @escaping @Sendable (TimeStoryRenderProgress) -> Void
@@ -922,8 +1062,7 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
             throw TimeStoryError.renderingFailed(writer.error?.localizedDescription ?? "编码器无法启动")
         }
         writer.startSession(atSourceTime: .zero)
-        let duration = project.timelineDurationSeconds
-        let frameCount = max(1, Int(ceil(duration * Double(TimeStoryConstants.framesPerSecond))))
+        let frameCount = timeline.totalFrames
         do {
             for frame in 0 ..< frameCount {
                 try Task.checkCancellation()
@@ -931,20 +1070,8 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
                     try Task.checkCancellation()
                     try await Task.sleep(for: .milliseconds(2))
                 }
-                let seconds = Double(frame) / Double(TimeStoryConstants.framesPerSecond)
-                guard let state = TimeStoryTimeline.state(
-                    at: seconds,
-                    shots: project.shots,
-                    transitionSeconds: TimeStoryConstants.transitionDurationSeconds
-                ) else { throw TimeStoryError.noSelectedShots }
-                guard let current = images[state.current.id],
-                      let buffer = Self.makePixelBuffer(
-                        current: current,
-                        next: state.next.flatMap { images[$0.id] },
-                        blend: state.blend,
-                        caption: state.current.caption,
-                        progress: state.progress
-                      )
+                guard let state = timeline.state(atFrame: frame),
+                      let buffer = Self.makePixelBuffer(state: state, images: images)
                 else {
                     throw TimeStoryError.renderingFailed("无法绘制第 \(frame + 1) 帧")
                 }
@@ -1006,11 +1133,8 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
     )
 
     private static func makePixelBuffer(
-        current: CGImage,
-        next: CGImage?,
-        blend: Double,
-        caption: String,
-        progress: Double
+        state: TimeStoryTimelineState,
+        images: [UUID: CGImage]
     ) -> CVPixelBuffer? {
         var buffer: CVPixelBuffer?
         let status = CVPixelBufferCreate(
@@ -1041,10 +1165,42 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
         else { return nil }
         context.setFillColor(NSColor.black.cgColor)
         context.fill(CGRect(origin: .zero, size: outputSize))
-        draw(image: current, in: context, alpha: 1 - blend, progress: progress)
-        if let next { draw(image: next, in: context, alpha: blend, progress: 0) }
-        drawCaption(caption, in: context)
+        draw(
+            segment: state.current,
+            image: state.current.assetID.flatMap { images[$0] },
+            in: context,
+            alpha: 1 - state.blend,
+            progress: state.progress
+        )
+        if let next = state.next {
+            draw(
+                segment: next,
+                image: next.assetID.flatMap { images[$0] },
+                in: context,
+                alpha: state.blend,
+                progress: 0
+            )
+        }
         return buffer
+    }
+
+    private static func draw(
+        segment: TimeStoryFrameSegment,
+        image: CGImage?,
+        in context: CGContext,
+        alpha: Double,
+        progress: Double
+    ) {
+        switch segment.kind {
+        case .projectTitle:
+            drawTitle(segment.title ?? "", style: .project, in: context, alpha: alpha)
+        case .chapterTitle:
+            drawTitle(segment.title ?? "", style: .chapter, in: context, alpha: alpha)
+        case .photo:
+            guard let image else { return }
+            draw(image: image, in: context, alpha: alpha, progress: progress)
+            drawCaption(segment.caption ?? "", in: context, alpha: alpha)
+        }
     }
 
     private static func draw(image: CGImage, in context: CGContext, alpha: Double, progress: Double) {
@@ -1067,7 +1223,9 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
         context.restoreGState()
 
         let fitScale = min(canvas.width / imageSize.width, canvas.height / imageSize.height)
-        let subtleScale = fitScale * (1 + 0.015 * min(1, max(0, progress)))
+        // A contained foreground moves from slightly smaller to exact fit. It
+        // never grows beyond fit, so all four source edges remain visible.
+        let subtleScale = fitScale * (0.985 + 0.015 * min(1, max(0, progress)))
         let fitSize = CGSize(width: imageSize.width * subtleScale, height: imageSize.height * subtleScale)
         let fitRect = CGRect(
             x: (canvas.width - fitSize.width) / 2,
@@ -1081,8 +1239,43 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
         context.restoreGState()
     }
 
-    private static func drawCaption(_ caption: String, in context: CGContext) {
+    private enum TitleStyle { case project, chapter }
+
+    private static func drawTitle(
+        _ title: String,
+        style: TitleStyle,
+        in context: CGContext,
+        alpha: Double
+    ) {
+        guard alpha > 0 else { return }
+        let canvas = CGRect(origin: .zero, size: outputSize)
+        context.saveGState()
+        defer { context.restoreGState() }
+        context.setAlpha(CGFloat(alpha))
+        context.setFillColor(NSColor(calibratedRed: 0.055, green: 0.082, blue: 0.12, alpha: 1).cgColor)
+        context.fill(canvas)
+        let size: CGFloat = style == .project ? 74 : 58
+        let attributed = NSAttributedString(
+            string: title,
+            attributes: [
+                .font: NSFont(name: "PingFang SC", size: size)
+                    ?? NSFont.systemFont(ofSize: size, weight: .semibold),
+                .foregroundColor: NSColor.white,
+            ]
+        )
+        let framesetter = CTFramesetterCreateWithAttributedString(attributed)
+        let textRect = CGRect(x: 150, y: 280, width: outputSize.width - 300, height: 520)
+        let path = CGPath(rect: textRect, transform: nil)
+        CTFrameDraw(CTFramesetterCreateFrame(framesetter, CFRange(), path, nil), context)
+        context.setFillColor(NSColor(calibratedRed: 0.95, green: 0.78, blue: 0.47, alpha: 1).cgColor)
+        context.fill(CGRect(x: outputSize.width / 2 - 72, y: 235, width: 144, height: 5))
+    }
+
+    private static func drawCaption(_ caption: String, in context: CGContext, alpha: Double) {
         guard !caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        context.saveGState()
+        defer { context.restoreGState() }
+        context.setAlpha(CGFloat(alpha))
         let attributed = NSAttributedString(
             string: caption,
             attributes: [
@@ -1189,6 +1382,7 @@ struct TimeStoryFeatureRuntime: Sendable {
     let store: TimeStoryProjectStore
     let validator: any TimeStoryMediaValidating
     let renderer: any TimeStoryRendering
+    let packageExporter: any TimeStoryPackageExporting
     let media: any TimeStoryMediaLoading
     let clock: any JobClock
 }
