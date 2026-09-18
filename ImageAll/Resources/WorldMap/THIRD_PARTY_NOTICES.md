@@ -33,3 +33,7 @@ Permission is granted, free of charge, to use, copy, modify, merge, publish, dis
 - Upstream GeoJSON SHA-256: `6866c877d39cba9c357620878839b336d569f8c662d3cfab4cb1dbe2d39c977f`
 
 Natural Earth states that all of its raster and vector map data is in the public domain. The vendored JavaScript file wraps the upstream GeoJSON object in a local global assignment so `WKWebView.loadFileURL` can load it without network access or filesystem XHR. No geometry or properties are changed.
+
+## OpenFreeMap / OpenStreetMap
+
+Detailed street maps use the OpenFreeMap public Liberty style and OpenMapTiles-compatible vector tiles at https://tiles.openfreemap.org. No API key or paid account is required. Map data © OpenStreetMap contributors (ODbL); provider/source attribution is displayed by MapLibre. See https://openfreemap.org/ and https://www.openstreetmap.org/copyright.

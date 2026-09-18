@@ -14,6 +14,8 @@ const naturalEarthCountries = globalThis.ImageAllNaturalEarthCountries;
 const requestedInitialCamera = globalThis.ImageAllWorldMapInitialCamera;
 
 let overlay = null;
+let detailedBasemap = false;
+let basemapController = null;
 let clusters = [];
 let selectedClusterID = null;
 let keyboardClusterID = null;
@@ -33,12 +35,15 @@ const initialCamera = {
     -85,
     Math.min(85, finiteNumber(requestedInitialCamera?.centerLatitude, 24))
   ),
-  zoom: Math.max(0.7, Math.min(12, finiteNumber(requestedInitialCamera?.zoom, 1.48))),
+  zoom: Math.max(0.7, Math.min(22, finiteNumber(requestedInitialCamera?.zoom, 1.48))),
   bearing: finiteNumber(requestedInitialCamera?.bearing, -14),
-  pitch: Math.max(0, Math.min(78, finiteNumber(requestedInitialCamera?.pitch, 44)))
+  pitch: Math.max(0, Math.min(78, finiteNumber(requestedInitialCamera?.pitch, 24)))
 };
 
 function post(message) {
+  if (typeof message.message === "string") {
+    message = { ...message, message: message.message.replace(/([?&]key=)[^&\s"<>)]*/gi, "$1[redacted]") };
+  }
   if (bridge) {
     bridge.postMessage(message);
     return;
@@ -159,10 +164,20 @@ try {
     bearing: initialCamera.bearing,
     maxPitch: 78,
     minZoom: 0.7,
-    maxZoom: 12,
+    maxZoom: 22,
     antialias: true,
     renderWorldCopies: true,
-    attributionControl: true,
+    attributionControl: { customAttribution: '<a href="https://openfreemap.org" target="_blank" rel="noopener noreferrer">OpenFreeMap</a> | <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">© OpenStreetMap contributors</a> | Natural Earth' },
+    transformRequest: (url) => {
+      const resource = new URL(url, globalThis.location.href);
+      if (resource.origin === "https://tiles.openfreemap.org") {
+        return { url, credentials: "omit" };
+      }
+      if (resource.origin !== globalThis.location.origin && !["blob:", "data:"].includes(resource.protocol)) {
+        throw new Error("地图资源域名不在允许范围内");
+      }
+      return { url };
+    },
     fadeDuration: 300
   });
 } catch (error) {
@@ -187,11 +202,13 @@ function colorForCount(count, alpha = 238) {
 
 function radiusForZoom() {
   const zoom = map.getZoom();
-  return Math.max(2800, Math.min(90000, 120000 / Math.pow(1.52, zoom)));
+  return Math.max(2800, Math.min(90000, 120000 / Math.pow(1.52, Math.min(zoom, 9))))
+    * Math.pow(0.5, Math.max(0, zoom - 9));
 }
 
 function elevationForCount(count) {
-  return 4200 * Math.pow(Math.log2(count + 1), 1.65);
+  return 4200 * Math.pow(Math.log2(count + 1), 1.65)
+    * Math.pow(0.5, Math.max(0, map.getZoom() - 9));
 }
 
 function clustersInCurrentViewport() {
@@ -282,6 +299,7 @@ function renderLayers() {
   const layers = [
     new deckRuntime.GeoJsonLayer({
       id: "natural-earth-land",
+      visible: !detailedBasemap,
       data: naturalEarthCountries,
       pickable: false,
       filled: true,
@@ -294,6 +312,7 @@ function renderLayers() {
     }),
     new deckRuntime.GeoJsonLayer({
       id: "local-graticule",
+      visible: !detailedBasemap,
       data: localGrid,
       pickable: false,
       filled: false,
@@ -441,7 +460,7 @@ function restoreViewport(viewport) {
       Math.max(-180, Math.min(180, finiteNumber(viewport.centerLongitude, map.getCenter().lng))),
       Math.max(-85, Math.min(85, finiteNumber(viewport.centerLatitude, map.getCenter().lat)))
     ],
-    zoom: Math.max(0.7, Math.min(12, finiteNumber(viewport.zoom, map.getZoom()))),
+    zoom: Math.max(0.7, Math.min(22, finiteNumber(viewport.zoom, map.getZoom()))),
     bearing: finiteNumber(viewport.bearing, map.getBearing()),
     pitch: Math.max(0, Math.min(78, finiteNumber(viewport.pitch, map.getPitch())))
   });
@@ -479,11 +498,21 @@ map.on("moveend", () => {
 });
 map.on("dragstart", () => { tooltip.style.display = "none"; });
 map.on("error", (event) => {
+  if (basemapController?.handleError(event)) return;
   post({
     type: "renderError",
     message: event?.error?.stack || event?.error?.message || String(event?.error || "unknown")
   });
-  console.warn("MapLibre renderer error", event.error);
+  console.warn("MapLibre renderer error");
+});
+
+basemapController = globalThis.ImageAllBasemap.create({
+  map,
+  offlineStyle: photoAtlasStyle,
+  onChange(active) {
+    detailedBasemap = active;
+    renderLayers();
+  }
 });
 
 clusterNavigatorPrevious.addEventListener("click", () => moveKeyboardCluster(-1));
@@ -550,6 +579,7 @@ globalThis.ImageAllWorldMap = Object.freeze({
   snapshotState() {
     return { selectedClusterID, keyboardClusterID, viewport: currentViewport() };
   },
+  basemapState() { return basemapController.snapshot(); },
   rendererStatus() {
     return { ready: rendererReady, webgl2Available: webGL2Available() };
   }

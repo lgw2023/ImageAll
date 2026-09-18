@@ -287,3 +287,66 @@ body::before {
     width: min(318px, calc(100vw - 20px));
   }
 }
+
+/* Compact atlas controls; neutral paper surfaces keep street labels legible. */
+body[data-basemap="online"] #paper-wash,
+body[data-basemap="online"] #paper-texture,
+body[data-basemap="online"]::before { display: none; }
+
+#basemap-panel {
+  position: fixed;
+  top: var(--native-map-controls-top, 112px);
+  left: 18px;
+  z-index: 11;
+  width: min(310px, calc(100vw - 76px));
+  color: var(--map-ink);
+  background: #faf9f5;
+  border: 1px solid #bdcbc3;
+  border-radius: 16px;
+  box-shadow: 0 8px 30px #3c45461c;
+  font-size: 12px;
+}
+#basemap-panel button, #basemap-panel input, #basemap-panel select { font: inherit; }
+#basemap-panel button, #basemap-panel summary, #basemap-panel select { cursor: pointer; }
+#basemap-panel button:focus-visible, #basemap-panel input:focus-visible,
+#basemap-panel select:focus-visible, #basemap-panel summary:focus-visible {
+  outline: 2px solid #426f7f;
+  outline-offset: 3px;
+}
+#basemap-toggle {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 43px;
+  padding: 10px 15px;
+  border: 0;
+  border-radius: 16px;
+  color: #344d45;
+  background: #eef2eb;
+  font-weight: 650 !important;
+  text-align: left;
+}
+.basemap-toggle-mark { margin-left: auto; }
+#basemap-body { max-height: calc(100dvh - var(--native-map-controls-top, 112px) - 236px); overflow-y: auto; padding: 15px; overscroll-behavior: contain; }
+#basemap-body[hidden] { display: none; }
+.basemap-intro { display: grid; gap: 4px; margin-bottom: 16px; }
+.basemap-intro strong { font-size: 15px; letter-spacing: .025em; }
+.basemap-intro span { color: #64706f; font-size: 11px; }
+.basemap-mode-label { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+#basemap-mode { padding: 7px; border: 1px solid #b8c9c1; border-radius: 7px; color: #354b42; background: white; }
+#basemap-status { padding: 9px 10px; border-radius: 8px; background: #eaf0ed; color: #496254; font-size: 11px; line-height: 1.6; }
+#basemap-panel[data-state="failed"] #basemap-status { color: #865337; background: #f6e9de; }
+.basemap-layer { display: grid; grid-template-columns: 16px 1fr auto; align-items: center; gap: 9px; padding: 8px 0; border-bottom: 1px solid #dfe5df; cursor: pointer; }
+.basemap-layer input { width: 15px; height: 15px; margin: 0; accent-color: #537b68; }
+.basemap-layer strong { display: block; margin-bottom: 3px; font-size: 12px; font-weight: 600; }
+.basemap-layer small { display: block; color: #65716d; font-size: 10px; line-height: 1.5; }
+.basemap-layer-state { color: #64766e; font-size: 9px; }
+.basemap-note { color: #63716a; font-size: 10px; line-height: 1.7; }
+#basemap-retry { width: 100%; margin-top: 8px; padding: 8px 10px; border: 1px solid #b8c9c1; border-radius: 7px; background: #edf2eb; color: #365447; }
+#fallback-badge { top: auto; bottom: 36px; right: 12px; }
+.maplibregl-ctrl-attrib { max-width: calc(100vw - 12px); }
+@media (max-width: 640px) {
+  #basemap-panel { top: var(--native-map-controls-top, 14px); left: 10px; }
+  #basemap-body { max-height: calc(100dvh - var(--native-map-controls-top, 14px) - 240px); }
+}

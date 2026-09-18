@@ -1070,6 +1070,18 @@ final class IdenticalDuplicateDetectionTests: XCTestCase {
             seedAssetIDs: []
         )
 
+        scanner.afterProgress = {
+            let running = try analysis.snapshot(jobID: enqueued.jobID)
+            XCTAssertEqual(running.state, .running)
+            XCTAssertEqual(running.scanProgress?.phase, .loadingFeaturePrints)
+            XCTAssertEqual(running.scanProgress?.completed, 1)
+            XCTAssertEqual(running.scanProgress?.total, 2)
+            XCTAssertEqual(running.scanProgress?.completionPass, 1)
+            let summary = try XCTUnwrap(analysis.listJobs().first)
+            XCTAssertEqual(summary.scanProgress, running.scanProgress)
+            let activity = try XCTUnwrap(queue.fetchActivityItems().first)
+            XCTAssertEqual(JobActivityPresentation.progressText(for: activity), running.scanProgress?.caption)
+        }
         try analysis.runPending()
 
         let finished = try analysis.snapshot(jobID: enqueued.jobID)
@@ -1128,6 +1140,7 @@ final class IdenticalDuplicateDetectionTests: XCTestCase {
 private final class LeaseAdvancingSlimmingScanner: LibrarySlimmingScanPort,
     @unchecked Sendable
 {
+    var afterProgress: (() throws -> Void)?
     private let clock: MutableJobClock
     private let heartbeatAtMs: Int64
     private let finishAtMs: Int64
@@ -1145,11 +1158,12 @@ private final class LeaseAdvancingSlimmingScanner: LibrarySlimmingScanPort,
         clock.setNowMs(heartbeatAtMs)
         onProgress?(
             LibrarySlimmingScanProgress(
-                phase: .clustering,
+                phase: .loadingFeaturePrints,
                 completed: 1,
                 total: 2
             )
         )
+        try afterProgress?()
         clock.setNowMs(finishAtMs)
         return LibrarySlimmingScanResult(
             clusters: [],

@@ -701,6 +701,7 @@ struct LibrarySlimmingAnalysisJobSnapshot: Sendable, Equatable {
     let progress: JobProgress
     let result: LibrarySlimmingScanResult?
     let seedAssetIDs: [UUID]
+    let scanProgress: LibrarySlimmingScanProgress?
 
     init(
         jobID: UUID,
@@ -708,7 +709,8 @@ struct LibrarySlimmingAnalysisJobSnapshot: Sendable, Equatable {
         controlRequest: JobControlRequest,
         progress: JobProgress,
         result: LibrarySlimmingScanResult?,
-        seedAssetIDs: [UUID] = []
+        seedAssetIDs: [UUID] = [],
+        scanProgress: LibrarySlimmingScanProgress? = nil
     ) {
         self.jobID = jobID
         self.state = state
@@ -716,6 +718,7 @@ struct LibrarySlimmingAnalysisJobSnapshot: Sendable, Equatable {
         self.progress = progress
         self.result = result
         self.seedAssetIDs = seedAssetIDs
+        self.scanProgress = scanProgress
     }
 }
 
@@ -737,6 +740,7 @@ struct LibrarySlimmingAnalysisJobSummary: Sendable, Equatable, Identifiable {
     let updatedAtMs: Int64
     let sourceNames: [String]
     let lastErrorCode: JobSafeErrorCode?
+    let scanProgress: LibrarySlimmingScanProgress?
 
     init(
         jobID: UUID,
@@ -754,7 +758,8 @@ struct LibrarySlimmingAnalysisJobSummary: Sendable, Equatable, Identifiable {
         createdAtMs: Int64,
         updatedAtMs: Int64,
         sourceNames: [String] = [],
-        lastErrorCode: JobSafeErrorCode? = nil
+        lastErrorCode: JobSafeErrorCode? = nil,
+        scanProgress: LibrarySlimmingScanProgress? = nil
     ) {
         self.jobID = jobID
         self.mode = mode
@@ -772,6 +777,7 @@ struct LibrarySlimmingAnalysisJobSummary: Sendable, Equatable, Identifiable {
         self.updatedAtMs = updatedAtMs
         self.sourceNames = sourceNames
         self.lastErrorCode = lastErrorCode
+        self.scanProgress = scanProgress
     }
 }
 
@@ -880,6 +886,29 @@ enum LibrarySlimmingAnalysisJobFactory {
         var nextOrdinal: Int
         var completionPass: Int
         var completedFloor: Int
+        var scanProgress: LibrarySlimmingScanProgress? = nil
+
+        func presentation(memberCount: Int) -> LibrarySlimmingScanProgress {
+            var value: LibrarySlimmingScanProgress
+            switch phase {
+            case .fingerprints:
+                value = .init(
+                    phase: .preparingFingerprints,
+                    completed: min(nextOrdinal, memberCount),
+                    total: memberCount
+                )
+            case .vectors:
+                value = .init(
+                    phase: .loadingFeaturePrints,
+                    completed: min(nextOrdinal, memberCount),
+                    total: memberCount
+                )
+            case .clustering:
+                value = scanProgress ?? .init(phase: .clustering, completed: 0, total: 1)
+            }
+            value.completionPass = completionPass
+            return value
+        }
     }
 
     static func makeCommand(
@@ -1121,7 +1150,10 @@ struct LibrarySlimmingAnalysisService: LibrarySlimmingAnalysisJobPort {
             controlRequest: job.controlRequest,
             progress: job.progress,
             result: persisted.0,
-            seedAssetIDs: persisted.1
+            seedAssetIDs: persisted.1,
+            scanProgress: job.state == .completed ? nil
+                : try LibrarySlimmingAnalysisJobFactory.decodeCheckpoint(job.checkpoint)
+                    .presentation(memberCount: max(0, ((job.progress.total ?? 1) - 1) / 2))
         )
     }
 
@@ -1184,6 +1216,7 @@ struct LibrarySlimmingAnalysisService: LibrarySlimmingAnalysisJobPort {
                 SELECT
                     job.id AS id,
                     job.payload AS payload,
+                    job.checkpoint AS checkpoint,
                     job.state AS state,
                     job.control_request AS control_request,
                     job.progress_completed AS progress_completed,
@@ -1221,6 +1254,10 @@ struct LibrarySlimmingAnalysisService: LibrarySlimmingAnalysisJobPort {
                 }
                 let payloadData: Data = row["payload"]
                 let payload = try LibrarySlimmingAnalysisJobFactory.decodePayload(payloadData)
+                let checkpointData: Data? = row["checkpoint"]
+                let checkpoint = try checkpointData.map {
+                    try JSONDecoder().decode(LibrarySlimmingAnalysisJobFactory.Checkpoint.self, from: $0)
+                }
                 let resultData: Data? = row["result_json"]
                 let clusterCount: Int
                 if let resultData,
@@ -1256,7 +1293,8 @@ struct LibrarySlimmingAnalysisService: LibrarySlimmingAnalysisJobPort {
                     sourceNames: sourceNamesByJobID[rawID, default: []],
                     lastErrorCode: try (row["last_error_code"] as String?).map {
                         try JobSafeErrorCode(persisted: $0)
-                    }
+                    },
+                    scanProgress: checkpoint?.presentation(memberCount: row["member_count"])
                 )
             }
         }
@@ -1544,6 +1582,7 @@ private struct LibrarySlimmingAnalysisHandler: LeaseBoundJobHandler {
                         return settled
                     }
                 case .clustering:
+                    state.scanProgress = nil
                     if let settled = try commitProgress(
                         lease: lease,
                         state: state,
@@ -1572,12 +1611,7 @@ private struct LibrarySlimmingAnalysisHandler: LeaseBoundJobHandler {
                     )
                     heartbeat.start()
                     let scanProgress: LibrarySlimmingScanProgressHandler = { progress in
-                        if progress.phase == .clustering
-                            || progress.completed == progress.total
-                            || progress.completed.isMultiple(of: 256)
-                        {
-                            heartbeat.renewIfDue()
-                        }
+                        heartbeat.report(progress)
                     }
                     let result: LibrarySlimmingScanResult
                     do {
@@ -1807,11 +1841,14 @@ private final class LibrarySlimmingAnalysisLeaseHeartbeat: @unchecked Sendable {
     private let queue: GRDBJobQueue
     private let clock: any JobClock
     private let lease: JobLeaseToken
-    private let checkpoint: JobCheckpoint
+    private var checkpoint: JobCheckpoint
     private let progress: JobProgress
     private let leaseDurationMs: Int64
     private let minimumRenewIntervalMs: Int64
     private let lock = NSLock()
+    private var lastProgressPublishedAtMs: Int64
+    private var progressIsDirty = false
+    private var reportedProgress: LibrarySlimmingScanProgress?
     private var lastRenewedAtMs: Int64
     private var storedStatus: Status = .active
     private var timer: DispatchSourceTimer?
@@ -1832,6 +1869,7 @@ private final class LibrarySlimmingAnalysisLeaseHeartbeat: @unchecked Sendable {
         self.progress = progress
         self.leaseDurationMs = leaseDurationMs
         minimumRenewIntervalMs = max(100, leaseDurationMs / 3)
+        lastProgressPublishedAtMs = clock.nowMs - 1_000
         lastRenewedAtMs = clock.nowMs
     }
 
@@ -1870,13 +1908,29 @@ private final class LibrarySlimmingAnalysisLeaseHeartbeat: @unchecked Sendable {
         lock.unlock()
     }
 
+    func report(_ progress: LibrarySlimmingScanProgress) {
+        lock.lock()
+        if !isStopped, case .active = storedStatus {
+            reportedProgress = progress
+            progressIsDirty = true
+        }
+        lock.unlock()
+        renewIfDue()
+    }
+
     func renewIfDue() {
         lock.lock()
         defer { lock.unlock() }
         guard !isStopped, case .active = storedStatus else { return }
         let nowMs = clock.nowMs
-        guard nowMs - lastRenewedAtMs >= minimumRenewIntervalMs else { return }
+        let publishProgress = progressIsDirty && nowMs - lastProgressPublishedAtMs >= 1_000
+        guard publishProgress || nowMs - lastRenewedAtMs >= minimumRenewIntervalMs else { return }
         do {
+            if progressIsDirty {
+                var state = try LibrarySlimmingAnalysisJobFactory.decodeCheckpoint(checkpoint)
+                state.scanProgress = reportedProgress
+                checkpoint = try LibrarySlimmingAnalysisJobFactory.encodeCheckpoint(state)
+            }
             let snapshot = try queue.submitSafeBatch(
                 SafeBatchCommitInput(
                     lease: lease,
@@ -1887,6 +1941,8 @@ private final class LibrarySlimmingAnalysisLeaseHeartbeat: @unchecked Sendable {
                 )
             )
             lastRenewedAtMs = nowMs
+            lastProgressPublishedAtMs = nowMs
+            progressIsDirty = false
             if snapshot.state != .running {
                 storedStatus = .settled
             }

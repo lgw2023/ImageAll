@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import Foundation
+import OSLog
 import Photos
 
 final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, PhotosChangeHistoryPort,
@@ -10,6 +11,10 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
     PHPhotoLibraryAvailabilityObserver,
     @unchecked Sendable
 {
+    private static let logger = Logger(
+        subsystem: "com.gwlee.ImageAll",
+        category: "PhotosLibraryAccess"
+    )
     private let imageManager = PHCachingImageManager()
     private let interactiveIOGate: InteractiveIOPriorityGate?
     private let observerLock = NSLock()
@@ -179,15 +184,14 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
         let changes: PHPersistentChangeFetchResult
         do {
             changes = try PHPhotoLibrary.shared().fetchPersistentChanges(since: decodedToken)
-        } catch let error as PhotosLibraryError {
-            throw error
         } catch {
-            throw PhotosLibraryError.changeTokenInvalid
+            throw Self.mapPersistentChangeError(error)
         }
 
-        do {
-            for change in changes {
-                func processChange() throws {
+        for change in changes {
+            let batch: PhotosPersistentChangeBatch
+            do {
+                batch = try {
                     let details = try change.changeDetails(for: .asset)
                     let changedIdentifiers = details.insertedLocalIdentifiers
                         .union(details.updatedLocalIdentifiers)
@@ -196,25 +200,65 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
                     // metadata resolution (empty resources, unsupported UTI, transient cloud
                     // eviction) must not be treated as deletions — full generation remains
                     // the sole unseen → missing convergence path.
-                    try onBatch(Self.makePersistentChangeBatch(
+                    return Self.makePersistentChangeBatch(
                         upsertedAssets: upsertedAssets,
                         deletedLocalIdentifiers: details.deletedLocalIdentifiers,
                         changeToken: try self.archiveChangeToken(change.changeToken)
-                    ))
+                    )
+                }()
+            } catch {
+                throw Self.mapPersistentChangeError(error)
+            }
+
+            // Keep caller failures outside the PhotoKit mapping boundary. A
+            // catalog transaction failure is a local persistence failure, not
+            // evidence that the Photos history token is invalid.
+            if let interactiveIOGate {
+                try interactiveIOGate.withBackgroundWork {
+                    try onBatch(batch)
                 }
-                if let interactiveIOGate {
-                    try interactiveIOGate.withBackgroundWork {
-                        try processChange()
-                    }
-                } else {
-                    try processChange()
+            } else {
+                try onBatch(batch)
+            }
+        }
+    }
+
+    static func mapPersistentChangeError(_ error: Error) -> PhotosLibraryError {
+        if let photosLibraryError = error as? PhotosLibraryError {
+            return photosLibraryError
+        }
+
+        var pending = [error as NSError]
+        var visited = Set<ObjectIdentifier>()
+        while let current = pending.popLast() {
+            guard visited.insert(ObjectIdentifier(current)).inserted else { continue }
+            if current.domain == PHPhotosErrorDomain {
+                switch current.code {
+                case PHPhotosError.Code.persistentChangeTokenExpired.rawValue,
+                     PHPhotosError.Code.persistentChangeDetailsUnavailable.rawValue:
+                    return .changeTokenInvalid
+                case PHPhotosError.Code.accessRestricted.rawValue:
+                    return .authorizationRestricted
+                case PHPhotosError.Code.accessUserDenied.rawValue:
+                    return .authorizationDenied
+                default:
+                    break
                 }
             }
-        } catch let error as PhotosLibraryError {
-            throw error
-        } catch {
-            throw PhotosLibraryError.changeTokenInvalid
+            if let underlying = current.userInfo[NSUnderlyingErrorKey] as? NSError {
+                pending.append(underlying)
+            }
         }
+
+        let error = error as NSError
+        logger.error(
+            "Persistent Photos history backend unavailable: domain=\(error.domain, privacy: .public) code=\(error.code)"
+        )
+        // Persistent-history fetches do not write ImageAll data. Any remaining
+        // PhotoKit/XPC/Core Data backend error means the current system library
+        // cannot be read now; it must not be reported as an ImageAll save error
+        // or trigger an unnecessary full replay.
+        return .libraryUnavailable
     }
 
     static func makePersistentChangeBatch(
@@ -272,14 +316,23 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
         }
     }
 
+    func currentUnavailabilityReason() -> PhotosLibraryUnavailabilityReason? {
+        Self.mapUnavailabilityReason(PHPhotoLibrary.shared().unavailabilityReason)
+    }
+
     func photoLibraryDidBecomeUnavailable(_ photoLibrary: PHPhotoLibrary) {
-        let error = photoLibrary.unavailabilityReason as NSError?
-        let reason: PhotosLibraryUnavailabilityReason =
-            error?.code == PHPhotosError.Code.switchingSystemPhotoLibrary.rawValue
-                ? .systemLibrarySwitch
-                : .other
+        let reason = Self.mapUnavailabilityReason(photoLibrary.unavailabilityReason) ?? .other
         let callback = observerLock.withLock { onLibraryUnavailable }
         callback?(reason)
+    }
+
+    private static func mapUnavailabilityReason(
+        _ reason: (any Error)?
+    ) -> PhotosLibraryUnavailabilityReason? {
+        guard let error = reason as NSError? else { return nil }
+        return error.code == PHPhotosError.Code.switchingSystemPhotoLibrary.rawValue
+            ? .systemLibrarySwitch
+            : .other
     }
 
     func stopObservingAvailability() {

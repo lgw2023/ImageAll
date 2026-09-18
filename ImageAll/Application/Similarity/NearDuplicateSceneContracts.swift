@@ -269,8 +269,8 @@ struct SlimmingCluster: Sendable, Equatable, Identifiable, Codable {
     let modelIdentity: SlimmingVectorModelIdentity
 }
 
-struct LibrarySlimmingScanProgress: Sendable, Equatable {
-    enum Phase: String, Sendable, Equatable {
+struct LibrarySlimmingScanProgress: Sendable, Equatable, Codable {
+    enum Phase: String, Sendable, Equatable, Codable {
         case preparingFingerprints
         case loadingFeaturePrints
         case loadingEmbeddings
@@ -280,8 +280,14 @@ struct LibrarySlimmingScanProgress: Sendable, Equatable {
     let phase: Phase
     let completed: Int
     let total: Int
+    var completionPass: Int? = nil
 
     var caption: String {
+        let prefix = completionPass.map { "第 \($0) 轮 · " } ?? ""
+        return prefix + phaseCaption
+    }
+
+    private var phaseCaption: String {
         switch phase {
         case .preparingFingerprints:
             "补全内容指纹 \(completed)/\(total)"
@@ -309,7 +315,11 @@ enum LibrarySlimmingJobProgressPresentation {
     ) -> LibrarySlimmingScanProgress? {
         guard progressTotal > 0, memberCount > 0 else { return nil }
         if completed >= progressTotal - 1 {
-            return LibrarySlimmingScanProgress(phase: .clustering, completed: 1, total: 1)
+            return LibrarySlimmingScanProgress(
+                phase: .clustering,
+                completed: completed >= progressTotal ? 1 : 0,
+                total: 1
+            )
         }
         if completed < memberCount {
             return LibrarySlimmingScanProgress(

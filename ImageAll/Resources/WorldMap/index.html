@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; child-src 'self' blob:">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' https://tiles.openfreemap.org; img-src 'self' data: blob: https://tiles.openfreemap.org; font-src 'self' data:; worker-src 'self' blob:; child-src 'self' blob:">
+  <meta name="referrer" content="no-referrer">
   <title>ImageAll Photo Atlas</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="maplibre-gl.css">
@@ -29,11 +30,28 @@
     </button>
     <p id="cluster-navigator-status" class="visually-hidden" role="status" aria-live="polite"></p>
   </section>
+  <section id="basemap-panel" aria-label="地图图层设置">
+    <button id="basemap-toggle" type="button" aria-expanded="true" aria-controls="basemap-body">
+      <span aria-hidden="true">▱</span> 地图图层 <span class="basemap-toggle-mark" aria-hidden="true">⌄</span>
+    </button>
+    <div id="basemap-body">
+      <div class="basemap-intro"><strong>地图内容</strong><span>选择地图上想看到的信息</span></div>
+      <label class="basemap-mode-label" for="basemap-mode">底图
+        <select id="basemap-mode"><option value="online">免费街道地图</option><option value="offline">离线轮廓地图</option></select>
+      </label>
+      <p id="basemap-status" role="status" aria-live="polite"></p>
+      <p class="basemap-note">OpenFreeMap · 免费使用，无需账号或密钥。在线加载当前区域的地图数据，不上传照片或文件路径。</p>
+      <div id="basemap-layers" role="group" aria-label="地图信息"></div>
+      <p class="basemap-note">地名优先中文。道路、景点和建筑随放大逐步显示，具体覆盖以地图数据为准。</p>
+      <button id="basemap-retry" type="button">重新连接街道地图</button>
+    </div>
+  </section>
   <div id="fallback-badge">LOCAL ATLAS · OFFLINE READY</div>
   <script src="maplibre-gl.js"></script>
   <script src="maplibre-gl-worker-source.js"></script>
   <script src="deck.gl.min.js"></script>
   <script src="natural-earth-countries.js"></script>
-  <script src="world-map.js?v=20260831-47"></script>
+  <script src="world-map-basemap.js"></script>
+  <script src="world-map.js?v=20260909-74"></script>
 </body>
 </html>

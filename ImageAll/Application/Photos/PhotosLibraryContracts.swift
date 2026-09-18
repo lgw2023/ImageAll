@@ -122,10 +122,18 @@ enum PhotosLibraryUnavailabilityReason: Equatable, Sendable {
 }
 
 protocol PhotosLibraryAvailabilityObserverPort: Sendable {
+    /// Returns the current PhotoKit availability before observation starts.
+    /// PhotoKit only reports transitions to observers, so an app launched while
+    /// the system library is already unavailable must preflight this state.
+    func currentUnavailabilityReason() -> PhotosLibraryUnavailabilityReason?
     func startObservingAvailability(
         _ onUnavailable: @escaping @Sendable (PhotosLibraryUnavailabilityReason) -> Void
     )
     func stopObservingAvailability()
+}
+
+extension PhotosLibraryAvailabilityObserverPort {
+    func currentUnavailabilityReason() -> PhotosLibraryUnavailabilityReason? { nil }
 }
 
 protocol PhotosCloudPreviewPort: Sendable {

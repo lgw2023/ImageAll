@@ -33,6 +33,7 @@ struct RemoteWebCompanionAssetStore {
         "/world-map/maplibre-gl-worker-source.js": Descriptor(name: "maplibre-gl-worker-source.js", contentType: "text/javascript; charset=utf-8", isWorldMap: true, allowsSameOriginFraming: false),
         "/world-map/deck.gl.min.js": Descriptor(name: "deck.gl.min.js", contentType: "text/javascript; charset=utf-8", isWorldMap: true, allowsSameOriginFraming: false),
         "/world-map/natural-earth-countries.js": Descriptor(name: "natural-earth-countries.js", contentType: "text/javascript; charset=utf-8", isWorldMap: true, allowsSameOriginFraming: false),
+        "/world-map/world-map-basemap.js": Descriptor(name: "world-map-basemap.js", contentType: "text/javascript; charset=utf-8", isWorldMap: true, allowsSameOriginFraming: false),
         "/world-map/world-map.js": Descriptor(name: "world-map.js", contentType: "text/javascript; charset=utf-8", isWorldMap: true, allowsSameOriginFraming: false),
     ]
 
@@ -442,7 +443,7 @@ enum RemoteWebCompanionSession {
     static let embeddedWorldMapSecurityHeaders: [(String, String)] = [
         (
             "Content-Security-Policy",
-            "default-src 'self'; base-uri 'none'; connect-src 'self'; font-src 'self' data:; form-action 'none'; frame-ancestors 'self'; img-src 'self' blob: data:; media-src 'none'; object-src 'none'; script-src 'self'; style-src 'self'; worker-src 'self' blob:; child-src 'self' blob:"
+            "default-src 'self'; base-uri 'none'; connect-src 'self' https://tiles.openfreemap.org; font-src 'self' data:; form-action 'none'; frame-ancestors 'self'; img-src 'self' blob: data: https://tiles.openfreemap.org; media-src 'none'; object-src 'none'; script-src 'self'; style-src 'self'; worker-src 'self' blob:; child-src 'self' blob:"
         ),
         ("Permissions-Policy", "camera=(), microphone=(), geolocation=()"),
         ("Referrer-Policy", "no-referrer"),

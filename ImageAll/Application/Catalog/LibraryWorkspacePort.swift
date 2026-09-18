@@ -145,6 +145,7 @@ enum LibraryWorkspaceNotice: Equatable, Sendable {
         displayName: String,
         blockers: LibrarySourceDeletionBlockers
     )
+    case sourceDisabled(displayName: String)
     case sourceDeleted(displayName: String, assetCount: Int)
     case backgroundScanFailed
     case photosAuthorizationRequired
@@ -497,6 +498,7 @@ protocol LibraryWorkspacePort: Sendable {
     func deleteLibrarySource(sourceID: UUID) async throws -> DeleteLibrarySourceOutcome
     func enqueueReconcile(sourceIDs: [UUID]) throws
     func hasPendingCatalogReconcileJobs() throws -> Bool
+    func nextCatalogReconcileRetryAtMs() throws -> Int64?
     func sourceIsReconcileClean(sourceID: UUID) throws -> Bool
     func fetchCatalogReconcileProgress() throws -> CatalogReconcileProgress?
     func runPendingReconcileJobs(sourceIDs: Set<UUID>?) throws
@@ -555,6 +557,10 @@ protocol LibraryWorkspacePort: Sendable {
 }
 
 extension LibraryWorkspacePort {
+    func nextCatalogReconcileRetryAtMs() throws -> Int64? {
+        JobActivityRetrySchedule.nextCatalogReconcileRetryAtMs(in: try fetchJobActivity())
+    }
+
     func fetchSourceFolders(sourceID _: UUID) throws -> [LibrarySourceFolder] {
         []
     }

@@ -193,6 +193,7 @@ struct LibrarySlimmingAnalysisJobPresentation: Identifiable, Equatable, Sendable
     let mediaKind: MediaKind
     let state: JobState
     let controlRequest: JobControlRequest
+    let scanProgress: LibrarySlimmingScanProgress?
     let progress: JobProgress
     let attempts: Int
     let maxAttempts: Int
@@ -266,14 +267,14 @@ struct LibrarySlimmingAnalysisJobPresentation: Identifiable, Equatable, Sendable
         else {
             return nil
         }
-        guard let mapped = LibrarySlimmingJobProgressPresentation.scanProgress(
+        guard let mapped = scanProgress ?? LibrarySlimmingJobProgressPresentation.scanProgress(
             completed: progress.completed,
             progressTotal: progressTotal,
             memberCount: memberCount
         ) else {
             return nil
         }
-        return "\(mapped.completed)/\(mapped.total)"
+        return mapped.caption
     }
 
     var createdCaption: String {
@@ -287,6 +288,7 @@ struct LibrarySlimmingAnalysisJobPresentation: Identifiable, Equatable, Sendable
         mediaKind = summary.mediaKind
         state = summary.state
         controlRequest = summary.controlRequest
+        scanProgress = summary.scanProgress
         progress = summary.progress
         attempts = summary.attempts
         maxAttempts = summary.maxAttempts
@@ -555,6 +557,8 @@ struct LibrarySlimmingWorkspaceView: View {
             action: handlePreviewNavigationKeyPress
         )
         .onKeyPress(.delete, action: handleMoveToRecycleKeyPress)
+        // macOS Backspace can arrive as DEL (U+007F), distinct from .delete (U+0008).
+        .onKeyPress(KeyEquivalent("\u{7F}"), action: handleMoveToRecycleKeyPress)
         .onKeyPress(.deleteForward, action: handleMoveToRecycleKeyPress)
         .task {
             await model.refreshLibrarySlimmingAnalysisJobs()
@@ -1035,6 +1039,9 @@ struct LibrarySlimmingWorkspaceView: View {
     }
 
     private func handleMoveToRecycleKeyPress() -> KeyPress.Result {
+        let responder = NSApp.keyWindow?.firstResponder
+        guard !(responder is NSTextView), !(responder is NSTextField)
+        else { return .ignored }
         if model.librarySlimmingPreviewAssetID != nil {
             requestFastDeleteFromPreview()
             return .handled
@@ -2943,13 +2950,13 @@ private struct SlimmingThumbnailCell: View {
                             ProgressView()
                                 .controlSize(.small)
                                 .tint(.white)
-                            Text("正在移动")
+                            Text("正在处理")
                                 .font(.caption2.weight(.semibold))
                                 .foregroundStyle(.white)
                         }
                     }
                     .accessibilityElement(children: .combine)
-                    .accessibilityLabel("正在安全移入回收站")
+                    .accessibilityLabel("正在处理删除或回收，请等待结果")
                 }
             }
         }

@@ -56,7 +56,8 @@ struct GRDBJobQueue: JobQueue, Sendable {
                 db,
                 sql: """
                 SELECT id, source_id, kind, state, control_request,
-                       progress_completed, progress_total
+                       progress_completed, progress_total, checkpoint,
+                       attempts, max_attempts, not_before_ms, last_error_code
                 FROM job
                 ORDER BY
                     CASE
@@ -74,16 +75,32 @@ struct GRDBJobQueue: JobQueue, Sendable {
                     throw JobQueueError.unknownPersistedRawValue(field: "id", value: rawID)
                 }
                 let rawSourceID: String? = row["source_id"]
+                let kind = JobActivityKind(persistedKind: row["kind"])
+                let checkpointData: Data? = row["checkpoint"]
+                let checkpoint = kind == .librarySlimmingAnalysis ? checkpointData.flatMap {
+                    try? JSONDecoder().decode(LibrarySlimmingAnalysisJobFactory.Checkpoint.self, from: $0)
+                } : nil
+                let total: Int? = row["progress_total"]
+                let rawLastErrorCode: String? = row["last_error_code"]
                 return JobActivityItem(
                     id: id,
                     sourceID: rawSourceID.flatMap(UUID.init(uuidString:)),
-                    kind: JobActivityKind(persistedKind: row["kind"]),
+                    kind: kind,
                     state: try JobPersistenceMapping.jobState(from: row["state"]),
                     controlRequest: try JobPersistenceMapping.controlRequest(from: row["control_request"]),
                     progress: JobProgress(
                         completed: row["progress_completed"],
-                        total: row["progress_total"]
-                    )
+                        total: total
+                    ),
+                    progressDetail: checkpoint?.presentation(
+                        memberCount: max(0, ((total ?? 1) - 1) / 2)
+                    ).caption,
+                    attempts: row["attempts"],
+                    maxAttempts: row["max_attempts"],
+                    notBeforeMs: row["not_before_ms"],
+                    lastErrorCode: try rawLastErrorCode.map {
+                        try JobSafeErrorCode(persisted: $0)
+                    }
                 )
             }
         }
@@ -257,6 +274,24 @@ struct GRDBJobQueue: JobQueue, Sendable {
                     nowMs,
                 ]
             ) ?? false
+        }
+    }
+
+    func nextCatalogReconcileRetryAtMs() throws -> Int64? {
+        try database.pool.read { db in
+            try Int64.fetchOne(
+                db,
+                sql: """
+                SELECT MIN(not_before_ms) FROM job
+                WHERE kind IN (?, ?)
+                    AND state = 'retryableFailed'
+                    AND attempts < max_attempts
+                """,
+                arguments: [
+                    FolderReconcileJobFactory.kind,
+                    PhotosReconcileJobFactory.kind,
+                ]
+            )
         }
     }
 

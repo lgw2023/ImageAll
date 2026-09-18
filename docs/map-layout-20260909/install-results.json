@@ -1,0 +1,8 @@
+{
+  "app": "/Volumes/SSD1/Xcode/DerivedData/Build/Products/Debug/ImageAll.app",
+  "backup": "/Volumes/SSD1/ImageAll/.build/map-header-live-backup/ImageAll.app",
+  "preservedPreviousApp": "/Volumes/SSD1/Xcode/DerivedData/Build/Products/Debug/ImageAll.before-map-header.app",
+  "build": "BUILD SUCCEEDED",
+  "signatureVerified": true,
+  "installedHashesMatchBuild": true
+}

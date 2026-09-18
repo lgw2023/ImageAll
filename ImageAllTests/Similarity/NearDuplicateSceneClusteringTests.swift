@@ -390,6 +390,26 @@ final class NearDuplicateSceneClusteringTests: XCTestCase {
         XCTAssertEqual(mapped?.total, memberCount)
     }
 
+    func testFinalJobUnitDoesNotClaimClusteringIsComplete() {
+        let progress = LibrarySlimmingJobProgressPresentation.scanProgress(
+            completed: 25_348, progressTotal: 25_349, memberCount: 12_674
+        )
+        XCTAssertEqual(progress?.completed, 0)
+        XCTAssertEqual(progress?.fraction, 0)
+    }
+
+    func testLegacyCompletionPassCheckpointShowsActualPhaseDespiteProgressFloor() throws {
+        let data = Data(#"{"phase":"vectors","nextOrdinal":16,"completionPass":3,"completedFloor":25348}"#.utf8)
+        let checkpoint = try LibrarySlimmingAnalysisJobFactory.decodeCheckpoint(
+            JobCheckpoint(version: 1, data: data)
+        )
+        let progress = checkpoint.presentation(memberCount: 12_674)
+        XCTAssertEqual(progress.phase, .loadingFeaturePrints)
+        XCTAssertEqual(progress.completed, 16)
+        XCTAssertEqual(progress.caption, "第 3 轮 · 加载 Feature Print 16/12674")
+        XCTAssertNil(checkpoint.scanProgress)
+    }
+
     func testAnalysisJobPresentationShowsCurrentAndMaximumAttemptCount() {
         let presentation = LibrarySlimmingAnalysisJobPresentation(
             LibrarySlimmingAnalysisJobSummary(

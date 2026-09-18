@@ -131,6 +131,17 @@ struct PhotosLibraryChangeObserverCoordinator: Sendable {
             return
         }
 
+        // PhotoKit availability observation is transition-based. When ImageAll
+        // launches after the system library has already become unavailable, no
+        // new callback is guaranteed, so suspend the source before registering
+        // observers or queueing catch-up work.
+        if availabilityObserver?.currentUnavailabilityReason() != nil {
+            let didSuspendSource = suspendActivePhotosSource()
+            stopObserving()
+            if didSuspendSource { changeRelay.notify() }
+            return
+        }
+
         let enqueuer = PhotosReconcileJobEnqueuer(clock: clock, idGenerator: idGenerator)
         observer.startObservingChanges {
             let didRecordChange = (try? database.pool.write { db in
@@ -173,41 +184,7 @@ struct PhotosLibraryChangeObserverCoordinator: Sendable {
         }) == true
         if didQueueCatchUp { changeRelay.notify() }
         availabilityObserver?.startObservingAvailability { _ in
-            let didSuspendSource = (try? database.pool.write { db in
-                guard let sourceID = try String.fetchOne(
-                    db,
-                    sql: """
-                    SELECT id FROM source
-                    WHERE kind = 'photos' AND state = 'active'
-                    ORDER BY created_at_ms, id LIMIT 1
-                    """
-                ) else { return false }
-                try db.execute(
-                    sql: """
-                    UPDATE source SET state = 'unavailable', updated_at_ms = ?
-                    WHERE id = ? AND kind = 'photos' AND state = 'active'
-                    """,
-                    arguments: [clock.nowMs, sourceID]
-                )
-                try db.execute(
-                    sql: """
-                    UPDATE job SET
-                        state = 'cancelled', control_request = 'none',
-                        lease_owner = NULL, lease_expires_at_ms = NULL, updated_at_ms = ?
-                    WHERE source_id = ? AND kind = ?
-                        AND state IN ('pending', 'paused', 'retryableFailed')
-                    """,
-                    arguments: [clock.nowMs, sourceID, PhotosReconcileJobFactory.kind]
-                )
-                try db.execute(
-                    sql: """
-                    UPDATE job SET control_request = 'cancel', updated_at_ms = ?
-                    WHERE source_id = ? AND kind = ? AND state = 'running'
-                    """,
-                    arguments: [clock.nowMs, sourceID, PhotosReconcileJobFactory.kind]
-                )
-                return true
-            }) == true
+            let didSuspendSource = suspendActivePhotosSource()
             if didSuspendSource { changeRelay.notify() }
         }
     }
@@ -220,6 +197,44 @@ struct PhotosLibraryChangeObserverCoordinator: Sendable {
     private func stopObserving() {
         observer.stopObservingChanges()
         availabilityObserver?.stopObservingAvailability()
+    }
+
+    private func suspendActivePhotosSource() -> Bool {
+        (try? database.pool.write { db in
+            guard let sourceID = try String.fetchOne(
+                db,
+                sql: """
+                SELECT id FROM source
+                WHERE kind = 'photos' AND state = 'active'
+                ORDER BY created_at_ms, id LIMIT 1
+                """
+            ) else { return false }
+            try db.execute(
+                sql: """
+                UPDATE source SET state = 'unavailable', updated_at_ms = ?
+                WHERE id = ? AND kind = 'photos' AND state = 'active'
+                """,
+                arguments: [clock.nowMs, sourceID]
+            )
+            try db.execute(
+                sql: """
+                UPDATE job SET
+                    state = 'cancelled', control_request = 'none',
+                    lease_owner = NULL, lease_expires_at_ms = NULL, updated_at_ms = ?
+                WHERE source_id = ? AND kind = ?
+                    AND state IN ('pending', 'paused', 'retryableFailed')
+                """,
+                arguments: [clock.nowMs, sourceID, PhotosReconcileJobFactory.kind]
+            )
+            try db.execute(
+                sql: """
+                UPDATE job SET control_request = 'cancel', updated_at_ms = ?
+                WHERE source_id = ? AND kind = ? AND state = 'running'
+                """,
+                arguments: [clock.nowMs, sourceID, PhotosReconcileJobFactory.kind]
+            )
+            return true
+        }) == true
     }
 }
 
@@ -243,20 +258,24 @@ struct PhotosLibraryConnectionService: Sendable {
 
     func connect() async throws -> ConnectPhotosOutcome {
         do {
-            let requiresExplicitRebind = try await database.pool.read { db in
+            let requiresExplicitSourceAction = try await database.pool.read { db in
                 try Bool.fetchOne(
                     db,
                     sql: """
                     SELECT EXISTS(
-                        SELECT 1 FROM source WHERE kind = 'photos' AND state = 'unavailable'
+                        SELECT 1 FROM source
+                        WHERE kind = 'photos' AND state IN ('unavailable', 'disabled')
                     )
                     AND NOT EXISTS(
-                        SELECT 1 FROM source WHERE kind = 'photos' AND state != 'unavailable'
+                        SELECT 1 FROM source
+                        WHERE kind = 'photos' AND state IN ('active', 'authorizationRequired')
                     )
                     """
                 ) ?? false
             }
-            guard !requiresExplicitRebind else { throw PhotosLibraryError.libraryUnavailable }
+            guard !requiresExplicitSourceAction else {
+                throw PhotosLibraryError.libraryUnavailable
+            }
         } catch let error as PhotosLibraryError {
             throw error
         } catch {
@@ -288,12 +307,11 @@ struct PhotosLibraryConnectionService: Sendable {
                     db,
                     sql: """
                     SELECT id FROM source
-                    WHERE kind = 'photos' AND state != 'unavailable'
+                    WHERE kind = 'photos' AND state IN ('active', 'authorizationRequired')
                     ORDER BY
                         CASE state
                             WHEN 'active' THEN 0
                             WHEN 'authorizationRequired' THEN 1
-                            ELSE 2
                         END,
                         created_at_ms DESC,
                         id

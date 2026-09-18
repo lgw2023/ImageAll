@@ -2532,6 +2532,10 @@ struct ProductionLibraryWorkspaceService:
         try queue.hasBlockingReconcileWork(nowMs: clock.nowMs)
     }
 
+    func nextCatalogReconcileRetryAtMs() throws -> Int64? {
+        try queue.nextCatalogReconcileRetryAtMs()
+    }
+
     func sourceIsReconcileClean(sourceID: UUID) throws -> Bool {
         try queue.isSourceReconcileClean(sourceID: sourceID)
     }
@@ -2576,6 +2580,7 @@ struct ProductionLibraryWorkspaceService:
 
     func runPendingReconcileJobs(sourceIDs: Set<UUID>?) throws {
         defer { try? folderSourceMonitor.synchronize() }
+        try queue.settleRetryableJobs()
         let claim = ClaimNextInput(
             owner: "imageall-reconcile-\(UUID().uuidString.lowercased())",
             leaseDurationMs: FolderReconcileJobFactory.leaseDurationMs,
@@ -2592,6 +2597,7 @@ struct ProductionLibraryWorkspaceService:
     }
 
     func runPendingPhotosReconcileJobs(sourceIDs: Set<UUID>?) throws {
+        try queue.settleRetryableJobs()
         let claim = ClaimNextInput(
             owner: "imageall-photos-reconcile-\(UUID().uuidString.lowercased())",
             leaseDurationMs: 60_000,
@@ -2599,9 +2605,11 @@ struct ProductionLibraryWorkspaceService:
             allowedSourceIDs: sourceIDs
         )
         while let result = try executionCoordinator.claimAndExecuteOnce(claim) {
+            let expectedUnavailableSettlement = result.snapshot.state == .terminalFailed
+                && result.snapshot.lastErrorCode == .photosSourceUnavailable
             guard result.snapshot.state == .completed
                     || result.snapshot.state == .cancelled
-            else {
+                    || expectedUnavailableSettlement else {
                 throw ProductionLibraryWorkspaceError.reconcileFailed
             }
         }

@@ -124,9 +124,9 @@ extension SuggestionGenerationMethod {
 enum SuggestionScoreThresholdMethodPresentation {
     static func displayName(_ method: SuggestionScoreThresholdMethod) -> String {
         switch method {
-        case .featureKnn: "特征向量"
-        case .personalCentroid: "个人模型"
-        case .personalAdamW: "超级个人模型"
+        case .featureKnn: "正反样本对比"
+        case .personalCentroid: "样本匹配模型"
+        case .personalAdamW: "学习识别模型"
         }
     }
 }

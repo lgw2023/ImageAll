@@ -13792,7 +13792,7 @@ function renderSourceActionsMenu() {
   const accessAuthorizationTargets = sources.filter((source) => (
     source.kind === "folder"
       ? ["unavailable", "authorizationRequired"].includes(source.state)
-      : ["authorizationRequired", "disabled"].includes(source.state)
+      : source.state === "authorizationRequired"
   ));
   const mutationAuthorizationTargets = sources.filter(
     (source) => source.kind === "folder" && source.state === "active"
@@ -15267,8 +15267,8 @@ function moveDialogButtonFocus(event, dialog) {
 
 function sourceManagementActionLabel(action, source = null, { emptyState = false } = {}) {
   if (action === "reauthorize" && source?.kind === "photos") {
-    if (emptyState) return "重新检查并同步";
     if (source.state === "disabled") return "重新启用…";
+    if (emptyState) return "重新检查并同步";
   }
   return {
     refreshAll: "更新全部来源",
@@ -16350,7 +16350,7 @@ function renderSourceManagement({ preserveContent = false, reconcileContent = tr
   const accessAuthorizationTargets = (snapshot?.sources || []).filter((source) => (
     source.kind === "folder"
       ? ["unavailable", "authorizationRequired"].includes(source.state)
-      : ["authorizationRequired", "disabled"].includes(source.state)
+      : source.state === "authorizationRequired"
   ));
   const mutationAuthorizationTargets = (snapshot?.sources || []).filter(
     (source) => source.kind === "folder" && source.state === "active"
@@ -16813,6 +16813,17 @@ function requestSourceManagementAction(action, sourceID) {
       tone: "danger",
     },
   };
+  if (action === "reauthorize"
+    && source?.kind === "photos"
+    && source.state === "disabled") {
+    confirmations.reauthorize = {
+      eyebrow: "REACTIVATE SOURCE",
+      title: `重新启用“${sourceName}”？`,
+      message: "这会恢复 Apple Photos 自动观察与后台同步。普通连接和批量重新授权不会重新启用已停用来源。",
+      actionLabel: "重新启用并同步",
+      tone: "warning",
+    };
+  }
   const confirmation = confirmations[action];
   if (!confirmation) {
     submitSourceManagementAction(action, sourceID || null);
@@ -43645,7 +43656,7 @@ function availableCommands() {
       disabled: !state.online || !state.sources.some((source) => (
         source.kind === "folder"
           ? ["unavailable", "authorizationRequired"].includes(source.state)
-          : ["authorizationRequired", "disabled"].includes(source.state)
+          : source.state === "authorizationRequired"
       )),
     },
     {

@@ -941,11 +941,10 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         samples: (accepted: Int, rejected: Int),
         job: JobRecordSnapshot?
     ) -> SuggestionTaskPresentation {
-        if samples.accepted < 2 || samples.rejected < 2 {
-            return .notReady
-        }
+        // A tag can start with accepted samples alone. Negative requirements belong
+        // only to featureKnn; an existing job must retain its actual state.
         guard let job else {
-            return .ready
+            return samples.accepted >= 2 ? .ready : .notReady
         }
         switch job.state {
         case .pending:

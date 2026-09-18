@@ -7,6 +7,56 @@ import XCTest
 @testable import ImageAll
 
 final class FullLibrarySuggestionsJobTests: XCTestCase {
+    func testPositiveOnlyReadinessKeepsContrastGateAndExistingJobState() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 8)
+        let queue = JobTestSupport.makeQueue(database: fixture.database)
+        let handler = makeHandler(
+            database: fixture.database,
+            loader: StubSyncFeatureVectorLoader(database: fixture.database, vectors: [:]),
+            queue: queue
+        )
+        let service = PersonalizationReviewService(
+            database: fixture.database,
+            queue: queue,
+            executionCoordinator: makeCoordinator(database: fixture.database, handler: handler, queue: queue),
+            tags: fixture.tags,
+            clock: FixedJobClock(nowMs: DatabaseTestSupport.timestampMs)
+        )
+        try fixture.database.pool.write { db in
+            try db.execute(
+                sql: "DELETE FROM asset_tag_decision WHERE tag_id = ? AND decision = 'rejected'",
+                arguments: [fixture.tagID.uuidString.lowercased()]
+            )
+        }
+        for rejectedCount in 0...2 {
+            if rejectedCount > 0 {
+                try seedDecisions(database: fixture.database, tagID: fixture.tagID,
+                                  accepted: [], rejected: [fixture.negativeIDs[rejectedCount - 1]])
+            }
+            let overview = try XCTUnwrap(service.tagOverviews().first { $0.id == fixture.tagID })
+            XCTAssertEqual(overview.rejectedSampleCount, rejectedCount)
+            XCTAssertEqual(overview.taskStatus, .ready)
+            XCTAssertTrue(overview.canGeneratePersonalModel)
+            XCTAssertEqual(overview.canGenerate || overview.canUpdate, rejectedCount == 2)
+            if rejectedCount < 2 {
+                XCTAssertThrowsError(try service.enqueueFullLibrarySuggestions(
+                    tagID: fixture.tagID, mode: .generate, sourceIDs: nil
+                )) { error in
+                    XCTAssertEqual(error as? PersonalizationReviewError,
+                                   .insufficientSamples(positiveMissing: 0, negativeMissing: 2 - rejectedCount))
+                }
+            }
+        }
+        _ = try service.enqueueFullLibrarySuggestions(tagID: fixture.tagID, mode: .generate, sourceIDs: nil)
+        try fixture.database.pool.write { db in
+            try db.execute(sql: "DELETE FROM asset_tag_decision WHERE tag_id = ?",
+                           arguments: [fixture.tagID.uuidString.lowercased()])
+        }
+        let active = try XCTUnwrap(service.tagOverviews().first { $0.id == fixture.tagID })
+        XCTAssertEqual(active.taskStatus, .waiting)
+        XCTAssertTrue(active.canCancel)
+    }
+
     func testFrozenAssetProcessingContextBatchUsesOneReadAndBeatsPerAssetReads() throws {
         let fixture = try makeLargeLibraryFixture(assetCount: 128)
         let assetIDs = try fixture.database.pool.read { db in

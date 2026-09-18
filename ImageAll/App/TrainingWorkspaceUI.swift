@@ -213,7 +213,7 @@ struct TrainingWorkspaceView: View {
         .accessibilityLabel(
             "三种训练产物状态，\(publishedTrainingSlotCount) 个已就绪"
         )
-        .persistentHelp("查看相似照片、快速个人模型和增强个人模型的发布状态。")
+        .persistentHelp("查看相似照片、样本匹配模型和学习识别模型的发布状态。")
     }
 
     private func trainingSlotStatusTitle(
@@ -289,7 +289,7 @@ struct TrainingWorkspaceView: View {
                     )
                 ) {
                     Text("全部记录").tag(Optional<TrainingRunMethod>.none)
-                    ForEach(TrainingRunMethod.allCases, id: \.self) { method in
+                    ForEach([TrainingRunMethod.personalCentroid, .personalAdamW, .featureKnn], id: \.self) { method in
                         Text(
                             TrainingWorkspaceMethodPresentation(
                                 method: method,
@@ -537,14 +537,14 @@ private struct TrainingWorkspaceLaunchSheet: View {
         }
         let personalOptions = model.suggestionOverviews.filter(\.canGeneratePersonalModel)
         let initialMethod: TrainingRunMethod
-        if !featureOptions.isEmpty, !model.activeReviewSources.isEmpty {
-            initialMethod = .featureKnn
-        } else if model.supportsPersonalModelRebuild, !personalOptions.isEmpty {
+        if model.supportsPersonalModelRebuild, !personalOptions.isEmpty {
             initialMethod = .personalCentroid
         } else if model.supportsPersonalAdamWModelRebuild, !personalOptions.isEmpty {
             initialMethod = .personalAdamW
-        } else {
+        } else if !featureOptions.isEmpty, !model.activeReviewSources.isEmpty {
             initialMethod = .featureKnn
+        } else {
+            initialMethod = .personalCentroid
         }
 
         _selectedMethod = State(initialValue: initialMethod)
@@ -688,7 +688,7 @@ private struct TrainingWorkspaceLaunchSheet: View {
             Text("任务类型")
                 .font(.headline)
             VStack(spacing: 10) {
-                ForEach(TrainingRunMethod.allCases, id: \.self) { method in
+                ForEach([TrainingRunMethod.personalCentroid, .personalAdamW, .featureKnn], id: \.self) { method in
                     methodSidebarCard(method)
                 }
             }
@@ -962,7 +962,7 @@ private struct TrainingWorkspaceLaunchSheet: View {
             if model.activeReviewSources.isEmpty {
                 return "需要至少一个可用\(model.selectedMediaKind.displayName)来源"
             }
-            return "需要至少 2 个属于、2 个不属于"
+            return "仅此可选方法需要至少 2 张确认、2 张拒绝样本"
         case .personalCentroid, .personalAdamW:
             if personalOptions.isEmpty {
                 return "需要至少一个有 2 个已确认\(model.selectedMediaKind.displayName)样本的标签"
@@ -1235,9 +1235,9 @@ struct TrainingWorkspaceInspectorView: View {
             Text("样本门槛")
                 .font(.subheadline.weight(.semibold))
             Text(
-                "相似\(model.selectedMediaKind.displayName)：每个标签至少 2 个属于、2 个不属于。"
+                "正反样本对比（可选）：每个标签至少 2 张确认、2 张拒绝样本。"
             )
-            Text("快速与增强个人模型：每个标签至少 2 个已确认样本。")
+            Text("样本匹配与学习识别模型：每个标签至少 2 个已确认样本，无需拒绝样本。")
             Text("训练结果不会覆盖人工标签；三种建议可以在待审核区同时出现。")
                 .foregroundStyle(.secondary)
         }
@@ -1261,8 +1261,8 @@ struct TrainingWorkspaceMethodPresentation: Equatable {
         case .featureKnn:
             Self(
                 method: method,
-                title: "为标签寻找相似\(mediaKind.displayName)",
-                shortTitle: "相似\(mediaKind.displayName)",
+                title: "正反样本对比（可选）",
+                shortTitle: "正反样本对比",
                 technicalName: "特征向量近邻",
                 detail: "用已确认属于和不属于该标签的\(mediaKind.displayName)作参考，找出新的相似\(mediaKind.displayName)并送去审核。",
                 requirement: "每个标签至少 2 个属于、2 个不属于",
@@ -1271,21 +1271,21 @@ struct TrainingWorkspaceMethodPresentation: Equatable {
         case .personalCentroid:
             Self(
                 method: method,
-                title: "更新快速个人模型",
-                shortTitle: "快速个人模型",
+                title: "更新样本匹配模型",
+                shortTitle: "样本匹配模型",
                 technicalName: "质心模型",
-                detail: "为每个选中标签单独训练一个快速个人模型；互不影响，可单独回滚。",
-                requirement: "每个标签至少 2 个已确认样本",
+                detail: "将每个标签的已确认照片归纳为代表样本，用于寻找匹配照片；标签互不影响，可单独回滚。",
+                requirement: "每个标签至少 2 个已确认样本；无需拒绝样本",
                 systemImage: "brain.head.profile"
             )
         case .personalAdamW:
             Self(
                 method: method,
-                title: "训练增强个人模型",
-                shortTitle: "增强个人模型",
+                title: "训练学习识别模型",
+                shortTitle: "学习识别模型",
                 technicalName: "AdamW 线性模型",
-                detail: "为每个选中标签单独做更充分的本机训练；标签之间互不影响。",
-                requirement: "每个标签至少 2 个已确认样本",
+                detail: "用已确认照片在本机训练分类模型，识别可能属于该标签的照片；标签之间互不影响。",
+                requirement: "每个标签至少 2 个已确认样本；无需拒绝样本",
                 systemImage: "brain.head.profile.fill"
             )
         }

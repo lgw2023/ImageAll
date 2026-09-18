@@ -1,5 +1,11 @@
 import Foundation
 import GRDB
+import OSLog
+
+private let photosReconcileLogger = Logger(
+    subsystem: "com.gwlee.ImageAll",
+    category: "PhotosReconcile"
+)
 
 private struct PhotosReconcilePayload: Sendable {
     let sourceID: UUID
@@ -313,6 +319,57 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
             return failure(.photosCheckpointInvalid, checkpoint: checkpoint, completed: persistedCompleted)
         } catch PhotosReconcileError.sourceUnavailable {
             return failure(.photosSourceUnavailable, checkpoint: checkpoint, completed: persistedCompleted)
+        } catch PhotosLibraryError.libraryUnavailable {
+            photosReconcileLogger.error("Photos library unavailable during reconcile")
+            let recoveryCheckpoint = (try? currentState?.jobCheckpoint) ?? checkpoint
+            let recoveryProgress = JobProgress(
+                completed: currentState?.processedCount ?? persistedCompleted,
+                total: persistedProgress.total
+            )
+            guard let sourceID else {
+                return failure(
+                    .photosSourceUnavailable,
+                    checkpoint: recoveryCheckpoint,
+                    completed: recoveryProgress.completed
+                )
+            }
+            do {
+                let snapshot = try queue.commitLeaseProtectedBatch(
+                    input: SafeBatchCommitInput(
+                        lease: lease,
+                        outcome: .nonRetryableFailure(code: .photosSourceUnavailable),
+                        checkpoint: recoveryCheckpoint,
+                        progress: recoveryProgress,
+                        leaseDurationMs: context.leaseDurationMs
+                    )
+                ) { db in
+                    try db.execute(
+                        sql: """
+                        UPDATE source SET state = 'unavailable', updated_at_ms = ?
+                        WHERE id = ? AND kind = 'photos' AND state = 'active'
+                        """,
+                        arguments: [clock.nowMs, sourceID.uuidString.lowercased()]
+                    )
+                }
+                return JobHandlerExecutionResult(
+                    outcome: snapshot.state == .cancelled
+                        ? .completed
+                        : .nonRetryableFailure(code: .photosSourceUnavailable),
+                    checkpoint: snapshot.checkpoint,
+                    progress: snapshot.progress,
+                    settledByHandler: true
+                )
+            } catch {
+                let error = error as NSError
+                photosReconcileLogger.error(
+                    "Failed to settle unavailable Photos source: domain=\(error.domain, privacy: .public) code=\(error.code)"
+                )
+                return retryableFailure(
+                    .photosPersistenceFailure,
+                    checkpoint: recoveryCheckpoint,
+                    completed: recoveryProgress.completed
+                )
+            }
         } catch PhotosLibraryError.authorizationDenied, PhotosLibraryError.authorizationRestricted {
             do {
                 if let sourceID {
@@ -335,6 +392,10 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
             }
             return failure(.photosAuthorizationRequired, checkpoint: checkpoint, completed: persistedCompleted)
         } catch {
+            let error = error as NSError
+            photosReconcileLogger.error(
+                "Unexpected Photos reconcile failure: domain=\(error.domain, privacy: .public) code=\(error.code)"
+            )
             let recoveryCheckpoint = (try? currentState?.jobCheckpoint) ?? checkpoint
             return retryableFailure(
                 .photosPersistenceFailure,

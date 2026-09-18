@@ -165,6 +165,44 @@ final class PhotosIntegrationTests: XCTestCase {
         XCTAssertFalse(batch.deletedLocalIdentifiers.contains("photos-unresolved-update"))
     }
 
+    func testPersistentChangeErrorMappingOnlyTreatsHistoryErrorsAsInvalidTokens() {
+        let expiredToken = NSError(
+            domain: PHPhotosErrorDomain,
+            code: PHPhotosError.Code.persistentChangeTokenExpired.rawValue
+        )
+        let unavailableBackend = NSError(
+            domain: PHPhotosErrorDomain,
+            code: 41_015,
+            userInfo: [
+                NSUnderlyingErrorKey: NSError(
+                    domain: NSCocoaErrorDomain,
+                    code: 134_060
+                ),
+            ]
+        )
+
+        XCTAssertEqual(
+            PhotoKitPhotosLibraryAdapter.mapPersistentChangeError(expiredToken),
+            .changeTokenInvalid
+        )
+        XCTAssertEqual(
+            PhotoKitPhotosLibraryAdapter.mapPersistentChangeError(unavailableBackend),
+            .libraryUnavailable
+        )
+        XCTAssertEqual(
+            PhotoKitPhotosLibraryAdapter.mapPersistentChangeError(
+                NSError(domain: NSCocoaErrorDomain, code: 134_060)
+            ),
+            .libraryUnavailable
+        )
+        XCTAssertEqual(
+            PhotoKitPhotosLibraryAdapter.mapPersistentChangeError(
+                PhotosLibraryError.persistenceFailure
+            ),
+            .persistenceFailure
+        )
+    }
+
     func testReconnectPreservesSyncCursorForIncrementalSync() async throws {
         let database = try FolderAuthorizationTestSupport.makeDatabase()
         let access = FakePhotosLibraryAccess(state: .authorized)
@@ -199,6 +237,86 @@ final class PhotosIntegrationTests: XCTestCase {
             )
         }
         XCTAssertEqual(cursor, token)
+    }
+
+    func testDisabledSourceRequiresExplicitReactivationBeforeSyncIsEnqueued() async throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let sourceID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let jobID = UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!
+        let originalUpdatedAtMs = DatabaseTestSupport.timestampMs
+        let reactivationTimeMs = originalUpdatedAtMs + 1_000
+        try await database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO source (
+                    id, kind, display_name, bookmark, state,
+                    created_at_ms, updated_at_ms
+                ) VALUES (?, 'photos', 'Apple Photos', NULL, 'disabled', ?, ?)
+                """,
+                arguments: [
+                    sourceID.uuidString.lowercased(),
+                    originalUpdatedAtMs,
+                    originalUpdatedAtMs,
+                ]
+            )
+        }
+        let service = PhotosLibraryConnectionService(
+            database: database,
+            access: FakePhotosLibraryAccess(state: .authorized),
+            clock: FixedJobClock(nowMs: reactivationTimeMs),
+            idGenerator: IDSequence([jobID]).next
+        )
+
+        do {
+            _ = try await service.connect()
+            XCTFail("Expected a disabled source to require explicit reactivation")
+        } catch {
+            XCTAssertEqual(error as? PhotosLibraryError, .libraryUnavailable)
+        }
+
+        let blockedEvidence = try await database.pool.read { db in
+            (
+                state: try String.fetchOne(
+                    db,
+                    sql: "SELECT state FROM source WHERE id = ?",
+                    arguments: [sourceID.uuidString.lowercased()]
+                ),
+                updatedAtMs: try Int64.fetchOne(
+                    db,
+                    sql: "SELECT updated_at_ms FROM source WHERE id = ?",
+                    arguments: [sourceID.uuidString.lowercased()]
+                ),
+                jobCount: try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM job")
+            )
+        }
+        XCTAssertEqual(blockedEvidence.state, SourceState.disabled.rawValue)
+        XCTAssertEqual(blockedEvidence.updatedAtMs, originalUpdatedAtMs)
+        XCTAssertEqual(blockedEvidence.jobCount, 0)
+
+        try service.reactivate(sourceID: sourceID)
+
+        let reactivatedEvidence = try await database.pool.read { db in
+            (
+                state: try String.fetchOne(
+                    db,
+                    sql: "SELECT state FROM source WHERE id = ?",
+                    arguments: [sourceID.uuidString.lowercased()]
+                ),
+                jobCount: try Int.fetchOne(
+                    db,
+                    sql: """
+                    SELECT COUNT(*) FROM job
+                    WHERE source_id = ? AND kind = ? AND state = 'pending'
+                    """,
+                    arguments: [
+                        sourceID.uuidString.lowercased(),
+                        PhotosReconcileJobFactory.kind,
+                    ]
+                )
+            )
+        }
+        XCTAssertEqual(reactivatedEvidence.state, SourceState.active.rawValue)
+        XCTAssertEqual(reactivatedEvidence.jobCount, 1)
     }
 
     func testSyncNowPreservesCursorAndFullRepairClearsCursor() async throws {
@@ -1165,6 +1283,151 @@ final class PhotosIntegrationTests: XCTestCase {
         XCTAssertEqual(evidence.assetAvailability, AssetAvailability.available.rawValue)
         XCTAssertEqual(evidence.activeJobs, 0)
         XCTAssertEqual(notifications.count, notificationsBeforeLoss + 1)
+    }
+
+    func testPhotoLibraryAlreadyUnavailableAtStartupSuspendsSourceBeforeObservation() async throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let sourceID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let assetID = UUID(uuidString: "33333333-4444-5555-6666-777777777777")!
+        let clock = FixedJobClock(nowMs: DatabaseTestSupport.timestampMs)
+        let connection = PhotosLibraryConnectionService(
+            database: database,
+            access: FakePhotosLibraryAccess(state: .authorized),
+            clock: clock,
+            idGenerator: IDSequence([
+                sourceID,
+                UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!,
+            ]).next
+        )
+        _ = try await connection.connect()
+        try await database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO asset (
+                    id, source_id, locator_kind, relative_path, photos_local_identifier,
+                    media_type, availability, record_created_at_ms, record_updated_at_ms, file_name
+                ) VALUES (?, ?, 'photos', NULL, 'photos-existing', 'public.jpeg',
+                          'available', ?, ?, 'Existing.jpg')
+                """,
+                arguments: [
+                    assetID.uuidString.lowercased(), sourceID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs, DatabaseTestSupport.timestampMs,
+                ]
+            )
+        }
+
+        let changes = FakePhotosChangeObserver()
+        let availability = FakePhotosAvailabilityObserver(currentReason: .other)
+        let notifications = PhotosObserverNotificationRecorder()
+        PhotosLibraryChangeObserverCoordinator(
+            observer: changes,
+            availabilityObserver: availability,
+            database: database,
+            clock: clock
+        ).start { notifications.record() }
+
+        let evidence = try await database.pool.read { db in
+            (
+                sourceState: try String.fetchOne(
+                    db,
+                    sql: "SELECT state FROM source WHERE id = ?",
+                    arguments: [sourceID.uuidString.lowercased()]
+                ),
+                assetAvailability: try String.fetchOne(
+                    db,
+                    sql: "SELECT availability FROM asset WHERE id = ?",
+                    arguments: [assetID.uuidString.lowercased()]
+                ),
+                activeJobs: try Int.fetchOne(
+                    db,
+                    sql: """
+                    SELECT COUNT(*) FROM job
+                    WHERE source_id = ? AND kind = ?
+                        AND state IN ('pending', 'running', 'paused', 'retryableFailed')
+                    """,
+                    arguments: [sourceID.uuidString.lowercased(), PhotosReconcileJobFactory.kind]
+                )
+            )
+        }
+        XCTAssertEqual(evidence.sourceState, SourceState.unavailable.rawValue)
+        XCTAssertEqual(evidence.assetAvailability, AssetAvailability.available.rawValue)
+        XCTAssertEqual(evidence.activeJobs, 0)
+        XCTAssertEqual(changes.startCount, 0)
+        XCTAssertEqual(availability.startCount, 0)
+        XCTAssertEqual(notifications.count, 1)
+    }
+
+    func testReconcileLibraryUnavailableSuspendsSourceWhenObserverMissedTransition() async throws {
+        let database = try FolderAuthorizationTestSupport.makeDatabase()
+        let sourceID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let assetID = UUID(uuidString: "33333333-4444-5555-6666-777777777777")!
+        let jobID = UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!
+        let clock = FixedJobClock(nowMs: DatabaseTestSupport.timestampMs)
+        let connection = PhotosLibraryConnectionService(
+            database: database,
+            access: FakePhotosLibraryAccess(state: .authorized),
+            clock: clock,
+            idGenerator: IDSequence([sourceID, jobID]).next
+        )
+        _ = try await connection.connect()
+        try await database.pool.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO asset (
+                    id, source_id, locator_kind, relative_path, photos_local_identifier,
+                    media_type, availability, record_created_at_ms, record_updated_at_ms, file_name
+                ) VALUES (?, ?, 'photos', NULL, 'photos-existing', 'public.jpeg',
+                          'available', ?, ?, 'Existing.jpg')
+                """,
+                arguments: [
+                    assetID.uuidString.lowercased(), sourceID.uuidString.lowercased(),
+                    DatabaseTestSupport.timestampMs, DatabaseTestSupport.timestampMs,
+                ]
+            )
+        }
+
+        let queue = GRDBJobQueue(
+            database: database,
+            clock: clock,
+            retryPolicy: FixedDelayRetryPolicy(delayMs: 1_000)
+        )
+        let handler = PhotosReconcileHandler(
+            database: database,
+            queue: queue,
+            access: UnavailablePhotosLibraryAccess(),
+            clock: clock
+        )
+        let coordinator = JobExecutionCoordinator(
+            queue: queue,
+            registry: MultiJobHandlerRegistry(handlers: [handler]),
+            leaseContextProvider: GRDBJobLeaseContextProvider(queue: queue)
+        )
+        let result = try coordinator.claimAndExecuteOnce(
+            ClaimNextInput(
+                owner: "photos-unavailable-fallback-test",
+                leaseDurationMs: 60_000,
+                allowedKinds: [PhotosReconcileJobFactory.kind]
+            )
+        )
+
+        let evidence = try await database.pool.read { db in
+            (
+                sourceState: try String.fetchOne(
+                    db,
+                    sql: "SELECT state FROM source WHERE id = ?",
+                    arguments: [sourceID.uuidString.lowercased()]
+                ),
+                assetAvailability: try String.fetchOne(
+                    db,
+                    sql: "SELECT availability FROM asset WHERE id = ?",
+                    arguments: [assetID.uuidString.lowercased()]
+                )
+            )
+        }
+        XCTAssertEqual(result?.snapshot.state, .terminalFailed)
+        XCTAssertEqual(result?.snapshot.lastErrorCode, .photosSourceUnavailable)
+        XCTAssertEqual(evidence.sourceState, SourceState.unavailable.rawValue)
+        XCTAssertEqual(evidence.assetAvailability, AssetAvailability.available.rawValue)
     }
 
     func testUnavailablePhotosSourceCannotBeSilentlyReactivatedByConnect() async throws {
@@ -2892,6 +3155,28 @@ private final class SuspendedPhotosAuthorizationAccess: PhotosLibraryAccessPort,
     }
 }
 
+private struct UnavailablePhotosLibraryAccess: PhotosLibraryAccessPort, Sendable {
+    func authorizationState() -> PhotosAuthorizationState { .authorized }
+    func requestAuthorization() async -> PhotosAuthorizationState { .authorized }
+    func supportedStaticImageCount() throws -> Int {
+        throw PhotosLibraryError.libraryUnavailable
+    }
+    func enumerateStaticImages(
+        startingAt _: Int,
+        batchSize _: Int,
+        onAssetEnumerated _: () throws -> Void,
+        onBatch _: (PhotosAssetEnumerationBatch) throws -> Void
+    ) throws {
+        throw PhotosLibraryError.libraryUnavailable
+    }
+    func requestLocalImage(
+        localIdentifier _: String,
+        variant _: PhotosImageVariant
+    ) async throws -> Data {
+        throw PhotosLibraryError.libraryUnavailable
+    }
+}
+
 private final class FakePhotosLibraryAccess: PhotosLibraryAccessPort, PhotosChangeHistoryPort, @unchecked Sendable {
     let state: PhotosAuthorizationState
     private let lock = NSLock()
@@ -2981,7 +3266,7 @@ private final class FakePhotosLibraryAccess: PhotosLibraryAccessPort, PhotosChan
             )
         }
         if configuration.1 {
-            throw PhotosLibraryError.libraryUnavailable
+            throw PhotosLibraryError.persistenceFailure
         }
     }
 
@@ -3270,6 +3555,15 @@ private final class FakePhotosAvailabilityObserver: PhotosLibraryAvailabilityObs
     private let lock = NSLock()
     private var onUnavailable: (@Sendable (PhotosLibraryUnavailabilityReason) -> Void)?
     private var storedStartCount = 0
+    private let currentReason: PhotosLibraryUnavailabilityReason?
+
+    init(currentReason: PhotosLibraryUnavailabilityReason? = nil) {
+        self.currentReason = currentReason
+    }
+
+    func currentUnavailabilityReason() -> PhotosLibraryUnavailabilityReason? {
+        currentReason
+    }
 
     func startObservingAvailability(
         _ onUnavailable: @escaping @Sendable (PhotosLibraryUnavailabilityReason) -> Void

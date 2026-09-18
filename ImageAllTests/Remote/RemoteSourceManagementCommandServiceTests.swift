@@ -286,7 +286,11 @@ final class RemoteSourceManagementCommandServiceTests: XCTestCase {
         XCTAssertEqual(terminal.completedSourceCount, 2)
         XCTAssertEqual(terminal.totalSourceCount, 2)
         XCTAssertEqual(workspace.reauthorizedFolderSourceIDs, [workspace.unavailableFolder.id])
-        XCTAssertEqual(workspace.reactivatedPhotosSourceIDs, [workspace.disabledPhotos.id])
+        XCTAssertEqual(
+            workspace.reactivatedPhotosSourceIDs,
+            [workspace.authorizationRequiredPhotos.id]
+        )
+        XCTAssertFalse(workspace.reactivatedPhotosSourceIDs.contains(workspace.disabledPhotos.id))
         XCTAssertTrue(terminal.message.contains("2 个来源"))
     }
 
@@ -1072,6 +1076,12 @@ private final class RemoteBatchAuthorizationWorkspaceStub:
         displayName: "Disabled Photos",
         state: .disabled
     )
+    let authorizationRequiredPhotos = LibrarySourceSummary(
+        id: UUID(),
+        kind: .photos,
+        displayName: "Photos Needs Access",
+        state: .authorizationRequired
+    )
     let firstActiveFolder = LibrarySourceSummary(
         id: UUID(),
         kind: .folder,
@@ -1096,7 +1106,13 @@ private final class RemoteBatchAuthorizationWorkspaceStub:
     }
 
     func fetchSources() throws -> [LibrarySourceSummary] {
-        [unavailableFolder, disabledPhotos, firstActiveFolder, secondActiveFolder]
+        [
+            unavailableFolder,
+            disabledPhotos,
+            authorizationRequiredPhotos,
+            firstActiveFolder,
+            secondActiveFolder,
+        ]
     }
 
     func reauthorizeFolder(sourceID: UUID) async throws -> ReauthorizeFolderOutcome {

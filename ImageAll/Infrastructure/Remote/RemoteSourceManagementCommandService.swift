@@ -518,7 +518,7 @@ actor RemoteSourceManagementCommandService: RemoteSourceManagementCommandPort {
         case .folder:
             source.state == .unavailable || source.state == .authorizationRequired
         case .photos:
-            source.state == .authorizationRequired || source.state == .disabled
+            source.state == .authorizationRequired
         }
     }
 

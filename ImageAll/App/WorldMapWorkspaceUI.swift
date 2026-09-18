@@ -243,6 +243,7 @@ struct WorldMapWorkspaceView: View {
     @State private var catalogRequestID = UUID()
     @State private var showPlaceResolution = false
     @State private var showLocationBackfill = false
+    @State private var mapControlsTopInset: CGFloat = 160
 
     init(
         model: LibraryWorkspaceModel,
@@ -288,9 +289,10 @@ struct WorldMapWorkspaceView: View {
                 clusters: clusters,
                 initialViewport: navigationState.viewport,
                 selectedClusterID: selectedClusterID,
+                controlsTopInset: mapControlsTopInset,
                 onEvent: receive
             )
-                .ignoresSafeArea()
+                // Keep the WebView and native overlays in the same content coordinates.
 
             LinearGradient(
                 colors: [Palette.paper.opacity(0.52), .clear, Palette.paper.opacity(0.30)],
@@ -301,6 +303,12 @@ struct WorldMapWorkspaceView: View {
 
             VStack(spacing: 0) {
                 heroOverlay
+                    .onGeometryChange(for: CGFloat.self) { proxy in
+                        proxy.size.height
+                    } action: { height in
+                        // Outer padding plus a gap below the measured native header.
+                        mapControlsTopInset = ceil(height + 22 + 12)
+                    }
                 Spacer()
                 footerOverlay
             }
@@ -1701,12 +1709,14 @@ private struct WorldMapWebView: NSViewRepresentable {
     let clusters: [WorldMapCluster]
     let initialViewport: WorldMapViewport?
     let selectedClusterID: String?
+    let controlsTopInset: CGFloat
     let onEvent: (WorldMapBridgeEvent) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
             clusters: clusters,
             selectedClusterID: selectedClusterID,
+            controlsTopInset: controlsTopInset,
             onEvent: onEvent
         )
     }
@@ -1757,6 +1767,7 @@ private struct WorldMapWebView: NSViewRepresentable {
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
+        context.coordinator.updateControlsTopInset(controlsTopInset, on: webView)
         context.coordinator.update(
             clusters: clusters,
             selectedClusterID: selectedClusterID,
@@ -1778,6 +1789,7 @@ private struct WorldMapWebView: NSViewRepresentable {
         weak var webView: WKWebView?
         private var clusters: [WorldMapCluster]
         private var selectedClusterID: String?
+        private var controlsTopInset: CGFloat
         private let onEvent: (WorldMapBridgeEvent) -> Void
         private var isReady = false
         private var revision = 0
@@ -1785,10 +1797,12 @@ private struct WorldMapWebView: NSViewRepresentable {
         init(
             clusters: [WorldMapCluster],
             selectedClusterID: String?,
+            controlsTopInset: CGFloat,
             onEvent: @escaping (WorldMapBridgeEvent) -> Void
         ) {
             self.clusters = clusters
             self.selectedClusterID = selectedClusterID
+            self.controlsTopInset = controlsTopInset
             self.onEvent = onEvent
         }
 
@@ -1819,6 +1833,7 @@ private struct WorldMapWebView: NSViewRepresentable {
             if case .ready = event {
                 isReady = true
                 if let webView {
+                    applyControlsTopInset(to: webView)
                     sendClusters(to: webView)
                 }
             }
@@ -1835,6 +1850,24 @@ private struct WorldMapWebView: NSViewRepresentable {
             withError error: Error
         ) {
             onEvent(.renderError(message: "本地地图页面无法打开：\(error.localizedDescription)"))
+        }
+
+        func updateControlsTopInset(_ inset: CGFloat, on webView: WKWebView) {
+            guard inset != controlsTopInset else { return }
+            controlsTopInset = inset
+            if isReady { applyControlsTopInset(to: webView) }
+        }
+
+        private func applyControlsTopInset(to webView: WKWebView) {
+            // The shared webpage cannot measure the SwiftUI header above it.
+            webView.evaluateJavaScript("""
+                (() => {
+                    document.documentElement.style.setProperty('--native-map-controls-top', '\(Int(controlsTopInset))px');
+                    document.querySelectorAll('.maplibregl-ctrl-top-right').forEach(control => {
+                        control.style.setProperty('top', '\(Int(controlsTopInset))px', 'important');
+                    });
+                })();
+                """)
         }
 
         private func sendClusters(to webView: WKWebView) {

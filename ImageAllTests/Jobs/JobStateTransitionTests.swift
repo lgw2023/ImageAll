@@ -371,6 +371,88 @@ final class JobStateTransitionTests: XCTestCase {
         XCTAssertEqual(item.kind, .folderReconcile)
     }
 
+    func testActivityProjectionPreservesRetryFailureMetadataAfterSettlement() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let queue = JobTestSupport.makeQueue(database: database)
+        let jobID = UUID()
+        let retryAtMs = JobTestSupport.baseTimeMs + 12_345
+        _ = try JobTestSupport.enqueueDefault(
+            queue: queue,
+            id: jobID,
+            kind: PhotosReconcileJobFactory.kind
+        )
+        try database.pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE job
+                SET attempts = 1, max_attempts = 5,
+                    not_before_ms = ?, last_error_code = ?, state = 'pending'
+                WHERE id = ?
+                """,
+                arguments: [
+                    retryAtMs,
+                    JobSafeErrorCode.photosPersistenceFailure.rawValue,
+                    jobID.uuidString.lowercased(),
+                ]
+            )
+        }
+
+        let item = try XCTUnwrap(queue.fetchActivityItems().first { $0.id == jobID })
+
+        XCTAssertEqual(item.attempts, 1)
+        XCTAssertEqual(item.maxAttempts, 5)
+        XCTAssertEqual(item.notBeforeMs, retryAtMs)
+        XCTAssertEqual(item.lastErrorCode, .photosPersistenceFailure)
+    }
+
+    func testCatalogRetryDeadlineQueriesAllEligibleReconcileJobs() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let queue = JobTestSupport.makeQueue(database: database)
+        let laterPhotosJobID = UUID()
+        let earlierFolderJobID = UUID()
+        let exhaustedJobID = UUID()
+        _ = try JobTestSupport.enqueueDefault(
+            queue: queue,
+            id: laterPhotosJobID,
+            kind: PhotosReconcileJobFactory.kind
+        )
+        _ = try JobTestSupport.enqueueDefault(
+            queue: queue,
+            id: earlierFolderJobID,
+            kind: FolderReconcileJobFactory.kind
+        )
+        _ = try JobTestSupport.enqueueDefault(
+            queue: queue,
+            id: exhaustedJobID,
+            kind: PhotosReconcileJobFactory.kind
+        )
+        try database.pool.write { db in
+            try db.execute(
+                sql: """
+                UPDATE job SET state = 'retryableFailed', attempts = 1,
+                    max_attempts = 5, not_before_ms = ? WHERE id = ?
+                """,
+                arguments: [5_000, laterPhotosJobID.uuidString.lowercased()]
+            )
+            try db.execute(
+                sql: """
+                UPDATE job SET state = 'retryableFailed', attempts = 1,
+                    max_attempts = 5, not_before_ms = ? WHERE id = ?
+                """,
+                arguments: [3_000, earlierFolderJobID.uuidString.lowercased()]
+            )
+            try db.execute(
+                sql: """
+                UPDATE job SET state = 'retryableFailed', attempts = 5,
+                    max_attempts = 5, not_before_ms = ? WHERE id = ?
+                """,
+                arguments: [1_000, exhaustedJobID.uuidString.lowercased()]
+            )
+        }
+
+        XCTAssertEqual(try queue.nextCatalogReconcileRetryAtMs(), 3_000)
+    }
+
     func testPendingRecycleExpiryActivityExplainsWhyItIsWaiting() {
         let item = JobActivityItem(
             id: UUID(),
@@ -385,6 +467,25 @@ final class JobStateTransitionTests: XCTestCase {
         XCTAssertEqual(
             JobActivityPresentation.progressText(for: item),
             "首批项目到期后自动清理"
+        )
+    }
+
+    func testPendingActivityWithPreviousFailureIsPresentedAsWaitingToRetry() {
+        let item = JobActivityItem(
+            id: UUID(),
+            kind: .photosReconcile,
+            state: .pending,
+            controlRequest: .none,
+            progress: JobProgress(completed: 0, total: nil),
+            attempts: 1,
+            maxAttempts: 5,
+            lastErrorCode: .photosPersistenceFailure
+        )
+
+        XCTAssertEqual(JobActivityPresentation.stateText(for: item), "等待重试")
+        XCTAssertEqual(
+            JobActivityPresentation.progressText(for: item),
+            "上次同步未完成：索引保存失败 · 已尝试 1 / 5 次"
         )
     }
 

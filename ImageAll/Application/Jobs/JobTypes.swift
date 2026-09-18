@@ -177,6 +177,11 @@ struct JobActivityItem: Identifiable, Sendable, Equatable {
     let state: JobState
     let controlRequest: JobControlRequest
     let progress: JobProgress
+    let progressDetail: String?
+    let attempts: Int
+    let maxAttempts: Int
+    let notBeforeMs: Int64
+    let lastErrorCode: JobSafeErrorCode?
 
     init(
         id: UUID,
@@ -184,7 +189,12 @@ struct JobActivityItem: Identifiable, Sendable, Equatable {
         kind: JobActivityKind,
         state: JobState,
         controlRequest: JobControlRequest,
-        progress: JobProgress
+        progress: JobProgress,
+        progressDetail: String? = nil,
+        attempts: Int = 0,
+        maxAttempts: Int = 0,
+        notBeforeMs: Int64 = 0,
+        lastErrorCode: JobSafeErrorCode? = nil
     ) {
         self.id = id
         self.sourceID = sourceID
@@ -192,6 +202,11 @@ struct JobActivityItem: Identifiable, Sendable, Equatable {
         self.state = state
         self.controlRequest = controlRequest
         self.progress = progress
+        self.progressDetail = progressDetail
+        self.attempts = attempts
+        self.maxAttempts = maxAttempts
+        self.notBeforeMs = notBeforeMs
+        self.lastErrorCode = lastErrorCode
     }
 
     var availableActions: [JobActivityAction] {
@@ -211,6 +226,21 @@ struct JobActivityItem: Identifiable, Sendable, Equatable {
         case .completed, .terminalFailed, .cancelled:
             []
         }
+    }
+}
+
+enum JobActivityRetrySchedule {
+    static func nextCatalogReconcileRetryAtMs(
+        in items: [JobActivityItem]
+    ) -> Int64? {
+        items.lazy
+            .filter {
+                ($0.kind == .folderReconcile || $0.kind == .photosReconcile)
+                    && $0.state == .retryableFailed
+                    && $0.attempts < $0.maxAttempts
+            }
+            .map(\.notBeforeMs)
+            .min()
     }
 }
 

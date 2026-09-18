@@ -89,6 +89,13 @@ private struct ReviewMutationUndoRecord {
     let appliedDecision: TagDecisionQueryState
     let tagDisplayName: String
     let affectedCount: Int
+    let tagID: UUID
+    let mediaKind: MediaKind
+    let sourceIDs: [UUID]?
+    let queueBefore: [ReviewQueueItemProjection]
+    let selection: Set<UUID>
+    let selectedRow: ReviewQueueItemID?
+    let wasPreviewing: Bool
 }
 
 private struct ContextualTagFeedMutationUndoRecord {
@@ -566,10 +573,10 @@ enum LibraryAssetDetailText {
 
     private static func reviewOriginText(_ origin: ReviewQueueSuggestionOrigin) -> String {
         switch origin {
-        case .featurePrint: "特征向量"
+        case .featurePrint: "正反对比"
         case .standardModel: "标准模型"
-        case .personalModel: "个人模型"
-        case .personalAdamW: "超级个人"
+        case .personalModel: "样本匹配模型"
+        case .personalAdamW: "学习识别"
         }
     }
 }
@@ -1625,6 +1632,14 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var suggestionOverviews: [SuggestionTagOverview] = []
     @Published private(set) var reviewMode: ReviewWorkspaceMode?
     @Published private(set) var reviewQueueItems: [ReviewQueueItemProjection] = []
+    @Published var expandedReviewTagIDs: Set<UUID> = []
+    @Published var reviewGroupsPhotos = true
+    @Published private(set) var isLoadingReviewQueue = false
+    @Published private(set) var reviewQueueError: String?
+    @Published private(set) var reviewOverviewError: String?
+    @Published private(set) var isApplyingReviewDecision = false
+    @Published private(set) var reviewFeedback: String?
+    @Published private(set) var reviewRestoreAnchorID: ReviewQueueItemID?
     @Published private(set) var selectedReviewItemID: ReviewQueueItemID?
     @Published fileprivate(set) var reviewNextCursor: ReviewQueueCursor?
     /// `nil` = all active sources; otherwise only the selected subset (may be empty).
@@ -1772,6 +1787,8 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var librarySlimmingSourceLoadTask: Task<Void, Never>?
     private var sourceSimilarityIndexRunnerTask: Task<Void, Never>?
     private var catalogReconcileTask: Task<Void, Never>?
+    private var catalogReconcileRetryTask: Task<Void, Never>?
+    private var catalogReconcileRetryScheduleID: UUID?
     private var catalogReconcileRunRequested = false
     private var isLibrarySlimmingWorkspaceActive = false
     private var librarySlimmingCatalogRefreshPendingAfterExit = false
@@ -1822,6 +1839,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private var contextualTagFeedSelectionAnchorID: UUID?
     private var contextualTagFeedInspectorRequestID: UUID?
     private var librarySlimmingSelectionAnchorID: UUID?
+    private var keepsFastDeleteMembersVisible = false
     private struct LibrarySlimmingOptimisticRecycleSnapshot {
         let clusters: [LibrarySlimmingClusterPresentation]
         let selectedClusterID: UUID?
@@ -3122,17 +3140,19 @@ final class LibraryWorkspaceModel: ObservableObject {
             isMutatingLibrarySlimmingRecycle = true
         }
         let pendingAssetIDs = Set(assetIDs)
+        keepsFastDeleteMembersVisible = removalMode == .releaseSourceSpace
         let optimisticSnapshot = beginOptimisticLibrarySlimmingRecycle(
             assetIDs: pendingAssetIDs
         )
         librarySlimmingRecyclePendingAssetIDs.formUnion(pendingAssetIDs)
         librarySlimmingRecycleActionMessage = nil
         librarySlimmingStatusMessage = removalMode == .releaseSourceSpace
-            ? "已从结果中隐藏，正在准备快速释放来源空间…"
+            ? "正在核验并删除所选照片，完成后将从结果中移除…"
             : "已从结果中隐藏，正在等待后台磁盘任务暂停…"
         await suspendBackgroundThumbnailWorkForRecycle()
         defer {
             librarySlimmingRecyclePendingAssetIDs.subtract(pendingAssetIDs)
+            keepsFastDeleteMembersVisible = false
             resumeBackgroundThumbnailWorkAfterRecycle()
             if !mutationStateAlreadyHeld {
                 isMutatingLibrarySlimmingRecycle = false
@@ -3361,7 +3381,9 @@ final class LibraryWorkspaceModel: ObservableObject {
                    outcome.photosMutationFailedAssetIDs.isEmpty
                 {
                     parts.append(
-                        "失败 \(outcome.failedAssetIDs.count) 张（来源已变化；请立即刷新照片来源，等待完成后重新分析，再重试）"
+                        removalMode == .releaseSourceSpace
+                            ? "未删除 \(outcome.failedAssetIDs.count) 张，照片已保留（文件校验未通过；请刷新该来源后重试）"
+                            : "失败 \(outcome.failedAssetIDs.count) 张（来源已变化；请立即刷新照片来源，等待完成后重新分析，再重试）"
                     )
                 } else if outcome.hasOnlyMutationAuthorizationInvalidFailures,
                    outcome.recycledEntryIDs.isEmpty,
@@ -3550,6 +3572,9 @@ final class LibraryWorkspaceModel: ObservableObject {
             previewAssetID: librarySlimmingPreviewAssetID,
             attemptedAssetIDs: assetIDs
         )
+        // A fast-delete request is not a committed deletion. Keep its cards and
+        // selection stable until the service confirms the outcome.
+        guard !keepsFastDeleteMembersVisible else { return snapshot }
         librarySlimmingClusters = filterLibrarySlimmingClustersRemoving(
             assetIDs: assetIDs,
             from: librarySlimmingClusters
@@ -3583,6 +3608,12 @@ final class LibraryWorkspaceModel: ObservableObject {
         snapshot: LibrarySlimmingOptimisticRecycleSnapshot,
         recycledAssetIDs: Set<UUID>
     ) {
+        if keepsFastDeleteMembersVisible {
+            // Once the outcome is known, later async refreshes must use durable
+            // visibility, not the temporary keep-visible exception.
+            librarySlimmingRecyclePendingAssetIDs.subtract(snapshot.attemptedAssetIDs)
+            keepsFastDeleteMembersVisible = false
+        }
         let failedAssetIDs = snapshot.attemptedAssetIDs.subtracting(recycledAssetIDs)
         librarySlimmingClusters = snapshot.clusters.compactMap { cluster in
             let remaining = cluster.memberAssetIDs.filter { !recycledAssetIDs.contains($0) }
@@ -4328,7 +4359,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             librarySlimmingAnalysisControlRequest = snapshot.controlRequest
             let memberCount = librarySlimmingAnalysisJobs
                 .first(where: { $0.id == snapshot.jobID })?.memberCount ?? 0
-            if let mapped = LibrarySlimmingJobProgressPresentation.scanProgress(
+            if let mapped = snapshot.scanProgress ?? LibrarySlimmingJobProgressPresentation.scanProgress(
                 completed: snapshot.progress.completed,
                 progressTotal: snapshot.progress.total ?? 0,
                 memberCount: memberCount
@@ -4560,6 +4591,9 @@ final class LibraryWorkspaceModel: ObservableObject {
             hidden.formUnion(
                 (try? recycle.slimmingHiddenAssetIDs(from: memberIDs)) ?? []
             )
+        }
+        if keepsFastDeleteMembersVisible {
+            hidden.subtract(librarySlimmingRecyclePendingAssetIDs)
         }
         return hidden
     }
@@ -5111,6 +5145,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         videoHoverTask?.cancel()
         thumbnailRecoveryTask?.cancel()
         librarySlimmingSourceLoadTask?.cancel()
+        catalogReconcileRetryTask?.cancel()
         catalogSourceMonitoringTask?.cancel()
         service.stopCatalogSourceMonitoring()
     }
@@ -5187,6 +5222,44 @@ final class LibraryWorkspaceModel: ObservableObject {
             && !isGeneratingStandardLibrarySuggestions
     }
 
+    func reviewGenerationDisabledReason(
+        for overview: SuggestionTagOverview,
+        method: SuggestionGenerationMethod
+    ) -> String? {
+        guard !activeReviewSources.isEmpty else { return "没有可用的照片来源，请先连接或启用来源。" }
+        if method == .featureKnn {
+            if overview.canGenerate || overview.canUpdate { return nil }
+            if overview.activeJobID != nil { return "这个标签已有生成任务，请等待完成或先处理当前任务。" }
+            if overview.missingPositiveCount > 0 || overview.missingNegativeCount > 0 {
+                return "仅正反样本对比需要双方各 2 张：还需确认 \(overview.missingPositiveCount) 张、拒绝 \(overview.missingNegativeCount) 张。可直接使用按样本匹配或用模型识别；它们不要求拒绝样本。"
+            }
+            return "这个标签当前不支持正反样本对比。"
+        }
+        let canGenerate = method == .personalModel
+            ? canGenerateAppPersonalTagLibrarySuggestions(for: overview)
+            : canGenerateAppPersonalAdamWTagLibrarySuggestions(for: overview)
+        if canGenerate { return nil }
+        guard supportsAppPersonalSampleSuggestions else { return "本机标签建议功能当前不可用。" }
+        if method == .personalAdamW, appPersonalAdamWTagLibrarySuggester == nil {
+            return "学习识别模型当前不可用，请先在训练工程中检查模型。"
+        }
+        if method == .personalModel, appPersonalTagLibrarySuggester == nil {
+            return "样本匹配模型当前不可用，请先在训练工程中检查模型。"
+        }
+        if isRebuildingPersonalModel || isRebuildingPersonalAdamWModel {
+            return "模型正在训练，请等待训练完成。"
+        }
+        if isGeneratingAppPersonalSampleSuggestions || isGeneratingAppPersonalTagLibrarySuggestions
+            || isGeneratingPersonalLibrarySuggestions || isGeneratingStandardLibrarySuggestions {
+            return "已有建议生成任务，请等待完成或先处理当前任务。"
+        }
+        if overview.activeJobID != nil { return "这个标签已有生成任务，请先处理当前任务。" }
+        if overview.acceptedSampleCount < 2 {
+            return "还需确认 \(2 - overview.acceptedSampleCount) 张属于这个标签的照片；此模型不要求拒绝样本。"
+        }
+        return "这个标签当前不支持使用此模型生成建议。"
+    }
+
     var supportsStandardLibrarySuggestions: Bool {
         localModelSuggestions != nil
     }
@@ -5234,7 +5307,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             return nil
         }
         if case .tagQueue = reviewMode {
-            guard let index = reviewQueueItems.firstIndex(where: {
+            guard let index = displayedReviewQueueItems.firstIndex(where: {
                 if let selectedReviewItemID {
                     return $0.id == selectedReviewItemID
                 }
@@ -5243,11 +5316,11 @@ final class LibraryWorkspaceModel: ObservableObject {
                 return nil
             }
             return LibrarySinglePhotoNavigationPresentation(
-                fileName: reviewQueueItems[index].fileName ?? "照片",
+                fileName: displayedReviewQueueItems[index].fileName ?? "照片",
                 position: index + 1,
-                loadedCount: reviewQueueItems.count,
+                loadedCount: displayedReviewQueueItems.count,
                 canMovePrevious: index > 0,
-                canMoveNext: index < reviewQueueItems.count - 1 || reviewNextCursor != nil
+                canMoveNext: index < displayedReviewQueueItems.count - 1 || reviewNextCursor != nil
             )
         }
         guard let index = items.firstIndex(where: { $0.assetID == assetID }) else {
@@ -6607,7 +6680,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             case .folder:
                 source.state == .unavailable || source.state == .authorizationRequired
             case .photos:
-                source.state == .authorizationRequired || source.state == .disabled
+                source.state == .authorizationRequired
             }
         }.count
     }
@@ -6629,7 +6702,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             case .folder:
                 source.state == .unavailable || source.state == .authorizationRequired
             case .photos:
-                source.state == .authorizationRequired || source.state == .disabled
+                source.state == .authorizationRequired
             }
         }
         guard !targets.isEmpty else { return }
@@ -6734,6 +6807,10 @@ final class LibraryWorkspaceModel: ObservableObject {
             let service = service
             sources = try await Self.offMain { try service.fetchSources() }
             await loadFirstPage()
+            await refreshJobActivity()
+            if let source = sources.first(where: { $0.id == sourceID }) {
+                notice = .sourceDisabled(displayName: source.displayName)
+            }
         } catch {
             notice = .sourceActionFailed
         }
@@ -9690,8 +9767,12 @@ final class LibraryWorkspaceModel: ObservableObject {
         let hasPendingWork = (try? service.hasPendingCatalogReconcileJobs()) ?? true
         guard hasPendingWork else {
             catalogReconcileRunRequested = false
+            scheduleCatalogReconcileRetryIfNeeded()
             return
         }
+        catalogReconcileRetryTask?.cancel()
+        catalogReconcileRetryTask = nil
+        catalogReconcileRetryScheduleID = nil
         isCatalogScanning = true
         catalogReconcileTask = Task { [weak self] in
             guard let self else { return }
@@ -9751,7 +9832,57 @@ final class LibraryWorkspaceModel: ObservableObject {
                     self.librarySlimmingStatusMessage = "照片来源已刷新"
                     self.reportsLibrarySlimmingCatalogRefreshCompletion = false
                 }
+                self.scheduleCatalogReconcileRetryIfNeeded()
             }
+        }
+    }
+
+    private func scheduleCatalogReconcileRetryIfNeeded() {
+        let scheduleID = UUID()
+        catalogReconcileRetryTask?.cancel()
+        catalogReconcileRetryScheduleID = scheduleID
+        let service = service
+        let clock = clock
+        catalogReconcileRetryTask = Task { @MainActor [weak self] in
+            let retryAtMs: Int64?
+            do {
+                retryAtMs = try await Self.offMain(priority: .utility) {
+                    try service.nextCatalogReconcileRetryAtMs()
+                }
+            } catch {
+                guard let self, self.catalogReconcileRetryScheduleID == scheduleID else { return }
+                self.catalogReconcileRetryTask = nil
+                self.catalogReconcileRetryScheduleID = nil
+                return
+            }
+            guard !Task.isCancelled,
+                  let self,
+                  self.catalogReconcileRetryScheduleID == scheduleID,
+                  let retryAtMs
+            else {
+                if let self, self.catalogReconcileRetryScheduleID == scheduleID {
+                    self.catalogReconcileRetryTask = nil
+                    self.catalogReconcileRetryScheduleID = nil
+                }
+                return
+            }
+
+            let delayMs = max(0, retryAtMs - clock.nowMs)
+            let maximumDelayMs = Int64(UInt64.max / 1_000_000)
+            let delayNanoseconds = UInt64(min(delayMs, maximumDelayMs)) * 1_000_000
+            if delayNanoseconds > 0 {
+                do {
+                    try await Task.sleep(nanoseconds: delayNanoseconds)
+                } catch {
+                    return
+                }
+            }
+            guard !Task.isCancelled,
+                  self.catalogReconcileRetryScheduleID == scheduleID
+            else { return }
+            self.catalogReconcileRetryTask = nil
+            self.catalogReconcileRetryScheduleID = nil
+            self.startCatalogReconcileRunnerIfNeeded()
         }
     }
 
@@ -10722,7 +10853,7 @@ extension LibraryWorkspaceModel: RemoteWorkspaceNoticePort, RemoteWorkspaceNotic
              .tagBatchMutationApplied, .photosAlreadyConnected,
              .photosSyncQueued, .photosFullRepairQueued,
              .assetAbsolutePathsCopied,
-             .sourceDeleted:
+             .sourceDisabled, .sourceDeleted:
             .success
         default:
             .warning
@@ -11264,6 +11395,7 @@ extension LibraryWorkspaceModel {
                     sourceIDs: sourceFilter
                 )
             }
+            reviewOverviewError = nil
             if pendingSuggestionTotal != snapshot.totalPendingSuggestionCount {
                 pendingSuggestionTotal = snapshot.totalPendingSuggestionCount
             }
@@ -11328,12 +11460,7 @@ extension LibraryWorkspaceModel {
                 assetPendingSuggestions = []
             }
         } catch {
-            if !suggestionOverviews.isEmpty {
-                suggestionOverviews = []
-            }
-            if pendingSuggestionTotal != 0 {
-                pendingSuggestionTotal = 0
-            }
+            reviewOverviewError = "审核概览刷新失败，保留上次结果。"
         }
     }
 
@@ -11648,6 +11775,8 @@ extension LibraryWorkspaceModel {
     func enterReviewQueue(tagID: UUID, displayName: String) async {
         reviewPageRequestID = UUID()
         reviewQueueItems = []
+        reviewQueueError = nil
+        reviewFeedback = nil
         reviewNextCursor = nil
         selectedAssetIDs = []
         selectedReviewItemID = nil
@@ -11675,6 +11804,9 @@ extension LibraryWorkspaceModel {
     func loadReviewQueueFirstPage(tagID: UUID) async {
         let requestID = UUID()
         reviewPageRequestID = requestID
+        isLoadingReviewQueue = true
+        reviewQueueError = nil
+        defer { if reviewPageRequestID == requestID { isLoadingReviewQueue = false } }
         let reviewPort = review
         let sourceFilter = resolvedReviewSourceFilter
         let mediaKind = selectedMediaKind
@@ -11705,6 +11837,7 @@ extension LibraryWorkspaceModel {
                 return
             }
             reviewQueueItems = refreshedItems
+            selectedAssetIDs.formIntersection(Set(refreshedItems.map(\.assetID)))
             if let selectedReviewItemID,
                !reviewQueueItems.contains(where: { $0.id == selectedReviewItemID })
             {
@@ -11724,17 +11857,18 @@ extension LibraryWorkspaceModel {
             reviewNextCursor = page.nextCursor
         } catch {
             guard reviewPageRequestID == requestID else { return }
-            reviewQueueItems = []
-            selectedReviewItemID = nil
-            reviewNextCursor = nil
+            reviewQueueError = "无法载入审核建议，请重试。"
         }
     }
 
     func loadMoreReviewQueueIfNeeded(currentAssetID: UUID, tagID: UUID) async {
-        guard currentAssetID == reviewQueueItems.last?.assetID,
-              let cursor = reviewNextCursor,
-              !isLoadingMoreReviewQueue
-        else { return }
+        guard currentAssetID == reviewQueueItems.last?.assetID else { return }
+        await loadNextReviewQueuePage(tagID: tagID)
+    }
+
+    func loadNextReviewQueuePage(tagID: UUID) async {
+        guard let cursor = reviewNextCursor, !isLoadingMoreReviewQueue else { return }
+        reviewQueueError = nil
         isLoadingMoreReviewQueue = true
         defer { isLoadingMoreReviewQueue = false }
         let requestID = reviewPageRequestID
@@ -11759,13 +11893,28 @@ extension LibraryWorkspaceModel {
             guard reviewPageRequestID == requestID else { return }
             let page = result.0
             favoriteStates.merge(result.1) { _, newest in newest }
-            reviewQueueItems.append(
-                contentsOf: page.items.filter {
-                    !hiddenRecycledAssetIDs.contains($0.assetID)
-                }
-            )
+            let existing = Set(reviewQueueItems.map(\.id))
+            reviewQueueItems.append(contentsOf: page.items.filter {
+                !hiddenRecycledAssetIDs.contains($0.assetID) && !existing.contains($0.id)
+            })
             reviewNextCursor = page.nextCursor
-        } catch {}
+        } catch {
+            guard reviewPageRequestID == requestID else { return }
+            reviewQueueError = "后续建议载入失败，已载入内容仍可审核。"
+        }
+    }
+
+    var displayedReviewQueueItems: [ReviewQueueItemProjection] {
+        guard reviewGroupsPhotos else { return reviewQueueItems }
+        var seen = Set<UUID>()
+        return reviewQueueItems.filter { seen.insert($0.assetID).inserted }
+    }
+
+    func setReviewGroupsPhotos(_ grouped: Bool) {
+        reviewGroupsPhotos = grouped
+        if grouped, let assetID = primarySelectedAssetID {
+            selectedReviewItemID = displayedReviewQueueItems.first { $0.assetID == assetID }?.id
+        }
     }
 
     var activeReviewSources: [LibrarySourceSummary] {
@@ -11810,12 +11959,26 @@ extension LibraryWorkspaceModel {
         }
         selected.formIntersection(activeIDs)
         reviewFilterSourceIDs = selected == activeIDs ? nil : selected
-        await refreshReviewState()
+        await reloadReviewSourceScope()
     }
 
     func selectAllReviewSources() async {
         reviewFilterSourceIDs = nil
-        await refreshReviewState()
+        await reloadReviewSourceScope()
+    }
+
+    private func reloadReviewSourceScope() async {
+        let mode = reviewMode
+        reviewPageRequestID = UUID()
+        reviewQueueItems = []
+        reviewNextCursor = nil
+        selectedReviewItemID = nil
+        selectedAssetIDs = []
+        isSinglePhotoPresented = false
+        await refreshReviewState(reloadActiveQueue: false)
+        if reviewMode == mode, case let .tagQueue(tagID, _) = mode {
+            await loadReviewQueueFirstPage(tagID: tagID)
+        }
     }
 
     func toggleSuggestionEnqueueSource(_ sourceID: UUID) {
@@ -11834,7 +11997,7 @@ extension LibraryWorkspaceModel {
     ) async {
         guard case let .tagQueue(tagID, _) = reviewMode else { return }
         guard let currentItemID = selectedReviewItemID else {
-            guard let firstItemID = reviewQueueItems.first?.id else { return }
+            guard let firstItemID = displayedReviewQueueItems.first?.id else { return }
             await selectReviewItem(firstItemID)
             return
         }
@@ -11848,22 +12011,20 @@ extension LibraryWorkspaceModel {
         }
 
         if offset > 0,
-           let currentIndex = reviewQueueItems.firstIndex(where: { $0.id == currentItemID }),
-           currentIndex + offset >= reviewQueueItems.count,
-           let lastLoadedID = reviewQueueItems.last?.assetID
+           let currentIndex = displayedReviewQueueItems.firstIndex(where: { $0.id == currentItemID }),
+           currentIndex + offset >= displayedReviewQueueItems.count,
+           let lastLoadedID = displayedReviewQueueItems.last?.assetID
         {
-            await loadMoreReviewQueueIfNeeded(
-                currentAssetID: lastLoadedID,
-                tagID: tagID
-            )
+            _ = lastLoadedID
+            await loadNextReviewQueuePage(tagID: tagID)
         }
 
-        guard let currentIndex = reviewQueueItems.firstIndex(where: { $0.id == currentItemID }) else {
+        guard let currentIndex = displayedReviewQueueItems.firstIndex(where: { $0.id == currentItemID }) else {
             return
         }
-        let targetIndex = min(max(currentIndex + offset, 0), reviewQueueItems.count - 1)
+        let targetIndex = min(max(currentIndex + offset, 0), displayedReviewQueueItems.count - 1)
         guard targetIndex != currentIndex else { return }
-        await selectReviewItem(reviewQueueItems[targetIndex].id)
+        await selectReviewItem(displayedReviewQueueItems[targetIndex].id)
     }
 
     func moveReviewPrimarySelection(
@@ -11872,7 +12033,7 @@ extension LibraryWorkspaceModel {
     ) async {
         let distance = max(pageItemCount, 1)
         await moveReviewPrimarySelection(
-            in: direction == .down ? .right : .left,
+            in: direction == .down ? .down : .up,
             columnCount: distance
         )
     }
@@ -12079,32 +12240,46 @@ extension LibraryWorkspaceModel {
     }
 
     func applyReviewDecision(action: LibraryTagDecisionAction) async {
-        guard case let .tagQueue(tagID, displayName) = reviewMode else { return }
-        let assetIDs = Array(selectedAssetIDs)
+        guard case let .tagQueue(tagID, displayName) = reviewMode,
+              !isApplyingReviewDecision, !isLoadingReviewQueue else { return }
+        let selected = selectedAssetIDs.intersection(Set(reviewQueueItems.map(\.assetID)))
+        let assetIDs = Array(selected)
         guard !assetIDs.isEmpty else { return }
+        isApplyingReviewDecision = true
+        defer { isApplyingReviewDecision = false }
+        let queueBefore = reviewQueueItems
+        let displayedBefore = displayedReviewQueueItems
+        let selectedRow = selectedReviewItemID
+        let wasPreviewing = isSinglePhotoPresented
+        let mediaKind = selectedMediaKind
+        let sourceIDs = resolvedReviewSourceFilter
+        let requestID = reviewPageRequestID
         let workspace = service
         do {
             notice = nil
             let snapshot = try await Self.offMain {
                 try workspace.mutateTag(tagID: tagID, assetIDs: assetIDs, action: action)
             }
+            reviewRestoreAnchorID = nil
             lastReviewMutation = ReviewMutationUndoRecord(
-                snapshot: snapshot,
-                appliedDecision: action.decision,
-                tagDisplayName: displayName,
-                affectedCount: assetIDs.count
+                snapshot: snapshot, appliedDecision: action.decision,
+                tagDisplayName: displayName, affectedCount: assetIDs.count,
+                tagID: tagID, mediaKind: mediaKind, sourceIDs: sourceIDs,
+                queueBefore: queueBefore, selection: selected,
+                selectedRow: selectedRow, wasPreviewing: wasPreviewing
             )
+            guard reviewPageRequestID == requestID else { return }
             notice = .reviewMutationApplied(count: assetIDs.count, tagName: displayName)
-            let queueBefore = reviewQueueItems
-            let selected = selectedAssetIDs
-            let selectedRow = selectedReviewItemID
+            reviewFeedback = "已\(action == .accept ? "确认" : "标记不属于") \(assetIDs.count) 张“\(displayName)”照片"
             reviewQueueItems.removeAll { selected.contains($0.assetID) }
+            if reviewQueueItems.isEmpty, reviewNextCursor != nil {
+                await loadNextReviewQueuePage(tagID: tagID)
+            }
+            guard reviewPageRequestID == requestID else { return }
             if let next = Self.nextReviewQueueSelection(
-                in: reviewQueueItems,
-                afterRemoving: selected,
-                from: queueBefore,
-                selectedRow: selectedRow
-            ) {
+                in: displayedReviewQueueItems, afterRemoving: selected,
+                from: displayedBefore, selectedRow: selectedRow
+            ) ?? displayedReviewQueueItems.first?.id {
                 selectedReviewItemID = next
                 selectedAssetIDs = [next.assetID]
             } else {
@@ -12116,24 +12291,31 @@ extension LibraryWorkspaceModel {
                 await generateContextualTagFeeds(tagID: tagID, anchorAssetIDs: assetIDs)
             }
             await enqueueAutomaticPersonalModelRebuildIfReady()
-            // The local removal is the authoritative visible transition for this session.
-            // Reloading page one here remounts/truncates a deeply paged LazyVGrid and jumps
-            // the user's viewport toward the top.
             await refreshReviewState(reloadActiveQueue: false)
             await refreshInspector()
         } catch {
             notice = .tagMutationFailed
+            reviewFeedback = "审核操作未完成，请重试。"
         }
     }
 
     func deferReviewSelection() async {
-        guard case .tagQueue = reviewMode, !reviewQueueItems.isEmpty else { return }
+        guard case let .tagQueue(tagID, _) = reviewMode,
+              !isApplyingReviewDecision, !reviewQueueItems.isEmpty else { return }
+        // Selection and pagination are independent of whether a grid cell has appeared.
+        let queue = displayedReviewQueueItems
+        let selectedIndex = selectedReviewItemID.flatMap { id in queue.firstIndex { $0.id == id } }
+            ?? queue.lastIndex { selectedAssetIDs.contains($0.assetID) }
+        while selectedIndex == displayedReviewQueueItems.count - 1, let previousCursor = reviewNextCursor {
+            await loadNextReviewQueuePage(tagID: tagID)
+            if reviewQueueError != nil || reviewNextCursor == previousCursor { return }
+        }
         if let next = Self.deferredReviewSelection(
-            in: reviewQueueItems,
-            selectedAssetIDs: selectedAssetIDs,
+            in: displayedReviewQueueItems, selectedAssetIDs: selectedAssetIDs,
             selectedRow: selectedReviewItemID
         ) {
             await selectReviewItem(next)
+            reviewFeedback = "已跳过，未记录标签决定。"
         }
     }
 
@@ -12196,19 +12378,59 @@ extension LibraryWorkspaceModel {
     }
 
     func undoLastReviewMutation() async {
-        guard let undo = lastReviewMutation else { return }
+        guard let undo = lastReviewMutation, !isApplyingReviewDecision else { return }
+        isApplyingReviewDecision = true
+        defer { isApplyingReviewDecision = false }
         let workspace = service
+        let reviewPort = review
+        let requestID = reviewPageRequestID
         do {
             notice = nil
             try await Self.offMain { try workspace.restoreTagMutation(undo.snapshot) }
             lastReviewMutation = nil
-            await enqueueAutomaticPersonalModelRebuildIfReady()
-            if case let .tagQueue(tagID, _) = reviewMode {
-                await loadReviewQueueFirstPage(tagID: tagID)
+            reviewFeedback = "已撤销 \(undo.affectedCount) 张“\(undo.tagDisplayName)”照片的审核。"
+            if case let .tagQueue(tagID, _) = reviewMode,
+               tagID == undo.tagID, selectedMediaKind == undo.mediaKind,
+               resolvedReviewSourceFilter == undo.sourceIDs {
+                // Validate restored rows against the current revision without replacing the visible window.
+                let validRows = try await Self.offMain {
+                    var rows: [ReviewQueueItemProjection] = []
+                    var cursor: ReviewQueueCursor?
+                    repeat {
+                        let page = try reviewPort.fetchReviewQueue(
+                            mediaKind: undo.mediaKind, tagID: undo.tagID,
+                            sourceIDs: undo.sourceIDs, cursor: cursor, limit: 100
+                        )
+                        rows.append(contentsOf: page.items)
+                        cursor = page.nextCursor
+                    } while cursor != nil && rows.count < undo.queueBefore.count + 100
+                    return rows.filter { undo.selection.contains($0.assetID) }
+                }
+                guard reviewPageRequestID == requestID else { return }
+                var restored = validRows.reduce(into: [ReviewQueueItemID: ReviewQueueItemProjection]()) { $0[$1.id] = $1 }
+                for (index, oldRow) in undo.queueBefore.enumerated() {
+                    guard let row = restored.removeValue(forKey: oldRow.id),
+                          !hiddenRecycledAssetIDs.contains(row.assetID),
+                          !reviewQueueItems.contains(where: { $0.id == row.id }) else { continue }
+                    reviewQueueItems.insert(row, at: min(index, reviewQueueItems.count))
+                }
+                let restoredSelection = undo.selection.intersection(Set(displayedReviewQueueItems.map(\.assetID)))
+                selectedAssetIDs = restoredSelection
+                selectedReviewItemID = displayedReviewQueueItems.first { $0.id == undo.selectedRow }?.id
+                    ?? displayedReviewQueueItems.first { restoredSelection.contains($0.assetID) }?.id
+                reviewRestoreAnchorID = selectedReviewItemID
+                isSinglePhotoPresented = undo.wasPreviewing && selectedReviewItemID != nil
+                if restoredSelection.count < undo.selection.count {
+                    reviewFeedback = "已撤销人工决定；建议已更新，部分照片可能不再出现。"
+                }
             }
-            await refreshReviewState()
+            await enqueueAutomaticPersonalModelRebuildIfReady()
+            await refreshReviewState(reloadActiveQueue: false)
             await refreshInspector()
         } catch {
+            reviewFeedback = lastReviewMutation == nil
+                ? "人工决定已撤销，建议恢复读取失败，请刷新重试。"
+                : "撤销未完成，请重试。"
             notice = .tagMutationFailed
         }
     }
@@ -12881,6 +13103,7 @@ enum JobActivityPresentation {
         return switch (item.state, item.controlRequest) {
         case (.running, .pause): "正在暂停"
         case (.running, .cancel): "正在取消"
+        case (.pending, _) where item.lastErrorCode != nil: "等待重试"
         case (.pending, _): "等待中"
         case (.running, _): "运行中"
         case (.paused, _): "已暂停"
@@ -12892,6 +13115,17 @@ enum JobActivityPresentation {
     }
 
     static func progressText(for item: JobActivityItem) -> String {
+        if let lastErrorCode = item.lastErrorCode {
+            let attemptText = item.maxAttempts > 0
+                ? " · 已尝试 \(item.attempts) / \(item.maxAttempts) 次"
+                : ""
+            return failureDescription(for: lastErrorCode) + attemptText
+        }
+        if item.kind == .librarySlimmingAnalysis,
+           item.state != .completed, item.state != .cancelled,
+           let detail = item.progressDetail {
+            return detail
+        }
         if item.kind == .librarySlimmingPurge {
             if item.state == .pending {
                 return "首批项目到期后自动清理"
@@ -12902,6 +13136,25 @@ enum JobActivityPresentation {
             return "进度 \(item.progress.completed) / \(total)"
         }
         return "已处理 \(item.progress.completed)"
+    }
+
+    private static func failureDescription(for code: JobSafeErrorCode) -> String {
+        if code == .photosAuthorizationRequired {
+            return "上次同步未完成：需要 Apple Photos 访问权限"
+        }
+        if code == .photosSourceUnavailable {
+            return "上次同步未完成：系统照片图库当前不可用"
+        }
+        if code == .photosPersistenceFailure {
+            return "上次同步未完成：索引保存失败"
+        }
+        if code == .folderAuthorizationRequired {
+            return "上次扫描未完成：需要重新授权文件夹"
+        }
+        if code == .folderSourceUnavailable {
+            return "上次扫描未完成：文件夹当前不可用"
+        }
+        return "上次任务未完成"
     }
 }
 
@@ -12935,6 +13188,60 @@ private struct SourceDeletionBlockedAlertModifier: ViewModifier {
             return nil
         }
         return notice
+    }
+}
+
+private struct SourceLifecycleConfirmationModifier: ViewModifier {
+    @ObservedObject var model: LibraryWorkspaceModel
+    @Binding var sourcePendingDisable: LibrarySourceSummary?
+    @Binding var photosSourcePendingReactivation: LibrarySourceSummary?
+
+    func body(content: Content) -> some View {
+        content
+            .confirmationDialog(
+                sourcePendingDisable.map { "停用“\($0.displayName)”？" } ?? "停用来源？",
+                isPresented: Binding(
+                    get: { sourcePendingDisable != nil },
+                    set: { if !$0 { sourcePendingDisable = nil } }
+                ),
+                titleVisibility: .visible,
+                presenting: sourcePendingDisable
+            ) { source in
+                Button("停用来源", role: .destructive) {
+                    sourcePendingDisable = nil
+                    Task { await model.disableSource(source.id) }
+                }
+                .persistentHelp("停止这个来源的自动同步和后台任务；保留 ImageAll 中的索引、标签与缓存。")
+                Button("取消", role: .cancel) {
+                    sourcePendingDisable = nil
+                }
+                .persistentHelp("关闭确认窗口，不修改来源状态。")
+            } message: { _ in
+                Text("停用后不会再自动同步 Apple Photos，现有索引、人工标签和缓存仍会保留。以后只能通过明确的“重新启用”操作恢复；Apple Photos 中的原图不会被修改或删除。")
+            }
+            .confirmationDialog(
+                photosSourcePendingReactivation.map {
+                    "重新启用“\($0.displayName)”？"
+                } ?? "重新启用来源？",
+                isPresented: Binding(
+                    get: { photosSourcePendingReactivation != nil },
+                    set: { if !$0 { photosSourcePendingReactivation = nil } }
+                ),
+                titleVisibility: .visible,
+                presenting: photosSourcePendingReactivation
+            ) { source in
+                Button("重新启用并同步") {
+                    photosSourcePendingReactivation = nil
+                    Task { await model.reauthorizeSource(source.id) }
+                }
+                .persistentHelp("把这个 Apple Photos 来源恢复为活跃状态，并排入一次增量同步。")
+                Button("取消", role: .cancel) {
+                    photosSourcePendingReactivation = nil
+                }
+                .persistentHelp("保持来源停用，不启动任何同步任务。")
+            } message: { _ in
+                Text("这会恢复 Apple Photos 自动观察与后台同步。普通“连接 Apple Photos”和批量重新授权都不会执行这个操作。")
+            }
     }
 }
 
@@ -12975,8 +13282,10 @@ struct LibraryWorkspaceView: View {
     @State private var worldMapGalleryScope: WorldMapGalleryScope?
     @State private var searchText = ""
     @State private var newTagName = ""
+    @State private var sourcePendingDisable: LibrarySourceSummary?
     @State private var sourcePendingDeletion: LibrarySourceSummary?
     @State private var photosSourcePendingRebind: LibrarySourceSummary?
+    @State private var photosSourcePendingReactivation: LibrarySourceSummary?
     @State private var photosSourcePendingFullRepair: LibrarySourceSummary?
     @State private var tagPendingRename: TagListItem?
     @State private var renamedTagName = ""
@@ -13023,14 +13332,20 @@ struct LibraryWorkspaceView: View {
     @FocusState private var commandSearchFieldFocused: Bool
 
     private var workspaceWithSourceControls: some View {
-        NavigationSplitView(columnVisibility: sidebarColumnVisibility) {
-            sidebar
-                .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 300)
-        } detail: {
-            keyboardEnabledContent
-        }
-        .inspector(isPresented: inspectorVisibility) {
-            workspaceInspectorColumn
+        VStack(spacing: 0) {
+            NavigationSplitView(columnVisibility: sidebarColumnVisibility) {
+                sidebar
+                    .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 300)
+            } detail: {
+                keyboardEnabledContent
+            }
+            .inspector(isPresented: inspectorVisibility) {
+                workspaceInspectorColumn
+            }
+
+            if let notice = model.notice {
+                noticeBar(notice)
+            }
         }
         .frame(minWidth: 640, minHeight: 560)
         .background {
@@ -13082,11 +13397,11 @@ struct LibraryWorkspaceView: View {
             }
         }
         .toolbar(removing: .sidebarToggle)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            if let notice = model.notice {
-                noticeBar(notice)
-            }
-        }
+        .modifier(SourceLifecycleConfirmationModifier(
+            model: model,
+            sourcePendingDisable: $sourcePendingDisable,
+            photosSourcePendingReactivation: $photosSourcePendingReactivation
+        ))
         .confirmationDialog(
             sourcePendingDeletion.map { "从 ImageAll 删除“\($0.displayName)”？" } ?? "删除来源？",
             isPresented: Binding(
@@ -13271,11 +13586,12 @@ struct LibraryWorkspaceView: View {
                 model.closeSinglePhotoView()
                 return .handled
             }
+            .onKeyPress(.delete, action: handleSelectedAssetDeleteKeyPress)
+            // macOS Backspace can arrive as DEL (U+007F), distinct from .delete (U+0008).
+            .onKeyPress(KeyEquivalent("\u{7F}"), action: handleSelectedAssetDeleteKeyPress)
+            .onKeyPress(.deleteForward, action: handleSelectedAssetDeleteKeyPress)
             .onDeleteCommand {
-                guard model.isSinglePhotoPresented,
-                      model.canDeleteSelectedAssetsImmediately
-                else { return }
-                showSelectedAssetDeleteConfirmation = true
+                _ = handleSelectedAssetDeleteKeyPress()
             }
             .reviewKeyboardShortcutHandling(
                 isEnabled: reviewKeyboardShortcutsEnabled,
@@ -13459,13 +13775,20 @@ struct LibraryWorkspaceView: View {
                 .persistentHelp("重新读取后台任务的最新进度和可用操作。")
             }
 
+            if model.usesAppPersonalSampleSuggestionsPath,
+               model.personalLibrarySuggestionState != .idle {
+                ReviewGenerationStatusView(model: model, showsHistory: true)
+            }
+
             if model.jobActivityItems.isEmpty {
-                ContentUnavailableView(
-                    "暂无活动",
-                    systemImage: "clock",
-                    description: Text("同步和个性化任务会显示在这里。")
-                )
-                .frame(height: 150)
+                if !model.usesAppPersonalSampleSuggestionsPath || model.personalLibrarySuggestionState == .idle {
+                    ContentUnavailableView(
+                        "暂无活动",
+                        systemImage: "clock",
+                        description: Text("同步和个性化任务会显示在这里。")
+                    )
+                    .frame(height: 150)
+                }
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
@@ -13879,12 +14202,13 @@ struct LibraryWorkspaceView: View {
             shortcutRow("全选当前照片", keys: "⌘A")
             shortcutRow("切换单图查看", keys: "Space")
             shortcutRow("返回照片网格", keys: "Esc")
+            shortcutRow("删除所选照片或视频（先确认）", keys: "Backspace / Delete")
             shortcutRow("移动照片选择", keys: "←  ↑  ↓  →")
             shortcutRow("按当前网格页幅翻页", keys: "Page Up / Page Down")
             Spacer()
         }
         .padding(24)
-        .frame(width: 420, height: 300)
+        .frame(width: 460, height: 330)
         .onExitCommand {
             activeSheet = nil
         }
@@ -13989,6 +14313,19 @@ struct LibraryWorkspaceView: View {
             await model.movePrimarySelection(in: direction, columnCount: gridColumnCount)
             gridScrollTargetID = model.primarySelectedAssetID
         }
+        return .handled
+    }
+
+    private func handleSelectedAssetDeleteKeyPress() -> KeyPress.Result {
+        // Text editing keeps Delete even when the gallery still has a selection.
+        let responder = NSApp.keyWindow?.firstResponder
+        guard !(responder is NSTextView),
+              !(responder is NSTextField),
+              activeSheet == nil,
+              !showSelectedAssetDeleteConfirmation,
+              model.canDeleteSelectedAssetsImmediately
+        else { return .ignored }
+        showSelectedAssetDeleteConfirmation = true
         return .handled
     }
 
@@ -14934,7 +15271,11 @@ struct LibraryWorkspaceView: View {
                 .persistentHelp("保留旧图库历史，并把当前系统照片图库连接为新来源。")
             } else {
                 Button(source.kind == .photos && source.state == .disabled ? "重新启用…" : "重新授权…") {
-                    Task { await model.reauthorizeSource(source.id) }
+                    if source.kind == .photos && source.state == .disabled {
+                        photosSourcePendingReactivation = source
+                    } else {
+                        Task { await model.reauthorizeSource(source.id) }
+                    }
                 }
                 .disabled(
                     model.isBusy ||
@@ -14942,8 +15283,10 @@ struct LibraryWorkspaceView: View {
                     (source.kind == .photos && source.state != .authorizationRequired && source.state != .disabled)
                 )
                 .persistentHelp(
-                    source.kind == .photos
-                        ? "重新请求 Apple Photos 权限或重新启用这个来源。"
+                    source.kind == .photos && source.state == .disabled
+                        ? "打开确认窗口；只有确认后才会重新启用这个 Apple Photos 来源并恢复同步。"
+                        : source.kind == .photos
+                        ? "重新请求 Apple Photos 权限并恢复同步。"
                         : "重新选择文件夹，恢复这个来源的访问授权。"
                 )
             }
@@ -14959,6 +15302,14 @@ struct LibraryWorkspaceView: View {
             }
 
             Divider()
+
+            if source.kind == .photos && source.state == .active {
+                Button("停用来源…", role: .destructive) {
+                    sourcePendingDisable = source
+                }
+                .disabled(model.isBusy)
+                .persistentHelp("停止自动同步并保留 ImageAll 中的索引、标签与缓存；不会修改 Apple Photos 原图。")
+            }
 
             Button("删除来源…", role: .destructive) {
                 sourcePendingDeletion = source
@@ -15664,7 +16015,7 @@ struct LibraryWorkspaceView: View {
                         .tint(.red)
                         .persistentHelp(
                             model.selectedAssetDeleteDisabledReason
-                                ?? "打开删除确认；文件夹原始媒体将永久删除，Apple Photos 资产将由系统移入“最近删除”。"
+                                ?? "Backspace / Delete：打开删除确认；文件夹原始媒体将永久删除，Apple Photos 资产将由系统移入“最近删除”。"
                         )
                     }
                     .buttonStyle(.bordered)
@@ -16040,7 +16391,7 @@ struct LibraryWorkspaceView: View {
                         .controlSize(.small)
                 } else {
                     LibraryToolbarLabel(
-                        title: "重建个人模型",
+                        title: "重建样本匹配模型",
                         systemImage: "brain.head.profile",
                         displayMode: toolbarDisplayModeSettings.displayMode
                     )
@@ -16052,7 +16403,7 @@ struct LibraryWorkspaceView: View {
                     || model.isGeneratingPersonalLibrarySuggestions
             )
             .libraryToolbarHelp(
-                "重建个人模型",
+                "重建样本匹配模型",
                 detail: "先在左侧选择要训练的标签；有多选时只使用选中照片上这些标签的确认样本，无多选时使用全库这些标签的全部确认样本。会自动为本批样本补齐本地 embedding（仅用本机预览）。"
             )
         }
@@ -16066,7 +16417,7 @@ struct LibraryWorkspaceView: View {
                         .controlSize(.small)
                 } else {
                     LibraryToolbarLabel(
-                        title: "训练超级个人模型",
+                        title: "训练学习识别模型",
                         systemImage: "brain.head.profile.fill",
                         displayMode: toolbarDisplayModeSettings.displayMode
                     )
@@ -16078,12 +16429,12 @@ struct LibraryWorkspaceView: View {
                     || model.isGeneratingPersonalLibrarySuggestions
             )
             .libraryToolbarHelp(
-                "训练超级个人模型",
-                detail: "先在左侧选择要训练的标签；冻结 DINO + AdamW 线性头，多 epoch / 早停；仍只要正样本。与人脑质心模型并存、互不覆盖。多选只限样本照片。"
+                "训练学习识别模型",
+                detail: "先在左侧选择要训练的标签；根据已确认照片训练分类模型；不要求拒绝样本。与样本匹配模型并存、互不覆盖。多选只限样本照片。"
             )
         }
 
-        if model.supportsAppPersonalSampleSuggestions {
+        if model.supportsAppPersonalSampleSuggestions, model.reviewMode != .overview {
             Button {
                 Task { await model.generateAppPersonalSampleSuggestions() }
             } label: {
@@ -16125,7 +16476,7 @@ struct LibraryWorkspaceView: View {
             .disabled(!model.canCacheSelectedAssetEmbedding)
             .libraryToolbarHelp(
                 "准备选中照片特征",
-                detail: "为当前选中的照片生成或命中跳过本地模型缓存；重建个人模型会按选中/历史样本范围自行准备所需特征。"
+                detail: "为当前选中的照片生成或命中跳过本地模型缓存；重建样本匹配模型会按选中/历史样本范围自行准备所需特征。"
             )
         }
 
@@ -16282,7 +16633,7 @@ struct LibraryWorkspaceView: View {
         .disabled(model.isBusy || model.isExportingPortableData)
         .libraryToolbarHelp(
             "导出用户数据",
-            detail: "导出标签、审核记录与个人模型等用户数据，便于备份或迁移。"
+            detail: "导出标签、审核记录与自训练模型等用户数据，便于备份或迁移。"
         )
 
         Button {
@@ -16330,7 +16681,7 @@ struct LibraryWorkspaceView: View {
         }
         .libraryToolbarHelp(
             "活动",
-            detail: "查看后台任务进度，例如扫描、建议生成与个人模型训练。"
+            detail: "查看后台任务进度，例如扫描、建议生成与模型训练。"
         )
 
         Button {
@@ -16722,7 +17073,7 @@ struct LibraryWorkspaceView: View {
              .tagBatchMutationApplied, .photosAlreadyConnected,
              .photosSyncQueued, .photosFullRepairQueued,
              .assetAbsolutePathsCopied,
-             .sourceDeleted:
+             .sourceDisabled, .sourceDeleted:
             "checkmark.circle"
         default:
             "exclamationmark.triangle"
@@ -16755,6 +17106,8 @@ struct LibraryWorkspaceView: View {
                 displayName: displayName,
                 blockers: blockers
             )
+        case let .sourceDisabled(displayName):
+            "已停用“\(displayName)”；后台同步已停止，ImageAll 索引、标签和缓存仍保留。"
         case let .sourceDeleted(displayName, assetCount):
             "已从 ImageAll 删除“\(displayName)”及其 \(assetCount) 个照片记录；磁盘原文件或 Apple Photos 中的照片未被修改。"
         case .backgroundScanFailed: "后台扫描未完成，已索引的照片仍可继续浏览。"
@@ -16762,9 +17115,9 @@ struct LibraryWorkspaceView: View {
         case .reviewActionFailed: "建议任务操作未完成，请重试。"
         case .reviewJobConflict: "该标签已有进行中的建议任务。"
         case let .insufficientSuggestionSamples(positive, negative):
-            "还需确认 \(positive) 张、标记不属于 \(negative) 张。"
+            "正反样本对比还需确认 \(positive) 张、拒绝 \(negative) 张。样本匹配与模型识别不要求拒绝样本。"
         case let .reviewMutationApplied(count, tagName):
-            "已处理 \(count) 条“\(tagName)”建议"
+            "已处理 \(count) 张“\(tagName)”照片"
         case let .tagBatchMutationApplied(count, tagName, action):
             tagBatchMutationNoticeText(count: count, tagName: tagName, action: action)
         case .photosAlreadyConnected:
@@ -16895,27 +17248,27 @@ struct LibraryWorkspaceView: View {
         case .jobActivityActionFailed:
             "任务操作未完成，已重新读取当前状态。请重试。"
         case let .personalModelRebuildCompleted(tagCount, sampleCount):
-            "个人模型已从 \(tagCount) 个标签的 \(sampleCount) 张人工样本重建并确认生效。"
+            "样本匹配模型已从 \(tagCount) 个标签的 \(sampleCount) 张人工样本重建并确认生效。"
         case .personalModelRebuildTagSelectionRequired:
             "请先在左侧选择要训练的标签；不会训练未选中的标签（例如地点类标签可不选）。"
         case .personalModelRebuildNotReady:
             "所选标签中尚无可训练项；每个标签至少需要 2 张确认样本（有多选时只计选中照片上的确认样本）。"
         case .personalModelRebuildPreviewUnavailable:
-            "训练样本中有照片尚未在本机可用；未下载云端原图，也未替换现有个人模型。"
+            "训练样本中有照片尚未在本机可用；未下载云端原图，也未替换现有样本匹配模型。"
         case .personalModelRebuildCacheUnavailable:
-            "训练样本的本地 embedding 未能准备完成；现有个人模型未替换。可确认本机预览可用后重试重建。"
+            "训练样本的本地 embedding 未能准备完成；现有样本匹配模型未替换。可确认本机预览可用后重试重建。"
         case .personalModelRebuildServiceUnavailable:
-            "个人模型服务当前不可用；现有模型和标准建议不受影响。"
+            "样本匹配模型服务当前不可用；现有模型和标准建议不受影响。"
         case .personalModelRebuildFailed:
-            "个人模型重建未完成；现有模型保持不变，请核对样本后重试。"
+            "样本匹配模型重建未完成；现有模型保持不变，请核对样本后重试。"
         case let .personalAdamWRebuildCompleted(tagCount, sampleCount):
-            "超级个人模型（AdamW）已从 \(tagCount) 个标签的 \(sampleCount) 张人工样本训练并确认生效。"
+            "学习识别模型（AdamW）已从 \(tagCount) 个标签的 \(sampleCount) 张人工样本训练并确认生效。"
         case .personalAdamWRebuildTagSelectionRequired:
-            "请先在左侧选择要训练的标签；超级人脑不会训练未选中的标签。"
+            "请先在左侧选择要训练的标签；学习识别模型不会训练未选中的标签。"
         case .personalAdamWRebuildNotReady:
-            "所选标签中尚无可训练项；超级人脑同样要求每个标签至少 2 张确认样本。"
+            "所选标签中尚无可训练项；学习识别模型同样要求每个标签至少 2 张确认样本。"
         case .personalAdamWRebuildFailed:
-            "超级个人模型训练未完成；现有超级模型保持不变，请核对样本后重试。"
+            "学习识别模型训练未完成；现有学习识别模型保持不变，请核对样本后重试。"
         case .selectedAssetEmbeddingCached:
             "已为当前照片生成身份匹配的本地模型缓存。"
         case let .selectedAssetEmbeddingBatchCompleted(prepared, skipped, cloudOnly, failed):
@@ -16938,7 +17291,7 @@ struct LibraryWorkspaceView: View {
                 "已扫描 \(checked) 张照片：没有新的待审核建议（命中照片此前已审核过），跳过 \(skipped) 张。"
             }
         case .personalSampleSuggestionsNotReady:
-            "当前没有可用的个人模型，或扫描范围为空；请先重建个人模型后再试。"
+            "当前没有可用的样本匹配模型，或扫描范围为空；请先重建样本匹配模型后再试。"
         case .personalSampleSuggestionsModelUnavailable:
             "App 内模型尚未启用或当前不可用；没有写入建议，浏览和人工标签不受影响。"
         case .personalSampleSuggestionsFailed:
@@ -16958,15 +17311,15 @@ struct LibraryWorkspaceView: View {
             inserted,
             skipped
         ):
-            "个人模型“\(tagName)”生成完成：高于阈值 \(aboveThreshold) 条 / 候选 \(candidates) 条，实际写入 \(inserted) 条，跳过 \(skipped) 条。"
+            "样本匹配模型“\(tagName)”生成完成：高于阈值 \(aboveThreshold) 条 / 候选 \(candidates) 条，实际写入 \(inserted) 条，跳过 \(skipped) 条。"
         case .personalTagLibrarySuggestionsNotReady:
-            "当前没有可用的个人模型；请先点人脑图标重建后再试。"
+            "当前没有可用的样本匹配模型；请先点“重建样本匹配模型”按钮重建后再试。"
         case .personalTagLibrarySuggestionsTagNotInModel:
-            "当前个人模型不含该标签；请先用该标签的确认样本点人脑重建。"
+            "当前样本匹配模型不含该标签；请先用该标签的确认样本重建样本匹配模型。"
         case .personalTagLibrarySuggestionsModelUnavailable:
             "App 内模型尚未启用或当前不可用；没有写入建议，浏览和人工标签不受影响。"
         case .personalTagLibrarySuggestionsFailed:
-            "个人模型全库建议未完成；现有审核队列保持不变，请稍后重试。"
+            "样本匹配模型全库建议未完成；现有审核队列保持不变，请稍后重试。"
         case let .personalAdamWTagLibrarySuggestionsCompleted(
             tagName,
             candidates,
@@ -16974,13 +17327,13 @@ struct LibraryWorkspaceView: View {
             inserted,
             skipped
         ):
-            "超级个人模型“\(tagName)”生成完成：高于阈值 \(aboveThreshold) 条 / 候选 \(candidates) 条，实际写入 \(inserted) 条，跳过 \(skipped) 条。"
+            "学习识别模型“\(tagName)”生成完成：高于阈值 \(aboveThreshold) 条 / 候选 \(candidates) 条，实际写入 \(inserted) 条，跳过 \(skipped) 条。"
         case .personalAdamWTagLibrarySuggestionsNotReady:
-            "当前没有可用的超级个人模型；请先点超级人脑图标训练后再试。"
+            "当前没有可用的学习识别模型；请先点“训练学习识别模型”按钮训练后再试。"
         case .personalAdamWTagLibrarySuggestionsTagNotInModel:
-            "当前超级个人模型不包含该标签；请先用超级人脑把该标签纳入训练后再试。"
+            "当前学习识别模型不包含该标签；请先用学习识别模型把该标签纳入训练后再试。"
         case .personalAdamWTagLibrarySuggestionsFailed:
-            "超级个人模型建议未完成；现有审核队列保持不变，请稍后重试。"
+            "学习识别模型建议未完成；现有审核队列保持不变，请稍后重试。"
         case let .suggestionThresholdPruned(tagName, methodName, deletedCount):
             "已按当前“\(methodName)”门槛刷新“\(tagName)”待审队列，删除 \(deletedCount) 条。"
         case .suggestionThresholdUpdateFailed:
@@ -17102,10 +17455,10 @@ struct LibraryWorkspaceView: View {
                     Task { await model.applyReviewDecision(action: .reject) }
                 }
                 .persistentHelp("确认所选照片不属于当前审核标签，并进入下一项；快捷键 X。")
-                Button("稍后 (U)") {
+                Button("跳过 (U)") {
                     Task { await model.deferReviewSelection() }
                 }
-                .persistentHelp("暂不处理所选照片并移到队列后面；快捷键 U。")
+                .persistentHelp("跳过所选照片，不记录标签决定；快捷键 U。")
             }
             .disabled(model.selectedAssetIDs.isEmpty)
         }
@@ -17188,24 +17541,10 @@ private struct SinglePhotoReviewView: View {
         VStack(spacing: 0) {
             SinglePhotoNavigationBar(model: model, onDelete: onDelete)
             Divider()
-            HStack(spacing: 12) {
-                Button("属于 (P)", systemImage: "checkmark.circle") {
-                    Task { await model.applyReviewDecision(action: .accept) }
-                }
-                .persistentHelp("确认当前照片属于审核标签，并进入下一张；快捷键 P。")
-                Button("不属于 (X)", systemImage: "xmark.circle") {
-                    Task { await model.applyReviewDecision(action: .reject) }
-                }
-                .persistentHelp("确认当前照片不属于审核标签，并进入下一张；快捷键 X。")
-                Button("稍后 (U)", systemImage: "arrow.right.circle") {
-                    Task { await model.deferReviewSelection() }
-                }
-                .persistentHelp("暂不处理当前照片并移到队列后面；快捷键 U。")
-            }
-            .buttonStyle(.bordered)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .disabled(model.selectedAssetIDs.isEmpty)
+            ReviewDecisionBar(model: model, displayName: {
+                if case let .tagQueue(_, name) = model.reviewMode { return name }
+                return "当前标签"
+            }())
             .accessibilityIdentifier("singlePhotoReviewActions")
             Divider()
             ZStack {

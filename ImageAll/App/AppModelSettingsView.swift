@@ -393,13 +393,13 @@ struct AppModelSettingsView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
-                        thresholdStepper(title: "特征向量默认门槛", value: model.suggestionDefaults.featureKnn) {
+                        thresholdStepper(title: "正反对比默认门槛", value: model.suggestionDefaults.featureKnn) {
                             model.setSuggestionDefault(method: .featureKnn, minScore: $0)
                         }
-                        thresholdStepper(title: "个人模型默认门槛", value: model.suggestionDefaults.personalCentroid) {
+                        thresholdStepper(title: "样本匹配模型默认门槛", value: model.suggestionDefaults.personalCentroid) {
                             model.setSuggestionDefault(method: .personalCentroid, minScore: $0)
                         }
-                        thresholdStepper(title: "超级个人模型默认门槛", value: model.suggestionDefaults.personalAdamW) {
+                        thresholdStepper(title: "学习识别模型默认门槛", value: model.suggestionDefaults.personalAdamW) {
                             model.setSuggestionDefault(method: .personalAdamW, minScore: $0)
                         }
                         Button("按标签覆盖…") {

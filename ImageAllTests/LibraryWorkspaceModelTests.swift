@@ -1210,6 +1210,56 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.items.map(\.assetID), [asset.assetID])
     }
 
+    func testCatalogRetrySchedulerSelectsEarliestEligibleReconcileDeadline() {
+        let items = [
+            JobActivityItem(
+                id: UUID(),
+                kind: .photosReconcile,
+                state: .retryableFailed,
+                controlRequest: .none,
+                progress: JobProgress(completed: 0, total: nil),
+                attempts: 2,
+                maxAttempts: 5,
+                notBeforeMs: 4_000
+            ),
+            JobActivityItem(
+                id: UUID(),
+                kind: .folderReconcile,
+                state: .retryableFailed,
+                controlRequest: .none,
+                progress: JobProgress(completed: 0, total: nil),
+                attempts: 1,
+                maxAttempts: 5,
+                notBeforeMs: 3_000
+            ),
+            JobActivityItem(
+                id: UUID(),
+                kind: .photosReconcile,
+                state: .retryableFailed,
+                controlRequest: .none,
+                progress: JobProgress(completed: 0, total: nil),
+                attempts: 5,
+                maxAttempts: 5,
+                notBeforeMs: 1_000
+            ),
+            JobActivityItem(
+                id: UUID(),
+                kind: .personalizationSuggestions,
+                state: .retryableFailed,
+                controlRequest: .none,
+                progress: JobProgress(completed: 0, total: nil),
+                attempts: 1,
+                maxAttempts: 5,
+                notBeforeMs: 2_000
+            ),
+        ]
+
+        XCTAssertEqual(
+            JobActivityRetrySchedule.nextCatalogReconcileRetryAtMs(in: items),
+            3_000
+        )
+    }
+
     func testFolderMonitoringChangeRunsAutomaticReconcile() async {
         let sourceID = UUID()
         let asset = Self.makeAsset(sourceID: sourceID, fileName: "auto-added.png")
@@ -1421,6 +1471,38 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             model.notice,
             .sourceAccessAuthorizationBatchCompleted(sourceCount: 2)
         )
+    }
+
+    func testBatchAccessAuthorizationSkipsDisabledPhotosUntilExplicitReactivation() async {
+        let sourceID = UUID()
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(
+                id: sourceID,
+                kind: .photos,
+                displayName: "Apple Photos",
+                state: .disabled
+            ),
+            reconciledItems: [],
+            startsConnected: true,
+            hasPendingCatalogReconcileJobs: false
+        )
+        let model = LibraryWorkspaceModel(
+            service: service,
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.start()
+
+        XCTAssertEqual(model.sourceAccessAuthorizationTargetCount, 0)
+        await model.reauthorizeAllSourcesRequiringAccess()
+
+        XCTAssertEqual(service.photosReactivateCallCount, 0)
+        XCTAssertEqual(model.sources.first?.state, .disabled)
+
+        await model.reauthorizeSource(sourceID)
+
+        XCTAssertEqual(service.photosReactivateCallCount, 1)
+        XCTAssertEqual(model.sources.first?.state, .active)
+        XCTAssertEqual(model.notice, .photosSyncQueued)
     }
 
     func testBatchMutationAuthorizationProcessesEveryActiveFolderSource() async {
@@ -6752,7 +6834,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
         let scan = StubLibrarySlimmingScanPort()
         scan.seedClusters = [cluster]
-        let recycle = FakeLibrarySlimmingRecyclePort()
+        let recycle = FakeLibrarySlimmingRecyclePort(blocksMove: true, blocksList: true)
         let model = LibraryWorkspaceModel(
             service: FakeLibraryWorkspaceService(
                 connectedSource: LibrarySourceSummary(
@@ -6777,14 +6859,111 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         model.selectLibrarySlimmingCluster(presentedClusterID)
         model.selectLibrarySlimmingMember(asset.assetID, additive: false)
 
-        await model.deleteSelectedLibrarySlimmingMembersImmediately()
+        let deletion = Task { @MainActor in
+            await model.deleteSelectedLibrarySlimmingMembersImmediately()
+        }
+        for _ in 0 ..< 100 where !model.librarySlimmingRecyclePendingAssetIDs.contains(asset.assetID) {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(model.isMutatingLibrarySlimmingRecycle)
+        XCTAssertEqual(model.selectedLibrarySlimmingMemberIDs, [asset.assetID])
+        XCTAssertTrue(model.librarySlimmingClusters.contains { $0.memberAssetIDs.contains(asset.assetID) })
+        recycle.releaseBlockedMove()
+        let refreshing = await Task.detached { recycle.waitUntilListRefreshStarts() }.value
+        XCTAssertTrue(refreshing)
+        XCTAssertTrue(model.librarySlimmingRecyclePendingAssetIDs.isEmpty)
+        let deletionMessage = model.librarySlimmingStatusMessage
+        await model.analyzeLibrarySlimming(mode: .seeds)
+        XCTAssertTrue(model.librarySlimmingClusters.isEmpty)
+        recycle.releaseBlockedListRefresh()
+        await deletion.value
 
         XCTAssertEqual(recycle.fastDeleteAssetIDCalls, [[asset.assetID]])
         XCTAssertTrue(recycle.moveAssetIDCalls.isEmpty)
         XCTAssertTrue(model.librarySlimmingClusters.isEmpty)
         XCTAssertEqual(
-            model.librarySlimmingStatusMessage,
+            deletionMessage,
             "已永久删除 1 张，来源空间已可回收"
+        )
+    }
+
+    func testLibrarySlimmingFastDeleteFailureKeepsCardAndSelectionInPlace() async throws {
+        let sourceID = UUID()
+        let asset = Self.makeAsset(sourceID: sourceID, fileName: "fast-delete.jpg")
+        let cluster = SlimmingCluster(
+            id: UUID(),
+            kind: .nearDuplicateScene,
+            memberAssetIDs: [asset.assetID],
+            representativeAssetID: asset.assetID,
+            score: 0.98,
+            modelIdentity: .featurePrintOnly
+        )
+        let scan = StubLibrarySlimmingScanPort()
+        scan.seedClusters = [cluster]
+        let recycle = FakeLibrarySlimmingRecyclePort(
+            moveOutcomes: [.init(
+                recycledEntryIDs: [], skippedPhotosAssetIDs: [], failedAssetIDs: [asset.assetID],
+                authorizationRequiredSourceIDs: [], authorizationRequiredAssetIDs: [],
+                authorizationDeniedPhotosAssetIDs: [], sourceChangedAssetIDs: [asset.assetID]
+            )],
+            blocksMove: true,
+            blocksList: true
+        )
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID,
+                    displayName: "Fixture",
+                    state: .active
+                ),
+                reconciledItems: [asset],
+                initialItems: [asset],
+                startsConnected: true,
+                hasPendingCatalogReconcileJobs: false
+            ),
+            librarySlimming: scan,
+            librarySlimmingRecycle: recycle,
+            idlePrewarmInstallEventMonitor: false
+        )
+        await model.start()
+        await model.selectAssets([asset.assetID])
+        await model.findLibrarySlimmingFromSelection()
+        await model.analyzeLibrarySlimming(mode: .seeds)
+        let presentedClusterID = try XCTUnwrap(model.librarySlimmingClusters.first?.id)
+        model.selectLibrarySlimmingCluster(presentedClusterID)
+        model.selectLibrarySlimmingMember(asset.assetID, additive: false)
+
+        let deletion = Task { @MainActor in
+            await model.deleteSelectedLibrarySlimmingMembersImmediately()
+        }
+        for _ in 0 ..< 100 where !model.librarySlimmingRecyclePendingAssetIDs.contains(asset.assetID) {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(model.isMutatingLibrarySlimmingRecycle)
+        XCTAssertEqual(model.selectedLibrarySlimmingMemberIDs, [asset.assetID])
+        XCTAssertTrue(model.librarySlimmingClusters.contains { $0.memberAssetIDs.contains(asset.assetID) })
+        recycle.releaseBlockedMove()
+        let refreshing = await Task.detached { recycle.waitUntilListRefreshStarts() }.value
+        XCTAssertTrue(refreshing)
+        XCTAssertTrue(model.librarySlimmingRecyclePendingAssetIDs.isEmpty)
+        let deletionMessage = model.librarySlimmingStatusMessage
+        XCTAssertEqual(model.selectedLibrarySlimmingMemberIDs, [asset.assetID])
+        // A refreshed copy of the old analysis must keep the failed card visible.
+        await model.analyzeLibrarySlimming(mode: .seeds)
+        XCTAssertTrue(model.librarySlimmingClusters.contains { $0.memberAssetIDs.contains(asset.assetID) })
+        recycle.releaseBlockedListRefresh()
+        await deletion.value
+
+        XCTAssertEqual(recycle.fastDeleteAssetIDCalls, [[asset.assetID]])
+        XCTAssertTrue(recycle.moveAssetIDCalls.isEmpty)
+        XCTAssertTrue(model.librarySlimmingClusters.contains { $0.memberAssetIDs.contains(asset.assetID) })
+        // Explicitly starting another analysis resets selection by design;
+        // deletion settlement's selection was checked before that refresh.
+        XCTAssertFalse(model.isMutatingLibrarySlimmingRecycle)
+        XCTAssertTrue(model.librarySlimmingRecyclePendingAssetIDs.isEmpty)
+        XCTAssertEqual(
+            deletionMessage,
+            "未删除 1 张，照片已保留（文件校验未通过；请刷新该来源后重试）"
         )
     }
 
@@ -9426,6 +9605,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.items.map(\.assetID), [asset.assetID])
         XCTAssertEqual(service.disableCallCount, 1)
         XCTAssertEqual(service.reconcileRunCount, 1)
+        XCTAssertEqual(model.notice, .sourceDisabled(displayName: "Fixture"))
     }
 
     func testDeletingSourceRemovesSourceAndItsCatalogItemsFromWorkspace() async {
@@ -11287,16 +11467,6 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(grouped[1].overviews.map(\.id), [park.id])
     }
 
-    func testReviewOverviewKeepsGenerationPanelNarrowerThanSuggestionWorkspace() {
-        XCTAssertEqual(ReviewOverviewLayout.localModelPanelMinimumWidth, 248)
-        XCTAssertEqual(ReviewOverviewLayout.localModelPanelIdealWidth, 288)
-        XCTAssertEqual(ReviewOverviewLayout.localModelPanelMaximumWidth, 320)
-        XCTAssertLessThan(
-            ReviewOverviewLayout.localModelPanelMaximumWidth,
-            ReviewOverviewLayout.cardMinimumWidth + ReviewOverviewLayout.cardSpacing
-        )
-    }
-
     @MainActor
     func testTagGroupCollapsePreferencesPersistToggleState() {
         let suiteName = "ImageAllTests.TagGroupCollapse.\(UUID().uuidString)"
@@ -12828,6 +12998,11 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         )
 
         await model.enterReviewQueue(tagID: tag.id, displayName: tag.displayName)
+        XCTAssertEqual(model.displayedReviewQueueItems.map(\.assetID), [shared.assetID, next.assetID])
+        await model.selectReviewItem(queueItems[0].id)
+        await model.deferReviewSelection()
+        XCTAssertEqual(model.selectedReviewItemID, queueItems[3].id)
+        model.setReviewGroupsPhotos(false)
         await model.selectReviewItem(queueItems[0].id)
         await model.deferReviewSelection()
 
@@ -12842,6 +13017,96 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         await model.deferReviewSelection()
         XCTAssertEqual(model.selectedReviewItemID, queueItems[3].id)
         XCTAssertEqual(model.selectedAssetIDs, [next.assetID])
+    }
+
+    func testReviewOverviewRendersSyntheticExpandedCards() async throws {
+        let tagID = UUID()
+        let overview = SuggestionTagOverview(
+            id: tagID, displayName: "家人（合成标签）", acceptedSampleCount: 12, rejectedSampleCount: 6,
+            pendingSuggestionCount: 42, taskStatus: .completed, checkedCount: 120, totalCount: 120,
+            skippedCount: 0, missingPositiveCount: 0, missingNegativeCount: 0,
+            canGenerate: false, canUpdate: true, canGeneratePersonalModel: false,
+            canReview: true, canPause: false, canResume: false, canCancel: false, activeJobID: nil)
+        let model = LibraryWorkspaceModel(service: FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: UUID(), displayName: "合成来源", state: .active),
+            reconciledItems: []), review: FakePersonalizationReviewPort(overviews: [overview]),
+            idlePrewarmInstallEventMonitor: false)
+        await model.refreshReviewState(reloadActiveQueue: false)
+        model.expandedReviewTagIDs.insert(tagID)
+        let host = NSHostingView(rootView: ReviewOverviewView(model: model, onOpenQueue: { _, _ in }, onBack: {})
+            .frame(width: 1100, height: 760))
+        host.frame = NSRect(x: 0, y: 0, width: 1100, height: 760)
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(200))
+        host.layoutSubtreeIfNeeded()
+        let representation = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: representation)
+        let png = try XCTUnwrap(representation.representation(using: .png, properties: [:]))
+        XCTAssertGreaterThan(png.count, 1000)
+        if let directory = ProcessInfo.processInfo.environment["IMAGEALL_REVIEW_EVIDENCE_DIR"] {
+            let output = URL(fileURLWithPath: directory, isDirectory: true)
+            try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+            try png.write(to: output.appendingPathComponent("native-overview.png"))
+        }
+    }
+
+    func testReviewSkipLoadsNextPageAndUndoPreservesLoadedWindowAndSelection() async {
+        let sourceID = UUID()
+        let tag = TagListItem(id: UUID(), displayName: "Fixture", state: .active)
+        let assets = (0..<6).map { Self.makeAsset(sourceID: sourceID, fileName: "item-\($0).jpg") }
+        let rows = assets.map { ReviewQueueItemProjection(assetID: $0.assetID, fileName: $0.fileName,
+            availability: .available, acceptedTagCount: 0, rejectedTagCount: 0) }
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: assets, tags: [tag])
+        let review = FakePersonalizationReviewPort(queueItems: rows, queuePageSize: 2)
+        review.decidedAssetIDsProvider = { [weak service] id in service?.decidedAssetIDs(tagID: id) ?? [] }
+        let model = LibraryWorkspaceModel(service: service, review: review)
+        await model.enterReviewQueue(tagID: tag.id, displayName: tag.displayName)
+        await model.selectReviewItem(rows[1].id)
+        await model.deferReviewSelection()
+        XCTAssertEqual(model.selectedReviewItemID, rows[2].id)
+        XCTAssertEqual(model.reviewQueueItems.count, 4)
+        await model.loadNextReviewQueuePage(tagID: tag.id)
+        await model.selectReviewItem(rows[4].id)
+        await model.applyReviewDecision(action: .reject)
+        XCTAssertEqual(model.selectedReviewItemID, rows[5].id)
+        XCTAssertEqual(model.reviewFeedback, "已标记不属于 1 张“Fixture”照片")
+        await model.undoLastReviewMutation()
+        XCTAssertEqual(model.reviewQueueItems.map(\.id), rows.map(\.id))
+        XCTAssertEqual(model.selectedReviewItemID, rows[4].id)
+        XCTAssertEqual(model.reviewRestoreAnchorID, rows[4].id)
+        XCTAssertEqual(model.selectedAssetIDs, [rows[4].assetID])
+    }
+
+    func testReviewReadFailurePreservesLoadedPageAndRetries() async {
+        let tag = TagListItem(id: UUID(), displayName: "Fixture", state: .active)
+        let sourceID = UUID()
+        let assets = (0..<3).map { Self.makeAsset(sourceID: sourceID, fileName: "item-\($0).jpg") }
+        let rows = assets.map { ReviewQueueItemProjection(assetID: $0.assetID, fileName: $0.fileName,
+            availability: .available, acceptedTagCount: 0, rejectedTagCount: 0) }
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: assets, tags: [tag])
+        let review = FakePersonalizationReviewPort(queueItems: rows, queuePageSize: 2)
+        review.setQueueReadFailure(true)
+        let model = LibraryWorkspaceModel(service: service, review: review)
+        await model.enterReviewQueue(tagID: tag.id, displayName: tag.displayName)
+        XCTAssertNotNil(model.reviewQueueError)
+        XCTAssertFalse(model.isLoadingReviewQueue)
+        review.setQueueReadFailure(false)
+        await model.loadReviewQueueFirstPage(tagID: tag.id)
+        XCTAssertNil(model.reviewQueueError)
+        await model.selectReviewItem(rows[1].id)
+        review.setQueueReadFailure(true)
+        await model.deferReviewSelection()
+        XCTAssertNotNil(model.reviewQueueError)
+        XCTAssertEqual(model.reviewQueueItems.count, 2)
+        XCTAssertEqual(model.selectedReviewItemID, rows[1].id)
+        review.setQueueReadFailure(false)
+        await model.deferReviewSelection()
+        XCTAssertNil(model.reviewQueueError)
+        XCTAssertEqual(model.selectedReviewItemID, rows[2].id)
     }
 
     func testTrainingWorkspaceRefreshFiltersRunsAndFallsBackSelection() async {
@@ -13128,7 +13393,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
         XCTAssertEqual(
             TrainingWorkspaceActivityPresentation.title(activity),
-            "快速个人模型正在训练"
+            "样本匹配模型正在训练"
         )
         XCTAssertEqual(
             TrainingWorkspaceActivityPresentation.detail(activity),
@@ -13145,8 +13410,8 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             TrainingWorkspaceMethodPresentation(method: .featureKnn),
             TrainingWorkspaceMethodPresentation(
                 method: .featureKnn,
-                title: "为标签寻找相似照片",
-                shortTitle: "相似照片",
+                title: "正反样本对比（可选）",
+                shortTitle: "正反样本对比",
                 technicalName: "特征向量近邻",
                 detail: "用已确认属于和不属于该标签的照片作参考，找出新的相似照片并送去审核。",
                 requirement: "每个标签至少 2 个属于、2 个不属于",
@@ -13157,11 +13422,11 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             TrainingWorkspaceMethodPresentation(method: .personalCentroid),
             TrainingWorkspaceMethodPresentation(
                 method: .personalCentroid,
-                title: "更新快速个人模型",
-                shortTitle: "快速个人模型",
+                title: "更新样本匹配模型",
+                shortTitle: "样本匹配模型",
                 technicalName: "质心模型",
-                detail: "为每个选中标签单独训练一个快速个人模型；互不影响，可单独回滚。",
-                requirement: "每个标签至少 2 个已确认样本",
+                detail: "将每个标签的已确认照片归纳为代表样本，用于寻找匹配照片；标签互不影响，可单独回滚。",
+                requirement: "每个标签至少 2 个已确认样本；无需拒绝样本",
                 systemImage: "brain.head.profile"
             )
         )
@@ -13169,11 +13434,11 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             TrainingWorkspaceMethodPresentation(method: .personalAdamW),
             TrainingWorkspaceMethodPresentation(
                 method: .personalAdamW,
-                title: "训练增强个人模型",
-                shortTitle: "增强个人模型",
+                title: "训练学习识别模型",
+                shortTitle: "学习识别模型",
                 technicalName: "AdamW 线性模型",
-                detail: "为每个选中标签单独做更充分的本机训练；标签之间互不影响。",
-                requirement: "每个标签至少 2 个已确认样本",
+                detail: "用已确认照片在本机训练分类模型，识别可能属于该标签的照片；标签之间互不影响。",
+                requirement: "每个标签至少 2 个已确认样本；无需拒绝样本",
                 systemImage: "brain.head.profile.fill"
             )
         )
@@ -13271,10 +13536,10 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             photoScope: .selectedAssets(count: 12)
         )
 
-        XCTAssertEqual(summary.methodText, "快速个人模型（质心模型）")
+        XCTAssertEqual(summary.methodText, "样本匹配模型（质心模型）")
         XCTAssertEqual(summary.tagText, "板栗、猫")
         XCTAssertEqual(summary.photoScopeText, "当前选择的 12 张照片")
-        XCTAssertEqual(summary.requirementText, "每个标签至少 2 个已确认样本")
+        XCTAssertEqual(summary.requirementText, "每个标签至少 2 个已确认样本；无需拒绝样本")
     }
 
     func testTrainingWorkspaceJSONPresentationRedactsProtectedLocatorFields() throws {
@@ -16733,6 +16998,9 @@ private final class FakeLibrarySlimmingRecyclePort: LibrarySlimmingRecyclePort, 
                 totalAssetCount: assetIDs.count
             )
         )
+        if blocksMove {
+            _ = moveReleaseSemaphore.wait(timeout: .now() + 5)
+        }
         return lock.withLock {
             storedFastDeleteAssetIDCalls.append(assetIDs)
             guard !storedMoveOutcomes.isEmpty else {
@@ -17349,6 +17617,10 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
 
     var photosFullRepairCallCount: Int {
         lock.withLock { storedPhotosFullRepairCallCount }
+    }
+
+    var photosReactivateCallCount: Int {
+        lock.withLock { storedPhotosReactivateCallCount }
     }
 
     var lastPhotosSyncSourceID: UUID? {
@@ -19024,6 +19296,8 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
     private var storedPersonalSuggestionInvalidationCallCount = 0
     private var storedPersonalModelRebuildEnqueueCallCount = 0
     private var storedQueueFetchCallCount = 0
+    private var failsQueueRead = false
+    func setQueueReadFailure(_ fails: Bool) { lock.withLock { failsQueueRead = fails } }
     private var storedReviewStateSnapshotCallCount = 0
     private let queuePageSize: Int?
     private let trainingSnapshot: PersonalTrainingSnapshot?
@@ -19152,7 +19426,8 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
         cursor: ReviewQueueCursor?,
         limit: Int
     ) throws -> ReviewQueuePage {
-        lock.withLock {
+        try lock.withLock {
+            if failsQueueRead { throw PersonalizationReviewError.persistenceFailure }
             storedQueueFetchCallCount += 1
             lastQueueSourceIDs = sourceIDs
             let excluded = decidedAssetIDsProvider?(tagID) ?? []
