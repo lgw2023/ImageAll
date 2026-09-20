@@ -2114,6 +2114,78 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         )
     }
 
+    func testReviewQueueTagFiltersApplyBeforePagination() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 10, preseedPredictions: 5)
+        let review = GRDBPersonalizationReviewRepository(database: fixture.database)
+        let candidates = try review.fetchReviewQueuePage(
+            tagID: fixture.tagID, cursor: nil, limit: 20
+        ).items
+        XCTAssertEqual(candidates.count, 5)
+        let place = try fixture.tags.createTag(
+            rawName: "Place", timestampMs: fixture.cutoffMs + 1
+        )
+        let activity = try fixture.tags.createTag(
+            rawName: "Activity", timestampMs: fixture.cutoffMs + 2
+        )
+        try seedDecisions(
+            database: fixture.database,
+            tagID: place.id,
+            accepted: [candidates[0].assetID, candidates[2].assetID],
+            rejected: [candidates[3].assetID]
+        )
+        try seedDecisions(
+            database: fixture.database,
+            tagID: activity.id,
+            accepted: [candidates[1].assetID, candidates[2].assetID],
+            rejected: []
+        )
+        let decisions = [
+            TagDecisionFilter(tagID: place.id, decision: .accepted),
+            TagDecisionFilter(tagID: activity.id, decision: .accepted),
+        ]
+        let anyFilter = ReviewQueueTagFilter(decisions: decisions, matchMode: .any)
+        var cursor: ReviewQueueCursor?
+        var found: [UUID] = []
+        repeat {
+            let page = try review.fetchReviewQueuePage(
+                tagID: fixture.tagID,
+                tagFilter: anyFilter,
+                cursor: cursor,
+                limit: 1
+            )
+            found += page.items.map(\.assetID)
+            cursor = page.nextCursor
+        } while cursor != nil
+        XCTAssertEqual(Set(found), Set(candidates.prefix(3).map(\.assetID)))
+        XCTAssertEqual(found.count, 3)
+
+        let allFilter = ReviewQueueTagFilter(decisions: decisions, matchMode: .all)
+        XCTAssertEqual(
+            try review.fetchReviewQueuePage(
+                tagID: fixture.tagID, tagFilter: allFilter, cursor: nil, limit: 20
+            ).items.map(\.assetID),
+            [candidates[2].assetID]
+        )
+        let excludedFilter = ReviewQueueTagFilter(
+            decisions: [decisions[0]], excludedTagIDs: [activity.id]
+        )
+        XCTAssertEqual(
+            try review.fetchReviewQueuePage(
+                tagID: fixture.tagID, tagFilter: excludedFilter, cursor: nil, limit: 20
+            ).items.map(\.assetID),
+            [candidates[0].assetID]
+        )
+        let rejectedFilter = ReviewQueueTagFilter(decisions: [
+            TagDecisionFilter(tagID: place.id, decision: .rejected),
+        ])
+        XCTAssertEqual(
+            try review.fetchReviewQueuePage(
+                tagID: fixture.tagID, tagFilter: rejectedFilter, cursor: nil, limit: 20
+            ).items.map(\.assetID),
+            [candidates[3].assetID]
+        )
+    }
+
     func testPersistentPersonalLibraryPayloadContainsOnlyCatalogAndBundleFacts() throws {
         let fixture = try makeLargeLibraryFixture(assetCount: 6)
         let capability = try makePersonalCapability(

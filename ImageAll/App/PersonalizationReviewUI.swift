@@ -2255,6 +2255,34 @@ struct ReviewQueueContentView: View {
             .padding(.vertical, 10)
             .background(.bar)
             Divider()
+            if let summary = model.tagFilterSummaryText() {
+                HStack(spacing: 10) {
+                    Image(systemName: "line.3.horizontal.decrease.circle")
+                        .foregroundStyle(.secondary)
+                    Text("标签筛选：\(summary)")
+                        .font(.callout)
+                        .lineLimit(2)
+                    Spacer(minLength: 8)
+                    if model.selectedTagFilterIDs.count > 1 {
+                        Picker("标签关系", selection: Binding(
+                            get: { model.tagMatchMode },
+                            set: { mode in Task { await model.setTagMatchMode(mode) } }
+                        )) {
+                            Text("或").tag(TagMatchMode.any)
+                            Text("且").tag(TagMatchMode.all)
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .frame(width: 100)
+                    }
+                    Button("清除") { Task { await model.clearTagFilters() } }
+                        .buttonStyle(.borderless)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(.bar)
+                Divider()
+            }
             if let error = model.reviewQueueError {
                 HStack {
                     Label(error, systemImage: "exclamationmark.triangle")
@@ -2492,6 +2520,7 @@ struct ReviewQueueContentView: View {
     private var emptyTitle: String {
         if model.reviewQueueError != nil { return "建议读取失败" }
         if model.resolvedReviewSourceFilter?.isEmpty == true { return "尚未选择来源" }
+        if model.hasActiveTagFilters { return "当前标签筛选没有待审建议" }
         guard let overview = model.suggestionOverviews.first(where: { $0.id == tagID }) else {
             return "暂无建议"
         }
@@ -2507,6 +2536,7 @@ struct ReviewQueueContentView: View {
     private var emptyDescription: String {
         if model.reviewQueueError != nil { return "请重试载入；读取失败不代表已经审核完成。" }
         if model.resolvedReviewSourceFilter?.isEmpty == true { return "选择至少一个来源以查看建议。" }
+        if model.hasActiveTagFilters { return "可在左侧调整标签条件，或清除上方筛选。" }
         guard let overview = model.suggestionOverviews.first(where: { $0.id == tagID }) else {
             return "可调整来源范围，或返回总览生成建议。"
         }

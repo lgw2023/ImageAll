@@ -126,6 +126,14 @@ struct ReviewQueuePage: Equatable, Sendable {
     let nextCursor: ReviewQueueCursor?
 }
 
+struct ReviewQueueTagFilter: Equatable, Sendable {
+    var decisions: [TagDecisionFilter] = []
+    var excludedTagIDs: [UUID] = []
+    var matchMode: TagMatchMode = .any
+
+    var isEmpty: Bool { decisions.isEmpty && excludedTagIDs.isEmpty }
+}
+
 struct AssetPendingSuggestion: Identifiable, Equatable, Sendable {
     let tagID: UUID
     let displayName: String
@@ -380,6 +388,14 @@ protocol PersonalizationReviewPort: Sendable {
         cursor: ReviewQueueCursor?,
         limit: Int
     ) throws -> ReviewQueuePage
+    func fetchReviewQueue(
+        mediaKind: MediaKind,
+        tagID: UUID,
+        sourceIDs: [UUID]?,
+        tagFilter: ReviewQueueTagFilter,
+        cursor: ReviewQueueCursor?,
+        limit: Int
+    ) throws -> ReviewQueuePage
     func personalSuggestionCandidates(
         mediaKind: MediaKind,
         afterAssetID: UUID?,
@@ -502,6 +518,24 @@ extension PersonalizationReviewPort {
             return ReviewQueuePage(items: [], nextCursor: nil)
         }
         return try fetchReviewQueue(
+            tagID: tagID,
+            sourceIDs: sourceIDs,
+            cursor: cursor,
+            limit: limit
+        )
+    }
+
+    func fetchReviewQueue(
+        mediaKind: MediaKind,
+        tagID: UUID,
+        sourceIDs: [UUID]?,
+        tagFilter: ReviewQueueTagFilter,
+        cursor: ReviewQueueCursor?,
+        limit: Int
+    ) throws -> ReviewQueuePage {
+        guard tagFilter.isEmpty else { throw PersonalizationReviewError.persistenceFailure }
+        return try fetchReviewQueue(
+            mediaKind: mediaKind,
             tagID: tagID,
             sourceIDs: sourceIDs,
             cursor: cursor,

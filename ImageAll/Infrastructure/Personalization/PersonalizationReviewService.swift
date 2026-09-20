@@ -237,6 +237,24 @@ struct PersonalizationReviewService: PersonalizationReviewPort, Sendable {
         )
     }
 
+    func fetchReviewQueue(
+        mediaKind: MediaKind,
+        tagID: UUID,
+        sourceIDs: [UUID]?,
+        tagFilter: ReviewQueueTagFilter,
+        cursor: ReviewQueueCursor?,
+        limit: Int
+    ) throws -> ReviewQueuePage {
+        try review.fetchReviewQueuePage(
+            mediaKind: mediaKind,
+            tagID: tagID,
+            sourceIDs: sourceIDs,
+            tagFilter: tagFilter,
+            cursor: cursor,
+            limit: limit
+        )
+    }
+
     func pendingSuggestionsForAsset(assetID: UUID) throws -> [AssetPendingSuggestion] {
         try review.pendingSuggestionsForAsset(assetID: assetID)
     }

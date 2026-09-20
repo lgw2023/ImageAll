@@ -1998,6 +1998,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
     func fetchReviewQueuePage(
         tagID: UUID,
         sourceIDs: [UUID]? = nil,
+        tagFilter: ReviewQueueTagFilter = ReviewQueueTagFilter(),
         cursor: ReviewQueueCursor?,
         limit: Int
     ) throws -> ReviewQueuePage {
@@ -2005,6 +2006,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             mediaKind: .image,
             tagID: tagID,
             sourceIDs: sourceIDs,
+            tagFilter: tagFilter,
             cursor: cursor,
             limit: limit
         )
@@ -2014,6 +2016,7 @@ struct GRDBPersonalizationReviewRepository: Sendable {
         mediaKind: MediaKind,
         tagID: UUID,
         sourceIDs: [UUID]? = nil,
+        tagFilter: ReviewQueueTagFilter = ReviewQueueTagFilter(),
         cursor: ReviewQueueCursor?,
         limit: Int
     ) throws -> ReviewQueuePage {
@@ -2122,6 +2125,48 @@ struct GRDBPersonalizationReviewRepository: Sendable {
             [uuid(tagID), mediaKind.rawValue, mediaKind.rawValue] + sourceArguments
             + [uuid(tagID), mediaKind.rawValue] + sourceArguments
             + [uuid(tagID), mediaKind.rawValue, mediaKind.rawValue] + sourceArguments
+        if !tagFilter.decisions.isEmpty {
+            switch tagFilter.matchMode {
+            case .all:
+                for decision in tagFilter.decisions {
+                    sql += """
+                     AND EXISTS (
+                        SELECT 1 FROM asset_tag_decision filter_decision
+                        WHERE filter_decision.asset_id = r.asset_id
+                            AND filter_decision.tag_id = ?
+                            AND filter_decision.decision = ?
+                     )
+                    """
+                    arguments += [uuid(decision.tagID), decision.decision.rawValue]
+                }
+            case .any:
+                let matches = Array(
+                    repeating: "(filter_decision.tag_id = ? AND filter_decision.decision = ?)",
+                    count: tagFilter.decisions.count
+                ).joined(separator: " OR ")
+                sql += """
+                 AND EXISTS (
+                    SELECT 1 FROM asset_tag_decision filter_decision
+                    WHERE filter_decision.asset_id = r.asset_id
+                        AND (\(matches))
+                 )
+                """
+                for decision in tagFilter.decisions {
+                    arguments += [uuid(decision.tagID), decision.decision.rawValue]
+                }
+            }
+        }
+        for excludedTagID in tagFilter.excludedTagIDs {
+            sql += """
+             AND NOT EXISTS (
+                SELECT 1 FROM asset_tag_decision filter_decision
+                WHERE filter_decision.asset_id = r.asset_id
+                    AND filter_decision.tag_id = ?
+                    AND filter_decision.decision = 'accepted'
+             )
+            """
+            arguments.append(uuid(excludedTagID))
+        }
         if let cursor {
             let boundary = try ReviewQueueCursorCodec.decodeBoundary(cursor)
             sql += """

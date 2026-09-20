@@ -10189,7 +10189,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             // ⌘-click = intersection. Removing a tag does not change mode.
             tagMatchMode = matchMode
         }
-        await loadFirstPage()
+        await reloadAfterTagFilterChange()
     }
 
     func filterToSingleIncludedTag(_ tagID: UUID) async {
@@ -10197,7 +10197,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         selectedTagFilterIDs = [tagID]
         excludedTagFilterIDs = []
         tagPresence = .any
-        await loadFirstPage()
+        await reloadAfterTagFilterChange()
     }
 
     func clearTagFilters() async {
@@ -10205,7 +10205,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         selectedTagFilterDecisions = [:]
         selectedTagFilterIDs = []
         excludedTagFilterIDs = []
-        await loadFirstPage()
+        await reloadAfterTagFilterChange()
     }
 
     func toggleExcludedTagFilter(_ tagID: UUID) async {
@@ -10217,7 +10217,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             excludedTagFilterIDs.insert(tagID)
             tagPresence = .any
         }
-        await loadFirstPage()
+        await reloadAfterTagFilterChange()
     }
 
     func isTagFilterIncluded(_ tagID: UUID) -> Bool {
@@ -10230,7 +10230,7 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     func setTagMatchMode(_ mode: TagMatchMode) async {
         tagMatchMode = mode
-        await loadFirstPage()
+        await reloadAfterTagFilterChange()
     }
 
     func setTagPresence(_ presence: TagPresenceFilter) async {
@@ -10342,7 +10342,7 @@ final class LibraryWorkspaceModel: ObservableObject {
         if decision != nil {
             tagPresence = .any
         }
-        await loadFirstPage()
+        await reloadAfterTagFilterChange()
     }
 
     func showAcceptedTag(_ tagID: UUID) async {
@@ -10351,6 +10351,34 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     func tagFilterDecision(for tagID: UUID) -> PersistableTagDecision? {
         selectedTagFilterDecisions[tagID]
+    }
+
+    private func reloadAfterTagFilterChange() async {
+        if case let .tagQueue(tagID, _) = reviewMode {
+            reviewPageRequestID = UUID()
+            reviewQueueItems = []
+            reviewNextCursor = nil
+            selectedReviewItemID = nil
+            selectedAssetIDs = []
+            isSinglePhotoPresented = false
+            await loadReviewQueueFirstPage(tagID: tagID)
+        } else if reviewMode == nil {
+            await loadFirstPage()
+        }
+    }
+
+    private var reviewQueueTagFilter: ReviewQueueTagFilter {
+        ReviewQueueTagFilter(
+            decisions: tags.compactMap { tag in
+                selectedTagFilterDecisions[tag.id].map {
+                    TagDecisionFilter(tagID: tag.id, decision: $0)
+                }
+            },
+            excludedTagIDs: excludedTagFilterIDs.sorted {
+                $0.uuidString < $1.uuidString
+            },
+            matchMode: tagMatchMode
+        )
     }
 
     private var currentFilter: AssetPageFilter {
@@ -11817,6 +11845,7 @@ extension LibraryWorkspaceModel {
         defer { if reviewPageRequestID == requestID { isLoadingReviewQueue = false } }
         let reviewPort = review
         let sourceFilter = resolvedReviewSourceFilter
+        let tagFilter = reviewQueueTagFilter
         let mediaKind = selectedMediaKind
         let service = service
         do {
@@ -11825,6 +11854,7 @@ extension LibraryWorkspaceModel {
                     mediaKind: mediaKind,
                     tagID: tagID,
                     sourceIDs: sourceFilter,
+                    tagFilter: tagFilter,
                     cursor: nil,
                     limit: 100
                 )
@@ -11882,6 +11912,7 @@ extension LibraryWorkspaceModel {
         let requestID = reviewPageRequestID
         let reviewPort = review
         let sourceFilter = resolvedReviewSourceFilter
+        let tagFilter = reviewQueueTagFilter
         let mediaKind = selectedMediaKind
         let service = service
         do {
@@ -11890,6 +11921,7 @@ extension LibraryWorkspaceModel {
                     mediaKind: mediaKind,
                     tagID: tagID,
                     sourceIDs: sourceFilter,
+                    tagFilter: tagFilter,
                     cursor: cursor,
                     limit: 100
                 )

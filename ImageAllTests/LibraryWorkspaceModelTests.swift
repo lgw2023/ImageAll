@@ -12617,6 +12617,52 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(provider.releaseCount, 1)
     }
 
+    func testSidebarTagFilterReloadsActiveReviewQueueAndClearsSelection() async {
+        let sourceID = UUID()
+        let reviewTag = TagListItem(id: UUID(), displayName: "老大", state: .active)
+        let placeTag = TagListItem(id: UUID(), displayName: "泰国", state: .active)
+        let asset = Self.makeAsset(sourceID: sourceID)
+        let item = ReviewQueueItemProjection(
+            assetID: asset.assetID,
+            fileName: asset.fileName,
+            availability: asset.availability,
+            acceptedTagCount: 1,
+            rejectedTagCount: 0
+        )
+        let review = FakePersonalizationReviewPort(queueItems: [item])
+        let model = LibraryWorkspaceModel(
+            service: FakeLibraryWorkspaceService(
+                connectedSource: LibrarySourceSummary(
+                    id: sourceID, displayName: "Fixture", state: .active
+                ),
+                reconciledItems: [asset],
+                tags: [reviewTag, placeTag],
+                startsConnected: true
+            ),
+            review: review
+        )
+        await model.start()
+        await model.enterReviewQueue(tagID: reviewTag.id, displayName: reviewTag.displayName)
+        await model.selectReviewItem(item.id)
+
+        await model.toggleIncludedTagFilter(placeTag.id, matchMode: .any)
+
+        XCTAssertEqual(review.lastQueueTagFilter.decisions, [
+            TagDecisionFilter(tagID: placeTag.id, decision: .accepted),
+        ])
+        XCTAssertEqual(review.lastQueueTagFilter.matchMode, .any)
+        XCTAssertTrue(model.selectedAssetIDs.isEmpty)
+        XCTAssertNil(model.selectedReviewItemID)
+        XCTAssertEqual(model.reviewQueueItems.map(\.assetID), [asset.assetID])
+
+        await model.toggleExcludedTagFilter(placeTag.id)
+        XCTAssertTrue(review.lastQueueTagFilter.decisions.isEmpty)
+        XCTAssertEqual(review.lastQueueTagFilter.excludedTagIDs, [placeTag.id])
+
+        await model.clearTagFilters()
+        XCTAssertTrue(review.lastQueueTagFilter.isEmpty)
+    }
+
     func testReviewVideoTabClearsPhotoQueueAndShowsNoPhotoCounts() async {
         let sourceID = UUID()
         let tag = TagListItem(id: UUID(), displayName: "Family", state: .active)
@@ -19296,6 +19342,7 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
     private var storedPersonalSuggestionInvalidationCallCount = 0
     private var storedPersonalModelRebuildEnqueueCallCount = 0
     private var storedQueueFetchCallCount = 0
+    private var storedLastQueueTagFilter = ReviewQueueTagFilter()
     private var failsQueueRead = false
     func setQueueReadFailure(_ fails: Bool) { lock.withLock { failsQueueRead = fails } }
     private var storedReviewStateSnapshotCallCount = 0
@@ -19443,6 +19490,27 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
                 : nil
             return ReviewQueuePage(items: items, nextCursor: nextCursor)
         }
+    }
+
+    func fetchReviewQueue(
+        mediaKind: MediaKind,
+        tagID: UUID,
+        sourceIDs: [UUID]?,
+        tagFilter: ReviewQueueTagFilter,
+        cursor: ReviewQueueCursor?,
+        limit: Int
+    ) throws -> ReviewQueuePage {
+        lock.withLock { storedLastQueueTagFilter = tagFilter }
+        guard mediaKind == .image else {
+            return ReviewQueuePage(items: [], nextCursor: nil)
+        }
+        return try fetchReviewQueue(
+            tagID: tagID, sourceIDs: sourceIDs, cursor: cursor, limit: limit
+        )
+    }
+
+    var lastQueueTagFilter: ReviewQueueTagFilter {
+        lock.withLock { storedLastQueueTagFilter }
     }
 
     func pendingSuggestionsForAsset(assetID: UUID) throws -> [AssetPendingSuggestion] {
