@@ -85,6 +85,7 @@ struct TimeStoryVerificationContainer: View {
                 rootProvider: taskRootStore, packageExporter: packageExporter,
                 installationID: taskRootStore.installationID
             ),
+            creativeRootProvider: taskRootStore,
             media: media,
             clock: SystemJobClock()
         )
@@ -415,6 +416,7 @@ struct TimeStoryTrialContainer: View {
                 packageExporter: packageExporter,
                 installationID: taskRootStore.installationID
             ),
+            creativeRootProvider: taskRootStore,
             media: media,
             clock: clock
         )

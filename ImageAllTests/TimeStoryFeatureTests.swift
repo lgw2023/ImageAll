@@ -1395,6 +1395,24 @@ final class TimeStoryFeatureTests: XCTestCase {
         )
     }
 
+    func testManualCandidateAdditionKeepsStoryChronologicalAndEditable() throws {
+        let first = UUID(), second = UUID(), middle = UUID()
+        var project = renderProject(first: first, second: second)
+        let candidate = candidate(middle.uuidString, time: timestamp(2022, 1, 1))
+        project.candidateSnapshot = makeSnapshot(project.candidateSnapshot.candidates + [candidate])
+        let planner = TimeStoryPlanner()
+
+        XCTAssertEqual(planner.addableCandidates(in: project).map(\.assetID), [middle])
+        let updated = try planner.appending(candidate, to: project, nowMs: 42)
+        XCTAssertEqual(updated.shots.map(\.assetID), [first, middle, second])
+        XCTAssertEqual(updated.chapters[0].shotIDs, updated.shots.map(\.id))
+        XCTAssertEqual(updated.shots[1].caption, "")
+        XCTAssertFalse(updated.shots[1].isLocked)
+        XCTAssertEqual(updated.updatedAtMs, 42)
+        XCTAssertEqual(updated.readiness.matchingCount, 3)
+        XCTAssertThrowsError(try planner.appending(candidate, to: updated, nowMs: 43))
+    }
+
     func testCreativePluginBoundedRoundTripAndStaleRejection() async throws {
         let root = try temporaryDirectory("creative").resolvingSymlinksInPath()
         let first = UUID(), second = UUID()

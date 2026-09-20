@@ -185,6 +185,7 @@ enum TimeStoryError: Error, Sendable, Equatable, LocalizedError {
     case mediaValidationFailed([TimeStoryMediaValidationIssue])
     case preservedMediaChanged(String)
     case capacityConflict(Int)
+    case candidateNotAddable
 
     var errorDescription: String? {
         switch self {
@@ -205,6 +206,8 @@ enum TimeStoryError: Error, Sendable, Equatable, LocalizedError {
             "保留的镜头 \(asset) 已失效、改版或不再属于主体标签；请解锁、排除或重新选择后再生成。"
         case let .capacityConflict(count):
             "有 \(count) 个锁定或手动修改镜头，超过 18 个镜头容量；请解锁或排除至少 \(count - 18) 个。"
+        case .candidateNotAddable:
+            "只能从当前主体快照补入可用、有可靠时间且与单章节同地点的未使用照片；最多 18 张。"
         }
     }
 }
@@ -869,6 +872,54 @@ struct TimeStoryPlanner: Sendable {
                 && !used.contains($0.assetID)
                 && !project.excludedAssetIDs.contains($0.assetID)
         }.sorted(by: candidateTimeOrder)
+    }
+
+    func addableCandidates(in project: TimeStoryProject) -> [TimeStoryCandidate] {
+        guard project.shots.count < TimeStoryConstants.maximumShots,
+              project.chapters.count == 1,
+              let first = project.shots.first,
+              project.shots.allSatisfy({ $0.chapterID == project.chapters[0].id }),
+              let anchor = project.candidateSnapshot.candidates.first(where: { $0.assetID == first.assetID })
+        else { return [] }
+        let used = Set(project.shots.map(\.assetID))
+        return project.candidateSnapshot.candidates.filter {
+            $0.availability == .available
+                && $0.mediaCreatedAtMs != nil
+                && $0.placeName == anchor.placeName
+                && !used.contains($0.assetID)
+                && !project.excludedAssetIDs.contains($0.assetID)
+        }.sorted(by: candidateTimeOrder)
+    }
+
+    func appending(_ candidate: TimeStoryCandidate, to project: TimeStoryProject, nowMs: Int64) throws -> TimeStoryProject {
+        guard addableCandidates(in: project).contains(candidate) else {
+            throw TimeStoryError.candidateNotAddable
+        }
+        var updated = project
+        let chapterID = updated.chapters[0].id
+        updated.shots.append(TimeStoryShot(
+            id: TimeStoryStableID.uuid("shot|\(candidate.assetID.uuidString.lowercased())"),
+            assetID: candidate.assetID,
+            contentRevision: candidate.contentRevision,
+            chapterID: chapterID,
+            caption: "",
+            durationSeconds: TimeStoryConstants.defaultShotDurationSeconds,
+            presentationMode: .fullFrameWithBackground,
+            reasons: ["人工补选候选"],
+            isLocked: false,
+            isUserEdited: false
+        ))
+        let byID = Dictionary(uniqueKeysWithValues: updated.candidateSnapshot.candidates.map { ($0.assetID, $0) })
+        updated.shots.sort { lhs, rhs in
+            guard let left = byID[lhs.assetID], let right = byID[rhs.assetID] else {
+                return lhs.assetID.uuidString < rhs.assetID.uuidString
+            }
+            return candidateTimeOrder(left, right)
+        }
+        updated.chapters[0].shotIDs = updated.shots.map(\.id)
+        updated.readiness = readiness(for: updated.candidateSnapshot, selectedCount: updated.shots.count)
+        updated.updatedAtMs = nowMs
+        return updated
     }
 
     private func timeBounds(_ candidates: [TimeStoryCandidate]) -> (start: Int64, end: Int64)? {
@@ -1552,6 +1603,7 @@ struct TimeStoryFeatureRuntime: Sendable {
     let renderer: any TimeStoryRendering
     let packageExporter: any TimeStoryPackageExporting
     let openMontageTasks: any OpenMontageStoryTasking
+    let creativeRootProvider: any OpenMontageTaskRootProviding
     let media: any TimeStoryMediaLoading
     let clock: any JobClock
 }

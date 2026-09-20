@@ -81,7 +81,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     @Published var message: String?
 
     private var creativePlugin: StoryCreativePlugin {
-        StoryCreativePlugin(rootProvider: UserDefaultsOpenMontageTaskRootStore(),
+        StoryCreativePlugin(rootProvider: runtime.creativeRootProvider,
                             exporter: runtime.packageExporter, validator: runtime.validator)
     }
     func setCreativeIntent(_ value: String) { project?.creativeIntent = String(value.prefix(4000)) }
@@ -408,6 +408,23 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     func replacementCandidates(for shotID: UUID) -> [TimeStoryCandidate] {
         guard let project else { return [] }
         return runtime.planner.replacementCandidates(for: shotID, in: project)
+    }
+
+    var addableCandidates: [TimeStoryCandidate] {
+        guard let project else { return [] }
+        return runtime.planner.addableCandidates(in: project)
+    }
+
+    func addCandidate(_ candidate: TimeStoryCandidate) async {
+        guard let current = project else { return }
+        do {
+            let updated = try runtime.planner.appending(candidate, to: current, nowMs: runtime.clock.nowMs)
+            project = updated
+            if let shot = updated.shots.first(where: { $0.assetID == candidate.assetID }) {
+                await loadThumbnail(for: shot)
+            }
+            message = "已从本次限定候选补入照片；请核对顺序、字幕并保存。"
+        } catch { message = error.localizedDescription }
     }
 
     func export(to destination: URL) {
@@ -969,6 +986,18 @@ struct TimeStoryWorkspaceView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             readinessBody(summary: summary, snapshot: project.candidateSnapshot)
+            if !model.addableCandidates.isEmpty {
+                Menu("从本次候选补入镜头…") {
+                    ForEach(Array(model.addableCandidates.prefix(40).enumerated()), id: \.element.assetID) { item in
+                        let candidate = item.element
+                        Button("拍摄顺序 \(item.offset + 1) · \(Date(timeIntervalSince1970: Double(candidate.mediaCreatedAtMs ?? 0) / 1000).formatted(date: .omitted, time: .standard)) · \(candidate.width ?? 0)×\(candidate.height ?? 0)") {
+                            Task { await model.addCandidate(candidate) }
+                        }
+                    }
+                }
+                .accessibilityIdentifier("timeStoryAddCandidate")
+                .persistentHelp("仅补入同一已确认地点的可用、可靠时间照片，最多 18 张；按拍摄时间插入。")
+            }
             Text("本故事已排除 \(project.excludedAssetIDs.count) 张；排除会在重新生成后继续生效。")
                 .font(.caption).foregroundStyle(.secondary)
             if project.timelineDurationSeconds > target {

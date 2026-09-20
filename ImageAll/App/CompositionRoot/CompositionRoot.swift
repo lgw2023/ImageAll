@@ -578,6 +578,7 @@ struct CompositionRoot {
                         packageExporter: packageExporter,
                         installationID: taskRootStore.installationID
                     ),
+                    creativeRootProvider: taskRootStore,
                     media: assetImages,
                     clock: clock
                 )
