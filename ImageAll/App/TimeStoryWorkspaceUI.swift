@@ -32,6 +32,23 @@ struct TimeStorySheetModifier: ViewModifier {
     }
 }
 
+private enum OpenMontageResultSaveError: LocalizedError {
+    case directoryAuthorizationRequired
+    case invalidDestination
+    case fileAlreadyExists
+
+    var errorDescription: String? {
+        switch self {
+        case .directoryAuthorizationRequired:
+            "无法写入所选文件夹，请重新选择保存位置。"
+        case .invalidDestination:
+            "成片只能另存到刚刚选择的文件夹中。"
+        case .fileAlreadyExists:
+            "所选文件夹已有同名文件，请更换文件名；现有文件未被覆盖。"
+        }
+    }
+}
+
 @MainActor
 final class TimeStoryWorkspaceModel: ObservableObject {
     @Published private(set) var project: TimeStoryProject?
@@ -440,10 +457,19 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         }
     }
 
-    func saveOpenMontageResult(to destination: URL) {
+    func saveOpenMontageResult(to destination: URL, in authorizedDirectory: URL) {
         withVerifiedOpenMontageResult { [weak self] result in
             do {
-                try Self.copyVerifiedResult(result, to: destination)
+                let didAccess = authorizedDirectory.startAccessingSecurityScopedResource()
+                guard didAccess else {
+                    throw OpenMontageResultSaveError.directoryAuthorizationRequired
+                }
+                defer { authorizedDirectory.stopAccessingSecurityScopedResource() }
+                try Self.copyVerifiedResult(
+                    result,
+                    to: destination,
+                    in: authorizedDirectory
+                )
                 self?.message = "成片已另存为：\(destination.lastPathComponent)"
             } catch {
                 self?.message = error.localizedDescription
@@ -513,33 +539,29 @@ final class TimeStoryWorkspaceModel: ObservableObject {
 
     private static func copyVerifiedResult(
         _ result: OpenMontageVerifiedResult,
-        to destination: URL
+        to destination: URL,
+        in authorizedDirectory: URL
     ) throws {
         let fileManager = FileManager.default
         let parent = destination.deletingLastPathComponent()
-        guard fileManager.fileExists(atPath: parent.path) else {
-            throw TimeStoryError.invalidDestination
+        guard parent.standardizedFileURL == authorizedDirectory.standardizedFileURL,
+              parent.resolvingSymlinksInPath() == authorizedDirectory.resolvingSymlinksInPath(),
+              fileManager.fileExists(atPath: parent.path)
+        else {
+            throw OpenMontageResultSaveError.invalidDestination
+        }
+        guard !fileManager.fileExists(atPath: destination.path) else {
+            throw OpenMontageResultSaveError.fileAlreadyExists
         }
         let staging = parent.appendingPathComponent(
             ".imageall-openmontage-\(UUID().uuidString).tmp.mp4"
         )
-        let backupName = ".imageall-openmontage-\(UUID().uuidString).backup.mp4"
         defer { try? fileManager.removeItem(at: staging) }
         try fileManager.copyItem(at: result.fileURL, to: staging)
         guard try OpenMontageTaskFileValidation.sha256(staging) == result.fileSHA256 else {
             throw OpenMontageTaskError.resultValidationFailed("另存前文件哈希发生变化。")
         }
-        if fileManager.fileExists(atPath: destination.path) {
-            _ = try fileManager.replaceItemAt(
-                destination,
-                withItemAt: staging,
-                backupItemName: backupName,
-                options: .usingNewMetadataOnly
-            )
-            try? fileManager.removeItem(at: parent.appendingPathComponent(backupName))
-        } else {
-            try fileManager.moveItem(at: staging, to: destination)
-        }
+        try fileManager.moveItem(at: staging, to: destination)
     }
 
     private static func openMontageTerminalMessage(
@@ -1017,12 +1039,38 @@ struct TimeStoryWorkspaceView: View {
 
     private func chooseOpenMontageResultDestination() {
         guard let project = model.project else { return }
-        let panel = NSSavePanel()
+        let panel = NSOpenPanel()
         panel.title = "另存 OpenMontage 成片"
-        panel.allowedContentTypes = [.mpeg4Movie]
-        panel.nameFieldStringValue = "\(project.subjectTagDisplayName)-OpenMontage.mp4"
-        if panel.runModal() == .OK, let url = panel.url {
-            model.saveOpenMontageResult(to: url)
+        panel.message = "选择保存文件夹；ImageAll 会在这个文件夹内校验并发布成片。"
+        panel.prompt = "保存到此文件夹"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        let accessory = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 48))
+        let label = NSTextField(labelWithString: "成片文件名")
+        label.frame = NSRect(x: 0, y: 28, width: 360, height: 18)
+        let fileName = NSTextField(
+            frame: NSRect(x: 0, y: 0, width: 360, height: 24)
+        )
+        fileName.stringValue = "\(project.subjectTagDisplayName)-OpenMontage.mp4"
+        fileName.setAccessibilityIdentifier("openMontageResultFileName")
+        accessory.addSubview(label)
+        accessory.addSubview(fileName)
+        panel.accessoryView = accessory
+        if panel.runModal() == .OK, let directory = panel.url {
+            let name = fileName.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, name != ".", name != "..",
+                  !name.contains("/"), !name.contains(":"),
+                  name.lowercased().hasSuffix(".mp4")
+            else {
+                model.message = "请输入不含路径符号、以 .mp4 结尾的文件名。"
+                return
+            }
+            model.saveOpenMontageResult(
+                to: directory.appendingPathComponent(name),
+                in: directory
+            )
         }
     }
 
