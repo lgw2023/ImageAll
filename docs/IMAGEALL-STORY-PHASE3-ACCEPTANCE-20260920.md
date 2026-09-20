@@ -1,5 +1,9 @@
 # 时光故事第三阶段：本地 OpenMontage 双边联调记录
 
+> 后续状态（2026-09-20）：本页保留当时的短片、竖屏及失败路径联调记录。随后从日常安装版 App 提交的约 60 秒横屏任务已完成联合验收；唯一权威结论及新证据见
+> `/Volumes/SSD1/ImageAll-Story-Interop/phase3/joint-acceptance-20260920-101819/JOINT_ACCEPTANCE.md`。
+> 本页的历史任务与当时尚未覆盖的范围不回填为已完成。
+
 - 日期：2026-09-20
 - 工作目录：`/Volumes/SSD1/ImageAll`，`main`，仅本地提交，未 push
 - 数据边界：只用代码生成的合成图片和音频；未访问 `/Volumes/HDD2` 的受保护真实照片，未对真实来源执行写入、删除、移动或云端下载
