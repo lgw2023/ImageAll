@@ -149,6 +149,9 @@ struct TimeStoryProject: Codable, Sendable, Equatable, Identifiable {
     var music: TimeStoryMusicSelection?
     // Optional to decode existing v1 projects without a migration.
     var chapterTitleOverrides: [UUID: String]? = nil
+    var creativeIntent: String? = nil
+    var creativeTargetFrames: Int? = nil
+    var creativeReceipt: StoryCreativeReceipt? = nil
 
     var timelineDurationSeconds: Double {
         (try? TimeStoryTimeline.normalize(project: self).durationSeconds) ?? 0

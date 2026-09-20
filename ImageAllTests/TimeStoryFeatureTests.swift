@@ -1395,6 +1395,81 @@ final class TimeStoryFeatureTests: XCTestCase {
         )
     }
 
+    func testCreativePluginBoundedRoundTripAndStaleRejection() async throws {
+        let root = try temporaryDirectory("creative").resolvingSymlinksInPath()
+        let first = UUID(), second = UUID()
+        var project = renderProject(first: first, second: second)
+        project.creativeIntent = "按时间讲述合成主体的变化"
+        project.creativeTargetFrames = 300
+        let media = FixtureStoryMediaLoader(images: [first: try pngData(color: .red, portrait: false), second: try pngData(color: .blue, portrait: true)])
+        let exporter = StoryRenderPackageExporter(media: media, validator: PassingStoryValidator())
+        let plugin = StoryCreativePlugin(rootProvider: FixtureOpenMontageRootProvider(root: root), exporter: exporter, validator: PassingStoryValidator())
+        let creative = root.appendingPathComponent("creative")
+        try FileManager.default.createDirectory(at: creative, withIntermediateDirectories: true)
+        let capability: [String: Any] = ["protocolVersion": "1.0", "profile": "editable-story-v1", "pluginID": "openmontage", "pluginVersion": "1.0.0", "planningMode": "agent-assisted", "automaticPlanning": false, "externalSendAllowed": false, "renderProtocol": "1.1", "renderPackage": "0.1"]
+        try JSONSerialization.data(withJSONObject: capability).write(to: creative.appendingPathComponent("capabilities.json"))
+        let receipt = try await plugin.publish(project: project, aspect: .landscape)
+        project.creativeReceipt = receipt
+        let directory = creative.appendingPathComponent("requests/" + receipt.requestID)
+        let requestData = try Data(contentsOf: directory.appendingPathComponent("request.json"))
+        XCTAssertEqual(StoryCreativePlugin.hash(requestData), receipt.requestSHA256)
+        let request = try JSONDecoder().decode(StoryCreativeRequest.self, from: requestData)
+        XCTAssertFalse(request.externalSendAllowed)
+        XCTAssertEqual(request.facts.count, 2)
+        XCTAssertFalse(String(decoding: requestData, as: UTF8.self).contains("filePath"))
+        var plan = StoryCreativePlan(protocolVersion: "1.0", profile: "editable-story-v1", requestID: receipt.requestID, requestSHA256: receipt.requestSHA256,
+            pluginVersion: "1.0.0", planningMode: "agent-assisted", title: "新标题", chapters: request.chapters,
+            shots: request.shots.map { .init(shotID: $0.shotID, assetID: $0.assetID, chapterID: $0.chapterID, caption: "导演字幕", durationFrames: 75,
+                                            factRefs: [$0.assetID + ".captureTimeMs"], rationale: "保留时间跨度") },
+            observations: ["合成素材"], uncertainties: ["未进行真人或宠物身份判断"])
+        let data = try StoryCreativePlugin.encode(plan)
+        let hash = StoryCreativePlugin.hash(data)
+        try data.write(to: directory.appendingPathComponent("plan.json"))
+        try StoryCreativePlugin.encode(["requestSHA256": receipt.requestSHA256, "planSHA256": hash]).write(to: directory.appendingPathComponent("ready.json"))
+        let (loadedRequest, loadedPlan, loadedHash) = try plugin.loadPlan(receipt)
+        var applied = try plugin.apply(loadedPlan, request: loadedRequest, digest: loadedHash, to: project)
+        XCTAssertEqual(applied.title, "新标题")
+        XCTAssertEqual(applied.shots.first?.durationSeconds, 2.5)
+        XCTAssertEqual(applied.candidateSnapshot, project.candidateSnapshot, "插件观察不能修改图库事实")
+        let store = TimeStoryProjectStore(applicationSupportDirectory: root)
+        applied.shots[0].caption = "用户修改"
+        try store.save(applied)
+        XCTAssertEqual(try store.load(applied.id), applied)
+        var edited = project
+        edited.shots[0].caption = "发布后用户编辑"
+        XCTAssertThrowsError(try plugin.apply(plan, request: request, digest: hash, to: edited))
+        plan.profile = "arbitrary-atelier"
+        XCTAssertThrowsError(try plugin.apply(plan, request: request, digest: hash, to: project))
+        try plugin.cancel(receipt)
+        XCTAssertTrue(try plugin.status(receipt).contains("已取消"))
+        XCTAssertThrowsError(try plugin.loadPlan(receipt))
+        let retry = try await plugin.publish(project: project, aspect: .portrait)
+        XCTAssertNotEqual(retry.requestID, receipt.requestID)
+    }
+
+    func testCreativePluginRejectsLockedChangesAndUnsafePath() throws {
+        let root = try temporaryDirectory("creative-lock").resolvingSymlinksInPath()
+        let first = UUID(), second = UUID()
+        var project = renderProject(first: first, second: second)
+        project.shots[0].isLocked = true
+        let base = try StoryCreativePlugin.fingerprint(project)
+        let rid = "creative-" + UUID().uuidString.lowercased()
+        let hash = String(repeating: "a", count: 64)
+        project.creativeReceipt = .init(requestID: rid, requestSHA256: hash, baseFingerprint: base, aspect: .landscape)
+        let request = StoryCreativeRequest(requestID: rid, projectID: "story-one", baseFingerprint: base, intent: "test", subject: "test", targetFrames: 180, aspect: .landscape, storySHA256: hash,
+            facts: project.shots.enumerated().map { .init(assetID: $0.element.assetID.uuidString, contentVersion: "v1", sha256: hash, captureTimeMs: Int64($0.offset), captureTimeSource: nil, placeName: nil) },
+            shots: project.shots.map { .init(shotID: $0.id.uuidString.lowercased(), assetID: $0.assetID.uuidString, chapterID: $0.chapterID.uuidString.lowercased(), caption: $0.caption, durationFrames: 45, locked: $0.isLocked, userEdited: false) },
+            chapters: project.chapters.map { .init(chapterID: $0.id.uuidString.lowercased(), title: $0.title) }, title: project.title)
+        let plan = StoryCreativePlan(protocolVersion: "1.0", profile: "editable-story-v1", requestID: rid, requestSHA256: hash, pluginVersion: "1", planningMode: "agent-assisted", title: project.title, chapters: request.chapters,
+            shots: request.shots.map { .init(shotID: $0.shotID, assetID: $0.assetID, chapterID: $0.chapterID, caption: "changed", durationFrames: 45, factRefs: [], rationale: "test") }, observations: [], uncertainties: [])
+        let media = FixtureStoryMediaLoader(images: [:])
+        let plugin = StoryCreativePlugin(rootProvider: FixtureOpenMontageRootProvider(root: root), exporter: StoryRenderPackageExporter(media: media, validator: PassingStoryValidator()), validator: PassingStoryValidator())
+        XCTAssertThrowsError(try plugin.apply(plan, request: request, digest: hash, to: project))
+        XCTAssertThrowsError(try StoryCreativePlugin.safe("../escape", root: root))
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("link"), withDestinationURL: root)
+        XCTAssertThrowsError(try StoryCreativePlugin.safe("link/anything", root: root))
+    }
+
     private func renderProject(first: UUID, second: UUID) -> TimeStoryProject {
         let chapterID = UUID()
         let firstCandidate = candidate(first.uuidString, time: timestamp(2020, 1, 1))

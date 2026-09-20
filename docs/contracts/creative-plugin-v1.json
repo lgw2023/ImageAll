@@ -1,0 +1,384 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "imageall/creative-plugin-v1",
+  "$defs": {
+    "capabilities": {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": "1.0"
+        },
+        "profile": {
+          "const": "editable-story-v1"
+        },
+        "pluginID": {
+          "const": "openmontage"
+        },
+        "pluginVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "planningMode": {
+          "const": "agent-assisted"
+        },
+        "automaticPlanning": {
+          "const": false
+        },
+        "renderProtocol": {
+          "const": "1.1"
+        },
+        "renderPackage": {
+          "const": "0.1"
+        },
+        "externalSendAllowed": {
+          "const": false
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "profile",
+        "pluginID",
+        "pluginVersion",
+        "planningMode",
+        "automaticPlanning",
+        "renderProtocol",
+        "renderPackage",
+        "externalSendAllowed"
+      ],
+      "additionalProperties": false
+    },
+    "request": {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": "1.0"
+        },
+        "profile": {
+          "const": "editable-story-v1"
+        },
+        "requestID": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9-]{1,80}$"
+        },
+        "projectID": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9-]{1,80}$"
+        },
+        "baseFingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "intent": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "subject": {
+          "type": "string"
+        },
+        "targetFrames": {
+          "type": "integer",
+          "minimum": 30,
+          "maximum": 18000
+        },
+        "aspect": {
+          "enum": [
+            "landscape",
+            "portrait"
+          ]
+        },
+        "externalSendAllowed": {
+          "const": false
+        },
+        "storySHA256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "facts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "assetID": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9-]{1,80}$"
+              },
+              "contentVersion": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "captureTimeMs": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "captureTimeSource": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "placeName": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "assetID",
+              "contentVersion",
+              "sha256"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1,
+          "maxItems": 100
+        },
+        "shots": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "shotID": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9-]{1,80}$"
+              },
+              "assetID": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9-]{1,80}$"
+              },
+              "chapterID": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9-]{1,80}$"
+              },
+              "caption": {
+                "type": "string",
+                "maxLength": 600
+              },
+              "durationFrames": {
+                "type": "integer",
+                "minimum": 45,
+                "maximum": 360
+              },
+              "locked": {
+                "type": "boolean"
+              },
+              "userEdited": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "shotID",
+              "assetID",
+              "chapterID",
+              "caption",
+              "durationFrames",
+              "locked",
+              "userEdited"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1,
+          "maxItems": 100
+        },
+        "chapters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "chapterID": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9-]{1,80}$"
+              },
+              "title": {
+                "type": "string",
+                "maxLength": 240
+              }
+            },
+            "required": [
+              "chapterID",
+              "title"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1,
+          "maxItems": 100
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 240
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "profile",
+        "requestID",
+        "projectID",
+        "baseFingerprint",
+        "intent",
+        "subject",
+        "targetFrames",
+        "aspect",
+        "externalSendAllowed",
+        "storySHA256",
+        "facts",
+        "shots",
+        "chapters",
+        "title"
+      ],
+      "additionalProperties": false
+    },
+    "plan": {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": "1.0"
+        },
+        "profile": {
+          "const": "editable-story-v1"
+        },
+        "requestID": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9-]{1,80}$"
+        },
+        "requestSHA256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "pluginVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "planningMode": {
+          "const": "agent-assisted"
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 240
+        },
+        "chapters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "chapterID": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9-]{1,80}$"
+              },
+              "title": {
+                "type": "string",
+                "maxLength": 240
+              }
+            },
+            "required": [
+              "chapterID",
+              "title"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1,
+          "maxItems": 100
+        },
+        "shots": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "shotID": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9-]{1,80}$"
+              },
+              "assetID": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9-]{1,80}$"
+              },
+              "chapterID": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9-]{1,80}$"
+              },
+              "caption": {
+                "type": "string",
+                "maxLength": 600
+              },
+              "durationFrames": {
+                "type": "integer",
+                "minimum": 45,
+                "maximum": 360
+              },
+              "factRefs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "uniqueItems": true
+              },
+              "rationale": {
+                "type": "string",
+                "maxLength": 2000
+              }
+            },
+            "required": [
+              "shotID",
+              "assetID",
+              "chapterID",
+              "caption",
+              "durationFrames",
+              "factRefs",
+              "rationale"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1,
+          "maxItems": 100
+        },
+        "observations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "maxItems": 100
+        },
+        "uncertainties": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "maxItems": 100
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "profile",
+        "requestID",
+        "requestSHA256",
+        "pluginVersion",
+        "planningMode",
+        "title",
+        "chapters",
+        "shots",
+        "observations",
+        "uncertainties"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

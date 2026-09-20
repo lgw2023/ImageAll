@@ -446,6 +446,10 @@ struct StoryRenderPackageExporter: TimeStoryPackageExporting, Sendable {
         opaqueID(prefix: "story", components: [projectID.uuidString])
     }
 
+    static func packageAssetID(projectID: UUID, assetID: UUID) -> String {
+        opaqueID(prefix: "photo", components: [projectID.uuidString, assetID.uuidString])
+    }
+
     private static func opaqueID(prefix: String, components: [String]) -> String {
         "\(prefix)-\(sha256(Data(components.joined(separator: "|").lowercased().utf8)).prefix(24))"
     }
