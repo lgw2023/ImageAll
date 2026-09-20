@@ -738,7 +738,7 @@ actor FileOpenMontageStoryTaskClient: OpenMontageStoryTasking {
         } else {
             result = nil
         }
-        var detail = status.error.map { "\($0.code)：\($0.message)" }
+        var detail = Self.userFacingTaskDetail(phase: phase, errorCode: status.error?.code)
         if detail == nil, !phase.isTerminal,
            let capability = try? Self.readCapability(root: root, now: now()),
            capability.state != .ready
@@ -826,8 +826,12 @@ actor FileOpenMontageStoryTaskClient: OpenMontageStoryTasking {
             break
         case "degraded":
             throw OpenMontageTaskError.dependenciesUnavailable("执行器报告本地依赖不可用。")
-        case "starting", "draining", "stopped":
-            throw OpenMontageTaskError.executorOffline("执行器当前状态：\(heartbeat.availability)。")
+        case "starting":
+            throw OpenMontageTaskError.executorOffline("本地执行器正在启动，请稍后刷新状态。")
+        case "draining":
+            throw OpenMontageTaskError.executorOffline("本地执行器正在停止，请等待它完成后重新启动。")
+        case "stopped":
+            throw OpenMontageTaskError.executorOffline("本地执行器已停止，请启动后刷新状态。")
         default:
             throw OpenMontageTaskError.executorIncompatible("执行器报告未知在线状态。")
         }
@@ -941,9 +945,11 @@ actor FileOpenMontageStoryTaskClient: OpenMontageStoryTasking {
             throw OpenMontageTaskError.resultValidationFailed("无法开始复核成片。")
         }
         var frames = 0
-        while output.copyNextSampleBuffer() != nil {
+        while let sampleBuffer = output.copyNextSampleBuffer() {
             try Task.checkCancellation()
-            frames += 1
+            // Compressed H.264 tracks can emit timing/end-marker buffers with
+            // zero samples. Count video samples, not reader callbacks.
+            frames += CMSampleBufferGetNumSamples(sampleBuffer)
         }
         guard reader.status == .completed else {
             throw OpenMontageTaskError.resultValidationFailed("成片未能完整解码。")
@@ -1105,6 +1111,25 @@ actor FileOpenMontageStoryTaskClient: OpenMontageStoryTasking {
         case "running", "cancelling":
             stage == "verification" || stage == "publication" ? .verifyingResult : .rendering
         default: .interrupted
+        }
+    }
+
+    private static func userFacingTaskDetail(
+        phase: OpenMontageStoryTaskPhase,
+        errorCode: String?
+    ) -> String? {
+        switch phase {
+        case .failed:
+            if errorCode == "RESULT_VERIFICATION_FAILED" {
+                return "成片未通过执行器检查。请查看本地任务记录；原生制作仍可使用。"
+            }
+            return "这次制作未完成。请查看本地执行器的任务记录；原生制作仍可使用。"
+        case .cancelled:
+            return "取消请求已确认，没有发布成片。"
+        case .interrupted:
+            return "制作已中断，结果无法确认；请检查本地执行器。不会自动重新提交。"
+        case .preparingAssets, .waitingForExecutor, .rendering, .verifyingResult, .succeeded:
+            return nil
         }
     }
 

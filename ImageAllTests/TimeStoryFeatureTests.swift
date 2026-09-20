@@ -278,6 +278,19 @@ final class TimeStoryFeatureTests: XCTestCase {
         let silent = root.appendingPathComponent("silent.mp4")
         try await renderer.render(project: project, destinationURL: silent) { _ in }
         try await assertPlayableVideo(silent, expectsAudio: false, expectedDuration: project.timelineDurationSeconds)
+        let silentAsset = AVURLAsset(url: silent)
+        let silentTracks = try await silentAsset.loadTracks(withMediaType: .video)
+        let silentTrack = try XCTUnwrap(silentTracks.first)
+        let reader = try AVAssetReader(asset: silentAsset)
+        let trackOutput = AVAssetReaderTrackOutput(track: silentTrack, outputSettings: nil)
+        reader.add(trackOutput)
+        XCTAssertTrue(reader.startReading())
+        var videoSamples = 0
+        while let buffer = trackOutput.copyNextSampleBuffer() {
+            videoSamples += CMSampleBufferGetNumSamples(buffer)
+        }
+        XCTAssertEqual(reader.status, .completed)
+        XCTAssertEqual(videoSamples, project.timelineFrameCount)
         try await assertFourEdgesVisibleThroughoutPhotos(silent, project: project)
 
         let music = root.appendingPathComponent("tone.wav")
@@ -646,11 +659,18 @@ final class TimeStoryFeatureTests: XCTestCase {
             stage: "terminal",
             progress: 0.4,
             terminal: true,
+            error: [
+                "code": "RENDER_CANCELLED",
+                "stage": "rendering",
+                "message": "render was cancelled; pending output was removed",
+                "retryable": false,
+            ],
             now: fixedNow
         )
         let cancelled = try await client.task(taskID: submitted.taskID)
         XCTAssertEqual(cancelled.phase, .cancelled)
         XCTAssertNil(cancelled.result)
+        XCTAssertEqual(cancelled.detail, "取消请求已确认，没有发布成片。")
 
         let recoveredClient = makeOpenMontageClient(
             root: root,
@@ -699,6 +719,28 @@ final class TimeStoryFeatureTests: XCTestCase {
             oldCompletionHash,
             "new task publication must not overwrite the old task"
         )
+        let newerRoot = root.appendingPathComponent("tasks/\(newer.taskID)")
+        let newerCompletion = try jsonObject(at: newerRoot.appendingPathComponent("submission/complete.json"))
+        try writeOpenMontageStatus(
+            at: newerRoot,
+            snapshot: newer,
+            digest: try XCTUnwrap(newerCompletion["manifestSHA256"] as? String),
+            sequence: 1,
+            state: "failed",
+            stage: "terminal",
+            progress: 0.9,
+            terminal: true,
+            error: [
+                "code": "RESULT_VERIFICATION_FAILED",
+                "stage": "verification",
+                "message": "adapter artifact path is unsafe",
+                "retryable": false,
+            ],
+            now: fixedNow
+        )
+        let failed = try await client.task(taskID: newer.taskID)
+        XCTAssertEqual(failed.phase, .failed)
+        XCTAssertEqual(failed.detail, "成片未通过执行器检查。请查看本地任务记录；原生制作仍可使用。")
     }
 
     func testOpenMontageStaleExecutorDoesNotPublishPartialTask() async throws {
@@ -1497,6 +1539,7 @@ final class TimeStoryFeatureTests: XCTestCase {
         stage: String,
         progress: Double,
         terminal: Bool,
+        error: [String: Any]? = nil,
         now: Date
     ) throws {
         let stateRoot = taskRoot.appendingPathComponent("state", isDirectory: true)
@@ -1514,7 +1557,7 @@ final class TimeStoryFeatureTests: XCTestCase {
             "progress": progress,
             "terminal": terminal,
             "updatedAt": iso8601(now),
-            "error": NSNull(),
+            "error": error.map { $0 as Any } ?? NSNull(),
         ], to: stateRoot.appendingPathComponent("status.json"))
     }
 
