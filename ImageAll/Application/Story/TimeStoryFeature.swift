@@ -10,7 +10,7 @@ import UniformTypeIdentifiers
 enum TimeStoryConstants {
     static let schemaVersion = 1
     static let templateVersion = "growth-footprints-v1"
-    static let strategyVersion = "time-place-balanced-v1"
+    static let strategyVersion = "time-place-balanced-v2"
     static let transitionDurationSeconds = 0.45
     static let defaultShotDurationSeconds = 3.5
     static let targetDurationSeconds = 60.0
@@ -52,6 +52,8 @@ struct TimeStoryCandidate: Codable, Sendable, Equatable, Identifiable {
     let locationSource: String?
     let similarityClusterID: String?
     let similarityState: TimeStorySimilarityState
+    // Absent in v1 projects; the original timezone/precision is not stored in the catalog.
+    var captureTimeSource: String? = nil
 }
 
 struct TimeStoryCandidateSnapshot: Codable, Sendable, Equatable {
@@ -60,6 +62,29 @@ struct TimeStoryCandidateSnapshot: Codable, Sendable, Equatable {
     let tagID: UUID
     let tagDisplayName: String
     let candidates: [TimeStoryCandidate]
+    // Counts indexed pending review suggestions, not all untagged library assets.
+    var pendingReviewCount: Int? = nil
+}
+
+struct TimeStoryReadinessDetails {
+    let available: Int
+    let namedAssets: Int
+    let analyzedAssets: Int
+    let duplicateGroups: Int
+    let assetsInDuplicateGroups: Int
+
+    init(candidates: [TimeStoryCandidate]) {
+        available = candidates.filter { $0.availability == .available }.count
+        namedAssets = candidates.filter { $0.locationState == .named }.count
+        analyzedAssets = candidates.filter { $0.similarityState == .ready }.count
+        let groups = Dictionary(grouping: candidates.compactMap { candidate -> (String, UUID)? in
+            guard candidate.similarityState == .ready, let cluster = candidate.similarityClusterID else { return nil }
+            return (candidate.sourceID.uuidString + "|" + cluster, candidate.assetID)
+        }, by: { $0.0 })
+        let repeated = groups.values.filter { $0.count > 1 }
+        duplicateGroups = repeated.count
+        assetsInDuplicateGroups = repeated.reduce(0) { $0 + $1.count }
+    }
 }
 
 struct TimeStoryReadinessSummary: Codable, Sendable, Equatable {
@@ -122,6 +147,8 @@ struct TimeStoryProject: Codable, Sendable, Equatable, Identifiable {
     var shots: [TimeStoryShot]
     var excludedAssetIDs: Set<UUID>
     var music: TimeStoryMusicSelection?
+    // Optional to decode existing v1 projects without a migration.
+    var chapterTitleOverrides: [UUID: String]? = nil
 
     var timelineDurationSeconds: Double {
         (try? TimeStoryTimeline.normalize(project: self).durationSeconds) ?? 0
@@ -153,6 +180,8 @@ enum TimeStoryError: Error, Sendable, Equatable, LocalizedError {
     case storyPackageExportFailed(String)
     case renderingFailed(String)
     case mediaValidationFailed([TimeStoryMediaValidationIssue])
+    case preservedMediaChanged(String)
+    case capacityConflict(Int)
 
     var errorDescription: String? {
         switch self {
@@ -169,6 +198,10 @@ enum TimeStoryError: Error, Sendable, Equatable, LocalizedError {
         case let .renderingFailed(message): "视频导出失败：\(message)"
         case let .mediaValidationFailed(issues):
             "有 \(issues.count) 个镜头的素材已变化或不可用。"
+        case let .preservedMediaChanged(asset):
+            "保留的镜头 \(asset) 已失效、改版或不再属于主体标签；请解锁、排除或重新选择后再生成。"
+        case let .capacityConflict(count):
+            "有 \(count) 个锁定或手动修改镜头，超过 18 个镜头容量；请解锁或排除至少 \(count - 18) 个。"
         }
     }
 }
@@ -374,26 +407,37 @@ struct TimeStoryCandidateProvider: Sendable {
     let database: CatalogDatabase
     let query: any AssetCatalogQueryPort
 
-    func snapshot(tag: TagListItem, nowMs: Int64) throws -> TimeStoryCandidateSnapshot {
+    func snapshot(
+        tag: TagListItem,
+        nowMs: Int64,
+        onProgress: (@Sendable (Int) -> Void)? = nil
+    ) throws -> TimeStoryCandidateSnapshot {
         guard tag.state == .active else { throw TimeStoryError.tagUnavailable }
         var cursor: AssetPageCursor?
         var projections: [AssetGridItemProjection] = []
         var observedCursors = Set<String>()
+        var seenAssetIDs = Set<UUID>()
         repeat {
+            try Task<Never, Never>.checkCancellation()
             let page = try query.fetchAssetPage(
                 AssetPageRequest(
                     filter: AssetPageFilter(
                         tagDecisionFilters: [
                             TagDecisionFilter(tagID: tag.id, decision: .accepted),
                         ],
+                        availabilities: [.available, .missing, .unreadable, .unsupported],
                         mediaKinds: [.image]
                     ),
                     sort: .embeddedTimeOldest,
                     cursor: cursor,
-                    limit: 500
+                    limit: 200
                 )
             )
+            guard page.items.allSatisfy({ seenAssetIDs.insert($0.assetID).inserted }) else {
+                throw TimeStoryError.persistenceFailed
+            }
             projections.append(contentsOf: page.items)
+            onProgress?(projections.count)
             cursor = page.nextCursor
             if let cursor {
                 let marker = String(describing: cursor)
@@ -403,8 +447,8 @@ struct TimeStoryCandidateProvider: Sendable {
             }
         } while cursor != nil
 
-        guard !projections.isEmpty else { throw TimeStoryError.noCandidates }
         let candidates = try metadataCandidates(for: projections)
+        let pending = try pendingReviewCount(for: tag.id)
         let canonicalCandidates = candidates.sorted {
             if $0.mediaCreatedAtMs != $1.mediaCreatedAtMs {
                 switch ($0.mediaCreatedAtMs, $1.mediaCreatedAtMs) {
@@ -420,14 +464,43 @@ struct TimeStoryCandidateProvider: Sendable {
             "tag=\(tag.id.uuidString.lowercased())\nstrategy=\(TimeStoryConstants.strategyVersion)\n".utf8
         )
         digestPayload.append(try JSONEncoder.timeStory.encode(canonicalCandidates))
+        digestPayload.append(Data("\npending=\(pending)".utf8))
         let digest = SHA256.hash(data: digestPayload).map { String(format: "%02x", $0) }.joined()
         return TimeStoryCandidateSnapshot(
             id: "sha256:\(digest)",
             createdAtMs: nowMs,
             tagID: tag.id,
             tagDisplayName: tag.displayName,
-            candidates: canonicalCandidates
+            candidates: canonicalCandidates,
+            pendingReviewCount: pending
         )
+    }
+
+    private func pendingReviewCount(for tagID: UUID) throws -> Int {
+        let id = tagID.uuidString.lowercased()
+        return try database.pool.read { db in
+            try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM (
+                    SELECT p.asset_id FROM personal_prediction p
+                    JOIN asset a ON a.id = p.asset_id AND a.content_revision = p.content_revision
+                    WHERE p.tag_id = ? AND p.state = 'pendingReview'
+                    UNION
+                    SELECT p.asset_id FROM standard_prediction p
+                    JOIN asset a ON a.id = p.asset_id AND a.content_revision = p.content_revision
+                    WHERE p.tag_id = ? AND p.state = 'pendingReview'
+                    UNION
+                    SELECT m.asset_id FROM contextual_tag_feed_member m
+                    JOIN contextual_tag_feed f ON f.id = m.feed_id
+                    WHERE f.tag_id = ? AND f.state = 'pending' AND m.role = 'candidate'
+                ) suggestions
+                JOIN asset a ON a.id = suggestions.asset_id
+                WHERE a.locator_state = 'current' AND a.media_kind = 'image'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM asset_tag_decision d
+                    WHERE d.asset_id = a.id AND d.tag_id = ?
+                  )
+                """, arguments: [id, id, id, id]) ?? 0
+        }
     }
 
     private func metadataCandidates(
@@ -436,6 +509,7 @@ struct TimeStoryCandidateProvider: Sendable {
         let ids = projections.map(\.assetID)
         var rowsByID: [UUID: Row] = [:]
         for batchStart in stride(from: 0, to: ids.count, by: 400) {
+            try Task<Never, Never>.checkCancellation()
             let batch = Array(ids[batchStart ..< min(ids.count, batchStart + 400)])
             let placeholders = Array(repeating: "?", count: batch.count).joined(separator: ",")
             let arguments = StatementArguments(batch.map { $0.uuidString.lowercased() })
@@ -443,7 +517,7 @@ struct TimeStoryCandidateProvider: Sendable {
                 try Row.fetchAll(
                     db,
                     sql: """
-                    SELECT asset.id,
+                    SELECT asset.id, asset.locator_kind,
                            favorite.desired_value,
                            favorite.photos_observed_value,
                            location.source_kind AS location_source_kind,
@@ -473,8 +547,10 @@ struct TimeStoryCandidateProvider: Sendable {
                 }
             }
         }
-        return projections.compactMap { projection in
-            guard let metadata = rowsByID[projection.assetID] else { return nil }
+        return try projections.map { projection in
+            guard let metadata = rowsByID[projection.assetID] else {
+                throw TimeStoryError.persistenceFailed
+            }
             let locationSource: String? = metadata["location_source_kind"]
             let latitude: Double? = metadata["latitude"]
             let longitude: Double? = metadata["longitude"]
@@ -497,7 +573,7 @@ struct TimeStoryCandidateProvider: Sendable {
             let similarityIndexState: String? = metadata["similarity_index_state"]
             let similarityReady = similarityIndexState == "ready"
                 && similarityRevision == projection.contentRevision
-            return TimeStoryCandidate(
+            var candidate = TimeStoryCandidate(
                 assetID: projection.assetID,
                 contentRevision: projection.contentRevision,
                 sourceID: projection.sourceID,
@@ -513,6 +589,12 @@ struct TimeStoryCandidateProvider: Sendable {
                 similarityClusterID: similarityReady ? metadata["cluster_id"] : nil,
                 similarityState: similarityReady ? .ready : .unavailable
             )
+            let locator: String? = metadata["locator_kind"]
+            if candidate.mediaCreatedAtMs != nil {
+                candidate.captureTimeSource = locator == "photos" ? "PhotoKit creationDate"
+                    : locator == "file" ? "有时区的文件媒体时间" : nil
+            }
+            return candidate
         }
     }
 }
@@ -532,10 +614,16 @@ struct TimeStoryPlanner: Sendable {
 
         let excluded = existing?.excludedAssetIDs ?? []
         let candidateByID = Dictionary(uniqueKeysWithValues: allCandidates.map { ($0.assetID, $0) })
-        let preservedShots = (existing?.shots ?? []).filter {
-            ($0.isLocked || $0.isUserEdited)
-                && !excluded.contains($0.assetID)
-                && candidateByID[$0.assetID] != nil
+        let preservedShots = (existing?.shots ?? []).filter { ($0.isLocked || $0.isUserEdited) && !excluded.contains($0.assetID) }
+        if preservedShots.count > TimeStoryConstants.maximumShots {
+            throw TimeStoryError.capacityConflict(preservedShots.count)
+        }
+        for shot in preservedShots {
+            guard let candidate = candidateByID[shot.assetID],
+                  candidate.availability == .available,
+                  candidate.mediaCreatedAtMs != nil,
+                  candidate.contentRevision == shot.contentRevision
+            else { throw TimeStoryError.preservedMediaChanged(String(shot.assetID.uuidString.prefix(8))) }
         }
         let preservedIDs = Set(preservedShots.map(\.assetID))
         let storyTimeBounds = timeBounds(reliable)
@@ -549,7 +637,7 @@ struct TimeStoryPlanner: Sendable {
         let oldShotByAssetID = Dictionary(uniqueKeysWithValues: (existing?.shots ?? []).map { ($0.assetID, $0) })
         var shots = selected.map { candidate -> TimeStoryShot in
             if var old = oldShotByAssetID[candidate.assetID], old.isLocked || old.isUserEdited {
-                old.contentRevision = candidate.contentRevision
+                if old.isLocked && !old.reasons.contains("用户锁定") { old.reasons.append("用户锁定") }
                 return old
             }
             return TimeStoryShot(
@@ -578,9 +666,10 @@ struct TimeStoryPlanner: Sendable {
             chapters.append(
                 TimeStoryChapter(
                     id: chapterID,
-                    title: old?.isUserEdited == true ? old!.title : draft.title,
+                    title: existing?.chapterTitleOverrides?[chapterID]
+                        ?? (old?.isUserEdited == true ? old!.title : draft.title),
                     shotIDs: shotIDs,
-                    isUserEdited: old?.isUserEdited == true
+                    isUserEdited: existing?.chapterTitleOverrides?[chapterID] != nil || old?.isUserEdited == true
                 )
             )
             for index in shots.indices where shotIDs.contains(shots[index].id) {
@@ -588,30 +677,7 @@ struct TimeStoryPlanner: Sendable {
             }
         }
 
-        let namedPlaces = Set(allCandidates.compactMap(\.placeName))
-        let similarityReady = allCandidates.contains(where: { $0.similarityState == .ready })
-        let omittedReliable = max(0, reliable.count - selected.count)
-        let tradeoff: String?
-        if omittedReliable > 0 {
-            tradeoff = "目标时长内选取 \(selected.count) 张，另有 \(omittedReliable) 张可靠时间素材未进入草稿。"
-        } else if allCandidates.count > reliable.count {
-            tradeoff = "有 \(allCandidates.count - reliable.count) 张时间未知素材留在待确认区。"
-        } else {
-            tradeoff = nil
-        }
-        let readiness = TimeStoryReadinessSummary(
-            matchingCount: allCandidates.count,
-            reliableTimeStartMs: reliable.compactMap(\.mediaCreatedAtMs).min(),
-            reliableTimeEndMs: reliable.compactMap(\.mediaCreatedAtMs).max(),
-            unknownTimeCount: allCandidates.filter { $0.mediaCreatedAtMs == nil }.count,
-            namedPlaceCount: namedPlaces.count,
-            coordinateOnlyCount: allCandidates.filter { $0.locationState == .coordinateOnly }.count,
-            noLocationCount: allCandidates.filter { $0.locationState == .absent }.count,
-            locationMetadataUnconfirmedCount: allCandidates.filter { $0.locationState == .unconfirmed }.count,
-            unavailableCount: allCandidates.filter { $0.availability != .available }.count,
-            similarityFilteringState: similarityReady ? .ready : .unavailable,
-            selectionTradeoff: tradeoff
-        )
+        let readiness = readiness(for: snapshot, selectedCount: selected.count)
         return TimeStoryProject(
             schemaVersion: TimeStoryConstants.schemaVersion,
             id: existing?.id ?? UUID(),
@@ -627,7 +693,36 @@ struct TimeStoryPlanner: Sendable {
             chapters: chapters,
             shots: shots,
             excludedAssetIDs: excluded,
-            music: existing?.music
+            music: existing?.music,
+            chapterTitleOverrides: existing?.chapterTitleOverrides
+        )
+    }
+
+    func readiness(for snapshot: TimeStoryCandidateSnapshot, selectedCount: Int? = nil) -> TimeStoryReadinessSummary {
+        let allCandidates = snapshot.candidates
+        let reliable = allCandidates.filter { $0.mediaCreatedAtMs != nil }
+        let namedPlaces = Set(allCandidates.compactMap(\.placeName))
+        let similarityReady = allCandidates.contains(where: { $0.similarityState == .ready })
+        let tradeoff: String?
+        if let selectedCount, reliable.count > selectedCount {
+            tradeoff = "选取 \(selectedCount) 张，另有 \(reliable.count - selectedCount) 张可靠时间素材未进入草稿（含不可用/排除）。"
+        } else if allCandidates.count > reliable.count {
+            tradeoff = "有 \(allCandidates.count - reliable.count) 张时间未知素材留在待确认区。"
+        } else {
+            tradeoff = nil
+        }
+        return TimeStoryReadinessSummary(
+            matchingCount: allCandidates.count,
+            reliableTimeStartMs: reliable.compactMap(\.mediaCreatedAtMs).min(),
+            reliableTimeEndMs: reliable.compactMap(\.mediaCreatedAtMs).max(),
+            unknownTimeCount: allCandidates.filter { $0.mediaCreatedAtMs == nil }.count,
+            namedPlaceCount: namedPlaces.count,
+            coordinateOnlyCount: allCandidates.filter { $0.locationState == .coordinateOnly }.count,
+            noLocationCount: allCandidates.filter { $0.locationState == .absent }.count,
+            locationMetadataUnconfirmedCount: allCandidates.filter { $0.locationState == .unconfirmed }.count,
+            unavailableCount: allCandidates.filter { $0.availability != .available }.count,
+            similarityFilteringState: similarityReady ? .ready : .unavailable,
+            selectionTradeoff: tradeoff
         )
     }
 
@@ -674,7 +769,7 @@ struct TimeStoryPlanner: Sendable {
             }
             if !isNearDuplicate { append(candidate) }
         }
-        for candidate in ordered where selected.count < limit { append(candidate) }
+        // Empty seats are preferable to repeating one capture event solely to fill a quota.
         return selected.sorted(by: candidateTimeOrder)
     }
 
@@ -692,15 +787,38 @@ struct TimeStoryPlanner: Sendable {
         bounds: (start: Int64, end: Int64)?
     ) -> [String] {
         var result: [String] = []
-        switch stageKey(candidate, bounds: bounds) {
-        case 0: result.append("早期代表")
-        case 2: result.append("近期代表")
-        default: result.append("中期代表")
+        let stage = stageKey(candidate, bounds: bounds)
+        let stageMembers = selected.filter { stageKey($0, bounds: bounds) == stage }
+        if stageMembers.first?.assetID == candidate.assetID {
+            result.append(["最早已知阶段代表", "中期阶段代表", "近期阶段代表"][stage])
+        } else {
+            result.append("同阶段可用照片")
         }
         if candidate.isFavorite { result.append("收藏照片") }
-        if candidate.placeName != nil { result.append("地点变化") }
-        if result.count == 1, selected.count > 3 { result.append("阶段多样性") }
+        if let place = candidate.placeName,
+           let index = selected.firstIndex(where: { $0.assetID == candidate.assetID }),
+           (index == 0 || selected[index - 1].placeName != place) {
+            result.append("该地点连续段的首张")
+        }
         return result
+    }
+
+    func replacementCandidates(for shotID: UUID, in project: TimeStoryProject) -> [TimeStoryCandidate] {
+        guard let shot = project.shots.first(where: { $0.id == shotID }),
+              let original = project.candidateSnapshot.candidates.first(where: { $0.assetID == shot.assetID })
+        else { return [] }
+        let bounds = timeBounds(project.candidateSnapshot.candidates.filter { $0.mediaCreatedAtMs != nil })
+        let stage = stageKey(original, bounds: bounds)
+        let used = Set(project.shots.filter { $0.id != shotID }.map(\.assetID))
+        return project.candidateSnapshot.candidates.filter {
+            $0.assetID != original.assetID
+                && $0.mediaCreatedAtMs != nil
+                && $0.availability == .available
+                && stageKey($0, bounds: bounds) == stage
+                && $0.placeName == original.placeName
+                && !used.contains($0.assetID)
+                && !project.excludedAssetIDs.contains($0.assetID)
+        }.sorted(by: candidateTimeOrder)
     }
 
     private func timeBounds(_ candidates: [TimeStoryCandidate]) -> (start: Int64, end: Int64)? {

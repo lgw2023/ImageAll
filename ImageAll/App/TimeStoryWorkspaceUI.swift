@@ -52,6 +52,9 @@ private enum OpenMontageResultSaveError: LocalizedError {
 @MainActor
 final class TimeStoryWorkspaceModel: ObservableObject {
     @Published private(set) var project: TimeStoryProject?
+    @Published private(set) var readinessSnapshot: TimeStoryCandidateSnapshot?
+    @Published private(set) var loadedCandidateCount = 0
+    @Published private(set) var isReadingCandidates = false
     @Published private(set) var projects: [TimeStoryProjectSummary] = []
     @Published private(set) var thumbnails: [UUID: NSImage] = [:]
     @Published private(set) var isBusy = false
@@ -69,6 +72,11 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     private var packageExportTask: Task<Void, Never>?
     private var openMontageSubmissionTask: Task<Void, Never>?
     private var openMontagePollingTask: Task<Void, Never>?
+    private var candidateTask: Task<TimeStoryCandidateSnapshot, Error>?
+
+    var readinessPreview: TimeStoryReadinessSummary? {
+        readinessSnapshot.map { runtime.planner.readiness(for: $0) }
+    }
 
     init(runtime: TimeStoryFeatureRuntime, tag: TagListItem) {
         self.runtime = runtime
@@ -95,16 +103,55 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         packageExportTask?.cancel()
         openMontageSubmissionTask?.cancel()
         openMontagePollingTask?.cancel()
+        candidateTask?.cancel()
     }
 
     func start() async {
         guard !isBusy else { return }
         await refreshProjects()
         if project == nil {
-            await createDraft(for: initialTag)
+            await loadReadiness()
         }
         await refreshOpenMontageCapability()
         await recoverOpenMontageTask()
+    }
+
+    func cancelCandidateLoading() { candidateTask?.cancel() }
+
+    private func fetchSnapshot(for tag: TagListItem) async throws -> TimeStoryCandidateSnapshot {
+        let runtime = runtime
+        let now = runtime.clock.nowMs
+        loadedCandidateCount = 0
+        isReadingCandidates = true
+        defer { isReadingCandidates = false }
+        let progress: @Sendable (Int) -> Void = { [weak self] count in
+            Task { @MainActor in self?.loadedCandidateCount = count }
+        }
+        let task = Task.detached(priority: .userInitiated) {
+            try runtime.candidates.snapshot(tag: tag, nowMs: now, onProgress: progress)
+        }
+        candidateTask = task
+        defer { candidateTask = nil }
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    func loadReadiness() async {
+        guard !isBusy else { return }
+        isBusy = true
+        message = "正在读取已确认的主体候选…"
+        do {
+            readinessSnapshot = try await fetchSnapshot(for: initialTag)
+            message = "素材就绪报告已生成；确认后可生成故事草稿。"
+        } catch is CancellationError {
+            message = "候选读取已取消。"
+        } catch {
+            message = error.localizedDescription
+        }
+        isBusy = false
     }
 
     func createDraft(for tag: TagListItem) async {
@@ -113,13 +160,14 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         let runtime = runtime
         do {
             let now = runtime.clock.nowMs
-            let project = try await Task.detached(priority: .userInitiated) {
-                let snapshot = try runtime.candidates.snapshot(tag: tag, nowMs: now)
-                return try runtime.planner.makeProject(snapshot: snapshot, nowMs: now)
-            }.value
+            let snapshot = try await fetchSnapshot(for: tag)
+            let project = try runtime.planner.makeProject(snapshot: snapshot, nowMs: now)
+            readinessSnapshot = snapshot
             self.project = project
             message = "草稿已生成；保存后可随时重新打开。"
             await loadThumbnails()
+        } catch is CancellationError {
+            message = "候选读取已取消。"
         } catch {
             message = error.localizedDescription
         }
@@ -159,19 +207,18 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     func regenerate() async {
         guard let current = project else { return }
         isBusy = true
-        message = "正在按同一候选快照重新生成…"
+        message = "正在重新读取当前主体候选并生成…"
         let runtime = runtime
         do {
-            let regenerated = try await Task.detached(priority: .userInitiated) {
-                try runtime.planner.makeProject(
-                    snapshot: current.candidateSnapshot,
-                    nowMs: runtime.clock.nowMs,
-                    existing: current
-                )
-            }.value
+            let tag = TagListItem(id: current.subjectTagID, displayName: current.subjectTagDisplayName, state: .active)
+            let snapshot = try await fetchSnapshot(for: tag)
+            let regenerated = try runtime.planner.makeProject(snapshot: snapshot, nowMs: runtime.clock.nowMs, existing: current)
             project = regenerated
+            readinessSnapshot = snapshot
             message = "已重新生成，并保留锁定、排除和明确编辑。"
             await loadThumbnails()
+        } catch is CancellationError {
+            message = "候选读取已取消，原草稿保持不变。"
         } catch {
             message = error.localizedDescription
         }
@@ -184,6 +231,9 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         else { return }
         project.chapters[index].title = String(title.prefix(240))
         project.chapters[index].isUserEdited = true
+        var overrides = project.chapterTitleOverrides ?? [:]
+        overrides[chapterID] = project.chapters[index].title
+        project.chapterTitleOverrides = overrides
         project.updatedAtMs = runtime.clock.nowMs
         self.project = project
     }
@@ -220,6 +270,13 @@ final class TimeStoryWorkspaceModel: ObservableObject {
               let index = project.shots.firstIndex(where: { $0.id == shotID })
         else { return }
         project.shots[index].isLocked.toggle()
+        if project.shots[index].isLocked {
+            if !project.shots[index].reasons.contains("用户锁定") {
+                project.shots[index].reasons.append("用户锁定")
+            }
+        } else {
+            project.shots[index].reasons.removeAll { $0 == "用户锁定" }
+        }
         project.updatedAtMs = runtime.clock.nowMs
         self.project = project
     }
@@ -241,14 +298,15 @@ final class TimeStoryWorkspaceModel: ObservableObject {
 
     func replace(_ shotID: UUID, with candidate: TimeStoryCandidate) async {
         guard var project,
-              let index = project.shots.firstIndex(where: { $0.id == shotID })
+              let index = project.shots.firstIndex(where: { $0.id == shotID }),
+              runtime.planner.replacementCandidates(for: shotID, in: project).contains(where: { $0.assetID == candidate.assetID })
         else { return }
         let previousAssetID = project.shots[index].assetID
         project.excludedAssetIDs.insert(previousAssetID)
         project.shots[index].assetID = candidate.assetID
         project.shots[index].contentRevision = candidate.contentRevision
         project.shots[index].caption = candidate.placeName ?? project.subjectTagDisplayName
-        project.shots[index].reasons = ["用户替换"]
+        project.shots[index].reasons = ["用户替换", "用户锁定"]
         project.shots[index].isLocked = true
         project.shots[index].isUserEdited = true
         project.updatedAtMs = runtime.clock.nowMs
@@ -276,13 +334,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
 
     func replacementCandidates(for shotID: UUID) -> [TimeStoryCandidate] {
         guard let project else { return [] }
-        let used = Set(project.shots.filter { $0.id != shotID }.map(\.assetID))
-        return project.candidateSnapshot.candidates.filter {
-            $0.mediaCreatedAtMs != nil
-                && $0.availability == .available
-                && !used.contains($0.assetID)
-                && !project.excludedAssetIDs.contains($0.assetID)
-        }
+        return runtime.planner.replacementCandidates(for: shotID, in: project)
     }
 
     func export(to destination: URL) {
@@ -729,15 +781,40 @@ struct TimeStoryWorkspaceView: View {
                 statusBar
             }
             .navigationTitle(project.title)
+        } else if let snapshot = model.readinessSnapshot, let summary = model.readinessPreview {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    Label("\(snapshot.tagDisplayName) · 素材就绪报告", systemImage: "checklist")
+                        .font(.title2.bold())
+                    readinessBody(summary: summary, snapshot: snapshot)
+                    Button("生成故事草稿") { Task { await model.createDraft(for: TagListItem(
+                        id: snapshot.tagID, displayName: snapshot.tagDisplayName, state: .active
+                    )) } }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(model.isBusy || !snapshot.candidates.contains {
+                        $0.availability == .available && $0.mediaCreatedAtMs != nil
+                    })
+                    .accessibilityIdentifier("timeStoryGenerateDraftButton")
+                    if !snapshot.candidates.contains(where: { $0.availability == .available && $0.mediaCreatedAtMs != nil }) {
+                        Text("至少需要一张有可靠拍摄时间且可用的已确认照片，才能生成草稿。")
+                            .foregroundStyle(.orange)
+                    }
+                    if model.isBusy {
+                        ProgressView("已读取 \(model.loadedCandidateCount) 张，正在更新候选…")
+                        Button("取消读取") { model.cancelCandidateLoading() }
+                    }
+                }.padding(24)
+            }
         } else if model.isBusy {
-            ProgressView("正在生成故事草稿…")
-                .controlSize(.large)
+            VStack {
+                ProgressView("已读取 \(model.loadedCandidateCount) 张主体候选…")
+                Button("取消读取") { model.cancelCandidateLoading() }
+            }
         } else {
-            ContentUnavailableView(
-                "无法生成故事",
-                systemImage: "film",
-                description: Text(model.message ?? "没有可用候选素材。")
-            )
+            VStack(spacing: 12) {
+                ContentUnavailableView("暂时无法读取候选", systemImage: "film", description: Text(model.message ?? "没有可用候选素材。"))
+                Button("重试读取") { Task { await model.loadReadiness() } }
+            }
         }
     }
 
@@ -763,35 +840,40 @@ struct TimeStoryWorkspaceView: View {
             Text("成片中项目标题显示为片头卡；章节标题显示为各章节卡；镜头字幕只显示在对应照片底部。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            HStack(spacing: 16) {
-                summaryPill("匹配", value: "\(summary.matchingCount)")
-                summaryPill("可靠时间", value: "\(summary.matchingCount - summary.unknownTimeCount)")
-                summaryPill("时间未知", value: "\(summary.unknownTimeCount)")
-                summaryPill("地点", value: "\(summary.namedPlaceCount)")
-                summaryPill("地点未确认", value: "\(summary.locationMetadataUnconfirmedCount)")
-                summaryPill("不可用", value: "\(summary.unavailableCount)")
-            }
-            Text(
-                "可靠拍摄时间覆盖：\(formattedTimeCoverage(summary))；"
-                    + "无地点 \(summary.noLocationCount) 张；"
-                    + "仅有坐标 \(summary.coordinateOnlyCount) 张。"
-            )
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            Text(
-                summary.similarityFilteringState == .ready
-                    ? "已复用兼容的近重复结果；跨时期相似画面仍保留。"
-                    : "相似筛选未完成；已按时间、地点、收藏和分辨率退化生成。"
-            )
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            if let tradeoff = summary.selectionTradeoff {
-                Text(tradeoff).font(.caption).foregroundStyle(.orange)
+            readinessBody(summary: summary, snapshot: project.candidateSnapshot)
+            Text("本故事已排除 \(project.excludedAssetIDs.count) 张；排除会在重新生成后继续生效。")
+                .font(.caption).foregroundStyle(.secondary)
+            if project.timelineDurationSeconds > TimeStoryConstants.targetDurationSeconds {
+                Text("当前 \(formattedDuration(project.timelineDurationSeconds))，超过约 60 秒目标。可以缩短镜头、排除照片，或保留较长成片；锁定时长不会自动缩短。")
+                    .font(.caption).foregroundStyle(.orange)
             }
         }
         .padding(18)
         .background(.background.secondary)
         .accessibilityIdentifier("timeStoryReadinessSummary")
+    }
+
+    private func readinessBody(summary: TimeStoryReadinessSummary, snapshot: TimeStoryCandidateSnapshot) -> some View {
+        let details = TimeStoryReadinessDetails(candidates: snapshot.candidates)
+        return VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 10) {
+                summaryPill("已确认候选", value: "\(summary.matchingCount)")
+                summaryPill("待确认建议", value: snapshot.pendingReviewCount.map(String.init) ?? "未知")
+                summaryPill("可用", value: "\(details.available)")
+                summaryPill("不可用", value: "\(summary.unavailableCount)")
+                summaryPill("时间未知", value: "\(summary.unknownTimeCount)")
+            }
+            Text("分母：当前可查询、标签已接受的静态图片 \(summary.matchingCount) 张；可用与不可用互斥。待审建议单独去重，不包含在分母；已拒绝的不纳入。回收及查询隐藏的缺失 Photos 历史不在范围内。")
+            Text("可靠拍摄日期：\(summary.matchingCount - summary.unknownTimeCount) 张，覆盖 \(formattedTimeCoverage(summary))；未知 \(summary.unknownTimeCount) 张不进入时间章节。来自目录中有时区的媒体时间或 PhotoKit creationDate；索引未保留原始时区与年月精度，按日期展示，不用文件修改时间。")
+            Text("有确认地点名 \(details.namedAssets) 张 / \(summary.namedPlaceCount) 个不同地点；仅坐标 \(summary.coordinateOnlyCount) 张；已检查无地点 \(summary.noLocationCount) 张；元数据未确认 \(summary.locationMetadataUnconfirmedCount) 张。四类照片计数互斥；地点名只用于连续章节，不推断居住。")
+            Text("近重复：可确认分析 \(details.analyzedAssets) / \(summary.matchingCount) 张，\(details.duplicateGroups) 组涉及 \(details.assetsInDuplicateGroups) 张；其余 \(summary.matchingCount - details.analyzedAssets) 张没有兼容的逐项结果，不能断言无重复。时间/地点/可用性/相似状态可重叠。")
+            if let tradeoff = summary.selectionTradeoff {
+                Text(tradeoff).foregroundStyle(.orange)
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .accessibilityIdentifier("timeStoryReadinessDetails")
     }
 
     private func summaryPill(_ title: String, value: String) -> some View {
@@ -858,6 +940,10 @@ struct TimeStoryWorkspaceView: View {
                 Text(shot.reasons.joined(separator: " · "))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if let evidence = model.project?.candidateSnapshot.candidates.first(where: { $0.assetID == shot.assetID }) {
+                    Text("拍摄日期 \(evidence.mediaCreatedAtMs.map(captureDate) ?? "待确认") · 来源 \(evidence.captureTimeSource ?? "旧项目未记录") · 地点 \(evidence.placeName ?? "未确认名称")")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
                 HStack {
                     Stepper(
                         value: Binding(
@@ -884,7 +970,7 @@ struct TimeStoryWorkspaceView: View {
             Menu("替换") {
                 let replacements = model.replacementCandidates(for: shot.id)
                 if replacements.isEmpty {
-                    Text("没有其他可用候选")
+                    Text("同一主体、时期及地点无可用替代照片")
                 }
                 ForEach(replacements.prefix(40)) { candidate in
                     Button(candidate.fileName ?? candidate.assetID.uuidString) {
@@ -893,7 +979,7 @@ struct TimeStoryWorkspaceView: View {
                 }
             }
             Button(role: .destructive) { model.remove(shot.id) } label: {
-                Label("移除", systemImage: "trash")
+                Label("从本故事排除", systemImage: "trash")
             }
         }
         .padding(10)
@@ -904,6 +990,14 @@ struct TimeStoryWorkspaceView: View {
     @ViewBuilder
     private var statusBar: some View {
         VStack(spacing: 6) {
+            if model.isReadingCandidates {
+                HStack {
+                    ProgressView()
+                    Text("已遍历 \(model.loadedCandidateCount) 张主体候选…")
+                        .font(.caption.monospacedDigit())
+                    Button("取消读取") { model.cancelCandidateLoading() }
+                }
+            }
             if let progress = model.exportProgress {
                 HStack {
                     ProgressView(value: progress.fraction)
@@ -1115,6 +1209,14 @@ struct TimeStoryWorkspaceView: View {
         formatter.dateFormat = "yyyy-MM-dd"
         return "\(formatter.string(from: Date(timeIntervalSince1970: Double(start) / 1_000)))"
             + " 至 \(formatter.string(from: Date(timeIntervalSince1970: Double(end) / 1_000)))"
+    }
+
+    private func captureDate(_ milliseconds: Int64) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: Date(timeIntervalSince1970: Double(milliseconds) / 1_000))
     }
 }
 

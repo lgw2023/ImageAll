@@ -33,13 +33,135 @@ final class TimeStoryFeatureTests: XCTestCase {
             .snapshot(tag: tag, nowMs: 123)
 
         XCTAssertEqual(query.requests.count, 2)
-        XCTAssertTrue(query.requests.allSatisfy { $0.limit == 500 && $0.sort == .embeddedTimeOldest })
+        XCTAssertTrue(query.requests.allSatisfy { $0.limit == 200 && $0.sort == .embeddedTimeOldest })
         XCTAssertEqual(query.requests.first?.filter.tagDecisionFilters, [
             TagDecisionFilter(tagID: tag.id, decision: .accepted),
         ])
+        XCTAssertEqual(query.requests.first?.filter.availabilities, [.available, .missing, .unreadable, .unsupported])
         XCTAssertEqual(snapshot.candidates.map(\.assetID), [firstID, secondID])
         XCTAssertEqual(snapshot.candidates.map(\.locationState), [.unconfirmed, .unconfirmed])
         XCTAssertTrue(snapshot.id.hasPrefix("sha256:"))
+    }
+
+    @MainActor
+    func testPhase4CatalogReadinessEditsAndLegacyProject() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        _ = try TimeStoryVerificationContainer.seedSyntheticCatalog(database)
+        let provider = TimeStoryCandidateProvider(
+            database: database, query: GRDBAssetCatalogQueryRepository(database: database)
+        )
+        let tag = TimeStoryVerificationContainer.subject
+        let snapshot = try provider.snapshot(tag: tag, nowMs: 1)
+        let details = TimeStoryReadinessDetails(candidates: snapshot.candidates)
+        let planner = TimeStoryPlanner()
+        let readiness = planner.readiness(for: snapshot)
+        XCTAssertEqual(snapshot.candidates.count, 511, "必须跨越实际 200 条查询边界")
+        XCTAssertEqual(snapshot.pendingReviewCount, 1)
+        XCTAssertEqual(details.available, 510)
+        XCTAssertEqual(readiness.unavailableCount, 1)
+        XCTAssertEqual(readiness.unknownTimeCount, 1)
+        XCTAssertEqual(readiness.namedPlaceCount, 2)
+        XCTAssertEqual(details.namedAssets, 508)
+        XCTAssertEqual(readiness.coordinateOnlyCount, 1)
+        XCTAssertEqual(readiness.noLocationCount, 1)
+        XCTAssertEqual(readiness.locationMetadataUnconfirmedCount, 1)
+        XCTAssertEqual(details.analyzedAssets, 505)
+        XCTAssertEqual(details.duplicateGroups, 252)
+        XCTAssertEqual(details.assetsInDuplicateGroups, 504)
+        for excludedNumber in [11, 12, 13] {
+            let id = UUID(uuidString: String(format: "10000000-0000-0000-0000-%012d", excludedNumber))!
+            XCTAssertFalse(snapshot.candidates.contains { $0.assetID == id })
+        }
+        var project = try planner.makeProject(snapshot: snapshot, nowMs: 2)
+        let ids = Set(project.shots.map(\.assetID))
+        func asset(_ number: Int) -> UUID {
+            UUID(uuidString: String(format: "10000000-0000-0000-0000-%012d", number))!
+        }
+        XCTAssertTrue(ids.contains(asset(1)))
+        XCTAssertTrue(ids.contains(asset(4)))
+        XCTAssertTrue(ids.contains(asset(6)))
+        XCTAssertFalse(ids.contains(asset(3)), "同事件相似照片不重复入选")
+        XCTAssertFalse(ids.contains(asset(8)), "未知时间不伪造顺序")
+        XCTAssertFalse(ids.contains(asset(9)), "不可用照片不入选")
+        XCTAssertEqual(project.chapters.map(\.title).filter { ["A 城", "B 城"].contains($0) },
+                       ["A 城", "B 城", "A 城"])
+        let repeated = try planner.makeProject(snapshot: snapshot, nowMs: 2)
+        XCTAssertEqual(project.shots.map(\.assetID), repeated.shots.map(\.assetID))
+        XCTAssertEqual(project.shots.map(\.reasons), repeated.shots.map(\.reasons))
+        let first = try XCTUnwrap(project.shots.first(where: { $0.assetID == asset(1) }))
+        let replacementTarget = try XCTUnwrap(project.shots.first(where: { $0.assetID == asset(2) }))
+        XCTAssertEqual(planner.replacementCandidates(for: replacementTarget.id, in: project).map(\.assetID),
+                       [asset(3)])
+        let replacementIndex = try XCTUnwrap(project.shots.firstIndex(where: { $0.id == replacementTarget.id }))
+        project.shots[replacementIndex].assetID = asset(3)
+        project.shots[replacementIndex].contentRevision = 1
+        project.shots[replacementIndex].caption = "手动字幕"
+        project.shots[replacementIndex].isLocked = true
+        project.shots[replacementIndex].isUserEdited = true
+        project.excludedAssetIDs.insert(asset(2))
+        project.excludedAssetIDs.insert(asset(4))
+        let middleChapter = try XCTUnwrap(project.chapters.first(where: { $0.title == "B 城" }))
+        project.chapterTitleOverrides = [middleChapter.id: "B 城 · 中期"]
+        project.shots.removeAll { $0.assetID == asset(4) }
+        project.chapters.removeAll { $0.id == middleChapter.id }
+        let lockedIndex = try XCTUnwrap(project.shots.firstIndex(where: { $0.id == first.id }))
+        project.shots[lockedIndex].isLocked = true
+        project.shots[lockedIndex].durationSeconds = 7
+        project.shots[lockedIndex].isUserEdited = true
+        let regenerated = try planner.makeProject(snapshot: snapshot, nowMs: 3, existing: project)
+        XCTAssertTrue(regenerated.shots.contains { $0.assetID == asset(3) && $0.caption == "手动字幕" && $0.isLocked })
+        XCTAssertFalse(regenerated.shots.contains { [asset(2), asset(4)].contains($0.assetID) })
+        XCTAssertEqual(regenerated.chapters.first(where: { $0.shotIDs.contains(where: { shotID in
+            regenerated.shots.contains(where: { $0.id == shotID && $0.assetID == asset(5) })
+        }) })?.title, "B 城 · 中期")
+        XCTAssertEqual(regenerated.shots.first(where: { $0.id == first.id })?.durationSeconds, 7)
+        var crowded = regenerated
+        for candidate in snapshot.candidates where crowded.shots.count < 19 && candidate.availability == .available {
+            guard !crowded.shots.contains(where: { $0.assetID == candidate.assetID }),
+                  !crowded.excludedAssetIDs.contains(candidate.assetID),
+                  candidate.mediaCreatedAtMs != nil
+            else { continue }
+            crowded.shots.append(TimeStoryShot(
+                id: UUID(), assetID: candidate.assetID, contentRevision: candidate.contentRevision,
+                chapterID: crowded.shots[0].chapterID, caption: "锁定", durationSeconds: 3,
+                presentationMode: .fullFrameWithBackground, reasons: ["用户锁定"],
+                isLocked: true, isUserEdited: false
+            ))
+        }
+        for index in crowded.shots.indices { crowded.shots[index].isLocked = true }
+        XCTAssertEqual(crowded.shots.count, 19)
+        XCTAssertThrowsError(try planner.makeProject(snapshot: snapshot, nowMs: 4, existing: crowded)) { error in
+            guard case TimeStoryError.capacityConflict(19) = error else {
+                return XCTFail("19 个锁定镜头必须报告具体容量冲突：\(error)")
+            }
+        }
+        let store = TimeStoryProjectStore(applicationSupportDirectory: try temporaryDirectory("phase4-store"))
+        try store.save(regenerated)
+        XCTAssertEqual(try store.load(regenerated.id), regenerated)
+        var legacyJSON = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(regenerated)) as? [String: Any])
+        legacyJSON.removeValue(forKey: "chapterTitleOverrides")
+        var legacySnapshot = try XCTUnwrap(legacyJSON["candidateSnapshot"] as? [String: Any])
+        legacySnapshot.removeValue(forKey: "pendingReviewCount")
+        legacySnapshot["candidates"] = try XCTUnwrap(legacySnapshot["candidates"] as? [[String: Any]]).map { row in
+            var old = row
+            old.removeValue(forKey: "captureTimeSource")
+            return old
+        }
+        legacyJSON["candidateSnapshot"] = legacySnapshot
+        let old = try JSONDecoder().decode(TimeStoryProject.self, from: JSONSerialization.data(withJSONObject: legacyJSON))
+        XCTAssertNil(old.candidateSnapshot.pendingReviewCount)
+        XCTAssertNil(old.chapterTitleOverrides)
+        XCTAssertTrue(old.candidateSnapshot.candidates.allSatisfy { $0.captureTimeSource == nil })
+        try database.pool.write { db in
+            try db.execute(sql: "UPDATE asset SET content_revision = 2 WHERE id = ?", arguments: [asset(1).uuidString.lowercased()])
+        }
+        let changed = try provider.snapshot(tag: tag, nowMs: 4)
+        XCTAssertNotEqual(changed.id, snapshot.id)
+        XCTAssertThrowsError(try planner.makeProject(snapshot: changed, nowMs: 5, existing: regenerated)) { error in
+            guard case TimeStoryError.preservedMediaChanged = error else {
+                return XCTFail("锁定素材版本变化必须明确报错：\(error)")
+            }
+        }
     }
 
     func testPlannerPreservesSparseEarlyEraABAAndUnknownTimeBoundary() throws {
