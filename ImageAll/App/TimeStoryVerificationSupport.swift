@@ -27,7 +27,9 @@ struct TimeStoryVerificationContainer: View {
                 }
                 .padding()
                 .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
-                Text("隔离合成验收：511 张已确认候选跨越 200 条分页；无真实照片访问。")
+                Text(ProcessInfo.processInfo.environment["IMAGEALL_ATELIER_SYNTHETIC"] == "1"
+                     ? "隔离 Atelier 合成验收：最多 26 张候选；无真实照片访问。"
+                     : "隔离合成验收：511 张已确认候选跨越 200 条分页；无真实照片访问。")
                     .foregroundStyle(.secondary)
             }
             .padding(32)
@@ -56,6 +58,7 @@ struct TimeStoryVerificationContainer: View {
     }
 
     private static func makeModel() throws -> TimeStoryWorkspaceModel {
+        let atelierMode = ProcessInfo.processInfo.environment["IMAGEALL_ATELIER_SYNTHETIC"] == "1"
         let requestedRun = ProcessInfo.processInfo.environment["IMAGEALL_TIME_STORY_VERIFICATION_RUN_ID"]
         let runID = requestedRun.flatMap { raw -> String? in
             guard !raw.isEmpty, raw.count <= 64,
@@ -63,15 +66,30 @@ struct TimeStoryVerificationContainer: View {
             else { return nil }
             return raw
         } ?? UUID().uuidString
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ImageAll-TimeStory-Phase4-\(runID)", isDirectory: true)
+        let requestedDirectory = ProcessInfo.processInfo.environment["IMAGEALL_TIME_STORY_VERIFICATION_DIR"]
+        let root: URL
+        if atelierMode, let requestedDirectory,
+           NSString(string: requestedDirectory).isAbsolutePath,
+           requestedDirectory != "/", !requestedDirectory.hasPrefix("/Volumes/HDD2/") {
+            root = URL(fileURLWithPath: requestedDirectory, isDirectory: true).standardizedFileURL
+        } else {
+            root = FileManager.default.temporaryDirectory
+                .appendingPathComponent("ImageAll-TimeStory-Phase4-\(runID)", isDirectory: true)
+        }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let database = try CatalogDatabase.open(at: root.appendingPathComponent("catalog.sqlite"))
-        let images = try seedSyntheticCatalog(database)
+        let images = try seedSyntheticCatalog(database, atelierMode: atelierMode)
         let media = TimeStoryVerificationMedia(images: images)
         let validator = TimeStoryMediaValidator(database: database)
         let packageExporter = StoryRenderPackageExporter(media: media, validator: validator)
-        let taskRootStore = UserDefaultsOpenMontageTaskRootStore()
+        let isolatedDefaults = atelierMode ? UserDefaults(suiteName: "com.gwlee.ImageAll.AtelierSynthetic.\(runID)") : nil
+        let taskRootStore = UserDefaultsOpenMontageTaskRootStore(defaults: isolatedDefaults ?? .standard)
+        if atelierMode, let taskPath = ProcessInfo.processInfo.environment["IMAGEALL_ATELIER_TASK_ROOT"],
+           NSString(string: taskPath).isAbsolutePath, taskPath != "/",
+           !taskPath.hasPrefix("/Volumes/HDD2/") {
+            let taskURL = URL(fileURLWithPath: taskPath, isDirectory: true).standardizedFileURL
+            try taskRootStore.saveTaskRoot(taskURL)
+        }
         let runtime = TimeStoryFeatureRuntime(
             candidates: TimeStoryCandidateProvider(database: database, query: GRDBAssetCatalogQueryRepository(database: database)),
             planner: TimeStoryPlanner(),
@@ -94,8 +112,8 @@ struct TimeStoryVerificationContainer: View {
         return model
     }
 
-    static func seedSyntheticCatalog(_ database: CatalogDatabase) throws -> [UUID: Data] {
-        let facts = [
+    static func seedSyntheticCatalog(_ database: CatalogDatabase, atelierMode: Bool = false) throws -> [UUID: Data] {
+        let baseFacts: [Fact] = [
             Fact(number: 1, time: 1_514_764_800_000, place: nil, location: "none", availability: "available", cluster: "growth-pose", decision: "accepted", favorite: true, portrait: true),
             Fact(number: 2, time: 1_546_300_800_000, place: "A 城", location: "placeTag", availability: "available", cluster: "early-event", decision: "accepted", favorite: true, portrait: false),
             Fact(number: 3, time: 1_546_300_860_000, place: "A 城", location: "placeTag", availability: "available", cluster: "early-event", decision: "accepted", favorite: false, portrait: true),
@@ -109,12 +127,14 @@ struct TimeStoryVerificationContainer: View {
             Fact(number: 11, time: 1_550_000_000_000, place: "A 城", location: "placeTag", availability: "available", cluster: nil, decision: nil, favorite: false, portrait: true),
             Fact(number: 12, time: 1_550_000_000_000, place: "A 城", location: "placeTag", availability: "available", cluster: nil, decision: "rejected", favorite: false, portrait: true),
             Fact(number: 13, time: 1_550_000_000_000, place: "B 城", location: "placeTag", availability: "available", cluster: nil, decision: "distractor", favorite: false, portrait: false),
-        ] + (100 ... 600).map { number in
+        ]
+        let rangeFacts: [Fact] = (atelierMode ? Array(100 ... 112) : Array(100 ... 600)).map { number in
             Fact(number: number, time: 1_737_417_600_000 + Int64(number - 100) * 3_600_000,
                  place: "A 城", location: "placeTag", availability: "available",
                  cluster: "recent-event-\((number - 100) / 2)", decision: "accepted",
                  favorite: false, portrait: number.isMultiple(of: 2))
         }
+        let facts = (baseFacts + rangeFacts).filter { !atelierMode || $0.number != 8 }
         let source = sourceID
         let tag = subject.id.uuidString.lowercased()
         let other = distractor
@@ -130,14 +150,16 @@ struct TimeStoryVerificationContainer: View {
             for (id, name, latitude, longitude) in [("a", "A 城", 31.0, 121.0), ("b", "B 城", 30.0, 120.0)] {
                 try db.execute(sql: "INSERT INTO place (id,canonical_name,latitude,longitude,kind,created_at_ms,updated_at_ms) VALUES (?,?,?,?,'city',1,1)", arguments: [id, name, latitude, longitude])
             }
+            let similarityCounts = atelierMode ? (25, 17, 10, 8) : (514, 505, 252, 9)
             try db.execute(sql: """
                 INSERT INTO source_similarity_index
                     (source_id,media_kind,state,policy_version,feature_print_provider,
                      feature_print_request_revision,feature_print_preprocessing_revision,
                      feature_print_max_l2,lsh_bit_count,lsh_planes_json,asset_count,indexed_count,
                      cluster_count,pending_count,built_at_ms,updated_at_ms)
-                VALUES (?,'image','ready','synthetic-v1','synthetic',1,1,1.0,8,?,514,505,252,9,1,1)
-                """, arguments: [source, Data("[]".utf8)])
+                VALUES (?,'image','ready','synthetic-v1','synthetic',1,1,1.0,8,?,?,?,?,?,1,1)
+                """, arguments: [source, Data("[]".utf8), similarityCounts.0,
+                                  similarityCounts.1, similarityCounts.2, similarityCounts.3])
             for fact in facts {
                 try db.execute(sql: """
                     INSERT INTO asset (id,source_id,locator_kind,relative_path,locator_state,file_name,

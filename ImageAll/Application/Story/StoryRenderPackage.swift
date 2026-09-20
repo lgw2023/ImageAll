@@ -309,7 +309,7 @@ struct StoryRenderPackageExporter: TimeStoryPackageExporting, Sendable {
         }
     }
 
-    private static func writeNormalizedJPEG(_ sourceData: Data, to destination: URL) throws {
+    static func writeNormalizedJPEG(_ sourceData: Data, to destination: URL) throws {
         guard let source = CGImageSourceCreateWithData(sourceData as CFData, nil) else {
             throw TimeStoryError.storyPackageExportFailed("正式素材无法解码")
         }

@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "imageall/atelier-project-v1",
+  "title": "ImageAll to OpenMontage Atelier project exchange",
+  "description": "Protocol 2.0. Separate from editable-story-v1. All paths are relative to one private request or frozen revision.",
+  "$defs": {
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9-]{1,80}$" },
+    "asset": {
+      "type": "object",
+      "properties": {
+        "assetID": { "$ref": "#/$defs/id" },
+        "relativePath": { "type": "string", "pattern": "^assets/[A-Za-z0-9-]+\\.jpg$" },
+        "contentVersion": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/sha" },
+        "captureTimeMs": { "type": ["integer", "null"] },
+        "captureTimeSource": { "type": ["string", "null"] },
+        "placeName": { "type": ["string", "null"] }
+      },
+      "required": ["assetID", "relativePath", "contentVersion", "sha256", "captureTimeMs", "captureTimeSource", "placeName"],
+      "additionalProperties": false
+    },
+    "file": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "sizeBytes": { "type": "integer", "minimum": 1 },
+        "sha256": { "$ref": "#/$defs/sha" }
+      },
+      "required": ["path", "sizeBytes", "sha256"],
+      "additionalProperties": false
+    },
+    "capabilities": {
+      "type": "object",
+      "properties": {
+        "protocolVersion": { "const": "2.0" },
+        "profile": { "const": "atelier-project-v1" },
+        "pluginID": { "const": "openmontage" },
+        "pluginVersion": { "type": "string", "minLength": 1 },
+        "planningMode": { "const": "agent-assisted" },
+        "automaticPlanning": { "const": false },
+        "renderRuntime": { "const": "remotion" },
+        "compositionMode": { "const": "atelier" }
+      },
+      "required": ["protocolVersion", "profile", "pluginID", "pluginVersion", "planningMode", "automaticPlanning", "renderRuntime", "compositionMode"],
+      "additionalProperties": false
+    },
+    "request": {
+      "type": "object",
+      "properties": {
+        "protocolVersion": { "const": "2.0" },
+        "profile": { "const": "atelier-project-v1" },
+        "requestID": { "$ref": "#/$defs/id" },
+        "projectID": { "$ref": "#/$defs/id" },
+        "requestRevision": { "type": "integer", "minimum": 1 },
+        "baseFingerprint": { "$ref": "#/$defs/sha" },
+        "scopeDigestSHA256": { "$ref": "#/$defs/sha" },
+        "intent": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "feedback": { "type": ["string", "null"], "maxLength": 4000 },
+        "parentProjectRevision": { "anyOf": [{ "$ref": "#/$defs/sha" }, { "type": "null" }] },
+        "subject": { "type": "string" },
+        "aspect": { "const": "portrait" },
+        "targetFrames": { "type": "integer", "minimum": 300, "maximum": 5400 },
+        "externalSendAllowed": { "const": false },
+        "assets": { "type": "array", "minItems": 1, "maxItems": 26, "items": { "$ref": "#/$defs/asset" } },
+        "selectedAssetIDs": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
+        "lockedAssetIDs": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
+        "lockedShots": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "assetID": { "$ref": "#/$defs/id" },
+              "orderIndex": { "type": "integer", "minimum": 0 },
+              "caption": { "type": "string", "maxLength": 600 },
+              "durationFrames": { "type": "integer", "minimum": 1 }
+            },
+            "required": ["assetID", "orderIndex", "caption", "durationFrames"],
+            "additionalProperties": false
+          }
+        },
+        "excludedAssetIDs": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/id" } }
+      },
+      "required": ["protocolVersion", "profile", "requestID", "projectID", "requestRevision", "baseFingerprint", "scopeDigestSHA256", "intent", "feedback", "parentProjectRevision", "subject", "aspect", "targetFrames", "externalSendAllowed", "assets", "selectedAssetIDs", "lockedAssetIDs", "lockedShots", "excludedAssetIDs"],
+      "additionalProperties": false
+    },
+    "proposal": {
+      "type": "object",
+      "properties": {
+        "protocolVersion": { "const": "2.0" },
+        "profile": { "const": "atelier-project-v1" },
+        "requestID": { "$ref": "#/$defs/id" },
+        "requestSHA256": { "$ref": "#/$defs/sha" },
+        "scopeDigestSHA256": { "$ref": "#/$defs/sha" },
+        "projectRevision": { "$ref": "#/$defs/sha" },
+        "manifestSHA256": { "$ref": "#/$defs/sha" },
+        "entryPoint": { "type": "string" },
+        "propsPath": { "type": "string" },
+        "compositionID": { "type": "string", "minLength": 1 },
+        "renderRuntime": { "const": "remotion" },
+        "runtimeVersion": { "type": "string", "minLength": 1 },
+        "width": { "const": 1080 },
+        "height": { "const": 1920 },
+        "fps": { "const": 30 },
+        "totalFrames": { "type": "integer", "minimum": 300, "maximum": 5400 },
+        "title": { "type": "string", "maxLength": 240 },
+        "summary": { "type": "string", "maxLength": 4000 },
+        "files": { "type": "array", "minItems": 3, "items": { "$ref": "#/$defs/file" } }
+      },
+      "required": ["protocolVersion", "profile", "requestID", "requestSHA256", "scopeDigestSHA256", "projectRevision", "manifestSHA256", "entryPoint", "propsPath", "compositionID", "renderRuntime", "runtimeVersion", "width", "height", "fps", "totalFrames", "title", "summary", "files"],
+      "additionalProperties": false
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "protocolVersion": { "const": "2.0" },
+        "requestID": { "$ref": "#/$defs/id" },
+        "requestSHA256": { "$ref": "#/$defs/sha" },
+        "projectRevision": { "$ref": "#/$defs/sha" },
+        "manifestSHA256": { "$ref": "#/$defs/sha" },
+        "status": { "enum": ["succeeded", "failed", "cancelled"] },
+        "outputPath": { "type": ["string", "null"] },
+        "outputSHA256": { "anyOf": [{ "$ref": "#/$defs/sha" }, { "type": "null" }] },
+        "width": { "type": ["integer", "null"] },
+        "height": { "type": ["integer", "null"] },
+        "fps": { "type": ["integer", "null"] },
+        "frames": { "type": ["integer", "null"] },
+        "errorCode": { "type": ["string", "null"] }
+      },
+      "required": ["protocolVersion", "requestID", "requestSHA256", "projectRevision", "manifestSHA256", "status", "outputPath", "outputSHA256", "width", "height", "fps", "frames", "errorCode"],
+      "additionalProperties": false
+    }
+  }
+}

@@ -6,6 +6,19 @@ import GRDB
 import XCTest
 
 final class TimeStoryFeatureTests: XCTestCase {
+    @MainActor
+    func testAtelierSyntheticCatalogHasOnlyBoundedReliableCandidates() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        _ = try TimeStoryVerificationContainer.seedSyntheticCatalog(database, atelierMode: true)
+        let snapshot = try TimeStoryCandidateProvider(
+            database: database, query: GRDBAssetCatalogQueryRepository(database: database)
+        ).snapshot(tag: TimeStoryVerificationContainer.subject, nowMs: 1)
+        XCTAssertEqual(snapshot.candidates.count, 22)
+        XCTAssertEqual(snapshot.candidates.filter { $0.availability == .available }.count, 21)
+        XCTAssertTrue(snapshot.candidates.filter { $0.availability == .available }
+            .allSatisfy { $0.mediaCreatedAtMs != nil })
+    }
+
     func testCandidateProviderReadsEveryPageAndFreezesStableSnapshot() throws {
         let databaseURL = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: databaseURL)
@@ -1486,6 +1499,73 @@ final class TimeStoryFeatureTests: XCTestCase {
         XCTAssertThrowsError(try StoryCreativePlugin.safe("../escape", root: root))
         try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("link"), withDestinationURL: root)
         XCTAssertThrowsError(try StoryCreativePlugin.safe("link/anything", root: root))
+    }
+
+    func testAtelierPublishesConfirmedCandidatesBeyondSelectedShotsAndRejectsVersionMismatch() async throws {
+        let root = try temporaryDirectory("atelier-scope").resolvingSymlinksInPath()
+        let first = UUID(), second = UUID(), third = UUID()
+        var project = renderProject(first: first, second: second)
+        project.creativeIntent = "用三张合成照片比较人物与环境关系"
+        project.creativeTargetFrames = 600
+        project.shots[0].isLocked = true
+        project.candidateSnapshot = makeSnapshot(project.candidateSnapshot.candidates + [candidate(third.uuidString, time: timestamp(2024, 1, 2))])
+        project.excludedAssetIDs = [third]
+        let media = FixtureStoryMediaLoader(images: [
+            first: try pngData(color: .red, portrait: false),
+            second: try pngData(color: .blue, portrait: true),
+            third: try pngData(color: .green, portrait: true),
+        ])
+        let exchange = StoryAtelierExchange(rootProvider: FixtureOpenMontageRootProvider(root: root),
+                                            media: media, validator: PassingStoryValidator())
+        let creative = root.appendingPathComponent("creative")
+        try FileManager.default.createDirectory(at: creative, withIntermediateDirectories: true)
+        var capability: [String: Any] = ["protocolVersion": "2.0", "profile": "atelier-project-v1",
+            "pluginID": "openmontage", "pluginVersion": "2.0.0", "planningMode": "agent-assisted",
+            "automaticPlanning": false, "renderRuntime": "remotion", "compositionMode": "atelier"]
+        let capabilityURL = creative.appendingPathComponent("atelier-capabilities.json")
+        try JSONSerialization.data(withJSONObject: capability).write(to: capabilityURL)
+        let receipt = try await exchange.publish(project: project)
+        let directory = creative.appendingPathComponent("atelier-requests/" + receipt.requestID)
+        let requestData = try Data(contentsOf: directory.appendingPathComponent("request.json"))
+        let request = try JSONDecoder().decode(StoryAtelierRequest.self, from: requestData)
+        let requestObject = try XCTUnwrap(JSONSerialization.jsonObject(with: requestData) as? [String: Any])
+        XCTAssertTrue(requestObject["feedback"] is NSNull)
+        XCTAssertTrue(requestObject["parentProjectRevision"] is NSNull)
+        let encodedAssets = try XCTUnwrap(requestObject["assets"] as? [[String: Any]])
+        XCTAssertTrue(encodedAssets.allSatisfy { $0.keys.contains("placeName") })
+        XCTAssertEqual(StoryCreativePlugin.hash(requestData), receipt.requestSHA256)
+        XCTAssertEqual(request.assets.count, 3, "Agent 应看到同一已确认范围，而不只看到 App 的两张草稿")
+        XCTAssertEqual(request.selectedAssetIDs.count, 2)
+        XCTAssertEqual(request.lockedAssetIDs.count, 1)
+        XCTAssertEqual(request.excludedAssetIDs.count, 1)
+        XCTAssertEqual(request.scopeDigestSHA256, StoryAtelierExchange.scopeDigest(request.assets))
+        XCTAssertFalse(request.externalSendAllowed)
+        let store = TimeStoryProjectStore(applicationSupportDirectory: root)
+        project.atelierVersions = [receipt]
+        try store.save(project)
+        XCTAssertEqual(try store.load(project.id).atelierVersions, [receipt])
+        let parentRevision = String(repeating: "b", count: 64)
+        let revised = try await exchange.publish(
+            project: project, feedback: "让双图关系多停留两秒",
+            parentProjectRevision: parentRevision)
+        let revisedData = try Data(contentsOf: creative.appendingPathComponent(
+            "atelier-requests/\(revised.requestID)/request.json"))
+        let revisedRequest = try JSONDecoder().decode(StoryAtelierRequest.self, from: revisedData)
+        XCTAssertEqual(revised.requestRevision, 2)
+        XCTAssertEqual(revisedRequest.feedback, "让双图关系多停留两秒")
+        XCTAssertEqual(revisedRequest.parentProjectRevision, parentRevision)
+        XCTAssertEqual(revisedRequest.scopeDigestSHA256, request.scopeDigestSHA256)
+        XCTAssertEqual(revisedRequest.lockedAssetIDs, request.lockedAssetIDs)
+        XCTAssertEqual(revisedRequest.excludedAssetIDs, request.excludedAssetIDs)
+        let asset = try XCTUnwrap(request.assets.first)
+        try Data("tampered".utf8).write(to: directory.appendingPathComponent(asset.relativePath))
+        XCTAssertThrowsError(try exchange.loadProposal(receipt, project: project))
+        capability["protocolVersion"] = "3.0"
+        try JSONSerialization.data(withJSONObject: capability).write(to: capabilityURL)
+        do {
+            _ = try await exchange.publish(project: project)
+            XCTFail("Unsupported protocol version must fail")
+        } catch { }
     }
 
     private func renderProject(first: UUID, second: UUID) -> TimeStoryProject {

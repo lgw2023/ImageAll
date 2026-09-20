@@ -152,6 +152,8 @@ struct TimeStoryProject: Codable, Sendable, Equatable, Identifiable {
     var creativeIntent: String? = nil
     var creativeTargetFrames: Int? = nil
     var creativeReceipt: StoryCreativeReceipt? = nil
+    // Separate full-fidelity Atelier versions. Absent in existing projects.
+    var atelierVersions: [StoryAtelierReceipt]? = nil
 
     var timelineDurationSeconds: Double {
         (try? TimeStoryTimeline.normalize(project: self).durationSeconds) ?? 0

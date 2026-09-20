@@ -78,11 +78,94 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     @Published private(set) var lastPackageURL: URL?
     @Published private(set) var creativeStatus = "本地创作插件 · 由 Agent 创作方案"
     @Published private(set) var creativePlan: StoryCreativePlan?
+    @Published private(set) var atelierStatus = "Atelier 创作项目 · Agent 协作"
+    @Published private(set) var atelierProposal: StoryAtelierProposal?
+    @Published private(set) var selectedAtelierRequestID: String?
+    @Published var atelierFeedback = ""
     @Published var message: String?
 
     private var creativePlugin: StoryCreativePlugin {
         StoryCreativePlugin(rootProvider: runtime.creativeRootProvider,
                             exporter: runtime.packageExporter, validator: runtime.validator)
+    }
+    private var atelierExchange: StoryAtelierExchange {
+        StoryAtelierExchange(rootProvider: runtime.creativeRootProvider,
+                             media: runtime.media, validator: runtime.validator)
+    }
+    var selectedAtelierReceipt: StoryAtelierReceipt? {
+        let receipts = project?.atelierVersions ?? []
+        return receipts.first(where: { $0.requestID == selectedAtelierRequestID }) ?? receipts.last
+    }
+    func selectAtelierVersion(_ id: String) {
+        selectedAtelierRequestID = id
+        atelierProposal = nil
+        refreshAtelierStatus()
+    }
+    func publishAtelierRequest(feedback: String? = nil) async {
+        guard let current = project, !isBusy else { return }
+        let parentRevision = feedback == nil ? nil : selectedAtelierReceipt?.projectRevision
+        isBusy = true
+        atelierStatus = "正在发布已确认候选快照…"
+        defer { isBusy = false }
+        do {
+            let receipt = try await atelierExchange.publish(
+                project: current, feedback: feedback, parentProjectRevision: parentRevision)
+            guard var edited = project, edited.id == current.id else { return }
+            edited.atelierVersions = (edited.atelierVersions ?? []) + [receipt]
+            try runtime.store.save(edited)
+            project = edited
+            selectedAtelierRequestID = receipt.requestID
+            atelierProposal = nil
+            atelierFeedback = ""
+            atelierStatus = "等待创作 Agent · 本次发布 \(current.candidateSnapshot.candidates.filter { $0.availability == .available }.count) 张候选"
+            await refreshProjects()
+        } catch { atelierStatus = error.localizedDescription }
+    }
+    func refreshAtelierStatus() {
+        guard let receipt = selectedAtelierReceipt else { return }
+        do { atelierStatus = try atelierExchange.status(receipt) }
+        catch { atelierStatus = error.localizedDescription }
+    }
+    func readAtelierProposal() async {
+        guard let current = project, let receipt = selectedAtelierReceipt else { return }
+        do {
+            let proposal = try atelierExchange.loadProposal(receipt, project: current)
+            atelierProposal = proposal
+            var edited = current
+            if let index = edited.atelierVersions?.firstIndex(where: { $0.requestID == receipt.requestID }) {
+                edited.atelierVersions?[index].projectRevision = proposal.projectRevision
+                edited.atelierVersions?[index].proposalSHA256 = try atelierExchange.proposalHash(receipt)
+                try runtime.store.save(edited)
+                project = edited
+            }
+            atelierStatus = "项目已核验 · 审阅摘要后可提交制作。"
+        } catch { atelierProposal = nil; atelierStatus = error.localizedDescription }
+    }
+    func requestAtelierRender() async {
+        guard let current = project, let receipt = selectedAtelierReceipt else { return }
+        do {
+            _ = try atelierExchange.requestRender(receipt, project: current)
+            atelierStatus = "制作任务已提交；等待可信本地 OpenMontage 进程处理。"
+        } catch { atelierStatus = error.localizedDescription }
+    }
+    func openAtelierResult() async {
+        guard let current = project, let receipt = selectedAtelierReceipt else { return }
+        do {
+            let (result, url) = try await atelierExchange.verifiedResult(receipt, project: current)
+            var edited = current
+            if let index = edited.atelierVersions?.firstIndex(where: { $0.requestID == receipt.requestID }) {
+                edited.atelierVersions?[index].resultSHA256 = result.outputSHA256
+                try runtime.store.save(edited)
+                project = edited
+            }
+            atelierStatus = "成片已核验：\(result.frames ?? 0) 帧，可打开审片。"
+            NSWorkspace.shared.open(url)
+        } catch { atelierStatus = error.localizedDescription }
+    }
+    func cancelAtelierRequest() {
+        guard let receipt = selectedAtelierReceipt else { return }
+        do { try atelierExchange.cancel(receipt); atelierProposal = nil; refreshAtelierStatus() }
+        catch { atelierStatus = error.localizedDescription }
     }
     func setCreativeIntent(_ value: String) { project?.creativeIntent = String(value.prefix(4000)) }
     func setCreativeTarget(_ seconds: Int) { project?.creativeTargetFrames = seconds * 30 }
@@ -185,6 +268,8 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         await refreshOpenMontageCapability()
         await recoverOpenMontageTask()
         refreshCreativeRequest()
+        selectedAtelierRequestID = project?.atelierVersions?.last?.requestID
+        refreshAtelierStatus()
     }
 
     func cancelCandidateLoading() { candidateTask?.cancel() }
@@ -253,6 +338,9 @@ final class TimeStoryWorkspaceModel: ObservableObject {
             message = "故事项目已重新打开。"
             creativePlan = nil
             refreshCreativeRequest()
+            selectedAtelierRequestID = project?.atelierVersions?.last?.requestID
+            atelierProposal = nil
+            refreshAtelierStatus()
             await loadThumbnails()
         } catch {
             message = error.localizedDescription
@@ -849,6 +937,7 @@ struct TimeStoryWorkspaceView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 16) {
                         creativePanel(project)
+                        atelierPanel(project)
                         readinessHeader(project)
                         TimeStoryTimelinePreview(project: project, thumbnails: model.thumbnails)
                             .padding(.horizontal, 18)
@@ -949,6 +1038,69 @@ struct TimeStoryWorkspaceView: View {
                     Text((receipt.observations + receipt.uncertainties.map { "待核对：" + $0 }).joined(separator: "\n"))
                         .font(.caption).foregroundStyle(.secondary)
                 }
+            }.padding(.vertical, 6)
+        }.padding(.horizontal, 18).padding(.top, 8)
+    }
+
+    private func atelierPanel(_ project: TimeStoryProject) -> some View {
+        DisclosureGroup("OpenMontage Atelier · 完整创作项目") {
+            let candidates = project.candidateSnapshot.candidates.filter { $0.availability == .available }
+            VStack(alignment: .leading, spacing: 10) {
+                Text("候选 \(candidates.count) 张 · 当前故事已选 \(project.shots.count) 张 · 最多发布 26 张已确认候选")
+                    .font(.caption)
+                TextField("描述这部短片想讲什么，以及希望观众看见什么", text: Binding(
+                    get: { model.project?.creativeIntent ?? "" }, set: { model.setCreativeIntent($0) }))
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityIdentifier("storyAtelierIntent")
+                Stepper(value: Binding(get: { (model.project?.creativeTargetFrames ?? 1350) / 30 },
+                                       set: { model.setCreativeTarget($0) }), in: 10...180, step: 5) {
+                    Text("目标约 \((model.project?.creativeTargetFrames ?? 1350) / 30) 秒")
+                }.frame(width: 170)
+                Text("Agent 在 OpenMontage 创作分镜与 Composition；App 保存版本、接收成片和修改意见。自由场景在新版本中修改，不进入上方逐镜头编辑器。")
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Button("发布竖屏 Atelier 创作") {
+                        Task { await model.publishAtelierRequest() }
+                    }
+                    .disabled(model.isBusy || candidates.isEmpty || candidates.count > 26)
+                    .accessibilityIdentifier("storyAtelierPublish")
+                    if let versions = project.atelierVersions, !versions.isEmpty {
+                        ForEach(versions) { version in
+                            Button("版本 \(version.requestRevision)") { model.selectAtelierVersion(version.requestID) }
+                                .buttonStyle(.bordered)
+                                .accessibilityIdentifier("storyAtelierVersion\(version.requestRevision)")
+                        }
+                    }
+                }
+                if let receipt = model.selectedAtelierReceipt {
+                    HStack {
+                        Text("当前：版本 \(receipt.requestRevision)")
+                        Button("刷新状态") { model.refreshAtelierStatus() }
+                        Button("读取项目摘要") { Task { await model.readAtelierProposal() } }
+                        Button("取消") { model.cancelAtelierRequest() }
+                    }
+                    if let proposal = model.atelierProposal, proposal.requestID == receipt.requestID {
+                        Text("\(proposal.title) · \(Double(proposal.totalFrames) / 30, specifier: "%.1f") 秒 · \(proposal.width)×\(proposal.height)")
+                            .font(.headline)
+                        Text(proposal.summary).font(.caption).textSelection(.enabled)
+                        Text("项目修订：\(proposal.projectRevision)")
+                            .font(.caption.monospaced()).textSelection(.enabled)
+                        Button("提交此创作版本制作") { Task { await model.requestAtelierRender() } }
+                            .accessibilityIdentifier("storyAtelierRender")
+                    }
+                    Button("核验并打开成片") { Task { await model.openAtelierResult() } }
+                        .accessibilityIdentifier("storyAtelierOpenResult")
+                    TextField("对镜头、选片、节奏或文字提出具体修改意见", text: $model.atelierFeedback, axis: .vertical)
+                        .lineLimit(2...4)
+                        .accessibilityIdentifier("storyAtelierFeedback")
+                    Button("按修改意见再创作新版本") {
+                        Task { await model.publishAtelierRequest(feedback: model.atelierFeedback) }
+                    }
+                    .disabled(model.atelierFeedback.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                              || receipt.projectRevision == nil || model.isBusy)
+                    .accessibilityIdentifier("storyAtelierRevise")
+                }
+                Text(model.atelierStatus).font(.caption).textSelection(.enabled)
             }.padding(.vertical, 6)
         }.padding(.horizontal, 18).padding(.top, 8)
     }

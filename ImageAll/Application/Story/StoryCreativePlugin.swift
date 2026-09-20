@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import AVFoundation
 
 /// Optional project state; no migration or catalog fact writes.
 struct StoryCreativeReceipt: Codable, Sendable, Equatable {
@@ -10,6 +11,463 @@ struct StoryCreativeReceipt: Codable, Sendable, Equatable {
     var appliedPlanSHA256: String?
     var observations: [String] = []
     var uncertainties: [String] = []
+}
+
+// MARK: - Full Atelier project exchange (protocol 2.0)
+
+struct StoryAtelierReceipt: Codable, Sendable, Equatable, Identifiable {
+    var requestID: String
+    var requestSHA256: String
+    var baseFingerprint: String
+    var scopeDigestSHA256: String
+    var requestRevision: Int
+    var projectRevision: String? = nil
+    var proposalSHA256: String? = nil
+    var resultSHA256: String? = nil
+    var id: String { requestID }
+}
+
+struct StoryAtelierRequest: Codable, Sendable {
+    var protocolVersion = "2.0"
+    var profile = "atelier-project-v1"
+    var requestID: String
+    var projectID: String
+    var requestRevision: Int
+    var baseFingerprint: String
+    var scopeDigestSHA256: String
+    var intent: String
+    var feedback: String?
+    var parentProjectRevision: String?
+    var subject: String
+    var aspect = "portrait"
+    var targetFrames: Int
+    var externalSendAllowed = false
+    var assets: [Asset]
+    var selectedAssetIDs: [String]
+    var lockedAssetIDs: [String]
+    var lockedShots: [LockedShot]
+    var excludedAssetIDs: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case protocolVersion, profile, requestID, projectID, requestRevision, baseFingerprint
+        case scopeDigestSHA256, intent, feedback, parentProjectRevision, subject, aspect
+        case targetFrames, externalSendAllowed, assets, selectedAssetIDs, lockedAssetIDs
+        case lockedShots, excludedAssetIDs
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(protocolVersion, forKey: .protocolVersion)
+        try container.encode(profile, forKey: .profile)
+        try container.encode(requestID, forKey: .requestID)
+        try container.encode(projectID, forKey: .projectID)
+        try container.encode(requestRevision, forKey: .requestRevision)
+        try container.encode(baseFingerprint, forKey: .baseFingerprint)
+        try container.encode(scopeDigestSHA256, forKey: .scopeDigestSHA256)
+        try container.encode(intent, forKey: .intent)
+        try container.encode(feedback, forKey: .feedback)
+        try container.encode(parentProjectRevision, forKey: .parentProjectRevision)
+        try container.encode(subject, forKey: .subject)
+        try container.encode(aspect, forKey: .aspect)
+        try container.encode(targetFrames, forKey: .targetFrames)
+        try container.encode(externalSendAllowed, forKey: .externalSendAllowed)
+        try container.encode(assets, forKey: .assets)
+        try container.encode(selectedAssetIDs, forKey: .selectedAssetIDs)
+        try container.encode(lockedAssetIDs, forKey: .lockedAssetIDs)
+        try container.encode(lockedShots, forKey: .lockedShots)
+        try container.encode(excludedAssetIDs, forKey: .excludedAssetIDs)
+    }
+
+    struct Asset: Codable, Sendable {
+        var assetID: String
+        var relativePath: String
+        var contentVersion: String
+        var sha256: String
+        var captureTimeMs: Int64?
+        var captureTimeSource: String?
+        var placeName: String?
+
+        enum CodingKeys: String, CodingKey {
+            case assetID, relativePath, contentVersion, sha256, captureTimeMs
+            case captureTimeSource, placeName
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(assetID, forKey: .assetID)
+            try container.encode(relativePath, forKey: .relativePath)
+            try container.encode(contentVersion, forKey: .contentVersion)
+            try container.encode(sha256, forKey: .sha256)
+            try container.encode(captureTimeMs, forKey: .captureTimeMs)
+            try container.encode(captureTimeSource, forKey: .captureTimeSource)
+            try container.encode(placeName, forKey: .placeName)
+        }
+    }
+    struct LockedShot: Codable, Sendable {
+        var assetID: String
+        var orderIndex: Int
+        var caption: String
+        var durationFrames: Int
+    }
+}
+
+struct StoryAtelierProposal: Codable, Sendable {
+    var protocolVersion: String
+    var profile: String
+    var requestID: String
+    var requestSHA256: String
+    var scopeDigestSHA256: String
+    var projectRevision: String
+    var manifestSHA256: String
+    var entryPoint: String
+    var propsPath: String
+    var compositionID: String
+    var renderRuntime: String
+    var runtimeVersion: String
+    var width: Int
+    var height: Int
+    var fps: Int
+    var totalFrames: Int
+    var title: String
+    var summary: String
+    var files: [File]
+
+    struct File: Codable, Sendable {
+        var path: String
+        var sizeBytes: Int
+        var sha256: String
+    }
+}
+
+struct StoryAtelierResult: Codable, Sendable {
+    var protocolVersion: String
+    var requestID: String
+    var requestSHA256: String
+    var projectRevision: String
+    var manifestSHA256: String
+    var status: String
+    var outputPath: String?
+    var outputSHA256: String?
+    var width: Int?
+    var height: Int?
+    var fps: Int?
+    var frames: Int?
+    var errorCode: String?
+}
+
+struct StoryAtelierExchange: Sendable {
+    let rootProvider: any OpenMontageTaskRootProviding
+    let media: any TimeStoryMediaLoading
+    let validator: any TimeStoryMediaValidating
+
+    private struct Capability: Decodable {
+        let protocolVersion: String
+        let profile: String
+        let pluginID: String
+        let pluginVersion: String
+        let planningMode: String
+        let automaticPlanning: Bool
+        let renderRuntime: String
+        let compositionMode: String
+    }
+    private struct Ready: Decodable {
+        let requestSHA256: String
+        let proposalSHA256: String
+    }
+
+    static func scopeDigest(_ assets: [StoryAtelierRequest.Asset]) -> String {
+        let lines = assets.sorted { $0.assetID < $1.assetID }
+            .map { "\($0.assetID)|\($0.contentVersion)|\($0.sha256)\n" }.joined()
+        return StoryCreativePlugin.hash(Data(lines.utf8))
+    }
+
+    private func withRoot<T>(_ operation: (URL) throws -> T) throws -> T {
+        let root = try rootProvider.resolveTaskRoot()
+        guard rootProvider.startAccessing(root) else { throw OpenMontageTaskError.taskRootAuthorizationRequired }
+        defer { rootProvider.stopAccessing(root) }
+        return try operation(root)
+    }
+    private func directory(_ receipt: StoryAtelierReceipt, root: URL) throws -> URL {
+        guard receipt.requestID.hasPrefix("atelier-"),
+              UUID(uuidString: String(receipt.requestID.dropFirst(8))) != nil else {
+            throw StoryCreativeError.invalid("INVALID_REQUEST_ID")
+        }
+        return try StoryCreativePlugin.safe("creative/atelier-requests/\(receipt.requestID)", root: root)
+    }
+    private static func decode<T: Decodable>(_ type: T.Type, _ url: URL) throws -> T {
+        let data = try Data(contentsOf: url)
+        guard data.count <= 2_000_000 else { throw StoryCreativeError.invalid("OVERSIZE_DOCUMENT") }
+        return try JSONDecoder().decode(type, from: data)
+    }
+    private static func requireExactKeys(_ data: Data, _ keys: Set<String>) throws {
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              Set(object.keys) == keys else { throw StoryCreativeError.invalid("UNSUPPORTED_FIELDS") }
+    }
+
+    func publish(project: TimeStoryProject, feedback: String? = nil,
+                 parentProjectRevision: String? = nil) async throws -> StoryAtelierReceipt {
+        let intent = (project.creativeIntent ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let note = feedback?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !intent.isEmpty, intent.count <= 4000, (note?.count ?? 0) <= 4000 else {
+            throw StoryCreativeError.invalid("请填写创作意图；修改意见不能超过 4000 字。")
+        }
+        let candidates = project.candidateSnapshot.candidates.filter { $0.availability == .available }
+            .sorted { ($0.mediaCreatedAtMs ?? .max, $0.assetID.uuidString) < ($1.mediaCreatedAtMs ?? .max, $1.assetID.uuidString) }
+        guard !candidates.isEmpty, candidates.count <= 26,
+              candidates.allSatisfy({ $0.mediaCreatedAtMs != nil }),
+              Set(project.shots.map(\.assetID)).isSubset(of: Set(candidates.map(\.assetID))) else {
+            throw StoryCreativeError.invalid("Atelier 候选须为当前已确认快照中 1–26 张可用、可靠时间的照片。")
+        }
+        var check = project
+        let chapterID = project.chapters.first?.id ?? UUID()
+        check.shots = candidates.map { candidate in
+            TimeStoryShot(id: candidate.assetID, assetID: candidate.assetID,
+                          contentRevision: candidate.contentRevision, chapterID: chapterID,
+                          caption: "", durationSeconds: 2, presentationMode: .fullFrameWithBackground,
+                          reasons: [], isLocked: false, isUserEdited: false)
+        }
+        guard try validator.validate(check).isEmpty else { throw StoryCreativeError.invalid("候选素材已变化或不可用。") }
+        let root = try rootProvider.resolveTaskRoot()
+        guard rootProvider.startAccessing(root) else { throw OpenMontageTaskError.taskRootAuthorizationRequired }
+        defer { rootProvider.stopAccessing(root) }
+        let capabilityURL = try StoryCreativePlugin.safe("creative/atelier-capabilities.json", root: root)
+        let capability = try Self.decode(Capability.self, capabilityURL)
+        guard capability.protocolVersion == "2.0", capability.profile == "atelier-project-v1",
+              capability.pluginID == "openmontage", !capability.pluginVersion.isEmpty,
+              capability.planningMode == "agent-assisted", !capability.automaticPlanning,
+              capability.renderRuntime == "remotion", capability.compositionMode == "atelier" else {
+            throw StoryCreativeError.invalid("INCOMPATIBLE_PLUGIN")
+        }
+        let requestID = "atelier-" + UUID().uuidString.lowercased()
+        let requests = try StoryCreativePlugin.safe("creative/atelier-requests", root: root)
+        try FileManager.default.createDirectory(at: requests, withIntermediateDirectories: true)
+        let staging = try StoryCreativePlugin.safe("creative/atelier-requests/.\(requestID)", root: root)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: false)
+        var published = false
+        defer { if !published { try? FileManager.default.removeItem(at: staging) } }
+        let assetsDirectory = staging.appendingPathComponent("assets")
+        try FileManager.default.createDirectory(at: assetsDirectory, withIntermediateDirectories: false)
+        var assets: [StoryAtelierRequest.Asset] = []
+        for candidate in candidates {
+            try Task.checkCancellation()
+            let id = StoryRenderPackageExporter.packageAssetID(projectID: project.id, assetID: candidate.assetID)
+            let relative = "assets/\(id).jpg"
+            let file = staging.appendingPathComponent(relative)
+            try StoryRenderPackageExporter.writeNormalizedJPEG(
+                try await media.loadStoryImage(assetID: candidate.assetID), to: file)
+            assets.append(.init(assetID: id, relativePath: relative,
+                                contentVersion: "catalog-revision-\(candidate.contentRevision)",
+                                sha256: try OpenMontageTaskFileValidation.sha256(file),
+                                captureTimeMs: candidate.mediaCreatedAtMs,
+                                captureTimeSource: candidate.captureTimeSource,
+                                placeName: candidate.placeName))
+        }
+        guard try validator.validate(check).isEmpty else { throw StoryCreativeError.invalid("导出期间候选素材发生变化。") }
+        let map = Dictionary(uniqueKeysWithValues: candidates.map {
+            ($0.assetID, StoryRenderPackageExporter.packageAssetID(projectID: project.id, assetID: $0.assetID))
+        })
+        let parent = parentProjectRevision ?? project.atelierVersions?.last?.projectRevision
+        let revision = (project.atelierVersions?.last?.requestRevision ?? 0) + 1
+        let request = StoryAtelierRequest(requestID: requestID,
+            projectID: StoryRenderPackageExporter.packageProjectID(for: project.id),
+            requestRevision: revision, baseFingerprint: try StoryCreativePlugin.fingerprint(project),
+            scopeDigestSHA256: Self.scopeDigest(assets), intent: intent, feedback: note,
+            parentProjectRevision: parent, subject: project.subjectTagDisplayName,
+            targetFrames: project.creativeTargetFrames ?? 1350, assets: assets,
+            selectedAssetIDs: project.shots.compactMap { map[$0.assetID] },
+            lockedAssetIDs: project.shots.filter { $0.isLocked || $0.isUserEdited }.compactMap { map[$0.assetID] },
+            lockedShots: project.shots.enumerated().compactMap { index, shot in
+                guard (shot.isLocked || shot.isUserEdited), let id = map[shot.assetID] else { return nil }
+                return .init(assetID: id, orderIndex: index, caption: shot.caption,
+                             durationFrames: Int((shot.durationSeconds * 30).rounded()))
+            },
+            excludedAssetIDs: project.excludedAssetIDs.compactMap { map[$0] }.sorted())
+        let data = try StoryCreativePlugin.encode(request)
+        let digest = StoryCreativePlugin.hash(data)
+        try data.write(to: staging.appendingPathComponent("request.json"), options: .atomic)
+        try StoryCreativePlugin.encode(["requestSHA256": digest]).write(to: staging.appendingPathComponent("complete.json"), options: .atomic)
+        try Task.checkCancellation()
+        try FileManager.default.moveItem(at: staging, to: requests.appendingPathComponent(requestID))
+        published = true
+        return StoryAtelierReceipt(requestID: requestID, requestSHA256: digest,
+            baseFingerprint: request.baseFingerprint, scopeDigestSHA256: request.scopeDigestSHA256,
+            requestRevision: revision)
+    }
+
+    func status(_ receipt: StoryAtelierReceipt) throws -> String {
+        try withRoot { root in
+            let dir = try directory(receipt, root: root)
+            if FileManager.default.fileExists(atPath: dir.appendingPathComponent("cancel.json").path) { return "已取消；可发布新版本。" }
+            let resultURL = dir.appendingPathComponent("result.json")
+            if FileManager.default.fileExists(atPath: resultURL.path) {
+                let result = try Self.decode(StoryAtelierResult.self, resultURL)
+                switch result.status {
+                case "succeeded": return "已返回成片；读取并核验。"
+                case "cancelled": return "制作已取消；可发布新版本。"
+                case "failed": return "制作失败：\(result.errorCode ?? "未知错误")；可发布新版本。"
+                default: throw StoryCreativeError.invalid("INVALID_RESULT_STATUS")
+                }
+            }
+            if FileManager.default.fileExists(atPath: dir.appendingPathComponent("render-request.json").path) { return "制作任务已提交；等待 OpenMontage 渲染。" }
+            if FileManager.default.fileExists(atPath: dir.appendingPathComponent("ready.json").path) { return "完整创作项目已返回；可审阅并提交制作。" }
+            return "等待创作 Agent · 非无人值守规划"
+        }
+    }
+
+    func loadProposal(_ receipt: StoryAtelierReceipt, project: TimeStoryProject,
+                      requireCurrentProject: Bool = false) throws -> StoryAtelierProposal {
+        try withRoot { root in
+            let dir = try directory(receipt, root: root)
+            if requireCurrentProject {
+                guard try StoryCreativePlugin.fingerprint(project) == receipt.baseFingerprint else {
+                    throw StoryCreativeError.invalid("STALE_PROJECT：意图、素材或用户编辑已变化。")
+                }
+            }
+            guard !FileManager.default.fileExists(atPath: dir.appendingPathComponent("cancel.json").path) else {
+                throw StoryCreativeError.invalid("CANCELLED")
+            }
+            let requestURL = try StoryCreativePlugin.safe("request.json", root: dir)
+            let requestData = try Data(contentsOf: requestURL)
+            guard StoryCreativePlugin.hash(requestData) == receipt.requestSHA256 else { throw StoryCreativeError.invalid("REQUEST_CHANGED") }
+            let request = try Self.decode(StoryAtelierRequest.self, requestURL)
+            guard request.protocolVersion == "2.0", request.profile == "atelier-project-v1",
+                  request.requestID == receipt.requestID, request.scopeDigestSHA256 == receipt.scopeDigestSHA256,
+                  Self.scopeDigest(request.assets) == request.scopeDigestSHA256,
+                  request.baseFingerprint == receipt.baseFingerprint,
+                  request.requestRevision == receipt.requestRevision else { throw StoryCreativeError.invalid("REQUEST_MISMATCH") }
+            if requireCurrentProject {
+                let current = project.candidateSnapshot.candidates.filter { $0.availability == .available }
+                let currentVersions = Dictionary(uniqueKeysWithValues: current.map { ($0.assetID, "catalog-revision-\($0.contentRevision)") })
+                guard request.assets.count == current.count,
+                      request.assets.allSatisfy({ asset in
+                          current.contains { candidate in
+                              StoryRenderPackageExporter.packageAssetID(projectID: project.id, assetID: candidate.assetID) == asset.assetID
+                                  && currentVersions[candidate.assetID] == asset.contentVersion
+                          }
+                      }) else { throw StoryCreativeError.invalid("STALE_SCOPE") }
+            }
+            for asset in request.assets {
+                let file = try StoryCreativePlugin.safe(asset.relativePath, root: dir)
+                guard try OpenMontageTaskFileValidation.sha256(file) == asset.sha256 else { throw StoryCreativeError.invalid("SOURCE_CHANGED") }
+            }
+            let proposalURL = try StoryCreativePlugin.safe("proposal.json", root: dir)
+            let bytes = try Data(contentsOf: proposalURL)
+            let ready = try Self.decode(Ready.self, try StoryCreativePlugin.safe("ready.json", root: dir))
+            guard ready.requestSHA256 == receipt.requestSHA256,
+                  ready.proposalSHA256 == StoryCreativePlugin.hash(bytes) else { throw StoryCreativeError.invalid("PROPOSAL_HASH_MISMATCH") }
+            try Self.requireExactKeys(bytes, ["protocolVersion", "profile", "requestID", "requestSHA256", "scopeDigestSHA256",
+                                               "projectRevision", "manifestSHA256", "entryPoint", "propsPath", "compositionID",
+                                               "renderRuntime", "runtimeVersion", "width", "height", "fps", "totalFrames",
+                                               "title", "summary", "files"])
+            let proposal = try JSONDecoder().decode(StoryAtelierProposal.self, from: bytes)
+            guard proposal.protocolVersion == "2.0", proposal.profile == "atelier-project-v1",
+                  proposal.requestID == receipt.requestID, proposal.requestSHA256 == receipt.requestSHA256,
+                  proposal.scopeDigestSHA256 == receipt.scopeDigestSHA256,
+                  proposal.renderRuntime == "remotion", proposal.width == 1080, proposal.height == 1920,
+                  proposal.fps == 30, (300...5400).contains(proposal.totalFrames),
+                  proposal.projectRevision == proposal.manifestSHA256,
+                  proposal.files.count >= 3,
+                  Set(proposal.files.map(\.path)).count == proposal.files.count else {
+                throw StoryCreativeError.invalid("INVALID_PROPOSAL")
+            }
+            var manifest = try StoryCreativePlugin.encode(["files": proposal.files])
+            manifest.append(0x0A) // Python exchange canonical JSON terminates with one LF.
+            guard StoryCreativePlugin.hash(manifest) == proposal.manifestSHA256 else { throw StoryCreativeError.invalid("MANIFEST_HASH_MISMATCH") }
+            let frozen = try StoryCreativePlugin.safe("revisions/\(proposal.projectRevision)", root: dir)
+            for file in proposal.files {
+                let url = try StoryCreativePlugin.safe(file.path, root: frozen)
+                let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+                guard values.isRegularFile == true, values.fileSize == file.sizeBytes,
+                      try OpenMontageTaskFileValidation.sha256(url) == file.sha256 else {
+                    throw StoryCreativeError.invalid("FROZEN_PROJECT_CHANGED")
+                }
+            }
+            guard proposal.files.contains(where: { $0.path == proposal.entryPoint }),
+                  proposal.files.contains(where: { $0.path == proposal.propsPath }) else {
+                throw StoryCreativeError.invalid("MISSING_RENDER_ENTRY")
+            }
+            return proposal
+        }
+    }
+
+    func requestRender(_ receipt: StoryAtelierReceipt, project: TimeStoryProject) throws -> StoryAtelierProposal {
+        let proposal = try loadProposal(receipt, project: project, requireCurrentProject: true)
+        try withRoot { root in
+            let dir = try directory(receipt, root: root)
+            let marker = try StoryCreativePlugin.safe("render-request.json", root: dir)
+            let data = try StoryCreativePlugin.encode(["requestSHA256": receipt.requestSHA256,
+                                                       "projectRevision": proposal.projectRevision])
+            if FileManager.default.fileExists(atPath: marker.path) {
+                guard try Data(contentsOf: marker) == data else { throw StoryCreativeError.invalid("RENDER_REQUEST_CONFLICT") }
+            } else { try data.write(to: marker, options: .atomic) }
+        }
+        return proposal
+    }
+
+    func proposalHash(_ receipt: StoryAtelierReceipt) throws -> String {
+        try withRoot { root in
+            let dir = try directory(receipt, root: root)
+            let file = try StoryCreativePlugin.safe("proposal.json", root: dir)
+            return StoryCreativePlugin.hash(try Data(contentsOf: file))
+        }
+    }
+
+    func verifiedResult(_ receipt: StoryAtelierReceipt, project: TimeStoryProject) async throws -> (StoryAtelierResult, URL) {
+        let proposal = try loadProposal(receipt, project: project)
+        let root = try rootProvider.resolveTaskRoot()
+        guard rootProvider.startAccessing(root) else { throw OpenMontageTaskError.taskRootAuthorizationRequired }
+        defer { rootProvider.stopAccessing(root) }
+        let dir = try directory(receipt, root: root)
+        let resultURL = try StoryCreativePlugin.safe("result.json", root: dir)
+        let result = try Self.decode(StoryAtelierResult.self, resultURL)
+        guard result.protocolVersion == "2.0", result.requestID == receipt.requestID,
+              result.requestSHA256 == receipt.requestSHA256,
+              result.projectRevision == proposal.projectRevision,
+              result.manifestSHA256 == proposal.manifestSHA256,
+              result.status == "succeeded", result.width == proposal.width,
+              result.height == proposal.height, result.fps == proposal.fps,
+              result.frames == proposal.totalFrames,
+              result.outputPath == "renders/\(proposal.projectRevision).mp4",
+              let outputPath = result.outputPath, let outputSHA = result.outputSHA256 else {
+            throw StoryCreativeError.invalid("RESULT_NOT_VERIFIED_OR_FAILED")
+        }
+        let output = try StoryCreativePlugin.safe(outputPath, root: dir)
+        guard try OpenMontageTaskFileValidation.sha256(output) == outputSHA else { throw StoryCreativeError.invalid("RESULT_HASH_MISMATCH") }
+        let asset = AVURLAsset(url: output)
+        let tracks = try await asset.loadTracks(withMediaType: .video)
+        guard let track = tracks.first else { throw StoryCreativeError.invalid("RESULT_NO_VIDEO") }
+        let size = try await track.load(.naturalSize)
+        let transform = try await track.load(.preferredTransform)
+        let dimensions = size.applying(transform)
+        let fps = Double(try await track.load(.nominalFrameRate))
+        let reader = try AVAssetReader(asset: asset)
+        let readerOutput = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
+        guard reader.canAdd(readerOutput) else { throw StoryCreativeError.invalid("RESULT_UNREADABLE") }
+        reader.add(readerOutput)
+        guard reader.startReading() else { throw StoryCreativeError.invalid("RESULT_UNREADABLE") }
+        var frames = 0
+        while let sample = readerOutput.copyNextSampleBuffer() {
+            try Task.checkCancellation()
+            frames += CMSampleBufferGetNumSamples(sample)
+        }
+        guard reader.status == .completed,
+              Int(abs(dimensions.width).rounded()) == proposal.width,
+              Int(abs(dimensions.height).rounded()) == proposal.height,
+              abs(fps - Double(proposal.fps)) < 0.01,
+              frames == proposal.totalFrames else { throw StoryCreativeError.invalid("RESULT_MEDIA_MISMATCH") }
+        return (result, output)
+    }
+
+    func cancel(_ receipt: StoryAtelierReceipt) throws {
+        try withRoot { root in
+            let dir = try directory(receipt, root: root)
+            guard !FileManager.default.fileExists(atPath: dir.appendingPathComponent("result.json").path) else {
+                throw StoryCreativeError.invalid("RESULT_ALREADY_EXISTS")
+            }
+            let marker = try StoryCreativePlugin.safe("cancel.json", root: dir)
+            try StoryCreativePlugin.encode(["requestSHA256": receipt.requestSHA256]).write(to: marker, options: .atomic)
+        }
+    }
 }
 
 struct StoryCreativeRequest: Codable, Sendable {
@@ -113,6 +571,7 @@ struct StoryCreativePlugin: Sendable {
     static func fingerprint(_ project: TimeStoryProject) throws -> String {
         var object = try JSONSerialization.jsonObject(with: encode(project)) as! [String: Any]
         object.removeValue(forKey: "creativeReceipt")
+        object.removeValue(forKey: "atelierVersions")
         object.removeValue(forKey: "updatedAtMs")
         if let excluded = object["excludedAssetIDs"] as? [String] { object["excludedAssetIDs"] = excluded.sorted() }
         return hash(try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes]))
