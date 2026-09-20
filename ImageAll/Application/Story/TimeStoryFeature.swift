@@ -10,7 +10,7 @@ import UniformTypeIdentifiers
 enum TimeStoryConstants {
     static let schemaVersion = 1
     static let templateVersion = "growth-footprints-v1"
-    static let strategyVersion = "time-place-balanced-v2"
+    static let strategyVersion = "time-place-balanced-v3"
     static let transitionDurationSeconds = 0.45
     static let defaultShotDurationSeconds = 3.5
     static let targetDurationSeconds = 60.0
@@ -626,13 +626,14 @@ struct TimeStoryPlanner: Sendable {
             else { throw TimeStoryError.preservedMediaChanged(String(shot.assetID.uuidString.prefix(8))) }
         }
         let preservedIDs = Set(preservedShots.map(\.assetID))
+        let preservedCandidates = preservedShots.compactMap { candidateByID[$0.assetID] }
         let storyTimeBounds = timeBounds(reliable)
-        var selected = selectCandidates(
+        let selected = selectCandidates(
             selectable.filter { !excluded.contains($0.assetID) && !preservedIDs.contains($0.assetID) },
-            limit: max(0, TimeStoryConstants.maximumShots - preservedShots.count)
+            limit: TimeStoryConstants.maximumShots,
+            preserving: preservedCandidates,
+            bounds: storyTimeBounds
         )
-        selected.append(contentsOf: preservedShots.compactMap { candidateByID[$0.assetID] })
-        selected.sort(by: candidateTimeOrder)
 
         let oldShotByAssetID = Dictionary(uniqueKeysWithValues: (existing?.shots ?? []).map { ($0.assetID, $0) })
         var shots = selected.map { candidate -> TimeStoryShot in
@@ -726,21 +727,26 @@ struct TimeStoryPlanner: Sendable {
         )
     }
 
-    private func selectCandidates(_ candidates: [TimeStoryCandidate], limit: Int) -> [TimeStoryCandidate] {
+    private func selectCandidates(
+        _ candidates: [TimeStoryCandidate],
+        limit: Int,
+        preserving preserved: [TimeStoryCandidate],
+        bounds: (start: Int64, end: Int64)?
+    ) -> [TimeStoryCandidate] {
         guard limit > 0 else { return [] }
         let ordered = candidates.sorted(by: candidateTimeOrder)
-        guard ordered.count > limit else { return ordered }
-        let bounds = timeBounds(ordered)
         let stages = Dictionary(grouping: ordered) { stageKey($0, bounds: bounds) }
-        var selected: [TimeStoryCandidate] = []
-        var selectedIDs = Set<UUID>()
+        var selected = preserved
+        var selectedIDs = Set(preserved.map(\.assetID))
         func append(_ candidate: TimeStoryCandidate?) {
             guard let candidate, selected.count < limit, selectedIDs.insert(candidate.assetID).inserted else { return }
             selected.append(candidate)
         }
 
         for key in [0, 1, 2] {
-            append(stages[key]?.max(by: { selectionScore($0) < selectionScore($1) }))
+            if !selected.contains(where: { stageKey($0, bounds: bounds) == key }) {
+                append(stages[key]?.max(by: { selectionScore($0) < selectionScore($1) }))
+            }
         }
         var previousPlace: String?
         for candidate in ordered {
@@ -755,7 +761,18 @@ struct TimeStoryPlanner: Sendable {
             if lhs != rhs { return lhs > rhs }
             return candidateTimeOrder($0, $1)
         }
-        for candidate in ranked where selected.count < limit {
+        func appendIfDistinct(_ candidate: TimeStoryCandidate) -> Bool {
+            guard !selectedIDs.contains(candidate.assetID),
+                  let time = candidate.mediaCreatedAtMs
+            else { return false }
+            // Without a compatible similarity result, a burst of favorites can
+            // otherwise consume most of the story. Two within a rolling day
+            // preserve room for a meaningful same-day comparison.
+            let withinDay = selected.filter {
+                guard let chosenTime = $0.mediaCreatedAtMs else { return false }
+                return abs(time - chosenTime) < 24 * 60 * 60 * 1_000
+            }.count
+            guard withinDay < 2 else { return false }
             let isNearDuplicate = selected.contains { chosen in
                 guard candidate.similarityState == .ready,
                       chosen.similarityState == .ready,
@@ -767,7 +784,37 @@ struct TimeStoryPlanner: Sendable {
                 else { return false }
                 return abs(lhs - rhs) <= 6 * 60 * 60 * 1_000
             }
-            if !isNearDuplicate { append(candidate) }
+            guard !isNearDuplicate else { return false }
+            append(candidate)
+            return true
+        }
+        // A populated period gets several opportunities before quality scores
+        // fill the remaining seats; sparse periods are never padded artificially.
+        for key in [0, 1, 2] {
+            for candidate in ranked where stageKey(candidate, bounds: bounds) == key {
+                guard selected.count < limit else { break }
+                if selected.filter({ stageKey($0, bounds: bounds) == key }).count >= 3 { break }
+                _ = appendIfDistinct(candidate)
+            }
+        }
+        func nearestSelectedDays(_ candidate: TimeStoryCandidate) -> Int64 {
+            guard let time = candidate.mediaCreatedAtMs else { return 0 }
+            return selected.compactMap { chosen in
+                chosen.mediaCreatedAtMs.map { abs(time - $0) / 86_400_000 }
+            }.min() ?? Int64.max
+        }
+        while selected.count < limit {
+            // After stage coverage, the next seat goes to a different capture
+            // period. Quality chooses between similarly distant windows.
+            let byTimeCoverage = ranked.sorted { lhs, rhs in
+                let lhsGap = nearestSelectedDays(lhs)
+                let rhsGap = nearestSelectedDays(rhs)
+                if lhsGap != rhsGap { return lhsGap > rhsGap }
+                let lhsScore = selectionScore(lhs)
+                let rhsScore = selectionScore(rhs)
+                return lhsScore == rhsScore ? candidateTimeOrder(lhs, rhs) : lhsScore > rhsScore
+            }
+            guard byTimeCoverage.contains(where: appendIfDistinct) else { break }
         }
         // Empty seats are preferable to repeating one capture event solely to fill a quota.
         return selected.sorted(by: candidateTimeOrder)

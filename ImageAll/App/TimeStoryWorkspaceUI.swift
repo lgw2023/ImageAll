@@ -1,6 +1,18 @@
 import AppKit
 import SwiftUI
 
+private enum TimeStoryDurationText {
+    static func format(_ seconds: Double) -> String {
+        guard seconds.isFinite else { return "0:00.00" }
+        let centiseconds = max(0, Int((seconds * 100).rounded()))
+        let wholeSeconds = centiseconds / 100
+        return String(
+            format: "%d:%02d.%02d",
+            wholeSeconds / 60, wholeSeconds % 60, centiseconds % 100
+        )
+    }
+}
+
 struct TimeStoryCreationButton: View {
     let tag: TagListItem
     let action: (TagListItem) -> Void
@@ -741,7 +753,7 @@ struct TimeStoryWorkspaceView: View {
                     } label: {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(project.title).lineLimit(2)
-                            Text("\(formattedDuration(project.durationSeconds)) · \(project.subjectTagDisplayName)")
+                            Text("预计 \(formattedDuration(project.durationSeconds)) · \(project.subjectTagDisplayName)")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -825,8 +837,13 @@ struct TimeStoryWorkspaceView: View {
                 Label("素材就绪摘要", systemImage: "checklist")
                     .font(.headline)
                 Spacer()
-                Text("实际时长 \(formattedDuration(project.timelineDurationSeconds))")
-                    .font(.headline.monospacedDigit())
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("预计成片 \(formattedDuration(project.timelineDurationSeconds))")
+                        .font(.headline.monospacedDigit())
+                    Text("目标约 \(formattedDuration(TimeStoryConstants.targetDurationSeconds)) · 按 30 fps 时间线计算")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             TextField(
                 "项目标题",
@@ -844,7 +861,7 @@ struct TimeStoryWorkspaceView: View {
             Text("本故事已排除 \(project.excludedAssetIDs.count) 张；排除会在重新生成后继续生效。")
                 .font(.caption).foregroundStyle(.secondary)
             if project.timelineDurationSeconds > TimeStoryConstants.targetDurationSeconds {
-                Text("当前 \(formattedDuration(project.timelineDurationSeconds))，超过约 60 秒目标。可以缩短镜头、排除照片，或保留较长成片；锁定时长不会自动缩短。")
+                Text("预计成片 \(formattedDuration(project.timelineDurationSeconds))，超过约 60 秒目标。可以缩短镜头、排除照片，或保留较长成片；锁定时长不会自动缩短。")
                     .font(.caption).foregroundStyle(.orange)
             }
         }
@@ -1195,8 +1212,7 @@ struct TimeStoryWorkspaceView: View {
     }
 
     private func formattedDuration(_ seconds: Double) -> String {
-        let total = max(0, Int(seconds.rounded()))
-        return String(format: "%d:%02d", total / 60, total % 60)
+        TimeStoryDurationText.format(seconds)
     }
 
     private func formattedTimeCoverage(_ summary: TimeStoryReadinessSummary) -> String {
@@ -1322,7 +1338,6 @@ private struct TimeStoryTimelinePreview: View {
     }
 
     private func formatted(_ seconds: Double) -> String {
-        let total = max(0, Int(seconds.rounded(.down)))
-        return String(format: "%d:%02d", total / 60, total % 60)
+        TimeStoryDurationText.format(seconds)
     }
 }

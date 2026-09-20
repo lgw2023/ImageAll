@@ -209,4 +209,225 @@ private struct TimeStoryVerificationMedia: TimeStoryMediaLoading {
         return image
     }
 }
+
+/// Opens a prefiltered private catalog without starting the production library workspace.
+/// The catalog contains one user-authorized tag and existing folder bookmarks only.
+@MainActor
+struct TimeStoryTrialContainer: View {
+    @State private var openedStory = false
+    @State private var message: String?
+    @State private var setup: Setup?
+    @State private var setupError: String?
+    private let requestedRootPath: String
+
+    private final class RootAccessLease {
+        let url: URL
+        init(url: URL) { self.url = url }
+        deinit { url.stopAccessingSecurityScopedResource() }
+    }
+
+    private struct Scope: Decodable {
+        let tagID: UUID
+        let tagDisplayName: String
+        let candidateCount: Int
+    }
+
+    private struct Setup {
+        let tag: TagListItem
+        let candidateCount: Int
+        let model: TimeStoryWorkspaceModel
+        let taskRootStore: UserDefaultsOpenMontageTaskRootStore
+        let rootAccessLease: RootAccessLease
+    }
+
+    private enum SetupError: LocalizedError {
+        case invalidRoot
+        case unexpectedCatalog
+        case preferencesUnavailable
+
+        var errorDescription: String? {
+            switch self {
+            case .invalidRoot: "隔离试用目录无效。"
+            case .unexpectedCatalog: "隔离目录库与授权标签范围不一致。"
+            case .preferencesUnavailable: "无法创建隔离的制作目录设置。"
+            }
+        }
+    }
+
+    init(rootPath: String) {
+        requestedRootPath = rootPath
+        _setup = State(initialValue: nil)
+        _setupError = State(initialValue: "请选择本轮隔离目录，授权安装版读取其中的限定目录库。")
+    }
+
+    var body: some View {
+        if let setup {
+            if openedStory {
+                TimeStoryWorkspaceView(model: setup.model)
+            } else {
+                VStack(alignment: .leading, spacing: 18) {
+                    Text("隔离故事试用").font(.largeTitle.bold())
+                    HStack {
+                        Label(setup.tag.displayName, systemImage: "tag")
+                        Spacer()
+                        TimeStoryCreationButton(tag: setup.tag) { _ in openedStory = true }
+                    }
+                    .padding()
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+                    Text("本轮仅从隔离目录库中读取 \(setup.candidateCount) 张已确认候选；来源照片只读，故事项目与缓存留在隔离目录。")
+                        .foregroundStyle(.secondary)
+                    Button("选择本轮 OpenMontage 任务目录…") {
+                        selectTaskRoot(setup.taskRootStore, model: setup.model)
+                    }
+                    if let message { Text(message).font(.caption).foregroundStyle(.secondary) }
+                }
+                .padding(32)
+                .frame(minWidth: 720, minHeight: 460, alignment: .topLeading)
+            }
+        } else {
+            VStack(spacing: 14) {
+                ContentUnavailableView(
+                    "隔离故事试用尚未连接",
+                    systemImage: "folder.badge.questionmark",
+                    description: Text(setupError ?? "请选择隔离项目目录。")
+                )
+                Button("选择隔离试用目录…") { selectTrialRoot() }
+            }
+            .frame(minWidth: 720, minHeight: 460)
+        }
+    }
+
+    private func selectTrialRoot() {
+        guard NSString(string: requestedRootPath).isAbsolutePath else {
+            setupError = SetupError.invalidRoot.localizedDescription
+            return
+        }
+        let expected = URL(fileURLWithPath: requestedRootPath, isDirectory: true).standardizedFileURL
+        let panel = NSOpenPanel()
+        panel.title = "选择本轮隔离试用目录"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = expected.deletingLastPathComponent()
+        guard panel.runModal() == .OK, let chosen = panel.url else { return }
+        guard chosen.standardizedFileURL == expected else {
+            setupError = "选择的目录与本轮隔离项目不一致。"
+            return
+        }
+        guard chosen.startAccessingSecurityScopedResource() else {
+            setupError = "无法取得隔离目录访问授权。"
+            return
+        }
+        let lease = RootAccessLease(url: chosen)
+        do {
+            setup = try Self.makeSetup(root: chosen, lease: lease)
+            setupError = nil
+        } catch {
+            setupError = error.localizedDescription
+        }
+    }
+
+    private func selectTaskRoot(
+        _ store: UserDefaultsOpenMontageTaskRootStore,
+        model: TimeStoryWorkspaceModel
+    ) {
+        let panel = NSOpenPanel()
+        panel.title = "选择本轮隔离的 OpenMontage 任务目录"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try store.saveTaskRoot(url)
+            message = "本轮制作目录已授权。"
+            Task { await model.refreshOpenMontageCapability() }
+        } catch {
+            message = error.localizedDescription
+        }
+    }
+
+    private static func makeSetup(root: URL, lease: RootAccessLease) throws -> Setup {
+        guard root.path != "/", !root.path.hasPrefix("/Volumes/HDD2/") else {
+            throw SetupError.invalidRoot
+        }
+        let scope = try JSONDecoder().decode(
+            Scope.self,
+            from: Data(contentsOf: root.appendingPathComponent("trial-scope.json"))
+        )
+        let database = try CatalogDatabase.openWithoutMigration(
+            at: root.appendingPathComponent("catalog.sqlite")
+        )
+        try database.validateQuickCheck()
+        let (assetCount, photosCount, tagCount) = try database.pool.read { db in
+            (
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset") ?? 0,
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM source WHERE kind='photos'") ?? 0,
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tag WHERE id=? AND state='active'", arguments: [scope.tagID.uuidString.lowercased()]) ?? 0
+            )
+        }
+        guard assetCount == scope.candidateCount, photosCount == 0, tagCount == 1 else {
+            throw SetupError.unexpectedCatalog
+        }
+        guard let trialDefaults = UserDefaults(suiteName: "com.gwlee.ImageAll.TimeStoryTrial") else {
+            throw SetupError.preferencesUnavailable
+        }
+        let clock = SystemJobClock()
+        let bookmark = FoundationSecurityScopedBookmarkAdapter()
+        let sourceAccess = FolderReconcileSourceAccessService(
+            repository: GRDBFolderSourceAuthorizationRepository(database: database),
+            bookmarkPort: bookmark,
+            rootValidator: FolderRootValidator(),
+            clock: clock
+        )
+        let derivedImages = DerivedImageCacheService(
+            database: database,
+            cachesDirectory: root
+                .appendingPathComponent("Caches", isDirectory: true)
+                .appendingPathComponent("ImageAll", isDirectory: true),
+            sourceAccess: sourceAccess,
+            clock: clock
+        )
+        let media = LibraryAssetImageLoader(
+            database: database,
+            fileImages: derivedImages,
+            photosImages: PhotoKitPhotosLibraryAdapter()
+        )
+        let validator = TimeStoryMediaValidator(database: database)
+        let packageExporter = StoryRenderPackageExporter(media: media, validator: validator)
+        let taskRootStore = UserDefaultsOpenMontageTaskRootStore(defaults: trialDefaults)
+        let runtime = TimeStoryFeatureRuntime(
+            candidates: TimeStoryCandidateProvider(
+                database: database,
+                query: GRDBAssetCatalogQueryRepository(database: database)
+            ),
+            planner: TimeStoryPlanner(),
+            store: TimeStoryProjectStore(applicationSupportDirectory: root),
+            validator: validator,
+            renderer: AVFoundationTimeStoryRenderer(
+                media: media,
+                temporaryDirectory: root.appendingPathComponent("Rendering", isDirectory: true)
+            ),
+            packageExporter: packageExporter,
+            openMontageTasks: FileOpenMontageStoryTaskClient(
+                rootProvider: taskRootStore,
+                packageExporter: packageExporter,
+                installationID: taskRootStore.installationID
+            ),
+            media: media,
+            clock: clock
+        )
+        return Setup(
+            tag: TagListItem(id: scope.tagID, displayName: scope.tagDisplayName, state: .active),
+            candidateCount: scope.candidateCount,
+            model: TimeStoryWorkspaceModel(
+                runtime: runtime,
+                tag: TagListItem(id: scope.tagID, displayName: scope.tagDisplayName, state: .active)
+            ),
+            taskRootStore: taskRootStore,
+            rootAccessLease: lease
+        )
+    }
+}
 #endif

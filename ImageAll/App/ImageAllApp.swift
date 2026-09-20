@@ -37,7 +37,9 @@ struct ImageAllApp: App {
     var body: some Scene {
         WindowGroup {
 #if DEBUG
-            if ProcessInfo.processInfo.environment["IMAGEALL_TIME_STORY_UI_VERIFICATION"] == "1" {
+            if let trialRoot = ProcessInfo.processInfo.environment["IMAGEALL_TIME_STORY_TRIAL_ROOT"] {
+                TimeStoryTrialContainer(rootPath: trialRoot)
+            } else if ProcessInfo.processInfo.environment["IMAGEALL_TIME_STORY_UI_VERIFICATION"] == "1" {
                 TimeStoryVerificationContainer()
             } else {
                 productionRoot

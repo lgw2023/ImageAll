@@ -224,6 +224,61 @@ final class TimeStoryFeatureTests: XCTestCase {
         )
     }
 
+    func testPlannerKeepsGrowthCoverageWhenFavoritesClusterWithinOneDay() throws {
+        func make(_ number: Int, time: Int64, favorite: Bool = false) -> TimeStoryCandidate {
+            candidate(
+                String(format: "00000000-0000-0000-0000-%012d", number),
+                time: time,
+                favorite: favorite
+            )
+        }
+        let early = (1 ... 4).map { make($0, time: timestamp(2018, $0 * 2, 1)) }
+        let middle = (5 ... 8).map { make($0, time: timestamp(2022, ($0 - 4) * 2, 1)) }
+        let burstStart = timestamp(2026, 1, 1)
+        let burst = (9 ... 38).map {
+            make($0, time: burstStart + Int64($0 - 9) * 60_000, favorite: true)
+        }
+        let later = (39 ... 65).map {
+            make($0, time: timestamp(2026, 1, 2) + Int64($0 - 39) * 86_400_000)
+        }
+        let snapshot = makeSnapshot(early + middle + burst + later)
+
+        let project = try TimeStoryPlanner().makeProject(snapshot: snapshot, nowMs: 10)
+        let byID = Dictionary(uniqueKeysWithValues: snapshot.candidates.map { ($0.assetID, $0) })
+        let selectedTimes = project.shots.compactMap { byID[$0.assetID]?.mediaCreatedAtMs }
+
+        XCTAssertEqual(project.shots.count, TimeStoryConstants.maximumShots)
+        XCTAssertGreaterThanOrEqual(selectedTimes.filter { $0 < timestamp(2020, 1, 1) }.count, 3)
+        XCTAssertGreaterThanOrEqual(selectedTimes.filter { $0 >= timestamp(2022, 1, 1) && $0 < timestamp(2023, 1, 1) }.count, 3)
+        XCTAssertLessThanOrEqual(selectedTimes.filter { abs($0 - burstStart) < 86_400_000 }.count, 2)
+    }
+
+    func testPlannerSpreadsRemainingSeatsAcrossCapturePeriods() throws {
+        func make(_ number: Int, year: Int, month: Int, favorite: Bool) -> TimeStoryCandidate {
+            candidate(
+                String(format: "00000000-0000-0000-0000-%012d", number),
+                time: timestamp(year, month, 1),
+                favorite: favorite
+            )
+        }
+        let olderFavorites = (1 ... 12).map { make($0, year: 2024, month: $0, favorite: true) }
+        let middle = (1 ... 12).map { make(100 + $0, year: 2025, month: $0, favorite: false) }
+        let recent = (1 ... 12).map { make(200 + $0, year: 2026, month: $0, favorite: false) }
+        let snapshot = makeSnapshot(olderFavorites + middle + recent)
+
+        let project = try TimeStoryPlanner().makeProject(snapshot: snapshot, nowMs: 10)
+        let byID = Dictionary(uniqueKeysWithValues: snapshot.candidates.map { ($0.assetID, $0) })
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let years = project.shots.compactMap { byID[$0.assetID]?.mediaCreatedAtMs }
+            .map { calendar.component(.year, from: Date(timeIntervalSince1970: Double($0) / 1_000)) }
+
+        XCTAssertEqual(project.shots.count, TimeStoryConstants.maximumShots)
+        XCTAssertLessThanOrEqual(years.filter { $0 == 2024 }.count, 8)
+        XCTAssertGreaterThanOrEqual(years.filter { $0 == 2025 }.count, 4)
+        XCTAssertGreaterThanOrEqual(years.filter { $0 == 2026 }.count, 4)
+    }
+
     func testTimelineStateRepresentsTheTransitionOverlap() throws {
         let first = candidate("02000000-0000-0000-0000-000000000001", time: timestamp(2020, 1, 1))
         let second = candidate("02000000-0000-0000-0000-000000000002", time: timestamp(2024, 1, 1))
