@@ -6,6 +6,27 @@ import GRDB
 import XCTest
 
 final class TimeStoryFeatureTests: XCTestCase {
+    func testOpenMontageConfigurationAndDetachGate() throws {
+        let suite = "OpenMontageConfig-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var value = OpenMontageConfiguration()
+        value.llm.model = "test-model"
+        try value.validate()
+        defaults.set(try JSONEncoder().encode(value), forKey: OpenMontageConfiguration.configurationKey)
+        XCTAssertEqual(try OpenMontageConfiguration.load(defaults), value)
+        value.paths.output_dir = "../escape"
+        XCTAssertThrowsError(try value.validate())
+        XCTAssertThrowsError(try OpenMontageServiceField.validate(["PATH": "/tmp"]))
+        XCTAssertThrowsError(try OpenMontageServiceField.validate(["OPENAI_BASE_URL": "http://remote.example/v1"]))
+        XCTAssertNoThrow(try OpenMontageServiceField.validate(["OPENAI_BASE_URL": "http://localhost:11434/v1", "OPENAI_API_KEY": "synthetic-only"]))
+        defaults.set(false, forKey: OpenMontageConfiguration.enabledKey)
+        let root = try temporaryDirectory("detached-engine").appendingPathComponent("tasks")
+        let store = UserDefaultsOpenMontageTaskRootStore(defaults: defaults, managedRoot: root)
+        XCTAssertThrowsError(try store.resolveTaskRoot())
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
+    }
+
     func testManagedOpenMontageDirectoryAndInvalidExistingAuthorization() throws {
         let suite = "OpenMontageTest-" + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))

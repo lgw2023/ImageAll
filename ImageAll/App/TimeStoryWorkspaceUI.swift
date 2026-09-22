@@ -899,46 +899,9 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         styleStatus = "正在准备并启动本地制作组件…"
         defer { isStartingLocalEngine = false }
         do {
-            let provider = runtime.creativeRootProvider
-            let root = try provider.resolveTaskRoot()
-            guard provider.startAccessing(root) else { throw OpenMontageTaskError.taskRootAuthorizationRequired }
-            defer { provider.stopAccessing(root) }
-            let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/OpenMontage Helper.app")
-            guard FileManager.default.fileExists(atPath: helper.path) else {
-                throw StoryCreativeError.invalid("App 缺少本地制作组件，请重新安装完整版本。")
-            }
-            let parent = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("ImageAll/OpenMontageRuntime", isDirectory: true)
-            let token = UUID().uuidString
-            let request = try JSONSerialization.data(withJSONObject: ["token": token, "runtime": parent.path])
-            try request.write(to: root.appendingPathComponent("launcher-request.json"), options: .atomic)
-            let configuration = NSWorkspace.OpenConfiguration()
-            var launchURL = URLComponents()
-            launchURL.scheme = "imageall-openmontage"
-            launchURL.host = "start"
-            launchURL.queryItems = [URLQueryItem(name: "taskRoot", value: root.path),
-                URLQueryItem(name: "runtime", value: parent.path), URLQueryItem(name: "token", value: token)]
-            configuration.activates = false
-            configuration.createsNewApplicationInstance = false
-            // Launch first so Launch Services refreshes the helper registration after an App update.
-            _ = try await NSWorkspace.shared.openApplication(at: helper, configuration: configuration)
-            _ = try await NSWorkspace.shared.open([launchURL.url!], withApplicationAt: helper, configuration: configuration)
-            for _ in 0..<120 {
-                try await Task.sleep(for: .seconds(1))
-                let capability = await runtime.openMontageTasks.capability()
-                openMontageCapability = capability
-                if capability.state == .ready {
-                    connectionCheckResult = "本地制作已启动并连接 · \(root.lastPathComponent)"
-                    checkStyleConnection()
-                    return
-                }
-                if let data = try? Data(contentsOf: root.appendingPathComponent("launcher-result.json")),
-                   let report = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   report["token"] as? String == token, report["success"] as? Bool == false {
-                    throw StoryCreativeError.invalid(report["message"] as? String ?? "本地制作启动失败")
-                }
-            }
-            throw StoryCreativeError.invalid("本地制作启动超时，请检查任务目录中的 launcher.log。")
+            connectionCheckResult = try await OpenMontageIntegrationControl.start(provider: runtime.creativeRootProvider)
+            await refreshOpenMontageCapability()
+            checkStyleConnection()
         } catch {
             connectionCheckResult = error.localizedDescription
             styleStatus = error.localizedDescription
@@ -1123,6 +1086,7 @@ private struct StoryDropFrameKey: PreferenceKey {
 }
 
 struct TimeStoryWorkspaceView: View {
+    @AppStorage(OpenMontageConfiguration.enabledKey) private var integrationEnabled = true
     @StateObject private var model: TimeStoryWorkspaceModel
     @State private var selectedShotID: UUID?
     @State private var selectedShotIDs: Set<UUID> = []
@@ -1282,6 +1246,7 @@ struct TimeStoryWorkspaceView: View {
             Button("模板库", systemImage: "square.grid.2x2") {
                 showStyleLibrary.toggle(); model.loadStyleTemplates()
             }.accessibilityIdentifier("timeStoryStyleLibrary")
+            .disabled(!integrationEnabled)
             Button("制作设置") { inspectorTab = "创作" }
             Menu("导出") {
                 Button("直接导出 MP4（横屏）…") { chooseExportDestination() }
@@ -1299,7 +1264,7 @@ struct TimeStoryWorkspaceView: View {
             VStack(spacing: 0) {
                 editingActions
                 Divider()
-                if showStyleLibrary { styleLibrary(project).frame(maxHeight: 370) }
+                if showStyleLibrary && integrationEnabled { styleLibrary(project).frame(maxHeight: 370) }
                 HSplitView {
                     materialBrowser(project)
                         .frame(minWidth: 220, idealWidth: 280, maxWidth: 400)
@@ -1716,7 +1681,8 @@ struct TimeStoryWorkspaceView: View {
                 Text("可编辑创作").tag("可编辑创作")
                 Text("自由场景").tag("自由场景")
             }.labelsHidden()
-            connectionControls
+            if !integrationEnabled { Text("OpenMontage 已停用，可在 App 设置中重新启用。原生导出仍可使用。").font(.caption) }
+            connectionControls.disabled(!integrationEnabled)
             if productionMode == "当前编排" {
                 Picker("画幅", selection: $productionAspect) {
                     ForEach(TimeStoryPackageAspect.allCases) { aspect in Text(aspect.displayName).tag(aspect) }

@@ -12,8 +12,9 @@ guard let requestData = try? Data(contentsOf: taskRoot.appendingPathComponent("l
       let request = try? JSONSerialization.jsonObject(with: requestData) as? [String: String],
       request["token"] == token, request["runtime"] == runtimePath else { return }
 try? fm.removeItem(at: taskRoot.appendingPathComponent("launcher-request.json"))
+var credentialFieldCount = 0
 func report(_ message: String, success: Bool) {
-    let value: [String: Any] = ["token": token, "success": success, "message": message]
+    let value: [String: Any] = ["token": token, "success": success, "message": message, "configuredServiceCount": credentialFieldCount]
     if let data = try? JSONSerialization.data(withJSONObject: value) {
         try? data.write(to: taskRoot.appendingPathComponent("launcher-result.json"), options: .atomic)
     }
@@ -36,15 +37,47 @@ do {
     process.arguments = [installed.appendingPathComponent("engine/scripts/story_executor.py").path, "start", "--task-root", taskRoot.path, "--detach"]
     process.currentDirectoryURL = installed.appendingPathComponent("engine")
     process.environment = ["PATH": installed.appendingPathComponent("bin").path + ":/usr/bin:/bin:/usr/sbin:/sbin", "HOME": NSHomeDirectory(), "PYTHONHOME": installed.appendingPathComponent("python").path, "PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1"]
+    // Reuse a running worker without mutating its configuration or credentials.
+    process.arguments = [installed.appendingPathComponent("engine/scripts/story_executor.py").path, "status", "--task-root", taskRoot.path]
+    let statusPipe = Pipe(); process.standardOutput = statusPipe; process.standardError = FileHandle.nullDevice
+    try process.run()
+    let statusData = statusPipe.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    if let status = try? JSONSerialization.jsonObject(with: statusData) as? [String: Any], status["running"] as? Bool == true {
+        report("执行器已在运行。新配置将在停止后重新启动时生效。", success: true)
+        return
+    }
+    let configuration = try JSONDecoder().decode(OpenMontageConfiguration.self, from: Data((request["configuration"] ?? OpenMontageConfiguration().json).utf8))
+    try configuration.validate()
+    let configDirectory = taskRoot.appendingPathComponent("configurations")
+    try fm.createDirectory(at: configDirectory, withIntermediateDirectories: true)
+    let configFile = configDirectory.appendingPathComponent(token + ".json")
+    try JSONEncoder().encode(configuration).write(to: configFile, options: .atomic)
+    var environment = process.environment ?? [:]
+    environment["OPENMONTAGE_CONFIG_PATH"] = configFile.path
+    if request["servicesEnabled"] == "true" {
+        let credentials = try OpenMontageCredentials.load()
+        try OpenMontageServiceField.validate(credentials)
+        credentialFieldCount = credentials.filter { !$0.value.isEmpty }.count
+        environment.merge(credentials.filter { !$0.value.isEmpty }, uniquingKeysWith: { _, new in new })
+    }
+    let worker = Process()
+    worker.executableURL = process.executableURL
+    worker.currentDirectoryURL = process.currentDirectoryURL
+    worker.environment = environment
+    worker.arguments = [installed.appendingPathComponent("engine/scripts/story_executor.py").path, "start", "--task-root", taskRoot.path, "--detach"]
     let log = taskRoot.appendingPathComponent("launcher.log")
     fm.createFile(atPath: log.path, contents: nil)
     let handle = try FileHandle(forWritingTo: log)
-    process.standardOutput = handle; process.standardError = handle
-    try process.run(); process.waitUntilExit(); try handle.close()
+    worker.standardOutput = handle; worker.standardError = handle
+    guard !fm.fileExists(atPath: taskRoot.appendingPathComponent("integration-disabled.json").path) else {
+        try handle.close(); report("OpenMontage 已停用，未启动执行器。", success: false); return
+    }
+    try worker.run(); worker.waitUntilExit(); try handle.close()
     let output = (try? Data(contentsOf: log)).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
     let alreadyRunning = output?["code"] as? String == "EXECUTOR_ALREADY_RUNNING"
-    let success = process.terminationStatus == 0 || alreadyRunning
-    report(success ? (alreadyRunning ? "本地执行器已在运行" : "本地执行器已启动") : "启动返回 \(process.terminationStatus)，请检查任务目录中的 launcher.log", success: success)
+    let success = worker.terminationStatus == 0 || alreadyRunning
+    report(success ? (alreadyRunning ? "本地执行器已在运行" : "本地执行器已启动") : "启动返回 \(worker.terminationStatus)，请检查任务目录中的 launcher.log", success: success)
 } catch { report(error.localizedDescription, success: false); exit(1) }
 
 }

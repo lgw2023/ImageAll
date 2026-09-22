@@ -14,6 +14,8 @@ engine = out/'engine'; engine.mkdir()
 archive = root/'Vendor/OpenMontage/source.tar.gz'
 assert hashlib.sha256(archive.read_bytes()).hexdigest() == '59438ce446c2916cf31a0952dddec1870cfd5b5fa9971bfb534031720aed097a'
 with tarfile.open(archive) as t: t.extractall(engine, filter='data')
+from config_patch import apply
+apply(engine)
 shutil.copytree(a.python_home, out/'python', symlinks=True)
 subprocess.run(['uv','pip','install','--break-system-packages','--python',str(out/'python/bin/python3.12'),'-r',str(root/'Vendor/OpenMontage/python-requirements.lock')],check=True)
 assert hashlib.sha256((a.node_modules.parent/'package-lock.json').read_bytes()).digest() == hashlib.sha256((engine/'remotion-composer/package-lock.json').read_bytes()).digest(), 'Remotion lockfile mismatch'

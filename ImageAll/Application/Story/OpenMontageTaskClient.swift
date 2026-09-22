@@ -231,6 +231,9 @@ struct UserDefaultsOpenMontageTaskRootStore: OpenMontageTaskRootProviding, @unch
     }
 
     func resolveTaskRoot() throws -> URL {
+        guard OpenMontageConfiguration.enabled(defaults) else {
+            throw OpenMontageTaskError.executorOffline("OpenMontage 已在设置中停用。")
+        }
         guard let bookmark = defaults.data(forKey: Self.bookmarkKey) else {
             let root = managedRoot
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
