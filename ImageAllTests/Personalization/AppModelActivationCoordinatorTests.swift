@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import XCTest
 @testable import ImageAll
@@ -294,7 +295,7 @@ final class AppModelActivationCoordinatorTests: XCTestCase {
     }
 
     @MainActor
-    func testSettingsShowsReferenceWithoutApplyingUntilUserConfirms() {
+    func testSettingsShowsReferenceWithoutApplyingUntilUserConfirms() async {
         let tagID = UUID()
         let thresholds = FakeSuggestionThresholdPort(
             rows: [
@@ -324,7 +325,11 @@ final class AppModelActivationCoordinatorTests: XCTestCase {
             )
         )
 
+        let loaded = expectation(description: "Background references loaded")
+        let subscription = model.$suggestionReferences.first(where: { !$0.isEmpty }).sink { _ in loaded.fulfill() }
         model.attachSuggestionThresholds(thresholds)
+        await fulfillment(of: [loaded], timeout: 2)
+        subscription.cancel()
 
         XCTAssertEqual(model.suggestionOverrides.first?.tagID, tagID)
         XCTAssertEqual(

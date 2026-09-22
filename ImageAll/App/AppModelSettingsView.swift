@@ -19,6 +19,8 @@ final class AppModelSettingsModel: ObservableObject {
     private var suggestionThresholds: (any SuggestionThresholdPort)?
     private var didStart = false
     private var operationID = 0
+    private var referenceLoadID = UUID()
+    private var referenceLoad: Task<[UUID: [SuggestionScoreThresholdMethod: SuggestionThresholdReference]], Never>?
 
     init(coordinator: AppModelActivationCoordinator) {
         self.coordinator = coordinator
@@ -33,6 +35,9 @@ final class AppModelSettingsModel: ObservableObject {
     }
 
     func refreshSuggestionThresholds() {
+        referenceLoad?.cancel()
+        let loadID = UUID()
+        referenceLoadID = loadID
         guard let suggestionThresholds else {
             suggestionDefaults = .factory
             suggestionOverrides = []
@@ -42,23 +47,25 @@ final class AppModelSettingsModel: ObservableObject {
         suggestionDefaults = (try? suggestionThresholds.defaults()) ?? .factory
         let rows = (try? suggestionThresholds.listTagOverrides()) ?? []
         suggestionOverrides = rows
-        var referencesByTag:
-            [UUID: [SuggestionScoreThresholdMethod: SuggestionThresholdReference]] = [:]
-        for row in rows {
-            var references: [SuggestionScoreThresholdMethod: SuggestionThresholdReference] = [:]
-            for method in SuggestionScoreThresholdMethod.allCases {
-                if let reference = try? suggestionThresholds.referenceSuggestion(
-                    tagID: row.tagID,
-                    method: method
-                ) {
-                    references[method] = reference
+        suggestionReferences = [:]
+        let load = Task.detached(priority: .utility) {
+            var result: [UUID: [SuggestionScoreThresholdMethod: SuggestionThresholdReference]] = [:]
+            for row in rows {
+                for method in SuggestionScoreThresholdMethod.allCases {
+                    guard !Task.isCancelled else { return result }
+                    if let reference = try? suggestionThresholds.referenceSuggestion(tagID: row.tagID, method: method) {
+                        result[row.tagID, default: [:]][method] = reference
+                    }
                 }
             }
-            if !references.isEmpty {
-                referencesByTag[row.tagID] = references
-            }
+            return result
         }
-        suggestionReferences = referencesByTag
+        referenceLoad = load
+        Task { [weak self] in
+            let references = await load.value
+            guard let self, self.referenceLoadID == loadID else { return }
+            self.suggestionReferences = references
+        }
     }
 
     func setSuggestionDefault(method: SuggestionScoreThresholdMethod, minScore: Double) {

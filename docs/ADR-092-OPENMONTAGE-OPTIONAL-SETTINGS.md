@@ -24,3 +24,5 @@
 2026-09-22 验收：Debug 构建与聚焦 XCTest 通过；日常 App 中使用隔离任务目录和无效合成 Key 完成保存、启动、已连接、断开、停用、重新启用。helper 报告读取 1 个配置字段；任务目录全文检查未包含合成 Key，heartbeat 最终为 stopped。已清除测试凭据并恢复原任务目录。无真实 API 请求。
 
 helper 使用宿主 App 的 application-identifier、同一 provisioning profile 和专用钥匙串访问组，Bundle identifier 保持独立。最初仅添加共享 entitlement 会被系统拒绝，实际启动验收后改为随组件嵌入宿主 profile；签名校验和 Launch Services 启动通过。
+
+日常图库设置入口验收还发现既有标签阈值参考计算阻塞主线程。将 Sendable 端口的逐标签参考读取改为后台任务，刷新时取消旧任务并用 generation 防止旧结果覆盖；默认值与覆盖列表仍立即显示。
