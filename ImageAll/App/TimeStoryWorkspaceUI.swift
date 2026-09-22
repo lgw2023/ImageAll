@@ -1496,6 +1496,8 @@ struct TimeStoryWorkspaceView: View {
             }
         }
         .focusable().focused($timelineFocused)
+        // Selection is shown on clips; keep keyboard focus without a canvas-wide ring.
+        .focusEffectDisabled()
         .onKeyPress(keys: [.init("a")]) { key in
             guard key.modifiers.contains(.command) else { return .ignored }
             selectAllShots(project); return .handled
