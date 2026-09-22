@@ -1,4 +1,5 @@
 import AppKit
+import AVKit
 import SwiftUI
 import ImageIO
 
@@ -46,6 +47,14 @@ private enum OpenMontageResultSaveError: LocalizedError {
 final class TimeStoryWorkspaceModel: ObservableObject {
     @Published private(set) var project: TimeStoryProject? {
         didSet {
+            if var current = project, var selection = current.styleTemplate,
+               let ids = selection.shotIDs, ids != current.shots.map(\.id) {
+                let map = Dictionary(zip(ids, selection.lines), uniquingKeysWith: { first, _ in first })
+                selection.lines = current.shots.map { map[$0.id] ?? $0.caption }
+                selection.shotIDs = current.shots.map(\.id)
+                current.styleTemplate = selection
+                project = current
+            }
             guard !restoringHistory, let oldValue, let project, oldValue.id == project.id,
                   oldValue != project else { return }
             undoProjects.append(oldValue)
@@ -110,6 +119,92 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     @Published private(set) var atelierProposal: StoryAtelierProposal?
     @Published private(set) var selectedAtelierRequestID: String?
     @Published var atelierFeedback = ""
+    @Published var styleTemplates = StoryStyleTemplate.builtins
+    @Published var styleStatus = "选择模板后校对文案，再制作。"
+    @Published var styleResultURL: URL?
+    private var stylePollingTask: Task<Void, Never>?
+    private var styleExchange: StoryStyleExchange {
+        .init(rootProvider: runtime.creativeRootProvider, exporter: runtime.packageExporter)
+    }
+    private var styleCatalog: StoryStyleCatalog {
+        .init(directory: runtime.store.rootDirectory.deletingLastPathComponent().appendingPathComponent("StyleTemplates/v1"))
+    }
+    func loadStyleTemplates() {
+        do { styleTemplates = try styleCatalog.load() }
+        catch { styleStatus = error.localizedDescription }
+    }
+    func applyStyle(_ template: StoryStyleTemplate) {
+        guard var current = project else { return }
+        current.styleTemplate = .init(template: template, lines: current.styleTemplate?.lines ?? current.shots.map { shot in
+            if let title = current.chapters.first(where: { $0.id == shot.chapterID })?.title,
+               current.showsChapterTitles != false { return title }
+            return shot.caption
+        }, shotIDs: current.shots.map(\.id))
+        current.styleReceipt = nil
+        project = current
+        styleResultURL = nil
+        styleStatus = "已套用样式，照片、顺序与时长已保留。请校对文案后制作；可撤销。"
+    }
+    func editStyle(_ selection: StoryStyleSelection) {
+        project?.styleTemplate = selection
+        styleResultURL = nil
+    }
+    func saveStyleVariant(name: String) {
+        guard let selection = project?.styleTemplate else { return }
+        do {
+            let value = try styleCatalog.saveVariant(selection.template, name: name)
+            project?.styleTemplate?.template = value
+            loadStyleTemplates()
+            styleStatus = "已另存为个人模板，仅保存样式参数。"
+        } catch { styleStatus = error.localizedDescription }
+    }
+    func checkStyleConnection() {
+        styleStatus = "正在检查模板制作端…"
+        do { let value = try styleExchange.capability(); styleStatus = "模板制作端已连接 · \(value.implementations.count) 种样式可用" }
+        catch { styleStatus = error.localizedDescription }
+    }
+    func renderStyle() async {
+        guard let current = project, !isBusy else { return }
+        isBusy = true
+        styleStatus = "正在准备当前故事素材…"
+        defer { isBusy = false }
+        do {
+            let receipt = try await styleExchange.publish(current)
+            guard var edited = project, edited.id == current.id else { return }
+            edited.styleReceipt = receipt
+            try runtime.store.save(edited)
+            project = edited
+            styleResultURL = nil
+            styleStatus = "已提交，等待本地制作端。"
+            pollStyle(receipt)
+        } catch { styleStatus = error.localizedDescription }
+    }
+    func refreshStyleResult() async {
+        guard let receipt = project?.styleReceipt else { checkStyleConnection(); return }
+        do {
+            guard let result = try styleExchange.status(receipt) else {
+                _ = try styleExchange.capability()
+                styleStatus = "排队中，等待本地制作端。"; return
+            }
+            styleStatus = result.detail
+            if result.status == "succeeded" {
+                styleResultURL = try await styleExchange.verifiedURL(receipt)
+                styleStatus = "成片已核验 · 9:16 · 30 fps · \(result.frames ?? 0) 帧"
+            }
+        } catch { styleStatus = error.localizedDescription }
+    }
+    private func pollStyle(_ receipt: StoryStyleReceipt) {
+        stylePollingTask?.cancel()
+        stylePollingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self, self.project?.styleReceipt == receipt else { return }
+                await self.refreshStyleResult()
+                if self.styleResultURL != nil { return }
+                if let result = try? self.styleExchange.status(receipt), result.status == "failed" { return }
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
+    }
     @Published var message: String?
 
     private var creativePlugin: StoryCreativePlugin {
@@ -947,6 +1042,9 @@ struct TimeStoryWorkspaceView: View {
     @State private var pickedAssets: Set<UUID> = []
     @State private var inspectorTab = "镜头"
     @State private var productionMode = "当前编排"
+    @State private var showStyleLibrary = false
+    @State private var styleVariantName = ""
+    @State private var stylePreviewPlayer: AVPlayer?
     @State private var productionAspect = TimeStoryPackageAspect.landscape
     @State private var showRegenerateConfirmation = false
     @State private var dropFrames: [String: CGRect] = [:]
@@ -977,6 +1075,95 @@ struct TimeStoryWorkspaceView: View {
         .task { await model.start() }
     }
 
+    private func styleLibrary(_ project: TimeStoryProject) -> some View {
+        HSplitView {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack { Text("OpenMontage 模板库").font(.headline); Spacer(); Button("收起") { showStyleLibrary = false } }
+                    Text("9:16 · 保留当前照片、顺序和时长").font(.caption).foregroundStyle(.secondary)
+                    ForEach(model.styleTemplates) { template in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label(template.name, systemImage: template.isPoem ? "text.below.photo" : "text.rectangle").font(.headline)
+                            Text(template.isPoem ? "手写小字叠在照片内底部，带深灰柔边；不增加文字镜头。" : "简短文字卡淡出到照片，文字迅速交代内容。")
+                                .font(.callout).foregroundStyle(.secondary)
+                            HStack {
+                                Text(template.isPoem ? "自由场景 · 1.0.0" : "可编辑创作 · 1.0.0").font(.caption)
+                                Spacer()
+                                Button("示例预览") {
+                                    if let url = Bundle.main.url(forResource: template.implementation, withExtension: "mp4") {
+                                        stylePreviewPlayer = AVPlayer(url: url); stylePreviewPlayer?.play()
+                                    }
+                                }
+                                Button("套用") { model.applyStyle(template) }
+                                    .accessibilityIdentifier("applyStyle-" + template.id)
+                            }
+                        }.padding(12).background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                    }
+                }.padding(12)
+            }.frame(minWidth: 280, idealWidth: 330, maxWidth: 400)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    if let player = stylePreviewPlayer {
+                        Text("合成素材样式示例 · 非当前故事").font(.caption).foregroundStyle(.secondary)
+                        VideoPlayer(player: player).frame(height: 180)
+                        Button("关闭示例") { player.pause(); stylePreviewPlayer = nil }
+                    }
+                    if let selection = project.styleTemplate {
+                        Text(selection.template.name + " · 校对与制作").font(.headline)
+                        Text("中央预览仍为原始编排；模板效果请看示例或制作后的成片。").font(.caption).foregroundStyle(.secondary)
+                        HStack {
+                            if selection.template.isPoem {
+                                Stepper("字号 \(selection.template.fontSize)", value: styleIntBinding(\.fontSize), in: 24...64)
+                                Stepper("距照片下沿 \(selection.template.bottomPercent)%", value: styleIntBinding(\.bottomPercent), in: 3...20)
+                            } else {
+                                Stepper("片头 \(selection.template.titleFrames) 帧", value: styleIntBinding(\.titleFrames), in: 1...90)
+                                Stepper("文字卡 \(selection.template.cardFrames) 帧", value: styleIntBinding(\.cardFrames), in: 10...60)
+                            }
+                        }
+                        Text(selection.template.isPoem ? "每行对应一张照片；相邻相同文案会连续显示，留空即纯享。" : "每行对应照片前的文字卡；相邻相同文案只出现一次，留空不加卡。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        HStack {
+                            Button("制作视频") { Task { await model.renderStyle() } }.buttonStyle(.borderedProminent)
+                                .disabled(model.isBusy || selection.lines.count != project.shots.count)
+                                .accessibilityIdentifier("renderStyleVideo")
+                            Button("检查连接") { model.checkStyleConnection() }
+                            Button("连接任务目录") { model.chooseTaskDirectory() }
+                            Button("刷新结果") { Task { await model.refreshStyleResult() } }
+                            if let url = model.styleResultURL { Button("播放上次成片") { NSWorkspace.shared.open(url) } }
+                        }
+                        HStack {
+                            TextField("个人模板名称", text: $styleVariantName).frame(maxWidth: 220)
+                            Button("另存为模板") { model.saveStyleVariant(name: styleVariantName) }.disabled(styleVariantName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                        ForEach(Array(project.shots.enumerated()), id: \.element.id) { index, shot in
+                            HStack {
+                                Text("\(index + 1)").monospacedDigit().frame(width: 25)
+                                if let image = model.thumbnails[shot.id] {
+                                    Image(nsImage: image).resizable().scaledToFit().frame(width: 44, height: 40)
+                                }
+                                TextField("此照片文案（可留空）", text: Binding(get: {
+                                    let lines = model.project?.styleTemplate?.lines ?? []
+                                    return index < lines.count ? lines[index] : ""
+                                }, set: { text in
+                                    guard var value = model.project?.styleTemplate else { return }
+                                    while value.lines.count < project.shots.count { value.lines.append("") }
+                                    value.lines[index] = String(text.prefix(80)); model.editStyle(value)
+                                }))
+                            }
+                        }
+                    } else { Text("从左侧选择一种样式。套用后可撤销；点击“制作视频”才会提交。") }
+                    Text(model.styleStatus).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                }.padding(12)
+            }.frame(minWidth: 390)
+        }.background(.background)
+    }
+    private func styleIntBinding(_ keyPath: WritableKeyPath<StoryStyleTemplate, Int>) -> Binding<Int> {
+        Binding(get: { model.project?.styleTemplate?.template[keyPath: keyPath] ?? 0 }, set: { value in
+            guard var selection = model.project?.styleTemplate else { return }
+            selection.template[keyPath: keyPath] = value; model.editStyle(selection)
+        })
+    }
+
     private var editingActions: some View {
         HStack(spacing: 12) {
             TextField("项目名称", text: Binding(get: { model.project?.title ?? "" }, set: { model.setProjectTitle($0) }))
@@ -989,6 +1176,9 @@ struct TimeStoryWorkspaceView: View {
             Button("保存") { Task { await model.save() } }
                 .disabled(model.isBusy).accessibilityIdentifier("timeStorySaveButton")
             musicMenu
+            Button("模板库", systemImage: "square.grid.2x2") {
+                showStyleLibrary.toggle(); model.loadStyleTemplates()
+            }.accessibilityIdentifier("timeStoryStyleLibrary")
             Button("制作设置") { inspectorTab = "创作" }
             Menu("导出") {
                 Button("直接导出 MP4（横屏）…") { chooseExportDestination() }
@@ -1006,6 +1196,7 @@ struct TimeStoryWorkspaceView: View {
             VStack(spacing: 0) {
                 editingActions
                 Divider()
+                if showStyleLibrary { styleLibrary(project).frame(maxHeight: 370) }
                 HSplitView {
                     materialBrowser(project)
                         .frame(minWidth: 220, idealWidth: 280, maxWidth: 400)

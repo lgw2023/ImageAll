@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        ST9100010000000000000001 = {isa = PBXBuildFile; fileRef = ST9100020000000000000001; };
+        ST9100010000000000000000 = {isa = PBXBuildFile; fileRef = ST9100020000000000000000; };
+		ST9000010000000000000001 = {isa = PBXBuildFile; fileRef = ST9000020000000000000001; };
 		TS0000010000000000000001 /* TimeStoryFeature.swift in Sources */ = {isa = PBXBuildFile; fileRef = TS0001010000000000000001 /* TimeStoryFeature.swift */; };
 		TS0000010000000000000002 /* TimeStoryWorkspaceUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = TS0001010000000000000002 /* TimeStoryWorkspaceUI.swift */; };
 		TS0000010000000000000003 /* TimeStoryVerificationSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = TS0001010000000000000003 /* TimeStoryVerificationSupport.swift */; };
@@ -350,6 +353,9 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+        ST9100020000000000000001 = {isa = PBXFileReference; lastKnownFileType = file; path = ImageAll/Resources/StoryTemplates/in-photo-handwritten-poem.mp4; sourceTree = SOURCE_ROOT; };
+        ST9100020000000000000000 = {isa = PBXFileReference; lastKnownFileType = file; path = ImageAll/Resources/StoryTemplates/brief-title-dissolve.mp4; sourceTree = SOURCE_ROOT; };
+		ST9000020000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Story/StoryStyleTemplates.swift; sourceTree = "<group>"; };
 		TS0001010000000000000001 /* TimeStoryFeature.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Story/TimeStoryFeature.swift; sourceTree = "<group>"; };
 		TS0001010000000000000002 /* TimeStoryWorkspaceUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimeStoryWorkspaceUI.swift; sourceTree = "<group>"; };
 		TS0001010000000000000003 /* TimeStoryVerificationSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimeStoryVerificationSupport.swift; sourceTree = "<group>"; };
@@ -855,6 +861,7 @@
 			isa = PBXGroup;
 			children = (
 				TS0001010000000000000001 /* TimeStoryFeature.swift */,
+                ST9000020000000000000001,
 				TS0001010000000000000004 /* StoryRenderPackage.swift */,
 				TS0001010000000000000005 /* OpenMontageTaskClient.swift */,
 				TS0001010000000000000006 /* StoryCreativePlugin.swift */,
@@ -1501,6 +1508,8 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+                ST9100010000000000000001,
+                ST9100010000000000000000,
 				IC0000010000000000000001 /* Assets.xcassets in Resources */,
 				WC0000010000000000000002 /* WebCompanion in Resources */,
 				WV2000010000000000000001 /* WebCompanionV2 in Resources */,
@@ -1558,6 +1567,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				TS0000010000000000000001 /* TimeStoryFeature.swift in Sources */,
+                ST9000010000000000000001,
 				TS0000010000000000000004 /* StoryRenderPackage.swift in Sources */,
 				TS0000010000000000000005 /* OpenMontageTaskClient.swift in Sources */,
 				TS0000010000000000000006 /* StoryCreativePlugin.swift in Sources */,

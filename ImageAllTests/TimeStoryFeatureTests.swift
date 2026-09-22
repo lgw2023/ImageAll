@@ -6,6 +6,41 @@ import GRDB
 import XCTest
 
 final class TimeStoryFeatureTests: XCTestCase {
+    func testStyleTemplatePersistenceVariantAndRequestBinding() async throws {
+        let root = try temporaryDirectory("style-template")
+        let first = UUID(), second = UUID()
+        var project = renderProject(first: first, second: second)
+        project.shots[0].durationSeconds = 2
+        project.shots[0].isLocked = true
+        let shots = project.shots
+        project.styleTemplate = .init(template: StoryStyleTemplate.builtins[1], lines: ["风从草地经过", "把蓝色留在眼里"])
+        let store = TimeStoryProjectStore(applicationSupportDirectory: root)
+        try store.save(project)
+        XCTAssertEqual(try store.load(project.id).styleTemplate, project.styleTemplate)
+        XCTAssertEqual(try store.load(project.id).shots, shots)
+        let catalog = StoryStyleCatalog(directory: root.appendingPathComponent("templates-library"))
+        let variant = try catalog.saveVariant(project.styleTemplate!.template, name: "个人样式")
+        XCTAssertNotEqual(variant.id, project.styleTemplate!.template.id)
+        XCTAssertEqual(try catalog.load().count, 3)
+        let stored = try String(contentsOf: catalog.directory.appendingPathComponent(variant.id + ".json"), encoding: .utf8)
+        XCTAssertFalse(stored.contains("风从草地经过"))
+        XCTAssertFalse(stored.contains(first.uuidString))
+        let capability = StoryStyleExchange.Capability(protocolVersion: "1.0", implementations: [variant.implementation: String(repeating: "a", count: 64)], ready: true, detail: "", updatedAtMs: Int64(Date().timeIntervalSince1970 * 1000))
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("templates"), withIntermediateDirectories: true)
+        try StoryCreativePlugin.encode(capability).write(to: root.appendingPathComponent("templates/capabilities.json"))
+        let exchange = StoryStyleExchange(rootProvider: FixtureOpenMontageRootProvider(root: root), exporter: StoryRenderPackageExporter(media: FixtureStoryMediaLoader(images: [first: try pngData(color: .red, portrait: true), second: try pngData(color: .blue, portrait: false)]), validator: PassingStoryValidator()))
+        let receipt = try await exchange.publish(project)
+        let requestURL = root.appendingPathComponent("templates/requests/\(receipt.requestID)/request.json")
+        let data = try Data(contentsOf: requestURL)
+        XCTAssertEqual(StoryCreativePlugin.hash(data), receipt.requestSHA256)
+        let request = try JSONDecoder().decode(StoryStyleExchange.Request.self, from: data)
+        XCTAssertEqual(request.photoFrames, shots.map { Int(($0.durationSeconds * 30).rounded()) })
+        XCTAssertEqual(request.photoIDs, shots.map { StoryRenderPackageExporter.packageAssetID(projectID: project.id, assetID: $0.assetID) })
+        XCTAssertEqual(request.style, project.styleTemplate)
+        var invalid = variant; invalid.fontSize = 300
+        XCTAssertThrowsError(try invalid.validate())
+    }
+
     @MainActor
     func testAtelierSyntheticCatalogHasOnlyBoundedReliableCandidates() throws {
         let database = try CatalogDatabase.open(at: makeTempDatabaseURL())

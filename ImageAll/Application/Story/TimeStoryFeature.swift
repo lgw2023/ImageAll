@@ -157,6 +157,8 @@ struct TimeStoryProject: Codable, Sendable, Equatable, Identifiable {
     var showsProjectTitle: Bool? = nil
     var showsChapterTitles: Bool? = nil
     var isFreeform: Bool? = nil
+    var styleTemplate: StoryStyleSelection? = nil
+    var styleReceipt: StoryStyleReceipt? = nil
 
     var timelineDurationSeconds: Double {
         (try? TimeStoryTimeline.normalize(project: self).durationSeconds) ?? 0
