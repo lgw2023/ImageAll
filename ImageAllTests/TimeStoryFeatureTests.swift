@@ -1426,6 +1426,100 @@ final class TimeStoryFeatureTests: XCTestCase {
         XCTAssertThrowsError(try planner.appending(candidate, to: updated, nowMs: 43))
     }
 
+    @MainActor
+    func testMaterialThumbnailsUseSmallImageRouteAndCoalesceRequests() async throws {
+        let root = try temporaryDirectory("thumbnail-route")
+        let database = try CatalogDatabase.open(at: root.appendingPathComponent("catalog.sqlite"))
+        let first = UUID(), second = UUID()
+        let project = renderProject(first: first, second: second)
+        let media = CountingStoryThumbnailLoader(data: try pngData(color: .red, portrait: false))
+        let exporter = StoryRenderPackageExporter(media: media, validator: PassingStoryValidator())
+        let roots = FixtureOpenMontageRootProvider(root: root)
+        let runtime = TimeStoryFeatureRuntime(
+            candidates: TimeStoryCandidateProvider(database: database, query: GRDBAssetCatalogQueryRepository(database: database)),
+            planner: TimeStoryPlanner(), store: TimeStoryProjectStore(applicationSupportDirectory: root),
+            validator: PassingStoryValidator(), renderer: AVFoundationTimeStoryRenderer(media: media, temporaryDirectory: root),
+            packageExporter: exporter, openMontageTasks: FileOpenMontageStoryTaskClient(rootProvider: roots, packageExporter: exporter, installationID: "fixture"),
+            creativeRootProvider: roots, media: media, clock: SystemJobClock())
+        let model = TimeStoryWorkspaceModel(verificationRuntime: runtime,
+            tag: TagListItem(id: project.subjectTagID, displayName: project.subjectTagDisplayName, state: .active), project: project, thumbnails: [:])
+        let candidate = try XCTUnwrap(project.candidateSnapshot.candidates.first)
+        async let firstLoad: Void = model.loadCandidateThumbnail(candidate)
+        async let secondLoad: Void = model.loadCandidateThumbnail(candidate)
+        _ = await (firstLoad, secondLoad)
+        await model.loadCandidateThumbnail(candidate)
+        let counts = await media.counts()
+        XCTAssertEqual(counts.0, 1)
+        XCTAssertEqual(counts.1, 0)
+        XCTAssertNotNil(model.candidateThumbnails[candidate.assetID])
+        model.setCreativeIntent("已编辑")
+        XCTAssertTrue(model.canUndo)
+        model.undo()
+        XCTAssertEqual(model.project?.creativeIntent, project.creativeIntent)
+        model.redo()
+        XCTAssertEqual(model.project?.creativeIntent, "已编辑")
+    }
+
+    func testOpenMontageAuthorizationFailureIsDistinctFromOffline() async throws {
+        let inspector = OpenMontageTaskDirectoryInspector(rootProvider: DeniedStoryRootProvider())
+        let capability = await inspector.capability()
+        XCTAssertEqual(capability.state, .authorizationRequired)
+        let media = FixtureStoryMediaLoader(images: [:])
+        let exporter = StoryRenderPackageExporter(media: media, validator: PassingStoryValidator())
+        let client = FileOpenMontageStoryTaskClient(rootProvider: DeniedStoryRootProvider(), packageExporter: exporter, installationID: "fixture")
+        let actual = await client.capability()
+        XCTAssertEqual(actual.state, .authorizationRequired)
+    }
+
+    func testFreeformExceedsTemplateLimitAndPersistsOptionalTitleCards() throws {
+        let candidates = (0..<30).map { _ in candidate(UUID().uuidString, time: nil) }
+        let planner = TimeStoryPlanner()
+        var project = planner.makeFreeformProject(snapshot: makeSnapshot(candidates), nowMs: 1)
+        XCTAssertTrue(project.shots.isEmpty)
+        XCTAssertEqual(project.isFreeform, true)
+        XCTAssertEqual(project.title, project.subjectTagDisplayName)
+        for candidate in candidates { project = try planner.manuallyInserting(candidate, in: project, nowMs: 2) }
+        XCTAssertEqual(project.shots.count, 30)
+        let plain = try TimeStoryTimeline.normalize(project: project)
+        XCTAssertEqual(plain.segments.count, 30)
+        project.showsProjectTitle = true
+        project.showsChapterTitles = true
+        XCTAssertEqual(try TimeStoryTimeline.normalize(project: project).segments.count, 32)
+        let store = TimeStoryProjectStore(applicationSupportDirectory: try temporaryDirectory("freeform"))
+        try store.save(project)
+        XCTAssertEqual(try store.load(project.id), project)
+        XCTAssertThrowsError(try planner.manuallyInserting(candidates[0], in: project, nowMs: 3))
+    }
+
+    func testManualMontageAcrossChaptersRoundTripsAndRejectsForeignCandidates() throws {
+        let first = UUID(), second = UUID()
+        var project = renderProject(first: first, second: second)
+        let chapterID = UUID()
+        project.shots[1].chapterID = chapterID
+        project.chapters[0].shotIDs = [project.shots[0].id]
+        project.chapters.append(TimeStoryChapter(id: chapterID, title: "另一章节", shotIDs: [project.shots[1].id], isUserEdited: false))
+        let extra = candidate(UUID().uuidString, time: nil, place: "新地点")
+        project.candidateSnapshot = makeSnapshot(project.candidateSnapshot.candidates + [extra])
+        let planner = TimeStoryPlanner()
+        let inserted = try planner.manuallyInserting(extra, in: project, nowMs: 41)
+        XCTAssertEqual(inserted.shots.count, 3)
+        XCTAssertTrue(inserted.shots[2].isLocked)
+        XCTAssertNoThrow(try TimeStoryTimeline.normalize(project: inserted))
+        let moved = try planner.moving(inserted.shots[2].id, before: inserted.shots[0].id, in: inserted, nowMs: 42)
+        XCTAssertEqual(moved.shots.first?.assetID, extra.assetID)
+        XCTAssertEqual(moved.chapters.flatMap(\.shotIDs), moved.shots.map(\.id))
+        XCTAssertNoThrow(try TimeStoryTimeline.normalize(project: moved))
+        let store = TimeStoryProjectStore(applicationSupportDirectory: try temporaryDirectory("manual-montage"))
+        try store.save(moved)
+        XCTAssertEqual(try store.load(moved.id), moved)
+        XCTAssertThrowsError(try planner.manuallyInserting(extra, in: moved, nowMs: 43))
+        XCTAssertThrowsError(try planner.manuallyInserting(candidate(UUID().uuidString, time: nil), in: moved, nowMs: 43))
+        var excluded = project
+        excluded.excludedAssetIDs.insert(extra.assetID)
+        XCTAssertThrowsError(try planner.manuallyInserting(extra, in: excluded, nowMs: 43))
+        XCTAssertThrowsError(try planner.moving(UUID(), before: nil, in: moved, nowMs: 43))
+    }
+
     func testCreativePluginBoundedRoundTripAndStaleRejection() async throws {
         let root = try temporaryDirectory("creative").resolvingSymlinksInPath()
         let first = UUID(), second = UUID()
@@ -1478,6 +1572,35 @@ final class TimeStoryFeatureTests: XCTestCase {
         XCTAssertNotEqual(retry.requestID, receipt.requestID)
     }
 
+    func testCreativeManualOrderAllowsUnknownDatesAndPreservesLocks() throws {
+        let root = try temporaryDirectory("creative-manual").resolvingSymlinksInPath()
+        var project = renderProject(first: UUID(), second: UUID())
+        project.shots.reverse()
+        project.chapters[0].shotIDs = project.shots.map(\.id)
+        project.shots[0].isLocked = true
+        let base = try StoryCreativePlugin.fingerprint(project)
+        let hash = String(repeating: "a", count: 64)
+        let rid = "creative-" + UUID().uuidString.lowercased()
+        project.creativeReceipt = .init(requestID: rid, requestSHA256: hash, baseFingerprint: base, aspect: .portrait)
+        let request = StoryCreativeRequest(protocolVersion: "1.1", requestID: rid, projectID: "story-test", baseFingerprint: base,
+            intent: "手动编排", subject: "合成", targetFrames: 300, aspect: .portrait, storySHA256: hash,
+            facts: project.shots.map { .init(assetID: $0.assetID.uuidString, contentVersion: "v1", sha256: hash, captureTimeMs: nil, captureTimeSource: nil, placeName: nil) },
+            shots: project.shots.map { .init(shotID: $0.id.uuidString.lowercased(), assetID: $0.assetID.uuidString, chapterID: $0.chapterID.uuidString.lowercased(), caption: $0.caption, durationFrames: Int(($0.durationSeconds * 30).rounded()), locked: $0.isLocked, userEdited: true) },
+            chapters: project.chapters.map { .init(chapterID: $0.id.uuidString.lowercased(), title: $0.title) }, title: project.title)
+        var plan = StoryCreativePlan(protocolVersion: "1.1", profile: "editable-story-v1", requestID: rid, requestSHA256: hash, pluginVersion: "1.1", planningMode: "agent-assisted", title: project.title, chapters: request.chapters,
+            shots: request.shots.map { .init(shotID: $0.shotID, assetID: $0.assetID, chapterID: $0.chapterID, caption: $0.caption, durationFrames: $0.durationFrames, factRefs: [], rationale: "保留手动顺序") }, observations: [], uncertainties: [])
+        let media = FixtureStoryMediaLoader(images: [:])
+        let plugin = StoryCreativePlugin(rootProvider: FixtureOpenMontageRootProvider(root: root), exporter: StoryRenderPackageExporter(media: media, validator: PassingStoryValidator()), validator: PassingStoryValidator())
+        let applied = try plugin.apply(plan, request: request, digest: hash, to: project)
+        XCTAssertEqual(applied.shots.map(\.id), project.shots.map(\.id))
+        XCTAssertEqual(applied.shots.map(\.durationSeconds), project.shots.map(\.durationSeconds))
+        plan.shots.reverse()
+        XCTAssertThrowsError(try plugin.apply(plan, request: request, digest: hash, to: project))
+        plan.shots.reverse()
+        plan.shots[0].durationFrames += 1
+        XCTAssertThrowsError(try plugin.apply(plan, request: request, digest: hash, to: project))
+    }
+
     func testCreativePluginRejectsLockedChangesAndUnsafePath() throws {
         let root = try temporaryDirectory("creative-lock").resolvingSymlinksInPath()
         let first = UUID(), second = UUID()
@@ -1501,14 +1624,15 @@ final class TimeStoryFeatureTests: XCTestCase {
         XCTAssertThrowsError(try StoryCreativePlugin.safe("link/anything", root: root))
     }
 
-    func testAtelierPublishesConfirmedCandidatesBeyondSelectedShotsAndRejectsVersionMismatch() async throws {
+    func testAtelierPublishesOnlySelectedPhotosAndRejectsVersionMismatch() async throws {
         let root = try temporaryDirectory("atelier-scope").resolvingSymlinksInPath()
         let first = UUID(), second = UUID(), third = UUID()
         var project = renderProject(first: first, second: second)
-        project.creativeIntent = "用三张合成照片比较人物与环境关系"
+        project.creativeIntent = "用已选合成照片比较人物与环境关系"
         project.creativeTargetFrames = 600
         project.shots[0].isLocked = true
         project.candidateSnapshot = makeSnapshot(project.candidateSnapshot.candidates + [candidate(third.uuidString, time: timestamp(2024, 1, 2))])
+        project.candidateSnapshot = makeSnapshot(project.candidateSnapshot.candidates + (0..<30).map { _ in candidate(UUID().uuidString, time: timestamp(2024, 1, 2)) })
         project.excludedAssetIDs = [third]
         let media = FixtureStoryMediaLoader(images: [
             first: try pngData(color: .red, portrait: false),
@@ -1534,10 +1658,10 @@ final class TimeStoryFeatureTests: XCTestCase {
         let encodedAssets = try XCTUnwrap(requestObject["assets"] as? [[String: Any]])
         XCTAssertTrue(encodedAssets.allSatisfy { $0.keys.contains("placeName") })
         XCTAssertEqual(StoryCreativePlugin.hash(requestData), receipt.requestSHA256)
-        XCTAssertEqual(request.assets.count, 3, "Agent 应看到同一已确认范围，而不只看到 App 的两张草稿")
+        XCTAssertEqual(request.assets.count, 2, "制作范围必须与用户已选照片一致")
         XCTAssertEqual(request.selectedAssetIDs.count, 2)
         XCTAssertEqual(request.lockedAssetIDs.count, 1)
-        XCTAssertEqual(request.excludedAssetIDs.count, 1)
+        XCTAssertEqual(request.excludedAssetIDs.count, 0)
         XCTAssertEqual(request.scopeDigestSHA256, StoryAtelierExchange.scopeDigest(request.assets))
         XCTAssertFalse(request.externalSendAllowed)
         let store = TimeStoryProjectStore(applicationSupportDirectory: root)
@@ -1566,6 +1690,36 @@ final class TimeStoryFeatureTests: XCTestCase {
             _ = try await exchange.publish(project: project)
             XCTFail("Unsupported protocol version must fail")
         } catch { }
+    }
+
+    func testAtelierPublishes35SelectedWithUnknownDate() async throws {
+        let root = try temporaryDirectory("atelier-35").resolvingSymlinksInPath()
+        var project = renderProject(first: UUID(), second: UUID())
+        let candidates = (0..<35).map { index in candidate(UUID().uuidString, time: index == 0 ? nil : Int64(1000 - index)) }
+        project.candidateSnapshot = makeSnapshot(candidates)
+        project.shots = candidates.enumerated().map { index, item in
+            var shot = makeShot(asset: item, index: index)
+            shot.chapterID = project.chapters[0].id
+            shot.isLocked = true
+            shot.durationSeconds = 1.5
+            return shot
+        }
+        project.chapters[0].shotIDs = project.shots.map(\.id)
+        project.creativeIntent = "保留合成镜头顺序"
+        let image = try pngData(color: .blue, portrait: true)
+        let media = FixtureStoryMediaLoader(images: Dictionary(uniqueKeysWithValues: candidates.map { ($0.assetID, image) }))
+        let exchange = StoryAtelierExchange(rootProvider: FixtureOpenMontageRootProvider(root: root), media: media, validator: PassingStoryValidator())
+        let creative = root.appendingPathComponent("creative")
+        try FileManager.default.createDirectory(at: creative, withIntermediateDirectories: true)
+        let capability: [String: Any] = ["protocolVersion": "2.1", "profile": "atelier-project-v1", "pluginID": "openmontage", "pluginVersion": "2.1.0", "planningMode": "agent-assisted", "automaticPlanning": false, "renderRuntime": "remotion", "compositionMode": "atelier"]
+        try JSONSerialization.data(withJSONObject: capability).write(to: creative.appendingPathComponent("atelier-capabilities.json"))
+        let receipt = try await exchange.publish(project: project)
+        let request = try JSONDecoder().decode(StoryAtelierRequest.self, from: Data(contentsOf: creative.appendingPathComponent("atelier-requests/\(receipt.requestID)/request.json")))
+        XCTAssertEqual(request.protocolVersion, "2.1")
+        XCTAssertEqual(request.assets.count, 35)
+        XCTAssertEqual(request.selectedAssetIDs, project.shots.map { StoryRenderPackageExporter.packageAssetID(projectID: project.id, assetID: $0.assetID) })
+        XCTAssertEqual(request.lockedShots.map(\.durationFrames), Array(repeating: 45, count: 35))
+        XCTAssertEqual(request.lockedShots.map(\.orderIndex), Array(0..<35))
     }
 
     private func renderProject(first: UUID, second: UUID) -> TimeStoryProject {
@@ -2039,4 +2193,23 @@ private final class ChangingStoryValidator: TimeStoryMediaValidating, @unchecked
             actualRevision: 2
         )]
     }
+}
+
+private actor CountingStoryThumbnailLoader: TimeStoryMediaLoading {
+    let data: Data
+    private var thumbnails = 0
+    private var previews = 0
+    init(data: Data) { self.data = data }
+    func loadStoryThumbnail(assetID: UUID) async throws -> Data {
+        thumbnails += 1
+        try await Task.sleep(for: .milliseconds(30))
+        return data
+    }
+    func loadStoryImage(assetID: UUID) async throws -> Data { previews += 1; return data }
+    func counts() -> (Int, Int) { (thumbnails, previews) }
+}
+private struct DeniedStoryRootProvider: OpenMontageTaskRootProviding {
+    func resolveTaskRoot() throws -> URL { throw OpenMontageTaskError.taskRootAuthorizationRequired }
+    func startAccessing(_ url: URL) -> Bool { false }
+    func stopAccessing(_ url: URL) {}
 }

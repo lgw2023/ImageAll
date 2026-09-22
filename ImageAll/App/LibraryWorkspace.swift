@@ -1218,7 +1218,7 @@ struct LibraryWorkspaceCommandItem: Identifiable, Equatable {
 
 /// Optional bounded test seam for thumbnail loads. Production runs without an
 /// app-level ceiling and lets Swift plus the image frameworks schedule work.
-private actor LibraryThumbnailLoadGate {
+actor LibraryThumbnailLoadGate {
     private var available: Int
     private var waiters: [Waiter] = []
 
@@ -12521,6 +12521,7 @@ private enum LibrarySidebarSelection: Hashable {
     case reviewSuggestions
     case contextualTagFeed
     case trainingWorkspace
+    case timeStory
     case librarySlimming
     case source(UUID)
     case folder(AssetFolderScope)
@@ -13331,6 +13332,7 @@ struct LibraryWorkspaceView: View {
     @State private var renamedTagName = ""
     @State private var tagPendingArchive: TagListItem?
     @State private var timeStoryTag: TagListItem?
+    @State private var storyWorkspaces: [UUID: TimeStoryWorkspaceModel] = [:]
     @State private var tagGroupPendingRename: TagGroupListItem?
     @State private var renamedTagGroupName = ""
     @State private var tagGroupPendingDelete: TagGroupListItem?
@@ -13422,12 +13424,11 @@ struct LibraryWorkspaceView: View {
                 }
             )
         }
-        .modifier(TimeStorySheetModifier(model: model, tag: $timeStoryTag))
         .toolbar {
             ToolbarItemGroup {
                 libraryToolbarLayoutItems
                 if selection != .galleryOverview,
-                   selection != .worldMap
+                   selection != .worldMap, selection != .timeStory
                 {
                     if selection == .librarySlimming || selection == .contextualTagFeed {
                         libraryGridPresentationToolbarItems
@@ -13570,7 +13571,9 @@ struct LibraryWorkspaceView: View {
 
     @ViewBuilder
     private var keyboardEnabledContent: some View {
-        if selection == .galleryOverview {
+        if selection == .timeStory {
+            content.navigationTitle("时光故事")
+        } else if selection == .galleryOverview {
             content
                 .navigationTitle("图库总览")
         } else if selection == .worldMap {
@@ -14084,6 +14087,10 @@ struct LibraryWorkspaceView: View {
         }
         .onChange(of: selection) { _, newValue in
             model.noteUserInteractionForIdlePrewarm()
+            if newValue == .timeStory {
+                layoutState.setInspectorPresented(false)
+                return
+            }
             let destination: LibraryBrowsingDestination = switch newValue {
             case .galleryOverview:
                 .galleryOverview
@@ -14091,7 +14098,7 @@ struct LibraryWorkspaceView: View {
                 .worldMap
             case .worldMapGallery:
                 worldMapGalleryScope.map(LibraryBrowsingDestination.worldMapGallery) ?? .all
-            case .all, .none:
+            case .all, .none, .timeStory:
                 .all
             case .favorites:
                 .favorites
@@ -14178,7 +14185,7 @@ struct LibraryWorkspaceView: View {
 
     private var inspectorVisibility: Binding<Bool> {
         Binding(
-            get: { layoutState.isInspectorPresented },
+            get: { selection != .timeStory && layoutState.isInspectorPresented },
             set: { layoutState.setInspectorPresented($0) }
         )
     }
@@ -14415,6 +14422,9 @@ struct LibraryWorkspaceView: View {
                     .tag(LibrarySidebarSelection.galleryOverview)
                 Label("照片世界", systemImage: "globe.asia.australia.fill")
                     .tag(LibrarySidebarSelection.worldMap)
+                Label("时光故事", systemImage: "film.stack")
+                    .tag(LibrarySidebarSelection.timeStory)
+                    .accessibilityIdentifier("timeStorySidebarEntry")
                 Label("全部照片", systemImage: "photo.on.rectangle.angled")
                     .tag(LibrarySidebarSelection.all)
                 Label("红心收藏", systemImage: "heart.fill")
@@ -15193,7 +15203,7 @@ struct LibraryWorkspaceView: View {
 
             Menu {
                 TimeStoryCreationButton(tag: tag) { selectedTag in
-                    timeStoryTag = selectedTag
+                    openStoryWorkspace(selectedTag)
                 }
 
                 Divider()
@@ -15449,7 +15459,9 @@ struct LibraryWorkspaceView: View {
 
     @ViewBuilder
     private var content: some View {
-        if selection == .galleryOverview {
+        if selection == .timeStory {
+            storyWorkspaceContent
+        } else if selection == .galleryOverview {
             GalleryOverviewView(model: model)
         } else if selection == .worldMap {
             WorldMapWorkspaceView(
@@ -15486,6 +15498,40 @@ struct LibraryWorkspaceView: View {
         } else {
             libraryContent
         }
+    }
+
+    private func openStoryWorkspace(_ tag: TagListItem) {
+        if storyWorkspaces[tag.id] == nil {
+            storyWorkspaces[tag.id] = model.makeTimeStoryWorkspaceModel(for: tag)
+        }
+        timeStoryTag = tag
+        selection = .timeStory
+    }
+
+    private var storyWorkspaceContent: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Label("时光故事", systemImage: "film.stack").font(.headline)
+                Menu(timeStoryTag?.displayName ?? "选择故事主体") {
+                    ForEach(model.tags) { tag in
+                        Button(tag.displayName) { openStoryWorkspace(tag) }
+                    }
+                }
+                .accessibilityIdentifier("timeStorySubjectPicker")
+                Spacer()
+                Text("草稿在切换模块时保留 · 保存后可再次打开")
+                    .font(.caption).foregroundStyle(.secondary)
+            }.padding(12)
+            Divider()
+            if let tag = timeStoryTag, let story = storyWorkspaces[tag.id] {
+                TimeStoryWorkspaceView(model: story).id(tag.id)
+            } else {
+                ContentUnavailableView("选择一个主体，开始编排故事", systemImage: "film.stack",
+                    description: Text("从上方选择人物、地点或其他标签；也可以从图库标签的菜单进入。随后按缩略图挑选照片，拖入镜头编排区。"))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     @ViewBuilder

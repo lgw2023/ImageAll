@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import ImageIO
 
 private enum TimeStoryDurationText {
     static func format(_ seconds: Double) -> String {
@@ -19,28 +20,8 @@ struct TimeStoryCreationButton: View {
 
     var body: some View {
         Button("创建时光故事…") { action(tag) }
-            .persistentHelp("以这个明确标签的已确认照片创建“成长与足迹”故事草稿。")
+            .persistentHelp("以这个标签的已确认照片进入自由编排工作区。")
             .accessibilityIdentifier("timeStoryCreateFromTag")
-    }
-}
-
-struct TimeStorySheetModifier: ViewModifier {
-    @ObservedObject var model: LibraryWorkspaceModel
-    @Binding var tag: TagListItem?
-
-    func body(content: Content) -> some View {
-        content.sheet(item: $tag) { selectedTag in
-            if let storyModel = model.makeTimeStoryWorkspaceModel(for: selectedTag) {
-                TimeStoryWorkspaceView(model: storyModel)
-            } else {
-                ContentUnavailableView(
-                    "时光故事暂不可用",
-                    systemImage: "film",
-                    description: Text("故事运行组件没有完成初始化。")
-                )
-                .frame(minWidth: 520, minHeight: 320)
-            }
-        }
     }
 }
 
@@ -63,11 +44,58 @@ private enum OpenMontageResultSaveError: LocalizedError {
 
 @MainActor
 final class TimeStoryWorkspaceModel: ObservableObject {
-    @Published private(set) var project: TimeStoryProject?
+    @Published private(set) var project: TimeStoryProject? {
+        didSet {
+            guard !restoringHistory, let oldValue, let project, oldValue.id == project.id,
+                  oldValue != project else { return }
+            undoProjects.append(oldValue)
+            if undoProjects.count > 50 { undoProjects.removeFirst() }
+            redoProjects.removeAll()
+        }
+    }
+    @Published private var undoProjects: [TimeStoryProject] = []
+    @Published private var redoProjects: [TimeStoryProject] = []
+    private var restoringHistory = false
+    private let thumbnailGate = LibraryThumbnailLoadGate(limit: 4)
+    private var thumbnailTasks: [UUID: Task<NSImage?, Never>] = [:]
+    @Published private(set) var failedThumbnails: Set<UUID> = []
+    var canUndo: Bool { !undoProjects.isEmpty }
+    var canRedo: Bool { !redoProjects.isEmpty }
+    func undo() { restoreHistory(undo: true) }
+    func redo() { restoreHistory(undo: false) }
+    private func restoreHistory(undo: Bool) {
+        guard let current = project, let value = undo ? undoProjects.popLast() : redoProjects.popLast() else { return }
+        restoringHistory = true
+        if undo { redoProjects.append(current) } else { undoProjects.append(current) }
+        project = value
+        restoringHistory = false
+        Task { await loadThumbnails() }
+    }
+    func setTitleCards(projectTitle: Bool? = nil, chapters: Bool? = nil) {
+        guard var edited = project else { return }
+        if let projectTitle { edited.showsProjectTitle = projectTitle }
+        if let chapters { edited.showsChapterTitles = chapters }
+        project = edited
+    }
+    func useFreeform() {
+        guard var edited = project else { return }
+        edited.isFreeform = true
+        edited.showsProjectTitle = false
+        edited.showsChapterTitles = false
+        if edited.title == "\(edited.subjectTagDisplayName) · 成长与足迹" { edited.title = edited.subjectTagDisplayName }
+        project = edited
+    }
+    func chooseTaskDirectory() {
+        let settings = OpenMontageSettingsModel()
+        settings.chooseTaskRoot()
+        Task { await refreshOpenMontageCapability() }
+    }
+
     @Published private(set) var readinessSnapshot: TimeStoryCandidateSnapshot?
     @Published private(set) var loadedCandidateCount = 0
     @Published private(set) var isReadingCandidates = false
     @Published private(set) var projects: [TimeStoryProjectSummary] = []
+    @Published private(set) var candidateThumbnails: [UUID: NSImage] = [:]
     @Published private(set) var thumbnails: [UUID: NSImage] = [:]
     @Published private(set) var isBusy = false
     @Published private(set) var exportProgress: TimeStoryRenderProgress?
@@ -117,7 +145,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
             selectedAtelierRequestID = receipt.requestID
             atelierProposal = nil
             atelierFeedback = ""
-            atelierStatus = "等待创作 Agent · 本次发布 \(current.candidateSnapshot.candidates.filter { $0.availability == .available }.count) 张候选"
+            atelierStatus = "等待创作 Agent · 本次发布 \(current.shots.count) 张已选照片"
             await refreshProjects()
         } catch { atelierStatus = error.localizedDescription }
     }
@@ -257,6 +285,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         openMontageSubmissionTask?.cancel()
         openMontagePollingTask?.cancel()
         candidateTask?.cancel()
+        thumbnailTasks.values.forEach { $0.cancel() }
     }
 
     func start() async {
@@ -317,10 +346,11 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         do {
             let now = runtime.clock.nowMs
             let snapshot = try await fetchSnapshot(for: tag)
-            let project = try runtime.planner.makeProject(snapshot: snapshot, nowMs: now)
+            let project = runtime.planner.makeFreeformProject(snapshot: snapshot, nowMs: now)
             readinessSnapshot = snapshot
             self.project = project
-            message = "草稿已生成；保存后可随时重新打开。"
+            undoProjects = []; redoProjects = []
+            message = "自由编排已就绪，拖入照片开始。"
             await loadThumbnails()
         } catch is CancellationError {
             message = "候选读取已取消。"
@@ -335,6 +365,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         let store = runtime.store
         do {
             project = try await Task.detached { try store.load(id) }.value
+            undoProjects = []; redoProjects = []
             message = "故事项目已重新打开。"
             creativePlan = nil
             refreshCreativeRequest()
@@ -348,9 +379,11 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         isBusy = false
     }
 
-    func save() async {
-        guard var project else { return }
+    @discardableResult
+    func save() async -> Bool {
+        guard var project else { return false }
         isBusy = true
+        defer { isBusy = false }
         project.updatedAtMs = runtime.clock.nowMs
         let store = runtime.store
         let projectToSave = project
@@ -359,14 +392,26 @@ final class TimeStoryWorkspaceModel: ObservableObject {
             self.project = project
             await refreshProjects()
             message = "故事项目已保存。"
+            return true
         } catch {
             message = error.localizedDescription
+            return false
         }
-        isBusy = false
+    }
+
+    func openSavedProject(_ id: UUID) async {
+        guard !isBusy else { return }
+        if project != nil, !(await save()) { return }
+        await open(id)
     }
 
     func regenerate() async {
         guard let current = project else { return }
+        let unknownIDs = Set(current.candidateSnapshot.candidates.filter { $0.mediaCreatedAtMs == nil }.map(\.assetID))
+        guard !current.shots.contains(where: { unknownIDs.contains($0.assetID) }) else {
+            message = "当前含有手动加入的时间未知照片，无法按时间重新生成；可继续手动编排、保存和导出。"
+            return
+        }
         isBusy = true
         message = "正在重新读取当前主体候选并生成…"
         let runtime = runtime
@@ -460,7 +505,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     func replace(_ shotID: UUID, with candidate: TimeStoryCandidate) async {
         guard var project,
               let index = project.shots.firstIndex(where: { $0.id == shotID }),
-              runtime.planner.replacementCandidates(for: shotID, in: project).contains(where: { $0.assetID == candidate.assetID })
+              runtime.planner.manuallyEditableCandidates(in: project, replacing: shotID).contains(where: { $0.assetID == candidate.assetID })
         else { return }
         let previousAssetID = project.shots[index].assetID
         project.excludedAssetIDs.insert(previousAssetID)
@@ -495,24 +540,68 @@ final class TimeStoryWorkspaceModel: ObservableObject {
 
     func replacementCandidates(for shotID: UUID) -> [TimeStoryCandidate] {
         guard let project else { return [] }
-        return runtime.planner.replacementCandidates(for: shotID, in: project)
+        return runtime.planner.manuallyEditableCandidates(in: project, replacing: shotID).filter { candidate in
+            candidate.assetID != project.shots.first(where: { $0.id == shotID })?.assetID
+        }
     }
 
     var addableCandidates: [TimeStoryCandidate] {
         guard let project else { return [] }
-        return runtime.planner.addableCandidates(in: project)
+        return runtime.planner.manuallyEditableCandidates(in: project)
     }
 
     func addCandidate(_ candidate: TimeStoryCandidate) async {
         guard let current = project else { return }
         do {
-            let updated = try runtime.planner.appending(candidate, to: current, nowMs: runtime.clock.nowMs)
+            let updated = try runtime.planner.manuallyInserting(candidate, in: current, nowMs: runtime.clock.nowMs)
             project = updated
             if let shot = updated.shots.first(where: { $0.assetID == candidate.assetID }) {
                 await loadThumbnail(for: shot)
             }
             message = "已从本次限定候选补入照片；请核对顺序、字幕并保存。"
         } catch { message = error.localizedDescription }
+    }
+
+    func moveShot(_ id: UUID, before targetID: UUID?) {
+        guard let current = project else { return }
+        do { project = try runtime.planner.moving(id, before: targetID, in: current, nowMs: runtime.clock.nowMs) }
+        catch { message = error.localizedDescription }
+    }
+
+    func loadCandidateThumbnail(_ candidate: TimeStoryCandidate) async {
+        guard candidate.availability == .available else { return }
+        _ = await thumbnail(assetID: candidate.assetID)
+    }
+
+    private func thumbnail(assetID: UUID) async -> NSImage? {
+        if let cached = candidateThumbnails[assetID] { return cached }
+        if let pending = thumbnailTasks[assetID] { return await pending.value }
+        let media = runtime.media
+        let gate = thumbnailGate
+        let task = Task.detached(priority: .userInitiated) { () -> NSImage? in
+            for attempt in 0..<2 {
+                do {
+                    let data = try await gate.withPermit { try await media.loadStoryThumbnail(assetID: assetID) }
+                    try Task.checkCancellation()
+                    guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+                          let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                            kCGImageSourceCreateThumbnailFromImageAlways: true,
+                            kCGImageSourceCreateThumbnailWithTransform: true,
+                            kCGImageSourceShouldCacheImmediately: true,
+                            kCGImageSourceThumbnailMaxPixelSize: 480
+                          ] as CFDictionary) else { return nil }
+                    return NSImage(cgImage: cg, size: .zero)
+                } catch is CancellationError { return nil }
+                catch { if attempt == 0 { try? await Task.sleep(for: .milliseconds(250)) } }
+            }
+            return nil
+        }
+        thumbnailTasks[assetID] = task
+        let image = await task.value
+        thumbnailTasks[assetID] = nil
+        if let image { candidateThumbnails[assetID] = image; failedThumbnails.remove(assetID) }
+        else { failedThumbnails.insert(assetID) }
+        return image
     }
 
     func export(to destination: URL) {
@@ -671,8 +760,16 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         }
     }
 
+    @Published private(set) var isCheckingConnection = false
+    @Published private(set) var connectionCheckResult: String?
+
     func refreshOpenMontageCapability() async {
+        guard !isCheckingConnection else { return }
+        isCheckingConnection = true
+        defer { isCheckingConnection = false }
         openMontageCapability = await runtime.openMontageTasks.capability()
+        let time = Date().formatted(date: .omitted, time: .standard)
+        connectionCheckResult = "\(time) · \(openMontageCapability?.detail ?? "未获取到连接状态")"
     }
 
     func openOpenMontageResult() {
@@ -708,7 +805,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     }
 
     private func recoverOpenMontageTask() async {
-        guard let project else { return }
+        guard let project, openMontageCapability?.state == .ready else { return }
         do {
             guard let snapshot = try await runtime.openMontageTasks.latestTask(projectID: project.id)
             else { return }
@@ -821,7 +918,6 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     }
 
     private func loadThumbnails() async {
-        thumbnails = [:]
         for shot in project?.shots ?? [] {
             guard !Task.isCancelled else { return }
             await loadThumbnail(for: shot)
@@ -829,162 +925,145 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     }
 
     private func loadThumbnail(for shot: TimeStoryShot) async {
-        do {
-            let data = try await runtime.media.loadStoryImage(assetID: shot.assetID)
-            if let image = NSImage(data: data) { thumbnails[shot.id] = image }
-        } catch {
-            // The export preflight reports exact missing/version failures. A failed
-            // editor thumbnail stays visibly empty without changing the project.
-        }
+        if let image = await thumbnail(assetID: shot.assetID) { thumbnails[shot.id] = image }
+    }
+
+}
+
+private struct StoryDropFrameKey: PreferenceKey {
+    static let defaultValue: [String: CGRect] = [:]
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
     }
 }
 
 struct TimeStoryWorkspaceView: View {
     @StateObject private var model: TimeStoryWorkspaceModel
-    @Environment(\.dismiss) private var dismiss
+    @State private var selectedShotID: UUID?
+    @State private var selectedCandidateID: UUID?
+    @State private var replacementShotID: UUID?
+    @State private var candidateSearch = ""
+    @State private var bulkSelection = false
+    @State private var pickedAssets: Set<UUID> = []
+    @State private var inspectorTab = "镜头"
+    @State private var productionMode = "当前编排"
+    @State private var productionAspect = TimeStoryPackageAspect.landscape
+    @State private var showRegenerateConfirmation = false
+    @State private var dropFrames: [String: CGRect] = [:]
+    @State private var dragToken: String?
+    @State private var dragLocation = CGPoint.zero
 
     init(model: TimeStoryWorkspaceModel) {
         _model = StateObject(wrappedValue: model)
     }
 
     var body: some View {
-        NavigationSplitView {
-            projectSidebar
-                .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 280)
-        } detail: {
-            editor
-        }
-        .frame(minWidth: 980, minHeight: 680)
-        .task { await model.start() }
-        .toolbar {
-            ToolbarItemGroup {
-                Button("保存") { Task { await model.save() } }
-                    .disabled(model.project == nil || model.isBusy)
-                    .accessibilityIdentifier("timeStorySaveButton")
-                Button("重新生成") { Task { await model.regenerate() } }
-                    .disabled(model.project == nil || model.isBusy)
-                    .accessibilityIdentifier("timeStoryRegenerateButton")
-                musicMenu
-                Button("导出 MP4…") { chooseExportDestination() }
-                    .disabled(
-                        model.project?.shots.isEmpty != false
-                            || model.exportProgress != nil
-                            || model.packageExportProgress != nil
-                    )
-                    .accessibilityIdentifier("timeStoryExportButton")
-                Menu("OpenMontage 本地制作") {
-                    ForEach(TimeStoryPackageAspect.allCases) { aspect in
-                        Button(aspect.displayName) { model.submitToOpenMontage(aspect: aspect) }
-                    }
-                }
-                .disabled(
-                    model.project?.shots.isEmpty != false
-                        || model.exportProgress != nil
-                        || model.packageExportProgress != nil
-                        || model.openMontageTask?.phase.isTerminal == false
-                )
-                .persistentHelp("将本次故事冻结后发布给用户已启动的 OpenMontage 本地执行器。")
-                .accessibilityIdentifier("timeStoryOpenMontageButton")
-                Menu("导出独立故事包") {
-                    ForEach(TimeStoryPackageAspect.allCases) { aspect in
-                        Button(aspect.displayName + "…") { choosePackageDestination(aspect: aspect) }
-                    }
-                }
-                .disabled(
-                    model.project?.shots.isEmpty != false
-                        || model.exportProgress != nil
-                        || model.packageExportProgress != nil
-                )
-                .persistentHelp("导出供外部制作工具使用的素材与制作方案。")
-                .accessibilityIdentifier("timeStoryPackageExportButton")
-                Button("关闭") { dismiss() }
+        editor
+        .frame(minWidth: 720, minHeight: 540)
+        .coordinateSpace(name: "storyMontageCanvas")
+        .onPreferenceChange(StoryDropFrameKey.self) { dropFrames = $0 }
+        .overlay(alignment: .topLeading) {
+            if let dragToken {
+                Label(dragToken.hasPrefix("imageall-story-shot:") ? "移动镜头" : "添加 / 替换照片", systemImage: "hand.draw.fill")
+                    .font(.callout.bold()).padding(10)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                    .position(x: dragLocation.x, y: dragLocation.y - 24)
+                    .allowsHitTesting(false)
             }
         }
+        .confirmationDialog("重新生成会按拍摄时间重新编排镜头。手动排序将被重置，锁定照片与明确编辑仍会保留。", isPresented: $showRegenerateConfirmation) {
+            Button("重新生成") { Task { await model.regenerate() } }
+        }
+        .task { await model.start() }
     }
 
-    private var projectSidebar: some View {
-        List {
-            Section("当前模板") {
-                Label("成长与足迹", systemImage: "film.stack")
-                    .accessibilityIdentifier("timeStoryTemplateGrowthFootprints")
-            }
-            Section("已保存故事") {
-                if model.projects.isEmpty {
-                    Text("尚无已保存故事")
-                        .foregroundStyle(.secondary)
+    private var editingActions: some View {
+        HStack(spacing: 12) {
+            TextField("项目名称", text: Binding(get: { model.project?.title ?? "" }, set: { model.setProjectTitle($0) }))
+                .font(.headline).textFieldStyle(.plain).frame(maxWidth: 260)
+            Spacer()
+            Button { model.undo() } label: { Image(systemName: "arrow.uturn.backward") }
+                .help("撤销").disabled(!model.canUndo || model.isBusy)
+            Button { model.redo() } label: { Image(systemName: "arrow.uturn.forward") }
+                .help("重做").disabled(!model.canRedo || model.isBusy)
+            Button("保存") { Task { await model.save() } }
+                .disabled(model.isBusy).accessibilityIdentifier("timeStorySaveButton")
+            musicMenu
+            Button("制作设置") { inspectorTab = "创作" }
+            Menu("导出") {
+                Button("直接导出 MP4（横屏）…") { chooseExportDestination() }
+                ForEach(TimeStoryPackageAspect.allCases) { aspect in
+                    Button("故事包 · " + aspect.displayName + "…") { choosePackageDestination(aspect: aspect) }
                 }
-                ForEach(model.projects) { project in
-                    Button {
-                        Task { await model.open(project.id) }
-                    } label: {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(project.title).lineLimit(2)
-                            Text("预计 \(formattedDuration(project.durationSeconds)) · \(project.subjectTagDisplayName)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        }
+            }.disabled(model.project?.shots.isEmpty != false || model.isBusy || model.exportProgress != nil || model.packageExportProgress != nil)
+                .accessibilityIdentifier("timeStoryExportButton")
+        }.padding(12).background(.bar)
     }
 
     @ViewBuilder
     private var editor: some View {
         if let project = model.project {
             VStack(spacing: 0) {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 16) {
-                        creativePanel(project)
-                        atelierPanel(project)
-                        readinessHeader(project)
-                        TimeStoryTimelinePreview(project: project, thumbnails: model.thumbnails)
-                            .padding(.horizontal, 18)
-                            .padding(.bottom, 12)
-                        Divider()
-                        ForEach(project.chapters) { chapter in
-                            chapterView(chapter, project: project)
+                editingActions
+                Divider()
+                HSplitView {
+                    materialBrowser(project)
+                        .frame(minWidth: 220, idealWidth: 280, maxWidth: 400)
+                    VStack(spacing: 12) {
+                        Spacer(minLength: 0)
+                        if let id = selectedCandidateID, let image = previewImage(for: id) {
+                            Image(nsImage: image).resizable().scaledToFit()
+                                .frame(maxWidth: .infinity, maxHeight: .infinity).background(Color.black)
+                            Button("返回成片预览") { selectedCandidateID = nil }
+                        } else if project.shots.isEmpty {
+                            ContentUnavailableView("拖入照片开始编排", systemImage: "film.stack",
+                                description: Text("从左侧素材库添加照片，或在创作中选用自动模板。"))
+                        } else {
+                            TimeStoryTimelinePreview(project: project, thumbnails: model.thumbnails)
                         }
-                        if project.readiness.unknownTimeCount > 0 {
-                            Label(
-                                "\(project.readiness.unknownTimeCount) 张时间未知照片留在待确认区，未插入成长顺序。",
-                                systemImage: "questionmark.circle"
-                            )
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 18)
+                        Spacer(minLength: 0)
+                    }.padding(12).frame(minWidth: 240, maxWidth: .infinity, maxHeight: .infinity)
+                    VStack(spacing: 0) {
+                        Picker("属性", selection: $inspectorTab) {
+                            Text("镜头").tag("镜头")
+                            Text("创作").tag("创作")
+                            Text("信息").tag("信息")
+                        }.pickerStyle(.segmented).padding(10)
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 16) {
+                                if inspectorTab == "镜头" {
+                                    if let shot = project.shots.first(where: { $0.id == selectedShotID }) { shotRow(shot) }
+                                    else { Text("选中下方镜头，编辑字幕、时长或替换照片。").foregroundStyle(.secondary) }
+                                } else if inspectorTab == "创作" {
+                                    creationInspector(project)
+                                } else {
+                                    readinessBody(summary: runtimeSummary(project), snapshot: project.candidateSnapshot)
+                                }
+                            }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
                         }
-                    }
-                    .padding(.vertical, 18)
+                    }.frame(minWidth: 275, idealWidth: 300, maxWidth: 360)
                 }
+                Divider()
+                montageTimeline(project)
                 statusBar
             }
+            .disabled(model.isBusy)
             .navigationTitle(project.title)
-        } else if let snapshot = model.readinessSnapshot, let summary = model.readinessPreview {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    Label("\(snapshot.tagDisplayName) · 素材就绪报告", systemImage: "checklist")
-                        .font(.title2.bold())
-                    readinessBody(summary: summary, snapshot: snapshot)
-                    Button("生成故事草稿") { Task { await model.createDraft(for: TagListItem(
-                        id: snapshot.tagID, displayName: snapshot.tagDisplayName, state: .active
-                    )) } }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(model.isBusy || !snapshot.candidates.contains {
-                        $0.availability == .available && $0.mediaCreatedAtMs != nil
-                    })
+        } else if let snapshot = model.readinessSnapshot {
+            VStack(spacing: 18) {
+                Image(systemName: "film.stack").font(.system(size: 42)).foregroundStyle(.secondary)
+                Text(snapshot.tagDisplayName).font(.title2.bold())
+                Text("\(snapshot.candidates.count) 张素材可供浏览，按自己的顺序自由编排。")
+                Button("新建自由编排") { Task { await model.createDraft(for: TagListItem(
+                    id: snapshot.tagID, displayName: snapshot.tagDisplayName, state: .active)) } }
+                    .buttonStyle(.borderedProminent).disabled(model.isBusy)
                     .accessibilityIdentifier("timeStoryGenerateDraftButton")
-                    if !snapshot.candidates.contains(where: { $0.availability == .available && $0.mediaCreatedAtMs != nil }) {
-                        Text("至少需要一张有可靠拍摄时间且可用的已确认照片，才能生成草稿。")
-                            .foregroundStyle(.orange)
+                Menu("打开已保存故事") {
+                    ForEach(model.projects) { saved in
+                        Button(saved.title) { Task { await model.openSavedProject(saved.id) } }
                     }
-                    if model.isBusy {
-                        ProgressView("已读取 \(model.loadedCandidateCount) 张，正在更新候选…")
-                        Button("取消读取") { model.cancelCandidateLoading() }
-                    }
-                }.padding(24)
-            }
+                }.disabled(model.projects.isEmpty)
+            }.frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if model.isBusy {
             VStack {
                 ProgressView("已读取 \(model.loadedCandidateCount) 张主体候选…")
@@ -998,28 +1077,329 @@ struct TimeStoryWorkspaceView: View {
         }
     }
 
-    private func creativePanel(_ project: TimeStoryProject) -> some View {
-        DisclosureGroup("OpenMontage 创作方案 · Agent 协作") {
-            VStack(alignment: .leading, spacing: 8) {
-                TextField("描述你想讲的故事", text: Binding(
-                    get: { model.project?.creativeIntent ?? "" }, set: { model.setCreativeIntent($0) }))
-                    .textFieldStyle(.roundedBorder)
-                    .accessibilityIdentifier("storyCreativeIntent")
+    private func previewImage(for assetID: UUID) -> NSImage? {
+        if let shot = model.project?.shots.first(where: { $0.assetID == assetID }), let image = model.thumbnails[shot.id] { return image }
+        return model.candidateThumbnails[assetID]
+    }
+
+    private func materialBrowser(_ project: TimeStoryProject) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("素材库", systemImage: "photo.on.rectangle.angled").font(.headline)
+                Spacer()
+                Menu("已保存") {
+                    if model.projects.isEmpty { Text("尚无已保存故事") }
+                    ForEach(model.projects) { saved in
+                        Button(saved.title) {
+                            Task { await model.openSavedProject(saved.id) }
+                            selectedShotID = nil
+                            replacementShotID = nil
+                        }
+                    }
+                }
+            }
+            TextField("搜索文件名或地点", text: $candidateSearch).textFieldStyle(.roundedBorder)
+            HStack {
+                Toggle("多选", isOn: $bulkSelection).toggleStyle(.button)
+                if bulkSelection {
+                    Button("加入选中 (\(pickedAssets.count))") {
+                        let chosen = visibleCandidates(project).filter { pickedAssets.contains($0.assetID) }
+                        Task { for candidate in chosen { await model.addCandidate(candidate) }; pickedAssets = [] }
+                    }.disabled(pickedAssets.isEmpty)
+                }
+            }
+            if replacementShotID != nil {
                 HStack {
-                    Text("主体：\(project.subjectTagDisplayName) · 本次候选仅含当前故事的 \(Set(project.shots.map(\.assetID)).count) 张照片")
-                    Stepper(value: Binding(get: { (model.project?.creativeTargetFrames ?? 1800) / 30 },
-                                           set: { model.setCreativeTarget($0) }), in: 10...180, step: 5) {
-                        Text("目标 \((model.project?.creativeTargetFrames ?? 1800) / 30) 秒")
-                    }.frame(width: 160)
+                    Text("选择缩略图后点击替换").font(.caption)
+                    Spacer()
+                    Button("取消") { replacementShotID = nil }
+                }
+            } else {
+                Text("拖到下方添加区加入故事；拖到镜头上替换照片。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 105), spacing: 8)], spacing: 10) {
+                    ForEach(visibleCandidates(project)) { candidate in
+                        candidateCard(candidate, project: project)
+                    }
+                }
+            }
+            Text("\(visibleCandidates(project).count) 张素材 · 已选 \(project.shots.count) 张")
+                .font(.caption).foregroundStyle(.secondary)
+        }.padding(12)
+        .accessibilityIdentifier("timeStoryMaterialBrowser")
+    }
+
+    private func visibleCandidates(_ project: TimeStoryProject) -> [TimeStoryCandidate] {
+        let source = replacementShotID.map { model.replacementCandidates(for: $0) } ?? project.candidateSnapshot.candidates
+        return source.filter {
+            candidateSearch.isEmpty || ($0.fileName ?? "").localizedCaseInsensitiveContains(candidateSearch)
+                || ($0.placeName ?? "").localizedCaseInsensitiveContains(candidateSearch)
+        }
+    }
+
+    private func candidateCard(_ candidate: TimeStoryCandidate, project: TimeStoryProject) -> some View {
+        let used = project.shots.contains { $0.assetID == candidate.assetID }
+        let excluded = project.excludedAssetIDs.contains(candidate.assetID)
+        let available = candidate.availability == .available && !used && !excluded
+        return VStack(alignment: .leading, spacing: 5) {
+            Group {
+                if let image = model.candidateThumbnails[candidate.assetID] {
+                    Image(nsImage: image).resizable().scaledToFit()
+                } else {
+                    if candidate.availability != .available {
+                        Image(systemName: "photo.badge.exclamationmark").foregroundStyle(.secondary)
+                    } else if model.failedThumbnails.contains(candidate.assetID) {
+                        Button("重试加载") { Task { await model.loadCandidateThumbnail(candidate) } }.font(.caption)
+                    } else { ProgressView().controlSize(.small) }
+                }
+            }
+            .frame(maxWidth: .infinity).frame(height: 88)
+            .background(Color.black.opacity(0.85))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(pickedAssets.contains(candidate.assetID) ? Color.accentColor : .clear, lineWidth: 3))
+            .onTapGesture {
+                if bulkSelection, available {
+                    if pickedAssets.contains(candidate.assetID) { pickedAssets.remove(candidate.assetID) }
+                    else { pickedAssets.insert(candidate.assetID) }
+                } else { selectedCandidateID = candidate.assetID }
+            }
+            Text(candidate.mediaCreatedAtMs.map(captureDate) ?? "拍摄时间待确认")
+                .font(.caption2).lineLimit(1)
+            Text(candidate.placeName ?? candidate.fileName ?? "未记录地点")
+                .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            if used { Text("已加入").font(.caption).foregroundStyle(.tint) }
+            else if excluded { Text("已从故事排除").font(.caption).foregroundStyle(.secondary) }
+            else if candidate.availability != .available { Text("素材不可用").font(.caption).foregroundStyle(.secondary) }
+            else {
+                Button(replacementShotID == nil ? "＋ 加入故事" : "替换所选镜头") {
+                    Task {
+                        if let id = replacementShotID {
+                            await model.replace(id, with: candidate)
+                            replacementShotID = nil
+                        } else { await model.addCandidate(candidate) }
+                    }
                 }.font(.caption)
-                Text("保留锁定与明确编辑。只允许本地使用；本请求不授权云上传。自由 Atelier 场景尚未接入此编辑器。")
+
+            }
+        }
+        .padding(6)
+        .background(selectedCandidateID == candidate.assetID ? Color.accentColor.opacity(0.16) : Color.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
+        .contentShape(Rectangle())
+        .simultaneousGesture(storyDragGesture(available ? "imageall-story-asset:" + candidate.assetID.uuidString : "imageall-story-unavailable"))
+        .background(dropFrameReader("imageall-story-asset:" + candidate.assetID.uuidString))
+        .task(id: candidate.assetID) { await model.loadCandidateThumbnail(candidate) }
+        .accessibilityIdentifier("timeStoryCandidateCard")
+    }
+
+    private func montageTimeline(_ project: TimeStoryProject) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label("镜头编排", systemImage: "film").font(.headline)
+                Text("\(formattedDuration(project.timelineDurationSeconds)) · 拖动镜头排序 / 拖入素材替换")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+            }
+            ScrollView(.horizontal) {
+                HStack(alignment: .top, spacing: 8) {
+                    ForEach(project.shots) { shot in
+                        VStack(alignment: .leading, spacing: 5) {
+                            if project.showsChapterTitles ?? true, let chapter = project.chapters.first(where: { $0.id == shot.chapterID }), chapter.shotIDs.first == shot.id {
+                                TextField("章节标题", text: Binding(get: {
+                                    model.project?.chapters.first(where: { $0.id == chapter.id })?.title ?? chapter.title
+                                }, set: { model.setChapterTitle(chapter.id, title: $0) }))
+                                    .font(.caption.bold()).textFieldStyle(.plain)
+                            } else { Text(" ").font(.caption) }
+                            Group {
+                                if let image = model.thumbnails[shot.id] { Image(nsImage: image).resizable().scaledToFit() }
+                                else { Image(systemName: "photo") }
+                            }.frame(width: 126, height: 75).background(Color.black.opacity(0.9))
+                            Text("\(shot.durationSeconds, specifier: "%.1f") 秒 · \(shot.caption.isEmpty ? "无字幕" : shot.caption)")
+                                .font(.caption).lineLimit(1)
+                        }
+                        .frame(width: 126).padding(7)
+                        .background(selectedShotID == shot.id ? Color.accentColor.opacity(0.22) : Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+                        .onTapGesture { selectedShotID = shot.id; selectedCandidateID = shot.assetID; inspectorTab = "镜头" }
+                        .contentShape(Rectangle())
+                        .simultaneousGesture(storyDragGesture("imageall-story-shot:" + shot.id.uuidString))
+                        .background(dropFrameReader(shot.id.uuidString))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(dropHighlight(shot.id.uuidString), lineWidth: 2))
+                        .contextMenu {
+                            Button("向前移动") {
+                                if let index = project.shots.firstIndex(where: { $0.id == shot.id }), index > 0 {
+                                    model.moveShot(shot.id, before: project.shots[index - 1].id)
+                                }
+                            }
+                            Button("移到末尾") { model.moveShot(shot.id, before: nil) }
+                            Button("从素材库选图替换") { selectedShotID = shot.id; replacementShotID = shot.id }
+                            Button("从故事排除", role: .destructive) { model.remove(shot.id) }
+                        }
+                        .accessibilityIdentifier("timeStoryTimelineClip")
+                    }
+                    Label("拖入照片\n添加镜头", systemImage: "plus.rectangle.on.rectangle")
+                        .font(.callout).frame(width: 136, height: 120)
+                        .background(Color.accentColor.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [5])).foregroundStyle(.secondary))
+                        .contentShape(Rectangle())
+                        .background(dropFrameReader("append"))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(dropHighlight("append"), lineWidth: 2))
+                        .accessibilityIdentifier("timeStoryTimelineDropZone")
+                }
+            }
+        }.padding(12)
+    }
+
+    private func dropFrameReader(_ key: String) -> some View {
+        GeometryReader { proxy in
+            Color.clear.preference(key: StoryDropFrameKey.self,
+                                   value: [key: proxy.frame(in: .named("storyMontageCanvas"))])
+        }
+    }
+
+    private func dropHighlight(_ key: String) -> Color {
+        dragToken != nil && dropFrames[key]?.contains(dragLocation) == true ? .accentColor : .clear
+    }
+
+    // HSplitView hosts its columns separately on macOS. Convert a local drag
+    // through the measured source frame rather than relying on a named gesture space.
+    private func dragPoint(_ localPoint: CGPoint, token: String) -> CGPoint {
+        let key = token.hasPrefix("imageall-story-shot:") ? String(token.dropFirst("imageall-story-shot:".count)) : token
+        let origin = dropFrames[key]?.origin ?? .zero
+        return CGPoint(x: origin.x + localPoint.x, y: origin.y + localPoint.y)
+    }
+
+    private func storyDragGesture(_ token: String) -> some Gesture {
+        DragGesture(minimumDistance: 6, coordinateSpace: .local)
+            .onChanged { value in
+                guard token != "imageall-story-unavailable" else { return }
+                dragToken = token
+                dragLocation = dragPoint(value.location, token: token)
+            }
+            .onEnded { value in
+                defer { dragToken = nil }
+                let point = dragPoint(value.location, token: token)
+                guard token != "imageall-story-unavailable",
+                      let target = dropFrames.first(where: {
+                          ($0.key == "append" || UUID(uuidString: $0.key) != nil) && $0.value.contains(point)
+                      })?.key else { return }
+                let accepted = handleDrop([token], onto: UUID(uuidString: target))
+#if DEBUG
+                if ProcessInfo.processInfo.environment["IMAGEALL_TIME_STORY_UI_VERIFICATION"] == "1" {
+                    FileHandle.standardError.write(Data("STORY_UI_DROP_ACCEPTED=\(accepted)\n".utf8))
+                }
+#endif
+            }
+    }
+
+    private func handleDrop(_ items: [String], onto shotID: UUID?) -> Bool {
+        guard let value = items.first, let project = model.project else { return false }
+        if value.hasPrefix("imageall-story-shot:"), let id = UUID(uuidString: String(value.dropFirst("imageall-story-shot:".count))),
+           project.shots.contains(where: { $0.id == id }), id != shotID {
+            model.moveShot(id, before: shotID)
+            return true
+        }
+        if value.hasPrefix("imageall-story-asset:"), let id = UUID(uuidString: String(value.dropFirst("imageall-story-asset:".count))),
+           let candidate = project.candidateSnapshot.candidates.first(where: { $0.assetID == id }) {
+            let eligible = shotID.map { model.replacementCandidates(for: $0) } ?? model.addableCandidates
+            guard eligible.contains(candidate) else { return false }
+            Task {
+                if let shotID { await model.replace(shotID, with: candidate); selectedShotID = shotID }
+                else { await model.addCandidate(candidate) }
+            }
+            return true
+        }
+        return false
+    }
+
+    private func creationInspector(_ project: TimeStoryProject) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("编排方式").font(.headline)
+            HStack {
+                Text(project.isFreeform == true ? "自由编排" : "成长与足迹模板")
+                Spacer()
+                if project.isFreeform != true { Button("转为自由编排") { model.useFreeform() } }
+            }
+            Menu("选用自动模板") {
+                Button("成长与足迹 · 按时间选片") { showRegenerateConfirmation = true }
+            }
+            Toggle("显示片头", isOn: Binding(get: { model.project?.showsProjectTitle ?? true }, set: { model.setTitleCards(projectTitle: $0) }))
+            Toggle("显示章节卡", isOn: Binding(get: { model.project?.showsChapterTitles ?? true }, set: { model.setTitleCards(chapters: $0) }))
+            Divider()
+            Text("创作意图").font(.headline)
+            TextField("希望呈现什么内容与氛围", text: Binding(get: { model.project?.creativeIntent ?? "" }, set: { model.setCreativeIntent($0) }), axis: .vertical)
+                .lineLimit(3...6).textFieldStyle(.roundedBorder).accessibilityIdentifier("storyCreativeIntent")
+            Stepper(value: Binding(get: { (model.project?.creativeTargetFrames ?? 1800) / 30 }, set: { model.setCreativeTarget($0) }), in: 10...180, step: 5) {
+                Text("创作目标 \((project.creativeTargetFrames ?? 1800) / 30) 秒")
+            }
+            Text("当前编排 \(formattedDuration(project.timelineDurationSeconds))。目标时长用于创作请求，不会自动改动现有镜头。")
+                .font(.caption).foregroundStyle(.secondary)
+            Divider()
+            Text("制作方式").font(.headline)
+            Picker("方式", selection: $productionMode) {
+                Text("当前编排").tag("当前编排")
+                Text("可编辑创作").tag("可编辑创作")
+                Text("自由场景").tag("自由场景")
+            }.labelsHidden()
+            connectionControls
+            if productionMode == "当前编排" {
+                Picker("画幅", selection: $productionAspect) {
+                    ForEach(TimeStoryPackageAspect.allCases) { aspect in Text(aspect.displayName).tag(aspect) }
+                }
+                Button("开始本地制作") { model.submitToOpenMontage(aspect: productionAspect) }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(project.shots.isEmpty || model.openMontageCapability?.state != .ready || model.openMontageTask?.phase.isTerminal == false)
+                Text("按当前镜头和时长制作。也可从顶部直接导出横屏 MP4，无需连接外部执行器。")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if productionMode == "可编辑创作" {
+                if project.shots.count > 100 { Text("此制作方式最多接收 100 张已选照片；当前项目仍可继续编辑和直接导出。").foregroundStyle(.orange) }
+                creativePanel(project)
+            } else { atelierPanel(project) }
+        }
+    }
+
+    private var connectionControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(connectionTitle).font(.subheadline.bold())
+            if let capability = model.openMontageCapability, capability.state != .ready {
+                Text(capability.detail).font(.caption).foregroundStyle(.secondary)
+            }
+            HStack {
+                Button("选择任务目录…") { model.chooseTaskDirectory() }
+                    .accessibilityIdentifier("storyConnectDirectory")
+                Button(model.isCheckingConnection ? "检查中…" : "检查连接") { Task { await model.refreshOpenMontageCapability() } }
+                    .disabled(model.isCheckingConnection)
+                    .accessibilityIdentifier("storyCheckConnection")
+            }
+            if let result = model.connectionCheckResult {
+                Text(result).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var connectionTitle: String {
+        switch model.openMontageCapability?.state {
+        case .ready: "本地制作已连接"
+        case .authorizationRequired: "任务目录授权已失效"
+        case .unconfigured: "尚未配置本地制作"
+        case .offline: "本地执行器未就绪"
+        case .incompatible: "执行器版本不兼容"
+        case .dependenciesUnavailable: "本地制作依赖未就绪"
+        case nil: "正在检查本地制作"
+        }
+    }
+
+    private func creativePanel(_ project: TimeStoryProject) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("保留当前照片顺序，生成可编辑方案；锁定的字幕和时长保持不变。提交后由创作 Agent 处理。")
                     .font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Menu("发布创作请求") {
                         ForEach(TimeStoryPackageAspect.allCases) { aspect in
                             Button(aspect.displayName) { Task { await model.publishCreativeRequest(aspect: aspect) } }
                         }
-                    }.disabled(model.isBusy || project.shots.isEmpty)
+                    }.disabled(model.isBusy || project.shots.isEmpty || project.shots.count > 100 || model.openMontageCapability?.state != .ready)
                     .accessibilityIdentifier("storyCreativePublish")
                     if project.creativeReceipt != nil {
                         Button("刷新状态") { model.refreshCreativeRequest() }
@@ -1039,30 +1419,22 @@ struct TimeStoryWorkspaceView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }.padding(.vertical, 6)
-        }.padding(.horizontal, 18).padding(.top, 8)
+        }
     }
 
     private func atelierPanel(_ project: TimeStoryProject) -> some View {
-        DisclosureGroup("OpenMontage Atelier · 完整创作项目") {
-            let candidates = project.candidateSnapshot.candidates.filter { $0.availability == .available }
+        VStack(alignment: .leading, spacing: 8) {
+            let candidates = project.candidateSnapshot.candidates.filter { candidate in
+                candidate.availability == .available && project.shots.contains { $0.assetID == candidate.assetID }
+            }
             VStack(alignment: .leading, spacing: 10) {
-                Text("候选 \(candidates.count) 张 · 当前故事已选 \(project.shots.count) 张 · 最多发布 26 张已确认候选")
-                    .font(.caption)
-                TextField("描述这部短片想讲什么，以及希望观众看见什么", text: Binding(
-                    get: { model.project?.creativeIntent ?? "" }, set: { model.setCreativeIntent($0) }))
-                    .textFieldStyle(.roundedBorder)
-                    .accessibilityIdentifier("storyAtelierIntent")
-                Stepper(value: Binding(get: { (model.project?.creativeTargetFrames ?? 1350) / 30 },
-                                       set: { model.setCreativeTarget($0) }), in: 10...180, step: 5) {
-                    Text("目标约 \((model.project?.creativeTargetFrames ?? 1350) / 30) 秒")
-                }.frame(width: 170)
-                Text("Agent 在 OpenMontage 创作分镜与 Composition；App 保存版本、接收成片和修改意见。自由场景在新版本中修改，不进入上方逐镜头编辑器。")
+                Text("自由场景制作使用已选 \(project.shots.count) 张照片；支持 1–100 张可用照片，保留已选顺序及锁定时长，竖屏输出。")
                     .font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Button("发布竖屏 Atelier 创作") {
                         Task { await model.publishAtelierRequest() }
                     }
-                    .disabled(model.isBusy || candidates.isEmpty || candidates.count > 26)
+                    .disabled(model.isBusy || candidates.isEmpty || candidates.count > 100 || model.openMontageCapability?.state != .ready)
                     .accessibilityIdentifier("storyAtelierPublish")
                     if let versions = project.atelierVersions, !versions.isEmpty {
                         ForEach(versions) { version in
@@ -1102,7 +1474,7 @@ struct TimeStoryWorkspaceView: View {
                 }
                 Text(model.atelierStatus).font(.caption).textSelection(.enabled)
             }.padding(.vertical, 6)
-        }.padding(.horizontal, 18).padding(.top, 8)
+        }
     }
 
     private func runtimeSummary(_ project: TimeStoryProject) -> TimeStoryReadinessSummary {
@@ -1134,22 +1506,10 @@ struct TimeStoryWorkspaceView: View {
             )
             .font(.title2.weight(.semibold))
             .accessibilityIdentifier("timeStoryProjectTitle")
-            Text("成片中项目标题显示为片头卡；章节标题显示为各章节卡；镜头字幕只显示在对应照片底部。")
+            Text("片头和章节卡可在创作面板开关；镜头字幕显示在对应照片底部。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             readinessBody(summary: summary, snapshot: project.candidateSnapshot)
-            if !model.addableCandidates.isEmpty {
-                Menu("从本次候选补入镜头…") {
-                    ForEach(Array(model.addableCandidates.prefix(40).enumerated()), id: \.element.assetID) { item in
-                        let candidate = item.element
-                        Button("拍摄顺序 \(item.offset + 1) · \(Date(timeIntervalSince1970: Double(candidate.mediaCreatedAtMs ?? 0) / 1000).formatted(date: .omitted, time: .standard)) · \(candidate.width ?? 0)×\(candidate.height ?? 0)") {
-                            Task { await model.addCandidate(candidate) }
-                        }
-                    }
-                }
-                .accessibilityIdentifier("timeStoryAddCandidate")
-                .persistentHelp("仅补入同一已确认地点的可用、可靠时间照片，最多 18 张；按拍摄时间插入。")
-            }
             Text("本故事已排除 \(project.excludedAssetIDs.count) 张；排除会在重新生成后继续生效。")
                 .font(.caption).foregroundStyle(.secondary)
             if project.timelineDurationSeconds > target {
@@ -1173,7 +1533,7 @@ struct TimeStoryWorkspaceView: View {
                 summaryPill("时间未知", value: "\(summary.unknownTimeCount)")
             }
             Text("分母：当前可查询、标签已接受的静态图片 \(summary.matchingCount) 张；可用与不可用互斥。待审建议单独去重，不包含在分母；已拒绝的不纳入。回收及查询隐藏的缺失 Photos 历史不在范围内。")
-            Text("可靠拍摄日期：\(summary.matchingCount - summary.unknownTimeCount) 张，覆盖 \(formattedTimeCoverage(summary))；未知 \(summary.unknownTimeCount) 张不进入时间章节。来自目录中有时区的媒体时间或 PhotoKit creationDate；索引未保留原始时区与年月精度，按日期展示，不用文件修改时间。")
+            Text("可靠拍摄日期：\(summary.matchingCount - summary.unknownTimeCount) 张，覆盖 \(formattedTimeCoverage(summary))；未知 \(summary.unknownTimeCount) 张不自动进入时间章节（可手动加入）。来自目录中有时区的媒体时间或 PhotoKit creationDate；索引未保留原始时区与年月精度，按日期展示，不用文件修改时间。")
             Text("有确认地点名 \(details.namedAssets) 张 / \(summary.namedPlaceCount) 个不同地点；仅坐标 \(summary.coordinateOnlyCount) 张；已检查无地点 \(summary.noLocationCount) 张；元数据未确认 \(summary.locationMetadataUnconfirmedCount) 张。四类照片计数互斥；地点名只用于连续章节，不推断居住。")
             Text("近重复：可确认分析 \(details.analyzedAssets) / \(summary.matchingCount) 张，\(details.duplicateGroups) 组涉及 \(details.assetsInDuplicateGroups) 张；其余 \(summary.matchingCount - details.analyzedAssets) 张没有兼容的逐项结果，不能断言无重复。时间/地点/可用性/相似状态可重叠。")
             if let tradeoff = summary.selectionTradeoff {
@@ -1195,30 +1555,8 @@ struct TimeStoryWorkspaceView: View {
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
     }
 
-    private func chapterView(_ chapter: TimeStoryChapter, project: TimeStoryProject) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            TextField(
-                "章节标题",
-                text: Binding(
-                    get: {
-                        model.project?.chapters.first(where: { $0.id == chapter.id })?.title
-                            ?? chapter.title
-                    },
-                    set: { model.setChapterTitle(chapter.id, title: $0) }
-                )
-            )
-            .font(.title3.weight(.semibold))
-            .textFieldStyle(.plain)
-            .accessibilityIdentifier("timeStoryChapterTitle")
-            ForEach(project.shots.filter { chapter.shotIDs.contains($0.id) }) { shot in
-                shotRow(shot)
-            }
-        }
-        .padding(.horizontal, 18)
-    }
-
     private func shotRow(_ shot: TimeStoryShot) -> some View {
-        HStack(alignment: .center, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             Group {
                 if let image = model.thumbnails[shot.id] {
                     Image(nsImage: image)
@@ -1232,7 +1570,7 @@ struct TimeStoryWorkspaceView: View {
                     }
                 }
             }
-            .frame(width: 150, height: 92)
+            .frame(width: 120, height: 72)
             .background(Color.black.opacity(0.85))
             .clipShape(RoundedRectangle(cornerRadius: 8))
 
@@ -1276,16 +1614,9 @@ struct TimeStoryWorkspaceView: View {
                 }
             }
             Spacer()
-            Menu("替换") {
-                let replacements = model.replacementCandidates(for: shot.id)
-                if replacements.isEmpty {
-                    Text("同一主体、时期及地点无可用替代照片")
-                }
-                ForEach(replacements.prefix(40)) { candidate in
-                    Button(candidate.fileName ?? candidate.assetID.uuidString) {
-                        Task { await model.replace(shot.id, with: candidate) }
-                    }
-                }
+            Button("从素材库选图替换") {
+                replacementShotID = shot.id
+                candidateSearch = ""
             }
             Button(role: .destructive) { model.remove(shot.id) } label: {
                 Label("从本故事排除", systemImage: "trash")
@@ -1355,18 +1686,6 @@ struct TimeStoryWorkspaceView: View {
                     }
                 }
                 .accessibilityIdentifier("timeStoryOpenMontageStatus")
-            } else if let capability = model.openMontageCapability,
-                      capability.state != .ready
-            {
-                HStack {
-                    Label("OpenMontage 未连接", systemImage: "bolt.slash")
-                        .font(.caption.weight(.semibold))
-                    Text(capability.detail)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button("刷新") { Task { await model.refreshOpenMontageCapability() } }
-                }
             }
             if let message = model.message {
                 Text(message)
@@ -1542,7 +1861,7 @@ private struct TimeStoryTimelinePreview: View {
             let seconds = isPlaying && duration > 0 ? elapsed.truncatingRemainder(dividingBy: duration) : 0
             let frame = Int((seconds * Double(timeline?.fps ?? 30)).rounded(.down))
             let state = timeline?.state(atFrame: frame)
-            HStack(spacing: 14) {
+            VStack(spacing: 12) {
                 ZStack(alignment: .bottom) {
                     Color.black
                     if let state {
@@ -1560,12 +1879,7 @@ private struct TimeStoryTimelinePreview: View {
                 .clipShape(RoundedRectangle(cornerRadius: 10))
                 .accessibilityIdentifier("timeStoryTimelinePreview")
 
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("时间线预览")
-                        .font(.headline)
-                    Text("预览、MP4 与故事包共用整数帧边界")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                HStack(spacing: 12) {
                     Button {
                         playbackStartedAt = Date()
                         isPlaying.toggle()
@@ -1575,7 +1889,7 @@ private struct TimeStoryTimelinePreview: View {
                     Text("\(formatted(seconds)) / \(formatted(duration))")
                         .font(.caption.monospacedDigit())
                 }
-                .frame(width: 180, alignment: .leading)
+                .frame(maxWidth: .infinity)
             }
             .frame(maxWidth: .infinity)
         }

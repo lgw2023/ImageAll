@@ -51,6 +51,7 @@ struct OpenMontageStoryTaskSnapshot: Sendable, Equatable, Identifiable {
 
 enum OpenMontageExecutorConnectionState: String, Sendable, Equatable {
     case unconfigured
+    case authorizationRequired
     case offline
     case incompatible
     case dependenciesUnavailable
@@ -96,7 +97,7 @@ enum OpenMontageTaskError: LocalizedError, Equatable, Sendable {
     var errorDescription: String? {
         switch self {
         case .taskRootNotConfigured:
-            "请先在设置中选择 OpenMontage 任务目录。"
+            "请选择用于本地制作的任务目录。"
         case .taskRootAuthorizationRequired:
             "OpenMontage 任务目录需要重新授权。"
         case .taskRootOffline:
@@ -268,7 +269,8 @@ struct OpenMontageTaskDirectoryInspector: Sendable {
             case .taskRootNotConfigured: .unconfigured
             case .executorIncompatible: .incompatible
             case .dependenciesUnavailable: .dependenciesUnavailable
-            case .taskRootAuthorizationRequired, .taskRootOffline, .taskRootUnsafe,
+            case .taskRootAuthorizationRequired: .authorizationRequired
+            case .taskRootOffline, .taskRootUnsafe,
                  .executorOffline, .taskAlreadyActive, .protocolViolation,
                  .resultValidationFailed: .offline
             }
@@ -332,7 +334,8 @@ actor FileOpenMontageStoryTaskClient: OpenMontageStoryTasking {
             case .taskRootNotConfigured: .unconfigured
             case .executorIncompatible: .incompatible
             case .dependenciesUnavailable: .dependenciesUnavailable
-            case .taskRootAuthorizationRequired, .taskRootOffline, .taskRootUnsafe,
+            case .taskRootAuthorizationRequired: .authorizationRequired
+            case .taskRootOffline, .taskRootUnsafe,
                  .executorOffline, .taskAlreadyActive, .protocolViolation,
                  .resultValidationFailed: .offline
             }
@@ -374,6 +377,7 @@ actor FileOpenMontageStoryTaskClient: OpenMontageStoryTasking {
                 throw OpenMontageTaskError.dependenciesUnavailable(capability.detail)
             case .incompatible:
                 throw OpenMontageTaskError.executorIncompatible(capability.detail)
+            case .authorizationRequired: throw OpenMontageTaskError.taskRootAuthorizationRequired
             case .unconfigured, .offline:
                 throw OpenMontageTaskError.executorOffline(capability.detail)
             case .ready:

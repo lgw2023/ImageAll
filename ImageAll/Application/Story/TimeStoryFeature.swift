@@ -154,6 +154,9 @@ struct TimeStoryProject: Codable, Sendable, Equatable, Identifiable {
     var creativeReceipt: StoryCreativeReceipt? = nil
     // Separate full-fidelity Atelier versions. Absent in existing projects.
     var atelierVersions: [StoryAtelierReceipt]? = nil
+    var showsProjectTitle: Bool? = nil
+    var showsChapterTitles: Bool? = nil
+    var isFreeform: Bool? = nil
 
     var timelineDurationSeconds: Double {
         (try? TimeStoryTimeline.normalize(project: self).durationSeconds) ?? 0
@@ -209,7 +212,7 @@ enum TimeStoryError: Error, Sendable, Equatable, LocalizedError {
         case let .capacityConflict(count):
             "有 \(count) 个锁定或手动修改镜头，超过 18 个镜头容量；请解锁或排除至少 \(count - 18) 个。"
         case .candidateNotAddable:
-            "只能从当前主体快照补入可用、有可靠时间且与单章节同地点的未使用照片；最多 18 张。"
+            "该照片不符合当前操作条件。请选择当前素材库中可用、未加入且未排除的照片。"
         }
     }
 }
@@ -312,6 +315,7 @@ enum TimeStoryTimeline {
             throw TimeStoryError.invalidTimeline("没有可呈现的章节")
         }
         let projectTitle = project.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if project.showsProjectTitle ?? true {
         drafts.append((
             .projectTitle,
             TimeStoryStableID.uuid("render-title|\(project.id.uuidString.lowercased())"),
@@ -322,12 +326,14 @@ enum TimeStoryTimeline {
             nil,
             TimeStoryConstants.projectTitleFrames
         ))
+        }
 
         for chapter in project.chapters {
             let chapterTitle = chapter.title.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !chapterTitle.isEmpty else {
                 throw TimeStoryError.invalidTimeline("章节标题不能为空")
             }
+            if project.showsChapterTitles ?? true {
             drafts.append((
                 .chapterTitle,
                 TimeStoryStableID.uuid("render-chapter|\(project.id.uuidString.lowercased())|\(chapter.id.uuidString.lowercased())"),
@@ -338,6 +344,7 @@ enum TimeStoryTimeline {
                 nil,
                 TimeStoryConstants.chapterTitleFrames
             ))
+            }
             for shotID in chapter.shotIDs {
                 guard let shot = project.shots.first(where: { $0.id == shotID }),
                       shot.chapterID == chapter.id
@@ -707,6 +714,16 @@ struct TimeStoryPlanner: Sendable {
         )
     }
 
+    func makeFreeformProject(snapshot: TimeStoryCandidateSnapshot, nowMs: Int64) -> TimeStoryProject {
+        TimeStoryProject(schemaVersion: TimeStoryConstants.schemaVersion, id: UUID(),
+            createdAtMs: nowMs, updatedAtMs: nowMs, subjectTagID: snapshot.tagID,
+            subjectTagDisplayName: snapshot.tagDisplayName, templateVersion: "freeform-v1",
+            strategyVersion: "manual-v1", title: snapshot.tagDisplayName,
+            candidateSnapshot: snapshot, readiness: readiness(for: snapshot, selectedCount: 0),
+            chapters: [], shots: [], excludedAssetIDs: [], music: nil,
+            showsProjectTitle: false, showsChapterTitles: false, isFreeform: true)
+    }
+
     func readiness(for snapshot: TimeStoryCandidateSnapshot, selectedCount: Int? = nil) -> TimeStoryReadinessSummary {
         let allCandidates = snapshot.candidates
         let reliable = allCandidates.filter { $0.mediaCreatedAtMs != nil }
@@ -920,6 +937,60 @@ struct TimeStoryPlanner: Sendable {
         }
         updated.chapters[0].shotIDs = updated.shots.map(\.id)
         updated.readiness = readiness(for: updated.candidateSnapshot, selectedCount: updated.shots.count)
+        updated.updatedAtMs = nowMs
+        return updated
+    }
+
+    /// Manual montage uses confirmed snapshot members, without inventing time/place facts.
+    func manuallyEditableCandidates(in project: TimeStoryProject, replacing shotID: UUID? = nil) -> [TimeStoryCandidate] {
+        let used = Set(project.shots.filter { $0.id != shotID }.map(\.assetID))
+        return project.candidateSnapshot.candidates.filter {
+            $0.availability == .available && !used.contains($0.assetID)
+                && !project.excludedAssetIDs.contains($0.assetID)
+        }.sorted(by: candidateTimeOrder)
+    }
+
+    func manuallyInserting(_ candidate: TimeStoryCandidate, before targetID: UUID? = nil,
+                           in project: TimeStoryProject, nowMs: Int64) throws -> TimeStoryProject {
+        guard manuallyEditableCandidates(in: project).contains(candidate),
+              targetID == nil || project.shots.contains(where: { $0.id == targetID })
+        else { throw TimeStoryError.candidateNotAddable }
+        var updated = project
+        let target = targetID.flatMap { id in updated.shots.first(where: { $0.id == id }) }
+        let chapterID = target?.chapterID ?? updated.chapters.last?.id ?? UUID()
+        if updated.chapters.isEmpty {
+            updated.chapters = [TimeStoryChapter(id: chapterID, title: "我的编排", shotIDs: [], isUserEdited: true)]
+        }
+        let shot = TimeStoryShot(id: UUID(), assetID: candidate.assetID,
+            contentRevision: candidate.contentRevision, chapterID: chapterID, caption: "",
+            durationSeconds: TimeStoryConstants.defaultShotDurationSeconds,
+            presentationMode: .fullFrameWithBackground, reasons: ["手动编排"], isLocked: true, isUserEdited: true)
+        let index = targetID.flatMap { id in updated.shots.firstIndex(where: { $0.id == id }) } ?? updated.shots.endIndex
+        updated.shots.insert(shot, at: index)
+        for index in updated.chapters.indices {
+            updated.chapters[index].shotIDs = updated.shots.filter { $0.chapterID == updated.chapters[index].id }.map(\.id)
+        }
+        updated.readiness = readiness(for: updated.candidateSnapshot, selectedCount: updated.shots.count)
+        updated.updatedAtMs = nowMs
+        return updated
+    }
+
+    func moving(_ shotID: UUID, before targetID: UUID?, in project: TimeStoryProject, nowMs: Int64) throws -> TimeStoryProject {
+        guard !project.chapters.isEmpty, shotID != targetID, let source = project.shots.firstIndex(where: { $0.id == shotID }),
+              targetID == nil || project.shots.contains(where: { $0.id == targetID })
+        else { throw TimeStoryError.candidateNotAddable }
+        var updated = project
+        var shot = updated.shots.remove(at: source)
+        let targetIndex = targetID.flatMap { id in updated.shots.firstIndex(where: { $0.id == id }) } ?? updated.shots.endIndex
+        shot.chapterID = targetID.flatMap { id in updated.shots.first(where: { $0.id == id })?.chapterID }
+            ?? updated.chapters.last!.id
+        shot.isUserEdited = true
+        shot.isLocked = true
+        updated.shots.insert(shot, at: targetIndex)
+        for index in updated.chapters.indices {
+            updated.chapters[index].shotIDs = updated.shots.filter { $0.chapterID == updated.chapters[index].id }.map(\.id)
+        }
+        updated.chapters.removeAll { $0.shotIDs.isEmpty }
         updated.updatedAtMs = nowMs
         return updated
     }
@@ -1150,9 +1221,17 @@ struct TimeStoryMediaValidator: TimeStoryMediaValidating, Sendable {
 
 protocol TimeStoryMediaLoading: Sendable {
     func loadStoryImage(assetID: UUID) async throws -> Data
+    func loadStoryThumbnail(assetID: UUID) async throws -> Data
+}
+
+extension TimeStoryMediaLoading {
+    func loadStoryThumbnail(assetID: UUID) async throws -> Data { try await loadStoryImage(assetID: assetID) }
 }
 
 extension LibraryAssetImageLoader: TimeStoryMediaLoading {
+    func loadStoryThumbnail(assetID: UUID) async throws -> Data {
+        try await load(assetID: assetID, variant: .originalAspectThumbnail)
+    }
     func loadStoryImage(assetID: UUID) async throws -> Data {
         try await load(assetID: assetID, variant: .preview)
     }

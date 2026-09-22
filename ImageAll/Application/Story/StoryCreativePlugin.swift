@@ -211,12 +211,12 @@ struct StoryAtelierExchange: Sendable {
         guard !intent.isEmpty, intent.count <= 4000, (note?.count ?? 0) <= 4000 else {
             throw StoryCreativeError.invalid("请填写创作意图；修改意见不能超过 4000 字。")
         }
-        let candidates = project.candidateSnapshot.candidates.filter { $0.availability == .available }
+        let selected = Set(project.shots.map(\.assetID))
+        let candidates = project.candidateSnapshot.candidates.filter { $0.availability == .available && selected.contains($0.assetID) }
             .sorted { ($0.mediaCreatedAtMs ?? .max, $0.assetID.uuidString) < ($1.mediaCreatedAtMs ?? .max, $1.assetID.uuidString) }
-        guard !candidates.isEmpty, candidates.count <= 26,
-              candidates.allSatisfy({ $0.mediaCreatedAtMs != nil }),
+        guard !candidates.isEmpty, candidates.count <= 100,
               Set(project.shots.map(\.assetID)).isSubset(of: Set(candidates.map(\.assetID))) else {
-            throw StoryCreativeError.invalid("Atelier 候选须为当前已确认快照中 1–26 张可用、可靠时间的照片。")
+            throw StoryCreativeError.invalid("Atelier 支持当前已选的 1–100 张可用照片。")
         }
         var check = project
         let chapterID = project.chapters.first?.id ?? UUID()
@@ -232,11 +232,14 @@ struct StoryAtelierExchange: Sendable {
         defer { rootProvider.stopAccessing(root) }
         let capabilityURL = try StoryCreativePlugin.safe("creative/atelier-capabilities.json", root: root)
         let capability = try Self.decode(Capability.self, capabilityURL)
-        guard capability.protocolVersion == "2.0", capability.profile == "atelier-project-v1",
+        guard ["2.0", "2.1"].contains(capability.protocolVersion), capability.profile == "atelier-project-v1",
               capability.pluginID == "openmontage", !capability.pluginVersion.isEmpty,
               capability.planningMode == "agent-assisted", !capability.automaticPlanning,
               capability.renderRuntime == "remotion", capability.compositionMode == "atelier" else {
             throw StoryCreativeError.invalid("INCOMPATIBLE_PLUGIN")
+        }
+        guard capability.protocolVersion == "2.1" || candidates.count <= 26 else {
+            throw StoryCreativeError.invalid("请更新 OpenMontage 制作端以支持超过 26 张照片。")
         }
         let requestID = "atelier-" + UUID().uuidString.lowercased()
         let requests = try StoryCreativePlugin.safe("creative/atelier-requests", root: root)
@@ -268,7 +271,7 @@ struct StoryAtelierExchange: Sendable {
         })
         let parent = parentProjectRevision ?? project.atelierVersions?.last?.projectRevision
         let revision = (project.atelierVersions?.last?.requestRevision ?? 0) + 1
-        let request = StoryAtelierRequest(requestID: requestID,
+        let request = StoryAtelierRequest(protocolVersion: capability.protocolVersion, requestID: requestID,
             projectID: StoryRenderPackageExporter.packageProjectID(for: project.id),
             requestRevision: revision, baseFingerprint: try StoryCreativePlugin.fingerprint(project),
             scopeDigestSHA256: Self.scopeDigest(assets), intent: intent, feedback: note,
@@ -330,13 +333,14 @@ struct StoryAtelierExchange: Sendable {
             let requestData = try Data(contentsOf: requestURL)
             guard StoryCreativePlugin.hash(requestData) == receipt.requestSHA256 else { throw StoryCreativeError.invalid("REQUEST_CHANGED") }
             let request = try Self.decode(StoryAtelierRequest.self, requestURL)
-            guard request.protocolVersion == "2.0", request.profile == "atelier-project-v1",
+            guard ["2.0", "2.1"].contains(request.protocolVersion), request.profile == "atelier-project-v1",
                   request.requestID == receipt.requestID, request.scopeDigestSHA256 == receipt.scopeDigestSHA256,
                   Self.scopeDigest(request.assets) == request.scopeDigestSHA256,
                   request.baseFingerprint == receipt.baseFingerprint,
                   request.requestRevision == receipt.requestRevision else { throw StoryCreativeError.invalid("REQUEST_MISMATCH") }
             if requireCurrentProject {
-                let current = project.candidateSnapshot.candidates.filter { $0.availability == .available }
+                let selected = Set(project.shots.map(\.assetID))
+                let current = project.candidateSnapshot.candidates.filter { $0.availability == .available && selected.contains($0.assetID) }
                 let currentVersions = Dictionary(uniqueKeysWithValues: current.map { ($0.assetID, "catalog-revision-\($0.contentRevision)") })
                 guard request.assets.count == current.count,
                       request.assets.allSatisfy({ asset in
@@ -360,7 +364,7 @@ struct StoryAtelierExchange: Sendable {
                                                "renderRuntime", "runtimeVersion", "width", "height", "fps", "totalFrames",
                                                "title", "summary", "files"])
             let proposal = try JSONDecoder().decode(StoryAtelierProposal.self, from: bytes)
-            guard proposal.protocolVersion == "2.0", proposal.profile == "atelier-project-v1",
+            guard proposal.protocolVersion == request.protocolVersion, proposal.profile == "atelier-project-v1",
                   proposal.requestID == receipt.requestID, proposal.requestSHA256 == receipt.requestSHA256,
                   proposal.scopeDigestSHA256 == receipt.scopeDigestSHA256,
                   proposal.renderRuntime == "remotion", proposal.width == 1080, proposal.height == 1920,
@@ -420,7 +424,7 @@ struct StoryAtelierExchange: Sendable {
         let dir = try directory(receipt, root: root)
         let resultURL = try StoryCreativePlugin.safe("result.json", root: dir)
         let result = try Self.decode(StoryAtelierResult.self, resultURL)
-        guard result.protocolVersion == "2.0", result.requestID == receipt.requestID,
+        guard result.protocolVersion == proposal.protocolVersion, result.requestID == receipt.requestID,
               result.requestSHA256 == receipt.requestSHA256,
               result.projectRevision == proposal.projectRevision,
               result.manifestSHA256 == proposal.manifestSHA256,
@@ -607,7 +611,7 @@ struct StoryCreativePlugin: Sendable {
             throw StoryCreativeError.invalid("尚未启用创作插件；现有本地制作仍可使用。")
         }
         let value = try JSONDecoder().decode(Capability.self, from: Data(contentsOf: url))
-        guard value.protocolVersion == "1.0", value.profile == "editable-story-v1",
+        guard ["1.0", "1.1"].contains(value.protocolVersion), value.profile == "editable-story-v1",
               value.pluginID == "openmontage", !value.pluginVersion.isEmpty,
               value.planningMode == "agent-assisted", !value.automaticPlanning,
               !value.externalSendAllowed, value.renderProtocol == "1.1", value.renderPackage == "0.1"
@@ -624,7 +628,7 @@ struct StoryCreativePlugin: Sendable {
         guard issues.isEmpty else { throw TimeStoryError.mediaValidationFailed(issues) }
         let root = try acquireRoot()
         defer { rootProvider.stopAccessing(root) }
-        _ = try capability(root)
+        let pluginCapability = try capability(root)
         let requestID = "creative-" + UUID().uuidString.lowercased()
         let requests = try Self.safe("creative/requests", root: root)
         try FileManager.default.createDirectory(at: requests, withIntermediateDirectories: true)
@@ -649,7 +653,7 @@ struct StoryCreativePlugin: Sendable {
                                captureTimeSource: candidate.captureTimeSource, placeName: candidate.placeName))
         }
         let request = StoryCreativeRequest(
-            requestID: requestID, projectID: story.projectID, baseFingerprint: base, intent: intent,
+            protocolVersion: pluginCapability.protocolVersion, requestID: requestID, projectID: story.projectID, baseFingerprint: base, intent: intent,
             subject: project.subjectTagDisplayName, targetFrames: project.creativeTargetFrames ?? 1800,
             aspect: aspect, storySHA256: Self.hash(storyData), facts: facts,
             shots: project.shots.map { .init(shotID: $0.id.uuidString.lowercased(),
@@ -732,7 +736,7 @@ struct StoryCreativePlugin: Sendable {
         guard try Self.fingerprint(project) == request.baseFingerprint else { throw StoryCreativeError.invalid("STALE_PROJECT：项目已修改，请重新发布。") }
         let issues = try validator.validate(project)
         guard issues.isEmpty else { throw TimeStoryError.mediaValidationFailed(issues) }
-        guard plan.protocolVersion == "1.0", plan.profile == "editable-story-v1",
+        guard ["1.0", "1.1"].contains(request.protocolVersion), plan.protocolVersion == request.protocolVersion, plan.profile == "editable-story-v1",
               plan.planningMode == "agent-assisted", !plan.pluginVersion.isEmpty,
               plan.requestID == request.requestID, plan.requestSHA256 == project.creativeReceipt?.requestSHA256,
               !plan.shots.isEmpty, plan.shots.count <= 100, plan.title.count <= 240,
@@ -745,6 +749,9 @@ struct StoryCreativePlugin: Sendable {
         }
         var updated = project
         var shots: [TimeStoryShot] = []
+        if request.protocolVersion == "1.1", plan.shots.map(\.shotID) != request.shots.map(\.shotID) {
+            throw StoryCreativeError.invalid("USER_ORDER_CONFLICT：请保留当前镜头顺序与全部已选照片。")
+        }
         var previousTime: Int64 = .min
         var seenChapters: Set<String> = []
         var lastChapter = ""
@@ -757,8 +764,7 @@ struct StoryCreativePlugin: Sendable {
                   plan.chapters.contains(where: { $0.chapterID == proposed.chapterID }),
                   proposed.caption.count <= 600, proposed.rationale.count <= 2000,
                   (45...360).contains(proposed.durationFrames),
-                  proposed.factRefs.allSatisfy({ $0 == proposed.assetID + ".captureTimeMs" || ($0 == proposed.assetID + ".placeName" && fact.placeName != nil) }),
-                  let time = fact.captureTimeMs, time >= previousTime else {
+                  proposed.factRefs.allSatisfy({ ($0 == proposed.assetID + ".captureTimeMs" && fact.captureTimeMs != nil) || ($0 == proposed.assetID + ".placeName" && fact.placeName != nil) }) else {
                 throw StoryCreativeError.invalid("INVALID_REFERENCE_OR_TIMELINE")
             }
             if source.locked || source.userEdited {
@@ -769,7 +775,12 @@ struct StoryCreativePlugin: Sendable {
                 guard seenChapters.insert(proposed.chapterID).inserted else { throw StoryCreativeError.invalid("CHAPTER_ORDER_CONFLICT") }
                 lastChapter = proposed.chapterID
             }
-            previousTime = time
+            if request.protocolVersion == "1.0" {
+                guard let time = fact.captureTimeMs, time >= previousTime else {
+                    throw StoryCreativeError.invalid("INVALID_REFERENCE_OR_TIMELINE")
+                }
+                previousTime = time
+            }
             var shot = original
             shot.chapterID = chapterID
             shot.caption = proposed.caption

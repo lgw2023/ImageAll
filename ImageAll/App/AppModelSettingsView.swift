@@ -337,6 +337,7 @@ final class OpenMontageSettingsModel: ObservableObject {
     var statusTitle: String {
         switch capability.state {
         case .unconfigured: "未配置"
+        case .authorizationRequired: "目录授权失效"
         case .offline: "未连接"
         case .incompatible: "版本不兼容"
         case .dependenciesUnavailable: "本地依赖未就绪"
@@ -348,6 +349,7 @@ final class OpenMontageSettingsModel: ObservableObject {
         switch capability.state {
         case .ready: "checkmark.circle.fill"
         case .unconfigured: "folder.badge.questionmark"
+        case .authorizationRequired: "lock.trianglebadge.exclamationmark"
         case .offline: "bolt.slash"
         case .incompatible: "arrow.triangle.2.circlepath"
         case .dependenciesUnavailable: "wrench.and.screwdriver"
