@@ -180,15 +180,23 @@ struct UserDefaultsOpenMontageTaskRootStore: OpenMontageTaskRootProviding, @unch
     static let bookmarkKey = "OpenMontageTaskRootBookmark.v1"
     static let installationIDKey = "OpenMontageImageAllInstallationID.v1"
 
+    let managedRoot: URL
     let defaults: UserDefaults
     let bookmarks: any SecurityScopedBookmarkPort
 
     init(
         defaults: UserDefaults = .standard,
+        managedRoot: URL = Self.managedTaskRoot,
         bookmarks: any SecurityScopedBookmarkPort = FoundationSecurityScopedBookmarkAdapter()
     ) {
+        self.managedRoot = managedRoot
         self.defaults = defaults
         self.bookmarks = bookmarks
+    }
+
+    static var managedTaskRoot: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ImageAll/OpenMontageTasks", isDirectory: true)
     }
 
     var configuredRootURL: URL? {
@@ -224,7 +232,9 @@ struct UserDefaultsOpenMontageTaskRootStore: OpenMontageTaskRootProviding, @unch
 
     func resolveTaskRoot() throws -> URL {
         guard let bookmark = defaults.data(forKey: Self.bookmarkKey) else {
-            throw OpenMontageTaskError.taskRootNotConfigured
+            let root = managedRoot
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            return root
         }
         let resolved: BookmarkResolveResult
         do {
@@ -245,11 +255,11 @@ struct UserDefaultsOpenMontageTaskRootStore: OpenMontageTaskRootProviding, @unch
     }
 
     func startAccessing(_ url: URL) -> Bool {
-        bookmarks.startAccessing(url)
+        url.standardizedFileURL == managedRoot.standardizedFileURL || bookmarks.startAccessing(url)
     }
 
     func stopAccessing(_ url: URL) {
-        bookmarks.stopAccessing(url)
+        if url.standardizedFileURL != managedRoot.standardizedFileURL { bookmarks.stopAccessing(url) }
     }
 }
 

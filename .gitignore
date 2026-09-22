@@ -30,3 +30,8 @@ user/
 
 # Vendored LibRaw: keep redistributable Dist artifacts; rebuild from tarball via scripts/build_libraw.sh
 Vendor/LibRaw/
+
+# Prepared local OpenMontage dependencies (reproducible source archive is tracked)
+Vendor/OpenMontage/Runtime/
+Vendor/OpenMontage/runtime-manifest.json
+Vendor/OpenMontage/runtime-version

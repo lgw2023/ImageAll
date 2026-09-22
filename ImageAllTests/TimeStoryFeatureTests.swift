@@ -6,6 +6,20 @@ import GRDB
 import XCTest
 
 final class TimeStoryFeatureTests: XCTestCase {
+    func testManagedOpenMontageDirectoryAndInvalidExistingAuthorization() throws {
+        let suite = "OpenMontageTest-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let root = try temporaryDirectory("managed-engine").appendingPathComponent("tasks")
+        let store = UserDefaultsOpenMontageTaskRootStore(defaults: defaults, managedRoot: root)
+        XCTAssertEqual(try store.resolveTaskRoot(), root)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.path))
+        XCTAssertTrue(store.startAccessing(root))
+        store.stopAccessing(root)
+        defaults.set(Data("invalid bookmark".utf8), forKey: UserDefaultsOpenMontageTaskRootStore.bookmarkKey)
+        XCTAssertThrowsError(try store.resolveTaskRoot()) // Never silently switch away from an authorized queue.
+    }
+
     func testFramingGeometryPersistenceAndDerivedExport() throws {
         let image = CGSize(width: 600, height: 1200), canvas = CGSize(width: 1920, height: 1080)
         XCTAssertEqual(TimeStoryPresentationMode.aspectFill.imageRect(image: image, canvas: canvas),
