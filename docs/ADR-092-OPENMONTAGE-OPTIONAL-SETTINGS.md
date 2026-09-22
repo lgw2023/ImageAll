@@ -26,3 +26,5 @@
 helper 使用宿主 App 的 application-identifier、同一 provisioning profile 和专用钥匙串访问组，Bundle identifier 保持独立。最初仅添加共享 entitlement 会被系统拒绝，实际启动验收后改为随组件嵌入宿主 profile；签名校验和 Launch Services 启动通过。
 
 日常图库设置入口验收还发现既有标签阈值参考计算阻塞主线程。将 Sendable 端口的逐标签参考读取改为后台任务，刷新时取消旧任务并用 generation 防止旧结果覆盖；默认值与覆盖列表仍立即显示。
+
+后台参考读取回归 `testSettingsShowsReferenceWithoutApplyingUntilUserConfirms` 通过；保留用户确认前不应用参考阈值的行为。设置外层统一为 680×620 内容尺寸，避免旧窗口高度裁切 OpenMontage 总开关。

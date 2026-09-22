@@ -503,7 +503,7 @@ struct AppModelSettingsView: View {
                 .tabItem { Label("OpenMontage", systemImage: "film.stack") }
 
         }
-        .frame(minWidth: 520, minHeight: 420)
+        .frame(width: 680, height: 620)
         .sheet(isPresented: $showingOverrides) { SuggestionThresholdOverridesSheet(model: model) }
         .onAppear {
             model.refreshSuggestionThresholds()
