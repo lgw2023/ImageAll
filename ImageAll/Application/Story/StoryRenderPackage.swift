@@ -110,7 +110,8 @@ struct StoryRenderPackageExporter: TimeStoryPackageExporting, Sendable {
             let relativePath = "assets/\(packageAssetID).jpg"
             let destination = staging.appendingPathComponent(relativePath)
             let sourceData = try await media.loadStoryImage(assetID: shot.assetID)
-            try Self.writeNormalizedJPEG(sourceData, to: destination)
+            try Self.writeNormalizedJPEG(sourceData, to: destination,
+                                         mode: shot.presentationMode, aspect: aspect)
             let hash = try Self.fileSHA256(destination)
             packageAssetIDBySource[shot.assetID] = packageAssetID
             packageAssets.append(.init(
@@ -275,7 +276,7 @@ struct StoryRenderPackageExporter: TimeStoryPackageExporting, Sendable {
                     },
                     fit: segment.kind == .photo ? .init(mode: "contain", allowCrop: false) : nil,
                     motion: segment.kind == .photo
-                        ? .init(type: "subtle-push", startScale: 0.985, endScale: 1.0)
+                        ? .init(type: "subtle-push", startScale: segment.presentationMode == .fullFrameWithBackground ? 0.985 : 1.0, endScale: 1.0)
                         : nil,
                     transitionIn: .init(
                         type: segment.transitionInFrames == 0 ? "cut" : "fade",
@@ -309,7 +310,9 @@ struct StoryRenderPackageExporter: TimeStoryPackageExporting, Sendable {
         }
     }
 
-    static func writeNormalizedJPEG(_ sourceData: Data, to destination: URL) throws {
+    static func writeNormalizedJPEG(_ sourceData: Data, to destination: URL,
+                                    mode: TimeStoryPresentationMode = .fullFrameWithBackground,
+                                    aspect: TimeStoryPackageAspect = .landscape) throws {
         guard let source = CGImageSourceCreateWithData(sourceData as CFData, nil) else {
             throw TimeStoryError.storyPackageExportFailed("正式素材无法解码")
         }
@@ -329,7 +332,25 @@ struct StoryRenderPackageExporter: TimeStoryPackageExporting, Sendable {
         else {
             throw TimeStoryError.storyPackageExportFailed("正式素材方向归一化失败")
         }
-        CGImageDestinationAddImage(destinationWriter, image, [
+        // Bake explicit user framing into this derived export asset. Existing package
+        // consumers can keep their contain contract, without silently dropping crop settings.
+        let outputImage: CGImage
+        if mode != .fullFrameWithBackground {
+            guard let context = CGContext(data: nil, width: aspect.width, height: aspect.height,
+                                          bitsPerComponent: 8, bytesPerRow: 0,
+                                          space: CGColorSpaceCreateDeviceRGB(),
+                                          bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else {
+                throw TimeStoryError.storyPackageExportFailed("无法创建镜头画幅")
+            }
+            let canvas = CGSize(width: aspect.width, height: aspect.height)
+            context.setFillColor(NSColor.black.cgColor)
+            context.fill(CGRect(origin: .zero, size: canvas))
+            context.interpolationQuality = .high
+            context.draw(image, in: mode.imageRect(image: CGSize(width: image.width, height: image.height), canvas: canvas))
+            guard let framed = context.makeImage() else { throw TimeStoryError.storyPackageExportFailed("镜头画幅生成失败") }
+            outputImage = framed
+        } else { outputImage = image }
+        CGImageDestinationAddImage(destinationWriter, outputImage, [
             kCGImageDestinationLossyCompressionQuality: 0.94,
             kCGImagePropertyOrientation: 1,
         ] as CFDictionary)

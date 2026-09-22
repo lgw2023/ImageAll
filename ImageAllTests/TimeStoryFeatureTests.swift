@@ -6,6 +6,36 @@ import GRDB
 import XCTest
 
 final class TimeStoryFeatureTests: XCTestCase {
+    func testFramingGeometryPersistenceAndDerivedExport() throws {
+        let image = CGSize(width: 600, height: 1200), canvas = CGSize(width: 1920, height: 1080)
+        XCTAssertEqual(TimeStoryPresentationMode.aspectFill.imageRect(image: image, canvas: canvas),
+                       CGRect(x: 0, y: -1380, width: 1920, height: 3840))
+        XCTAssertEqual(TimeStoryPresentationMode.aspectFitBlack.imageRect(image: image, canvas: canvas),
+                       CGRect(x: 690, y: 0, width: 540, height: 1080))
+        var project = renderProject(first: UUID(), second: UUID())
+        for mode in TimeStoryPresentationMode.allCases {
+            project.shots[0].presentationMode = mode
+            let decoded = try JSONDecoder().decode(TimeStoryProject.self, from: JSONEncoder().encode(project))
+            XCTAssertEqual(decoded.shots[0].presentationMode, mode)
+            XCTAssertEqual(try TimeStoryTimeline.normalize(project: decoded).segments.first(where: { $0.kind == .photo })?.presentationMode, mode)
+        }
+        let root = try temporaryDirectory("framing")
+        for aspect in TimeStoryPackageAspect.allCases {
+            for mode in [TimeStoryPresentationMode.aspectFill, .aspectFitBlack] {
+                let url = root.appendingPathComponent("\(aspect.rawValue)-\(mode.rawValue).jpg")
+                try StoryRenderPackageExporter.writeNormalizedJPEG(try pngData(color: .red, portrait: false),
+                    to: url, mode: mode, aspect: aspect)
+                let source = try XCTUnwrap(CGImageSourceCreateWithURL(url as CFURL, nil))
+                let output = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+                XCTAssertEqual(output.width, aspect.width)
+                XCTAssertEqual(output.height, aspect.height)
+                let pixel = try XCTUnwrap(NSBitmapImageRep(cgImage: output).colorAt(x: 2, y: 2)?.usingColorSpace(.deviceRGB))
+                if mode == .aspectFill { XCTAssertGreaterThan(pixel.redComponent, 0.8) }
+                else { XCTAssertLessThan(pixel.redComponent, 0.1) }
+            }
+        }
+    }
+
     func testStyleTemplatePersistenceVariantAndRequestBinding() async throws {
         let root = try temporaryDirectory("style-template")
         let first = UUID(), second = UUID()
@@ -525,6 +555,8 @@ final class TimeStoryFeatureTests: XCTestCase {
             filePath: music.path,
             securityScopedBookmark: nil
         )
+        project.shots[0].presentationMode = .aspectFill
+        project.shots[1].presentationMode = .aspectFitBlack
         let musical = root.appendingPathComponent("musical.mp4")
         try await renderer.render(project: project, destinationURL: musical) { _ in }
         try await assertPlayableVideo(musical, expectsAudio: true, expectedDuration: project.timelineDurationSeconds)
@@ -1487,6 +1519,27 @@ final class TimeStoryFeatureTests: XCTestCase {
         XCTAssertEqual(counts.0, 1)
         XCTAssertEqual(counts.1, 0)
         XCTAssertNotNil(model.candidateThumbnails[candidate.assetID])
+        let selected = Set(project.shots.map(\.id))
+        model.editShots(selected, duration: 5, mode: .aspectFill, locked: true)
+        XCTAssertTrue(model.project!.shots.allSatisfy { $0.durationSeconds == 5 && $0.presentationMode == .aspectFill && $0.isLocked })
+        model.undo()
+        XCTAssertEqual(model.project, project, "one undo restores the whole batch")
+        model.redo()
+        XCTAssertTrue(model.project!.shots.allSatisfy { $0.presentationMode == .aspectFill })
+        try runtime.store.save(model.project!)
+        XCTAssertEqual(try runtime.store.load(project.id).shots, model.project!.shots)
+        model.editShots(selected, remove: true)
+        XCTAssertTrue(model.project!.shots.isEmpty)
+        XCTAssertTrue(model.project!.chapters.isEmpty)
+        model.undo()
+        XCTAssertEqual(model.project!.shots.count, 2)
+        _ = try TimeStoryTimeline.normalize(project: model.project!)
+        model.moveShots([model.project!.shots[0].id], before: nil)
+        XCTAssertEqual(model.project!.shots.map(\.assetID), [second, first])
+        model.undo()
+        XCTAssertEqual(model.project!.shots.map(\.assetID), [first, second])
+        model.undo()
+        XCTAssertEqual(model.project, project)
         model.setCreativeIntent("已编辑")
         XCTAssertTrue(model.canUndo)
         model.undo()

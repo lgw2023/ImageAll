@@ -101,8 +101,28 @@ struct TimeStoryReadinessSummary: Codable, Sendable, Equatable {
     let selectionTradeoff: String?
 }
 
-enum TimeStoryPresentationMode: String, Codable, Sendable, Equatable {
+enum TimeStoryPresentationMode: String, Codable, Sendable, Equatable, CaseIterable {
     case fullFrameWithBackground
+    case aspectFitBlack
+    case aspectFill
+
+    var displayName: String {
+        switch self {
+        case .fullFrameWithBackground: "完整显示 · 背景填充"
+        case .aspectFitBlack: "完整显示 · 黑边"
+        case .aspectFill: "居中裁剪 · 铺满"
+        }
+    }
+
+    func imageRect(image: CGSize, canvas: CGSize, progress: Double = 1) -> CGRect {
+        guard image.width > 0, image.height > 0 else { return .zero }
+        let x = canvas.width / image.width, y = canvas.height / image.height
+        let scale = self == .aspectFill ? max(x, y) : min(x, y)
+        let motion = self == .fullFrameWithBackground ? 0.985 + 0.015 * min(1, max(0, progress)) : 1
+        let size = CGSize(width: image.width * scale * motion, height: image.height * scale * motion)
+        return CGRect(x: (canvas.width - size.width) / 2, y: (canvas.height - size.height) / 2,
+                      width: size.width, height: size.height)
+    }
 }
 
 struct TimeStoryShot: Codable, Sendable, Equatable, Identifiable {
@@ -252,6 +272,8 @@ struct TimeStoryFrameSegment: Sendable, Equatable, Identifiable {
     let durationFrames: Int
     let transitionInFrames: Int
 
+    var presentationMode: TimeStoryPresentationMode = .fullFrameWithBackground
+
     var endFrame: Int { startFrame + durationFrames }
 }
 
@@ -399,7 +421,8 @@ enum TimeStoryTimeline {
                 caption: draft.caption,
                 startFrame: start,
                 durationFrames: draft.duration,
-                transitionInFrames: overlap
+                transitionInFrames: overlap,
+                presentationMode: project.shots.first(where: { $0.id == draft.shotID })?.presentationMode ?? .fullFrameWithBackground
             ))
         }
         guard let totalFrames = segments.map(\.endFrame).max(), totalFrames > 0 else {
@@ -1500,44 +1523,32 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
             drawTitle(segment.title ?? "", style: .chapter, in: context, alpha: alpha)
         case .photo:
             guard let image else { return }
-            draw(image: image, in: context, alpha: alpha, progress: progress)
+            draw(image: image, in: context, alpha: alpha, progress: progress, mode: segment.presentationMode)
             drawCaption(segment.caption ?? "", in: context, alpha: alpha)
         }
     }
 
-    private static func draw(image: CGImage, in context: CGContext, alpha: Double, progress: Double) {
+    private static func draw(image: CGImage, in context: CGContext, alpha: Double, progress: Double,
+                             mode: TimeStoryPresentationMode) {
         guard alpha > 0 else { return }
         let canvas = CGRect(origin: .zero, size: outputSize)
         let imageSize = CGSize(width: image.width, height: image.height)
-        let fillScale = max(canvas.width / imageSize.width, canvas.height / imageSize.height)
-        let fillSize = CGSize(width: imageSize.width * fillScale, height: imageSize.height * fillScale)
-        let fillRect = CGRect(
-            x: (canvas.width - fillSize.width) / 2,
-            y: (canvas.height - fillSize.height) / 2,
-            width: fillSize.width,
-            height: fillSize.height
-        )
         context.saveGState()
-        context.setAlpha(CGFloat(alpha * 0.32))
-        context.draw(image, in: fillRect)
-        context.setFillColor(NSColor.black.withAlphaComponent(0.46).cgColor)
-        context.fill(canvas)
-        context.restoreGState()
-
-        let fitScale = min(canvas.width / imageSize.width, canvas.height / imageSize.height)
-        // A contained foreground moves from slightly smaller to exact fit. It
-        // never grows beyond fit, so all four source edges remain visible.
-        let subtleScale = fitScale * (0.985 + 0.015 * min(1, max(0, progress)))
-        let fitSize = CGSize(width: imageSize.width * subtleScale, height: imageSize.height * subtleScale)
-        let fitRect = CGRect(
-            x: (canvas.width - fitSize.width) / 2,
-            y: (canvas.height - fitSize.height) / 2,
-            width: fitSize.width,
-            height: fitSize.height
-        )
-        context.saveGState()
+        context.clip(to: canvas)
         context.setAlpha(CGFloat(alpha))
-        context.draw(image, in: fitRect)
+        context.beginTransparencyLayer(auxiliaryInfo: nil)
+        context.setFillColor(NSColor.black.cgColor)
+        context.fill(canvas)
+        if mode == .fullFrameWithBackground {
+            context.saveGState()
+            context.setAlpha(0.32)
+            context.draw(image, in: TimeStoryPresentationMode.aspectFill.imageRect(image: imageSize, canvas: outputSize))
+            context.setFillColor(NSColor.black.withAlphaComponent(0.46).cgColor)
+            context.fill(canvas)
+            context.restoreGState()
+        }
+        context.draw(image, in: mode.imageRect(image: imageSize, canvas: outputSize, progress: progress))
+        context.endTransparencyLayer()
         context.restoreGState()
     }
 

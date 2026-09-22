@@ -556,6 +556,32 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         self.project = project
     }
 
+    /// Publish once so an entire batch is one undo step.
+    func editShots(_ ids: Set<UUID>, duration: Double? = nil,
+                   mode: TimeStoryPresentationMode? = nil, locked: Bool? = nil,
+                   clearCaptions: Bool = false, remove: Bool = false) {
+        guard var edited = project, !ids.isEmpty else { return }
+        for index in edited.shots.indices where ids.contains(edited.shots[index].id) {
+            if let duration, duration.isFinite { edited.shots[index].durationSeconds = min(12, max(1.5, duration)) }
+            if let mode { edited.shots[index].presentationMode = mode }
+            if let locked {
+                edited.shots[index].isLocked = locked
+                edited.shots[index].reasons.removeAll { $0 == "用户锁定" }
+                if locked { edited.shots[index].reasons.append("用户锁定") }
+            }
+            if clearCaptions { edited.shots[index].caption = "" }
+            edited.shots[index].isUserEdited = true
+        }
+        if remove {
+            edited.excludedAssetIDs.formUnion(edited.shots.filter { ids.contains($0.id) }.map(\.assetID))
+            edited.shots.removeAll { ids.contains($0.id) }
+            for index in edited.chapters.indices { edited.chapters[index].shotIDs.removeAll { ids.contains($0) } }
+            edited.chapters.removeAll { $0.shotIDs.isEmpty }
+        }
+        edited.updatedAtMs = runtime.clock.nowMs
+        project = edited
+    }
+
     func setDuration(_ shotID: UUID, seconds: Double) {
         guard var project,
               let index = project.shots.firstIndex(where: { $0.id == shotID })
@@ -654,6 +680,15 @@ final class TimeStoryWorkspaceModel: ObservableObject {
                 await loadThumbnail(for: shot)
             }
             message = "已从本次限定候选补入照片；请核对顺序、字幕并保存。"
+        } catch { message = error.localizedDescription }
+    }
+
+    func moveShots(_ ids: Set<UUID>, before targetID: UUID?) {
+        guard var edited = project, targetID.map({ !ids.contains($0) }) ?? true else { return }
+        let ordered = edited.shots.filter { ids.contains($0.id) }.map(\.id)
+        do {
+            for id in ordered { edited = try runtime.planner.moving(id, before: targetID, in: edited, nowMs: runtime.clock.nowMs) }
+            project = edited
         } catch { message = error.localizedDescription }
     }
 
@@ -1035,6 +1070,10 @@ private struct StoryDropFrameKey: PreferenceKey {
 struct TimeStoryWorkspaceView: View {
     @StateObject private var model: TimeStoryWorkspaceModel
     @State private var selectedShotID: UUID?
+    @State private var selectedShotIDs: Set<UUID> = []
+    @State private var selectionAnchor: UUID?
+    @State private var batchDuration = 3.5
+    @FocusState private var timelineFocused: Bool
     @State private var selectedCandidateID: UUID?
     @State private var replacementShotID: UUID?
     @State private var candidateSearch = ""
@@ -1071,6 +1110,13 @@ struct TimeStoryWorkspaceView: View {
         }
         .confirmationDialog("重新生成会按拍摄时间重新编排镜头。手动排序将被重置，锁定照片与明确编辑仍会保留。", isPresented: $showRegenerateConfirmation) {
             Button("重新生成") { Task { await model.regenerate() } }
+        }
+        .onChange(of: model.project?.id) { _, _ in
+            selectedShotIDs = []; selectedShotID = nil; selectionAnchor = nil; selectedCandidateID = nil
+        }
+        .onChange(of: model.project?.shots.map(\.id)) { _, ids in
+            selectedShotIDs.formIntersection(Set(ids ?? []))
+            if let selectedShotID, !(ids ?? []).contains(selectedShotID) { self.selectedShotID = nil; selectedCandidateID = nil }
         }
         .task { await model.start() }
     }
@@ -1203,8 +1249,8 @@ struct TimeStoryWorkspaceView: View {
                     VStack(spacing: 12) {
                         Spacer(minLength: 0)
                         if let id = selectedCandidateID, let image = previewImage(for: id) {
-                            Image(nsImage: image).resizable().scaledToFit()
-                                .frame(maxWidth: .infinity, maxHeight: .infinity).background(Color.black)
+                            StoryPhotoFrame(image: image, mode: project.shots.first(where: { $0.id == selectedShotID && $0.assetID == id })?.presentationMode ?? .aspectFitBlack)
+                                .aspectRatio(16.0 / 9.0, contentMode: .fit)
                             Button("返回成片预览") { selectedCandidateID = nil }
                         } else if project.shots.isEmpty {
                             ContentUnavailableView("拖入照片开始编排", systemImage: "film.stack",
@@ -1223,7 +1269,8 @@ struct TimeStoryWorkspaceView: View {
                         ScrollView {
                             VStack(alignment: .leading, spacing: 16) {
                                 if inspectorTab == "镜头" {
-                                    if let shot = project.shots.first(where: { $0.id == selectedShotID }) { shotRow(shot) }
+                                    if selectedShotIDs.count > 1 { batchShotInspector }
+                                    else if let shot = project.shots.first(where: { $0.id == selectedShotID }) { shotRow(shot) }
                                     else { Text("选中下方镜头，编辑字幕、时长或替换照片。").foregroundStyle(.secondary) }
                                 } else if inspectorTab == "创作" {
                                     creationInspector(project)
@@ -1391,6 +1438,11 @@ struct TimeStoryWorkspaceView: View {
                 Text("\(formattedDuration(project.timelineDurationSeconds)) · 拖动镜头排序 / 拖入素材替换")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
+                Text("已选 \(selectedShotIDs.count) · ⌘ 点选 / ⇧ 连选").font(.caption)
+                Button("全选") { selectAllShots(project) }
+                if !selectedShotIDs.isEmpty {
+                    Menu("批量操作") { batchShotActions }
+                }
             }
             ScrollView(.horizontal) {
                 HStack(alignment: .top, spacing: 8) {
@@ -1403,15 +1455,15 @@ struct TimeStoryWorkspaceView: View {
                                     .font(.caption.bold()).textFieldStyle(.plain)
                             } else { Text(" ").font(.caption) }
                             Group {
-                                if let image = model.thumbnails[shot.id] { Image(nsImage: image).resizable().scaledToFit() }
+                                if let image = model.thumbnails[shot.id] { StoryPhotoFrame(image: image, mode: shot.presentationMode) }
                                 else { Image(systemName: "photo") }
                             }.frame(width: 126, height: 75).background(Color.black.opacity(0.9))
                             Text("\(shot.durationSeconds, specifier: "%.1f") 秒 · \(shot.caption.isEmpty ? "无字幕" : shot.caption)")
                                 .font(.caption).lineLimit(1)
                         }
                         .frame(width: 126).padding(7)
-                        .background(selectedShotID == shot.id ? Color.accentColor.opacity(0.22) : Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
-                        .onTapGesture { selectedShotID = shot.id; selectedCandidateID = shot.assetID; inspectorTab = "镜头" }
+                        .background(selectedShotIDs.contains(shot.id) ? Color.accentColor.opacity(0.22) : Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+                        .onTapGesture { selectShot(shot, in: project) }
                         .contentShape(Rectangle())
                         .simultaneousGesture(storyDragGesture("imageall-story-shot:" + shot.id.uuidString))
                         .background(dropFrameReader(shot.id.uuidString))
@@ -1423,7 +1475,11 @@ struct TimeStoryWorkspaceView: View {
                                 }
                             }
                             Button("移到末尾") { model.moveShot(shot.id, before: nil) }
-                            Button("从素材库选图替换") { selectedShotID = shot.id; replacementShotID = shot.id }
+                            if selectedShotIDs.contains(shot.id), selectedShotIDs.count > 1 {
+                                Divider()
+                                batchShotActions
+                            }
+                            Button("从素材库选图替换") { selectedShotIDs = [shot.id]; selectedShotID = shot.id; replacementShotID = shot.id }
                             Button("从故事排除", role: .destructive) { model.remove(shot.id) }
                         }
                         .accessibilityIdentifier("timeStoryTimelineClip")
@@ -1438,7 +1494,74 @@ struct TimeStoryWorkspaceView: View {
                         .accessibilityIdentifier("timeStoryTimelineDropZone")
                 }
             }
-        }.padding(12)
+        }
+        .focusable().focused($timelineFocused)
+        .onKeyPress(keys: [.init("a")]) { key in
+            guard key.modifiers.contains(.command) else { return .ignored }
+            selectAllShots(project); return .handled
+        }
+        .onKeyPress(.escape) { selectedShotIDs = []; selectedShotID = nil; selectedCandidateID = nil; return .handled }
+        .onKeyPress(keys: [.delete, .deleteForward, .init("\u{7F}")]) { _ in
+            guard !selectedShotIDs.isEmpty else { return .ignored }
+            model.editShots(selectedShotIDs, remove: true); return .handled
+        }
+        .padding(12)
+    }
+
+    private func selectAllShots(_ project: TimeStoryProject) {
+        selectedShotIDs = Set(project.shots.map(\.id))
+        selectedShotID = project.shots.first?.id
+        selectedCandidateID = project.shots.first?.assetID
+        selectionAnchor = selectedShotID
+        inspectorTab = "镜头"; timelineFocused = true
+    }
+
+    private func selectShot(_ shot: TimeStoryShot, in project: TimeStoryProject) {
+        let flags = NSEvent.modifierFlags
+        if flags.contains(.shift), let anchor = selectionAnchor,
+           let start = project.shots.firstIndex(where: { $0.id == anchor }),
+           let end = project.shots.firstIndex(where: { $0.id == shot.id }) {
+            let range = Set(project.shots[min(start, end)...max(start, end)].map(\.id))
+            selectedShotIDs = flags.contains(.command) ? selectedShotIDs.union(range) : range
+        } else if flags.contains(.command) {
+            if !selectedShotIDs.insert(shot.id).inserted { selectedShotIDs.remove(shot.id) }
+            selectionAnchor = shot.id
+        } else { selectedShotIDs = [shot.id]; selectionAnchor = shot.id }
+        selectedShotID = selectedShotIDs.contains(shot.id) ? shot.id : project.shots.first(where: { selectedShotIDs.contains($0.id) })?.id
+        selectedCandidateID = project.shots.first(where: { $0.id == selectedShotID })?.assetID
+        inspectorTab = "镜头"; timelineFocused = true
+    }
+
+    @ViewBuilder private var batchShotActions: some View {
+        Button("锁定所选镜头") { model.editShots(selectedShotIDs, locked: true) }
+        Button("解锁所选镜头") { model.editShots(selectedShotIDs, locked: false) }
+        Menu("画面适配") {
+            ForEach(TimeStoryPresentationMode.allCases, id: \.self) { mode in
+                Button(mode.displayName) { model.editShots(selectedShotIDs, mode: mode) }
+            }
+        }
+        Button("将所选镜头移到开头") {
+            model.moveShots(selectedShotIDs, before: model.project?.shots.first(where: { !selectedShotIDs.contains($0.id) })?.id)
+        }
+        Button("将所选镜头移到末尾") { model.moveShots(selectedShotIDs, before: nil) }
+        Button("清空所选字幕") { model.editShots(selectedShotIDs, clearCaptions: true) }
+        Divider()
+        Button("从故事排除所选镜头", role: .destructive) { model.editShots(selectedShotIDs, remove: true) }
+    }
+
+    private var batchShotInspector: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("已选 \(selectedShotIDs.count) 个镜头").font(.headline)
+            Text("以下操作应用到所有选中镜头，可一次撤销。").font(.caption).foregroundStyle(.secondary)
+            Stepper("统一时长 \(batchDuration, specifier: "%.1f") 秒", value: $batchDuration, in: 1.5...12, step: 0.5)
+            Button("应用时长") { model.editShots(selectedShotIDs, duration: batchDuration) }
+            Menu("画面适配") {
+                ForEach(TimeStoryPresentationMode.allCases, id: \.self) { mode in
+                    Button(mode.displayName) { model.editShots(selectedShotIDs, mode: mode) }
+                }
+            }
+            Menu("更多批量操作") { batchShotActions }
+        }.accessibilityIdentifier("timeStoryBatchInspector")
     }
 
     private func dropFrameReader(_ key: String) -> some View {
@@ -1487,7 +1610,9 @@ struct TimeStoryWorkspaceView: View {
         guard let value = items.first, let project = model.project else { return false }
         if value.hasPrefix("imageall-story-shot:"), let id = UUID(uuidString: String(value.dropFirst("imageall-story-shot:".count))),
            project.shots.contains(where: { $0.id == id }), id != shotID {
-            model.moveShot(id, before: shotID)
+            let moving = selectedShotIDs.contains(id) ? selectedShotIDs : [id]
+            guard shotID.map({ !moving.contains($0) }) ?? true else { return false }
+            model.moveShots(moving, before: shotID)
             return true
         }
         if value.hasPrefix("imageall-story-asset:"), let id = UUID(uuidString: String(value.dropFirst("imageall-story-asset:".count))),
@@ -1750,9 +1875,7 @@ struct TimeStoryWorkspaceView: View {
         VStack(alignment: .leading, spacing: 10) {
             Group {
                 if let image = model.thumbnails[shot.id] {
-                    Image(nsImage: image)
-                        .resizable()
-                        .scaledToFit()
+                    StoryPhotoFrame(image: image, mode: shot.presentationMode)
                 } else {
                     ZStack {
                         Color.secondary.opacity(0.12)
@@ -1804,6 +1927,13 @@ struct TimeStoryWorkspaceView: View {
                     .toggleStyle(.button)
                 }
             }
+            Picker("画面适配", selection: Binding(
+                get: { model.project?.shots.first(where: { $0.id == shot.id })?.presentationMode ?? shot.presentationMode },
+                set: { model.editShots([shot.id], mode: $0) }
+            )) {
+                ForEach(TimeStoryPresentationMode.allCases, id: \.self) { mode in Text(mode.displayName).tag(mode) }
+            }.accessibilityIdentifier("timeStoryPresentationMode")
+            Text("裁剪以画面中心为准；完整显示保留照片全部内容。").font(.caption).foregroundStyle(.secondary)
             Spacer()
             Button("从素材库选图替换") {
                 replacementShotID = shot.id
@@ -2111,10 +2241,7 @@ private struct TimeStoryTimelinePreview: View {
             case .photo:
                 ZStack(alignment: .bottom) {
                     if let shotID = segment.shotID, let image = thumbnails[shotID] {
-                        Image(nsImage: image)
-                            .resizable()
-                            .scaledToFit()
-                            .scaleEffect(scale)
+                        StoryPhotoFrame(image: image, mode: segment.presentationMode, progress: (scale - 0.985) / 0.015)
                     }
                     if let caption = segment.caption,
                        !caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -2136,5 +2263,26 @@ private struct TimeStoryTimelinePreview: View {
 
     private func formatted(_ seconds: Double) -> String {
         TimeStoryDurationText.format(seconds)
+    }
+}
+
+/// Shared fitting geometry with the native renderer. The canvas clips only in fill mode.
+private struct StoryPhotoFrame: View {
+    let image: NSImage
+    let mode: TimeStoryPresentationMode
+    var progress: Double = 1
+    var body: some View {
+        GeometryReader { proxy in
+            let rect = mode.imageRect(image: image.size, canvas: proxy.size, progress: progress)
+            ZStack {
+                Color.black
+                if mode == .fullFrameWithBackground {
+                    let background = TimeStoryPresentationMode.aspectFill.imageRect(image: image.size, canvas: proxy.size)
+                    Image(nsImage: image).resizable().frame(width: background.width, height: background.height)
+                        .opacity(0.32).overlay(Color.black.opacity(0.1472))
+                }
+                Image(nsImage: image).resizable().frame(width: rect.width, height: rect.height)
+            }.frame(width: proxy.size.width, height: proxy.size.height).clipped()
+        }
     }
 }
