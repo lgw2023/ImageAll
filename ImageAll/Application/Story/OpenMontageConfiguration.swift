@@ -2,6 +2,30 @@ import Foundation
 import Security
 
 struct OpenMontageConfiguration: Codable, Equatable, Sendable {
+    struct ModelConnection: Codable, Equatable, Sendable {
+        var baseURL = "", model = ""
+        var temperature = 0.2, timeoutSeconds = 180.0
+        var maxTokens = 2200
+        var responseFormat = "json_object"
+        var tokenParameter = "max_tokens"
+        var organization = "", project = "", extraBody = "{}"
+        var completionURL: String {
+            let root = baseURL.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            return root.hasSuffix("/chat/completions") ? root : root + "/chat/completions"
+        }
+        func validate() throws {
+            guard let url = URLComponents(string: completionURL), let host = url.host, !host.isEmpty,
+                  url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
+                  url.scheme == "https" || (url.scheme == "http" && ["localhost", "127.0.0.1", "::1"].contains(host)),
+                  !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  temperature.isFinite, (0...2).contains(temperature), (1...1_000_000).contains(maxTokens),
+                  timeoutSeconds.isFinite, (1...600).contains(timeoutSeconds),
+                  ["json_object", "text"].contains(responseFormat), ["max_tokens", "max_completion_tokens"].contains(tokenParameter),
+                  !organization.contains("\n"), !project.contains("\n") else { throw configurationError("请填写有效的接口地址、模型名称和调用参数。远程地址使用 HTTPS，本机服务可用 HTTP。") }
+            guard let body = try? JSONSerialization.jsonObject(with: Data(extraBody.utf8)) as? [String: Any],
+                  Set(body.keys).isDisjoint(with: ["model", "messages", "stream", "temperature", "max_tokens", "max_completion_tokens", "response_format", "api_key", "apiKey", "headers", "authorization", "base_url"]) else { throw configurationError("附加请求参数必须是 JSON 对象，不能覆盖模型、消息、密钥或上方已有字段。") }
+        }
+    }
     struct LLM: Codable, Equatable, Sendable {
         var provider = "anthropic", model: String? = nil
         var temperature = 0.7
@@ -19,6 +43,7 @@ struct OpenMontageConfiguration: Codable, Equatable, Sendable {
     struct Paths: Codable, Equatable, Sendable {
         var pipeline_dir = "pipeline", library_dir = "library", styles_dir = "styles", skills_dir = "skills", output_dir = "output"
     }
+    var connection: ModelConnection? = nil
     var llm = LLM(), budget = Budget(), checkpoint = Checkpoint(), output = Output(), paths = Paths()
     static let enabledKey = "OpenMontage.IntegrationEnabled.v1"
     static let configurationKey = "OpenMontage.Configuration.v1"
@@ -30,6 +55,7 @@ struct OpenMontageConfiguration: Codable, Equatable, Sendable {
         try value.validate(); return value
     }
     func validate() throws {
+        try connection?.validate()
         guard !llm.provider.isEmpty, llm.temperature.isFinite, (0...2).contains(llm.temperature), (1...1_000_000).contains(llm.max_tokens),
               ["observe", "warn", "cap"].contains(budget.mode), budget.total_usd.isFinite, budget.total_usd >= 0,
               budget.reserve_pct.isFinite, (0..<1).contains(budget.reserve_pct), budget.single_action_approval_usd.isFinite, budget.single_action_approval_usd >= 0,
@@ -59,7 +85,7 @@ struct OpenMontageServiceField: Identifiable, Sendable {
     ]
     static var all: [Self] { groups.flatMap { group, keys in keys.split(separator: " ").map { Self(id: String($0), group: group) } } }
     static func validate(_ values: [String: String]) throws {
-        let allowed = Set(all.map(\.id))
+        let allowed = Set(all.map(\.id)).union(["OPENMONTAGE_MODEL_API_KEY"])
         for (key, value) in values {
             guard allowed.contains(key), value.count <= 16_384, !value.contains("\0"), !value.contains("\n") else { throw configurationError("服务配置中包含不支持的字段或换行。") }
             if !value.isEmpty && (key.contains("URL") || key.hasSuffix("ENDPOINT") || key.hasSuffix("HOST")) {

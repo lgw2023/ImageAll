@@ -56,6 +56,7 @@ enum OpenMontageIntegrationControl {
 @MainActor
 final class OpenMontagePreferencesModel: ObservableObject {
     @Published var config = OpenMontageConfiguration()
+    @Published var modelConnection = OpenMontageConfiguration.ModelConnection()
     @Published var environment: [String: String] = [:]
     @Published var servicesEnabled = false
     @Published var message = ""
@@ -66,6 +67,12 @@ final class OpenMontagePreferencesModel: ObservableObject {
         credentialsLoaded = false
         do {
             config = try OpenMontageConfiguration.load()
+            modelConnection = config.connection ?? .init()
+            if config.connection == nil, let model = config.llm.model, !model.isEmpty {
+                modelConnection.model = model
+                modelConnection.temperature = config.llm.temperature
+                modelConnection.maxTokens = config.llm.max_tokens
+            }
             environment = try OpenMontageCredentials.load(); credentialsLoaded = true
             servicesEnabled = UserDefaults.standard.bool(forKey: OpenMontageConfiguration.servicesKey)
             advancedJSON = config.json
@@ -74,6 +81,7 @@ final class OpenMontagePreferencesModel: ObservableObject {
     func save() {
         do {
             guard credentialsLoaded else { throw configurationError("钥匙串读取失败，不能覆盖现有凭据；请重试读取。") }
+            config.connection = modelConnection.baseURL.isEmpty && modelConnection.model.isEmpty ? nil : modelConnection
             try config.validate(); try OpenMontageServiceField.validate(environment)
             let data = try JSONEncoder().encode(config)
             try OpenMontageCredentials.save(environment)
@@ -84,7 +92,7 @@ final class OpenMontagePreferencesModel: ObservableObject {
         } catch { message = error.localizedDescription }
     }
     func applyJSON() {
-        do { let value = try JSONDecoder().decode(OpenMontageConfiguration.self, from: Data(advancedJSON.utf8)); try value.validate(); config = value; save() }
+        do { let value = try JSONDecoder().decode(OpenMontageConfiguration.self, from: Data(advancedJSON.utf8)); try value.validate(); config = value; modelConnection = value.connection ?? .init(); save() }
         catch { message = error.localizedDescription }
     }
     func start() async {
@@ -121,6 +129,8 @@ struct OpenMontageIntegrationSettingsView: View {
     @State private var page = "运行"
     @State private var service = "OpenAI / Google / xAI"
     @State private var search = ""
+    @State private var showModelAdvanced = false
+    @State private var showOtherServices = false
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Toggle("启用 OpenMontage", isOn: Binding(get: { enabled }, set: { preferences.setEnabled($0); Task { await connection.refresh() } }))
@@ -153,16 +163,35 @@ struct OpenMontageIntegrationSettingsView: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 } else if page == "模型与服务" {
-                    Section("创作 Agent 的模型信息") {
-                        Text("当前自由创作由外部 Agent 编写方案。以下模型信息供 OpenMontage 配置使用，不代表 App 已内置自动多模态创作；本地模板不调用这些模型。")
+                    Section("模型连接 · OpenAI 兼容") {
+                        TextField("接口地址（Base URL 或完整 Chat Completions 地址）", text: $preferences.modelConnection.baseURL).accessibilityIdentifier("openMontageModelURL")
+                        SecureField("API Key", text: binding("OPENMONTAGE_MODEL_API_KEY")).accessibilityIdentifier("openMontageModelKey")
+                        TextField("模型名称", text: $preferences.modelConnection.model).accessibilityIdentifier("openMontageModelName")
+                        Button("填入百炼示例") {
+                            preferences.modelConnection.baseURL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+                            preferences.modelConnection.model = "qwen3.8-flash"
+                            preferences.modelConnection.extraBody = "{\"enable_thinking\": false}"
+                        }
+                        Text("照片分析实际使用这里的地址、密钥和模型。密钥存入本机钥匙串，无需填写环境变量名。本地模板不需要模型；保存不会上传照片或自动开始创作。")
                             .font(.caption).foregroundStyle(.secondary)
-                        TextField("提供商", text: $preferences.config.llm.provider)
-                        TextField("模型 ID（空白使用服务默认值）", text: Binding(get: { preferences.config.llm.model ?? "" }, set: { preferences.config.llm.model = $0.isEmpty ? nil : $0 }))
-                        TextField("温度 0–2", value: $preferences.config.llm.temperature, format: .number)
-                        TextField("最大输出 tokens", value: $preferences.config.llm.max_tokens, format: .number)
+                        DisclosureGroup("高级调用参数", isExpanded: $showModelAdvanced) {
+                            TextField("温度", value: $preferences.modelConnection.temperature, format: .number)
+                            TextField("输出 token 上限", value: $preferences.modelConnection.maxTokens, format: .number)
+                            TextField("超时（秒）", value: $preferences.modelConnection.timeoutSeconds, format: .number)
+                            Picker("Token 参数", selection: $preferences.modelConnection.tokenParameter) { Text("max_tokens").tag("max_tokens"); Text("max_completion_tokens").tag("max_completion_tokens") }
+                            Picker("响应格式", selection: $preferences.modelConnection.responseFormat) { Text("JSON 对象").tag("json_object"); Text("不发送 response_format").tag("text") }
+                            TextField("Organization（可选）", text: $preferences.modelConnection.organization)
+                            TextField("Project（可选）", text: $preferences.modelConnection.project)
+                            Text("附加请求参数（JSON，例如 enable_thinking；不要填写凭据）").font(.caption)
+                            TextEditor(text: $preferences.modelConnection.extraBody).font(.system(.caption, design: .monospaced)).frame(height: 70)
+                            Text("使用 OpenAI SDK 的 Chat Completions 接口；自动重试为 0，避免失败后重复发送照片或计费。参数是否支持取决于你选择的服务和模型。")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        HStack { Button("保存模型配置") { preferences.save() }.accessibilityIdentifier("openMontageSaveModel"); Button("重新读取") { preferences.load() } }
                     }
-                    Section("可选服务") {
-                        Toggle("向执行器提供服务配置", isOn: $preferences.servicesEnabled)
+                    Section {
+                        DisclosureGroup("其他工具与服务（高级）", isExpanded: $showOtherServices) {
+                        Toggle("向其他工具提供服务配置", isOn: $preferences.servicesEnabled)
                         Text("密钥和服务参数仅保存在本机钥匙串，启动时交给本地执行器。不会写入故事包或启动日志。填写凭据不会自动调用服务，也不改变每次任务的本地使用限制。")
                             .font(.caption).foregroundStyle(.secondary)
                         Picker("服务类别", selection: $service) { ForEach(OpenMontageServiceField.groups.map(\.0), id: \.self) { Text($0) } }
@@ -177,6 +206,7 @@ struct OpenMontageIntegrationSettingsView: View {
                         Text("各服务只需填写自己要用的项。工具专属模型、声音、提示词等属于单次制作参数；本地 GPU 工具需要另装其运行依赖。Google 服务账号填 JSON 文件路径，不要粘贴私钥。")
                             .font(.caption).foregroundStyle(.secondary)
                         HStack { Button("保存配置与凭据") { preferences.save() }; Button("重新读取") { preferences.load() }; Button("清除全部服务凭据", role: .destructive) { preferences.clearCredentials() } }
+                    }
                     }
                 } else {
                     Section("制作默认值与高级配置") {

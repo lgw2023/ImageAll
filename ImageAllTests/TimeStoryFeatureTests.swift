@@ -10,7 +10,20 @@ final class TimeStoryFeatureTests: XCTestCase {
         let suite = "OpenMontageConfig-" + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
+        var connection = OpenMontageConfiguration.ModelConnection()
+        connection.baseURL = "https://example.com/compatible-mode/v1"
+        connection.model = "user-selected-model"
+        XCTAssertEqual(connection.completionURL, "https://example.com/compatible-mode/v1/chat/completions")
+        connection.baseURL = connection.completionURL
+        try connection.validate()
+        XCTAssertFalse(connection.completionURL.contains("chat/completions/chat/completions"))
+        connection.extraBody = "{\"model\":\"override\"}"
+        XCTAssertThrowsError(try connection.validate())
+        connection.extraBody = "{\"enable_thinking\":false}"
+        try connection.validate()
         var value = OpenMontageConfiguration()
+        XCTAssertNil(try JSONDecoder().decode(OpenMontageConfiguration.self, from: JSONEncoder().encode(value)).connection)
+        value.connection = connection
         value.llm.model = "test-model"
         try value.validate()
         defaults.set(try JSONEncoder().encode(value), forKey: OpenMontageConfiguration.configurationKey)

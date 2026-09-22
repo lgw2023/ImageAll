@@ -55,8 +55,9 @@ do {
     try JSONEncoder().encode(configuration).write(to: configFile, options: .atomic)
     var environment = process.environment ?? [:]
     environment["OPENMONTAGE_CONFIG_PATH"] = configFile.path
-    if request["servicesEnabled"] == "true" {
-        let credentials = try OpenMontageCredentials.load()
+    do {
+        let stored = try OpenMontageCredentials.load()
+        let credentials = request["servicesEnabled"] == "true" ? stored : stored.filter { $0.key == "OPENMONTAGE_MODEL_API_KEY" }
         try OpenMontageServiceField.validate(credentials)
         credentialFieldCount = credentials.filter { !$0.value.isEmpty }.count
         environment.merge(credentials.filter { !$0.value.isEmpty }, uniquingKeysWith: { _, new in new })
