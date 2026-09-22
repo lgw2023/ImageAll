@@ -115,7 +115,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     @Published private(set) var lastPackageURL: URL?
     @Published private(set) var creativeStatus = "本地创作插件 · 由 Agent 创作方案"
     @Published private(set) var creativePlan: StoryCreativePlan?
-    @Published private(set) var atelierStatus = "Atelier 创作项目 · Agent 协作"
+    @Published private(set) var atelierStatus = "提交后等待创作方案，读取摘要后可继续制作成片。"
     @Published private(set) var atelierProposal: StoryAtelierProposal?
     @Published private(set) var selectedAtelierRequestID: String?
     @Published var atelierFeedback = ""
@@ -1100,6 +1100,7 @@ struct TimeStoryWorkspaceView: View {
     @State private var pickedAssets: Set<UUID> = []
     @State private var inspectorTab = "镜头"
     @State private var productionMode = "当前编排"
+    @State private var showProductionSettings = false
     @State private var showStyleLibrary = false
     @State private var styleVariantName = ""
     @State private var stylePreviewPlayer: AVPlayer?
@@ -1136,6 +1137,9 @@ struct TimeStoryWorkspaceView: View {
         .onChange(of: model.project?.shots.map(\.id)) { _, ids in
             selectedShotIDs.formIntersection(Set(ids ?? []))
             if let selectedShotID, !(ids ?? []).contains(selectedShotID) { self.selectedShotID = nil; selectedCandidateID = nil }
+        }
+        .sheet(isPresented: $showProductionSettings) {
+            if let project = model.project { productionSettings(project) }
         }
         .task { await model.start() }
     }
@@ -1247,11 +1251,20 @@ struct TimeStoryWorkspaceView: View {
                 showStyleLibrary.toggle(); model.loadStyleTemplates()
             }.accessibilityIdentifier("timeStoryStyleLibrary")
             .disabled(!integrationEnabled)
-            Button("制作设置") { inspectorTab = "创作" }
+            Divider().frame(height: 18)
+            Button("制作视频…", systemImage: "film") { showProductionSettings = true }
+                .help("选择制作方式、画幅并查看制作进度")
+                .accessibilityIdentifier("timeStoryProductionSettings")
             Menu("导出") {
-                Button("直接导出 MP4（横屏）…") { chooseExportDestination() }
-                ForEach(TimeStoryPackageAspect.allCases) { aspect in
-                    Button("故事包 · " + aspect.displayName + "…") { choosePackageDestination(aspect: aspect) }
+                Section("当前编排 · 可直接播放") {
+                    Button("导出横屏 MP4（16:9）…") { chooseExportDestination() }
+                }
+                Section("交给外部工具继续制作") {
+                    Menu("导出故事包（非视频）") {
+                        ForEach(TimeStoryPackageAspect.allCases) { aspect in
+                            Button(aspect.displayName + "…") { choosePackageDestination(aspect: aspect) }
+                        }
+                    }
                 }
             }.disabled(model.project?.shots.isEmpty != false || model.isBusy || model.exportProgress != nil || model.packageExportProgress != nil)
                 .accessibilityIdentifier("timeStoryExportButton")
@@ -1675,28 +1688,94 @@ struct TimeStoryWorkspaceView: View {
             Text("当前编排 \(formattedDuration(project.timelineDurationSeconds))。目标时长用于创作请求，不会自动改动现有镜头。")
                 .font(.caption).foregroundStyle(.secondary)
             Divider()
-            Text("制作方式").font(.headline)
-            Picker("方式", selection: $productionMode) {
-                Text("当前编排").tag("当前编排")
-                Text("可编辑创作").tag("可编辑创作")
-                Text("自由场景").tag("自由场景")
-            }.labelsHidden()
-            if !integrationEnabled { Text("OpenMontage 已停用，可在 App 设置中重新启用。原生导出仍可使用。").font(.caption) }
-            connectionControls.disabled(!integrationEnabled)
-            if productionMode == "当前编排" {
-                Picker("画幅", selection: $productionAspect) {
-                    ForEach(TimeStoryPackageAspect.allCases) { aspect in Text(aspect.displayName).tag(aspect) }
-                }
-                Button("开始本地制作") { model.submitToOpenMontage(aspect: productionAspect) }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(project.shots.isEmpty || model.openMontageCapability?.state != .ready || model.openMontageTask?.phase.isTerminal == false)
-                Text("按当前镜头和时长制作。也可从顶部直接导出横屏 MP4，无需连接外部执行器。")
-                    .font(.caption).foregroundStyle(.secondary)
-            } else if productionMode == "可编辑创作" {
-                if project.shots.count > 100 { Text("此制作方式最多接收 100 张已选照片；当前项目仍可继续编辑和直接导出。").foregroundStyle(.orange) }
-                creativePanel(project)
-            } else { atelierPanel(project) }
+            Button("制作视频…", systemImage: "film") { showProductionSettings = true }
+                .accessibilityIdentifier("storyInspectorProductionSettings")
+            Text("在制作面板选择方式与画幅，查看创作及成片进度。")
+                .font(.caption).foregroundStyle(.secondary)
         }
+    }
+
+    private func productionSettings(_ project: TimeStoryProject) -> some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("制作视频").font(.title2.bold())
+                    Text("\(project.title) · \(project.shots.count) 张照片 · 当前编排 \(formattedDuration(project.timelineDurationSeconds))")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("完成") { showProductionSettings = false }
+                    .keyboardShortcut(.cancelAction)
+            }.padding(20)
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    Picker("制作方式", selection: $productionMode) {
+                        Text("当前编排").tag("当前编排")
+                        Text("可编辑创作").tag("可编辑创作")
+                        Text("自由场景").tag("自由场景")
+                    }.pickerStyle(.segmented)
+                        .accessibilityIdentifier("storyProductionMode")
+                    Text(productionMode == "当前编排"
+                         ? "按当前镜头顺序、字幕与时长生成视频。"
+                         : productionMode == "可编辑创作"
+                         ? "根据创作意图生成方案，读取并应用后可继续逐镜头编辑。"
+                         : "根据创作意图生成独立的场景项目，可审片并用文字意见迭代版本。")
+                        .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    GroupBox("输出画幅") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            if productionMode == "自由场景" {
+                                Label("竖屏 9:16", systemImage: "rectangle.portrait")
+                                Text("自由场景目前仅支持竖屏。需要横屏时，请选择当前编排或可编辑创作。")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            } else {
+                                Picker("画幅", selection: $productionAspect) {
+                                    ForEach(TimeStoryPackageAspect.allCases) { aspect in Text(aspect.displayName).tag(aspect) }
+                                }.pickerStyle(.segmented).labelsHidden()
+                                    .accessibilityIdentifier("storyProductionAspect")
+                            }
+                            Text("画幅只用于本次制作；编辑区继续显示当前编排的横屏预览。")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
+                    }
+                    if productionMode == "当前编排" && productionAspect == .landscape {
+                        GroupBox("直接导出") {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("无需连接本地制作服务，直接保存当前编排的横屏视频。")
+                                    .font(.callout).foregroundStyle(.secondary)
+                                Button("导出横屏 MP4…") { chooseExportDestination() }
+                                    .disabled(project.shots.isEmpty || model.isBusy || model.exportProgress != nil || model.packageExportProgress != nil)
+                                    .accessibilityIdentifier("storyProductionDirectExport")
+                            }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
+                        }
+                    }
+                    GroupBox("本地制作服务") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            if !integrationEnabled {
+                                Text("OpenMontage 已停用，可在 App 设置中启用。直接导出横屏 MP4 仍可使用。")
+                                    .font(.callout).foregroundStyle(.secondary)
+                            }
+                            connectionControls.disabled(!integrationEnabled)
+                            Divider()
+                            Group {
+                                if productionMode == "当前编排" {
+                                    Button("按当前编排制作 · " + productionAspect.displayName) {
+                                        model.submitToOpenMontage(aspect: productionAspect)
+                                    }.buttonStyle(.borderedProminent)
+                                        .disabled(project.shots.isEmpty || model.isBusy || model.openMontageCapability?.state != .ready || model.openMontageTask?.phase.isTerminal == false)
+                                } else if productionMode == "可编辑创作" {
+                                    creativePanel(project)
+                                } else {
+                                    atelierPanel(project)
+                                }
+                            }.disabled(!integrationEnabled)
+                        }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
+                    }
+                }.padding(20)
+            }
+            statusBar
+        }.frame(width: 640, height: 650)
+            .accessibilityIdentifier("timeStoryProductionSheet")
     }
 
     private var connectionControls: some View {
@@ -1705,16 +1784,17 @@ struct TimeStoryWorkspaceView: View {
             if let capability = model.openMontageCapability, capability.state != .ready {
                 Text(capability.detail).font(.caption).foregroundStyle(.secondary)
             }
-            Button(model.isStartingLocalEngine ? "启动中…" : "启动本地制作") { Task { await model.startLocalEngine() } }
-                .buttonStyle(.borderedProminent)
-                .disabled(model.isStartingLocalEngine)
+            Button(model.isStartingLocalEngine ? "启动中…" : "启动本地制作服务") { Task { await model.startLocalEngine() } }
+                .disabled(model.isStartingLocalEngine || model.openMontageCapability?.state == .ready)
                 .accessibilityIdentifier("storyStartEngine")
-            HStack {
+            DisclosureGroup("连接选项") {
+              HStack {
                 Button("选择任务目录…") { model.chooseTaskDirectory() }
                     .accessibilityIdentifier("storyConnectDirectory")
                 Button(model.isCheckingConnection ? "检查中…" : "检查连接") { Task { await model.refreshOpenMontageCapability() } }
                     .disabled(model.isCheckingConnection)
                     .accessibilityIdentifier("storyCheckConnection")
+              }
             }
             if let result = model.connectionCheckResult {
                 Text(result).font(.caption).foregroundStyle(.secondary)
@@ -1739,17 +1819,21 @@ struct TimeStoryWorkspaceView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("保留当前照片顺序，生成可编辑方案；锁定的字幕和时长保持不变。提交后由创作 Agent 处理。")
                     .font(.caption).foregroundStyle(.secondary)
-                HStack {
-                    Menu("发布创作请求") {
-                        ForEach(TimeStoryPackageAspect.allCases) { aspect in
-                            Button(aspect.displayName) { Task { await model.publishCreativeRequest(aspect: aspect) } }
-                        }
-                    }.disabled(model.isBusy || project.shots.isEmpty || project.shots.count > 100 || model.openMontageCapability?.state != .ready)
+                VStack(alignment: .leading, spacing: 10) {
+                    if project.shots.count > 100 {
+                        Text("可编辑创作最多接收 100 张照片；当前项目仍可直接导出。")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
+                    Button("生成可编辑方案 · " + productionAspect.displayName) {
+                        Task { await model.publishCreativeRequest(aspect: productionAspect) }
+                    }.buttonStyle(.borderedProminent).disabled(model.isBusy || project.shots.isEmpty || project.shots.count > 100 || model.openMontageCapability?.state != .ready)
                     .accessibilityIdentifier("storyCreativePublish")
                     if project.creativeReceipt != nil {
-                        Button("刷新状态") { model.refreshCreativeRequest() }
-                        Button("读取方案") { model.readCreativePlan() }
-                        Button("取消创作") { model.cancelCreativeRequest() }
+                        HStack {
+                            Button("刷新状态") { model.refreshCreativeRequest() }
+                            Button("读取方案") { model.readCreativePlan() }
+                            Button("取消创作") { model.cancelCreativeRequest() }
+                        }
                     }
                     Text(model.creativeStatus).font(.caption).textSelection(.enabled)
                 }
@@ -1775,11 +1859,12 @@ struct TimeStoryWorkspaceView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text("自由场景制作使用已选 \(project.shots.count) 张照片；支持 1–100 张可用照片，保留已选顺序及锁定时长，竖屏输出。")
                     .font(.caption).foregroundStyle(.secondary)
-                HStack {
-                    Button("发布竖屏 Atelier 创作") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Button("开始自由场景创作") {
                         Task { await model.publishAtelierRequest() }
                     }
-                    .disabled(model.isBusy || candidates.isEmpty || candidates.count > 100 || model.openMontageCapability?.state != .ready)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(model.isBusy || project.shots.isEmpty || project.shots.count > 100 || candidates.isEmpty || model.openMontageCapability?.state != .ready)
                     .accessibilityIdentifier("storyAtelierPublish")
                     if let versions = project.atelierVersions, !versions.isEmpty {
                         ForEach(versions) { version in
