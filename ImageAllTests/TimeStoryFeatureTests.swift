@@ -54,6 +54,25 @@ final class TimeStoryFeatureTests: XCTestCase {
         XCTAssertThrowsError(try store.resolveTaskRoot()) // Never silently switch away from an authorized queue.
     }
 
+    func testTaskRootRenewalAndRejectedReplacementPreserveQueue() throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "TaskRoot-" + UUID().uuidString))
+        let root = try temporaryDirectory("task-root-grant")
+        let port = StoryTaskRootBookmarkFixture(url: root)
+        let store = UserDefaultsOpenMontageTaskRootStore(defaults: defaults, bookmarks: port)
+        defaults.set(Data("old".utf8), forKey: UserDefaultsOpenMontageTaskRootStore.bookmarkKey)
+        XCTAssertEqual(try store.resolveTaskRoot(), root)
+        XCTAssertEqual(defaults.data(forKey: UserDefaultsOpenMontageTaskRootStore.bookmarkKey), Data("fresh".utf8))
+        XCTAssertEqual(port.active, 0)
+        port.reject = true
+        XCTAssertThrowsError(try store.saveTaskRoot(root))
+        XCTAssertEqual(defaults.data(forKey: UserDefaultsOpenMontageTaskRootStore.bookmarkKey), Data("fresh".utf8))
+        XCTAssertEqual(port.active, 0)
+        port.reject = false
+        try store.saveTaskRoot(root)
+        XCTAssertEqual(try store.resolveTaskRoot(), root)
+        XCTAssertEqual(port.active, 0)
+    }
+
     func testFramingGeometryPersistenceAndDerivedExport() throws {
         let image = CGSize(width: 600, height: 1200), canvas = CGSize(width: 1920, height: 1080)
         XCTAssertEqual(TimeStoryPresentationMode.aspectFill.imageRect(image: image, canvas: canvas),
@@ -2508,4 +2527,21 @@ private struct DeniedStoryRootProvider: OpenMontageTaskRootProviding {
     func resolveTaskRoot() throws -> URL { throw OpenMontageTaskError.taskRootAuthorizationRequired }
     func startAccessing(_ url: URL) -> Bool { false }
     func stopAccessing(_ url: URL) {}
+}
+
+private final class StoryTaskRootBookmarkFixture: SecurityScopedBookmarkPort, @unchecked Sendable {
+    let url: URL
+    var active = 0
+    var reject = false
+    init(url: URL) { self.url = url }
+    func createReadOnlyBookmark(for url: URL) throws -> Data { try createWritableBookmark(for: url) }
+    func createWritableBookmark(for url: URL) throws -> Data {
+        guard active > 0 else { throw OpenMontageTaskError.taskRootAuthorizationRequired }
+        return Data("fresh".utf8)
+    }
+    func resolveBookmark(_ bookmark: Data) throws -> BookmarkResolveResult {
+        BookmarkResolveResult(url: url, isStale: bookmark == Data("old".utf8))
+    }
+    func startAccessing(_ url: URL) -> Bool { if reject { return false }; active += 1; return true }
+    func stopAccessing(_ url: URL) { active -= 1 }
 }

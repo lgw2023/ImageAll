@@ -313,7 +313,8 @@ final class OpenMontageSettingsModel: ObservableObject {
         configuredRootURL = store.configuredRootURL
     }
 
-    func chooseTaskRoot() {
+    @discardableResult
+    func chooseTaskRoot() -> Result<URL, Error>? {
         let panel = NSOpenPanel()
         panel.title = "选择 OpenMontage 任务目录"
         panel.message = "ImageAll 只会在这个目录中发布任务、读取状态和取得已验证成片。"
@@ -322,14 +323,16 @@ final class OpenMontageSettingsModel: ObservableObject {
         panel.canChooseFiles = false
         panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
         do {
             try store.saveTaskRoot(url)
             configuredRootURL = store.configuredRootURL
-            message = "任务目录已授权。请启动 OpenMontage 执行器后刷新状态。"
+            message = "任务目录已授权：\(url.path)"
             Task { await refresh() }
+            return .success(url)
         } catch {
             message = error.localizedDescription
+            return .failure(error)
         }
     }
 

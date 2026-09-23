@@ -213,6 +213,8 @@ struct UserDefaultsOpenMontageTaskRootStore: OpenMontageTaskRootProviding, @unch
     }
 
     func saveTaskRoot(_ url: URL) throws {
+        let accessing = bookmarks.startAccessing(url)
+        defer { if accessing { bookmarks.stopAccessing(url) } }
         let values = try url.resourceValues(forKeys: [
             .isDirectoryKey,
             .isSymbolicLinkKey,
@@ -222,7 +224,17 @@ struct UserDefaultsOpenMontageTaskRootStore: OpenMontageTaskRootProviding, @unch
               values.isSymbolicLink != true,
               values.isPackage != true
         else { throw OpenMontageTaskError.taskRootUnsafe }
+        if url.standardizedFileURL == managedRoot.standardizedFileURL {
+            clearTaskRoot() // Explicit selection of the App-owned directory needs no external grant.
+            return
+        }
         let bookmark = try bookmarks.createWritableBookmark(for: url)
+        // Verify the persisted grant, not just the transient NSOpenPanel URL.
+        let resolved = try bookmarks.resolveBookmark(bookmark)
+        guard !resolved.isStale, bookmarks.startAccessing(resolved.url) else {
+            throw OpenMontageTaskError.taskRootAuthorizationRequired
+        }
+        defer { bookmarks.stopAccessing(resolved.url) }
         defaults.set(bookmark, forKey: Self.bookmarkKey)
     }
 
@@ -251,8 +263,15 @@ struct UserDefaultsOpenMontageTaskRootStore: OpenMontageTaskRootProviding, @unch
             }
             throw OpenMontageTaskError.taskRootAuthorizationRequired
         }
-        guard !resolved.isStale else {
-            throw OpenMontageTaskError.taskRootAuthorizationRequired
+        if resolved.isStale {
+            // A stale bookmark can still hold a valid grant after an app update.
+            // Renew only while that grant is active; never switch queues silently.
+            guard bookmarks.startAccessing(resolved.url) else {
+                throw OpenMontageTaskError.taskRootAuthorizationRequired
+            }
+            defer { bookmarks.stopAccessing(resolved.url) }
+            let refreshed = try bookmarks.createWritableBookmark(for: resolved.url)
+            defaults.set(refreshed, forKey: Self.bookmarkKey)
         }
         return resolved.url
     }

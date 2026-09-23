@@ -99,10 +99,17 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     }
     func chooseTaskDirectory() {
         let settings = OpenMontageSettingsModel()
-        settings.chooseTaskRoot()
-        Task { await refreshOpenMontageCapability() }
+        guard let result = settings.chooseTaskRoot() else { return }
+        switch result {
+        case .success(let url):
+            taskDirectoryMessage = "已授权任务目录：\(url.path)"
+            Task { await refreshOpenMontageCapability() }
+        case .failure(let error):
+            taskDirectoryMessage = "目录授权未完成：\(error.localizedDescription)"
+        }
     }
 
+    @Published private(set) var taskDirectoryMessage: String?
     @Published private(set) var readinessSnapshot: TimeStoryCandidateSnapshot?
     @Published private(set) var loadedCandidateCount = 0
     @Published private(set) var isReadingCandidates = false
@@ -1963,14 +1970,16 @@ struct TimeStoryWorkspaceView: View {
             Button(model.isStartingLocalEngine ? "启动中…" : "启动本地制作服务") { Task { await model.startLocalEngine() } }
                 .disabled(model.isStartingLocalEngine || model.openMontageCapability?.state == .ready)
                 .accessibilityIdentifier("storyStartEngine")
-            DisclosureGroup("连接选项") {
-              HStack {
+            Text("连接选项").font(.caption).foregroundStyle(.secondary)
+            HStack {
                 Button("选择任务目录…") { model.chooseTaskDirectory() }
                     .accessibilityIdentifier("storyConnectDirectory")
                 Button(model.isCheckingConnection ? "检查中…" : "检查连接") { Task { await model.refreshOpenMontageCapability() } }
                     .disabled(model.isCheckingConnection)
                     .accessibilityIdentifier("storyCheckConnection")
-              }
+            }
+            if let directoryMessage = model.taskDirectoryMessage {
+                Text(directoryMessage).font(.caption).textSelection(.enabled)
             }
             if let result = model.connectionCheckResult {
                 Text(result).font(.caption).foregroundStyle(.secondary)
