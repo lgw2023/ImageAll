@@ -2469,3 +2469,84 @@ private struct StoryPhotoFrame: View {
         }
     }
 }
+
+
+/// Uses the gallery's persisted group/order/collapse model; selecting a subject is not a tag edit.
+struct StorySubjectPicker: View {
+    let sections: [LibraryTagGroupSection]
+    let selectedID: UUID?
+    let isCollapsed: (UUID) -> Bool
+    let toggleCollapsed: (UUID) -> Void
+    let onSelect: (TagListItem) -> Void
+    @State private var search = ""
+    @Environment(\.dismiss) private var dismiss
+
+    private var query: String { search.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var visibleSections: [LibraryTagGroupSection] {
+        sections.compactMap { section in
+            let tags = query.isEmpty || section.group.displayName.localizedStandardContains(query)
+                ? section.tags : section.tags.filter { $0.displayName.localizedStandardContains(query) }
+            return tags.isEmpty ? nil : .init(group: section.group, tags: tags)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("选择故事主体").font(.headline)
+                Spacer()
+                Button("完成") { dismiss() }
+            }
+            TextField("搜索标签或分组", text: $search)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityIdentifier("storySubjectSearch")
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    if visibleSections.isEmpty {
+                        ContentUnavailableView(query.isEmpty ? "还没有标签" : "没有匹配标签", systemImage: "tag",
+                            description: Text(query.isEmpty ? "先在图库中添加标签，再选择故事主体。" : "试试其他标签名称或分组名称。"))
+                    }
+                    ForEach(visibleSections) { section in
+                        let collapsed = query.isEmpty && isCollapsed(section.id)
+                        VStack(alignment: .leading, spacing: 8) {
+                            Button { toggleCollapsed(section.id) } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: collapsed ? "chevron.right" : "chevron.down")
+                                        .font(.caption2)
+                                    Text(section.group.displayName).font(.subheadline.weight(.semibold))
+                                    Text("\(section.tags.count)").font(.caption).foregroundStyle(.secondary)
+                                    Spacer()
+                                }.contentShape(Rectangle())
+                            }.buttonStyle(.plain)
+                                .disabled(!query.isEmpty)
+                                .accessibilityLabel(section.group.displayName)
+                                .accessibilityValue(collapsed ? "已折叠" : "已展开")
+                            if !collapsed {
+                                LibraryTagFlowLayout {
+                                    ForEach(section.tags) { tag in
+                                        Button { onSelect(tag) } label: {
+                                            HStack(spacing: 5) {
+                                                Image(systemName: "tag")
+                                                Text(tag.displayName).lineLimit(1)
+                                                if tag.id == selectedID { Image(systemName: "checkmark").font(.caption.weight(.semibold)) }
+                                            }
+                                            .padding(.horizontal, 8).frame(height: 28)
+                                            .frame(maxWidth: 180, alignment: .leading)
+                                            .fixedSize(horizontal: true, vertical: false)
+                                            .background(tag.id == selectedID ? Color.accentColor.opacity(0.18) : Color(nsColor: .controlBackgroundColor).opacity(0.75), in: RoundedRectangle(cornerRadius: 6))
+                                            .contentShape(Rectangle())
+                                        }.buttonStyle(.plain)
+                                            .help(tag.displayName)
+                                            .accessibilityLabel(tag.displayName)
+                                            .accessibilityValue(tag.id == selectedID ? "当前故事主体" : "")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }.padding(16).frame(width: 480, height: 520)
+            .accessibilityIdentifier("storySubjectGroupedPicker")
+    }
+}

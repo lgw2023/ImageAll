@@ -13332,6 +13332,7 @@ struct LibraryWorkspaceView: View {
     @State private var renamedTagName = ""
     @State private var tagPendingArchive: TagListItem?
     @State private var timeStoryTag: TagListItem?
+    @State private var showStorySubjectPicker = false
     @State private var storyWorkspaces: [UUID: TimeStoryWorkspaceModel] = [:]
     @State private var tagGroupPendingRename: TagGroupListItem?
     @State private var renamedTagGroupName = ""
@@ -15512,12 +15513,25 @@ struct LibraryWorkspaceView: View {
         VStack(spacing: 0) {
             HStack {
                 Label("时光故事", systemImage: "film.stack").font(.headline)
-                Menu(timeStoryTag?.displayName ?? "选择故事主体") {
-                    ForEach(model.tags) { tag in
-                        Button(tag.displayName) { openStoryWorkspace(tag) }
+                Button { showStorySubjectPicker.toggle() } label: {
+                    HStack(spacing: 6) {
+                        Text(timeStoryTag?.displayName ?? "选择故事主体")
+                        Image(systemName: "chevron.down").font(.caption2)
                     }
                 }
                 .accessibilityIdentifier("timeStorySubjectPicker")
+                .popover(isPresented: $showStorySubjectPicker, arrowEdge: .bottom) {
+                    StorySubjectPicker(
+                        sections: model.tagGroupSections,
+                        selectedID: timeStoryTag?.id,
+                        isCollapsed: model.isTagGroupCollapsed,
+                        toggleCollapsed: model.toggleTagGroupCollapsed,
+                        onSelect: { tag in
+                            showStorySubjectPicker = false
+                            openStoryWorkspace(tag)
+                        }
+                    )
+                }
                 Spacer()
                 Text("草稿在切换模块时保留 · 保存后可再次打开")
                     .font(.caption).foregroundStyle(.secondary)
