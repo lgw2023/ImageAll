@@ -658,6 +658,7 @@ final class TimeStoryFeatureTests: XCTestCase {
         project.title = "用户修改的项目标题"
         project.chapters[0].title = "用户修改的章节标题"
         project.shots[0].caption = "用户修改的镜头字幕"
+        project.typography = StoryTypography(family: "Songti SC", titleSize: 72, captionSize: 40, weight: 700)
         project.candidateSnapshot = makeSnapshot(
             project.candidateSnapshot.candidates + [unused]
         )
@@ -699,6 +700,10 @@ final class TimeStoryFeatureTests: XCTestCase {
         var portraitDocument = try packageDocument(at: portrait)
         let repeatedDocument = try packageDocument(at: repeated)
 
+        XCTAssertEqual(landscapeDocument.export.template.fontFamily, "Songti SC")
+        XCTAssertEqual(landscapeDocument.export.template.captionFontSize, 40)
+        XCTAssertEqual(landscapeDocument.export.template.titleFontSize, 72)
+        XCTAssertEqual(landscapeDocument.export.template.fontWeight, 700)
         XCTAssertEqual(landscapeDocument.assets.count, 2, "unused candidate must not be exported")
         XCTAssertEqual(landscapeDocument.export.totalFrames, try TimeStoryTimeline.normalize(project: project).totalFrames)
         XCTAssertEqual(landscapeResult.totalFrames, project.timelineFrameCount)

@@ -46,7 +46,7 @@ protocol TimeStoryPackageExporting: Sendable {
 struct StoryRenderPackageExporter: TimeStoryPackageExporting, Sendable {
     static let schemaVersion = "0.1"
     static let schemaCommit = "30d412449354efce1ec002539e471b7c067e11c7"
-    static let schemaSHA256 = "884a6fed3eb4d8cf3b37c450b8a9a4e2d21782220532a66d21dccdf8fe696841"
+    static let schemaSHA256 = "62152ef8ff73882a459359f11f551bc3d6582a4b6d299e30cc8486846b28a1a0"
     static let exporterVersion = "imageall-story-render-package-v0.1"
 
     let media: any TimeStoryMediaLoading
@@ -197,10 +197,13 @@ struct StoryRenderPackageExporter: TimeStoryPackageExporting, Sendable {
                     title: renderedProjectTitle,
                     subtitle: nil,
                     closingText: nil,
-                    fontFamily: "PingFang SC",
+                    fontFamily: project.resolvedTypography.family,
                     textColor: "#FFFFFF",
                     accentColor: "#F2C879",
-                    safeMarginRatio: 0.07
+                    safeMarginRatio: 0.07,
+                    titleFontSize: project.resolvedTypography.titleSize,
+                    captionFontSize: project.resolvedTypography.captionSize,
+                    fontWeight: project.resolvedTypography.weight
                 )
             ),
             assets: packageAssets,
@@ -534,6 +537,9 @@ struct StoryRenderPackageDocument: Codable, Sendable, Equatable {
         var textColor: String?
         var accentColor: String?
         var safeMarginRatio: Double?
+        var titleFontSize: Double? = nil
+        var captionFontSize: Double? = nil
+        var fontWeight: Int? = nil
     }
 
     struct Asset: Codable, Sendable, Equatable {

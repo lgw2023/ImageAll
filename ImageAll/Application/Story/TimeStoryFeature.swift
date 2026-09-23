@@ -7,6 +7,24 @@ import GRDB
 import ImageIO
 import UniformTypeIdentifiers
 
+/// Story-wide typography; pixel sizes refer to a 1080-pixel short edge.
+struct StoryTypography: Codable, Sendable, Equatable {
+    var family = "PingFang SC"
+    var titleSize: Double = 64
+    var captionSize: Double = 36
+    var weight: Int = 400
+
+    func font(size: Double) -> NSFont {
+        let base = NSFontManager.shared.font(withFamily: family, traits: [], weight: 5, size: size)
+            ?? NSFont.systemFont(ofSize: size)
+        return weight >= 600 ? NSFontManager.shared.convert(base, toHaveTrait: .boldFontMask) : base
+    }
+
+    var creativeConstraint: String {
+        "文字样式由 ImageAll 固定：字体 \(family)，标题 \(Int(titleSize)) px，字幕 \(Int(captionSize)) px，字重 \(weight)（1080 像素短边）。保留该样式，仅优化文字内容和节奏。"
+    }
+}
+
 enum TimeStoryConstants {
     static let schemaVersion = 1
     static let templateVersion = "growth-footprints-v1"
@@ -189,6 +207,8 @@ struct TimeStoryProject: Codable, Sendable, Equatable, Identifiable {
     var isFreeform: Bool? = nil
     var styleTemplate: StoryStyleSelection? = nil
     var styleReceipt: StoryStyleReceipt? = nil
+    var typography: StoryTypography? = nil
+    var resolvedTypography: StoryTypography { typography ?? StoryTypography() }
 
     var timelineDurationSeconds: Double {
         (try? TimeStoryTimeline.normalize(project: self).durationSeconds) ?? 0
@@ -1332,6 +1352,7 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
         }
         try await renderVideo(
             timeline: timeline,
+            typography: project.resolvedTypography,
             images: images,
             outputURL: silentURL,
             onProgress: onProgress
@@ -1362,6 +1383,7 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
 
     private func renderVideo(
         timeline: TimeStoryFrameTimeline,
+        typography: StoryTypography,
         images: [UUID: CGImage],
         outputURL: URL,
         onProgress: @escaping @Sendable (TimeStoryRenderProgress) -> Void
@@ -1405,7 +1427,7 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
                     try await Task.sleep(for: .milliseconds(2))
                 }
                 guard let state = timeline.state(atFrame: frame),
-                      let buffer = Self.makePixelBuffer(state: state, images: images)
+                      let buffer = Self.makePixelBuffer(state: state, images: images, typography: typography)
                 else {
                     throw TimeStoryError.renderingFailed("无法绘制第 \(frame + 1) 帧")
                 }
@@ -1468,7 +1490,8 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
 
     private static func makePixelBuffer(
         state: TimeStoryTimelineState,
-        images: [UUID: CGImage]
+        images: [UUID: CGImage],
+        typography: StoryTypography
     ) -> CVPixelBuffer? {
         var buffer: CVPixelBuffer?
         let status = CVPixelBufferCreate(
@@ -1504,7 +1527,7 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
             image: state.current.assetID.flatMap { images[$0] },
             in: context,
             alpha: 1 - state.blend,
-            progress: state.progress
+            progress: state.progress, typography: typography
         )
         if let next = state.next {
             draw(
@@ -1512,7 +1535,7 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
                 image: next.assetID.flatMap { images[$0] },
                 in: context,
                 alpha: state.blend,
-                progress: 0
+                progress: 0, typography: typography
             )
         }
         return buffer
@@ -1523,17 +1546,18 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
         image: CGImage?,
         in context: CGContext,
         alpha: Double,
-        progress: Double
+        progress: Double,
+        typography: StoryTypography
     ) {
         switch segment.kind {
         case .projectTitle:
-            drawTitle(segment.title ?? "", style: .project, in: context, alpha: alpha)
+            drawTitle(segment.title ?? "", style: .project, in: context, alpha: alpha, typography: typography)
         case .chapterTitle:
-            drawTitle(segment.title ?? "", style: .chapter, in: context, alpha: alpha)
+            drawTitle(segment.title ?? "", style: .chapter, in: context, alpha: alpha, typography: typography)
         case .photo:
             guard let image else { return }
             draw(image: image, in: context, alpha: alpha, progress: progress, mode: segment.presentationMode)
-            drawCaption(segment.caption ?? "", in: context, alpha: alpha)
+            drawCaption(segment.caption ?? "", in: context, alpha: alpha, typography: typography)
         }
     }
 
@@ -1567,7 +1591,8 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
         _ title: String,
         style: TitleStyle,
         in context: CGContext,
-        alpha: Double
+        alpha: Double,
+        typography: StoryTypography
     ) {
         guard alpha > 0 else { return }
         let canvas = CGRect(origin: .zero, size: outputSize)
@@ -1576,12 +1601,11 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
         context.setAlpha(CGFloat(alpha))
         context.setFillColor(NSColor(calibratedRed: 0.055, green: 0.082, blue: 0.12, alpha: 1).cgColor)
         context.fill(canvas)
-        let size: CGFloat = style == .project ? 74 : 58
+        let size = typography.titleSize * (style == .project ? 1 : 0.8)
         let attributed = NSAttributedString(
             string: title,
             attributes: [
-                .font: NSFont(name: "PingFang SC", size: size)
-                    ?? NSFont.systemFont(ofSize: size, weight: .semibold),
+                .font: typography.font(size: size),
                 .foregroundColor: NSColor.white,
             ]
         )
@@ -1593,7 +1617,7 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
         context.fill(CGRect(x: outputSize.width / 2 - 72, y: 235, width: 144, height: 5))
     }
 
-    private static func drawCaption(_ caption: String, in context: CGContext, alpha: Double) {
+    private static func drawCaption(_ caption: String, in context: CGContext, alpha: Double, typography: StoryTypography) {
         guard !caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         context.saveGState()
         defer { context.restoreGState() }
@@ -1601,7 +1625,7 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
         let attributed = NSAttributedString(
             string: caption,
             attributes: [
-                .font: NSFont(name: "PingFang SC", size: 42) ?? NSFont.systemFont(ofSize: 42, weight: .semibold),
+                .font: typography.font(size: typography.captionSize),
                 .foregroundColor: NSColor.white,
                 .strokeColor: NSColor.black.withAlphaComponent(0.7),
                 .strokeWidth: -3.0,

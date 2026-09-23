@@ -207,6 +207,9 @@ struct StoryAtelierExchange: Sendable {
     func publish(project: TimeStoryProject, feedback: String? = nil,
                  parentProjectRevision: String? = nil) async throws -> StoryAtelierReceipt {
         let intent = (project.creativeIntent ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard intent.count + project.resolvedTypography.creativeConstraint.count + 1 <= 4000 else {
+            throw StoryCreativeError.invalid("创作意图与文字样式约束合计超过 4000 字，请缩短创作意图后重试。")
+        }
         let note = feedback?.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !intent.isEmpty, intent.count <= 4000, (note?.count ?? 0) <= 4000 else {
             throw StoryCreativeError.invalid("请填写创作意图；修改意见不能超过 4000 字。")
@@ -274,7 +277,7 @@ struct StoryAtelierExchange: Sendable {
         let request = StoryAtelierRequest(protocolVersion: capability.protocolVersion, requestID: requestID,
             projectID: StoryRenderPackageExporter.packageProjectID(for: project.id),
             requestRevision: revision, baseFingerprint: try StoryCreativePlugin.fingerprint(project),
-            scopeDigestSHA256: Self.scopeDigest(assets), intent: intent, feedback: note,
+            scopeDigestSHA256: Self.scopeDigest(assets), intent: intent + "\n" + project.resolvedTypography.creativeConstraint, feedback: note,
             parentProjectRevision: parent, subject: project.subjectTagDisplayName,
             targetFrames: project.creativeTargetFrames ?? 1350, assets: assets,
             selectedAssetIDs: project.shots.compactMap { map[$0.assetID] },
@@ -629,6 +632,9 @@ struct StoryCreativePlugin: Sendable {
 
     func publish(project: TimeStoryProject, aspect: TimeStoryPackageAspect, authorization: StoryModelAuthorization? = nil) async throws -> StoryCreativeReceipt {
         let intent = (project.creativeIntent ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard intent.count + project.resolvedTypography.creativeConstraint.count + 1 <= 4000 else {
+            throw StoryCreativeError.invalid("创作意图与文字样式约束合计超过 4000 字，请缩短创作意图后重试。")
+        }
         guard !intent.isEmpty, intent.count <= 4000, !project.shots.isEmpty, project.shots.count <= 100 else {
             throw StoryCreativeError.invalid("请填写创作意图，并限定为 1–100 张当前故事照片。")
         }
@@ -671,7 +677,7 @@ struct StoryCreativePlugin: Sendable {
                                captureTimeSource: candidate.captureTimeSource, placeName: candidate.placeName))
         }
         var request = StoryCreativeRequest(
-            protocolVersion: pluginCapability.protocolVersion, requestID: requestID, projectID: story.projectID, baseFingerprint: base, intent: intent,
+            protocolVersion: pluginCapability.protocolVersion, requestID: requestID, projectID: story.projectID, baseFingerprint: base, intent: intent + "\n" + project.resolvedTypography.creativeConstraint,
             subject: project.subjectTagDisplayName, targetFrames: project.creativeTargetFrames ?? 1800,
             aspect: aspect, storySHA256: Self.hash(storyData), facts: facts,
             shots: project.shots.map { .init(shotID: $0.id.uuidString.lowercased(),

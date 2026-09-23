@@ -2,6 +2,8 @@
 from pathlib import Path
 
 def apply(engine: Path):
+    import typography_patch
+    typography_patch.apply(engine)
     module = engine / 'lib/config_model.py'
     source = module.read_text()
     original = 'config_path = Path(__file__).resolve().parent.parent / "config.yaml"'

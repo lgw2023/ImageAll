@@ -302,6 +302,10 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         do { try atelierExchange.cancel(receipt); atelierProposal = nil; refreshAtelierStatus() }
         catch { atelierStatus = error.localizedDescription }
     }
+    func setTypography(_ value: StoryTypography) {
+        guard !isInputLocked else { return }
+        project?.typography = value
+    }
     func setCreativeIntent(_ value: String) {
         guard !isInputLocked else { return }
         project?.creativeIntent = String(value.prefix(4000)) }
@@ -1795,6 +1799,9 @@ struct TimeStoryWorkspaceView: View {
             Toggle("显示片头", isOn: Binding(get: { model.project?.showsProjectTitle ?? true }, set: { model.setTitleCards(projectTitle: $0) }))
             Toggle("显示章节卡", isOn: Binding(get: { model.project?.showsChapterTitles ?? true }, set: { model.setTitleCards(chapters: $0) }))
             Divider()
+            StoryTypographyEditor(value: project.resolvedTypography, onChange: model.setTypography)
+                .disabled(model.isInputLocked)
+            Divider()
             Text("创作意图").font(.headline)
             TextField("希望呈现什么内容与氛围", text: Binding(get: { model.project?.creativeIntent ?? "" }, set: { model.setCreativeIntent($0) }), axis: .vertical)
                 .lineLimit(3...6).textFieldStyle(.roundedBorder).accessibilityIdentifier("storyCreativeIntent")
@@ -2506,6 +2513,7 @@ private struct TimeStoryTimelinePreview: View {
     let thumbnails: [UUID: NSImage]
     @State private var isPlaying = false
     @State private var playbackStartedAt = Date()
+    @State private var previewWidth: CGFloat = 864
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !isPlaying)) { context in
@@ -2531,6 +2539,7 @@ private struct TimeStoryTimelinePreview: View {
                 }
                 .aspectRatio(16 / 9, contentMode: .fit)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { previewWidth = $0 }
                 .accessibilityIdentifier("timeStoryTimelinePreview")
 
                 HStack(spacing: 12) {
@@ -2562,7 +2571,7 @@ private struct TimeStoryTimelinePreview: View {
                     Color(red: 0.055, green: 0.082, blue: 0.12)
                     VStack(spacing: 10) {
                         Text(segment.title ?? "")
-                            .font(segment.kind == .projectTitle ? .title.bold() : .title2.bold())
+                            .font(Font(project.resolvedTypography.font(size: project.resolvedTypography.titleSize * (segment.kind == .projectTitle ? 1 : 0.8) * (previewWidth / 1920))))
                             .multilineTextAlignment(.center)
                             .foregroundStyle(.white)
                         Rectangle()
@@ -2580,7 +2589,7 @@ private struct TimeStoryTimelinePreview: View {
                        !caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     {
                         Text(caption)
-                            .font(.headline)
+                            .font(Font(project.resolvedTypography.font(size: project.resolvedTypography.captionSize * (previewWidth / 1920))))
                             .foregroundStyle(.white)
                             .shadow(color: .black, radius: 3)
                             .padding(.horizontal, 12)
@@ -2698,5 +2707,63 @@ struct StorySubjectPicker: View {
             }
         }.padding(16).frame(width: 480, height: 520)
             .accessibilityIdentifier("storySubjectGroupedPicker")
+    }
+}
+
+
+private struct StoryTypographyEditor: View {
+    let value: StoryTypography
+    let onChange: (StoryTypography) -> Void
+    @State private var families = NSFontManager.shared.availableFontFamilies.filter { !$0.hasPrefix(".") }.sorted()
+    private static let common = ["PingFang SC", "Songti SC", "Kaiti SC", "Hiragino Sans GB", "Heiti SC", "Arial", "Avenir"]
+    private static let names = ["PingFang SC": "苹方", "Songti SC": "宋体", "Kaiti SC": "楷体", "Hiragino Sans GB": "冬青黑体", "Heiti SC": "黑体"]
+    private func label(_ family: String) -> String { Self.names[family].map { "\($0) · \(family)" } ?? family }
+    private var visibleFamilies: [String] {
+        let ordered = Self.common.filter { families.contains($0) } + families.filter { !Self.common.contains($0) }
+        return ordered.filter { fontSearch.isEmpty || label($0).localizedCaseInsensitiveContains(fontSearch) }
+    }
+    @State private var choosingFont = false
+    @State private var fontSearch = ""
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("文字样式").font(.headline)
+            Button { choosingFont.toggle() } label: {
+                HStack { Text(label(value.family)).font(.custom(value.family, size: 15)); Spacer(); Image(systemName: "chevron.down") }
+            }.accessibilityIdentifier("storyFontFamily")
+                .popover(isPresented: $choosingFont, arrowEdge: .bottom) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        TextField("搜索本机字体", text: $fontSearch).textFieldStyle(.roundedBorder)
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 4) {
+                                ForEach(visibleFamilies, id: \.self) { family in
+                                    Button {
+                                        var next = value; next.family = family; onChange(next); choosingFont = false
+                                    } label: {
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            HStack { Text(label(family)).font(.caption); Spacer(); if value.family == family { Image(systemName: "checkmark") } }
+                                            Text("时光里的故事 · Aa 123").font(.custom(family, size: 20))
+                                        }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
+                                    }.buttonStyle(.plain)
+                                }
+                            }
+                        }
+                    }.padding(12).frame(width: 310, height: 390)
+                }
+            Picker("字重", selection: Binding(get: { value.weight }, set: { weight in var next = value; next.weight = weight; onChange(next) })) {
+                Text("常规").tag(400)
+                Text("粗体").tag(700)
+            }
+            Stepper("标题 \(Int(value.titleSize)) px", value: Binding(get: { value.titleSize }, set: { size in var next = value; next.titleSize = size; onChange(next) }), in: 24...120, step: 2)
+                .accessibilityIdentifier("storyTitleFontSize")
+            Stepper("字幕 \(Int(value.captionSize)) px", value: Binding(get: { value.captionSize }, set: { size in var next = value; next.captionSize = size; onChange(next) }), in: 16...80, step: 2)
+                .accessibilityIdentifier("storyCaptionFontSize")
+            VStack(spacing: 8) {
+                Text("时光里的故事").font(Font(value.font(size: value.titleSize * 0.4)))
+                Text("把这一刻，留给未来 · Aa 123").font(Font(value.font(size: value.captionSize * 0.4)))
+            }.foregroundStyle(.white).frame(maxWidth: .infinity).padding(16)
+                .background(Color(red: 0.055, green: 0.082, blue: 0.12), in: RoundedRectangle(cornerRadius: 8))
+            Text("全故事统一使用；字号按 1080 像素短边计算。使用本机已安装字体；缺失字形由系统补全。")
+                .font(.caption).foregroundStyle(.secondary)
+        }
     }
 }
