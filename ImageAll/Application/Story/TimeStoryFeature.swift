@@ -136,6 +136,16 @@ struct TimeStoryShot: Codable, Sendable, Equatable, Identifiable {
     var reasons: [String]
     var isLocked: Bool
     var isUserEdited: Bool
+    // Optional fields preserve compatibility with saved stories predating field-level protection.
+    var explicitLock: Bool? = nil
+    var captionEdited: Bool? = nil
+    var durationEdited: Bool? = nil
+
+    var hasExplicitLock: Bool {
+        explicitLock ?? (isLocked && (reasons.contains("用户锁定") || !reasons.contains("手动编排")) && !reasons.contains("用户替换"))
+    }
+    var protectsCaption: Bool { captionEdited ?? (isUserEdited && !caption.isEmpty) }
+    var protectsDuration: Bool { durationEdited ?? (isUserEdited && durationSeconds != TimeStoryConstants.defaultShotDurationSeconds) }
 }
 
 struct TimeStoryChapter: Codable, Sendable, Equatable, Identifiable {
@@ -989,7 +999,7 @@ struct TimeStoryPlanner: Sendable {
         let shot = TimeStoryShot(id: UUID(), assetID: candidate.assetID,
             contentRevision: candidate.contentRevision, chapterID: chapterID, caption: "",
             durationSeconds: TimeStoryConstants.defaultShotDurationSeconds,
-            presentationMode: .fullFrameWithBackground, reasons: ["手动编排"], isLocked: true, isUserEdited: true)
+            presentationMode: .fullFrameWithBackground, reasons: ["手动编排"], isLocked: false, isUserEdited: true, explicitLock: false, captionEdited: false, durationEdited: false)
         let index = targetID.flatMap { id in updated.shots.firstIndex(where: { $0.id == id }) } ?? updated.shots.endIndex
         updated.shots.insert(shot, at: index)
         for index in updated.chapters.indices {
@@ -1010,7 +1020,6 @@ struct TimeStoryPlanner: Sendable {
         shot.chapterID = targetID.flatMap { id in updated.shots.first(where: { $0.id == id })?.chapterID }
             ?? updated.chapters.last!.id
         shot.isUserEdited = true
-        shot.isLocked = true
         updated.shots.insert(shot, at: targetIndex)
         for index in updated.chapters.indices {
             updated.chapters[index].shotIDs = updated.shots.filter { $0.chapterID == updated.chapters[index].id }.map(\.id)

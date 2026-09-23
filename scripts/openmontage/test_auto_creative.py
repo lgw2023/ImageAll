@@ -33,7 +33,7 @@ class AutoTests(unittest.TestCase):
                     aid='asset-'+str(i);p=directory/f'package/assets/{aid}.jpg';Image.new('RGB',(32,32),color).save(p);digest=legacy.digest(p.read_bytes())
                     assets.append(dict(assetID=aid,mediaType='image/jpeg',relativePath=f'assets/{aid}.jpg',renderFileSHA256=digest,sourceContentVersion='v1'))
                     facts.append(dict(assetID=aid,contentVersion='v1',sha256=digest,captureTimeMs=None,captureTimeSource=None,placeName=None))
-                    shots.append(dict(shotID=str(uuid.uuid4()),assetID=aid,chapterID=chapter,caption='锁定' if i==0 else '',durationFrames=60,locked=i==0,userEdited=False))
+                    shots.append(dict(shotID=str(uuid.uuid4()),assetID=aid,chapterID=chapter,caption='锁定' if i==0 else '',durationFrames=60,locked=i==0,userEdited=False,captionProtected=False,durationProtected=False))
                 legacy.write(directory/'package/story.json',dict(schemaVersion='0.1',projectID='synthetic',assets=assets))
                 req=dict(protocolVersion='1.2',profile='editable-story-v1',requestID=directory.name,projectID='synthetic',baseFingerprint='a'*64,intent='动态色彩',subject='合成',targetFrames=150,aspect='landscape',externalSendAllowed=True,modelAuthorization=dict(endpoint=endpoint,model='fixture'),storySHA256=legacy.digest((directory/'package/story.json').read_bytes()),facts=facts,shots=shots,chapters=[dict(chapterID=chapter,title='合成')],title='合成故事')
                 def publish():
@@ -47,6 +47,14 @@ class AutoTests(unittest.TestCase):
                 with self.assertRaises(ValueError):auto.validate_plan(req,digest,bad)
                 bad=copy.deepcopy(plan);bad['shots'].reverse()
                 with self.assertRaises(ValueError):auto.validate_plan(req,digest,bad)
+                # A selection/edit marker alone does not freeze timing when field flags are present.
+                scoped=copy.deepcopy(req)
+                scoped['shots'][1].update(userEdited=True,captionProtected=False,durationProtected=False)
+                auto.validate_plan(scoped,digest,plan)
+                scoped['shots'][1]['captionProtected']=True
+                with self.assertRaises(ValueError):auto.validate_plan(scoped,digest,plan)
+                scoped['shots'][1].update(captionProtected=False,durationProtected=True)
+                with self.assertRaises(ValueError):auto.validate_plan(scoped,digest,plan)
                 (directory/'ready.json').unlink()
                 req['externalSendAllowed']=False;publish();auto.run(directory);self.assertEqual(len(calls),1)
                 req['externalSendAllowed']=True;req['modelAuthorization']['model']='wrong';publish();auto.run(directory);self.assertEqual(len(calls),1)

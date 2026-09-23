@@ -512,6 +512,8 @@ struct StoryCreativeRequest: Codable, Sendable {
         var durationFrames: Int
         var locked: Bool
         var userEdited: Bool
+        var captionProtected: Bool? = nil
+        var durationProtected: Bool? = nil
     }
     struct Chapter: Codable, Sendable {
         var chapterID: String
@@ -671,7 +673,7 @@ struct StoryCreativePlugin: Sendable {
             shots: project.shots.map { .init(shotID: $0.id.uuidString.lowercased(),
                 assetID: StoryRenderPackageExporter.packageAssetID(projectID: project.id, assetID: $0.assetID),
                 chapterID: $0.chapterID.uuidString.lowercased(), caption: $0.caption,
-                durationFrames: Int(($0.durationSeconds * 30).rounded()), locked: $0.isLocked, userEdited: $0.isUserEdited) },
+                durationFrames: Int(($0.durationSeconds * 30).rounded()), locked: $0.hasExplicitLock, userEdited: pluginCapability.protocolVersion == "1.2" ? false : ($0.protectsCaption || $0.protectsDuration), captionProtected: pluginCapability.protocolVersion == "1.2" ? $0.protectsCaption : nil, durationProtected: pluginCapability.protocolVersion == "1.2" ? $0.protectsDuration : nil) },
             chapters: project.chapters.map { .init(chapterID: $0.id.uuidString.lowercased(), title: $0.title) }, title: project.title)
         request.modelAuthorization = authorization
         request.externalSendAllowed = authorization != nil
@@ -806,9 +808,12 @@ struct StoryCreativePlugin: Sendable {
                   proposed.factRefs.allSatisfy({ ($0 == proposed.assetID + ".captureTimeMs" && fact.captureTimeMs != nil) || ($0 == proposed.assetID + ".placeName" && fact.placeName != nil) }) else {
                 throw StoryCreativeError.invalid("INVALID_REFERENCE_OR_TIMELINE")
             }
-            if source.locked || source.userEdited {
-                guard proposed.caption == source.caption, proposed.durationFrames == source.durationFrames,
-                      proposed.chapterID == source.chapterID else { throw StoryCreativeError.invalid("USER_CONSTRAINT_CONFLICT") }
+            let protectCaption = source.locked || (source.captionProtected ?? source.userEdited)
+            let protectDuration = source.locked || (source.durationProtected ?? source.userEdited)
+            guard (!protectCaption || proposed.caption == source.caption),
+                  (!protectDuration || proposed.durationFrames == source.durationFrames),
+                  (!source.locked || proposed.chapterID == source.chapterID) else {
+                throw StoryCreativeError.invalid("USER_CONSTRAINT_CONFLICT")
             }
             if lastChapter != proposed.chapterID {
                 guard seenChapters.insert(proposed.chapterID).inserted else { throw StoryCreativeError.invalid("CHAPTER_ORDER_CONFLICT") }
@@ -824,7 +829,11 @@ struct StoryCreativePlugin: Sendable {
             shot.chapterID = chapterID
             shot.caption = proposed.caption
             shot.durationSeconds = Double(proposed.durationFrames) / 30
-            shot.reasons = ["创作建议：" + proposed.rationale]
+            shot.explicitLock = source.locked
+            shot.isLocked = source.locked
+            shot.captionEdited = source.captionProtected ?? source.userEdited
+            shot.durationEdited = source.durationProtected ?? source.userEdited
+            shot.reasons = (source.locked ? ["用户锁定"] : []) + ["创作建议：" + proposed.rationale]
             shots.append(shot)
         }
         guard request.shots.filter({ $0.locked || $0.userEdited }).allSatisfy({ original in plan.shots.contains { $0.shotID == original.shotID } }) else {

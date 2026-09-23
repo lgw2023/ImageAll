@@ -1639,7 +1639,9 @@ final class TimeStoryFeatureTests: XCTestCase {
         let planner = TimeStoryPlanner()
         let inserted = try planner.manuallyInserting(extra, in: project, nowMs: 41)
         XCTAssertEqual(inserted.shots.count, 3)
-        XCTAssertTrue(inserted.shots[2].isLocked)
+        XCTAssertFalse(inserted.shots[2].isLocked)
+        XCTAssertFalse(inserted.shots[2].protectsCaption)
+        XCTAssertFalse(inserted.shots[2].protectsDuration)
         XCTAssertNoThrow(try TimeStoryTimeline.normalize(project: inserted))
         let moved = try planner.moving(inserted.shots[2].id, before: inserted.shots[0].id, in: inserted, nowMs: 42)
         XCTAssertEqual(moved.shots.first?.assetID, extra.assetID)
@@ -1692,6 +1694,18 @@ final class TimeStoryFeatureTests: XCTestCase {
         XCTAssertEqual(applied.title, "新标题")
         XCTAssertEqual(applied.shots.first?.durationSeconds, 2.5)
         XCTAssertEqual(applied.candidateSnapshot, project.candidateSnapshot, "插件观察不能修改图库事实")
+        var protectedRequest = request
+        protectedRequest.shots[0].captionProtected = true
+        XCTAssertThrowsError(try plugin.apply(plan, request: protectedRequest, digest: loadedHash, to: project))
+        var captionPlan = plan
+        captionPlan.shots[0].caption = request.shots[0].caption
+        XCTAssertNoThrow(try plugin.apply(captionPlan, request: protectedRequest, digest: loadedHash, to: project))
+        protectedRequest.shots[0].captionProtected = false
+        protectedRequest.shots[0].durationProtected = true
+        XCTAssertThrowsError(try plugin.apply(plan, request: protectedRequest, digest: loadedHash, to: project))
+        var durationPlan = plan
+        durationPlan.shots[0].durationFrames = request.shots[0].durationFrames
+        XCTAssertNoThrow(try plugin.apply(durationPlan, request: protectedRequest, digest: loadedHash, to: project))
         let store = TimeStoryProjectStore(applicationSupportDirectory: root)
         applied.shots[0].caption = "用户修改"
         try store.save(applied)
@@ -1747,6 +1761,18 @@ final class TimeStoryFeatureTests: XCTestCase {
         XCTAssertEqual(applied.title, "新标题")
         XCTAssertEqual(applied.shots.first?.durationSeconds, 2.5)
         XCTAssertEqual(applied.candidateSnapshot, project.candidateSnapshot, "插件观察不能修改图库事实")
+        var protectedRequest = request
+        protectedRequest.shots[0].captionProtected = true
+        XCTAssertThrowsError(try plugin.apply(plan, request: protectedRequest, digest: loadedHash, to: project))
+        var captionPlan = plan
+        captionPlan.shots[0].caption = request.shots[0].caption
+        XCTAssertNoThrow(try plugin.apply(captionPlan, request: protectedRequest, digest: loadedHash, to: project))
+        protectedRequest.shots[0].captionProtected = false
+        protectedRequest.shots[0].durationProtected = true
+        XCTAssertThrowsError(try plugin.apply(plan, request: protectedRequest, digest: loadedHash, to: project))
+        var durationPlan = plan
+        durationPlan.shots[0].durationFrames = request.shots[0].durationFrames
+        XCTAssertNoThrow(try plugin.apply(durationPlan, request: protectedRequest, digest: loadedHash, to: project))
         let store = TimeStoryProjectStore(applicationSupportDirectory: root)
         applied.shots[0].caption = "用户修改"
         try store.save(applied)
@@ -1790,6 +1816,29 @@ final class TimeStoryFeatureTests: XCTestCase {
         plan.shots.reverse()
         plan.shots[0].durationFrames += 1
         XCTAssertThrowsError(try plugin.apply(plan, request: request, digest: hash, to: project))
+    }
+
+    func testCreativeProtectionSeparatesLegacySelectionFromExplicitEdits() throws {
+        var shot = renderProject(first: UUID(), second: UUID()).shots[0]
+        shot.reasons = ["手动编排"]
+        shot.isLocked = true
+        shot.isUserEdited = true
+        shot.caption = ""
+        shot.durationSeconds = TimeStoryConstants.defaultShotDurationSeconds
+        XCTAssertFalse(shot.hasExplicitLock)
+        XCTAssertFalse(shot.protectsCaption)
+        XCTAssertFalse(shot.protectsDuration)
+        shot.captionEdited = true
+        XCTAssertTrue(shot.protectsCaption)
+        XCTAssertFalse(shot.protectsDuration)
+        shot.durationEdited = true
+        XCTAssertTrue(shot.protectsDuration)
+        shot.explicitLock = true
+        XCTAssertTrue(shot.hasExplicitLock)
+        let restored = try JSONDecoder().decode(TimeStoryShot.self, from: JSONEncoder().encode(shot))
+        XCTAssertEqual(restored, shot)
+        shot.explicitLock = false
+        XCTAssertFalse(shot.hasExplicitLock)
     }
 
     func testCreativePluginRejectsLockedChangesAndUnsafePath() throws {

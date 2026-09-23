@@ -575,6 +575,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
               let index = project.shots.firstIndex(where: { $0.id == shotID })
         else { return }
         project.shots[index].caption = String(caption.prefix(240))
+        project.shots[index].captionEdited = true
         project.shots[index].isUserEdited = true
         project.updatedAtMs = runtime.clock.nowMs
         self.project = project
@@ -586,14 +587,15 @@ final class TimeStoryWorkspaceModel: ObservableObject {
                    clearCaptions: Bool = false, remove: Bool = false) {
         guard var edited = project, !ids.isEmpty else { return }
         for index in edited.shots.indices where ids.contains(edited.shots[index].id) {
-            if let duration, duration.isFinite { edited.shots[index].durationSeconds = min(12, max(1.5, duration)) }
+            if let duration, duration.isFinite { edited.shots[index].durationSeconds = min(12, max(1.5, duration)); edited.shots[index].durationEdited = true }
             if let mode { edited.shots[index].presentationMode = mode }
             if let locked {
                 edited.shots[index].isLocked = locked
+                edited.shots[index].explicitLock = locked
                 edited.shots[index].reasons.removeAll { $0 == "用户锁定" }
                 if locked { edited.shots[index].reasons.append("用户锁定") }
             }
-            if clearCaptions { edited.shots[index].caption = "" }
+            if clearCaptions { edited.shots[index].caption = ""; edited.shots[index].captionEdited = true }
             edited.shots[index].isUserEdited = true
         }
         if remove {
@@ -606,11 +608,25 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         project = edited
     }
 
+    func allowCreativeOptimization(_ ids: Set<UUID>) {
+        guard var project else { return }
+        for index in project.shots.indices where ids.contains(project.shots[index].id) {
+            project.shots[index].explicitLock = false
+            project.shots[index].isLocked = false
+            project.shots[index].captionEdited = false
+            project.shots[index].durationEdited = false
+            project.shots[index].reasons.removeAll { $0 == "用户锁定" }
+        }
+        project.updatedAtMs = runtime.clock.nowMs
+        self.project = project
+    }
+
     func setDuration(_ shotID: UUID, seconds: Double) {
         guard var project,
               let index = project.shots.firstIndex(where: { $0.id == shotID })
         else { return }
         project.shots[index].durationSeconds = min(12, max(1.5, seconds))
+        project.shots[index].durationEdited = true
         project.shots[index].isUserEdited = true
         project.updatedAtMs = runtime.clock.nowMs
         self.project = project
@@ -620,7 +636,8 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         guard var project,
               let index = project.shots.firstIndex(where: { $0.id == shotID })
         else { return }
-        project.shots[index].isLocked.toggle()
+        project.shots[index].isLocked = !project.shots[index].hasExplicitLock
+        project.shots[index].explicitLock = project.shots[index].isLocked
         if project.shots[index].isLocked {
             if !project.shots[index].reasons.contains("用户锁定") {
                 project.shots[index].reasons.append("用户锁定")
@@ -657,8 +674,8 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         project.shots[index].assetID = candidate.assetID
         project.shots[index].contentRevision = candidate.contentRevision
         project.shots[index].caption = candidate.placeName ?? project.subjectTagDisplayName
-        project.shots[index].reasons = ["用户替换", "用户锁定"]
-        project.shots[index].isLocked = true
+        project.shots[index].reasons = ["用户替换"]
+        project.shots[index].captionEdited = false
         project.shots[index].isUserEdited = true
         project.updatedAtMs = runtime.clock.nowMs
         self.project = project
@@ -1604,6 +1621,7 @@ struct TimeStoryWorkspaceView: View {
     @ViewBuilder private var batchShotActions: some View {
         Button("锁定所选镜头") { model.editShots(selectedShotIDs, locked: true) }
         Button("解锁所选镜头") { model.editShots(selectedShotIDs, locked: false) }
+        Button("允许重新优化所选字幕与时长") { model.allowCreativeOptimization(selectedShotIDs) }
         Menu("画面适配") {
             ForEach(TimeStoryPresentationMode.allCases, id: \.self) { mode in
                 Button(mode.displayName) { model.editShots(selectedShotIDs, mode: mode) }
@@ -1855,7 +1873,13 @@ struct TimeStoryWorkspaceView: View {
     private func creativePanel(_ project: TimeStoryProject) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             VStack(alignment: .leading, spacing: 8) {
-                Text("自动分析已选照片并生成字幕和节奏建议，保留照片顺序、章节及锁定内容。方案返回后先应用，再人工调整，最后制作成片。")
+                Text("自动分析已选照片并生成字幕和节奏建议，保留已选照片、顺序和章节；创作意图与目标时长作为建议。仅明确锁定的镜头固定全部内容，手动改过的字幕或时长分别保留，其余允许自动优化。方案返回后先应用，再人工调整，最后制作成片。")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("明确锁定 \(project.shots.filter { $0.hasExplicitLock }.count) 个 · 保留手动字幕 \(project.shots.filter { $0.protectsCaption && !$0.hasExplicitLock }.count) 个 · 保留手动时长 \(project.shots.filter { $0.protectsDuration && !$0.hasExplicitLock }.count) 个")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("允许重新优化全部字幕与时长") {
+                    model.allowCreativeOptimization(Set(project.shots.map(\.id)))
+                }.help("解除镜头锁定和手动内容保护，保留当前内容作为建议；下次生成时允许调整。")
                     .font(.caption).foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 10) {
                     if project.shots.count > 100 {
@@ -2100,10 +2124,10 @@ struct TimeStoryWorkspaceView: View {
                     }
                     .frame(width: 150)
                     Toggle(isOn: Binding(
-                        get: { model.project?.shots.first(where: { $0.id == shot.id })?.isLocked ?? shot.isLocked },
+                        get: { model.project?.shots.first(where: { $0.id == shot.id })?.hasExplicitLock ?? shot.hasExplicitLock },
                         set: { _ in model.toggleLock(shot.id) }
                     )) {
-                        Label("锁定", systemImage: shot.isLocked ? "lock.fill" : "lock.open")
+                        Label("锁定", systemImage: shot.hasExplicitLock ? "lock.fill" : "lock.open")
                     }
                     .toggleStyle(.button)
                 }
