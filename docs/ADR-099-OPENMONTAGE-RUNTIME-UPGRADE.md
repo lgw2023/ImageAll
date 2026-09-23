@@ -11,3 +11,11 @@
 界面把终态成片与本次创作状态分开，标为“上次成片”，避免历史完成状态被误解为本次自动创作成功。当前失败记录不篡改、不自动重试；用户重新生成新请求后使用新服务。
 
 验证：包含旧导演 1.2.0 提交前拒绝、无 requests 目录落盘，以及新版发布/返回/应用的 Swift 定向测试通过；Python 合成 SDK 往返测试通过。正式 Debug build 通过，helper 的 PID 路径检查与 graceful stop 分支编译通过。真实失败请求仅进行离线结构校验；没有加载照片文件或重新调用模型。未通过真实进行中的渲染任务验证等待升级分支，不把该场景记为现场通过。证据及旧 App 备份位于 `/Volumes/SSD1/ImageAll-artifacts/runtime-upgrade-20260923/`。
+
+## 缓存编号缺陷的追加修复
+
+随后现场仍显示原 requestID 的失败记录，且后台重启后仍为 1.2.0。进一步发现 embed.sh 复制的是 prepare.py 初次生成的 runtime-version；修改导演覆盖脚本后没有刷新这个编号。因此新版 bundle 虽含 1.2.1，却仍指向已缓存的 1.2.0 目录，上一轮仅检查运行路径的修复不足。
+
+改为每次嵌入前应用受版本控制的 integration overrides，并对实际 Runtime 内容生成 SHA-256 身份，包含相对文件名、文件内容和符号链接目标，忽略运行生成的 pycache/pyc。prepare stamp 不再决定安装目录。新增回归证明 prepare stamp 不变时修改导演源码必定改变内容身份。helper 增加受同一 launcher-request nonce 校验约束的无界面启动入口，用于验证服务升级，不自动发布创作请求。
+
+追加现场验收：旧 payload 1e26fa… 已经 graceful drain；通过 nonce 校验的 helper 启动入口启动新内容身份 1fc609e…，并保留现有配置及可选服务偏好。随后核对 heartbeat PID 的实际命令路径为新安装目录、capabilities.pluginVersion 为 1.2.1、安装脚本字节与受版本控制的 override 一致。使用该已安装 runtime 的 Python 与 engine 跑合成 SDK 往返测试通过（本地 fixture 模型，不读取真实照片、不调用付费模型）。旧失败请求 ID 未改写、未重试。日常 App 已更新并签名验证通过；当前 App 的原生请求协议未再改变，可直接生成新请求，无需为了本次后台修复再次重启。现场证据位于 `/Volumes/SSD1/ImageAll-artifacts/payload-cache-20260923/`。

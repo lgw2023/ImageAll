@@ -115,6 +115,11 @@ final class Delegate: NSObject, NSApplicationDelegate {
         application.terminate(nil)
     }
 }
+// Headless service verification uses the same nonce-checked launch contract as the URL route.
+if CommandLine.arguments.count == 5, CommandLine.arguments[1] == "--launch-request" {
+    launch(rootPath: CommandLine.arguments[2], runtimePath: CommandLine.arguments[3], token: CommandLine.arguments[4])
+    exit(0)
+}
 let delegate = Delegate()
 let application = NSApplication.shared
 application.delegate = delegate

@@ -2,10 +2,12 @@
 set -euo pipefail
 BASE="$SRCROOT/Vendor/OpenMontage"
 [ -f "$BASE/runtime-version" ] || { echo 'error: Prepare OpenMontage runtime with scripts/openmontage/prepare.py first'; exit 1; }
+# Refresh checked-in integration overrides before hashing/copying the generated runtime.
+python3 -B -c 'import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); import config_patch; config_patch.apply(Path(sys.argv[2]))' "$SRCROOT/scripts/openmontage" "$BASE/Runtime/engine"
 HELPER="$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Helpers/OpenMontage Helper.app"
 mkdir -p "$HELPER/Contents/MacOS" "$HELPER/Contents/Resources"
 /usr/bin/ditto "$BASE/Runtime" "$HELPER/Contents/Resources/payload"
-cp "$BASE/runtime-version" "$HELPER/Contents/Resources/payload-version"
+python3 -B "$SRCROOT/scripts/openmontage/payload_version.py" "$BASE/Runtime" > "$HELPER/Contents/Resources/payload-version"
 mkdir -p "$DERIVED_FILE_DIR/OpenMontage"
 cp "$SRCROOT/scripts/openmontage/Launcher.swift" "$DERIVED_FILE_DIR/OpenMontage/main.swift"
 /usr/bin/xcrun swiftc -O "$DERIVED_FILE_DIR/OpenMontage/main.swift" "$SRCROOT/ImageAll/Application/Story/OpenMontageConfiguration.swift" -o "$HELPER/Contents/MacOS/OpenMontageHelper"
