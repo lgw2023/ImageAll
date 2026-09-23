@@ -1542,6 +1542,48 @@ final class TimeStoryFeatureTests: XCTestCase {
     }
 
     @MainActor
+    func testCreativeProgressLocksMutationsAndCancellationRestoresEditing() async throws {
+        let root = try temporaryDirectory("creative-input-lock")
+        let database = try CatalogDatabase.open(at: root.appendingPathComponent("catalog.sqlite"))
+        let first = UUID(), second = UUID()
+        var project = renderProject(first: first, second: second)
+        let media = CountingStoryThumbnailLoader(data: try pngData(color: .red, portrait: false))
+        let exporter = StoryRenderPackageExporter(media: media, validator: PassingStoryValidator())
+        let roots = FixtureOpenMontageRootProvider(root: root)
+        let runtime = TimeStoryFeatureRuntime(
+            candidates: TimeStoryCandidateProvider(database: database, query: GRDBAssetCatalogQueryRepository(database: database)),
+            planner: TimeStoryPlanner(), store: TimeStoryProjectStore(applicationSupportDirectory: root),
+            validator: PassingStoryValidator(), renderer: AVFoundationTimeStoryRenderer(media: media, temporaryDirectory: root),
+            packageExporter: exporter, openMontageTasks: FileOpenMontageStoryTaskClient(rootProvider: roots, packageExporter: exporter, installationID: "fixture"),
+            creativeRootProvider: roots, media: media, clock: SystemJobClock())
+        let receipt = StoryCreativeReceipt(requestID: "creative-" + UUID().uuidString.lowercased(), requestSHA256: String(repeating: "a", count: 64), baseFingerprint: "test", aspect: .landscape)
+        project.creativeReceipt = receipt
+        let directory = root.appendingPathComponent("creative/requests/" + receipt.requestID)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data(#"{"phase":"calling-model","message":"正在生成合成方案"}"#.utf8).write(to: directory.appendingPathComponent("auto-status.json"))
+        let model = TimeStoryWorkspaceModel(verificationRuntime: runtime,
+            tag: TagListItem(id: project.subjectTagID, displayName: project.subjectTagDisplayName, state: .active), project: project, thumbnails: [:])
+        model.refreshCreativeRequest()
+        XCTAssertTrue(model.isCreativeRunning)
+        XCTAssertTrue(model.isInputLocked)
+        let before = model.project
+        let id = project.shots[0].id
+        model.setCaption(id, caption: "不应写入")
+        model.setDuration(id, seconds: 8)
+        model.setCreativeIntent("不应改动")
+        model.moveShot(id, before: nil)
+        model.editShots([id], remove: true)
+        model.allowCreativeOptimization([id])
+        model.undo()
+        XCTAssertEqual(model.project, before)
+        model.cancelCreativeRequest()
+        XCTAssertFalse(model.isCreativeRunning)
+        XCTAssertFalse(model.isInputLocked)
+        model.setCaption(id, caption: "取消后允许编辑")
+        XCTAssertEqual(model.project?.shots[0].caption, "取消后允许编辑")
+    }
+
+    @MainActor
     func testMaterialThumbnailsUseSmallImageRouteAndCoalesceRequests() async throws {
         let root = try temporaryDirectory("thumbnail-route")
         let database = try CatalogDatabase.open(at: root.appendingPathComponent("catalog.sqlite"))

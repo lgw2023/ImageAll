@@ -73,6 +73,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     func undo() { restoreHistory(undo: true) }
     func redo() { restoreHistory(undo: false) }
     private func restoreHistory(undo: Bool) {
+        guard !isInputLocked else { return }
         guard let current = project, let value = undo ? undoProjects.popLast() : redoProjects.popLast() else { return }
         restoringHistory = true
         if undo { redoProjects.append(current) } else { undoProjects.append(current) }
@@ -81,12 +82,14 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         Task { await loadThumbnails() }
     }
     func setTitleCards(projectTitle: Bool? = nil, chapters: Bool? = nil) {
+        guard !isInputLocked else { return }
         guard var edited = project else { return }
         if let projectTitle { edited.showsProjectTitle = projectTitle }
         if let chapters { edited.showsChapterTitles = chapters }
         project = edited
     }
     func useFreeform() {
+        guard !isInputLocked else { return }
         guard var edited = project else { return }
         edited.isFreeform = true
         edited.showsProjectTitle = false
@@ -115,7 +118,12 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     @Published private(set) var lastPackageURL: URL?
     @Published private(set) var creativeStatus = "自动创作 · 返回方案后可人工调整"
     @Published private(set) var creativePlan: StoryCreativePlan?
+    @Published private(set) var isSubmittingRender = false
     @Published private(set) var isCreativeRunning = false
+    var isInputLocked: Bool {
+        isBusy || isCreativeRunning || isSubmittingRender || openMontageTask?.phase.isTerminal == false
+            || exportProgress != nil || packageExportProgress != nil
+    }
     @Published private(set) var atelierStatus = "提交后等待创作方案，读取摘要后可继续制作成片。"
     @Published private(set) var atelierProposal: StoryAtelierProposal?
     @Published private(set) var selectedAtelierRequestID: String?
@@ -135,6 +143,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         catch { styleStatus = error.localizedDescription }
     }
     func applyStyle(_ template: StoryStyleTemplate) {
+        guard !isInputLocked else { return }
         guard var current = project else { return }
         current.styleTemplate = .init(template: template, lines: current.styleTemplate?.lines ?? current.shots.map { shot in
             if let title = current.chapters.first(where: { $0.id == shot.chapterID })?.title,
@@ -147,10 +156,12 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         styleStatus = "已套用样式，照片、顺序与时长已保留。请校对文案后制作；可撤销。"
     }
     func editStyle(_ selection: StoryStyleSelection) {
+        guard !isInputLocked else { return }
         project?.styleTemplate = selection
         styleResultURL = nil
     }
     func saveStyleVariant(name: String) {
+        guard !isInputLocked else { return }
         guard let selection = project?.styleTemplate else { return }
         do {
             let value = try styleCatalog.saveVariant(selection.template, name: name)
@@ -165,7 +176,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         catch { styleStatus = error.localizedDescription }
     }
     func renderStyle() async {
-        guard let current = project, !isBusy else { return }
+        guard let current = project, !isInputLocked else { return }
         isBusy = true
         styleStatus = "正在准备当前故事素材…"
         defer { isBusy = false }
@@ -226,7 +237,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         refreshAtelierStatus()
     }
     func publishAtelierRequest(feedback: String? = nil) async {
-        guard let current = project, !isBusy else { return }
+        guard let current = project, !isInputLocked else { return }
         let parentRevision = feedback == nil ? nil : selectedAtelierReceipt?.projectRevision
         isBusy = true
         atelierStatus = "正在发布已确认候选快照…"
@@ -291,10 +302,22 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         do { try atelierExchange.cancel(receipt); atelierProposal = nil; refreshAtelierStatus() }
         catch { atelierStatus = error.localizedDescription }
     }
-    func setCreativeIntent(_ value: String) { project?.creativeIntent = String(value.prefix(4000)) }
-    func setCreativeTarget(_ seconds: Int) { project?.creativeTargetFrames = seconds * 30 }
+    func setCreativeIntent(_ value: String) {
+        guard !isInputLocked else { return }
+        project?.creativeIntent = String(value.prefix(4000)) }
+    func setCreativeTarget(_ seconds: Int) {
+        guard !isInputLocked else { return }
+        project?.creativeTargetFrames = seconds * 30 }
+    private var creativePublishingTask: Task<Void, Never>?
+    func startCreativeRequest(aspect: TimeStoryPackageAspect, authorization: StoryModelAuthorization) {
+        guard !isInputLocked, creativePublishingTask == nil else { return }
+        creativePublishingTask = Task {
+            await publishCreativeRequest(aspect: aspect, authorization: authorization)
+            creativePublishingTask = nil
+        }
+    }
     func publishCreativeRequest(aspect: TimeStoryPackageAspect, authorization: StoryModelAuthorization? = nil) async {
-        guard let current = project, !isBusy, !isCreativeRunning else { return }
+        guard let current = project, !isInputLocked else { return }
         isBusy = true
         isCreativeRunning = true
         creativeStatus = "正在发布限定范围的创作请求…"
@@ -303,6 +326,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
             creativeStatus = "正在启动并连接 OpenMontage…"
             _ = try await OpenMontageIntegrationControl.start(provider: runtime.creativeRootProvider)
             await refreshOpenMontageCapability()
+            try Task.checkCancellation()
             creativeStatus = "正在准备限定范围的派生素材…"
             let receipt = try await creativePlugin.publish(project: current, aspect: aspect, authorization: authorization)
             // Publishing does not replace concurrent editor changes.
@@ -313,9 +337,13 @@ final class TimeStoryWorkspaceModel: ObservableObject {
             creativePlan = nil
             creativeStatus = "请求已发布，等待 OpenMontage 接收"
             await refreshProjects()
-        } catch { isCreativeRunning = false; creativeStatus = error.localizedDescription }
+        } catch {
+            isCreativeRunning = false
+            creativeStatus = error is CancellationError ? "已取消创作准备；可继续编辑。" : error.localizedDescription
+        }
     }
     func pollCreativeRequest() {
+        guard !isBusy else { return }
         guard let receipt = project?.creativeReceipt, receipt.appliedPlanSHA256 == nil, creativePlan == nil else { return }
         refreshCreativeRequest()
         if creativeStatus.hasPrefix("方案已返回") { readCreativePlan() }
@@ -357,6 +385,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         } catch { creativeStatus = error.localizedDescription; return false }
     }
     func cancelCreativeRequest() {
+        creativePublishingTask?.cancel()
         guard let receipt = project?.creativeReceipt else { return }
         do { try creativePlugin.cancel(receipt); creativePlan = nil; refreshCreativeRequest() }
         catch { creativeStatus = error.localizedDescription }
@@ -519,12 +548,13 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     }
 
     func openSavedProject(_ id: UUID) async {
-        guard !isBusy else { return }
+        guard !isInputLocked else { return }
         if project != nil, !(await save()) { return }
         await open(id)
     }
 
     func regenerate() async {
+        guard !isInputLocked else { return }
         guard let current = project else { return }
         let unknownIDs = Set(current.candidateSnapshot.candidates.filter { $0.mediaCreatedAtMs == nil }.map(\.assetID))
         guard !current.shots.contains(where: { unknownIDs.contains($0.assetID) }) else {
@@ -551,6 +581,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     }
 
     func setChapterTitle(_ chapterID: UUID, title: String) {
+        guard !isInputLocked else { return }
         guard var project,
               let index = project.chapters.firstIndex(where: { $0.id == chapterID })
         else { return }
@@ -564,6 +595,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     }
 
     func setProjectTitle(_ title: String) {
+        guard !isInputLocked else { return }
         guard var project else { return }
         project.title = String(title.prefix(240))
         project.updatedAtMs = runtime.clock.nowMs
@@ -571,6 +603,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     }
 
     func setCaption(_ shotID: UUID, caption: String) {
+        guard !isInputLocked else { return }
         guard var project,
               let index = project.shots.firstIndex(where: { $0.id == shotID })
         else { return }
@@ -585,6 +618,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     func editShots(_ ids: Set<UUID>, duration: Double? = nil,
                    mode: TimeStoryPresentationMode? = nil, locked: Bool? = nil,
                    clearCaptions: Bool = false, remove: Bool = false) {
+        guard !isInputLocked else { return }
         guard var edited = project, !ids.isEmpty else { return }
         for index in edited.shots.indices where ids.contains(edited.shots[index].id) {
             if let duration, duration.isFinite { edited.shots[index].durationSeconds = min(12, max(1.5, duration)); edited.shots[index].durationEdited = true }
@@ -609,6 +643,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     }
 
     func allowCreativeOptimization(_ ids: Set<UUID>) {
+        guard !isInputLocked else { return }
         guard var project else { return }
         for index in project.shots.indices where ids.contains(project.shots[index].id) {
             project.shots[index].explicitLock = false
@@ -622,6 +657,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     }
 
     func setDuration(_ shotID: UUID, seconds: Double) {
+        guard !isInputLocked else { return }
         guard var project,
               let index = project.shots.firstIndex(where: { $0.id == shotID })
         else { return }
@@ -633,6 +669,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     }
 
     func toggleLock(_ shotID: UUID) {
+        guard !isInputLocked else { return }
         guard var project,
               let index = project.shots.firstIndex(where: { $0.id == shotID })
         else { return }
@@ -650,6 +687,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     }
 
     func remove(_ shotID: UUID) {
+        guard !isInputLocked else { return }
         guard var project,
               let shot = project.shots.first(where: { $0.id == shotID })
         else { return }
@@ -665,6 +703,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     }
 
     func replace(_ shotID: UUID, with candidate: TimeStoryCandidate) async {
+        guard !isInputLocked else { return }
         guard var project,
               let index = project.shots.firstIndex(where: { $0.id == shotID }),
               runtime.planner.manuallyEditableCandidates(in: project, replacing: shotID).contains(where: { $0.assetID == candidate.assetID })
@@ -683,6 +722,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     }
 
     func setMusic(url: URL?) {
+        guard !isInputLocked else { return }
         guard var project else { return }
         project.music = url.map {
             let bookmark = try? $0.bookmarkData(
@@ -713,6 +753,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     }
 
     func addCandidate(_ candidate: TimeStoryCandidate) async {
+        guard !isInputLocked else { return }
         guard let current = project else { return }
         do {
             let updated = try runtime.planner.manuallyInserting(candidate, in: current, nowMs: runtime.clock.nowMs)
@@ -725,6 +766,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     }
 
     func moveShots(_ ids: Set<UUID>, before targetID: UUID?) {
+        guard !isInputLocked else { return }
         guard var edited = project, targetID.map({ !ids.contains($0) }) ?? true else { return }
         let ordered = edited.shots.filter { ids.contains($0.id) }.map(\.id)
         do {
@@ -734,6 +776,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     }
 
     func moveShot(_ id: UUID, before targetID: UUID?) {
+        guard !isInputLocked else { return }
         guard let current = project else { return }
         do { project = try runtime.planner.moving(id, before: targetID, in: current, nowMs: runtime.clock.nowMs) }
         catch { message = error.localizedDescription }
@@ -869,7 +912,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     }
 
     func submitToOpenMontage(aspect: TimeStoryPackageAspect) {
-        guard let project,
+        guard !isInputLocked, let project,
               openMontageSubmissionTask == nil,
               openMontageTask?.phase.isTerminal != false
         else {
@@ -879,6 +922,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
             return
         }
         let frozenProject = project
+        isSubmittingRender = true
         openMontageTask = nil
         let client = runtime.openMontageTasks
         message = "正在准备素材并发布 OpenMontage 制作任务…"
@@ -912,10 +956,15 @@ final class TimeStoryWorkspaceModel: ObservableObject {
             progressTask.cancel()
             await progressTask.value
             self?.openMontageSubmissionTask = nil
+            self?.isSubmittingRender = false
         }
     }
 
     func cancelOpenMontageTask() {
+        if isSubmittingRender && openMontageTask == nil {
+            openMontageSubmissionTask?.cancel()
+            return
+        }
         guard let taskID = openMontageTask?.taskID,
               openMontageTask?.phase.isTerminal == false
         else { return }
@@ -1144,7 +1193,7 @@ struct TimeStoryWorkspaceView: View {
     @State private var pickedAssets: Set<UUID> = []
     @State private var inspectorTab = "镜头"
     @State private var productionMode = "当前编排"
-    @State private var showProductionSettings = false
+    @State private var productionPage = "设置"
     @State private var pendingCreativeAuthorization: StoryModelAuthorization?
     @State private var confirmCreativeSend = false
     @State private var creativeConfigurationError: String?
@@ -1187,8 +1236,23 @@ struct TimeStoryWorkspaceView: View {
             selectedShotIDs.formIntersection(Set(ids ?? []))
             if let selectedShotID, !(ids ?? []).contains(selectedShotID) { self.selectedShotID = nil; selectedCandidateID = nil }
         }
-        .sheet(isPresented: $showProductionSettings) {
-            if let project = model.project { productionSettings(project) }
+        .onChange(of: model.isCreativeRunning) { _, running in
+            if running { inspectorTab = "制作"; productionPage = "进度" }
+        }
+        .onChange(of: model.creativePlan != nil) { _, ready in
+            if ready { inspectorTab = "制作"; productionPage = "方案" }
+        }
+        .onChange(of: model.isSubmittingRender) { _, submitting in
+            if submitting { inspectorTab = "制作"; productionPage = "进度" }
+        }
+        .onChange(of: model.openMontageTask?.taskID) { _, id in
+            if id != nil { inspectorTab = "制作"; productionPage = "进度" }
+        }
+        .task {
+            while !Task.isCancelled {
+                model.pollCreativeRequest()
+                try? await Task.sleep(for: .seconds(1))
+            }
         }
         .task { await model.start() }
     }
@@ -1287,21 +1351,21 @@ struct TimeStoryWorkspaceView: View {
     private var editingActions: some View {
         HStack(spacing: 12) {
             TextField("项目名称", text: Binding(get: { model.project?.title ?? "" }, set: { model.setProjectTitle($0) }))
-                .font(.headline).textFieldStyle(.plain).frame(maxWidth: 260)
+                .font(.headline).textFieldStyle(.plain).frame(maxWidth: 260).disabled(model.isInputLocked)
             Spacer()
             Button { model.undo() } label: { Image(systemName: "arrow.uturn.backward") }
-                .help("撤销").disabled(!model.canUndo || model.isBusy)
+                .help("撤销").disabled(!model.canUndo || model.isInputLocked)
             Button { model.redo() } label: { Image(systemName: "arrow.uturn.forward") }
-                .help("重做").disabled(!model.canRedo || model.isBusy)
+                .help("重做").disabled(!model.canRedo || model.isInputLocked)
             Button("保存") { Task { await model.save() } }
                 .disabled(model.isBusy).accessibilityIdentifier("timeStorySaveButton")
-            musicMenu
+            musicMenu.disabled(model.isInputLocked)
             Button("模板库", systemImage: "square.grid.2x2") {
                 showStyleLibrary.toggle(); model.loadStyleTemplates()
             }.accessibilityIdentifier("timeStoryStyleLibrary")
-            .disabled(!integrationEnabled)
+            .disabled(!integrationEnabled || model.isInputLocked)
             Divider().frame(height: 18)
-            Button("制作视频…", systemImage: "film") { showProductionSettings = true }
+            Button("制作视频", systemImage: "film") { inspectorTab = "制作" }
                 .help("选择制作方式、画幅并查看制作进度")
                 .accessibilityIdentifier("timeStoryProductionSettings")
             Menu("导出") {
@@ -1315,7 +1379,7 @@ struct TimeStoryWorkspaceView: View {
                         }
                     }
                 }
-            }.disabled(model.project?.shots.isEmpty != false || model.isBusy || model.exportProgress != nil || model.packageExportProgress != nil)
+            }.disabled(model.project?.shots.isEmpty != false || model.isInputLocked || model.exportProgress != nil || model.packageExportProgress != nil)
                 .accessibilityIdentifier("timeStoryExportButton")
         }.padding(12).background(.bar)
     }
@@ -1326,9 +1390,9 @@ struct TimeStoryWorkspaceView: View {
             VStack(spacing: 0) {
                 editingActions
                 Divider()
-                if showStyleLibrary && integrationEnabled { styleLibrary(project).frame(maxHeight: 370) }
+                if showStyleLibrary && integrationEnabled { styleLibrary(project).frame(maxHeight: 370).disabled(model.isInputLocked) }
                 HSplitView {
-                    materialBrowser(project)
+                    materialBrowser(project).disabled(model.isInputLocked)
                         .frame(minWidth: 220, idealWidth: 280, maxWidth: 400)
                     VStack(spacing: 12) {
                         Spacer(minLength: 0)
@@ -1348,28 +1412,30 @@ struct TimeStoryWorkspaceView: View {
                         Picker("属性", selection: $inspectorTab) {
                             Text("镜头").tag("镜头")
                             Text("创作").tag("创作")
+                            Text("制作").tag("制作")
                             Text("信息").tag("信息")
                         }.pickerStyle(.segmented).padding(10)
                         ScrollView {
                             VStack(alignment: .leading, spacing: 16) {
                                 if inspectorTab == "镜头" {
-                                    if selectedShotIDs.count > 1 { batchShotInspector }
-                                    else if let shot = project.shots.first(where: { $0.id == selectedShotID }) { shotRow(shot) }
+                                    if selectedShotIDs.count > 1 { batchShotInspector.disabled(model.isInputLocked) }
+                                    else if let shot = project.shots.first(where: { $0.id == selectedShotID }) { shotRow(shot).disabled(model.isInputLocked) }
                                     else { Text("选中下方镜头，编辑字幕、时长或替换照片。").foregroundStyle(.secondary) }
                                 } else if inspectorTab == "创作" {
-                                    creationInspector(project)
+                                    creationInspector(project).disabled(model.isInputLocked)
+                                } else if inspectorTab == "制作" {
+                                    productionSettings(project)
                                 } else {
                                     readinessBody(summary: runtimeSummary(project), snapshot: project.candidateSnapshot)
                                 }
                             }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
                         }
-                    }.frame(minWidth: 275, idealWidth: 300, maxWidth: 360)
+                    }.frame(minWidth: 320, idealWidth: 380, maxWidth: 460)
                 }
                 Divider()
-                montageTimeline(project)
+                montageTimeline(project).disabled(model.isInputLocked)
                 statusBar
             }
-            .disabled(model.isBusy)
             .navigationTitle(project.title)
         } else if let snapshot = model.readinessSnapshot {
             VStack(spacing: 18) {
@@ -1738,7 +1804,7 @@ struct TimeStoryWorkspaceView: View {
             Text("当前编排 \(formattedDuration(project.timelineDurationSeconds))。目标时长用于创作请求，不会自动改动现有镜头。")
                 .font(.caption).foregroundStyle(.secondary)
             Divider()
-            Button("制作视频…", systemImage: "film") { showProductionSettings = true }
+            Button("制作视频", systemImage: "film") { inspectorTab = "制作" }
                 .accessibilityIdentifier("storyInspectorProductionSettings")
             Text("在制作面板选择方式与画幅，查看创作及成片进度。")
                 .font(.caption).foregroundStyle(.secondary)
@@ -1746,25 +1812,32 @@ struct TimeStoryWorkspaceView: View {
     }
 
     private func productionSettings(_ project: TimeStoryProject) -> some View {
-        VStack(spacing: 0) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("制作视频").font(.title2.bold())
-                    Text("\(project.title) · \(project.shots.count) 张照片 · 当前编排 \(formattedDuration(project.timelineDurationSeconds))")
-                        .font(.subheadline).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 16) {
+            Text("制作视频").font(.headline)
+            Text("\(project.shots.count) 张照片 · 当前编排 \(formattedDuration(project.timelineDurationSeconds))")
+                .font(.caption).foregroundStyle(.secondary)
+            Picker("制作步骤", selection: $productionPage) {
+                Text("设置").tag("设置")
+                Text("方案").tag("方案")
+                Text("进度 / 成片").tag("进度")
+            }.pickerStyle(.segmented)
+            if productionPage == "进度" {
+                productionProgress
+            } else if productionPage == "方案" {
+                if model.creativePlan != nil || project.creativeReceipt?.appliedPlanSHA256 != nil {
+                    creativePanel(project)
+                } else {
+                    Text("方案返回后在这里审核，再应用到编辑器微调。")
+                        .foregroundStyle(.secondary)
+                    Button("前往制作设置") { productionPage = "设置" }
                 }
-                Spacer()
-                Button("完成") { showProductionSettings = false }
-                    .keyboardShortcut(.cancelAction)
-            }.padding(20)
-            Divider()
-            ScrollView {
+            } else {
                 VStack(alignment: .leading, spacing: 18) {
                     Picker("制作方式", selection: $productionMode) {
                         Text("当前编排").tag("当前编排")
                         Text("可编辑创作").tag("可编辑创作")
                         Text("自由场景").tag("自由场景")
-                    }.pickerStyle(.segmented)
+                    }.pickerStyle(.menu).disabled(model.isInputLocked)
                         .accessibilityIdentifier("storyProductionMode")
                     Text(productionMode == "当前编排"
                          ? "按当前镜头顺序、字幕与时长生成视频。"
@@ -1782,7 +1855,7 @@ struct TimeStoryWorkspaceView: View {
                                 Picker("画幅", selection: $productionAspect) {
                                     ForEach(TimeStoryPackageAspect.allCases) { aspect in Text(aspect.displayName).tag(aspect) }
                                 }.pickerStyle(.segmented).labelsHidden()
-                                    .accessibilityIdentifier("storyProductionAspect")
+                                    .accessibilityIdentifier("storyProductionAspect").disabled(model.isInputLocked)
                             }
                             Text("画幅只用于本次制作；编辑区继续显示当前编排的横屏预览。")
                                 .font(.caption).foregroundStyle(.secondary)
@@ -1821,17 +1894,53 @@ struct TimeStoryWorkspaceView: View {
                             }.disabled(!integrationEnabled)
                         }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
                     }
-                }.padding(20)
-            }
-            statusBar
-        }.frame(width: 640, height: 650)
-            .accessibilityIdentifier("timeStoryProductionSheet")
-            .task {
-                while !Task.isCancelled {
-                    model.pollCreativeRequest()
-                    try? await Task.sleep(for: .seconds(1))
                 }
             }
+        }.frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityIdentifier("timeStoryProductionInspector")
+    }
+
+    private var productionProgress: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if model.isCreativeRunning {
+                ProgressView().progressViewStyle(.linear)
+                Text("OpenMontage 正在创作").font(.headline)
+            }
+            if model.project?.creativeReceipt != nil || model.isCreativeRunning {
+                Text(model.creativeStatus).font(.callout).textSelection(.enabled)
+            }
+            if model.isSubmittingRender && model.openMontageTask == nil {
+                ProgressView().progressViewStyle(.linear)
+                Text("正在准备素材并提交 OpenMontage…")
+                Button("取消制作") { model.cancelOpenMontageTask() }
+            } else if model.openMontageTask == nil && model.project?.creativeReceipt == nil && !model.isCreativeRunning {
+                Text("尚未开始制作。提交任务后，这里会持续显示后台阶段与结果。")
+                    .foregroundStyle(.secondary)
+            }
+            if model.isCreativeRunning {
+                Text("正在处理本次输入，暂时暂停镜头、字幕、时长及创作意图的编辑。可切换模块查看，或取消任务后调整。")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("取消创作") { model.cancelCreativeRequest() }
+            } else if model.creativePlan != nil {
+                Button("审核返回方案") { productionPage = "方案" }
+            }
+            if let task = model.openMontageTask {
+                Divider()
+                Text(openMontagePhaseName(task.phase)).font(.headline)
+                if !task.phase.isTerminal {
+                    ProgressView(value: task.progress)
+                    Text("\(Int(task.progress * 100))% · \(task.aspect.displayName)").font(.caption.monospacedDigit())
+                    Button("取消制作") { model.cancelOpenMontageTask() }
+                }
+                if let detail = task.detail { Text(detail).font(.caption).textSelection(.enabled) }
+                if task.phase == .succeeded {
+                    Button("打开成片") { model.openOpenMontageResult() }
+                    Button("在 Finder 中显示") { model.revealOpenMontageResult() }
+                    Button("另存成片…") { chooseOpenMontageResultDestination() }
+                }
+            }
+            Button("返回制作设置") { productionPage = "设置" }
+        }
     }
 
     private var connectionControls: some View {
@@ -1872,14 +1981,14 @@ struct TimeStoryWorkspaceView: View {
 
     private func creativePanel(_ project: TimeStoryProject) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            VStack(alignment: .leading, spacing: 8) {
+            if productionPage == "设置" {
                 Text("自动分析已选照片并生成字幕和节奏建议，保留已选照片、顺序和章节；创作意图与目标时长作为建议。仅明确锁定的镜头固定全部内容，手动改过的字幕或时长分别保留，其余允许自动优化。方案返回后先应用，再人工调整，最后制作成片。")
                     .font(.caption).foregroundStyle(.secondary)
                 Text("明确锁定 \(project.shots.filter { $0.hasExplicitLock }.count) 个 · 保留手动字幕 \(project.shots.filter { $0.protectsCaption && !$0.hasExplicitLock }.count) 个 · 保留手动时长 \(project.shots.filter { $0.protectsDuration && !$0.hasExplicitLock }.count) 个")
                     .font(.caption).foregroundStyle(.secondary)
                 Button("允许重新优化全部字幕与时长") {
                     model.allowCreativeOptimization(Set(project.shots.map(\.id)))
-                }.help("解除镜头锁定和手动内容保护，保留当前内容作为建议；下次生成时允许调整。")
+                }.disabled(model.isInputLocked).help("解除镜头锁定和手动内容保护，保留当前内容作为建议；下次生成时允许调整。")
                     .font(.caption).foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 10) {
                     if project.shots.count > 100 {
@@ -1894,43 +2003,48 @@ struct TimeStoryWorkspaceView: View {
                             creativeConfigurationError = nil
                             confirmCreativeSend = true
                         } catch { creativeConfigurationError = error.localizedDescription }
-                    }.buttonStyle(.borderedProminent).disabled(model.isBusy || model.isCreativeRunning || project.shots.isEmpty || project.shots.count > 100)
+                    }.buttonStyle(.borderedProminent).disabled(model.isInputLocked || project.shots.isEmpty || project.shots.count > 100)
                     .accessibilityIdentifier("storyCreativePublish")
-                    .alert("本次自动创作的模型调用", isPresented: $confirmCreativeSend) {
-                        Button("取消", role: .cancel) { pendingCreativeAuthorization = nil }
-                        Button("同意并生成") {
-                            let authorization = pendingCreativeAuthorization
-                            pendingCreativeAuthorization = nil
-                            Task { await model.publishCreativeRequest(aspect: productionAspect, authorization: authorization) }
+                    if confirmCreativeSend, let authorization = pendingCreativeAuthorization {
+                        GroupBox("确认本次模型调用") {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("将本故事 \(project.shots.count) 张派生照片、创作意图及时间地点信息发送至：\(authorization.endpoint)\n模型：\(authorization.model)\n最多一次调用，可能产生 API 费用；不自动重试。")
+                                    .font(.caption).textSelection(.enabled)
+                                Button("同意并生成") {
+                                    confirmCreativeSend = false
+                                    pendingCreativeAuthorization = nil
+                                    model.startCreativeRequest(aspect: productionAspect, authorization: authorization)
+                                }.buttonStyle(.borderedProminent).disabled(model.isInputLocked)
+                                Button("取消") { confirmCreativeSend = false; pendingCreativeAuthorization = nil }
+                            }
                         }
-                    } message: {
-                        Text("将本故事 \(project.shots.count) 张派生照片（最长边 768）、创作意图及时间地点信息发送至：\(pendingCreativeAuthorization?.endpoint ?? "")\n模型：\(pendingCreativeAuthorization?.model ?? "")\n最多一次模型调用，可能产生 API 费用；不自动重试。返回方案需要你应用后才改变编辑器。")
                     }
                     if let error = creativeConfigurationError { Text(error).font(.caption).foregroundStyle(.red) }
                     if let receipt = project.creativeReceipt, receipt.appliedPlanSHA256 == nil {
                         HStack {
-                            Button("刷新状态") { model.refreshCreativeRequest() }
+                            Button("刷新状态") { model.refreshCreativeRequest() }.disabled(model.isBusy)
                             Button("读取方案") { model.readCreativePlan() }
                             Button("取消创作") { model.cancelCreativeRequest() }
                         }
                     }
                     Text(model.creativeStatus).font(.caption).textSelection(.enabled)
                 }
-                if let plan = model.creativePlan {
+            }
+                if productionPage == "方案", let plan = model.creativePlan {
                     Text("\(plan.title) · \(plan.shots.count) 张 · 创作来源：\(plan.planningMode) / \(plan.pluginVersion)")
                     Button("应用方案并进入编辑器") {
                         Task {
                             if await model.applyCreativePlan() {
                                 if let project = model.project, let first = project.shots.first { selectShot(first, in: project) }
-                                showProductionSettings = false
+                                inspectorTab = "镜头"
                             }
                         }
                     }.buttonStyle(.borderedProminent)
                         .accessibilityIdentifier("storyCreativeApply")
                     Text((plan.observations + plan.uncertainties.map { "待核对：" + $0 }).joined(separator: "\n"))
                         .font(.caption).textSelection(.enabled)
-                } else if let receipt = project.creativeReceipt, receipt.appliedPlanSHA256 != nil {
-                    Text("方案已应用。可关闭面板调整字幕和时长，调整完成后制作。")
+                } else if productionPage == "方案", let receipt = project.creativeReceipt, receipt.appliedPlanSHA256 != nil {
+                    Text("方案已应用。切换右侧“镜头”调整字幕和时长，调整完成后在这里制作。")
                     Button("按调整后的编排制作 · " + receipt.aspect.displayName) {
                         model.submitToOpenMontage(aspect: receipt.aspect)
                     }.disabled(model.openMontageCapability?.state != .ready || model.openMontageTask?.phase.isTerminal == false)
@@ -1938,8 +2052,7 @@ struct TimeStoryWorkspaceView: View {
                     Text((receipt.observations + receipt.uncertainties.map { "待核对：" + $0 }).joined(separator: "\n"))
                         .font(.caption).foregroundStyle(.secondary)
                 }
-            }.padding(.vertical, 6)
-        }
+        }.padding(.vertical, 6)
     }
 
     private func atelierPanel(_ project: TimeStoryProject) -> some View {
@@ -2156,6 +2269,15 @@ struct TimeStoryWorkspaceView: View {
     @ViewBuilder
     private var statusBar: some View {
         VStack(spacing: 6) {
+            if model.isCreativeRunning {
+                HStack {
+                    ProgressView().progressViewStyle(.linear).frame(width: 130)
+                    Text(model.creativeStatus).font(.caption)
+                    Spacer()
+                    Button("查看进度") { inspectorTab = "制作"; productionPage = "进度" }
+                    Button("取消创作") { model.cancelCreativeRequest() }
+                }
+            }
             if model.isReadingCandidates {
                 HStack {
                     ProgressView()
