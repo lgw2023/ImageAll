@@ -113,8 +113,9 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     @Published private(set) var openMontageTask: OpenMontageStoryTaskSnapshot?
     @Published private(set) var lastExportURL: URL?
     @Published private(set) var lastPackageURL: URL?
-    @Published private(set) var creativeStatus = "本地创作插件 · 由 Agent 创作方案"
+    @Published private(set) var creativeStatus = "自动创作 · 返回方案后可人工调整"
     @Published private(set) var creativePlan: StoryCreativePlan?
+    @Published private(set) var isCreativeRunning = false
     @Published private(set) var atelierStatus = "提交后等待创作方案，读取摘要后可继续制作成片。"
     @Published private(set) var atelierProposal: StoryAtelierProposal?
     @Published private(set) var selectedAtelierRequestID: String?
@@ -292,27 +293,44 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     }
     func setCreativeIntent(_ value: String) { project?.creativeIntent = String(value.prefix(4000)) }
     func setCreativeTarget(_ seconds: Int) { project?.creativeTargetFrames = seconds * 30 }
-    func publishCreativeRequest(aspect: TimeStoryPackageAspect) async {
-        guard let current = project, !isBusy else { return }
+    func publishCreativeRequest(aspect: TimeStoryPackageAspect, authorization: StoryModelAuthorization? = nil) async {
+        guard let current = project, !isBusy, !isCreativeRunning else { return }
         isBusy = true
+        isCreativeRunning = true
         creativeStatus = "正在发布限定范围的创作请求…"
         defer { isBusy = false }
         do {
-            let receipt = try await creativePlugin.publish(project: current, aspect: aspect)
+            creativeStatus = "正在启动并连接 OpenMontage…"
+            _ = try await OpenMontageIntegrationControl.start(provider: runtime.creativeRootProvider)
+            await refreshOpenMontageCapability()
+            creativeStatus = "正在准备限定范围的派生素材…"
+            let receipt = try await creativePlugin.publish(project: current, aspect: aspect, authorization: authorization)
             // Publishing does not replace concurrent editor changes.
             guard var edited = project, edited.id == current.id else { return }
             edited.creativeReceipt = receipt
             project = edited
             try runtime.store.save(edited)
             creativePlan = nil
-            creativeStatus = "等待创作 Agent · 仅发布本故事照片；未授权云上传"
+            creativeStatus = "请求已发布，等待 OpenMontage 接收"
             await refreshProjects()
-        } catch { creativeStatus = error.localizedDescription }
+        } catch { isCreativeRunning = false; creativeStatus = error.localizedDescription }
+    }
+    func pollCreativeRequest() {
+        guard let receipt = project?.creativeReceipt, receipt.appliedPlanSHA256 == nil, creativePlan == nil else { return }
+        refreshCreativeRequest()
+        if creativeStatus.hasPrefix("方案已返回") { readCreativePlan() }
     }
     func refreshCreativeRequest() {
-        guard let receipt = project?.creativeReceipt else { return }
-        do { creativeStatus = try creativePlugin.status(receipt) }
-        catch { creativeStatus = error.localizedDescription }
+        guard let receipt = project?.creativeReceipt else { isCreativeRunning = false; return }
+        if receipt.appliedPlanSHA256 != nil {
+            isCreativeRunning = false
+            creativeStatus = "方案已应用并保存；可继续编辑，然后用本地制作冻结成片。"
+            return
+        }
+        do {
+            creativeStatus = try creativePlugin.status(receipt)
+            isCreativeRunning = try creativePlugin.isPending(receipt)
+        } catch { isCreativeRunning = false; creativeStatus = error.localizedDescription }
     }
     func readCreativePlan() {
         guard let receipt = project?.creativeReceipt, let current = project else { return }
@@ -323,8 +341,8 @@ final class TimeStoryWorkspaceModel: ObservableObject {
             creativeStatus = "方案已校验 · 查看创作说明后应用到编辑器"
         } catch { creativePlan = nil; creativeStatus = error.localizedDescription }
     }
-    func applyCreativePlan() async {
-        guard let receipt = project?.creativeReceipt, let current = project else { return }
+    func applyCreativePlan() async -> Bool {
+        guard let receipt = project?.creativeReceipt, let current = project else { return false }
         do {
             let (request, plan, digest) = try creativePlugin.loadPlan(receipt)
             let updated = try creativePlugin.apply(plan, request: request, digest: digest, to: current)
@@ -332,9 +350,11 @@ final class TimeStoryWorkspaceModel: ObservableObject {
             project = updated
             creativePlan = nil
             creativeStatus = "方案已应用并保存；可继续编辑，然后用本地制作冻结成片。"
+            isCreativeRunning = false
             await refreshProjects()
             await loadThumbnails()
-        } catch { creativeStatus = error.localizedDescription }
+            return true
+        } catch { creativeStatus = error.localizedDescription; return false }
     }
     func cancelCreativeRequest() {
         guard let receipt = project?.creativeReceipt else { return }
@@ -462,6 +482,10 @@ final class TimeStoryWorkspaceModel: ObservableObject {
             project = try await Task.detached { try store.load(id) }.value
             undoProjects = []; redoProjects = []
             message = "故事项目已重新打开。"
+            openMontagePollingTask?.cancel()
+            openMontageTask = nil
+            await refreshOpenMontageCapability()
+            await recoverOpenMontageTask()
             creativePlan = nil
             refreshCreativeRequest()
             selectedAtelierRequestID = project?.atelierVersions?.last?.requestID
@@ -838,6 +862,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
             return
         }
         let frozenProject = project
+        openMontageTask = nil
         let client = runtime.openMontageTasks
         message = "正在准备素材并发布 OpenMontage 制作任务…"
         let (progressStream, progressContinuation) =
@@ -978,6 +1003,7 @@ final class TimeStoryWorkspaceModel: ObservableObject {
                     let snapshot = try await client.task(taskID: taskID)
                     guard self?.openMontageTask?.taskID == taskID else { return }
                     self?.openMontageTask = snapshot
+                    self?.message = nil
                     if snapshot.phase.isTerminal {
                         self?.message = Self.openMontageTerminalMessage(snapshot)
                         return
@@ -996,15 +1022,16 @@ final class TimeStoryWorkspaceModel: ObservableObject {
     ) {
         guard let taskID = openMontageTask?.taskID else { return }
         let client = runtime.openMontageTasks
+        let rootProvider = runtime.creativeRootProvider
         Task { [weak self] in
             do {
                 let result = try await client.verifiedResult(taskID: taskID)
                 guard self?.openMontageTask?.taskID == taskID else { return }
-                let didAccess = result.authorizedRootURL.startAccessingSecurityScopedResource()
+                let didAccess = rootProvider.startAccessing(result.authorizedRootURL)
                 guard didAccess else {
                     throw OpenMontageTaskError.taskRootAuthorizationRequired
                 }
-                defer { result.authorizedRootURL.stopAccessingSecurityScopedResource() }
+                defer { rootProvider.stopAccessing(result.authorizedRootURL) }
                 perform(result)
             } catch {
                 self?.message = error.localizedDescription
@@ -1101,6 +1128,10 @@ struct TimeStoryWorkspaceView: View {
     @State private var inspectorTab = "镜头"
     @State private var productionMode = "当前编排"
     @State private var showProductionSettings = false
+    @State private var pendingCreativeAuthorization: StoryModelAuthorization?
+    @State private var confirmCreativeSend = false
+    @State private var creativeConfigurationError: String?
+
     @State private var showStyleLibrary = false
     @State private var styleVariantName = ""
     @State private var stylePreviewPlayer: AVPlayer?
@@ -1132,6 +1163,7 @@ struct TimeStoryWorkspaceView: View {
             Button("重新生成") { Task { await model.regenerate() } }
         }
         .onChange(of: model.project?.id) { _, _ in
+            model.refreshCreativeRequest()
             selectedShotIDs = []; selectedShotID = nil; selectionAnchor = nil; selectedCandidateID = nil
         }
         .onChange(of: model.project?.shots.map(\.id)) { _, ids in
@@ -1776,6 +1808,12 @@ struct TimeStoryWorkspaceView: View {
             statusBar
         }.frame(width: 640, height: 650)
             .accessibilityIdentifier("timeStoryProductionSheet")
+            .task {
+                while !Task.isCancelled {
+                    model.pollCreativeRequest()
+                    try? await Task.sleep(for: .seconds(1))
+                }
+            }
     }
 
     private var connectionControls: some View {
@@ -1817,7 +1855,7 @@ struct TimeStoryWorkspaceView: View {
     private func creativePanel(_ project: TimeStoryProject) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             VStack(alignment: .leading, spacing: 8) {
-                Text("保留当前照片顺序，生成可编辑方案；锁定的字幕和时长保持不变。提交后由创作 Agent 处理。")
+                Text("自动分析已选照片并生成字幕和节奏建议，保留照片顺序、章节及锁定内容。方案返回后先应用，再人工调整，最后制作成片。")
                     .font(.caption).foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 10) {
                     if project.shots.count > 100 {
@@ -1825,10 +1863,27 @@ struct TimeStoryWorkspaceView: View {
                             .font(.caption).foregroundStyle(.orange)
                     }
                     Button("生成可编辑方案 · " + productionAspect.displayName) {
-                        Task { await model.publishCreativeRequest(aspect: productionAspect) }
-                    }.buttonStyle(.borderedProminent).disabled(model.isBusy || project.shots.isEmpty || project.shots.count > 100 || model.openMontageCapability?.state != .ready)
+                        do {
+                            guard let connection = try OpenMontageConfiguration.load().connection else { throw configurationError("请先在 App 设置中填写模型接口、密钥和模型名称。") }
+                            try connection.validate()
+                            pendingCreativeAuthorization = .init(endpoint: connection.completionURL, model: connection.model)
+                            creativeConfigurationError = nil
+                            confirmCreativeSend = true
+                        } catch { creativeConfigurationError = error.localizedDescription }
+                    }.buttonStyle(.borderedProminent).disabled(model.isBusy || model.isCreativeRunning || project.shots.isEmpty || project.shots.count > 100)
                     .accessibilityIdentifier("storyCreativePublish")
-                    if project.creativeReceipt != nil {
+                    .alert("本次自动创作的模型调用", isPresented: $confirmCreativeSend) {
+                        Button("取消", role: .cancel) { pendingCreativeAuthorization = nil }
+                        Button("同意并生成") {
+                            let authorization = pendingCreativeAuthorization
+                            pendingCreativeAuthorization = nil
+                            Task { await model.publishCreativeRequest(aspect: productionAspect, authorization: authorization) }
+                        }
+                    } message: {
+                        Text("将本故事 \(project.shots.count) 张派生照片（最长边 768）、创作意图及时间地点信息发送至：\(pendingCreativeAuthorization?.endpoint ?? "")\n模型：\(pendingCreativeAuthorization?.model ?? "")\n最多一次模型调用，可能产生 API 费用；不自动重试。返回方案需要你应用后才改变编辑器。")
+                    }
+                    if let error = creativeConfigurationError { Text(error).font(.caption).foregroundStyle(.red) }
+                    if let receipt = project.creativeReceipt, receipt.appliedPlanSHA256 == nil {
                         HStack {
                             Button("刷新状态") { model.refreshCreativeRequest() }
                             Button("读取方案") { model.readCreativePlan() }
@@ -1839,11 +1894,23 @@ struct TimeStoryWorkspaceView: View {
                 }
                 if let plan = model.creativePlan {
                     Text("\(plan.title) · \(plan.shots.count) 张 · 创作来源：\(plan.planningMode) / \(plan.pluginVersion)")
+                    Button("应用方案并进入编辑器") {
+                        Task {
+                            if await model.applyCreativePlan() {
+                                if let project = model.project, let first = project.shots.first { selectShot(first, in: project) }
+                                showProductionSettings = false
+                            }
+                        }
+                    }.buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("storyCreativeApply")
                     Text((plan.observations + plan.uncertainties.map { "待核对：" + $0 }).joined(separator: "\n"))
                         .font(.caption).textSelection(.enabled)
-                    Button("应用方案并保存") { Task { await model.applyCreativePlan() } }
-                        .accessibilityIdentifier("storyCreativeApply")
                 } else if let receipt = project.creativeReceipt, receipt.appliedPlanSHA256 != nil {
+                    Text("方案已应用。可关闭面板调整字幕和时长，调整完成后制作。")
+                    Button("按调整后的编排制作 · " + receipt.aspect.displayName) {
+                        model.submitToOpenMontage(aspect: receipt.aspect)
+                    }.disabled(model.openMontageCapability?.state != .ready || model.openMontageTask?.phase.isTerminal == false)
+                        .accessibilityIdentifier("storyCreativeRender")
                     Text((receipt.observations + receipt.uncertainties.map { "待核对：" + $0 }).joined(separator: "\n"))
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -1860,7 +1927,7 @@ struct TimeStoryWorkspaceView: View {
                 Text("自由场景制作使用已选 \(project.shots.count) 张照片；支持 1–100 张可用照片，保留已选顺序及锁定时长，竖屏输出。")
                     .font(.caption).foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 10) {
-                    Button("开始自由场景创作") {
+                    Button("发布自由场景请求（需外部 Agent）") {
                         Task { await model.publishAtelierRequest() }
                     }
                     .buttonStyle(.borderedProminent)
@@ -2094,7 +2161,9 @@ struct TimeStoryWorkspaceView: View {
                     HStack {
                         if !task.phase.isTerminal {
                             ProgressView(value: task.progress)
-                                .frame(maxWidth: 220)
+                                .frame(maxWidth: 180)
+                            Text("\(Int(task.progress * 100))%")
+                                .font(.caption.monospacedDigit())
                         }
                         Label(openMontagePhaseName(task.phase), systemImage: openMontagePhaseIcon(task.phase))
                             .font(.caption.weight(.semibold))

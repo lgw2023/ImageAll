@@ -83,7 +83,8 @@ struct TimeStoryVerificationContainer: View {
         let validator = TimeStoryMediaValidator(database: database)
         let packageExporter = StoryRenderPackageExporter(media: media, validator: validator)
         let isolatedDefaults = atelierMode ? UserDefaults(suiteName: "com.gwlee.ImageAll.AtelierSynthetic.\(runID)") : nil
-        let taskRootStore = UserDefaultsOpenMontageTaskRootStore(defaults: isolatedDefaults ?? .standard)
+        let taskRootStore = UserDefaultsOpenMontageTaskRootStore(defaults: isolatedDefaults ?? .standard,
+            managedRoot: atelierMode ? root.appendingPathComponent("tasks", isDirectory: true) : UserDefaultsOpenMontageTaskRootStore.managedTaskRoot)
         if atelierMode, let taskPath = ProcessInfo.processInfo.environment["IMAGEALL_ATELIER_TASK_ROOT"],
            NSString(string: taskPath).isAbsolutePath, taskPath != "/",
            !taskPath.hasPrefix("/Volumes/HDD2/") {
