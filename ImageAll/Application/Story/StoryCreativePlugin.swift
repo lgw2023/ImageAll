@@ -640,6 +640,10 @@ struct StoryCreativePlugin: Sendable {
         if authorization != nil && pluginCapability.protocolVersion != "1.2" {
             throw StoryCreativeError.invalid("请停止旧执行器后重新启动，加载自动创作组件。")
         }
+        if pluginCapability.protocolVersion == "1.2",
+           pluginCapability.pluginVersion.compare("1.2.1", options: .numeric) == .orderedAscending {
+            throw StoryCreativeError.invalid("后台创作组件仍是旧版本，尚不支持字幕与时长独立保护。请启动本地制作服务以更新后台；未发送素材。")
+        }
         if pluginCapability.protocolVersion == "1.2" && authorization == nil {
             throw StoryCreativeError.invalid("请先确认本次模型调用和派生照片发送范围。")
         }

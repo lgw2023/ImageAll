@@ -1926,7 +1926,11 @@ struct TimeStoryWorkspaceView: View {
             }
             if let task = model.openMontageTask {
                 Divider()
-                Text(openMontagePhaseName(task.phase)).font(.headline)
+                Text(task.phase.isTerminal && model.project?.creativeReceipt != nil ? "上次成片 · " + openMontagePhaseName(task.phase) : openMontagePhaseName(task.phase)).font(.headline)
+                if task.phase.isTerminal && model.project?.creativeReceipt != nil {
+                    Text("以下是已有制作任务的结果，不代表本次自动创作成功。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 if !task.phase.isTerminal {
                     ProgressView(value: task.progress)
                     Text("\(Int(task.progress * 100))% · \(task.aspect.displayName)").font(.caption.monospacedDigit())

@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 
 // Launch Services delivers a URL to the separate local helper, never a shell command.
 func launch(rootPath: String, runtimePath: String, token: String) {
@@ -44,8 +45,29 @@ do {
     let statusData = statusPipe.fileHandleForReading.readDataToEndOfFile()
     process.waitUntilExit()
     if let status = try? JSONSerialization.jsonObject(with: statusData) as? [String: Any], status["running"] as? Bool == true {
-        report("执行器已在运行。新配置将在停止后重新启动时生效。", success: true)
-        return
+        let heartbeat = status["heartbeat"] as? [String: Any]
+        let pid = (heartbeat?["pid"] as? Int) ?? (status["pid"] as? Int) ?? 0
+        var buffer = [CChar](repeating: 0, count: 4096)
+        let pathLength = pid > 0 ? proc_pidpath(Int32(pid), &buffer, UInt32(buffer.count)) : 0
+        let runningPath = pathLength > 0 ? String(cString: buffer) : ""
+        if runningPath.hasPrefix(installed.path + "/") {
+            report("本地执行器版本已匹配，继续使用当前服务。", success: true)
+            return
+        }
+        // Gracefully drain the old payload; never kill or cancel an in-flight render/model call.
+        let stop = Process()
+        stop.executableURL = process.executableURL
+        stop.currentDirectoryURL = process.currentDirectoryURL
+        stop.environment = process.environment
+        stop.arguments = [installed.appendingPathComponent("engine/scripts/story_executor.py").path,
+                          "stop", "--task-root", taskRoot.path, "--mode", "finish-current", "--wait", "--wait-seconds", "15"]
+        stop.standardOutput = FileHandle.nullDevice
+        stop.standardError = FileHandle.nullDevice
+        try stop.run(); stop.waitUntilExit()
+        guard stop.terminationStatus == 0 else {
+            report("后台版本需要更新，已安排当前任务完成后退出。请等待当前任务结束再启动制作；本次未提交新创作。", success: false)
+            return
+        }
     }
     let configuration = try JSONDecoder().decode(OpenMontageConfiguration.self, from: Data((request["configuration"] ?? OpenMontageConfiguration().json).utf8))
     try configuration.validate()

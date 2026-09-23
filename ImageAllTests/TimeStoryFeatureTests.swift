@@ -1775,7 +1775,16 @@ final class TimeStoryFeatureTests: XCTestCase {
         let plugin = StoryCreativePlugin(rootProvider: FixtureOpenMontageRootProvider(root: root), exporter: exporter, validator: PassingStoryValidator())
         let creative = root.appendingPathComponent("creative")
         try FileManager.default.createDirectory(at: creative, withIntermediateDirectories: true)
-        let capability: [String: Any] = ["protocolVersion": "1.2", "profile": "editable-story-v1", "pluginID": "openmontage", "pluginVersion": "1.0.0", "planningMode": "automatic-model", "automaticPlanning": true, "externalSendAllowed": false, "renderProtocol": "1.1", "renderPackage": "0.1"]
+        let capability: [String: Any] = ["protocolVersion": "1.2", "profile": "editable-story-v1", "pluginID": "openmontage", "pluginVersion": "1.2.1", "planningMode": "automatic-model", "automaticPlanning": true, "externalSendAllowed": false, "renderProtocol": "1.1", "renderPackage": "0.1"]
+        try JSONSerialization.data(withJSONObject: capability).write(to: creative.appendingPathComponent("capabilities.json"))
+        var oldCapability = capability
+        oldCapability["pluginVersion"] = "1.2.0"
+        try JSONSerialization.data(withJSONObject: oldCapability).write(to: creative.appendingPathComponent("capabilities.json"))
+        do {
+            _ = try await plugin.publish(project: project, aspect: .landscape, authorization: .init(endpoint: "https://example.invalid/v1/chat/completions", model: "synthetic"))
+            XCTFail("Old director must be rejected before publishing")
+        } catch { XCTAssertTrue(error.localizedDescription.contains("旧版本")) }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: creative.appendingPathComponent("requests").path))
         try JSONSerialization.data(withJSONObject: capability).write(to: creative.appendingPathComponent("capabilities.json"))
         let receipt = try await plugin.publish(project: project, aspect: .landscape, authorization: .init(endpoint: "https://example.invalid/v1/chat/completions", model: "synthetic"))
         XCTAssertTrue(try plugin.isPending(receipt))
