@@ -1,3 +1,4 @@
+import AVFoundation
 import CryptoKit
 import Foundation
 import GRDB
@@ -6,6 +7,53 @@ import XCTest
 @testable import ImageAll
 
 final class PhoneArchiveImportTests: XCTestCase {
+    func testOfflineVideoArchivePlaysAfterPhoneStageIsRemoved() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let sample = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("docs/evidence/time-story-phase-1-20260918/synthetic-silent.mp4")
+        let bytes = try Data(contentsOf: sample)
+        let resourceID = UUID()
+        let directory = fixture.incoming.appendingPathComponent("resources", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let filename = "\(resourceID.uuidString.lowercased()).mp4"
+        try bytes.write(to: directory.appendingPathComponent(filename))
+        let digest = SHA256.hash(data: bytes)
+            .map { String(format: "%02x", $0) }.joined()
+        let resource = ImageAllMigrationResource(
+            id: resourceID, role: "original", version: 1,
+            uniformTypeIdentifier: "public.mpeg-4", required: true,
+            status: .present, relativePath: "resources/\(filename)",
+            byteCount: Int64(bytes.count), sha256: digest
+        )
+        let mediaID = UUID()
+        let item = ImageAllMigrationItem(
+            mediaID: mediaID, sourceLocalIdentifier: "synthetic-video",
+            mediaKind: .video, createdAtMs: nil,
+            favoriteTarget: nil, observedFavorite: false, factRevision: 0,
+            tagDecisions: [], collections: [], resources: [resource]
+        )
+        let header = fixture.header(count: 1)
+        try fixture.write(header: header, items: [item])
+        let importer = VerifiedPhoneArchiveImporter(database: fixture.database)
+        let receipt = try importer.importArchive(from: fixture.incoming, to: fixture.target)
+        try FileManager.default.removeItem(at: fixture.incoming)
+        XCTAssertEqual(try importer.importedItems(
+            migrationID: header.migrationID, offset: 0
+        ).first?.mediaKind, "video")
+        let preview = try importer.verifiedPreview(
+            migrationID: header.migrationID, mediaID: mediaID,
+            archiveRoot: receipt.archiveURL
+        )
+        let copied = preview.originalURL
+        XCTAssertTrue(preview.facts.tagDecisions.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: copied), bytes)
+        let playable = try await AVURLAsset(url: copied).load(.isPlayable)
+        XCTAssertTrue(playable)
+    }
+
     func testSealedNetworkStageImportsIntoSiblingMacArchive() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -246,6 +294,13 @@ final class PhoneArchiveImportTests: XCTestCase {
         try FileManager.default.removeItem(at: fixture.incoming)
         XCTAssertEqual(try ImageAllMigrationArchive.verify(at: receipt.archiveURL).verifiedBytes,
                        Int64("original-photo".utf8.count + "paired-video".utf8.count))
+        let offlineFacts = try importer.importedFacts(
+            migrationID: header.migrationID, mediaID: mediaID
+        )
+        XCTAssertEqual(offlineFacts.tagDecisions.first?.tagName, "旅途")
+        XCTAssertEqual(offlineFacts.collections.first?.collectionName, "相册")
+        XCTAssertEqual(offlineFacts.appleAlbums.first?.albumTitle, "周末")
+        XCTAssertEqual(offlineFacts.favoriteTarget, true)
 
         let recoveryTarget = fixture.root.appendingPathComponent("recovery", isDirectory: true)
         try FileManager.default.createDirectory(at: recoveryTarget, withIntermediateDirectories: true)

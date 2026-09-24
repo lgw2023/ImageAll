@@ -1,5 +1,7 @@
 import AppKit
+import AVKit
 import CoreImage.CIFilterBuiltins
+import ImageIO
 import ImageAllRemoteProtocol
 import SwiftUI
 
@@ -1180,6 +1182,14 @@ struct RemoteHostSettingsView: View {
     }
 }
 
+private struct PhoneArchivePreview: Identifiable {
+    let id: UUID
+    let title: String
+    let url: URL
+    let isVideo: Bool
+    let facts: PhoneArchiveImportedFacts
+}
+
 @MainActor
 private final class PhoneArchiveImportModel: ObservableObject {
     @Published private(set) var batches: [PhoneArchiveImportedBatch] = []
@@ -1191,6 +1201,8 @@ private final class PhoneArchiveImportModel: ObservableObject {
     @Published private(set) var transferTargetPath: String? =
         RemoteHostProcessHolder.migrationTransferTargetURL()?.path
     @Published private(set) var sealedTransfers: [ImageAllMigrationTransferSealedArchive] = []
+    @Published var preview: PhoneArchivePreview?
+    private var previewScopedParent: URL?
 
     var selectedBatch: PhoneArchiveImportedBatch? {
         batches.first { $0.id == selectedBatchID }
@@ -1395,6 +1407,46 @@ private final class PhoneArchiveImportModel: ObservableObject {
         } catch {
             message = "打开原件前复验失败：\(error.localizedDescription)"
         }
+    }
+
+    func previewOriginal(_ item: PhoneArchiveImportedItem) async {
+        guard !isBusy, let batch = selectedBatch,
+              let importer = PhoneArchiveImportProcessHolder.importer() else { return }
+        dismissPreview()
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let parent = try targetParent(for: batch)
+            let accessed = parent.startAccessingSecurityScopedResource()
+            do {
+                let archive = parent.appendingPathComponent(
+                    "ImageAll-Archive-\(batch.id.uuidString.lowercased())", isDirectory: true
+                )
+                let verified = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                    try importer.verifiedPreview(
+                        migrationID: batch.id, mediaID: item.id, archiveRoot: archive
+                    )
+                }
+                previewScopedParent = accessed ? parent : nil
+                preview = PhoneArchivePreview(
+                    id: item.id, title: item.sourceLocalIdentifier,
+                    url: verified.originalURL, isVideo: item.mediaKind == "video",
+                    facts: verified.facts
+                )
+                message = nil
+            } catch {
+                if accessed { parent.stopAccessingSecurityScopedResource() }
+                throw error
+            }
+        } catch {
+            message = "归档预览前复验失败：\(error.localizedDescription)"
+        }
+    }
+
+    func dismissPreview() {
+        preview = nil
+        previewScopedParent?.stopAccessingSecurityScopedResource()
+        previewScopedParent = nil
     }
 
     func importFactSnapshot() async {
@@ -1762,6 +1814,11 @@ private struct PhoneArchiveImportCard: View {
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
+                        Button("在 App 中预览") {
+                            Task { await model.previewOriginal(item) }
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(model.isBusy)
                         Button("打开原件") { Task { await model.openOriginal(item) } }
                             .buttonStyle(.bordered)
                             .disabled(model.isBusy)
@@ -1776,5 +1833,146 @@ private struct PhoneArchiveImportCard: View {
             }
         }
         .task { await model.refresh() }
+        .sheet(item: $model.preview, onDismiss: { model.dismissPreview() }) { preview in
+            PhoneArchivePreviewSheet(preview: preview)
+        }
+    }
+}
+
+private struct PhoneArchivePreviewSheet: View {
+    let preview: PhoneArchivePreview
+    @State private var image: NSImage?
+    @State private var player: AVPlayer?
+    @State private var didLoadImage = false
+
+    var body: some View {
+        VStack(spacing: 12) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(preview.title).font(.headline).lineLimit(1)
+                    Text("Mac 独立归档 · 手机无需连接")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("使用系统打开") { NSWorkspace.shared.open(preview.url) }
+                    .buttonStyle(.bordered)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            Group {
+                if preview.isVideo {
+                    if let player {
+                        VideoPlayer(player: player)
+                    } else {
+                        ProgressView("正在准备视频…")
+                    }
+                } else if let image {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFit()
+                } else if !didLoadImage {
+                    ProgressView("正在准备图片…")
+                } else {
+                    ContentUnavailableView(
+                        "无法在 App 中预览此格式",
+                        systemImage: "photo",
+                        description: Text("可使用系统打开已校验的 Mac 归档原件。")
+                    )
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(.black.opacity(0.94))
+            ScrollView {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("整理信息").font(.subheadline.weight(.semibold))
+                    Text("标签决定：\(tagSummary)")
+                    Text("ImageAll 集合：\(collectionSummary)")
+                    Text("来源 Photos 相册：\(albumSummary)")
+                    Text("来源收藏：\(preview.facts.observedFavorite ? "是" : "否") · ImageAll 收藏目标：\(favoriteSummary)")
+                }
+                .font(.caption)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+            }
+            .frame(maxHeight: 115)
+        }
+        .frame(minWidth: 720, minHeight: 540)
+        .task(id: preview.id) {
+            if preview.isVideo {
+                let playback = AVPlayer(url: preview.url)
+                player = playback
+                playback.play()
+            } else {
+                let url = preview.url
+                let data = await Task.detached(priority: .utility) {
+                    Self.thumbnailData(at: url)
+                }.value
+                guard !Task.isCancelled else { return }
+                image = data.flatMap(NSImage.init(data:))
+                didLoadImage = true
+            }
+        }
+        .onDisappear {
+            player?.pause()
+            player = nil
+            image = nil
+            didLoadImage = false
+        }
+    }
+
+    private var tagSummary: String {
+        let tags = preview.facts.tagDecisions.map { tag in
+            let decision: String
+            switch tag.decision {
+            case .accepted: decision = "接受"
+            case .rejected: decision = "拒绝"
+            case .cleared: decision = "清除"
+            }
+            return "\(tag.tagName)（\(decision)）"
+        }
+        return tags.isEmpty ? "无" : tags.joined(separator: "、")
+    }
+
+    private var collectionSummary: String {
+        let names = preview.facts.collections.map(\.collectionName)
+        return names.isEmpty ? "无已纳入成员" : names.joined(separator: "、")
+    }
+
+    private var albumSummary: String {
+        let names = preview.facts.appleAlbums.map { album in
+            (album.folderPath.compactMap(\.title) + [album.albumTitle ?? "未命名相册"])
+                .joined(separator: "/")
+        }
+        return names.isEmpty ? "未记录或无可访问成员" : names.joined(separator: "、")
+    }
+
+    private var favoriteSummary: String {
+        switch preview.facts.favoriteTarget {
+        case true: "是"
+        case false: "否"
+        case nil: "未设置"
+        }
+    }
+
+    nonisolated private static func thumbnailData(at url: URL) -> Data? {
+        guard let source = CGImageSourceCreateWithURL(
+            url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary
+        ), let thumbnail = CGImageSourceCreateThumbnailAtIndex(
+            source, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: 2_048,
+                kCGImageSourceShouldCache: false,
+            ] as CFDictionary
+        ) else { return nil }
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            data, "public.jpeg" as CFString, 1, nil
+        ) else { return nil }
+        CGImageDestinationAddImage(destination, thumbnail, [
+            kCGImageDestinationLossyCompressionQuality: 0.86,
+        ] as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return data as Data
     }
 }

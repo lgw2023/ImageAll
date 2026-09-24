@@ -120,6 +120,19 @@ struct PhoneArchiveImportedItem: Identifiable, Sendable {
     let appleAlbumCount: Int
 }
 
+struct PhoneArchiveImportedFacts: Sendable, Equatable {
+    let observedFavorite: Bool
+    let favoriteTarget: Bool?
+    let tagDecisions: [ImageAllMigrationTagDecision]
+    let collections: [ImageAllMigrationCollectionMembership]
+    let appleAlbums: [ImageAllMigrationAppleAlbumMembership]
+}
+
+struct PhoneArchiveVerifiedPreview: Sendable {
+    let originalURL: URL
+    let facts: PhoneArchiveImportedFacts
+}
+
 /// Imports a verified phone package into dedicated catalog bindings. The
 /// existing one-source Asset row remains untouched; archive resources are
 /// owned by this migration until a deliberate MediaItem/Replica projection
@@ -889,6 +902,93 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                 )
             }
         }
+    }
+
+    func importedFacts(migrationID: UUID, mediaID: UUID) throws -> PhoneArchiveImportedFacts {
+        let migration = migrationID.uuidString.lowercased()
+        let media = mediaID.uuidString.lowercased()
+        return try database.pool.read { db in
+            guard let item = try Row.fetchOne(db, sql: """
+                SELECT i.source_device_id, i.source_epoch,
+                       i.observed_favorite, i.favorite_target
+                FROM migration_import_item i
+                JOIN migration_import m ON m.id = i.migration_id
+                WHERE i.migration_id = ? AND i.media_id = ?
+                  AND m.state = 'catalogCommitted'
+                """, arguments: [migration, media]) else {
+                throw PhoneArchiveImportError.missingImportJournal
+            }
+            let device: String = item["source_device_id"]
+            let epoch: String = item["source_epoch"]
+            let tags = try Row.fetchAll(db, sql: """
+                SELECT tag_id, tag_name, decision
+                FROM migration_import_tag_decision
+                WHERE source_device_id = ? AND source_epoch = ? AND media_id = ?
+                ORDER BY tag_id
+                """, arguments: [device, epoch, media]).map { row in
+                guard let tagID = UUID(uuidString: row["tag_id"]),
+                      let decision = RemoteLocalLibraryDecision(rawValue: row["decision"])
+                else { throw PhoneArchiveImportError.catalogDiverged }
+                return ImageAllMigrationTagDecision(
+                    tagID: tagID, tagName: row["tag_name"], decision: decision
+                )
+            }
+            let collections = try Row.fetchAll(db, sql: """
+                SELECT collection_id, collection_name
+                FROM migration_import_collection
+                WHERE source_device_id = ? AND source_epoch = ? AND media_id = ?
+                  AND included = 1 ORDER BY collection_id
+                """, arguments: [device, epoch, media]).map { row in
+                guard let id = UUID(uuidString: row["collection_id"])
+                else { throw PhoneArchiveImportError.catalogDiverged }
+                return ImageAllMigrationCollectionMembership(
+                    collectionID: id, collectionName: row["collection_name"],
+                    included: true
+                )
+            }
+            let decoder = JSONDecoder()
+            let albums = try Row.fetchAll(db, sql: """
+                SELECT album_local_identifier, album_title,
+                       folder_path_json, source_ordinal
+                FROM migration_import_apple_album_member
+                WHERE migration_id = ? AND media_id = ?
+                ORDER BY album_local_identifier
+                """, arguments: [migration, media]).map { row in
+                let path: String = row["folder_path_json"]
+                return ImageAllMigrationAppleAlbumMembership(
+                    albumLocalIdentifier: row["album_local_identifier"],
+                    albumTitle: row["album_title"],
+                    folderPath: try decoder.decode(
+                        [ImageAllMigrationAppleAlbumMembership.Folder].self,
+                        from: Data(path.utf8)
+                    ),
+                    sourceOrdinal: row["source_ordinal"]
+                )
+            }
+            let observed: Int = item["observed_favorite"]
+            let target: Int? = item["favorite_target"]
+            return PhoneArchiveImportedFacts(
+                observedFavorite: observed == 1,
+                favoriteTarget: target.map { $0 == 1 },
+                tagDecisions: tags, collections: collections,
+                appleAlbums: albums
+            )
+        }
+    }
+
+    func verifiedPreview(
+        migrationID: UUID, mediaID: UUID, archiveRoot: URL
+    ) throws -> PhoneArchiveVerifiedPreview {
+        _ = try auditImportedArchive(
+            migrationID: migrationID, archiveRoot: archiveRoot
+        )
+        return PhoneArchiveVerifiedPreview(
+            originalURL: try verifiedOriginalURL(
+                migrationID: migrationID, mediaID: mediaID,
+                archiveRoot: archiveRoot
+            ),
+            facts: try importedFacts(migrationID: migrationID, mediaID: mediaID)
+        )
     }
 
     /// The caller keeps the target parent's security scope open while using
