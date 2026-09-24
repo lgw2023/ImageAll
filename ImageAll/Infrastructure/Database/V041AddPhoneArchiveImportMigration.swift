@@ -319,3 +319,48 @@ enum V046AuditMediaAssetBindingMigration {
         }
     }
 }
+
+/// Explicit identity aliases between a phone tag namespace and the existing
+/// Mac tag catalog. Alias events are retained after an alias is revoked.
+enum V047AddPhoneTagAliasMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v047AddPhoneTagAlias) { db in
+            try db.execute(sql: """
+                CREATE TABLE phone_tag_alias (
+                    source_install_id TEXT NOT NULL,
+                    source_epoch TEXT NOT NULL,
+                    phone_tag_id TEXT NOT NULL,
+                    mac_tag_id TEXT NOT NULL REFERENCES tag(id) ON DELETE RESTRICT,
+                    confirmed_phone_name TEXT NOT NULL CHECK(length(confirmed_phone_name) > 0),
+                    created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+                    PRIMARY KEY(source_install_id, source_epoch, phone_tag_id),
+                    UNIQUE(source_install_id, source_epoch, mac_tag_id)
+                ) STRICT
+                """)
+            try db.execute(sql: """
+                CREATE TABLE phone_tag_alias_event (
+                    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id TEXT NOT NULL UNIQUE,
+                    source_install_id TEXT NOT NULL,
+                    source_epoch TEXT NOT NULL,
+                    phone_tag_id TEXT NOT NULL,
+                    mac_tag_id TEXT NOT NULL,
+                    event_kind TEXT NOT NULL CHECK(event_kind IN ('confirmed', 'revoked')),
+                    confirmed_event_id TEXT UNIQUE
+                        REFERENCES phone_tag_alias_event(id) ON DELETE RESTRICT,
+                    created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+                    CHECK(
+                        (event_kind = 'confirmed' AND confirmed_event_id IS NULL)
+                        OR (event_kind = 'revoked' AND confirmed_event_id IS NOT NULL)
+                    )
+                ) STRICT
+                """)
+            try db.execute(sql: """
+                CREATE INDEX phone_tag_alias_event_scope_idx
+                ON phone_tag_alias_event(
+                    source_install_id, source_epoch, phone_tag_id, sequence
+                )
+                """)
+        }
+    }
+}

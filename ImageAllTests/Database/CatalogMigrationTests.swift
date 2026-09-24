@@ -1496,6 +1496,12 @@ final class CatalogMigrationTests: XCTestCase {
     }
 
     private static func dropV035AndLaterTables(_ db: Database) throws {
+        try db.execute(sql: "DROP TABLE IF EXISTS phone_tag_alias_event")
+        try db.execute(sql: "DROP TABLE IF EXISTS phone_tag_alias")
+        try db.execute(
+            sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
+            arguments: [CatalogMigrationID.v047AddPhoneTagAlias]
+        )
         try db.execute(sql: "DROP TABLE IF EXISTS media_asset_binding_event")
         try db.execute(
             sql: "DELETE FROM grdb_migrations WHERE identifier = ?",

@@ -22,6 +22,8 @@ enum PhoneArchiveImportError: LocalizedError, Equatable {
     case assetBindingCandidateChanged
     case assetAlreadyBound
     case assetKindMismatch
+    case tagAliasCandidateChanged
+    case tagAliasAlreadyMapped
 
     var errorDescription: String? {
         switch self {
@@ -42,6 +44,8 @@ enum PhoneArchiveImportError: LocalizedError, Equatable {
         case .assetBindingCandidateChanged: "Mac 资产或来源已变化，请重新搜索并确认。"
         case .assetAlreadyBound: "此 Mac 资产已关联其他媒体，不能重复关联。"
         case .assetKindMismatch: "手机归档与 Mac 资产的媒体类型不一致。"
+        case .tagAliasCandidateChanged: "标签身份或事实版本已变化，请重新对账。"
+        case .tagAliasAlreadyMapped: "此手机或 Mac 标签已映射到另一标签，需先对账。"
         }
     }
 }
@@ -165,6 +169,7 @@ enum PhoneArchiveTagComparisonState: Sendable, Equatable {
     case nameAliasRequired
     case identityConflict
     case macTagArchived
+    case nameDiffers
 }
 
 struct PhoneArchiveTagComparison: Identifiable, Sendable {
@@ -173,8 +178,17 @@ struct PhoneArchiveTagComparison: Identifiable, Sendable {
     let phoneTagName: String
     let phoneDecision: RemoteLocalLibraryDecision
     let macTagID: UUID?
+    let macTagName: String?
+    let macTagUpdatedAtMs: Int64?
     let macDecision: String?
     let state: PhoneArchiveTagComparisonState
+    let aliasConfirmationEventID: UUID?
+}
+
+struct PhoneArchiveTagAliasReceipt: Sendable, Equatable {
+    let phoneTagID: UUID
+    let macTagID: UUID
+    let replayed: Bool
 }
 
 struct PhoneArchiveMacOnlyTagDecision: Identifiable, Sendable {
@@ -1292,6 +1306,179 @@ struct VerifiedPhoneArchiveImporter: Sendable {
         }
     }
 
+    func confirmTagAlias(
+        migrationID: UUID, mediaID: UUID, assetID: UUID,
+        phoneTagID: UUID, phoneTagName: String, macTagID: UUID,
+        macTagUpdatedAtMs: Int64, expectedFactSnapshotSequence: Int64
+    ) throws -> PhoneArchiveTagAliasReceipt {
+        try database.pool.write { db in
+            let scope = try boundTagAliasScope(
+                db, migrationID: migrationID, mediaID: mediaID, assetID: assetID
+            )
+            guard scope.snapshotSequence == expectedFactSnapshotSequence,
+                  let storedPhoneName = try String.fetchOne(db, sql: """
+                    SELECT tag_name FROM migration_import_tag_decision
+                    WHERE source_device_id = ? AND source_epoch = ?
+                      AND media_id = ? AND tag_id = ?
+                    """, arguments: [
+                        scope.install, scope.epoch, mediaID.uuidString.lowercased(),
+                        phoneTagID.uuidString.lowercased(),
+                    ]), storedPhoneName == phoneTagName,
+                  phoneTagID != macTagID else {
+                throw PhoneArchiveImportError.tagAliasCandidateChanged
+            }
+            let phone = phoneTagID.uuidString.lowercased()
+            let mac = macTagID.uuidString.lowercased()
+            let exactMacTagForPhone: String? = try String.fetchOne(db, sql: """
+                SELECT id FROM tag WHERE id = ?
+                """, arguments: [phone])
+            let phoneTagAlreadyUsingMacID: String? = try String.fetchOne(db, sql: """
+                SELECT tag_id FROM migration_import_tag_decision
+                WHERE source_device_id = ? AND source_epoch = ? AND tag_id = ?
+                  AND tag_id != ? LIMIT 1
+                """, arguments: [scope.install, scope.epoch, mac, phone])
+            guard exactMacTagForPhone == nil,
+                  phoneTagAlreadyUsingMacID == nil else {
+                throw PhoneArchiveImportError.tagAliasAlreadyMapped
+            }
+            let existing: String? = try String.fetchOne(db, sql: """
+                SELECT mac_tag_id FROM phone_tag_alias
+                WHERE source_install_id = ? AND source_epoch = ? AND phone_tag_id = ?
+                """, arguments: [scope.install, scope.epoch, phone])
+            if let existing {
+                guard existing == mac else { throw PhoneArchiveImportError.tagAliasAlreadyMapped }
+                return PhoneArchiveTagAliasReceipt(
+                    phoneTagID: phoneTagID, macTagID: macTagID, replayed: true
+                )
+            }
+            let claimedPhone: String? = try String.fetchOne(db, sql: """
+                SELECT phone_tag_id FROM phone_tag_alias
+                WHERE source_install_id = ? AND source_epoch = ? AND mac_tag_id = ?
+                """, arguments: [scope.install, scope.epoch, mac])
+            guard claimedPhone == nil else { throw PhoneArchiveImportError.tagAliasAlreadyMapped }
+            guard case let .success(phoneName) = TagNameNormalizer.validateAndNormalize(phoneTagName),
+                  let macTag = try Self.macTags(db, matching: "tag.id = ?", value: mac).first,
+                  (macTag["state"] as String) == "active",
+                  (macTag["updated_at_ms"] as Int64) == macTagUpdatedAtMs,
+                  (macTag["effective_name"] as String) == phoneName.normalizedName else {
+                throw PhoneArchiveImportError.tagAliasCandidateChanged
+            }
+            let now = Int64(Date().timeIntervalSince1970 * 1_000)
+            try db.execute(sql: """
+                INSERT INTO phone_tag_alias (
+                    source_install_id, source_epoch, phone_tag_id, mac_tag_id,
+                    confirmed_phone_name, created_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """, arguments: [
+                    scope.install, scope.epoch, phone, mac, phoneTagName, now,
+                ])
+            try db.execute(sql: """
+                INSERT INTO phone_tag_alias_event (
+                    id, source_install_id, source_epoch, phone_tag_id, mac_tag_id,
+                    event_kind, confirmed_event_id, created_at_ms
+                ) VALUES (?, ?, ?, ?, ?, 'confirmed', NULL, ?)
+                """, arguments: [
+                    UUID().uuidString.lowercased(), scope.install, scope.epoch,
+                    phone, mac, now,
+                ])
+            return PhoneArchiveTagAliasReceipt(
+                phoneTagID: phoneTagID, macTagID: macTagID, replayed: false
+            )
+        }
+    }
+
+    func revokeTagAlias(
+        migrationID: UUID, mediaID: UUID, assetID: UUID,
+        phoneTagID: UUID, macTagID: UUID, confirmationEventID: UUID
+    ) throws -> PhoneArchiveTagAliasReceipt {
+        try database.pool.write { db in
+            let scope = try boundTagAliasScope(
+                db, migrationID: migrationID, mediaID: mediaID, assetID: assetID
+            )
+            let phone = phoneTagID.uuidString.lowercased()
+            let mac = macTagID.uuidString.lowercased()
+            let current: String? = try String.fetchOne(db, sql: """
+                SELECT mac_tag_id FROM phone_tag_alias
+                WHERE source_install_id = ? AND source_epoch = ? AND phone_tag_id = ?
+                """, arguments: [scope.install, scope.epoch, phone])
+            if let current, current != mac { throw PhoneArchiveImportError.tagAliasAlreadyMapped }
+            guard let event = try Row.fetchOne(db, sql: """
+                SELECT id, mac_tag_id, event_kind, confirmed_event_id
+                FROM phone_tag_alias_event
+                WHERE source_install_id = ? AND source_epoch = ? AND phone_tag_id = ?
+                ORDER BY sequence DESC LIMIT 1
+                """, arguments: [scope.install, scope.epoch, phone]) else {
+                throw PhoneArchiveImportError.tagAliasCandidateChanged
+            }
+            let eventKind: String = event["event_kind"]
+            let eventID: String = event["id"]
+            let eventMac: String = event["mac_tag_id"]
+            let confirmation = confirmationEventID.uuidString.lowercased()
+            guard eventMac == mac else {
+                throw PhoneArchiveImportError.tagAliasCandidateChanged
+            }
+            if current == nil {
+                let priorConfirmation: String? = event["confirmed_event_id"]
+                guard eventKind == "revoked", priorConfirmation == confirmation else {
+                    throw PhoneArchiveImportError.tagAliasCandidateChanged
+                }
+                return PhoneArchiveTagAliasReceipt(
+                    phoneTagID: phoneTagID, macTagID: macTagID, replayed: true
+                )
+            }
+            guard eventKind == "confirmed", eventID == confirmation else {
+                throw PhoneArchiveImportError.tagAliasCandidateChanged
+            }
+            try db.execute(sql: """
+                DELETE FROM phone_tag_alias
+                WHERE source_install_id = ? AND source_epoch = ? AND phone_tag_id = ?
+                """, arguments: [scope.install, scope.epoch, phone])
+            try db.execute(sql: """
+                INSERT INTO phone_tag_alias_event (
+                    id, source_install_id, source_epoch, phone_tag_id, mac_tag_id,
+                    event_kind, confirmed_event_id, created_at_ms
+                ) VALUES (?, ?, ?, ?, ?, 'revoked', ?, ?)
+                """, arguments: [
+                    UUID().uuidString.lowercased(), scope.install, scope.epoch,
+                    phone, mac, confirmation, Int64(Date().timeIntervalSince1970 * 1_000),
+                ])
+            return PhoneArchiveTagAliasReceipt(
+                phoneTagID: phoneTagID, macTagID: macTagID, replayed: false
+            )
+        }
+    }
+
+    private func boundTagAliasScope(
+        _ db: Database, migrationID: UUID, mediaID: UUID, assetID: UUID
+    ) throws -> (install: String, epoch: String, snapshotSequence: Int64) {
+        _ = try importedMediaKind(db, migrationID: migrationID, mediaID: mediaID)
+        guard let row = try Row.fetchOne(db, sql: """
+            SELECT i.source_device_id, i.source_epoch, m.fact_snapshot_sequence,
+                   (SELECT e.event_kind FROM media_asset_binding_event e
+                    WHERE e.media_id = i.media_id AND e.asset_id = ?
+                    ORDER BY e.sequence DESC LIMIT 1) AS latest_binding_event
+            FROM migration_import_item i
+            JOIN migration_import m ON m.id = i.migration_id
+            JOIN media_asset_binding b ON b.media_id = i.media_id AND b.asset_id = ?
+            WHERE i.migration_id = ? AND i.media_id = ?
+              AND m.state = 'catalogCommitted'
+            """, arguments: [
+                assetID.uuidString.lowercased(), assetID.uuidString.lowercased(),
+                migrationID.uuidString.lowercased(),
+                mediaID.uuidString.lowercased(),
+            ]) else {
+            throw PhoneArchiveImportError.assetBindingCandidateChanged
+        }
+        let latestBindingEvent: String? = row["latest_binding_event"]
+        guard latestBindingEvent == "confirmed" else {
+            throw PhoneArchiveImportError.catalogDiverged
+        }
+        return (
+            install: row["source_device_id"], epoch: row["source_epoch"],
+            snapshotSequence: row["fact_snapshot_sequence"]
+        )
+    }
+
     /// Compares the stored phone archive facts with one explicitly bound Mac
     /// Asset in a single catalog snapshot. This is historical archive evidence,
     /// not proof that the phone's live shared ledger has reached this watermark.
@@ -1344,10 +1531,24 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                 case .success(let parts): normalized = parts.normalizedName
                 case .failure: normalized = nil
                 }
-                let idMatches = try Self.macTags(db, matching: "tag.id = ?", value: rawPhoneID)
+                let aliasMacID: String? = try String.fetchOne(db, sql: """
+                    SELECT mac_tag_id FROM phone_tag_alias
+                    WHERE source_install_id = ? AND source_epoch = ? AND phone_tag_id = ?
+                    """, arguments: [install, epoch, rawPhoneID])
+                let idMatches = try Self.macTags(
+                    db, matching: "tag.id = ?", value: aliasMacID ?? rawPhoneID
+                )
                 let matched: Row?
                 let state: PhoneArchiveTagComparisonState?
-                if let exact = idMatches.first {
+                if let aliasMacID {
+                    guard let exact = idMatches.first,
+                          (exact["id"] as String) == aliasMacID else {
+                        throw PhoneArchiveImportError.catalogDiverged
+                    }
+                    matched = exact
+                    let effectiveName: String = exact["effective_name"]
+                    state = normalized == effectiveName ? nil : .nameDiffers
+                } else if let exact = idMatches.first {
                     matched = exact
                     let effectiveName: String = exact["effective_name"]
                     state = normalized == effectiveName ? nil : .identityConflict
@@ -1364,6 +1565,21 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                     state = .identityConflict
                 }
                 let rawMacID: String? = matched?["id"]
+                let aliasConfirmationEventID: UUID?
+                if aliasMacID != nil {
+                    guard let event = try Row.fetchOne(db, sql: """
+                        SELECT id, event_kind FROM phone_tag_alias_event
+                        WHERE source_install_id = ? AND source_epoch = ?
+                          AND phone_tag_id = ? ORDER BY sequence DESC LIMIT 1
+                        """, arguments: [install, epoch, rawPhoneID]),
+                          (event["event_kind"] as String) == "confirmed",
+                          let parsed = UUID(uuidString: event["id"]) else {
+                        throw PhoneArchiveImportError.catalogDiverged
+                    }
+                    aliasConfirmationEventID = parsed
+                } else {
+                    aliasConfirmationEventID = nil
+                }
                 if let rawMacID { representedMacTagIDs.insert(rawMacID) }
                 let macDecision: String? = try rawMacID.flatMap { id in
                     try String.fetchOne(db, sql: """
@@ -1388,7 +1604,10 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                     phoneTagID: phoneID, phoneTagName: phoneName,
                     phoneDecision: phoneDecision,
                     macTagID: rawMacID.flatMap(UUID.init(uuidString:)),
-                    macDecision: macDecision, state: resultState
+                    macTagName: matched?["name"],
+                    macTagUpdatedAtMs: matched?["updated_at_ms"],
+                    macDecision: macDecision, state: resultState,
+                    aliasConfirmationEventID: aliasConfirmationEventID
                 )
             }
             let macOnly = try Row.fetchAll(db, sql: """
@@ -1436,7 +1655,7 @@ struct VerifiedPhoneArchiveImporter: Sendable {
         _ db: Database, matching predicate: String, value: String
     ) throws -> [Row] {
         try Row.fetchAll(db, sql: """
-            SELECT tag.id, tag.name, tag.state,
+            SELECT tag.id, tag.name, tag.state, tag.updated_at_ms,
                    coalesce(concept.normalized_name, tag.normalized_name) AS effective_name
             FROM tag
             LEFT JOIN standard_tag_binding binding ON binding.tag_id = tag.id

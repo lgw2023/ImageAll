@@ -101,6 +101,7 @@ struct CatalogDatabase: Sendable {
         V044AddPhoneArchiveValidationMigration.register(on: &migrator)
         V045AddMediaIdentityReplicaMigration.register(on: &migrator)
         V046AuditMediaAssetBindingMigration.register(on: &migrator)
+        V047AddPhoneTagAliasMigration.register(on: &migrator)
         return migrator
     }
 

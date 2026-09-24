@@ -2326,6 +2326,11 @@ private struct PhoneArchiveFactComparisonSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var comparison: PhoneArchiveBoundFactComparison?
     @State private var message: String?
+    @State private var aliasTarget: PhoneArchiveTagComparison?
+    @State private var revokeAliasTarget: PhoneArchiveTagComparison?
+    @State private var showAliasConfirmation = false
+    @State private var showAliasRevocation = false
+    @State private var isBusy = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -2337,9 +2342,12 @@ private struct PhoneArchiveFactComparisonSheet: View {
             }
             Text("对照的是 Mac catalog 与已入库 iPhone 归档快照；手机后续共享变化、权限和冲突水位仍须单独核验。此页不修改两端事实。")
                 .font(.footnote).foregroundStyle(.secondary)
+            Text("明确确认同名标签映射只解决身份；两端标签决定仍需按版本单独收敛。")
+                .font(.footnote).foregroundStyle(.secondary)
             if let message {
                 Text(message).foregroundStyle(.orange)
-            } else if let comparison {
+            }
+            if let comparison {
                 Text(comparison.factSnapshotSequence == 0
                      ? "归档事实版本：初始清单"
                      : "归档事实快照序号：\(comparison.factSnapshotSequence)")
@@ -2356,9 +2364,28 @@ private struct PhoneArchiveFactComparisonSheet: View {
                                     .font(.subheadline.weight(.medium))
                                 Text("手机：\(tag.phoneDecision.rawValue) · Mac：\(tag.macDecision ?? "未设置")")
                                     .font(.caption).foregroundStyle(.secondary)
+                                if let macTagName = tag.macTagName {
+                                    Text("Mac 标签：\(macTagName)")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
                                 Text("手机 ID：\(tag.phoneTagID.uuidString) · Mac ID：\(tag.macTagID?.uuidString ?? "未建立")")
                                     .font(.caption2).foregroundStyle(.tertiary)
                                     .textSelection(.enabled)
+                                if tag.state == .nameAliasRequired,
+                                   tag.macTagID != nil, tag.macTagUpdatedAtMs != nil {
+                                    Button("确认这两个标签为同一身份…") {
+                                        aliasTarget = tag
+                                        showAliasConfirmation = true
+                                    }
+                                    .disabled(isBusy)
+                                }
+                                if tag.aliasConfirmationEventID != nil {
+                                    Button("解除已确认的标签映射…") {
+                                        revokeAliasTarget = tag
+                                        showAliasRevocation = true
+                                    }
+                                    .disabled(isBusy)
+                                }
                             }
                             Divider()
                         }
@@ -2382,26 +2409,93 @@ private struct PhoneArchiveFactComparisonSheet: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-            } else {
+            } else if message == nil {
                 ProgressView("正在读取两端整理信息…")
             }
         }
         .padding(20)
         .frame(minWidth: 680, minHeight: 540)
-        .task {
-            guard let importer = PhoneArchiveImportProcessHolder.importer() else {
-                message = "图库尚未就绪。"
-                return
+        .task { await loadComparison() }
+        .confirmationDialog(
+            "确认标签身份映射？",
+            isPresented: $showAliasConfirmation,
+            presenting: aliasTarget
+        ) { tag in
+            Button("确认映射") { Task { await confirmAlias(tag) } }
+        } message: { tag in
+            Text("手机“\(tag.phoneTagName)”（\(tag.phoneTagID.uuidString)）与 Mac“\(tag.macTagName ?? "")”（\(tag.macTagID?.uuidString ?? "")）将在该手机安装及来源 epoch 范围内视为同一标签身份，适用于同范围其他媒体；不会改动任一端的标签决定。")
+        }
+        .confirmationDialog(
+            "解除标签身份映射？",
+            isPresented: $showAliasRevocation,
+            presenting: revokeAliasTarget
+        ) { tag in
+            Button("解除映射", role: .destructive) {
+                Task { await revokeAlias(tag) }
             }
-            do {
-                comparison = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
-                    try importer.compareBoundAssetFacts(
-                        migrationID: migrationID, mediaID: mediaID, assetID: asset.id
-                    )
-                }
-            } catch {
-                message = "对账失败：\(error.localizedDescription)"
+        } message: { tag in
+            Text("手机“\(tag.phoneTagName)”与 Mac“\(tag.macTagName ?? "")”在该手机来源范围内的身份映射将解除，其他媒体的对账也会受影响；两端标签决定不变。")
+        }
+    }
+
+    private func loadComparison() async {
+        guard let importer = PhoneArchiveImportProcessHolder.importer() else {
+            message = "图库尚未就绪。"
+            return
+        }
+        do {
+            comparison = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.compareBoundAssetFacts(
+                    migrationID: migrationID, mediaID: mediaID, assetID: asset.id
+                )
             }
+            message = nil
+        } catch {
+            message = "对账失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func confirmAlias(_ tag: PhoneArchiveTagComparison) async {
+        guard !isBusy, let comparison,
+              let macTagID = tag.macTagID,
+              let macTagUpdatedAtMs = tag.macTagUpdatedAtMs,
+              let importer = PhoneArchiveImportProcessHolder.importer() else { return }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            _ = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.confirmTagAlias(
+                    migrationID: migrationID, mediaID: mediaID, assetID: asset.id,
+                    phoneTagID: tag.phoneTagID, phoneTagName: tag.phoneTagName,
+                    macTagID: macTagID, macTagUpdatedAtMs: macTagUpdatedAtMs,
+                    expectedFactSnapshotSequence: comparison.factSnapshotSequence
+                )
+            }
+            await loadComparison()
+            message = "标签身份映射已记录；决定仍待版本化收敛。"
+        } catch {
+            message = "标签映射失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func revokeAlias(_ tag: PhoneArchiveTagComparison) async {
+        guard !isBusy, let macTagID = tag.macTagID,
+              let confirmationEventID = tag.aliasConfirmationEventID,
+              let importer = PhoneArchiveImportProcessHolder.importer() else { return }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            _ = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.revokeTagAlias(
+                    migrationID: migrationID, mediaID: mediaID, assetID: asset.id,
+                    phoneTagID: tag.phoneTagID, macTagID: macTagID,
+                    confirmationEventID: confirmationEventID
+                )
+            }
+            await loadComparison()
+            message = "标签身份映射已解除并保留审计记录。"
+        } catch {
+            message = "解除映射失败：\(error.localizedDescription)"
         }
     }
 
@@ -2414,6 +2508,7 @@ private struct PhoneArchiveFactComparisonSheet: View {
         case .nameAliasRequired: "同名不同 ID，需确认映射"
         case .identityConflict: "标签身份冲突"
         case .macTagArchived: "Mac 标签已归档"
+        case .nameDiffers: "已映射，但两端名称不同"
         }
     }
 

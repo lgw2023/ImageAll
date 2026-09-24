@@ -627,6 +627,98 @@ final class PhoneArchiveImportTests: XCTestCase {
         XCTAssertEqual(compared.phoneFavoriteTarget, true)
         XCTAssertEqual(compared.macFavoriteTarget, false)
         XCTAssertEqual(compared.phoneCollectionNames, ["旅途"])
+        let aliasCandidate = try XCTUnwrap(compared.tags.first {
+            $0.phoneTagID == phoneAliasID
+        })
+        let aliasRevision = try XCTUnwrap(aliasCandidate.macTagUpdatedAtMs)
+        XCTAssertThrowsError(try importer.confirmTagAlias(
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID,
+            phoneTagID: phoneAliasID, phoneTagName: "Beach", macTagID: sharedID,
+            macTagUpdatedAtMs: 1,
+            expectedFactSnapshotSequence: compared.factSnapshotSequence
+        )) { XCTAssertEqual($0 as? PhoneArchiveImportError, .tagAliasAlreadyMapped) }
+        try fixture.database.pool.write { db in
+            try db.execute(sql: "UPDATE tag SET updated_at_ms = 2 WHERE id = ?",
+                           arguments: [macAliasID.uuidString.lowercased()])
+        }
+        XCTAssertThrowsError(try importer.confirmTagAlias(
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID,
+            phoneTagID: phoneAliasID, phoneTagName: "Beach", macTagID: macAliasID,
+            macTagUpdatedAtMs: aliasRevision,
+            expectedFactSnapshotSequence: compared.factSnapshotSequence
+        )) { XCTAssertEqual($0 as? PhoneArchiveImportError, .tagAliasCandidateChanged) }
+        let refreshed = try importer.compareBoundAssetFacts(
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID
+        )
+        let refreshedAlias = try XCTUnwrap(refreshed.tags.first {
+            $0.phoneTagID == phoneAliasID
+        })
+        let currentRevision = try XCTUnwrap(refreshedAlias.macTagUpdatedAtMs)
+        XCTAssertFalse(try importer.confirmTagAlias(
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID,
+            phoneTagID: phoneAliasID, phoneTagName: "Beach", macTagID: macAliasID,
+            macTagUpdatedAtMs: currentRevision,
+            expectedFactSnapshotSequence: refreshed.factSnapshotSequence
+        ).replayed)
+        XCTAssertTrue(try importer.confirmTagAlias(
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID,
+            phoneTagID: phoneAliasID, phoneTagName: "Beach", macTagID: macAliasID,
+            macTagUpdatedAtMs: currentRevision,
+            expectedFactSnapshotSequence: refreshed.factSnapshotSequence
+        ).replayed)
+        let mapped = try importer.compareBoundAssetFacts(
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID
+        )
+        let mappedAlias = try XCTUnwrap(mapped.tags.first { $0.phoneTagID == phoneAliasID })
+        XCTAssertEqual(mappedAlias.state, .decisionDiffers)
+        XCTAssertEqual(mappedAlias.macTagID, macAliasID)
+        let aliasConfirmation = try XCTUnwrap(mappedAlias.aliasConfirmationEventID)
+        try fixture.database.pool.write { db in
+            try db.execute(sql: """
+                UPDATE tag SET name = 'Coast', normalized_name = 'coast', updated_at_ms = 3
+                WHERE id = ?
+                """, arguments: [macAliasID.uuidString.lowercased()])
+        }
+        XCTAssertEqual(try importer.compareBoundAssetFacts(
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID
+        ).tags.first { $0.phoneTagID == phoneAliasID }?.state, .nameDiffers)
+        try fixture.database.pool.write { db in
+            try db.execute(sql: """
+                UPDATE tag SET name = 'Beach', normalized_name = 'beach', updated_at_ms = 4
+                WHERE id = ?
+                """, arguments: [macAliasID.uuidString.lowercased()])
+        }
+        XCTAssertFalse(try importer.revokeTagAlias(
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID,
+            phoneTagID: phoneAliasID, macTagID: macAliasID,
+            confirmationEventID: aliasConfirmation
+        ).replayed)
+        XCTAssertTrue(try importer.revokeTagAlias(
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID,
+            phoneTagID: phoneAliasID, macTagID: macAliasID,
+            confirmationEventID: aliasConfirmation
+        ).replayed)
+        XCTAssertEqual(try importer.compareBoundAssetFacts(
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID
+        ).tags.first { $0.phoneTagID == phoneAliasID }?.state, .nameAliasRequired)
+        XCTAssertFalse(try importer.confirmTagAlias(
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID,
+            phoneTagID: phoneAliasID, phoneTagName: "Beach", macTagID: macAliasID,
+            macTagUpdatedAtMs: 4,
+            expectedFactSnapshotSequence: refreshed.factSnapshotSequence
+        ).replayed)
+        XCTAssertThrowsError(try importer.revokeTagAlias(
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID,
+            phoneTagID: phoneAliasID, macTagID: macAliasID,
+            confirmationEventID: aliasConfirmation
+        )) { XCTAssertEqual($0 as? PhoneArchiveImportError, .tagAliasCandidateChanged) }
+        try fixture.database.pool.read { db in
+            XCTAssertEqual(try String.fetchAll(db, sql: """
+                SELECT event_kind FROM phone_tag_alias_event
+                WHERE phone_tag_id = ? ORDER BY sequence
+                """, arguments: [phoneAliasID.uuidString.lowercased()]),
+                ["confirmed", "revoked", "confirmed"])
+        }
         let confirmationID = try XCTUnwrap(importer.boundAssets(
             migrationID: header.migrationID, mediaID: item.mediaID
         ).first?.confirmationEventID)
