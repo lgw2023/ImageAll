@@ -120,6 +120,19 @@ struct PhoneArchiveImportedItem: Identifiable, Sendable {
     let appleAlbumCount: Int
 }
 
+struct PhoneArchiveSourceLink: Sendable, Equatable {
+    let migrationID: UUID
+    let mediaID: UUID
+    let sourceLocalIdentifier: String
+    let mediaKind: String
+
+    func matches(_ asset: RemoteLocalLibraryAsset) -> Bool {
+        asset.id == mediaID
+            && asset.localIdentifier == sourceLocalIdentifier
+            && asset.mediaKind.rawValue == mediaKind
+    }
+}
+
 struct PhoneArchiveImportedFacts: Sendable, Equatable {
     let observedFavorite: Bool
     let favoriteTarget: Bool?
@@ -868,6 +881,42 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                         .flatMap(ImageAllMigrationAppleAlbumCoverage.init(rawValue:))
                 )
             }
+        }
+    }
+
+    /// A verified manifest source identity is the only automatic association
+    /// between a shared phone directory entry and a committed Mac archive.
+    func sourceLinks(
+        sourceInstallID: UUID, sourceEpoch: UUID
+    ) throws -> [UUID: PhoneArchiveSourceLink] {
+        try database.pool.read { db in
+            var links: [UUID: PhoneArchiveSourceLink] = [:]
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT i.media_id, i.migration_id,
+                       i.source_local_identifier, i.media_kind
+                FROM migration_import_item i
+                JOIN migration_import m ON m.id = i.migration_id
+                WHERE i.source_device_id = ? AND i.source_epoch = ?
+                  AND m.state = 'catalogCommitted'
+                ORDER BY i.media_id
+                """, arguments: [
+                    sourceInstallID.uuidString.lowercased(), sourceEpoch.uuidString.lowercased(),
+                ])
+            for row in rows {
+                let rawMedia: String = row["media_id"]
+                let rawMigration: String = row["migration_id"]
+                guard let mediaID = UUID(uuidString: rawMedia),
+                      let migrationID = UUID(uuidString: rawMigration),
+                      links[mediaID] == nil else {
+                    throw PhoneArchiveImportError.catalogDiverged
+                }
+                links[mediaID] = PhoneArchiveSourceLink(
+                    migrationID: migrationID, mediaID: mediaID,
+                    sourceLocalIdentifier: row["source_local_identifier"],
+                    mediaKind: row["media_kind"]
+                )
+            }
+            return links
         }
     }
 

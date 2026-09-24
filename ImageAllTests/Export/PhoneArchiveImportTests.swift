@@ -265,6 +265,32 @@ final class PhoneArchiveImportTests: XCTestCase {
         XCTAssertEqual(listed.tagCount, 1)
         XCTAssertEqual(listed.collectionCount, 1)
         XCTAssertEqual(listed.appleAlbumCount, 1)
+        let sourceLink = try XCTUnwrap(importer.sourceLinks(
+            sourceInstallID: header.sourceDeviceID, sourceEpoch: header.sourceEpoch
+        )[mediaID])
+        XCTAssertEqual(sourceLink.migrationID, header.migrationID)
+        let matchingProjection = RemoteLocalLibraryAsset(
+            id: mediaID, localIdentifier: "phone-local-id", mediaKind: .image,
+            createdAtMs: 1_000, observedFavorite: false, favoriteTarget: nil,
+            tagDecisions: [], collections: []
+        )
+        XCTAssertTrue(sourceLink.matches(matchingProjection))
+        XCTAssertFalse(sourceLink.matches(.init(
+            id: mediaID, localIdentifier: "other-photo", mediaKind: .image,
+            createdAtMs: 1_000, observedFavorite: false, favoriteTarget: nil,
+            tagDecisions: [], collections: []
+        )))
+        XCTAssertFalse(sourceLink.matches(.init(
+            id: mediaID, localIdentifier: "phone-local-id", mediaKind: .video,
+            createdAtMs: 1_000, observedFavorite: false, favoriteTarget: nil,
+            tagDecisions: [], collections: []
+        )))
+        XCTAssertTrue(try importer.sourceLinks(
+            sourceInstallID: header.sourceDeviceID, sourceEpoch: UUID()
+        ).isEmpty)
+        XCTAssertTrue(try importer.sourceLinks(
+            sourceInstallID: UUID(), sourceEpoch: header.sourceEpoch
+        ).isEmpty)
         let opened = try importer.verifiedOriginalURL(
             migrationID: batch.id, mediaID: listed.id, archiveRoot: receipt.archiveURL
         )
@@ -346,6 +372,9 @@ final class PhoneArchiveImportTests: XCTestCase {
         XCTAssertEqual(try fixture.database.pool.read { db in
             try String.fetchOne(db, sql: "SELECT state FROM migration_import")
         }, "prepared")
+        XCTAssertTrue(try importer.sourceLinks(
+            sourceInstallID: header.sourceDeviceID, sourceEpoch: header.sourceEpoch
+        ).isEmpty)
         let receipt = try importer.importArchive(from: fixture.incoming, to: fixture.target)
         XCTAssertFalse(receipt.replayed)
         XCTAssertEqual(try fixture.database.pool.read { db in

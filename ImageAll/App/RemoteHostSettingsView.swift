@@ -267,9 +267,12 @@ struct RemotePhoneLibraryView: View {
 
     let projection: RemoteLocalLibrarySyncStore.Projection
     let deviceName: String?
+    @StateObject private var archiveModel = PhoneArchiveImportModel()
     @State private var searchText = ""
     @State private var editedProjection: RemoteLocalLibrarySyncStore.Projection?
     @State private var syncEditError: String?
+    @State private var sourceLinks: [UUID: PhoneArchiveSourceLink] = [:]
+    @State private var archiveLinkError: String?
 
     private var currentProjection: RemoteLocalLibrarySyncStore.Projection {
         editedProjection ?? projection
@@ -320,12 +323,22 @@ struct RemotePhoneLibraryView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                Button("刷新归档状态", systemImage: "arrow.clockwise") {
+                    Task { await refreshArchiveLinks() }
+                }
+                .disabled(archiveModel.isBusy)
             }
-            Text("共享标签、ImageAll 集合成员和收藏目标可在 Mac 修改，并等待 iPhone 下次同步；来源 Photos 收藏由 iPhone 另行写回。原件仍在 iPhone，尚未归档到 Mac。")
+            Text("共享标签、ImageAll 集合成员和收藏目标可在 Mac 修改，并等待 iPhone 下次同步；来源 Photos 收藏由 iPhone 另行写回。标有 Mac 已入库归档的项目有独立副本，打开时再次核查。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             if let syncEditError {
                 Text(syncEditError).font(.footnote).foregroundStyle(.red)
+            }
+            if let archiveLinkError {
+                Text(archiveLinkError).font(.footnote).foregroundStyle(.orange)
+            }
+            if let message = archiveModel.message {
+                Text(message).font(.footnote).foregroundStyle(.orange)
             }
             TextField("搜索媒体 ID、集合或标签", text: $searchText)
                 .textFieldStyle(.roundedBorder)
@@ -350,6 +363,25 @@ struct RemotePhoneLibraryView: View {
                             .font(.caption.weight(.medium))
                             .foregroundStyle(projected.lastVisibleSnapshotSequence == currentProjection.snapshotSequence
                                 ? Color.green : Color.orange)
+                    }
+                    if let link = sourceLinks[projected.id] {
+                        if link.matches(projected.asset) {
+                            HStack {
+                                Label("Mac 已入库归档 · 打开前复验", systemImage: "archivebox.fill")
+                                    .font(.caption)
+                                    .foregroundStyle(.green)
+                                Spacer()
+                                Button("打开 Mac 副本") {
+                                    Task { await archiveModel.previewLinkedOriginal(link) }
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(archiveModel.isBusy)
+                            }
+                        } else {
+                            Text("归档身份与当前手机目录不一致，需先对账；不会自动关联。")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
                     }
                     if projected.lastVisibleSnapshotSequence < currentProjection.snapshotSequence {
                         Text("保留上次可见记录；可能是权限、离线或来源变化，不代表照片已删除")
@@ -454,6 +486,34 @@ struct RemotePhoneLibraryView: View {
         .onChange(of: projection.sharedCollectionFacts) { _, _ in editedProjection = nil }
         .onChange(of: projection.sharedFavoriteFacts) { _, _ in editedProjection = nil }
         .onChange(of: projection.snapshotSequence) { _, _ in editedProjection = nil }
+        .task(id: "\(projection.installID.uuidString)|\(projection.sourceEpoch.uuidString)|\(projection.snapshotSequence)") {
+            await refreshArchiveLinks()
+        }
+        .sheet(item: $archiveModel.preview, onDismiss: { archiveModel.dismissPreview() }) { preview in
+            PhoneArchivePreviewSheet(preview: preview)
+        }
+        .onDisappear { archiveModel.dismissPreview() }
+    }
+
+    private func refreshArchiveLinks() async {
+        await archiveModel.refresh()
+        guard let importer = PhoneArchiveImportProcessHolder.importer() else {
+            sourceLinks = [:]
+            archiveLinkError = "图库尚未就绪，暂不能核对 Mac 归档状态。"
+            return
+        }
+        do {
+            sourceLinks = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.sourceLinks(
+                    sourceInstallID: projection.installID,
+                    sourceEpoch: projection.sourceEpoch
+                )
+            }
+            archiveLinkError = nil
+        } catch {
+            sourceLinks = [:]
+            archiveLinkError = "核对 Mac 归档身份失败：\(error.localizedDescription)"
+        }
     }
 
     private func favoriteTarget(_ target: Bool?) -> String {
@@ -1414,8 +1474,28 @@ final class PhoneArchiveImportModel: ObservableObject {
     }
 
     func previewOriginal(_ item: PhoneArchiveImportedItem) async {
-        guard !isBusy, let batch = selectedBatch,
-              let importer = PhoneArchiveImportProcessHolder.importer() else { return }
+        guard let batch = selectedBatch else { return }
+        await previewOriginal(
+            migrationID: batch.id, mediaID: item.id,
+            title: item.sourceLocalIdentifier, isVideo: item.mediaKind == "video"
+        )
+    }
+
+    func previewLinkedOriginal(_ link: PhoneArchiveSourceLink) async {
+        await previewOriginal(
+            migrationID: link.migrationID, mediaID: link.mediaID,
+            title: link.sourceLocalIdentifier, isVideo: link.mediaKind == "video"
+        )
+    }
+
+    private func previewOriginal(
+        migrationID: UUID, mediaID: UUID, title: String, isVideo: Bool
+    ) async {
+        guard !isBusy, let batch = batches.first(where: { $0.id == migrationID }),
+              let importer = PhoneArchiveImportProcessHolder.importer() else {
+            message = "找不到已入库的 Mac 归档批次，请刷新后重试。"
+            return
+        }
         dismissPreview()
         isBusy = true
         defer { isBusy = false }
@@ -1428,13 +1508,13 @@ final class PhoneArchiveImportModel: ObservableObject {
                 )
                 let verified = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
                     try importer.verifiedPreview(
-                        migrationID: batch.id, mediaID: item.id, archiveRoot: archive
+                        migrationID: batch.id, mediaID: mediaID, archiveRoot: archive
                     )
                 }
                 previewScopedParent = accessed ? parent : nil
                 preview = PhoneArchivePreview(
-                    id: item.id, title: item.sourceLocalIdentifier,
-                    url: verified.originalURL, isVideo: item.mediaKind == "video",
+                    id: mediaID, title: title,
+                    url: verified.originalURL, isVideo: isVideo,
                     facts: verified.facts
                 )
                 message = nil
