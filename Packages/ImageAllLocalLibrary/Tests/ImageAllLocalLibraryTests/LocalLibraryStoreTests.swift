@@ -553,3 +553,74 @@ import Testing
     #expect(try await reopened.memberships(assetID: asset.id).isEmpty)
     #expect(try await reopened.pendingSharedOperations().isEmpty)
 }
+
+@Test func macCollectionChangesApplyAtomicallyAndPreservePhoneIntent() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("local.sqlite")
+    let store = try LocalLibraryStore(url: url)
+    try await store.observe([
+        LocalObservedAsset(localIdentifier: "shared", kind: "image", creationDate: nil, isFavorite: false)
+    ])
+    let asset = try #require(await store.assets(visibleIdentifiers: ["shared"]).first)
+    let collectionID = try await store.createCollection(name: "旅行")
+    let hostID = UUID()
+    let deviceID = UUID()
+    try await store.setShared(assetID: asset.id, shared: true)
+    try await store.setMembership(assetID: asset.id, collectionID: collectionID, included: true)
+    let snapshot = try await store.prepareSharedSnapshot(visibleIdentifiers: ["shared"])
+    try await store.acknowledgeSharedSnapshot(
+        snapshot, hostID: hostID, deviceID: deviceID, importedAssetIDs: [asset.id]
+    )
+    let epoch = try await store.sourceEpoch()
+    let removed = LocalSharedCollectionChange(
+        sequence: 1, assetID: asset.id, collectionID: collectionID,
+        collectionName: "旅行", included: false, fieldRevision: 2
+    )
+    let first = try await store.applySharedCollectionChanges(
+        hostID: hostID, deviceID: deviceID, sourceEpoch: epoch,
+        scopeRevision: snapshot.scopeRevision, afterCursor: 0,
+        changes: [removed], nextCursor: 1
+    )
+    #expect(first.applied == 1)
+    #expect(try await store.memberships(assetID: asset.id).isEmpty)
+    #expect(try await store.pendingSharedOperations().isEmpty)
+    #expect(try await store.sharedCollectionChangeCursor() == 1)
+    try await store.setMembership(assetID: asset.id, collectionID: collectionID, included: true)
+    let conflicting = LocalSharedCollectionChange(
+        sequence: 2, assetID: asset.id, collectionID: collectionID,
+        collectionName: "旅行", included: false, fieldRevision: 3
+    )
+    let second = try await store.applySharedCollectionChanges(
+        hostID: hostID, deviceID: deviceID, sourceEpoch: epoch,
+        scopeRevision: snapshot.scopeRevision, afterCursor: 1,
+        changes: [conflicting], nextCursor: 2
+    )
+    #expect(second.conflicts == 1)
+    #expect(try await store.memberships(assetID: asset.id).contains(collectionID))
+    let reopened = try LocalLibraryStore(url: url)
+    let conflict = try #require(await reopened.pendingSharedOperations().first)
+    #expect(conflict.conflictValue == "0")
+    #expect(conflict.conflictReason == .fieldVersion)
+    #expect(try await reopened.sharedCollectionChangeCursor() == 2)
+    do {
+        _ = try await reopened.applySharedCollectionChanges(
+            hostID: hostID, deviceID: deviceID, sourceEpoch: epoch,
+            scopeRevision: snapshot.scopeRevision, afterCursor: 2,
+            changes: [.init(
+                sequence: 3, assetID: asset.id, collectionID: collectionID,
+                collectionName: "别名", included: true, fieldRevision: 4
+            )], nextCursor: 3
+        )
+        Issue.record("collection identity mismatch must not advance cursor")
+    } catch LocalLibraryError.syncRemoteCollectionMismatch {
+        #expect(try await reopened.sharedCollectionChangeCursor() == 2)
+    }
+    let retryID = try #require(await reopened.resolveSharedCollectionConflict(
+        operationID: conflict.id, resolution: .keepPhone
+    ))
+    let retry = try #require(await reopened.prepareSharedCollectionOperation(
+        id: retryID, hostID: hostID, deviceID: deviceID
+    ))
+    #expect(retry.baseRevision == 3)
+}

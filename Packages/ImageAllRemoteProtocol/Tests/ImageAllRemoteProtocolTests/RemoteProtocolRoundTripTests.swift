@@ -36,6 +36,31 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
         ))
     }
 
+    func testCollectionChangePageRoundTripAndLegacyCapabilityBoundary() throws {
+        let change = RemoteLocalLibraryCollectionChange(
+            sequence: 3, scopeRevision: 2, assetID: UUID(),
+            collectionID: UUID(), collectionName: "旅行",
+            included: false, fieldRevision: 4
+        )
+        let page = RemoteLocalLibraryCollectionChangesPage(
+            hostID: UUID(), deviceID: UUID(), sourceEpoch: UUID(),
+            scopeRevision: 2, changes: [change], nextCursor: 3, hasMore: false
+        )
+        XCTAssertEqual(
+            try JSONDecoder().decode(
+                RemoteLocalLibraryCollectionChangesPage.self,
+                from: JSONEncoder().encode(page)
+            ), page
+        )
+        XCTAssertEqual(
+            RemoteHTTPPaths.localLibraryCollectionChanges,
+            "/v1/sync/local-library/collection-changes"
+        )
+        XCTAssertFalse(RemoteCapabilities(hostAppVersion: "old").capabilities.contains(
+            .localLibraryCollectionChanges
+        ))
+    }
+
     func testSharedTagConflictReasonRoundTripAndLegacyAbsence() throws {
         let receipt = RemoteLocalLibraryTagDecisionReceipt(
             hostID: UUID(), deviceID: UUID(), operationID: UUID(),

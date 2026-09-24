@@ -317,6 +317,82 @@ final class RemoteHTTPServerTests: XCTestCase {
         }
     }
 
+    func testMacCollectionMemberEditsAreVersionedAndPagedAcrossRestart() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("collection-edits.json")
+        let hostID = UUID()
+        let deviceID = UUID()
+        let installID = UUID()
+        let epoch = UUID()
+        let firstID = UUID()
+        let secondID = UUID()
+        let collectionID = UUID()
+        let first = RemoteLocalLibraryAsset(
+            id: firstID, localIdentifier: "first", mediaKind: .image,
+            createdAtMs: nil, observedFavorite: false, favoriteTarget: nil,
+            tagDecisions: [],
+            collections: [.init(collectionID: collectionID, collectionName: "旅行")]
+        )
+        let second = RemoteLocalLibraryAsset(
+            id: secondID, localIdentifier: "second", mediaKind: .image,
+            createdAtMs: nil, observedFavorite: false, favoriteTarget: nil,
+            tagDecisions: [], collections: []
+        )
+        let store = try RemoteLocalLibrarySyncStore(hostID: hostID, storageURL: url)
+        _ = try await store.submit(
+            .init(
+                hostID: hostID, installID: installID, sourceEpoch: epoch,
+                scopeRevision: 1, snapshotSequence: 1,
+                selectedAssetIDs: [firstID, secondID], assets: [first, second]
+            ), authenticatedDeviceID: deviceID
+        )
+        _ = try await store.setCollectionMembershipFromMac(
+            deviceID: deviceID, assetID: firstID, collectionID: collectionID,
+            included: false, expectedRevision: 1
+        )
+        let edited = try await store.setCollectionMembershipFromMac(
+            deviceID: deviceID, assetID: secondID, collectionID: collectionID,
+            included: true, expectedRevision: 0
+        )
+        XCTAssertEqual(edited.sharedCollectionFacts.first(where: { $0.assetID == firstID })?.included, false)
+        XCTAssertEqual(edited.sharedCollectionFacts.first(where: { $0.assetID == secondID })?.revision, 1)
+        let firstPage = try await store.collectionChanges(
+            deviceID: deviceID, sourceEpoch: epoch, scopeRevision: 1,
+            afterCursor: 0, limit: 1
+        )
+        XCTAssertEqual(firstPage.changes.count, 1)
+        XCTAssertTrue(firstPage.hasMore)
+        XCTAssertEqual(firstPage.changes.first?.included, false)
+        let reopened = try RemoteLocalLibrarySyncStore(hostID: hostID, storageURL: url)
+        let secondPage = try await reopened.collectionChanges(
+            deviceID: deviceID, sourceEpoch: epoch, scopeRevision: 1,
+            afterCursor: firstPage.nextCursor, limit: 1
+        )
+        XCTAssertEqual(secondPage.changes.first?.assetID, secondID)
+        XCTAssertEqual(secondPage.changes.first?.included, true)
+        XCTAssertFalse(secondPage.hasMore)
+        do {
+            _ = try await reopened.setCollectionMembershipFromMac(
+                deviceID: deviceID, assetID: firstID, collectionID: collectionID,
+                included: true, expectedRevision: 1
+            )
+            XCTFail("stale Mac editor must not overwrite a member change")
+        } catch let error as RemoteAPIError {
+            XCTAssertEqual(error.code, .conflict)
+        }
+        _ = try await reopened.submit(
+            .init(
+                hostID: hostID, installID: installID, sourceEpoch: epoch,
+                scopeRevision: 1, snapshotSequence: 2,
+                selectedAssetIDs: [firstID, secondID], assets: [first, second]
+            ), authenticatedDeviceID: deviceID
+        )
+        let persisted = await reopened.projection(deviceID: deviceID)
+        XCTAssertEqual(persisted?.sharedCollectionFacts.first(where: { $0.assetID == firstID })?.included, false)
+        XCTAssertEqual(persisted?.sharedCollectionFacts.first(where: { $0.assetID == secondID })?.included, true)
+    }
+
     func testSharedTagIdentityConflictsHaveDistinctReasons() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -563,6 +639,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(capabilities.capabilities.contains(.localLibraryTagOperations))
         XCTAssertTrue(capabilities.capabilities.contains(.localLibraryTagChanges))
         XCTAssertTrue(capabilities.capabilities.contains(.localLibraryCollectionMembership))
+        XCTAssertTrue(capabilities.capabilities.contains(.localLibraryCollectionChanges))
 
         let tagOperation = RemoteLocalLibraryTagDecisionRequest(
             hostID: hostID, installID: snapshot.installID,
@@ -643,6 +720,33 @@ final class RemoteHTTPServerTests: XCTestCase {
         )
         XCTAssertEqual(changes.deviceID, tokens.deviceID)
         XCTAssertEqual(changes.changes.first?.decision, .rejected)
+        _ = try await syncStore.setCollectionMembershipFromMac(
+            deviceID: tokens.deviceID, assetID: assetID,
+            collectionID: collectionOperation.collectionID,
+            included: false, expectedRevision: 1
+        )
+        var collectionChangesURL = changesURL
+        collectionChangesURL.path = RemoteHTTPPaths.localLibraryCollectionChanges
+        var collectionChangesRequest = URLRequest(url: try XCTUnwrap(collectionChangesURL.url))
+        collectionChangesRequest.setValue(
+            "Bearer \(tokens.accessToken)", forHTTPHeaderField: "Authorization"
+        )
+        let (collectionChangesData, collectionChangesResponse) = try await URLSession.shared.data(
+            for: collectionChangesRequest
+        )
+        XCTAssertEqual(try XCTUnwrap(collectionChangesResponse as? HTTPURLResponse).statusCode, 200)
+        let collectionChanges = try JSONDecoder().decode(
+            RemoteLocalLibraryCollectionChangesPage.self, from: collectionChangesData
+        )
+        XCTAssertEqual(collectionChanges.deviceID, tokens.deviceID)
+        XCTAssertEqual(collectionChanges.changes.first?.included, false)
+        collectionChangesRequest.setValue(
+            "Bearer \(Self.legacyDebugToken)", forHTTPHeaderField: "Authorization"
+        )
+        let (_, unpairedCollectionChanges) = try await URLSession.shared.data(
+            for: collectionChangesRequest
+        )
+        XCTAssertEqual(try XCTUnwrap(unpairedCollectionChanges as? HTTPURLResponse).statusCode, 401)
         changesRequest.setValue(
             "Bearer \(Self.legacyDebugToken)", forHTTPHeaderField: "Authorization"
         )

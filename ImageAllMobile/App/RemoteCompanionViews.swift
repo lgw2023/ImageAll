@@ -3550,6 +3550,7 @@ private func remoteCapabilityTitle(_ capability: RemoteCapability) -> String {
     case .localLibraryTagOperations: "本机图库标签提交"
     case .localLibraryTagChanges: "共享标签变化回传"
     case .localLibraryCollectionMembership: "本机图库集合成员提交"
+    case .localLibraryCollectionChanges: "共享集合成员变化回传"
     }
 }
 

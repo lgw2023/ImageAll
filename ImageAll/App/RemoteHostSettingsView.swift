@@ -258,14 +258,31 @@ final class RemoteHostSettingsModel: ObservableObject {
 }
 
 struct RemotePhoneLibraryView: View {
+    private struct CollectionChoice: Identifiable {
+        let id: UUID
+        let name: String
+    }
+
     let projection: RemoteLocalLibrarySyncStore.Projection
     let deviceName: String?
     @State private var searchText = ""
     @State private var editedProjection: RemoteLocalLibrarySyncStore.Projection?
-    @State private var tagEditError: String?
+    @State private var syncEditError: String?
 
     private var currentProjection: RemoteLocalLibrarySyncStore.Projection {
         editedProjection ?? projection
+    }
+
+    private var knownCollections: [CollectionChoice] {
+        let byID = currentProjection.sharedCollectionFacts.reduce(into: [UUID: String]()) {
+            result, fact in
+            if result[fact.collectionID] == nil {
+                result[fact.collectionID] = fact.collectionName
+            }
+        }
+        return byID.map { CollectionChoice(id: $0.key, name: $0.value) }.sorted {
+            $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
     }
 
     private var visibleAssets: [RemoteLocalLibrarySyncStore.ProjectedAsset] {
@@ -302,11 +319,11 @@ struct RemotePhoneLibraryView: View {
                 }
                 Spacer()
             }
-            Text("共享标签可在 Mac 修改，并等待 iPhone 下次同步；原件仍在 iPhone，尚未归档到 Mac。")
+            Text("共享标签与 ImageAll 集合成员可在 Mac 修改，并等待 iPhone 下次同步；原件仍在 iPhone，尚未归档到 Mac。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-            if let tagEditError {
-                Text(tagEditError).font(.footnote).foregroundStyle(.red)
+            if let syncEditError {
+                Text(syncEditError).font(.footnote).foregroundStyle(.red)
             }
             TextField("搜索媒体 ID、集合或标签", text: $searchText)
                 .textFieldStyle(.roundedBorder)
@@ -350,6 +367,30 @@ struct RemotePhoneLibraryView: View {
                     if !sharedCollections.isEmpty {
                         Text("共享集合：\(sharedCollections.map(\.collectionName).joined(separator: "、"))")
                             .font(.caption)
+                    }
+                    if !knownCollections.isEmpty {
+                        Menu("修改集合成员") {
+                            ForEach(knownCollections) { collection in
+                                let current = currentProjection.sharedCollectionFacts.first {
+                                    $0.assetID == projected.asset.id
+                                        && $0.collectionID == collection.id
+                                }
+                                Button {
+                                    updateCollection(
+                                        assetID: projected.asset.id,
+                                        collectionID: collection.id,
+                                        included: !(current?.included ?? false),
+                                        expectedRevision: current?.revision ?? 0
+                                    )
+                                } label: {
+                                    Label(
+                                        collection.name,
+                                        systemImage: current?.included == true ? "checkmark.circle.fill" : "circle"
+                                    )
+                                }
+                            }
+                        }
+                        .menuStyle(.borderlessButton)
                     }
                     let sharedTags = currentProjection.sharedTagFacts.filter {
                         $0.assetID == projected.asset.id
@@ -418,9 +459,27 @@ struct RemotePhoneLibraryView: View {
                     tagID: fact.tagID, decision: decision,
                     expectedRevision: fact.revision
                 )
-                tagEditError = nil
+                syncEditError = nil
             } catch {
-                tagEditError = "更新共享标签失败：\(error.localizedDescription)"
+                syncEditError = "更新共享标签失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func updateCollection(
+        assetID: UUID, collectionID: UUID,
+        included: Bool, expectedRevision: Int64
+    ) {
+        Task {
+            do {
+                editedProjection = try await RemoteHostProcessHolder.setSharedPhoneCollectionMembership(
+                    deviceID: currentProjection.deviceID, assetID: assetID,
+                    collectionID: collectionID, included: included,
+                    expectedRevision: expectedRevision
+                )
+                syncEditError = nil
+            } catch {
+                syncEditError = "更新共享集合成员失败：\(error.localizedDescription)"
             }
         }
     }

@@ -12,6 +12,9 @@ struct LocalSharedSyncSummary {
     let received: Int
     let pullSupported: Bool
     let pullHasMore: Bool
+    let collectionReceived: Int
+    let collectionPullSupported: Bool
+    let collectionPullHasMore: Bool
     let remaining: Int
 }
 
@@ -204,6 +207,8 @@ final class LocalLibraryModel: ObservableObject {
             var deferred = 0
             var received = 0
             var pullHasMore = false
+            var collectionReceived = 0
+            var collectionPullHasMore = false
             var sent = 0
             var blockedFields: Set<String> = []
             let visible = Dictionary(uniqueKeysWithValues: snapshot.assets.map { ($0.id, $0) })
@@ -336,6 +341,35 @@ final class LocalLibraryModel: ObservableObject {
                     if !page.hasMore { break }
                 }
             }
+            let collectionPullSupported = remoteModel.supportsLocalLibraryCollectionChanges
+            if collectionPullSupported {
+                for _ in 0..<20 {
+                    let cursor = try await store.sharedCollectionChangeCursor()
+                    let page = try await remoteModel.fetchLocalLibraryCollectionChanges(
+                        sourceEpoch: snapshot.sourceEpoch,
+                        scopeRevision: snapshot.scopeRevision,
+                        afterCursor: cursor
+                    )
+                    let result = try await store.applySharedCollectionChanges(
+                        hostID: page.hostID, deviceID: page.deviceID,
+                        sourceEpoch: page.sourceEpoch,
+                        scopeRevision: page.scopeRevision, afterCursor: cursor,
+                        changes: page.changes.map { change in
+                            LocalSharedCollectionChange(
+                                sequence: change.sequence, assetID: change.assetID,
+                                collectionID: change.collectionID,
+                                collectionName: change.collectionName,
+                                included: change.included,
+                                fieldRevision: change.fieldRevision
+                            )
+                        }, nextCursor: page.nextCursor
+                    )
+                    collectionReceived += result.applied
+                    conflicts += result.conflicts
+                    collectionPullHasMore = page.hasMore
+                    if !page.hasMore { break }
+                }
+            }
             let remaining = try await store.pendingSharedOperations().count
             await reloadFacts()
             return LocalSharedSyncSummary(
@@ -344,6 +378,9 @@ final class LocalLibraryModel: ObservableObject {
                 received: received,
                 pullSupported: pullSupported,
                 pullHasMore: pullHasMore,
+                collectionReceived: collectionReceived,
+                collectionPullSupported: collectionPullSupported,
+                collectionPullHasMore: collectionPullHasMore,
                 remaining: remaining
             )
         } catch {
@@ -734,8 +771,12 @@ private struct LocalShareScopeView: View {
                                     ? "Mac 标签回传 \(result.received) 项"
                                     : "当前 Mac 版本尚无标签回传"
                                 let continuation = result.pullHasMore
+                                    || result.collectionPullHasMore
                                     ? "Mac 仍有后续变化页，请再次同步。" : ""
-                                statusMessage = "Mac 已接收 \(receipt.acceptedAssetCount) 项目录；手机标签/集合成员提交 \(result.applied) 项、已一致 \(result.unchanged) 项；\(pull)、冲突 \(result.conflicts) 项；仍待处理 \(result.remaining) 项。\(continuation)原件尚未传输。"
+                                let collectionPull = result.collectionPullSupported
+                                    ? "Mac 集合回传 \(result.collectionReceived) 项"
+                                    : "当前 Mac 版本尚无集合回传"
+                                statusMessage = "Mac 已接收 \(receipt.acceptedAssetCount) 项目录；手机标签/集合成员提交 \(result.applied) 项、已一致 \(result.unchanged) 项；\(pull)、\(collectionPull)、冲突 \(result.conflicts) 项；仍待处理 \(result.remaining) 项。\(continuation)原件尚未传输。"
                             } catch {
                                 statusMessage = "Mac 已接收目录，但整理信息提交未完成：\(error.localizedDescription)"
                             }
@@ -748,7 +789,7 @@ private struct LocalShareScopeView: View {
                 if let statusMessage {
                     Text(statusMessage).font(.footnote).foregroundStyle(.secondary)
                 }
-                Text("先在“Mac 图库”完成设备配对。冲突会保留在手机；Mac 修改集合成员与收藏同步仍待接入。")
+                Text("先在“Mac 图库”完成设备配对。冲突会保留在手机；收藏目标同步仍待接入。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
         }

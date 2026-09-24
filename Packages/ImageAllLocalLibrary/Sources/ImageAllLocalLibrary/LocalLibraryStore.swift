@@ -13,6 +13,7 @@ public enum LocalLibraryError: Error, Equatable {
     case syncEarlierOperationPending
     case unsupportedSharedOperation
     case syncRemoteTagMismatch
+    case syncRemoteCollectionMismatch
     case syncConflictDetailsUnavailable
 }
 
@@ -161,6 +162,33 @@ public struct LocalSharedTagPullResult: Sendable {
     public let nextCursor: Int64
 }
 
+public struct LocalSharedCollectionChange: Sendable {
+    public let sequence: Int64
+    public let assetID: UUID
+    public let collectionID: UUID
+    public let collectionName: String
+    public let included: Bool
+    public let fieldRevision: Int64
+
+    public init(
+        sequence: Int64, assetID: UUID, collectionID: UUID,
+        collectionName: String, included: Bool, fieldRevision: Int64
+    ) {
+        self.sequence = sequence
+        self.assetID = assetID
+        self.collectionID = collectionID
+        self.collectionName = collectionName
+        self.included = included
+        self.fieldRevision = fieldRevision
+    }
+}
+
+public struct LocalSharedCollectionPullResult: Sendable {
+    public let applied: Int
+    public let conflicts: Int
+    public let nextCursor: Int64
+}
+
 /// A directory and human-fact projection for assets the owner explicitly selected.
 /// It contains no media bytes, thumbnail, GPS, or unreferenced tag/collection names.
 public struct LocalSharedSnapshot: Codable, Sendable {
@@ -299,6 +327,7 @@ public actor LocalLibraryStore {
                 INSERT OR IGNORE INTO identity(key,value) VALUES('sync_ack_scope_revision','0');
                 INSERT OR IGNORE INTO identity(key,value) VALUES('sync_ack_snapshot_sequence','0');
                 INSERT OR IGNORE INTO identity(key,value) VALUES('sync_tag_change_cursor','0');
+                INSERT OR IGNORE INTO identity(key,value) VALUES('sync_collection_change_cursor','0');
                 """
             guard sqlite3_exec(db, setup, nil, nil, nil) == SQLITE_OK else {
                 throw LocalLibraryError.database(String(cString: sqlite3_errmsg(db)))
@@ -1247,6 +1276,109 @@ public actor LocalLibraryStore {
             ])
         }
         return LocalSharedTagPullResult(
+            applied: applied, conflicts: conflicts, nextCursor: nextCursor
+        )
+    }
+
+    public func sharedCollectionChangeCursor() throws -> Int64 {
+        Int64(try requiredIdentity("sync_collection_change_cursor")) ?? 0
+    }
+
+    /// A member change and its cursor commit together. A local pending operation is
+    /// kept as an explicit conflict, and remote observation never echoes to Mac.
+    public func applySharedCollectionChanges(
+        hostID: UUID, deviceID: UUID, sourceEpoch: UUID,
+        scopeRevision: Int64, afterCursor: Int64,
+        changes: [LocalSharedCollectionChange], nextCursor: Int64
+    ) throws -> LocalSharedCollectionPullResult {
+        guard try requiredIdentity("sync_host_id") == hostID.uuidString,
+              try requiredIdentity("sync_device_id") == deviceID.uuidString,
+              try requiredIdentity("source_epoch") == sourceEpoch.uuidString,
+              Int64(try requiredIdentity("share_scope_revision")) == scopeRevision,
+              Int64(try requiredIdentity("sync_ack_scope_revision")) == scopeRevision,
+              try sharedCollectionChangeCursor() == afterCursor,
+              nextCursor >= afterCursor,
+              changes.allSatisfy({
+                  $0.sequence > afterCursor && $0.sequence <= nextCursor && $0.fieldRevision > 0
+              }),
+              zip(changes, changes.dropFirst()).allSatisfy({ $0.0.sequence < $0.1.sequence }) else {
+            throw LocalLibraryError.syncIdentityChanged
+        }
+        var applied = 0
+        var conflicts = 0
+        try transaction {
+            for change in changes {
+                guard try isShared(assetID: change.assetID),
+                      let localName = try scalar(
+                          "SELECT name FROM collections WHERE id=?", [change.collectionID.uuidString]
+                      ), localName == change.collectionName else {
+                    throw LocalLibraryError.syncRemoteCollectionMismatch
+                }
+                let field = "collection.\(change.collectionID.uuidString)"
+                let value = change.included ? "1" : "0"
+                let baseline = Int64(try scalar("""
+                    SELECT revision FROM shared_field_versions WHERE asset_id=? AND field=?
+                    """, [change.assetID.uuidString, field]) ?? "0") ?? 0
+                if change.fieldRevision <= baseline { continue }
+                let pending = try rows("""
+                    SELECT s.operation_id,s.value,d.state
+                    FROM shared_outbox s JOIN outbox o ON o.operation_id=s.operation_id
+                    LEFT JOIN shared_delivery d ON d.operation_id=s.operation_id
+                    WHERE s.asset_id=? AND s.field=? ORDER BY o.sequence
+                    """, [change.assetID.uuidString, field]).first
+                if let pending {
+                    guard pending[2] != "prepared" else {
+                        throw LocalLibraryError.syncEarlierOperationPending
+                    }
+                    if pending[1] == value, pending[2] == nil {
+                        try execute("DELETE FROM shared_outbox WHERE operation_id=?", [pending[0] ?? ""])
+                        applied += 1
+                    } else {
+                        try execute("""
+                            INSERT INTO shared_delivery(
+                              operation_id,host_id,device_id,base_revision,scope_revision,
+                              state,conflict_revision,conflict_value
+                            ) VALUES(?,?,?,?,?,'conflict',?,?)
+                            ON CONFLICT(operation_id) DO UPDATE SET
+                              state='conflict',conflict_revision=excluded.conflict_revision,
+                              conflict_value=excluded.conflict_value
+                            """, [
+                                pending[0] ?? "", hostID.uuidString, deviceID.uuidString,
+                                String(baseline), String(scopeRevision),
+                                String(change.fieldRevision), value
+                            ])
+                        try execute("""
+                            INSERT INTO shared_conflict_details(operation_id,reason)
+                            VALUES(?,'fieldVersion')
+                            ON CONFLICT(operation_id) DO UPDATE SET reason=excluded.reason
+                            """, [pending[0] ?? ""])
+                        conflicts += 1
+                    }
+                } else {
+                    let current = try scalar("""
+                        SELECT included FROM memberships WHERE asset_id=? AND collection_id=?
+                        """, [change.assetID.uuidString, change.collectionID.uuidString])
+                    if current != value {
+                        try execute("""
+                            INSERT INTO memberships(collection_id,asset_id,included,revision)
+                            VALUES(?,?,?,1) ON CONFLICT(collection_id,asset_id) DO UPDATE SET
+                              included=excluded.included,revision=revision+1
+                            """, [change.collectionID.uuidString, change.assetID.uuidString, value])
+                        _ = try enqueue(change.assetID, field: field, value: value)
+                    }
+                    applied += 1
+                }
+                try execute("""
+                    INSERT INTO shared_field_versions(asset_id,field,revision) VALUES(?,?,?)
+                    ON CONFLICT(asset_id,field) DO UPDATE SET
+                      revision=MAX(revision,excluded.revision)
+                    """, [change.assetID.uuidString, field, String(change.fieldRevision)])
+            }
+            try execute("UPDATE identity SET value=? WHERE key='sync_collection_change_cursor'", [
+                String(nextCursor)
+            ])
+        }
+        return LocalSharedCollectionPullResult(
             applied: applied, conflicts: conflicts, nextCursor: nextCursor
         )
     }

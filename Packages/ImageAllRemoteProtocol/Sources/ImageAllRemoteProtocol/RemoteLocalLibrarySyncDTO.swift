@@ -5,6 +5,55 @@ public extension RemoteHTTPPaths {
     static let localLibraryTagDecision = "/v1/sync/local-library/tag-decision"
     static let localLibraryTagChanges = "/v1/sync/local-library/tag-changes"
     static let localLibraryCollectionMembership = "/v1/sync/local-library/collection-membership"
+    static let localLibraryCollectionChanges = "/v1/sync/local-library/collection-changes"
+}
+
+public struct RemoteLocalLibraryCollectionChange: Codable, Sendable, Equatable {
+    public let sequence: Int64
+    public let scopeRevision: Int64
+    public let assetID: UUID
+    public let collectionID: UUID
+    public let collectionName: String
+    public let included: Bool
+    public let fieldRevision: Int64
+
+    public init(
+        sequence: Int64, scopeRevision: Int64, assetID: UUID,
+        collectionID: UUID, collectionName: String,
+        included: Bool, fieldRevision: Int64
+    ) {
+        self.sequence = sequence
+        self.scopeRevision = scopeRevision
+        self.assetID = assetID
+        self.collectionID = collectionID
+        self.collectionName = collectionName
+        self.included = included
+        self.fieldRevision = fieldRevision
+    }
+}
+
+public struct RemoteLocalLibraryCollectionChangesPage: Codable, Sendable, Equatable {
+    public let hostID: UUID
+    public let deviceID: UUID
+    public let sourceEpoch: UUID
+    public let scopeRevision: Int64
+    public let changes: [RemoteLocalLibraryCollectionChange]
+    public let nextCursor: Int64
+    public let hasMore: Bool
+
+    public init(
+        hostID: UUID, deviceID: UUID, sourceEpoch: UUID,
+        scopeRevision: Int64, changes: [RemoteLocalLibraryCollectionChange],
+        nextCursor: Int64, hasMore: Bool
+    ) {
+        self.hostID = hostID
+        self.deviceID = deviceID
+        self.sourceEpoch = sourceEpoch
+        self.scopeRevision = scopeRevision
+        self.changes = changes
+        self.nextCursor = nextCursor
+        self.hasMore = hasMore
+    }
 }
 
 public struct RemoteLocalLibraryTagChange: Codable, Sendable, Equatable {

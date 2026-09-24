@@ -66,6 +66,7 @@ actor RemoteLocalLibrarySyncStore {
         let lastPhoneOperationSequence: Int64?
         let importedAssetIDs: [UUID]?
         let tagChanges: [RemoteLocalLibraryTagChange]?
+        let collectionChanges: [RemoteLocalLibraryCollectionChange]?
     }
 
     private struct PersistedState: Codable {
@@ -96,6 +97,7 @@ actor RemoteLocalLibrarySyncStore {
                       let operationIDs = (record.tagOperations ?? []).map(\.request.operationID)
                           + (record.collectionOperations ?? []).map(\.request.operationID)
                       let changes = record.tagChanges ?? []
+                      let collectionChanges = record.collectionChanges ?? []
                       return record.request.hostID == hostID
                           && record.request.schemaVersion == 1
                           && Set(projectedIDs).count == projectedIDs.count
@@ -127,6 +129,14 @@ actor RemoteLocalLibrarySyncStore {
                               $0.0.sequence < $0.1.sequence
                           }
                           && changes.allSatisfy {
+                              $0.sequence > 0 && $0.fieldRevision > 0
+                                  && $0.scopeRevision >= 0
+                                  && $0.scopeRevision <= record.request.scopeRevision
+                          }
+                          && zip(collectionChanges, collectionChanges.dropFirst()).allSatisfy {
+                              $0.0.sequence < $0.1.sequence
+                          }
+                          && collectionChanges.allSatisfy {
                               $0.sequence > 0 && $0.fieldRevision > 0
                                   && $0.scopeRevision >= 0
                                   && $0.scopeRevision <= record.request.scopeRevision
@@ -216,7 +226,8 @@ actor RemoteLocalLibrarySyncStore {
             collectionOperations: previous?.collectionOperations ?? [],
             lastPhoneOperationSequence: previous?.lastPhoneOperationSequence ?? 0,
             importedAssetIDs: importedAssetIDs,
-            tagChanges: previous?.tagChanges ?? []
+            tagChanges: previous?.tagChanges ?? [],
+            collectionChanges: previous?.collectionChanges ?? []
         )
         var updated = records
         updated[authenticatedDeviceID] = record
@@ -365,7 +376,8 @@ actor RemoteLocalLibrarySyncStore {
             collectionOperations: previous.collectionOperations,
             lastPhoneOperationSequence: request.deviceSequence,
             importedAssetIDs: previous.importedAssetIDs,
-            tagChanges: previous.tagChanges
+            tagChanges: previous.tagChanges,
+            collectionChanges: previous.collectionChanges
         )
         var updated = records
         updated[authenticatedDeviceID] = record
@@ -493,7 +505,8 @@ actor RemoteLocalLibrarySyncStore {
             ],
             lastPhoneOperationSequence: request.deviceSequence,
             importedAssetIDs: previous.importedAssetIDs,
-            tagChanges: previous.tagChanges
+            tagChanges: previous.tagChanges,
+            collectionChanges: previous.collectionChanges
         )
         var updated = records
         updated[authenticatedDeviceID] = record
@@ -550,7 +563,8 @@ actor RemoteLocalLibrarySyncStore {
             collectionOperations: previous.collectionOperations,
             lastPhoneOperationSequence: previous.lastPhoneOperationSequence,
             importedAssetIDs: previous.importedAssetIDs,
-            tagChanges: (previous.tagChanges ?? []) + [change]
+            tagChanges: (previous.tagChanges ?? []) + [change],
+            collectionChanges: previous.collectionChanges
         )
         var updated = records
         updated[deviceID] = record
@@ -585,6 +599,106 @@ actor RemoteLocalLibrarySyncStore {
             sourceEpoch: sourceEpoch, scopeRevision: scopeRevision,
             changes: page,
             nextCursor: page.last?.sequence ?? (filtered.isEmpty ? (all.last?.sequence ?? afterCursor) : afterCursor),
+            hasMore: filtered.count > page.count
+        )
+    }
+
+    /// Mac edits a member field within the already shared phone collection namespace.
+    /// The collection ID must have been introduced by the phone; no name-based merge occurs.
+    func setCollectionMembershipFromMac(
+        deviceID: UUID, assetID: UUID, collectionID: UUID,
+        included: Bool, expectedRevision: Int64
+    ) throws -> Projection {
+        guard let previous = records[deviceID],
+              previous.request.selectedAssetIDs.contains(assetID),
+              previous.projectedAssets.contains(where: { $0.asset.id == assetID }),
+              expectedRevision >= 0 else {
+            throw RemoteAPIError(code: .notFound, message: "shared phone asset unavailable")
+        }
+        var facts = previous.sharedCollectionFacts
+            ?? Self.seedCollectionFacts(from: previous.projectedAssets)
+        let names = Set(facts.filter { $0.collectionID == collectionID }.map(\.collectionName))
+        guard names.count == 1, let collectionName = names.first else {
+            throw RemoteAPIError(code: .notFound, message: "shared phone collection unavailable")
+        }
+        let index = facts.firstIndex {
+            $0.assetID == assetID && $0.collectionID == collectionID
+        }
+        let current = index.map { facts[$0] }
+        guard (current?.revision ?? 0) == expectedRevision else {
+            throw RemoteAPIError(code: .conflict, message: "shared phone collection member changed")
+        }
+        if current?.included == included || (current == nil && !included) {
+            return projection(deviceID: deviceID)!
+        }
+        guard expectedRevision < Int64.max,
+              (previous.collectionChanges?.last?.sequence ?? 0) < Int64.max else {
+            throw RemoteAPIError(code: .internalError, message: "shared change revision exhausted")
+        }
+        let nextRevision = expectedRevision + 1
+        let nextSequence = (previous.collectionChanges?.last?.sequence ?? 0) + 1
+        let fact = SharedCollectionFact(
+            assetID: assetID, collectionID: collectionID,
+            collectionName: collectionName, included: included,
+            revision: nextRevision
+        )
+        if let index { facts[index] = fact } else { facts.append(fact) }
+        let change = RemoteLocalLibraryCollectionChange(
+            sequence: nextSequence, scopeRevision: previous.request.scopeRevision,
+            assetID: assetID, collectionID: collectionID,
+            collectionName: collectionName, included: included,
+            fieldRevision: nextRevision
+        )
+        let record = Record(
+            deviceID: previous.deviceID, request: previous.request,
+            projectedAssets: previous.projectedAssets,
+            acceptedAtMs: previous.acceptedAtMs,
+            sharedTagFacts: previous.sharedTagFacts,
+            sharedCollectionFacts: facts.sorted {
+                ($0.assetID.uuidString, $0.collectionID.uuidString)
+                    < ($1.assetID.uuidString, $1.collectionID.uuidString)
+            },
+            tagOperations: previous.tagOperations,
+            collectionOperations: previous.collectionOperations,
+            lastPhoneOperationSequence: previous.lastPhoneOperationSequence,
+            importedAssetIDs: previous.importedAssetIDs,
+            tagChanges: previous.tagChanges,
+            collectionChanges: (previous.collectionChanges ?? []) + [change]
+        )
+        var updated = records
+        updated[deviceID] = record
+        try persist(updated)
+        return projection(deviceID: deviceID)!
+    }
+
+    func collectionChanges(
+        deviceID: UUID, sourceEpoch: UUID, scopeRevision: Int64,
+        afterCursor: Int64, limit: Int = 100
+    ) throws -> RemoteLocalLibraryCollectionChangesPage {
+        guard let record = records[deviceID] else {
+            throw RemoteAPIError(code: .notFound, message: "phone share scope not established")
+        }
+        guard sourceEpoch == record.request.sourceEpoch,
+              scopeRevision == record.request.scopeRevision,
+              afterCursor >= 0, limit > 0, limit <= 100 else {
+            throw RemoteAPIError(code: .conflict, message: "shared collection cursor scope changed")
+        }
+        let all = record.collectionChanges ?? []
+        guard afterCursor <= (all.last?.sequence ?? 0) else {
+            throw RemoteAPIError(code: .conflict, message: "shared collection cursor beyond log")
+        }
+        let selected = Set(record.request.selectedAssetIDs)
+        let filtered = all.filter {
+            $0.sequence > afterCursor && $0.scopeRevision == scopeRevision
+                && selected.contains($0.assetID)
+        }
+        let page = Array(filtered.prefix(limit))
+        return RemoteLocalLibraryCollectionChangesPage(
+            hostID: hostID, deviceID: deviceID,
+            sourceEpoch: sourceEpoch, scopeRevision: scopeRevision,
+            changes: page,
+            nextCursor: page.last?.sequence
+                ?? (filtered.isEmpty ? (all.last?.sequence ?? afterCursor) : afterCursor),
             hasMore: filtered.count > page.count
         )
     }

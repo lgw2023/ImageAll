@@ -678,12 +678,39 @@ final class RemoteCompanionModel: ObservableObject {
         return page
     }
 
+    func fetchLocalLibraryCollectionChanges(
+        sourceEpoch: UUID, scopeRevision: Int64, afterCursor: Int64
+    ) async throws -> RemoteLocalLibraryCollectionChangesPage {
+        guard isConnected, let client, let sessionTokens,
+              let capabilities,
+              capabilities.capabilities.contains(.localLibraryCollectionChanges),
+              capabilities.hostID == sessionTokens.hostID else {
+            throw RemoteAPIError(code: .unauthorized, message: "请先连接支持共享集合的已配对 Mac")
+        }
+        let page = try await client.fetchLocalLibraryCollectionChanges(
+            sourceEpoch: sourceEpoch, scopeRevision: scopeRevision,
+            afterCursor: afterCursor
+        )
+        guard page.hostID == sessionTokens.hostID,
+              page.deviceID == sessionTokens.deviceID,
+              page.sourceEpoch == sourceEpoch,
+              page.scopeRevision == scopeRevision,
+              page.changes.allSatisfy({ $0.scopeRevision == scopeRevision }) else {
+            throw RemoteAPIError(code: .conflict, message: "Mac 集合变化页身份不匹配")
+        }
+        return page
+    }
+
     var supportsLocalLibraryTagChanges: Bool {
         isConnected && capabilities?.capabilities.contains(.localLibraryTagChanges) == true
     }
 
     var supportsLocalLibraryCollectionMembership: Bool {
         isConnected && capabilities?.capabilities.contains(.localLibraryCollectionMembership) == true
+    }
+
+    var supportsLocalLibraryCollectionChanges: Bool {
+        isConnected && capabilities?.capabilities.contains(.localLibraryCollectionChanges) == true
     }
 
     func reloadHostStatus() async {

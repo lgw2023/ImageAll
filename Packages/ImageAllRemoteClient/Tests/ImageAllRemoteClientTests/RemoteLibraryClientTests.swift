@@ -4,6 +4,45 @@ import ImageAllRemoteProtocol
 import XCTest
 
 final class RemoteLibraryClientTests: XCTestCase {
+    func testFetchesScopedMacCollectionChangesWithBearerToken() async throws {
+        let hostID = UUID()
+        let deviceID = UUID()
+        let epoch = UUID()
+        let change = RemoteLocalLibraryCollectionChange(
+            sequence: 5, scopeRevision: 2, assetID: UUID(),
+            collectionID: UUID(), collectionName: "旅行",
+            included: false, fieldRevision: 3
+        )
+        let transport = MockTransport { outgoing in
+            XCTAssertEqual(outgoing.httpMethod, "GET")
+            XCTAssertEqual(outgoing.url?.path, RemoteHTTPPaths.localLibraryCollectionChanges)
+            XCTAssertEqual(outgoing.value(forHTTPHeaderField: "Authorization"), "Bearer secret")
+            let query = URLComponents(url: try XCTUnwrap(outgoing.url), resolvingAgainstBaseURL: false)?
+                .queryItems ?? []
+            XCTAssertEqual(query.first(where: { $0.name == "sourceEpoch" })?.value, epoch.uuidString)
+            XCTAssertEqual(query.first(where: { $0.name == "scopeRevision" })?.value, "2")
+            XCTAssertEqual(query.first(where: { $0.name == "afterCursor" })?.value, "4")
+            let page = RemoteLocalLibraryCollectionChangesPage(
+                hostID: hostID, deviceID: deviceID, sourceEpoch: epoch,
+                scopeRevision: 2, changes: [change], nextCursor: 5, hasMore: false
+            )
+            return (
+                try JSONEncoder().encode(page),
+                HTTPURLResponse(url: outgoing.url!, statusCode: 200,
+                                httpVersion: "HTTP/1.1", headerFields: nil)!
+            )
+        }
+        let client = RemoteLibraryClient(
+            endpoint: try RemoteHostEndpoint(host: "127.0.0.1", port: 8787, accessToken: "secret"),
+            transport: transport
+        )
+        let page = try await client.fetchLocalLibraryCollectionChanges(
+            sourceEpoch: epoch, scopeRevision: 2, afterCursor: 4
+        )
+        XCTAssertEqual(page.changes, [change])
+        XCTAssertEqual(page.nextCursor, 5)
+    }
+
     func testPostsCollectionMembershipWithStableOperationID() async throws {
         let request = RemoteLocalLibraryCollectionMembershipRequest(
             hostID: UUID(), installID: UUID(), sourceEpoch: UUID(),
