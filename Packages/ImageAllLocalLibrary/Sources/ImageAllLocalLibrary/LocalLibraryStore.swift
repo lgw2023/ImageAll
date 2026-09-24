@@ -220,10 +220,12 @@ public struct LocalSharedCollectionChange: Sendable {
     public let collectionName: String
     public let included: Bool
     public let fieldRevision: Int64
+    public let renamedFrom: String?
 
     public init(
         sequence: Int64, assetID: UUID, collectionID: UUID,
-        collectionName: String, included: Bool, fieldRevision: Int64
+        collectionName: String, included: Bool, fieldRevision: Int64,
+        renamedFrom: String? = nil
     ) {
         self.sequence = sequence
         self.assetID = assetID
@@ -231,6 +233,7 @@ public struct LocalSharedCollectionChange: Sendable {
         self.collectionName = collectionName
         self.included = included
         self.fieldRevision = fieldRevision
+        self.renamedFrom = renamedFrom
     }
 }
 
@@ -1987,7 +1990,18 @@ public actor LocalLibraryStore {
               try sharedCollectionChangeCursor() == afterCursor,
               nextCursor >= afterCursor,
               changes.allSatisfy({
-                  $0.sequence > afterCursor && $0.sequence <= nextCursor && $0.fieldRevision > 0
+                  $0.sequence > afterCursor && $0.sequence <= nextCursor
+                      && $0.fieldRevision > 0
+                      && ($0.renamedFrom == nil || (
+                          $0.renamedFrom?.isEmpty == false
+                              && $0.renamedFrom != $0.collectionName
+                              && !$0.collectionName.isEmpty
+                              && $0.collectionName == $0.collectionName.trimmingCharacters(
+                                  in: .whitespacesAndNewlines
+                              )
+                              && $0.collectionName.count <= 160
+                              && $0.collectionName.utf8.count <= 640
+                      ))
               }),
               zip(changes, changes.dropFirst()).allSatisfy({ $0.0.sequence < $0.1.sequence }) else {
             throw LocalLibraryError.syncIdentityChanged
@@ -1996,6 +2010,9 @@ public actor LocalLibraryStore {
             guard try isShared(assetID: change.assetID) else {
                 throw LocalLibraryError.syncRemoteCollectionMismatch
             }
+            // A rename is an identity-preserving transition. A colliding new
+            // name is rejected by the transaction, never proposed as a new alias.
+            if change.renamedFrom != nil { continue }
             if try scalar("SELECT id FROM collections WHERE id=?", [
                 change.collectionID.uuidString
             ]) != nil { continue }
@@ -2040,7 +2057,8 @@ public actor LocalLibraryStore {
                 }
                 let localCollectionID = try localCollectionIdentity(
                     for: change.collectionID, remoteName: change.collectionName,
-                    hostID: hostID, deviceID: deviceID, sourceEpoch: sourceEpoch
+                    hostID: hostID, deviceID: deviceID, sourceEpoch: sourceEpoch,
+                    renamedFrom: change.renamedFrom
                 )
                 let field = "collection.\(localCollectionID.uuidString)"
                 let value = change.included ? "1" : "0"
@@ -2050,15 +2068,64 @@ public actor LocalLibraryStore {
                 if let localName = try scalar(
                     "SELECT name FROM collections WHERE id=?", [localCollectionID.uuidString]
                 ) {
-                    guard localCollectionID != change.collectionID
-                            || localName == change.collectionName else {
-                        throw LocalLibraryError.syncRemoteCollectionMismatch
+                    if let oldName = change.renamedFrom {
+                        let alias = localCollectionID == change.collectionID ? nil
+                            : try collectionAliasRow(
+                                remoteCollectionID: change.collectionID,
+                                hostID: hostID, deviceID: deviceID,
+                                sourceEpoch: sourceEpoch
+                            )
+                        guard (alias == nil && localCollectionID == change.collectionID
+                                   && (localName == oldName || localName == change.collectionName))
+                                || (alias != nil && localName == alias?[2]
+                                    && (alias?[1] == oldName
+                                        || alias?[1] == change.collectionName)) else {
+                            throw LocalLibraryError.syncRemoteCollectionMismatch
+                        }
+                        let needsTransition = alias == nil
+                            ? localName == oldName : alias?[1] == oldName
+                        if needsTransition {
+                            let existingNames = try rows(
+                                "SELECT id,name FROM collections"
+                            )
+                            guard !existingNames.contains(where: {
+                                      $0[0] != localCollectionID.uuidString
+                                          && Self.syncTagNameKey($0[1] ?? "")
+                                              == Self.syncTagNameKey(change.collectionName)
+                                  }) else {
+                                throw LocalLibraryError.syncRemoteCollectionMismatch
+                            }
+                            if localName != change.collectionName {
+                                try execute("UPDATE collections SET name=? WHERE id=?", [
+                                    change.collectionName, localCollectionID.uuidString
+                                ])
+                            }
+                            if alias != nil {
+                                try execute("""
+                                    UPDATE shared_collection_aliases
+                                    SET remote_name=?,local_name=?
+                                    WHERE host_id=? AND device_id=? AND source_epoch=?
+                                      AND remote_collection_id=?
+                                    """, [
+                                        change.collectionName, change.collectionName,
+                                        hostID.uuidString, deviceID.uuidString,
+                                        sourceEpoch.uuidString,
+                                        change.collectionID.uuidString
+                                    ])
+                            }
+                        }
+                    } else {
+                        guard localCollectionID != change.collectionID
+                                || localName == change.collectionName else {
+                            throw LocalLibraryError.syncRemoteCollectionMismatch
+                        }
                     }
                 } else {
                     let trimmed = change.collectionName.trimmingCharacters(in: .whitespacesAndNewlines)
                     let normalizedName = Self.syncTagNameKey(trimmed)
                     let existingNames = try rows("SELECT name FROM collections").compactMap { $0[0] }
-                    guard baseline == 0, change.fieldRevision == 1, change.included,
+                    guard change.renamedFrom == nil,
+                          baseline == 0, change.fieldRevision == 1, change.included,
                           trimmed == change.collectionName, !trimmed.isEmpty,
                           trimmed.count <= 160, trimmed.utf8.count <= 640,
                           !existingNames.contains(where: {
@@ -2311,14 +2378,15 @@ public actor LocalLibraryStore {
 
     private func localCollectionIdentity(
         for remoteCollectionID: UUID, remoteName: String,
-        hostID: UUID, deviceID: UUID, sourceEpoch: UUID
+        hostID: UUID, deviceID: UUID, sourceEpoch: UUID,
+        renamedFrom: String? = nil
     ) throws -> UUID {
         guard let alias = try collectionAliasRow(
             remoteCollectionID: remoteCollectionID, hostID: hostID,
             deviceID: deviceID, sourceEpoch: sourceEpoch
         ) else { return remoteCollectionID }
         guard let localID = UUID(uuidString: alias[0] ?? ""),
-              alias[1] == remoteName,
+              (alias[1] == remoteName || alias[1] == renamedFrom),
               try scalar("SELECT name FROM collections WHERE id=?", [localID.uuidString]) == alias[2]
         else { throw LocalLibraryError.syncRemoteCollectionMismatch }
         return localID

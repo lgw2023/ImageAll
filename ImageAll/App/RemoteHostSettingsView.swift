@@ -273,6 +273,8 @@ struct RemotePhoneLibraryView: View {
     @State private var syncEditError: String?
     @State private var collectionCreateAssetID: UUID?
     @State private var newCollectionName = ""
+    @State private var collectionRenameChoice: CollectionChoice?
+    @State private var renamedCollectionName = ""
     @State private var sourceLinks: [UUID: PhoneArchiveSourceLink] = [:]
     @State private var archiveLinkError: String?
 
@@ -290,6 +292,10 @@ struct RemotePhoneLibraryView: View {
         return byID.map { CollectionChoice(id: $0.key, name: $0.value) }.sorted {
             $0.name.localizedStandardCompare($1.name) == .orderedAscending
         }
+    }
+
+    private var renamableCollections: [CollectionChoice] {
+        knownCollections.filter { currentProjection.macCreatedCollectionIDs.contains($0.id) }
     }
 
     private var visibleAssets: [RemoteLocalLibrarySyncStore.ProjectedAsset] {
@@ -329,6 +335,16 @@ struct RemotePhoneLibraryView: View {
                     Task { await refreshArchiveLinks() }
                 }
                 .disabled(archiveModel.isBusy)
+                if !renamableCollections.isEmpty {
+                    Menu("重命名 Mac 新建的集合") {
+                        ForEach(renamableCollections) { collection in
+                            Button(collection.name) {
+                                collectionRenameChoice = collection
+                                renamedCollectionName = collection.name
+                            }
+                        }
+                    }
+                }
             }
             Text("共享标签、ImageAll 集合成员和收藏目标可在 Mac 修改，并等待 iPhone 下次同步；来源 Photos 收藏由 iPhone 另行写回。标有 Mac 已入库归档的项目有独立副本，打开时再次核查。")
                 .font(.footnote)
@@ -516,6 +532,22 @@ struct RemotePhoneLibraryView: View {
         } message: {
             Text("会在手机 ImageAll 中建立集合及此项成员关系；手机下次手动同步后生效。不会创建 Photos 来源相册。")
         }
+        .alert("重命名共享 ImageAll 集合", isPresented: Binding(
+            get: { collectionRenameChoice != nil },
+            set: { if !$0 { collectionRenameChoice = nil } }
+        )) {
+            TextField("集合新名称", text: $renamedCollectionName)
+            Button("重命名") {
+                if let collection = collectionRenameChoice {
+                    renameCollection(collection, to: renamedCollectionName)
+                }
+                collectionRenameChoice = nil
+            }
+            .disabled(renamedCollectionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Button("取消", role: .cancel) { collectionRenameChoice = nil }
+        } message: {
+            Text("仅修改此 Mac 创建的共享 ImageAll 集合名称；手机下次手动同步后应用，不改来源 Photos 相册。")
+        }
         .onDisappear { archiveModel.dismissPreview() }
     }
 
@@ -612,6 +644,26 @@ struct RemotePhoneLibraryView: View {
                 syncEditError = nil
             } catch {
                 syncEditError = "新建共享集合失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func renameCollection(_ collection: CollectionChoice, to name: String) {
+        let expected = currentProjection
+        Task {
+            do {
+                editedProjection = try await RemoteHostProcessHolder.renameMacCreatedPhoneCollection(
+                    deviceID: expected.deviceID,
+                    collectionID: collection.id,
+                    expectedName: collection.name,
+                    newName: name.trimmingCharacters(in: .whitespacesAndNewlines),
+                    expectedSourceEpoch: expected.sourceEpoch,
+                    expectedScopeRevision: expected.scopeRevision,
+                    expectedSnapshotSequence: expected.snapshotSequence
+                )
+                syncEditError = nil
+            } catch {
+                syncEditError = "重命名共享集合失败：\(error.localizedDescription)"
             }
         }
     }

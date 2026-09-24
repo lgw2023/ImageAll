@@ -746,6 +746,8 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(page.changes.count, 1)
         XCTAssertEqual(page.changes.first?.collectionID, collectionID)
         XCTAssertEqual(page.changes.first?.included, true)
+        XCTAssertEqual(page.changes.first?.createdCollectionID, collectionID)
+        XCTAssertTrue(replay.macCreatedCollectionIDs.contains(collectionID))
         do {
             _ = try await reopened.createCollectionFromMac(
                 deviceID: deviceID, assetID: assetID,
@@ -757,6 +759,28 @@ final class RemoteHTTPServerTests: XCTestCase {
         } catch let error as RemoteAPIError {
             XCTAssertEqual(error.code, .conflict)
         }
+        let renamed = try await reopened.renameMacCreatedCollection(
+            deviceID: deviceID, collectionID: collectionID,
+            expectedName: "Journey", newName: "Trip",
+            expectedSourceEpoch: epoch, expectedScopeRevision: 1,
+            expectedSnapshotSequence: 1
+        )
+        XCTAssertEqual(renamed.sharedCollectionFacts.first?.collectionName, "Trip")
+        XCTAssertEqual(renamed.sharedCollectionFacts.first?.revision, 1)
+        let renamePage = try await reopened.collectionChanges(
+            deviceID: deviceID, sourceEpoch: epoch, scopeRevision: 1,
+            afterCursor: 1
+        )
+        XCTAssertEqual(renamePage.changes.first?.renamedFrom, "Journey")
+        XCTAssertEqual(renamePage.changes.first?.collectionName, "Trip")
+        let rereopened = try RemoteLocalLibrarySyncStore(hostID: hostID, storageURL: url)
+        let renameReplay = try await rereopened.renameMacCreatedCollection(
+            deviceID: deviceID, collectionID: collectionID,
+            expectedName: "Journey", newName: "Trip",
+            expectedSourceEpoch: epoch, expectedScopeRevision: 1,
+            expectedSnapshotSequence: 1
+        )
+        XCTAssertEqual(renameReplay.sharedCollectionFacts.first?.collectionName, "Trip")
         _ = try await reopened.submit(.init(
             hostID: hostID, installID: installID, sourceEpoch: epoch,
             scopeRevision: 1, snapshotSequence: 2,
@@ -764,6 +788,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         ), authenticatedDeviceID: deviceID)
         let persisted = await reopened.projection(deviceID: deviceID)
         XCTAssertEqual(persisted?.sharedCollectionFacts.first?.collectionID, collectionID)
+        XCTAssertEqual(persisted?.sharedCollectionFacts.first?.collectionName, "Trip")
     }
 
     func testMigrationCheckpointRejectsLaterMacChangesAndHiddenScope() async throws {

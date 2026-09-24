@@ -45,6 +45,7 @@ actor RemoteLocalLibrarySyncStore {
         let assets: [ProjectedAsset]
         let sharedTagFacts: [SharedTagFact]
         let sharedCollectionFacts: [SharedCollectionFact]
+        let macCreatedCollectionIDs: Set<UUID>
         let sharedFavoriteFacts: [SharedFavoriteFact]
     }
 
@@ -373,6 +374,8 @@ actor RemoteLocalLibrarySyncStore {
             sharedTagFacts: record.sharedTagFacts ?? Self.seedTagFacts(from: record.projectedAssets),
             sharedCollectionFacts: record.sharedCollectionFacts
                 ?? Self.seedCollectionFacts(from: record.projectedAssets),
+            macCreatedCollectionIDs: Set((record.collectionChanges ?? [])
+                .compactMap(\.createdCollectionID)),
             sharedFavoriteFacts: record.sharedFavoriteFacts
                 ?? Self.seedFavoriteFacts(from: record.projectedAssets)
         )
@@ -1118,7 +1121,8 @@ actor RemoteLocalLibrarySyncStore {
         let change = RemoteLocalLibraryCollectionChange(
             sequence: nextSequence, scopeRevision: expectedScopeRevision,
             assetID: assetID, collectionID: collectionID,
-            collectionName: collectionName, included: true, fieldRevision: 1
+            collectionName: collectionName, included: true, fieldRevision: 1,
+            createdCollectionID: collectionID
         )
         let record = Record(
             deviceID: previous.deviceID, request: previous.request,
@@ -1138,6 +1142,96 @@ actor RemoteLocalLibrarySyncStore {
             importedAssetIDs: previous.importedAssetIDs,
             tagChanges: previous.tagChanges,
             collectionChanges: (previous.collectionChanges ?? []) + [change],
+            favoriteChanges: previous.favoriteChanges
+        )
+        var updated = records
+        updated[deviceID] = record
+        try persist(updated)
+        return projection(deviceID: deviceID)!
+    }
+
+    /// Renames a collection created in this Mac shared namespace. The name
+    /// transition has its own change sequence and preserves member revisions.
+    func renameMacCreatedCollection(
+        deviceID: UUID, collectionID: UUID,
+        expectedName: String, newName: String,
+        expectedSourceEpoch: UUID, expectedScopeRevision: Int64,
+        expectedSnapshotSequence: Int64
+    ) throws -> Projection {
+        guard let previous = records[deviceID],
+              previous.request.sourceEpoch == expectedSourceEpoch,
+              previous.request.scopeRevision == expectedScopeRevision,
+              previous.request.snapshotSequence == expectedSnapshotSequence,
+              (previous.collectionChanges ?? []).contains(where: {
+                  $0.createdCollectionID == collectionID
+              }) else {
+            throw RemoteAPIError(code: .conflict, message: "shared collection identity changed")
+        }
+        guard newName == newName.trimmingCharacters(in: .whitespacesAndNewlines),
+              !newName.isEmpty, newName.count <= 160,
+              newName.utf8.count <= 640 else {
+            throw RemoteAPIError(code: .badRequest, message: "invalid shared collection name")
+        }
+        var facts = previous.sharedCollectionFacts
+            ?? Self.seedCollectionFacts(from: previous.projectedAssets)
+        let indices = facts.indices.filter { facts[$0].collectionID == collectionID }
+        let names = Set(indices.map { facts[$0].collectionName })
+        guard !indices.isEmpty, names.count == 1 else {
+            throw RemoteAPIError(code: .conflict, message: "shared collection name diverged")
+        }
+        if names == [newName] {
+            let lastRename = (previous.collectionChanges ?? []).last {
+                $0.collectionID == collectionID && $0.renamedFrom != nil
+            }
+            guard lastRename?.renamedFrom == expectedName,
+                  lastRename?.collectionName == newName else {
+                throw RemoteAPIError(code: .conflict, message: "shared collection name changed")
+            }
+            return projection(deviceID: deviceID)!
+        }
+        guard names == [expectedName],
+              !facts.contains(where: {
+                  $0.collectionID != collectionID
+                      && Self.sameCollectionIdentityName($0.collectionName, newName)
+              }),
+              !indices.isEmpty else {
+            throw RemoteAPIError(code: .conflict, message: "shared collection name changed")
+        }
+        let head = previous.collectionChanges?.last?.sequence ?? 0
+        guard head <= Int64.max - Int64(indices.count) else {
+            throw RemoteAPIError(code: .internalError, message: "shared change revision exhausted")
+        }
+        var changes = previous.collectionChanges ?? []
+        for (offset, index) in indices.enumerated() {
+            let old = facts[index]
+            facts[index] = SharedCollectionFact(
+                assetID: old.assetID, collectionID: collectionID,
+                collectionName: newName, included: old.included,
+                revision: old.revision
+            )
+            changes.append(RemoteLocalLibraryCollectionChange(
+                sequence: head + Int64(offset) + 1,
+                scopeRevision: expectedScopeRevision,
+                assetID: old.assetID, collectionID: collectionID,
+                collectionName: newName, included: old.included,
+                fieldRevision: old.revision, renamedFrom: expectedName
+            ))
+        }
+        let record = Record(
+            deviceID: previous.deviceID, request: previous.request,
+            projectedAssets: previous.projectedAssets,
+            acceptedAtMs: previous.acceptedAtMs,
+            sharedTagFacts: previous.sharedTagFacts,
+            sharedCollectionFacts: facts,
+            sharedFavoriteFacts: previous.sharedFavoriteFacts,
+            tagOperations: previous.tagOperations,
+            collectionOperations: previous.collectionOperations,
+            favoriteOperations: previous.favoriteOperations,
+            macTagOperations: previous.macTagOperations,
+            lastPhoneOperationSequence: previous.lastPhoneOperationSequence,
+            importedAssetIDs: previous.importedAssetIDs,
+            tagChanges: previous.tagChanges,
+            collectionChanges: changes,
             favoriteChanges: previous.favoriteChanges
         )
         var updated = records

@@ -512,7 +512,8 @@ final class LocalLibraryModel: ObservableObject {
                                 collectionID: change.collectionID,
                                 collectionName: change.collectionName,
                                 included: change.included,
-                                fieldRevision: change.fieldRevision
+                                fieldRevision: change.fieldRevision,
+                                renamedFrom: change.renamedFrom
                             )
                         }, nextCursor: page.nextCursor
                     )

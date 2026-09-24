@@ -1094,3 +1094,161 @@ import Testing
     #expect(prepared.collectionID == collidingID)
     #expect(prepared.baseRevision == 1)
 }
+
+@Test func macCreatedCollectionRenameAppliesAcrossPagesWithoutMemberEcho() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try LocalLibraryStore(url: root.appendingPathComponent("local.sqlite"))
+    try await store.observe([
+        .init(localIdentifier: "one", kind: "image", creationDate: nil, isFavorite: false),
+        .init(localIdentifier: "two", kind: "image", creationDate: nil, isFavorite: false),
+    ])
+    let assets = try await store.assets(visibleIdentifiers: ["one", "two"])
+    let firstID = try #require(assets.first(where: { $0.localIdentifier == "one" })?.id)
+    let secondID = try #require(assets.first(where: { $0.localIdentifier == "two" })?.id)
+    let collectionID = UUID(), hostID = UUID(), deviceID = UUID()
+    try await store.setShared(assetID: firstID, shared: true)
+    try await store.setShared(assetID: secondID, shared: true)
+    let snapshot = try await store.prepareSharedSnapshot(visibleIdentifiers: ["one", "two"])
+    try await store.acknowledgeSharedSnapshot(
+        snapshot, hostID: hostID, deviceID: deviceID,
+        importedAssetIDs: [firstID, secondID]
+    )
+    _ = try await store.applySharedCollectionChanges(
+        hostID: hostID, deviceID: deviceID, sourceEpoch: snapshot.sourceEpoch,
+        scopeRevision: snapshot.scopeRevision, afterCursor: 0,
+        changes: [
+            .init(sequence: 1, assetID: firstID, collectionID: collectionID,
+                  collectionName: "Journey", included: true, fieldRevision: 1),
+            .init(sequence: 2, assetID: secondID, collectionID: collectionID,
+                  collectionName: "Journey", included: true, fieldRevision: 1),
+        ], nextCursor: 2
+    )
+    _ = try await store.applySharedCollectionChanges(
+        hostID: hostID, deviceID: deviceID, sourceEpoch: snapshot.sourceEpoch,
+        scopeRevision: snapshot.scopeRevision, afterCursor: 2,
+        changes: [.init(
+            sequence: 3, assetID: firstID, collectionID: collectionID,
+            collectionName: "Trip", included: true, fieldRevision: 1,
+            renamedFrom: "Journey"
+        )], nextCursor: 3
+    )
+    #expect(try await store.collections().first { $0.id == collectionID }?.name == "Trip")
+    _ = try await store.applySharedCollectionChanges(
+        hostID: hostID, deviceID: deviceID, sourceEpoch: snapshot.sourceEpoch,
+        scopeRevision: snapshot.scopeRevision, afterCursor: 3,
+        changes: [.init(
+            sequence: 4, assetID: secondID, collectionID: collectionID,
+            collectionName: "Trip", included: true, fieldRevision: 1,
+            renamedFrom: "Journey"
+        )], nextCursor: 4
+    )
+    #expect(try await store.pendingSharedOperations().isEmpty)
+    #expect(try await store.sharedCollectionChangeCursor() == 4)
+    _ = try await store.createCollection(name: "Taken")
+    do {
+        _ = try await store.applySharedCollectionChanges(
+            hostID: hostID, deviceID: deviceID, sourceEpoch: snapshot.sourceEpoch,
+            scopeRevision: snapshot.scopeRevision, afterCursor: 4,
+            changes: [.init(
+                sequence: 5, assetID: firstID, collectionID: collectionID,
+                collectionName: "Taken", included: true, fieldRevision: 1,
+                renamedFrom: "Trip"
+            )], nextCursor: 5
+        )
+        Issue.record("a colliding rename must leave the name and cursor unchanged")
+    } catch LocalLibraryError.syncRemoteCollectionMismatch {
+        #expect(try await store.sharedCollectionChangeCursor() == 4)
+        #expect(try await store.collections().first { $0.id == collectionID }?.name == "Trip")
+    }
+    let wire = try await store.prepareSharedSnapshot(visibleIdentifiers: ["one", "two"])
+    #expect(wire.assets.allSatisfy {
+        $0.collections.contains { $0.collectionID == collectionID && $0.collectionName == "Trip" }
+    })
+    try await store.setMembership(assetID: secondID, collectionID: collectionID, included: false)
+    let pending = try #require(await store.pendingSharedOperations().first)
+    let preparedBefore = try #require(await store.prepareSharedCollectionOperation(
+        id: pending.id, hostID: hostID, deviceID: deviceID
+    ))
+    _ = try await store.applySharedCollectionChanges(
+        hostID: hostID, deviceID: deviceID, sourceEpoch: snapshot.sourceEpoch,
+        scopeRevision: snapshot.scopeRevision, afterCursor: 4,
+        changes: [
+            .init(sequence: 5, assetID: firstID, collectionID: collectionID,
+                  collectionName: "Later", included: true, fieldRevision: 1,
+                  renamedFrom: "Trip"),
+            .init(sequence: 6, assetID: secondID, collectionID: collectionID,
+                  collectionName: "Later", included: true, fieldRevision: 1,
+                  renamedFrom: "Trip"),
+        ], nextCursor: 6
+    )
+    let afterRename = try #require(await store.pendingSharedOperations().first)
+    #expect(afterRename.id == pending.id)
+    #expect(!afterRename.isConflicted)
+    let preparedAfter = try #require(await store.prepareSharedCollectionOperation(
+        id: pending.id, hostID: hostID, deviceID: deviceID
+    ))
+    #expect(preparedAfter.baseRevision == preparedBefore.baseRevision)
+    #expect(try await store.collections().first { $0.id == collectionID }?.name == "Later")
+}
+
+@Test func confirmedCollectionAliasFollowsExplicitMacRename() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try LocalLibraryStore(url: root.appendingPathComponent("local.sqlite"))
+    try await store.observe([.init(
+        localIdentifier: "shared", kind: "image", creationDate: nil, isFavorite: false
+    )])
+    let asset = try #require(await store.assets(visibleIdentifiers: ["shared"]).first)
+    let localID = try await store.createCollection(name: "Café")
+    let remoteID = UUID(), hostID = UUID(), deviceID = UUID()
+    try await store.setShared(assetID: asset.id, shared: true)
+    let snapshot = try await store.prepareSharedSnapshot(visibleIdentifiers: ["shared"])
+    try await store.acknowledgeSharedSnapshot(
+        snapshot, hostID: hostID, deviceID: deviceID,
+        importedAssetIDs: [asset.id]
+    )
+    let created = LocalSharedCollectionChange(
+        sequence: 1, assetID: asset.id, collectionID: remoteID,
+        collectionName: "Cafe\u{301}", included: true, fieldRevision: 1
+    )
+    do {
+        _ = try await store.applySharedCollectionChanges(
+            hostID: hostID, deviceID: deviceID, sourceEpoch: snapshot.sourceEpoch,
+            scopeRevision: snapshot.scopeRevision, afterCursor: 0,
+            changes: [created], nextCursor: 1
+        )
+        Issue.record("same-name different-ID collection needs owner confirmation")
+    } catch LocalLibraryError.syncRemoteCollectionAliasRequired(let candidate) {
+        try await store.confirmSharedCollectionAlias(candidate)
+    }
+    _ = try await store.applySharedCollectionChanges(
+        hostID: hostID, deviceID: deviceID, sourceEpoch: snapshot.sourceEpoch,
+        scopeRevision: snapshot.scopeRevision, afterCursor: 0,
+        changes: [created], nextCursor: 1
+    )
+    _ = try await store.applySharedCollectionChanges(
+        hostID: hostID, deviceID: deviceID, sourceEpoch: snapshot.sourceEpoch,
+        scopeRevision: snapshot.scopeRevision, afterCursor: 1,
+        changes: [.init(
+            sequence: 2, assetID: asset.id, collectionID: remoteID,
+            collectionName: "Trip", included: true, fieldRevision: 1,
+            renamedFrom: "Cafe\u{301}"
+        )], nextCursor: 2
+    )
+    #expect(try await store.collections().first { $0.id == localID }?.name == "Trip")
+    let wire = try await store.prepareSharedSnapshot(visibleIdentifiers: ["shared"])
+    #expect(wire.assets.first?.collections.contains {
+        $0.collectionID == remoteID && $0.collectionName == "Trip"
+    } == true)
+    try await store.acknowledgeSharedSnapshot(
+        wire, hostID: hostID, deviceID: deviceID, importedAssetIDs: []
+    )
+    let checkpoint = try await store.migrationCompletionCheckpoint(
+        visibleIdentifiers: ["shared"]
+    )
+    #expect(checkpoint.checkpoint.collectionAliases == [.init(
+        localCollectionID: localID, localCollectionName: "Trip",
+        remoteCollectionID: remoteID, remoteCollectionName: "Trip"
+    )])
+}

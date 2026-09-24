@@ -63,11 +63,18 @@ public struct RemoteLocalLibraryCollectionChange: Codable, Sendable, Equatable {
     public let collectionName: String
     public let included: Bool
     public let fieldRevision: Int64
+    /// Set only on the first change that creates a Mac-owned collection.
+    /// Older changes decode as nil and retain their existing meaning.
+    public let createdCollectionID: UUID?
+    /// An explicit collection name transition. Its sequence advances while
+    /// the member field revision stays unchanged.
+    public let renamedFrom: String?
 
     public init(
         sequence: Int64, scopeRevision: Int64, assetID: UUID,
         collectionID: UUID, collectionName: String,
-        included: Bool, fieldRevision: Int64
+        included: Bool, fieldRevision: Int64,
+        createdCollectionID: UUID? = nil, renamedFrom: String? = nil
     ) {
         self.sequence = sequence
         self.scopeRevision = scopeRevision
@@ -76,6 +83,8 @@ public struct RemoteLocalLibraryCollectionChange: Codable, Sendable, Equatable {
         self.collectionName = collectionName
         self.included = included
         self.fieldRevision = fieldRevision
+        self.createdCollectionID = createdCollectionID
+        self.renamedFrom = renamedFrom
     }
 }
 
