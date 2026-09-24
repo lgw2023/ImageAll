@@ -1301,6 +1301,8 @@ final class PhoneArchiveImportModel: ObservableObject {
     @Published private(set) var items: [PhoneArchiveImportedItem] = []
     @Published private(set) var selectedBatchID: UUID?
     @Published private(set) var latestValidationRecord: PhoneArchiveValidationRecord?
+    @Published private(set) var latestCompletionReceipt: PhoneArchiveCompletionReceipt?
+    @Published private(set) var completionReceiptIsCurrent = false
     @Published private(set) var isBusy = false
     @Published private(set) var message: String?
     @Published private(set) var transferTargetPath: String? =
@@ -1418,11 +1420,18 @@ final class PhoneArchiveImportModel: ObservableObject {
         selectedBatchID = id
         items = []
         latestValidationRecord = nil
+        latestCompletionReceipt = nil
+        completionReceiptIsCurrent = false
         await loadMore(using: importer)
         do {
-            latestValidationRecord = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
-                try importer.latestValidationRecord(migrationID: id)
+            let history = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                (
+                    try importer.latestValidationRecord(migrationID: id),
+                    try importer.latestCompletionReceipt(migrationID: id)
+                )
             }
+            latestValidationRecord = history.0
+            latestCompletionReceipt = history.1
         } catch {
             message = "读取归档验收历史失败：\(error.localizedDescription)"
         }
@@ -1792,6 +1801,7 @@ final class PhoneArchiveImportModel: ObservableObject {
                         )
                     }
                     latestValidationRecord = record
+                    completionReceiptIsCurrent = false
                     let stillMatches: Bool
                     if let snapshot = after.factSnapshot {
                         stillMatches = (try? await RemoteHostProcessHolder.matchesMigrationCheckpoint(
@@ -1857,6 +1867,97 @@ final class PhoneArchiveImportModel: ObservableObject {
         } catch {
             message = "候选验收记录已失效或暂不可复核：\(error.localizedDescription)"
         }
+    }
+
+    /// A receipt is issued only after the same local proof and live Host
+    /// checkpoint both pass again. The result covers this selected scope.
+    func issueCompletionReceipt() async {
+        guard !isBusy, let batch = selectedBatch,
+              let validation = latestValidationRecord,
+              validation.migrationID == batch.id,
+              let importer = PhoneArchiveImportProcessHolder.importer() else { return }
+        isBusy = true
+        completionReceiptIsCurrent = false
+        defer { isBusy = false }
+        do {
+            let parent = try targetParent(for: batch)
+            let sourceAccess = parent.startAccessingSecurityScopedResource()
+            defer { if sourceAccess { parent.stopAccessingSecurityScopedResource() } }
+            let recoveryParent = try recoveryParent(for: validation)
+            let recoveryAccess = recoveryParent.startAccessingSecurityScopedResource()
+            defer { if recoveryAccess { recoveryParent.stopAccessingSecurityScopedResource() } }
+            let before = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.auditValidationRecord(validation)
+            }
+            guard let beforeSnapshot = before.factSnapshot,
+                  try await RemoteHostProcessHolder.matchesMigrationCheckpoint(
+                      beforeSnapshot, manifestSHA256: before.manifestSHA256
+                  ) else { throw PhoneArchiveImportError.validationStale }
+            let receipt = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.recordCompletionReceipt(validation: validation)
+            }
+            latestCompletionReceipt = receipt
+            let after = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.auditCompletionReceipt(receipt)
+            }
+            guard before == after,
+                  let afterSnapshot = after.factSnapshot,
+                  try await RemoteHostProcessHolder.matchesMigrationCheckpoint(
+                      afterSnapshot, manifestSHA256: after.manifestSHA256
+                  ) else { throw PhoneArchiveImportError.validationStale }
+            completionReceiptIsCurrent = true
+            message = "所选范围完成回执已保存：\(receipt.itemCount) 项、\(receipt.resourceCount) 个资源，\(receipt.verifiedBytes) 字节。仅覆盖本次所选资产；不代表整机图库或第二份备份，也不授权清理手机原件。"
+        } catch {
+            message = "完成回执未通过当前复核：\(error.localizedDescription)。已有历史回执如存在，需重新复核。"
+        }
+    }
+
+    func auditLatestCompletionReceipt() async {
+        guard !isBusy, let batch = selectedBatch,
+              let receipt = latestCompletionReceipt,
+              receipt.migrationID == batch.id,
+              let validation = latestValidationRecord,
+              validation.id == receipt.validationID,
+              let importer = PhoneArchiveImportProcessHolder.importer() else { return }
+        isBusy = true
+        completionReceiptIsCurrent = false
+        defer { isBusy = false }
+        do {
+            let parent = try targetParent(for: batch)
+            let sourceAccess = parent.startAccessingSecurityScopedResource()
+            defer { if sourceAccess { parent.stopAccessingSecurityScopedResource() } }
+            let recoveryParent = try recoveryParent(for: validation)
+            let recoveryAccess = recoveryParent.startAccessingSecurityScopedResource()
+            defer { if recoveryAccess { recoveryParent.stopAccessingSecurityScopedResource() } }
+            let report = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.auditCompletionReceipt(receipt)
+            }
+            guard let snapshot = report.factSnapshot,
+                  try await RemoteHostProcessHolder.matchesMigrationCheckpoint(
+                      snapshot, manifestSHA256: report.manifestSHA256
+                  ) else { throw PhoneArchiveImportError.validationStale }
+            completionReceiptIsCurrent = true
+            message = "所选范围完成回执 \(receipt.id.uuidString) 当前复核通过；若来源、归档或共享事实变化，须再次复核。"
+        } catch {
+            message = "完成回执当前无效或暂不可复核：\(error.localizedDescription)"
+        }
+    }
+
+    private func recoveryParent(for record: PhoneArchiveValidationRecord) throws -> URL {
+        let expected = URL(fileURLWithPath: record.recoveryCatalogPath)
+            .deletingLastPathComponent().standardizedFileURL.path
+        if let bookmark = record.recoveryParentBookmark {
+            var stale = false
+            let parent = try URL(
+                resolvingBookmarkData: bookmark, options: [.withSecurityScope],
+                relativeTo: nil, bookmarkDataIsStale: &stale
+            )
+            guard !stale, parent.standardizedFileURL.path == expected else {
+                throw PhoneArchiveImportError.validationStale
+            }
+            return parent
+        }
+        return URL(fileURLWithPath: expected, isDirectory: true)
     }
 
     private func targetParent(for batch: PhoneArchiveImportedBatch) throws -> URL {
@@ -1991,6 +2092,23 @@ private struct PhoneArchiveImportCard: View {
                         Spacer()
                         Button("复核记录") {
                             Task { await model.auditLatestValidationRecord() }
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(model.isBusy)
+                        Button("生成所选范围回执") {
+                            Task { await model.issueCompletionReceipt() }
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(model.isBusy)
+                    }
+                }
+                if let receipt = model.latestCompletionReceipt {
+                    HStack {
+                        Text("所选范围回执 · \(receipt.itemCount) 项 · \(model.completionReceiptIsCurrent ? "当前复核通过" : "需复核")")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("复核回执") {
+                            Task { await model.auditLatestCompletionReceipt() }
                         }
                         .buttonStyle(.bordered)
                         .disabled(model.isBusy)

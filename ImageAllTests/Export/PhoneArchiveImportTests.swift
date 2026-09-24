@@ -182,12 +182,26 @@ final class PhoneArchiveImportTests: XCTestCase {
         ))
         XCTAssertEqual(loadedValidation.id, validation.id)
         XCTAssertEqual(try reopenedImporter.auditValidationRecord(loadedValidation), integrity)
+        let completion = try reopenedImporter.recordCompletionReceipt(
+            validation: loadedValidation
+        )
+        XCTAssertEqual(completion.itemCount, 1)
+        XCTAssertEqual(completion.unsupportedResourceCount, 0)
+        XCTAssertEqual(completion.albumCoverage, "selectedAssetsOnly")
+        XCTAssertEqual(try reopenedImporter.recordCompletionReceipt(
+            validation: loadedValidation
+        ), completion)
+        XCTAssertEqual(try reopenedImporter.latestCompletionReceipt(
+            migrationID: header.migrationID
+        ), completion)
+        XCTAssertEqual(try reopenedImporter.auditCompletionReceipt(completion), integrity)
         try Data("changed-recovery".utf8).write(
             to: recovery.restoredArchiveURL.appendingPathComponent(
                 try XCTUnwrap(resource.relativePath)
             )
         )
         XCTAssertThrowsError(try reopenedImporter.auditValidationRecord(loadedValidation))
+        XCTAssertThrowsError(try reopenedImporter.auditCompletionReceipt(completion))
         let wrongBinding = ImageAllMigrationFactSnapshot(
             sourceDeviceID: deviceID, sourceEpoch: header.sourceEpoch,
             scopeRevision: header.scopeRevision, snapshotSequence: 9,

@@ -112,6 +112,39 @@ struct PhoneArchiveValidationRecord: Identifiable, Sendable {
     let createdAtMs: Int64
 }
 
+/// Historical receipt for one explicitly selected scope. It covers the media
+/// and fact kinds named here; it does not authorize source deletion or prove a
+/// second backup. The live Host watermark is checked again when displayed.
+struct PhoneArchiveCompletionReceipt: Codable, Identifiable, Sendable, Equatable {
+    let formatVersion: Int
+    let id: UUID
+    let migrationID: UUID
+    let validationID: UUID
+    let manifestSHA256: String
+    let factSnapshotSHA256: String
+    let archivePath: String
+    let archiveVolumeUUID: String?
+    let sourceDeviceID: UUID
+    let sourceEpoch: UUID
+    let scopeRevision: Int64
+    let hostID: UUID
+    let deviceID: UUID
+    let acknowledgedSnapshotSequence: Int64
+    let tagChangeCursor: Int64
+    let collectionChangeCursor: Int64
+    let favoriteChangeCursor: Int64
+    let factSnapshotSequence: Int64
+    let factWatermark: Int64
+    let itemCount: Int
+    let resourceCount: Int
+    let verifiedBytes: Int64
+    let sourceVerifiedAtMs: Int64
+    let issuedAtMs: Int64
+    let albumCoverage: String
+    let factCoverage: [String]
+    let unsupportedResourceCount: Int
+}
+
 struct PhoneArchiveImportedBatch: Identifiable, Sendable {
     let id: UUID
     let archivePath: String
@@ -452,6 +485,170 @@ struct VerifiedPhoneArchiveImporter: Sendable {
         )
         guard restored == original else { throw PhoneArchiveImportError.validationStale }
         return original
+    }
+
+    /// The caller must compare the checkpoint with the live Host before and
+    /// after issuance. This transaction makes the local proof immutable and
+    /// idempotent for one validation record.
+    func recordCompletionReceipt(
+        validation: PhoneArchiveValidationRecord
+    ) throws -> PhoneArchiveCompletionReceipt {
+        guard try latestValidationRecord(migrationID: validation.migrationID)?.id == validation.id
+        else { throw PhoneArchiveImportError.validationStale }
+        let report = try auditValidationRecord(validation)
+        let archive = URL(fileURLWithPath: validation.archivePath, isDirectory: true)
+        let header = try ImageAllMigrationArchive.readVerifiedHeader(at: archive).0
+        guard header.appleAlbumCoverage == .selectedAssetsOnly,
+              report.itemCount > 0, report.resourceCount > 0,
+              let snapshot = report.factSnapshot,
+              let checkpoint = snapshot.syncCheckpoint,
+              checkpoint.archiveManifestSHA256 == report.manifestSHA256,
+              checkpoint.sourceVerifiedAtMs == validation.sourceVerifiedAtMs,
+              snapshot.sourceDeviceID == header.sourceDeviceID,
+              snapshot.sourceEpoch == header.sourceEpoch,
+              snapshot.scopeRevision == header.scopeRevision else {
+            throw PhoneArchiveImportError.validationStale
+        }
+        let receipt = PhoneArchiveCompletionReceipt(
+            formatVersion: 1, id: UUID(), migrationID: validation.migrationID,
+            validationID: validation.id, manifestSHA256: validation.manifestSHA256,
+            factSnapshotSHA256: validation.factSnapshotSHA256,
+            archivePath: validation.archivePath,
+            archiveVolumeUUID: validation.archiveVolumeUUID,
+            sourceDeviceID: snapshot.sourceDeviceID, sourceEpoch: snapshot.sourceEpoch,
+            scopeRevision: snapshot.scopeRevision,
+            hostID: checkpoint.hostID, deviceID: checkpoint.deviceID,
+            acknowledgedSnapshotSequence: checkpoint.acknowledgedSnapshotSequence,
+            tagChangeCursor: checkpoint.tagChangeCursor,
+            collectionChangeCursor: checkpoint.collectionChangeCursor,
+            favoriteChangeCursor: checkpoint.favoriteChangeCursor,
+            factSnapshotSequence: report.factSnapshotSequence,
+            factWatermark: report.factWatermark,
+            itemCount: report.itemCount, resourceCount: report.resourceCount,
+            verifiedBytes: report.verifiedBytes,
+            sourceVerifiedAtMs: validation.sourceVerifiedAtMs,
+            issuedAtMs: Int64(Date().timeIntervalSince1970 * 1_000),
+            albumCoverage: ImageAllMigrationAppleAlbumCoverage.selectedAssetsOnly.rawValue,
+            factCoverage: [
+                "observedFavorite", "favoriteTarget", "tagDecisions",
+                "imageAllCollections", "appleAlbumMemberships",
+            ],
+            unsupportedResourceCount: 0
+        )
+        return try database.pool.write { db in
+            guard let current = try Row.fetchOne(db, sql: """
+                SELECT manifest_sha256, fact_snapshot_sha256, state
+                FROM migration_import WHERE id = ?
+                """, arguments: [validation.migrationID.uuidString.lowercased()]),
+                  (current["state"] as String) == "catalogCommitted",
+                  (current["manifest_sha256"] as String) == receipt.manifestSHA256,
+                  (current["fact_snapshot_sha256"] as String?) == receipt.factSnapshotSHA256,
+                  let newest = try Row.fetchOne(db, sql: """
+                    SELECT id FROM migration_import_validation WHERE migration_id = ?
+                    ORDER BY created_at_ms DESC, id DESC LIMIT 1
+                    """, arguments: [validation.migrationID.uuidString.lowercased()]),
+                  (newest["id"] as String) == validation.id.uuidString.lowercased() else {
+                throw PhoneArchiveImportError.validationStale
+            }
+            if let existing = try Row.fetchOne(db, sql: """
+                SELECT * FROM migration_completion_receipt WHERE validation_id = ?
+                """, arguments: [validation.id.uuidString.lowercased()]) {
+                return try Self.decodeCompletionReceipt(existing)
+            }
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            let payload = try encoder.encode(receipt)
+            let digest = Self.sha256(payload)
+            try db.execute(sql: """
+                INSERT INTO migration_completion_receipt
+                    (id, migration_id, validation_id, payload, payload_sha256, issued_at_ms)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """, arguments: [
+                    receipt.id.uuidString.lowercased(),
+                    receipt.migrationID.uuidString.lowercased(),
+                    receipt.validationID.uuidString.lowercased(),
+                    payload, digest, receipt.issuedAtMs,
+                ])
+            return receipt
+        }
+    }
+
+    func latestCompletionReceipt(
+        migrationID: UUID
+    ) throws -> PhoneArchiveCompletionReceipt? {
+        try database.pool.read { db in
+            guard let row = try Row.fetchOne(db, sql: """
+                SELECT * FROM migration_completion_receipt WHERE migration_id = ?
+                ORDER BY issued_at_ms DESC, id DESC LIMIT 1
+                """, arguments: [migrationID.uuidString.lowercased()]) else { return nil }
+            return try Self.decodeCompletionReceipt(row)
+        }
+    }
+
+    /// Rechecks the persisted receipt, current catalog, both archive copies,
+    /// and source checkpoint. The caller must also compare the live Host head.
+    func auditCompletionReceipt(
+        _ receipt: PhoneArchiveCompletionReceipt
+    ) throws -> PhoneArchiveIntegrityReport {
+        guard let saved = try latestCompletionReceipt(migrationID: receipt.migrationID),
+              saved == receipt,
+              let validation = try latestValidationRecord(migrationID: receipt.migrationID),
+              validation.id == receipt.validationID else {
+            throw PhoneArchiveImportError.validationStale
+        }
+        let report = try auditValidationRecord(validation)
+        let header = try ImageAllMigrationArchive.readVerifiedHeader(
+            at: URL(fileURLWithPath: receipt.archivePath, isDirectory: true)
+        ).0
+        guard let snapshot = report.factSnapshot,
+              let checkpoint = snapshot.syncCheckpoint,
+              receipt.formatVersion == 1,
+              receipt.manifestSHA256 == report.manifestSHA256,
+              receipt.factSnapshotSHA256 == validation.factSnapshotSHA256,
+              receipt.archivePath == validation.archivePath,
+              receipt.archiveVolumeUUID == validation.archiveVolumeUUID,
+              receipt.sourceDeviceID == snapshot.sourceDeviceID,
+              receipt.sourceEpoch == snapshot.sourceEpoch,
+              receipt.scopeRevision == snapshot.scopeRevision,
+              receipt.hostID == checkpoint.hostID,
+              receipt.deviceID == checkpoint.deviceID,
+              receipt.acknowledgedSnapshotSequence == checkpoint.acknowledgedSnapshotSequence,
+              receipt.tagChangeCursor == checkpoint.tagChangeCursor,
+              receipt.collectionChangeCursor == checkpoint.collectionChangeCursor,
+              receipt.favoriteChangeCursor == checkpoint.favoriteChangeCursor,
+              receipt.factSnapshotSequence == report.factSnapshotSequence,
+              receipt.factWatermark == report.factWatermark,
+              receipt.itemCount == report.itemCount,
+              receipt.resourceCount == report.resourceCount,
+              receipt.verifiedBytes == report.verifiedBytes,
+              receipt.sourceVerifiedAtMs == checkpoint.sourceVerifiedAtMs,
+              receipt.albumCoverage == header.appleAlbumCoverage?.rawValue,
+              receipt.factCoverage == [
+                  "observedFavorite", "favoriteTarget", "tagDecisions",
+                  "imageAllCollections", "appleAlbumMemberships",
+              ],
+              receipt.unsupportedResourceCount == 0 else {
+            throw PhoneArchiveImportError.validationStale
+        }
+        return report
+    }
+
+    private static func decodeCompletionReceipt(_ row: Row) throws -> PhoneArchiveCompletionReceipt {
+        let payload: Data = row["payload"]
+        let digest: String = row["payload_sha256"]
+        let receipt = try JSONDecoder().decode(PhoneArchiveCompletionReceipt.self, from: payload)
+        guard sha256(payload) == digest,
+              receipt.id.uuidString.lowercased() == (row["id"] as String),
+              receipt.migrationID.uuidString.lowercased() == (row["migration_id"] as String),
+              receipt.validationID.uuidString.lowercased() == (row["validation_id"] as String),
+              receipt.issuedAtMs == (row["issued_at_ms"] as Int64) else {
+            throw PhoneArchiveImportError.validationStale
+        }
+        return receipt
+    }
+
+    private static func sha256(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     private static func readOnlyImporter(at url: URL) throws -> VerifiedPhoneArchiveImporter {

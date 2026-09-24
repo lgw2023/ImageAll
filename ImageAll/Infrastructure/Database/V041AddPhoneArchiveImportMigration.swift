@@ -641,3 +641,29 @@ enum V051AllowNewPhoneTagOutboundIntentMigration {
         }
     }
 }
+
+/// Immutable proof for one explicitly selected phone archive. A receipt is
+/// historical; current validity still requires rechecking both copies and the
+/// live Mac shared-fact watermark.
+enum V052AddPhoneArchiveCompletionReceiptMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v052AddPhoneArchiveCompletionReceipt) { db in
+            try db.execute(sql: """
+                CREATE TABLE migration_completion_receipt (
+                    id TEXT NOT NULL PRIMARY KEY,
+                    migration_id TEXT NOT NULL
+                        REFERENCES migration_import(id) ON DELETE RESTRICT,
+                    validation_id TEXT NOT NULL UNIQUE
+                        REFERENCES migration_import_validation(id) ON DELETE RESTRICT,
+                    payload BLOB NOT NULL,
+                    payload_sha256 TEXT NOT NULL CHECK(length(payload_sha256) = 64),
+                    issued_at_ms INTEGER NOT NULL CHECK(issued_at_ms > 0)
+                ) STRICT
+                """)
+            try db.execute(sql: """
+                CREATE INDEX migration_completion_receipt_batch_idx
+                ON migration_completion_receipt(migration_id, issued_at_ms DESC)
+                """)
+        }
+    }
+}

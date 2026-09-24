@@ -80,6 +80,8 @@ enum CatalogMigrationID {
         "v050_allow_cleared_phone_tag_outbound_intent"
     static let v051AllowNewPhoneTagOutboundIntent =
         "v051_allow_new_phone_tag_outbound_intent"
+    static let v052AddPhoneArchiveCompletionReceipt =
+        "v052_add_phone_archive_completion_receipt"
 
     static let knownOrdered: [String] = [
         v001CreateCatalogCore,
@@ -133,5 +135,6 @@ enum CatalogMigrationID {
         v049AddPhoneTagOutboundIntent,
         v050AllowClearedPhoneTagOutboundIntent,
         v051AllowNewPhoneTagOutboundIntent,
+        v052AddPhoneArchiveCompletionReceipt,
     ]
 }

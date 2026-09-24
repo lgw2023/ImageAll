@@ -106,6 +106,7 @@ struct CatalogDatabase: Sendable {
         V049AddPhoneTagOutboundIntentMigration.register(on: &migrator)
         V050AllowClearedPhoneTagOutboundIntentMigration.register(on: &migrator)
         V051AllowNewPhoneTagOutboundIntentMigration.register(on: &migrator)
+        V052AddPhoneArchiveCompletionReceiptMigration.register(on: &migrator)
         return migrator
     }
 
