@@ -769,7 +769,10 @@ private struct LocalShareScopeView: View {
     @State private var isSending = false
     @State private var isExporting = false
     @State private var isExportingFacts = false
+    @State private var isUploadingArchive = false
     @State private var exportedArchive: URL?
+    @State private var exportedArchiveComplete = false
+    @State private var savedArchives: [URL] = []
     @State private var exportedFacts: URL?
     @State private var statusMessage: String?
     @State private var archiveStatusMessage: String?
@@ -972,11 +975,13 @@ private struct LocalShareScopeView: View {
                 Task {
                     isExporting = true
                     exportedArchive = nil
+                    exportedArchiveComplete = false
                     archiveStatusMessage = nil
                     defer { isExporting = false }
                     do {
                         let (url, verification) = try await model.exportSelectedArchive()
                         exportedArchive = url
+                        exportedArchiveComplete = verification.isComplete
                         archiveStatusMessage = "归档 \(verification.itemCount) 项，已校验 \(verification.resourceCount) 个资源；必需原件缺失 \(verification.incompleteMediaIDs.count) 项。缺失项不能视为迁移完成。"
                     } catch {
                         archiveStatusMessage = "归档未完成：\(error.localizedDescription)"
@@ -986,6 +991,53 @@ private struct LocalShareScopeView: View {
             .disabled(isExporting || isSending || model.sharedSelections.isEmpty)
             if let exportedArchive {
                 LocalArchiveShareButton(url: exportedArchive)
+                Button(isUploadingArchive ? "正在分片上传到 Mac…" : "上传已校验归档到 Mac") {
+                    Task {
+                        isUploadingArchive = true
+                        defer { isUploadingArchive = false }
+                        do {
+                            let receipt = try await remoteModel.uploadMigrationArchive(
+                                at: exportedArchive
+                            )
+                            archiveStatusMessage = "Mac 已接收并复验 \(receipt.itemCount) 项、\(receipt.resourceCount) 个资源；请在 Mac 接收目录中点击入库。此回执不是迁移完成确认。"
+                        } catch {
+                            archiveStatusMessage = "上传未完成；重连后可继续同一归档：\(error.localizedDescription)"
+                        }
+                    }
+                }
+                .disabled(!exportedArchiveComplete || !remoteModel.isConnected
+                          || isUploadingArchive || isExporting)
+            }
+            Button("查找本机已生成的归档以继续上传") {
+                do {
+                    savedArchives = try LocalPhotoArchiveExporter.existingArchives()
+                    if savedArchives.isEmpty {
+                        archiveStatusMessage = "本机没有可继续上传的归档包。"
+                    }
+                } catch {
+                    archiveStatusMessage = "读取已有归档失败：\(error.localizedDescription)"
+                }
+            }
+            .disabled(isExporting || isUploadingArchive)
+            ForEach(savedArchives, id: \.self) { archive in
+                Button("选用归档 \(archive.deletingPathExtension().lastPathComponent)") {
+                    Task {
+                        do {
+                            let verification = try await Task.detached(priority: .utility) {
+                                try ImageAllMigrationArchive.verify(at: archive)
+                            }.value
+                            guard verification.isComplete else {
+                                throw LocalArchiveExportError.incompleteArchive
+                            }
+                            exportedArchive = archive
+                            exportedArchiveComplete = true
+                            archiveStatusMessage = "已选用现有归档；连接 Mac 后会从接收端已提交的分片继续上传。"
+                        } catch {
+                            archiveStatusMessage = "现有归档不可继续上传：\(error.localizedDescription)"
+                        }
+                    }
+                }
+                .disabled(isExporting || isUploadingArchive)
             }
             Button(isExportingFacts ? "正在生成整理信息快照…" : "导出最新整理信息快照") {
                 Task {
@@ -1043,6 +1095,7 @@ private enum LocalArchiveExportError: LocalizedError {
     case selectionNotVisible
     case selectionChanged
     case sourceChanged
+    case incompleteArchive
 
     var errorDescription: String? {
         switch self {
@@ -1050,6 +1103,7 @@ private enum LocalArchiveExportError: LocalizedError {
         case .selectionNotVisible: "所选项目中有当前无权访问或已隐藏的资产；请先恢复访问，再生成完整范围归档。"
         case .selectionChanged: "导出期间分享范围已变化；请重新生成归档。"
         case .sourceChanged: "导出期间来源照片或视频已变化；请重新生成归档。"
+        case .incompleteArchive: "现有归档缺少必需原件，不能上传为完整迁移归档。"
         }
     }
 }
@@ -1162,6 +1216,28 @@ private enum LocalPhotoArchiveExporter {
     private struct SourceVersion: Equatable {
         let modificationDate: Date?
         let resourceSignature: [String]
+    }
+
+    static func existingArchives() throws -> [URL] {
+        let manager = FileManager.default
+        let support = try manager.url(
+            for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: true
+        )
+        let parent = support.appendingPathComponent(
+            "LocalLibrary/MigrationArchives", isDirectory: true
+        )
+        guard manager.fileExists(atPath: parent.path) else { return [] }
+        return try manager.contentsOfDirectory(
+            at: parent, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+        ).filter { url in
+            guard url.pathExtension == "imageallarchive",
+                  UUID(uuidString: url.deletingPathExtension().lastPathComponent) != nil,
+                  let values = try? url.resourceValues(
+                    forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+                  ) else { return false }
+            return values.isDirectory == true && values.isSymbolicLink != true
+        }.sorted { $0.lastPathComponent > $1.lastPathComponent }
     }
 
     static func export(

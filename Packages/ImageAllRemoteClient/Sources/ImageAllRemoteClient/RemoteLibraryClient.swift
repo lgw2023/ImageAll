@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import ImageAllRemoteProtocol
 
@@ -59,12 +60,31 @@ public protocol RemoteHTTPTransporting: Sendable {
 public struct URLSessionRemoteHTTPTransport: RemoteHTTPTransporting {
     private let session: URLSession
 
-    public init(session: URLSession = .shared) {
+    public init() {
+        session = URLSession(
+            configuration: .ephemeral,
+            delegate: RemoteNoRedirectDelegate(), delegateQueue: nil
+        )
+    }
+
+    public init(session: URLSession) {
         self.session = session
     }
 
     public func data(for request: URLRequest) async throws -> (Data, URLResponse) {
         try await session.data(for: request)
+    }
+}
+
+private final class RemoteNoRedirectDelegate: NSObject, URLSessionTaskDelegate,
+    @unchecked Sendable {
+    func urlSession(
+        _ session: URLSession, task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        completionHandler(nil)
     }
 }
 
@@ -110,6 +130,122 @@ public struct RemoteLibraryClient: Sendable {
 
     public func fetchCapabilities() async throws -> RemoteCapabilities {
         try await getJSON(path: RemoteHTTPPaths.capabilities)
+    }
+
+    public func beginMigrationTransfer(
+        migrationID: UUID
+    ) async throws -> ImageAllMigrationTransferProgress {
+        try await postJSON(
+            path: RemoteHTTPPaths.migrationTransfer(migrationID), body: Data()
+        )
+    }
+
+    public func migrationTransferProgress(
+        migrationID: UUID
+    ) async throws -> ImageAllMigrationTransferProgress {
+        try await getJSON(path: RemoteHTTPPaths.migrationTransfer(migrationID))
+    }
+
+    public func uploadMigrationChunk(
+        migrationID: UUID, relativePath: String, offset: Int64, bytes: Data
+    ) async throws -> ImageAllMigrationTransferProgress {
+        guard !bytes.isEmpty,
+              bytes.count <= ImageAllMigrationTransferStore.defaultMaximumChunkBytes else {
+            throw RemoteAPIError(code: .badRequest, message: "invalid migration chunk size")
+        }
+        var request = try makeRequest(
+            path: RemoteHTTPPaths.migrationTransferChunks(migrationID), method: "PUT"
+        )
+        request.timeoutInterval = 90
+        request.setValue(relativePath, forHTTPHeaderField: "X-ImageAll-File")
+        request.setValue(String(offset), forHTTPHeaderField: "X-ImageAll-Offset")
+        request.setValue(
+            Data(SHA256.hash(data: bytes)).map { String(format: "%02x", $0) }.joined(),
+            forHTTPHeaderField: "X-ImageAll-SHA256"
+        )
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        request.httpBody = bytes
+        let (data, response) = try await transport.data(for: request)
+        try Self.validate(response: response, data: data)
+        return try decoder.decode(ImageAllMigrationTransferProgress.self, from: data)
+    }
+
+    public func sealMigrationTransfer(
+        migrationID: UUID
+    ) async throws -> ImageAllMigrationTransferSealReceipt {
+        try await postJSON(
+            path: RemoteHTTPPaths.migrationTransferSeal(migrationID), body: Data()
+        )
+    }
+
+    /// Sends a previously exported local package file by file. Resume always
+    /// uses the receiver's committed offsets; the final receipt proves only
+    /// verified staging on Mac, not catalog import or migration completion.
+    public func uploadMigrationArchive(
+        at archiveRoot: URL
+    ) async throws -> ImageAllMigrationTransferSealReceipt {
+        let (header, firstVerification) = try ImageAllMigrationArchive.readVerifiedHeader(
+            at: archiveRoot
+        )
+        guard firstVerification.isComplete else {
+            throw RemoteAPIError(code: .badRequest, message: "archive has missing resources")
+        }
+        let capabilities = try await fetchCapabilities()
+        guard capabilities.capabilities.contains(.migrationTransfer) else {
+            throw RemoteAPIError(code: .notFound, message: "host cannot receive migration archives")
+        }
+        var progress = try await beginMigrationTransfer(migrationID: header.migrationID)
+        let manager = FileManager.default
+        var paths = [ImageAllMigrationArchive.manifestFilename]
+        for directoryName in ["resources", ImageAllMigrationFacts.sidecarDirectoryName] {
+            let directory = archiveRoot.appendingPathComponent(directoryName, isDirectory: true)
+            if manager.fileExists(atPath: directory.path) {
+                paths += try manager.contentsOfDirectory(atPath: directory.path)
+                    .sorted().map { "\(directoryName)/\($0)" }
+            }
+        }
+        for path in paths {
+            let file = archiveRoot.appendingPathComponent(path)
+            let handle = try FileHandle(forReadingFrom: file)
+            defer { try? handle.close() }
+            let attributes = try manager.attributesOfItem(atPath: file.path)
+            guard let sizeValue = attributes[.size] as? NSNumber else {
+                throw RemoteAPIError(code: .badRequest, message: "archive file size unavailable")
+            }
+            let size = sizeValue.int64Value
+            let committed = progress.files.first(where: { $0.relativePath == path })?.committedBytes ?? 0
+            guard committed >= 0, committed <= size else {
+                throw RemoteAPIError(code: .conflict, message: "receiver offset exceeds source file")
+            }
+            try handle.seek(toOffset: UInt64(committed))
+            var offset = committed
+            while offset < size {
+                let count = Int(min(Int64(progress.maximumChunkBytes), size - offset))
+                guard count > 0, let bytes = try handle.read(upToCount: count), !bytes.isEmpty else {
+                    throw RemoteAPIError(code: .conflict, message: "archive changed during transfer")
+                }
+                progress = try await uploadMigrationChunk(
+                    migrationID: header.migrationID, relativePath: path,
+                    offset: offset, bytes: bytes
+                )
+                offset += Int64(bytes.count)
+                guard progress.files.first(where: { $0.relativePath == path })?.committedBytes == offset else {
+                    throw RemoteAPIError(code: .conflict, message: "receiver did not commit chunk")
+                }
+            }
+        }
+        guard try ImageAllMigrationArchive.verify(at: archiveRoot) == firstVerification else {
+            throw RemoteAPIError(code: .conflict, message: "archive changed during transfer")
+        }
+        let receipt = try await sealMigrationTransfer(migrationID: header.migrationID)
+        guard receipt.manifestSHA256 == firstVerification.manifestSHA256,
+              receipt.itemCount == firstVerification.itemCount,
+              receipt.resourceCount == firstVerification.resourceCount,
+              receipt.verifiedBytes == firstVerification.verifiedBytes,
+              receipt.factsSHA256 == firstVerification.factsSHA256 else {
+            throw RemoteAPIError(code: .conflict, message: "receiver archive differs from source")
+        }
+        return receipt
     }
 
     public func submitLocalLibrarySnapshot(

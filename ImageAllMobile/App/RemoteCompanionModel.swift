@@ -578,6 +578,21 @@ final class RemoteCompanionModel: ObservableObject {
         return receipt
     }
 
+    func uploadMigrationArchive(
+        at archiveRoot: URL
+    ) async throws -> ImageAllMigrationTransferSealReceipt {
+        guard isConnected, let client, let sessionTokens,
+              let capabilities,
+              capabilities.capabilities.contains(.migrationTransfer),
+              capabilities.hostID == sessionTokens.hostID else {
+            throw RemoteAPIError(
+                code: .unauthorized,
+                message: "请先连接已设置网络归档接收目录的 Mac"
+            )
+        }
+        return try await client.uploadMigrationArchive(at: archiveRoot)
+    }
+
     func submitLocalLibraryTagDecision(
         _ prepared: LocalPreparedSharedTagOperation
     ) async throws -> RemoteLocalLibraryTagDecisionReceipt {

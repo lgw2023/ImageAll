@@ -80,6 +80,26 @@ struct PhoneArchiveImportedItem: Identifiable, Sendable {
 struct VerifiedPhoneArchiveImporter: Sendable {
     let database: CatalogDatabase
 
+    func validateTargetDirectory(_ targetParent: URL) throws {
+        let values = try targetParent.resourceValues(
+            forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+        )
+        guard values.isDirectory == true, values.isSymbolicLink != true else {
+            throw ImageAllMigrationArchiveError.unsafeResourcePath
+        }
+        do {
+            try PortableExportSourceIsolationValidator(
+                sourceRepository: GRDBFolderSourceAuthorizationRepository(database: database),
+                bookmarkPort: FoundationSecurityScopedBookmarkAdapter(),
+                relationshipChecker: FoundationFolderRootRelationshipChecker()
+            ).validate(parentDirectoryURL: targetParent)
+        } catch PortableCatalogExportError.destinationOverlapsSource {
+            throw PhoneArchiveImportError.targetOverlapsMacLibrary
+        } catch {
+            throw PhoneArchiveImportError.targetIsolationIndeterminate
+        }
+    }
+
     func reconcileFacts(
         from url: URL, migrationID: UUID, archiveRoot: URL? = nil,
         afterFactPublication: (() throws -> Void)? = nil
@@ -383,26 +403,16 @@ struct VerifiedPhoneArchiveImporter: Sendable {
         guard verification.isComplete else { throw PhoneArchiveImportError.incompleteArchive }
         let source = incoming.standardizedFileURL.resolvingSymlinksInPath()
         let target = targetParent.standardizedFileURL.resolvingSymlinksInPath()
+        let receiverOwnedStage = source.lastPathComponent == "package"
+            && source.deletingLastPathComponent().lastPathComponent
+                == ".imageall-transfer-\(header.migrationID.uuidString.lowercased())"
+            && source.deletingLastPathComponent().deletingLastPathComponent() == target
         guard source.path != target.path,
-              !source.path.hasPrefix(target.path + "/"),
+              (!source.path.hasPrefix(target.path + "/") || receiverOwnedStage),
               !target.path.hasPrefix(source.path + "/") else {
             throw ImageAllMigrationArchiveError.destinationOverlap
         }
-        let targetValues = try targetParent.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
-        guard targetValues.isDirectory == true, targetValues.isSymbolicLink != true else {
-            throw ImageAllMigrationArchiveError.unsafeResourcePath
-        }
-        do {
-            try PortableExportSourceIsolationValidator(
-                sourceRepository: GRDBFolderSourceAuthorizationRepository(database: database),
-                bookmarkPort: FoundationSecurityScopedBookmarkAdapter(),
-                relationshipChecker: FoundationFolderRootRelationshipChecker()
-            ).validate(parentDirectoryURL: targetParent)
-        } catch PortableCatalogExportError.destinationOverlapsSource {
-            throw PhoneArchiveImportError.targetOverlapsMacLibrary
-        } catch {
-            throw PhoneArchiveImportError.targetIsolationIndeterminate
-        }
+        try validateTargetDirectory(targetParent)
         let parent = targetParent.standardizedFileURL
         let targetBookmark = try? targetParent.bookmarkData(
             options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil

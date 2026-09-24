@@ -266,6 +266,7 @@ enum RemoteHostProcessHolder {
     private static let legacyDebugTokenKey = "imageall.remoteHost.accessToken"
     private static let portKey = "imageall.remoteHost.port"
     static let publicBaseURLKey = "imageall.remoteHost.publicBaseURL"
+    private static let migrationTransferBookmarkKey = "imageall.remoteHost.migrationTransferBookmark"
     private static let state = State()
 
     enum LifecycleResult: Equatable, Sendable {
@@ -465,6 +466,24 @@ enum RemoteHostProcessHolder {
 
     static func reloadConfiguration() async -> LifecycleResult {
         await state.apply(enabled: isEnabled(), forceRestart: true)
+    }
+
+    static func migrationTransferTargetURL(defaults: UserDefaults = .standard) -> URL? {
+        guard let data = defaults.data(forKey: migrationTransferBookmarkKey) else { return nil }
+        var stale = false
+        return try? URL(
+            resolvingBookmarkData: data, options: [.withSecurityScope],
+            relativeTo: nil, bookmarkDataIsStale: &stale
+        )
+    }
+
+    static func configureMigrationTransferTarget(_ directory: URL) async throws -> LifecycleResult {
+        let bookmark = try directory.bookmarkData(
+            options: [.withSecurityScope], includingResourceValuesForKeys: nil,
+            relativeTo: nil
+        )
+        UserDefaults.standard.set(bookmark, forKey: migrationTransferBookmarkKey)
+        return await reloadConfiguration()
     }
 
     static func currentAccessToken() -> String? {
@@ -669,6 +688,18 @@ enum RemoteHostProcessHolder {
             logger.error("Local library sync disabled: projection store unavailable")
             localLibrarySyncStore = nil
         }
+        var migrationTransferStore: ImageAllMigrationTransferStore?
+        var migrationTransferScopeURL: URL?
+        if let target = migrationTransferTargetURL(defaults: defaults),
+           target.startAccessingSecurityScopedResource() {
+            do {
+                migrationTransferStore = try ImageAllMigrationTransferStore(root: target)
+                migrationTransferScopeURL = target
+            } catch {
+                target.stopAccessingSecurityScopedResource()
+                logger.error("Migration transfer receiver unavailable")
+            }
+        }
         let accessAccountStore = makeAccessAccountStore()
         let idempotency = RemoteIdempotencyStore(
             storageURL: remoteHostDirectory().appendingPathComponent("idempotency.json")
@@ -699,6 +730,8 @@ enum RemoteHostProcessHolder {
                 facade: facade,
                 pairingStore: pairingStore,
                 localLibrarySyncStore: localLibrarySyncStore,
+                migrationTransferStore: migrationTransferStore,
+                migrationTransferScopeURL: migrationTransferScopeURL,
                 accessAccountStore: accessAccountStore,
                 eventBroker: eventBroker,
                 mediaResources: attachment.mediaResources,

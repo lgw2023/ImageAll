@@ -501,8 +501,13 @@ public enum ImageAllMigrationArchive {
     ) throws -> URL {
         let source = archiveRoot.standardizedFileURL.resolvingSymlinksInPath()
         let target = targetParent.standardizedFileURL.resolvingSymlinksInPath()
+        let first = try verify(at: archiveRoot)
+        let receiverOwnedStage = source.lastPathComponent == "package"
+            && source.deletingLastPathComponent().lastPathComponent
+                == ".imageall-transfer-\(first.migrationID.uuidString.lowercased())"
+            && source.deletingLastPathComponent().deletingLastPathComponent() == target
         guard source.path != target.path,
-              !source.path.hasPrefix(target.path + "/"),
+              (!source.path.hasPrefix(target.path + "/") || receiverOwnedStage),
               !target.path.hasPrefix(source.path + "/") else {
             throw ImageAllMigrationArchiveError.destinationOverlap
         }
@@ -513,7 +518,6 @@ public enum ImageAllMigrationArchive {
               targetValues.isSymbolicLink != true else {
             throw ImageAllMigrationArchiveError.unsafeResourcePath
         }
-        let first = try verify(at: archiveRoot)
         guard first.isComplete else {
             throw ImageAllMigrationArchiveError.invalidManifest
         }

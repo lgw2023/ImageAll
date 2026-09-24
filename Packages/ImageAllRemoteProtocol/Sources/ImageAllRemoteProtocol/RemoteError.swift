@@ -23,6 +23,17 @@ extension RemoteAPIError: LocalizedError {
 }
 
 public enum RemoteHTTPPaths {
+    public static func migrationTransfer(_ migrationID: UUID) -> String {
+        "/v1/migration-transfers/\(migrationID.uuidString.lowercased())"
+    }
+
+    public static func migrationTransferChunks(_ migrationID: UUID) -> String {
+        migrationTransfer(migrationID) + "/chunks"
+    }
+
+    public static func migrationTransferSeal(_ migrationID: UUID) -> String {
+        migrationTransfer(migrationID) + "/seal"
+    }
     public static let capabilities = "/v1/capabilities"
     public static let sources = "/v1/sources"
     public static let sourceFolders = "/v1/source-folders"

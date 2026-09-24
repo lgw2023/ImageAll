@@ -11,6 +11,115 @@ import XCTest
 final class RemoteHTTPServerTests: XCTestCase {
     private static let legacyDebugToken = "secret-token"
 
+    func testPairedMigrationChunkRouteStreamsBeyondJSONLimitAndSealsPackage() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "RemoteMigrationTransfer-\(UUID().uuidString)", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source", isDirectory: true)
+        let receiver = root.appendingPathComponent("receiver", isDirectory: true)
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: receiver, withIntermediateDirectories: true)
+        let migrationID = UUID()
+        let resourceID = UUID()
+        let relativePath = "resources/\(resourceID.uuidString.lowercased()).bin"
+        let bytes = Data(repeating: 0x52, count: 384 * 1_024)
+        let resourceURL = source.appendingPathComponent(relativePath)
+        try FileManager.default.createDirectory(
+            at: resourceURL.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try bytes.write(to: resourceURL)
+        func hash(_ data: Data) -> String {
+            Data(SHA256.hash(data: data)).map { String(format: "%02x", $0) }.joined()
+        }
+        let header = ImageAllMigrationHeader(
+            migrationID: migrationID, sourceDeviceID: UUID(), sourceEpoch: UUID(),
+            scopeRevision: 1, inventoryWatermark: 1, declaredItemCount: 1
+        )
+        let item = ImageAllMigrationItem(
+            mediaID: UUID(), sourceLocalIdentifier: "synthetic-photo",
+            mediaKind: .image, createdAtMs: nil, favoriteTarget: nil,
+            observedFavorite: false, factRevision: 1,
+            tagDecisions: [], collections: [], resources: [.init(
+                id: resourceID, role: "original", version: 1,
+                uniformTypeIdentifier: "public.data", required: true,
+                status: .present, relativePath: relativePath,
+                byteCount: Int64(bytes.count), sha256: hash(bytes)
+            )]
+        )
+        try ImageAllMigrationArchive.write(header: header, items: [item], to: source)
+        let manifest = try Data(contentsOf: source.appendingPathComponent("manifest.jsonl"))
+
+        let port = UInt16.random(in: 19_000...29_000)
+        let pairing = makePairingStore(listenPort: Int(port))
+        let transfer = try ImageAllMigrationTransferStore(root: receiver)
+        let (server, _) = makeServer(
+            port: port, pairingStore: pairing, migrationTransferStore: transfer
+        )
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        defer { Task { await server.stop() } }
+        let offer = await pairing.issueOffer()
+        let tokens = try await pairing.completePairing(.init(
+            pairingToken: offer.pairingToken,
+            deviceName: "Synthetic iPhone",
+            devicePublicKeySPKI_SHA256: "migration-test-device"
+        ))
+        func request(_ path: String, method: String, body: Data? = nil) -> URLRequest {
+            var value = URLRequest(url: URL(string: "http://127.0.0.1:\(port)\(path)")!)
+            value.httpMethod = method
+            value.setValue("Bearer \(tokens.accessToken)", forHTTPHeaderField: "Authorization")
+            value.httpBody = body
+            return value
+        }
+        let base = RemoteHTTPPaths.migrationTransfer(migrationID)
+        let (beginData, beginResponse) = try await URLSession.shared.data(
+            for: request(base, method: "POST", body: Data())
+        )
+        XCTAssertEqual(try XCTUnwrap(beginResponse as? HTTPURLResponse).statusCode, 200)
+        XCTAssertEqual(try JSONDecoder().decode(
+            ImageAllMigrationTransferProgress.self, from: beginData
+        ).maximumChunkBytes, 4 * 1_024 * 1_024)
+
+        for (path, contents) in [("manifest.jsonl", manifest), (relativePath, bytes)] {
+            var upload = request(
+                RemoteHTTPPaths.migrationTransferChunks(migrationID),
+                method: "PUT", body: contents
+            )
+            upload.setValue(path, forHTTPHeaderField: "X-ImageAll-File")
+            upload.setValue("0", forHTTPHeaderField: "X-ImageAll-Offset")
+            upload.setValue(hash(contents), forHTTPHeaderField: "X-ImageAll-SHA256")
+            let (data, response) = try await URLSession.shared.data(for: upload)
+            XCTAssertEqual(
+                try XCTUnwrap(response as? HTTPURLResponse).statusCode, 200,
+                String(decoding: data, as: UTF8.self)
+            )
+        }
+        let (sealedData, sealedResponse) = try await URLSession.shared.data(
+            for: request(RemoteHTTPPaths.migrationTransferSeal(migrationID),
+                         method: "POST", body: Data())
+        )
+        XCTAssertEqual(try XCTUnwrap(sealedResponse as? HTTPURLResponse).statusCode, 200)
+        let sealed = try JSONDecoder().decode(
+            ImageAllMigrationTransferSealReceipt.self, from: sealedData
+        )
+        XCTAssertEqual(sealed.verifiedBytes, Int64(bytes.count))
+        let (package, verification) = try await transfer.sealVerifiedArchive(
+            migrationID: migrationID, authenticatedDeviceID: tokens.deviceID
+        )
+        XCTAssertEqual(sealed.manifestSHA256, verification.manifestSHA256)
+        XCTAssertEqual(try Data(contentsOf: package.appendingPathComponent(relativePath)), bytes)
+
+        var cookieRequest = request(base, method: "GET")
+        cookieRequest.setValue(nil, forHTTPHeaderField: "Authorization")
+        cookieRequest.setValue(
+            "\(RemoteWebCompanionSession.accessCookieName)=\(tokens.accessToken)",
+            forHTTPHeaderField: "Cookie"
+        )
+        let (_, cookieResponse) = try await URLSession.shared.data(for: cookieRequest)
+        XCTAssertEqual(try XCTUnwrap(cookieResponse as? HTTPURLResponse).statusCode, 401)
+    }
+
     func testLocalLibraryProjectionKeepsHiddenItemsUntilExplicitRevokeAndRejectsLateReplay() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -1780,6 +1889,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         catalog: any RemoteCatalogServing = RemoteHTTPServerTestCatalog(),
         pairingStore: RemotePairingStore? = nil,
         localLibrarySyncStore: RemoteLocalLibrarySyncStore? = nil,
+        migrationTransferStore: ImageAllMigrationTransferStore? = nil,
         accessAccountStore: RemoteAccessAccountStore? = nil,
         trainingWorkspace: (any TrainingWorkspacePort)? = nil,
         trainingCommands: (any RemoteTrainingCommandPort)? = nil,
@@ -1812,6 +1922,7 @@ final class RemoteHTTPServerTests: XCTestCase {
             facade: facade,
             pairingStore: store,
             localLibrarySyncStore: localLibrarySyncStore,
+            migrationTransferStore: migrationTransferStore,
             accessAccountStore: accessAccountStore ?? makeAccessAccountStore(),
             eventBroker: RemoteEventBroker(),
             mediaResources: mediaResources,

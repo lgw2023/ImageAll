@@ -16,7 +16,7 @@ public enum RemotePinnedURLSessionFactory {
         let delegate = PinningDelegate(expectedFingerprint: normalized)
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = timeout
-        config.timeoutIntervalForResource = timeout * 4
+        config.timeoutIntervalForResource = max(timeout * 4, 120)
         return URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
     }
 
@@ -27,7 +27,8 @@ public enum RemotePinnedURLSessionFactory {
     }
 }
 
-final class PinningDelegate: NSObject, URLSessionDelegate, @unchecked Sendable {
+final class PinningDelegate: NSObject, URLSessionDelegate, URLSessionTaskDelegate,
+    @unchecked Sendable {
     private let expectedFingerprint: String
 
     init(expectedFingerprint: String) {
@@ -44,6 +45,15 @@ final class PinningDelegate: NSObject, URLSessionDelegate, @unchecked Sendable {
             expectedFingerprint: expectedFingerprint,
             completionHandler: completionHandler
         )
+    }
+
+    func urlSession(
+        _ session: URLSession, task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        completionHandler(nil)
     }
 }
 

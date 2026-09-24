@@ -214,12 +214,15 @@ actor RemoteHTTPServer {
     static let maximumRequestBytes = 256 * 1_024
     static let maximumHeaderBytes = 32 * 1_024
     static let requestTimeout: Duration = .seconds(15)
+    static let transferChunkTimeout: Duration = .seconds(90)
     private static let webSocketGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
     private let facade: RemoteCatalogFacade
     private let cloudPreviewDownloads: RemoteCloudPreviewDownloadCoordinator
     private let pairingStore: RemotePairingStore
     private let localLibrarySyncStore: RemoteLocalLibrarySyncStore?
+    private let migrationTransferStore: ImageAllMigrationTransferStore?
+    private var migrationTransferScopeURL: URL?
     private let accessAccountStore: RemoteAccessAccountStore
     private let eventBroker: RemoteEventBroker
     private let mediaResources: any RemoteMediaResourceProviding
@@ -234,6 +237,7 @@ actor RemoteHTTPServer {
     private var listener: NWListener?
     private var localWebListener: NWListener?
     private var webSocketConnections: [ObjectIdentifier: NWConnection] = [:]
+    private var activeTransferUploads = 0
     private let jsonEncoder = JSONEncoder()
     private let jsonDecoder = JSONDecoder()
 
@@ -243,6 +247,8 @@ actor RemoteHTTPServer {
         facade: RemoteCatalogFacade,
         pairingStore: RemotePairingStore,
         localLibrarySyncStore: RemoteLocalLibrarySyncStore? = nil,
+        migrationTransferStore: ImageAllMigrationTransferStore? = nil,
+        migrationTransferScopeURL: URL? = nil,
         accessAccountStore: RemoteAccessAccountStore,
         eventBroker: RemoteEventBroker,
         mediaResources: any RemoteMediaResourceProviding = UnavailableRemoteMediaResourceProvider(),
@@ -258,6 +264,8 @@ actor RemoteHTTPServer {
         cloudPreviewDownloads = RemoteCloudPreviewDownloadCoordinator(facade: facade)
         self.pairingStore = pairingStore
         self.localLibrarySyncStore = localLibrarySyncStore
+        self.migrationTransferStore = migrationTransferStore
+        self.migrationTransferScopeURL = migrationTransferScopeURL
         self.accessAccountStore = accessAccountStore
         self.eventBroker = eventBroker
         self.mediaResources = mediaResources
@@ -318,6 +326,8 @@ actor RemoteHTTPServer {
             connection.cancel()
         }
         webSocketConnections.removeAll()
+        migrationTransferScopeURL?.stopAccessingSecurityScopedResource()
+        migrationTransferScopeURL = nil
         Task { await cloudPreviewDownloads.cancelAll() }
         Task { await eventBroker.stopPingLoop() }
     }
@@ -418,6 +428,12 @@ actor RemoteHTTPServer {
                 var next = buffer
                 if let data, !data.isEmpty {
                     next.append(data)
+                }
+                if Self.isTransferChunkRequest(next) {
+                    await self.receiveTransferChunk(
+                        on: connection, buffer: next, timeoutTask: timeoutTask
+                    )
+                    return
                 }
                 switch Self.parseRequest(buffer: next, isComplete: isComplete) {
                 case .incomplete:
@@ -560,6 +576,189 @@ actor RemoteHTTPServer {
                 body: buffer.subdata(in: bodyStart..<bodyEnd)
             )
         )
+    }
+
+    private struct TransferChunkHead {
+        let migrationID: UUID
+        let relativePath: String
+        let offset: Int64
+        let sha256: String
+        let contentLength: Int
+        let bodyStart: Int
+        let headers: [String: String]
+    }
+
+    private static func migrationTransferID(from path: String, suffix: String? = nil) -> UUID? {
+        let parts = path.split(separator: "/", omittingEmptySubsequences: false)
+        let expectedCount = suffix == nil ? 4 : 5
+        guard parts.count == expectedCount, parts[0].isEmpty,
+              parts[1] == "v1", parts[2] == "migration-transfers" else { return nil }
+        if let suffix, parts[4] != Substring(suffix) { return nil }
+        return UUID(uuidString: String(parts[3]))
+    }
+
+    private static func isTransferChunkRequest(_ buffer: Data) -> Bool {
+        guard let headerEnd = buffer.range(of: Data("\r\n\r\n".utf8)),
+              headerEnd.upperBound <= maximumHeaderBytes,
+              let firstLineEnd = buffer.range(of: Data("\r\n".utf8)),
+              firstLineEnd.lowerBound < headerEnd.lowerBound,
+              let line = String(data: buffer[..<firstLineEnd.lowerBound], encoding: .utf8)
+        else { return false }
+        let parts = line.split(separator: " ")
+        return parts.count == 3 && parts[0] == "PUT"
+            && migrationTransferID(from: String(parts[1]), suffix: "chunks") != nil
+    }
+
+    private static func parseTransferChunkHead(_ buffer: Data) throws -> TransferChunkHead {
+        guard let headerEnd = buffer.range(of: Data("\r\n\r\n".utf8)),
+              headerEnd.upperBound <= maximumHeaderBytes,
+              let headerText = String(data: buffer[..<headerEnd.lowerBound], encoding: .utf8)
+        else { throw RemoteAPIError(code: .badRequest, message: "invalid transfer headers") }
+        let lines = headerText.split(separator: "\r\n", omittingEmptySubsequences: false)
+        guard let requestLine = lines.first else {
+            throw RemoteAPIError(code: .badRequest, message: "missing transfer request")
+        }
+        let parts = requestLine.split(separator: " ")
+        guard parts.count == 3, parts[0] == "PUT",
+              ["HTTP/1.0", "HTTP/1.1"].contains(String(parts[2])),
+              let migrationID = migrationTransferID(from: String(parts[1]), suffix: "chunks")
+        else { throw RemoteAPIError(code: .badRequest, message: "invalid transfer route") }
+        var headers: [String: String] = [:]
+        for line in lines.dropFirst() {
+            guard let separator = line.firstIndex(of: ":") else {
+                throw RemoteAPIError(code: .badRequest, message: "invalid transfer header")
+            }
+            let key = line[..<separator].trimmingCharacters(in: .whitespaces).lowercased()
+            let value = line[line.index(after: separator)...].trimmingCharacters(in: .whitespaces)
+            guard !key.isEmpty, headers[key] == nil else {
+                throw RemoteAPIError(code: .badRequest, message: "duplicate transfer header")
+            }
+            headers[key] = value
+        }
+        guard headers["transfer-encoding"] == nil,
+              let contentLength = Int(headers["content-length"] ?? ""),
+              (1...ImageAllMigrationTransferStore.defaultMaximumChunkBytes).contains(contentLength),
+              let relativePath = headers["x-imageall-file"], !relativePath.isEmpty,
+              let offset = Int64(headers["x-imageall-offset"] ?? ""), offset >= 0,
+              let sha256 = headers["x-imageall-sha256"], sha256.count == 64,
+              sha256.allSatisfy({ $0.isASCII && ($0.isNumber || ("a"..."f").contains(String($0))) })
+        else { throw RemoteAPIError(code: .badRequest, message: "invalid transfer chunk") }
+        return .init(
+            migrationID: migrationID, relativePath: relativePath,
+            offset: offset, sha256: sha256, contentLength: contentLength,
+            bodyStart: headerEnd.upperBound, headers: headers
+        )
+    }
+
+    private func receiveTransferChunk(
+        on connection: NWConnection, buffer: Data, timeoutTask: Task<Void, Never>
+    ) async {
+        var responseTimeoutTask = timeoutTask
+        var temporaryURL: URL?
+        defer { if let temporaryURL { try? FileManager.default.removeItem(at: temporaryURL) } }
+        do {
+            let head = try Self.parseTransferChunkHead(buffer)
+            guard buffer.count - head.bodyStart <= head.contentLength else {
+                throw RemoteAPIError(code: .badRequest, message: "unexpected trailing bytes")
+            }
+            guard case let .deviceBearer(deviceID) = await authenticateRequest(headers: head.headers)
+            else { throw RemoteAPIError(code: .unauthorized, message: "paired bearer required") }
+            guard let migrationTransferStore else {
+                throw RemoteAPIError(code: .notFound, message: "migration transfer unavailable")
+            }
+            guard activeTransferUploads < 2 else {
+                throw RemoteAPIError(code: .conflict, message: "transfer receiver busy")
+            }
+            activeTransferUploads += 1
+            defer { activeTransferUploads -= 1 }
+            do {
+                temporaryURL = try await migrationTransferStore.allocateIncomingChunk(
+                    migrationID: head.migrationID, authenticatedDeviceID: deviceID,
+                    byteCount: head.contentLength
+                )
+                timeoutTask.cancel()
+                let transferTimeout = Task {
+                    do { try await Task.sleep(for: Self.transferChunkTimeout) }
+                    catch { return }
+                    connection.cancel()
+                }
+                responseTimeoutTask = transferTimeout
+                guard let temporaryURL else {
+                    throw RemoteAPIError(code: .internalError, message: "transfer staging unavailable")
+                }
+                let handle = try FileHandle(forWritingTo: temporaryURL)
+                defer { try? handle.close() }
+                let initial = buffer.subdata(in: head.bodyStart..<buffer.count)
+                if !initial.isEmpty { try handle.write(contentsOf: initial) }
+                var received = initial.count
+                while received < head.contentLength {
+                    let (next, complete) = try await Self.receiveTransferBlock(on: connection)
+                    guard !next.isEmpty, received + next.count <= head.contentLength else {
+                        throw RemoteAPIError(code: .badRequest, message: "incomplete transfer body")
+                    }
+                    try handle.write(contentsOf: next)
+                    received += next.count
+                    if complete && received < head.contentLength {
+                        throw RemoteAPIError(code: .badRequest, message: "incomplete transfer body")
+                    }
+                }
+                try handle.synchronize()
+                try handle.close()
+                let progress = try await migrationTransferStore.commitIncomingChunk(
+                    migrationID: head.migrationID, authenticatedDeviceID: deviceID,
+                    relativePath: head.relativePath, offset: head.offset,
+                    temporaryURL: temporaryURL, byteCount: head.contentLength,
+                    sha256: head.sha256
+                )
+                await respondJSON(
+                    connection, status: 200, value: progress,
+                    timeoutTask: responseTimeoutTask
+                )
+            } catch let transferError as ImageAllMigrationTransferError {
+                throw Self.transferAPIError(transferError)
+            }
+        } catch let api as RemoteAPIError {
+            let status: Int = {
+                switch api.code {
+                case .unauthorized: 401
+                case .notFound: 404
+                case .badRequest: 400
+                case .conflict: 409
+                case .internalError: 500
+                }
+            }()
+            await respond(connection, status: status, error: api, timeoutTask: responseTimeoutTask)
+        } catch {
+            await respond(
+                connection, status: 500,
+                error: .init(code: .internalError, message: "transfer receive failed"),
+                timeoutTask: responseTimeoutTask
+            )
+        }
+    }
+
+    private static func receiveTransferBlock(
+        on connection: NWConnection
+    ) async throws -> (Data, Bool) {
+        try await withCheckedThrowingContinuation { continuation in
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1_024) {
+                data, _, isComplete, error in
+                if let error { continuation.resume(throwing: error) }
+                else { continuation.resume(returning: (data ?? Data(), isComplete)) }
+            }
+        }
+    }
+
+    private static func transferAPIError(
+        _ error: ImageAllMigrationTransferError
+    ) -> RemoteAPIError {
+        switch error {
+        case .unsafeRoot, .unsafePath, .invalidSession, .chunkTooLarge,
+             .quotaExceeded, .insufficientSpace, .changedChunk:
+            .init(code: .badRequest, message: String(describing: error))
+        case .identityConflict, .offsetConflict, .sealed, .incompleteArchive:
+            .init(code: .conflict, message: String(describing: error))
+        }
     }
 
     // MARK: - Routing
@@ -871,7 +1070,8 @@ actor RemoteHTTPServer {
             switch (method, path) {
             case ("GET", RemoteHTTPPaths.capabilities):
                 let payload = await facade.capabilities(
-                    supportsLocalLibrarySnapshot: localLibrarySyncStore != nil
+                    supportsLocalLibrarySnapshot: localLibrarySyncStore != nil,
+                    supportsMigrationTransfer: migrationTransferStore != nil
                 )
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             case ("POST", RemoteHTTPPaths.localLibrarySnapshot):
@@ -1403,7 +1603,53 @@ actor RemoteHTTPServer {
                 let payload = await pairingStore.listDevices()
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             default:
-                if ["GET", "HEAD"].contains(method),
+                if let migrationID = Self.migrationTransferID(from: path),
+                   ["GET", "POST"].contains(method) {
+                    guard case let .deviceBearer(deviceID) = requestAuthentication else {
+                        throw RemoteAPIError(code: .unauthorized, message: "paired bearer required")
+                    }
+                    guard let migrationTransferStore else {
+                        throw RemoteAPIError(code: .notFound, message: "migration transfer unavailable")
+                    }
+                    do {
+                        let payload: ImageAllMigrationTransferProgress
+                        if method == "POST" {
+                            guard body.isEmpty else {
+                                throw RemoteAPIError(code: .badRequest, message: "body must be empty")
+                            }
+                            payload = try await migrationTransferStore.begin(
+                                migrationID: migrationID, authenticatedDeviceID: deviceID
+                            )
+                        } else {
+                            payload = try await migrationTransferStore.status(
+                                migrationID: migrationID, authenticatedDeviceID: deviceID
+                            )
+                        }
+                        await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+                    } catch let error as ImageAllMigrationTransferError {
+                        throw Self.transferAPIError(error)
+                    }
+                } else if method == "POST",
+                          let migrationID = Self.migrationTransferID(from: path, suffix: "seal") {
+                    guard case let .deviceBearer(deviceID) = requestAuthentication else {
+                        throw RemoteAPIError(code: .unauthorized, message: "paired bearer required")
+                    }
+                    guard body.isEmpty, let migrationTransferStore else {
+                        throw RemoteAPIError(code: .badRequest, message: "invalid transfer seal")
+                    }
+                    do {
+                        let (_, verification) = try await migrationTransferStore.sealVerifiedArchive(
+                            migrationID: migrationID, authenticatedDeviceID: deviceID
+                        )
+                        await respondJSON(
+                            connection, status: 200,
+                            value: ImageAllMigrationTransferSealReceipt(verification: verification),
+                            timeoutTask: timeoutTask
+                        )
+                    } catch let error as ImageAllMigrationTransferError {
+                        throw Self.transferAPIError(error)
+                    }
+                } else if ["GET", "HEAD"].contains(method),
                    let assetID = Self.originalAssetID(from: path)
                 {
                     let resource = try await mediaResources.openOriginalResource(assetID: assetID)

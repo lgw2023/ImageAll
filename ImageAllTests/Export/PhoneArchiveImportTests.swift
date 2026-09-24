@@ -6,6 +6,46 @@ import XCTest
 @testable import ImageAll
 
 final class PhoneArchiveImportTests: XCTestCase {
+    func testSealedNetworkStageImportsIntoSiblingMacArchive() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let resource = try fixture.resource(
+            "original", bytes: Data("network-stage-original".utf8)
+        )
+        let item = fixture.item(resource: resource)
+        let header = fixture.header(count: 1)
+        try fixture.write(header: header, items: [item])
+        let deviceID = UUID()
+        let store = try ImageAllMigrationTransferStore(root: fixture.target)
+        _ = try await store.begin(
+            migrationID: header.migrationID, authenticatedDeviceID: deviceID
+        )
+        let paths = [ImageAllMigrationArchive.manifestFilename, resource.relativePath!]
+        for path in paths {
+            let bytes = try Data(contentsOf: fixture.incoming.appendingPathComponent(path))
+            let digest = Data(SHA256.hash(data: bytes))
+                .map { String(format: "%02x", $0) }.joined()
+            _ = try await store.append(
+                migrationID: header.migrationID, authenticatedDeviceID: deviceID,
+                relativePath: path, offset: 0, bytes: bytes, sha256: digest
+            )
+        }
+        let (stage, verification) = try await store.sealVerifiedArchive(
+            migrationID: header.migrationID, authenticatedDeviceID: deviceID
+        )
+        XCTAssertTrue(verification.isComplete)
+        let staged = try await store.sealedArchives()
+        XCTAssertEqual(staged.map(\.id), [header.migrationID])
+        let importer = VerifiedPhoneArchiveImporter(database: fixture.database)
+        let imported = try importer.importArchive(from: stage, to: fixture.target)
+        XCTAssertNotEqual(imported.archiveURL, stage)
+        XCTAssertEqual(imported.manifestSHA256, verification.manifestSHA256)
+        XCTAssertEqual(try Data(contentsOf: importer.verifiedOriginalURL(
+            migrationID: header.migrationID, mediaID: item.mediaID,
+            archiveRoot: imported.archiveURL
+        )), Data("network-stage-original".utf8))
+    }
+
     func testImportPreservesMediaResourcesAndFactsAcrossRestartAndReplay() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

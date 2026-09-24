@@ -61,7 +61,10 @@ actor RemoteCatalogFacade {
         self.certificateFingerprintSHA256 = certificateFingerprintSHA256
     }
 
-    func capabilities(supportsLocalLibrarySnapshot: Bool = false) -> RemoteCapabilities {
+    func capabilities(
+        supportsLocalLibrarySnapshot: Bool = false,
+        supportsMigrationTransfer: Bool = false
+    ) -> RemoteCapabilities {
         RemoteCapabilities(
             hostAppVersion: hostAppVersion,
             capabilities: RemoteCapability.allCases.filter {
@@ -71,11 +74,13 @@ actor RemoteCatalogFacade {
                     && $0 != .localLibraryCollectionChanges
                     && $0 != .localLibraryFavoriteTarget
                     && $0 != .localLibraryFavoriteChanges
+                    && $0 != .migrationTransfer
             } + (supportsLocalLibrarySnapshot
                 ? [.localLibrarySnapshot, .localLibraryTagOperations,
                    .localLibraryTagChanges, .localLibraryCollectionMembership,
                    .localLibraryCollectionChanges, .localLibraryFavoriteTarget,
-                   .localLibraryFavoriteChanges] : []),
+                   .localLibraryFavoriteChanges] : [])
+                + (supportsMigrationTransfer ? [.migrationTransfer] : []),
             listenPort: listenPort,
             usesTLS: usesTLS,
             hostID: hostID,
