@@ -87,6 +87,19 @@ final class PhoneArchiveImportTests: XCTestCase {
         XCTAssertNotNil(try ImageAllMigrationArchive.verify(
             at: imported.archiveURL
         ).factsSHA256)
+        let integrity = try importer.auditImportedArchive(
+            migrationID: header.migrationID, archiveRoot: imported.archiveURL
+        )
+        XCTAssertEqual(integrity.factSnapshotSequence, 8)
+        try await fixture.database.pool.write { db in
+            try db.execute(sql: """
+                UPDATE migration_import_tag_decision SET tag_name = '被改动'
+                WHERE media_id = ?
+                """, arguments: [item.mediaID.uuidString.lowercased()])
+        }
+        XCTAssertThrowsError(try importer.auditImportedArchive(
+            migrationID: header.migrationID, archiveRoot: imported.archiveURL
+        )) { XCTAssertEqual($0 as? PhoneArchiveImportError, .catalogDiverged) }
     }
 
     func testImportPreservesMediaResourcesAndFactsAcrossRestartAndReplay() throws {
@@ -118,6 +131,9 @@ final class PhoneArchiveImportTests: XCTestCase {
         XCTAssertEqual(receipt.itemCount, 1)
         XCTAssertEqual(receipt.resourceCount, 2)
         XCTAssertEqual(try ImageAllMigrationArchive.verify(at: receipt.archiveURL).isComplete, true)
+        XCTAssertEqual(try importer.auditImportedArchive(
+            migrationID: header.migrationID, archiveRoot: receipt.archiveURL
+        ).resourceCount, 2)
         let batch = try XCTUnwrap(importer.importedBatches().first)
         XCTAssertEqual(batch.id, header.migrationID)
         XCTAssertEqual(batch.itemCount, 1)

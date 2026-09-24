@@ -14,6 +14,7 @@ enum PhoneArchiveImportError: LocalizedError, Equatable {
     case factScopeMismatch
     case staleFactSnapshot
     case factSnapshotConflict
+    case catalogDiverged
 
     var errorDescription: String? {
         switch self {
@@ -27,6 +28,7 @@ enum PhoneArchiveImportError: LocalizedError, Equatable {
         case .factScopeMismatch: "整理信息快照与所选归档批次的来源或资产集合不一致。"
         case .staleFactSnapshot: "整理信息快照早于已导入版本，请从手机重新导出。"
         case .factSnapshotConflict: "同一整理信息版本的内容不一致，需要先对账。"
+        case .catalogDiverged: "Mac 归档与入库账本不一致，不能通过完整性核查。"
         }
     }
 }
@@ -47,6 +49,16 @@ struct PhoneArchiveFactReceipt: Sendable, Equatable {
     let snapshotSequence: Int64
     let factWatermark: Int64
     let replayed: Bool
+}
+
+struct PhoneArchiveIntegrityReport: Sendable, Equatable {
+    let migrationID: UUID
+    let manifestSHA256: String
+    let itemCount: Int
+    let resourceCount: Int
+    let verifiedBytes: Int64
+    let factSnapshotSequence: Int64
+    let factWatermark: Int64
 }
 
 struct PhoneArchiveImportedBatch: Identifiable, Sendable {
@@ -79,6 +91,266 @@ struct PhoneArchiveImportedItem: Identifiable, Sendable {
 /// exposes them in the unified gallery.
 struct VerifiedPhoneArchiveImporter: Sendable {
     let database: CatalogDatabase
+
+    /// Re-verifies the independently published media package and compares each
+    /// portable record with the dedicated Mac import ledger. This is a local
+    /// integrity check, not a source-sync or migration-complete receipt.
+    func auditImportedArchive(
+        migrationID: UUID, archiveRoot: URL
+    ) throws -> PhoneArchiveIntegrityReport {
+        let (header, verification) = try ImageAllMigrationArchive.readVerifiedHeader(
+            at: archiveRoot
+        )
+        guard header.migrationID == migrationID, verification.isComplete else {
+            throw PhoneArchiveImportError.incompleteArchive
+        }
+        let latest = try ImageAllMigrationFacts.latestPublishedURL(in: archiveRoot)
+            .map { try ImageAllMigrationFacts.read(at: $0) }
+        let facts = Dictionary(uniqueKeysWithValues: (latest?.items ?? []).map {
+            ($0.mediaID, $0)
+        })
+        let factDigest: String? = try latest.map { snapshot in
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            return SHA256.hash(data: try encoder.encode(snapshot))
+                .map { String(format: "%02x", $0) }.joined()
+        }
+        let migrationKey = migrationID.uuidString.lowercased()
+        let deviceKey = header.sourceDeviceID.uuidString.lowercased()
+        let epochKey = header.sourceEpoch.uuidString.lowercased()
+        let folderEncoder = JSONEncoder()
+        folderEncoder.outputFormatting = [.sortedKeys]
+        return try database.pool.read { db in
+            guard let batch = try Row.fetchOne(
+                db, sql: "SELECT * FROM migration_import WHERE id = ? AND state = 'catalogCommitted'",
+                arguments: [migrationKey]
+            ) else { throw PhoneArchiveImportError.missingImportJournal }
+            let savedPath: String = batch["archive_path"]
+            let savedDevice: String = batch["source_device_id"]
+            let savedEpoch: String = batch["source_epoch"]
+            let savedScope: Int64 = batch["scope_revision"]
+            let savedInventory: Int64 = batch["inventory_watermark"]
+            let savedManifest: String = batch["manifest_sha256"]
+            let savedItems: Int = batch["item_count"]
+            let savedResources: Int = batch["resource_count"]
+            let savedBytes: Int64 = batch["verified_bytes"]
+            let savedFactSequence: Int64 = batch["fact_snapshot_sequence"]
+            let savedFactWatermark: Int64 = batch["fact_watermark"]
+            let savedFactDigest: String? = batch["fact_snapshot_sha256"]
+            let savedAlbumCoverage: String? = batch["apple_album_coverage"]
+            guard URL(fileURLWithPath: savedPath).standardizedFileURL == archiveRoot.standardizedFileURL,
+                  savedDevice == deviceKey, savedEpoch == epochKey,
+                  savedScope == header.scopeRevision,
+                  savedInventory == header.inventoryWatermark,
+                  savedManifest == verification.manifestSHA256,
+                  savedItems == verification.itemCount,
+                  savedResources == verification.resourceCount,
+                  savedBytes == verification.verifiedBytes,
+                  savedFactSequence == (latest?.snapshotSequence ?? 0),
+                  savedFactWatermark == (latest?.factWatermark ?? 0),
+                  savedFactDigest == factDigest,
+                  savedAlbumCoverage == header.appleAlbumCoverage?.rawValue else {
+                throw PhoneArchiveImportError.catalogDiverged
+            }
+            var seen = Set<UUID>()
+            _ = try ImageAllMigrationArchive.visitVerifiedRecords(
+                at: archiveRoot,
+                onHeader: { record in
+                    guard record == header else {
+                        throw PhoneArchiveImportError.catalogDiverged
+                    }
+                },
+                onItem: { item in
+                    guard seen.insert(item.mediaID).inserted else {
+                        throw PhoneArchiveImportError.catalogDiverged
+                    }
+                    let mediaKey = item.mediaID.uuidString.lowercased()
+                    guard let row = try Row.fetchOne(db, sql: """
+                        SELECT * FROM migration_import_item
+                        WHERE migration_id = ? AND media_id = ?
+                        """, arguments: [migrationKey, mediaKey]) else {
+                        throw PhoneArchiveImportError.catalogDiverged
+                    }
+                    let rowDevice: String = row["source_device_id"]
+                    let rowEpoch: String = row["source_epoch"]
+                    let rowIdentifier: String = row["source_local_identifier"]
+                    let rowKind: String = row["media_kind"]
+                    let rowCreated: Int64? = row["created_at_ms"]
+                    let rowFavorite: Int = row["observed_favorite"]
+                    let rowTarget: Int? = row["favorite_target"]
+                    let rowRevision: Int64 = row["fact_revision"]
+                    let fact = facts[item.mediaID]
+                    let expectedTarget: Bool? = if let fact {
+                        fact.favoriteTarget
+                    } else {
+                        item.favoriteTarget
+                    }
+                    guard rowDevice == deviceKey, rowEpoch == epochKey,
+                          rowIdentifier == item.sourceLocalIdentifier,
+                          rowKind == item.mediaKind.rawValue,
+                          rowCreated == item.createdAtMs,
+                          rowFavorite == ((fact?.observedFavorite ?? item.observedFavorite) ? 1 : 0),
+                          rowTarget == expectedTarget.map({ $0 ? 1 : 0 }),
+                          rowRevision == (latest?.factWatermark ?? item.factRevision) else {
+                        throw PhoneArchiveImportError.catalogDiverged
+                    }
+                    try auditResources(
+                        item.resources, db: db, device: deviceKey,
+                        epoch: epochKey, media: mediaKey
+                    )
+                    try auditTags(
+                        fact?.tagDecisions ?? item.tagDecisions,
+                        db: db, device: deviceKey, epoch: epochKey, media: mediaKey
+                    )
+                    try auditCollections(
+                        fact?.collections ?? item.collections,
+                        db: db, device: deviceKey, epoch: epochKey, media: mediaKey
+                    )
+                    try auditAppleAlbums(
+                        item.appleAlbums ?? [], db: db,
+                        migration: migrationKey, media: mediaKey,
+                        encoder: folderEncoder
+                    )
+                }
+            )
+            let catalogItems = try Int.fetchOne(
+                db, sql: "SELECT COUNT(*) FROM migration_import_item WHERE migration_id = ?",
+                arguments: [migrationKey]
+            ) ?? 0
+            guard seen.count == verification.itemCount,
+                  catalogItems == verification.itemCount else {
+                throw PhoneArchiveImportError.catalogDiverged
+            }
+            return PhoneArchiveIntegrityReport(
+                migrationID: migrationID, manifestSHA256: savedManifest,
+                itemCount: savedItems, resourceCount: savedResources,
+                verifiedBytes: savedBytes,
+                factSnapshotSequence: savedFactSequence,
+                factWatermark: savedFactWatermark
+            )
+        }
+    }
+
+    private func auditResources(
+        _ expected: [ImageAllMigrationResource], db: Database,
+        device: String, epoch: String, media: String
+    ) throws {
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT * FROM migration_import_resource
+            WHERE source_device_id = ? AND source_epoch = ? AND media_id = ?
+            """, arguments: [device, epoch, media])
+        guard rows.count == expected.count else {
+            throw PhoneArchiveImportError.catalogDiverged
+        }
+        let byID = Dictionary(uniqueKeysWithValues: rows.map { row -> (String, Row) in
+            (row["id"], row)
+        })
+        for resource in expected {
+            guard let row = byID[resource.id.uuidString.lowercased()],
+                  resource.status == .present,
+                  let path = resource.relativePath,
+                  let count = resource.byteCount,
+                  let hash = resource.sha256 else {
+                throw PhoneArchiveImportError.catalogDiverged
+            }
+            let role: String = row["role"]
+            let version: Int64 = row["version"]
+            let uti: String = row["uti"]
+            let storedPath: String = row["relative_path"]
+            let storedCount: Int64 = row["byte_count"]
+            let storedHash: String = row["sha256"]
+            guard role == resource.role, version == resource.version,
+                  uti == resource.uniformTypeIdentifier,
+                  storedPath == path, storedCount == count,
+                  storedHash == hash else {
+                throw PhoneArchiveImportError.catalogDiverged
+            }
+        }
+    }
+
+    private func auditTags(
+        _ expected: [ImageAllMigrationTagDecision], db: Database,
+        device: String, epoch: String, media: String
+    ) throws {
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT * FROM migration_import_tag_decision
+            WHERE source_device_id = ? AND source_epoch = ? AND media_id = ?
+            """, arguments: [device, epoch, media])
+        guard rows.count == expected.count else {
+            throw PhoneArchiveImportError.catalogDiverged
+        }
+        let byID = Dictionary(uniqueKeysWithValues: rows.map { row -> (String, Row) in
+            (row["tag_id"], row)
+        })
+        for tag in expected {
+            guard let row = byID[tag.tagID.uuidString.lowercased()] else {
+                throw PhoneArchiveImportError.catalogDiverged
+            }
+            let name: String = row["tag_name"]
+            let decision: String = row["decision"]
+            guard name == tag.tagName, decision == tag.decision.rawValue else {
+                throw PhoneArchiveImportError.catalogDiverged
+            }
+        }
+    }
+
+    private func auditCollections(
+        _ expected: [ImageAllMigrationCollectionMembership], db: Database,
+        device: String, epoch: String, media: String
+    ) throws {
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT * FROM migration_import_collection
+            WHERE source_device_id = ? AND source_epoch = ? AND media_id = ?
+            """, arguments: [device, epoch, media])
+        guard rows.count == expected.count else {
+            throw PhoneArchiveImportError.catalogDiverged
+        }
+        let byID = Dictionary(uniqueKeysWithValues: rows.map { row -> (String, Row) in
+            (row["collection_id"], row)
+        })
+        for collection in expected {
+            guard let row = byID[collection.collectionID.uuidString.lowercased()] else {
+                throw PhoneArchiveImportError.catalogDiverged
+            }
+            let name: String = row["collection_name"]
+            let included: Int = row["included"]
+            guard name == collection.collectionName,
+                  included == (collection.included ? 1 : 0) else {
+                throw PhoneArchiveImportError.catalogDiverged
+            }
+        }
+    }
+
+    private func auditAppleAlbums(
+        _ expected: [ImageAllMigrationAppleAlbumMembership], db: Database,
+        migration: String, media: String, encoder: JSONEncoder
+    ) throws {
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT * FROM migration_import_apple_album_member
+            WHERE migration_id = ? AND media_id = ?
+            """, arguments: [migration, media])
+        guard rows.count == expected.count else {
+            throw PhoneArchiveImportError.catalogDiverged
+        }
+        let byID = Dictionary(uniqueKeysWithValues: rows.map { row -> (String, Row) in
+            (row["album_local_identifier"], row)
+        })
+        for album in expected {
+            guard let row = byID[album.albumLocalIdentifier] else {
+                throw PhoneArchiveImportError.catalogDiverged
+            }
+            let title: String? = row["album_title"]
+            let folderPath: String = row["folder_path_json"]
+            let ordinal: Int64 = row["source_ordinal"]
+            let expectedPath = String(
+                decoding: try encoder.encode(album.folderPath), as: UTF8.self
+            )
+            guard title == album.albumTitle, folderPath == expectedPath,
+                  ordinal == album.sourceOrdinal else {
+                throw PhoneArchiveImportError.catalogDiverged
+            }
+        }
+    }
 
     func validateTargetDirectory(_ targetParent: URL) throws {
         let values = try targetParent.resourceValues(

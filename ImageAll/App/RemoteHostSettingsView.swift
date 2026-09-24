@@ -1436,6 +1436,29 @@ private final class PhoneArchiveImportModel: ObservableObject {
         }
     }
 
+    func auditSelectedBatch() async {
+        guard !isBusy, let batch = selectedBatch,
+              let importer = PhoneArchiveImportProcessHolder.importer() else { return }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let parent = try targetParent(for: batch)
+            let access = parent.startAccessingSecurityScopedResource()
+            defer { if access { parent.stopAccessingSecurityScopedResource() } }
+            let archive = parent.appendingPathComponent(
+                "ImageAll-Archive-\(batch.id.uuidString.lowercased())", isDirectory: true
+            )
+            let report = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.auditImportedArchive(
+                    migrationID: batch.id, archiveRoot: archive
+                )
+            }
+            message = "Mac 归档逐资源与入库账本核对通过：\(report.itemCount) 项、\(report.resourceCount) 个资源，整理快照序号 \(report.factSnapshotSequence)。仍需手机同步冲突、事实水位和独立恢复验收。"
+        } catch {
+            message = "Mac 归档完整性核查未通过：\(error.localizedDescription)"
+        }
+    }
+
     private func targetParent(for batch: PhoneArchiveImportedBatch) throws -> URL {
         if let bookmark = batch.targetBookmark {
             var stale = false
@@ -1549,6 +1572,9 @@ private struct PhoneArchiveImportCard: View {
                         .lineLimit(1).truncationMode(.middle)
                     Spacer()
                     Button("导入整理信息快照") { Task { await model.importFactSnapshot() } }
+                        .buttonStyle(.bordered)
+                        .disabled(model.isBusy)
+                    Button("核查 Mac 归档") { Task { await model.auditSelectedBatch() } }
                         .buttonStyle(.bordered)
                         .disabled(model.isBusy)
                 }
