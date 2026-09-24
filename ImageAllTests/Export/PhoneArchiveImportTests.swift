@@ -30,6 +30,18 @@ final class PhoneArchiveImportTests: XCTestCase {
         XCTAssertEqual(receipt.itemCount, 1)
         XCTAssertEqual(receipt.resourceCount, 2)
         XCTAssertEqual(try ImageAllMigrationArchive.verify(at: receipt.archiveURL).isComplete, true)
+        let batch = try XCTUnwrap(importer.importedBatches().first)
+        XCTAssertEqual(batch.id, header.migrationID)
+        XCTAssertEqual(batch.itemCount, 1)
+        let listed = try XCTUnwrap(importer.importedItems(migrationID: batch.id, offset: 0).first)
+        XCTAssertEqual(listed.id, mediaID)
+        XCTAssertEqual(listed.resourceCount, 2)
+        XCTAssertEqual(listed.tagCount, 1)
+        XCTAssertEqual(listed.collectionCount, 1)
+        let opened = try importer.verifiedOriginalURL(
+            migrationID: batch.id, mediaID: listed.id, archiveRoot: receipt.archiveURL
+        )
+        XCTAssertEqual(try Data(contentsOf: opened), Data("original-photo".utf8))
 
         try fixture.database.pool.read { db in
             XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT count(*) FROM migration_import_item"), 1)
@@ -93,6 +105,23 @@ final class PhoneArchiveImportTests: XCTestCase {
         XCTAssertEqual(try fixture.database.pool.read { db in
             try String.fetchOne(db, sql: "SELECT state FROM migration_import")
         }, "catalogCommitted")
+    }
+
+    func testOriginalCannotOpenAfterPublishedResourceChanges() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let resource = try fixture.resource("original", bytes: Data("verified-original".utf8))
+        let item = fixture.item(resource: resource)
+        let header = fixture.header(count: 1)
+        try fixture.write(header: header, items: [item])
+        let importer = VerifiedPhoneArchiveImporter(database: fixture.database)
+        let receipt = try importer.importArchive(from: fixture.incoming, to: fixture.target)
+        try Data("changed-original".utf8).write(
+            to: receipt.archiveURL.appendingPathComponent(try XCTUnwrap(resource.relativePath))
+        )
+        XCTAssertThrowsError(try importer.verifiedOriginalURL(
+            migrationID: header.migrationID, mediaID: item.mediaID, archiveRoot: receipt.archiveURL
+        ))
     }
 
     func testMissingOriginalCannotPublishOrCreateImportJournal() throws {

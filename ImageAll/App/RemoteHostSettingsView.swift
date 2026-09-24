@@ -546,6 +546,7 @@ struct RemoteHostSettingsView: View {
                 pairingCard
                 pairedDevicesCard
                 phoneSharesCard
+                phoneArchiveCard
             }
             .frame(maxWidth: 680)
             .padding(.horizontal, 24)
@@ -996,6 +997,10 @@ struct RemoteHostSettingsView: View {
         }
     }
 
+    private var phoneArchiveCard: some View {
+        settingsCard { PhoneArchiveImportCard() }
+    }
+
     private func projectionTime(_ milliseconds: Int64?) -> String {
         guard let milliseconds else { return "时间未知" }
         return Date(timeIntervalSince1970: TimeInterval(milliseconds) / 1_000)
@@ -1172,5 +1177,246 @@ struct RemoteHostSettingsView: View {
         let image = NSImage(size: rep.size)
         image.addRepresentation(rep)
         return image
+    }
+}
+
+@MainActor
+private final class PhoneArchiveImportModel: ObservableObject {
+    @Published private(set) var batches: [PhoneArchiveImportedBatch] = []
+    @Published private(set) var items: [PhoneArchiveImportedItem] = []
+    @Published private(set) var selectedBatchID: UUID?
+    @Published private(set) var isBusy = false
+    @Published private(set) var message: String?
+
+    var selectedBatch: PhoneArchiveImportedBatch? {
+        batches.first { $0.id == selectedBatchID }
+    }
+
+    func refresh() async {
+        guard !isBusy else { return }
+        guard let importer = PhoneArchiveImportProcessHolder.importer() else {
+            message = "图库尚未就绪，请稍后重试。"
+            return
+        }
+        do {
+            let loaded = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.importedBatches()
+            }
+            batches = loaded
+            if let selectedBatchID, loaded.contains(where: { $0.id == selectedBatchID }) {
+                await select(selectedBatchID)
+            } else if let first = loaded.first {
+                await select(first.id)
+            } else {
+                selectedBatchID = nil
+                items = []
+            }
+        } catch {
+            message = "读取导入记录失败：\(error.localizedDescription)"
+        }
+    }
+
+    func select(_ id: UUID) async {
+        guard !isBusy, let importer = PhoneArchiveImportProcessHolder.importer() else { return }
+        selectedBatchID = id
+        items = []
+        await loadMore(using: importer)
+    }
+
+    func loadMore() async {
+        guard let importer = PhoneArchiveImportProcessHolder.importer() else { return }
+        await loadMore(using: importer)
+    }
+
+    private func loadMore(using importer: VerifiedPhoneArchiveImporter) async {
+        guard let id = selectedBatchID, !isBusy else { return }
+        isBusy = true
+        defer { isBusy = false }
+        let offset = items.count
+        do {
+            let next = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.importedItems(migrationID: id, offset: offset)
+            }
+            guard selectedBatchID == id else { return }
+            items.append(contentsOf: next)
+        } catch {
+            message = "读取归档目录失败：\(error.localizedDescription)"
+        }
+    }
+
+    func importChosenArchive() async {
+        guard !isBusy else { return }
+        guard let source = await chooseDirectory(
+            title: "选择 iPhone 原件归档包",
+            message: "请选择包含 manifest.jsonl 与 resources 的完整归档目录。"
+        ) else { return }
+        guard let target = await chooseDirectory(
+            title: "选择 Mac 归档存放目录",
+            message: "ImageAll 会在这里发布经逐资源校验的独立副本。"
+        ) else { return }
+        guard !isProtectedPhotoVolume(source), !isProtectedPhotoVolume(target) else {
+            message = "受保护的 HDD2 真实照片目录不能作为此阶段的归档来源或写入目标。"
+            return
+        }
+        guard let importer = PhoneArchiveImportProcessHolder.importer() else {
+            message = "图库尚未就绪，请稍后重试。"
+            return
+        }
+        let sourceScope = source.startAccessingSecurityScopedResource()
+        let targetScope = target.startAccessingSecurityScopedResource()
+        defer {
+            if targetScope { target.stopAccessingSecurityScopedResource() }
+            if sourceScope { source.stopAccessingSecurityScopedResource() }
+        }
+        isBusy = true
+        message = "正在校验、复制并入库；请保持目标磁盘连接。"
+        do {
+            let receipt = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.importArchive(from: source, to: target)
+            }
+            isBusy = false
+            await refresh()
+            await select(receipt.migrationID)
+            message = receipt.replayed
+                ? "归档已存在，副本复验通过：\(receipt.itemCount) 项、\(receipt.resourceCount) 个资源。"
+                : "导入完成：\(receipt.itemCount) 项、\(receipt.resourceCount) 个资源已写入 Mac 独立副本。"
+        } catch {
+            isBusy = false
+            message = "归档导入失败：\(error.localizedDescription)"
+        }
+    }
+
+    func openOriginal(_ item: PhoneArchiveImportedItem) async {
+        guard !isBusy, let batch = selectedBatch,
+              let importer = PhoneArchiveImportProcessHolder.importer() else { return }
+        do {
+            let parent: URL
+            if let bookmark = batch.targetBookmark {
+                var stale = false
+                parent = try URL(
+                    resolvingBookmarkData: bookmark, options: [.withSecurityScope],
+                    relativeTo: nil, bookmarkDataIsStale: &stale
+                )
+            } else {
+                parent = URL(fileURLWithPath: batch.targetParentPath, isDirectory: true)
+            }
+            let accessed = parent.startAccessingSecurityScopedResource()
+            defer { if accessed { parent.stopAccessingSecurityScopedResource() } }
+            let archive = parent.appendingPathComponent(
+                "ImageAll-Archive-\(batch.id.uuidString.lowercased())", isDirectory: true
+            )
+            isBusy = true
+            defer { isBusy = false }
+            let url = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.verifiedOriginalURL(
+                    migrationID: batch.id, mediaID: item.id, archiveRoot: archive
+                )
+            }
+            guard NSWorkspace.shared.open(url) else {
+                message = "系统未能打开原件，请确认目标磁盘可用。"
+                return
+            }
+            message = nil
+        } catch {
+            message = "打开原件前复验失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func chooseDirectory(title: String, message: String) async -> URL? {
+        let panel = NSOpenPanel()
+        panel.title = title
+        panel.message = message
+        panel.prompt = "选择"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.resolvesAliases = false
+        panel.treatsFilePackagesAsDirectories = false
+        NSApp.activate(ignoringOtherApps: true)
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.main.async {
+                continuation.resume(returning: panel.runModal() == .OK ? panel.url : nil)
+            }
+        }
+    }
+
+    private func isProtectedPhotoVolume(_ url: URL) -> Bool {
+        let path = url.standardizedFileURL.resolvingSymlinksInPath().path
+        return path == "/Volumes/HDD2" || path.hasPrefix("/Volumes/HDD2/")
+    }
+}
+
+private struct PhoneArchiveImportCard: View {
+    @StateObject private var model = PhoneArchiveImportModel()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Label("iPhone 原件归档", systemImage: "externaldrive.badge.plus")
+                    .font(.headline)
+                Spacer()
+                Button("刷新") { Task { await model.refresh() } }
+                    .buttonStyle(.bordered)
+                Button("导入归档包") { Task { await model.importChosenArchive() } }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(model.isBusy)
+            }
+            Text("手动选择手机导出的完整包和 Mac 保存目录。入库前校验每个资源；这里展示的是 Mac 独立副本，手机原件不会被删除。")
+                .font(.footnote).foregroundStyle(.secondary)
+            if let message = model.message {
+                Text(message).font(.footnote).foregroundStyle(.secondary)
+            }
+            if model.batches.isEmpty {
+                Text("尚无已导入的原件归档。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            } else {
+                ForEach(model.batches) { batch in
+                    Button {
+                        Task { await model.select(batch.id) }
+                    } label: {
+                        HStack {
+                            Image(systemName: model.selectedBatchID == batch.id
+                                  ? "checkmark.circle.fill" : "archivebox")
+                            Text("\(batch.itemCount) 项 · \(batch.resourceCount) 个资源")
+                            Spacer()
+                            Text(Date(timeIntervalSince1970: TimeInterval(batch.importedAtMs) / 1_000)
+                                .formatted(date: .abbreviated, time: .shortened))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.vertical, 3)
+                    .disabled(model.isBusy)
+                }
+            }
+            if let batch = model.selectedBatch {
+                Divider()
+                Text(batch.archivePath)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle)
+                ForEach(model.items) { item in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(item.sourceLocalIdentifier)
+                                .font(.callout).lineLimit(1).truncationMode(.middle)
+                            Text("\(item.mediaKind == "video" ? "视频" : "照片") · \(item.resourceCount) 个资源 · \(item.tagCount) 项标签决定 · \(item.collectionCount) 个相册")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("打开原件") { Task { await model.openOriginal(item) } }
+                            .buttonStyle(.bordered)
+                            .disabled(model.isBusy)
+                    }
+                    .padding(.vertical, 3)
+                }
+                if model.items.count < batch.itemCount {
+                    Button("加载更多") { Task { await model.loadMore() } }
+                        .buttonStyle(.bordered)
+                        .disabled(model.isBusy)
+                }
+            }
+        }
+        .task { await model.refresh() }
     }
 }

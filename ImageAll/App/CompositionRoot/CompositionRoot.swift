@@ -604,6 +604,7 @@ struct CompositionRoot {
             workspaceNoticeRecorder: workspaceModel,
             clock: clock
         )
+        PhoneArchiveImportProcessHolder.attach(database: runtime.database)
         RemoteHostProcessHolder.attach(
             catalog: service,
             review: personalizationReview,

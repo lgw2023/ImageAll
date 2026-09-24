@@ -8,6 +8,8 @@ enum PhoneArchiveImportError: LocalizedError, Equatable {
     case targetChanged
     case publishedCopyChanged
     case missingImportJournal
+    case targetOverlapsMacLibrary
+    case targetIsolationIndeterminate
 
     var errorDescription: String? {
         switch self {
@@ -16,6 +18,8 @@ enum PhoneArchiveImportError: LocalizedError, Equatable {
         case .targetChanged: "此迁移 ID 已绑定另一目标位置。"
         case .publishedCopyChanged: "Mac 已发布的归档副本与入库记录不一致。"
         case .missingImportJournal: "归档导入记录丢失，不能返回完成回执。"
+        case .targetOverlapsMacLibrary: "保存目录与 Mac 已授权的图库来源重叠，请选择独立目录。"
+        case .targetIsolationIndeterminate: "无法确认保存目录与 Mac 图库来源隔离，请检查来源磁盘授权。"
         }
     }
 }
@@ -30,12 +34,124 @@ struct PhoneArchiveImportReceipt: Sendable, Equatable {
     let replayed: Bool
 }
 
+struct PhoneArchiveImportedBatch: Identifiable, Sendable {
+    let id: UUID
+    let archivePath: String
+    let targetParentPath: String
+    let targetBookmark: Data?
+    let itemCount: Int
+    let resourceCount: Int
+    let verifiedBytes: Int64
+    let importedAtMs: Int64
+}
+
+struct PhoneArchiveImportedItem: Identifiable, Sendable {
+    let id: UUID
+    let sourceLocalIdentifier: String
+    let mediaKind: String
+    let createdAtMs: Int64?
+    let resourceCount: Int
+    let tagCount: Int
+    let collectionCount: Int
+}
+
 /// Imports a verified phone package into dedicated catalog bindings. The
 /// existing one-source Asset row remains untouched; archive resources are
 /// owned by this migration until a deliberate MediaItem/Replica projection
 /// exposes them in the unified gallery.
 struct VerifiedPhoneArchiveImporter: Sendable {
     let database: CatalogDatabase
+
+    func importedBatches() throws -> [PhoneArchiveImportedBatch] {
+        try database.pool.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT id, archive_path, target_parent_path, target_bookmark,
+                       item_count, resource_count, verified_bytes, updated_at_ms
+                FROM migration_import WHERE state = 'catalogCommitted'
+                ORDER BY updated_at_ms DESC
+                """).compactMap { row in
+                guard let id = UUID(uuidString: row["id"]) else { return nil }
+                return PhoneArchiveImportedBatch(
+                    id: id,
+                    archivePath: row["archive_path"],
+                    targetParentPath: row["target_parent_path"],
+                    targetBookmark: row["target_bookmark"],
+                    itemCount: row["item_count"],
+                    resourceCount: row["resource_count"],
+                    verifiedBytes: row["verified_bytes"],
+                    importedAtMs: row["updated_at_ms"]
+                )
+            }
+        }
+    }
+
+    func importedItems(migrationID: UUID, offset: Int, limit: Int = 100) throws -> [PhoneArchiveImportedItem] {
+        try database.pool.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT i.media_id, i.source_local_identifier, i.media_kind, i.created_at_ms,
+                       (SELECT COUNT(*) FROM migration_import_resource r
+                        WHERE r.source_device_id = i.source_device_id AND r.source_epoch = i.source_epoch
+                          AND r.media_id = i.media_id) AS resource_count,
+                       (SELECT COUNT(*) FROM migration_import_tag_decision t
+                        WHERE t.source_device_id = i.source_device_id AND t.source_epoch = i.source_epoch
+                          AND t.media_id = i.media_id) AS tag_count,
+                       (SELECT COUNT(*) FROM migration_import_collection c
+                        WHERE c.source_device_id = i.source_device_id AND c.source_epoch = i.source_epoch
+                          AND c.media_id = i.media_id AND c.included = 1) AS collection_count
+                FROM migration_import_item i
+                JOIN migration_import m ON m.id = i.migration_id
+                WHERE i.migration_id = ? AND m.state = 'catalogCommitted'
+                ORDER BY i.created_at_ms, i.media_id LIMIT ? OFFSET ?
+                """, arguments: [migrationID.uuidString.lowercased(), limit, offset]).compactMap { row in
+                guard let id = UUID(uuidString: row["media_id"]) else { return nil }
+                return PhoneArchiveImportedItem(
+                    id: id, sourceLocalIdentifier: row["source_local_identifier"],
+                    mediaKind: row["media_kind"], createdAtMs: row["created_at_ms"],
+                    resourceCount: row["resource_count"], tagCount: row["tag_count"],
+                    collectionCount: row["collection_count"]
+                )
+            }
+        }
+    }
+
+    /// The caller keeps the target parent's security scope open while using
+    /// the returned URL. Package verification binds this resource to the
+    /// committed manifest before any external application opens it.
+    func verifiedOriginalURL(migrationID: UUID, mediaID: UUID, archiveRoot: URL) throws -> URL {
+        let expected = try database.pool.read { db -> (String, Int, Int, Int64, String)? in
+            guard let row = try Row.fetchOne(db, sql: """
+                SELECT m.manifest_sha256, m.item_count, m.resource_count, m.verified_bytes,
+                       r.relative_path
+                FROM migration_import m
+                JOIN migration_import_item i ON i.migration_id = m.id
+                JOIN migration_import_resource r
+                  ON r.source_device_id = i.source_device_id AND r.source_epoch = i.source_epoch
+                 AND r.media_id = i.media_id
+                WHERE m.id = ? AND i.media_id = ? AND m.state = 'catalogCommitted'
+                  AND r.role = 'original'
+                ORDER BY r.version LIMIT 1
+                """, arguments: [migrationID.uuidString.lowercased(), mediaID.uuidString.lowercased()]
+            ) else { return nil }
+            return (row["manifest_sha256"], row["item_count"], row["resource_count"],
+                    row["verified_bytes"], row["relative_path"])
+        }
+        guard let expected else { throw PhoneArchiveImportError.missingImportJournal }
+        let root = archiveRoot.standardizedFileURL
+        let verification = try ImageAllMigrationArchive.verify(at: root)
+        guard verification.migrationID == migrationID,
+              verification.manifestSHA256 == expected.0,
+              verification.itemCount == expected.1,
+              verification.resourceCount == expected.2,
+              verification.verifiedBytes == expected.3,
+              verification.isComplete else {
+            throw PhoneArchiveImportError.publishedCopyChanged
+        }
+        let relative = expected.4
+        guard relative.hasPrefix("resources/"), relative.split(separator: "/").count == 2 else {
+            throw ImageAllMigrationArchiveError.unsafeResourcePath
+        }
+        return root.appendingPathComponent(relative)
+    }
 
     func importArchive(
         from incoming: URL, to targetParent: URL,
@@ -53,6 +169,17 @@ struct VerifiedPhoneArchiveImporter: Sendable {
         let targetValues = try targetParent.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
         guard targetValues.isDirectory == true, targetValues.isSymbolicLink != true else {
             throw ImageAllMigrationArchiveError.unsafeResourcePath
+        }
+        do {
+            try PortableExportSourceIsolationValidator(
+                sourceRepository: GRDBFolderSourceAuthorizationRepository(database: database),
+                bookmarkPort: FoundationSecurityScopedBookmarkAdapter(),
+                relationshipChecker: FoundationFolderRootRelationshipChecker()
+            ).validate(parentDirectoryURL: targetParent)
+        } catch PortableCatalogExportError.destinationOverlapsSource {
+            throw PhoneArchiveImportError.targetOverlapsMacLibrary
+        } catch {
+            throw PhoneArchiveImportError.targetIsolationIndeterminate
         }
         let parent = targetParent.standardizedFileURL
         let targetBookmark = try? targetParent.bookmarkData(
@@ -234,5 +361,18 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                     collection.collectionName, collection.included ? 1 : 0,
                 ])
         }
+    }
+}
+
+@MainActor
+enum PhoneArchiveImportProcessHolder {
+    private static var database: CatalogDatabase?
+
+    static func attach(database: CatalogDatabase) {
+        self.database = database
+    }
+
+    static func importer() -> VerifiedPhoneArchiveImporter? {
+        database.map { VerifiedPhoneArchiveImporter(database: $0) }
     }
 }
