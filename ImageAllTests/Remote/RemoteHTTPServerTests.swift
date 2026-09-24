@@ -669,6 +669,66 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(persisted?.sharedCollectionFacts.first(where: { $0.assetID == secondID })?.included, true)
     }
 
+    func testMacCreatesSharedPhoneCollectionWithStableIdentityAndChange() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("new-collection.json")
+        let hostID = UUID(), deviceID = UUID(), installID = UUID(), epoch = UUID()
+        let assetID = UUID(), collectionID = UUID()
+        let asset = RemoteLocalLibraryAsset(
+            id: assetID, localIdentifier: "shared", mediaKind: .image,
+            createdAtMs: nil, observedFavorite: false, favoriteTarget: nil,
+            tagDecisions: [], collections: []
+        )
+        let store = try RemoteLocalLibrarySyncStore(hostID: hostID, storageURL: url)
+        _ = try await store.submit(.init(
+            hostID: hostID, installID: installID, sourceEpoch: epoch,
+            scopeRevision: 1, snapshotSequence: 1,
+            selectedAssetIDs: [assetID], assets: [asset]
+        ), authenticatedDeviceID: deviceID)
+        let created = try await store.createCollectionFromMac(
+            deviceID: deviceID, assetID: assetID,
+            collectionID: collectionID, collectionName: "Journey",
+            expectedInstallID: installID, expectedSourceEpoch: epoch,
+            expectedScopeRevision: 1, expectedSnapshotSequence: 1
+        )
+        XCTAssertEqual(created.sharedCollectionFacts.first?.collectionID, collectionID)
+        XCTAssertEqual(created.sharedCollectionFacts.first?.revision, 1)
+        let reopened = try RemoteLocalLibrarySyncStore(hostID: hostID, storageURL: url)
+        let replay = try await reopened.createCollectionFromMac(
+            deviceID: deviceID, assetID: assetID,
+            collectionID: collectionID, collectionName: "Journey",
+            expectedInstallID: installID, expectedSourceEpoch: epoch,
+            expectedScopeRevision: 1, expectedSnapshotSequence: 1
+        )
+        XCTAssertEqual(replay.sharedCollectionFacts.count, 1)
+        let page = try await reopened.collectionChanges(
+            deviceID: deviceID, sourceEpoch: epoch, scopeRevision: 1,
+            afterCursor: 0
+        )
+        XCTAssertEqual(page.changes.count, 1)
+        XCTAssertEqual(page.changes.first?.collectionID, collectionID)
+        XCTAssertEqual(page.changes.first?.included, true)
+        do {
+            _ = try await reopened.createCollectionFromMac(
+                deviceID: deviceID, assetID: assetID,
+                collectionID: UUID(), collectionName: "journey",
+                expectedInstallID: installID, expectedSourceEpoch: epoch,
+                expectedScopeRevision: 1, expectedSnapshotSequence: 1
+            )
+            XCTFail("same-name different-ID collection must not merge")
+        } catch let error as RemoteAPIError {
+            XCTAssertEqual(error.code, .conflict)
+        }
+        _ = try await reopened.submit(.init(
+            hostID: hostID, installID: installID, sourceEpoch: epoch,
+            scopeRevision: 1, snapshotSequence: 2,
+            selectedAssetIDs: [assetID], assets: [asset]
+        ), authenticatedDeviceID: deviceID)
+        let persisted = await reopened.projection(deviceID: deviceID)
+        XCTAssertEqual(persisted?.sharedCollectionFacts.first?.collectionID, collectionID)
+    }
+
     func testMigrationCheckpointRejectsLaterMacChangesAndHiddenScope() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

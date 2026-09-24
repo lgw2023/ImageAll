@@ -271,6 +271,8 @@ struct RemotePhoneLibraryView: View {
     @State private var searchText = ""
     @State private var editedProjection: RemoteLocalLibrarySyncStore.Projection?
     @State private var syncEditError: String?
+    @State private var collectionCreateAssetID: UUID?
+    @State private var newCollectionName = ""
     @State private var sourceLinks: [UUID: PhoneArchiveSourceLink] = [:]
     @State private var archiveLinkError: String?
 
@@ -450,6 +452,12 @@ struct RemotePhoneLibraryView: View {
                         }
                         .menuStyle(.borderlessButton)
                     }
+                    Button("新建共享 ImageAll 集合并加入此项") {
+                        newCollectionName = ""
+                        collectionCreateAssetID = projected.asset.id
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(projected.lastVisibleSnapshotSequence != currentProjection.snapshotSequence)
                     let sharedTags = currentProjection.sharedTagFacts.filter {
                         $0.assetID == projected.asset.id
                     }
@@ -491,6 +499,22 @@ struct RemotePhoneLibraryView: View {
         }
         .sheet(item: $archiveModel.preview, onDismiss: { archiveModel.dismissPreview() }) { preview in
             PhoneArchivePreviewSheet(preview: preview)
+        }
+        .alert("新建手机共享 ImageAll 集合", isPresented: Binding(
+            get: { collectionCreateAssetID != nil },
+            set: { if !$0 { collectionCreateAssetID = nil } }
+        )) {
+            TextField("集合名称", text: $newCollectionName)
+            Button("创建并加入") {
+                if let assetID = collectionCreateAssetID {
+                    createCollection(assetID: assetID, name: newCollectionName)
+                }
+                collectionCreateAssetID = nil
+            }
+            .disabled(newCollectionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Button("取消", role: .cancel) { collectionCreateAssetID = nil }
+        } message: {
+            Text("会在手机 ImageAll 中建立集合及此项成员关系；手机下次手动同步后生效。不会创建 Photos 来源相册。")
         }
         .onDisappear { archiveModel.dismissPreview() }
     }
@@ -567,6 +591,27 @@ struct RemotePhoneLibraryView: View {
                 syncEditError = nil
             } catch {
                 syncEditError = "更新共享集合成员失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func createCollection(assetID: UUID, name: String) {
+        let expected = currentProjection
+        let collectionID = UUID()
+        Task {
+            do {
+                editedProjection = try await RemoteHostProcessHolder.createSharedPhoneCollection(
+                    deviceID: expected.deviceID, assetID: assetID,
+                    collectionID: collectionID,
+                    collectionName: name.trimmingCharacters(in: .whitespacesAndNewlines),
+                    expectedInstallID: expected.installID,
+                    expectedSourceEpoch: expected.sourceEpoch,
+                    expectedScopeRevision: expected.scopeRevision,
+                    expectedSnapshotSequence: expected.snapshotSequence
+                )
+                syncEditError = nil
+            } catch {
+                syncEditError = "新建共享集合失败：\(error.localizedDescription)"
             }
         }
     }

@@ -971,3 +971,61 @@ import Testing
     ))
     #expect(retry.baseRevision == 3)
 }
+
+@Test func macNewCollectionIdentityInstallsWithMemberAndCollisionRollsBackPage() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("local.sqlite")
+    let store = try LocalLibraryStore(url: url)
+    try await store.observe([.init(
+        localIdentifier: "shared", kind: "image", creationDate: nil, isFavorite: false
+    )])
+    let asset = try #require(await store.assets(visibleIdentifiers: ["shared"]).first)
+    let existingID = try await store.createCollection(name: "Café")
+    let hostID = UUID(), deviceID = UUID()
+    try await store.setShared(assetID: asset.id, shared: true)
+    let snapshot = try await store.prepareSharedSnapshot(visibleIdentifiers: ["shared"])
+    try await store.acknowledgeSharedSnapshot(
+        snapshot, hostID: hostID, deviceID: deviceID, importedAssetIDs: [asset.id]
+    )
+    let createdID = UUID(), collidingID = UUID()
+    let first = LocalSharedCollectionChange(
+        sequence: 1, assetID: asset.id, collectionID: createdID,
+        collectionName: "Journey", included: true, fieldRevision: 1
+    )
+    let collision = LocalSharedCollectionChange(
+        sequence: 2, assetID: asset.id, collectionID: collidingID,
+        collectionName: "Cafe\u{301}", included: true, fieldRevision: 1
+    )
+    do {
+        _ = try await store.applySharedCollectionChanges(
+            hostID: hostID, deviceID: deviceID, sourceEpoch: snapshot.sourceEpoch,
+            scopeRevision: snapshot.scopeRevision, afterCursor: 0,
+            changes: [first, collision], nextCursor: 2
+        )
+        Issue.record("name collision must roll back the entire collection page")
+    } catch LocalLibraryError.syncRemoteCollectionMismatch {
+        #expect(try await store.sharedCollectionChangeCursor() == 0)
+        #expect(try await !store.collections().contains { $0.id == createdID })
+        #expect(try await store.collections().contains { $0.id == existingID })
+    }
+    let received = try await store.applySharedCollectionChanges(
+        hostID: hostID, deviceID: deviceID, sourceEpoch: snapshot.sourceEpoch,
+        scopeRevision: snapshot.scopeRevision, afterCursor: 0,
+        changes: [first], nextCursor: 1
+    )
+    #expect(received.applied == 1)
+    #expect(try await store.collections().contains {
+        $0.id == createdID && $0.name == "Journey"
+    })
+    #expect(try await store.memberships(assetID: asset.id) == [createdID])
+    #expect(try await store.pendingSharedOperations().isEmpty)
+    let reopened = try LocalLibraryStore(url: url)
+    try await reopened.setMembership(assetID: asset.id, collectionID: createdID, included: false)
+    let pending = try #require(await reopened.pendingSharedOperations().first)
+    let prepared = try #require(await reopened.prepareSharedCollectionOperation(
+        id: pending.id, hostID: hostID, deviceID: deviceID
+    ))
+    #expect(prepared.collectionID == createdID)
+    #expect(prepared.baseRevision == 1)
+}

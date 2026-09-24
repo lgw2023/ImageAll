@@ -999,6 +999,86 @@ actor RemoteLocalLibrarySyncStore {
         )
     }
 
+    /// Mac creates one ImageAll collection in this phone's shared namespace and
+    /// includes a currently visible shared asset. The generated ID is the retry key.
+    func createCollectionFromMac(
+        deviceID: UUID, assetID: UUID, collectionID: UUID,
+        collectionName: String, expectedInstallID: UUID,
+        expectedSourceEpoch: UUID, expectedScopeRevision: Int64,
+        expectedSnapshotSequence: Int64
+    ) throws -> Projection {
+        guard let previous = records[deviceID] else {
+            throw RemoteAPIError(code: .notFound, message: "shared phone source unavailable")
+        }
+        guard previous.request.installID == expectedInstallID,
+              previous.request.sourceEpoch == expectedSourceEpoch,
+              previous.request.scopeRevision == expectedScopeRevision,
+              previous.request.snapshotSequence == expectedSnapshotSequence,
+              previous.request.selectedAssetIDs.contains(assetID),
+              previous.projectedAssets.contains(where: {
+                  $0.asset.id == assetID &&
+                  $0.lastVisibleSnapshotSequence == expectedSnapshotSequence
+              }) else {
+            throw RemoteAPIError(code: .conflict, message: "shared phone scope changed")
+        }
+        guard collectionName == collectionName.trimmingCharacters(in: .whitespacesAndNewlines),
+              !collectionName.isEmpty,
+              collectionName.count <= 160, collectionName.utf8.count <= 640 else {
+            throw RemoteAPIError(code: .badRequest, message: "invalid shared collection name")
+        }
+        var facts = previous.sharedCollectionFacts
+            ?? Self.seedCollectionFacts(from: previous.projectedAssets)
+        if let existing = facts.first(where: { $0.collectionID == collectionID }) {
+            guard existing.collectionName == collectionName,
+                  existing.assetID == assetID, existing.included else {
+                throw RemoteAPIError(code: .conflict, message: "shared collection identity changed")
+            }
+            return projection(deviceID: deviceID)!
+        }
+        guard !facts.contains(where: {
+            Self.sameCollectionIdentityName($0.collectionName, collectionName)
+        }) else {
+            throw RemoteAPIError(code: .conflict, message: "shared collection name already exists")
+        }
+        guard (previous.collectionChanges?.last?.sequence ?? 0) < Int64.max else {
+            throw RemoteAPIError(code: .internalError, message: "shared change revision exhausted")
+        }
+        let nextSequence = (previous.collectionChanges?.last?.sequence ?? 0) + 1
+        facts.append(SharedCollectionFact(
+            assetID: assetID, collectionID: collectionID,
+            collectionName: collectionName, included: true, revision: 1
+        ))
+        let change = RemoteLocalLibraryCollectionChange(
+            sequence: nextSequence, scopeRevision: expectedScopeRevision,
+            assetID: assetID, collectionID: collectionID,
+            collectionName: collectionName, included: true, fieldRevision: 1
+        )
+        let record = Record(
+            deviceID: previous.deviceID, request: previous.request,
+            projectedAssets: previous.projectedAssets,
+            acceptedAtMs: previous.acceptedAtMs,
+            sharedTagFacts: previous.sharedTagFacts,
+            sharedCollectionFacts: facts.sorted {
+                ($0.assetID.uuidString, $0.collectionID.uuidString)
+                    < ($1.assetID.uuidString, $1.collectionID.uuidString)
+            },
+            sharedFavoriteFacts: previous.sharedFavoriteFacts,
+            tagOperations: previous.tagOperations,
+            collectionOperations: previous.collectionOperations,
+            favoriteOperations: previous.favoriteOperations,
+            macTagOperations: previous.macTagOperations,
+            lastPhoneOperationSequence: previous.lastPhoneOperationSequence,
+            importedAssetIDs: previous.importedAssetIDs,
+            tagChanges: previous.tagChanges,
+            collectionChanges: (previous.collectionChanges ?? []) + [change],
+            favoriteChanges: previous.favoriteChanges
+        )
+        var updated = records
+        updated[deviceID] = record
+        try persist(updated)
+        return projection(deviceID: deviceID)!
+    }
+
     /// Mac edits a member field within the already shared phone collection namespace.
     /// The collection ID must have been introduced by the phone; no name-based merge occurs.
     func setCollectionMembershipFromMac(
@@ -1227,6 +1307,30 @@ actor RemoteLocalLibrarySyncStore {
             return left.normalizedName == right.normalizedName
         }
         return lhs.localizedCaseInsensitiveCompare(rhs) == .orderedSame
+    }
+
+    private static func sameCollectionIdentityName(_ lhs: String, _ rhs: String) -> Bool {
+        func key(_ value: String) -> String {
+            let scalars = Array(value.precomposedStringWithCanonicalMapping.unicodeScalars)
+            var normalized: [Unicode.Scalar] = []
+            var inWhitespace = false
+            for scalar in scalars {
+                if scalar.properties.isWhitespace {
+                    if !inWhitespace {
+                        normalized.append(Unicode.Scalar(0x20)!)
+                        inWhitespace = true
+                    }
+                } else {
+                    normalized.append(scalar)
+                    inWhitespace = false
+                }
+            }
+            return String(String.UnicodeScalarView(normalized))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .folding(options: .caseInsensitive, locale: nil)
+                .precomposedStringWithCanonicalMapping
+        }
+        return key(lhs) == key(rhs)
     }
 
     private static func seedTagFacts(from assets: [ProjectedAsset]) -> [SharedTagFact] {

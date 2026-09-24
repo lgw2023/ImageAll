@@ -1030,6 +1030,8 @@ private struct LocalShareScopeView: View {
                                     statusMessage = "Mac 已接收目录；回传标签需要你确认同名不同 ID 的身份。变化页和 cursor 均未提交。"
                                 } else if case LocalLibraryError.syncRemoteTagMismatch = error {
                                     statusMessage = "Mac 已接收目录，但回传标签与本机标签身份冲突。该变化页和 cursor 均未提交；请先核对同名不同 ID 或标签名称差异，当前版本不会自动合并。"
+                                } else if case LocalLibraryError.syncRemoteCollectionMismatch = error {
+                                    statusMessage = "Mac 已接收目录，但回传集合与本机集合身份冲突。集合变化页和 cursor 均未提交；同名不同 ID 不会自动合并。"
                                 } else {
                                     statusMessage = "Mac 已接收目录，但整理信息提交未完成：\(error.localizedDescription)"
                                 }

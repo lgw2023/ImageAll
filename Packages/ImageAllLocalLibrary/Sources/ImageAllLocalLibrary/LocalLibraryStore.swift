@@ -1846,10 +1846,7 @@ public actor LocalLibraryStore {
         var conflicts = 0
         try transaction {
             for change in changes {
-                guard try isShared(assetID: change.assetID),
-                      let localName = try scalar(
-                          "SELECT name FROM collections WHERE id=?", [change.collectionID.uuidString]
-                      ), localName == change.collectionName else {
+                guard try isShared(assetID: change.assetID) else {
                     throw LocalLibraryError.syncRemoteCollectionMismatch
                 }
                 let field = "collection.\(change.collectionID.uuidString)"
@@ -1857,6 +1854,30 @@ public actor LocalLibraryStore {
                 let baseline = Int64(try scalar("""
                     SELECT revision FROM shared_field_versions WHERE asset_id=? AND field=?
                     """, [change.assetID.uuidString, field]) ?? "0") ?? 0
+                if let localName = try scalar(
+                    "SELECT name FROM collections WHERE id=?", [change.collectionID.uuidString]
+                ) {
+                    guard localName == change.collectionName else {
+                        throw LocalLibraryError.syncRemoteCollectionMismatch
+                    }
+                } else {
+                    let trimmed = change.collectionName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let normalizedName = Self.syncTagNameKey(trimmed)
+                    let existingNames = try rows("SELECT name FROM collections").compactMap { $0[0] }
+                    guard baseline == 0, change.fieldRevision == 1, change.included,
+                          trimmed == change.collectionName, !trimmed.isEmpty,
+                          trimmed.count <= 160, trimmed.utf8.count <= 640,
+                          !existingNames.contains(where: {
+                              Self.syncTagNameKey($0) == normalizedName
+                          }) else {
+                        throw LocalLibraryError.syncRemoteCollectionMismatch
+                    }
+                    // The Mac-created collection identity, first membership and
+                    // cursor are installed together without a phone echo.
+                    try execute("INSERT INTO collections(id,name) VALUES(?,?)", [
+                        change.collectionID.uuidString, trimmed
+                    ])
+                }
                 if change.fieldRevision <= baseline { continue }
                 let pending = try rows("""
                     SELECT s.operation_id,s.value,d.state
