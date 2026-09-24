@@ -219,6 +219,7 @@ actor RemoteHTTPServer {
     private let facade: RemoteCatalogFacade
     private let cloudPreviewDownloads: RemoteCloudPreviewDownloadCoordinator
     private let pairingStore: RemotePairingStore
+    private let localLibrarySyncStore: RemoteLocalLibrarySyncStore?
     private let accessAccountStore: RemoteAccessAccountStore
     private let eventBroker: RemoteEventBroker
     private let mediaResources: any RemoteMediaResourceProviding
@@ -241,6 +242,7 @@ actor RemoteHTTPServer {
     init(
         facade: RemoteCatalogFacade,
         pairingStore: RemotePairingStore,
+        localLibrarySyncStore: RemoteLocalLibrarySyncStore? = nil,
         accessAccountStore: RemoteAccessAccountStore,
         eventBroker: RemoteEventBroker,
         mediaResources: any RemoteMediaResourceProviding = UnavailableRemoteMediaResourceProvider(),
@@ -255,6 +257,7 @@ actor RemoteHTTPServer {
         self.facade = facade
         cloudPreviewDownloads = RemoteCloudPreviewDownloadCoordinator(facade: facade)
         self.pairingStore = pairingStore
+        self.localLibrarySyncStore = localLibrarySyncStore
         self.accessAccountStore = accessAccountStore
         self.eventBroker = eventBroker
         self.mediaResources = mediaResources
@@ -867,7 +870,23 @@ actor RemoteHTTPServer {
         do {
             switch (method, path) {
             case ("GET", RemoteHTTPPaths.capabilities):
-                let payload = await facade.capabilities()
+                let payload = await facade.capabilities(
+                    supportsLocalLibrarySnapshot: localLibrarySyncStore != nil
+                )
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("POST", RemoteHTTPPaths.localLibrarySnapshot):
+                guard let deviceID = requestAuthentication.deviceID else {
+                    throw RemoteAPIError(code: .unauthorized, message: "paired device required")
+                }
+                guard let localLibrarySyncStore else {
+                    throw RemoteAPIError(code: .notFound, message: "local library sync unavailable")
+                }
+                let request = try jsonDecoder.decode(
+                    RemoteLocalLibrarySnapshotRequest.self, from: body
+                )
+                let payload = try await localLibrarySyncStore.submit(
+                    request, authenticatedDeviceID: deviceID
+                )
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             case ("GET", RemoteHTTPPaths.workspaceNotice):
                 let payload = await facade.fetchWorkspaceNotice()
@@ -1630,12 +1649,13 @@ actor RemoteHTTPServer {
     private func authenticateRequest(
         headers: [String: String]
     ) async -> RemoteRequestAuthentication {
+        let bearer = bearerToken(headers: headers)
         let pairingOutcome = await pairingStore.authenticate(
             bearer: authenticationToken(headers: headers)
         )
         switch pairingOutcome {
         case let .device(deviceID):
-            return .device(deviceID)
+            return bearer.isEmpty ? .deviceCookie(deviceID) : .deviceBearer(deviceID)
         case .legacyDebugToken:
             return .legacyDebugToken
         case .unauthorized:
@@ -2352,14 +2372,15 @@ actor RemoteHTTPServer {
 }
 
 private enum RemoteRequestAuthentication {
-    case device(UUID)
+    case deviceBearer(UUID)
+    case deviceCookie(UUID)
     case legacyDebugToken
     case account(String)
     case unauthorized
 
     var isAuthorized: Bool {
         switch self {
-        case .device, .legacyDebugToken, .account:
+        case .deviceBearer, .deviceCookie, .legacyDebugToken, .account:
             true
         case .unauthorized:
             false
@@ -2367,8 +2388,10 @@ private enum RemoteRequestAuthentication {
     }
 
     var deviceID: UUID? {
-        guard case let .device(deviceID) = self else { return nil }
-        return deviceID
+        switch self {
+        case let .deviceBearer(deviceID), let .deviceCookie(deviceID): return deviceID
+        case .legacyDebugToken, .account, .unauthorized: return nil
+        }
     }
 
     var username: String? {
@@ -2378,7 +2401,7 @@ private enum RemoteRequestAuthentication {
 
     var authMode: String {
         switch self {
-        case .device:
+        case .deviceBearer, .deviceCookie:
             "pairedDevice"
         case .legacyDebugToken:
             "debug"
@@ -2391,8 +2414,10 @@ private enum RemoteRequestAuthentication {
 
     var requiresSameOriginMutationCheck: Bool {
         switch self {
-        case .device:
+        case .deviceCookie:
             true
+        case .deviceBearer:
+            false
         case .account:
             true
         case .legacyDebugToken, .unauthorized:

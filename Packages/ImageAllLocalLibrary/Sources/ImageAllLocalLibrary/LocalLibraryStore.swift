@@ -39,6 +39,14 @@ public struct LocalAsset: Identifiable, Sendable {
     public let observedFavorite: Bool
     public let favoriteTarget: Bool?
     public let favoriteWritebackState: LocalFavoriteWritebackState
+    public let isShared: Bool
+}
+
+public struct LocalShareSelection: Identifiable, Sendable {
+    public let id: UUID
+    public let localIdentifier: String
+    public let kind: String
+    public let creationDate: Date?
 }
 
 public struct LocalTag: Identifiable, Sendable {
@@ -65,6 +73,9 @@ public struct LocalSharedSnapshot: Sendable {
     public let installID: UUID
     public let sourceEpoch: UUID
     public let scopeRevision: Int64
+    public let snapshotSequence: Int64
+    /// Explicit grants, including items temporarily hidden by PhotoKit permission changes.
+    public let selectedAssetIDs: [UUID]
     public let assets: [LocalSharedAsset]
 }
 
@@ -160,6 +171,7 @@ public actor LocalLibraryStore {
                 INSERT OR IGNORE INTO identity(key,value) VALUES('install_id','\(UUID().uuidString)');
                 INSERT OR IGNORE INTO identity(key,value) VALUES('source_epoch','\(UUID().uuidString)');
                 INSERT OR IGNORE INTO identity(key,value) VALUES('share_scope_revision','0');
+                INSERT OR IGNORE INTO identity(key,value) VALUES('share_snapshot_sequence','0');
                 """
             guard sqlite3_exec(db, setup, nil, nil, nil) == SQLITE_OK else {
                 throw LocalLibraryError.database(String(cString: sqlite3_errmsg(db)))
@@ -201,11 +213,40 @@ public actor LocalLibraryStore {
         try scalar("SELECT asset_id FROM shared_assets WHERE asset_id=?", [assetID.uuidString]) != nil
     }
 
+    public func sharedSelections() throws -> [LocalShareSelection] {
+        let epoch = try requiredIdentity("source_epoch")
+        return try rows("""
+            SELECT a.id,a.local_identifier,a.kind,a.creation_time
+            FROM shared_assets s JOIN assets a ON a.id=s.asset_id
+            WHERE a.source_epoch=? ORDER BY a.creation_time DESC,a.id
+            """, [epoch]).compactMap { row in
+                guard let id = UUID(uuidString: row[0] ?? ""), let identifier = row[1] else {
+                    return nil
+                }
+                return LocalShareSelection(
+                    id: id, localIdentifier: identifier, kind: row[2] ?? "image",
+                    creationDate: row[3].flatMap(Double.init).map(Date.init(timeIntervalSince1970:))
+                )
+            }
+    }
+
+    /// Reserves a durable order for a network attempt. A retry may reuse the returned value;
+    /// a later attempt after relaunch gets a larger sequence, so late packets cannot win.
+    public func prepareSharedSnapshot(visibleIdentifiers: Set<String>) throws -> LocalSharedSnapshot {
+        try transaction {
+            try execute("""
+                UPDATE identity SET value=CAST(value AS INTEGER)+1 WHERE key='share_snapshot_sequence'
+                """)
+        }
+        return try sharedSnapshot(visibleIdentifiers: visibleIdentifiers)
+    }
+
     /// The caller supplies the identifiers currently returned by PhotoKit. Missing permission
     /// only hides the projection; it does not revoke sharing or generate deletion records.
     public func sharedSnapshot(visibleIdentifiers: Set<String>) throws -> LocalSharedSnapshot {
         let epoch = try requiredIdentity("source_epoch")
         let revision = Int64(try requiredIdentity("share_scope_revision")) ?? 0
+        let sequence = Int64(try requiredIdentity("share_snapshot_sequence")) ?? 0
         let selected = try rows("""
             SELECT a.id,a.local_identifier,a.kind,a.creation_time,a.observed_favorite,a.favorite_target
             FROM shared_assets s JOIN assets a ON a.id=s.asset_id
@@ -243,7 +284,9 @@ public actor LocalLibraryStore {
         }
         return LocalSharedSnapshot(
             installID: try installID(), sourceEpoch: try sourceEpoch(),
-            scopeRevision: revision, assets: assets
+            scopeRevision: revision, snapshotSequence: sequence,
+            selectedAssetIDs: selected.compactMap { UUID(uuidString: $0[0] ?? "") },
+            assets: assets
         )
     }
 
@@ -281,7 +324,7 @@ public actor LocalLibraryStore {
         let epoch = try requiredIdentity("source_epoch")
         let placeholders = Array(repeating: "?", count: visibleIdentifiers.count).joined(separator: ",")
         return try rows(
-            "SELECT a.id,a.local_identifier,a.kind,a.creation_time,a.observed_favorite,a.favorite_target,w.state FROM assets a LEFT JOIN favorite_writebacks w ON w.asset_id=a.id WHERE a.source_epoch=? AND a.local_identifier IN (\(placeholders))",
+            "SELECT a.id,a.local_identifier,a.kind,a.creation_time,a.observed_favorite,a.favorite_target,w.state,s.asset_id FROM assets a LEFT JOIN favorite_writebacks w ON w.asset_id=a.id LEFT JOIN shared_assets s ON s.asset_id=a.id WHERE a.source_epoch=? AND a.local_identifier IN (\(placeholders))",
             [epoch] + visibleIdentifiers.sorted()
         )
             .compactMap { row in
@@ -293,7 +336,8 @@ public actor LocalLibraryStore {
                     observedFavorite: row[4] == "1",
                     favoriteTarget: row[5].map { $0 == "1" },
                     favoriteWritebackState: LocalFavoriteWritebackState(rawValue: row[6] ?? "")
-                        ?? .notRequested
+                        ?? .notRequested,
+                    isShared: row[7] != nil
                 )
             }
     }

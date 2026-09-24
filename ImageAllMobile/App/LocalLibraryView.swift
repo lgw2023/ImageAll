@@ -9,6 +9,7 @@ final class LocalLibraryModel: ObservableObject {
     @Published private(set) var assets: [LocalAsset] = []
     @Published private(set) var tags: [LocalTag] = []
     @Published private(set) var collections: [LocalCollection] = []
+    @Published private(set) var sharedSelections: [LocalShareSelection] = []
     @Published private(set) var pendingCount = 0
     @Published private(set) var hasMore = false
     @Published private(set) var favoriteWritesInFlight: Set<UUID> = []
@@ -129,6 +130,47 @@ final class LocalLibraryModel: ObservableObject {
         } catch { errorMessage = "保存集合失败：\(error.localizedDescription)" }
     }
 
+    func setShared(_ shared: Bool, assetID: UUID, localIdentifier: String) async {
+        guard let store else { return }
+        do {
+            try await store.setShared(assetID: assetID, shared: shared)
+            if let index = assets.firstIndex(where: { $0.id == assetID }),
+               let refreshed = try await store.assets(visibleIdentifiers: [localIdentifier]).first {
+                assets[index] = refreshed
+            }
+            await reloadFacts()
+        } catch {
+            errorMessage = "更新待分享范围失败：\(error.localizedDescription)"
+        }
+    }
+
+    func prepareSharedSnapshot() async throws -> LocalSharedSnapshot {
+        guard let store else { throw LocalFavoriteSourceError.storeUnavailable }
+        let selections = try await store.sharedSelections()
+        var visible: [PHAsset] = []
+        let authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        if authorization == .authorized || authorization == .limited {
+            let options = PHFetchOptions()
+            options.includeHiddenAssets = false
+            options.includeAssetSourceTypes = .typeUserLibrary
+            let result = PHAsset.fetchAssets(
+                withLocalIdentifiers: selections.map(\.localIdentifier), options: options
+            )
+            result.enumerateObjects { asset, _, _ in visible.append(asset) }
+        }
+        try await store.observe(visible.map {
+            LocalObservedAsset(
+                localIdentifier: $0.localIdentifier,
+                kind: $0.mediaType == .video ? "video" : "image",
+                creationDate: $0.creationDate,
+                isFavorite: $0.isFavorite
+            )
+        })
+        return try await store.prepareSharedSnapshot(
+            visibleIdentifiers: Set(visible.map(\.localIdentifier))
+        )
+    }
+
     func setFavoriteTarget(_ favorite: Bool, asset: LocalAsset) async {
         await writeFavorite(favorite, asset: asset, saveNewIntent: true)
     }
@@ -201,17 +243,20 @@ final class LocalLibraryModel: ObservableObject {
         do {
             tags = try await store.tags()
             collections = try await store.collections()
+            sharedSelections = try await store.sharedSelections()
             pendingCount = try await store.pendingOperations().count
         } catch { errorMessage = "读取本机资料失败：\(error.localizedDescription)" }
     }
 }
 
 private enum LocalFavoriteSourceError: LocalizedError {
+    case storeUnavailable
     case authorizationRequired
     case assetUnavailable
 
     var errorDescription: String? {
         switch self {
+        case .storeUnavailable: "本机资料库不可用"
         case .authorizationRequired: "本机照片授权已变化"
         case .assetUnavailable: "这张照片已不在当前授权范围内"
         }
@@ -220,6 +265,7 @@ private enum LocalFavoriteSourceError: LocalizedError {
 
 struct LocalLibraryView: View {
     @ObservedObject var model: LocalLibraryModel
+    @ObservedObject var remoteModel: RemoteCompanionModel
     @State private var newTagName = ""
     @State private var newCollectionName = ""
 
@@ -248,6 +294,11 @@ struct LocalLibraryView: View {
         }
         .navigationTitle("此 iPhone")
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                NavigationLink("待分享") {
+                    LocalShareScopeView(model: model, remoteModel: remoteModel)
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button("刷新", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
             }
@@ -331,6 +382,69 @@ struct LocalLibraryView: View {
     }
 }
 
+private struct LocalShareScopeView: View {
+    @ObservedObject var model: LocalLibraryModel
+    @ObservedObject var remoteModel: RemoteCompanionModel
+    @State private var isSending = false
+    @State private var statusMessage: String?
+
+    var body: some View {
+        List {
+            Section {
+                Text("已选择 \(model.sharedSelections.count) 项。只会发送当前仍获准访问的目录及整理信息；权限暂时收缩不会撤销选择，也不会被当作删除。")
+                    .font(.footnote)
+            }
+            Section("待分享资产") {
+                ForEach(model.sharedSelections) { selection in
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(selection.kind == "video" ? "视频" : "照片")
+                            if let date = selection.creationDate {
+                                Text(date, format: .dateTime.year().month().day())
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Text(selection.id.uuidString.prefix(8))
+                                .font(.caption2).foregroundStyle(.tertiary)
+                        }
+                        Spacer()
+                        Button("移除") {
+                            Task {
+                                await model.setShared(
+                                    false, assetID: selection.id,
+                                    localIdentifier: selection.localIdentifier
+                                )
+                            }
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+            }
+            Section {
+                Button(isSending ? "正在提交…" : "同步目录与整理信息到 Mac") {
+                    Task {
+                        isSending = true
+                        defer { isSending = false }
+                        do {
+                            let snapshot = try await model.prepareSharedSnapshot()
+                            let receipt = try await remoteModel.submitLocalLibrarySnapshot(snapshot)
+                            statusMessage = "Mac 已接收 \(receipt.acceptedAssetCount) 项目录投影；原件尚未传输。"
+                        } catch {
+                            statusMessage = "同步未完成：\(error.localizedDescription)"
+                        }
+                    }
+                }
+                .disabled(isSending || !remoteModel.isConnected)
+                if let statusMessage {
+                    Text(statusMessage).font(.footnote).foregroundStyle(.secondary)
+                }
+                Text("先在“Mac 图库”完成设备配对。Mac 接收后仍需后续阶段接入双端浏览、冲突处理与增量回执。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+        }
+        .navigationTitle("待分享范围")
+    }
+}
+
 private struct LocalAssetDetailView: View {
     @ObservedObject var model: LocalLibraryModel
     let asset: LocalAsset
@@ -403,6 +517,21 @@ private struct LocalAssetDetailView: View {
                         }
                     ))
                 }
+            }
+            Section("跨端分享") {
+                Toggle("加入待分享范围", isOn: Binding(
+                    get: { currentAsset.isShared },
+                    set: { shared in
+                        Task {
+                            await model.setShared(
+                                shared, assetID: asset.id,
+                                localIdentifier: asset.localIdentifier
+                            )
+                        }
+                    }
+                ))
+                Text("只有选中的照片会在手动同步时发送目录与整理信息；原件不会因此上传。")
+                    .font(.footnote).foregroundStyle(.secondary)
             }
         }
         .navigationTitle("本机照片")

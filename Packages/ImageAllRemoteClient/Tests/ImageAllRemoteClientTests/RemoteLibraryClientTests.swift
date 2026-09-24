@@ -4,6 +4,46 @@ import ImageAllRemoteProtocol
 import XCTest
 
 final class RemoteLibraryClientTests: XCTestCase {
+    func testPostsExplicitLocalLibrarySnapshotWithBearerToken() async throws {
+        let hostID = UUID()
+        let assetID = UUID()
+        let request = RemoteLocalLibrarySnapshotRequest(
+            hostID: hostID, installID: UUID(), sourceEpoch: UUID(),
+            scopeRevision: 1, snapshotSequence: 2, selectedAssetIDs: [assetID],
+            assets: [RemoteLocalLibraryAsset(
+                id: assetID, localIdentifier: "local-only-identifier", mediaKind: .image,
+                createdAtMs: nil, observedFavorite: false, favoriteTarget: true,
+                tagDecisions: [], collections: []
+            )]
+        )
+        let transport = MockTransport { outgoing in
+            XCTAssertEqual(outgoing.httpMethod, "POST")
+            XCTAssertEqual(outgoing.url?.path, RemoteHTTPPaths.localLibrarySnapshot)
+            XCTAssertEqual(outgoing.value(forHTTPHeaderField: "Authorization"), "Bearer secret")
+            XCTAssertEqual(try JSONDecoder().decode(
+                RemoteLocalLibrarySnapshotRequest.self,
+                from: XCTUnwrap(outgoing.httpBody)
+            ), request)
+            let response = RemoteLocalLibrarySnapshotReceipt(
+                hostID: hostID, deviceID: UUID(), sourceEpoch: request.sourceEpoch,
+                snapshotSequence: request.snapshotSequence, acceptedAssetCount: 1,
+                replayed: false
+            )
+            return (
+                try JSONEncoder().encode(response),
+                HTTPURLResponse(url: outgoing.url!, statusCode: 200,
+                                httpVersion: "HTTP/1.1", headerFields: nil)!
+            )
+        }
+        let client = RemoteLibraryClient(
+            endpoint: try RemoteHostEndpoint(host: "127.0.0.1", port: 8787, accessToken: "secret"),
+            transport: transport
+        )
+        let receipt = try await client.submitLocalLibrarySnapshot(request)
+        XCTAssertEqual(receipt.hostID, hostID)
+        XCTAssertEqual(receipt.acceptedAssetCount, 1)
+    }
+
     func testFetchesCapabilitiesAndSourcesWithBearerToken() async throws {
         let transport = MockTransport { request in
             XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer secret")

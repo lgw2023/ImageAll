@@ -3,6 +3,31 @@ import ImageAllRemoteProtocol
 import XCTest
 
 final class RemoteProtocolRoundTripTests: XCTestCase {
+    func testLocalLibrarySnapshotKeepsExplicitGrantsSeparateFromVisiblePayload() throws {
+        let visible = UUID()
+        let temporarilyHidden = UUID()
+        let request = RemoteLocalLibrarySnapshotRequest(
+            hostID: UUID(), installID: UUID(), sourceEpoch: UUID(),
+            scopeRevision: 3, snapshotSequence: 12,
+            selectedAssetIDs: [visible, temporarilyHidden],
+            assets: [RemoteLocalLibraryAsset(
+                id: visible, localIdentifier: "source-local-locator", mediaKind: .image,
+                createdAtMs: 1_700_000_000_000, observedFavorite: false,
+                favoriteTarget: true,
+                tagDecisions: [.init(tagID: UUID(), tagName: "family", decision: .accepted)],
+                collections: [.init(collectionID: UUID(), collectionName: "trip")]
+            )]
+        )
+        let decoded = try JSONDecoder().decode(
+            RemoteLocalLibrarySnapshotRequest.self, from: JSONEncoder().encode(request)
+        )
+        XCTAssertEqual(decoded, request)
+        XCTAssertEqual(decoded.selectedAssetIDs.count, 2)
+        XCTAssertEqual(decoded.assets.count, 1)
+        XCTAssertEqual(RemoteHTTPPaths.localLibrarySnapshot, "/v1/sync/local-library/snapshot")
+        XCTAssertFalse(RemoteCapabilities(hostAppVersion: "old").capabilities.contains(.localLibrarySnapshot))
+    }
+
     func testGeneralSettingsRoundTripPreservesSharedMacPreferences() throws {
         let snapshot = RemoteGeneralSettingsSnapshot(
             localModel: RemoteLocalModelSettings(

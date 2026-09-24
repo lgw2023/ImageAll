@@ -574,6 +574,18 @@ enum RemoteHostProcessHolder {
             storageURL: remoteHostDirectory().appendingPathComponent("pairing.json"),
             legacyDebugToken: existingOrCreateLegacyDebugToken(defaults: defaults)
         )
+        let localLibrarySyncStore: RemoteLocalLibrarySyncStore?
+        do {
+            localLibrarySyncStore = try RemoteLocalLibrarySyncStore(
+                hostID: identity.hostID,
+                storageURL: remoteHostDirectory().appendingPathComponent("local-library-projections.json")
+            )
+        } catch {
+            // Keep existing Companion routes available. The sync capability stays hidden;
+            // never reset or overwrite a projection file that cannot be decoded.
+            logger.error("Local library sync disabled: projection store unavailable")
+            localLibrarySyncStore = nil
+        }
         let accessAccountStore = makeAccessAccountStore()
         let idempotency = RemoteIdempotencyStore(
             storageURL: remoteHostDirectory().appendingPathComponent("idempotency.json")
@@ -603,6 +615,7 @@ enum RemoteHostProcessHolder {
             server: RemoteHTTPServer(
                 facade: facade,
                 pairingStore: pairingStore,
+                localLibrarySyncStore: localLibrarySyncStore,
                 accessAccountStore: accessAccountStore,
                 eventBroker: eventBroker,
                 mediaResources: attachment.mediaResources,

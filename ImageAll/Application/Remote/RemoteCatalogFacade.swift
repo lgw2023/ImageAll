@@ -61,9 +61,11 @@ actor RemoteCatalogFacade {
         self.certificateFingerprintSHA256 = certificateFingerprintSHA256
     }
 
-    func capabilities() -> RemoteCapabilities {
+    func capabilities(supportsLocalLibrarySnapshot: Bool = false) -> RemoteCapabilities {
         RemoteCapabilities(
             hostAppVersion: hostAppVersion,
+            capabilities: RemoteCapability.allCases.filter { $0 != .localLibrarySnapshot }
+                + (supportsLocalLibrarySnapshot ? [.localLibrarySnapshot] : []),
             listenPort: listenPort,
             usesTLS: usesTLS,
             hostID: hostID,

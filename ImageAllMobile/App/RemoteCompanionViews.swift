@@ -3546,6 +3546,7 @@ private func remoteCapabilityTitle(_ capability: RemoteCapability) -> String {
     case .jobs: "后台任务"
     case .pairing: "安全配对"
     case .events: "实时事件"
+    case .localLibrarySnapshot: "本机图库目录同步"
     }
 }
 

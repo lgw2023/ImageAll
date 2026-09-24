@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import ImageAllRemoteClient
 import ImageAllRemoteProtocol
+import ImageAllLocalLibrary
 import Network
 import SwiftUI
 import UIKit
@@ -512,6 +513,69 @@ final class RemoteCompanionModel: ObservableObject {
         } catch {
             statusMessage = error.localizedDescription
         }
+    }
+
+    func submitLocalLibrarySnapshot(
+        _ snapshot: LocalSharedSnapshot
+    ) async throws -> RemoteLocalLibrarySnapshotReceipt {
+        guard isConnected, let client, let sessionTokens,
+              let capabilities,
+              capabilities.capabilities.contains(.localLibrarySnapshot),
+              capabilities.hostID == sessionTokens.hostID
+        else {
+            throw RemoteAPIError(
+                code: .unauthorized,
+                message: "请先以配对设备连接支持本机图库同步的 Mac"
+            )
+        }
+        let request = RemoteLocalLibrarySnapshotRequest(
+            hostID: sessionTokens.hostID,
+            installID: snapshot.installID,
+            sourceEpoch: snapshot.sourceEpoch,
+            scopeRevision: snapshot.scopeRevision,
+            snapshotSequence: snapshot.snapshotSequence,
+            selectedAssetIDs: snapshot.selectedAssetIDs,
+            assets: snapshot.assets.map { asset in
+                RemoteLocalLibraryAsset(
+                    id: asset.id,
+                    localIdentifier: asset.localIdentifier,
+                    mediaKind: asset.kind == "video" ? .video : .image,
+                    createdAtMs: asset.creationDate.map {
+                        Int64(($0.timeIntervalSince1970 * 1_000).rounded())
+                    },
+                    observedFavorite: asset.observedFavorite,
+                    favoriteTarget: asset.favoriteTarget,
+                    tagDecisions: asset.tagDecisions.map { fact in
+                        let decision: RemoteLocalLibraryDecision
+                        switch fact.decision {
+                        case .accepted: decision = .accepted
+                        case .rejected: decision = .rejected
+                        case .cleared: decision = .cleared
+                        }
+                        return .init(
+                            tagID: fact.tagID, tagName: fact.tagName, decision: decision
+                        )
+                    },
+                    collections: asset.collections.map {
+                        .init(collectionID: $0.collectionID, collectionName: $0.collectionName)
+                    }
+                )
+            }
+        )
+        guard try JSONEncoder().encode(request).count <= 200 * 1_024 else {
+            throw RemoteAPIError(
+                code: .badRequest,
+                message: "待分享目录超过当前单次提交大小，请缩小选择范围"
+            )
+        }
+        let receipt = try await client.submitLocalLibrarySnapshot(request)
+        guard receipt.hostID == sessionTokens.hostID,
+              receipt.deviceID == sessionTokens.deviceID,
+              receipt.sourceEpoch == snapshot.sourceEpoch,
+              receipt.snapshotSequence == snapshot.snapshotSequence else {
+            throw RemoteAPIError(code: .conflict, message: "Mac 回执身份与本次提交不一致")
+        }
+        return receipt
     }
 
     func reloadHostStatus() async {

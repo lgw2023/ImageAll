@@ -12,7 +12,7 @@ struct ImageAllMobileApp: App {
         WindowGroup {
             TabView {
                 NavigationStack {
-                    LocalLibraryView(model: localModel)
+                    LocalLibraryView(model: localModel, remoteModel: model)
                 }
                 .tabItem { Label("此 iPhone", systemImage: "iphone.gen3") }
 

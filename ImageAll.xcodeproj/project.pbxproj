@@ -36,6 +36,7 @@
 		SRP000010000000000000101 /* RemoteSourceManagementCommandServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRP000020000000000000101 /* RemoteSourceManagementCommandServiceTests.swift */; };
 		RH0000010000000000000002 /* RemoteCatalogFacade.swift in Sources */ = {isa = PBXBuildFile; fileRef = RH0001010000000000000002 /* RemoteCatalogFacade.swift */; };
 		RH0000010000000000000003 /* RemoteHTTPServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = RH0001010000000000000003 /* RemoteHTTPServer.swift */; };
+		LY0000010000000000000001 /* RemoteLocalLibrarySyncStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = LY0001010000000000000001 /* RemoteLocalLibrarySyncStore.swift */; };
 		WC0000010000000000000001 /* RemoteWebCompanion.swift in Sources */ = {isa = PBXBuildFile; fileRef = WC0001010000000000000001 /* RemoteWebCompanion.swift */; };
 		WC0000010000000000000002 /* WebCompanion in Resources */ = {isa = PBXBuildFile; fileRef = WC0001010000000000000002 /* WebCompanion */; };
 		WV2000010000000000000001 /* WebCompanionV2 in Resources */ = {isa = PBXBuildFile; fileRef = WV2001010000000000000001 /* WebCompanionV2 */; };
@@ -595,6 +596,7 @@
 		SRP000020000000000000101 /* RemoteSourceManagementCommandServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSourceManagementCommandServiceTests.swift; sourceTree = "<group>"; };
 		RH0001010000000000000002 /* RemoteCatalogFacade.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteCatalogFacade.swift; sourceTree = "<group>"; };
 		RH0001010000000000000003 /* RemoteHTTPServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteHTTPServer.swift; sourceTree = "<group>"; };
+		LY0001010000000000000001 /* RemoteLocalLibrarySyncStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteLocalLibrarySyncStore.swift; sourceTree = "<group>"; };
 		WC0001010000000000000001 /* RemoteWebCompanion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteWebCompanion.swift; sourceTree = "<group>"; };
 		WC0001010000000000000002 /* WebCompanion */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Resources/WebCompanion; sourceTree = "<group>"; };
 		WV2001010000000000000001 /* WebCompanionV2 */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Resources/WebCompanionV2; sourceTree = "<group>"; };
@@ -1396,6 +1398,7 @@
 				STG000020000000000000002 /* RemoteStorageMaintenanceCommandService.swift */,
 				GST000020000000000000002 /* RemoteGeneralSettingsCommandService.swift */,
 				RH0001010000000000000003 /* RemoteHTTPServer.swift */,
+				LY0001010000000000000001 /* RemoteLocalLibrarySyncStore.swift */,
 				WC0001010000000000000001 /* RemoteWebCompanion.swift */,
 				RH0001010000000000000004 /* RemoteHostProcessHolder.swift */,
 				RH0001010000000000000005 /* RemoteHostIdentity.swift */,
@@ -1641,6 +1644,7 @@
 				GST000010000000000000002 /* RemoteGeneralSettingsCommandService.swift in Sources */,
 				RH0000010000000000000002 /* RemoteCatalogFacade.swift in Sources */,
 				RH0000010000000000000003 /* RemoteHTTPServer.swift in Sources */,
+				LY0000010000000000000001 /* RemoteLocalLibrarySyncStore.swift in Sources */,
 				WC0000010000000000000001 /* RemoteWebCompanion.swift in Sources */,
 				RH0000010000000000000004 /* RemoteHostProcessHolder.swift in Sources */,
 				RH0000010000000000000007 /* RemoteHostIdentity.swift in Sources */,

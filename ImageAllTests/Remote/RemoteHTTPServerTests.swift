@@ -11,6 +11,150 @@ import XCTest
 final class RemoteHTTPServerTests: XCTestCase {
     private static let legacyDebugToken = "secret-token"
 
+    func testLocalLibraryProjectionKeepsHiddenItemsUntilExplicitRevokeAndRejectsLateReplay() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("sync/projections.json")
+        let hostID = UUID()
+        let deviceID = UUID()
+        let installID = UUID()
+        let epoch = UUID()
+        let visibleID = UUID()
+        let hiddenID = UUID()
+        let asset = RemoteLocalLibraryAsset(
+            id: visibleID, localIdentifier: "phone-local", mediaKind: .image,
+            createdAtMs: nil, observedFavorite: false, favoriteTarget: true,
+            tagDecisions: [.init(tagID: UUID(), tagName: "family", decision: .accepted)],
+            collections: []
+        )
+        let store = try RemoteLocalLibrarySyncStore(hostID: hostID, storageURL: url)
+        let first = RemoteLocalLibrarySnapshotRequest(
+            hostID: hostID, installID: installID, sourceEpoch: epoch,
+            scopeRevision: 1, snapshotSequence: 1,
+            selectedAssetIDs: [visibleID, hiddenID], assets: [asset]
+        )
+        let receipt = try await store.submit(first, authenticatedDeviceID: deviceID)
+        XCTAssertEqual(receipt.acceptedAssetCount, 1)
+        XCTAssertFalse(receipt.replayed)
+
+        let permissionContracted = RemoteLocalLibrarySnapshotRequest(
+            hostID: hostID, installID: installID, sourceEpoch: epoch,
+            scopeRevision: 1, snapshotSequence: 2,
+            selectedAssetIDs: [visibleID, hiddenID], assets: []
+        )
+        _ = try await store.submit(permissionContracted, authenticatedDeviceID: deviceID)
+        let hiddenProjection = await store.projection(deviceID: deviceID)
+        XCTAssertEqual(hiddenProjection?.assets.map(\.asset.id), [visibleID])
+        XCTAssertEqual(hiddenProjection?.assets.first?.lastVisibleSnapshotSequence, 1)
+        XCTAssertEqual(hiddenProjection?.snapshotSequence, 2)
+
+        let reopened = try RemoteLocalLibrarySyncStore(hostID: hostID, storageURL: url)
+        let replay = try await reopened.submit(permissionContracted, authenticatedDeviceID: deviceID)
+        XCTAssertTrue(replay.replayed)
+        let wrongSource = RemoteLocalLibrarySnapshotRequest(
+            hostID: hostID, installID: installID, sourceEpoch: UUID(),
+            scopeRevision: 1, snapshotSequence: 3,
+            selectedAssetIDs: [visibleID, hiddenID], assets: []
+        )
+        do {
+            _ = try await reopened.submit(wrongSource, authenticatedDeviceID: deviceID)
+            XCTFail("source epoch change requires explicit rebind")
+        } catch let error as RemoteAPIError {
+            XCTAssertEqual(error.code, .conflict)
+        }
+        do {
+            _ = try await reopened.submit(first, authenticatedDeviceID: deviceID)
+            XCTFail("late packet must not replace newer projection")
+        } catch let error as RemoteAPIError {
+            XCTAssertEqual(error.code, .conflict)
+        }
+
+        let revoked = RemoteLocalLibrarySnapshotRequest(
+            hostID: hostID, installID: installID, sourceEpoch: epoch,
+            scopeRevision: 2, snapshotSequence: 3,
+            selectedAssetIDs: [hiddenID], assets: []
+        )
+        let revokeReceipt = try await reopened.submit(revoked, authenticatedDeviceID: deviceID)
+        XCTAssertEqual(revokeReceipt.acceptedAssetCount, 0)
+        let finalProjection = await reopened.projection(deviceID: deviceID)
+        XCTAssertEqual(finalProjection?.selectedAssetIDs, [hiddenID])
+    }
+
+    func testLocalLibrarySnapshotRouteRequiresPairedDeviceAndAcceptsNativeBearer() async throws {
+        let port = UInt16.random(in: 19_000...29_000)
+        let hostID = UUID()
+        let pairing = makePairingStore(hostID: hostID, listenPort: Int(port))
+        let syncStore = try RemoteLocalLibrarySyncStore(
+            hostID: hostID, storageURL: tempStorageURL(name: "local-sync.json")
+        )
+        let (server, _) = makeServer(
+            port: port, pairingStore: pairing, localLibrarySyncStore: syncStore
+        )
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        defer { Task { await server.stop() } }
+
+        let offer = await pairing.issueOffer()
+        let tokens = try await pairing.completePairing(.init(
+            pairingToken: offer.pairingToken,
+            deviceName: "Synthetic iPhone",
+            devicePublicKeySPKI_SHA256: "fixture-key"
+        ))
+        let assetID = UUID()
+        let snapshot = RemoteLocalLibrarySnapshotRequest(
+            hostID: hostID, installID: UUID(), sourceEpoch: UUID(),
+            scopeRevision: 1, snapshotSequence: 1,
+            selectedAssetIDs: [assetID],
+            assets: [.init(
+                id: assetID, localIdentifier: "fixture-locator", mediaKind: .image,
+                createdAtMs: nil, observedFavorite: false, favoriteTarget: nil,
+                tagDecisions: [], collections: []
+            )]
+        )
+        let body = try JSONEncoder().encode(snapshot)
+        func request(authorization: String?, cookie: String? = nil) -> URLRequest {
+            var request = URLRequest(url: URL(string:
+                "http://127.0.0.1:\(port)\(RemoteHTTPPaths.localLibrarySnapshot)"
+            )!)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            if let authorization { request.setValue(authorization, forHTTPHeaderField: "Authorization") }
+            if let cookie { request.setValue(cookie, forHTTPHeaderField: "Cookie") }
+            request.httpBody = body
+            return request
+        }
+        let (acceptedData, acceptedResponse) = try await URLSession.shared.data(for: request(
+            authorization: "Bearer \(tokens.accessToken)"
+        ))
+        XCTAssertEqual(try XCTUnwrap(acceptedResponse as? HTTPURLResponse).statusCode, 200)
+        let receipt = try JSONDecoder().decode(
+            RemoteLocalLibrarySnapshotReceipt.self, from: acceptedData
+        )
+        XCTAssertEqual(receipt.deviceID, tokens.deviceID)
+        XCTAssertEqual(receipt.acceptedAssetCount, 1)
+        var capabilitiesRequest = URLRequest(url: URL(string:
+            "http://127.0.0.1:\(port)\(RemoteHTTPPaths.capabilities)"
+        )!)
+        capabilitiesRequest.setValue(
+            "Bearer \(tokens.accessToken)", forHTTPHeaderField: "Authorization"
+        )
+        let (capabilitiesData, _) = try await URLSession.shared.data(for: capabilitiesRequest)
+        let capabilities = try JSONDecoder().decode(
+            RemoteCapabilities.self, from: capabilitiesData
+        )
+        XCTAssertTrue(capabilities.capabilities.contains(.localLibrarySnapshot))
+
+        let (_, cookieResponse) = try await URLSession.shared.data(for: request(
+            authorization: nil,
+            cookie: "\(RemoteWebCompanionSession.accessCookieName)=\(tokens.accessToken)"
+        ))
+        XCTAssertEqual(try XCTUnwrap(cookieResponse as? HTTPURLResponse).statusCode, 403)
+        let (_, debugResponse) = try await URLSession.shared.data(for: request(
+            authorization: "Bearer \(Self.legacyDebugToken)"
+        ))
+        XCTAssertEqual(try XCTUnwrap(debugResponse as? HTTPURLResponse).statusCode, 401)
+    }
+
     func testReviewSourceQueryDistinguishesAllPartialAndExplicitEmptyScopes() throws {
         let sourceID = UUID(uuidString: "77777777-7777-4777-8777-777777777777")!
 
@@ -824,6 +968,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         port: UInt16,
         catalog: any RemoteCatalogServing = RemoteHTTPServerTestCatalog(),
         pairingStore: RemotePairingStore? = nil,
+        localLibrarySyncStore: RemoteLocalLibrarySyncStore? = nil,
         accessAccountStore: RemoteAccessAccountStore? = nil,
         trainingWorkspace: (any TrainingWorkspacePort)? = nil,
         trainingCommands: (any RemoteTrainingCommandPort)? = nil,
@@ -855,6 +1000,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         let server = RemoteHTTPServer(
             facade: facade,
             pairingStore: store,
+            localLibrarySyncStore: localLibrarySyncStore,
             accessAccountStore: accessAccountStore ?? makeAccessAccountStore(),
             eventBroker: RemoteEventBroker(),
             mediaResources: mediaResources,

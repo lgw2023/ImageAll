@@ -112,6 +112,15 @@ public struct RemoteLibraryClient: Sendable {
         try await getJSON(path: RemoteHTTPPaths.capabilities)
     }
 
+    public func submitLocalLibrarySnapshot(
+        _ request: RemoteLocalLibrarySnapshotRequest
+    ) async throws -> RemoteLocalLibrarySnapshotReceipt {
+        try await postJSON(
+            path: RemoteHTTPPaths.localLibrarySnapshot,
+            body: encoder.encode(request)
+        )
+    }
+
     public func fetchSources() async throws -> [RemoteSourceSummary] {
         try await getJSON(path: RemoteHTTPPaths.sources)
     }
