@@ -691,7 +691,9 @@ final class RemoteHTTPServerTests: XCTestCase {
         let checkpoint = ImageAllMigrationSyncCheckpoint(
             hostID: hostID, deviceID: deviceID,
             acknowledgedScopeRevision: 1, acknowledgedSnapshotSequence: 1,
-            tagChangeCursor: 0, collectionChangeCursor: 0, favoriteChangeCursor: 0
+            tagChangeCursor: 0, collectionChangeCursor: 0, favoriteChangeCursor: 0,
+            archiveManifestSHA256: String(repeating: "a", count: 64),
+            sourceVerifiedAtMs: 1_000
         )
         let facts = ImageAllMigrationFactSnapshot(
             sourceDeviceID: installID, sourceEpoch: epoch,
@@ -702,13 +704,21 @@ final class RemoteHTTPServerTests: XCTestCase {
                 collections: []
             )], syncCheckpoint: checkpoint
         )
-        let initiallyMatches = await store.matchesMigrationCheckpoint(facts)
+        let initiallyMatches = await store.matchesMigrationCheckpoint(
+            facts, manifestSHA256: String(repeating: "a", count: 64)
+        )
         XCTAssertTrue(initiallyMatches)
+        let wrongArchiveMatches = await store.matchesMigrationCheckpoint(
+            facts, manifestSHA256: String(repeating: "b", count: 64)
+        )
+        XCTAssertFalse(wrongArchiveMatches)
         _ = try await store.setTagDecisionFromMac(
             deviceID: deviceID, assetID: assetID, tagID: tagID,
             decision: .rejected, expectedRevision: 1
         )
-        let afterMacEditMatches = await store.matchesMigrationCheckpoint(facts)
+        let afterMacEditMatches = await store.matchesMigrationCheckpoint(
+            facts, manifestSHA256: String(repeating: "a", count: 64)
+        )
         XCTAssertFalse(afterMacEditMatches)
         let updatedFacts = ImageAllMigrationFactSnapshot(
             sourceDeviceID: installID, sourceEpoch: epoch,
@@ -720,17 +730,23 @@ final class RemoteHTTPServerTests: XCTestCase {
             )], syncCheckpoint: .init(
                 hostID: hostID, deviceID: deviceID,
                 acknowledgedScopeRevision: 1, acknowledgedSnapshotSequence: 1,
-                tagChangeCursor: 1, collectionChangeCursor: 0, favoriteChangeCursor: 0
+                tagChangeCursor: 1, collectionChangeCursor: 0, favoriteChangeCursor: 0,
+                archiveManifestSHA256: String(repeating: "a", count: 64),
+                sourceVerifiedAtMs: 1_001
             )
         )
-        let afterReconciliationMatches = await store.matchesMigrationCheckpoint(updatedFacts)
+        let afterReconciliationMatches = await store.matchesMigrationCheckpoint(
+            updatedFacts, manifestSHA256: String(repeating: "a", count: 64)
+        )
         XCTAssertTrue(afterReconciliationMatches)
         _ = try await store.submit(.init(
             hostID: hostID, installID: installID, sourceEpoch: epoch,
             scopeRevision: 1, snapshotSequence: 2,
             selectedAssetIDs: [assetID], assets: []
         ), authenticatedDeviceID: deviceID)
-        let afterHiddenScopeMatches = await store.matchesMigrationCheckpoint(updatedFacts)
+        let afterHiddenScopeMatches = await store.matchesMigrationCheckpoint(
+            updatedFacts, manifestSHA256: String(repeating: "a", count: 64)
+        )
         XCTAssertFalse(afterHiddenScopeMatches)
     }
 

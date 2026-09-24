@@ -168,6 +168,11 @@ struct VerifiedPhoneArchiveImporter: Sendable {
         }
         let latest = try ImageAllMigrationFacts.latestPublishedURL(in: archiveRoot)
             .map { try ImageAllMigrationFacts.read(at: $0) }
+        if let checkpoint = latest?.syncCheckpoint,
+           let boundManifest = checkpoint.archiveManifestSHA256,
+           boundManifest != verification.manifestSHA256 {
+            throw PhoneArchiveImportError.catalogDiverged
+        }
         let facts = Dictionary(uniqueKeysWithValues: (latest?.items ?? []).map {
             ($0.mediaID, $0)
         })
@@ -448,6 +453,10 @@ struct VerifiedPhoneArchiveImporter: Sendable {
             .map { String(format: "%02x", $0) }.joined()
         let id = migrationID.uuidString.lowercased()
         let expected = try preflightFactSnapshot(snapshot, digest: digest, migrationID: id)
+        if let boundManifest = snapshot.syncCheckpoint?.archiveManifestSHA256,
+           boundManifest != expected.manifestSHA256 {
+            throw PhoneArchiveImportError.factScopeMismatch
+        }
         let archive = archiveRoot ?? expected.archiveURL
         guard archive.lastPathComponent == "ImageAll-Archive-\(id)" else {
             throw PhoneArchiveImportError.targetChanged

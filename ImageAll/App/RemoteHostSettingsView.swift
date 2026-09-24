@@ -1456,10 +1456,12 @@ private final class PhoneArchiveImportModel: ObservableObject {
             let checkpoint: String
             if let snapshot = report.factSnapshot, snapshot.syncCheckpoint != nil {
                 do {
-                    let matches = try await RemoteHostProcessHolder.matchesMigrationCheckpoint(snapshot)
+                    let matches = try await RemoteHostProcessHolder.matchesMigrationCheckpoint(
+                        snapshot, manifestSHA256: report.manifestSHA256
+                    )
                     checkpoint = matches
-                        ? "手机候选检查点与 Mac 当前分享事实及变化水位一致。"
-                        : "手机候选检查点与 Mac 当前状态不一致，需重新同步并生成检查点。"
+                        ? "手机来源复核、归档清单与 Mac 当前分享事实及变化水位一致。"
+                        : "候选检查点缺少来源复核证明，或与归档清单、Mac 当前状态不一致；请重新核对并生成检查点。"
                 } catch {
                     checkpoint = "Mac 共享状态读取失败，候选检查点尚未通过：\(error.localizedDescription)"
                 }

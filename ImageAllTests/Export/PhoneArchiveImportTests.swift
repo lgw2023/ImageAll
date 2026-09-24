@@ -59,7 +59,9 @@ final class PhoneArchiveImportTests: XCTestCase {
                 acknowledgedScopeRevision: header.scopeRevision,
                 acknowledgedSnapshotSequence: header.inventoryWatermark,
                 tagChangeCursor: 0, collectionChangeCursor: 0,
-                favoriteChangeCursor: 0
+                favoriteChangeCursor: 0,
+                archiveManifestSHA256: verification.manifestSHA256,
+                sourceVerifiedAtMs: 1_000
             )
         )
         let factsFile = fixture.root.appendingPathComponent("latest.imageallfacts")
@@ -114,6 +116,26 @@ final class PhoneArchiveImportTests: XCTestCase {
             try XCTUnwrap(resource.relativePath)
         )), Data("network-stage-original".utf8))
         XCTAssertNotNil(recovery.integrity.phoneSyncCheckpoint)
+        let wrongBinding = ImageAllMigrationFactSnapshot(
+            sourceDeviceID: deviceID, sourceEpoch: header.sourceEpoch,
+            scopeRevision: header.scopeRevision, snapshotSequence: 9,
+            factWatermark: 9, items: facts.items,
+            syncCheckpoint: .init(
+                hostID: UUID(), deviceID: UUID(),
+                acknowledgedScopeRevision: header.scopeRevision,
+                acknowledgedSnapshotSequence: header.inventoryWatermark,
+                tagChangeCursor: 0, collectionChangeCursor: 0,
+                favoriteChangeCursor: 0,
+                archiveManifestSHA256: String(repeating: "a", count: 64),
+                sourceVerifiedAtMs: 1_001
+            )
+        )
+        let wrongBindingURL = fixture.root.appendingPathComponent("wrong-binding.imageallfacts")
+        try ImageAllMigrationFacts.write(wrongBinding, to: wrongBindingURL)
+        XCTAssertThrowsError(try importer.reconcileFacts(
+            from: wrongBindingURL, migrationID: header.migrationID,
+            archiveRoot: imported.archiveURL
+        )) { XCTAssertEqual($0 as? PhoneArchiveImportError, .factScopeMismatch) }
         XCTAssertThrowsError(try importer.verifyIndependentRecovery(
             migrationID: header.migrationID, archiveRoot: imported.archiveURL,
             into: recoveryDirectory

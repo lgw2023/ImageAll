@@ -21,7 +21,9 @@ final class ImageAllMigrationArchiveTests: XCTestCase {
                 acknowledgedScopeRevision: 2,
                 acknowledgedSnapshotSequence: 3,
                 tagChangeCursor: 4, collectionChangeCursor: 5,
-                favoriteChangeCursor: 6
+                favoriteChangeCursor: 6,
+                archiveManifestSHA256: String(repeating: "a", count: 64),
+                sourceVerifiedAtMs: 1_000
             )
         )
         try ImageAllMigrationFacts.write(snapshot, to: url)
@@ -45,6 +47,20 @@ final class ImageAllMigrationArchiveTests: XCTestCase {
             )
         )
         XCTAssertThrowsError(try ImageAllMigrationFacts.write(invalidCursor, to: url)) {
+            XCTAssertEqual($0 as? ImageAllMigrationFactsError, .invalidSnapshot)
+        }
+        let unpairedSourceProof = ImageAllMigrationFactSnapshot(
+            sourceDeviceID: snapshot.sourceDeviceID, sourceEpoch: snapshot.sourceEpoch,
+            scopeRevision: 2, snapshotSequence: 5, factWatermark: 7,
+            items: [item], syncCheckpoint: .init(
+                hostID: UUID(), deviceID: UUID(),
+                acknowledgedScopeRevision: 2, acknowledgedSnapshotSequence: 3,
+                tagChangeCursor: 0, collectionChangeCursor: 0,
+                favoriteChangeCursor: 0,
+                archiveManifestSHA256: String(repeating: "b", count: 64)
+            )
+        )
+        XCTAssertThrowsError(try ImageAllMigrationFacts.write(unpairedSourceProof, to: url)) {
             XCTAssertEqual($0 as? ImageAllMigrationFactsError, .invalidSnapshot)
         }
     }

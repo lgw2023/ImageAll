@@ -40,6 +40,11 @@ public struct ImageAllMigrationSyncCheckpoint: Codable, Sendable, Equatable {
     public let tagChangeCursor: Int64
     public let collectionChangeCursor: Int64
     public let favoriteChangeCursor: Int64
+    /// Digest of the immutable media manifest whose source resources were
+    /// reread locally before this checkpoint was exported. Older candidates
+    /// without this proof remain readable but cannot pass completion checks.
+    public let archiveManifestSHA256: String?
+    public let sourceVerifiedAtMs: Int64?
 
     public init(
         hostID: UUID, deviceID: UUID,
@@ -47,7 +52,9 @@ public struct ImageAllMigrationSyncCheckpoint: Codable, Sendable, Equatable {
         acknowledgedSnapshotSequence: Int64,
         tagChangeCursor: Int64,
         collectionChangeCursor: Int64,
-        favoriteChangeCursor: Int64
+        favoriteChangeCursor: Int64,
+        archiveManifestSHA256: String? = nil,
+        sourceVerifiedAtMs: Int64? = nil
     ) {
         self.hostID = hostID
         self.deviceID = deviceID
@@ -56,6 +63,8 @@ public struct ImageAllMigrationSyncCheckpoint: Codable, Sendable, Equatable {
         self.tagChangeCursor = tagChangeCursor
         self.collectionChangeCursor = collectionChangeCursor
         self.favoriteChangeCursor = favoriteChangeCursor
+        self.archiveManifestSHA256 = archiveManifestSHA256
+        self.sourceVerifiedAtMs = sourceVerifiedAtMs
     }
 }
 
@@ -231,7 +240,13 @@ public enum ImageAllMigrationFacts {
                   checkpoint.acknowledgedSnapshotSequence <= snapshot.snapshotSequence,
                   checkpoint.tagChangeCursor >= 0,
                   checkpoint.collectionChangeCursor >= 0,
-                  checkpoint.favoriteChangeCursor >= 0 else {
+                  checkpoint.favoriteChangeCursor >= 0,
+                  (checkpoint.archiveManifestSHA256 == nil) ==
+                    (checkpoint.sourceVerifiedAtMs == nil),
+                  (checkpoint.archiveManifestSHA256 == nil ||
+                   (checkpoint.archiveManifestSHA256?.count == 64 &&
+                    checkpoint.archiveManifestSHA256?.allSatisfy({ $0.isHexDigit }) == true)),
+                  checkpoint.sourceVerifiedAtMs.map({ $0 > 0 }) ?? true else {
                 throw ImageAllMigrationFactsError.invalidSnapshot
             }
         }

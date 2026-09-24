@@ -311,8 +311,12 @@ actor RemoteLocalLibrarySyncStore {
     /// Compares a phone-local candidate checkpoint with this Host's current
     /// projection and change-log heads. A later Mac edit or phone snapshot
     /// invalidates the candidate; no completion receipt is issued here.
-    func matchesMigrationCheckpoint(_ snapshot: ImageAllMigrationFactSnapshot) -> Bool {
+    func matchesMigrationCheckpoint(
+        _ snapshot: ImageAllMigrationFactSnapshot, manifestSHA256: String
+    ) -> Bool {
         guard let checkpoint = snapshot.syncCheckpoint,
+              checkpoint.archiveManifestSHA256 == manifestSHA256,
+              checkpoint.sourceVerifiedAtMs != nil,
               checkpoint.hostID == hostID,
               let record = records[checkpoint.deviceID],
               record.request.installID == snapshot.sourceDeviceID,

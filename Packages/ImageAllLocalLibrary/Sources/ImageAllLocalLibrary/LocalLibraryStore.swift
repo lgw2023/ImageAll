@@ -253,7 +253,7 @@ public struct LocalMigrationSyncCheckpoint: Codable, Sendable, Equatable {
     public let favoriteChangeCursor: Int64
 }
 
-public struct LocalSharedAsset: Codable, Identifiable, Sendable {
+public struct LocalSharedAsset: Codable, Identifiable, Sendable, Equatable {
     public let id: UUID
     public let localIdentifier: String
     public let kind: String
@@ -264,13 +264,13 @@ public struct LocalSharedAsset: Codable, Identifiable, Sendable {
     public let collections: [LocalSharedCollectionMembership]
 }
 
-public struct LocalSharedTagDecision: Codable, Sendable {
+public struct LocalSharedTagDecision: Codable, Sendable, Equatable {
     public let tagID: UUID
     public let tagName: String
     public let decision: LocalDecision
 }
 
-public struct LocalSharedCollectionMembership: Codable, Sendable {
+public struct LocalSharedCollectionMembership: Codable, Sendable, Equatable {
     public let collectionID: UUID
     public let collectionName: String
 }

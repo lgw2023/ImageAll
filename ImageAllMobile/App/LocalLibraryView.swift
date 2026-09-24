@@ -243,12 +243,12 @@ final class LocalLibraryModel: ObservableObject {
         }.value
     }
 
-    func exportCompletionCheckpointFacts() async throws -> URL {
+    func exportCompletionCheckpointFacts(for archiveRoot: URL) async throws -> URL {
         guard let store else { throw LocalFavoriteSourceError.storeUnavailable }
         let identifiers = try await observedSharedVisibleIdentifiers()
-        let candidate: (snapshot: LocalSharedSnapshot, checkpoint: LocalMigrationSyncCheckpoint)
+        let before: (snapshot: LocalSharedSnapshot, checkpoint: LocalMigrationSyncCheckpoint)
         do {
-            candidate = try await store.migrationCompletionCheckpoint(
+            before = try await store.migrationCompletionCheckpoint(
                 visibleIdentifiers: identifiers
             )
         } catch LocalLibraryError.migrationScopeIncomplete {
@@ -258,9 +258,28 @@ final class LocalLibraryModel: ObservableObject {
         } catch LocalLibraryError.syncScopeNotAcknowledged {
             throw LocalArchiveExportError.syncNotAcknowledged
         }
+        let verification = try await LocalPhotoArchiveExporter.verifyCurrentSourcesMatchArchive(
+            at: archiveRoot, snapshot: before.snapshot
+        )
+        let latestIdentifiers = try await observedSharedVisibleIdentifiers()
+        let after = try await store.migrationCompletionCheckpoint(
+            visibleIdentifiers: latestIdentifiers
+        )
+        guard before.checkpoint == after.checkpoint,
+              before.snapshot.installID == after.snapshot.installID,
+              before.snapshot.sourceEpoch == after.snapshot.sourceEpoch,
+              before.snapshot.scopeRevision == after.snapshot.scopeRevision,
+              before.snapshot.outboxWatermark == after.snapshot.outboxWatermark,
+              before.snapshot.selectedAssetIDs == after.snapshot.selectedAssetIDs,
+              before.snapshot.assets == after.snapshot.assets else {
+            throw LocalArchiveExportError.selectionChanged
+        }
+        let verifiedAtMs = Int64(Date().timeIntervalSince1970 * 1_000)
         return try await Task.detached(priority: .utility) {
             try LocalMigrationFactExporter.export(
-                snapshot: candidate.snapshot, checkpoint: candidate.checkpoint
+                snapshot: after.snapshot, checkpoint: after.checkpoint,
+                archiveManifestSHA256: verification.manifestSHA256,
+                sourceVerifiedAtMs: verifiedAtMs
             )
         }.value
     }
@@ -1112,7 +1131,9 @@ private struct LocalShareScopeView: View {
                         isUploadingArchive = true
                         defer { isUploadingArchive = false }
                         do {
-                            let facts = try await model.exportCompletionCheckpointFacts()
+                            let facts = try await model.exportCompletionCheckpointFacts(
+                                for: exportedArchive
+                            )
                             try await Task.detached(priority: .utility) {
                                 try LocalMigrationFactExporter.attach(
                                     facts, to: exportedArchive
@@ -1122,7 +1143,7 @@ private struct LocalShareScopeView: View {
                             _ = try await remoteModel.uploadMigrationArchive(
                                 at: exportedArchive
                             )
-                            archiveStatusMessage = "手机已提交当前分享范围的事实水位候选；请在 Mac 再次入库并核查。Mac 变化水位和独立恢复仍待验收。"
+                            archiveStatusMessage = "手机已逐资源复核来源并提交事实水位候选；请在 Mac 再次入库并核查。Mac 变化水位和独立恢复仍待验收。"
                         } catch {
                             archiveStatusMessage = "验收检查点未提交：\(error.localizedDescription)"
                         }
@@ -1263,6 +1284,12 @@ private enum LocalMigrationFactExporter {
               Set(snapshot.items.map(\.mediaID)) == mediaIDs else {
             throw LocalArchiveExportError.archiveScopeChanged
         }
+        if let checkpoint = snapshot.syncCheckpoint {
+            guard checkpoint.archiveManifestSHA256 == verification.manifestSHA256,
+                  checkpoint.sourceVerifiedAtMs != nil else {
+                throw LocalArchiveExportError.sourceChanged
+            }
+        }
         if let currentURL = try ImageAllMigrationFacts.latestPublishedURL(in: archiveRoot) {
             let current = try ImageAllMigrationFacts.readWithDigest(at: currentURL)
             guard snapshot.snapshotSequence > current.snapshot.snapshotSequence ||
@@ -1294,31 +1321,11 @@ private enum LocalMigrationFactExporter {
 
     static func export(
         snapshot: LocalSharedSnapshot,
-        checkpoint: LocalMigrationSyncCheckpoint? = nil
+        checkpoint: LocalMigrationSyncCheckpoint? = nil,
+        archiveManifestSHA256: String? = nil,
+        sourceVerifiedAtMs: Int64? = nil
     ) throws -> URL {
-        let items = snapshot.assets.map { asset in
-            ImageAllMigrationFactItem(
-                mediaID: asset.id, observedFavorite: asset.observedFavorite,
-                favoriteTarget: asset.favoriteTarget,
-                tagDecisions: asset.tagDecisions.map { tag in
-                    let decision: RemoteLocalLibraryDecision
-                    switch tag.decision {
-                    case .accepted: decision = .accepted
-                    case .rejected: decision = .rejected
-                    case .cleared: decision = .cleared
-                    }
-                    return ImageAllMigrationTagDecision(
-                        tagID: tag.tagID, tagName: tag.tagName, decision: decision
-                    )
-                },
-                collections: asset.collections.map { collection in
-                    ImageAllMigrationCollectionMembership(
-                        collectionID: collection.collectionID,
-                        collectionName: collection.collectionName, included: true
-                    )
-                }
-            )
-        }
+        let items = factItems(from: snapshot)
         let facts = ImageAllMigrationFactSnapshot(
             sourceDeviceID: snapshot.installID, sourceEpoch: snapshot.sourceEpoch,
             scopeRevision: snapshot.scopeRevision,
@@ -1331,7 +1338,9 @@ private enum LocalMigrationFactExporter {
                     acknowledgedSnapshotSequence: local.acknowledgedSnapshotSequence,
                     tagChangeCursor: local.tagChangeCursor,
                     collectionChangeCursor: local.collectionChangeCursor,
-                    favoriteChangeCursor: local.favoriteChangeCursor
+                    favoriteChangeCursor: local.favoriteChangeCursor,
+                    archiveManifestSHA256: archiveManifestSHA256,
+                    sourceVerifiedAtMs: sourceVerifiedAtMs
                 )
             }
         )
@@ -1355,6 +1364,32 @@ private enum LocalMigrationFactExporter {
         )
         return url
     }
+
+    static func factItems(from snapshot: LocalSharedSnapshot) -> [ImageAllMigrationFactItem] {
+        snapshot.assets.map { asset in
+            ImageAllMigrationFactItem(
+                mediaID: asset.id, observedFavorite: asset.observedFavorite,
+                favoriteTarget: asset.favoriteTarget,
+                tagDecisions: asset.tagDecisions.map { tag in
+                    let decision: RemoteLocalLibraryDecision
+                    switch tag.decision {
+                    case .accepted: decision = .accepted
+                    case .rejected: decision = .rejected
+                    case .cleared: decision = .cleared
+                    }
+                    return ImageAllMigrationTagDecision(
+                        tagID: tag.tagID, tagName: tag.tagName, decision: decision
+                    )
+                },
+                collections: asset.collections.map { collection in
+                    ImageAllMigrationCollectionMembership(
+                        collectionID: collection.collectionID,
+                        collectionName: collection.collectionName, included: true
+                    )
+                }
+            )
+        }
+    }
 }
 
 @MainActor
@@ -1362,6 +1397,131 @@ private enum LocalPhotoArchiveExporter {
     private struct SourceVersion: Equatable {
         let modificationDate: Date?
         let resourceSignature: [String]
+    }
+
+    private final class ResourceDigestSink: @unchecked Sendable {
+        private let lock = NSLock()
+        private var digest = SHA256()
+        private var byteCount: Int64 = 0
+        private var overflow = false
+
+        func append(_ data: Data) {
+            lock.lock()
+            defer { lock.unlock() }
+            let (next, didOverflow) = byteCount.addingReportingOverflow(Int64(data.count))
+            byteCount = next
+            overflow = overflow || didOverflow
+            digest.update(data: data)
+        }
+
+        func result() throws -> (Int64, String) {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !overflow else { throw LocalArchiveExportError.sourceChanged }
+            return (byteCount, digest.finalize().map { String(format: "%02x", $0) }.joined())
+        }
+    }
+
+    /// Re-reads every currently local PhotoKit resource without cloud access.
+    /// A candidate checkpoint may only bind the exact media bytes and album
+    /// membership recorded in the already published archive.
+    static func verifyCurrentSourcesMatchArchive(
+        at archiveRoot: URL, snapshot: LocalSharedSnapshot
+    ) async throws -> ImageAllMigrationVerification {
+        var header: ImageAllMigrationHeader?
+        var items: [ImageAllMigrationItem] = []
+        let verification = try ImageAllMigrationArchive.visitVerifiedRecords(
+            at: archiveRoot,
+            onHeader: { header = $0 },
+            onItem: { items.append($0) }
+        )
+        guard let header, verification.isComplete,
+              header.appleAlbumCoverage == .selectedAssetsOnly,
+              header.sourceDeviceID == snapshot.installID,
+              header.sourceEpoch == snapshot.sourceEpoch,
+              header.scopeRevision == snapshot.scopeRevision,
+              Set(items.map(\.mediaID)) == Set(snapshot.selectedAssetIDs),
+              items.count == snapshot.assets.count else {
+            throw LocalArchiveExportError.archiveScopeChanged
+        }
+        let assetsByID = Dictionary(uniqueKeysWithValues: snapshot.assets.map { ($0.id, $0) })
+        let options = PHFetchOptions()
+        options.includeHiddenAssets = false
+        options.includeAssetSourceTypes = .typeUserLibrary
+        let fetched = PHAsset.fetchAssets(
+            withLocalIdentifiers: snapshot.assets.map(\.localIdentifier), options: options
+        )
+        var byLocator: [String: PHAsset] = [:]
+        fetched.enumerateObjects { asset, _, _ in byLocator[asset.localIdentifier] = asset }
+        guard byLocator.count == snapshot.assets.count else {
+            throw LocalArchiveExportError.selectionNotVisible
+        }
+        let before = byLocator.mapValues(sourceVersion)
+        let selectedLocators = Set(byLocator.keys)
+        let albums = try captureAlbumMemberships(selectedLocators: selectedLocators)
+        for item in items {
+            guard let selected = assetsByID[item.mediaID],
+                  selected.localIdentifier == item.sourceLocalIdentifier,
+                  let asset = byLocator[item.sourceLocalIdentifier],
+                  item.appleAlbums == (albums[item.sourceLocalIdentifier] ?? []),
+                  item.mediaKind == (asset.mediaType == .video ? .video : .image),
+                  item.createdAtMs == asset.creationDate.map({
+                      Int64($0.timeIntervalSince1970 * 1_000)
+                  }) else {
+                throw LocalArchiveExportError.sourceChanged
+            }
+            let resources = PHAssetResource.assetResources(for: asset)
+            let primary = primaryResourceIndex(
+                mediaType: asset.mediaType, resources: resources
+            )
+            guard primary != nil, item.resources.count == resources.count else {
+                throw LocalArchiveExportError.sourceChanged
+            }
+            for (index, resource) in resources.enumerated() {
+                let expected = item.resources[index]
+                let uti = resource.uniformTypeIdentifier.isEmpty
+                    ? UTType.data.identifier : resource.uniformTypeIdentifier
+                guard expected.status == .present,
+                      expected.role == (index == primary ? "original" : resourceRole(resource.type)),
+                      expected.uniformTypeIdentifier == uti,
+                      let bytes = expected.byteCount,
+                      let hash = expected.sha256 else {
+                    throw LocalArchiveExportError.sourceChanged
+                }
+                let current = try await hashSourceResource(resource)
+                guard current.0 == bytes, current.1 == hash.lowercased() else {
+                    throw LocalArchiveExportError.sourceChanged
+                }
+            }
+        }
+        let refreshed = PHAsset.fetchAssets(
+            withLocalIdentifiers: snapshot.assets.map(\.localIdentifier), options: options
+        )
+        var finalByLocator: [String: PHAsset] = [:]
+        refreshed.enumerateObjects { asset, _, _ in finalByLocator[asset.localIdentifier] = asset }
+        guard finalByLocator.count == byLocator.count,
+              finalByLocator.allSatisfy({ before[$0.key] == sourceVersion($0.value) }),
+              albums == (try captureAlbumMemberships(selectedLocators: selectedLocators)) else {
+            throw LocalArchiveExportError.sourceChanged
+        }
+        return verification
+    }
+
+    private static func hashSourceResource(_ resource: PHAssetResource) async throws -> (Int64, String) {
+        let sink = ResourceDigestSink()
+        let options = PHAssetResourceRequestOptions()
+        options.isNetworkAccessAllowed = false
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            PHAssetResourceManager.default().requestData(
+                for: resource, options: options,
+                dataReceivedHandler: { chunk in sink.append(chunk) },
+                completionHandler: { error in
+                    if let error { continuation.resume(throwing: error) }
+                    else { continuation.resume(returning: ()) }
+                }
+            )
+        }
+        return try sink.result()
     }
 
     static func existingArchives() throws -> [URL] {
