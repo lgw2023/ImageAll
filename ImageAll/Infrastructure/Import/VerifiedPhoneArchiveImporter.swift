@@ -17,6 +17,7 @@ enum PhoneArchiveImportError: LocalizedError, Equatable {
     case catalogDiverged
     case recoveryDestinationNotEmpty
     case insufficientRecoverySpace
+    case validationStale
 
     var errorDescription: String? {
         switch self {
@@ -33,6 +34,7 @@ enum PhoneArchiveImportError: LocalizedError, Equatable {
         case .catalogDiverged: "Mac 归档与入库账本不一致，不能通过完整性核查。"
         case .recoveryDestinationNotEmpty: "恢复验收需要单独的空目录，以免覆盖现有文件或 catalog。"
         case .insufficientRecoverySpace: "恢复目录可用空间不足以容纳独立归档副本，请选择其他磁盘。"
+        case .validationStale: "验收记录所绑定的归档、恢复副本或事实水位已变化，请重新核查。"
         }
     }
 }
@@ -73,6 +75,27 @@ struct PhoneArchiveRecoveryReport: Sendable, Equatable {
     let recoveredCatalogURL: URL
 }
 
+struct PhoneArchiveValidationRecord: Identifiable, Sendable {
+    let id: UUID
+    let migrationID: UUID
+    let archivePath: String
+    let archiveVolumeUUID: String?
+    let recoveryArchivePath: String
+    let recoveryCatalogPath: String
+    let recoveryParentBookmark: Data?
+    let manifestSHA256: String
+    let factSnapshotSHA256: String
+    let factSnapshotSequence: Int64
+    let factWatermark: Int64
+    let itemCount: Int
+    let resourceCount: Int
+    let verifiedBytes: Int64
+    let hostID: UUID
+    let deviceID: UUID
+    let sourceVerifiedAtMs: Int64
+    let createdAtMs: Int64
+}
+
 struct PhoneArchiveImportedBatch: Identifiable, Sendable {
     let id: UUID
     let archivePath: String
@@ -103,6 +126,173 @@ struct PhoneArchiveImportedItem: Identifiable, Sendable {
 /// exposes them in the unified gallery.
 struct VerifiedPhoneArchiveImporter: Sendable {
     let database: CatalogDatabase
+
+    /// Persists a historical candidate after both catalogs independently
+    /// agree. Current validity is never inferred from this row alone.
+    func recordValidation(
+        migrationID: UUID, archiveRoot: URL,
+        recovery: PhoneArchiveRecoveryReport,
+        recoveryParentBookmark: Data? = nil
+    ) throws -> PhoneArchiveValidationRecord {
+        let original = try auditImportedArchive(
+            migrationID: migrationID, archiveRoot: archiveRoot
+        )
+        guard let snapshot = original.factSnapshot,
+              let checkpoint = snapshot.syncCheckpoint,
+              checkpoint.archiveManifestSHA256 == original.manifestSHA256,
+              let sourceVerifiedAtMs = checkpoint.sourceVerifiedAtMs,
+              original == recovery.integrity,
+              try ImageAllMigrationArchive.readVerifiedHeader(
+                  at: archiveRoot
+              ).0.appleAlbumCoverage == .selectedAssetsOnly else {
+            throw PhoneArchiveImportError.validationStale
+        }
+        let restored = try Self.readOnlyImporter(at: recovery.recoveredCatalogURL)
+            .auditImportedArchive(
+                migrationID: migrationID, archiveRoot: recovery.restoredArchiveURL
+            )
+        guard restored == original,
+              recovery.restoredArchiveURL.standardizedFileURL != archiveRoot.standardizedFileURL
+        else { throw PhoneArchiveImportError.validationStale }
+        let digest = try Self.factDigest(snapshot)
+        let volume = try archiveRoot.resourceValues(
+            forKeys: [.volumeUUIDStringKey]
+        ).volumeUUIDString
+        let record = PhoneArchiveValidationRecord(
+            id: UUID(), migrationID: migrationID,
+            archivePath: archiveRoot.standardizedFileURL.path,
+            archiveVolumeUUID: volume,
+            recoveryArchivePath: recovery.restoredArchiveURL.standardizedFileURL.path,
+            recoveryCatalogPath: recovery.recoveredCatalogURL.standardizedFileURL.path,
+            recoveryParentBookmark: recoveryParentBookmark,
+            manifestSHA256: original.manifestSHA256,
+            factSnapshotSHA256: digest,
+            factSnapshotSequence: original.factSnapshotSequence,
+            factWatermark: original.factWatermark,
+            itemCount: original.itemCount, resourceCount: original.resourceCount,
+            verifiedBytes: original.verifiedBytes,
+            hostID: checkpoint.hostID, deviceID: checkpoint.deviceID,
+            sourceVerifiedAtMs: sourceVerifiedAtMs,
+            createdAtMs: Int64(Date().timeIntervalSince1970 * 1_000)
+        )
+        try database.pool.write { db in
+            let batch = try Row.fetchOne(db, sql: """
+                SELECT archive_path, manifest_sha256, fact_snapshot_sequence,
+                       fact_snapshot_sha256 FROM migration_import
+                WHERE id = ? AND state = 'catalogCommitted'
+                """, arguments: [migrationID.uuidString.lowercased()])
+            guard let batch,
+                  (batch["archive_path"] as String) == record.archivePath,
+                  (batch["manifest_sha256"] as String) == record.manifestSHA256,
+                  (batch["fact_snapshot_sequence"] as Int64) == record.factSnapshotSequence,
+                  (batch["fact_snapshot_sha256"] as String?) == record.factSnapshotSHA256 else {
+                throw PhoneArchiveImportError.validationStale
+            }
+            try db.execute(sql: """
+                INSERT INTO migration_import_validation (
+                    id, migration_id, archive_path, archive_volume_uuid,
+                    recovery_archive_path, recovery_catalog_path, recovery_parent_bookmark,
+                    manifest_sha256,
+                    fact_snapshot_sha256, fact_snapshot_sequence, fact_watermark,
+                    item_count, resource_count, verified_bytes, host_id, device_id,
+                    source_verified_at_ms, created_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, arguments: [
+                    record.id.uuidString.lowercased(), migrationID.uuidString.lowercased(),
+                    record.archivePath, record.archiveVolumeUUID,
+                    record.recoveryArchivePath, record.recoveryCatalogPath,
+                    record.recoveryParentBookmark,
+                    record.manifestSHA256, record.factSnapshotSHA256,
+                    record.factSnapshotSequence, record.factWatermark,
+                    record.itemCount, record.resourceCount, record.verifiedBytes,
+                    record.hostID.uuidString.lowercased(), record.deviceID.uuidString.lowercased(),
+                    record.sourceVerifiedAtMs, record.createdAtMs,
+                ])
+        }
+        return record
+    }
+
+    func latestValidationRecord(migrationID: UUID) throws -> PhoneArchiveValidationRecord? {
+        try database.pool.read { db in
+            guard let row = try Row.fetchOne(db, sql: """
+                SELECT * FROM migration_import_validation WHERE migration_id = ?
+                ORDER BY created_at_ms DESC, id DESC LIMIT 1
+                """, arguments: [migrationID.uuidString.lowercased()]) else { return nil }
+            guard let id = UUID(uuidString: row["id"]),
+                  let hostID = UUID(uuidString: row["host_id"]),
+                  let deviceID = UUID(uuidString: row["device_id"]) else {
+                throw PhoneArchiveImportError.validationStale
+            }
+            return PhoneArchiveValidationRecord(
+                id: id, migrationID: migrationID,
+                archivePath: row["archive_path"],
+                archiveVolumeUUID: row["archive_volume_uuid"],
+                recoveryArchivePath: row["recovery_archive_path"],
+                recoveryCatalogPath: row["recovery_catalog_path"],
+                recoveryParentBookmark: row["recovery_parent_bookmark"],
+                manifestSHA256: row["manifest_sha256"],
+                factSnapshotSHA256: row["fact_snapshot_sha256"],
+                factSnapshotSequence: row["fact_snapshot_sequence"],
+                factWatermark: row["fact_watermark"],
+                itemCount: row["item_count"], resourceCount: row["resource_count"],
+                verifiedBytes: row["verified_bytes"],
+                hostID: hostID, deviceID: deviceID,
+                sourceVerifiedAtMs: row["source_verified_at_ms"],
+                createdAtMs: row["created_at_ms"]
+            )
+        }
+    }
+
+    /// Rechecks the saved evidence after restart, including both archive
+    /// copies. The caller must additionally compare the live Host watermark.
+    func auditValidationRecord(
+        _ record: PhoneArchiveValidationRecord
+    ) throws -> PhoneArchiveIntegrityReport {
+        let archive = URL(fileURLWithPath: record.archivePath, isDirectory: true)
+        let original = try auditImportedArchive(
+            migrationID: record.migrationID, archiveRoot: archive
+        )
+        let volume = try archive.resourceValues(
+            forKeys: [.volumeUUIDStringKey]
+        ).volumeUUIDString
+        guard volume == record.archiveVolumeUUID,
+              original.manifestSHA256 == record.manifestSHA256,
+              original.factSnapshotSequence == record.factSnapshotSequence,
+              original.factWatermark == record.factWatermark,
+              original.itemCount == record.itemCount,
+              original.resourceCount == record.resourceCount,
+              original.verifiedBytes == record.verifiedBytes,
+              let snapshot = original.factSnapshot,
+              try Self.factDigest(snapshot) == record.factSnapshotSHA256,
+              let checkpoint = snapshot.syncCheckpoint,
+              checkpoint.hostID == record.hostID,
+              checkpoint.deviceID == record.deviceID,
+              checkpoint.sourceVerifiedAtMs == record.sourceVerifiedAtMs else {
+            throw PhoneArchiveImportError.validationStale
+        }
+        let restored = try Self.readOnlyImporter(
+            at: URL(fileURLWithPath: record.recoveryCatalogPath)
+        ).auditImportedArchive(
+            migrationID: record.migrationID,
+            archiveRoot: URL(fileURLWithPath: record.recoveryArchivePath, isDirectory: true)
+        )
+        guard restored == original else { throw PhoneArchiveImportError.validationStale }
+        return original
+    }
+
+    private static func readOnlyImporter(at url: URL) throws -> VerifiedPhoneArchiveImporter {
+        var configuration = Configuration()
+        configuration.readonly = true
+        let pool = try DatabasePool(path: url.path, configuration: configuration)
+        return VerifiedPhoneArchiveImporter(database: CatalogDatabase(pool: pool))
+    }
+
+    private static func factDigest(_ snapshot: ImageAllMigrationFactSnapshot) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return SHA256.hash(data: try encoder.encode(snapshot))
+            .map { String(format: "%02x", $0) }.joined()
+    }
 
     /// Reconstructs a separate catalog and archive copy from the published
     /// package, then audits both ledgers against the same verified bytes and

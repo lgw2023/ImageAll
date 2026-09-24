@@ -13,7 +13,7 @@ final class PhoneArchiveImportTests: XCTestCase {
             "original", bytes: Data("network-stage-original".utf8)
         )
         let item = fixture.item(resource: resource)
-        let header = fixture.header(count: 1)
+        let header = fixture.header(count: 1, appleAlbumCoverage: .selectedAssetsOnly)
         try fixture.write(header: header, items: [item])
         let deviceID = header.sourceDeviceID
         let store = try ImageAllMigrationTransferStore(root: fixture.target)
@@ -116,6 +116,24 @@ final class PhoneArchiveImportTests: XCTestCase {
             try XCTUnwrap(resource.relativePath)
         )), Data("network-stage-original".utf8))
         XCTAssertNotNil(recovery.integrity.phoneSyncCheckpoint)
+        let validation = try importer.recordValidation(
+            migrationID: header.migrationID, archiveRoot: imported.archiveURL,
+            recovery: recovery
+        )
+        let reopenedImporter = VerifiedPhoneArchiveImporter(
+            database: try CatalogDatabase.open(at: fixture.databaseURL)
+        )
+        let loadedValidation = try XCTUnwrap(reopenedImporter.latestValidationRecord(
+            migrationID: header.migrationID
+        ))
+        XCTAssertEqual(loadedValidation.id, validation.id)
+        XCTAssertEqual(try reopenedImporter.auditValidationRecord(loadedValidation), integrity)
+        try Data("changed-recovery".utf8).write(
+            to: recovery.restoredArchiveURL.appendingPathComponent(
+                try XCTUnwrap(resource.relativePath)
+            )
+        )
+        XCTAssertThrowsError(try reopenedImporter.auditValidationRecord(loadedValidation))
         let wrongBinding = ImageAllMigrationFactSnapshot(
             sourceDeviceID: deviceID, sourceEpoch: header.sourceEpoch,
             scopeRevision: header.scopeRevision, snapshotSequence: 9,

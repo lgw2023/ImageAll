@@ -35,6 +35,7 @@ final class CatalogMigrationTests: XCTestCase {
             XCTAssertEqual(row["state"] as String, "catalogCommitted")
             XCTAssertNil(row["apple_album_coverage"] as String?)
             XCTAssertTrue(try db.tableExists("migration_import_apple_album_member"))
+            XCTAssertTrue(try db.tableExists("migration_import_validation"))
         }
     }
 
@@ -1379,6 +1380,11 @@ final class CatalogMigrationTests: XCTestCase {
     }
 
     private static func dropV035AndLaterTables(_ db: Database) throws {
+        try db.execute(sql: "DROP TABLE IF EXISTS migration_import_validation")
+        try db.execute(
+            sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
+            arguments: [CatalogMigrationID.v044AddPhoneArchiveValidation]
+        )
         try db.execute(sql: "DROP TABLE IF EXISTS migration_import_apple_album_member")
         try db.execute(
             sql: "DELETE FROM grdb_migrations WHERE identifier = ?",

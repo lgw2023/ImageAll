@@ -1185,6 +1185,7 @@ private final class PhoneArchiveImportModel: ObservableObject {
     @Published private(set) var batches: [PhoneArchiveImportedBatch] = []
     @Published private(set) var items: [PhoneArchiveImportedItem] = []
     @Published private(set) var selectedBatchID: UUID?
+    @Published private(set) var latestValidationRecord: PhoneArchiveValidationRecord?
     @Published private(set) var isBusy = false
     @Published private(set) var message: String?
     @Published private(set) var transferTargetPath: String? =
@@ -1295,7 +1296,15 @@ private final class PhoneArchiveImportModel: ObservableObject {
         guard !isBusy, let importer = PhoneArchiveImportProcessHolder.importer() else { return }
         selectedBatchID = id
         items = []
+        latestValidationRecord = nil
         await loadMore(using: importer)
+        do {
+            latestValidationRecord = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.latestValidationRecord(migrationID: id)
+            }
+        } catch {
+            message = "读取归档验收历史失败：\(error.localizedDescription)"
+        }
     }
 
     func loadMore() async {
@@ -1499,15 +1508,111 @@ private final class PhoneArchiveImportModel: ObservableObject {
             let archive = parent.appendingPathComponent(
                 "ImageAll-Archive-\(batch.id.uuidString.lowercased())", isDirectory: true
             )
+            let before = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.auditImportedArchive(migrationID: batch.id, archiveRoot: archive)
+            }
+            let matchedBefore: Bool
+            if let snapshot = before.factSnapshot {
+                matchedBefore = (try? await RemoteHostProcessHolder.matchesMigrationCheckpoint(
+                    snapshot, manifestSHA256: before.manifestSHA256
+                )) ?? false
+            } else {
+                matchedBefore = false
+            }
             let report = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
                 try importer.verifyIndependentRecovery(
                     migrationID: batch.id, archiveRoot: archive,
                     into: destination
                 )
             }
-            message = "独立恢复核查通过：\(report.integrity.itemCount) 项、\(report.integrity.resourceCount) 个资源及整理事实已在空 catalog 重建。恢复目录：\(destination.path)。候选检查点与实时同步状态仍须分别核对；此副本不是第二份备份或迁移完成回执。"
+            let after = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.auditImportedArchive(migrationID: batch.id, archiveRoot: archive)
+            }
+            let matchedAfter: Bool
+            if let snapshot = after.factSnapshot {
+                matchedAfter = (try? await RemoteHostProcessHolder.matchesMigrationCheckpoint(
+                    snapshot, manifestSHA256: after.manifestSHA256
+                )) ?? false
+            } else {
+                matchedAfter = false
+            }
+            if matchedBefore, matchedAfter, before == after {
+                let bookmark = try? destination.bookmarkData(
+                    options: [.withSecurityScope],
+                    includingResourceValuesForKeys: nil, relativeTo: nil
+                )
+                do {
+                    let record = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                        try importer.recordValidation(
+                            migrationID: batch.id, archiveRoot: archive,
+                            recovery: report, recoveryParentBookmark: bookmark
+                        )
+                    }
+                    latestValidationRecord = record
+                    let stillMatches: Bool
+                    if let snapshot = after.factSnapshot {
+                        stillMatches = (try? await RemoteHostProcessHolder.matchesMigrationCheckpoint(
+                            snapshot, manifestSHA256: after.manifestSHA256
+                        )) ?? false
+                    } else {
+                        stillMatches = false
+                    }
+                    message = stillMatches
+                        ? "独立恢复与当前同步状态均通过，已保存候选验收记录 \(record.id.uuidString)。恢复目录：\(destination.path)。记录需复核，尚非迁移完成回执或第二份备份。"
+                        : "候选验收记录已保存，但 Mac 状态随后变化；请复核记录并重新同步。"
+                } catch {
+                    message = "独立恢复通过，但候选验收记录未保存：\(error.localizedDescription)。恢复目录保留在 \(destination.path)。"
+                }
+            } else {
+                message = "独立恢复通过：\(report.integrity.itemCount) 项及 \(report.integrity.resourceCount) 个资源已在空 catalog 重建；手机检查点缺失或 Mac 状态已变化，未登记候选验收记录。恢复目录：\(destination.path)。"
+            }
         } catch {
             message = "独立恢复核查未通过：\(error.localizedDescription)。目标目录可能留有未完成的恢复文件，请检查后另选空目录重试。"
+        }
+    }
+
+    func auditLatestValidationRecord() async {
+        guard !isBusy, let batch = selectedBatch,
+              let record = latestValidationRecord,
+              record.migrationID == batch.id,
+              let importer = PhoneArchiveImportProcessHolder.importer() else { return }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let parent = try targetParent(for: batch)
+            let sourceAccess = parent.startAccessingSecurityScopedResource()
+            defer { if sourceAccess { parent.stopAccessingSecurityScopedResource() } }
+            let recoveryParent: URL
+            if let bookmark = record.recoveryParentBookmark {
+                var stale = false
+                recoveryParent = try URL(
+                    resolvingBookmarkData: bookmark, options: [.withSecurityScope],
+                    relativeTo: nil, bookmarkDataIsStale: &stale
+                )
+                guard !stale else { throw PhoneArchiveImportError.validationStale }
+            } else {
+                recoveryParent = URL(fileURLWithPath: record.recoveryCatalogPath)
+                    .deletingLastPathComponent()
+            }
+            guard recoveryParent.standardizedFileURL.path ==
+                    URL(fileURLWithPath: record.recoveryCatalogPath)
+                        .deletingLastPathComponent().standardizedFileURL.path else {
+                throw PhoneArchiveImportError.validationStale
+            }
+            let recoveryAccess = recoveryParent.startAccessingSecurityScopedResource()
+            defer { if recoveryAccess { recoveryParent.stopAccessingSecurityScopedResource() } }
+            let report = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.auditValidationRecord(record)
+            }
+            guard let snapshot = report.factSnapshot,
+                  try await RemoteHostProcessHolder.matchesMigrationCheckpoint(
+                      snapshot, manifestSHA256: report.manifestSHA256
+                  ) else {
+                throw PhoneArchiveImportError.validationStale
+            }
+            message = "候选验收记录 \(record.id.uuidString) 的两份归档、事实与 Mac 当前变化水位仍一致；实体设备与人工审核验收仍未完成。"
+        } catch {
+            message = "候选验收记录已失效或暂不可复核：\(error.localizedDescription)"
         }
     }
 
@@ -1634,6 +1739,19 @@ private struct PhoneArchiveImportCard: View {
                     }
                     .buttonStyle(.bordered)
                     .disabled(model.isBusy)
+                }
+                if let record = model.latestValidationRecord {
+                    HStack {
+                        Text("候选验收记录 · \(Date(timeIntervalSince1970: TimeInterval(record.createdAtMs) / 1_000).formatted(date: .abbreviated, time: .shortened)) · 需复核")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("复核记录") {
+                            Task { await model.auditLatestValidationRecord() }
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(model.isBusy)
+                    }
                 }
                 ForEach(model.items) { item in
                     HStack {

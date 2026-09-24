@@ -70,6 +70,7 @@ enum CatalogMigrationID {
     static let v041AddPhoneArchiveImport = "v041_add_phone_archive_import"
     static let v042AddPhoneArchiveFactCheckpoint = "v042_add_phone_archive_fact_checkpoint"
     static let v043AddPhoneArchiveAppleAlbums = "v043_add_phone_archive_apple_albums"
+    static let v044AddPhoneArchiveValidation = "v044_add_phone_archive_validation"
 
     static let knownOrdered: [String] = [
         v001CreateCatalogCore,
@@ -115,5 +116,6 @@ enum CatalogMigrationID {
         v041AddPhoneArchiveImport,
         v042AddPhoneArchiveFactCheckpoint,
         v043AddPhoneArchiveAppleAlbums,
+        v044AddPhoneArchiveValidation,
     ]
 }

@@ -145,3 +145,40 @@ enum V043AddPhoneArchiveAppleAlbumsMigration {
         }
     }
 }
+
+/// Append-only evidence for a selected phone archive. The stored row is a
+/// historical candidate; callers must re-audit both copies and current Host
+/// watermarks before presenting it as current.
+enum V044AddPhoneArchiveValidationMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v044AddPhoneArchiveValidation) { db in
+            try db.execute(sql: """
+                CREATE TABLE migration_import_validation (
+                    id TEXT NOT NULL PRIMARY KEY,
+                    migration_id TEXT NOT NULL
+                        REFERENCES migration_import(id) ON DELETE RESTRICT,
+                    archive_path TEXT NOT NULL,
+                    archive_volume_uuid TEXT,
+                    recovery_archive_path TEXT NOT NULL,
+                    recovery_catalog_path TEXT NOT NULL,
+                    recovery_parent_bookmark BLOB,
+                    manifest_sha256 TEXT NOT NULL CHECK(length(manifest_sha256) = 64),
+                    fact_snapshot_sha256 TEXT NOT NULL CHECK(length(fact_snapshot_sha256) = 64),
+                    fact_snapshot_sequence INTEGER NOT NULL CHECK(fact_snapshot_sequence > 0),
+                    fact_watermark INTEGER NOT NULL CHECK(fact_watermark >= 0),
+                    item_count INTEGER NOT NULL CHECK(item_count > 0),
+                    resource_count INTEGER NOT NULL CHECK(resource_count > 0),
+                    verified_bytes INTEGER NOT NULL CHECK(verified_bytes >= 0),
+                    host_id TEXT NOT NULL,
+                    device_id TEXT NOT NULL,
+                    source_verified_at_ms INTEGER NOT NULL CHECK(source_verified_at_ms > 0),
+                    created_at_ms INTEGER NOT NULL CHECK(created_at_ms > 0)
+                ) STRICT
+                """)
+            try db.execute(sql: """
+                CREATE INDEX migration_import_validation_batch_idx
+                ON migration_import_validation(migration_id, created_at_ms DESC)
+                """)
+        }
+    }
+}
