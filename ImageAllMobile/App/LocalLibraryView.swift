@@ -207,7 +207,7 @@ final class LocalLibraryModel: ObservableObject {
     /// An explicit, local-only export of the current selected scope. A reduced
     /// Photos permission must never silently turn this into a smaller archive.
     func exportSelectedArchive() async throws -> (URL, ImageAllMigrationVerification) {
-        let snapshot = try await prepareSharedSnapshot()
+        let snapshot = try await makeSharedSnapshot(forMigrationFacts: true)
         guard !snapshot.selectedAssetIDs.isEmpty else {
             throw LocalArchiveExportError.emptySelection
         }
@@ -216,7 +216,7 @@ final class LocalLibraryModel: ObservableObject {
         }
         let result = try await LocalPhotoArchiveExporter.export(snapshot: snapshot)
         do {
-            let current = try await prepareSharedSnapshot()
+            let current = try await makeSharedSnapshot(forMigrationFacts: true)
             guard current.sourceEpoch == snapshot.sourceEpoch,
                   current.scopeRevision == snapshot.scopeRevision,
                   Set(current.selectedAssetIDs) == Set(snapshot.selectedAssetIDs),
@@ -558,6 +558,11 @@ final class LocalLibraryModel: ObservableObject {
         }
     }
 
+    func confirmSharedTagAlias(_ candidate: LocalSharedTagAliasCandidate) async throws {
+        guard let store else { throw LocalFavoriteSourceError.storeUnavailable }
+        try await store.confirmSharedTagAlias(candidate)
+    }
+
     func resolveSharedCollectionConflict(
         _ operation: LocalSharedPendingOperation,
         resolution: LocalSharedCollectionConflictResolution
@@ -822,6 +827,7 @@ private struct LocalShareScopeView: View {
     @State private var exportedFacts: URL?
     @State private var statusMessage: String?
     @State private var archiveStatusMessage: String?
+    @State private var tagAliasCandidate: LocalSharedTagAliasCandidate?
 
     var body: some View {
         List {
@@ -968,6 +974,28 @@ private struct LocalShareScopeView: View {
                     }
                 }
             }
+            if let candidate = tagAliasCandidate {
+                Section("核对标签身份") {
+                    Text("Mac 标签“\(candidate.remoteTagName)”（\(candidate.remoteTagID.uuidString.prefix(8))）与本机标签“\(candidate.localTagName)”（\(candidate.localTagID.uuidString.prefix(8))）名称相近，但身份不同。确认后，本机标签 ID 保留；此 Mac 的共享同步会使用已确认的对应关系。")
+                        .font(.footnote)
+                    Button("确认这两个标签是同一个") {
+                        Task {
+                            do {
+                                try await model.confirmSharedTagAlias(candidate)
+                                tagAliasCandidate = nil
+                                statusMessage = "标签身份对应关系已保存。请再次同步，重取未提交的 Mac 变化页。"
+                            } catch {
+                                statusMessage = "标签身份已变化或已有共享记录；请重新同步核对。\(error.localizedDescription)"
+                                tagAliasCandidate = nil
+                            }
+                        }
+                    }
+                    Button("暂不合并", role: .cancel) {
+                        tagAliasCandidate = nil
+                        statusMessage = "标签身份未合并；Mac 变化页和 cursor 保持原状。"
+                    }
+                }
+            }
             Section {
                 Button(isSending ? "正在提交…" : "同步目录与整理信息到 Mac") {
                     Task {
@@ -981,6 +1009,7 @@ private struct LocalShareScopeView: View {
                                     snapshot: snapshot, receipt: receipt,
                                     remoteModel: remoteModel
                                 )
+                                tagAliasCandidate = nil
                                 let pull = result.pullSupported
                                     ? "Mac 标签回传 \(result.received) 项"
                                     : "当前 Mac 版本尚无标签回传"
@@ -996,7 +1025,10 @@ private struct LocalShareScopeView: View {
                                     : "当前 Mac 版本尚无收藏目标回传"
                                 statusMessage = "Mac 已接收 \(receipt.acceptedAssetCount) 项目录；手机标签/集合成员/收藏目标提交 \(result.applied) 项、已一致 \(result.unchanged) 项；\(pull)、\(collectionPull)、\(favoritePull)、冲突 \(result.conflicts) 项；仍待处理 \(result.remaining) 项。\(continuation)原件尚未传输。"
                             } catch {
-                                if case LocalLibraryError.syncRemoteTagMismatch = error {
+                                if case LocalLibraryError.syncRemoteTagAliasRequired(let candidate) = error {
+                                    tagAliasCandidate = candidate
+                                    statusMessage = "Mac 已接收目录；回传标签需要你确认同名不同 ID 的身份。变化页和 cursor 均未提交。"
+                                } else if case LocalLibraryError.syncRemoteTagMismatch = error {
                                     statusMessage = "Mac 已接收目录，但回传标签与本机标签身份冲突。该变化页和 cursor 均未提交；请先核对同名不同 ID 或标签名称差异，当前版本不会自动合并。"
                                 } else {
                                     statusMessage = "Mac 已接收目录，但整理信息提交未完成：\(error.localizedDescription)"

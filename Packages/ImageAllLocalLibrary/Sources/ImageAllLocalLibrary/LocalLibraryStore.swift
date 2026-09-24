@@ -13,6 +13,7 @@ public enum LocalLibraryError: Error, Equatable {
     case syncEarlierOperationPending
     case unsupportedSharedOperation
     case syncRemoteTagMismatch
+    case syncRemoteTagAliasRequired(LocalSharedTagAliasCandidate)
     case syncRemoteCollectionMismatch
     case syncConflictDetailsUnavailable
     case migrationScopeIncomplete
@@ -170,6 +171,38 @@ public struct LocalSharedTagChange: Sendable {
         self.tagName = tagName
         self.decision = decision
         self.fieldRevision = fieldRevision
+    }
+}
+
+/// An authenticated change page exposed one possible identity match. The user
+/// must confirm it; a matching display name alone never changes an identity.
+public struct LocalSharedTagAliasCandidate: Equatable, Sendable {
+    public let hostID: UUID
+    public let deviceID: UUID
+    public let sourceEpoch: UUID
+    public let scopeRevision: Int64
+    public let afterCursor: Int64
+    public let assetID: UUID
+    public let remoteTagID: UUID
+    public let remoteTagName: String
+    public let localTagID: UUID
+    public let localTagName: String
+
+    init(
+        hostID: UUID, deviceID: UUID, sourceEpoch: UUID, scopeRevision: Int64,
+        afterCursor: Int64, assetID: UUID, remoteTagID: UUID,
+        remoteTagName: String, localTagID: UUID, localTagName: String
+    ) {
+        self.hostID = hostID
+        self.deviceID = deviceID
+        self.sourceEpoch = sourceEpoch
+        self.scopeRevision = scopeRevision
+        self.afterCursor = afterCursor
+        self.assetID = assetID
+        self.remoteTagID = remoteTagID
+        self.remoteTagName = remoteTagName
+        self.localTagID = localTagID
+        self.localTagName = localTagName
     }
 }
 
@@ -366,6 +399,16 @@ public actor LocalLibraryStore {
                 CREATE TABLE IF NOT EXISTS shared_snapshot_delivery (
                   id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS shared_tag_aliases (
+                  host_id TEXT NOT NULL, device_id TEXT NOT NULL,
+                  source_epoch TEXT NOT NULL,
+                  remote_tag_id TEXT NOT NULL,
+                  local_tag_id TEXT NOT NULL REFERENCES tags(id),
+                  remote_name TEXT NOT NULL, local_name TEXT NOT NULL,
+                  confirmed_time REAL NOT NULL,
+                  PRIMARY KEY(host_id,device_id,source_epoch,remote_tag_id),
+                  UNIQUE(host_id,device_id,source_epoch,local_tag_id)
+                );
                 """
             let setup = schema + """
                 INSERT OR IGNORE INTO identity(key,value) VALUES('install_id','\(UUID().uuidString)');
@@ -450,7 +493,7 @@ public actor LocalLibraryStore {
     /// Persists the exact payload before network I/O so a lost ACK can replay the same sequence.
     /// A changed visible set must use a new payload; revoked PhotoKit access is never replayed.
     public func prepareSharedSnapshot(visibleIdentifiers: Set<String>) throws -> LocalSharedSnapshot {
-        let current = try sharedSnapshot(visibleIdentifiers: visibleIdentifiers)
+        let current = try networkSharedSnapshot(visibleIdentifiers: visibleIdentifiers)
         if let encoded = try scalar("SELECT payload FROM shared_snapshot_delivery WHERE id=1"),
            let payload = encoded.data(using: .utf8),
            let pending = try? JSONDecoder().decode(LocalSharedSnapshot.self, from: payload),
@@ -466,7 +509,7 @@ public actor LocalLibraryStore {
             try execute("""
                 UPDATE identity SET value=CAST(value AS INTEGER)+1 WHERE key='share_snapshot_sequence'
                 """)
-            let snapshot = try sharedSnapshot(visibleIdentifiers: visibleIdentifiers)
+            let snapshot = try networkSharedSnapshot(visibleIdentifiers: visibleIdentifiers)
             guard let payload = String(data: try JSONEncoder().encode(snapshot), encoding: .utf8)
             else { throw LocalLibraryError.database("cannot encode shared snapshot") }
             try execute("""
@@ -598,6 +641,34 @@ public actor LocalLibraryStore {
             outboxWatermark: outboxWatermark,
             selectedAssetIDs: selected.compactMap { UUID(uuidString: $0[0] ?? "") },
             assets: assets
+        )
+    }
+
+    /// Only the network projection uses the Mac's confirmed tag identity.
+    /// Local fact and migration snapshots retain the phone's original IDs.
+    private func networkSharedSnapshot(visibleIdentifiers: Set<String>) throws -> LocalSharedSnapshot {
+        let local = try sharedSnapshot(visibleIdentifiers: visibleIdentifiers)
+        let assets = try local.assets.map { asset in
+            let tags = try asset.tagDecisions.map { tag in
+                let identity = try wireTagIdentity(for: tag.tagID, localName: tag.tagName)
+                return LocalSharedTagDecision(
+                    tagID: identity.id, tagName: identity.name, decision: tag.decision
+                )
+            }
+            return LocalSharedAsset(
+                id: asset.id, localIdentifier: asset.localIdentifier,
+                kind: asset.kind, creationDate: asset.creationDate,
+                observedFavorite: asset.observedFavorite,
+                favoriteTarget: asset.favoriteTarget,
+                tagDecisions: tags, collections: asset.collections
+            )
+        }
+        return LocalSharedSnapshot(
+            installID: local.installID, sourceEpoch: local.sourceEpoch,
+            scopeRevision: local.scopeRevision,
+            snapshotSequence: local.snapshotSequence,
+            outboxWatermark: local.outboxWatermark,
+            selectedAssetIDs: local.selectedAssetIDs, assets: assets
         )
     }
 
@@ -857,10 +928,14 @@ public actor LocalLibraryStore {
             for assetID in importedAssetIDs {
                 guard try isShared(assetID: assetID), let asset = byID[assetID] else { continue }
                 for tag in asset.tagDecisions {
+                    let localTagID = try localTagIdentity(
+                        for: tag.tagID, remoteName: tag.tagName,
+                        hostID: hostID, deviceID: deviceID, sourceEpoch: snapshot.sourceEpoch
+                    )
                     try execute("""
                         INSERT OR IGNORE INTO shared_field_versions(asset_id,field,revision)
                         VALUES(?,?,1)
-                        """, [assetID.uuidString, "tag.\(tag.tagID.uuidString)"])
+                        """, [assetID.uuidString, "tag.\(localTagID.uuidString)"])
                 }
                 for collection in asset.collections {
                     try execute("""
@@ -923,6 +998,7 @@ public actor LocalLibraryStore {
               pending.scopeRevision == (Int64(try requiredIdentity("sync_ack_scope_revision")) ?? -1) else {
             throw LocalLibraryError.syncScopeNotAcknowledged
         }
+        let wireTag = try wireTagIdentity(for: tagID, localName: tagName)
         let earlier = try scalar("""
             SELECT MIN(o.sequence) FROM shared_outbox s
             JOIN outbox o ON o.operation_id=s.operation_id
@@ -959,7 +1035,7 @@ public actor LocalLibraryStore {
         }
         return LocalPreparedSharedTagOperation(
             hostID: hostID, deviceID: deviceID,
-            operation: pending, tagID: tagID, tagName: tagName,
+            operation: pending, tagID: wireTag.id, tagName: wireTag.name,
             decision: decision, baseRevision: baseRevision,
             installID: try installID(), sourceEpoch: try sourceEpoch()
         )
@@ -1490,6 +1566,55 @@ public actor LocalLibraryStore {
         Int64(try requiredIdentity("sync_tag_change_cursor")) ?? 0
     }
 
+    /// Explicitly bind one Mac tag to an existing, still local-only phone tag.
+    /// A tag that has already appeared in the shared ledger cannot be rebound.
+    public func confirmSharedTagAlias(_ candidate: LocalSharedTagAliasCandidate) throws {
+        let field = "tag.\(candidate.localTagID.uuidString)"
+        guard candidate.remoteTagID != candidate.localTagID,
+              try requiredIdentity("sync_host_id") == candidate.hostID.uuidString,
+              try requiredIdentity("sync_device_id") == candidate.deviceID.uuidString,
+              try requiredIdentity("source_epoch") == candidate.sourceEpoch.uuidString,
+              Int64(try requiredIdentity("share_scope_revision")) == candidate.scopeRevision,
+              Int64(try requiredIdentity("sync_ack_scope_revision")) == candidate.scopeRevision,
+              try sharedTagChangeCursor() == candidate.afterCursor,
+              try isShared(assetID: candidate.assetID),
+              try scalar("SELECT name FROM tags WHERE id=?", [candidate.localTagID.uuidString])
+                  == candidate.localTagName,
+              try scalar("SELECT id FROM tags WHERE id=?", [candidate.remoteTagID.uuidString])
+                  == nil,
+              !candidate.remoteTagName.isEmpty,
+              Self.syncTagNameKey(candidate.remoteTagName)
+                  == Self.syncTagNameKey(candidate.localTagName),
+              try scalar("SELECT operation_id FROM shared_outbox WHERE field=? LIMIT 1", [field])
+                  == nil,
+              try scalar("SELECT asset_id FROM shared_field_versions WHERE field=? LIMIT 1", [field])
+                  == nil,
+              try scalar("SELECT payload FROM shared_snapshot_delivery WHERE id=1") == nil,
+              try aliasRow(
+                  remoteTagID: candidate.remoteTagID, hostID: candidate.hostID,
+                  deviceID: candidate.deviceID, sourceEpoch: candidate.sourceEpoch
+              ) == nil,
+              try scalar("""
+                  SELECT remote_tag_id FROM shared_tag_aliases
+                  WHERE host_id=? AND device_id=? AND source_epoch=? AND local_tag_id=?
+                  """, [candidate.hostID.uuidString, candidate.deviceID.uuidString,
+                         candidate.sourceEpoch.uuidString, candidate.localTagID.uuidString]) == nil
+        else { throw LocalLibraryError.syncRemoteTagMismatch }
+        try transaction {
+            try execute("""
+                INSERT INTO shared_tag_aliases(
+                  host_id,device_id,source_epoch,remote_tag_id,local_tag_id,
+                  remote_name,local_name,confirmed_time
+                ) VALUES(?,?,?,?,?,?,?,?)
+                """, [
+                    candidate.hostID.uuidString, candidate.deviceID.uuidString,
+                    candidate.sourceEpoch.uuidString, candidate.remoteTagID.uuidString,
+                    candidate.localTagID.uuidString, candidate.remoteTagName,
+                    candidate.localTagName, String(Date().timeIntervalSince1970)
+                ])
+        }
+    }
+
     /// Applies one Mac change page and its cursor atomically. A pending phone intent is
     /// never overwritten by a Mac value; a prepared request must be retried first.
     public func applySharedTagChanges(
@@ -1510,6 +1635,47 @@ public actor LocalLibraryStore {
               zip(changes, changes.dropFirst()).allSatisfy({ $0.0.sequence < $0.1.sequence }) else {
             throw LocalLibraryError.syncIdentityChanged
         }
+        // Surface a name match as a candidate before starting the page transaction.
+        // No facts or cursor change until the owner confirms the two identities.
+        for change in changes {
+            guard try isShared(assetID: change.assetID) else {
+                throw LocalLibraryError.syncRemoteTagMismatch
+            }
+            if try scalar("SELECT id FROM tags WHERE id=?", [change.tagID.uuidString]) != nil {
+                continue
+            }
+            if try aliasRow(
+                remoteTagID: change.tagID, hostID: hostID,
+                deviceID: deviceID, sourceEpoch: sourceEpoch
+            ) != nil {
+                continue
+            }
+            let matching = try tags().filter {
+                Self.syncTagNameKey($0.name) == Self.syncTagNameKey(change.tagName)
+            }
+            if matching.count == 1, let local = matching.first {
+                let field = "tag.\(local.id.uuidString)"
+                guard try scalar(
+                    "SELECT operation_id FROM shared_outbox WHERE field=? LIMIT 1", [field]
+                ) == nil,
+                      try scalar(
+                          "SELECT asset_id FROM shared_field_versions WHERE field=? LIMIT 1", [field]
+                      ) == nil,
+                      try scalar("""
+                          SELECT remote_tag_id FROM shared_tag_aliases
+                          WHERE host_id=? AND device_id=? AND source_epoch=? AND local_tag_id=?
+                          """, [hostID.uuidString, deviceID.uuidString,
+                                 sourceEpoch.uuidString, local.id.uuidString]) == nil
+                else { throw LocalLibraryError.syncRemoteTagMismatch }
+                throw LocalLibraryError.syncRemoteTagAliasRequired(.init(
+                    hostID: hostID, deviceID: deviceID, sourceEpoch: sourceEpoch,
+                    scopeRevision: scopeRevision, afterCursor: afterCursor,
+                    assetID: change.assetID, remoteTagID: change.tagID,
+                    remoteTagName: change.tagName,
+                    localTagID: local.id, localTagName: local.name
+                ))
+            }
+        }
         var applied = 0
         var conflicts = 0
         try transaction {
@@ -1517,14 +1683,18 @@ public actor LocalLibraryStore {
                 guard try isShared(assetID: change.assetID) else {
                     throw LocalLibraryError.syncRemoteTagMismatch
                 }
-                let field = "tag.\(change.tagID.uuidString)"
+                let localTagID = try localTagIdentity(
+                    for: change.tagID, remoteName: change.tagName,
+                    hostID: hostID, deviceID: deviceID, sourceEpoch: sourceEpoch
+                )
+                let field = "tag.\(localTagID.uuidString)"
                 let baseline = Int64(try scalar("""
                     SELECT revision FROM shared_field_versions WHERE asset_id=? AND field=?
                     """, [change.assetID.uuidString, field]) ?? "0") ?? 0
                 if let localName = try scalar(
-                    "SELECT name FROM tags WHERE id=?", [change.tagID.uuidString]
+                    "SELECT name FROM tags WHERE id=?", [localTagID.uuidString]
                 ) {
-                    guard localName == change.tagName else {
+                    guard localTagID != change.tagID || localName == change.tagName else {
                         throw LocalLibraryError.syncRemoteTagMismatch
                     }
                 } else {
@@ -1585,14 +1755,14 @@ public actor LocalLibraryStore {
                 } else {
                     let current = try scalar("""
                         SELECT decision FROM tag_decisions WHERE asset_id=? AND tag_id=?
-                        """, [change.assetID.uuidString, change.tagID.uuidString])
+                        """, [change.assetID.uuidString, localTagID.uuidString])
                     if current != change.decision.rawValue {
                         try execute("""
                             INSERT INTO tag_decisions(asset_id,tag_id,decision,revision)
                             VALUES(?,?,?,1) ON CONFLICT(asset_id,tag_id) DO UPDATE SET
                               decision=excluded.decision,revision=revision+1
                             """, [
-                                change.assetID.uuidString, change.tagID.uuidString,
+                                change.assetID.uuidString, localTagID.uuidString,
                                 change.decision.rawValue
                             ])
                         _ = try enqueue(
@@ -1840,6 +2010,48 @@ public actor LocalLibraryStore {
         }
         try execute("UPDATE identity SET value=? WHERE key='sync_host_id'", [hostID.uuidString])
         try execute("UPDATE identity SET value=? WHERE key='sync_device_id'", [deviceID.uuidString])
+    }
+
+    private func aliasRow(
+        remoteTagID: UUID, hostID: UUID, deviceID: UUID, sourceEpoch: UUID
+    ) throws -> [String?]? {
+        try rows("""
+            SELECT local_tag_id,remote_name,local_name FROM shared_tag_aliases
+            WHERE host_id=? AND device_id=? AND source_epoch=? AND remote_tag_id=?
+            """, [hostID.uuidString, deviceID.uuidString,
+                   sourceEpoch.uuidString, remoteTagID.uuidString]).first
+    }
+
+    private func localTagIdentity(
+        for remoteTagID: UUID, remoteName: String,
+        hostID: UUID, deviceID: UUID, sourceEpoch: UUID
+    ) throws -> UUID {
+        guard let alias = try aliasRow(
+            remoteTagID: remoteTagID, hostID: hostID,
+            deviceID: deviceID, sourceEpoch: sourceEpoch
+        ) else { return remoteTagID }
+        guard let localID = UUID(uuidString: alias[0] ?? ""),
+              alias[1] == remoteName,
+              try scalar("SELECT name FROM tags WHERE id=?", [localID.uuidString]) == alias[2]
+        else { throw LocalLibraryError.syncRemoteTagMismatch }
+        return localID
+    }
+
+    private func wireTagIdentity(for localTagID: UUID, localName: String) throws -> (id: UUID, name: String) {
+        let host = try requiredIdentity("sync_host_id")
+        let device = try requiredIdentity("sync_device_id")
+        let epoch = try requiredIdentity("source_epoch")
+        guard !host.isEmpty, !device.isEmpty,
+              let row = try rows("""
+                  SELECT remote_tag_id,remote_name,local_name FROM shared_tag_aliases
+                  WHERE host_id=? AND device_id=? AND source_epoch=? AND local_tag_id=?
+                  """, [host, device, epoch, localTagID.uuidString]).first
+        else { return (localTagID, localName) }
+        guard row[2] == localName, let remoteID = UUID(uuidString: row[0] ?? ""),
+              let remoteName = row[1] else {
+            throw LocalLibraryError.syncRemoteTagMismatch
+        }
+        return (remoteID, remoteName)
     }
 
     private func requiredIdentity(_ key: String) throws -> String {

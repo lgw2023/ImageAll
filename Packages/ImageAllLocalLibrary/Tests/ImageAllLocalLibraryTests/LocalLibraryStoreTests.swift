@@ -605,6 +605,7 @@ import Testing
     let localTagID = try await store.createTag(name: "Café")
     let wouldBeCreated = UUID()
     let colliding = UUID()
+    var aliasCandidate: LocalSharedTagAliasCandidate?
     do {
         _ = try await store.applySharedTagChanges(
             hostID: hostID, deviceID: deviceID, sourceEpoch: snapshot.sourceEpoch,
@@ -617,12 +618,92 @@ import Testing
             ], nextCursor: 3
         )
         Issue.record("same-name different-ID must stop the whole page")
-    } catch LocalLibraryError.syncRemoteTagMismatch {
+    } catch LocalLibraryError.syncRemoteTagAliasRequired(let candidate) {
+        aliasCandidate = candidate
         #expect(try await store.sharedTagChangeCursor() == 1)
         #expect(try await store.tags().contains { $0.id == localTagID })
         #expect(try await !store.tags().contains { $0.id == wouldBeCreated })
         #expect(try await !store.tags().contains { $0.id == colliding })
         #expect(try await store.pendingSharedOperations().isEmpty)
+    }
+    let candidate = try #require(aliasCandidate)
+    #expect(candidate.localTagID == localTagID)
+    #expect(candidate.remoteTagID == colliding)
+    try await store.confirmSharedTagAlias(candidate)
+    let reopened = try LocalLibraryStore(url: root.appendingPathComponent("local.sqlite"))
+    let replay = try await reopened.applySharedTagChanges(
+        hostID: hostID, deviceID: deviceID, sourceEpoch: snapshot.sourceEpoch,
+        scopeRevision: snapshot.scopeRevision, afterCursor: 1,
+        changes: [
+            .init(sequence: 2, assetID: asset.id, tagID: wouldBeCreated,
+                  tagName: "Other", decision: .rejected, fieldRevision: 1),
+            .init(sequence: 3, assetID: asset.id, tagID: colliding,
+                  tagName: "Cafe\u{301}", decision: .accepted, fieldRevision: 1),
+        ], nextCursor: 3
+    )
+    #expect(replay.applied == 2)
+    #expect(try await reopened.sharedTagChangeCursor() == 3)
+    #expect(try await reopened.decisions(assetID: asset.id)[localTagID] == .accepted)
+    #expect(try await !reopened.tags().contains { $0.id == colliding })
+    #expect(try await reopened.pendingSharedOperations().isEmpty)
+
+    // A later snapshot uses the confirmed Mac identity, while migration facts
+    // retain the phone's original tag ID. The snapshot ACK keys its baseline
+    // to the phone field so a later edit can send the correct Mac revision.
+    try await reopened.observe([.init(
+        localIdentifier: "later", kind: "image", creationDate: nil, isFavorite: false
+    )])
+    let later = try #require(await reopened.assets(visibleIdentifiers: ["later"]).first)
+    try await reopened.setDecision(assetID: later.id, tagID: localTagID, decision: .accepted)
+    try await reopened.setShared(assetID: later.id, shared: true)
+    let network = try await reopened.prepareSharedSnapshot(visibleIdentifiers: ["shared", "later"])
+    let networkTag = try #require(network.assets.first { $0.id == later.id }?.tagDecisions.first)
+    #expect(networkTag.tagID == colliding)
+    #expect(networkTag.tagName == "Cafe\u{301}")
+    let facts = try await reopened.migrationFactSnapshot(visibleIdentifiers: ["shared", "later"])
+    #expect(facts.assets.first { $0.id == later.id }?.tagDecisions.first?.tagID == localTagID)
+    try await reopened.acknowledgeSharedSnapshot(
+        network, hostID: hostID, deviceID: deviceID, importedAssetIDs: [later.id]
+    )
+    try await reopened.setDecision(assetID: later.id, tagID: localTagID, decision: .rejected)
+    let pending = try #require(await reopened.pendingSharedOperations().first)
+    let prepared = try #require(await reopened.prepareSharedTagOperation(
+        id: pending.id, hostID: hostID, deviceID: deviceID
+    ))
+    #expect(prepared.tagID == colliding)
+    #expect(prepared.tagName == "Cafe\u{301}")
+    #expect(prepared.baseRevision == 1)
+}
+
+@Test func sharedPhoneTagCannotBeSilentlyReboundToDifferentMacTag() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try LocalLibraryStore(url: root.appendingPathComponent("local.sqlite"))
+    try await store.observe([.init(
+        localIdentifier: "shared", kind: "image", creationDate: nil, isFavorite: false
+    )])
+    let asset = try #require(await store.assets(visibleIdentifiers: ["shared"]).first)
+    let localTagID = try await store.createTag(name: "Family")
+    try await store.setDecision(assetID: asset.id, tagID: localTagID, decision: .accepted)
+    try await store.setShared(assetID: asset.id, shared: true)
+    let snapshot = try await store.prepareSharedSnapshot(visibleIdentifiers: ["shared"])
+    let hostID = UUID(), deviceID = UUID()
+    try await store.acknowledgeSharedSnapshot(
+        snapshot, hostID: hostID, deviceID: deviceID, importedAssetIDs: [asset.id]
+    )
+    do {
+        _ = try await store.applySharedTagChanges(
+            hostID: hostID, deviceID: deviceID, sourceEpoch: snapshot.sourceEpoch,
+            scopeRevision: snapshot.scopeRevision, afterCursor: 0,
+            changes: [.init(
+                sequence: 1, assetID: asset.id, tagID: UUID(),
+                tagName: "family", decision: .rejected, fieldRevision: 1
+            )], nextCursor: 1
+        )
+        Issue.record("an established shared tag identity must not be rebound")
+    } catch LocalLibraryError.syncRemoteTagMismatch {
+        #expect(try await store.sharedTagChangeCursor() == 0)
+        #expect(try await store.decisions(assetID: asset.id)[localTagID] == .accepted)
     }
 }
 
