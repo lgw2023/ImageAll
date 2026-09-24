@@ -15,6 +15,8 @@ public enum LocalLibraryError: Error, Equatable {
     case syncRemoteTagMismatch
     case syncRemoteCollectionMismatch
     case syncConflictDetailsUnavailable
+    case migrationScopeIncomplete
+    case migrationSyncPending
 }
 
 public enum LocalDecision: String, Codable, Sendable {
@@ -236,6 +238,19 @@ public struct LocalSharedSnapshot: Codable, Sendable {
     /// Explicit grants, including items temporarily hidden by PhotoKit permission changes.
     public let selectedAssetIDs: [UUID]
     public let assets: [LocalSharedAsset]
+}
+
+/// Captured in the same SQLite transaction as a migration fact snapshot. It
+/// proves only the phone's local delivery state at this watermark; Mac must
+/// still compare the three cursors with its current change-log heads.
+public struct LocalMigrationSyncCheckpoint: Codable, Sendable, Equatable {
+    public let hostID: UUID
+    public let deviceID: UUID
+    public let acknowledgedScopeRevision: Int64
+    public let acknowledgedSnapshotSequence: Int64
+    public let tagChangeCursor: Int64
+    public let collectionChangeCursor: Int64
+    public let favoriteChangeCursor: Int64
 }
 
 public struct LocalSharedAsset: Codable, Identifiable, Sendable {
@@ -476,6 +491,61 @@ public actor LocalLibraryStore {
         }
         guard let snapshot else { throw LocalLibraryError.database("missing migration fact snapshot") }
         return snapshot
+    }
+
+    /// Freeze one candidate completion watermark only after the entire
+    /// explicitly shared scope is visible, acknowledged, and has no pending
+    /// delivery or unresolved shared conflict. This does not claim that the
+    /// Mac has no newer changes or that the archive is complete.
+    public func migrationCompletionCheckpoint(
+        visibleIdentifiers: Set<String>
+    ) throws -> (snapshot: LocalSharedSnapshot, checkpoint: LocalMigrationSyncCheckpoint) {
+        var result: (LocalSharedSnapshot, LocalMigrationSyncCheckpoint)?
+        try transaction {
+            let current = try sharedSnapshot(visibleIdentifiers: visibleIdentifiers)
+            guard !current.selectedAssetIDs.isEmpty,
+                  current.selectedAssetIDs.count == current.assets.count else {
+                throw LocalLibraryError.migrationScopeIncomplete
+            }
+            let scope = Int64(try requiredIdentity("sync_ack_scope_revision")) ?? -1
+            let ackSequence = Int64(try requiredIdentity("sync_ack_snapshot_sequence")) ?? 0
+            let hostText = try requiredIdentity("sync_host_id")
+            let deviceText = try requiredIdentity("sync_device_id")
+            guard scope == current.scopeRevision, ackSequence > 0,
+                  let hostID = UUID(uuidString: hostText),
+                  let deviceID = UUID(uuidString: deviceText) else {
+                throw LocalLibraryError.syncScopeNotAcknowledged
+            }
+            let pending = Int64(try scalar("SELECT COUNT(*) FROM shared_outbox") ?? "0") ?? -1
+            let frozenSnapshot = try scalar(
+                "SELECT payload FROM shared_snapshot_delivery WHERE id=1"
+            )
+            guard pending == 0, frozenSnapshot == nil else {
+                throw LocalLibraryError.migrationSyncPending
+            }
+            try execute("""
+                UPDATE identity SET value=CAST(value AS INTEGER)+1
+                WHERE key='share_snapshot_sequence'
+                """)
+            let snapshot = try sharedSnapshot(visibleIdentifiers: visibleIdentifiers)
+            let checkpoint = LocalMigrationSyncCheckpoint(
+                hostID: hostID, deviceID: deviceID,
+                acknowledgedScopeRevision: scope,
+                acknowledgedSnapshotSequence: ackSequence,
+                tagChangeCursor: Int64(try requiredIdentity("sync_tag_change_cursor")) ?? 0,
+                collectionChangeCursor: Int64(
+                    try requiredIdentity("sync_collection_change_cursor")
+                ) ?? 0,
+                favoriteChangeCursor: Int64(
+                    try requiredIdentity("sync_favorite_change_cursor")
+                ) ?? 0
+            )
+            result = (snapshot, checkpoint)
+        }
+        guard let result else {
+            throw LocalLibraryError.database("missing migration completion checkpoint")
+        }
+        return result
     }
 
     /// The caller supplies the identifiers currently returned by PhotoKit. Missing permission

@@ -54,7 +54,13 @@ final class PhoneArchiveImportTests: XCTestCase {
                 tagDecisions: [.init(
                     tagID: UUID(), tagName: "传输后标签", decision: .accepted
                 )], collections: []
-            )]
+            )], syncCheckpoint: .init(
+                hostID: UUID(), deviceID: UUID(),
+                acknowledgedScopeRevision: header.scopeRevision,
+                acknowledgedSnapshotSequence: header.inventoryWatermark,
+                tagChangeCursor: 0, collectionChangeCursor: 0,
+                favoriteChangeCursor: 0
+            )
         )
         let factsFile = fixture.root.appendingPathComponent("latest.imageallfacts")
         try ImageAllMigrationFacts.write(facts, to: factsFile)
@@ -91,6 +97,7 @@ final class PhoneArchiveImportTests: XCTestCase {
             migrationID: header.migrationID, archiveRoot: imported.archiveURL
         )
         XCTAssertEqual(integrity.factSnapshotSequence, 8)
+        XCTAssertNotNil(integrity.phoneSyncCheckpoint)
         try await fixture.database.pool.write { db in
             try db.execute(sql: """
                 UPDATE migration_import_tag_decision SET tag_name = '被改动'

@@ -308,6 +308,65 @@ actor RemoteLocalLibrarySyncStore {
             .compactMap { projection(deviceID: $0) }
     }
 
+    /// Compares a phone-local candidate checkpoint with this Host's current
+    /// projection and change-log heads. A later Mac edit or phone snapshot
+    /// invalidates the candidate; no completion receipt is issued here.
+    func matchesMigrationCheckpoint(_ snapshot: ImageAllMigrationFactSnapshot) -> Bool {
+        guard let checkpoint = snapshot.syncCheckpoint,
+              checkpoint.hostID == hostID,
+              let record = records[checkpoint.deviceID],
+              record.request.installID == snapshot.sourceDeviceID,
+              record.request.sourceEpoch == snapshot.sourceEpoch,
+              record.request.scopeRevision == snapshot.scopeRevision,
+              record.request.snapshotSequence == checkpoint.acknowledgedSnapshotSequence,
+              checkpoint.acknowledgedScopeRevision == snapshot.scopeRevision,
+              checkpoint.tagChangeCursor == (record.tagChanges?.last?.sequence ?? 0),
+              checkpoint.collectionChangeCursor == (record.collectionChanges?.last?.sequence ?? 0),
+              checkpoint.favoriteChangeCursor == (record.favoriteChanges?.last?.sequence ?? 0),
+              let view = projection(deviceID: checkpoint.deviceID) else { return false }
+        let selected = Set(record.request.selectedAssetIDs)
+        let candidateIDs = snapshot.items.map(\.mediaID)
+        guard Set(candidateIDs).count == candidateIDs.count else { return false }
+        let factsByID = Dictionary(uniqueKeysWithValues: snapshot.items.map {
+            ($0.mediaID, $0)
+        })
+        guard selected.count == record.request.selectedAssetIDs.count,
+              selected == Set(factsByID.keys),
+              Set(view.assets.map(\.asset.id)) == selected,
+              view.assets.allSatisfy({
+                  $0.lastVisibleSnapshotSequence == record.request.snapshotSequence
+              }) else { return false }
+        for projected in view.assets {
+            let asset = projected.asset
+            guard let fact = factsByID[asset.id],
+                  fact.observedFavorite == asset.observedFavorite else { return false }
+            let tags = view.sharedTagFacts.filter { $0.assetID == asset.id }
+            guard tags.count == fact.tagDecisions.count else { return false }
+            let tagsByID = Dictionary(uniqueKeysWithValues: tags.map { ($0.tagID, $0) })
+            for expected in fact.tagDecisions {
+                guard let actual = tagsByID[expected.tagID],
+                      actual.tagName == expected.tagName,
+                      actual.decision == expected.decision else { return false }
+            }
+            let included = view.sharedCollectionFacts.filter {
+                $0.assetID == asset.id && $0.included
+            }
+            let expectedIncluded = fact.collections.filter(\.included)
+            guard included.count == expectedIncluded.count else { return false }
+            let collectionsByID = Dictionary(uniqueKeysWithValues: included.map {
+                ($0.collectionID, $0)
+            })
+            for expected in expectedIncluded {
+                guard let actual = collectionsByID[expected.collectionID],
+                      actual.collectionName == expected.collectionName else { return false }
+            }
+            let targets = view.sharedFavoriteFacts.filter { $0.assetID == asset.id }
+            guard targets.count <= 1,
+                  targets.first?.target == fact.favoriteTarget else { return false }
+        }
+        return true
+    }
+
     func submitTagDecision(
         _ request: RemoteLocalLibraryTagDecisionRequest,
         authenticatedDeviceID: UUID

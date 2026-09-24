@@ -3,6 +3,53 @@ import SQLite3
 import Testing
 @testable import ImageAllLocalLibrary
 
+@Test func migrationCheckpointRequiresVisibleAcknowledgedConflictFreeScope() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try LocalLibraryStore(url: root.appendingPathComponent("local.sqlite"))
+    try await store.observe([
+        LocalObservedAsset(
+            localIdentifier: "selected", kind: "image",
+            creationDate: nil, isFavorite: false
+        )
+    ])
+    let asset = try #require(await store.assets(visibleIdentifiers: ["selected"]).first)
+    try await store.setShared(assetID: asset.id, shared: true)
+    do {
+        _ = try await store.migrationCompletionCheckpoint(visibleIdentifiers: ["selected"])
+        Issue.record("unacknowledged scope produced a completion checkpoint")
+    } catch LocalLibraryError.syncScopeNotAcknowledged { }
+
+    let hostID = UUID()
+    let deviceID = UUID()
+    let directory = try await store.prepareSharedSnapshot(visibleIdentifiers: ["selected"])
+    try await store.acknowledgeSharedSnapshot(
+        directory, hostID: hostID, deviceID: deviceID,
+        importedAssetIDs: [asset.id]
+    )
+    do {
+        _ = try await store.migrationCompletionCheckpoint(visibleIdentifiers: [])
+        Issue.record("permission-reduced scope produced a completion checkpoint")
+    } catch LocalLibraryError.migrationScopeIncomplete { }
+
+    let candidate = try await store.migrationCompletionCheckpoint(
+        visibleIdentifiers: ["selected"]
+    )
+    #expect(candidate.checkpoint.hostID == hostID)
+    #expect(candidate.checkpoint.deviceID == deviceID)
+    #expect(candidate.checkpoint.acknowledgedScopeRevision == candidate.snapshot.scopeRevision)
+    #expect(candidate.checkpoint.acknowledgedSnapshotSequence == directory.snapshotSequence)
+    #expect(candidate.snapshot.snapshotSequence > directory.snapshotSequence)
+    #expect(candidate.snapshot.selectedAssetIDs == [asset.id])
+
+    let tagID = try await store.createTag(name: "later")
+    try await store.setDecision(assetID: asset.id, tagID: tagID, decision: .accepted)
+    do {
+        _ = try await store.migrationCompletionCheckpoint(visibleIdentifiers: ["selected"])
+        Issue.record("pending shared edit produced a completion checkpoint")
+    } catch LocalLibraryError.migrationSyncPending { }
+}
+
 @Test func persistsOfflineFactsAndStableIdentity() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }

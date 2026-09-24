@@ -15,7 +15,14 @@ final class ImageAllMigrationArchiveTests: XCTestCase {
         )
         let snapshot = ImageAllMigrationFactSnapshot(
             sourceDeviceID: UUID(), sourceEpoch: UUID(), scopeRevision: 2,
-            snapshotSequence: 4, factWatermark: 7, items: [item]
+            snapshotSequence: 4, factWatermark: 7, items: [item],
+            syncCheckpoint: .init(
+                hostID: UUID(), deviceID: UUID(),
+                acknowledgedScopeRevision: 2,
+                acknowledgedSnapshotSequence: 3,
+                tagChangeCursor: 4, collectionChangeCursor: 5,
+                favoriteChangeCursor: 6
+            )
         )
         try ImageAllMigrationFacts.write(snapshot, to: url)
         XCTAssertEqual(try ImageAllMigrationFacts.read(at: url), snapshot)
@@ -25,6 +32,19 @@ final class ImageAllMigrationArchiveTests: XCTestCase {
             items: [item, item]
         )
         XCTAssertThrowsError(try ImageAllMigrationFacts.write(duplicate, to: url)) {
+            XCTAssertEqual($0 as? ImageAllMigrationFactsError, .invalidSnapshot)
+        }
+        let invalidCursor = ImageAllMigrationFactSnapshot(
+            sourceDeviceID: snapshot.sourceDeviceID, sourceEpoch: snapshot.sourceEpoch,
+            scopeRevision: 2, snapshotSequence: 5, factWatermark: 7,
+            items: [item], syncCheckpoint: .init(
+                hostID: UUID(), deviceID: UUID(),
+                acknowledgedScopeRevision: 2, acknowledgedSnapshotSequence: 3,
+                tagChangeCursor: -1, collectionChangeCursor: 0,
+                favoriteChangeCursor: 0
+            )
+        )
+        XCTAssertThrowsError(try ImageAllMigrationFacts.write(invalidCursor, to: url)) {
             XCTAssertEqual($0 as? ImageAllMigrationFactsError, .invalidSnapshot)
         }
     }

@@ -669,6 +669,71 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(persisted?.sharedCollectionFacts.first(where: { $0.assetID == secondID })?.included, true)
     }
 
+    func testMigrationCheckpointRejectsLaterMacChangesAndHiddenScope() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let hostID = UUID(), deviceID = UUID(), installID = UUID(), epoch = UUID()
+        let assetID = UUID(), tagID = UUID()
+        let asset = RemoteLocalLibraryAsset(
+            id: assetID, localIdentifier: "phone-local", mediaKind: .image,
+            createdAtMs: nil, observedFavorite: false, favoriteTarget: nil,
+            tagDecisions: [.init(tagID: tagID, tagName: "family", decision: .accepted)],
+            collections: []
+        )
+        let store = try RemoteLocalLibrarySyncStore(
+            hostID: hostID, storageURL: root.appendingPathComponent("sync.json")
+        )
+        _ = try await store.submit(.init(
+            hostID: hostID, installID: installID, sourceEpoch: epoch,
+            scopeRevision: 1, snapshotSequence: 1,
+            selectedAssetIDs: [assetID], assets: [asset]
+        ), authenticatedDeviceID: deviceID)
+        let checkpoint = ImageAllMigrationSyncCheckpoint(
+            hostID: hostID, deviceID: deviceID,
+            acknowledgedScopeRevision: 1, acknowledgedSnapshotSequence: 1,
+            tagChangeCursor: 0, collectionChangeCursor: 0, favoriteChangeCursor: 0
+        )
+        let facts = ImageAllMigrationFactSnapshot(
+            sourceDeviceID: installID, sourceEpoch: epoch,
+            scopeRevision: 1, snapshotSequence: 2, factWatermark: 1,
+            items: [.init(
+                mediaID: assetID, observedFavorite: false, favoriteTarget: nil,
+                tagDecisions: [.init(tagID: tagID, tagName: "family", decision: .accepted)],
+                collections: []
+            )], syncCheckpoint: checkpoint
+        )
+        let initiallyMatches = await store.matchesMigrationCheckpoint(facts)
+        XCTAssertTrue(initiallyMatches)
+        _ = try await store.setTagDecisionFromMac(
+            deviceID: deviceID, assetID: assetID, tagID: tagID,
+            decision: .rejected, expectedRevision: 1
+        )
+        let afterMacEditMatches = await store.matchesMigrationCheckpoint(facts)
+        XCTAssertFalse(afterMacEditMatches)
+        let updatedFacts = ImageAllMigrationFactSnapshot(
+            sourceDeviceID: installID, sourceEpoch: epoch,
+            scopeRevision: 1, snapshotSequence: 3, factWatermark: 2,
+            items: [.init(
+                mediaID: assetID, observedFavorite: false, favoriteTarget: nil,
+                tagDecisions: [.init(tagID: tagID, tagName: "family", decision: .rejected)],
+                collections: []
+            )], syncCheckpoint: .init(
+                hostID: hostID, deviceID: deviceID,
+                acknowledgedScopeRevision: 1, acknowledgedSnapshotSequence: 1,
+                tagChangeCursor: 1, collectionChangeCursor: 0, favoriteChangeCursor: 0
+            )
+        )
+        let afterReconciliationMatches = await store.matchesMigrationCheckpoint(updatedFacts)
+        XCTAssertTrue(afterReconciliationMatches)
+        _ = try await store.submit(.init(
+            hostID: hostID, installID: installID, sourceEpoch: epoch,
+            scopeRevision: 1, snapshotSequence: 2,
+            selectedAssetIDs: [assetID], assets: []
+        ), authenticatedDeviceID: deviceID)
+        let afterHiddenScopeMatches = await store.matchesMigrationCheckpoint(updatedFacts)
+        XCTAssertFalse(afterHiddenScopeMatches)
+    }
+
     func testSharedTagIdentityConflictsHaveDistinctReasons() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

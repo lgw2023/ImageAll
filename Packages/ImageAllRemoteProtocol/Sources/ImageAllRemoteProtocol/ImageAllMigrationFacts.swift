@@ -11,11 +11,15 @@ public struct ImageAllMigrationFactSnapshot: Codable, Sendable, Equatable {
     public let snapshotSequence: Int64
     public let factWatermark: Int64
     public let items: [ImageAllMigrationFactItem]
+    /// Phone-local delivery checkpoint. Mac must compare these cursors with
+    /// its change-log heads before any completion decision.
+    public let syncCheckpoint: ImageAllMigrationSyncCheckpoint?
 
     public init(
         sourceDeviceID: UUID, sourceEpoch: UUID, scopeRevision: Int64,
         snapshotSequence: Int64, factWatermark: Int64,
-        items: [ImageAllMigrationFactItem]
+        items: [ImageAllMigrationFactItem],
+        syncCheckpoint: ImageAllMigrationSyncCheckpoint? = nil
     ) {
         formatVersion = 1
         self.sourceDeviceID = sourceDeviceID
@@ -24,6 +28,34 @@ public struct ImageAllMigrationFactSnapshot: Codable, Sendable, Equatable {
         self.snapshotSequence = snapshotSequence
         self.factWatermark = factWatermark
         self.items = items
+        self.syncCheckpoint = syncCheckpoint
+    }
+}
+
+public struct ImageAllMigrationSyncCheckpoint: Codable, Sendable, Equatable {
+    public let hostID: UUID
+    public let deviceID: UUID
+    public let acknowledgedScopeRevision: Int64
+    public let acknowledgedSnapshotSequence: Int64
+    public let tagChangeCursor: Int64
+    public let collectionChangeCursor: Int64
+    public let favoriteChangeCursor: Int64
+
+    public init(
+        hostID: UUID, deviceID: UUID,
+        acknowledgedScopeRevision: Int64,
+        acknowledgedSnapshotSequence: Int64,
+        tagChangeCursor: Int64,
+        collectionChangeCursor: Int64,
+        favoriteChangeCursor: Int64
+    ) {
+        self.hostID = hostID
+        self.deviceID = deviceID
+        self.acknowledgedScopeRevision = acknowledgedScopeRevision
+        self.acknowledgedSnapshotSequence = acknowledgedSnapshotSequence
+        self.tagChangeCursor = tagChangeCursor
+        self.collectionChangeCursor = collectionChangeCursor
+        self.favoriteChangeCursor = favoriteChangeCursor
     }
 }
 
@@ -190,6 +222,16 @@ public enum ImageAllMigrationFacts {
                   Set(item.collections.map(\.collectionID)).count == item.collections.count,
                   item.tagDecisions.allSatisfy({ !$0.tagName.isEmpty }),
                   item.collections.allSatisfy({ !$0.collectionName.isEmpty }) else {
+                throw ImageAllMigrationFactsError.invalidSnapshot
+            }
+        }
+        if let checkpoint = snapshot.syncCheckpoint {
+            guard checkpoint.acknowledgedScopeRevision == snapshot.scopeRevision,
+                  checkpoint.acknowledgedSnapshotSequence > 0,
+                  checkpoint.acknowledgedSnapshotSequence <= snapshot.snapshotSequence,
+                  checkpoint.tagChangeCursor >= 0,
+                  checkpoint.collectionChangeCursor >= 0,
+                  checkpoint.favoriteChangeCursor >= 0 else {
                 throw ImageAllMigrationFactsError.invalidSnapshot
             }
         }

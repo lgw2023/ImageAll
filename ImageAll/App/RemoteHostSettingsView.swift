@@ -1453,7 +1453,20 @@ private final class PhoneArchiveImportModel: ObservableObject {
                     migrationID: batch.id, archiveRoot: archive
                 )
             }
-            message = "Mac 归档逐资源与入库账本核对通过：\(report.itemCount) 项、\(report.resourceCount) 个资源，整理快照序号 \(report.factSnapshotSequence)。仍需手机同步冲突、事实水位和独立恢复验收。"
+            let checkpoint: String
+            if let snapshot = report.factSnapshot, snapshot.syncCheckpoint != nil {
+                do {
+                    let matches = try await RemoteHostProcessHolder.matchesMigrationCheckpoint(snapshot)
+                    checkpoint = matches
+                        ? "手机候选检查点与 Mac 当前分享事实及变化水位一致。"
+                        : "手机候选检查点与 Mac 当前状态不一致，需重新同步并生成检查点。"
+                } catch {
+                    checkpoint = "Mac 共享状态读取失败，候选检查点尚未通过：\(error.localizedDescription)"
+                }
+            } else {
+                checkpoint = "手机尚未附带验收检查点。"
+            }
+            message = "Mac 归档逐资源与入库账本核对通过：\(report.itemCount) 项、\(report.resourceCount) 个资源，整理快照序号 \(report.factSnapshotSequence)。\(checkpoint)独立恢复仍待验收。"
         } catch {
             message = "Mac 归档完整性核查未通过：\(error.localizedDescription)"
         }

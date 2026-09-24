@@ -59,6 +59,8 @@ struct PhoneArchiveIntegrityReport: Sendable, Equatable {
     let verifiedBytes: Int64
     let factSnapshotSequence: Int64
     let factWatermark: Int64
+    let phoneSyncCheckpoint: ImageAllMigrationSyncCheckpoint?
+    let factSnapshot: ImageAllMigrationFactSnapshot?
 }
 
 struct PhoneArchiveImportedBatch: Identifiable, Sendable {
@@ -226,7 +228,9 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                 itemCount: savedItems, resourceCount: savedResources,
                 verifiedBytes: savedBytes,
                 factSnapshotSequence: savedFactSequence,
-                factWatermark: savedFactWatermark
+                factWatermark: savedFactWatermark,
+                phoneSyncCheckpoint: latest?.syncCheckpoint,
+                factSnapshot: latest
             )
         }
     }

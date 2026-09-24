@@ -172,6 +172,15 @@ final class LocalLibraryModel: ObservableObject {
 
     private func makeSharedSnapshot(forMigrationFacts: Bool) async throws -> LocalSharedSnapshot {
         guard let store else { throw LocalFavoriteSourceError.storeUnavailable }
+        let identifiers = try await observedSharedVisibleIdentifiers()
+        if forMigrationFacts {
+            return try await store.migrationFactSnapshot(visibleIdentifiers: identifiers)
+        }
+        return try await store.prepareSharedSnapshot(visibleIdentifiers: identifiers)
+    }
+
+    private func observedSharedVisibleIdentifiers() async throws -> Set<String> {
+        guard let store else { throw LocalFavoriteSourceError.storeUnavailable }
         let selections = try await store.sharedSelections()
         var visible: [PHAsset] = []
         let authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
@@ -192,11 +201,7 @@ final class LocalLibraryModel: ObservableObject {
                 isFavorite: $0.isFavorite
             )
         })
-        let identifiers = Set(visible.map(\.localIdentifier))
-        if forMigrationFacts {
-            return try await store.migrationFactSnapshot(visibleIdentifiers: identifiers)
-        }
-        return try await store.prepareSharedSnapshot(visibleIdentifiers: identifiers)
+        return Set(visible.map(\.localIdentifier))
     }
 
     /// An explicit, local-only export of the current selected scope. A reduced
@@ -235,6 +240,28 @@ final class LocalLibraryModel: ObservableObject {
         }
         return try await Task.detached(priority: .utility) {
             try LocalMigrationFactExporter.export(snapshot: snapshot)
+        }.value
+    }
+
+    func exportCompletionCheckpointFacts() async throws -> URL {
+        guard let store else { throw LocalFavoriteSourceError.storeUnavailable }
+        let identifiers = try await observedSharedVisibleIdentifiers()
+        let candidate: (snapshot: LocalSharedSnapshot, checkpoint: LocalMigrationSyncCheckpoint)
+        do {
+            candidate = try await store.migrationCompletionCheckpoint(
+                visibleIdentifiers: identifiers
+            )
+        } catch LocalLibraryError.migrationScopeIncomplete {
+            throw LocalArchiveExportError.selectionNotVisible
+        } catch LocalLibraryError.migrationSyncPending {
+            throw LocalArchiveExportError.syncPending
+        } catch LocalLibraryError.syncScopeNotAcknowledged {
+            throw LocalArchiveExportError.syncNotAcknowledged
+        }
+        return try await Task.detached(priority: .utility) {
+            try LocalMigrationFactExporter.export(
+                snapshot: candidate.snapshot, checkpoint: candidate.checkpoint
+            )
         }.value
     }
 
@@ -1080,6 +1107,29 @@ private struct LocalShareScopeView: View {
                 }
                 .disabled(!exportedArchiveComplete || !remoteModel.isConnected
                           || isUploadingArchive || isExporting || isExportingFacts)
+                Button(isUploadingArchive ? "正在上传检查点…" : "生成并上传验收检查点") {
+                    Task {
+                        isUploadingArchive = true
+                        defer { isUploadingArchive = false }
+                        do {
+                            let facts = try await model.exportCompletionCheckpointFacts()
+                            try await Task.detached(priority: .utility) {
+                                try LocalMigrationFactExporter.attach(
+                                    facts, to: exportedArchive
+                                )
+                            }.value
+                            exportedFacts = facts
+                            _ = try await remoteModel.uploadMigrationArchive(
+                                at: exportedArchive
+                            )
+                            archiveStatusMessage = "手机已提交当前分享范围的事实水位候选；请在 Mac 再次入库并核查。Mac 变化水位和独立恢复仍待验收。"
+                        } catch {
+                            archiveStatusMessage = "验收检查点未提交：\(error.localizedDescription)"
+                        }
+                    }
+                }
+                .disabled(!exportedArchiveComplete || !remoteModel.isConnected
+                          || isUploadingArchive || isExporting || isExportingFacts)
             }
             if let archiveStatusMessage {
                 Text(archiveStatusMessage).font(.footnote).foregroundStyle(.secondary)
@@ -1122,6 +1172,8 @@ private enum LocalArchiveExportError: LocalizedError {
     case sourceChanged
     case incompleteArchive
     case archiveScopeChanged
+    case syncPending
+    case syncNotAcknowledged
 
     var errorDescription: String? {
         switch self {
@@ -1131,6 +1183,8 @@ private enum LocalArchiveExportError: LocalizedError {
         case .sourceChanged: "导出期间来源照片或视频已变化；请重新生成归档。"
         case .incompleteArchive: "现有归档缺少必需原件，不能上传为完整迁移归档。"
         case .archiveScopeChanged: "整理信息范围或来源与此归档不一致，请重新选择对应归档。"
+        case .syncPending: "仍有待发送整理操作或未解决冲突；请先同步并处理，再生成验收检查点。"
+        case .syncNotAcknowledged: "当前分享范围尚无 Mac 确认；请先同步目录与整理信息。"
         }
     }
 }
@@ -1238,7 +1292,10 @@ private enum LocalMigrationFactExporter {
         }
     }
 
-    static func export(snapshot: LocalSharedSnapshot) throws -> URL {
+    static func export(
+        snapshot: LocalSharedSnapshot,
+        checkpoint: LocalMigrationSyncCheckpoint? = nil
+    ) throws -> URL {
         let items = snapshot.assets.map { asset in
             ImageAllMigrationFactItem(
                 mediaID: asset.id, observedFavorite: asset.observedFavorite,
@@ -1266,7 +1323,17 @@ private enum LocalMigrationFactExporter {
             sourceDeviceID: snapshot.installID, sourceEpoch: snapshot.sourceEpoch,
             scopeRevision: snapshot.scopeRevision,
             snapshotSequence: snapshot.snapshotSequence,
-            factWatermark: snapshot.outboxWatermark, items: items
+            factWatermark: snapshot.outboxWatermark, items: items,
+            syncCheckpoint: checkpoint.map { local in
+                ImageAllMigrationSyncCheckpoint(
+                    hostID: local.hostID, deviceID: local.deviceID,
+                    acknowledgedScopeRevision: local.acknowledgedScopeRevision,
+                    acknowledgedSnapshotSequence: local.acknowledgedSnapshotSequence,
+                    tagChangeCursor: local.tagChangeCursor,
+                    collectionChangeCursor: local.collectionChangeCursor,
+                    favoriteChangeCursor: local.favoriteChangeCursor
+                )
+            }
         )
         let manager = FileManager.default
         let support = try manager.url(

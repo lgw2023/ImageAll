@@ -545,6 +545,15 @@ enum RemoteHostProcessHolder {
         return await store.projections()
     }
 
+    static func matchesMigrationCheckpoint(
+        _ snapshot: ImageAllMigrationFactSnapshot
+    ) async throws -> Bool {
+        guard let checkpoint = snapshot.syncCheckpoint,
+              (await pairedDevices()).contains(where: { $0.deviceID == checkpoint.deviceID }),
+              let store = try await state.syncStoreForUI() else { return false }
+        return await store.matchesMigrationCheckpoint(snapshot)
+    }
+
     static func setSharedPhoneTagDecision(
         deviceID: UUID, assetID: UUID, tagID: UUID,
         decision: RemoteLocalLibraryDecision, expectedRevision: Int64
