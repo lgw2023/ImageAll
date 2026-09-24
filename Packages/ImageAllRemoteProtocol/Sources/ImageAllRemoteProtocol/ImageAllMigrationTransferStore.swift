@@ -174,7 +174,9 @@ public actor ImageAllMigrationTransferStore {
               session.deviceID == authenticatedDeviceID else {
             throw ImageAllMigrationTransferError.identityConflict
         }
-        guard !session.sealed else { throw ImageAllMigrationTransferError.sealed }
+        guard !session.sealed || relativePath.hasPrefix("facts/") else {
+            throw ImageAllMigrationTransferError.sealed
+        }
         let file = packageDirectory(migrationID).appendingPathComponent(relativePath)
         try prepareFileParent(for: file, migrationID: migrationID)
         let committed = try Self.repairFile(
@@ -228,8 +230,12 @@ public actor ImageAllMigrationTransferStore {
     /// Reserve a receiver-owned temporary file for one HTTP request body.
     /// The caller writes it in bounded blocks, then calls `commitIncomingChunk`.
     public func allocateIncomingChunk(
-        migrationID: UUID, authenticatedDeviceID: UUID, byteCount: Int
+        migrationID: UUID, authenticatedDeviceID: UUID,
+        relativePath: String, byteCount: Int
     ) throws -> URL {
+        guard Self.isAllowed(relativePath) else {
+            throw ImageAllMigrationTransferError.unsafePath
+        }
         guard byteCount > 0, byteCount <= maximumChunkBytes else {
             throw ImageAllMigrationTransferError.chunkTooLarge
         }
@@ -237,7 +243,11 @@ public actor ImageAllMigrationTransferStore {
               session.deviceID == authenticatedDeviceID else {
             throw ImageAllMigrationTransferError.identityConflict
         }
-        guard !session.sealed else { throw ImageAllMigrationTransferError.sealed }
+        // A sealed media package may receive later immutable fact checkpoints.
+        // Manifest and resource bytes stay locked after the first seal.
+        guard !session.sealed || relativePath.hasPrefix("facts/") else {
+            throw ImageAllMigrationTransferError.sealed
+        }
         try validateDirectories(for: migrationID)
         let volumeAttributes = try FileManager.default.attributesOfFileSystem(forPath: root.path)
         let free = volumeAttributes[.systemFreeSize] as? NSNumber
@@ -296,7 +306,9 @@ public actor ImageAllMigrationTransferStore {
               session.deviceID == authenticatedDeviceID else {
             throw ImageAllMigrationTransferError.identityConflict
         }
-        guard !session.sealed else { throw ImageAllMigrationTransferError.sealed }
+        guard !session.sealed || relativePath.hasPrefix("facts/") else {
+            throw ImageAllMigrationTransferError.sealed
+        }
         let file = packageDirectory(migrationID).appendingPathComponent(relativePath)
         try prepareFileParent(for: file, migrationID: migrationID)
         let committed = try Self.repairFile(
@@ -393,7 +405,10 @@ public actor ImageAllMigrationTransferStore {
                   name == ".imageall-transfer-\(id.uuidString.lowercased())" else {
                 continue
             }
-            guard let session = try load(migrationID: id), session.sealed else { continue }
+            guard let session = try load(migrationID: id), session.sealed,
+                  let verification = try? ImageAllMigrationArchive.verify(
+                    at: packageDirectory(id)
+                  ), verification.isComplete else { continue }
             archives.append(.init(id: id, packageURL: packageDirectory(id)))
         }
         return archives.sorted { $0.id.uuidString < $1.id.uuidString }

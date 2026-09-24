@@ -1283,7 +1283,7 @@ private final class PhoneArchiveImportModel: ObservableObject {
             let receipt = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
                 try importer.importArchive(from: transfer.packageURL, to: target)
             }
-            message = "Mac 已复验并入库 \(receipt.itemCount) 项、\(receipt.resourceCount) 个资源；整理信息尾部对账仍需完成。"
+            message = "Mac 已复验 \(receipt.itemCount) 项、\(receipt.resourceCount) 个资源并应用现有整理快照；完成回执仍需共享冲突及事实水位验收。"
             isBusy = false
             await refresh()
         } catch {
@@ -1501,10 +1501,10 @@ private struct PhoneArchiveImportCard: View {
             }
             ForEach(model.sealedTransfers) { transfer in
                 HStack {
-                    Text("已校验待入库 · \(transfer.id.uuidString)")
+                    Text("已校验归档 · \(transfer.id.uuidString)")
                         .font(.caption).lineLimit(1).truncationMode(.middle)
                     Spacer()
-                    Button("入库到 Mac") {
+                    Button("入库并对账") {
                         Task { await model.importSealedTransfer(transfer) }
                     }
                     .disabled(model.isBusy)

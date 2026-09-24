@@ -68,6 +68,24 @@ final class MigrationTransferClientTests: XCTestCase {
         XCTAssertEqual(receipt.manifestSHA256, verified.manifestSHA256)
         XCTAssertEqual(try Data(contentsOf: package.appendingPathComponent(path)), resourceBytes)
         XCTAssertEqual(try Data(contentsOf: package.appendingPathComponent("manifest.jsonl")), manifest)
+
+        let factFile = root.appendingPathComponent("tail.imageallfacts")
+        try ImageAllMigrationFacts.write(.init(
+            sourceDeviceID: deviceID, sourceEpoch: header.sourceEpoch,
+            scopeRevision: header.scopeRevision, snapshotSequence: 2,
+            factWatermark: 2, items: [.init(
+                mediaID: item.mediaID, observedFavorite: true,
+                favoriteTarget: true, tagDecisions: [], collections: []
+            )]
+        ), to: factFile)
+        _ = try ImageAllMigrationFacts.publish(from: factFile, into: source)
+        let updatedReceipt = try await client.uploadMigrationArchive(at: source)
+        XCTAssertNotNil(updatedReceipt.factsSHA256)
+        XCTAssertEqual(updatedReceipt.verifiedBytes, receipt.verifiedBytes)
+        let (_, updatedVerification) = try await store.sealVerifiedArchive(
+            migrationID: migrationID, authenticatedDeviceID: deviceID
+        )
+        XCTAssertEqual(updatedReceipt.factsSHA256, updatedVerification.factsSHA256)
     }
 
     private func hash(_ data: Data) -> String {

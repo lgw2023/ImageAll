@@ -1056,6 +1056,31 @@ private struct LocalShareScopeView: View {
             if let exportedFacts {
                 LocalFactsShareButton(url: exportedFacts)
             }
+            if let exportedArchive {
+                Button(isUploadingArchive ? "正在上传整理信息…" : "生成并上传最新整理信息到 Mac") {
+                    Task {
+                        isUploadingArchive = true
+                        defer { isUploadingArchive = false }
+                        do {
+                            let facts = try await model.exportSelectedFacts()
+                            try await Task.detached(priority: .utility) {
+                                try LocalMigrationFactExporter.attach(
+                                    facts, to: exportedArchive
+                                )
+                            }.value
+                            exportedFacts = facts
+                            let receipt = try await remoteModel.uploadMigrationArchive(
+                                at: exportedArchive
+                            )
+                            archiveStatusMessage = "Mac 已复验最新整理信息；请在 Mac 对同一批次再次点击入库以对账。已接收 \(receipt.itemCount) 项，此回执不是迁移完成确认。"
+                        } catch {
+                            archiveStatusMessage = "整理信息上传未完成：\(error.localizedDescription)"
+                        }
+                    }
+                }
+                .disabled(!exportedArchiveComplete || !remoteModel.isConnected
+                          || isUploadingArchive || isExporting || isExportingFacts)
+            }
             if let archiveStatusMessage {
                 Text(archiveStatusMessage).font(.footnote).foregroundStyle(.secondary)
             }
@@ -1096,6 +1121,7 @@ private enum LocalArchiveExportError: LocalizedError {
     case selectionChanged
     case sourceChanged
     case incompleteArchive
+    case archiveScopeChanged
 
     var errorDescription: String? {
         switch self {
@@ -1104,6 +1130,7 @@ private enum LocalArchiveExportError: LocalizedError {
         case .selectionChanged: "导出期间分享范围已变化；请重新生成归档。"
         case .sourceChanged: "导出期间来源照片或视频已变化；请重新生成归档。"
         case .incompleteArchive: "现有归档缺少必需原件，不能上传为完整迁移归档。"
+        case .archiveScopeChanged: "整理信息范围或来源与此归档不一致，请重新选择对应归档。"
         }
     }
 }
@@ -1159,6 +1186,58 @@ private struct LocalFactsShareButton: View {
 }
 
 private enum LocalMigrationFactExporter {
+    static func attach(_ snapshotURL: URL, to archiveRoot: URL) throws {
+        let read = try ImageAllMigrationFacts.readWithDigest(at: snapshotURL)
+        let snapshot = read.snapshot
+        var header: ImageAllMigrationHeader?
+        var mediaIDs = Set<UUID>()
+        var highestFactRevision: Int64 = 0
+        let verification = try ImageAllMigrationArchive.visitVerifiedRecords(
+            at: archiveRoot,
+            onHeader: { header = $0 },
+            onItem: { item in
+                mediaIDs.insert(item.mediaID)
+                highestFactRevision = max(highestFactRevision, item.factRevision)
+            }
+        )
+        guard let header, verification.isComplete,
+              snapshot.sourceDeviceID == header.sourceDeviceID,
+              snapshot.sourceEpoch == header.sourceEpoch,
+              snapshot.scopeRevision == header.scopeRevision,
+              snapshot.snapshotSequence >= header.inventoryWatermark,
+              snapshot.factWatermark >= highestFactRevision,
+              Set(snapshot.items.map(\.mediaID)) == mediaIDs else {
+            throw LocalArchiveExportError.archiveScopeChanged
+        }
+        if let currentURL = try ImageAllMigrationFacts.latestPublishedURL(in: archiveRoot) {
+            let current = try ImageAllMigrationFacts.readWithDigest(at: currentURL)
+            guard snapshot.snapshotSequence > current.snapshot.snapshotSequence ||
+                    (snapshot.snapshotSequence == current.snapshot.snapshotSequence
+                     && read.sha256 == current.sha256) else {
+                throw LocalArchiveExportError.archiveScopeChanged
+            }
+        }
+        let factDirectory = archiveRoot.appendingPathComponent(
+            ImageAllMigrationFacts.sidecarDirectoryName, isDirectory: true
+        )
+        let existingNames = Set((try? FileManager.default.contentsOfDirectory(
+            atPath: factDirectory.path
+        )) ?? [])
+        let published = try ImageAllMigrationFacts.publish(
+            from: snapshotURL, into: archiveRoot
+        )
+        do {
+            guard try ImageAllMigrationArchive.verify(at: archiveRoot).isComplete else {
+                throw LocalArchiveExportError.incompleteArchive
+            }
+        } catch {
+            if !existingNames.contains(published.lastPathComponent) {
+                try? FileManager.default.removeItem(at: published)
+            }
+            throw error
+        }
+    }
+
     static func export(snapshot: LocalSharedSnapshot) throws -> URL {
         let items = snapshot.assets.map { asset in
             ImageAllMigrationFactItem(

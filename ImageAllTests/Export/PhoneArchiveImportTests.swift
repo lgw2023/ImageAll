@@ -15,7 +15,7 @@ final class PhoneArchiveImportTests: XCTestCase {
         let item = fixture.item(resource: resource)
         let header = fixture.header(count: 1)
         try fixture.write(header: header, items: [item])
-        let deviceID = UUID()
+        let deviceID = header.sourceDeviceID
         let store = try ImageAllMigrationTransferStore(root: fixture.target)
         _ = try await store.begin(
             migrationID: header.migrationID, authenticatedDeviceID: deviceID
@@ -44,6 +44,49 @@ final class PhoneArchiveImportTests: XCTestCase {
             migrationID: header.migrationID, mediaID: item.mediaID,
             archiveRoot: imported.archiveURL
         )), Data("network-stage-original".utf8))
+
+        let facts = ImageAllMigrationFactSnapshot(
+            sourceDeviceID: deviceID, sourceEpoch: header.sourceEpoch,
+            scopeRevision: header.scopeRevision, snapshotSequence: 8,
+            factWatermark: 8,
+            items: [.init(
+                mediaID: item.mediaID, observedFavorite: true, favoriteTarget: true,
+                tagDecisions: [.init(
+                    tagID: UUID(), tagName: "传输后标签", decision: .accepted
+                )], collections: []
+            )]
+        )
+        let factsFile = fixture.root.appendingPathComponent("latest.imageallfacts")
+        try ImageAllMigrationFacts.write(facts, to: factsFile)
+        let attached = try ImageAllMigrationFacts.publish(
+            from: factsFile, into: fixture.incoming
+        )
+        let relativeFacts = "facts/\(attached.lastPathComponent)"
+        let factsBytes = try Data(contentsOf: attached)
+        let factsDigest = Data(SHA256.hash(data: factsBytes))
+            .map { String(format: "%02x", $0) }.joined()
+        _ = try await store.append(
+            migrationID: header.migrationID, authenticatedDeviceID: deviceID,
+            relativePath: relativeFacts, offset: 0,
+            bytes: factsBytes, sha256: factsDigest
+        )
+        let (_, updated) = try await store.sealVerifiedArchive(
+            migrationID: header.migrationID, authenticatedDeviceID: deviceID
+        )
+        XCTAssertNotNil(updated.factsSHA256)
+        let replay = try importer.importArchive(from: stage, to: fixture.target)
+        XCTAssertTrue(replay.replayed)
+        let batch = try XCTUnwrap(importer.importedBatches().first)
+        XCTAssertEqual(batch.factSnapshotSequence, 8)
+        let tagName = try await fixture.database.pool.read { db in
+            try String.fetchOne(
+                db, sql: "SELECT tag_name FROM migration_import_tag_decision"
+            )
+        }
+        XCTAssertEqual(tagName, "传输后标签")
+        XCTAssertNotNil(try ImageAllMigrationArchive.verify(
+            at: imported.archiveURL
+        ).factsSHA256)
     }
 
     func testImportPreservesMediaResourcesAndFactsAcrossRestartAndReplay() throws {

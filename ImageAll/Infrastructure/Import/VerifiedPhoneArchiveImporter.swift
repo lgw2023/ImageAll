@@ -486,6 +486,9 @@ struct VerifiedPhoneArchiveImporter: Sendable {
 
         if alreadyCommitted {
             try recoverPublishedFactsIfNeeded(at: final, migrationID: header.migrationID)
+            try reconcileNewStagedFacts(
+                from: incoming, into: final, migrationID: header.migrationID
+            )
             return receipt(header: header, verification: verification, url: final, replayed: true)
         }
 
@@ -515,7 +518,37 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                 """, arguments: [now, id])
         }
         try recoverPublishedFactsIfNeeded(at: final, migrationID: header.migrationID)
+        try reconcileNewStagedFacts(
+            from: incoming, into: final, migrationID: header.migrationID
+        )
         return receipt(header: header, verification: verification, url: final, replayed: false)
+    }
+
+    private func reconcileNewStagedFacts(
+        from incoming: URL, into published: URL, migrationID: UUID
+    ) throws {
+        let directory = incoming.appendingPathComponent(
+            ImageAllMigrationFacts.sidecarDirectoryName, isDirectory: true
+        )
+        guard FileManager.default.fileExists(atPath: directory.path) else { return }
+        let names = try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted()
+        for name in names {
+            let source = directory.appendingPathComponent(name)
+            let next = try ImageAllMigrationFacts.readWithDigest(at: source)
+            if let currentURL = try ImageAllMigrationFacts.latestPublishedURL(in: published) {
+                let current = try ImageAllMigrationFacts.readWithDigest(at: currentURL)
+                if next.snapshot.snapshotSequence < current.snapshot.snapshotSequence { continue }
+                if next.snapshot.snapshotSequence == current.snapshot.snapshotSequence {
+                    guard next.sha256 == current.sha256 else {
+                        throw PhoneArchiveImportError.factSnapshotConflict
+                    }
+                    continue
+                }
+            }
+            _ = try reconcileFacts(
+                from: source, migrationID: migrationID, archiveRoot: published
+            )
+        }
     }
 
     private func recoverPublishedFactsIfNeeded(at archive: URL, migrationID: UUID) throws {

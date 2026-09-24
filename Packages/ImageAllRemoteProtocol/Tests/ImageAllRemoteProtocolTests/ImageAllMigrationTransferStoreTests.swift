@@ -167,6 +167,39 @@ final class ImageAllMigrationTransferStoreTests: XCTestCase {
             migrationID: migrationID, authenticatedDeviceID: deviceID
         )
         XCTAssertEqual(replay.1, verified)
+
+        let factFile = root.appendingPathComponent("updated.imageallfacts")
+        try ImageAllMigrationFacts.write(.init(
+            sourceDeviceID: deviceID, sourceEpoch: header.sourceEpoch,
+            scopeRevision: header.scopeRevision, snapshotSequence: 2,
+            factWatermark: 2, items: [.init(
+                mediaID: item.mediaID, observedFavorite: true,
+                favoriteTarget: true, tagDecisions: [], collections: []
+            )]
+        ), to: factFile)
+        let publishedFact = try ImageAllMigrationFacts.publish(
+            from: factFile, into: source
+        )
+        let factBytes = try Data(contentsOf: publishedFact)
+        let factPath = "facts/\(publishedFact.lastPathComponent)"
+        let firstFactPart = Data(factBytes.prefix(factBytes.count / 2))
+        let lastFactPart = Data(factBytes.suffix(factBytes.count - firstFactPart.count))
+        _ = try await resumed.append(
+            migrationID: migrationID, authenticatedDeviceID: deviceID,
+            relativePath: factPath, offset: 0,
+            bytes: firstFactPart, sha256: hash(firstFactPart)
+        )
+        let readyDuringUpload = try await resumed.sealedArchives()
+        XCTAssertTrue(readyDuringUpload.isEmpty)
+        _ = try await resumed.append(
+            migrationID: migrationID, authenticatedDeviceID: deviceID,
+            relativePath: factPath, offset: Int64(firstFactPart.count),
+            bytes: lastFactPart, sha256: hash(lastFactPart)
+        )
+        let updated = try await resumed.sealVerifiedArchive(
+            migrationID: migrationID, authenticatedDeviceID: deviceID
+        )
+        XCTAssertNotNil(updated.1.factsSHA256)
         do {
             _ = try await resumed.append(
                 migrationID: migrationID, authenticatedDeviceID: deviceID,

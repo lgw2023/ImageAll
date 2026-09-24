@@ -32,8 +32,23 @@ final class RemoteHTTPServerTests: XCTestCase {
         func hash(_ data: Data) -> String {
             Data(SHA256.hash(data: data)).map { String(format: "%02x", $0) }.joined()
         }
+        let port = UInt16.random(in: 19_000...29_000)
+        let pairing = makePairingStore(listenPort: Int(port))
+        let transfer = try ImageAllMigrationTransferStore(root: receiver)
+        let (server, _) = makeServer(
+            port: port, pairingStore: pairing, migrationTransferStore: transfer
+        )
+        try await server.start()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        defer { Task { await server.stop() } }
+        let offer = await pairing.issueOffer()
+        let tokens = try await pairing.completePairing(.init(
+            pairingToken: offer.pairingToken,
+            deviceName: "Synthetic iPhone",
+            devicePublicKeySPKI_SHA256: "migration-test-device"
+        ))
         let header = ImageAllMigrationHeader(
-            migrationID: migrationID, sourceDeviceID: UUID(), sourceEpoch: UUID(),
+            migrationID: migrationID, sourceDeviceID: tokens.deviceID, sourceEpoch: UUID(),
             scopeRevision: 1, inventoryWatermark: 1, declaredItemCount: 1
         )
         let item = ImageAllMigrationItem(
@@ -50,21 +65,6 @@ final class RemoteHTTPServerTests: XCTestCase {
         try ImageAllMigrationArchive.write(header: header, items: [item], to: source)
         let manifest = try Data(contentsOf: source.appendingPathComponent("manifest.jsonl"))
 
-        let port = UInt16.random(in: 19_000...29_000)
-        let pairing = makePairingStore(listenPort: Int(port))
-        let transfer = try ImageAllMigrationTransferStore(root: receiver)
-        let (server, _) = makeServer(
-            port: port, pairingStore: pairing, migrationTransferStore: transfer
-        )
-        try await server.start()
-        try await Task.sleep(nanoseconds: 150_000_000)
-        defer { Task { await server.stop() } }
-        let offer = await pairing.issueOffer()
-        let tokens = try await pairing.completePairing(.init(
-            pairingToken: offer.pairingToken,
-            deviceName: "Synthetic iPhone",
-            devicePublicKeySPKI_SHA256: "migration-test-device"
-        ))
         func request(_ path: String, method: String, body: Data? = nil) -> URLRequest {
             var value = URLRequest(url: URL(string: "http://127.0.0.1:\(port)\(path)")!)
             value.httpMethod = method
@@ -109,6 +109,39 @@ final class RemoteHTTPServerTests: XCTestCase {
         )
         XCTAssertEqual(sealed.manifestSHA256, verification.manifestSHA256)
         XCTAssertEqual(try Data(contentsOf: package.appendingPathComponent(relativePath)), bytes)
+
+        let factFile = root.appendingPathComponent("new-facts.imageallfacts")
+        try ImageAllMigrationFacts.write(.init(
+            sourceDeviceID: tokens.deviceID, sourceEpoch: header.sourceEpoch,
+            scopeRevision: header.scopeRevision, snapshotSequence: 2,
+            factWatermark: 2, items: [.init(
+                mediaID: item.mediaID, observedFavorite: true,
+                favoriteTarget: true, tagDecisions: [], collections: []
+            )]
+        ), to: factFile)
+        let publishedFact = try ImageAllMigrationFacts.publish(
+            from: factFile, into: source
+        )
+        let factBytes = try Data(contentsOf: publishedFact)
+        var factUpload = request(
+            RemoteHTTPPaths.migrationTransferChunks(migrationID),
+            method: "PUT", body: factBytes
+        )
+        factUpload.setValue(
+            "facts/\(publishedFact.lastPathComponent)", forHTTPHeaderField: "X-ImageAll-File"
+        )
+        factUpload.setValue("0", forHTTPHeaderField: "X-ImageAll-Offset")
+        factUpload.setValue(hash(factBytes), forHTTPHeaderField: "X-ImageAll-SHA256")
+        let (_, factResponse) = try await URLSession.shared.data(for: factUpload)
+        XCTAssertEqual(try XCTUnwrap(factResponse as? HTTPURLResponse).statusCode, 200)
+        let (updatedData, updatedResponse) = try await URLSession.shared.data(
+            for: request(RemoteHTTPPaths.migrationTransferSeal(migrationID),
+                         method: "POST", body: Data())
+        )
+        XCTAssertEqual(try XCTUnwrap(updatedResponse as? HTTPURLResponse).statusCode, 200)
+        XCTAssertNotNil(try JSONDecoder().decode(
+            ImageAllMigrationTransferSealReceipt.self, from: updatedData
+        ).factsSHA256)
 
         var cookieRequest = request(base, method: "GET")
         cookieRequest.setValue(nil, forHTTPHeaderField: "Authorization")

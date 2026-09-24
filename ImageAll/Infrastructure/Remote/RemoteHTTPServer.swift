@@ -674,7 +674,7 @@ actor RemoteHTTPServer {
             do {
                 temporaryURL = try await migrationTransferStore.allocateIncomingChunk(
                     migrationID: head.migrationID, authenticatedDeviceID: deviceID,
-                    byteCount: head.contentLength
+                    relativePath: head.relativePath, byteCount: head.contentLength
                 )
                 timeoutTask.cancel()
                 let transferTimeout = Task {
