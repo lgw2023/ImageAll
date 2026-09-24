@@ -6,6 +6,7 @@ public extension RemoteHTTPPaths {
     static let localLibraryTagChanges = "/v1/sync/local-library/tag-changes"
     static let localLibraryCollectionMembership = "/v1/sync/local-library/collection-membership"
     static let localLibraryCollectionChanges = "/v1/sync/local-library/collection-changes"
+    static let localLibraryFavoriteTarget = "/v1/sync/local-library/favorite-target"
 }
 
 public struct RemoteLocalLibraryCollectionChange: Codable, Sendable, Equatable {
@@ -362,5 +363,61 @@ public struct RemoteLocalLibraryCollectionMembershipReceipt: Codable, Sendable, 
         self.currentIncluded = currentIncluded
         self.replayed = replayed
         self.conflictReason = conflictReason
+    }
+}
+
+/// ImageAll's desired favorite is a shared human fact. It is distinct from the
+/// source PhotoKit observation and its writeback result.
+public struct RemoteLocalLibraryFavoriteTargetRequest: Codable, Sendable, Equatable {
+    public let schemaVersion: Int
+    public let hostID: UUID
+    public let installID: UUID
+    public let sourceEpoch: UUID
+    public let scopeRevision: Int64
+    public let operationID: UUID
+    public let deviceSequence: Int64
+    public let assetID: UUID
+    public let target: Bool
+    public let baseRevision: Int64
+
+    public init(
+        hostID: UUID, installID: UUID, sourceEpoch: UUID,
+        scopeRevision: Int64, operationID: UUID, deviceSequence: Int64,
+        assetID: UUID, target: Bool, baseRevision: Int64
+    ) {
+        self.schemaVersion = 1
+        self.hostID = hostID
+        self.installID = installID
+        self.sourceEpoch = sourceEpoch
+        self.scopeRevision = scopeRevision
+        self.operationID = operationID
+        self.deviceSequence = deviceSequence
+        self.assetID = assetID
+        self.target = target
+        self.baseRevision = baseRevision
+    }
+}
+
+public struct RemoteLocalLibraryFavoriteTargetReceipt: Codable, Sendable, Equatable {
+    public let hostID: UUID
+    public let deviceID: UUID
+    public let operationID: UUID
+    public let disposition: RemoteLocalLibraryTagDecisionDisposition
+    public let fieldRevision: Int64
+    public let currentTarget: Bool?
+    public let replayed: Bool
+
+    public init(
+        hostID: UUID, deviceID: UUID, operationID: UUID,
+        disposition: RemoteLocalLibraryTagDecisionDisposition,
+        fieldRevision: Int64, currentTarget: Bool?, replayed: Bool
+    ) {
+        self.hostID = hostID
+        self.deviceID = deviceID
+        self.operationID = operationID
+        self.disposition = disposition
+        self.fieldRevision = fieldRevision
+        self.currentTarget = currentTarget
+        self.replayed = replayed
     }
 }

@@ -359,8 +359,17 @@ struct RemotePhoneLibraryView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    Text("系统收藏观测：\(projected.asset.observedFavorite ? "是" : "否") · ImageAll 收藏目标：\(favoriteTarget(projected.asset.favoriteTarget))")
+                    let sharedFavorite = currentProjection.sharedFavoriteFacts.first {
+                        $0.assetID == projected.asset.id
+                    }
+                    Text("共享收藏目标：\(favoriteTarget(sharedFavorite?.target))（版本 \(sharedFavorite?.revision ?? 0)） · 上次目录观测的系统收藏：\(projected.asset.observedFavorite ? "是" : "否")")
                         .font(.caption)
+                    if let sharedFavorite,
+                       sharedFavorite.target != projected.asset.observedFavorite {
+                        Text("目标与上次来源观测不同；等待 iPhone 确认来源写回与回读")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
                     let sharedCollections = currentProjection.sharedCollectionFacts.filter {
                         $0.assetID == projected.asset.id && $0.included
                     }
@@ -426,6 +435,7 @@ struct RemotePhoneLibraryView: View {
         .frame(minWidth: 650, minHeight: 450)
         .onChange(of: projection.sharedTagFacts) { _, _ in editedProjection = nil }
         .onChange(of: projection.sharedCollectionFacts) { _, _ in editedProjection = nil }
+        .onChange(of: projection.sharedFavoriteFacts) { _, _ in editedProjection = nil }
         .onChange(of: projection.snapshotSequence) { _, _ in editedProjection = nil }
     }
 

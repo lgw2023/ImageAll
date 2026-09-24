@@ -4,6 +4,38 @@ import ImageAllRemoteProtocol
 import XCTest
 
 final class RemoteLibraryClientTests: XCTestCase {
+    func testPostsFavoriteTargetWithBearerAndStableOperationID() async throws {
+        let request = RemoteLocalLibraryFavoriteTargetRequest(
+            hostID: UUID(), installID: UUID(), sourceEpoch: UUID(),
+            scopeRevision: 2, operationID: UUID(), deviceSequence: 19,
+            assetID: UUID(), target: false, baseRevision: 1
+        )
+        let transport = MockTransport { outgoing in
+            XCTAssertEqual(outgoing.httpMethod, "POST")
+            XCTAssertEqual(outgoing.url?.path, RemoteHTTPPaths.localLibraryFavoriteTarget)
+            XCTAssertEqual(outgoing.value(forHTTPHeaderField: "Authorization"), "Bearer secret")
+            XCTAssertEqual(try JSONDecoder().decode(
+                RemoteLocalLibraryFavoriteTargetRequest.self,
+                from: XCTUnwrap(outgoing.httpBody)
+            ), request)
+            let response = RemoteLocalLibraryFavoriteTargetReceipt(
+                hostID: request.hostID, deviceID: UUID(), operationID: request.operationID,
+                disposition: .applied, fieldRevision: 2, currentTarget: false, replayed: false
+            )
+            return (
+                try JSONEncoder().encode(response),
+                HTTPURLResponse(url: outgoing.url!, statusCode: 200,
+                                httpVersion: "HTTP/1.1", headerFields: nil)!
+            )
+        }
+        let client = RemoteLibraryClient(
+            endpoint: try RemoteHostEndpoint(host: "127.0.0.1", port: 8787, accessToken: "secret"),
+            transport: transport
+        )
+        let receipt = try await client.submitLocalLibraryFavoriteTarget(request)
+        XCTAssertEqual(receipt.operationID, request.operationID)
+        XCTAssertEqual(receipt.currentTarget, false)
+    }
     func testFetchesScopedMacCollectionChangesWithBearerToken() async throws {
         let hostID = UUID()
         let deviceID = UUID()

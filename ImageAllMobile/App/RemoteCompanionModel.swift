@@ -655,6 +655,40 @@ final class RemoteCompanionModel: ObservableObject {
         return receipt
     }
 
+    func submitLocalLibraryFavoriteTarget(
+        _ prepared: LocalPreparedSharedFavoriteOperation
+    ) async throws -> RemoteLocalLibraryFavoriteTargetReceipt {
+        guard isConnected, let client, let sessionTokens,
+              let capabilities,
+              capabilities.capabilities.contains(.localLibraryFavoriteTarget),
+              capabilities.hostID == sessionTokens.hostID,
+              prepared.hostID == sessionTokens.hostID,
+              prepared.deviceID == sessionTokens.deviceID else {
+            throw RemoteAPIError(
+                code: .unauthorized,
+                message: "请先连接支持手机收藏目标提交的已配对 Mac"
+            )
+        }
+        let request = RemoteLocalLibraryFavoriteTargetRequest(
+            hostID: prepared.hostID,
+            installID: prepared.installID,
+            sourceEpoch: prepared.sourceEpoch,
+            scopeRevision: prepared.operation.scopeRevision,
+            operationID: prepared.operation.id,
+            deviceSequence: prepared.operation.sequence,
+            assetID: prepared.operation.assetID,
+            target: prepared.target,
+            baseRevision: prepared.baseRevision
+        )
+        let receipt = try await client.submitLocalLibraryFavoriteTarget(request)
+        guard receipt.hostID == sessionTokens.hostID,
+              receipt.deviceID == sessionTokens.deviceID,
+              receipt.operationID == prepared.operation.id else {
+            throw RemoteAPIError(code: .conflict, message: "Mac 收藏目标回执身份不匹配")
+        }
+        return receipt
+    }
+
     func fetchLocalLibraryTagChanges(
         sourceEpoch: UUID, scopeRevision: Int64, afterCursor: Int64
     ) async throws -> RemoteLocalLibraryTagChangesPage {
@@ -711,6 +745,10 @@ final class RemoteCompanionModel: ObservableObject {
 
     var supportsLocalLibraryCollectionChanges: Bool {
         isConnected && capabilities?.capabilities.contains(.localLibraryCollectionChanges) == true
+    }
+
+    var supportsLocalLibraryFavoriteTarget: Bool {
+        isConnected && capabilities?.capabilities.contains(.localLibraryFavoriteTarget) == true
     }
 
     func reloadHostStatus() async {

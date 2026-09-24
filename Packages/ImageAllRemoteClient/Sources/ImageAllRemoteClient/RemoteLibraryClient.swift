@@ -139,6 +139,15 @@ public struct RemoteLibraryClient: Sendable {
         )
     }
 
+    public func submitLocalLibraryFavoriteTarget(
+        _ request: RemoteLocalLibraryFavoriteTargetRequest
+    ) async throws -> RemoteLocalLibraryFavoriteTargetReceipt {
+        try await postJSON(
+            path: RemoteHTTPPaths.localLibraryFavoriteTarget,
+            body: encoder.encode(request)
+        )
+    }
+
     public func fetchLocalLibraryTagChanges(
         sourceEpoch: UUID, scopeRevision: Int64, afterCursor: Int64
     ) async throws -> RemoteLocalLibraryTagChangesPage {

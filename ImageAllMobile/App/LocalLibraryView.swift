@@ -216,9 +216,12 @@ final class LocalLibraryModel: ObservableObject {
             for operation in pending {
                 let isTag = operation.field.hasPrefix("tag.")
                 let isCollection = operation.field.hasPrefix("collection.")
-                guard isTag || (isCollection && remoteModel.supportsLocalLibraryCollectionMembership)
+                let isFavorite = operation.field == "favorite.target"
+                guard isTag
+                    || (isCollection && remoteModel.supportsLocalLibraryCollectionMembership)
+                    || (isFavorite && remoteModel.supportsLocalLibraryFavoriteTarget)
                 else {
-                    deferred += 1 // Favorite and unsupported fields retain their shared intent.
+                    deferred += 1 // Unsupported fields retain their shared intent.
                     continue
                 }
                 let fieldKey = "\(operation.assetID.uuidString)|\(operation.field)"
@@ -274,7 +277,7 @@ final class LocalLibraryModel: ObservableObject {
                             }
                         }
                     )
-                } else {
+                } else if isCollection {
                     guard let prepared = try await store.prepareSharedCollectionOperation(
                         id: operation.id, hostID: receipt.hostID, deviceID: receipt.deviceID
                     ) else { continue }
@@ -298,6 +301,24 @@ final class LocalLibraryModel: ObservableObject {
                             case .nameAlias: .nameAlias
                             }
                         }
+                    )
+                } else {
+                    guard let prepared = try await store.prepareSharedFavoriteOperation(
+                        id: operation.id, hostID: receipt.hostID, deviceID: receipt.deviceID
+                    ) else { continue }
+                    let favoriteReceipt = try await remoteModel.submitLocalLibraryFavoriteTarget(
+                        prepared
+                    )
+                    disposition = switch favoriteReceipt.disposition {
+                    case .applied: .applied
+                    case .unchanged: .unchanged
+                    case .conflict: .conflict
+                    }
+                    _ = try await store.recordSharedFavoriteResult(
+                        operationID: operation.id, hostID: receipt.hostID,
+                        deviceID: receipt.deviceID, disposition: disposition,
+                        fieldRevision: favoriteReceipt.fieldRevision,
+                        currentTarget: favoriteReceipt.currentTarget
                     )
                 }
                 sent += 1
@@ -423,6 +444,25 @@ final class LocalLibraryModel: ObservableObject {
             await reloadFacts()
         } catch {
             errorMessage = "处理集合成员冲突失败：\(error.localizedDescription)"
+            await reloadFacts()
+        }
+    }
+
+    func resolveSharedFavoriteConflict(
+        _ operation: LocalSharedPendingOperation,
+        resolution: LocalSharedFavoriteConflictResolution
+    ) async {
+        guard let store else {
+            errorMessage = "本机资料库不可用"
+            return
+        }
+        do {
+            _ = try await store.resolveSharedFavoriteConflict(
+                operationID: operation.id, resolution: resolution
+            )
+            await reloadFacts()
+        } catch {
+            errorMessage = "处理收藏目标冲突失败：\(error.localizedDescription)"
             await reloadFacts()
         }
     }
@@ -681,7 +721,9 @@ private struct LocalShareScopeView: View {
                 Section("整理信息冲突") {
                     ForEach(model.sharedConflicts) { operation in
                         VStack(alignment: .leading, spacing: 6) {
-                            Text(operation.referenceName ?? "字段身份待确认")
+                            Text(operation.field == "favorite.target"
+                                 ? "收藏目标"
+                                 : (operation.referenceName ?? "字段身份待确认"))
                                 .font(.headline)
                             if operation.field.hasPrefix("collection.") {
                                 Text("资产 \(operation.assetID.uuidString.prefix(8)) · 本机成员：\(membershipName(operation.localCurrentIncluded))")
@@ -712,6 +754,41 @@ private struct LocalShareScopeView: View {
                                     .buttonStyle(.borderless)
                                 } else {
                                     Text("集合身份需要先对账；当前保留本机意图。")
+                                        .font(.footnote)
+                                        .foregroundStyle(.orange)
+                                }
+                            } else if operation.field == "favorite.target" {
+                                Text("资产 \(operation.assetID.uuidString.prefix(8)) · 本机收藏目标：\(favoriteName(operation.localCurrentFavoriteTarget))")
+                                    .font(.footnote)
+                                if let revision = operation.conflictRevision {
+                                    Text("已知 Mac 版本 \(revision)：\(favoriteName(operation.conflictValue.map { $0 == "1" }))")
+                                        .font(.footnote)
+                                }
+                                if operation.conflictReason == .fieldVersion,
+                                   operation.conflictValue == "0" || operation.conflictValue == "1",
+                                   operation.conflictRevision != nil {
+                                    HStack {
+                                        Button("采用已知 Mac 收藏目标") {
+                                            Task {
+                                                await model.resolveSharedFavoriteConflict(
+                                                    operation, resolution: .acceptMac
+                                                )
+                                            }
+                                        }
+                                        Button("保留本机，待下次同步") {
+                                            Task {
+                                                await model.resolveSharedFavoriteConflict(
+                                                    operation, resolution: .keepPhone
+                                                )
+                                            }
+                                        }
+                                    }
+                                    .buttonStyle(.borderless)
+                                    Text("采用 Mac 目标只更新 ImageAll；来源系统收藏需在照片详情中另行写回。")
+                                        .font(.footnote)
+                                        .foregroundStyle(.secondary)
+                                } else {
+                                    Text("Mac 未提供可处理的收藏版本，当前保留本机意图。")
                                         .font(.footnote)
                                         .foregroundStyle(.orange)
                                 }
@@ -755,7 +832,7 @@ private struct LocalShareScopeView: View {
                 }
             }
             Section {
-                Button(isSending ? "正在提交…" : "同步目录、标签与集合到 Mac") {
+                Button(isSending ? "正在提交…" : "同步目录与整理信息到 Mac") {
                     Task {
                         isSending = true
                         defer { isSending = false }
@@ -776,7 +853,7 @@ private struct LocalShareScopeView: View {
                                 let collectionPull = result.collectionPullSupported
                                     ? "Mac 集合回传 \(result.collectionReceived) 项"
                                     : "当前 Mac 版本尚无集合回传"
-                                statusMessage = "Mac 已接收 \(receipt.acceptedAssetCount) 项目录；手机标签/集合成员提交 \(result.applied) 项、已一致 \(result.unchanged) 项；\(pull)、\(collectionPull)、冲突 \(result.conflicts) 项；仍待处理 \(result.remaining) 项。\(continuation)原件尚未传输。"
+                                statusMessage = "Mac 已接收 \(receipt.acceptedAssetCount) 项目录；手机标签/集合成员/收藏目标提交 \(result.applied) 项、已一致 \(result.unchanged) 项；\(pull)、\(collectionPull)、冲突 \(result.conflicts) 项；仍待处理 \(result.remaining) 项。\(continuation)原件尚未传输。"
                             } catch {
                                 statusMessage = "Mac 已接收目录，但整理信息提交未完成：\(error.localizedDescription)"
                             }
@@ -809,6 +886,14 @@ private struct LocalShareScopeView: View {
         switch included {
         case true: "包含"
         case false: "不包含"
+        case nil: "未知"
+        }
+    }
+
+    private func favoriteName(_ target: Bool?) -> String {
+        switch target {
+        case true: "收藏"
+        case false: "取消收藏"
         case nil: "未知"
         }
     }

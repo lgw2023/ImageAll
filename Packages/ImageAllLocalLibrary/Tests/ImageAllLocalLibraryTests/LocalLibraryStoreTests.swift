@@ -71,6 +71,84 @@ import Testing
     #expect(afterExternalChange.favoriteWritebackState == .failed)
 }
 
+@Test func sharedFavoriteTargetHasDurableVersionAndExplicitConflictResolution() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("local.sqlite")
+    let store = try LocalLibraryStore(url: url)
+    try await store.observe([
+        LocalObservedAsset(localIdentifier: "shared", kind: "image", creationDate: nil, isFavorite: false)
+    ])
+    let asset = try #require(await store.assets(visibleIdentifiers: ["shared"]).first)
+    let hostID = UUID()
+    let deviceID = UUID()
+    try await store.setShared(assetID: asset.id, shared: true)
+    try await store.setFavoriteTarget(assetID: asset.id, isFavorite: true)
+    let snapshot = try await store.prepareSharedSnapshot(visibleIdentifiers: ["shared"])
+    try await store.acknowledgeSharedSnapshot(
+        snapshot, hostID: hostID, deviceID: deviceID, importedAssetIDs: [asset.id]
+    )
+    #expect(try await store.pendingSharedOperations().isEmpty)
+    try await store.setFavoriteTarget(assetID: asset.id, isFavorite: false)
+    let first = try #require(await store.pendingSharedOperations().first)
+    let prepared = try #require(await store.prepareSharedFavoriteOperation(
+        id: first.id, hostID: hostID, deviceID: deviceID
+    ))
+    #expect(prepared.baseRevision == 1)
+    #expect(prepared.target == false)
+    let reopened = try LocalLibraryStore(url: url)
+    let retry = try #require(await reopened.prepareSharedFavoriteOperation(
+        id: first.id, hostID: hostID, deviceID: deviceID
+    ))
+    #expect(retry.operation.id == first.id)
+    #expect(retry.baseRevision == 1)
+    try await reopened.recordSharedFavoriteResult(
+        operationID: first.id, hostID: hostID, deviceID: deviceID,
+        disposition: .applied, fieldRevision: 2, currentTarget: false
+    )
+    #expect(try await reopened.pendingSharedOperations().isEmpty)
+    try await reopened.setFavoriteTarget(assetID: asset.id, isFavorite: true)
+    let second = try #require(await reopened.pendingSharedOperations().first)
+    let secondPrepared = try #require(await reopened.prepareSharedFavoriteOperation(
+        id: second.id, hostID: hostID, deviceID: deviceID
+    ))
+    #expect(secondPrepared.baseRevision == 2)
+    try await reopened.recordSharedFavoriteResult(
+        operationID: second.id, hostID: hostID, deviceID: deviceID,
+        disposition: .conflict, fieldRevision: 3, currentTarget: false
+    )
+    let conflict = try #require(await reopened.pendingSharedOperations().first)
+    #expect(conflict.isConflicted)
+    #expect(conflict.localCurrentFavoriteTarget == true)
+    let auditCount = try await reopened.pendingOperations().count
+    _ = try await reopened.resolveSharedFavoriteConflict(
+        operationID: second.id, resolution: .acceptMac
+    )
+    let resolved = try #require(await reopened.assets(visibleIdentifiers: ["shared"]).first)
+    #expect(resolved.favoriteTarget == false)
+    #expect(resolved.favoriteWritebackState == .matched)
+    #expect(try await reopened.pendingSharedOperations().isEmpty)
+    #expect(try await reopened.pendingOperations().count == auditCount + 1)
+    try await reopened.setFavoriteTarget(assetID: asset.id, isFavorite: true)
+    let third = try #require(await reopened.pendingSharedOperations().first)
+    let rebased = try #require(await reopened.prepareSharedFavoriteOperation(
+        id: third.id, hostID: hostID, deviceID: deviceID
+    ))
+    #expect(rebased.baseRevision == 3)
+    try await reopened.recordSharedFavoriteResult(
+        operationID: third.id, hostID: hostID, deviceID: deviceID,
+        disposition: .conflict, fieldRevision: 4, currentTarget: false
+    )
+    let keepID = try #require(await reopened.resolveSharedFavoriteConflict(
+        operationID: third.id, resolution: .keepPhone
+    ))
+    let keep = try #require(await reopened.prepareSharedFavoriteOperation(
+        id: keepID, hostID: hostID, deviceID: deviceID
+    ))
+    #expect(keep.baseRevision == 4)
+    #expect(keep.target == true)
+}
+
 @Test func explicitShareScopeFiltersPrivateFactsAndSurvivesPermissionContraction() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }

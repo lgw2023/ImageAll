@@ -69,10 +69,11 @@ actor RemoteCatalogFacade {
                     && $0 != .localLibraryTagChanges
                     && $0 != .localLibraryCollectionMembership
                     && $0 != .localLibraryCollectionChanges
+                    && $0 != .localLibraryFavoriteTarget
             } + (supportsLocalLibrarySnapshot
                 ? [.localLibrarySnapshot, .localLibraryTagOperations,
                    .localLibraryTagChanges, .localLibraryCollectionMembership,
-                   .localLibraryCollectionChanges] : []),
+                   .localLibraryCollectionChanges, .localLibraryFavoriteTarget] : []),
             listenPort: listenPort,
             usesTLS: usesTLS,
             hostID: hostID,

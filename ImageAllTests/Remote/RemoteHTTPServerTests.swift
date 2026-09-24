@@ -224,6 +224,69 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(afterPermissionContraction?.sharedTagFacts.first?.revision, 3)
     }
 
+    func testSharedFavoriteTargetSurvivesSnapshotRestartAndRejectsHiddenEdits() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("shared-favorites.json")
+        let hostID = UUID()
+        let deviceID = UUID()
+        let installID = UUID()
+        let epoch = UUID()
+        let assetID = UUID()
+        let asset = RemoteLocalLibraryAsset(
+            id: assetID, localIdentifier: "fixture-local", mediaKind: .image,
+            createdAtMs: nil, observedFavorite: false, favoriteTarget: true,
+            tagDecisions: [], collections: []
+        )
+        let store = try RemoteLocalLibrarySyncStore(hostID: hostID, storageURL: url)
+        func snapshot(sequence: Int64, assets: [RemoteLocalLibraryAsset])
+            -> RemoteLocalLibrarySnapshotRequest {
+            .init(hostID: hostID, installID: installID, sourceEpoch: epoch,
+                  scopeRevision: 1, snapshotSequence: sequence,
+                  selectedAssetIDs: [assetID], assets: assets)
+        }
+        _ = try await store.submit(snapshot(sequence: 1, assets: [asset]),
+                                   authenticatedDeviceID: deviceID)
+        let initialProjection = await store.projection(deviceID: deviceID)
+        XCTAssertEqual(initialProjection?.sharedFavoriteFacts.first?.revision, 1)
+        func operation(sequence: Int64, base: Int64, target: Bool) -> RemoteLocalLibraryFavoriteTargetRequest {
+            .init(hostID: hostID, installID: installID, sourceEpoch: epoch,
+                  scopeRevision: 1, operationID: UUID(), deviceSequence: sequence,
+                  assetID: assetID, target: target, baseRevision: base)
+        }
+        let change = operation(sequence: 1, base: 1, target: false)
+        let accepted = try await store.submitFavoriteTarget(change, authenticatedDeviceID: deviceID)
+        XCTAssertEqual(accepted.disposition, .applied)
+        XCTAssertEqual(accepted.fieldRevision, 2)
+        XCTAssertEqual(accepted.currentTarget, false)
+        let replay = try await store.submitFavoriteTarget(change, authenticatedDeviceID: deviceID)
+        XCTAssertTrue(replay.replayed)
+
+        _ = try await store.submit(snapshot(sequence: 2, assets: [asset]),
+                                   authenticatedDeviceID: deviceID)
+        let reopened = try RemoteLocalLibrarySyncStore(hostID: hostID, storageURL: url)
+        let projection = await reopened.projection(deviceID: deviceID)
+        XCTAssertEqual(projection?.sharedFavoriteFacts.first?.target, false)
+        XCTAssertEqual(projection?.sharedFavoriteFacts.first?.revision, 2)
+        XCTAssertEqual(projection?.assets.first?.asset.favoriteTarget, true)
+        let stale = try await reopened.submitFavoriteTarget(
+            operation(sequence: 2, base: 1, target: true), authenticatedDeviceID: deviceID
+        )
+        XCTAssertEqual(stale.disposition, .conflict)
+        XCTAssertEqual(stale.currentTarget, false)
+        XCTAssertEqual(stale.fieldRevision, 2)
+        _ = try await reopened.submit(snapshot(sequence: 3, assets: []),
+                                      authenticatedDeviceID: deviceID)
+        do {
+            _ = try await reopened.submitFavoriteTarget(
+                operation(sequence: 3, base: 2, target: true), authenticatedDeviceID: deviceID
+            )
+            XCTFail("permission-hidden asset must reject a new favorite edit")
+        } catch let error as RemoteAPIError {
+            XCTAssertEqual(error.code, .conflict)
+        }
+    }
+
     func testSharedCollectionMembershipRemovalSurvivesSnapshotAndRestart() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -640,6 +703,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(capabilities.capabilities.contains(.localLibraryTagChanges))
         XCTAssertTrue(capabilities.capabilities.contains(.localLibraryCollectionMembership))
         XCTAssertTrue(capabilities.capabilities.contains(.localLibraryCollectionChanges))
+        XCTAssertTrue(capabilities.capabilities.contains(.localLibraryFavoriteTarget))
 
         let tagOperation = RemoteLocalLibraryTagDecisionRequest(
             hostID: hostID, installID: snapshot.installID,
@@ -697,6 +761,36 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(collectionReceipt.fieldRevision, 1)
         let sharedCollectionProjection = await syncStore.projection(deviceID: tokens.deviceID)
         XCTAssertEqual(sharedCollectionProjection?.sharedCollectionFacts.first?.included, true)
+        let favoriteOperation = RemoteLocalLibraryFavoriteTargetRequest(
+            hostID: hostID, installID: snapshot.installID,
+            sourceEpoch: snapshot.sourceEpoch, scopeRevision: 1,
+            operationID: UUID(), deviceSequence: 3,
+            assetID: assetID, target: true, baseRevision: 0
+        )
+        func favoriteRequest(authorization: String?, cookie: String? = nil) throws -> URLRequest {
+            var request = URLRequest(url: URL(string:
+                "http://127.0.0.1:\(port)\(RemoteHTTPPaths.localLibraryFavoriteTarget)"
+            )!)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            if let authorization { request.setValue(authorization, forHTTPHeaderField: "Authorization") }
+            if let cookie { request.setValue(cookie, forHTTPHeaderField: "Cookie") }
+            request.httpBody = try JSONEncoder().encode(favoriteOperation)
+            return request
+        }
+        let (favoriteData, favoriteResponse) = try await URLSession.shared.data(for: favoriteRequest(
+            authorization: "Bearer \(tokens.accessToken)"
+        ))
+        XCTAssertEqual(try XCTUnwrap(favoriteResponse as? HTTPURLResponse).statusCode, 200)
+        let favoriteReceipt = try JSONDecoder().decode(
+            RemoteLocalLibraryFavoriteTargetReceipt.self, from: favoriteData
+        )
+        XCTAssertEqual(favoriteReceipt.disposition, .applied)
+        XCTAssertEqual(favoriteReceipt.fieldRevision, 1)
+        let (_, favoriteCookieResponse) = try await URLSession.shared.data(for: favoriteRequest(
+            authorization: nil, cookie: "imageall_session=fixture"
+        ))
+        XCTAssertEqual(try XCTUnwrap(favoriteCookieResponse as? HTTPURLResponse).statusCode, 401)
         _ = try await syncStore.setTagDecisionFromMac(
             deviceID: tokens.deviceID, assetID: assetID, tagID: tagOperation.tagID,
             decision: .rejected, expectedRevision: 1
