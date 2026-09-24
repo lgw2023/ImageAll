@@ -195,3 +195,91 @@ import Testing
         #expect(try await store.pendingOperations().count == outboxCount)
     }
 }
+
+@Test func sharedTagDeliveryFreezesBaseAndKeepsConflictsAcrossRestart() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("local.sqlite")
+    let hostID = UUID()
+    let deviceID = UUID()
+    let store = try LocalLibraryStore(url: url)
+    try await store.observe([
+        LocalObservedAsset(localIdentifier: "selected", kind: "image", creationDate: nil, isFavorite: false)
+    ])
+    let asset = try #require(await store.assets(visibleIdentifiers: ["selected"]).first)
+    let tagID = try await store.createTag(name: "家庭")
+    try await store.setShared(assetID: asset.id, shared: true)
+    try await store.setDecision(assetID: asset.id, tagID: tagID, decision: .accepted)
+    let snapshot = try await store.prepareSharedSnapshot(visibleIdentifiers: ["selected"])
+    #expect(snapshot.outboxWatermark > 0)
+    try await store.acknowledgeSharedSnapshot(
+        snapshot, hostID: hostID, deviceID: deviceID, importedAssetIDs: [asset.id]
+    )
+    #expect(try await store.pendingSharedOperations().isEmpty)
+
+    try await store.setDecision(assetID: asset.id, tagID: tagID, decision: .rejected)
+    let pending = try #require(await store.pendingSharedOperations().first)
+    let prepared = try #require(await store.prepareSharedTagOperation(
+        id: pending.id, hostID: hostID, deviceID: deviceID
+    ))
+    #expect(prepared.baseRevision == 1)
+    #expect(prepared.operation.id == pending.id)
+    #expect(prepared.operation.sequence == pending.sequence)
+
+    let reopened = try LocalLibraryStore(url: url)
+    let retry = try #require(await reopened.prepareSharedTagOperation(
+        id: pending.id, hostID: hostID, deviceID: deviceID
+    ))
+    #expect(retry.baseRevision == 1)
+    #expect(retry.operation.id == pending.id)
+    try await reopened.recordSharedTagResult(
+        operationID: pending.id, hostID: hostID, deviceID: deviceID,
+        disposition: .conflict, fieldRevision: 2, currentDecision: .accepted
+    )
+    #expect(try await reopened.pendingSharedOperations().first?.isConflicted == true)
+    do {
+        _ = try await reopened.prepareSharedTagOperation(
+            id: pending.id, hostID: hostID, deviceID: deviceID
+        )
+        Issue.record("conflicted operation must remain pending for explicit resolution")
+    } catch LocalLibraryError.syncConflictRequiresResolution {
+        #expect(try await reopened.pendingSharedOperations().count == 1)
+    }
+}
+
+@Test func sharedTagAppliedReceiptAdvancesNextFieldBaseWithoutDeletingAudit() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try LocalLibraryStore(url: root.appendingPathComponent("local.sqlite"))
+    try await store.observe([
+        LocalObservedAsset(localIdentifier: "selected", kind: "image", creationDate: nil, isFavorite: false)
+    ])
+    let asset = try #require(await store.assets(visibleIdentifiers: ["selected"]).first)
+    let tagID = try await store.createTag(name: "旅行")
+    let hostID = UUID()
+    let deviceID = UUID()
+    try await store.setShared(assetID: asset.id, shared: true)
+    let snapshot = try await store.prepareSharedSnapshot(visibleIdentifiers: ["selected"])
+    try await store.acknowledgeSharedSnapshot(
+        snapshot, hostID: hostID, deviceID: deviceID, importedAssetIDs: [asset.id]
+    )
+    try await store.setDecision(assetID: asset.id, tagID: tagID, decision: .accepted)
+    let first = try #require(await store.pendingSharedOperations().first)
+    let prepared = try #require(await store.prepareSharedTagOperation(
+        id: first.id, hostID: hostID, deviceID: deviceID
+    ))
+    #expect(prepared.baseRevision == 0)
+    let auditCount = try await store.pendingOperations().count
+    try await store.recordSharedTagResult(
+        operationID: first.id, hostID: hostID, deviceID: deviceID,
+        disposition: .applied, fieldRevision: 1, currentDecision: .accepted
+    )
+    #expect(try await store.pendingSharedOperations().isEmpty)
+    #expect(try await store.pendingOperations().count == auditCount)
+    try await store.setDecision(assetID: asset.id, tagID: tagID, decision: .rejected)
+    let second = try #require(await store.pendingSharedOperations().first)
+    let secondPrepared = try #require(await store.prepareSharedTagOperation(
+        id: second.id, hostID: hostID, deviceID: deviceID
+    ))
+    #expect(secondPrepared.baseRevision == 1)
+}

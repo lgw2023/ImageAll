@@ -578,6 +578,47 @@ final class RemoteCompanionModel: ObservableObject {
         return receipt
     }
 
+    func submitLocalLibraryTagDecision(
+        _ prepared: LocalPreparedSharedTagOperation
+    ) async throws -> RemoteLocalLibraryTagDecisionReceipt {
+        guard isConnected, let client, let sessionTokens,
+              let capabilities,
+              capabilities.capabilities.contains(.localLibraryTagOperations),
+              capabilities.hostID == sessionTokens.hostID,
+              prepared.hostID == sessionTokens.hostID,
+              prepared.deviceID == sessionTokens.deviceID else {
+            throw RemoteAPIError(
+                code: .unauthorized,
+                message: "请先连接支持手机标签提交的已配对 Mac"
+            )
+        }
+        let decision: RemoteLocalLibraryDecision = switch prepared.decision {
+        case .accepted: .accepted
+        case .rejected: .rejected
+        case .cleared: .cleared
+        }
+        let request = RemoteLocalLibraryTagDecisionRequest(
+            hostID: prepared.hostID,
+            installID: prepared.installID,
+            sourceEpoch: prepared.sourceEpoch,
+            scopeRevision: prepared.operation.scopeRevision,
+            operationID: prepared.operation.id,
+            deviceSequence: prepared.operation.sequence,
+            assetID: prepared.operation.assetID,
+            tagID: prepared.tagID,
+            tagName: prepared.tagName,
+            decision: decision,
+            baseRevision: prepared.baseRevision
+        )
+        let receipt = try await client.submitLocalLibraryTagDecision(request)
+        guard receipt.hostID == sessionTokens.hostID,
+              receipt.deviceID == sessionTokens.deviceID,
+              receipt.operationID == prepared.operation.id else {
+            throw RemoteAPIError(code: .conflict, message: "Mac 标签回执身份不匹配")
+        }
+        return receipt
+    }
+
     func reloadHostStatus() async {
         guard let client, !isRefreshingHostStatus else { return }
         isRefreshingHostStatus = true

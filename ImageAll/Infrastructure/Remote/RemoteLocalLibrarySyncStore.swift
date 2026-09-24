@@ -47,6 +47,7 @@ actor RemoteLocalLibrarySyncStore {
         let sharedTagFacts: [SharedTagFact]?
         let tagOperations: [TagOperationRecord]?
         let lastPhoneOperationSequence: Int64?
+        let importedAssetIDs: [UUID]?
     }
 
     private struct PersistedState: Codable {
@@ -76,6 +77,9 @@ actor RemoteLocalLibrarySyncStore {
                           && record.request.schemaVersion == 1
                           && Set(projectedIDs).count == projectedIDs.count
                           && Set(projectedIDs).isSubset(of: selectedIDs)
+                          && Set(record.importedAssetIDs ?? []).count ==
+                              (record.importedAssetIDs ?? []).count
+                          && Set(record.importedAssetIDs ?? []).isSubset(of: Set(projectedIDs))
                           && Set(factKeys).count == factKeys.count
                           && (record.sharedTagFacts ?? []).allSatisfy {
                               selectedIDs.contains($0.assetID) && $0.revision > 0
@@ -135,15 +139,21 @@ actor RemoteLocalLibrarySyncStore {
         let projectedAssets = projection.values.sorted {
             $0.asset.id.uuidString < $1.asset.id.uuidString
         }
+        let previouslyProjected = Set(previous?.projectedAssets.map(\.asset.id) ?? [])
         let sharedTagFacts: [SharedTagFact]
+        let importedAssetIDs: [UUID]
         if let established = previous?.sharedTagFacts {
-            let newlySelected = selected.subtracting(previous?.request.selectedAssetIDs ?? [])
+            importedAssetIDs = projectedAssets.map(\.asset.id).filter {
+                !previouslyProjected.contains($0)
+            }
+            let newlyImported = Set(importedAssetIDs)
             sharedTagFacts = established.filter { selected.contains($0.assetID) }
                 + Self.seedTagFacts(from: projectedAssets.filter {
-                    newlySelected.contains($0.asset.id)
+                    newlyImported.contains($0.asset.id)
                 })
         } else {
             // One-time bootstrap for records created before the fact ledger existed.
+            importedAssetIDs = projectedAssets.map(\.asset.id)
             sharedTagFacts = Self.seedTagFacts(from: projectedAssets)
         }
         let record = Record(
@@ -152,7 +162,8 @@ actor RemoteLocalLibrarySyncStore {
             acceptedAtMs: Int64((Date().timeIntervalSince1970 * 1_000).rounded()),
             sharedTagFacts: sharedTagFacts,
             tagOperations: previous?.tagOperations ?? [],
-            lastPhoneOperationSequence: previous?.lastPhoneOperationSequence ?? 0
+            lastPhoneOperationSequence: previous?.lastPhoneOperationSequence ?? 0,
+            importedAssetIDs: importedAssetIDs
         )
         var updated = records
         updated[authenticatedDeviceID] = record
@@ -284,7 +295,8 @@ actor RemoteLocalLibrarySyncStore {
                     < ($1.assetID.uuidString, $1.tagID.uuidString)
             },
             tagOperations: (previous.tagOperations ?? []) + [operation],
-            lastPhoneOperationSequence: request.deviceSequence
+            lastPhoneOperationSequence: request.deviceSequence,
+            importedAssetIDs: previous.importedAssetIDs
         )
         var updated = records
         updated[authenticatedDeviceID] = record
@@ -336,7 +348,8 @@ actor RemoteLocalLibrarySyncStore {
             hostID: hostID, deviceID: record.deviceID,
             sourceEpoch: record.request.sourceEpoch,
             snapshotSequence: record.request.snapshotSequence,
-            acceptedAssetCount: record.projectedAssets.count, replayed: replayed
+            acceptedAssetCount: record.projectedAssets.count, replayed: replayed,
+            importedAssetIDs: record.importedAssetIDs
         )
     }
 

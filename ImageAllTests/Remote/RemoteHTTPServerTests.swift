@@ -35,6 +35,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         )
         let receipt = try await store.submit(first, authenticatedDeviceID: deviceID)
         XCTAssertEqual(receipt.acceptedAssetCount, 1)
+        XCTAssertEqual(receipt.importedAssetIDs, [visibleID])
         XCTAssertFalse(receipt.replayed)
 
         let permissionContracted = RemoteLocalLibrarySnapshotRequest(
@@ -56,6 +57,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(offlineProjections.first?.acceptedAtMs, hiddenProjection?.acceptedAtMs)
         let replay = try await reopened.submit(permissionContracted, authenticatedDeviceID: deviceID)
         XCTAssertTrue(replay.replayed)
+        XCTAssertEqual(replay.importedAssetIDs, [])
         let wrongSource = RemoteLocalLibrarySnapshotRequest(
             hostID: hostID, installID: installID, sourceEpoch: UUID(),
             scopeRevision: 1, snapshotSequence: 3,
@@ -74,13 +76,29 @@ final class RemoteHTTPServerTests: XCTestCase {
             XCTAssertEqual(error.code, .conflict)
         }
 
+        let newlyVisible = RemoteLocalLibraryAsset(
+            id: hiddenID, localIdentifier: "newly-visible", mediaKind: .image,
+            createdAtMs: nil, observedFavorite: false, favoriteTarget: nil,
+            tagDecisions: [], collections: []
+        )
+        let expandedVisibility = RemoteLocalLibrarySnapshotRequest(
+            hostID: hostID, installID: installID, sourceEpoch: epoch,
+            scopeRevision: 1, snapshotSequence: 3,
+            selectedAssetIDs: [visibleID, hiddenID], assets: [newlyVisible]
+        )
+        let expandedReceipt = try await reopened.submit(
+            expandedVisibility, authenticatedDeviceID: deviceID
+        )
+        XCTAssertEqual(expandedReceipt.importedAssetIDs, [hiddenID])
+
         let revoked = RemoteLocalLibrarySnapshotRequest(
             hostID: hostID, installID: installID, sourceEpoch: epoch,
-            scopeRevision: 2, snapshotSequence: 3,
+            scopeRevision: 2, snapshotSequence: 4,
             selectedAssetIDs: [hiddenID], assets: []
         )
         let revokeReceipt = try await reopened.submit(revoked, authenticatedDeviceID: deviceID)
-        XCTAssertEqual(revokeReceipt.acceptedAssetCount, 0)
+        XCTAssertEqual(revokeReceipt.acceptedAssetCount, 1)
+        XCTAssertEqual(revokeReceipt.importedAssetIDs, [])
         let finalProjection = await reopened.projection(deviceID: deviceID)
         XCTAssertEqual(finalProjection?.selectedAssetIDs, [hiddenID])
     }

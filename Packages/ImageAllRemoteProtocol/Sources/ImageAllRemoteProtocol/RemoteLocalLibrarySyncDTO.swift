@@ -101,6 +101,9 @@ public struct RemoteLocalLibrarySnapshotReceipt: Codable, Sendable, Equatable {
     public let snapshotSequence: Int64
     public let acceptedAssetCount: Int
     public let replayed: Bool
+    /// Assets whose tag facts were first bound to the Mac shared-fact ledger by this snapshot.
+    /// Missing on older Hosts; clients must not infer this list from acceptedAssetCount.
+    public let importedAssetIDs: [UUID]?
 
     public init(
         hostID: UUID,
@@ -108,7 +111,8 @@ public struct RemoteLocalLibrarySnapshotReceipt: Codable, Sendable, Equatable {
         sourceEpoch: UUID,
         snapshotSequence: Int64,
         acceptedAssetCount: Int,
-        replayed: Bool
+        replayed: Bool,
+        importedAssetIDs: [UUID]? = nil
     ) {
         self.hostID = hostID
         self.deviceID = deviceID
@@ -116,6 +120,7 @@ public struct RemoteLocalLibrarySnapshotReceipt: Codable, Sendable, Equatable {
         self.snapshotSequence = snapshotSequence
         self.acceptedAssetCount = acceptedAssetCount
         self.replayed = replayed
+        self.importedAssetIDs = importedAssetIDs
     }
 }
 

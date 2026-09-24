@@ -1,7 +1,16 @@
 import ImageAllLocalLibrary
+import ImageAllRemoteProtocol
 import Photos
 import SwiftUI
 import UIKit
+
+struct LocalSharedSyncSummary {
+    let applied: Int
+    let unchanged: Int
+    let conflicts: Int
+    let deferred: Int
+    let remaining: Int
+}
 
 @MainActor
 final class LocalLibraryModel: ObservableObject {
@@ -171,6 +180,93 @@ final class LocalLibraryModel: ObservableObject {
         )
     }
 
+    func completeSharedSync(
+        snapshot: LocalSharedSnapshot,
+        receipt: RemoteLocalLibrarySnapshotReceipt,
+        remoteModel: RemoteCompanionModel
+    ) async throws -> LocalSharedSyncSummary {
+        guard let store else { throw LocalFavoriteSourceError.storeUnavailable }
+        guard let importedAssetIDs = receipt.importedAssetIDs else {
+            throw LocalLibraryError.database("Mac 缺少首次导入字段回执，整理操作仍保留在手机")
+        }
+        do {
+            try await store.acknowledgeSharedSnapshot(
+                snapshot, hostID: receipt.hostID, deviceID: receipt.deviceID,
+                importedAssetIDs: importedAssetIDs
+            )
+            var applied = 0
+            var unchanged = 0
+            var conflicts = 0
+            var deferred = 0
+            let visible = Dictionary(uniqueKeysWithValues: snapshot.assets.map { ($0.id, $0) })
+            let pending = try await store.pendingSharedOperations()
+            for operation in pending.prefix(100) {
+                guard operation.field.hasPrefix("tag.") else {
+                    deferred += 1 // Collection/favorite have separate authority and protocol work.
+                    continue
+                }
+                if operation.isConflicted {
+                    conflicts += 1
+                    break
+                }
+                guard let asset = visible[operation.assetID],
+                      PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized
+                        || PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited else {
+                    deferred += 1
+                    continue
+                }
+                let options = PHFetchOptions()
+                options.includeHiddenAssets = false
+                options.includeAssetSourceTypes = .typeUserLibrary
+                guard PHAsset.fetchAssets(
+                    withLocalIdentifiers: [asset.localIdentifier], options: options
+                ).firstObject != nil else {
+                    deferred += 1
+                    continue
+                }
+                guard let prepared = try await store.prepareSharedTagOperation(
+                    id: operation.id, hostID: receipt.hostID, deviceID: receipt.deviceID
+                ) else { continue }
+                let tagReceipt = try await remoteModel.submitLocalLibraryTagDecision(prepared)
+                let disposition: LocalSharedTagDisposition = switch tagReceipt.disposition {
+                case .applied: .applied
+                case .unchanged: .unchanged
+                case .conflict: .conflict
+                }
+                let currentDecision: LocalDecision? = switch tagReceipt.currentDecision {
+                case .accepted: .accepted
+                case .rejected: .rejected
+                case .cleared: .cleared
+                case nil: nil
+                }
+                _ = try await store.recordSharedTagResult(
+                    operationID: operation.id, hostID: receipt.hostID,
+                    deviceID: receipt.deviceID, disposition: disposition,
+                    fieldRevision: tagReceipt.fieldRevision,
+                    currentDecision: currentDecision
+                )
+                switch disposition {
+                case .applied: applied += 1
+                case .unchanged: unchanged += 1
+                case .conflict:
+                    conflicts += 1
+                    break
+                }
+                if conflicts > 0 { break }
+            }
+            let remaining = try await store.pendingSharedOperations().count
+            await reloadFacts()
+            return LocalSharedSyncSummary(
+                applied: applied, unchanged: unchanged,
+                conflicts: conflicts, deferred: deferred,
+                remaining: remaining
+            )
+        } catch {
+            await reloadFacts()
+            throw error
+        }
+    }
+
     func setFavoriteTarget(_ favorite: Bool, asset: LocalAsset) async {
         await writeFavorite(favorite, asset: asset, saveNewIntent: true)
     }
@@ -244,7 +340,7 @@ final class LocalLibraryModel: ObservableObject {
             tags = try await store.tags()
             collections = try await store.collections()
             sharedSelections = try await store.sharedSelections()
-            pendingCount = try await store.pendingOperations().count
+            pendingCount = try await store.pendingSharedOperations().count
         } catch { errorMessage = "读取本机资料失败：\(error.localizedDescription)" }
     }
 }
@@ -321,8 +417,8 @@ struct LocalLibraryView: View {
                 }
             }
             Section {
-                LabeledContent("待同步整理操作", value: "\(model.pendingCount)")
-                Text("本机整理会持久保存；分享范围与 Mac 同步将在后续阶段提供。")
+                LabeledContent("已分享范围的待提交操作", value: "\(model.pendingCount)")
+                Text("本机整理会持久保存；只有明确加入待分享范围的资产会进入跨端提交队列。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -420,14 +516,22 @@ private struct LocalShareScopeView: View {
                 }
             }
             Section {
-                Button(isSending ? "正在提交…" : "同步目录与整理信息到 Mac") {
+                Button(isSending ? "正在提交…" : "同步目录与标签到 Mac") {
                     Task {
                         isSending = true
                         defer { isSending = false }
                         do {
                             let snapshot = try await model.prepareSharedSnapshot()
                             let receipt = try await remoteModel.submitLocalLibrarySnapshot(snapshot)
-                            statusMessage = "Mac 已接收 \(receipt.acceptedAssetCount) 项目录投影；原件尚未传输。"
+                            do {
+                                let result = try await model.completeSharedSync(
+                                    snapshot: snapshot, receipt: receipt,
+                                    remoteModel: remoteModel
+                                )
+                                statusMessage = "Mac 已接收 \(receipt.acceptedAssetCount) 项目录；标签提交 \(result.applied) 项、已一致 \(result.unchanged) 项、冲突 \(result.conflicts) 项；仍待处理 \(result.remaining) 项。原件尚未传输。"
+                            } catch {
+                                statusMessage = "Mac 已接收目录，但整理信息提交未完成：\(error.localizedDescription)"
+                            }
                         } catch {
                             statusMessage = "同步未完成：\(error.localizedDescription)"
                         }
@@ -437,7 +541,7 @@ private struct LocalShareScopeView: View {
                 if let statusMessage {
                     Text(statusMessage).font(.footnote).foregroundStyle(.secondary)
                 }
-                Text("先在“Mac 图库”完成设备配对。Mac 接收后仍需后续阶段接入双端浏览、冲突处理与增量回执。")
+                Text("先在“Mac 图库”完成设备配对。标签冲突会保留在手机；集合、收藏和 Mac 改动回传仍待后续协议接入。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
         }
