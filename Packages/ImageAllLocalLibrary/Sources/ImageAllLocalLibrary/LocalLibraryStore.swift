@@ -87,9 +87,11 @@ public struct LocalSharedPendingOperation: Identifiable, Sendable {
     public let preparedBaseRevision: Int64?
     public let isConflicted: Bool
     public let conflictRevision: Int64?
+    public let conflictValue: String?
     public let conflictDecision: LocalDecision?
-    public let conflictReason: LocalSharedTagConflictReason?
+    public let conflictReason: LocalSharedConflictReason?
     public let localCurrentDecision: LocalDecision?
+    public let localCurrentIncluded: Bool?
 }
 
 public struct LocalPreparedSharedTagOperation: Sendable {
@@ -104,15 +106,31 @@ public struct LocalPreparedSharedTagOperation: Sendable {
     public let sourceEpoch: UUID
 }
 
+public struct LocalPreparedSharedCollectionOperation: Sendable {
+    public let hostID: UUID
+    public let deviceID: UUID
+    public let operation: LocalSharedPendingOperation
+    public let collectionID: UUID
+    public let collectionName: String
+    public let included: Bool
+    public let baseRevision: Int64
+    public let installID: UUID
+    public let sourceEpoch: UUID
+}
+
 public enum LocalSharedTagDisposition: Sendable {
     case applied, unchanged, conflict
 }
 
-public enum LocalSharedTagConflictReason: String, Sendable {
-    case fieldVersion, tagIdentity, nameAlias
+public enum LocalSharedConflictReason: String, Sendable {
+    case fieldVersion, tagIdentity, collectionIdentity, nameAlias
 }
 
 public enum LocalSharedTagConflictResolution: Sendable {
+    case acceptMac, keepPhone
+}
+
+public enum LocalSharedCollectionConflictResolution: Sendable {
     case acceptMac, keepPhone
 }
 
@@ -640,12 +658,13 @@ public actor LocalLibraryStore {
         try rows("""
             SELECT o.sequence,s.operation_id,s.asset_id,s.field,s.value,s.reference_name,
                    s.scope_revision,d.base_revision,d.state,d.conflict_revision,
-                   d.conflict_value,c.reason,t.decision
+                   d.conflict_value,c.reason,t.decision,m.included
             FROM shared_outbox s JOIN outbox o ON o.operation_id=s.operation_id
             JOIN shared_assets a ON a.asset_id=s.asset_id
             LEFT JOIN shared_delivery d ON d.operation_id=s.operation_id
             LEFT JOIN shared_conflict_details c ON c.operation_id=s.operation_id
             LEFT JOIN tag_decisions t ON t.asset_id=s.asset_id AND s.field='tag.' || t.tag_id
+            LEFT JOIN memberships m ON m.asset_id=s.asset_id AND s.field='collection.' || m.collection_id
             ORDER BY o.sequence
             """).map { row in
                 guard let sequence = Int64(row[0] ?? ""),
@@ -662,9 +681,11 @@ public actor LocalLibraryStore {
                     preparedBaseRevision: row[7].flatMap(Int64.init),
                     isConflicted: row[8] == "conflict",
                     conflictRevision: row[9].flatMap(Int64.init),
+                    conflictValue: row[10],
                     conflictDecision: row[10].flatMap(LocalDecision.init(rawValue:)),
-                    conflictReason: row[11].flatMap(LocalSharedTagConflictReason.init(rawValue:)),
-                    localCurrentDecision: row[12].flatMap(LocalDecision.init(rawValue:))
+                    conflictReason: row[11].flatMap(LocalSharedConflictReason.init(rawValue:)),
+                    localCurrentDecision: row[12].flatMap(LocalDecision.init(rawValue:)),
+                    localCurrentIncluded: row[13].map { $0 == "1" }
                 )
             }
     }
@@ -691,6 +712,12 @@ public actor LocalLibraryStore {
                         INSERT OR IGNORE INTO shared_field_versions(asset_id,field,revision)
                         VALUES(?,?,1)
                         """, [assetID.uuidString, "tag.\(tag.tagID.uuidString)"])
+                }
+                for collection in asset.collections {
+                    try execute("""
+                        INSERT OR IGNORE INTO shared_field_versions(asset_id,field,revision)
+                        VALUES(?,?,1)
+                        """, [assetID.uuidString, "collection.\(collection.collectionID.uuidString)"])
                 }
                 try execute("""
                     DELETE FROM shared_outbox WHERE asset_id=?
@@ -783,13 +810,77 @@ public actor LocalLibraryStore {
         )
     }
 
+    /// Freezes the membership base revision and wire identity for lossless ACK retry.
+    public func prepareSharedCollectionOperation(
+        id: UUID, hostID: UUID, deviceID: UUID
+    ) throws -> LocalPreparedSharedCollectionOperation? {
+        guard let pending = try pendingSharedOperations().first(where: { $0.id == id }) else {
+            return nil
+        }
+        guard pending.field.hasPrefix("collection."),
+              let collectionID = UUID(uuidString: String(pending.field.dropFirst(11))),
+              let collectionName = pending.referenceName, !collectionName.isEmpty,
+              pending.value == "0" || pending.value == "1" else {
+            throw LocalLibraryError.unsupportedSharedOperation
+        }
+        guard !pending.isConflicted else { throw LocalLibraryError.syncConflictRequiresResolution }
+        guard try requiredIdentity("sync_host_id") == hostID.uuidString,
+              try requiredIdentity("sync_device_id") == deviceID.uuidString else {
+            throw LocalLibraryError.syncIdentityChanged
+        }
+        guard pending.scopeRevision == (Int64(try requiredIdentity("share_scope_revision")) ?? -1),
+              pending.scopeRevision == (Int64(try requiredIdentity("sync_ack_scope_revision")) ?? -1) else {
+            throw LocalLibraryError.syncScopeNotAcknowledged
+        }
+        let earlier = try scalar("""
+            SELECT MIN(o.sequence) FROM shared_outbox s
+            JOIN outbox o ON o.operation_id=s.operation_id
+            WHERE s.asset_id=? AND s.field=?
+            """, [pending.assetID.uuidString, pending.field]).flatMap(Int64.init)
+        guard earlier == pending.sequence else {
+            throw LocalLibraryError.syncEarlierOperationPending
+        }
+        let baseRevision: Int64
+        if let prepared = pending.preparedBaseRevision {
+            let binding = try rows("""
+                SELECT host_id,device_id,scope_revision FROM shared_delivery WHERE operation_id=?
+                """, [id.uuidString]).first
+            guard binding?[0] == hostID.uuidString,
+                  binding?[1] == deviceID.uuidString,
+                  Int64(binding?[2] ?? "") == pending.scopeRevision else {
+                throw LocalLibraryError.syncIdentityChanged
+            }
+            baseRevision = prepared
+        } else {
+            baseRevision = Int64(try scalar("""
+                SELECT revision FROM shared_field_versions WHERE asset_id=? AND field=?
+                """, [pending.assetID.uuidString, pending.field]) ?? "0") ?? 0
+            try transaction {
+                try execute("""
+                    INSERT INTO shared_delivery(
+                      operation_id,host_id,device_id,base_revision,scope_revision,state
+                    ) VALUES(?,?,?,?,?,'prepared')
+                    """, [
+                        id.uuidString, hostID.uuidString, deviceID.uuidString,
+                        String(baseRevision), String(pending.scopeRevision)
+                    ])
+            }
+        }
+        return LocalPreparedSharedCollectionOperation(
+            hostID: hostID, deviceID: deviceID, operation: pending,
+            collectionID: collectionID, collectionName: collectionName,
+            included: pending.value == "1", baseRevision: baseRevision,
+            installID: try installID(), sourceEpoch: try sourceEpoch()
+        )
+    }
+
     /// Applied/unchanged ACKs advance the local field baseline; conflicts remain durable.
     @discardableResult
     public func recordSharedTagResult(
         operationID: UUID, hostID: UUID, deviceID: UUID,
         disposition: LocalSharedTagDisposition,
         fieldRevision: Int64, currentDecision: LocalDecision?,
-        conflictReason: LocalSharedTagConflictReason? = nil
+        conflictReason: LocalSharedConflictReason? = nil
     ) throws -> Bool {
         guard fieldRevision >= 0 else { throw LocalLibraryError.database("invalid shared revision") }
         guard let operation = try pendingSharedOperations().first(where: { $0.id == operationID })
@@ -835,6 +926,137 @@ public actor LocalLibraryStore {
             }
         }
         return true
+    }
+
+    @discardableResult
+    public func recordSharedCollectionResult(
+        operationID: UUID, hostID: UUID, deviceID: UUID,
+        disposition: LocalSharedTagDisposition,
+        fieldRevision: Int64, currentIncluded: Bool?,
+        conflictReason: LocalSharedConflictReason? = nil
+    ) throws -> Bool {
+        guard fieldRevision >= 0 else { throw LocalLibraryError.database("invalid shared revision") }
+        guard let operation = try pendingSharedOperations().first(where: { $0.id == operationID }),
+              operation.field.hasPrefix("collection.") else { return false }
+        let binding = try rows("""
+            SELECT host_id,device_id,base_revision FROM shared_delivery WHERE operation_id=?
+            """, [operationID.uuidString]).first
+        guard binding?[0] == hostID.uuidString,
+              binding?[1] == deviceID.uuidString,
+              let base = Int64(binding?[2] ?? ""),
+              fieldRevision >= base else {
+            throw LocalLibraryError.syncIdentityChanged
+        }
+        try transaction {
+            switch disposition {
+            case .applied, .unchanged:
+                guard currentIncluded.map({ $0 ? "1" : "0" }) == operation.value else {
+                    throw LocalLibraryError.database("shared ACK does not match submitted membership")
+                }
+                try execute("""
+                    INSERT INTO shared_field_versions(asset_id,field,revision) VALUES(?,?,?)
+                    ON CONFLICT(asset_id,field) DO UPDATE SET
+                      revision=MAX(revision,excluded.revision)
+                    """, [operation.assetID.uuidString, operation.field, String(fieldRevision)])
+                try execute("DELETE FROM shared_outbox WHERE operation_id=?", [operationID.uuidString])
+            case .conflict:
+                try execute("""
+                    UPDATE shared_delivery SET state='conflict',
+                      conflict_revision=?,conflict_value=? WHERE operation_id=?
+                    """, [
+                        String(fieldRevision), currentIncluded.map { $0 ? "1" : "0" } ?? "",
+                        operationID.uuidString
+                    ])
+                if let conflictReason {
+                    try execute("""
+                        INSERT INTO shared_conflict_details(operation_id,reason) VALUES(?,?)
+                        ON CONFLICT(operation_id) DO UPDATE SET reason=excluded.reason
+                        """, [operationID.uuidString, conflictReason.rawValue])
+                }
+            }
+        }
+        return true
+    }
+
+    /// Rebases only a known version conflict. Alias and identity conflicts need a
+    /// separate mapping decision and must not be silently merged by name.
+    @discardableResult
+    public func resolveSharedCollectionConflict(
+        operationID: UUID, resolution: LocalSharedCollectionConflictResolution
+    ) throws -> UUID? {
+        guard let conflict = try pendingSharedOperations().first(where: { $0.id == operationID }),
+              conflict.isConflicted,
+              conflict.conflictReason == .fieldVersion,
+              let revision = conflict.conflictRevision,
+              let macRaw = conflict.conflictValue,
+              macRaw == "0" || macRaw == "1",
+              conflict.field.hasPrefix("collection."),
+              let collectionID = UUID(uuidString: String(conflict.field.dropFirst(11))),
+              let collectionName = try scalar(
+                  "SELECT name FROM collections WHERE id=?", [collectionID.uuidString]
+              ),
+              let localIncluded = conflict.localCurrentIncluded,
+              conflict.scopeRevision == Int64(try requiredIdentity("share_scope_revision")),
+              conflict.scopeRevision == Int64(try requiredIdentity("sync_ack_scope_revision")) else {
+            throw LocalLibraryError.syncConflictDetailsUnavailable
+        }
+        let hostID = try requiredIdentity("sync_host_id")
+        let deviceID = try requiredIdentity("sync_device_id")
+        let rowsForField = try rows("""
+            SELECT s.operation_id,o.sequence,d.state,d.host_id,d.device_id
+            FROM shared_outbox s JOIN outbox o ON o.operation_id=s.operation_id
+            LEFT JOIN shared_delivery d ON d.operation_id=s.operation_id
+            WHERE s.asset_id=? AND s.field=? ORDER BY o.sequence
+            """, [conflict.assetID.uuidString, conflict.field])
+        guard let first = rowsForField.first,
+              first[0] == operationID.uuidString,
+              first[3] == hostID, first[4] == deviceID,
+              rowsForField.dropFirst().allSatisfy({ $0[2] == nil }) else {
+            throw LocalLibraryError.syncEarlierOperationPending
+        }
+        let baseline = Int64(try scalar("""
+            SELECT revision FROM shared_field_versions WHERE asset_id=? AND field=?
+            """, [conflict.assetID.uuidString, conflict.field]) ?? "0") ?? 0
+        guard baseline <= revision else { throw LocalLibraryError.syncIdentityChanged }
+        let macIncluded = macRaw == "1"
+        var newOperationID: UUID?
+        try transaction {
+            for row in rowsForField {
+                try execute("DELETE FROM shared_outbox WHERE operation_id=?", [row[0] ?? ""])
+            }
+            try execute("""
+                INSERT INTO shared_field_versions(asset_id,field,revision) VALUES(?,?,?)
+                ON CONFLICT(asset_id,field) DO UPDATE SET
+                  revision=MAX(revision,excluded.revision)
+                """, [conflict.assetID.uuidString, conflict.field, String(revision)])
+            switch resolution {
+            case .acceptMac:
+                if localIncluded != macIncluded {
+                    try execute("""
+                        UPDATE memberships SET included=?,revision=revision+1
+                        WHERE asset_id=? AND collection_id=?
+                        """, [
+                            macRaw, conflict.assetID.uuidString, collectionID.uuidString
+                        ])
+                    _ = try enqueue(
+                        conflict.assetID, field: conflict.field, value: macRaw
+                    )
+                }
+            case .keepPhone:
+                if localIncluded != macIncluded {
+                    let value = localIncluded ? "1" : "0"
+                    let id = try enqueue(
+                        conflict.assetID, field: conflict.field, value: value
+                    )
+                    try enqueueShared(
+                        id, assetID: conflict.assetID, field: conflict.field,
+                        value: value, referenceName: collectionName
+                    )
+                    newOperationID = id
+                }
+            }
+        }
+        return newOperationID
     }
 
     /// An explicit owner choice consumes the conflicted wire operation. Keeping the phone

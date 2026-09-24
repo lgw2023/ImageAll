@@ -224,6 +224,99 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(afterPermissionContraction?.sharedTagFacts.first?.revision, 3)
     }
 
+    func testSharedCollectionMembershipRemovalSurvivesSnapshotAndRestart() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("shared-collections.json")
+        let hostID = UUID()
+        let deviceID = UUID()
+        let installID = UUID()
+        let epoch = UUID()
+        let assetID = UUID()
+        let collectionID = UUID()
+        let asset = RemoteLocalLibraryAsset(
+            id: assetID, localIdentifier: "fixture-local", mediaKind: .image,
+            createdAtMs: nil, observedFavorite: false, favoriteTarget: nil,
+            tagDecisions: [],
+            collections: [.init(collectionID: collectionID, collectionName: "旅行")]
+        )
+        let store = try RemoteLocalLibrarySyncStore(hostID: hostID, storageURL: url)
+        let snapshot = RemoteLocalLibrarySnapshotRequest(
+            hostID: hostID, installID: installID, sourceEpoch: epoch,
+            scopeRevision: 1, snapshotSequence: 1,
+            selectedAssetIDs: [assetID], assets: [asset]
+        )
+        _ = try await store.submit(snapshot, authenticatedDeviceID: deviceID)
+        func operation(
+            id: UUID = UUID(), sequence: Int64, base: Int64, included: Bool,
+            collectionID: UUID = collectionID, name: String = "旅行"
+        ) -> RemoteLocalLibraryCollectionMembershipRequest {
+            .init(
+                hostID: hostID, installID: installID, sourceEpoch: epoch,
+                scopeRevision: 1, operationID: id, deviceSequence: sequence,
+                assetID: assetID, collectionID: collectionID,
+                collectionName: name, included: included, baseRevision: base
+            )
+        }
+        let removal = operation(sequence: 1, base: 1, included: false)
+        let applied = try await store.submitCollectionMembership(
+            removal, authenticatedDeviceID: deviceID
+        )
+        XCTAssertEqual(applied.disposition, .applied)
+        XCTAssertEqual(applied.fieldRevision, 2)
+        XCTAssertEqual(applied.currentIncluded, false)
+        let replay = try await store.submitCollectionMembership(
+            removal, authenticatedDeviceID: deviceID
+        )
+        XCTAssertTrue(replay.replayed)
+        _ = try await store.submit(
+            .init(
+                hostID: hostID, installID: installID, sourceEpoch: epoch,
+                scopeRevision: 1, snapshotSequence: 2,
+                selectedAssetIDs: [assetID], assets: [asset]
+            ), authenticatedDeviceID: deviceID
+        )
+        let reopened = try RemoteLocalLibrarySyncStore(hostID: hostID, storageURL: url)
+        let projection = await reopened.projection(deviceID: deviceID)
+        XCTAssertEqual(projection?.sharedCollectionFacts.first?.included, false)
+        XCTAssertEqual(projection?.sharedCollectionFacts.first?.revision, 2)
+        XCTAssertEqual(projection?.assets.first?.asset.collections.count, 1)
+        let stale = try await reopened.submitCollectionMembership(
+            operation(sequence: 2, base: 1, included: true),
+            authenticatedDeviceID: deviceID
+        )
+        XCTAssertEqual(stale.disposition, .conflict)
+        XCTAssertEqual(stale.conflictReason, .fieldVersion)
+        let alias = try await reopened.submitCollectionMembership(
+            operation(sequence: 3, base: 0, included: true, collectionID: UUID()),
+            authenticatedDeviceID: deviceID
+        )
+        XCTAssertEqual(alias.disposition, .conflict)
+        XCTAssertEqual(alias.conflictReason, .nameAlias)
+        let renamedIdentity = try await reopened.submitCollectionMembership(
+            operation(sequence: 4, base: 2, included: true, name: "另一集合"),
+            authenticatedDeviceID: deviceID
+        )
+        XCTAssertEqual(renamedIdentity.disposition, .conflict)
+        XCTAssertEqual(renamedIdentity.conflictReason, .collectionIdentity)
+        _ = try await reopened.submit(
+            .init(
+                hostID: hostID, installID: installID, sourceEpoch: epoch,
+                scopeRevision: 1, snapshotSequence: 3,
+                selectedAssetIDs: [assetID], assets: []
+            ), authenticatedDeviceID: deviceID
+        )
+        do {
+            _ = try await reopened.submitCollectionMembership(
+                operation(sequence: 5, base: 2, included: true),
+                authenticatedDeviceID: deviceID
+            )
+            XCTFail("permission-hidden assets must not accept new membership edits")
+        } catch let error as RemoteAPIError {
+            XCTAssertEqual(error.code, .conflict)
+        }
+    }
+
     func testSharedTagIdentityConflictsHaveDistinctReasons() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -369,11 +462,12 @@ final class RemoteHTTPServerTests: XCTestCase {
         let deviceID = UUID()
         let assetID = UUID()
         let tagID = UUID()
+        let collectionID = UUID()
         let asset = RemoteLocalLibraryAsset(
             id: assetID, localIdentifier: "fixture-local", mediaKind: .image,
             createdAtMs: nil, observedFavorite: false, favoriteTarget: nil,
             tagDecisions: [.init(tagID: tagID, tagName: "旧标签", decision: .accepted)],
-            collections: []
+            collections: [.init(collectionID: collectionID, collectionName: "旧集合")]
         )
         let snapshot = RemoteLocalLibrarySnapshotRequest(
             hostID: hostID, installID: UUID(), sourceEpoch: UUID(),
@@ -399,6 +493,8 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(projection?.sharedTagFacts.first?.tagID, tagID)
         XCTAssertEqual(projection?.sharedTagFacts.first?.decision, .accepted)
         XCTAssertEqual(projection?.sharedTagFacts.first?.revision, 1)
+        XCTAssertEqual(projection?.sharedCollectionFacts.first?.collectionID, collectionID)
+        XCTAssertEqual(projection?.sharedCollectionFacts.first?.included, true)
     }
 
     func testLocalLibrarySnapshotRouteRequiresPairedDeviceAndAcceptsNativeBearer() async throws {
@@ -466,6 +562,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(capabilities.capabilities.contains(.localLibrarySnapshot))
         XCTAssertTrue(capabilities.capabilities.contains(.localLibraryTagOperations))
         XCTAssertTrue(capabilities.capabilities.contains(.localLibraryTagChanges))
+        XCTAssertTrue(capabilities.capabilities.contains(.localLibraryCollectionMembership))
 
         let tagOperation = RemoteLocalLibraryTagDecisionRequest(
             hostID: hostID, installID: snapshot.installID,
@@ -494,6 +591,35 @@ final class RemoteHTTPServerTests: XCTestCase {
         )
         XCTAssertEqual(tagReceipt.disposition, .applied)
         XCTAssertEqual(tagReceipt.fieldRevision, 1)
+        let collectionOperation = RemoteLocalLibraryCollectionMembershipRequest(
+            hostID: hostID, installID: snapshot.installID,
+            sourceEpoch: snapshot.sourceEpoch, scopeRevision: 1,
+            operationID: UUID(), deviceSequence: 2,
+            assetID: assetID, collectionID: UUID(), collectionName: "旅行",
+            included: true, baseRevision: 0
+        )
+        func collectionRequest(authorization: String?, cookie: String? = nil) throws -> URLRequest {
+            var request = URLRequest(url: URL(string:
+                "http://127.0.0.1:\(port)\(RemoteHTTPPaths.localLibraryCollectionMembership)"
+            )!)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            if let authorization { request.setValue(authorization, forHTTPHeaderField: "Authorization") }
+            if let cookie { request.setValue(cookie, forHTTPHeaderField: "Cookie") }
+            request.httpBody = try JSONEncoder().encode(collectionOperation)
+            return request
+        }
+        let (collectionData, collectionResponse) = try await URLSession.shared.data(for: collectionRequest(
+            authorization: "Bearer \(tokens.accessToken)"
+        ))
+        XCTAssertEqual(try XCTUnwrap(collectionResponse as? HTTPURLResponse).statusCode, 200)
+        let collectionReceipt = try JSONDecoder().decode(
+            RemoteLocalLibraryCollectionMembershipReceipt.self, from: collectionData
+        )
+        XCTAssertEqual(collectionReceipt.disposition, .applied)
+        XCTAssertEqual(collectionReceipt.fieldRevision, 1)
+        let sharedCollectionProjection = await syncStore.projection(deviceID: tokens.deviceID)
+        XCTAssertEqual(sharedCollectionProjection?.sharedCollectionFacts.first?.included, true)
         _ = try await syncStore.setTagDecisionFromMac(
             deviceID: tokens.deviceID, assetID: assetID, tagID: tagOperation.tagID,
             decision: .rejected, expectedRevision: 1
@@ -527,6 +653,11 @@ final class RemoteHTTPServerTests: XCTestCase {
             cookie: "\(RemoteWebCompanionSession.accessCookieName)=\(tokens.accessToken)"
         ))
         XCTAssertEqual(try XCTUnwrap(untrustedTagResponse as? HTTPURLResponse).statusCode, 403)
+        let (_, untrustedCollectionResponse) = try await URLSession.shared.data(for: collectionRequest(
+            authorization: nil,
+            cookie: "\(RemoteWebCompanionSession.accessCookieName)=\(tokens.accessToken)"
+        ))
+        XCTAssertEqual(try XCTUnwrap(untrustedCollectionResponse as? HTTPURLResponse).statusCode, 403)
 
         let (_, cookieResponse) = try await URLSession.shared.data(for: request(
             authorization: nil,

@@ -130,6 +130,15 @@ public struct RemoteLibraryClient: Sendable {
         )
     }
 
+    public func submitLocalLibraryCollectionMembership(
+        _ request: RemoteLocalLibraryCollectionMembershipRequest
+    ) async throws -> RemoteLocalLibraryCollectionMembershipReceipt {
+        try await postJSON(
+            path: RemoteHTTPPaths.localLibraryCollectionMembership,
+            body: encoder.encode(request)
+        )
+    }
+
     public func fetchLocalLibraryTagChanges(
         sourceEpoch: UUID, scopeRevision: Int64, afterCursor: Int64
     ) async throws -> RemoteLocalLibraryTagChangesPage {

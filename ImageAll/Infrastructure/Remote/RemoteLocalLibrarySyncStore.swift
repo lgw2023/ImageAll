@@ -13,6 +13,14 @@ actor RemoteLocalLibrarySyncStore {
         let revision: Int64
     }
 
+    struct SharedCollectionFact: Codable, Sendable, Equatable {
+        let assetID: UUID
+        let collectionID: UUID
+        let collectionName: String
+        let included: Bool
+        let revision: Int64
+    }
+
     struct ProjectedAsset: Codable, Sendable, Identifiable {
         var id: UUID { asset.id }
         let asset: RemoteLocalLibraryAsset
@@ -30,12 +38,19 @@ actor RemoteLocalLibrarySyncStore {
         let selectedAssetIDs: [UUID]
         let assets: [ProjectedAsset]
         let sharedTagFacts: [SharedTagFact]
+        let sharedCollectionFacts: [SharedCollectionFact]
     }
 
     private struct TagOperationRecord: Codable {
         let request: RemoteLocalLibraryTagDecisionRequest
         let payloadSHA256: String
         let receipt: RemoteLocalLibraryTagDecisionReceipt
+    }
+
+    private struct CollectionOperationRecord: Codable {
+        let request: RemoteLocalLibraryCollectionMembershipRequest
+        let payloadSHA256: String
+        let receipt: RemoteLocalLibraryCollectionMembershipReceipt
     }
 
     private struct Record: Codable {
@@ -45,7 +60,9 @@ actor RemoteLocalLibrarySyncStore {
         let acceptedAtMs: Int64?
         /// Optional for snapshots written before the versioned fact ledger existed.
         let sharedTagFacts: [SharedTagFact]?
+        let sharedCollectionFacts: [SharedCollectionFact]?
         let tagOperations: [TagOperationRecord]?
+        let collectionOperations: [CollectionOperationRecord]?
         let lastPhoneOperationSequence: Int64?
         let importedAssetIDs: [UUID]?
         let tagChanges: [RemoteLocalLibraryTagChange]?
@@ -73,7 +90,11 @@ actor RemoteLocalLibrarySyncStore {
                       let factKeys = (record.sharedTagFacts ?? []).map {
                           "\($0.assetID.uuidString)|\($0.tagID.uuidString)"
                       }
+                      let collectionKeys = (record.sharedCollectionFacts ?? []).map {
+                          "\($0.assetID.uuidString)|\($0.collectionID.uuidString)"
+                      }
                       let operationIDs = (record.tagOperations ?? []).map(\.request.operationID)
+                          + (record.collectionOperations ?? []).map(\.request.operationID)
                       let changes = record.tagChanges ?? []
                       return record.request.hostID == hostID
                           && record.request.schemaVersion == 1
@@ -83,11 +104,20 @@ actor RemoteLocalLibrarySyncStore {
                               (record.importedAssetIDs ?? []).count
                           && Set(record.importedAssetIDs ?? []).isSubset(of: Set(projectedIDs))
                           && Set(factKeys).count == factKeys.count
+                          && Set(collectionKeys).count == collectionKeys.count
                           && (record.sharedTagFacts ?? []).allSatisfy {
+                              selectedIDs.contains($0.assetID) && $0.revision > 0
+                          }
+                          && (record.sharedCollectionFacts ?? []).allSatisfy {
                               selectedIDs.contains($0.assetID) && $0.revision > 0
                           }
                           && Set(operationIDs).count == operationIDs.count
                           && (record.tagOperations ?? []).allSatisfy {
+                              $0.receipt.hostID == hostID
+                                  && $0.receipt.deviceID == record.deviceID
+                                  && $0.receipt.operationID == $0.request.operationID
+                          }
+                          && (record.collectionOperations ?? []).allSatisfy {
                               $0.receipt.hostID == hostID
                                   && $0.receipt.deviceID == record.deviceID
                                   && $0.receipt.operationID == $0.request.operationID
@@ -151,6 +181,7 @@ actor RemoteLocalLibrarySyncStore {
         }
         let previouslyProjected = Set(previous?.projectedAssets.map(\.asset.id) ?? [])
         let sharedTagFacts: [SharedTagFact]
+        let sharedCollectionFacts: [SharedCollectionFact]
         let importedAssetIDs: [UUID]
         if let established = previous?.sharedTagFacts {
             importedAssetIDs = projectedAssets.map(\.asset.id).filter {
@@ -166,12 +197,23 @@ actor RemoteLocalLibrarySyncStore {
             importedAssetIDs = projectedAssets.map(\.asset.id)
             sharedTagFacts = Self.seedTagFacts(from: projectedAssets)
         }
+        if let established = previous?.sharedCollectionFacts {
+            let newlyImported = Set(importedAssetIDs)
+            sharedCollectionFacts = established.filter { selected.contains($0.assetID) }
+                + Self.seedCollectionFacts(from: projectedAssets.filter {
+                    newlyImported.contains($0.asset.id)
+                })
+        } else {
+            sharedCollectionFacts = Self.seedCollectionFacts(from: projectedAssets)
+        }
         let record = Record(
             deviceID: authenticatedDeviceID, request: request,
             projectedAssets: projectedAssets,
             acceptedAtMs: Int64((Date().timeIntervalSince1970 * 1_000).rounded()),
             sharedTagFacts: sharedTagFacts,
+            sharedCollectionFacts: sharedCollectionFacts,
             tagOperations: previous?.tagOperations ?? [],
+            collectionOperations: previous?.collectionOperations ?? [],
             lastPhoneOperationSequence: previous?.lastPhoneOperationSequence ?? 0,
             importedAssetIDs: importedAssetIDs,
             tagChanges: previous?.tagChanges ?? []
@@ -193,7 +235,9 @@ actor RemoteLocalLibrarySyncStore {
             acceptedAtMs: record.acceptedAtMs,
             selectedAssetIDs: record.request.selectedAssetIDs,
             assets: record.projectedAssets,
-            sharedTagFacts: record.sharedTagFacts ?? Self.seedTagFacts(from: record.projectedAssets)
+            sharedTagFacts: record.sharedTagFacts ?? Self.seedTagFacts(from: record.projectedAssets),
+            sharedCollectionFacts: record.sharedCollectionFacts
+                ?? Self.seedCollectionFacts(from: record.projectedAssets)
         )
     }
 
@@ -233,6 +277,11 @@ actor RemoteLocalLibrarySyncStore {
                 fieldRevision: saved.fieldRevision, currentDecision: saved.currentDecision,
                 replayed: true, conflictReason: saved.conflictReason
             )
+        }
+        guard !(previous.collectionOperations ?? []).contains(where: {
+            $0.request.operationID == request.operationID
+        }) else {
+            throw RemoteAPIError(code: .conflict, message: "operation ID reused for another field")
         }
         guard request.installID == previous.request.installID,
               request.sourceEpoch == previous.request.sourceEpoch,
@@ -311,7 +360,137 @@ actor RemoteLocalLibrarySyncStore {
                 ($0.assetID.uuidString, $0.tagID.uuidString)
                     < ($1.assetID.uuidString, $1.tagID.uuidString)
             },
+            sharedCollectionFacts: previous.sharedCollectionFacts,
             tagOperations: (previous.tagOperations ?? []) + [operation],
+            collectionOperations: previous.collectionOperations,
+            lastPhoneOperationSequence: request.deviceSequence,
+            importedAssetIDs: previous.importedAssetIDs,
+            tagChanges: previous.tagChanges
+        )
+        var updated = records
+        updated[authenticatedDeviceID] = record
+        try persist(updated)
+        return receipt
+    }
+
+    func submitCollectionMembership(
+        _ request: RemoteLocalLibraryCollectionMembershipRequest,
+        authenticatedDeviceID: UUID
+    ) throws -> RemoteLocalLibraryCollectionMembershipReceipt {
+        guard request.schemaVersion == 1,
+              request.hostID == hostID,
+              request.deviceSequence > 0,
+              request.baseRevision >= 0,
+              !request.collectionName.isEmpty,
+              request.collectionName == request.collectionName.trimmingCharacters(in: .whitespacesAndNewlines),
+              request.collectionName.count <= 160,
+              request.collectionName.utf8.count <= 640 else {
+            throw RemoteAPIError(code: .badRequest, message: "invalid shared collection membership")
+        }
+        guard let previous = records[authenticatedDeviceID] else {
+            throw RemoteAPIError(code: .notFound, message: "phone share scope not established")
+        }
+        let digest = try Self.payloadSHA256(request)
+        if let prior = previous.collectionOperations?.first(where: {
+            $0.request.operationID == request.operationID
+        }) {
+            guard prior.payloadSHA256 == digest else {
+                throw RemoteAPIError(code: .conflict, message: "operation ID reused with different payload")
+            }
+            let saved = prior.receipt
+            return RemoteLocalLibraryCollectionMembershipReceipt(
+                hostID: saved.hostID, deviceID: saved.deviceID,
+                operationID: saved.operationID, disposition: saved.disposition,
+                fieldRevision: saved.fieldRevision, currentIncluded: saved.currentIncluded,
+                replayed: true, conflictReason: saved.conflictReason
+            )
+        }
+        guard !(previous.tagOperations ?? []).contains(where: {
+            $0.request.operationID == request.operationID
+        }),
+              request.installID == previous.request.installID,
+              request.sourceEpoch == previous.request.sourceEpoch,
+              request.scopeRevision == previous.request.scopeRevision,
+              request.deviceSequence > (previous.lastPhoneOperationSequence ?? 0),
+              previous.request.selectedAssetIDs.contains(request.assetID),
+              previous.projectedAssets.contains(where: {
+                  $0.asset.id == request.assetID
+                      && $0.lastVisibleSnapshotSequence == previous.request.snapshotSequence
+              }) else {
+            throw RemoteAPIError(code: .conflict, message: "stale or unauthorized phone collection membership")
+        }
+        var facts = previous.sharedCollectionFacts
+            ?? Self.seedCollectionFacts(from: previous.projectedAssets)
+        let index = facts.firstIndex {
+            $0.assetID == request.assetID && $0.collectionID == request.collectionID
+        }
+        let current = index.map { facts[$0] }
+        let revision = current?.revision ?? 0
+        let disposition: RemoteLocalLibraryTagDecisionDisposition
+        let resultingRevision: Int64
+        let resultingIncluded: Bool?
+        let conflictReason: RemoteLocalLibraryCollectionConflictReason?
+        if facts.contains(where: {
+            $0.collectionID == request.collectionID
+                && $0.collectionName != request.collectionName
+        }) {
+            disposition = .conflict
+            resultingRevision = revision
+            resultingIncluded = current?.included
+            conflictReason = .collectionIdentity
+        } else if facts.contains(where: {
+            $0.collectionID != request.collectionID
+                && $0.collectionName.localizedCaseInsensitiveCompare(request.collectionName) == .orderedSame
+        }) {
+            disposition = .conflict
+            resultingRevision = revision
+            resultingIncluded = current?.included
+            conflictReason = .nameAlias
+        } else if current?.included == request.included {
+            disposition = .unchanged
+            resultingRevision = revision
+            resultingIncluded = current?.included
+            conflictReason = nil
+        } else if request.baseRevision != revision {
+            disposition = .conflict
+            resultingRevision = revision
+            resultingIncluded = current?.included
+            conflictReason = .fieldVersion
+        } else {
+            guard revision < Int64.max else {
+                throw RemoteAPIError(code: .internalError, message: "shared field revision exhausted")
+            }
+            disposition = .applied
+            resultingRevision = revision + 1
+            resultingIncluded = request.included
+            conflictReason = nil
+            let fact = SharedCollectionFact(
+                assetID: request.assetID, collectionID: request.collectionID,
+                collectionName: request.collectionName,
+                included: request.included, revision: resultingRevision
+            )
+            if let index { facts[index] = fact } else { facts.append(fact) }
+        }
+        let receipt = RemoteLocalLibraryCollectionMembershipReceipt(
+            hostID: hostID, deviceID: authenticatedDeviceID,
+            operationID: request.operationID, disposition: disposition,
+            fieldRevision: resultingRevision, currentIncluded: resultingIncluded,
+            replayed: false, conflictReason: conflictReason
+        )
+        let record = Record(
+            deviceID: previous.deviceID, request: previous.request,
+            projectedAssets: previous.projectedAssets, acceptedAtMs: previous.acceptedAtMs,
+            sharedTagFacts: previous.sharedTagFacts,
+            sharedCollectionFacts: facts.sorted {
+                ($0.assetID.uuidString, $0.collectionID.uuidString)
+                    < ($1.assetID.uuidString, $1.collectionID.uuidString)
+            },
+            tagOperations: previous.tagOperations,
+            collectionOperations: (previous.collectionOperations ?? []) + [
+                CollectionOperationRecord(
+                    request: request, payloadSHA256: digest, receipt: receipt
+                )
+            ],
             lastPhoneOperationSequence: request.deviceSequence,
             importedAssetIDs: previous.importedAssetIDs,
             tagChanges: previous.tagChanges
@@ -365,7 +544,10 @@ actor RemoteLocalLibrarySyncStore {
             deviceID: previous.deviceID, request: previous.request,
             projectedAssets: previous.projectedAssets,
             acceptedAtMs: previous.acceptedAtMs,
-            sharedTagFacts: facts, tagOperations: previous.tagOperations,
+            sharedTagFacts: facts,
+            sharedCollectionFacts: previous.sharedCollectionFacts,
+            tagOperations: previous.tagOperations,
+            collectionOperations: previous.collectionOperations,
             lastPhoneOperationSequence: previous.lastPhoneOperationSequence,
             importedAssetIDs: previous.importedAssetIDs,
             tagChanges: (previous.tagChanges ?? []) + [change]
@@ -416,6 +598,15 @@ actor RemoteLocalLibrarySyncStore {
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
+    private static func payloadSHA256(
+        _ request: RemoteLocalLibraryCollectionMembershipRequest
+    ) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(request)
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
     private static func seedTagFacts(from assets: [ProjectedAsset]) -> [SharedTagFact] {
         assets.flatMap { projected in
             projected.asset.tagDecisions.map { tag in
@@ -427,6 +618,22 @@ actor RemoteLocalLibrarySyncStore {
         }.sorted {
             ($0.assetID.uuidString, $0.tagID.uuidString)
                 < ($1.assetID.uuidString, $1.tagID.uuidString)
+        }
+    }
+
+    private static func seedCollectionFacts(from assets: [ProjectedAsset]) -> [SharedCollectionFact] {
+        assets.flatMap { projected in
+            projected.asset.collections.map { collection in
+                SharedCollectionFact(
+                    assetID: projected.asset.id,
+                    collectionID: collection.collectionID,
+                    collectionName: collection.collectionName,
+                    included: true, revision: 1
+                )
+            }
+        }.sorted {
+            ($0.assetID.uuidString, $0.collectionID.uuidString)
+                < ($1.assetID.uuidString, $1.collectionID.uuidString)
         }
     }
 

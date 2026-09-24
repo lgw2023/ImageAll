@@ -479,3 +479,77 @@ import Testing
         #expect(try await store.pendingSharedOperations().first?.isConflicted == true)
     }
 }
+
+@Test func sharedCollectionMembershipKeepsVersionedRemovalAcrossRestart() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("local.sqlite")
+    let store = try LocalLibraryStore(url: url)
+    try await store.observe([
+        LocalObservedAsset(localIdentifier: "shared", kind: "image", creationDate: nil, isFavorite: false)
+    ])
+    let asset = try #require(await store.assets(visibleIdentifiers: ["shared"]).first)
+    let collectionID = try await store.createCollection(name: "trip")
+    let hostID = UUID()
+    let deviceID = UUID()
+    try await store.setShared(assetID: asset.id, shared: true)
+    try await store.setMembership(assetID: asset.id, collectionID: collectionID, included: true)
+    let snapshot = try await store.prepareSharedSnapshot(visibleIdentifiers: ["shared"])
+    try await store.acknowledgeSharedSnapshot(
+        snapshot, hostID: hostID, deviceID: deviceID, importedAssetIDs: [asset.id]
+    )
+    #expect(try await store.pendingSharedOperations().isEmpty)
+    try await store.setMembership(assetID: asset.id, collectionID: collectionID, included: false)
+    let pending = try #require(await store.pendingSharedOperations().first)
+    let prepared = try #require(await store.prepareSharedCollectionOperation(
+        id: pending.id, hostID: hostID, deviceID: deviceID
+    ))
+    #expect(prepared.baseRevision == 1)
+    #expect(prepared.included == false)
+    let reopened = try LocalLibraryStore(url: url)
+    let retry = try #require(await reopened.prepareSharedCollectionOperation(
+        id: pending.id, hostID: hostID, deviceID: deviceID
+    ))
+    #expect(retry.operation.id == prepared.operation.id)
+    #expect(retry.baseRevision == 1)
+    try await reopened.recordSharedCollectionResult(
+        operationID: pending.id, hostID: hostID, deviceID: deviceID,
+        disposition: .applied, fieldRevision: 2, currentIncluded: false
+    )
+    #expect(try await reopened.pendingSharedOperations().isEmpty)
+    try await reopened.setMembership(assetID: asset.id, collectionID: collectionID, included: true)
+    let next = try #require(await reopened.pendingSharedOperations().first)
+    let nextPrepared = try #require(await reopened.prepareSharedCollectionOperation(
+        id: next.id, hostID: hostID, deviceID: deviceID
+    ))
+    #expect(nextPrepared.baseRevision == 2)
+    #expect(nextPrepared.operation.sequence > prepared.operation.sequence)
+    try await reopened.recordSharedCollectionResult(
+        operationID: next.id, hostID: hostID, deviceID: deviceID,
+        disposition: .conflict, fieldRevision: 3, currentIncluded: false,
+        conflictReason: .fieldVersion
+    )
+    let conflict = try #require(await reopened.pendingSharedOperations().first)
+    #expect(conflict.isConflicted)
+    #expect(conflict.conflictReason == .fieldVersion)
+    #expect(conflict.conflictValue == "0")
+    #expect(conflict.localCurrentIncluded == true)
+    let retryID = try #require(await reopened.resolveSharedCollectionConflict(
+        operationID: conflict.id, resolution: .keepPhone
+    ))
+    let rebased = try #require(await reopened.prepareSharedCollectionOperation(
+        id: retryID, hostID: hostID, deviceID: deviceID
+    ))
+    #expect(rebased.baseRevision == 3)
+    #expect(rebased.operation.id != conflict.id)
+    try await reopened.recordSharedCollectionResult(
+        operationID: retryID, hostID: hostID, deviceID: deviceID,
+        disposition: .conflict, fieldRevision: 4, currentIncluded: false,
+        conflictReason: .fieldVersion
+    )
+    _ = try await reopened.resolveSharedCollectionConflict(
+        operationID: retryID, resolution: .acceptMac
+    )
+    #expect(try await reopened.memberships(assetID: asset.id).isEmpty)
+    #expect(try await reopened.pendingSharedOperations().isEmpty)
+}

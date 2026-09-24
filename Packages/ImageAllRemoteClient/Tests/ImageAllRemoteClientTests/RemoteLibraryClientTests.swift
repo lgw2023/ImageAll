@@ -4,6 +4,41 @@ import ImageAllRemoteProtocol
 import XCTest
 
 final class RemoteLibraryClientTests: XCTestCase {
+    func testPostsCollectionMembershipWithStableOperationID() async throws {
+        let request = RemoteLocalLibraryCollectionMembershipRequest(
+            hostID: UUID(), installID: UUID(), sourceEpoch: UUID(),
+            scopeRevision: 2, operationID: UUID(), deviceSequence: 19,
+            assetID: UUID(), collectionID: UUID(), collectionName: "旅行",
+            included: false, baseRevision: 1
+        )
+        let transport = MockTransport { outgoing in
+            XCTAssertEqual(outgoing.httpMethod, "POST")
+            XCTAssertEqual(outgoing.url?.path, RemoteHTTPPaths.localLibraryCollectionMembership)
+            XCTAssertEqual(outgoing.value(forHTTPHeaderField: "Authorization"), "Bearer secret")
+            XCTAssertEqual(try JSONDecoder().decode(
+                RemoteLocalLibraryCollectionMembershipRequest.self,
+                from: XCTUnwrap(outgoing.httpBody)
+            ), request)
+            let response = RemoteLocalLibraryCollectionMembershipReceipt(
+                hostID: request.hostID, deviceID: UUID(),
+                operationID: request.operationID, disposition: .applied,
+                fieldRevision: 2, currentIncluded: false, replayed: false
+            )
+            return (
+                try JSONEncoder().encode(response),
+                HTTPURLResponse(url: outgoing.url!, statusCode: 200,
+                                httpVersion: "HTTP/1.1", headerFields: nil)!
+            )
+        }
+        let client = RemoteLibraryClient(
+            endpoint: try RemoteHostEndpoint(host: "127.0.0.1", port: 8787, accessToken: "secret"),
+            transport: transport
+        )
+        let receipt = try await client.submitLocalLibraryCollectionMembership(request)
+        XCTAssertEqual(receipt.operationID, request.operationID)
+        XCTAssertEqual(receipt.currentIncluded, false)
+    }
+
     func testFetchesScopedMacTagChangesWithBearerToken() async throws {
         let hostID = UUID()
         let deviceID = UUID()

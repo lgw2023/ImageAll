@@ -209,8 +209,11 @@ final class LocalLibraryModel: ObservableObject {
             let visible = Dictionary(uniqueKeysWithValues: snapshot.assets.map { ($0.id, $0) })
             let pending = try await store.pendingSharedOperations()
             for operation in pending {
-                guard operation.field.hasPrefix("tag.") else {
-                    deferred += 1 // Collection/favorite have separate authority and protocol work.
+                let isTag = operation.field.hasPrefix("tag.")
+                let isCollection = operation.field.hasPrefix("collection.")
+                guard isTag || (isCollection && remoteModel.supportsLocalLibraryCollectionMembership)
+                else {
+                    deferred += 1 // Favorite and unsupported fields retain their shared intent.
                     continue
                 }
                 let fieldKey = "\(operation.assetID.uuidString)|\(operation.field)"
@@ -236,35 +239,63 @@ final class LocalLibraryModel: ObservableObject {
                     deferred += 1
                     continue
                 }
-                guard let prepared = try await store.prepareSharedTagOperation(
-                    id: operation.id, hostID: receipt.hostID, deviceID: receipt.deviceID
-                ) else { continue }
-                let tagReceipt = try await remoteModel.submitLocalLibraryTagDecision(prepared)
-                sent += 1
-                let disposition: LocalSharedTagDisposition = switch tagReceipt.disposition {
-                case .applied: .applied
-                case .unchanged: .unchanged
-                case .conflict: .conflict
-                }
-                let currentDecision: LocalDecision? = switch tagReceipt.currentDecision {
-                case .accepted: .accepted
-                case .rejected: .rejected
-                case .cleared: .cleared
-                case nil: nil
-                }
-                _ = try await store.recordSharedTagResult(
-                    operationID: operation.id, hostID: receipt.hostID,
-                    deviceID: receipt.deviceID, disposition: disposition,
-                    fieldRevision: tagReceipt.fieldRevision,
-                    currentDecision: currentDecision,
-                    conflictReason: tagReceipt.conflictReason.map {
-                        switch $0 {
-                        case .fieldVersion: .fieldVersion
-                        case .tagIdentity: .tagIdentity
-                        case .nameAlias: .nameAlias
-                        }
+                let disposition: LocalSharedTagDisposition
+                if isTag {
+                    guard let prepared = try await store.prepareSharedTagOperation(
+                        id: operation.id, hostID: receipt.hostID, deviceID: receipt.deviceID
+                    ) else { continue }
+                    let tagReceipt = try await remoteModel.submitLocalLibraryTagDecision(prepared)
+                    disposition = switch tagReceipt.disposition {
+                    case .applied: .applied
+                    case .unchanged: .unchanged
+                    case .conflict: .conflict
                     }
-                )
+                    let currentDecision: LocalDecision? = switch tagReceipt.currentDecision {
+                    case .accepted: .accepted
+                    case .rejected: .rejected
+                    case .cleared: .cleared
+                    case nil: nil
+                    }
+                    _ = try await store.recordSharedTagResult(
+                        operationID: operation.id, hostID: receipt.hostID,
+                        deviceID: receipt.deviceID, disposition: disposition,
+                        fieldRevision: tagReceipt.fieldRevision,
+                        currentDecision: currentDecision,
+                        conflictReason: tagReceipt.conflictReason.map {
+                            switch $0 {
+                            case .fieldVersion: .fieldVersion
+                            case .tagIdentity: .tagIdentity
+                            case .nameAlias: .nameAlias
+                            }
+                        }
+                    )
+                } else {
+                    guard let prepared = try await store.prepareSharedCollectionOperation(
+                        id: operation.id, hostID: receipt.hostID, deviceID: receipt.deviceID
+                    ) else { continue }
+                    let collectionReceipt = try await remoteModel.submitLocalLibraryCollectionMembership(
+                        prepared
+                    )
+                    disposition = switch collectionReceipt.disposition {
+                    case .applied: .applied
+                    case .unchanged: .unchanged
+                    case .conflict: .conflict
+                    }
+                    _ = try await store.recordSharedCollectionResult(
+                        operationID: operation.id, hostID: receipt.hostID,
+                        deviceID: receipt.deviceID, disposition: disposition,
+                        fieldRevision: collectionReceipt.fieldRevision,
+                        currentIncluded: collectionReceipt.currentIncluded,
+                        conflictReason: collectionReceipt.conflictReason.map {
+                            switch $0 {
+                            case .fieldVersion: .fieldVersion
+                            case .collectionIdentity: .collectionIdentity
+                            case .nameAlias: .nameAlias
+                            }
+                        }
+                    )
+                }
+                sent += 1
                 switch disposition {
                 case .applied: applied += 1
                 case .unchanged: unchanged += 1
@@ -336,6 +367,25 @@ final class LocalLibraryModel: ObservableObject {
             await reloadFacts()
         } catch {
             errorMessage = "处理标签冲突失败：\(error.localizedDescription)"
+            await reloadFacts()
+        }
+    }
+
+    func resolveSharedCollectionConflict(
+        _ operation: LocalSharedPendingOperation,
+        resolution: LocalSharedCollectionConflictResolution
+    ) async {
+        guard let store else {
+            errorMessage = "本机资料库不可用"
+            return
+        }
+        do {
+            _ = try await store.resolveSharedCollectionConflict(
+                operationID: operation.id, resolution: resolution
+            )
+            await reloadFacts()
+        } catch {
+            errorMessage = "处理集合成员冲突失败：\(error.localizedDescription)"
             await reloadFacts()
         }
     }
@@ -591,50 +641,84 @@ private struct LocalShareScopeView: View {
                 }
             }
             if !model.sharedConflicts.isEmpty {
-                Section("标签冲突") {
+                Section("整理信息冲突") {
                     ForEach(model.sharedConflicts) { operation in
                         VStack(alignment: .leading, spacing: 6) {
-                            Text(operation.referenceName ?? "标签身份待确认")
+                            Text(operation.referenceName ?? "字段身份待确认")
                                 .font(.headline)
-                            Text("资产 \(operation.assetID.uuidString.prefix(8)) · 本机：\(decisionName(operation.localCurrentDecision))")
-                                .font(.footnote)
-                            if let revision = operation.conflictRevision {
-                                Text("已知 Mac 版本 \(revision)：\(decisionName(operation.conflictDecision))")
+                            if operation.field.hasPrefix("collection.") {
+                                Text("资产 \(operation.assetID.uuidString.prefix(8)) · 本机成员：\(membershipName(operation.localCurrentIncluded))")
                                     .font(.footnote)
-                            }
-                            if operation.conflictReason == .fieldVersion,
-                               operation.conflictDecision != nil,
-                               operation.conflictRevision != nil {
-                                HStack {
-                                    Button("采用已知 Mac 决定") {
-                                        Task {
-                                            await model.resolveSharedTagConflict(
-                                                operation, resolution: .acceptMac
-                                            )
-                                        }
-                                    }
-                                    Button("保留本机，待下次同步") {
-                                        Task {
-                                            await model.resolveSharedTagConflict(
-                                                operation, resolution: .keepPhone
-                                            )
-                                        }
-                                    }
+                                if let revision = operation.conflictRevision {
+                                    Text("已知 Mac 版本 \(revision)：\(membershipName(operation.conflictValue.map { $0 == "1" }))")
+                                        .font(.footnote)
                                 }
-                                .buttonStyle(.borderless)
+                                if operation.conflictReason == .fieldVersion,
+                                   operation.conflictValue == "0" || operation.conflictValue == "1",
+                                   operation.conflictRevision != nil {
+                                    HStack {
+                                        Button("采用已知 Mac 成员状态") {
+                                            Task {
+                                                await model.resolveSharedCollectionConflict(
+                                                    operation, resolution: .acceptMac
+                                                )
+                                            }
+                                        }
+                                        Button("保留本机，待下次同步") {
+                                            Task {
+                                                await model.resolveSharedCollectionConflict(
+                                                    operation, resolution: .keepPhone
+                                                )
+                                            }
+                                        }
+                                    }
+                                    .buttonStyle(.borderless)
+                                } else {
+                                    Text("集合身份需要先对账；当前保留本机意图。")
+                                        .font(.footnote)
+                                        .foregroundStyle(.orange)
+                                }
                             } else {
-                                Text(operation.conflictReason == nil
-                                     ? "Mac 未提供冲突类型；更新 Mac 后再对账。"
-                                     : "标签身份需要先对账；当前不能直接覆盖或合并。")
+                                Text("资产 \(operation.assetID.uuidString.prefix(8)) · 本机：\(decisionName(operation.localCurrentDecision))")
                                     .font(.footnote)
-                                    .foregroundStyle(.orange)
+                                if let revision = operation.conflictRevision {
+                                    Text("已知 Mac 版本 \(revision)：\(decisionName(operation.conflictDecision))")
+                                        .font(.footnote)
+                                }
+                                if operation.conflictReason == .fieldVersion,
+                                   operation.conflictDecision != nil,
+                                   operation.conflictRevision != nil {
+                                    HStack {
+                                        Button("采用已知 Mac 决定") {
+                                            Task {
+                                                await model.resolveSharedTagConflict(
+                                                    operation, resolution: .acceptMac
+                                                )
+                                            }
+                                        }
+                                        Button("保留本机，待下次同步") {
+                                            Task {
+                                                await model.resolveSharedTagConflict(
+                                                    operation, resolution: .keepPhone
+                                                )
+                                            }
+                                        }
+                                    }
+                                    .buttonStyle(.borderless)
+                                } else {
+                                    Text(operation.conflictReason == nil
+                                         ? "Mac 未提供冲突类型；更新 Mac 后再对账。"
+                                         : "标签身份需要先对账；当前不能直接覆盖或合并。")
+                                        .font(.footnote)
+                                        .foregroundStyle(.orange)
+                                }
                             }
                         }
                     }
                 }
             }
             Section {
-                Button(isSending ? "正在提交…" : "同步目录与标签到 Mac") {
+                Button(isSending ? "正在提交…" : "同步目录、标签与集合到 Mac") {
                     Task {
                         isSending = true
                         defer { isSending = false }
@@ -651,7 +735,7 @@ private struct LocalShareScopeView: View {
                                     : "当前 Mac 版本尚无标签回传"
                                 let continuation = result.pullHasMore
                                     ? "Mac 仍有后续变化页，请再次同步。" : ""
-                                statusMessage = "Mac 已接收 \(receipt.acceptedAssetCount) 项目录；手机标签提交 \(result.applied) 项、已一致 \(result.unchanged) 项；\(pull)、冲突 \(result.conflicts) 项；仍待处理 \(result.remaining) 项。\(continuation)原件尚未传输。"
+                                statusMessage = "Mac 已接收 \(receipt.acceptedAssetCount) 项目录；手机标签/集合成员提交 \(result.applied) 项、已一致 \(result.unchanged) 项；\(pull)、冲突 \(result.conflicts) 项；仍待处理 \(result.remaining) 项。\(continuation)原件尚未传输。"
                             } catch {
                                 statusMessage = "Mac 已接收目录，但整理信息提交未完成：\(error.localizedDescription)"
                             }
@@ -664,7 +748,7 @@ private struct LocalShareScopeView: View {
                 if let statusMessage {
                     Text(statusMessage).font(.footnote).foregroundStyle(.secondary)
                 }
-                Text("先在“Mac 图库”完成设备配对。标签冲突会保留在手机；集合与收藏仍待后续协议接入。")
+                Text("先在“Mac 图库”完成设备配对。冲突会保留在手机；Mac 修改集合成员与收藏同步仍待接入。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
         }
@@ -676,6 +760,14 @@ private struct LocalShareScopeView: View {
         case .accepted: "接受"
         case .rejected: "拒绝"
         case .cleared: "清除"
+        case nil: "未知"
+        }
+    }
+
+    private func membershipName(_ included: Bool?) -> String {
+        switch included {
+        case true: "包含"
+        case false: "不包含"
         case nil: "未知"
         }
     }

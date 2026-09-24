@@ -619,6 +619,42 @@ final class RemoteCompanionModel: ObservableObject {
         return receipt
     }
 
+    func submitLocalLibraryCollectionMembership(
+        _ prepared: LocalPreparedSharedCollectionOperation
+    ) async throws -> RemoteLocalLibraryCollectionMembershipReceipt {
+        guard isConnected, let client, let sessionTokens,
+              let capabilities,
+              capabilities.capabilities.contains(.localLibraryCollectionMembership),
+              capabilities.hostID == sessionTokens.hostID,
+              prepared.hostID == sessionTokens.hostID,
+              prepared.deviceID == sessionTokens.deviceID else {
+            throw RemoteAPIError(
+                code: .unauthorized,
+                message: "请先连接支持手机集合提交的已配对 Mac"
+            )
+        }
+        let request = RemoteLocalLibraryCollectionMembershipRequest(
+            hostID: prepared.hostID,
+            installID: prepared.installID,
+            sourceEpoch: prepared.sourceEpoch,
+            scopeRevision: prepared.operation.scopeRevision,
+            operationID: prepared.operation.id,
+            deviceSequence: prepared.operation.sequence,
+            assetID: prepared.operation.assetID,
+            collectionID: prepared.collectionID,
+            collectionName: prepared.collectionName,
+            included: prepared.included,
+            baseRevision: prepared.baseRevision
+        )
+        let receipt = try await client.submitLocalLibraryCollectionMembership(request)
+        guard receipt.hostID == sessionTokens.hostID,
+              receipt.deviceID == sessionTokens.deviceID,
+              receipt.operationID == prepared.operation.id else {
+            throw RemoteAPIError(code: .conflict, message: "Mac 集合回执身份不匹配")
+        }
+        return receipt
+    }
+
     func fetchLocalLibraryTagChanges(
         sourceEpoch: UUID, scopeRevision: Int64, afterCursor: Int64
     ) async throws -> RemoteLocalLibraryTagChangesPage {
@@ -644,6 +680,10 @@ final class RemoteCompanionModel: ObservableObject {
 
     var supportsLocalLibraryTagChanges: Bool {
         isConnected && capabilities?.capabilities.contains(.localLibraryTagChanges) == true
+    }
+
+    var supportsLocalLibraryCollectionMembership: Bool {
+        isConnected && capabilities?.capabilities.contains(.localLibraryCollectionMembership) == true
     }
 
     func reloadHostStatus() async {

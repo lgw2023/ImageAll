@@ -4,6 +4,7 @@ public extension RemoteHTTPPaths {
     static let localLibrarySnapshot = "/v1/sync/local-library/snapshot"
     static let localLibraryTagDecision = "/v1/sync/local-library/tag-decision"
     static let localLibraryTagChanges = "/v1/sync/local-library/tag-changes"
+    static let localLibraryCollectionMembership = "/v1/sync/local-library/collection-membership"
 }
 
 public struct RemoteLocalLibraryTagChange: Codable, Sendable, Equatable {
@@ -242,6 +243,74 @@ public struct RemoteLocalLibraryTagDecisionReceipt: Codable, Sendable, Equatable
         self.disposition = disposition
         self.fieldRevision = fieldRevision
         self.currentDecision = currentDecision
+        self.replayed = replayed
+        self.conflictReason = conflictReason
+    }
+}
+
+/// A membership is an independent versioned field. `included=false` is an explicit
+/// removal, not an omitted item in a PhotoKit directory snapshot.
+public struct RemoteLocalLibraryCollectionMembershipRequest: Codable, Sendable, Equatable {
+    public let schemaVersion: Int
+    public let hostID: UUID
+    public let installID: UUID
+    public let sourceEpoch: UUID
+    public let scopeRevision: Int64
+    public let operationID: UUID
+    public let deviceSequence: Int64
+    public let assetID: UUID
+    public let collectionID: UUID
+    public let collectionName: String
+    public let included: Bool
+    public let baseRevision: Int64
+
+    public init(
+        hostID: UUID, installID: UUID, sourceEpoch: UUID,
+        scopeRevision: Int64, operationID: UUID, deviceSequence: Int64,
+        assetID: UUID, collectionID: UUID, collectionName: String,
+        included: Bool, baseRevision: Int64
+    ) {
+        self.schemaVersion = 1
+        self.hostID = hostID
+        self.installID = installID
+        self.sourceEpoch = sourceEpoch
+        self.scopeRevision = scopeRevision
+        self.operationID = operationID
+        self.deviceSequence = deviceSequence
+        self.assetID = assetID
+        self.collectionID = collectionID
+        self.collectionName = collectionName
+        self.included = included
+        self.baseRevision = baseRevision
+    }
+}
+
+public enum RemoteLocalLibraryCollectionConflictReason: String, Codable, Sendable, Equatable {
+    case fieldVersion, collectionIdentity, nameAlias
+}
+
+public struct RemoteLocalLibraryCollectionMembershipReceipt: Codable, Sendable, Equatable {
+    public let hostID: UUID
+    public let deviceID: UUID
+    public let operationID: UUID
+    public let disposition: RemoteLocalLibraryTagDecisionDisposition
+    public let fieldRevision: Int64
+    public let currentIncluded: Bool?
+    public let replayed: Bool
+    public let conflictReason: RemoteLocalLibraryCollectionConflictReason?
+
+    public init(
+        hostID: UUID, deviceID: UUID, operationID: UUID,
+        disposition: RemoteLocalLibraryTagDecisionDisposition,
+        fieldRevision: Int64, currentIncluded: Bool?, replayed: Bool,
+        conflictReason: RemoteLocalLibraryCollectionConflictReason? = nil
+    ) {
+        self.hostID = hostID
+        self.deviceID = deviceID
+        self.operationID = operationID
+        self.disposition = disposition
+        self.fieldRevision = fieldRevision
+        self.currentIncluded = currentIncluded
         self.replayed = replayed
         self.conflictReason = conflictReason
     }

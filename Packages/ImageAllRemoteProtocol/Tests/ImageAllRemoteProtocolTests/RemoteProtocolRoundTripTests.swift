@@ -3,6 +3,39 @@ import ImageAllRemoteProtocol
 import XCTest
 
 final class RemoteProtocolRoundTripTests: XCTestCase {
+    func testCollectionMembershipWireRoundTrip() throws {
+        let request = RemoteLocalLibraryCollectionMembershipRequest(
+            hostID: UUID(), installID: UUID(), sourceEpoch: UUID(),
+            scopeRevision: 2, operationID: UUID(), deviceSequence: 9,
+            assetID: UUID(), collectionID: UUID(), collectionName: "trip",
+            included: false, baseRevision: 1
+        )
+        XCTAssertEqual(
+            try JSONDecoder().decode(
+                RemoteLocalLibraryCollectionMembershipRequest.self,
+                from: JSONEncoder().encode(request)
+            ), request
+        )
+        let receipt = RemoteLocalLibraryCollectionMembershipReceipt(
+            hostID: request.hostID, deviceID: UUID(), operationID: request.operationID,
+            disposition: .conflict, fieldRevision: 3, currentIncluded: true,
+            replayed: false, conflictReason: .fieldVersion
+        )
+        XCTAssertEqual(
+            try JSONDecoder().decode(
+                RemoteLocalLibraryCollectionMembershipReceipt.self,
+                from: JSONEncoder().encode(receipt)
+            ), receipt
+        )
+        XCTAssertEqual(
+            RemoteHTTPPaths.localLibraryCollectionMembership,
+            "/v1/sync/local-library/collection-membership"
+        )
+        XCTAssertFalse(RemoteCapabilities(hostAppVersion: "old").capabilities.contains(
+            .localLibraryCollectionMembership
+        ))
+    }
+
     func testSharedTagConflictReasonRoundTripAndLegacyAbsence() throws {
         let receipt = RemoteLocalLibraryTagDecisionReceipt(
             hostID: UUID(), deviceID: UUID(), operationID: UUID(),

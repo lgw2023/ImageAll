@@ -277,8 +277,9 @@ struct RemotePhoneLibraryView: View {
         guard !searchText.isEmpty else { return sorted }
         return sorted.filter { projected in
             projected.asset.id.uuidString.localizedCaseInsensitiveContains(searchText)
-                || projected.asset.collections.contains {
-                    $0.collectionName.localizedCaseInsensitiveContains(searchText)
+                || currentProjection.sharedCollectionFacts.contains {
+                    $0.assetID == projected.id && $0.included
+                        && $0.collectionName.localizedCaseInsensitiveContains(searchText)
                 }
                 || currentProjection.sharedTagFacts.contains {
                     $0.assetID == projected.id
@@ -343,8 +344,11 @@ struct RemotePhoneLibraryView: View {
                     }
                     Text("系统收藏观测：\(projected.asset.observedFavorite ? "是" : "否") · ImageAll 收藏目标：\(favoriteTarget(projected.asset.favoriteTarget))")
                         .font(.caption)
-                    if !projected.asset.collections.isEmpty {
-                        Text("集合：\(projected.asset.collections.map(\.collectionName).joined(separator: "、"))")
+                    let sharedCollections = currentProjection.sharedCollectionFacts.filter {
+                        $0.assetID == projected.asset.id && $0.included
+                    }
+                    if !sharedCollections.isEmpty {
+                        Text("共享集合：\(sharedCollections.map(\.collectionName).joined(separator: "、"))")
                             .font(.caption)
                     }
                     let sharedTags = currentProjection.sharedTagFacts.filter {
@@ -380,6 +384,7 @@ struct RemotePhoneLibraryView: View {
         .padding(20)
         .frame(minWidth: 650, minHeight: 450)
         .onChange(of: projection.sharedTagFacts) { _, _ in editedProjection = nil }
+        .onChange(of: projection.sharedCollectionFacts) { _, _ in editedProjection = nil }
         .onChange(of: projection.snapshotSequence) { _, _ in editedProjection = nil }
     }
 
