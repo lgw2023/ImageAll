@@ -284,6 +284,15 @@ public struct LocalMigrationSyncCheckpoint: Codable, Sendable, Equatable {
     public let tagChangeCursor: Int64
     public let collectionChangeCursor: Int64
     public let favoriteChangeCursor: Int64
+    /// Confirmed phone-local to Mac shared identities referenced by this fact snapshot.
+    public let tagAliases: [LocalMigrationTagAlias]
+}
+
+public struct LocalMigrationTagAlias: Codable, Sendable, Equatable {
+    public let localTagID: UUID
+    public let localTagName: String
+    public let remoteTagID: UUID
+    public let remoteTagName: String
 }
 
 public struct LocalSharedAsset: Codable, Identifiable, Sendable, Equatable {
@@ -571,6 +580,26 @@ public actor LocalLibraryStore {
                 WHERE key='share_snapshot_sequence'
                 """)
             let snapshot = try sharedSnapshot(visibleIdentifiers: visibleIdentifiers)
+            let referencedTagIDs = Set(snapshot.assets.flatMap {
+                $0.tagDecisions.map(\.tagID)
+            })
+            let tagAliases = try rows("""
+                SELECT local_tag_id,local_name,remote_tag_id,remote_name
+                FROM shared_tag_aliases
+                WHERE host_id=? AND device_id=? AND source_epoch=?
+                ORDER BY local_tag_id
+                """, [hostID.uuidString, deviceID.uuidString,
+                       snapshot.sourceEpoch.uuidString]).compactMap { row -> LocalMigrationTagAlias? in
+                    guard let localTagID = UUID(uuidString: row[0] ?? ""),
+                          referencedTagIDs.contains(localTagID),
+                          let localName = row[1],
+                          let remoteTagID = UUID(uuidString: row[2] ?? ""),
+                          let remoteName = row[3] else { return nil }
+                    return LocalMigrationTagAlias(
+                        localTagID: localTagID, localTagName: localName,
+                        remoteTagID: remoteTagID, remoteTagName: remoteName
+                    )
+                }
             let checkpoint = LocalMigrationSyncCheckpoint(
                 hostID: hostID, deviceID: deviceID,
                 acknowledgedScopeRevision: scope,
@@ -581,7 +610,8 @@ public actor LocalLibraryStore {
                 ) ?? 0,
                 favoriteChangeCursor: Int64(
                     try requiredIdentity("sync_favorite_change_cursor")
-                ) ?? 0
+                ) ?? 0,
+                tagAliases: tagAliases
             )
             result = (snapshot, checkpoint)
         }

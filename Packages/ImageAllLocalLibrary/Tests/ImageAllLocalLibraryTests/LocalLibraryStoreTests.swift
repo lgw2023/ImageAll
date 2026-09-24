@@ -673,6 +673,20 @@ import Testing
     #expect(prepared.tagID == colliding)
     #expect(prepared.tagName == "Cafe\u{301}")
     #expect(prepared.baseRevision == 1)
+    try await reopened.recordSharedTagResult(
+        operationID: pending.id, hostID: hostID, deviceID: deviceID,
+        disposition: .applied, fieldRevision: 2, currentDecision: .rejected
+    )
+    let completion = try await reopened.migrationCompletionCheckpoint(
+        visibleIdentifiers: ["shared", "later"]
+    )
+    #expect(completion.checkpoint.tagAliases == [.init(
+        localTagID: localTagID, localTagName: "Café",
+        remoteTagID: colliding, remoteTagName: "Cafe\u{301}"
+    )])
+    #expect(completion.snapshot.assets.first {
+        $0.id == later.id
+    }?.tagDecisions.first?.tagID == localTagID)
 }
 
 @Test func sharedPhoneTagCannotBeSilentlyReboundToDifferentMacTag() async throws {

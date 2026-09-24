@@ -750,6 +750,66 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertFalse(afterHiddenScopeMatches)
     }
 
+    func testMigrationCheckpointUsesConfirmedPhoneTagAliasWithoutRewritingArchiveIdentity() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let hostID = UUID(), deviceID = UUID(), installID = UUID(), epoch = UUID()
+        let assetID = UUID(), phoneTagID = UUID(), macTagID = UUID()
+        let manifest = String(repeating: "a", count: 64)
+        let store = try RemoteLocalLibrarySyncStore(
+            hostID: hostID, storageURL: root.appendingPathComponent("sync.json")
+        )
+        let asset = RemoteLocalLibraryAsset(
+            id: assetID, localIdentifier: "phone-local", mediaKind: .image,
+            createdAtMs: nil, observedFavorite: false, favoriteTarget: nil,
+            tagDecisions: [.init(
+                tagID: macTagID, tagName: "Cafe\u{301}", decision: .accepted
+            )], collections: []
+        )
+        _ = try await store.submit(.init(
+            hostID: hostID, installID: installID, sourceEpoch: epoch,
+            scopeRevision: 1, snapshotSequence: 1,
+            selectedAssetIDs: [assetID], assets: [asset]
+        ), authenticatedDeviceID: deviceID)
+        func facts(_ aliases: [ImageAllMigrationTagAlias]) -> ImageAllMigrationFactSnapshot {
+            .init(
+                sourceDeviceID: installID, sourceEpoch: epoch,
+                scopeRevision: 1, snapshotSequence: 2, factWatermark: 1,
+                items: [.init(
+                    mediaID: assetID, observedFavorite: false, favoriteTarget: nil,
+                    tagDecisions: [.init(
+                        tagID: phoneTagID, tagName: "Café", decision: .accepted
+                    )], collections: []
+                )], syncCheckpoint: .init(
+                    hostID: hostID, deviceID: deviceID,
+                    acknowledgedScopeRevision: 1, acknowledgedSnapshotSequence: 1,
+                    tagChangeCursor: 0, collectionChangeCursor: 0,
+                    favoriteChangeCursor: 0, tagAliases: aliases,
+                    archiveManifestSHA256: manifest, sourceVerifiedAtMs: 1_000
+                )
+            )
+        }
+        let alias = ImageAllMigrationTagAlias(
+            localTagID: phoneTagID, localTagName: "Café",
+            remoteTagID: macTagID, remoteTagName: "Cafe\u{301}"
+        )
+        let unmatched = await store.matchesMigrationCheckpoint(
+            facts([]), manifestSHA256: manifest
+        )
+        XCTAssertFalse(unmatched)
+        let matched = await store.matchesMigrationCheckpoint(
+            facts([alias]), manifestSHA256: manifest
+        )
+        XCTAssertTrue(matched)
+        let changedName = await store.matchesMigrationCheckpoint(
+            facts([.init(
+                localTagID: phoneTagID, localTagName: "Café",
+                remoteTagID: macTagID, remoteTagName: "different"
+            )]), manifestSHA256: manifest
+        )
+        XCTAssertFalse(changedName)
+    }
+
     func testSharedTagIdentityConflictsHaveDistinctReasons() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

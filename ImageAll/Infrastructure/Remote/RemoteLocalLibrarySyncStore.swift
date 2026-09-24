@@ -384,16 +384,51 @@ actor RemoteLocalLibrarySyncStore {
               view.assets.allSatisfy({
                   $0.lastVisibleSnapshotSequence == record.request.snapshotSequence
               }) else { return false }
+        let aliases = checkpoint.tagAliases ?? []
+        var localTagNames: [UUID: String] = [:]
+        for fact in snapshot.items {
+            for tag in fact.tagDecisions {
+                if let earlier = localTagNames[tag.tagID], earlier != tag.tagName {
+                    return false
+                }
+                localTagNames[tag.tagID] = tag.tagName
+            }
+        }
+        guard Set(aliases.map(\.localTagID)).count == aliases.count,
+              Set(aliases.map(\.remoteTagID)).count == aliases.count,
+              aliases.allSatisfy({
+                  $0.localTagID != $0.remoteTagID &&
+                  localTagNames[$0.localTagID] == $0.localTagName &&
+                  Self.sameTagIdentityName($0.localTagName, $0.remoteTagName)
+              }) else {
+            return false
+        }
+        let aliasesByLocal = Dictionary(uniqueKeysWithValues: aliases.map {
+            ($0.localTagID, $0)
+        })
+        let resolvedTagIDs = localTagNames.keys.map {
+            aliasesByLocal[$0]?.remoteTagID ?? $0
+        }
+        guard Set(resolvedTagIDs).count == resolvedTagIDs.count else { return false }
         for projected in view.assets {
             let asset = projected.asset
             guard let fact = factsByID[asset.id],
                   fact.observedFavorite == asset.observedFavorite else { return false }
             let tags = view.sharedTagFacts.filter { $0.assetID == asset.id }
-            guard tags.count == fact.tagDecisions.count else { return false }
+            guard tags.count == fact.tagDecisions.count,
+                  Set(tags.map(\.tagID)).count == tags.count else { return false }
             let tagsByID = Dictionary(uniqueKeysWithValues: tags.map { ($0.tagID, $0) })
+            let expectedTagIDs = Set(fact.tagDecisions.map {
+                aliasesByLocal[$0.tagID]?.remoteTagID ?? $0.tagID
+            })
+            guard expectedTagIDs.count == fact.tagDecisions.count,
+                  expectedTagIDs == Set(tagsByID.keys) else { return false }
             for expected in fact.tagDecisions {
-                guard let actual = tagsByID[expected.tagID],
-                      actual.tagName == expected.tagName,
+                let alias = aliasesByLocal[expected.tagID]
+                let remoteID = alias?.remoteTagID ?? expected.tagID
+                let remoteName = alias?.remoteTagName ?? expected.tagName
+                guard let actual = tagsByID[remoteID],
+                      actual.tagName == remoteName,
                       actual.decision == expected.decision else { return false }
             }
             let included = view.sharedCollectionFacts.filter {

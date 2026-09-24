@@ -1375,6 +1375,14 @@ private enum LocalMigrationFactExporter {
                     tagChangeCursor: local.tagChangeCursor,
                     collectionChangeCursor: local.collectionChangeCursor,
                     favoriteChangeCursor: local.favoriteChangeCursor,
+                    tagAliases: local.tagAliases.map { alias in
+                        ImageAllMigrationTagAlias(
+                            localTagID: alias.localTagID,
+                            localTagName: alias.localTagName,
+                            remoteTagID: alias.remoteTagID,
+                            remoteTagName: alias.remoteTagName
+                        )
+                    },
                     archiveManifestSHA256: archiveManifestSHA256,
                     sourceVerifiedAtMs: sourceVerifiedAtMs
                 )

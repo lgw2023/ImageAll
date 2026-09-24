@@ -40,6 +40,8 @@ public struct ImageAllMigrationSyncCheckpoint: Codable, Sendable, Equatable {
     public let tagChangeCursor: Int64
     public let collectionChangeCursor: Int64
     public let favoriteChangeCursor: Int64
+    /// Present in new checkpoints. Missing in older files means no aliases.
+    public let tagAliases: [ImageAllMigrationTagAlias]?
     /// Digest of the immutable media manifest whose source resources were
     /// reread locally before this checkpoint was exported. Older candidates
     /// without this proof remain readable but cannot pass completion checks.
@@ -53,6 +55,7 @@ public struct ImageAllMigrationSyncCheckpoint: Codable, Sendable, Equatable {
         tagChangeCursor: Int64,
         collectionChangeCursor: Int64,
         favoriteChangeCursor: Int64,
+        tagAliases: [ImageAllMigrationTagAlias]? = nil,
         archiveManifestSHA256: String? = nil,
         sourceVerifiedAtMs: Int64? = nil
     ) {
@@ -63,8 +66,28 @@ public struct ImageAllMigrationSyncCheckpoint: Codable, Sendable, Equatable {
         self.tagChangeCursor = tagChangeCursor
         self.collectionChangeCursor = collectionChangeCursor
         self.favoriteChangeCursor = favoriteChangeCursor
+        self.tagAliases = tagAliases
         self.archiveManifestSHA256 = archiveManifestSHA256
         self.sourceVerifiedAtMs = sourceVerifiedAtMs
+    }
+}
+
+/// The phone retains its local tag identity in the archive; this explicit
+/// mapping identifies the same tag in the Mac shared ledger for one checkpoint.
+public struct ImageAllMigrationTagAlias: Codable, Sendable, Equatable {
+    public let localTagID: UUID
+    public let localTagName: String
+    public let remoteTagID: UUID
+    public let remoteTagName: String
+
+    public init(
+        localTagID: UUID, localTagName: String,
+        remoteTagID: UUID, remoteTagName: String
+    ) {
+        self.localTagID = localTagID
+        self.localTagName = localTagName
+        self.remoteTagID = remoteTagID
+        self.remoteTagName = remoteTagName
     }
 }
 
@@ -235,6 +258,7 @@ public enum ImageAllMigrationFacts {
             }
         }
         if let checkpoint = snapshot.syncCheckpoint {
+            let aliases = checkpoint.tagAliases ?? []
             guard checkpoint.acknowledgedScopeRevision == snapshot.scopeRevision,
                   checkpoint.acknowledgedSnapshotSequence > 0,
                   checkpoint.acknowledgedSnapshotSequence <= snapshot.snapshotSequence,
@@ -246,7 +270,13 @@ public enum ImageAllMigrationFacts {
                   (checkpoint.archiveManifestSHA256 == nil ||
                    (checkpoint.archiveManifestSHA256?.count == 64 &&
                     checkpoint.archiveManifestSHA256?.allSatisfy({ $0.isHexDigit }) == true)),
-                  checkpoint.sourceVerifiedAtMs.map({ $0 > 0 }) ?? true else {
+                  checkpoint.sourceVerifiedAtMs.map({ $0 > 0 }) ?? true,
+                  Set(aliases.map(\.localTagID)).count == aliases.count,
+                  Set(aliases.map(\.remoteTagID)).count == aliases.count,
+                  aliases.allSatisfy({
+                      $0.localTagID != $0.remoteTagID &&
+                      !$0.localTagName.isEmpty && !$0.remoteTagName.isEmpty
+                  }) else {
                 throw ImageAllMigrationFactsError.invalidSnapshot
             }
         }
