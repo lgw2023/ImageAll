@@ -480,3 +480,81 @@ enum V049AddPhoneTagOutboundIntentMigration {
         }
     }
 }
+
+/// Keep V049 immutable while admitting a Mac-side cleared decision. Existing
+/// intents retain their IDs and receipts through this transactional rebuild.
+enum V050AllowClearedPhoneTagOutboundIntentMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(
+            CatalogMigrationID.v050AllowClearedPhoneTagOutboundIntent
+        ) { db in
+            try db.execute(sql: """
+                CREATE TABLE phone_tag_mac_outbound_intent_v050 (
+                    id TEXT NOT NULL PRIMARY KEY,
+                    migration_id TEXT NOT NULL REFERENCES migration_import(id) ON DELETE RESTRICT,
+                    media_id TEXT NOT NULL REFERENCES media_item(id) ON DELETE RESTRICT,
+                    asset_id TEXT NOT NULL,
+                    binding_confirmation_event_id TEXT NOT NULL
+                        REFERENCES media_asset_binding_event(id) ON DELETE RESTRICT,
+                    source_install_id TEXT NOT NULL,
+                    source_epoch TEXT NOT NULL,
+                    phone_device_id TEXT NOT NULL,
+                    phone_scope_revision INTEGER NOT NULL CHECK(phone_scope_revision >= 0),
+                    phone_tag_id TEXT NOT NULL,
+                    phone_tag_name TEXT NOT NULL CHECK(length(phone_tag_name) > 0),
+                    mac_tag_id TEXT NOT NULL,
+                    mac_expected_revision INTEGER NOT NULL CHECK(mac_expected_revision >= 0),
+                    mac_expected_decision TEXT NOT NULL
+                        CHECK(mac_expected_decision IN ('accepted', 'rejected', 'cleared')),
+                    phone_expected_revision INTEGER NOT NULL CHECK(phone_expected_revision > 0),
+                    phone_expected_decision TEXT NOT NULL
+                        CHECK(phone_expected_decision IN ('accepted', 'rejected', 'cleared')),
+                    desired_decision TEXT NOT NULL
+                        CHECK(desired_decision IN ('accepted', 'rejected', 'cleared')),
+                    state TEXT NOT NULL DEFAULT 'prepared'
+                        CHECK(state IN ('prepared', 'committed', 'conflict')),
+                    phone_resulting_revision INTEGER CHECK(phone_resulting_revision > 0),
+                    phone_change_sequence INTEGER CHECK(phone_change_sequence > 0),
+                    created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+                    resolved_at_ms INTEGER CHECK(resolved_at_ms >= created_at_ms),
+                    CHECK(
+                        (state = 'prepared' AND phone_resulting_revision IS NULL
+                            AND phone_change_sequence IS NULL AND resolved_at_ms IS NULL)
+                        OR (state = 'committed' AND phone_resulting_revision IS NOT NULL
+                            AND phone_change_sequence IS NOT NULL AND resolved_at_ms IS NOT NULL)
+                        OR (state = 'conflict' AND phone_resulting_revision IS NULL
+                            AND phone_change_sequence IS NULL AND resolved_at_ms IS NOT NULL)
+                    )
+                ) STRICT
+                """)
+            try db.execute(sql: """
+                INSERT INTO phone_tag_mac_outbound_intent_v050 (
+                    id, migration_id, media_id, asset_id,
+                    binding_confirmation_event_id, source_install_id, source_epoch,
+                    phone_device_id, phone_scope_revision, phone_tag_id, phone_tag_name,
+                    mac_tag_id, mac_expected_revision, mac_expected_decision,
+                    phone_expected_revision, phone_expected_decision, desired_decision,
+                    state, phone_resulting_revision, phone_change_sequence,
+                    created_at_ms, resolved_at_ms
+                ) SELECT
+                    id, migration_id, media_id, asset_id,
+                    binding_confirmation_event_id, source_install_id, source_epoch,
+                    phone_device_id, phone_scope_revision, phone_tag_id, phone_tag_name,
+                    mac_tag_id, mac_expected_revision, mac_expected_decision,
+                    phone_expected_revision, phone_expected_decision, desired_decision,
+                    state, phone_resulting_revision, phone_change_sequence,
+                    created_at_ms, resolved_at_ms
+                FROM phone_tag_mac_outbound_intent
+                """)
+            try db.execute(sql: "DROP TABLE phone_tag_mac_outbound_intent")
+            try db.execute(sql: """
+                ALTER TABLE phone_tag_mac_outbound_intent_v050
+                RENAME TO phone_tag_mac_outbound_intent
+                """)
+            try db.execute(sql: """
+                CREATE INDEX phone_tag_mac_outbound_intent_asset_idx
+                ON phone_tag_mac_outbound_intent(asset_id, media_id, state, created_at_ms)
+                """)
+        }
+    }
+}

@@ -76,6 +76,8 @@ enum CatalogMigrationID {
     static let v047AddPhoneTagAlias = "v047_add_phone_tag_alias"
     static let v048AddAssetTagDecisionRevision = "v048_add_asset_tag_decision_revision"
     static let v049AddPhoneTagOutboundIntent = "v049_add_phone_tag_outbound_intent"
+    static let v050AllowClearedPhoneTagOutboundIntent =
+        "v050_allow_cleared_phone_tag_outbound_intent"
 
     static let knownOrdered: [String] = [
         v001CreateCatalogCore,
@@ -127,5 +129,6 @@ enum CatalogMigrationID {
         v047AddPhoneTagAlias,
         v048AddAssetTagDecisionRevision,
         v049AddPhoneTagOutboundIntent,
+        v050AllowClearedPhoneTagOutboundIntent,
     ]
 }

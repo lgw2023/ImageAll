@@ -3,6 +3,85 @@ import XCTest
 @testable import ImageAll
 
 final class CatalogMigrationTests: XCTestCase {
+    func testV050PreservesPendingOutboundIntentAndAllowsClear() throws {
+        let url = try makeTempDatabaseURL()
+        let pool = try DatabasePool(path: url.path)
+        try CatalogDatabase.makeMigrator().migrate(
+            pool, upTo: CatalogMigrationID.v049AddPhoneTagOutboundIntent
+        )
+        let migration = UUID().uuidString.lowercased()
+        let media = UUID().uuidString.lowercased()
+        let bindingEvent = UUID().uuidString.lowercased()
+        let firstOperation = UUID().uuidString.lowercased()
+        let secondOperation = UUID().uuidString.lowercased()
+        let asset = UUID().uuidString.lowercased()
+        let install = UUID().uuidString.lowercased()
+        let epoch = UUID().uuidString.lowercased()
+        let device = UUID().uuidString.lowercased()
+        let tag = UUID().uuidString.lowercased()
+        try pool.write { db in
+            try db.execute(sql: """
+                INSERT INTO migration_import (
+                    id, source_device_id, source_epoch, scope_revision,
+                    inventory_watermark, manifest_sha256, target_parent_path,
+                    archive_path, item_count, resource_count, verified_bytes,
+                    state, created_at_ms, updated_at_ms
+                ) VALUES (?, ?, ?, 1, 1, ?, '/synthetic', '/synthetic/archive',
+                          1, 1, 1, 'catalogCommitted', 1, 1)
+                """, arguments: [migration, install, epoch, String(repeating: "a", count: 64)])
+            try db.execute(sql: """
+                INSERT INTO media_item (
+                    id, source_install_id, source_epoch,
+                    source_local_identifier, media_kind
+                ) VALUES (?, ?, ?, 'synthetic', 'image')
+                """, arguments: [media, install, epoch])
+            try db.execute(sql: """
+                INSERT INTO media_asset_binding_event (
+                    id, media_id, asset_id, event_kind, created_at_ms
+                ) VALUES (?, ?, ?, 'confirmed', 1)
+                """, arguments: [bindingEvent, media, asset])
+            try db.execute(sql: """
+                INSERT INTO phone_tag_mac_outbound_intent (
+                    id, migration_id, media_id, asset_id,
+                    binding_confirmation_event_id, source_install_id, source_epoch,
+                    phone_device_id, phone_scope_revision, phone_tag_id, phone_tag_name,
+                    mac_tag_id, mac_expected_revision, mac_expected_decision,
+                    phone_expected_revision, phone_expected_decision,
+                    desired_decision, state, created_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 'Trip', ?, 1,
+                          'rejected', 1, 'accepted', 'rejected', 'prepared', 1)
+                """, arguments: [
+                    firstOperation, migration, media, asset, bindingEvent,
+                    install, epoch, device, tag, tag,
+                ])
+        }
+        let database = CatalogDatabase(pool: pool)
+        try database.migrate()
+        try database.migrate()
+        try pool.write { db in
+            XCTAssertEqual(try String.fetchOne(db, sql: """
+                SELECT desired_decision FROM phone_tag_mac_outbound_intent WHERE id = ?
+                """, arguments: [firstOperation]), "rejected")
+            try db.execute(sql: """
+                INSERT INTO phone_tag_mac_outbound_intent (
+                    id, migration_id, media_id, asset_id,
+                    binding_confirmation_event_id, source_install_id, source_epoch,
+                    phone_device_id, phone_scope_revision, phone_tag_id, phone_tag_name,
+                    mac_tag_id, mac_expected_revision, mac_expected_decision,
+                    phone_expected_revision, phone_expected_decision,
+                    desired_decision, state, created_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 'Trip', ?, 2,
+                          'cleared', 2, 'rejected', 'cleared', 'prepared', 2)
+                """, arguments: [
+                    secondOperation, migration, media, asset, bindingEvent,
+                    install, epoch, device, tag, tag,
+                ])
+            XCTAssertEqual(try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM phone_tag_mac_outbound_intent
+                """), 2)
+        }
+    }
+
     func testV048BackfillsExistingTagDecisionWithoutChangingIt() throws {
         let url = try makeTempDatabaseURL()
         let pool = try DatabasePool(path: url.path)
@@ -1585,6 +1664,10 @@ final class CatalogMigrationTests: XCTestCase {
 
     private static func dropV035AndLaterTables(_ db: Database) throws {
         try db.execute(sql: "DROP TABLE IF EXISTS phone_tag_mac_outbound_intent")
+        try db.execute(
+            sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
+            arguments: [CatalogMigrationID.v050AllowClearedPhoneTagOutboundIntent]
+        )
         try db.execute(
             sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
             arguments: [CatalogMigrationID.v049AddPhoneTagOutboundIntent]

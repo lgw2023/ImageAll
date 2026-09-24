@@ -2504,7 +2504,7 @@ private struct PhoneArchiveFactComparisonSheet: View {
         ) { target in
             Button("提交 Mac 决定") { Task { await submitMacTagDecision(target) } }
         } message: { target in
-            Text("“\(target.tag.phoneTagName)”当前手机共享决定为 \(target.fact.decision.rawValue)（版本 \(target.fact.revision)），Mac 决定为 \(target.tag.macDecision ?? "未设置")。提交前会复核绑定、身份和两端版本；手机需稍后主动同步。")
+            Text("“\(target.tag.phoneTagName)”当前手机共享决定为 \(target.fact.decision.rawValue)（版本 \(target.fact.revision)），Mac 决定为 \(target.tag.macDecision ?? "清除")。提交前会复核绑定、身份和两端版本；手机需稍后主动同步。")
         }
         .confirmationDialog(
             "把手机共享标签决定应用到 Mac 资产？",
@@ -2576,10 +2576,13 @@ private struct PhoneArchiveFactComparisonSheet: View {
         _ tag: PhoneArchiveTagComparison,
         to fact: RemoteLocalLibrarySyncStore.SharedTagFact
     ) -> Bool {
-        (tag.state == .same || tag.state == .decisionDiffers)
+        (tag.state == .same || tag.state == .decisionDiffers
+            || tag.state == .macDecisionMissing)
             && (tag.macDecision == RemoteLocalLibraryDecision.accepted.rawValue
-                || tag.macDecision == RemoteLocalLibraryDecision.rejected.rawValue)
-            && tag.macDecision != fact.decision.rawValue
+                || tag.macDecision == RemoteLocalLibraryDecision.rejected.rawValue
+                || tag.macDecision == nil)
+            && (tag.macDecision ?? RemoteLocalLibraryDecision.cleared.rawValue)
+                != fact.decision.rawValue
             && !outboundIntents.contains(where: {
                 $0.state == .prepared && $0.phoneTagID == tag.phoneTagID
             })
@@ -2664,8 +2667,10 @@ private struct PhoneArchiveFactComparisonSheet: View {
                   catalog.bindingConfirmationEventID == intent.bindingConfirmationEventID,
                   tag?.macTagID == intent.macTagID,
                   tag?.macDecisionRevision == intent.macExpectedRevision,
-                  tag?.macDecision == intent.macExpectedDecision.rawValue,
-                  tag?.state == .same || tag?.state == .decisionDiffers,
+                  (tag?.macDecision ?? RemoteLocalLibraryDecision.cleared.rawValue)
+                    == intent.macExpectedDecision.rawValue,
+                  tag?.state == .same || tag?.state == .decisionDiffers
+                    || tag?.state == .macDecisionMissing,
                   projection?.installID == intent.sourceInstallID,
                   projection?.sourceEpoch == intent.sourceEpoch,
                   projection?.scopeRevision == intent.phoneScopeRevision,

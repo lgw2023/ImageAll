@@ -104,6 +104,7 @@ struct CatalogDatabase: Sendable {
         V047AddPhoneTagAliasMigration.register(on: &migrator)
         V048AddAssetTagDecisionRevisionMigration.register(on: &migrator)
         V049AddPhoneTagOutboundIntentMigration.register(on: &migrator)
+        V050AllowClearedPhoneTagOutboundIntentMigration.register(on: &migrator)
         return migrator
     }
 

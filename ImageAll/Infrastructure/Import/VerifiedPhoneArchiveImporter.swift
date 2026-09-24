@@ -1759,13 +1759,18 @@ struct VerifiedPhoneArchiveImporter: Sendable {
               tag.macDecisionRevision == expectedTag.macDecisionRevision,
               tag.aliasConfirmationEventID == expectedTag.aliasConfirmationEventID,
               tag.state == expectedTag.state,
-              tag.state == .same || tag.state == .decisionDiffers,
-              let rawDecision = tag.macDecision,
-              let decision = RemoteLocalLibraryDecision(rawValue: rawDecision),
-              decision != .cleared else {
+              tag.state == .same || tag.state == .decisionDiffers
+                || tag.state == .macDecisionMissing else {
             throw PhoneArchiveImportError.tagSyncCandidateChanged
         }
-        return decision
+        if let rawDecision = tag.macDecision {
+            guard let decision = RemoteLocalLibraryDecision(rawValue: rawDecision),
+                  decision != .cleared else {
+                throw PhoneArchiveImportError.tagSyncCandidateChanged
+            }
+            return decision
+        }
+        return .cleared
     }
 
     func outboundTagIntents(
@@ -1854,7 +1859,9 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                       intent.macTagID == macTagID,
                       intent.phoneExpectedRevision == sharedFact.revision,
                       intent.phoneExpectedDecision == sharedFact.decision,
-                      intent.desiredDecision.rawValue == expectedTag.macDecision else {
+                      intent.desiredDecision.rawValue ==
+                          (expectedTag.macDecision ?? RemoteLocalLibraryDecision.cleared.rawValue)
+                      else {
                     throw PhoneArchiveImportError.tagSyncCandidateChanged
                 }
                 return intent
@@ -1879,9 +1886,11 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                   tag.macDecisionRevision == expectedTag.macDecisionRevision,
                   tag.aliasConfirmationEventID == expectedTag.aliasConfirmationEventID,
                   tag.state == expectedTag.state,
-                  tag.state == .same || tag.state == .decisionDiffers,
-                  let rawDecision = tag.macDecision,
-                  let desired = RemoteLocalLibraryDecision(rawValue: rawDecision),
+                  tag.state == .same || tag.state == .decisionDiffers
+                    || tag.state == .macDecisionMissing,
+                  let desired = RemoteLocalLibraryDecision(
+                      rawValue: tag.macDecision ?? RemoteLocalLibraryDecision.cleared.rawValue
+                  ),
                   desired != sharedFact.decision else {
                 throw PhoneArchiveImportError.tagSyncCandidateChanged
             }

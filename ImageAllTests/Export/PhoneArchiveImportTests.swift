@@ -1344,6 +1344,50 @@ final class PhoneArchiveImportTests: XCTestCase {
         XCTAssertEqual(replayRecovery, .init(
             prepared: 0, committed: 0, stillPending: 0, failedVerification: 0
         ))
+
+        // A cleared Mac decision is a versioned change, not a missing tag field.
+        try await recoveredCatalog.pool.write { db in
+            try db.execute(sql: """
+                DELETE FROM asset_tag_decision WHERE asset_id = ? AND tag_id = ?
+                """, arguments: [assetID.uuidString.lowercased(),
+                                 tagID.uuidString.lowercased()])
+        }
+        let clearedComparison = try recoveredImporter.compareBoundAssetFacts(
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID
+        )
+        let clearedTag = try XCTUnwrap(clearedComparison.tags.first)
+        XCTAssertEqual(clearedTag.state, .macDecisionMissing)
+        XCTAssertEqual(try recoveredImporter.validateBoundMacTagDecision(
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID,
+            expectedComparison: clearedComparison, expectedTag: clearedTag
+        ), .cleared)
+        let currentProjection = await recoveredStore.projection(deviceID: deviceID)
+        let currentFact = try XCTUnwrap(currentProjection?.sharedTagFacts.first)
+        let clearOperationID = UUID()
+        let clearIntent = try recoveredImporter.prepareOutboundMacTagDecision(
+            operationID: clearOperationID,
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID,
+            expectedComparison: clearedComparison, expectedTag: clearedTag,
+            phoneDeviceID: deviceID, phoneScopeRevision: 1,
+            sharedFact: currentFact, timestampMs: 13
+        )
+        XCTAssertEqual(clearIntent.desiredDecision, .cleared)
+        _ = try await recoveredStore.setTagDecisionFromMac(
+            deviceID: deviceID, assetID: item.mediaID, tagID: tagID,
+            decision: .cleared, expectedRevision: currentFact.revision,
+            expectedInstallID: fixture.sourceDeviceID,
+            expectedSourceEpoch: fixture.sourceEpoch,
+            expectedScopeRevision: 1, operationID: clearOperationID
+        )
+        let clearReceiptValue = await recoveredStore.macTagOperation(
+            deviceID: deviceID, operationID: clearOperationID
+        )
+        let clearReceipt = try XCTUnwrap(clearReceiptValue)
+        XCTAssertEqual(try recoveredImporter.finalizeOutboundMacTagDecision(
+            operationID: clearOperationID, receipt: clearReceipt, timestampMs: 14
+        ).state, .committed)
+        let clearedProjection = await recoveredStore.projection(deviceID: deviceID)
+        XCTAssertEqual(clearedProjection?.sharedTagFacts.first?.decision, .cleared)
     }
 
     private final class Fixture {
