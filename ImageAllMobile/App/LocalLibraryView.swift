@@ -860,6 +860,7 @@ private struct LocalShareScopeView: View {
     @State private var isUploadingArchive = false
     @State private var exportedArchive: URL?
     @State private var exportedArchiveComplete = false
+    @State private var exportedVerification: ImageAllMigrationVerification?
     @State private var savedArchives: [URL] = []
     @State private var exportedFacts: URL?
     @State private var statusMessage: String?
@@ -1128,13 +1129,15 @@ private struct LocalShareScopeView: View {
                     isExporting = true
                     exportedArchive = nil
                     exportedArchiveComplete = false
+                    exportedVerification = nil
                     archiveStatusMessage = nil
                     defer { isExporting = false }
                     do {
                         let (url, verification) = try await model.exportSelectedArchive()
                         exportedArchive = url
                         exportedArchiveComplete = verification.isComplete
-                        archiveStatusMessage = "归档 \(verification.itemCount) 项，已校验 \(verification.resourceCount) 个资源；必需原件缺失 \(verification.incompleteMediaIDs.count) 项。缺失项不能视为迁移完成。"
+                        exportedVerification = verification
+                        archiveStatusMessage = archiveSummary(verification)
                     } catch {
                         archiveStatusMessage = "归档未完成：\(error.localizedDescription)"
                     }
@@ -1142,7 +1145,9 @@ private struct LocalShareScopeView: View {
             }
             .disabled(isExporting || isSending || model.sharedSelections.isEmpty)
             if let exportedArchive {
-                LocalArchiveShareButton(url: exportedArchive)
+                LocalArchiveShareButton(
+                    url: exportedArchive, isComplete: exportedArchiveComplete
+                )
                 Button(isUploadingArchive ? "正在分片上传到 Mac…" : "上传已校验归档到 Mac") {
                     Task {
                         isUploadingArchive = true
@@ -1174,16 +1179,19 @@ private struct LocalShareScopeView: View {
             ForEach(savedArchives, id: \.self) { archive in
                 Button("选用归档 \(archive.deletingPathExtension().lastPathComponent)") {
                     Task {
+                        exportedArchive = nil
+                        exportedArchiveComplete = false
+                        exportedVerification = nil
                         do {
                             let verification = try await Task.detached(priority: .utility) {
                                 try ImageAllMigrationArchive.verify(at: archive)
                             }.value
-                            guard verification.isComplete else {
-                                throw LocalArchiveExportError.incompleteArchive
-                            }
                             exportedArchive = archive
-                            exportedArchiveComplete = true
-                            archiveStatusMessage = "已选用现有归档；连接 Mac 后会从接收端已提交的分片继续上传。"
+                            exportedArchiveComplete = verification.isComplete
+                            exportedVerification = verification
+                            archiveStatusMessage = verification.isComplete
+                                ? "已选用现有完整归档；连接 Mac 后会从接收端已提交的分片继续上传。"
+                                : archiveSummary(verification)
                         } catch {
                             archiveStatusMessage = "现有归档不可继续上传：\(error.localizedDescription)"
                         }
@@ -1261,6 +1269,19 @@ private struct LocalShareScopeView: View {
             if let archiveStatusMessage {
                 Text(archiveStatusMessage).font(.footnote).foregroundStyle(.secondary)
             }
+            if let exportedVerification,
+               !exportedVerification.unavailableResources.isEmpty {
+                DisclosureGroup("不可用资源 · \(exportedVerification.unavailableResources.count) 项") {
+                    ForEach(exportedVerification.unavailableResources, id: \.resourceID) { resource in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("资产 \(resource.mediaID.uuidString.prefix(8)) · \(resource.role)")
+                            Text(unavailableResourceReason(resource.status))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        .font(.footnote)
+                    }
+                }
+            }
             Text("仅读取当前获准访问的所选项目，不从 iCloud 下载。归档包由用户选择导出位置；Mac 入库与迁移完成校验仍需后续步骤。")
                 .font(.footnote).foregroundStyle(.secondary)
         }
@@ -1272,6 +1293,24 @@ private struct LocalShareScopeView: View {
         case .rejected: "拒绝"
         case .cleared: "清除"
         case nil: "未知"
+        }
+    }
+
+    private func archiveSummary(_ verification: ImageAllMigrationVerification) -> String {
+        if verification.isComplete {
+            return "归档 \(verification.itemCount) 项，逐项校验 \(verification.resourceCount) 个资源；已声明资源完整。可继续上传，Mac 入库与完成验收仍需后续步骤。"
+        }
+        return "归档 \(verification.itemCount) 项，已校验 \(verification.resourceCount) 个资源；\(verification.unavailableResources.count) 个资源不可用，其中 \(verification.incompleteMediaIDs.count) 项资产缺少必需资源。下方列出原因；当前版本不能上传含资源缺口的归档，修复后需重新生成。"
+    }
+
+    private func unavailableResourceReason(
+        _ status: ImageAllMigrationResourceStatus
+    ) -> String {
+        switch status {
+        case .present: "已存在"
+        case .notLocal: "原件当前不在本机；本期不从 iCloud 下载"
+        case .permissionDenied: "当前照片权限不足"
+        case .unsupported: "该资源类型暂不支持"
         }
     }
 
@@ -1330,13 +1369,16 @@ private struct LocalMigrationArchiveTransfer: Transferable, Sendable {
 
 private struct LocalArchiveShareButton: View {
     let url: URL
+    let isComplete: Bool
 
     var body: some View {
         ShareLink(
             item: LocalMigrationArchiveTransfer(url: url),
             preview: SharePreview("ImageAll 原件归档包")
         ) {
-            Text("导出归档包到文件或其他 App")
+            Text(isComplete
+                 ? "导出归档包到文件或其他 App"
+                 : "导出不完整归档供排查（不能用于迁移完成）")
         }
     }
 }

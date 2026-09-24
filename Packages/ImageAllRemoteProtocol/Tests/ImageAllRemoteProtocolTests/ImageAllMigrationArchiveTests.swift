@@ -248,12 +248,13 @@ final class ImageAllMigrationArchiveTests: XCTestCase {
         let root = makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let mediaID = UUID()
+        let resourceID = UUID()
         let item = ImageAllMigrationItem(
             mediaID: mediaID, sourceLocalIdentifier: "fixture-local",
             mediaKind: .image, createdAtMs: nil,
             favoriteTarget: true, observedFavorite: false, factRevision: 2,
             tagDecisions: [], collections: [], resources: [
-                .init(id: UUID(), role: "original", version: 1,
+                .init(id: resourceID, role: "original", version: 1,
                       uniformTypeIdentifier: "public.jpeg",
                       required: true, status: .notLocal,
                       relativePath: nil, byteCount: nil, sha256: nil)
@@ -266,6 +267,12 @@ final class ImageAllMigrationArchiveTests: XCTestCase {
         XCTAssertFalse(result.isComplete)
         XCTAssertEqual(result.incompleteMediaIDs, [mediaID])
         XCTAssertEqual(result.verifiedBytes, 0)
+        XCTAssertEqual(result.unavailableResources.count, 1)
+        XCTAssertEqual(result.unavailableResources.first?.mediaID, mediaID)
+        XCTAssertEqual(result.unavailableResources.first?.resourceID, resourceID)
+        XCTAssertEqual(result.unavailableResources.first?.role, "original")
+        XCTAssertEqual(result.unavailableResources.first?.status, .notLocal)
+        XCTAssertEqual(result.unavailableResources.first?.required, true)
     }
 
     func testMissingLivePhotoPairKeepsArchiveIncompleteEvenWithOriginalPhoto() throws {
@@ -296,6 +303,39 @@ final class ImageAllMigrationArchiveTests: XCTestCase {
         XCTAssertFalse(verification.isComplete)
         XCTAssertEqual(verification.resourceCount, 1)
         XCTAssertEqual(verification.incompleteMediaIDs, [item.mediaID])
+        XCTAssertEqual(verification.unavailableResources.map(\.role), ["pairedVideo"])
+    }
+
+    func testUnavailableOptionalResourceAlsoBlocksCurrentMacImport() throws {
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = try makeItem(
+            root: root, resourceID: UUID(), bytes: Data("synthetic-original".utf8)
+        )
+        let item = ImageAllMigrationItem(
+            mediaID: original.mediaID,
+            sourceLocalIdentifier: original.sourceLocalIdentifier,
+            mediaKind: original.mediaKind, createdAtMs: original.createdAtMs,
+            favoriteTarget: original.favoriteTarget,
+            observedFavorite: original.observedFavorite,
+            factRevision: original.factRevision,
+            tagDecisions: original.tagDecisions,
+            collections: original.collections,
+            resources: original.resources + [.init(
+                id: UUID(), role: "adjustmentData", version: 1,
+                uniformTypeIdentifier: "public.data", required: false,
+                status: .unsupported, relativePath: nil,
+                byteCount: nil, sha256: nil
+            )]
+        )
+        try ImageAllMigrationArchive.write(
+            header: header(migrationID: UUID(), count: 1), items: [item], to: root
+        )
+        let verification = try ImageAllMigrationArchive.verify(at: root)
+        XCTAssertFalse(verification.isComplete)
+        XCTAssertTrue(verification.incompleteMediaIDs.isEmpty)
+        XCTAssertEqual(verification.unavailableResources.map(\.status), [.unsupported])
+        XCTAssertEqual(verification.unavailableResources.map(\.required), [false])
     }
 
     func testVerifiedVisitorStreamsRecordsAndDetectsSourceChangingDuringImport() throws {

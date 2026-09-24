@@ -187,15 +187,30 @@ public struct ImageAllMigrationVerification: Sendable, Equatable {
     public let resourceCount: Int
     public let verifiedBytes: Int64
     public let incompleteMediaIDs: [UUID]
+    /// All declared resources that could not be copied. The media list above
+    /// includes only assets with a missing required resource.
+    public let unavailableResources: [ImageAllMigrationUnavailableResource]
     public let factsSHA256: String?
 
-    public var isComplete: Bool { incompleteMediaIDs.isEmpty }
+    /// Current Mac import persists every declared resource. Until partial
+    /// resource imports have an explicit catalog contract, any unavailable
+    /// resource keeps the package out of the migration path.
+    public var isComplete: Bool { unavailableResources.isEmpty }
 
     public func hasSameMedia(as other: Self) -> Bool {
         migrationID == other.migrationID && manifestSHA256 == other.manifestSHA256
             && itemCount == other.itemCount && resourceCount == other.resourceCount
             && verifiedBytes == other.verifiedBytes && incompleteMediaIDs == other.incompleteMediaIDs
+            && unavailableResources == other.unavailableResources
     }
+}
+
+public struct ImageAllMigrationUnavailableResource: Sendable, Equatable {
+    public let mediaID: UUID
+    public let resourceID: UUID
+    public let role: String
+    public let status: ImageAllMigrationResourceStatus
+    public let required: Bool
 }
 
 public enum ImageAllMigrationArchive {
@@ -254,6 +269,7 @@ public enum ImageAllMigrationArchive {
         var verifiedBytes: Int64 = 0
         var highestFactRevision: Int64 = 0
         var incomplete: [UUID] = []
+        var unavailableResources: [ImageAllMigrationUnavailableResource] = []
         var mediaIDs: Set<UUID> = []
         var sourceLocators: Set<String> = []
         var resourceIDs: Set<UUID> = []
@@ -374,6 +390,11 @@ public enum ImageAllMigrationArchive {
                               resource.sha256 == nil else {
                             throw ImageAllMigrationArchiveError.invalidManifest
                         }
+                        unavailableResources.append(ImageAllMigrationUnavailableResource(
+                            mediaID: item.mediaID, resourceID: resource.id,
+                            role: resource.role, status: resource.status,
+                            required: resource.required
+                        ))
                         if resource.required { itemComplete = false }
                     }
                 }
@@ -419,6 +440,7 @@ public enum ImageAllMigrationArchive {
             manifestSHA256: hex(Data(manifestHash.finalize())),
             itemCount: itemCount, resourceCount: resourceCount,
             verifiedBytes: verifiedBytes, incompleteMediaIDs: incomplete,
+            unavailableResources: unavailableResources,
             factsSHA256: publishedFacts.sha256
         )
     }
