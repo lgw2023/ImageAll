@@ -1182,7 +1182,7 @@ struct RemoteHostSettingsView: View {
     }
 }
 
-private struct PhoneArchivePreview: Identifiable {
+struct PhoneArchivePreview: Identifiable {
     let id: UUID
     let title: String
     let url: URL
@@ -1191,7 +1191,7 @@ private struct PhoneArchivePreview: Identifiable {
 }
 
 @MainActor
-private final class PhoneArchiveImportModel: ObservableObject {
+final class PhoneArchiveImportModel: ObservableObject {
     @Published private(set) var batches: [PhoneArchiveImportedBatch] = []
     @Published private(set) var items: [PhoneArchiveImportedItem] = []
     @Published private(set) var selectedBatchID: UUID?
@@ -1201,8 +1201,11 @@ private final class PhoneArchiveImportModel: ObservableObject {
     @Published private(set) var transferTargetPath: String? =
         RemoteHostProcessHolder.migrationTransferTargetURL()?.path
     @Published private(set) var sealedTransfers: [ImageAllMigrationTransferSealedArchive] = []
+    @Published private(set) var galleryOriginalURLs: [UUID: URL] = [:]
     @Published var preview: PhoneArchivePreview?
     private var previewScopedParent: URL?
+    private var galleryScopedParent: URL?
+    private var galleryLoadGeneration = UUID()
 
     var selectedBatch: PhoneArchiveImportedBatch? {
         batches.first { $0.id == selectedBatchID }
@@ -1306,6 +1309,7 @@ private final class PhoneArchiveImportModel: ObservableObject {
 
     func select(_ id: UUID) async {
         guard !isBusy, let importer = PhoneArchiveImportProcessHolder.importer() else { return }
+        dismissGallery()
         selectedBatchID = id
         items = []
         latestValidationRecord = nil
@@ -1447,6 +1451,50 @@ private final class PhoneArchiveImportModel: ObservableObject {
         preview = nil
         previewScopedParent?.stopAccessingSecurityScopedResource()
         previewScopedParent = nil
+    }
+
+    func loadGalleryOriginals() async {
+        guard !isBusy, let batch = selectedBatch,
+              let importer = PhoneArchiveImportProcessHolder.importer() else { return }
+        dismissGallery()
+        let generation = galleryLoadGeneration
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let parent = try targetParent(for: batch)
+            let accessed = parent.startAccessingSecurityScopedResource()
+            do {
+                let archive = parent.appendingPathComponent(
+                    "ImageAll-Archive-\(batch.id.uuidString.lowercased())", isDirectory: true
+                )
+                let originals = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                    try importer.verifiedGalleryOriginalURLs(
+                        migrationID: batch.id, archiveRoot: archive
+                    )
+                }
+                guard selectedBatchID == batch.id,
+                      galleryLoadGeneration == generation,
+                      !Task.isCancelled else {
+                    if accessed { parent.stopAccessingSecurityScopedResource() }
+                    return
+                }
+                galleryScopedParent = accessed ? parent : nil
+                galleryOriginalURLs = originals
+                message = nil
+            } catch {
+                if accessed { parent.stopAccessingSecurityScopedResource() }
+                throw error
+            }
+        } catch {
+            message = "归档缩略图核查失败：\(error.localizedDescription)"
+        }
+    }
+
+    func dismissGallery() {
+        galleryLoadGeneration = UUID()
+        galleryOriginalURLs = [:]
+        galleryScopedParent?.stopAccessingSecurityScopedResource()
+        galleryScopedParent = nil
     }
 
     func importFactSnapshot() async {
@@ -1839,6 +1887,169 @@ private struct PhoneArchiveImportCard: View {
     }
 }
 
+struct PhoneArchiveGalleryView: View {
+    @StateObject private var model = PhoneArchiveImportModel()
+    private let columns = [GridItem(.adaptive(minimum: 190, maximum: 260), spacing: 12)]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Mac 已入库的 iPhone 归档")
+                        .font(.title2.weight(.semibold))
+                    Text("这些媒体存放在 Mac 独立归档中，手机离线后仍可打开。打开前会复验资源与整理信息。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("刷新", systemImage: "arrow.clockwise") {
+                    Task {
+                        await model.refresh()
+                        await model.loadGalleryOriginals()
+                    }
+                }
+                .disabled(model.isBusy)
+            }
+            if let message = model.message {
+                Text(message)
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
+            }
+            if model.batches.isEmpty {
+                ContentUnavailableView(
+                    "尚无已入库的 iPhone 归档",
+                    systemImage: "archivebox",
+                    description: Text("先在移动 Host 设置中选择归档包或接收目录，完成 Mac 入库后可在这里浏览。")
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                HStack {
+                    Menu {
+                        ForEach(model.batches) { batch in
+                            Button {
+                                Task {
+                                    await model.select(batch.id)
+                                    await model.loadGalleryOriginals()
+                                }
+                            } label: {
+                                Text("\(batch.itemCount) 项 · \(batch.id.uuidString)")
+                            }
+                        }
+                    } label: {
+                        Label(
+                            model.selectedBatch.map { "\($0.itemCount) 项 · \($0.id.uuidString)" } ?? "选择归档",
+                            systemImage: "archivebox"
+                        )
+                    }
+                    .disabled(model.isBusy)
+                    Spacer()
+                    if let batch = model.selectedBatch {
+                        Text("\(model.items.count) / \(batch.itemCount) 项")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                ScrollView {
+                    LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
+                        ForEach(model.items) { item in
+                            Button {
+                                Task { await model.previewOriginal(item) }
+                            } label: {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    PhoneArchiveGridThumbnail(
+                                        url: model.galleryOriginalURLs[item.id],
+                                        isVideo: item.mediaKind == "video"
+                                    )
+                                    .frame(maxWidth: .infinity, minHeight: 92)
+                                    .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                                    Text(item.mediaKind == "video" ? "视频" : "照片")
+                                        .font(.headline)
+                                    if let createdAtMs = item.createdAtMs {
+                                        Text(Date(timeIntervalSince1970: TimeInterval(createdAtMs) / 1_000)
+                                            .formatted(date: .abbreviated, time: .shortened))
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Text("\(item.resourceCount) 个资源 · \(item.tagCount) 项标签 · \(item.collectionCount) 个集合")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(2)
+                                    Text(item.sourceLocalIdentifier)
+                                        .font(.caption2)
+                                        .foregroundStyle(.tertiary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(10)
+                                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(model.isBusy)
+                            .accessibilityLabel("预览归档\(item.mediaKind == "video" ? "视频" : "照片")，\(item.sourceLocalIdentifier)")
+                        }
+                    }
+                    if let batch = model.selectedBatch, model.items.count < batch.itemCount {
+                        Button("加载更多") { Task { await model.loadMore() } }
+                            .buttonStyle(.bordered)
+                            .disabled(model.isBusy)
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 12)
+                    }
+                }
+            }
+        }
+        .padding(20)
+        .task {
+            await model.refresh()
+            await model.loadGalleryOriginals()
+        }
+        .onDisappear {
+            model.dismissPreview()
+            model.dismissGallery()
+        }
+        .sheet(item: $model.preview, onDismiss: { model.dismissPreview() }) { preview in
+            PhoneArchivePreviewSheet(preview: preview)
+        }
+    }
+}
+
+private struct PhoneArchiveGridThumbnail: View {
+    let url: URL?
+    let isVideo: Bool
+    @State private var image: NSImage?
+
+    var body: some View {
+        ZStack {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(maxWidth: .infinity, maxHeight: 92)
+                    .clipped()
+            } else {
+                Image(systemName: isVideo ? "play.rectangle" : "photo")
+                    .font(.system(size: 38, weight: .light))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(height: 92)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .task(id: url) {
+            image = nil
+            guard let url else { return }
+            let video = isVideo
+            let data = await Task.detached(priority: .utility) {
+                PhoneArchiveImagePreview.thumbnailData(
+                    at: url, maxPixelSize: 320, isVideo: video
+                )
+            }.value
+            guard !Task.isCancelled else { return }
+            image = data.flatMap(NSImage.init(data:))
+        }
+    }
+}
+
 private struct PhoneArchivePreviewSheet: View {
     let preview: PhoneArchivePreview
     @State private var image: NSImage?
@@ -1905,7 +2116,9 @@ private struct PhoneArchivePreviewSheet: View {
             } else {
                 let url = preview.url
                 let data = await Task.detached(priority: .utility) {
-                    Self.thumbnailData(at: url)
+                    PhoneArchiveImagePreview.thumbnailData(
+                        at: url, maxPixelSize: 2_048, isVideo: false
+                    )
                 }.value
                 guard !Task.isCancelled else { return }
                 image = data.flatMap(NSImage.init(data:))
@@ -1954,17 +2167,34 @@ private struct PhoneArchivePreviewSheet: View {
         }
     }
 
-    nonisolated private static func thumbnailData(at url: URL) -> Data? {
-        guard let source = CGImageSourceCreateWithURL(
-            url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary
-        ), let thumbnail = CGImageSourceCreateThumbnailAtIndex(
-            source, 0, [
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceCreateThumbnailWithTransform: true,
-                kCGImageSourceThumbnailMaxPixelSize: 2_048,
-                kCGImageSourceShouldCache: false,
-            ] as CFDictionary
-        ) else { return nil }
+}
+
+enum PhoneArchiveImagePreview {
+    nonisolated static func thumbnailData(
+        at url: URL, maxPixelSize: Int, isVideo: Bool
+    ) -> Data? {
+        let thumbnail: CGImage
+        if isVideo {
+            let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = CGSize(width: maxPixelSize, height: maxPixelSize)
+            guard let frame = try? generator.copyCGImage(
+                at: CMTime(seconds: 0.5, preferredTimescale: 600), actualTime: nil
+            ) else { return nil }
+            thumbnail = frame
+        } else {
+            guard let source = CGImageSourceCreateWithURL(
+                url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary
+            ), let frame = CGImageSourceCreateThumbnailAtIndex(
+                source, 0, [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceCreateThumbnailWithTransform: true,
+                    kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+                    kCGImageSourceShouldCache: false,
+                ] as CFDictionary
+            ) else { return nil }
+            thumbnail = frame
+        }
         let data = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(
             data, "public.jpeg" as CFString, 1, nil

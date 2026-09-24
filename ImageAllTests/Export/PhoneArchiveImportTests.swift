@@ -48,6 +48,12 @@ final class PhoneArchiveImportTests: XCTestCase {
             archiveRoot: receipt.archiveURL
         )
         let copied = preview.originalURL
+        XCTAssertEqual(try importer.verifiedGalleryOriginalURLs(
+            migrationID: header.migrationID, archiveRoot: receipt.archiveURL
+        )[mediaID], copied)
+        XCTAssertNotNil(PhoneArchiveImagePreview.thumbnailData(
+            at: copied, maxPixelSize: 320, isVideo: true
+        ))
         XCTAssertTrue(preview.facts.tagDecisions.isEmpty)
         XCTAssertEqual(try Data(contentsOf: copied), bytes)
         let playable = try await AVURLAsset(url: copied).load(.isPlayable)
@@ -361,6 +367,9 @@ final class PhoneArchiveImportTests: XCTestCase {
         )
         XCTAssertThrowsError(try importer.verifiedOriginalURL(
             migrationID: header.migrationID, mediaID: item.mediaID, archiveRoot: receipt.archiveURL
+        ))
+        XCTAssertThrowsError(try importer.verifiedGalleryOriginalURLs(
+            migrationID: header.migrationID, archiveRoot: receipt.archiveURL
         ))
     }
 

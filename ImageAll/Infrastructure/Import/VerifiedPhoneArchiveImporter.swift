@@ -991,6 +991,41 @@ struct VerifiedPhoneArchiveImporter: Sendable {
         )
     }
 
+    /// Resolves originals for a gallery page after one complete archive and
+    /// catalog audit. The caller keeps the target security scope open while
+    /// producing thumbnails. Opening a full preview re-verifies the archive.
+    func verifiedGalleryOriginalURLs(
+        migrationID: UUID, archiveRoot: URL
+    ) throws -> [UUID: URL] {
+        _ = try auditImportedArchive(migrationID: migrationID, archiveRoot: archiveRoot)
+        return try database.pool.read { db in
+            var originals: [UUID: URL] = [:]
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT i.media_id, r.relative_path
+                FROM migration_import_item i
+                JOIN migration_import_resource r
+                  ON r.source_device_id = i.source_device_id
+                 AND r.source_epoch = i.source_epoch
+                 AND r.media_id = i.media_id
+                WHERE i.migration_id = ? AND r.role = 'original'
+                ORDER BY i.media_id, r.version
+                """, arguments: [migrationID.uuidString.lowercased()])
+            for row in rows {
+                let media: String = row["media_id"]
+                let relative: String = row["relative_path"]
+                guard let id = UUID(uuidString: media),
+                      relative.hasPrefix("resources/"),
+                      relative.split(separator: "/").count == 2 else {
+                    throw PhoneArchiveImportError.catalogDiverged
+                }
+                if originals[id] == nil {
+                    originals[id] = archiveRoot.appendingPathComponent(relative)
+                }
+            }
+            return originals
+        }
+    }
+
     /// The caller keeps the target parent's security scope open while using
     /// the returned URL. Package verification binds this resource to the
     /// committed manifest before any external application opens it.

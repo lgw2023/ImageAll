@@ -12524,6 +12524,7 @@ private enum LibrarySidebarSelection: Hashable {
     case timeStory
     case librarySlimming
     case phoneSource(UUID)
+    case phoneArchive
     case source(UUID)
     case folder(AssetFolderScope)
 }
@@ -13577,6 +13578,7 @@ struct LibraryWorkspaceView: View {
 
     private var isPhoneSourceSelected: Bool {
         if case .phoneSource = selection { return true }
+        if selection == .phoneArchive { return true }
         return false
     }
 
@@ -13613,6 +13615,9 @@ struct LibraryWorkspaceView: View {
         } else if case .phoneSource = selection {
             content
                 .navigationTitle("iPhone 分享目录")
+        } else if selection == .phoneArchive {
+            content
+                .navigationTitle("Mac 已入库归档")
         } else {
             libraryKeyboardEnabledContent
         }
@@ -14111,6 +14116,10 @@ struct LibraryWorkspaceView: View {
                 Task { await refreshSharedPhoneProjections() }
                 return
             }
+            if newValue == .phoneArchive {
+                layoutState.setInspectorPresented(false)
+                return
+            }
             let destination: LibraryBrowsingDestination = switch newValue {
             case .galleryOverview:
                 .galleryOverview
@@ -14134,6 +14143,8 @@ struct LibraryWorkspaceView: View {
                 .librarySlimming
             case .phoneSource:
                 .all // handled above by the dedicated phone directory branch
+            case .phoneArchive:
+                .all // handled above by the dedicated Mac archive branch
             case let .source(sourceID):
                 .source(sourceID)
             case let .folder(scope):
@@ -14550,6 +14561,8 @@ struct LibraryWorkspaceView: View {
                 }
             }
             Section("来自 iPhone") {
+                Label("Mac 已入库归档", systemImage: "archivebox")
+                    .tag(LibrarySidebarSelection.phoneArchive)
                 ForEach(sharedPhoneProjections) { projection in
                     HStack {
                         Label(
@@ -15509,6 +15522,8 @@ struct LibraryWorkspaceView: View {
             storyWorkspaceContent
         } else if case let .phoneSource(deviceID) = selection {
             phoneLibraryContent(deviceID: deviceID)
+        } else if selection == .phoneArchive {
+            PhoneArchiveGalleryView()
         } else if selection == .galleryOverview {
             GalleryOverviewView(model: model)
         } else if selection == .worldMap {
