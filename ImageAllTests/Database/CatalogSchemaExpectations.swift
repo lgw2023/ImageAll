@@ -99,6 +99,11 @@ enum CatalogSchemaExpectations {
         "library_slimming_cluster_review",
         "library_slimming_scan_member",
         "library_slimming_scan_result",
+        "migration_import",
+        "migration_import_collection",
+        "migration_import_item",
+        "migration_import_resource",
+        "migration_import_tag_decision",
         "ontology_concept",
         "ontology_edge",
         "ontology_pack",
@@ -162,6 +167,7 @@ enum CatalogSchemaExpectations {
         "job_active_coalescing_uq",
         "job_queue_idx",
         "library_slimming_cluster_review_queue_idx",
+        "migration_import_item_batch_idx",
         "personal_prediction_review_rank_idx",
         "prediction_review_rank_idx",
         "recycle_entry_active_asset_uq",
@@ -856,6 +862,7 @@ enum CatalogSchemaExpectations {
         "job_queue_idx": "job",
         "job_active_coalescing_uq": "job",
         "library_slimming_cluster_review_queue_idx": "library_slimming_cluster_review",
+        "migration_import_item_batch_idx": "migration_import_item",
         "personal_prediction_review_rank_idx": "personal_prediction",
         "prediction_review_rank_idx": "prediction",
         "training_run_method_created_idx": "training_run",
@@ -872,6 +879,15 @@ enum CatalogSchemaExpectations {
     ]
 
     static let indexes: [IndexExpectation] = [
+        .init(
+            name: "migration_import_item_batch_idx",
+            keyColumns: [
+                .init(name: "migration_id", descending: false, collation: "BINARY"),
+                .init(name: "media_id", descending: false, collation: "BINARY"),
+            ],
+            unique: false,
+            partialPredicateSQL: ""
+        ),
         .init(
             name: "asset_favorite_state_favorite_idx",
             keyColumns: [

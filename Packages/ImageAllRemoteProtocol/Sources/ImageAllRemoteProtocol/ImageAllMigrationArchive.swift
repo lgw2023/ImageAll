@@ -316,6 +316,77 @@ public enum ImageAllMigrationArchive {
         )
     }
 
+    /// Streams a verified package into a caller-owned transaction. The second
+    /// verification must succeed before that transaction is committed; it
+    /// catches a package changing while records are being consumed.
+    public static func visitVerifiedRecords(
+        at archiveRoot: URL,
+        onHeader: (ImageAllMigrationHeader) throws -> Void,
+        onItem: (ImageAllMigrationItem) throws -> Void
+    ) throws -> ImageAllMigrationVerification {
+        let before = try verify(at: archiveRoot)
+        let handle = try FileHandle(forReadingFrom: archiveRoot.appendingPathComponent(manifestFilename))
+        defer { try? handle.close() }
+        let decoder = JSONDecoder()
+        var buffer = Data()
+        var sawHeader = false
+        var itemCount = 0
+        while let block = try handle.read(upToCount: readBlockBytes), !block.isEmpty {
+            buffer.append(block)
+            while let newline = buffer.firstIndex(of: 0x0A) {
+                let line = buffer.prefix(upTo: newline)
+                buffer.removeSubrange(...newline)
+                guard !line.isEmpty, line.count < maximumLineBytes else {
+                    throw ImageAllMigrationArchiveError.invalidManifest
+                }
+                if !sawHeader {
+                    let header = try decoder.decode(ImageAllMigrationHeader.self, from: line)
+                    guard header.recordType == "header", header.migrationID == before.migrationID else {
+                        throw ImageAllMigrationArchiveError.invalidManifest
+                    }
+                    try onHeader(header)
+                    sawHeader = true
+                } else {
+                    let item = try decoder.decode(ImageAllMigrationItem.self, from: line)
+                    guard item.recordType == "item" else {
+                        throw ImageAllMigrationArchiveError.invalidManifest
+                    }
+                    try onItem(item)
+                    itemCount += 1
+                }
+            }
+            guard buffer.count <= maximumLineBytes else {
+                throw ImageAllMigrationArchiveError.invalidManifest
+            }
+        }
+        guard sawHeader, buffer.isEmpty, itemCount == before.itemCount,
+              try verify(at: archiveRoot) == before else {
+            throw ImageAllMigrationArchiveError.resourceChanged
+        }
+        return before
+    }
+
+    public static func readVerifiedHeader(
+        at archiveRoot: URL
+    ) throws -> (ImageAllMigrationHeader, ImageAllMigrationVerification) {
+        let verification = try verify(at: archiveRoot)
+        let handle = try FileHandle(forReadingFrom: archiveRoot.appendingPathComponent(manifestFilename))
+        defer { try? handle.close() }
+        var line = Data()
+        while let byte = try handle.read(upToCount: 1), !byte.isEmpty {
+            if byte[0] == 0x0A { break }
+            line.append(byte)
+            guard line.count < maximumLineBytes else {
+                throw ImageAllMigrationArchiveError.invalidManifest
+            }
+        }
+        let header = try JSONDecoder().decode(ImageAllMigrationHeader.self, from: line)
+        guard header.recordType == "header", header.migrationID == verification.migrationID else {
+            throw ImageAllMigrationArchiveError.invalidManifest
+        }
+        return (header, verification)
+    }
+
     /// Publishes only a byte-verified independent copy. Catalog identity and
     /// human facts must be committed separately before archive completion.
     public static func publishVerifiedCopy(

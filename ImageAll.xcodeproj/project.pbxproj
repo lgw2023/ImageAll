@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		MA1020010000000000000001 /* V041AddPhoneArchiveImportMigration.swift in Sources */ = {isa = PBXBuildFile; fileRef = MA1020020000000000000001 /* V041AddPhoneArchiveImportMigration.swift */; };
+		MA1020010000000000000002 /* VerifiedPhoneArchiveImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = MA1020020000000000000002 /* VerifiedPhoneArchiveImporter.swift */; };
+		MA1020010000000000000003 /* PhoneArchiveImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = MA1020020000000000000003 /* PhoneArchiveImportTests.swift */; };
         OM9200010000000000000001 = {isa = PBXBuildFile; fileRef = OM9200020000000000000001; };
         OM9200010000000000000002 = {isa = PBXBuildFile; fileRef = OM9200020000000000000002; };
         ST9100010000000000000001 = {isa = PBXBuildFile; fileRef = ST9100020000000000000001; };
@@ -356,6 +359,9 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		MA1020020000000000000001 /* V041AddPhoneArchiveImportMigration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = V041AddPhoneArchiveImportMigration.swift; sourceTree = "<group>"; };
+		MA1020020000000000000002 /* VerifiedPhoneArchiveImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Import/VerifiedPhoneArchiveImporter.swift; sourceTree = "<group>"; };
+		MA1020020000000000000003 /* PhoneArchiveImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Export/PhoneArchiveImportTests.swift; sourceTree = "<group>"; };
         OM9200020000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Application/Story/OpenMontageConfiguration.swift; sourceTree = "<group>"; };
         OM9200020000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenMontageIntegrationSettings.swift; sourceTree = "<group>"; };
         ST9100020000000000000001 = {isa = PBXFileReference; lastKnownFileType = file; path = ImageAll/Resources/StoryTemplates/in-photo-handwritten-poem.mp4; sourceTree = SOURCE_ROOT; };
@@ -749,6 +755,7 @@
 				RH0006010000000000000003 /* Remote */,
 				SL0006010000000000000003 /* Similarity */,
 				EX0001010000000000000101 /* PortableCatalogExportTests.swift */,
+				MA1020020000000000000003 /* PhoneArchiveImportTests.swift */,
 				OO0006010000000000000003 /* Photos */,
 				JJ0001010000000000000101 /* LibraryWorkspaceModelTests.swift */,
 				IP0001010000000000000101 /* IdleThumbnailPrewarmTests.swift */,
@@ -1011,6 +1018,7 @@
 				RH0006010000000000000002 /* Remote */,
 				SL0006010000000000000002 /* Similarity */,
 				EX0001010000000000000001 /* PortableCatalogExporter.swift */,
+				MA1020020000000000000002 /* VerifiedPhoneArchiveImporter.swift */,
 				OO0006010000000000000002 /* Photos */,
 				KK0006010000000000000002 /* Personalization */,
 				HH0006010000000000000002 /* Authorization */,
@@ -1129,6 +1137,7 @@
 				KK0001010000000000000001 /* V004AddPersonalizationMigration.swift */,
 				CC0001010000000000000004 /* CatalogDatabase.swift */,
 				CC0001010000000000000005 /* CatalogRepository.swift */,
+				MA1020020000000000000001 /* V041AddPhoneArchiveImportMigration.swift */,
 				CC000101000000000000000D /* CatalogSnapshotConstants.swift */,
 				CC000101000000000000000E /* CatalogSnapshotError.swift */,
 				CC000101000000000000000F /* CatalogSnapshotManifest.swift */,
@@ -1622,6 +1631,8 @@
 				CM0000010000000000000003 /* AppModelActivationCoordinator.swift in Sources */,
 				CM0000010000000000000004 /* UserDefaultsModelEnablementPreferenceStore.swift in Sources */,
 				EX0000010000000000000001 /* PortableCatalogExporter.swift in Sources */,
+				MA1020010000000000000001 /* V041AddPhoneArchiveImportMigration.swift in Sources */,
+				MA1020010000000000000002 /* VerifiedPhoneArchiveImporter.swift in Sources */,
 				OO0000010000000000000001 /* PhotosLibraryContracts.swift in Sources */,
 				OO0000010000000000000002 /* PhotosLibraryConnectionService.swift in Sources */,
 				OO0000010000000000000003 /* PhotosReconcileHandler.swift in Sources */,
@@ -1811,6 +1822,7 @@
 				CM0000010000000000000103 /* AppModelActivationCoordinatorTests.swift in Sources */,
 				CM0000010000000000000102 /* LoopbackModelSuggestionClient.swift in Sources */,
 				EX0000010000000000000101 /* PortableCatalogExportTests.swift in Sources */,
+				MA1020010000000000000003 /* PhoneArchiveImportTests.swift in Sources */,
 				OO0000010000000000000101 /* PhotosIntegrationTests.swift in Sources */,
 				MM0000010000000000000101 /* PersonalizedSuggestionServiceTests.swift in Sources */,
 				LL0000010000000000000101 /* FeaturePrintCacheTests.swift in Sources */,

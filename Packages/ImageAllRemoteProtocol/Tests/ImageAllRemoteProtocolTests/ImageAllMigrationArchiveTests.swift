@@ -88,6 +88,37 @@ final class ImageAllMigrationArchiveTests: XCTestCase {
         XCTAssertEqual(verification.incompleteMediaIDs, [item.mediaID])
     }
 
+    func testVerifiedVisitorStreamsRecordsAndDetectsSourceChangingDuringImport() throws {
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bytes = Data("stable original".utf8)
+        let item = try makeItem(root: root, resourceID: UUID(), bytes: bytes)
+        let header = header(migrationID: UUID(), count: 1)
+        try ImageAllMigrationArchive.write(header: header, items: [item], to: root)
+        let (readHeader, expected) = try ImageAllMigrationArchive.readVerifiedHeader(at: root)
+        XCTAssertEqual(readHeader, header)
+        var visited: [UUID] = []
+        let result = try ImageAllMigrationArchive.visitVerifiedRecords(
+            at: root,
+            onHeader: { XCTAssertEqual($0, header) },
+            onItem: { visited.append($0.mediaID) }
+        )
+        XCTAssertEqual(result, expected)
+        XCTAssertEqual(visited, [item.mediaID])
+
+        XCTAssertThrowsError(try ImageAllMigrationArchive.visitVerifiedRecords(
+            at: root,
+            onHeader: { _ in },
+            onItem: { record in
+                try Data("changed during import".utf8).write(
+                    to: root.appendingPathComponent(record.resources[0].relativePath!)
+                )
+            }
+        )) { error in
+            XCTAssertEqual(error as? ImageAllMigrationArchiveError, .resourceChanged)
+        }
+    }
+
     func testRejectsSymlinkAndUnfinishedOrDuplicateManifest() throws {
         let root = makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }

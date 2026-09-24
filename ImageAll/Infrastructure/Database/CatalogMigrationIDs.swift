@@ -67,6 +67,7 @@ enum CatalogMigrationID {
         "v039_add_file_modified_time_sort"
     static let v040RetirePDFDocuments =
         "v040_retire_pdf_documents"
+    static let v041AddPhoneArchiveImport = "v041_add_phone_archive_import"
 
     static let knownOrdered: [String] = [
         v001CreateCatalogCore,
@@ -109,5 +110,6 @@ enum CatalogMigrationID {
         v038AddContextualTagFeed,
         v039AddFileModifiedTimeSort,
         v040RetirePDFDocuments,
+        v041AddPhoneArchiveImport,
     ]
 }

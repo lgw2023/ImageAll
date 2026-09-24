@@ -149,7 +149,16 @@ final class CatalogMigrationTests: XCTestCase {
     }
 
     func testV037BackfillsMediaBearingFoldersAndAncestorsFromExistingAssets() throws {
-        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let url = try makeTempDatabaseURL()
+        var configuration = Configuration()
+        configuration.prepareDatabase { db in
+            try db.execute(sql: "PRAGMA foreign_keys = ON")
+        }
+        let pool = try DatabasePool(path: url.path, configuration: configuration)
+        try CatalogDatabase.makeMigrator().migrate(
+            pool, upTo: CatalogMigrationID.v036AddTrainingRunSampleManifest
+        )
+        let database = CatalogDatabase(pool: pool)
         let sourceID = UUID()
         let assetID = UUID()
         try DatabaseTestSupport.makeFolderSourceWithFileAsset(
@@ -165,18 +174,6 @@ final class CatalogMigrationTests: XCTestCase {
                     "毕业照.jpg",
                     assetID.uuidString.lowercased(),
                 ]
-            )
-            try db.execute(sql: "DROP TABLE contextual_tag_feed_evidence")
-            try db.execute(sql: "DROP TABLE contextual_tag_feed_member")
-            try db.execute(sql: "DROP TABLE contextual_tag_feed")
-            try db.execute(sql: "DROP TABLE source_folder")
-            try db.execute(
-                sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
-                arguments: [CatalogMigrationID.v038AddContextualTagFeed]
-            )
-            try db.execute(
-                sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
-                arguments: [CatalogMigrationID.v037AddSourceFolderIndex]
             )
         }
 
@@ -664,7 +661,15 @@ final class CatalogMigrationTests: XCTestCase {
         let url = try makeTempDatabaseURL()
         let sourceID = UUID()
         let assetID = UUID()
-        let seeded = try CatalogDatabase.open(at: url)
+        var configuration = Configuration()
+        configuration.prepareDatabase { db in
+            try db.execute(sql: "PRAGMA foreign_keys = ON")
+        }
+        let pool = try DatabasePool(path: url.path, configuration: configuration)
+        try CatalogDatabase.makeMigrator().migrate(
+            pool, upTo: CatalogMigrationID.v011AddStandardPredictionProvenance
+        )
+        let seeded = CatalogDatabase(pool: pool)
         let repository = CatalogRepository(database: seeded)
         try DatabaseTestSupport.makeFolderSourceWithFileAsset(
             repository: repository,
@@ -674,53 +679,6 @@ final class CatalogMigrationTests: XCTestCase {
         try seeded.pool.write { db in
             try db.execute(sql: "PRAGMA foreign_keys = OFF")
             try db.execute(sql: "DROP TABLE standard_tag_binding")
-            try db.execute(sql: "DROP TABLE suggestion_score_threshold_override")
-            try db.execute(sql: "DROP TABLE suggestion_score_threshold_default")
-            try db.execute(sql: "DROP TABLE IF EXISTS tag_group")
-            try db.execute(sql: "DROP INDEX IF EXISTS tag_group_id_idx")
-            if try db.columns(in: "tag").contains(where: { $0.name == "group_id" }) {
-                try Self.stripTagGroupColumn(db)
-            }
-            // GRDB rejects replaying an earlier migration while a later one remains
-            // recorded; clear the subsequent repair id so v012→v013 can re-apply.
-            try db.execute(sql: "DROP TABLE IF EXISTS asset_similarity_fingerprint")
-            try db.execute(sql: "DROP TABLE IF EXISTS recycle_entry")
-            try db.execute(sql: "DROP TABLE IF EXISTS source_mutation_authorization")
-            try Self.dropV022Tables(db)
-            try Self.dropV023Tables(db)
-            try Self.dropV032Tables(db)
-            try Self.dropV033Tables(db)
-            try Self.dropV035AndLaterTables(db)
-            try db.execute(sql: "DROP TABLE IF EXISTS asset_location")
-            try db.execute(
-                sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                arguments: [
-                    CatalogMigrationID.v012RepairStandardTagBinding,
-                    CatalogMigrationID.v013PhotosMissingAssetRepair,
-                    CatalogMigrationID.v014AddTrainingRunsAndPersonalMultiSlot,
-                    CatalogMigrationID.v015AddSuggestionScoreThresholds,
-                    CatalogMigrationID.v016AddTagGroups,
-                    CatalogMigrationID.v017PerTagPersonalSuggestionModels,
-                    CatalogMigrationID.v018AddAssetSimilarityFingerprint,
-                    CatalogMigrationID.v019AddLibrarySlimmingRecycle,
-                    CatalogMigrationID.v020HardenLibrarySlimmingRecycle,
-                    CatalogMigrationID.v021AddPhotosRecycleIdentifier,
-                    CatalogMigrationID.v022HardenLibrarySlimmingAnalysis,
-                    CatalogMigrationID.v023AddSourceSimilarityIndex,
-                    CatalogMigrationID.v024RepairSourceMutationAuthorization,
-                    CatalogMigrationID.v025RetainPurgedAssetKnowledge,
-                    CatalogMigrationID.v026AddMediaKindAndVideoMetadata,
-                    CatalogMigrationID.v027PartitionPersonalizationByMediaKind,
-                    CatalogMigrationID.v028PartitionSlimmingByMediaKind,
-                    CatalogMigrationID.v029AddOriginalAspectThumbnailCache,
-                    CatalogMigrationID.v030AddSimilarityDigestProvenance,
-                    CatalogMigrationID.v031AddAssetLocation,
-                    CatalogMigrationID.v032AddPlaceTagResolution,
-                    CatalogMigrationID.v033AddSlimmingClusterReviewQueue,
-                    CatalogMigrationID.v034BackfillSlimmingConfirmedHistory,
-                    CatalogMigrationID.v035AddAssetFavoriteState,
-                ]
-            )
             try db.execute(sql: "PRAGMA foreign_keys = ON")
             XCTAssertFalse(try db.tableExists("standard_tag_binding"))
         }
@@ -1386,6 +1344,15 @@ final class CatalogMigrationTests: XCTestCase {
     }
 
     private static func dropV035AndLaterTables(_ db: Database) throws {
+        try db.execute(sql: "DROP TABLE IF EXISTS migration_import_collection")
+        try db.execute(sql: "DROP TABLE IF EXISTS migration_import_tag_decision")
+        try db.execute(sql: "DROP TABLE IF EXISTS migration_import_resource")
+        try db.execute(sql: "DROP TABLE IF EXISTS migration_import_item")
+        try db.execute(sql: "DROP TABLE IF EXISTS migration_import")
+        try db.execute(
+            sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
+            arguments: [CatalogMigrationID.v041AddPhoneArchiveImport]
+        )
         try db.execute(sql: "DROP INDEX IF EXISTS asset_current_embedded_time_idx")
         try db.execute(sql: "DROP INDEX IF EXISTS asset_current_embedded_time_desc_idx")
         try db.execute(sql: "DROP INDEX IF EXISTS asset_current_file_modified_time_idx")
