@@ -563,6 +563,11 @@ final class LocalLibraryModel: ObservableObject {
         try await store.confirmSharedTagAlias(candidate)
     }
 
+    func confirmSharedCollectionAlias(_ candidate: LocalSharedCollectionAliasCandidate) async throws {
+        guard let store else { throw LocalFavoriteSourceError.storeUnavailable }
+        try await store.confirmSharedCollectionAlias(candidate)
+    }
+
     func resolveSharedCollectionConflict(
         _ operation: LocalSharedPendingOperation,
         resolution: LocalSharedCollectionConflictResolution
@@ -828,6 +833,7 @@ private struct LocalShareScopeView: View {
     @State private var statusMessage: String?
     @State private var archiveStatusMessage: String?
     @State private var tagAliasCandidate: LocalSharedTagAliasCandidate?
+    @State private var collectionAliasCandidate: LocalSharedCollectionAliasCandidate?
 
     var body: some View {
         List {
@@ -996,6 +1002,28 @@ private struct LocalShareScopeView: View {
                     }
                 }
             }
+            if let candidate = collectionAliasCandidate {
+                Section("核对相册身份") {
+                    Text("Mac 相册“\(candidate.remoteCollectionName)”（\(candidate.remoteCollectionID.uuidString.prefix(8))）与本机相册“\(candidate.localCollectionName)”（\(candidate.localCollectionID.uuidString.prefix(8))）名称相近，但身份不同。确认后，本机相册 ID 保留；此 Mac 的共享同步会使用已确认的对应关系。")
+                        .font(.footnote)
+                    Button("确认这两个相册是同一个") {
+                        Task {
+                            do {
+                                try await model.confirmSharedCollectionAlias(candidate)
+                                collectionAliasCandidate = nil
+                                statusMessage = "相册身份对应关系已保存。请再次同步，重取未提交的 Mac 变化页。"
+                            } catch {
+                                statusMessage = "相册身份已变化或已有共享记录；请重新同步核对。\(error.localizedDescription)"
+                                collectionAliasCandidate = nil
+                            }
+                        }
+                    }
+                    Button("暂不合并相册", role: .cancel) {
+                        collectionAliasCandidate = nil
+                        statusMessage = "相册身份未合并；Mac 变化页和 cursor 保持原状。"
+                    }
+                }
+            }
             Section {
                 Button(isSending ? "正在提交…" : "同步目录与整理信息到 Mac") {
                     Task {
@@ -1010,6 +1038,7 @@ private struct LocalShareScopeView: View {
                                     remoteModel: remoteModel
                                 )
                                 tagAliasCandidate = nil
+                                collectionAliasCandidate = nil
                                 let pull = result.pullSupported
                                     ? "Mac 标签回传 \(result.received) 项"
                                     : "当前 Mac 版本尚无标签回传"
@@ -1027,7 +1056,12 @@ private struct LocalShareScopeView: View {
                             } catch {
                                 if case LocalLibraryError.syncRemoteTagAliasRequired(let candidate) = error {
                                     tagAliasCandidate = candidate
+                                    collectionAliasCandidate = nil
                                     statusMessage = "Mac 已接收目录；回传标签需要你确认同名不同 ID 的身份。变化页和 cursor 均未提交。"
+                                } else if case LocalLibraryError.syncRemoteCollectionAliasRequired(let candidate) = error {
+                                    collectionAliasCandidate = candidate
+                                    tagAliasCandidate = nil
+                                    statusMessage = "Mac 已接收目录；回传相册需要你确认同名不同 ID 的身份。变化页和 cursor 均未提交。"
                                 } else if case LocalLibraryError.syncRemoteTagMismatch = error {
                                     statusMessage = "Mac 已接收目录，但回传标签与本机标签身份冲突。该变化页和 cursor 均未提交；请先核对同名不同 ID 或标签名称差异，当前版本不会自动合并。"
                                 } else if case LocalLibraryError.syncRemoteCollectionMismatch = error {
@@ -1383,6 +1417,14 @@ private enum LocalMigrationFactExporter {
                             localTagName: alias.localTagName,
                             remoteTagID: alias.remoteTagID,
                             remoteTagName: alias.remoteTagName
+                        )
+                    },
+                    collectionAliases: local.collectionAliases.map { alias in
+                        ImageAllMigrationCollectionAlias(
+                            localCollectionID: alias.localCollectionID,
+                            localCollectionName: alias.localCollectionName,
+                            remoteCollectionID: alias.remoteCollectionID,
+                            remoteCollectionName: alias.remoteCollectionName
                         )
                     },
                     archiveManifestSHA256: archiveManifestSHA256,

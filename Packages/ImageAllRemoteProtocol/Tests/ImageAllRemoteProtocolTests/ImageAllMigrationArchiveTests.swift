@@ -99,6 +99,40 @@ final class ImageAllMigrationArchiveTests: XCTestCase {
         }
     }
 
+    func testCheckpointCollectionAliasesRoundTripAndRejectAmbiguousIdentity() throws {
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("collection-alias-facts.imageallfacts")
+        let localID = UUID(), remoteID = UUID()
+        let item = ImageAllMigrationFactItem(
+            mediaID: UUID(), observedFavorite: false, favoriteTarget: nil,
+            tagDecisions: [],
+            collections: [.init(collectionID: localID, collectionName: "Café", included: true)]
+        )
+        let alias = ImageAllMigrationCollectionAlias(
+            localCollectionID: localID, localCollectionName: "Café",
+            remoteCollectionID: remoteID, remoteCollectionName: "Cafe\u{301}"
+        )
+        func snapshot(_ aliases: [ImageAllMigrationCollectionAlias]) -> ImageAllMigrationFactSnapshot {
+            .init(
+                sourceDeviceID: UUID(), sourceEpoch: UUID(),
+                scopeRevision: 1, snapshotSequence: 2, factWatermark: 1,
+                items: [item], syncCheckpoint: .init(
+                    hostID: UUID(), deviceID: UUID(),
+                    acknowledgedScopeRevision: 1, acknowledgedSnapshotSequence: 1,
+                    tagChangeCursor: 0, collectionChangeCursor: 0,
+                    favoriteChangeCursor: 0, collectionAliases: aliases
+                )
+            )
+        }
+        let valid = snapshot([alias])
+        try ImageAllMigrationFacts.write(valid, to: file)
+        XCTAssertEqual(try ImageAllMigrationFacts.read(at: file), valid)
+        XCTAssertThrowsError(try ImageAllMigrationFacts.write(snapshot([alias, alias]), to: file)) {
+            XCTAssertEqual($0 as? ImageAllMigrationFactsError, .invalidSnapshot)
+        }
+    }
+
     func testPublishedFactSidecarIsPartOfIndependentArchiveVerification() throws {
         let root = makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }

@@ -1004,28 +1004,62 @@ import Testing
             changes: [first, collision], nextCursor: 2
         )
         Issue.record("name collision must roll back the entire collection page")
-    } catch LocalLibraryError.syncRemoteCollectionMismatch {
+    } catch LocalLibraryError.syncRemoteCollectionAliasRequired(let candidate) {
         #expect(try await store.sharedCollectionChangeCursor() == 0)
         #expect(try await !store.collections().contains { $0.id == createdID })
         #expect(try await store.collections().contains { $0.id == existingID })
+        #expect(candidate.localCollectionID == existingID)
+        #expect(candidate.remoteCollectionID == collidingID)
+        try await store.confirmSharedCollectionAlias(candidate)
     }
     let received = try await store.applySharedCollectionChanges(
         hostID: hostID, deviceID: deviceID, sourceEpoch: snapshot.sourceEpoch,
         scopeRevision: snapshot.scopeRevision, afterCursor: 0,
-        changes: [first], nextCursor: 1
+        changes: [first, collision], nextCursor: 2
     )
-    #expect(received.applied == 1)
+    #expect(received.applied == 2)
     #expect(try await store.collections().contains {
         $0.id == createdID && $0.name == "Journey"
     })
-    #expect(try await store.memberships(assetID: asset.id) == [createdID])
+    #expect(Set(try await store.memberships(assetID: asset.id)) == [createdID, existingID])
     #expect(try await store.pendingSharedOperations().isEmpty)
     let reopened = try LocalLibraryStore(url: url)
-    try await reopened.setMembership(assetID: asset.id, collectionID: createdID, included: false)
+    let wire = try await reopened.prepareSharedSnapshot(visibleIdentifiers: ["shared"])
+    let wireCollections = try #require(wire.assets.first?.collections)
+    #expect(wireCollections.contains {
+        $0.collectionID == collidingID && $0.collectionName == "Cafe\u{301}"
+    })
+    try await reopened.acknowledgeSharedSnapshot(
+        wire, hostID: hostID, deviceID: deviceID, importedAssetIDs: []
+    )
+    let migration = try await reopened.migrationCompletionCheckpoint(
+        visibleIdentifiers: ["shared"]
+    )
+    #expect(migration.snapshot.assets.first?.collections.contains {
+        $0.collectionID == existingID && $0.collectionName == "Café"
+    } == true)
+    #expect(migration.checkpoint.collectionAliases == [.init(
+        localCollectionID: existingID, localCollectionName: "Café",
+        remoteCollectionID: collidingID, remoteCollectionName: "Cafe\u{301}"
+    )])
+    do {
+        _ = try await reopened.applySharedCollectionChanges(
+            hostID: hostID, deviceID: deviceID, sourceEpoch: snapshot.sourceEpoch,
+            scopeRevision: snapshot.scopeRevision, afterCursor: 2,
+            changes: [.init(
+                sequence: 3, assetID: asset.id, collectionID: UUID(),
+                collectionName: "Café", included: true, fieldRevision: 1
+            )], nextCursor: 3
+        )
+        Issue.record("one local collection must not acquire a second Mac identity")
+    } catch LocalLibraryError.syncRemoteCollectionMismatch {
+        #expect(try await reopened.sharedCollectionChangeCursor() == 2)
+    }
+    try await reopened.setMembership(assetID: asset.id, collectionID: existingID, included: false)
     let pending = try #require(await reopened.pendingSharedOperations().first)
     let prepared = try #require(await reopened.prepareSharedCollectionOperation(
         id: pending.id, hostID: hostID, deviceID: deviceID
     ))
-    #expect(prepared.collectionID == createdID)
+    #expect(prepared.collectionID == collidingID)
     #expect(prepared.baseRevision == 1)
 }

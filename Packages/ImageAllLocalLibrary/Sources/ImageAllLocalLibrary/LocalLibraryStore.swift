@@ -15,6 +15,7 @@ public enum LocalLibraryError: Error, Equatable {
     case syncRemoteTagMismatch
     case syncRemoteTagAliasRequired(LocalSharedTagAliasCandidate)
     case syncRemoteCollectionMismatch
+    case syncRemoteCollectionAliasRequired(LocalSharedCollectionAliasCandidate)
     case syncConflictDetailsUnavailable
     case migrationScopeIncomplete
     case migrationSyncPending
@@ -233,6 +234,37 @@ public struct LocalSharedCollectionChange: Sendable {
     }
 }
 
+public struct LocalSharedCollectionAliasCandidate: Equatable, Sendable {
+    public let hostID: UUID
+    public let deviceID: UUID
+    public let sourceEpoch: UUID
+    public let scopeRevision: Int64
+    public let afterCursor: Int64
+    public let assetID: UUID
+    public let remoteCollectionID: UUID
+    public let remoteCollectionName: String
+    public let localCollectionID: UUID
+    public let localCollectionName: String
+
+    init(
+        hostID: UUID, deviceID: UUID, sourceEpoch: UUID,
+        scopeRevision: Int64, afterCursor: Int64, assetID: UUID,
+        remoteCollectionID: UUID, remoteCollectionName: String,
+        localCollectionID: UUID, localCollectionName: String
+    ) {
+        self.hostID = hostID
+        self.deviceID = deviceID
+        self.sourceEpoch = sourceEpoch
+        self.scopeRevision = scopeRevision
+        self.afterCursor = afterCursor
+        self.assetID = assetID
+        self.remoteCollectionID = remoteCollectionID
+        self.remoteCollectionName = remoteCollectionName
+        self.localCollectionID = localCollectionID
+        self.localCollectionName = localCollectionName
+    }
+}
+
 public struct LocalSharedCollectionPullResult: Sendable {
     public let applied: Int
     public let conflicts: Int
@@ -286,6 +318,7 @@ public struct LocalMigrationSyncCheckpoint: Codable, Sendable, Equatable {
     public let favoriteChangeCursor: Int64
     /// Confirmed phone-local to Mac shared identities referenced by this fact snapshot.
     public let tagAliases: [LocalMigrationTagAlias]
+    public let collectionAliases: [LocalMigrationCollectionAlias]
 }
 
 public struct LocalMigrationTagAlias: Codable, Sendable, Equatable {
@@ -293,6 +326,13 @@ public struct LocalMigrationTagAlias: Codable, Sendable, Equatable {
     public let localTagName: String
     public let remoteTagID: UUID
     public let remoteTagName: String
+}
+
+public struct LocalMigrationCollectionAlias: Codable, Sendable, Equatable {
+    public let localCollectionID: UUID
+    public let localCollectionName: String
+    public let remoteCollectionID: UUID
+    public let remoteCollectionName: String
 }
 
 public struct LocalSharedAsset: Codable, Identifiable, Sendable, Equatable {
@@ -417,6 +457,16 @@ public actor LocalLibraryStore {
                   confirmed_time REAL NOT NULL,
                   PRIMARY KEY(host_id,device_id,source_epoch,remote_tag_id),
                   UNIQUE(host_id,device_id,source_epoch,local_tag_id)
+                );
+                CREATE TABLE IF NOT EXISTS shared_collection_aliases (
+                  host_id TEXT NOT NULL, device_id TEXT NOT NULL,
+                  source_epoch TEXT NOT NULL,
+                  remote_collection_id TEXT NOT NULL,
+                  local_collection_id TEXT NOT NULL REFERENCES collections(id),
+                  remote_name TEXT NOT NULL, local_name TEXT NOT NULL,
+                  confirmed_time REAL NOT NULL,
+                  PRIMARY KEY(host_id,device_id,source_epoch,remote_collection_id),
+                  UNIQUE(host_id,device_id,source_epoch,local_collection_id)
                 );
                 """
             let setup = schema + """
@@ -600,6 +650,26 @@ public actor LocalLibraryStore {
                         remoteTagID: remoteTagID, remoteTagName: remoteName
                     )
                 }
+            let referencedCollectionIDs = Set(snapshot.assets.flatMap {
+                $0.collections.map(\.collectionID)
+            })
+            let collectionAliases = try rows("""
+                SELECT local_collection_id,local_name,remote_collection_id,remote_name
+                FROM shared_collection_aliases
+                WHERE host_id=? AND device_id=? AND source_epoch=?
+                ORDER BY local_collection_id
+                """, [hostID.uuidString, deviceID.uuidString,
+                       snapshot.sourceEpoch.uuidString]).compactMap { row -> LocalMigrationCollectionAlias? in
+                    guard let localID = UUID(uuidString: row[0] ?? ""),
+                          referencedCollectionIDs.contains(localID),
+                          let localName = row[1],
+                          let remoteID = UUID(uuidString: row[2] ?? ""),
+                          let remoteName = row[3] else { return nil }
+                    return LocalMigrationCollectionAlias(
+                        localCollectionID: localID, localCollectionName: localName,
+                        remoteCollectionID: remoteID, remoteCollectionName: remoteName
+                    )
+                }
             let checkpoint = LocalMigrationSyncCheckpoint(
                 hostID: hostID, deviceID: deviceID,
                 acknowledgedScopeRevision: scope,
@@ -611,7 +681,7 @@ public actor LocalLibraryStore {
                 favoriteChangeCursor: Int64(
                     try requiredIdentity("sync_favorite_change_cursor")
                 ) ?? 0,
-                tagAliases: tagAliases
+                tagAliases: tagAliases, collectionAliases: collectionAliases
             )
             result = (snapshot, checkpoint)
         }
@@ -685,12 +755,20 @@ public actor LocalLibraryStore {
                     tagID: identity.id, tagName: identity.name, decision: tag.decision
                 )
             }
+            let collections = try asset.collections.map { collection in
+                let identity = try wireCollectionIdentity(
+                    for: collection.collectionID, localName: collection.collectionName
+                )
+                return LocalSharedCollectionMembership(
+                    collectionID: identity.id, collectionName: identity.name
+                )
+            }
             return LocalSharedAsset(
                 id: asset.id, localIdentifier: asset.localIdentifier,
                 kind: asset.kind, creationDate: asset.creationDate,
                 observedFavorite: asset.observedFavorite,
                 favoriteTarget: asset.favoriteTarget,
-                tagDecisions: tags, collections: asset.collections
+                tagDecisions: tags, collections: collections
             )
         }
         return LocalSharedSnapshot(
@@ -968,10 +1046,14 @@ public actor LocalLibraryStore {
                         """, [assetID.uuidString, "tag.\(localTagID.uuidString)"])
                 }
                 for collection in asset.collections {
+                    let localCollectionID = try localCollectionIdentity(
+                        for: collection.collectionID, remoteName: collection.collectionName,
+                        hostID: hostID, deviceID: deviceID, sourceEpoch: snapshot.sourceEpoch
+                    )
                     try execute("""
                         INSERT OR IGNORE INTO shared_field_versions(asset_id,field,revision)
                         VALUES(?,?,1)
-                        """, [assetID.uuidString, "collection.\(collection.collectionID.uuidString)"])
+                        """, [assetID.uuidString, "collection.\(localCollectionID.uuidString)"])
                 }
                 if asset.favoriteTarget != nil {
                     try execute("""
@@ -1093,6 +1175,9 @@ public actor LocalLibraryStore {
               pending.scopeRevision == (Int64(try requiredIdentity("sync_ack_scope_revision")) ?? -1) else {
             throw LocalLibraryError.syncScopeNotAcknowledged
         }
+        let wireCollection = try wireCollectionIdentity(
+            for: collectionID, localName: collectionName
+        )
         let earlier = try scalar("""
             SELECT MIN(o.sequence) FROM shared_outbox s
             JOIN outbox o ON o.operation_id=s.operation_id
@@ -1129,7 +1214,7 @@ public actor LocalLibraryStore {
         }
         return LocalPreparedSharedCollectionOperation(
             hostID: hostID, deviceID: deviceID, operation: pending,
-            collectionID: collectionID, collectionName: collectionName,
+            collectionID: wireCollection.id, collectionName: wireCollection.name,
             included: pending.value == "1", baseRevision: baseRevision,
             installID: try installID(), sourceEpoch: try sourceEpoch()
         )
@@ -1822,6 +1907,64 @@ public actor LocalLibraryStore {
         Int64(try requiredIdentity("sync_collection_change_cursor")) ?? 0
     }
 
+    /// The owner confirms one Mac collection as the same still-local-only
+    /// phone collection. This records identity only; the change page is retried.
+    public func confirmSharedCollectionAlias(
+        _ candidate: LocalSharedCollectionAliasCandidate
+    ) throws {
+        let field = "collection.\(candidate.localCollectionID.uuidString)"
+        guard candidate.remoteCollectionID != candidate.localCollectionID,
+              try requiredIdentity("sync_host_id") == candidate.hostID.uuidString,
+              try requiredIdentity("sync_device_id") == candidate.deviceID.uuidString,
+              try requiredIdentity("source_epoch") == candidate.sourceEpoch.uuidString,
+              Int64(try requiredIdentity("share_scope_revision")) == candidate.scopeRevision,
+              Int64(try requiredIdentity("sync_ack_scope_revision")) == candidate.scopeRevision,
+              try sharedCollectionChangeCursor() == candidate.afterCursor,
+              try isShared(assetID: candidate.assetID),
+              try scalar("SELECT name FROM collections WHERE id=?", [
+                  candidate.localCollectionID.uuidString
+              ]) == candidate.localCollectionName,
+              try scalar("SELECT id FROM collections WHERE id=?", [
+                  candidate.remoteCollectionID.uuidString
+              ]) == nil,
+              !candidate.remoteCollectionName.isEmpty,
+              Self.syncTagNameKey(candidate.remoteCollectionName)
+                  == Self.syncTagNameKey(candidate.localCollectionName),
+              try scalar("SELECT operation_id FROM shared_outbox WHERE field=? LIMIT 1", [field])
+                  == nil,
+              try scalar("SELECT asset_id FROM shared_field_versions WHERE field=? LIMIT 1", [field])
+                  == nil,
+              try scalar("SELECT payload FROM shared_snapshot_delivery WHERE id=1") == nil,
+              try collectionAliasRow(
+                  remoteCollectionID: candidate.remoteCollectionID,
+                  hostID: candidate.hostID, deviceID: candidate.deviceID,
+                  sourceEpoch: candidate.sourceEpoch
+              ) == nil,
+              try scalar("""
+                  SELECT remote_collection_id FROM shared_collection_aliases
+                  WHERE host_id=? AND device_id=? AND source_epoch=? AND local_collection_id=?
+                  """, [candidate.hostID.uuidString, candidate.deviceID.uuidString,
+                         candidate.sourceEpoch.uuidString,
+                         candidate.localCollectionID.uuidString]) == nil else {
+            throw LocalLibraryError.syncRemoteCollectionMismatch
+        }
+        try transaction {
+            try execute("""
+                INSERT INTO shared_collection_aliases(
+                  host_id,device_id,source_epoch,remote_collection_id,
+                  local_collection_id,remote_name,local_name,confirmed_time
+                ) VALUES(?,?,?,?,?,?,?,?)
+                """, [
+                    candidate.hostID.uuidString, candidate.deviceID.uuidString,
+                    candidate.sourceEpoch.uuidString,
+                    candidate.remoteCollectionID.uuidString,
+                    candidate.localCollectionID.uuidString,
+                    candidate.remoteCollectionName, candidate.localCollectionName,
+                    String(Date().timeIntervalSince1970)
+                ])
+        }
+    }
+
     /// A member change and its cursor commit together. A local pending operation is
     /// kept as an explicit conflict, and remote observation never echoes to Mac.
     public func applySharedCollectionChanges(
@@ -1842,6 +1985,45 @@ public actor LocalLibraryStore {
               zip(changes, changes.dropFirst()).allSatisfy({ $0.0.sequence < $0.1.sequence }) else {
             throw LocalLibraryError.syncIdentityChanged
         }
+        for change in changes {
+            guard try isShared(assetID: change.assetID) else {
+                throw LocalLibraryError.syncRemoteCollectionMismatch
+            }
+            if try scalar("SELECT id FROM collections WHERE id=?", [
+                change.collectionID.uuidString
+            ]) != nil { continue }
+            if try collectionAliasRow(
+                remoteCollectionID: change.collectionID, hostID: hostID,
+                deviceID: deviceID, sourceEpoch: sourceEpoch
+            ) != nil { continue }
+            let matching = try collections().filter {
+                Self.syncTagNameKey($0.name) == Self.syncTagNameKey(change.collectionName)
+            }
+            if matching.count == 1, let local = matching.first {
+                let field = "collection.\(local.id.uuidString)"
+                guard try scalar(
+                    "SELECT operation_id FROM shared_outbox WHERE field=? LIMIT 1", [field]
+                ) == nil,
+                      try scalar(
+                          "SELECT asset_id FROM shared_field_versions WHERE field=? LIMIT 1", [field]
+                      ) == nil,
+                      try scalar("""
+                          SELECT remote_collection_id FROM shared_collection_aliases
+                          WHERE host_id=? AND device_id=? AND source_epoch=? AND local_collection_id=?
+                          """, [hostID.uuidString, deviceID.uuidString,
+                                 sourceEpoch.uuidString, local.id.uuidString]) == nil else {
+                    throw LocalLibraryError.syncRemoteCollectionMismatch
+                }
+                throw LocalLibraryError.syncRemoteCollectionAliasRequired(.init(
+                    hostID: hostID, deviceID: deviceID, sourceEpoch: sourceEpoch,
+                    scopeRevision: scopeRevision, afterCursor: afterCursor,
+                    assetID: change.assetID,
+                    remoteCollectionID: change.collectionID,
+                    remoteCollectionName: change.collectionName,
+                    localCollectionID: local.id, localCollectionName: local.name
+                ))
+            }
+        }
         var applied = 0
         var conflicts = 0
         try transaction {
@@ -1849,15 +2031,20 @@ public actor LocalLibraryStore {
                 guard try isShared(assetID: change.assetID) else {
                     throw LocalLibraryError.syncRemoteCollectionMismatch
                 }
-                let field = "collection.\(change.collectionID.uuidString)"
+                let localCollectionID = try localCollectionIdentity(
+                    for: change.collectionID, remoteName: change.collectionName,
+                    hostID: hostID, deviceID: deviceID, sourceEpoch: sourceEpoch
+                )
+                let field = "collection.\(localCollectionID.uuidString)"
                 let value = change.included ? "1" : "0"
                 let baseline = Int64(try scalar("""
                     SELECT revision FROM shared_field_versions WHERE asset_id=? AND field=?
                     """, [change.assetID.uuidString, field]) ?? "0") ?? 0
                 if let localName = try scalar(
-                    "SELECT name FROM collections WHERE id=?", [change.collectionID.uuidString]
+                    "SELECT name FROM collections WHERE id=?", [localCollectionID.uuidString]
                 ) {
-                    guard localName == change.collectionName else {
+                    guard localCollectionID != change.collectionID
+                            || localName == change.collectionName else {
                         throw LocalLibraryError.syncRemoteCollectionMismatch
                     }
                 } else {
@@ -1916,13 +2103,13 @@ public actor LocalLibraryStore {
                 } else {
                     let current = try scalar("""
                         SELECT included FROM memberships WHERE asset_id=? AND collection_id=?
-                        """, [change.assetID.uuidString, change.collectionID.uuidString])
+                        """, [change.assetID.uuidString, localCollectionID.uuidString])
                     if current != value {
                         try execute("""
                             INSERT INTO memberships(collection_id,asset_id,included,revision)
                             VALUES(?,?,?,1) ON CONFLICT(collection_id,asset_id) DO UPDATE SET
                               included=excluded.included,revision=revision+1
-                            """, [change.collectionID.uuidString, change.assetID.uuidString, value])
+                            """, [localCollectionID.uuidString, change.assetID.uuidString, value])
                         _ = try enqueue(change.assetID, field: field, value: value)
                     }
                     applied += 1
@@ -2101,6 +2288,50 @@ public actor LocalLibraryStore {
         guard row[2] == localName, let remoteID = UUID(uuidString: row[0] ?? ""),
               let remoteName = row[1] else {
             throw LocalLibraryError.syncRemoteTagMismatch
+        }
+        return (remoteID, remoteName)
+    }
+
+    private func collectionAliasRow(
+        remoteCollectionID: UUID, hostID: UUID, deviceID: UUID, sourceEpoch: UUID
+    ) throws -> [String?]? {
+        try rows("""
+            SELECT local_collection_id,remote_name,local_name FROM shared_collection_aliases
+            WHERE host_id=? AND device_id=? AND source_epoch=? AND remote_collection_id=?
+            """, [hostID.uuidString, deviceID.uuidString,
+                   sourceEpoch.uuidString, remoteCollectionID.uuidString]).first
+    }
+
+    private func localCollectionIdentity(
+        for remoteCollectionID: UUID, remoteName: String,
+        hostID: UUID, deviceID: UUID, sourceEpoch: UUID
+    ) throws -> UUID {
+        guard let alias = try collectionAliasRow(
+            remoteCollectionID: remoteCollectionID, hostID: hostID,
+            deviceID: deviceID, sourceEpoch: sourceEpoch
+        ) else { return remoteCollectionID }
+        guard let localID = UUID(uuidString: alias[0] ?? ""),
+              alias[1] == remoteName,
+              try scalar("SELECT name FROM collections WHERE id=?", [localID.uuidString]) == alias[2]
+        else { throw LocalLibraryError.syncRemoteCollectionMismatch }
+        return localID
+    }
+
+    private func wireCollectionIdentity(
+        for localCollectionID: UUID, localName: String
+    ) throws -> (id: UUID, name: String) {
+        let host = try requiredIdentity("sync_host_id")
+        let device = try requiredIdentity("sync_device_id")
+        let epoch = try requiredIdentity("source_epoch")
+        guard !host.isEmpty, !device.isEmpty,
+              let row = try rows("""
+                  SELECT remote_collection_id,remote_name,local_name FROM shared_collection_aliases
+                  WHERE host_id=? AND device_id=? AND source_epoch=? AND local_collection_id=?
+                  """, [host, device, epoch, localCollectionID.uuidString]).first
+        else { return (localCollectionID, localName) }
+        guard row[2] == localName, let remoteID = UUID(uuidString: row[0] ?? ""),
+              let remoteName = row[1] else {
+            throw LocalLibraryError.syncRemoteCollectionMismatch
         }
         return (remoteID, remoteName)
     }

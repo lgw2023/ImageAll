@@ -42,6 +42,8 @@ public struct ImageAllMigrationSyncCheckpoint: Codable, Sendable, Equatable {
     public let favoriteChangeCursor: Int64
     /// Present in new checkpoints. Missing in older files means no aliases.
     public let tagAliases: [ImageAllMigrationTagAlias]?
+    /// Present in new checkpoints. Missing in older files means no aliases.
+    public let collectionAliases: [ImageAllMigrationCollectionAlias]?
     /// Digest of the immutable media manifest whose source resources were
     /// reread locally before this checkpoint was exported. Older candidates
     /// without this proof remain readable but cannot pass completion checks.
@@ -56,6 +58,7 @@ public struct ImageAllMigrationSyncCheckpoint: Codable, Sendable, Equatable {
         collectionChangeCursor: Int64,
         favoriteChangeCursor: Int64,
         tagAliases: [ImageAllMigrationTagAlias]? = nil,
+        collectionAliases: [ImageAllMigrationCollectionAlias]? = nil,
         archiveManifestSHA256: String? = nil,
         sourceVerifiedAtMs: Int64? = nil
     ) {
@@ -67,6 +70,7 @@ public struct ImageAllMigrationSyncCheckpoint: Codable, Sendable, Equatable {
         self.collectionChangeCursor = collectionChangeCursor
         self.favoriteChangeCursor = favoriteChangeCursor
         self.tagAliases = tagAliases
+        self.collectionAliases = collectionAliases
         self.archiveManifestSHA256 = archiveManifestSHA256
         self.sourceVerifiedAtMs = sourceVerifiedAtMs
     }
@@ -88,6 +92,25 @@ public struct ImageAllMigrationTagAlias: Codable, Sendable, Equatable {
         self.localTagName = localTagName
         self.remoteTagID = remoteTagID
         self.remoteTagName = remoteTagName
+    }
+}
+
+/// The phone retains its local collection identity in the archive while
+/// shared synchronization addresses the confirmed Mac collection identity.
+public struct ImageAllMigrationCollectionAlias: Codable, Sendable, Equatable {
+    public let localCollectionID: UUID
+    public let localCollectionName: String
+    public let remoteCollectionID: UUID
+    public let remoteCollectionName: String
+
+    public init(
+        localCollectionID: UUID, localCollectionName: String,
+        remoteCollectionID: UUID, remoteCollectionName: String
+    ) {
+        self.localCollectionID = localCollectionID
+        self.localCollectionName = localCollectionName
+        self.remoteCollectionID = remoteCollectionID
+        self.remoteCollectionName = remoteCollectionName
     }
 }
 
@@ -259,6 +282,7 @@ public enum ImageAllMigrationFacts {
         }
         if let checkpoint = snapshot.syncCheckpoint {
             let aliases = checkpoint.tagAliases ?? []
+            let collectionAliases = checkpoint.collectionAliases ?? []
             guard checkpoint.acknowledgedScopeRevision == snapshot.scopeRevision,
                   checkpoint.acknowledgedSnapshotSequence > 0,
                   checkpoint.acknowledgedSnapshotSequence <= snapshot.snapshotSequence,
@@ -276,6 +300,12 @@ public enum ImageAllMigrationFacts {
                   aliases.allSatisfy({
                       $0.localTagID != $0.remoteTagID &&
                       !$0.localTagName.isEmpty && !$0.remoteTagName.isEmpty
+                  }),
+                  Set(collectionAliases.map(\.localCollectionID)).count == collectionAliases.count,
+                  Set(collectionAliases.map(\.remoteCollectionID)).count == collectionAliases.count,
+                  collectionAliases.allSatisfy({
+                      $0.localCollectionID != $0.remoteCollectionID &&
+                      !$0.localCollectionName.isEmpty && !$0.remoteCollectionName.isEmpty
                   }) else {
                 throw ImageAllMigrationFactsError.invalidSnapshot
             }

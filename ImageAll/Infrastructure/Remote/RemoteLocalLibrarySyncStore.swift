@@ -410,6 +410,33 @@ actor RemoteLocalLibrarySyncStore {
             aliasesByLocal[$0]?.remoteTagID ?? $0
         }
         guard Set(resolvedTagIDs).count == resolvedTagIDs.count else { return false }
+        let collectionAliases = checkpoint.collectionAliases ?? []
+        var localCollectionNames: [UUID: String] = [:]
+        for fact in snapshot.items {
+            for collection in fact.collections {
+                if let earlier = localCollectionNames[collection.collectionID],
+                   earlier != collection.collectionName {
+                    return false
+                }
+                localCollectionNames[collection.collectionID] = collection.collectionName
+            }
+        }
+        guard Set(collectionAliases.map(\.localCollectionID)).count == collectionAliases.count,
+              Set(collectionAliases.map(\.remoteCollectionID)).count == collectionAliases.count,
+              collectionAliases.allSatisfy({
+                  $0.localCollectionID != $0.remoteCollectionID &&
+                  localCollectionNames[$0.localCollectionID] == $0.localCollectionName &&
+                  Self.sameCollectionIdentityName(
+                      $0.localCollectionName, $0.remoteCollectionName
+                  )
+              }) else { return false }
+        let collectionAliasesByLocal = Dictionary(uniqueKeysWithValues: collectionAliases.map {
+            ($0.localCollectionID, $0)
+        })
+        let resolvedCollectionIDs = localCollectionNames.keys.map {
+            collectionAliasesByLocal[$0]?.remoteCollectionID ?? $0
+        }
+        guard Set(resolvedCollectionIDs).count == resolvedCollectionIDs.count else { return false }
         for projected in view.assets {
             let asset = projected.asset
             guard let fact = factsByID[asset.id],
@@ -435,13 +462,22 @@ actor RemoteLocalLibrarySyncStore {
                 $0.assetID == asset.id && $0.included
             }
             let expectedIncluded = fact.collections.filter(\.included)
-            guard included.count == expectedIncluded.count else { return false }
+            guard included.count == expectedIncluded.count,
+                  Set(included.map(\.collectionID)).count == included.count else { return false }
             let collectionsByID = Dictionary(uniqueKeysWithValues: included.map {
                 ($0.collectionID, $0)
             })
+            let expectedCollectionIDs = Set(expectedIncluded.map {
+                collectionAliasesByLocal[$0.collectionID]?.remoteCollectionID ?? $0.collectionID
+            })
+            guard expectedCollectionIDs.count == expectedIncluded.count,
+                  expectedCollectionIDs == Set(collectionsByID.keys) else { return false }
             for expected in expectedIncluded {
-                guard let actual = collectionsByID[expected.collectionID],
-                      actual.collectionName == expected.collectionName else { return false }
+                let alias = collectionAliasesByLocal[expected.collectionID]
+                let remoteID = alias?.remoteCollectionID ?? expected.collectionID
+                let remoteName = alias?.remoteCollectionName ?? expected.collectionName
+                guard let actual = collectionsByID[remoteID],
+                      actual.collectionName == remoteName else { return false }
             }
             let targets = view.sharedFavoriteFacts.filter { $0.assetID == asset.id }
             guard targets.count <= 1,
