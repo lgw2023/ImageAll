@@ -153,8 +153,8 @@ final class TimeStoryWorkspaceModel: ObservableObject {
         guard !isInputLocked else { return }
         guard var current = project else { return }
         current.styleTemplate = .init(template: template, lines: current.styleTemplate?.lines ?? current.shots.map { shot in
-            if let title = current.chapters.first(where: { $0.id == shot.chapterID })?.title,
-               current.showsChapterTitles != false { return title }
+            if let chapter = current.chapters.first(where: { $0.id == shot.chapterID }),
+               current.rendersChapterTitle(chapter) { return chapter.title }
             return shot.caption
         }, shotIDs: current.shots.map(\.id))
         current.styleReceipt = nil
@@ -1805,6 +1805,12 @@ struct TimeStoryWorkspaceView: View {
             }
             Toggle("显示片头", isOn: Binding(get: { model.project?.showsProjectTitle ?? true }, set: { model.setTitleCards(projectTitle: $0) }))
             Toggle("显示章节卡", isOn: Binding(get: { model.project?.showsChapterTitles ?? true }, set: { model.setTitleCards(chapters: $0) }))
+            if project.isFreeform == true && project.chapters.contains(where: {
+                $0.title.trimmingCharacters(in: .whitespacesAndNewlines) == "我的编排"
+            }) {
+                Text("“我的编排”是编辑占位名，不会生成章节卡；改成正式章节名后才会显示。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Divider()
             StoryTypographyEditor(value: project.resolvedTypography, onChange: model.setTypography)
                 .disabled(model.isInputLocked)

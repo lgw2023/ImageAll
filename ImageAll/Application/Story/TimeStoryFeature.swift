@@ -210,6 +210,12 @@ struct TimeStoryProject: Codable, Sendable, Equatable, Identifiable {
     var typography: StoryTypography? = nil
     var resolvedTypography: StoryTypography { typography ?? StoryTypography() }
 
+    func rendersChapterTitle(_ chapter: TimeStoryChapter) -> Bool {
+        guard showsChapterTitles ?? true else { return false }
+        // Freeform's initial chapter name is an editor placeholder, not story copy.
+        return !(isFreeform == true && chapter.title.trimmingCharacters(in: .whitespacesAndNewlines) == "我的编排")
+    }
+
     var timelineDurationSeconds: Double {
         (try? TimeStoryTimeline.normalize(project: self).durationSeconds) ?? 0
     }
@@ -387,7 +393,7 @@ enum TimeStoryTimeline {
             guard !chapterTitle.isEmpty else {
                 throw TimeStoryError.invalidTimeline("章节标题不能为空")
             }
-            if project.showsChapterTitles ?? true {
+            if project.rendersChapterTitle(chapter) {
             drafts.append((
                 .chapterTitle,
                 TimeStoryStableID.uuid("render-chapter|\(project.id.uuidString.lowercased())|\(chapter.id.uuidString.lowercased())"),

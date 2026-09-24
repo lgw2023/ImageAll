@@ -1686,6 +1686,9 @@ final class TimeStoryFeatureTests: XCTestCase {
         XCTAssertEqual(plain.segments.count, 30)
         project.showsProjectTitle = true
         project.showsChapterTitles = true
+        XCTAssertEqual(Array(try TimeStoryTimeline.normalize(project: project).segments.map(\.kind).prefix(2)), [.projectTitle, .photo])
+        XCTAssertEqual(try TimeStoryTimeline.normalize(project: project).segments.count, 31)
+        project.chapters[0].title = "音乐节现场"
         XCTAssertEqual(try TimeStoryTimeline.normalize(project: project).segments.count, 32)
         let store = TimeStoryProjectStore(applicationSupportDirectory: try temporaryDirectory("freeform"))
         try store.save(project)
