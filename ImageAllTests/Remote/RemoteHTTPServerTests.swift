@@ -669,6 +669,43 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(persisted?.sharedCollectionFacts.first(where: { $0.assetID == secondID })?.included, true)
     }
 
+    func testSnapshotReceiptLookupSurvivesHostRestart() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("sync.json")
+        let hostID = UUID(), deviceID = UUID(), assetID = UUID()
+        let snapshot = RemoteLocalLibrarySnapshotRequest(
+            hostID: hostID, installID: UUID(), sourceEpoch: UUID(),
+            scopeRevision: 1, snapshotSequence: 1,
+            selectedAssetIDs: [assetID], assets: [.init(
+                id: assetID, localIdentifier: "old-visible-locator", mediaKind: .image,
+                createdAtMs: nil, observedFavorite: false, favoriteTarget: nil,
+                tagDecisions: [], collections: []
+            )]
+        )
+        let store = try RemoteLocalLibrarySyncStore(hostID: hostID, storageURL: url)
+        let before = try await store.lookupSnapshotReceipt(
+            .init(request: snapshot), authenticatedDeviceID: deviceID
+        )
+        XCTAssertNil(before.receipt)
+        _ = try await store.submit(snapshot, authenticatedDeviceID: deviceID)
+        let reopened = try RemoteLocalLibrarySyncStore(hostID: hostID, storageURL: url)
+        let recovered = try await reopened.lookupSnapshotReceipt(
+            .init(request: snapshot), authenticatedDeviceID: deviceID
+        )
+        XCTAssertEqual(recovered.receipt?.importedAssetIDs, [assetID])
+        XCTAssertEqual(recovered.receipt?.replayed, true)
+        let hidden = RemoteLocalLibrarySnapshotRequest(
+            hostID: hostID, installID: snapshot.installID,
+            sourceEpoch: snapshot.sourceEpoch, scopeRevision: 1,
+            snapshotSequence: 2, selectedAssetIDs: [assetID], assets: []
+        )
+        let unaccepted = try await reopened.lookupSnapshotReceipt(
+            .init(request: hidden), authenticatedDeviceID: deviceID
+        )
+        XCTAssertNil(unaccepted.receipt)
+    }
+
     func testMacCreatesSharedPhoneCollectionWithStableIdentityAndChange() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -1289,6 +1326,44 @@ final class RemoteHTTPServerTests: XCTestCase {
         )
         XCTAssertEqual(receipt.deviceID, tokens.deviceID)
         XCTAssertEqual(receipt.acceptedAssetCount, 1)
+        let lookup = try RemoteLocalLibrarySnapshotReceiptLookup(request: snapshot)
+        func lookupRequest(_ candidate: RemoteLocalLibrarySnapshotReceiptLookup,
+                           authorization: String?) throws -> URLRequest {
+            var request = URLRequest(url: URL(string:
+                "http://127.0.0.1:\(port)\(RemoteHTTPPaths.localLibrarySnapshotReceipt)"
+            )!)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            if let authorization {
+                request.setValue(authorization, forHTTPHeaderField: "Authorization")
+            }
+            request.httpBody = try JSONEncoder().encode(candidate)
+            return request
+        }
+        let (lookupData, lookupResponse) = try await URLSession.shared.data(for: lookupRequest(
+            lookup, authorization: "Bearer \(tokens.accessToken)"
+        ))
+        XCTAssertEqual(try XCTUnwrap(lookupResponse as? HTTPURLResponse).statusCode, 200)
+        let found = try JSONDecoder().decode(
+            RemoteLocalLibrarySnapshotReceiptLookupResult.self, from: lookupData
+        )
+        XCTAssertEqual(found.receipt?.importedAssetIDs, [assetID])
+        XCTAssertEqual(found.receipt?.replayed, true)
+        let (unpairedLookupData, unpairedLookupResponse) = try await URLSession.shared.data(
+            for: lookupRequest(lookup, authorization: nil)
+        )
+        XCTAssertEqual(try XCTUnwrap(unpairedLookupResponse as? HTTPURLResponse).statusCode, 401)
+        XCTAssertFalse(unpairedLookupData.isEmpty)
+        let different = RemoteLocalLibrarySnapshotRequest(
+            hostID: hostID, installID: snapshot.installID,
+            sourceEpoch: snapshot.sourceEpoch, scopeRevision: 1,
+            snapshotSequence: 1, selectedAssetIDs: [assetID], assets: []
+        )
+        let (_, mismatchedLookupResponse) = try await URLSession.shared.data(
+            for: lookupRequest(try .init(request: different),
+                               authorization: "Bearer \(tokens.accessToken)")
+        )
+        XCTAssertEqual(try XCTUnwrap(mismatchedLookupResponse as? HTTPURLResponse).statusCode, 409)
         var capabilitiesRequest = URLRequest(url: URL(string:
             "http://127.0.0.1:\(port)\(RemoteHTTPPaths.capabilities)"
         )!)

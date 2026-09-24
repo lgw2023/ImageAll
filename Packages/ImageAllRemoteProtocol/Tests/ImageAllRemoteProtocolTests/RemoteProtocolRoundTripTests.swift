@@ -151,6 +151,15 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
         XCTAssertEqual(decoded.selectedAssetIDs.count, 2)
         XCTAssertEqual(decoded.assets.count, 1)
         XCTAssertEqual(RemoteHTTPPaths.localLibrarySnapshot, "/v1/sync/local-library/snapshot")
+        let lookup = try RemoteLocalLibrarySnapshotReceiptLookup(request: request)
+        let lookupData = try JSONEncoder().encode(lookup)
+        XCTAssertEqual(try JSONDecoder().decode(
+            RemoteLocalLibrarySnapshotReceiptLookup.self, from: lookupData
+        ), lookup)
+        XCTAssertFalse(String(decoding: lookupData, as: UTF8.self).contains("source-local-locator"))
+        XCTAssertEqual(lookup.requestSHA256.count, 64)
+        XCTAssertEqual(RemoteHTTPPaths.localLibrarySnapshotReceipt,
+                       "/v1/sync/local-library/snapshot-receipt")
         XCTAssertFalse(RemoteCapabilities(hostAppVersion: "old").capabilities.contains(.localLibrarySnapshot))
     }
 

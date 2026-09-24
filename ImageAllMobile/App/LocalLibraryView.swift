@@ -166,17 +166,49 @@ final class LocalLibraryModel: ObservableObject {
         }
     }
 
-    func prepareSharedSnapshot() async throws -> LocalSharedSnapshot {
-        try await makeSharedSnapshot(forMigrationFacts: false)
+    func prepareSharedSnapshotRecoveringReceipt(
+        from remoteModel: RemoteCompanionModel
+    ) async throws -> LocalSharedSnapshot {
+        guard let store else { throw LocalFavoriteSourceError.storeUnavailable }
+        var legacyPending: LocalSharedSnapshot?
+        if let pending = try await store.pendingSharedSnapshot() {
+            let lookup = try await remoteModel.lookupLocalLibrarySnapshotReceipt(pending)
+            if let receipt = lookup.receipt {
+                guard let importedIDs = receipt.importedAssetIDs else {
+                    throw LocalLibraryError.syncIdentityChanged
+                }
+                try await store.acknowledgeSharedSnapshot(
+                    pending, hostID: receipt.hostID, deviceID: receipt.deviceID,
+                    importedAssetIDs: importedIDs
+                )
+            } else if !lookup.supported {
+                legacyPending = pending
+            }
+        }
+        // Permission may change while the receipt query is in flight.
+        let currentVisible = try await observedSharedVisibleIdentifiers()
+        if let legacyPending {
+            let current = try await store.sharedSnapshot(visibleIdentifiers: currentVisible)
+            guard legacyPending.installID == current.installID,
+                  legacyPending.sourceEpoch == current.sourceEpoch,
+                  legacyPending.scopeRevision == current.scopeRevision,
+                  legacyPending.selectedAssetIDs == current.selectedAssetIDs,
+                  Set(legacyPending.assets.map(\.id)) == Set(current.assets.map(\.id)) else {
+                throw RemoteAPIError(
+                    code: .conflict,
+                    message: "Mac 版本不支持查询丢失的快照回执；当前权限或分享范围已变化，请先升级 Mac 后重试"
+                )
+            }
+        }
+        return try await store.prepareSharedSnapshot(
+            visibleIdentifiers: currentVisible
+        )
     }
 
-    private func makeSharedSnapshot(forMigrationFacts: Bool) async throws -> LocalSharedSnapshot {
+    private func makeMigrationFactSnapshot() async throws -> LocalSharedSnapshot {
         guard let store else { throw LocalFavoriteSourceError.storeUnavailable }
         let identifiers = try await observedSharedVisibleIdentifiers()
-        if forMigrationFacts {
-            return try await store.migrationFactSnapshot(visibleIdentifiers: identifiers)
-        }
-        return try await store.prepareSharedSnapshot(visibleIdentifiers: identifiers)
+        return try await store.migrationFactSnapshot(visibleIdentifiers: identifiers)
     }
 
     private func observedSharedVisibleIdentifiers() async throws -> Set<String> {
@@ -207,7 +239,7 @@ final class LocalLibraryModel: ObservableObject {
     /// An explicit, local-only export of the current selected scope. A reduced
     /// Photos permission must never silently turn this into a smaller archive.
     func exportSelectedArchive() async throws -> (URL, ImageAllMigrationVerification) {
-        let snapshot = try await makeSharedSnapshot(forMigrationFacts: true)
+        let snapshot = try await makeMigrationFactSnapshot()
         guard !snapshot.selectedAssetIDs.isEmpty else {
             throw LocalArchiveExportError.emptySelection
         }
@@ -216,7 +248,7 @@ final class LocalLibraryModel: ObservableObject {
         }
         let result = try await LocalPhotoArchiveExporter.export(snapshot: snapshot)
         do {
-            let current = try await makeSharedSnapshot(forMigrationFacts: true)
+            let current = try await makeMigrationFactSnapshot()
             guard current.sourceEpoch == snapshot.sourceEpoch,
                   current.scopeRevision == snapshot.scopeRevision,
                   Set(current.selectedAssetIDs) == Set(snapshot.selectedAssetIDs),
@@ -231,7 +263,7 @@ final class LocalLibraryModel: ObservableObject {
     }
 
     func exportSelectedFacts() async throws -> URL {
-        let snapshot = try await makeSharedSnapshot(forMigrationFacts: true)
+        let snapshot = try await makeMigrationFactSnapshot()
         guard !snapshot.selectedAssetIDs.isEmpty else {
             throw LocalArchiveExportError.emptySelection
         }
@@ -1030,7 +1062,9 @@ private struct LocalShareScopeView: View {
                         isSending = true
                         defer { isSending = false }
                         do {
-                            let snapshot = try await model.prepareSharedSnapshot()
+                            let snapshot = try await model.prepareSharedSnapshotRecoveringReceipt(
+                                from: remoteModel
+                            )
                             let receipt = try await remoteModel.submitLocalLibrarySnapshot(snapshot)
                             do {
                                 let result = try await model.completeSharedSync(

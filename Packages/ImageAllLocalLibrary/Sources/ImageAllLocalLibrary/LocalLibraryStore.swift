@@ -293,7 +293,7 @@ public struct LocalSharedFavoritePullResult: Sendable {
 
 /// A directory and human-fact projection for assets the owner explicitly selected.
 /// It contains no media bytes, thumbnail, GPS, or unreferenced tag/collection names.
-public struct LocalSharedSnapshot: Codable, Sendable {
+public struct LocalSharedSnapshot: Codable, Sendable, Equatable {
     public let installID: UUID
     public let sourceEpoch: UUID
     public let scopeRevision: Int64
@@ -547,6 +547,13 @@ public actor LocalLibraryStore {
                     creationDate: row[3].flatMap(Double.init).map(Date.init(timeIntervalSince1970:))
                 )
             }
+    }
+
+    /// Reads the frozen request for a digest-only receipt lookup after ACK loss.
+    public func pendingSharedSnapshot() throws -> LocalSharedSnapshot? {
+        guard let encoded = try scalar("SELECT payload FROM shared_snapshot_delivery WHERE id=1"),
+              let payload = encoded.data(using: .utf8) else { return nil }
+        return try JSONDecoder().decode(LocalSharedSnapshot.self, from: payload)
     }
 
     /// Persists the exact payload before network I/O so a lost ACK can replay the same sequence.

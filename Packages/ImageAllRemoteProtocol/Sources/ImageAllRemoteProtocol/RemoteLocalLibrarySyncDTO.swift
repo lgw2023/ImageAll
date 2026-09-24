@@ -1,7 +1,9 @@
+import CryptoKit
 import Foundation
 
 public extension RemoteHTTPPaths {
     static let localLibrarySnapshot = "/v1/sync/local-library/snapshot"
+    static let localLibrarySnapshotReceipt = "/v1/sync/local-library/snapshot-receipt"
     static let localLibraryTagDecision = "/v1/sync/local-library/tag-decision"
     static let localLibraryTagChanges = "/v1/sync/local-library/tag-changes"
     static let localLibraryCollectionMembership = "/v1/sync/local-library/collection-membership"
@@ -264,6 +266,43 @@ public struct RemoteLocalLibrarySnapshotReceipt: Codable, Sendable, Equatable {
         self.acceptedAssetCount = acceptedAssetCount
         self.replayed = replayed
         self.importedAssetIDs = importedAssetIDs
+    }
+}
+
+/// Queries only the receipt for the exact frozen request. The request contains
+/// no previously visible asset metadata, so it remains safe after permission shrinks.
+public struct RemoteLocalLibrarySnapshotReceiptLookup: Codable, Sendable, Equatable {
+    public let hostID: UUID
+    public let installID: UUID
+    public let sourceEpoch: UUID
+    public let scopeRevision: Int64
+    public let snapshotSequence: Int64
+    public let requestSHA256: String
+
+    public init(request: RemoteLocalLibrarySnapshotRequest) throws {
+        hostID = request.hostID
+        installID = request.installID
+        sourceEpoch = request.sourceEpoch
+        scopeRevision = request.scopeRevision
+        snapshotSequence = request.snapshotSequence
+        requestSHA256 = try request.canonicalSHA256()
+    }
+}
+
+public struct RemoteLocalLibrarySnapshotReceiptLookupResult: Codable, Sendable, Equatable {
+    public let receipt: RemoteLocalLibrarySnapshotReceipt?
+
+    public init(receipt: RemoteLocalLibrarySnapshotReceipt?) {
+        self.receipt = receipt
+    }
+}
+
+public extension RemoteLocalLibrarySnapshotRequest {
+    func canonicalSHA256() throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return Data(SHA256.hash(data: try encoder.encode(self)))
+            .map { String(format: "%02x", $0) }.joined()
     }
 }
 

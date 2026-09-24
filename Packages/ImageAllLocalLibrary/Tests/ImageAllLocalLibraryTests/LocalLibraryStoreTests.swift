@@ -299,12 +299,14 @@ import Testing
 
     let firstAttempt = try await store.prepareSharedSnapshot(visibleIdentifiers: ["selected"])
     #expect(firstAttempt.snapshotSequence == 1)
+    #expect(try await store.pendingSharedSnapshot() == firstAttempt)
     let secondAttempt = try await store.prepareSharedSnapshot(visibleIdentifiers: [])
     #expect(secondAttempt.snapshotSequence == 2)
     #expect(secondAttempt.assets.isEmpty)
     #expect(secondAttempt.selectedAssetIDs == [selected.id])
 
     let reopened = try LocalLibraryStore(url: url)
+    #expect(try await reopened.pendingSharedSnapshot() == secondAttempt)
     #expect(try await reopened.isShared(assetID: selected.id))
     #expect(try await reopened.prepareSharedSnapshot(visibleIdentifiers: []).snapshotSequence == 2)
     #expect(try await reopened.sharedSnapshot(visibleIdentifiers: []).assets.isEmpty)
@@ -347,6 +349,35 @@ import Testing
     let fresh = try await reopened.prepareSharedSnapshot(visibleIdentifiers: ["selected"])
     #expect(fresh.snapshotSequence == facts.snapshotSequence + 1)
     #expect(fresh.assets.first?.tagDecisions.first?.decision == .rejected)
+}
+
+@Test func lostSnapshotReceiptCanBeAppliedAfterVisibilityContracts() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("local.sqlite")
+    let store = try LocalLibraryStore(url: url)
+    try await store.observe([.init(
+        localIdentifier: "selected", kind: "image", creationDate: nil, isFavorite: false
+    )])
+    let asset = try #require(await store.assets(visibleIdentifiers: ["selected"]).first)
+    let tagID = try await store.createTag(name: "shared")
+    try await store.setShared(assetID: asset.id, shared: true)
+    try await store.setDecision(assetID: asset.id, tagID: tagID, decision: .accepted)
+    let submitted = try await store.prepareSharedSnapshot(visibleIdentifiers: ["selected"])
+    let reopened = try LocalLibraryStore(url: url)
+    let frozen = try #require(await reopened.pendingSharedSnapshot())
+    #expect(frozen == submitted)
+    #expect(try await reopened.sharedSnapshot(visibleIdentifiers: []).assets.isEmpty)
+    try await reopened.acknowledgeSharedSnapshot(
+        frozen, hostID: UUID(), deviceID: UUID(), importedAssetIDs: [asset.id]
+    )
+    #expect(try await reopened.pendingSharedSnapshot() == nil)
+    #expect(try await reopened.pendingSharedOperations().isEmpty)
+    let hidden = try await reopened.prepareSharedSnapshot(visibleIdentifiers: [])
+    #expect(hidden.snapshotSequence > submitted.snapshotSequence)
+    #expect(hidden.assets.isEmpty)
+    #expect(hidden.selectedAssetIDs == [asset.id])
+    #expect(try await reopened.decisions(assetID: asset.id)[tagID] == .accepted)
 }
 
 @Test func sharedOutboxContainsOnlyExplicitlySharedAssetEditsAndSurvivesRestart() async throws {

@@ -528,8 +528,59 @@ final class RemoteCompanionModel: ObservableObject {
                 message: "请先以配对设备连接支持本机图库同步的 Mac"
             )
         }
-        let request = RemoteLocalLibrarySnapshotRequest(
-            hostID: sessionTokens.hostID,
+        let request = Self.localLibraryRequest(snapshot, hostID: sessionTokens.hostID)
+        guard try JSONEncoder().encode(request).count <= 200 * 1_024 else {
+            throw RemoteAPIError(
+                code: .badRequest,
+                message: "待分享目录超过当前单次提交大小，请缩小选择范围"
+            )
+        }
+        let receipt = try await client.submitLocalLibrarySnapshot(request)
+        guard receipt.hostID == sessionTokens.hostID,
+              receipt.deviceID == sessionTokens.deviceID,
+              receipt.sourceEpoch == snapshot.sourceEpoch,
+              receipt.snapshotSequence == snapshot.snapshotSequence else {
+            throw RemoteAPIError(code: .conflict, message: "Mac 回执身份与本次提交不一致")
+        }
+        return receipt
+    }
+
+    /// A missing receipt means the exact frozen request was not committed.
+    /// A 404 means this Host predates the lookup route.
+    func lookupLocalLibrarySnapshotReceipt(
+        _ snapshot: LocalSharedSnapshot
+    ) async throws -> (supported: Bool, receipt: RemoteLocalLibrarySnapshotReceipt?) {
+        guard isConnected, let client, let sessionTokens,
+              let capabilities,
+              capabilities.capabilities.contains(.localLibrarySnapshot),
+              capabilities.hostID == sessionTokens.hostID else {
+            throw RemoteAPIError(code: .unauthorized, message: "请先连接已配对的 Mac")
+        }
+        let request = Self.localLibraryRequest(snapshot, hostID: sessionTokens.hostID)
+        let lookup = try RemoteLocalLibrarySnapshotReceiptLookup(request: request)
+        let result: RemoteLocalLibrarySnapshotReceiptLookupResult
+        do {
+            result = try await client.lookupLocalLibrarySnapshotReceipt(lookup)
+        } catch let error as RemoteAPIError where error.code == .notFound {
+            return (false, nil)
+        }
+        if let receipt = result.receipt {
+            guard receipt.hostID == sessionTokens.hostID,
+                  receipt.deviceID == sessionTokens.deviceID,
+                  receipt.sourceEpoch == snapshot.sourceEpoch,
+                  receipt.snapshotSequence == snapshot.snapshotSequence,
+                  receipt.importedAssetIDs != nil else {
+                throw RemoteAPIError(code: .conflict, message: "Mac 的旧快照回执身份不一致")
+            }
+        }
+        return (true, result.receipt)
+    }
+
+    private static func localLibraryRequest(
+        _ snapshot: LocalSharedSnapshot, hostID: UUID
+    ) -> RemoteLocalLibrarySnapshotRequest {
+        RemoteLocalLibrarySnapshotRequest(
+            hostID: hostID,
             installID: snapshot.installID,
             sourceEpoch: snapshot.sourceEpoch,
             scopeRevision: snapshot.scopeRevision,
@@ -562,20 +613,6 @@ final class RemoteCompanionModel: ObservableObject {
                 )
             }
         )
-        guard try JSONEncoder().encode(request).count <= 200 * 1_024 else {
-            throw RemoteAPIError(
-                code: .badRequest,
-                message: "待分享目录超过当前单次提交大小，请缩小选择范围"
-            )
-        }
-        let receipt = try await client.submitLocalLibrarySnapshot(request)
-        guard receipt.hostID == sessionTokens.hostID,
-              receipt.deviceID == sessionTokens.deviceID,
-              receipt.sourceEpoch == snapshot.sourceEpoch,
-              receipt.snapshotSequence == snapshot.snapshotSequence else {
-            throw RemoteAPIError(code: .conflict, message: "Mac 回执身份与本次提交不一致")
-        }
-        return receipt
     }
 
     func uploadMigrationArchive(

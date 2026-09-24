@@ -328,6 +328,37 @@ actor RemoteLocalLibrarySyncStore {
         return receipt(for: record, replayed: false)
     }
 
+    /// Looks up only the current exact request. It cannot replay an old asset
+    /// payload after PhotoKit permission has contracted.
+    func lookupSnapshotReceipt(
+        _ lookup: RemoteLocalLibrarySnapshotReceiptLookup,
+        authenticatedDeviceID: UUID
+    ) throws -> RemoteLocalLibrarySnapshotReceiptLookupResult {
+        guard lookup.hostID == hostID,
+              lookup.snapshotSequence > 0,
+              lookup.scopeRevision >= 0,
+              lookup.requestSHA256.count == 64,
+              lookup.requestSHA256.allSatisfy({ $0.isHexDigit }) else {
+            throw RemoteAPIError(code: .badRequest, message: "invalid snapshot receipt lookup")
+        }
+        guard let record = records[authenticatedDeviceID] else {
+            return .init(receipt: nil)
+        }
+        guard record.request.installID == lookup.installID,
+              record.request.sourceEpoch == lookup.sourceEpoch else {
+            throw RemoteAPIError(code: .conflict, message: "source identity changed; rebind required")
+        }
+        if record.request.snapshotSequence < lookup.snapshotSequence {
+            return .init(receipt: nil)
+        }
+        guard record.request.snapshotSequence == lookup.snapshotSequence,
+              record.request.scopeRevision == lookup.scopeRevision,
+              try record.request.canonicalSHA256() == lookup.requestSHA256 else {
+            throw RemoteAPIError(code: .conflict, message: "snapshot receipt no longer matches")
+        }
+        return .init(receipt: receipt(for: record, replayed: true))
+    }
+
     func projection(deviceID: UUID) -> Projection? {
         guard let record = records[deviceID] else { return nil }
         return Projection(

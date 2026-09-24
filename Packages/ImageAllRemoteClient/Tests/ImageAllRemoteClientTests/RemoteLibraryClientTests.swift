@@ -4,6 +4,49 @@ import ImageAllRemoteProtocol
 import XCTest
 
 final class RemoteLibraryClientTests: XCTestCase {
+    func testLooksUpFrozenSnapshotReceiptWithoutResendingAssetMetadata() async throws {
+        let hostID = UUID(), deviceID = UUID(), assetID = UUID()
+        let snapshot = RemoteLocalLibrarySnapshotRequest(
+            hostID: hostID, installID: UUID(), sourceEpoch: UUID(),
+            scopeRevision: 1, snapshotSequence: 7,
+            selectedAssetIDs: [assetID], assets: [.init(
+                id: assetID, localIdentifier: "private-source-locator",
+                mediaKind: .image, createdAtMs: nil,
+                observedFavorite: false, favoriteTarget: nil,
+                tagDecisions: [], collections: []
+            )]
+        )
+        let lookup = try RemoteLocalLibrarySnapshotReceiptLookup(request: snapshot)
+        let receipt = RemoteLocalLibrarySnapshotReceipt(
+            hostID: hostID, deviceID: deviceID, sourceEpoch: snapshot.sourceEpoch,
+            snapshotSequence: 7, acceptedAssetCount: 1, replayed: true,
+            importedAssetIDs: [assetID]
+        )
+        let transport = MockTransport { outgoing in
+            XCTAssertEqual(outgoing.httpMethod, "POST")
+            XCTAssertEqual(outgoing.url?.path, RemoteHTTPPaths.localLibrarySnapshotReceipt)
+            XCTAssertEqual(outgoing.value(forHTTPHeaderField: "Authorization"), "Bearer secret")
+            let body = try XCTUnwrap(outgoing.httpBody)
+            XCTAssertFalse(String(decoding: body, as: UTF8.self).contains("private-source-locator"))
+            XCTAssertEqual(try JSONDecoder().decode(
+                RemoteLocalLibrarySnapshotReceiptLookup.self, from: body
+            ), lookup)
+            return (
+                try JSONEncoder().encode(RemoteLocalLibrarySnapshotReceiptLookupResult(
+                    receipt: receipt
+                )),
+                HTTPURLResponse(url: outgoing.url!, statusCode: 200,
+                                httpVersion: "HTTP/1.1", headerFields: nil)!
+            )
+        }
+        let client = RemoteLibraryClient(
+            endpoint: try RemoteHostEndpoint(host: "127.0.0.1", port: 8787, accessToken: "secret"),
+            transport: transport
+        )
+        let result = try await client.lookupLocalLibrarySnapshotReceipt(lookup)
+        XCTAssertEqual(result.receipt, receipt)
+    }
+
     func testFetchesScopedMacFavoriteChangesWithBearerToken() async throws {
         let hostID = UUID()
         let deviceID = UUID()

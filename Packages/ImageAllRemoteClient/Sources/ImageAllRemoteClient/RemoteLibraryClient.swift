@@ -257,6 +257,15 @@ public struct RemoteLibraryClient: Sendable {
         )
     }
 
+    public func lookupLocalLibrarySnapshotReceipt(
+        _ lookup: RemoteLocalLibrarySnapshotReceiptLookup
+    ) async throws -> RemoteLocalLibrarySnapshotReceiptLookupResult {
+        try await postJSON(
+            path: RemoteHTTPPaths.localLibrarySnapshotReceipt,
+            body: encoder.encode(lookup)
+        )
+    }
+
     public func submitLocalLibraryTagDecision(
         _ request: RemoteLocalLibraryTagDecisionRequest
     ) async throws -> RemoteLocalLibraryTagDecisionReceipt {
