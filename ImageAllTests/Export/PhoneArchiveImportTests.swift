@@ -133,7 +133,7 @@ final class PhoneArchiveImportTests: XCTestCase {
         let header = fixture.header(count: 1)
         try fixture.write(header: header, items: [item])
         let importer = VerifiedPhoneArchiveImporter(database: fixture.database)
-        _ = try importer.importArchive(from: fixture.incoming, to: fixture.target)
+        let published = try importer.importArchive(from: fixture.incoming, to: fixture.target)
         let factsURL = fixture.root.appendingPathComponent("facts.imageallfacts")
         let tag = ImageAllMigrationTagDecision(
             tagID: UUID(), tagName: "旅行", decision: .rejected
@@ -182,14 +182,17 @@ final class PhoneArchiveImportTests: XCTestCase {
             from: factsURL, migrationID: header.migrationID
         )) { XCTAssertEqual($0 as? PhoneArchiveImportError, .factScopeMismatch) }
 
+        let latestTag = ImageAllMigrationTagDecision(
+            tagID: UUID(), tagName: "最新", decision: .accepted
+        )
         try ImageAllMigrationFacts.write(
-            snapshot(sequence: 9, tags: [], collections: []), to: factsURL
+            snapshot(sequence: 9, tags: [latestTag], collections: []), to: factsURL
         )
         _ = try importer.reconcileFacts(from: factsURL, migrationID: header.migrationID)
         try fixture.database.pool.read { db in
-            XCTAssertEqual(try Int.fetchOne(
-                db, sql: "SELECT count(*) FROM migration_import_tag_decision"
-            ), 0)
+            XCTAssertEqual(try String.fetchOne(
+                db, sql: "SELECT tag_name FROM migration_import_tag_decision"
+            ), "最新")
             XCTAssertEqual(try Int.fetchOne(
                 db, sql: "SELECT count(*) FROM migration_import_collection"
             ), 0)
@@ -197,9 +200,45 @@ final class PhoneArchiveImportTests: XCTestCase {
                 db, sql: "SELECT fact_snapshot_sequence FROM migration_import"
             ), 9)
         }
+        XCTAssertNotNil(try ImageAllMigrationArchive.verify(
+            at: published.archiveURL
+        ).factsSHA256)
+        try FileManager.default.removeItem(at: fixture.incoming)
+        let recovery = fixture.root.appendingPathComponent("fact-recovery", isDirectory: true)
+        try FileManager.default.createDirectory(at: recovery, withIntermediateDirectories: true)
+        let clean = try CatalogDatabase.open(at: fixture.root.appendingPathComponent("clean-facts.sqlite"))
+        let restored = try VerifiedPhoneArchiveImporter(database: clean).importArchive(
+            from: published.archiveURL, to: recovery
+        )
+        XCTAssertEqual(restored.resourceCount, 1)
+        let recoveredOriginal = try VerifiedPhoneArchiveImporter(database: clean)
+            .verifiedOriginalURL(
+                migrationID: header.migrationID, mediaID: item.mediaID,
+                archiveRoot: restored.archiveURL
+            )
+        XCTAssertEqual(try Data(contentsOf: recoveredOriginal), Data("facts-original".utf8))
+        try clean.pool.read { db in
+            XCTAssertEqual(try Int64.fetchOne(
+                db, sql: "SELECT fact_snapshot_sequence FROM migration_import"
+            ), 9)
+            XCTAssertEqual(try String.fetchOne(
+                db, sql: "SELECT tag_name FROM migration_import_tag_decision"
+            ), "最新")
+            XCTAssertEqual(try String.fetchOne(
+                db, sql: "SELECT decision FROM migration_import_tag_decision"
+            ), "accepted")
+            XCTAssertEqual(try Int.fetchOne(
+                db, sql: "SELECT favorite_target FROM migration_import_item"
+            ), 1)
+        }
+        let sidecar = try XCTUnwrap(ImageAllMigrationFacts.latestPublishedURL(
+            in: published.archiveURL
+        ))
+        try Data("changed".utf8).write(to: sidecar)
+        XCTAssertThrowsError(try ImageAllMigrationArchive.verify(at: published.archiveURL))
     }
 
-    func testFactScopeMismatchRollsBackEarlierItemUpdates() throws {
+    func testFactScopeMismatchDoesNotPublishOrMutateCatalog() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
         let first = fixture.item(resource: try fixture.resource(
@@ -214,7 +253,7 @@ final class PhoneArchiveImportTests: XCTestCase {
         let header = fixture.header(count: 2)
         try fixture.write(header: header, items: [first, second])
         let importer = VerifiedPhoneArchiveImporter(database: fixture.database)
-        _ = try importer.importArchive(from: fixture.incoming, to: fixture.target)
+        let published = try importer.importArchive(from: fixture.incoming, to: fixture.target)
         let changed = ImageAllMigrationFactItem(
             mediaID: first.mediaID, observedFavorite: true, favoriteTarget: true,
             tagDecisions: [.init(tagID: UUID(), tagName: "新增", decision: .accepted)],
@@ -245,6 +284,51 @@ final class PhoneArchiveImportTests: XCTestCase {
                 db, sql: "SELECT fact_snapshot_sequence FROM migration_import"
             ), 0)
         }
+        XCTAssertNil(try ImageAllMigrationArchive.verify(
+            at: published.archiveURL
+        ).factsSHA256)
+    }
+
+    func testFactSidecarPublishedBeforeCatalogCommitRecoversOnArchiveReplay() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let item = fixture.item(resource: try fixture.resource(
+            "original", bytes: Data("recover-facts".utf8)
+        ))
+        let header = fixture.header(count: 1)
+        try fixture.write(header: header, items: [item])
+        let importer = VerifiedPhoneArchiveImporter(database: fixture.database)
+        let published = try importer.importArchive(from: fixture.incoming, to: fixture.target)
+        let facts = ImageAllMigrationFactSnapshot(
+            sourceDeviceID: fixture.sourceDeviceID, sourceEpoch: fixture.sourceEpoch,
+            scopeRevision: 1, snapshotSequence: 8, factWatermark: 9,
+            items: [.init(
+                mediaID: item.mediaID, observedFavorite: true, favoriteTarget: true,
+                tagDecisions: [], collections: []
+            )]
+        )
+        let url = fixture.root.appendingPathComponent("interrupted.imageallfacts")
+        try ImageAllMigrationFacts.write(facts, to: url)
+        enum Injected: Error { case stop }
+        XCTAssertThrowsError(try importer.reconcileFacts(
+            from: url, migrationID: header.migrationID,
+            afterFactPublication: { throw Injected.stop }
+        ))
+        XCTAssertEqual(try fixture.database.pool.read { db in
+            try Int64.fetchOne(db, sql: "SELECT fact_snapshot_sequence FROM migration_import")
+        }, 0)
+        XCTAssertNotNil(try ImageAllMigrationArchive.verify(
+            at: published.archiveURL
+        ).factsSHA256)
+        XCTAssertTrue(try importer.importArchive(
+            from: fixture.incoming, to: fixture.target
+        ).replayed)
+        XCTAssertEqual(try fixture.database.pool.read { db in
+            try Int64.fetchOne(db, sql: "SELECT fact_snapshot_sequence FROM migration_import")
+        }, 8)
+        XCTAssertEqual(try fixture.database.pool.read { db in
+            try Int.fetchOne(db, sql: "SELECT favorite_target FROM migration_import_item")
+        }, 1)
     }
 
     func testMissingOriginalCannotPublishOrCreateImportJournal() throws {

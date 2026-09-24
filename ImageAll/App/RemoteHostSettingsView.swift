@@ -1290,16 +1290,7 @@ private final class PhoneArchiveImportModel: ObservableObject {
         guard !isBusy, let batch = selectedBatch,
               let importer = PhoneArchiveImportProcessHolder.importer() else { return }
         do {
-            let parent: URL
-            if let bookmark = batch.targetBookmark {
-                var stale = false
-                parent = try URL(
-                    resolvingBookmarkData: bookmark, options: [.withSecurityScope],
-                    relativeTo: nil, bookmarkDataIsStale: &stale
-                )
-            } else {
-                parent = URL(fileURLWithPath: batch.targetParentPath, isDirectory: true)
-            }
+            let parent = try targetParent(for: batch)
             let accessed = parent.startAccessingSecurityScopedResource()
             defer { if accessed { parent.stopAccessingSecurityScopedResource() } }
             let archive = parent.appendingPathComponent(
@@ -1348,8 +1339,16 @@ private final class PhoneArchiveImportModel: ObservableObject {
         defer { if accessed { chosen.stopAccessingSecurityScopedResource() } }
         isBusy = true
         do {
+            let parent = try targetParent(for: batch)
+            let targetAccess = parent.startAccessingSecurityScopedResource()
+            defer { if targetAccess { parent.stopAccessingSecurityScopedResource() } }
+            let archive = parent.appendingPathComponent(
+                "ImageAll-Archive-\(batch.id.uuidString.lowercased())", isDirectory: true
+            )
             let receipt = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
-                try importer.reconcileFacts(from: chosen, migrationID: batch.id)
+                try importer.reconcileFacts(
+                    from: chosen, migrationID: batch.id, archiveRoot: archive
+                )
             }
             isBusy = false
             await refresh()
@@ -1360,6 +1359,17 @@ private final class PhoneArchiveImportModel: ObservableObject {
             isBusy = false
             message = "整理信息对账失败：\(error.localizedDescription)"
         }
+    }
+
+    private func targetParent(for batch: PhoneArchiveImportedBatch) throws -> URL {
+        if let bookmark = batch.targetBookmark {
+            var stale = false
+            return try URL(
+                resolvingBookmarkData: bookmark, options: [.withSecurityScope],
+                relativeTo: nil, bookmarkDataIsStale: &stale
+            )
+        }
+        return URL(fileURLWithPath: batch.targetParentPath, isDirectory: true)
     }
 
     private func chooseDirectory(title: String, message: String) async -> URL? {

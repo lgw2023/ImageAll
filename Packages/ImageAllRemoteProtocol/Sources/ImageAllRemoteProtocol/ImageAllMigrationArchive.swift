@@ -143,8 +143,15 @@ public struct ImageAllMigrationVerification: Sendable, Equatable {
     public let resourceCount: Int
     public let verifiedBytes: Int64
     public let incompleteMediaIDs: [UUID]
+    public let factsSHA256: String?
 
     public var isComplete: Bool { incompleteMediaIDs.isEmpty }
+
+    public func hasSameMedia(as other: Self) -> Bool {
+        migrationID == other.migrationID && manifestSHA256 == other.manifestSHA256
+            && itemCount == other.itemCount && resourceCount == other.resourceCount
+            && verifiedBytes == other.verifiedBytes && incompleteMediaIDs == other.incompleteMediaIDs
+    }
 }
 
 public enum ImageAllMigrationArchive {
@@ -201,6 +208,7 @@ public enum ImageAllMigrationArchive {
         var itemCount = 0
         var resourceCount = 0
         var verifiedBytes: Int64 = 0
+        var highestFactRevision: Int64 = 0
         var incomplete: [UUID] = []
         var mediaIDs: Set<UUID> = []
         var sourceLocators: Set<String> = []
@@ -242,6 +250,7 @@ public enum ImageAllMigrationArchive {
                       sourceLocators.insert(item.sourceLocalIdentifier).inserted else {
                     throw ImageAllMigrationArchiveError.duplicateIdentity
                 }
+                highestFactRevision = max(highestFactRevision, item.factRevision)
                 var itemComplete = true
                 for resource in item.resources {
                     guard resourceIDs.insert(resource.id).inserted else {
@@ -295,8 +304,11 @@ public enum ImageAllMigrationArchive {
             throw ImageAllMigrationArchiveError.invalidManifest
         }
         let rootEntries = Set(try manager.contentsOfDirectory(atPath: root.path))
-        let expectedRootEntries: Set<String> = paths.isEmpty
+        var expectedRootEntries: Set<String> = paths.isEmpty
             ? [manifestFilename] : [manifestFilename, "resources"]
+        if rootEntries.contains(ImageAllMigrationFacts.sidecarDirectoryName) {
+            expectedRootEntries.insert(ImageAllMigrationFacts.sidecarDirectoryName)
+        }
         guard rootEntries == expectedRootEntries else {
             throw ImageAllMigrationArchiveError.invalidManifest
         }
@@ -308,11 +320,18 @@ public enum ImageAllMigrationArchive {
                 throw ImageAllMigrationArchiveError.invalidManifest
             }
         }
+        let publishedFacts = try ImageAllMigrationFacts.inspectPublished(
+            at: root, sourceDeviceID: header.sourceDeviceID,
+            sourceEpoch: header.sourceEpoch, scopeRevision: header.scopeRevision,
+            inventoryWatermark: header.inventoryWatermark,
+            minimumFactWatermark: highestFactRevision, mediaIDs: mediaIDs
+        )
         return ImageAllMigrationVerification(
             migrationID: header.migrationID,
             manifestSHA256: hex(Data(manifestHash.finalize())),
             itemCount: itemCount, resourceCount: resourceCount,
-            verifiedBytes: verifiedBytes, incompleteMediaIDs: incomplete
+            verifiedBytes: verifiedBytes, incompleteMediaIDs: incomplete,
+            factsSHA256: publishedFacts.sha256
         )
     }
 

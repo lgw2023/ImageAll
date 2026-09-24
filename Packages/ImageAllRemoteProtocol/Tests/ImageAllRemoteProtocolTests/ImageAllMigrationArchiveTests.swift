@@ -29,6 +29,54 @@ final class ImageAllMigrationArchiveTests: XCTestCase {
         }
     }
 
+    func testPublishedFactSidecarIsPartOfIndependentArchiveVerification() throws {
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.deletingLastPathComponent().appendingPathComponent(
+            "ImageAll-facts-\(UUID().uuidString).imageallfacts"
+        )
+        defer { try? FileManager.default.removeItem(at: source) }
+        let item = try makeItem(
+            root: root, resourceID: UUID(), bytes: Data("original-with-facts".utf8)
+        )
+        let migrationHeader = header(migrationID: UUID(), count: 1)
+        try ImageAllMigrationArchive.write(header: migrationHeader, items: [item], to: root)
+        let facts = ImageAllMigrationFactSnapshot(
+            sourceDeviceID: migrationHeader.sourceDeviceID,
+            sourceEpoch: migrationHeader.sourceEpoch,
+            scopeRevision: migrationHeader.scopeRevision,
+            snapshotSequence: migrationHeader.inventoryWatermark + 1,
+            factWatermark: item.factRevision + 1,
+            items: [.init(
+                mediaID: item.mediaID, observedFavorite: true, favoriteTarget: false,
+                tagDecisions: [], collections: []
+            )]
+        )
+        try ImageAllMigrationFacts.write(facts, to: source)
+        let originalMedia = try ImageAllMigrationArchive.verify(at: root)
+        let published = try ImageAllMigrationFacts.publish(from: source, into: root)
+        XCTAssertEqual(try ImageAllMigrationFacts.publish(from: source, into: root), published)
+        let withFacts = try ImageAllMigrationArchive.verify(at: root)
+        XCTAssertTrue(withFacts.hasSameMedia(as: originalMedia))
+        XCTAssertNotNil(withFacts.factsSHA256)
+        try Data("tampered".utf8).write(to: published)
+        XCTAssertThrowsError(try ImageAllMigrationArchive.verify(at: root))
+    }
+
+    func testDanglingFactsSymlinkDoesNotPassArchiveVerification() throws {
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let item = try makeItem(root: root, resourceID: UUID(), bytes: Data("original".utf8))
+        try ImageAllMigrationArchive.write(
+            header: header(migrationID: UUID(), count: 1), items: [item], to: root
+        )
+        try FileManager.default.createSymbolicLink(
+            at: root.appendingPathComponent("facts"),
+            withDestinationURL: root.appendingPathComponent("missing-facts")
+        )
+        XCTAssertThrowsError(try ImageAllMigrationArchive.verify(at: root))
+    }
+
     func testIndependentVerifierChecksOriginalBytesAndHumanFacts() throws {
         let root = makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }

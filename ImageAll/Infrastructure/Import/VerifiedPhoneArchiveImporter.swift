@@ -78,13 +78,46 @@ struct PhoneArchiveImportedItem: Identifiable, Sendable {
 struct VerifiedPhoneArchiveImporter: Sendable {
     let database: CatalogDatabase
 
-    func reconcileFacts(from url: URL, migrationID: UUID) throws -> PhoneArchiveFactReceipt {
-        let snapshot = try ImageAllMigrationFacts.read(at: url)
+    func reconcileFacts(
+        from url: URL, migrationID: UUID, archiveRoot: URL? = nil,
+        afterFactPublication: (() throws -> Void)? = nil
+    ) throws -> PhoneArchiveFactReceipt {
+        let read = try ImageAllMigrationFacts.readWithDigest(at: url)
+        let snapshot = read.snapshot
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let digest = SHA256.hash(data: try encoder.encode(snapshot))
             .map { String(format: "%02x", $0) }.joined()
         let id = migrationID.uuidString.lowercased()
+        let expected = try preflightFactSnapshot(snapshot, digest: digest, migrationID: id)
+        let archive = archiveRoot ?? expected.archiveURL
+        guard archive.lastPathComponent == "ImageAll-Archive-\(id)" else {
+            throw PhoneArchiveImportError.targetChanged
+        }
+        let before = try ImageAllMigrationArchive.verify(at: archive)
+        guard before.manifestSHA256 == expected.manifestSHA256,
+              before.itemCount == expected.itemCount,
+              before.resourceCount == expected.resourceCount,
+              before.verifiedBytes == expected.verifiedBytes else {
+            throw PhoneArchiveImportError.publishedCopyChanged
+        }
+        if let latestURL = try ImageAllMigrationFacts.latestPublishedURL(in: archive) {
+            let latest = try ImageAllMigrationFacts.readWithDigest(at: latestURL)
+            guard snapshot.snapshotSequence >= latest.snapshot.snapshotSequence,
+                  snapshot.factWatermark >= latest.snapshot.factWatermark else {
+                throw PhoneArchiveImportError.staleFactSnapshot
+            }
+            if snapshot.snapshotSequence == latest.snapshot.snapshotSequence,
+               read.sha256 != latest.sha256 {
+                throw PhoneArchiveImportError.factSnapshotConflict
+            }
+        }
+        _ = try ImageAllMigrationFacts.publish(from: url, into: archive)
+        let after = try ImageAllMigrationArchive.verify(at: archive)
+        guard after.hasSameMedia(as: before), after.factsSHA256 != nil else {
+            throw PhoneArchiveImportError.publishedCopyChanged
+        }
+        try afterFactPublication?()
         return try database.pool.write { db in
             guard let batch = try Row.fetchOne(
                 db, sql: "SELECT * FROM migration_import WHERE id = ? AND state = 'catalogCommitted'",
@@ -183,6 +216,60 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                 migrationID: migrationID, itemCount: count,
                 snapshotSequence: snapshot.snapshotSequence,
                 factWatermark: snapshot.factWatermark, replayed: false
+            )
+        }
+    }
+
+    private func preflightFactSnapshot(
+        _ snapshot: ImageAllMigrationFactSnapshot, digest: String, migrationID: String
+    ) throws -> (
+        archiveURL: URL, manifestSHA256: String, itemCount: Int,
+        resourceCount: Int, verifiedBytes: Int64
+    ) {
+        try database.pool.read { db in
+            guard let batch = try Row.fetchOne(db, sql: """
+                SELECT * FROM migration_import WHERE id = ? AND state = 'catalogCommitted'
+                """, arguments: [migrationID]) else {
+                throw PhoneArchiveImportError.missingImportJournal
+            }
+            let sourceDevice: String = batch["source_device_id"]
+            let sourceEpoch: String = batch["source_epoch"]
+            let scopeRevision: Int64 = batch["scope_revision"]
+            let inventoryWatermark: Int64 = batch["inventory_watermark"]
+            let itemCount: Int = batch["item_count"]
+            let previousSequence: Int64 = batch["fact_snapshot_sequence"]
+            let previousHash: String? = batch["fact_snapshot_sha256"]
+            guard sourceDevice == snapshot.sourceDeviceID.uuidString.lowercased(),
+                  sourceEpoch == snapshot.sourceEpoch.uuidString.lowercased(),
+                  scopeRevision == snapshot.scopeRevision,
+                  itemCount == snapshot.items.count else {
+                throw PhoneArchiveImportError.factScopeMismatch
+            }
+            guard snapshot.snapshotSequence >= inventoryWatermark,
+                  snapshot.snapshotSequence >= previousSequence else {
+                throw PhoneArchiveImportError.staleFactSnapshot
+            }
+            if snapshot.snapshotSequence == previousSequence && previousHash != digest {
+                throw PhoneArchiveImportError.factSnapshotConflict
+            }
+            let highestFactRevision = try Int64.fetchOne(db, sql: """
+                SELECT MAX(fact_revision) FROM migration_import_item WHERE migration_id = ?
+                """, arguments: [migrationID]) ?? 0
+            guard snapshot.factWatermark >= highestFactRevision else {
+                throw PhoneArchiveImportError.staleFactSnapshot
+            }
+            for item in snapshot.items {
+                guard try Int.fetchOne(db, sql: """
+                    SELECT 1 FROM migration_import_item WHERE migration_id = ? AND media_id = ?
+                    """, arguments: [migrationID, item.mediaID.uuidString.lowercased()]) != nil else {
+                    throw PhoneArchiveImportError.factScopeMismatch
+                }
+            }
+            let path: String = batch["archive_path"]
+            return (
+                URL(fileURLWithPath: path, isDirectory: true),
+                batch["manifest_sha256"], itemCount,
+                batch["resource_count"], batch["verified_bytes"]
             )
         }
     }
@@ -361,7 +448,7 @@ struct VerifiedPhoneArchiveImporter: Sendable {
         }
 
         if FileManager.default.fileExists(atPath: final.path) {
-            guard try ImageAllMigrationArchive.verify(at: final) == verification else {
+            guard try ImageAllMigrationArchive.verify(at: final).hasSameMedia(as: verification) else {
                 throw PhoneArchiveImportError.publishedCopyChanged
             }
         } else {
@@ -376,6 +463,7 @@ struct VerifiedPhoneArchiveImporter: Sendable {
         try afterPublication?()
 
         if alreadyCommitted {
+            try recoverPublishedFactsIfNeeded(at: final, migrationID: header.migrationID)
             return receipt(header: header, verification: verification, url: final, replayed: true)
         }
 
@@ -396,7 +484,7 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                     try insert(item: item, header: header, db: db)
                 }
             )
-            guard reread == verification else {
+            guard reread.hasSameMedia(as: verification) else {
                 throw PhoneArchiveImportError.publishedCopyChanged
             }
             try db.execute(sql: """
@@ -404,7 +492,13 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                 WHERE id = ? AND state = 'prepared'
                 """, arguments: [now, id])
         }
+        try recoverPublishedFactsIfNeeded(at: final, migrationID: header.migrationID)
         return receipt(header: header, verification: verification, url: final, replayed: false)
+    }
+
+    private func recoverPublishedFactsIfNeeded(at archive: URL, migrationID: UUID) throws {
+        guard let latest = try ImageAllMigrationFacts.latestPublishedURL(in: archive) else { return }
+        _ = try reconcileFacts(from: latest, migrationID: migrationID, archiveRoot: archive)
     }
 
     private func receipt(

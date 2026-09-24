@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// A user-exported, fact-only checkpoint for the exact media IDs in one archive.
@@ -50,9 +51,12 @@ public enum ImageAllMigrationFactsError: Error, Equatable, Sendable {
     case invalidSnapshot
     case unsupportedVersion
     case unsafeFile
+    case publishedFactsChanged
 }
 
 public enum ImageAllMigrationFacts {
+    public static let sidecarDirectoryName = "facts"
+
     public static func write(_ snapshot: ImageAllMigrationFactSnapshot, to url: URL) throws {
         try validate(snapshot)
         let encoder = JSONEncoder()
@@ -61,15 +65,115 @@ public enum ImageAllMigrationFacts {
     }
 
     public static func read(at url: URL) throws -> ImageAllMigrationFactSnapshot {
+        try readWithDigest(at: url).snapshot
+    }
+
+    public static func readWithDigest(
+        at url: URL
+    ) throws -> (snapshot: ImageAllMigrationFactSnapshot, sha256: String) {
         let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
         guard values.isRegularFile == true, values.isSymbolicLink != true else {
             throw ImageAllMigrationFactsError.unsafeFile
         }
-        let snapshot = try JSONDecoder().decode(
-            ImageAllMigrationFactSnapshot.self, from: Data(contentsOf: url)
-        )
+        let data = try Data(contentsOf: url)
+        let snapshot = try JSONDecoder().decode(ImageAllMigrationFactSnapshot.self, from: data)
         try validate(snapshot)
-        return snapshot
+        return (snapshot, hexDigest(Data(SHA256.hash(data: data))))
+    }
+
+    /// Fact checkpoints are immutable siblings inside the published media
+    /// package. Staging stays outside the package so an interrupted copy does
+    /// not make the last complete package invalid.
+    public static func publish(from source: URL, into archiveRoot: URL) throws -> URL {
+        let expected = try readWithDigest(at: source)
+        let name = filename(sequence: expected.snapshot.snapshotSequence, sha256: expected.sha256)
+        let manager = FileManager.default
+        let rootValues = try archiveRoot.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        guard rootValues.isDirectory == true, rootValues.isSymbolicLink != true else {
+            throw ImageAllMigrationFactsError.unsafeFile
+        }
+        let facts = archiveRoot.appendingPathComponent(sidecarDirectoryName, isDirectory: true)
+        let final = facts.appendingPathComponent(name)
+        let staging = archiveRoot.deletingLastPathComponent().appendingPathComponent(
+            ".imageall-facts-staging-\(UUID().uuidString.lowercased())"
+        )
+        try manager.copyItem(at: source, to: staging)
+        defer { try? manager.removeItem(at: staging) }
+        guard try readWithDigest(at: staging).sha256 == expected.sha256 else {
+            throw ImageAllMigrationFactsError.publishedFactsChanged
+        }
+        if manager.fileExists(atPath: facts.path) {
+            let values = try facts.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard values.isDirectory == true, values.isSymbolicLink != true else {
+                throw ImageAllMigrationFactsError.unsafeFile
+            }
+        } else {
+            try manager.createDirectory(at: facts, withIntermediateDirectories: false)
+        }
+        if manager.fileExists(atPath: final.path) {
+            guard try readWithDigest(at: final).sha256 == expected.sha256 else {
+                throw ImageAllMigrationFactsError.publishedFactsChanged
+            }
+            return final
+        }
+        try manager.moveItem(at: staging, to: final)
+        return final
+    }
+
+    public static func inspectPublished(
+        at archiveRoot: URL, sourceDeviceID: UUID, sourceEpoch: UUID,
+        scopeRevision: Int64, inventoryWatermark: Int64,
+        minimumFactWatermark: Int64, mediaIDs: Set<UUID>
+    ) throws -> (sha256: String?, latestURL: URL?) {
+        let facts = archiveRoot.appendingPathComponent(sidecarDirectoryName, isDirectory: true)
+        guard try FileManager.default.contentsOfDirectory(atPath: archiveRoot.path)
+            .contains(sidecarDirectoryName) else { return (nil, nil) }
+        let values = try facts.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        guard values.isDirectory == true, values.isSymbolicLink != true else {
+            throw ImageAllMigrationFactsError.unsafeFile
+        }
+        let names = try FileManager.default.contentsOfDirectory(atPath: facts.path).sorted()
+        var digest = SHA256()
+        var lastSequence: Int64 = -1
+        var lastWatermark = minimumFactWatermark
+        var latest: URL?
+        for name in names {
+            let url = facts.appendingPathComponent(name)
+            let read = try readWithDigest(at: url)
+            let snapshot = read.snapshot
+            guard name == filename(sequence: snapshot.snapshotSequence, sha256: read.sha256),
+                  snapshot.sourceDeviceID == sourceDeviceID,
+                  snapshot.sourceEpoch == sourceEpoch,
+                  snapshot.scopeRevision == scopeRevision,
+                  snapshot.snapshotSequence >= inventoryWatermark,
+                  snapshot.snapshotSequence > lastSequence,
+                  snapshot.factWatermark >= lastWatermark,
+                  Set(snapshot.items.map(\.mediaID)) == mediaIDs else {
+                throw ImageAllMigrationFactsError.publishedFactsChanged
+            }
+            digest.update(data: Data("\(name)\n".utf8))
+            lastSequence = snapshot.snapshotSequence
+            lastWatermark = snapshot.factWatermark
+            latest = url
+        }
+        return (names.isEmpty ? nil : hexDigest(Data(digest.finalize())), latest)
+    }
+
+    /// Call after the enclosing media package has passed `verify(at:)`.
+    public static func latestPublishedURL(in archiveRoot: URL) throws -> URL? {
+        let facts = archiveRoot.appendingPathComponent(sidecarDirectoryName, isDirectory: true)
+        guard FileManager.default.fileExists(atPath: facts.path) else { return nil }
+        guard let last = try FileManager.default.contentsOfDirectory(atPath: facts.path).sorted().last
+        else { return nil }
+        return facts.appendingPathComponent(last)
+    }
+
+    private static func filename(sequence: Int64, sha256: String) -> String {
+        String(format: "%020lld-%@.imageallfacts", sequence, sha256)
+    }
+
+    private static func hexDigest(_ data: Data) -> String {
+        data.map { String(format: "%02x", $0) }.joined()
     }
 
     public static func validate(_ snapshot: ImageAllMigrationFactSnapshot) throws {
