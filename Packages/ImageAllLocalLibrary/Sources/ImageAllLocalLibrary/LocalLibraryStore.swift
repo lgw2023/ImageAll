@@ -104,7 +104,7 @@ public enum LocalSharedTagDisposition: Sendable {
 
 /// A directory and human-fact projection for assets the owner explicitly selected.
 /// It contains no media bytes, thumbnail, GPS, or unreferenced tag/collection names.
-public struct LocalSharedSnapshot: Sendable {
+public struct LocalSharedSnapshot: Codable, Sendable {
     public let installID: UUID
     public let sourceEpoch: UUID
     public let scopeRevision: Int64
@@ -116,7 +116,7 @@ public struct LocalSharedSnapshot: Sendable {
     public let assets: [LocalSharedAsset]
 }
 
-public struct LocalSharedAsset: Identifiable, Sendable {
+public struct LocalSharedAsset: Codable, Identifiable, Sendable {
     public let id: UUID
     public let localIdentifier: String
     public let kind: String
@@ -127,13 +127,13 @@ public struct LocalSharedAsset: Identifiable, Sendable {
     public let collections: [LocalSharedCollectionMembership]
 }
 
-public struct LocalSharedTagDecision: Sendable {
+public struct LocalSharedTagDecision: Codable, Sendable {
     public let tagID: UUID
     public let tagName: String
     public let decision: LocalDecision
 }
 
-public struct LocalSharedCollectionMembership: Sendable {
+public struct LocalSharedCollectionMembership: Codable, Sendable {
     public let collectionID: UUID
     public let collectionName: String
 }
@@ -222,6 +222,9 @@ public actor LocalLibraryStore {
                   state TEXT NOT NULL, conflict_revision INTEGER,
                   conflict_value TEXT
                 );
+                CREATE TABLE IF NOT EXISTS shared_snapshot_delivery (
+                  id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL
+                );
                 """
             let setup = schema + """
                 INSERT OR IGNORE INTO identity(key,value) VALUES('install_id','\(UUID().uuidString)');
@@ -268,6 +271,7 @@ public actor LocalLibraryStore {
             try execute("""
                 UPDATE identity SET value=CAST(value AS INTEGER)+1 WHERE key='share_scope_revision'
                 """)
+            try execute("DELETE FROM shared_snapshot_delivery")
             // Unprepared operations have no wire payload yet and follow the new scope.
             // Prepared operations keep their original scope/digest for exact replay.
             try execute("""
@@ -299,15 +303,36 @@ public actor LocalLibraryStore {
             }
     }
 
-    /// Reserves a durable order for a network attempt. A retry may reuse the returned value;
-    /// a later attempt after relaunch gets a larger sequence, so late packets cannot win.
+    /// Persists the exact payload before network I/O so a lost ACK can replay the same sequence.
+    /// A changed visible set must use a new payload; revoked PhotoKit access is never replayed.
     public func prepareSharedSnapshot(visibleIdentifiers: Set<String>) throws -> LocalSharedSnapshot {
+        let current = try sharedSnapshot(visibleIdentifiers: visibleIdentifiers)
+        if let encoded = try scalar("SELECT payload FROM shared_snapshot_delivery WHERE id=1"),
+           let payload = encoded.data(using: .utf8),
+           let pending = try? JSONDecoder().decode(LocalSharedSnapshot.self, from: payload),
+           pending.installID == current.installID,
+           pending.sourceEpoch == current.sourceEpoch,
+           pending.scopeRevision == current.scopeRevision,
+           pending.selectedAssetIDs == current.selectedAssetIDs,
+           Set(pending.assets.map(\.id)) == Set(current.assets.map(\.id)) {
+            return pending
+        }
+        var prepared: LocalSharedSnapshot?
         try transaction {
             try execute("""
                 UPDATE identity SET value=CAST(value AS INTEGER)+1 WHERE key='share_snapshot_sequence'
                 """)
+            let snapshot = try sharedSnapshot(visibleIdentifiers: visibleIdentifiers)
+            guard let payload = String(data: try JSONEncoder().encode(snapshot), encoding: .utf8)
+            else { throw LocalLibraryError.database("cannot encode shared snapshot") }
+            try execute("""
+                INSERT INTO shared_snapshot_delivery(id,payload) VALUES(1,?)
+                ON CONFLICT(id) DO UPDATE SET payload=excluded.payload
+                """, [payload])
+            prepared = snapshot
         }
-        return try sharedSnapshot(visibleIdentifiers: visibleIdentifiers)
+        guard let prepared else { throw LocalLibraryError.database("missing prepared shared snapshot") }
+        return prepared
     }
 
     /// The caller supplies the identifiers currently returned by PhotoKit. Missing permission
@@ -630,6 +655,13 @@ public actor LocalLibraryStore {
                 try execute("UPDATE identity SET value=? WHERE key='sync_ack_snapshot_sequence'", [
                     String(snapshot.snapshotSequence)
                 ])
+            }
+            if let encoded = try scalar("SELECT payload FROM shared_snapshot_delivery WHERE id=1"),
+               let payload = encoded.data(using: .utf8),
+               let prepared = try? JSONDecoder().decode(LocalSharedSnapshot.self, from: payload),
+               prepared.snapshotSequence == snapshot.snapshotSequence,
+               prepared.scopeRevision == snapshot.scopeRevision {
+                try execute("DELETE FROM shared_snapshot_delivery")
             }
         }
     }

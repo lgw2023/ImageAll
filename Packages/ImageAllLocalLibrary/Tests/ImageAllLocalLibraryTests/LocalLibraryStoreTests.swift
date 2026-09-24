@@ -116,7 +116,7 @@ import Testing
 
     let reopened = try LocalLibraryStore(url: url)
     #expect(try await reopened.isShared(assetID: selected.id))
-    #expect(try await reopened.prepareSharedSnapshot(visibleIdentifiers: []).snapshotSequence == 3)
+    #expect(try await reopened.prepareSharedSnapshot(visibleIdentifiers: []).snapshotSequence == 2)
     #expect(try await reopened.sharedSnapshot(visibleIdentifiers: []).assets.isEmpty)
     #expect(try await reopened.sharedSnapshot(visibleIdentifiers: ["selected"]).assets.count == 1)
     try await reopened.setShared(assetID: selected.id, shared: false)
@@ -124,6 +124,36 @@ import Testing
     let revoked = try await reopened.sharedSnapshot(visibleIdentifiers: ["selected"])
     #expect(revoked.assets.isEmpty)
     #expect(revoked.scopeRevision == 2)
+}
+
+@Test func sharedSnapshotRetryKeepsPayloadAndWatermarkAcrossRestart() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("local.sqlite")
+    let store = try LocalLibraryStore(url: url)
+    try await store.observe([
+        LocalObservedAsset(localIdentifier: "selected", kind: "image", creationDate: nil, isFavorite: false)
+    ])
+    let asset = try #require(await store.assets(visibleIdentifiers: ["selected"]).first)
+    let tag = try await store.createTag(name: "shared")
+    try await store.setShared(assetID: asset.id, shared: true)
+    try await store.setDecision(assetID: asset.id, tagID: tag, decision: .accepted)
+    let first = try await store.prepareSharedSnapshot(visibleIdentifiers: ["selected"])
+    try await store.setDecision(assetID: asset.id, tagID: tag, decision: .rejected)
+    let reopened = try LocalLibraryStore(url: url)
+    let retry = try await reopened.prepareSharedSnapshot(visibleIdentifiers: ["selected"])
+    #expect(retry.snapshotSequence == first.snapshotSequence)
+    #expect(retry.outboxWatermark == first.outboxWatermark)
+    #expect(retry.assets.first?.tagDecisions.first?.decision == .accepted)
+    try await reopened.acknowledgeSharedSnapshot(
+        retry, hostID: UUID(), deviceID: UUID(), importedAssetIDs: [asset.id]
+    )
+    let pending = try await reopened.pendingSharedOperations()
+    #expect(pending.count == 1)
+    #expect(pending.first?.value == LocalDecision.rejected.rawValue)
+    let fresh = try await reopened.prepareSharedSnapshot(visibleIdentifiers: ["selected"])
+    #expect(fresh.snapshotSequence == first.snapshotSequence + 1)
+    #expect(fresh.assets.first?.tagDecisions.first?.decision == .rejected)
 }
 
 @Test func sharedOutboxContainsOnlyExplicitlySharedAssetEditsAndSurvivesRestart() async throws {
