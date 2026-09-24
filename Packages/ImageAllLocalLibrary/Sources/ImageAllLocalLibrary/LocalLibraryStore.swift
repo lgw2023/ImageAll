@@ -67,6 +67,18 @@ public struct LocalPendingOperation: Identifiable, Sendable {
     public let value: String
 }
 
+/// Only operations on explicitly shared assets may enter the network sync path.
+/// The operation ID and sequence are the same durable values as the local audit outbox.
+public struct LocalSharedPendingOperation: Identifiable, Sendable {
+    public let id: UUID
+    public let sequence: Int64
+    public let assetID: UUID
+    public let field: String
+    public let value: String
+    public let referenceName: String?
+    public let scopeRevision: Int64
+}
+
 /// A directory and human-fact projection for assets the owner explicitly selected.
 /// It contains no media bytes, thumbnail, GPS, or unreferenced tag/collection names.
 public struct LocalSharedSnapshot: Sendable {
@@ -166,6 +178,13 @@ public actor LocalLibraryStore {
                 CREATE TABLE IF NOT EXISTS shared_assets (
                   asset_id TEXT PRIMARY KEY REFERENCES assets(id)
                 );
+                CREATE TABLE IF NOT EXISTS shared_outbox (
+                  operation_id TEXT PRIMARY KEY REFERENCES outbox(operation_id),
+                  asset_id TEXT NOT NULL REFERENCES assets(id),
+                  field TEXT NOT NULL, value TEXT NOT NULL,
+                  reference_name TEXT, scope_revision INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS shared_outbox_asset_idx ON shared_outbox(asset_id);
                 """
             let setup = schema + """
                 INSERT OR IGNORE INTO identity(key,value) VALUES('install_id','\(UUID().uuidString)');
@@ -202,6 +221,7 @@ public actor LocalLibraryStore {
                 try execute("INSERT INTO shared_assets(asset_id) VALUES(?)", [assetID.uuidString])
             } else {
                 try execute("DELETE FROM shared_assets WHERE asset_id=?", [assetID.uuidString])
+                try execute("DELETE FROM shared_outbox WHERE asset_id=?", [assetID.uuidString])
             }
             try execute("""
                 UPDATE identity SET value=CAST(value AS INTEGER)+1 WHERE key='share_scope_revision'
@@ -390,7 +410,14 @@ public actor LocalLibraryStore {
                 ON CONFLICT(asset_id,tag_id) DO UPDATE SET
                   decision=excluded.decision, revision=revision+1
                 """, [assetID.uuidString, tagID.uuidString, decision.rawValue])
-            try enqueue(assetID, field: field, value: decision.rawValue)
+            let operationID = try enqueue(assetID, field: field, value: decision.rawValue)
+            if try isShared(assetID: assetID) {
+                let tagName = try scalar("SELECT name FROM tags WHERE id=?", [tagID.uuidString])
+                try enqueueShared(
+                    operationID, assetID: assetID, field: field,
+                    value: decision.rawValue, referenceName: tagName
+                )
+            }
         }
     }
 
@@ -412,7 +439,16 @@ public actor LocalLibraryStore {
                 ON CONFLICT(collection_id,asset_id) DO UPDATE SET
                   included=excluded.included, revision=revision+1
                 """, [collectionID.uuidString, assetID.uuidString, included ? "1" : "0"])
-            try enqueue(assetID, field: "collection.\(collectionID.uuidString)", value: included ? "1" : "0")
+            let field = "collection.\(collectionID.uuidString)"
+            let value = included ? "1" : "0"
+            let operationID = try enqueue(assetID, field: field, value: value)
+            if try isShared(assetID: assetID) {
+                let collectionName = try scalar("SELECT name FROM collections WHERE id=?", [collectionID.uuidString])
+                try enqueueShared(
+                    operationID, assetID: assetID, field: field,
+                    value: value, referenceName: collectionName
+                )
+            }
         }
     }
 
@@ -431,7 +467,14 @@ public actor LocalLibraryStore {
                 INSERT INTO favorite_writebacks(asset_id,target,state) VALUES(?,?,'pending')
                 ON CONFLICT(asset_id) DO UPDATE SET target=excluded.target,state='pending'
                 """, [assetID.uuidString, isFavorite ? "1" : "0"])
-            try enqueue(assetID, field: "favorite.target", value: isFavorite ? "1" : "0")
+            let value = isFavorite ? "1" : "0"
+            let operationID = try enqueue(assetID, field: "favorite.target", value: value)
+            if try isShared(assetID: assetID) {
+                try enqueueShared(
+                    operationID, assetID: assetID, field: "favorite.target",
+                    value: value, referenceName: nil
+                )
+            }
         }
     }
 
@@ -467,6 +510,28 @@ public actor LocalLibraryStore {
             }
     }
 
+    public func pendingSharedOperations() throws -> [LocalSharedPendingOperation] {
+        try rows("""
+            SELECT o.sequence,s.operation_id,s.asset_id,s.field,s.value,s.reference_name,s.scope_revision
+            FROM shared_outbox s JOIN outbox o ON o.operation_id=s.operation_id
+            JOIN shared_assets a ON a.asset_id=s.asset_id
+            ORDER BY o.sequence
+            """).map { row in
+                guard let sequence = Int64(row[0] ?? ""),
+                      let id = UUID(uuidString: row[1] ?? ""),
+                      let assetID = UUID(uuidString: row[2] ?? ""),
+                      let scopeRevision = Int64(row[6] ?? "") else {
+                    throw LocalLibraryError.database("invalid shared outbox row")
+                }
+                return LocalSharedPendingOperation(
+                    id: id, sequence: sequence, assetID: assetID,
+                    field: row[3] ?? "", value: row[4] ?? "",
+                    referenceName: row[5].flatMap { $0.isEmpty ? nil : $0 },
+                    scopeRevision: scopeRevision
+                )
+            }
+    }
+
     private func requiredIdentity(_ key: String) throws -> String {
         guard let value = try scalar("SELECT value FROM identity WHERE key=?", [key]) else {
             throw LocalLibraryError.database("missing identity")
@@ -478,10 +543,27 @@ public actor LocalLibraryStore {
         try scalar("SELECT id FROM \(table) WHERE id=?", [id.uuidString]) != nil
     }
 
-    private func enqueue(_ entityID: UUID, field: String, value: String) throws {
+    @discardableResult
+    private func enqueue(_ entityID: UUID, field: String, value: String) throws -> UUID {
+        let operationID = UUID()
         try execute("INSERT INTO outbox(operation_id,entity_id,field,value,created_time) VALUES(?,?,?,?,?)", [
-            UUID().uuidString, entityID.uuidString, field, value, String(Date().timeIntervalSince1970)
+            operationID.uuidString, entityID.uuidString, field, value, String(Date().timeIntervalSince1970)
         ])
+        return operationID
+    }
+
+    private func enqueueShared(
+        _ operationID: UUID, assetID: UUID, field: String,
+        value: String, referenceName: String?
+    ) throws {
+        let scopeRevision = try requiredIdentity("share_scope_revision")
+        try execute("""
+            INSERT INTO shared_outbox(operation_id,asset_id,field,value,reference_name,scope_revision)
+            VALUES(?,?,?,?,?,?)
+            """, [
+                operationID.uuidString, assetID.uuidString, field, value,
+                referenceName ?? "", scopeRevision
+            ])
     }
 
     private func transaction(_ body: () throws -> Void) throws {

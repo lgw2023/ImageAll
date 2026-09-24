@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import Testing
 @testable import ImageAllLocalLibrary
 
@@ -123,4 +124,74 @@ import Testing
     let revoked = try await reopened.sharedSnapshot(visibleIdentifiers: ["selected"])
     #expect(revoked.assets.isEmpty)
     #expect(revoked.scopeRevision == 2)
+}
+
+@Test func sharedOutboxContainsOnlyExplicitlySharedAssetEditsAndSurvivesRestart() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("local.sqlite")
+    let store = try LocalLibraryStore(url: url)
+    try await store.observe([
+        LocalObservedAsset(localIdentifier: "shared", kind: "image", creationDate: nil, isFavorite: false),
+        LocalObservedAsset(localIdentifier: "private", kind: "image", creationDate: nil, isFavorite: false),
+    ])
+    let shared = try #require(await store.assets(visibleIdentifiers: ["shared"]).first)
+    let privateAsset = try #require(await store.assets(visibleIdentifiers: ["private"]).first)
+    let tagID = try await store.createTag(name: "家庭")
+    let collectionID = try await store.createCollection(name: "周末")
+
+    try await store.setDecision(assetID: privateAsset.id, tagID: tagID, decision: .accepted)
+    try await store.setDecision(assetID: shared.id, tagID: tagID, decision: .rejected)
+    #expect(try await store.pendingSharedOperations().isEmpty)
+
+    try await store.setShared(assetID: shared.id, shared: true)
+    try await store.setDecision(assetID: shared.id, tagID: tagID, decision: .accepted)
+    try await store.setMembership(assetID: shared.id, collectionID: collectionID, included: true)
+    try await store.setFavoriteTarget(assetID: shared.id, isFavorite: true)
+    try await store.setFavoriteTarget(assetID: privateAsset.id, isFavorite: true)
+    let pending = try await store.pendingSharedOperations()
+    #expect(pending.count == 3)
+    #expect(pending.map(\.field) == ["tag.\(tagID.uuidString)", "collection.\(collectionID.uuidString)", "favorite.target"])
+    #expect(pending.map(\.referenceName) == ["家庭", "周末", nil])
+    #expect(pending.allSatisfy { $0.assetID == shared.id && $0.scopeRevision == 1 })
+    #expect(Set(pending.map(\.id)).count == 3)
+    let localIDs = Set(try await store.pendingOperations().map(\.id))
+    #expect(Set(pending.map(\.id)).isSubset(of: localIDs))
+
+    let reopened = try LocalLibraryStore(url: url)
+    #expect(try await reopened.pendingSharedOperations().map(\.id) == pending.map(\.id))
+    try await reopened.setShared(assetID: shared.id, shared: false)
+    #expect(try await reopened.pendingSharedOperations().isEmpty)
+    #expect(try await reopened.decisions(assetID: shared.id)[tagID] == .accepted)
+    try await reopened.setShared(assetID: shared.id, shared: true)
+    #expect(try await reopened.pendingSharedOperations().isEmpty)
+    try await reopened.setDecision(assetID: shared.id, tagID: tagID, decision: .cleared)
+    #expect(try await reopened.pendingSharedOperations().count == 1)
+}
+
+@Test func sharedOutboxWriteFailureRollsBackTheLocalFact() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("local.sqlite")
+    let store = try LocalLibraryStore(url: url)
+    try await store.observe([
+        LocalObservedAsset(localIdentifier: "fixture", kind: "image", creationDate: nil, isFavorite: false)
+    ])
+    let asset = try #require(await store.assets(visibleIdentifiers: ["fixture"]).first)
+    let tagID = try await store.createTag(name: "test")
+    try await store.setShared(assetID: asset.id, shared: true)
+    let outboxCount = try await store.pendingOperations().count
+
+    var rawDB: OpaquePointer?
+    #expect(sqlite3_open(url.path, &rawDB) == SQLITE_OK)
+    defer { if let rawDB { sqlite3_close(rawDB) } }
+    #expect(sqlite3_exec(rawDB, "DROP TABLE shared_outbox", nil, nil, nil) == SQLITE_OK)
+
+    do {
+        try await store.setDecision(assetID: asset.id, tagID: tagID, decision: .accepted)
+        Issue.record("a shared outbox failure must reject the whole local fact transaction")
+    } catch {
+        #expect(try await store.decisions(assetID: asset.id).isEmpty)
+        #expect(try await store.pendingOperations().count == outboxCount)
+    }
 }
