@@ -231,7 +231,7 @@ public struct LocalSharedSnapshot: Codable, Sendable {
     public let sourceEpoch: UUID
     public let scopeRevision: Int64
     public let snapshotSequence: Int64
-    /// Local shared operation sequence captured with this directory/fact view.
+    /// Monotonic local operation sequence captured with this directory/fact view.
     public let outboxWatermark: Int64
     /// Explicit grants, including items temporarily hidden by PhotoKit permission changes.
     public let selectedAssetIDs: [UUID]
@@ -464,6 +464,20 @@ public actor LocalLibraryStore {
         return prepared
     }
 
+    /// Fact-only migration exports must capture current values, even while a
+    /// frozen network snapshot is waiting for an ACK and must remain replayable.
+    public func migrationFactSnapshot(visibleIdentifiers: Set<String>) throws -> LocalSharedSnapshot {
+        var snapshot: LocalSharedSnapshot?
+        try transaction {
+            try execute("""
+                UPDATE identity SET value=CAST(value AS INTEGER)+1 WHERE key='share_snapshot_sequence'
+                """)
+            snapshot = try sharedSnapshot(visibleIdentifiers: visibleIdentifiers)
+        }
+        guard let snapshot else { throw LocalLibraryError.database("missing migration fact snapshot") }
+        return snapshot
+    }
+
     /// The caller supplies the identifiers currently returned by PhotoKit. Missing permission
     /// only hides the projection; it does not revoke sharing or generate deletion records.
     public func sharedSnapshot(visibleIdentifiers: Set<String>) throws -> LocalSharedSnapshot {
@@ -471,9 +485,7 @@ public actor LocalLibraryStore {
         let revision = Int64(try requiredIdentity("share_scope_revision")) ?? 0
         let sequence = Int64(try requiredIdentity("share_snapshot_sequence")) ?? 0
         let outboxWatermark = Int64(try scalar("""
-            SELECT MAX(o.sequence) FROM shared_outbox s
-            JOIN outbox o ON o.operation_id=s.operation_id
-            JOIN shared_assets a ON a.asset_id=s.asset_id
+            SELECT MAX(sequence) FROM outbox
             """) ?? "0") ?? 0
         let selected = try rows("""
             SELECT a.id,a.local_identifier,a.kind,a.creation_time,a.observed_favorite,a.favorite_target

@@ -96,6 +96,7 @@ struct CatalogDatabase: Sendable {
         V039AddFileModifiedTimeSortMigration.register(on: &migrator)
         V040RetirePDFDocumentsMigration.register(on: &migrator)
         V041AddPhoneArchiveImportMigration.register(on: &migrator)
+        V042AddPhoneArchiveFactCheckpointMigration.register(on: &migrator)
         return migrator
     }
 

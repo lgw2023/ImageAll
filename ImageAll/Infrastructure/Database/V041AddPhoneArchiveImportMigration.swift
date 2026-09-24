@@ -90,3 +90,23 @@ enum V041AddPhoneArchiveImportMigration {
         }
     }
 }
+
+/// Additive checkpoint. V041 remains unchanged for catalogs that already ran it.
+enum V042AddPhoneArchiveFactCheckpointMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v042AddPhoneArchiveFactCheckpoint) { db in
+            try db.execute(sql: """
+                ALTER TABLE migration_import ADD COLUMN fact_snapshot_sequence
+                INTEGER NOT NULL DEFAULT 0 CHECK(fact_snapshot_sequence >= 0)
+                """)
+            try db.execute(sql: """
+                ALTER TABLE migration_import ADD COLUMN fact_watermark
+                INTEGER NOT NULL DEFAULT 0 CHECK(fact_watermark >= 0)
+                """)
+            try db.execute(sql: """
+                ALTER TABLE migration_import ADD COLUMN fact_snapshot_sha256
+                TEXT CHECK(fact_snapshot_sha256 IS NULL OR length(fact_snapshot_sha256) = 64)
+                """)
+        }
+    }
+}

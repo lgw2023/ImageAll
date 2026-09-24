@@ -4,6 +4,31 @@ import ImageAllRemoteProtocol
 import XCTest
 
 final class ImageAllMigrationArchiveTests: XCTestCase {
+    func testFactSnapshotRoundTripRejectsDuplicateMediaIdentity() throws {
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("facts.imageallfacts")
+        let item = ImageAllMigrationFactItem(
+            mediaID: UUID(), observedFavorite: true, favoriteTarget: false,
+            tagDecisions: [.init(tagID: UUID(), tagName: "风景", decision: .accepted)],
+            collections: [.init(collectionID: UUID(), collectionName: "旅行", included: true)]
+        )
+        let snapshot = ImageAllMigrationFactSnapshot(
+            sourceDeviceID: UUID(), sourceEpoch: UUID(), scopeRevision: 2,
+            snapshotSequence: 4, factWatermark: 7, items: [item]
+        )
+        try ImageAllMigrationFacts.write(snapshot, to: url)
+        XCTAssertEqual(try ImageAllMigrationFacts.read(at: url), snapshot)
+        let duplicate = ImageAllMigrationFactSnapshot(
+            sourceDeviceID: snapshot.sourceDeviceID, sourceEpoch: snapshot.sourceEpoch,
+            scopeRevision: 2, snapshotSequence: 4, factWatermark: 7,
+            items: [item, item]
+        )
+        XCTAssertThrowsError(try ImageAllMigrationFacts.write(duplicate, to: url)) {
+            XCTAssertEqual($0 as? ImageAllMigrationFactsError, .invalidSnapshot)
+        }
+    }
+
     func testIndependentVerifierChecksOriginalBytesAndHumanFacts() throws {
         let root = makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }

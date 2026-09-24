@@ -1322,6 +1322,46 @@ private final class PhoneArchiveImportModel: ObservableObject {
         }
     }
 
+    func importFactSnapshot() async {
+        guard !isBusy, let batch = selectedBatch,
+              let importer = PhoneArchiveImportProcessHolder.importer() else { return }
+        let panel = NSOpenPanel()
+        panel.title = "选择 iPhone 整理信息快照"
+        panel.message = "只接受与当前归档批次的来源身份、范围及资产集合一致的快照。"
+        panel.prompt = "导入"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.resolvesAliases = false
+        NSApp.activate(ignoringOtherApps: true)
+        let chosen: URL? = await withCheckedContinuation { continuation in
+            DispatchQueue.main.async {
+                continuation.resume(returning: panel.runModal() == .OK ? panel.url : nil)
+            }
+        }
+        guard let chosen else { return }
+        guard !isProtectedPhotoVolume(chosen) else {
+            message = "受保护的 HDD2 真实照片目录不能作为此阶段的快照来源。"
+            return
+        }
+        let accessed = chosen.startAccessingSecurityScopedResource()
+        defer { if accessed { chosen.stopAccessingSecurityScopedResource() } }
+        isBusy = true
+        do {
+            let receipt = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.reconcileFacts(from: chosen, migrationID: batch.id)
+            }
+            isBusy = false
+            await refresh()
+            message = receipt.replayed
+                ? "此整理信息快照已导入；\(receipt.itemCount) 项事实保持一致。"
+                : "已核对 \(receipt.itemCount) 项整理信息；媒体归档完成回执仍需后续独立验收。"
+        } catch {
+            isBusy = false
+            message = "整理信息对账失败：\(error.localizedDescription)"
+        }
+    }
+
     private func chooseDirectory(title: String, message: String) async -> URL? {
         let panel = NSOpenPanel()
         panel.title = title
@@ -1378,7 +1418,8 @@ private struct PhoneArchiveImportCard: View {
                         HStack {
                             Image(systemName: model.selectedBatchID == batch.id
                                   ? "checkmark.circle.fill" : "archivebox")
-                            Text("\(batch.itemCount) 项 · \(batch.resourceCount) 个资源")
+                            Text("\(batch.itemCount) 项 · \(batch.resourceCount) 个资源" +
+                                 (batch.factSnapshotSequence > 0 ? " · 整理快照已导入" : " · 整理快照待对账"))
                             Spacer()
                             Text(Date(timeIntervalSince1970: TimeInterval(batch.importedAtMs) / 1_000)
                                 .formatted(date: .abbreviated, time: .shortened))
@@ -1392,9 +1433,15 @@ private struct PhoneArchiveImportCard: View {
             }
             if let batch = model.selectedBatch {
                 Divider()
-                Text(batch.archivePath)
-                    .font(.caption).foregroundStyle(.secondary)
-                    .lineLimit(1).truncationMode(.middle)
+                HStack {
+                    Text(batch.archivePath)
+                        .font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.middle)
+                    Spacer()
+                    Button("导入整理信息快照") { Task { await model.importFactSnapshot() } }
+                        .buttonStyle(.bordered)
+                        .disabled(model.isBusy)
+                }
                 ForEach(model.items) { item in
                     HStack {
                         VStack(alignment: .leading, spacing: 3) {

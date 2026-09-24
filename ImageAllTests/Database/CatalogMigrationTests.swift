@@ -1344,6 +1344,10 @@ final class CatalogMigrationTests: XCTestCase {
     }
 
     private static func dropV035AndLaterTables(_ db: Database) throws {
+        try db.execute(
+            sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
+            arguments: [CatalogMigrationID.v042AddPhoneArchiveFactCheckpoint]
+        )
         try db.execute(sql: "DROP TABLE IF EXISTS migration_import_collection")
         try db.execute(sql: "DROP TABLE IF EXISTS migration_import_tag_decision")
         try db.execute(sql: "DROP TABLE IF EXISTS migration_import_resource")

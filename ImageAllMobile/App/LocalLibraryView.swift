@@ -167,6 +167,10 @@ final class LocalLibraryModel: ObservableObject {
     }
 
     func prepareSharedSnapshot() async throws -> LocalSharedSnapshot {
+        try await makeSharedSnapshot(forMigrationFacts: false)
+    }
+
+    private func makeSharedSnapshot(forMigrationFacts: Bool) async throws -> LocalSharedSnapshot {
         guard let store else { throw LocalFavoriteSourceError.storeUnavailable }
         let selections = try await store.sharedSelections()
         var visible: [PHAsset] = []
@@ -188,9 +192,11 @@ final class LocalLibraryModel: ObservableObject {
                 isFavorite: $0.isFavorite
             )
         })
-        return try await store.prepareSharedSnapshot(
-            visibleIdentifiers: Set(visible.map(\.localIdentifier))
-        )
+        let identifiers = Set(visible.map(\.localIdentifier))
+        if forMigrationFacts {
+            return try await store.migrationFactSnapshot(visibleIdentifiers: identifiers)
+        }
+        return try await store.prepareSharedSnapshot(visibleIdentifiers: identifiers)
     }
 
     /// An explicit, local-only export of the current selected scope. A reduced
@@ -217,6 +223,19 @@ final class LocalLibraryModel: ObservableObject {
             try? FileManager.default.removeItem(at: result.0)
             throw error
         }
+    }
+
+    func exportSelectedFacts() async throws -> URL {
+        let snapshot = try await makeSharedSnapshot(forMigrationFacts: true)
+        guard !snapshot.selectedAssetIDs.isEmpty else {
+            throw LocalArchiveExportError.emptySelection
+        }
+        guard Set(snapshot.selectedAssetIDs) == Set(snapshot.assets.map(\.id)) else {
+            throw LocalArchiveExportError.selectionNotVisible
+        }
+        return try await Task.detached(priority: .utility) {
+            try LocalMigrationFactExporter.export(snapshot: snapshot)
+        }.value
     }
 
     func completeSharedSync(
@@ -749,7 +768,9 @@ private struct LocalShareScopeView: View {
     @ObservedObject var remoteModel: RemoteCompanionModel
     @State private var isSending = false
     @State private var isExporting = false
+    @State private var isExportingFacts = false
     @State private var exportedArchive: URL?
+    @State private var exportedFacts: URL?
     @State private var statusMessage: String?
     @State private var archiveStatusMessage: String?
 
@@ -966,6 +987,23 @@ private struct LocalShareScopeView: View {
             if let exportedArchive {
                 LocalArchiveShareButton(url: exportedArchive)
             }
+            Button(isExportingFacts ? "正在生成整理信息快照…" : "导出最新整理信息快照") {
+                Task {
+                    isExportingFacts = true
+                    exportedFacts = nil
+                    defer { isExportingFacts = false }
+                    do {
+                        exportedFacts = try await model.exportSelectedFacts()
+                        archiveStatusMessage = "整理信息快照已生成；请在 Mac 选中对应归档批次后导入。此操作不代表迁移完成。"
+                    } catch {
+                        archiveStatusMessage = "整理信息快照未生成：\(error.localizedDescription)"
+                    }
+                }
+            }
+            .disabled(isExporting || isExportingFacts || model.sharedSelections.isEmpty)
+            if let exportedFacts {
+                LocalFactsShareButton(url: exportedFacts)
+            }
             if let archiveStatusMessage {
                 Text(archiveStatusMessage).font(.footnote).foregroundStyle(.secondary)
             }
@@ -1038,6 +1076,84 @@ private struct LocalArchiveShareButton: View {
         ) {
             Text("导出归档包到文件或其他 App")
         }
+    }
+}
+
+private struct LocalMigrationFactsTransfer: Transferable, Sendable {
+    let url: URL
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(
+            exportedContentType: UTType(exportedAs: "com.gwlee.imageall.migration-facts")
+        ) { facts in
+            SentTransferredFile(facts.url)
+        }
+    }
+}
+
+private struct LocalFactsShareButton: View {
+    let url: URL
+
+    var body: some View {
+        ShareLink(
+            item: LocalMigrationFactsTransfer(url: url),
+            preview: SharePreview("ImageAll 整理信息快照")
+        ) {
+            Text("导出整理信息快照到文件或其他 App")
+        }
+    }
+}
+
+private enum LocalMigrationFactExporter {
+    static func export(snapshot: LocalSharedSnapshot) throws -> URL {
+        let items = snapshot.assets.map { asset in
+            ImageAllMigrationFactItem(
+                mediaID: asset.id, observedFavorite: asset.observedFavorite,
+                favoriteTarget: asset.favoriteTarget,
+                tagDecisions: asset.tagDecisions.map { tag in
+                    let decision: RemoteLocalLibraryDecision
+                    switch tag.decision {
+                    case .accepted: decision = .accepted
+                    case .rejected: decision = .rejected
+                    case .cleared: decision = .cleared
+                    }
+                    return ImageAllMigrationTagDecision(
+                        tagID: tag.tagID, tagName: tag.tagName, decision: decision
+                    )
+                },
+                collections: asset.collections.map { collection in
+                    ImageAllMigrationCollectionMembership(
+                        collectionID: collection.collectionID,
+                        collectionName: collection.collectionName, included: true
+                    )
+                }
+            )
+        }
+        let facts = ImageAllMigrationFactSnapshot(
+            sourceDeviceID: snapshot.installID, sourceEpoch: snapshot.sourceEpoch,
+            scopeRevision: snapshot.scopeRevision,
+            snapshotSequence: snapshot.snapshotSequence,
+            factWatermark: snapshot.outboxWatermark, items: items
+        )
+        let manager = FileManager.default
+        let support = try manager.url(
+            for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: true
+        )
+        let parent = support.appendingPathComponent(
+            "LocalLibrary/MigrationFacts", isDirectory: true
+        )
+        try manager.createDirectory(at: parent, withIntermediateDirectories: true)
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        var mutableParent = parent
+        try mutableParent.setResourceValues(values)
+        let url = parent.appendingPathComponent("\(UUID().uuidString).imageallfacts")
+        try ImageAllMigrationFacts.write(facts, to: url)
+        try manager.setAttributes(
+            [.protectionKey: FileProtectionType.complete], ofItemAtPath: url.path
+        )
+        return url
     }
 }
 

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import GRDB
 import ImageAllRemoteProtocol
@@ -10,6 +11,9 @@ enum PhoneArchiveImportError: LocalizedError, Equatable {
     case missingImportJournal
     case targetOverlapsMacLibrary
     case targetIsolationIndeterminate
+    case factScopeMismatch
+    case staleFactSnapshot
+    case factSnapshotConflict
 
     var errorDescription: String? {
         switch self {
@@ -20,6 +24,9 @@ enum PhoneArchiveImportError: LocalizedError, Equatable {
         case .missingImportJournal: "归档导入记录丢失，不能返回完成回执。"
         case .targetOverlapsMacLibrary: "保存目录与 Mac 已授权的图库来源重叠，请选择独立目录。"
         case .targetIsolationIndeterminate: "无法确认保存目录与 Mac 图库来源隔离，请检查来源磁盘授权。"
+        case .factScopeMismatch: "整理信息快照与所选归档批次的来源或资产集合不一致。"
+        case .staleFactSnapshot: "整理信息快照早于已导入版本，请从手机重新导出。"
+        case .factSnapshotConflict: "同一整理信息版本的内容不一致，需要先对账。"
         }
     }
 }
@@ -34,6 +41,14 @@ struct PhoneArchiveImportReceipt: Sendable, Equatable {
     let replayed: Bool
 }
 
+struct PhoneArchiveFactReceipt: Sendable, Equatable {
+    let migrationID: UUID
+    let itemCount: Int
+    let snapshotSequence: Int64
+    let factWatermark: Int64
+    let replayed: Bool
+}
+
 struct PhoneArchiveImportedBatch: Identifiable, Sendable {
     let id: UUID
     let archivePath: String
@@ -43,6 +58,7 @@ struct PhoneArchiveImportedBatch: Identifiable, Sendable {
     let resourceCount: Int
     let verifiedBytes: Int64
     let importedAtMs: Int64
+    let factSnapshotSequence: Int64
 }
 
 struct PhoneArchiveImportedItem: Identifiable, Sendable {
@@ -62,11 +78,121 @@ struct PhoneArchiveImportedItem: Identifiable, Sendable {
 struct VerifiedPhoneArchiveImporter: Sendable {
     let database: CatalogDatabase
 
+    func reconcileFacts(from url: URL, migrationID: UUID) throws -> PhoneArchiveFactReceipt {
+        let snapshot = try ImageAllMigrationFacts.read(at: url)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let digest = SHA256.hash(data: try encoder.encode(snapshot))
+            .map { String(format: "%02x", $0) }.joined()
+        let id = migrationID.uuidString.lowercased()
+        return try database.pool.write { db in
+            guard let batch = try Row.fetchOne(
+                db, sql: "SELECT * FROM migration_import WHERE id = ? AND state = 'catalogCommitted'",
+                arguments: [id]
+            ) else { throw PhoneArchiveImportError.missingImportJournal }
+            let sourceDevice: String = batch["source_device_id"]
+            let sourceEpoch: String = batch["source_epoch"]
+            let scopeRevision: Int64 = batch["scope_revision"]
+            let inventoryWatermark: Int64 = batch["inventory_watermark"]
+            let count: Int = batch["item_count"]
+            let previousSequence: Int64 = batch["fact_snapshot_sequence"]
+            let previousHash: String? = batch["fact_snapshot_sha256"]
+            guard sourceDevice == snapshot.sourceDeviceID.uuidString.lowercased(),
+                  sourceEpoch == snapshot.sourceEpoch.uuidString.lowercased(),
+                  scopeRevision == snapshot.scopeRevision,
+                  count == snapshot.items.count else {
+                throw PhoneArchiveImportError.factScopeMismatch
+            }
+            guard snapshot.snapshotSequence >= inventoryWatermark,
+                  snapshot.snapshotSequence >= previousSequence else {
+                throw PhoneArchiveImportError.staleFactSnapshot
+            }
+            if snapshot.snapshotSequence == previousSequence {
+                guard previousHash == digest else {
+                    throw PhoneArchiveImportError.factSnapshotConflict
+                }
+                return PhoneArchiveFactReceipt(
+                    migrationID: migrationID, itemCount: count,
+                    snapshotSequence: snapshot.snapshotSequence,
+                    factWatermark: snapshot.factWatermark, replayed: true
+                )
+            }
+            let highestFactRevision = try Int64.fetchOne(
+                db, sql: "SELECT MAX(fact_revision) FROM migration_import_item WHERE migration_id = ?",
+                arguments: [id]
+            ) ?? 0
+            guard snapshot.factWatermark >= highestFactRevision else {
+                throw PhoneArchiveImportError.staleFactSnapshot
+            }
+            for item in snapshot.items {
+                let media = item.mediaID.uuidString.lowercased()
+                guard try Int.fetchOne(db, sql: """
+                    SELECT 1 FROM migration_import_item WHERE migration_id = ? AND media_id = ?
+                    """, arguments: [id, media]) != nil else {
+                    throw PhoneArchiveImportError.factScopeMismatch
+                }
+                try db.execute(sql: """
+                    UPDATE migration_import_item
+                    SET observed_favorite = ?, favorite_target = ?, fact_revision = ?
+                    WHERE migration_id = ? AND media_id = ?
+                    """, arguments: [
+                        item.observedFavorite ? 1 : 0,
+                        item.favoriteTarget.map { $0 ? 1 : 0 }, snapshot.factWatermark,
+                        id, media,
+                    ])
+                try db.execute(sql: """
+                    DELETE FROM migration_import_tag_decision
+                    WHERE source_device_id = ? AND source_epoch = ? AND media_id = ?
+                    """, arguments: [sourceDevice, sourceEpoch, media])
+                try db.execute(sql: """
+                    DELETE FROM migration_import_collection
+                    WHERE source_device_id = ? AND source_epoch = ? AND media_id = ?
+                    """, arguments: [sourceDevice, sourceEpoch, media])
+                for tag in item.tagDecisions {
+                    try db.execute(sql: """
+                        INSERT INTO migration_import_tag_decision (
+                            source_device_id, source_epoch, media_id, tag_id, tag_name, decision
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        """, arguments: [
+                            sourceDevice, sourceEpoch, media, tag.tagID.uuidString.lowercased(),
+                            tag.tagName, tag.decision.rawValue,
+                        ])
+                }
+                for collection in item.collections {
+                    try db.execute(sql: """
+                        INSERT INTO migration_import_collection (
+                            source_device_id, source_epoch, media_id,
+                            collection_id, collection_name, included
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        """, arguments: [
+                            sourceDevice, sourceEpoch, media,
+                            collection.collectionID.uuidString.lowercased(),
+                            collection.collectionName, collection.included ? 1 : 0,
+                        ])
+                }
+            }
+            try db.execute(sql: """
+                UPDATE migration_import
+                SET fact_snapshot_sequence = ?, fact_watermark = ?, fact_snapshot_sha256 = ?,
+                    updated_at_ms = ? WHERE id = ?
+                """, arguments: [
+                    snapshot.snapshotSequence, snapshot.factWatermark, digest,
+                    Int64(Date().timeIntervalSince1970 * 1_000), id,
+                ])
+            return PhoneArchiveFactReceipt(
+                migrationID: migrationID, itemCount: count,
+                snapshotSequence: snapshot.snapshotSequence,
+                factWatermark: snapshot.factWatermark, replayed: false
+            )
+        }
+    }
+
     func importedBatches() throws -> [PhoneArchiveImportedBatch] {
         try database.pool.read { db in
             try Row.fetchAll(db, sql: """
                 SELECT id, archive_path, target_parent_path, target_bookmark,
-                       item_count, resource_count, verified_bytes, updated_at_ms
+                       item_count, resource_count, verified_bytes, updated_at_ms,
+                       fact_snapshot_sequence
                 FROM migration_import WHERE state = 'catalogCommitted'
                 ORDER BY updated_at_ms DESC
                 """).compactMap { row in
@@ -79,7 +205,8 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                     itemCount: row["item_count"],
                     resourceCount: row["resource_count"],
                     verifiedBytes: row["verified_bytes"],
-                    importedAtMs: row["updated_at_ms"]
+                    importedAtMs: row["updated_at_ms"],
+                    factSnapshotSequence: row["fact_snapshot_sequence"]
                 )
             }
         }

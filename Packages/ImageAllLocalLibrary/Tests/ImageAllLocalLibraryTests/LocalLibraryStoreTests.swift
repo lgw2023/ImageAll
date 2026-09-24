@@ -283,6 +283,9 @@ import Testing
     try await store.setDecision(assetID: asset.id, tagID: tag, decision: .accepted)
     let first = try await store.prepareSharedSnapshot(visibleIdentifiers: ["selected"])
     try await store.setDecision(assetID: asset.id, tagID: tag, decision: .rejected)
+    let facts = try await store.migrationFactSnapshot(visibleIdentifiers: ["selected"])
+    #expect(facts.snapshotSequence > first.snapshotSequence)
+    #expect(facts.assets.first?.tagDecisions.first?.decision == .rejected)
     let reopened = try LocalLibraryStore(url: url)
     let retry = try await reopened.prepareSharedSnapshot(visibleIdentifiers: ["selected"])
     #expect(retry.snapshotSequence == first.snapshotSequence)
@@ -295,7 +298,7 @@ import Testing
     #expect(pending.count == 1)
     #expect(pending.first?.value == LocalDecision.rejected.rawValue)
     let fresh = try await reopened.prepareSharedSnapshot(visibleIdentifiers: ["selected"])
-    #expect(fresh.snapshotSequence == first.snapshotSequence + 1)
+    #expect(fresh.snapshotSequence == facts.snapshotSequence + 1)
     #expect(fresh.assets.first?.tagDecisions.first?.decision == .rejected)
 }
 
@@ -389,6 +392,9 @@ import Testing
         snapshot, hostID: hostID, deviceID: deviceID, importedAssetIDs: [asset.id]
     )
     #expect(try await store.pendingSharedOperations().isEmpty)
+    #expect(try await store.sharedSnapshot(
+        visibleIdentifiers: ["selected"]
+    ).outboxWatermark >= snapshot.outboxWatermark)
 
     try await store.setDecision(assetID: asset.id, tagID: tagID, decision: .rejected)
     let pending = try #require(await store.pendingSharedOperations().first)
