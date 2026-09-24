@@ -1388,6 +1388,24 @@ final class PhoneArchiveImportModel: ObservableObject {
         await loadMore(using: importer)
     }
 
+    func refreshVisibleItemsAfterBinding() async {
+        guard !isBusy, let id = selectedBatchID,
+              let importer = PhoneArchiveImportProcessHolder.importer() else { return }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let count = max(items.count, 100)
+            let loaded = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.importedItems(migrationID: id, offset: 0, limit: count)
+            }
+            guard selectedBatchID == id else { return }
+            items = loaded
+            message = "已记录用户确认的身份关联；两端整理信息仍独立，后续需按冲突规则收敛。"
+        } catch {
+            message = "关联已提交，但刷新目录失败：\(error.localizedDescription)"
+        }
+    }
+
     private func loadMore(using importer: VerifiedPhoneArchiveImporter) async {
         guard let id = selectedBatchID, !isBusy else { return }
         isBusy = true
@@ -1969,6 +1987,7 @@ private struct PhoneArchiveImportCard: View {
 
 struct PhoneArchiveGalleryView: View {
     @StateObject private var model = PhoneArchiveImportModel()
+    @State private var bindingItem: PhoneArchiveImportedItem?
     private let columns = [GridItem(.adaptive(minimum: 190, maximum: 260), spacing: 12)]
 
     var body: some View {
@@ -2032,41 +2051,53 @@ struct PhoneArchiveGalleryView: View {
                 ScrollView {
                     LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
                         ForEach(model.items) { item in
-                            Button {
-                                Task { await model.previewOriginal(item) }
-                            } label: {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    PhoneArchiveGridThumbnail(
-                                        url: model.galleryOriginalURLs[item.id],
-                                        isVideo: item.mediaKind == "video"
-                                    )
-                                    .frame(maxWidth: .infinity, minHeight: 92)
-                                    .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
-                                    Text(item.mediaKind == "video" ? "视频" : "照片")
-                                        .font(.headline)
-                                    if let createdAtMs = item.createdAtMs {
-                                        Text(Date(timeIntervalSince1970: TimeInterval(createdAtMs) / 1_000)
-                                            .formatted(date: .abbreviated, time: .shortened))
+                            VStack(alignment: .leading, spacing: 8) {
+                                Button {
+                                    Task { await model.previewOriginal(item) }
+                                } label: {
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        PhoneArchiveGridThumbnail(
+                                            url: model.galleryOriginalURLs[item.id],
+                                            isVideo: item.mediaKind == "video"
+                                        )
+                                        .frame(maxWidth: .infinity, minHeight: 92)
+                                        .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                                        Text(item.mediaKind == "video" ? "视频" : "照片")
+                                            .font(.headline)
+                                        if let createdAtMs = item.createdAtMs {
+                                            Text(Date(timeIntervalSince1970: TimeInterval(createdAtMs) / 1_000)
+                                                .formatted(date: .abbreviated, time: .shortened))
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        Text("\(item.resourceCount) 个资源 · \(item.tagCount) 项标签 · \(item.collectionCount) 个集合")
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
+                                            .lineLimit(2)
+                                        if item.assetBindingCount > 0 {
+                                            Label("已关联 \(item.assetBindingCount) 项 Mac 资产", systemImage: "link")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        Text(item.sourceLocalIdentifier)
+                                            .font(.caption2)
+                                            .foregroundStyle(.tertiary)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
                                     }
-                                    Text("\(item.resourceCount) 个资源 · \(item.tagCount) 项标签 · \(item.collectionCount) 个集合")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(2)
-                                    Text(item.sourceLocalIdentifier)
-                                        .font(.caption2)
-                                        .foregroundStyle(.tertiary)
-                                        .lineLimit(1)
-                                        .truncationMode(.middle)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(10)
+                                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                                 }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(10)
-                                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                                .buttonStyle(.plain)
+                                .disabled(model.isBusy)
+                                .accessibilityLabel("预览归档\(item.mediaKind == "video" ? "视频" : "照片")，\(item.sourceLocalIdentifier)")
+                                Button("关联现有 Mac 资产…", systemImage: "link.badge.plus") {
+                                    bindingItem = item
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(model.isBusy)
                             }
-                            .buttonStyle(.plain)
-                            .disabled(model.isBusy)
-                            .accessibilityLabel("预览归档\(item.mediaKind == "video" ? "视频" : "照片")，\(item.sourceLocalIdentifier)")
                         }
                     }
                     if let batch = model.selectedBatch, model.items.count < batch.itemCount {
@@ -2090,6 +2121,150 @@ struct PhoneArchiveGalleryView: View {
         }
         .sheet(item: $model.preview, onDismiss: { model.dismissPreview() }) { preview in
             PhoneArchivePreviewSheet(preview: preview)
+        }
+        .sheet(item: $bindingItem) { item in
+            if let migrationID = model.selectedBatchID {
+                PhoneArchiveAssetBindingSheet(migrationID: migrationID, item: item) {
+                    Task { await model.refreshVisibleItemsAfterBinding() }
+                }
+            }
+        }
+    }
+}
+
+private struct PhoneArchiveAssetBindingSheet: View {
+    let migrationID: UUID
+    let item: PhoneArchiveImportedItem
+    let onBound: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var search = ""
+    @State private var candidates: [PhoneArchiveAssetCandidate] = []
+    @State private var boundAssets: [PhoneArchiveBoundAsset] = []
+    @State private var selected: PhoneArchiveAssetCandidate?
+    @State private var message: String?
+    @State private var isBusy = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("关联现有 Mac 资产").font(.title2.weight(.semibold))
+            Text("iPhone 归档：\(item.sourceLocalIdentifier) · \(item.id.uuidString)")
+                .font(.caption).textSelection(.enabled)
+            Text("按文件名、来源或资产 ID 搜索，然后核对来源和定位信息。关联只记录身份；不会移动文件或合并标签、相册与收藏。")
+                .font(.footnote).foregroundStyle(.secondary)
+            if !boundAssets.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("已确认的 Mac 关联").font(.subheadline.weight(.semibold))
+                    ForEach(boundAssets) { asset in
+                        Text("\(asset.displayName) · \(asset.sourceName) · \(asset.id.uuidString)")
+                            .font(.caption).textSelection(.enabled)
+                    }
+                }
+            }
+            HStack {
+                TextField("至少输入两个字符", text: $search)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { Task { await loadCandidates() } }
+                Button("搜索") { Task { await loadCandidates() } }
+                    .disabled(search.trimmingCharacters(in: .whitespacesAndNewlines).count < 2 || isBusy)
+            }
+            if let message {
+                Text(message).font(.footnote).foregroundStyle(.orange)
+            }
+            List(candidates) { candidate in
+                Button {
+                    selected = candidate
+                } label: {
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack {
+                            Text(candidate.displayName).font(.headline)
+                            Spacer()
+                            if selected?.id == candidate.id {
+                                Image(systemName: "checkmark.circle.fill")
+                            }
+                        }
+                        Text("\(candidate.sourceName) · \(candidate.locatorDescription)")
+                            .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        Text(candidate.id.uuidString)
+                            .font(.caption2).foregroundStyle(.tertiary).textSelection(.enabled)
+                        if let createdAtMs = candidate.createdAtMs {
+                            Text(Date(timeIntervalSince1970: TimeInterval(createdAtMs) / 1_000)
+                                .formatted(date: .abbreviated, time: .shortened))
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                        if let bound = candidate.boundMediaID, bound != item.id {
+                            Text("已关联其他媒体").font(.caption).foregroundStyle(.orange)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(candidate.boundMediaID != nil && candidate.boundMediaID != item.id)
+            }
+            if let selected {
+                Text("待确认：\(selected.displayName)（\(selected.sourceName)）→ iPhone 归档 \(item.sourceLocalIdentifier)")
+                    .font(.footnote.weight(.medium))
+            }
+            HStack {
+                Spacer()
+                Button("完成") { dismiss() }
+                Button("确认关联") { Task { await confirm() } }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(selected == nil || isBusy)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 620, minHeight: 500)
+        .task { await loadBoundAssets() }
+    }
+
+    private func loadBoundAssets() async {
+        guard let importer = PhoneArchiveImportProcessHolder.importer() else { return }
+        do {
+            boundAssets = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.boundAssets(migrationID: migrationID, mediaID: item.id)
+            }
+        } catch {
+            message = "读取已关联资产失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func loadCandidates() async {
+        guard !isBusy, let importer = PhoneArchiveImportProcessHolder.importer() else { return }
+        let term = search
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            candidates = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.assetBindingCandidates(
+                    migrationID: migrationID, mediaID: item.id, search: term
+                )
+            }
+            selected = nil
+            message = candidates.isEmpty
+                ? "前 500 条检索结果中没有同类型的可用 Mac 资产，请缩小关键词。" : nil
+        } catch {
+            selected = nil
+            message = "搜索失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func confirm() async {
+        guard !isBusy, let selected,
+              let importer = PhoneArchiveImportProcessHolder.importer() else { return }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            _ = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.confirmAssetBinding(
+                    migrationID: migrationID, mediaID: item.id, candidate: selected
+                )
+            }
+            await loadBoundAssets()
+            candidates = []
+            self.selected = nil
+            message = "关联已记录；整理信息仍需单独对账。"
+            onBound()
+        } catch {
+            message = "关联失败：\(error.localizedDescription)"
         }
     }
 }

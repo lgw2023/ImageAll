@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import GRDB
 import ImageAllRemoteProtocol
+import UniformTypeIdentifiers
 
 enum PhoneArchiveImportError: LocalizedError, Equatable {
     case incompleteArchive
@@ -18,6 +19,9 @@ enum PhoneArchiveImportError: LocalizedError, Equatable {
     case recoveryDestinationNotEmpty
     case insufficientRecoverySpace
     case validationStale
+    case assetBindingCandidateChanged
+    case assetAlreadyBound
+    case assetKindMismatch
 
     var errorDescription: String? {
         switch self {
@@ -35,6 +39,9 @@ enum PhoneArchiveImportError: LocalizedError, Equatable {
         case .recoveryDestinationNotEmpty: "恢复验收需要单独的空目录，以免覆盖现有文件或 catalog。"
         case .insufficientRecoverySpace: "恢复目录可用空间不足以容纳独立归档副本，请选择其他磁盘。"
         case .validationStale: "验收记录所绑定的归档、恢复副本或事实水位已变化，请重新核查。"
+        case .assetBindingCandidateChanged: "Mac 资产或来源已变化，请重新搜索并确认。"
+        case .assetAlreadyBound: "此 Mac 资产已关联其他媒体，不能重复关联。"
+        case .assetKindMismatch: "手机归档与 Mac 资产的媒体类型不一致。"
         }
     }
 }
@@ -118,6 +125,35 @@ struct PhoneArchiveImportedItem: Identifiable, Sendable {
     let tagCount: Int
     let collectionCount: Int
     let appleAlbumCount: Int
+    let assetBindingCount: Int
+}
+
+struct PhoneArchiveAssetCandidate: Identifiable, Sendable, Equatable {
+    let id: UUID
+    let sourceID: UUID
+    let displayName: String
+    let sourceName: String
+    let sourceUpdatedAtMs: Int64
+    let locatorDescription: String
+    let mediaType: String
+    let contentRevision: Int64
+    let createdAtMs: Int64?
+    let boundMediaID: UUID?
+}
+
+struct PhoneArchiveAssetBindingReceipt: Sendable, Equatable {
+    let mediaID: UUID
+    let assetID: UUID
+    let replayed: Bool
+}
+
+struct PhoneArchiveBoundAsset: Identifiable, Sendable {
+    let id: UUID
+    let displayName: String
+    let sourceName: String
+    let locatorDescription: String
+    let evidenceKind: String
+    let createdAtMs: Int64
 }
 
 struct PhoneArchiveSourceLink: Sendable, Equatable {
@@ -968,7 +1004,9 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                           AND c.media_id = i.media_id AND c.included = 1) AS collection_count,
                        (SELECT COUNT(*) FROM migration_import_apple_album_member a
                         WHERE a.migration_id = i.migration_id AND a.media_id = i.media_id)
-                        AS apple_album_count
+                        AS apple_album_count,
+                       (SELECT COUNT(*) FROM media_asset_binding b
+                        WHERE b.media_id = i.media_id) AS asset_binding_count
                 FROM migration_import_item i
                 JOIN migration_import m ON m.id = i.migration_id
                 WHERE i.migration_id = ? AND m.state = 'catalogCommitted'
@@ -980,10 +1018,195 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                     mediaKind: row["media_kind"], createdAtMs: row["created_at_ms"],
                     resourceCount: row["resource_count"], tagCount: row["tag_count"],
                     collectionCount: row["collection_count"],
-                    appleAlbumCount: row["apple_album_count"]
+                    appleAlbumCount: row["apple_album_count"],
+                    assetBindingCount: row["asset_binding_count"]
                 )
             }
         }
+    }
+
+    /// Metadata-only search. Matching bytes or filenames never create a binding.
+    func assetBindingCandidates(
+        migrationID: UUID, mediaID: UUID, search: String
+    ) throws -> [PhoneArchiveAssetCandidate] {
+        let term = String(search.trimmingCharacters(in: .whitespacesAndNewlines).prefix(160))
+        guard term.count >= 2 else { return [] }
+        return try database.pool.read { db in
+            let kind = try importedMediaKind(db, migrationID: migrationID, mediaID: mediaID)
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT a.id, a.source_id, a.file_name, a.relative_path,
+                       a.photos_local_identifier, a.media_type, a.content_revision,
+                       a.media_created_at_ms, s.display_name AS source_name,
+                       s.updated_at_ms AS source_updated_at_ms,
+                       b.media_id AS bound_media_id
+                FROM asset a
+                JOIN source s ON s.id = a.source_id
+                LEFT JOIN media_asset_binding b ON b.asset_id = a.id
+                WHERE a.locator_state = 'current' AND a.availability = 'available'
+                  AND s.state = 'active'
+                  AND (
+                    instr(lower(coalesce(a.file_name, '')), lower(?)) > 0
+                    OR instr(lower(coalesce(a.relative_path, '')), lower(?)) > 0
+                    OR instr(lower(coalesce(a.photos_local_identifier, '')), lower(?)) > 0
+                    OR instr(lower(s.display_name), lower(?)) > 0
+                    OR lower(a.id) = lower(?)
+                  )
+                ORDER BY a.media_created_at_ms DESC, a.id
+                LIMIT 500
+                """, arguments: [term, term, term, term, term])
+            return try rows.compactMap { row -> PhoneArchiveAssetCandidate? in
+                let mediaType: String = row["media_type"]
+                guard Self.assetKind(mediaType) == kind else { return nil }
+                let rawID: String = row["id"]
+                let rawSourceID: String = row["source_id"]
+                guard let id = UUID(uuidString: rawID),
+                      let sourceID = UUID(uuidString: rawSourceID) else {
+                    throw PhoneArchiveImportError.catalogDiverged
+                }
+                let fileName: String? = row["file_name"]
+                let relativePath: String? = row["relative_path"]
+                let photosLocator: String? = row["photos_local_identifier"]
+                let boundMedia: String? = row["bound_media_id"]
+                return PhoneArchiveAssetCandidate(
+                    id: id, sourceID: sourceID,
+                    displayName: fileName ?? relativePath?.split(separator: "/").last.map(String.init)
+                        ?? "未命名 Mac 资产",
+                    sourceName: row["source_name"],
+                    sourceUpdatedAtMs: row["source_updated_at_ms"],
+                    locatorDescription: relativePath ?? photosLocator ?? rawID,
+                    mediaType: mediaType, contentRevision: row["content_revision"],
+                    createdAtMs: row["media_created_at_ms"],
+                    boundMediaID: boundMedia.flatMap(UUID.init(uuidString:))
+                )
+            }.prefix(50).map { $0 }
+        }
+    }
+
+    /// The caller presents both identities and asks for an explicit user action.
+    /// This records identity only; existing Mac and phone facts stay independent.
+    func confirmAssetBinding(
+        migrationID: UUID, mediaID: UUID, candidate: PhoneArchiveAssetCandidate
+    ) throws -> PhoneArchiveAssetBindingReceipt {
+        try database.pool.write { db in
+            let kind = try importedMediaKind(db, migrationID: migrationID, mediaID: mediaID)
+            guard let row = try Row.fetchOne(db, sql: """
+                SELECT a.source_id, a.file_name, a.relative_path,
+                       a.photos_local_identifier, a.media_type, a.content_revision,
+                       a.media_created_at_ms, s.display_name AS source_name,
+                       s.updated_at_ms AS source_updated_at_ms
+                FROM asset a JOIN source s ON s.id = a.source_id
+                WHERE a.id = ? AND a.locator_state = 'current'
+                  AND a.availability = 'available' AND s.state = 'active'
+                """, arguments: [candidate.id.uuidString.lowercased()]) else {
+                throw PhoneArchiveImportError.assetBindingCandidateChanged
+            }
+            let mediaType: String = row["media_type"]
+            guard Self.assetKind(mediaType) == kind else {
+                throw PhoneArchiveImportError.assetKindMismatch
+            }
+            let sourceID: String = row["source_id"]
+            let fileName: String? = row["file_name"]
+            let relativePath: String? = row["relative_path"]
+            let photosLocator: String? = row["photos_local_identifier"]
+            let revision: Int64 = row["content_revision"]
+            let createdAtMs: Int64? = row["media_created_at_ms"]
+            let sourceName: String = row["source_name"]
+            let sourceUpdatedAtMs: Int64 = row["source_updated_at_ms"]
+            guard sourceID == candidate.sourceID.uuidString.lowercased(),
+                  (fileName ?? relativePath?.split(separator: "/").last.map(String.init)
+                    ?? "未命名 Mac 资产") == candidate.displayName,
+                  (relativePath ?? photosLocator ?? candidate.id.uuidString.lowercased())
+                    == candidate.locatorDescription,
+                  mediaType == candidate.mediaType,
+                  revision == candidate.contentRevision,
+                  createdAtMs == candidate.createdAtMs,
+                  sourceName == candidate.sourceName,
+                  sourceUpdatedAtMs == candidate.sourceUpdatedAtMs else {
+                throw PhoneArchiveImportError.assetBindingCandidateChanged
+            }
+            let existing: String? = try String.fetchOne(db, sql: """
+                SELECT media_id FROM media_asset_binding WHERE asset_id = ?
+                """, arguments: [candidate.id.uuidString.lowercased()])
+            if let existing {
+                guard existing == mediaID.uuidString.lowercased() else {
+                    throw PhoneArchiveImportError.assetAlreadyBound
+                }
+                return PhoneArchiveAssetBindingReceipt(
+                    mediaID: mediaID, assetID: candidate.id, replayed: true
+                )
+            }
+            try db.execute(sql: """
+                INSERT INTO media_asset_binding (
+                    media_id, asset_id, evidence_kind, created_at_ms
+                ) VALUES (?, ?, 'userConfirmed', ?)
+                """, arguments: [
+                    mediaID.uuidString.lowercased(), candidate.id.uuidString.lowercased(),
+                    Int64(Date().timeIntervalSince1970 * 1_000),
+                ])
+            return PhoneArchiveAssetBindingReceipt(
+                mediaID: mediaID, assetID: candidate.id, replayed: false
+            )
+        }
+    }
+
+    func boundAssets(migrationID: UUID, mediaID: UUID) throws -> [PhoneArchiveBoundAsset] {
+        try database.pool.read { db in
+            _ = try importedMediaKind(db, migrationID: migrationID, mediaID: mediaID)
+            return try Row.fetchAll(db, sql: """
+                SELECT a.id, a.file_name, a.relative_path,
+                       a.photos_local_identifier, s.display_name AS source_name,
+                       b.evidence_kind, b.created_at_ms
+                FROM media_asset_binding b
+                JOIN asset a ON a.id = b.asset_id
+                JOIN source s ON s.id = a.source_id
+                WHERE b.media_id = ? ORDER BY b.created_at_ms, a.id
+                """, arguments: [mediaID.uuidString.lowercased()]).map { row in
+                let rawID: String = row["id"]
+                guard let id = UUID(uuidString: rawID) else {
+                    throw PhoneArchiveImportError.catalogDiverged
+                }
+                let fileName: String? = row["file_name"]
+                let relativePath: String? = row["relative_path"]
+                let photosLocator: String? = row["photos_local_identifier"]
+                return PhoneArchiveBoundAsset(
+                    id: id,
+                    displayName: fileName ?? relativePath?.split(separator: "/").last.map(String.init)
+                        ?? "未命名 Mac 资产",
+                    sourceName: row["source_name"],
+                    locatorDescription: relativePath ?? photosLocator ?? rawID,
+                    evidenceKind: row["evidence_kind"], createdAtMs: row["created_at_ms"]
+                )
+            }
+        }
+    }
+
+    private func importedMediaKind(
+        _ db: Database, migrationID: UUID, mediaID: UUID
+    ) throws -> String {
+        guard let kind = try String.fetchOne(db, sql: """
+            SELECT mi.media_kind
+            FROM migration_import_item i
+            JOIN migration_import m ON m.id = i.migration_id
+            JOIN media_item mi ON mi.id = i.media_id
+                AND mi.source_install_id = i.source_device_id
+                AND mi.source_epoch = i.source_epoch
+            JOIN media_replica r ON r.media_id = mi.id
+                AND r.migration_id = i.migration_id
+            WHERE i.migration_id = ? AND i.media_id = ?
+              AND m.state = 'catalogCommitted' AND r.storage_kind = 'macArchive'
+            """, arguments: [
+                migrationID.uuidString.lowercased(), mediaID.uuidString.lowercased(),
+            ]) else {
+            throw PhoneArchiveImportError.missingImportJournal
+        }
+        return kind
+    }
+
+    private static func assetKind(_ mediaType: String) -> String? {
+        guard let type = UTType(mediaType) else { return nil }
+        if type.conforms(to: .image) { return "image" }
+        if type.conforms(to: .movie) || type.conforms(to: .video) { return "video" }
+        return nil
     }
 
     func importedFacts(migrationID: UUID, mediaID: UUID) throws -> PhoneArchiveImportedFacts {

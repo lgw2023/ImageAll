@@ -439,6 +439,77 @@ final class PhoneArchiveImportTests: XCTestCase {
         )) { XCTAssertEqual($0 as? PhoneArchiveImportError, .catalogDiverged) }
     }
 
+    func testUserConfirmedAssetBindingIsVersionedAndCannotClaimAnotherMedia() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let first = fixture.item(resource: try fixture.resource(
+            "original", bytes: Data("first-phone-image".utf8)
+        ))
+        let second = ImageAllMigrationItem(
+            mediaID: UUID(), sourceLocalIdentifier: "second-phone-local-id",
+            mediaKind: .image, createdAtMs: nil,
+            favoriteTarget: nil, observedFavorite: false, factRevision: 0,
+            tagDecisions: [], collections: [], resources: [try fixture.resource(
+                "original", bytes: Data("second-phone-image".utf8)
+            )]
+        )
+        let header = fixture.header(count: 2)
+        try fixture.write(header: header, items: [first, second])
+        let importer = VerifiedPhoneArchiveImporter(database: fixture.database)
+        _ = try importer.importArchive(from: fixture.incoming, to: fixture.target)
+        let assetID = UUID()
+        try DatabaseTestSupport.makeFolderSourceWithFileAsset(
+            repository: CatalogRepository(database: fixture.database), assetID: assetID
+        )
+        XCTAssertTrue(try importer.assetBindingCandidates(
+            migrationID: header.migrationID, mediaID: first.mediaID, search: "x"
+        ).isEmpty)
+        let candidate = try XCTUnwrap(importer.assetBindingCandidates(
+            migrationID: header.migrationID, mediaID: first.mediaID, search: "photo.jpg"
+        ).first)
+        XCTAssertEqual(candidate.id, assetID)
+        try fixture.database.pool.write { db in
+            try db.execute(sql: """
+                UPDATE asset SET content_revision = content_revision + 1 WHERE id = ?
+                """, arguments: [assetID.uuidString.lowercased()])
+        }
+        XCTAssertThrowsError(try importer.confirmAssetBinding(
+            migrationID: header.migrationID, mediaID: first.mediaID, candidate: candidate
+        )) { XCTAssertEqual($0 as? PhoneArchiveImportError, .assetBindingCandidateChanged) }
+        let refreshedCandidate = try XCTUnwrap(importer.assetBindingCandidates(
+            migrationID: header.migrationID, mediaID: first.mediaID, search: "photo.jpg"
+        ).first)
+        let firstReceipt = try importer.confirmAssetBinding(
+            migrationID: header.migrationID, mediaID: first.mediaID, candidate: refreshedCandidate
+        )
+        XCTAssertFalse(firstReceipt.replayed)
+        XCTAssertTrue(try importer.confirmAssetBinding(
+            migrationID: header.migrationID, mediaID: first.mediaID, candidate: refreshedCandidate
+        ).replayed)
+        XCTAssertThrowsError(try importer.confirmAssetBinding(
+            migrationID: header.migrationID, mediaID: second.mediaID, candidate: refreshedCandidate
+        )) { XCTAssertEqual($0 as? PhoneArchiveImportError, .assetAlreadyBound) }
+        let imported = try importer.importedItems(migrationID: header.migrationID, offset: 0)
+        XCTAssertEqual(imported.first { $0.id == first.mediaID }?.assetBindingCount, 1)
+        XCTAssertEqual(imported.first { $0.id == second.mediaID }?.assetBindingCount, 0)
+        let bound = try importer.boundAssets(migrationID: header.migrationID, mediaID: first.mediaID)
+        XCTAssertEqual(bound.map(\.id), [assetID])
+        XCTAssertEqual(bound.first?.evidenceKind, "userConfirmed")
+        try fixture.database.pool.read { db in
+            XCTAssertEqual(try String.fetchOne(
+                db, sql: "SELECT evidence_kind FROM media_asset_binding WHERE asset_id = ?",
+                arguments: [assetID.uuidString.lowercased()]
+            ), "userConfirmed")
+        }
+        try fixture.database.pool.write { db in
+            try db.execute(sql: "UPDATE asset SET availability = 'missing' WHERE id = ?",
+                           arguments: [assetID.uuidString.lowercased()])
+        }
+        XCTAssertThrowsError(try importer.confirmAssetBinding(
+            migrationID: header.migrationID, mediaID: first.mediaID, candidate: refreshedCandidate
+        )) { XCTAssertEqual($0 as? PhoneArchiveImportError, .assetBindingCandidateChanged) }
+    }
+
     func testFactSnapshotReconcilesExactBatchAndRejectsStaleOrChangedReplay() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
