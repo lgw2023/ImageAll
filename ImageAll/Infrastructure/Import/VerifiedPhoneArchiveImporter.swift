@@ -157,6 +157,43 @@ struct PhoneArchiveBoundAsset: Identifiable, Sendable {
     let confirmationEventID: UUID
 }
 
+enum PhoneArchiveTagComparisonState: Sendable, Equatable {
+    case same
+    case decisionDiffers
+    case macDecisionMissing
+    case macTagMissing
+    case nameAliasRequired
+    case identityConflict
+    case macTagArchived
+}
+
+struct PhoneArchiveTagComparison: Identifiable, Sendable {
+    var id: UUID { phoneTagID }
+    let phoneTagID: UUID
+    let phoneTagName: String
+    let phoneDecision: RemoteLocalLibraryDecision
+    let macTagID: UUID?
+    let macDecision: String?
+    let state: PhoneArchiveTagComparisonState
+}
+
+struct PhoneArchiveMacOnlyTagDecision: Identifiable, Sendable {
+    var id: UUID { tagID }
+    let tagID: UUID
+    let tagName: String
+    let decision: String
+}
+
+struct PhoneArchiveBoundFactComparison: Sendable {
+    let factSnapshotSequence: Int64
+    let tags: [PhoneArchiveTagComparison]
+    let macOnlyTags: [PhoneArchiveMacOnlyTagDecision]
+    let phoneFavoriteTarget: Bool?
+    let macFavoriteTarget: Bool?
+    let phoneCollectionNames: [String]
+    let phoneAppleAlbumNames: [String]
+}
+
 struct PhoneArchiveSourceLink: Sendable, Equatable {
     let migrationID: UUID
     let mediaID: UUID
@@ -1253,6 +1290,162 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                 )
             }
         }
+    }
+
+    /// Compares the stored phone archive facts with one explicitly bound Mac
+    /// Asset in a single catalog snapshot. This is historical archive evidence,
+    /// not proof that the phone's live shared ledger has reached this watermark.
+    func compareBoundAssetFacts(
+        migrationID: UUID, mediaID: UUID, assetID: UUID
+    ) throws -> PhoneArchiveBoundFactComparison {
+        try database.pool.read { db in
+            _ = try importedMediaKind(db, migrationID: migrationID, mediaID: mediaID)
+            let migration = migrationID.uuidString.lowercased()
+            let media = mediaID.uuidString.lowercased()
+            let asset = assetID.uuidString.lowercased()
+            guard let binding = try Row.fetchOne(db, sql: """
+                SELECT i.source_device_id, i.source_epoch,
+                       m.fact_snapshot_sequence,
+                       (SELECT e.event_kind FROM media_asset_binding_event e
+                        WHERE e.media_id = i.media_id AND e.asset_id = ?
+                        ORDER BY e.sequence DESC LIMIT 1) AS latest_event_kind
+                FROM migration_import_item i
+                JOIN migration_import m ON m.id = i.migration_id
+                JOIN media_asset_binding b ON b.media_id = i.media_id
+                    AND b.asset_id = ?
+                WHERE i.migration_id = ? AND i.media_id = ?
+                  AND m.state = 'catalogCommitted'
+                """, arguments: [asset, asset, migration, media]) else {
+                throw PhoneArchiveImportError.assetBindingCandidateChanged
+            }
+            let latestEvent: String? = binding["latest_event_kind"]
+            guard latestEvent == "confirmed" else {
+                throw PhoneArchiveImportError.catalogDiverged
+            }
+            let install: String = binding["source_device_id"]
+            let epoch: String = binding["source_epoch"]
+            let phoneTags = try Row.fetchAll(db, sql: """
+                SELECT tag_id, tag_name, decision
+                FROM migration_import_tag_decision
+                WHERE source_device_id = ? AND source_epoch = ? AND media_id = ?
+                ORDER BY tag_id
+                """, arguments: [install, epoch, media])
+            var representedMacTagIDs = Set<String>()
+            let comparisons = try phoneTags.map { row -> PhoneArchiveTagComparison in
+                let rawPhoneID: String = row["tag_id"]
+                let phoneName: String = row["tag_name"]
+                let rawDecision: String = row["decision"]
+                guard let phoneID = UUID(uuidString: rawPhoneID),
+                      let phoneDecision = RemoteLocalLibraryDecision(rawValue: rawDecision) else {
+                    throw PhoneArchiveImportError.catalogDiverged
+                }
+                let normalized: String?
+                switch TagNameNormalizer.validateAndNormalize(phoneName) {
+                case .success(let parts): normalized = parts.normalizedName
+                case .failure: normalized = nil
+                }
+                let idMatches = try Self.macTags(db, matching: "tag.id = ?", value: rawPhoneID)
+                let matched: Row?
+                let state: PhoneArchiveTagComparisonState?
+                if let exact = idMatches.first {
+                    matched = exact
+                    let effectiveName: String = exact["effective_name"]
+                    state = normalized == effectiveName ? nil : .identityConflict
+                } else if let normalized {
+                    let nameMatches = try Self.macTags(
+                        db, matching: "coalesce(concept.normalized_name, tag.normalized_name) = ?",
+                        value: normalized
+                    )
+                    matched = nameMatches.count == 1 ? nameMatches[0] : nil
+                    state = nameMatches.count > 1 ? .identityConflict
+                        : (matched == nil ? .macTagMissing : .nameAliasRequired)
+                } else {
+                    matched = nil
+                    state = .identityConflict
+                }
+                let rawMacID: String? = matched?["id"]
+                if let rawMacID { representedMacTagIDs.insert(rawMacID) }
+                let macDecision: String? = try rawMacID.flatMap { id in
+                    try String.fetchOne(db, sql: """
+                        SELECT decision FROM asset_tag_decision
+                        WHERE asset_id = ? AND tag_id = ?
+                        """, arguments: [asset, id])
+                }
+                let macState: String? = matched?["state"]
+                let resultState: PhoneArchiveTagComparisonState
+                if let state {
+                    resultState = state
+                } else if macState == "archived" {
+                    resultState = .macTagArchived
+                } else if macDecision == (phoneDecision == .cleared ? nil : phoneDecision.rawValue) {
+                    resultState = .same
+                } else if macDecision == nil {
+                    resultState = .macDecisionMissing
+                } else {
+                    resultState = .decisionDiffers
+                }
+                return PhoneArchiveTagComparison(
+                    phoneTagID: phoneID, phoneTagName: phoneName,
+                    phoneDecision: phoneDecision,
+                    macTagID: rawMacID.flatMap(UUID.init(uuidString:)),
+                    macDecision: macDecision, state: resultState
+                )
+            }
+            let macOnly = try Row.fetchAll(db, sql: """
+                SELECT t.id, t.name, d.decision
+                FROM asset_tag_decision d JOIN tag t ON t.id = d.tag_id
+                WHERE d.asset_id = ? ORDER BY t.normalized_name, t.id
+                """, arguments: [asset]).compactMap { row -> PhoneArchiveMacOnlyTagDecision? in
+                let rawID: String = row["id"]
+                guard !representedMacTagIDs.contains(rawID),
+                      let id = UUID(uuidString: rawID) else { return nil }
+                return PhoneArchiveMacOnlyTagDecision(
+                    tagID: id, tagName: row["name"], decision: row["decision"]
+                )
+            }
+            let phoneFavoriteRaw: Int? = try Int.fetchOne(db, sql: """
+                SELECT favorite_target FROM migration_import_item
+                WHERE migration_id = ? AND media_id = ?
+                """, arguments: [migration, media])
+            let macFavoriteRaw: Int? = try Int.fetchOne(db, sql: """
+                SELECT desired_value FROM asset_favorite_state WHERE asset_id = ?
+                """, arguments: [asset])
+            let phoneCollections = try String.fetchAll(db, sql: """
+                SELECT collection_name FROM migration_import_collection
+                WHERE source_device_id = ? AND source_epoch = ? AND media_id = ?
+                  AND included = 1 ORDER BY collection_id
+                """, arguments: [install, epoch, media])
+            let phoneAlbums = try String.fetchAll(db, sql: """
+                SELECT coalesce(album_title, '未命名相册')
+                FROM migration_import_apple_album_member
+                WHERE migration_id = ? AND media_id = ?
+                ORDER BY album_local_identifier
+                """, arguments: [migration, media])
+            return PhoneArchiveBoundFactComparison(
+                factSnapshotSequence: binding["fact_snapshot_sequence"],
+                tags: comparisons, macOnlyTags: macOnly,
+                phoneFavoriteTarget: phoneFavoriteRaw.map { $0 == 1 },
+                macFavoriteTarget: macFavoriteRaw.map { $0 == 1 },
+                phoneCollectionNames: phoneCollections,
+                phoneAppleAlbumNames: phoneAlbums
+            )
+        }
+    }
+
+    private static func macTags(
+        _ db: Database, matching predicate: String, value: String
+    ) throws -> [Row] {
+        try Row.fetchAll(db, sql: """
+            SELECT tag.id, tag.name, tag.state,
+                   coalesce(concept.normalized_name, tag.normalized_name) AS effective_name
+            FROM tag
+            LEFT JOIN standard_tag_binding binding ON binding.tag_id = tag.id
+            LEFT JOIN ontology_concept concept
+                ON concept.ontology_id = binding.ontology_id
+                AND concept.ontology_revision = binding.ontology_revision
+                AND concept.concept_id = binding.concept_id
+            WHERE \(predicate) ORDER BY tag.id LIMIT 2
+            """, arguments: [value])
     }
 
     private func importedMediaKind(

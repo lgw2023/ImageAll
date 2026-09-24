@@ -547,6 +547,98 @@ final class PhoneArchiveImportTests: XCTestCase {
         )) { XCTAssertEqual($0 as? PhoneArchiveImportError, .catalogDiverged) }
     }
 
+    func testBoundAssetFactComparisonKeepsTagIdentityAndSourceFactsSeparate() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let sharedID = UUID()
+        let conflictingDecisionID = UUID()
+        let missingDecisionID = UUID()
+        let phoneAliasID = UUID()
+        let macAliasID = UUID()
+        let phoneMissingID = UUID()
+        let macOnlyID = UUID()
+        let item = ImageAllMigrationItem(
+            mediaID: UUID(), sourceLocalIdentifier: "phone-comparison",
+            mediaKind: .image, createdAtMs: nil,
+            favoriteTarget: true, observedFavorite: false, factRevision: 1,
+            tagDecisions: [
+                .init(tagID: sharedID, tagName: "Trip", decision: .accepted),
+                .init(tagID: conflictingDecisionID, tagName: "City", decision: .rejected),
+                .init(tagID: missingDecisionID, tagName: "Walk", decision: .accepted),
+                .init(tagID: phoneAliasID, tagName: "Beach", decision: .rejected),
+                .init(tagID: phoneMissingID, tagName: "New", decision: .accepted),
+            ],
+            collections: [.init(collectionID: UUID(), collectionName: "旅途", included: true)],
+            resources: [try fixture.resource("original", bytes: Data("comparison".utf8))]
+        )
+        let header = fixture.header(count: 1)
+        try fixture.write(header: header, items: [item])
+        let importer = VerifiedPhoneArchiveImporter(database: fixture.database)
+        _ = try importer.importArchive(from: fixture.incoming, to: fixture.target)
+        let assetID = UUID()
+        try DatabaseTestSupport.makeFolderSourceWithFileAsset(
+            repository: CatalogRepository(database: fixture.database), assetID: assetID
+        )
+        try fixture.database.pool.write { db in
+            for (id, name, normalized) in [
+                (sharedID, "Trip", "trip"),
+                (conflictingDecisionID, "City", "city"),
+                (missingDecisionID, "Walk", "walk"),
+                (macAliasID, "Beach", "beach"),
+                (macOnlyID, "Mac only", "mac only"),
+            ] {
+                try db.execute(sql: """
+                    INSERT INTO tag (id, name, normalized_name, state,
+                                     created_at_ms, updated_at_ms)
+                    VALUES (?, ?, ?, 'active', 1, 1)
+                    """, arguments: [id.uuidString.lowercased(), name, normalized])
+            }
+            for (id, decision) in [(sharedID, "accepted"),
+                                   (conflictingDecisionID, "accepted"),
+                                   (macAliasID, "accepted"),
+                                   (macOnlyID, "rejected")] {
+                try db.execute(sql: """
+                    INSERT INTO asset_tag_decision (asset_id, tag_id, decision, updated_at_ms)
+                    VALUES (?, ?, ?, 1)
+                    """, arguments: [assetID.uuidString.lowercased(), id.uuidString.lowercased(), decision])
+            }
+            try db.execute(sql: """
+                INSERT INTO asset_favorite_state (
+                    asset_id, desired_value, sync_status, intent_revision,
+                    requested_at_ms, updated_at_ms
+                ) VALUES (?, 0, 'localOnly', 0, 1, 1)
+                """, arguments: [assetID.uuidString.lowercased()])
+        }
+        let candidate = try XCTUnwrap(importer.assetBindingCandidates(
+            migrationID: header.migrationID, mediaID: item.mediaID, search: "photo.jpg"
+        ).first)
+        _ = try importer.confirmAssetBinding(
+            migrationID: header.migrationID, mediaID: item.mediaID, candidate: candidate
+        )
+        let compared = try importer.compareBoundAssetFacts(
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID
+        )
+        XCTAssertEqual(compared.tags.first { $0.phoneTagID == sharedID }?.state, .same)
+        XCTAssertEqual(compared.tags.first { $0.phoneTagID == conflictingDecisionID }?.state, .decisionDiffers)
+        XCTAssertEqual(compared.tags.first { $0.phoneTagID == missingDecisionID }?.state, .macDecisionMissing)
+        XCTAssertEqual(compared.tags.first { $0.phoneTagID == phoneAliasID }?.state, .nameAliasRequired)
+        XCTAssertEqual(compared.tags.first { $0.phoneTagID == phoneMissingID }?.state, .macTagMissing)
+        XCTAssertEqual(compared.macOnlyTags.map(\.tagID), [macOnlyID])
+        XCTAssertEqual(compared.phoneFavoriteTarget, true)
+        XCTAssertEqual(compared.macFavoriteTarget, false)
+        XCTAssertEqual(compared.phoneCollectionNames, ["旅途"])
+        let confirmationID = try XCTUnwrap(importer.boundAssets(
+            migrationID: header.migrationID, mediaID: item.mediaID
+        ).first?.confirmationEventID)
+        _ = try importer.revokeAssetBinding(
+            migrationID: header.migrationID, mediaID: item.mediaID,
+            assetID: assetID, confirmationEventID: confirmationID
+        )
+        XCTAssertThrowsError(try importer.compareBoundAssetFacts(
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID
+        )) { XCTAssertEqual($0 as? PhoneArchiveImportError, .assetBindingCandidateChanged) }
+    }
+
     func testFactSnapshotReconcilesExactBatchAndRejectsStaleOrChangedReplay() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

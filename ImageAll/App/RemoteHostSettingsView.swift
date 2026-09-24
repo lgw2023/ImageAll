@@ -2142,6 +2142,7 @@ private struct PhoneArchiveAssetBindingSheet: View {
     @State private var boundAssets: [PhoneArchiveBoundAsset] = []
     @State private var selected: PhoneArchiveAssetCandidate?
     @State private var revocationTarget: PhoneArchiveBoundAsset?
+    @State private var comparisonTarget: PhoneArchiveBoundAsset?
     @State private var showRevokeConfirmation = false
     @State private var message: String?
     @State private var isBusy = false
@@ -2161,6 +2162,8 @@ private struct PhoneArchiveAssetBindingSheet: View {
                             Text("\(asset.displayName) · \(asset.sourceName) · \(asset.id.uuidString)")
                                 .font(.caption).textSelection(.enabled)
                             Spacer()
+                            Button("对账…") { comparisonTarget = asset }
+                                .disabled(isBusy)
                             Button("解除…") {
                                 revocationTarget = asset
                                 showRevokeConfirmation = true
@@ -2235,6 +2238,11 @@ private struct PhoneArchiveAssetBindingSheet: View {
         } message: { asset in
             Text("\(asset.displayName) 将不再与此 iPhone 归档视为同一媒体。文件和两端整理信息不会删除。")
         }
+        .sheet(item: $comparisonTarget) { asset in
+            PhoneArchiveFactComparisonSheet(
+                migrationID: migrationID, mediaID: item.id, asset: asset
+            )
+        }
     }
 
     private func loadBoundAssets() async {
@@ -2307,6 +2315,113 @@ private struct PhoneArchiveAssetBindingSheet: View {
             onChanged()
         } catch {
             message = "解除失败：\(error.localizedDescription)"
+        }
+    }
+}
+
+private struct PhoneArchiveFactComparisonSheet: View {
+    let migrationID: UUID
+    let mediaID: UUID
+    let asset: PhoneArchiveBoundAsset
+    @Environment(\.dismiss) private var dismiss
+    @State private var comparison: PhoneArchiveBoundFactComparison?
+    @State private var message: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("整理信息对账 · \(asset.displayName)")
+                    .font(.title2.weight(.semibold))
+                Spacer()
+                Button("完成") { dismiss() }
+            }
+            Text("对照的是 Mac catalog 与已入库 iPhone 归档快照；手机后续共享变化、权限和冲突水位仍须单独核验。此页不修改两端事实。")
+                .font(.footnote).foregroundStyle(.secondary)
+            if let message {
+                Text(message).foregroundStyle(.orange)
+            } else if let comparison {
+                Text(comparison.factSnapshotSequence == 0
+                     ? "归档事实版本：初始清单"
+                     : "归档事实快照序号：\(comparison.factSnapshotSequence)")
+                    .font(.caption).foregroundStyle(.secondary)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("标签决定").font(.headline)
+                        if comparison.tags.isEmpty {
+                            Text("归档中没有标签决定").foregroundStyle(.secondary)
+                        }
+                        ForEach(comparison.tags) { tag in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("\(tag.phoneTagName) · \(tagStateText(tag.state))")
+                                    .font(.subheadline.weight(.medium))
+                                Text("手机：\(tag.phoneDecision.rawValue) · Mac：\(tag.macDecision ?? "未设置")")
+                                    .font(.caption).foregroundStyle(.secondary)
+                                Text("手机 ID：\(tag.phoneTagID.uuidString) · Mac ID：\(tag.macTagID?.uuidString ?? "未建立")")
+                                    .font(.caption2).foregroundStyle(.tertiary)
+                                    .textSelection(.enabled)
+                            }
+                            Divider()
+                        }
+                        if !comparison.macOnlyTags.isEmpty {
+                            Text("仅 Mac 有决定的标签").font(.headline)
+                            ForEach(comparison.macOnlyTags) { tag in
+                                Text("\(tag.tagName)：\(tag.decision)")
+                                    .font(.subheadline)
+                            }
+                        }
+                        Text("ImageAll 收藏目标").font(.headline)
+                        Text("手机归档：\(favoriteText(comparison.phoneFavoriteTarget)) · Mac：\(favoriteText(comparison.macFavoriteTarget))")
+                        Text("iPhone ImageAll 集合").font(.headline)
+                        Text(comparison.phoneCollectionNames.isEmpty
+                             ? "无已纳入成员" : comparison.phoneCollectionNames.joined(separator: "、"))
+                        Text("Mac 主图库尚无对应的 ImageAll 集合成员表；此处仅展示手机归档事实。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text("iPhone Photos 来源相册").font(.headline)
+                        Text(comparison.phoneAppleAlbumNames.isEmpty
+                             ? "无已记录成员" : comparison.phoneAppleAlbumNames.joined(separator: "、"))
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            } else {
+                ProgressView("正在读取两端整理信息…")
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 680, minHeight: 540)
+        .task {
+            guard let importer = PhoneArchiveImportProcessHolder.importer() else {
+                message = "图库尚未就绪。"
+                return
+            }
+            do {
+                comparison = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                    try importer.compareBoundAssetFacts(
+                        migrationID: migrationID, mediaID: mediaID, assetID: asset.id
+                    )
+                }
+            } catch {
+                message = "对账失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func tagStateText(_ state: PhoneArchiveTagComparisonState) -> String {
+        switch state {
+        case .same: "一致"
+        case .decisionDiffers: "决定不同"
+        case .macDecisionMissing: "Mac 未设置决定"
+        case .macTagMissing: "Mac 缺少标签身份"
+        case .nameAliasRequired: "同名不同 ID，需确认映射"
+        case .identityConflict: "标签身份冲突"
+        case .macTagArchived: "Mac 标签已归档"
+        }
+    }
+
+    private func favoriteText(_ value: Bool?) -> String {
+        switch value {
+        case true: "收藏"
+        case false: "不收藏"
+        case nil: "未设置"
         }
     }
 }
