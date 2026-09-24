@@ -687,13 +687,93 @@ final class PhoneArchiveImportTests: XCTestCase {
             migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID,
             expectedComparison: mapped, expectedTag: mappedAlias
         ), .accepted)
-        try fixture.database.pool.write { db in
-            try db.execute(sql: """
-                UPDATE asset_tag_decision SET updated_at_ms = 2
+        let phoneDeviceID = UUID()
+        let applyOperationID = UUID()
+        let sharedRejection = RemoteLocalLibrarySyncStore.SharedTagFact(
+            assetID: item.mediaID, tagID: phoneAliasID, tagName: "Beach",
+            decision: .rejected, revision: 2
+        )
+        let applied = try importer.applySharedPhoneTagDecisionToBoundAsset(
+            operationID: applyOperationID,
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID,
+            expectedComparison: mapped, expectedTag: mappedAlias,
+            phoneDeviceID: phoneDeviceID, phoneScopeRevision: 1,
+            sharedFact: sharedRejection, timestampMs: 2
+        )
+        XCTAssertFalse(applied.replayed)
+        XCTAssertEqual(applied.decision, .rejected)
+        XCTAssertEqual(applied.macDecisionRevision, 2)
+        XCTAssertTrue(try importer.applySharedPhoneTagDecisionToBoundAsset(
+            operationID: applyOperationID,
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID,
+            expectedComparison: mapped, expectedTag: mappedAlias,
+            phoneDeviceID: phoneDeviceID, phoneScopeRevision: 1,
+            sharedFact: sharedRejection, timestampMs: 2
+        ).replayed)
+        XCTAssertThrowsError(try importer.applySharedPhoneTagDecisionToBoundAsset(
+            operationID: applyOperationID,
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID,
+            expectedComparison: mapped, expectedTag: mappedAlias,
+            phoneDeviceID: phoneDeviceID, phoneScopeRevision: 1,
+            sharedFact: .init(
+                assetID: item.mediaID, tagID: phoneAliasID, tagName: "Beach",
+                decision: .accepted, revision: 2
+            ), timestampMs: 2
+        )) { XCTAssertEqual($0 as? PhoneArchiveImportError, .tagSyncCandidateChanged) }
+        XCTAssertThrowsError(try importer.applySharedPhoneTagDecisionToBoundAsset(
+            operationID: UUID(),
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID,
+            expectedComparison: mapped, expectedTag: mappedAlias,
+            phoneDeviceID: phoneDeviceID, phoneScopeRevision: 1,
+            sharedFact: sharedRejection, timestampMs: 3
+        )) { XCTAssertEqual($0 as? PhoneArchiveImportError, .tagSyncCandidateChanged) }
+        let afterRejection = try importer.compareBoundAssetFacts(
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID
+        )
+        let clearCandidate = try XCTUnwrap(afterRejection.tags.first {
+            $0.phoneTagID == phoneAliasID
+        })
+        let cleared = try importer.applySharedPhoneTagDecisionToBoundAsset(
+            operationID: UUID(),
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID,
+            expectedComparison: afterRejection, expectedTag: clearCandidate,
+            phoneDeviceID: phoneDeviceID, phoneScopeRevision: 1,
+            sharedFact: .init(
+                assetID: item.mediaID, tagID: phoneAliasID, tagName: "Beach",
+                decision: .cleared, revision: 3
+            ), timestampMs: 3
+        )
+        XCTAssertEqual(cleared.macDecisionRevision, 3)
+        try fixture.database.pool.read { db in
+            XCTAssertNil(try String.fetchOne(db, sql: """
+                SELECT decision FROM asset_tag_decision
                 WHERE asset_id = ? AND tag_id = ?
                 """, arguments: [assetID.uuidString.lowercased(),
-                                 macAliasID.uuidString.lowercased()])
+                                 macAliasID.uuidString.lowercased()]))
+            XCTAssertEqual(try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM phone_tag_mac_application_event
+                WHERE asset_id = ? AND mac_tag_id = ?
+                """, arguments: [assetID.uuidString.lowercased(),
+                                 macAliasID.uuidString.lowercased()]), 2)
         }
+        let afterClear = try importer.compareBoundAssetFacts(
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID
+        )
+        let missingDecision = try XCTUnwrap(afterClear.tags.first {
+            $0.phoneTagID == phoneAliasID
+        })
+        XCTAssertEqual(missingDecision.state, .macDecisionMissing)
+        let accepted = try importer.applySharedPhoneTagDecisionToBoundAsset(
+            operationID: UUID(),
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID,
+            expectedComparison: afterClear, expectedTag: missingDecision,
+            phoneDeviceID: phoneDeviceID, phoneScopeRevision: 1,
+            sharedFact: .init(
+                assetID: item.mediaID, tagID: phoneAliasID, tagName: "Beach",
+                decision: .accepted, revision: 4
+            ), timestampMs: 4
+        )
+        XCTAssertEqual(accepted.macDecisionRevision, 4)
         XCTAssertThrowsError(try importer.validateBoundMacTagDecision(
             migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID,
             expectedComparison: mapped, expectedTag: mappedAlias

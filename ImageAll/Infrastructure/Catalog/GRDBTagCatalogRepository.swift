@@ -744,6 +744,26 @@ struct GRDBTagCatalogRepository: TagCatalogQueryPort, TagDecisionCommandPort, St
         }
     }
 
+    /// Allows a caller with a wider catalog transaction to clear one decision
+    /// while preserving the normal tag and derived-location side effects.
+    func clearDecision(
+        in db: Database, tagID: UUID, assetID: UUID, timestampMs: Int64
+    ) throws {
+        guard try fetchTagState(db, tagID: tagID) == .active else {
+            throw CatalogQueryError.archivedTag
+        }
+        try validateAssetsExist(db, assetIDs: [assetID])
+        try db.execute(sql: """
+            DELETE FROM asset_tag_decision WHERE asset_id = ? AND tag_id = ?
+            """, arguments: [
+                CatalogQuerySQLHelpers.lowercaseUUID(assetID),
+                CatalogQuerySQLHelpers.lowercaseUUID(tagID),
+            ])
+        try WorldMapPlaceResolutionService.refreshCanonicalLocations(
+            db, assetIDs: [assetID], nowMs: timestampMs
+        )
+    }
+
     func createTagAndApply(
         rawName: String,
         assetIDs: [UUID],

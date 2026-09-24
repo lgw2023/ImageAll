@@ -3,6 +3,94 @@ import XCTest
 @testable import ImageAll
 
 final class CatalogMigrationTests: XCTestCase {
+    func testV048BackfillsExistingTagDecisionWithoutChangingIt() throws {
+        let url = try makeTempDatabaseURL()
+        let pool = try DatabasePool(path: url.path)
+        try CatalogDatabase.makeMigrator().migrate(
+            pool, upTo: CatalogMigrationID.v047AddPhoneTagAlias
+        )
+        let database = CatalogDatabase(pool: pool)
+        let assetID = UUID()
+        let tagID = UUID()
+        try DatabaseTestSupport.makeFolderSourceWithFileAsset(
+            repository: CatalogRepository(database: database), assetID: assetID
+        )
+        try pool.write { db in
+            try db.execute(sql: """
+                INSERT INTO tag (id, name, normalized_name, state,
+                                 created_at_ms, updated_at_ms)
+                VALUES (?, 'Existing', 'existing', 'active', 1, 1)
+                """, arguments: [tagID.uuidString.lowercased()])
+            try db.execute(sql: """
+                INSERT INTO asset_tag_decision (asset_id, tag_id, decision, updated_at_ms)
+                VALUES (?, ?, 'accepted', 123)
+                """, arguments: [assetID.uuidString.lowercased(),
+                                 tagID.uuidString.lowercased()])
+        }
+        try database.migrate()
+        try database.migrate()
+        try pool.read { db in
+            let row = try XCTUnwrap(Row.fetchOne(db, sql: """
+                SELECT d.decision, d.updated_at_ms, r.revision
+                FROM asset_tag_decision d
+                JOIN asset_tag_decision_revision r
+                  ON r.asset_id = d.asset_id AND r.tag_id = d.tag_id
+                WHERE d.asset_id = ? AND d.tag_id = ?
+                """, arguments: [assetID.uuidString.lowercased(),
+                                 tagID.uuidString.lowercased()]))
+            XCTAssertEqual(row["decision"] as String, "accepted")
+            XCTAssertEqual(row["updated_at_ms"] as Int64, 123)
+            XCTAssertEqual(row["revision"] as Int64, 1)
+        }
+    }
+
+    func testV048TracksTagDecisionChangesIncludingClearAndChangeBack() throws {
+        let url = try makeTempDatabaseURL()
+        let database = try CatalogDatabase.open(at: url)
+        let assetID = UUID()
+        let tagID = UUID()
+        try DatabaseTestSupport.makeFolderSourceWithFileAsset(
+            repository: CatalogRepository(database: database), assetID: assetID
+        )
+        try database.pool.write { db in
+            let asset = assetID.uuidString.lowercased()
+            let tag = tagID.uuidString.lowercased()
+            try db.execute(sql: """
+                INSERT INTO tag (id, name, normalized_name, state,
+                                 created_at_ms, updated_at_ms)
+                VALUES (?, 'Test', 'test', 'active', 1, 1)
+                """, arguments: [tag])
+            for (decision, expected) in [("accepted", 1), ("rejected", 2)] {
+                try db.execute(sql: """
+                    INSERT INTO asset_tag_decision (asset_id, tag_id, decision, updated_at_ms)
+                    VALUES (?, ?, ?, 1)
+                    ON CONFLICT(asset_id, tag_id) DO UPDATE SET
+                        decision = excluded.decision,
+                        updated_at_ms = excluded.updated_at_ms
+                    """, arguments: [asset, tag, decision])
+                XCTAssertEqual(try Int.fetchOne(db, sql: """
+                    SELECT revision FROM asset_tag_decision_revision
+                    WHERE asset_id = ? AND tag_id = ?
+                    """, arguments: [asset, tag]), expected)
+            }
+            try db.execute(sql: """
+                DELETE FROM asset_tag_decision WHERE asset_id = ? AND tag_id = ?
+                """, arguments: [asset, tag])
+            XCTAssertEqual(try Int.fetchOne(db, sql: """
+                SELECT revision FROM asset_tag_decision_revision
+                WHERE asset_id = ? AND tag_id = ?
+                """, arguments: [asset, tag]), 3)
+            try db.execute(sql: """
+                INSERT INTO asset_tag_decision (asset_id, tag_id, decision, updated_at_ms)
+                VALUES (?, ?, 'accepted', 1)
+                """, arguments: [asset, tag])
+            XCTAssertEqual(try Int.fetchOne(db, sql: """
+                SELECT revision FROM asset_tag_decision_revision
+                WHERE asset_id = ? AND tag_id = ?
+                """, arguments: [asset, tag]), 4)
+        }
+    }
+
     func testV046BackfillsActiveAssetBindingAuditWithoutChangingBinding() throws {
         let url = try makeTempDatabaseURL()
         let pool = try DatabasePool(path: url.path)
@@ -1496,6 +1584,15 @@ final class CatalogMigrationTests: XCTestCase {
     }
 
     private static func dropV035AndLaterTables(_ db: Database) throws {
+        try db.execute(sql: "DROP TRIGGER IF EXISTS asset_tag_decision_revision_insert")
+        try db.execute(sql: "DROP TRIGGER IF EXISTS asset_tag_decision_revision_update")
+        try db.execute(sql: "DROP TRIGGER IF EXISTS asset_tag_decision_revision_delete")
+        try db.execute(sql: "DROP TABLE IF EXISTS phone_tag_mac_application_event")
+        try db.execute(sql: "DROP TABLE IF EXISTS asset_tag_decision_revision")
+        try db.execute(
+            sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
+            arguments: [CatalogMigrationID.v048AddAssetTagDecisionRevision]
+        )
         try db.execute(sql: "DROP TABLE IF EXISTS phone_tag_alias_event")
         try db.execute(sql: "DROP TABLE IF EXISTS phone_tag_alias")
         try db.execute(

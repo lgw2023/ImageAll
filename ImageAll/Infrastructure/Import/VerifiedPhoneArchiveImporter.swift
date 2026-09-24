@@ -184,6 +184,7 @@ struct PhoneArchiveTagComparison: Identifiable, Sendable {
     let macTagUpdatedAtMs: Int64?
     let macDecision: String?
     let macDecisionUpdatedAtMs: Int64?
+    let macDecisionRevision: Int64?
     let state: PhoneArchiveTagComparisonState
     let aliasConfirmationEventID: UUID?
 }
@@ -191,6 +192,14 @@ struct PhoneArchiveTagComparison: Identifiable, Sendable {
 struct PhoneArchiveTagAliasReceipt: Sendable, Equatable {
     let phoneTagID: UUID
     let macTagID: UUID
+    let replayed: Bool
+}
+
+struct PhoneArchiveMacTagApplicationReceipt: Sendable, Equatable {
+    let operationID: UUID
+    let macTagID: UUID
+    let decision: RemoteLocalLibraryDecision
+    let macDecisionRevision: Int64
     let replayed: Bool
 }
 
@@ -1492,6 +1501,15 @@ struct VerifiedPhoneArchiveImporter: Sendable {
         migrationID: UUID, mediaID: UUID, assetID: UUID
     ) throws -> PhoneArchiveBoundFactComparison {
         try database.pool.read { db in
+            try compareBoundAssetFacts(
+                in: db, migrationID: migrationID, mediaID: mediaID, assetID: assetID
+            )
+        }
+    }
+
+    private func compareBoundAssetFacts(
+        in db: Database, migrationID: UUID, mediaID: UUID, assetID: UUID
+    ) throws -> PhoneArchiveBoundFactComparison {
             _ = try importedMediaKind(db, migrationID: migrationID, mediaID: mediaID)
             let migration = migrationID.uuidString.lowercased()
             let media = mediaID.uuidString.lowercased()
@@ -1603,6 +1621,12 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                         """, arguments: [asset, id])
                 }
                 let macDecision: String? = macDecisionRow?["decision"]
+                let macDecisionRevision: Int64? = try rawMacID.map { id in
+                    try Int64.fetchOne(db, sql: """
+                        SELECT revision FROM asset_tag_decision_revision
+                        WHERE asset_id = ? AND tag_id = ?
+                        """, arguments: [asset, id]) ?? 0
+                }
                 let macState: String? = matched?["state"]
                 let resultState: PhoneArchiveTagComparisonState
                 if let state {
@@ -1624,6 +1648,7 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                     macTagUpdatedAtMs: matched?["updated_at_ms"],
                     macDecision: macDecision,
                     macDecisionUpdatedAtMs: macDecisionRow?["updated_at_ms"],
+                    macDecisionRevision: macDecisionRevision,
                     state: resultState,
                     aliasConfirmationEventID: aliasConfirmationEventID
                 )
@@ -1668,7 +1693,6 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                 phoneCollectionNames: phoneCollections,
                 phoneAppleAlbumNames: phoneAlbums
             )
-        }
     }
 
     /// Rechecks the catalog half of an explicit Mac-to-phone tag decision.
@@ -1692,6 +1716,7 @@ struct VerifiedPhoneArchiveImporter: Sendable {
               tag.macTagUpdatedAtMs == expectedTag.macTagUpdatedAtMs,
               tag.macDecision == expectedTag.macDecision,
               tag.macDecisionUpdatedAtMs == expectedTag.macDecisionUpdatedAtMs,
+              tag.macDecisionRevision == expectedTag.macDecisionRevision,
               tag.aliasConfirmationEventID == expectedTag.aliasConfirmationEventID,
               tag.state == expectedTag.state,
               tag.state == .same || tag.state == .decisionDiffers,
@@ -1701,6 +1726,139 @@ struct VerifiedPhoneArchiveImporter: Sendable {
             throw PhoneArchiveImportError.tagSyncCandidateChanged
         }
         return decision
+    }
+
+    /// Applies one explicitly reviewed shared phone decision to an existing
+    /// Mac Asset. The catalog fact, monotonic revision and audit event commit
+    /// together; the phone projection is rechecked by the caller around this
+    /// transaction because it resides in a separate durable store.
+    func applySharedPhoneTagDecisionToBoundAsset(
+        operationID: UUID, migrationID: UUID, mediaID: UUID, assetID: UUID,
+        expectedComparison: PhoneArchiveBoundFactComparison,
+        expectedTag: PhoneArchiveTagComparison,
+        phoneDeviceID: UUID, phoneScopeRevision: Int64,
+        sharedFact: RemoteLocalLibrarySyncStore.SharedTagFact,
+        timestampMs: Int64
+    ) throws -> PhoneArchiveMacTagApplicationReceipt {
+        guard timestampMs >= 0, phoneScopeRevision >= 0,
+              sharedFact.assetID == mediaID,
+              sharedFact.tagID == expectedTag.phoneTagID,
+              sharedFact.revision > 0,
+              let macTagID = expectedTag.macTagID else {
+            throw PhoneArchiveImportError.tagSyncCandidateChanged
+        }
+        return try database.pool.write { db in
+            let operation = operationID.uuidString.lowercased()
+            if let prior = try Row.fetchOne(db, sql: """
+                SELECT migration_id, media_id, asset_id,
+                       binding_confirmation_event_id, source_install_id, source_epoch,
+                       phone_device_id, phone_scope_revision, phone_tag_id, mac_tag_id,
+                       phone_field_revision, phone_decision, resulting_mac_revision
+                FROM phone_tag_mac_application_event WHERE id = ?
+                """, arguments: [operation]) {
+                guard (prior["migration_id"] as String) == migrationID.uuidString.lowercased(),
+                      (prior["media_id"] as String) == mediaID.uuidString.lowercased(),
+                      (prior["asset_id"] as String) == assetID.uuidString.lowercased(),
+                      (prior["binding_confirmation_event_id"] as String) ==
+                          expectedComparison.bindingConfirmationEventID.uuidString.lowercased(),
+                      (prior["source_install_id"] as String) ==
+                          expectedComparison.sourceInstallID.uuidString.lowercased(),
+                      (prior["source_epoch"] as String) ==
+                          expectedComparison.sourceEpoch.uuidString.lowercased(),
+                      (prior["phone_device_id"] as String) == phoneDeviceID.uuidString.lowercased(),
+                      (prior["phone_scope_revision"] as Int64) == phoneScopeRevision,
+                      (prior["phone_tag_id"] as String) ==
+                          expectedTag.phoneTagID.uuidString.lowercased(),
+                      (prior["mac_tag_id"] as String) == macTagID.uuidString.lowercased(),
+                      (prior["phone_field_revision"] as Int64) == sharedFact.revision,
+                      (prior["phone_decision"] as String) == sharedFact.decision.rawValue else {
+                    throw PhoneArchiveImportError.tagSyncCandidateChanged
+                }
+                return PhoneArchiveMacTagApplicationReceipt(
+                    operationID: operationID, macTagID: macTagID,
+                    decision: sharedFact.decision,
+                    macDecisionRevision: prior["resulting_mac_revision"], replayed: true
+                )
+            }
+            let current = try compareBoundAssetFacts(
+                in: db, migrationID: migrationID, mediaID: mediaID, assetID: assetID
+            )
+            guard current.sourceInstallID == expectedComparison.sourceInstallID,
+                  current.sourceEpoch == expectedComparison.sourceEpoch,
+                  current.bindingConfirmationEventID == expectedComparison.bindingConfirmationEventID,
+                  current.factSnapshotSequence == expectedComparison.factSnapshotSequence,
+                  let tag = current.tags.first(where: { $0.phoneTagID == expectedTag.phoneTagID }),
+                  tag.phoneTagName == expectedTag.phoneTagName,
+                  tag.macTagID == macTagID,
+                  tag.macTagName == expectedTag.macTagName,
+                  tag.macTagUpdatedAtMs == expectedTag.macTagUpdatedAtMs,
+                  tag.macDecision == expectedTag.macDecision,
+                  tag.macDecisionUpdatedAtMs == expectedTag.macDecisionUpdatedAtMs,
+                  tag.macDecisionRevision == expectedTag.macDecisionRevision,
+                  tag.aliasConfirmationEventID == expectedTag.aliasConfirmationEventID,
+                  tag.state == expectedTag.state,
+                  tag.state == .same || tag.state == .decisionDiffers
+                      || tag.state == .macDecisionMissing,
+                  tag.macDecision != (sharedFact.decision == .cleared
+                      ? nil : sharedFact.decision.rawValue) else {
+                throw PhoneArchiveImportError.tagSyncCandidateChanged
+            }
+            let priorRevision = tag.macDecisionRevision ?? 0
+            guard priorRevision < Int64.max else {
+                throw PhoneArchiveImportError.catalogDiverged
+            }
+            let tags = GRDBTagCatalogRepository(database: database)
+            switch sharedFact.decision {
+            case .accepted:
+                _ = try tags.applyBatchDecision(
+                    in: db, tagID: macTagID, assetIDs: [assetID],
+                    decision: .accepted, timestampMs: timestampMs
+                )
+            case .rejected:
+                _ = try tags.applyBatchDecision(
+                    in: db, tagID: macTagID, assetIDs: [assetID],
+                    decision: .rejected, timestampMs: timestampMs
+                )
+            case .cleared:
+                try tags.clearDecision(
+                    in: db, tagID: macTagID, assetID: assetID,
+                    timestampMs: timestampMs
+                )
+            }
+            guard let resultingRevision = try Int64.fetchOne(db, sql: """
+                SELECT revision FROM asset_tag_decision_revision
+                WHERE asset_id = ? AND tag_id = ?
+                """, arguments: [assetID.uuidString.lowercased(),
+                                 macTagID.uuidString.lowercased()]),
+                  resultingRevision == priorRevision + 1 else {
+                throw PhoneArchiveImportError.catalogDiverged
+            }
+            try db.execute(sql: """
+                INSERT INTO phone_tag_mac_application_event (
+                    id, migration_id, media_id, asset_id,
+                    binding_confirmation_event_id, source_install_id, source_epoch,
+                    phone_device_id, phone_scope_revision, phone_tag_id, mac_tag_id,
+                    phone_field_revision, phone_decision, prior_mac_decision,
+                    prior_mac_revision, resulting_mac_revision, committed_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, arguments: [
+                    operation, migrationID.uuidString.lowercased(),
+                    mediaID.uuidString.lowercased(), assetID.uuidString.lowercased(),
+                    expectedComparison.bindingConfirmationEventID.uuidString.lowercased(),
+                    expectedComparison.sourceInstallID.uuidString.lowercased(),
+                    expectedComparison.sourceEpoch.uuidString.lowercased(),
+                    phoneDeviceID.uuidString.lowercased(), phoneScopeRevision,
+                    expectedTag.phoneTagID.uuidString.lowercased(),
+                    macTagID.uuidString.lowercased(), sharedFact.revision,
+                    sharedFact.decision.rawValue, tag.macDecision,
+                    priorRevision, resultingRevision, timestampMs,
+                ])
+            return PhoneArchiveMacTagApplicationReceipt(
+                operationID: operationID, macTagID: macTagID,
+                decision: sharedFact.decision,
+                macDecisionRevision: resultingRevision, replayed: false
+            )
+        }
     }
 
     private static func macTags(

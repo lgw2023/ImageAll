@@ -364,3 +364,67 @@ enum V047AddPhoneTagAliasMigration {
         }
     }
 }
+
+/// A monotonic version survives a cleared decision and detects change-back ABA.
+/// Triggers cover every existing Mac tag mutation path, including undo and batch edits.
+enum V048AddAssetTagDecisionRevisionMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v048AddAssetTagDecisionRevision) { db in
+            try db.execute(sql: """
+                CREATE TABLE asset_tag_decision_revision (
+                    asset_id TEXT NOT NULL REFERENCES asset(id) ON DELETE CASCADE,
+                    tag_id TEXT NOT NULL REFERENCES tag(id) ON DELETE CASCADE,
+                    revision INTEGER NOT NULL CHECK(revision > 0),
+                    PRIMARY KEY(asset_id, tag_id)
+                ) STRICT
+                """)
+            try db.execute(sql: """
+                INSERT INTO asset_tag_decision_revision (asset_id, tag_id, revision)
+                SELECT asset_id, tag_id, 1 FROM asset_tag_decision
+                """)
+            for (name, operation, row) in [
+                ("asset_tag_decision_revision_insert", "INSERT", "NEW"),
+                ("asset_tag_decision_revision_update", "UPDATE", "NEW"),
+                ("asset_tag_decision_revision_delete", "DELETE", "OLD"),
+            ] {
+                try db.execute(sql: """
+                    CREATE TRIGGER \(name) AFTER \(operation) ON asset_tag_decision
+                    BEGIN
+                        INSERT INTO asset_tag_decision_revision (asset_id, tag_id, revision)
+                        VALUES (\(row).asset_id, \(row).tag_id, 1)
+                        ON CONFLICT(asset_id, tag_id) DO UPDATE SET
+                            revision = revision + 1;
+                    END
+                    """)
+            }
+            try db.execute(sql: """
+                CREATE TABLE phone_tag_mac_application_event (
+                    id TEXT NOT NULL PRIMARY KEY,
+                    migration_id TEXT NOT NULL REFERENCES migration_import(id) ON DELETE RESTRICT,
+                    media_id TEXT NOT NULL REFERENCES media_item(id) ON DELETE RESTRICT,
+                    asset_id TEXT NOT NULL,
+                    binding_confirmation_event_id TEXT NOT NULL
+                        REFERENCES media_asset_binding_event(id) ON DELETE RESTRICT,
+                    source_install_id TEXT NOT NULL,
+                    source_epoch TEXT NOT NULL,
+                    phone_device_id TEXT NOT NULL,
+                    phone_scope_revision INTEGER NOT NULL CHECK(phone_scope_revision >= 0),
+                    phone_tag_id TEXT NOT NULL,
+                    mac_tag_id TEXT NOT NULL,
+                    phone_field_revision INTEGER NOT NULL CHECK(phone_field_revision > 0),
+                    phone_decision TEXT NOT NULL
+                        CHECK(phone_decision IN ('accepted', 'rejected', 'cleared')),
+                    prior_mac_decision TEXT CHECK(prior_mac_decision IN ('accepted', 'rejected')),
+                    prior_mac_revision INTEGER NOT NULL CHECK(prior_mac_revision >= 0),
+                    resulting_mac_revision INTEGER NOT NULL
+                        CHECK(resulting_mac_revision > prior_mac_revision),
+                    committed_at_ms INTEGER NOT NULL CHECK(committed_at_ms >= 0)
+                ) STRICT
+                """)
+            try db.execute(sql: """
+                CREATE INDEX phone_tag_mac_application_event_asset_idx
+                ON phone_tag_mac_application_event(asset_id, mac_tag_id, committed_at_ms)
+                """)
+        }
+    }
+}

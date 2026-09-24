@@ -2240,7 +2240,8 @@ private struct PhoneArchiveAssetBindingSheet: View {
         }
         .sheet(item: $comparisonTarget) { asset in
             PhoneArchiveFactComparisonSheet(
-                migrationID: migrationID, mediaID: item.id, asset: asset
+                migrationID: migrationID, mediaID: item.id, asset: asset,
+                onChanged: onChanged
             )
         }
     }
@@ -2325,9 +2326,16 @@ private struct PhoneArchiveFactComparisonSheet: View {
         let fact: RemoteLocalLibrarySyncStore.SharedTagFact
     }
 
+    private struct PhoneToMacTarget {
+        let operationID = UUID()
+        let tag: PhoneArchiveTagComparison
+        let fact: RemoteLocalLibrarySyncStore.SharedTagFact
+    }
+
     let migrationID: UUID
     let mediaID: UUID
     let asset: PhoneArchiveBoundAsset
+    let onChanged: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var comparison: PhoneArchiveBoundFactComparison?
     @State private var message: String?
@@ -2336,9 +2344,11 @@ private struct PhoneArchiveFactComparisonSheet: View {
     @State private var liveProjection: RemoteLocalLibrarySyncStore.Projection?
     @State private var sharedStatus: String?
     @State private var tagSyncTarget: TagSyncTarget?
+    @State private var phoneToMacTarget: PhoneToMacTarget?
     @State private var showAliasConfirmation = false
     @State private var showAliasRevocation = false
     @State private var showTagSyncConfirmation = false
+    @State private var showPhoneToMacConfirmation = false
     @State private var isBusy = false
 
     var body: some View {
@@ -2379,12 +2389,19 @@ private struct PhoneArchiveFactComparisonSheet: View {
                                 Text("手机归档快照：\(tag.phoneDecision.rawValue) · Mac 当前：\(tag.macDecision ?? "未设置")")
                                     .font(.caption).foregroundStyle(.secondary)
                                 if let fact = sharedTagFact(for: tag) {
-                                    Text("手机共享账本：\(fact.decision.rawValue) · 字段版本 \(fact.revision)")
+                                    Text("手机共享账本：\(fact.tagName) · \(fact.decision.rawValue) · 字段版本 \(fact.revision)")
                                         .font(.caption).foregroundStyle(.secondary)
                                     if canSubmitMacDecision(tag, to: fact) {
                                         Button("把 Mac 当前决定提交到手机共享账本…") {
                                             tagSyncTarget = TagSyncTarget(tag: tag, fact: fact)
                                             showTagSyncConfirmation = true
+                                        }
+                                        .disabled(isBusy)
+                                    }
+                                    if canApplySharedDecision(tag, fact: fact) {
+                                        Button("把手机共享决定应用到 Mac 资产…") {
+                                            phoneToMacTarget = PhoneToMacTarget(tag: tag, fact: fact)
+                                            showPhoneToMacConfirmation = true
                                         }
                                         .disabled(isBusy)
                                     }
@@ -2473,6 +2490,15 @@ private struct PhoneArchiveFactComparisonSheet: View {
         } message: { target in
             Text("“\(target.tag.phoneTagName)”当前手机共享决定为 \(target.fact.decision.rawValue)（版本 \(target.fact.revision)），Mac 决定为 \(target.tag.macDecision ?? "未设置")。提交前会复核绑定、身份和两端版本；手机需稍后主动同步。")
         }
+        .confirmationDialog(
+            "把手机共享标签决定应用到 Mac 资产？",
+            isPresented: $showPhoneToMacConfirmation,
+            presenting: phoneToMacTarget
+        ) { target in
+            Button("应用手机决定") { Task { await applyPhoneTagDecisionToMac(target) } }
+        } message: { target in
+            Text("手机共享标签“\(target.fact.tagName)”（\(target.tag.phoneTagID.uuidString)）为 \(target.fact.decision.rawValue)（版本 \(target.fact.revision)），Mac 标签“\(target.tag.macTagName ?? "")”（\(target.tag.macTagID?.uuidString ?? "")）当前为 \(target.tag.macDecision ?? "未设置")。操作只修改已关联 Mac 资产的 ImageAll 标签决定，并记录版本和审计事件。")
+        }
     }
 
     private func loadComparison() async {
@@ -2531,6 +2557,76 @@ private struct PhoneArchiveFactComparisonSheet: View {
             && (tag.macDecision == RemoteLocalLibraryDecision.accepted.rawValue
                 || tag.macDecision == RemoteLocalLibraryDecision.rejected.rawValue)
             && tag.macDecision != fact.decision.rawValue
+    }
+
+    private func canApplySharedDecision(
+        _ tag: PhoneArchiveTagComparison,
+        fact: RemoteLocalLibrarySyncStore.SharedTagFact
+    ) -> Bool {
+        (tag.state == .same || tag.state == .decisionDiffers
+            || tag.state == .macDecisionMissing)
+            && tag.macTagID != nil
+            && tag.macDecision != (fact.decision == .cleared ? nil : fact.decision.rawValue)
+    }
+
+    private func applyPhoneTagDecisionToMac(_ target: PhoneToMacTarget) async {
+        guard !isBusy, let comparison, let projection = liveProjection,
+              sharedTagFact(for: target.tag) == target.fact,
+              let importer = PhoneArchiveImportProcessHolder.importer() else {
+            message = "对账已变化，请刷新后重试。"
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            guard (await RemoteHostProcessHolder.pairedDevices()).contains(where: {
+                $0.deviceID == projection.deviceID
+            }) else {
+                message = "手机已解除配对，不能应用共享决定。"
+                return
+            }
+            let before = try await RemoteHostProcessHolder.sharedPhoneProjections().first {
+                $0.deviceID == projection.deviceID
+            }
+            guard before?.installID == comparison.sourceInstallID,
+                  before?.sourceEpoch == comparison.sourceEpoch,
+                  before?.scopeRevision == projection.scopeRevision,
+                  before?.selectedAssetIDs.contains(mediaID) == true,
+                  before?.assets.contains(where: { $0.id == mediaID }) == true,
+                  before?.sharedTagFacts.first(where: {
+                      $0.assetID == mediaID && $0.tagID == target.tag.phoneTagID
+                  }) == target.fact else {
+                message = "手机共享范围或标签字段已变化，请刷新对账。"
+                return
+            }
+            _ = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.applySharedPhoneTagDecisionToBoundAsset(
+                    operationID: target.operationID,
+                    migrationID: migrationID, mediaID: mediaID, assetID: asset.id,
+                    expectedComparison: comparison, expectedTag: target.tag,
+                    phoneDeviceID: projection.deviceID,
+                    phoneScopeRevision: projection.scopeRevision,
+                    sharedFact: target.fact,
+                    timestampMs: Int64(Date().timeIntervalSince1970 * 1_000)
+                )
+            }
+            let after = try? await RemoteHostProcessHolder.sharedPhoneProjections().first {
+                $0.deviceID == projection.deviceID
+            }
+            let unchanged = after?.installID == comparison.sourceInstallID
+                && after?.sourceEpoch == comparison.sourceEpoch
+                && after?.scopeRevision == projection.scopeRevision
+                && after?.sharedTagFacts.first(where: {
+                    $0.assetID == mediaID && $0.tagID == target.tag.phoneTagID
+                }) == target.fact
+            await loadComparison()
+            onChanged()
+            message = unchanged
+                ? "手机共享决定已应用到 Mac 资产并留审计记录；手机实际本地状态仍以其下次同步为准。"
+                : "Mac 资产已修改，但手机共享字段随后变化或无法复核；请重新对账，勿视为收敛完成。"
+        } catch {
+            message = "应用失败：\(error.localizedDescription)"
+        }
     }
 
     private func submitMacTagDecision(_ target: TagSyncTarget) async {
