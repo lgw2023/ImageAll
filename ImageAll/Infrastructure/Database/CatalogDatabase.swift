@@ -103,6 +103,7 @@ struct CatalogDatabase: Sendable {
         V046AuditMediaAssetBindingMigration.register(on: &migrator)
         V047AddPhoneTagAliasMigration.register(on: &migrator)
         V048AddAssetTagDecisionRevisionMigration.register(on: &migrator)
+        V049AddPhoneTagOutboundIntentMigration.register(on: &migrator)
         return migrator
     }
 

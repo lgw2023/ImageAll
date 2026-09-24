@@ -687,6 +687,47 @@ final class PhoneArchiveImportTests: XCTestCase {
             migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID,
             expectedComparison: mapped, expectedTag: mappedAlias
         ), .accepted)
+        let outboundOperationID = UUID()
+        let sharedBeforeOutbound = RemoteLocalLibrarySyncStore.SharedTagFact(
+            assetID: item.mediaID, tagID: phoneAliasID, tagName: "Beach",
+            decision: .rejected, revision: 1
+        )
+        let prepared = try importer.prepareOutboundMacTagDecision(
+            operationID: outboundOperationID,
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID,
+            expectedComparison: mapped, expectedTag: mappedAlias,
+            phoneDeviceID: UUID(), phoneScopeRevision: 1,
+            sharedFact: sharedBeforeOutbound, timestampMs: 5
+        )
+        XCTAssertEqual(prepared.state, .prepared)
+        XCTAssertThrowsError(try importer.prepareOutboundMacTagDecision(
+            operationID: UUID(),
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID,
+            expectedComparison: mapped, expectedTag: mappedAlias,
+            phoneDeviceID: prepared.phoneDeviceID, phoneScopeRevision: 1,
+            sharedFact: sharedBeforeOutbound, timestampMs: 5
+        )) { XCTAssertEqual($0 as? PhoneArchiveImportError, .tagSyncPending) }
+        let reopenedCatalog = try CatalogDatabase.open(at: fixture.databaseURL)
+        let reopenedImporter = VerifiedPhoneArchiveImporter(database: reopenedCatalog)
+        XCTAssertEqual(try reopenedImporter.outboundTagIntents(
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID
+        ).map(\.id), [outboundOperationID])
+        let outboundReceipt = RemoteLocalLibrarySyncStore.MacTagOperationReceipt(
+            operationID: outboundOperationID, deviceID: prepared.phoneDeviceID,
+            installID: fixture.sourceDeviceID, sourceEpoch: fixture.sourceEpoch,
+            scopeRevision: 1, assetID: item.mediaID, tagID: phoneAliasID,
+            decision: .accepted, expectedRevision: 1,
+            resultingRevision: 2, changeSequence: 1
+        )
+        let committed = try reopenedImporter.finalizeOutboundMacTagDecision(
+            operationID: outboundOperationID, receipt: outboundReceipt,
+            timestampMs: 6
+        )
+        XCTAssertEqual(committed.state, .committed)
+        XCTAssertEqual(committed.phoneResultingRevision, 2)
+        XCTAssertEqual(try importer.outboundTagIntents(
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID
+        ).count, 0)
         let phoneDeviceID = UUID()
         let applyOperationID = UUID()
         let sharedRejection = RemoteLocalLibrarySyncStore.SharedTagFact(
@@ -1168,6 +1209,110 @@ final class PhoneArchiveImportTests: XCTestCase {
         XCTAssertEqual(try importer.auditImportedArchive(
             migrationID: header.migrationID, archiveRoot: receipt.archiveURL
         ).itemCount, 2)
+    }
+
+    func testMacTagOutboundIntentFinalizesFromDurableLedgerAfterRestart() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let tagID = UUID()
+        let item = ImageAllMigrationItem(
+            mediaID: UUID(), sourceLocalIdentifier: "recoverable-tag",
+            mediaKind: .image, createdAtMs: nil,
+            favoriteTarget: nil, observedFavorite: false, factRevision: 1,
+            tagDecisions: [.init(tagID: tagID, tagName: "Trip", decision: .accepted)],
+            collections: [],
+            resources: [try fixture.resource("original", bytes: Data("recover-tag".utf8))]
+        )
+        let header = fixture.header(count: 1)
+        try fixture.write(header: header, items: [item])
+        let importer = VerifiedPhoneArchiveImporter(database: fixture.database)
+        _ = try importer.importArchive(from: fixture.incoming, to: fixture.target)
+        let assetID = UUID()
+        try DatabaseTestSupport.makeFolderSourceWithFileAsset(
+            repository: CatalogRepository(database: fixture.database), assetID: assetID
+        )
+        try await fixture.database.pool.write { db in
+            try db.execute(sql: """
+                INSERT INTO tag (id, name, normalized_name, state,
+                                 created_at_ms, updated_at_ms)
+                VALUES (?, 'Trip', 'trip', 'active', 1, 1)
+                """, arguments: [tagID.uuidString.lowercased()])
+            try db.execute(sql: """
+                INSERT INTO asset_tag_decision (asset_id, tag_id, decision, updated_at_ms)
+                VALUES (?, ?, 'rejected', 1)
+                """, arguments: [assetID.uuidString.lowercased(),
+                                 tagID.uuidString.lowercased()])
+        }
+        let candidate = try XCTUnwrap(importer.assetBindingCandidates(
+            migrationID: header.migrationID, mediaID: item.mediaID, search: "photo.jpg"
+        ).first)
+        _ = try importer.confirmAssetBinding(
+            migrationID: header.migrationID, mediaID: item.mediaID, candidate: candidate
+        )
+        let comparison = try importer.compareBoundAssetFacts(
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID
+        )
+        let comparedTag = try XCTUnwrap(comparison.tags.first)
+        let hostID = UUID()
+        let deviceID = UUID()
+        let ledgerURL = fixture.root.appendingPathComponent("shared-ledger.json")
+        let store = try RemoteLocalLibrarySyncStore(hostID: hostID, storageURL: ledgerURL)
+        let phoneAsset = RemoteLocalLibraryAsset(
+            id: item.mediaID, localIdentifier: item.sourceLocalIdentifier,
+            mediaKind: .image, createdAtMs: nil,
+            observedFavorite: false, favoriteTarget: nil,
+            tagDecisions: [.init(tagID: tagID, tagName: "Trip", decision: .accepted)],
+            collections: []
+        )
+        _ = try await store.submit(.init(
+            hostID: hostID, installID: fixture.sourceDeviceID,
+            sourceEpoch: fixture.sourceEpoch, scopeRevision: 1,
+            snapshotSequence: 1, selectedAssetIDs: [item.mediaID],
+            assets: [phoneAsset]
+        ), authenticatedDeviceID: deviceID)
+        let projected = await store.projection(deviceID: deviceID)
+        let fact = try XCTUnwrap(projected?.sharedTagFacts.first)
+        let operationID = UUID()
+        let intent = try importer.prepareOutboundMacTagDecision(
+            operationID: operationID,
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID,
+            expectedComparison: comparison, expectedTag: comparedTag,
+            phoneDeviceID: deviceID, phoneScopeRevision: 1,
+            sharedFact: fact, timestampMs: 10
+        )
+        XCTAssertEqual(intent.state, .prepared)
+        _ = try await store.setTagDecisionFromMac(
+            deviceID: deviceID, assetID: item.mediaID, tagID: tagID,
+            decision: .rejected, expectedRevision: 1,
+            expectedInstallID: fixture.sourceDeviceID,
+            expectedSourceEpoch: fixture.sourceEpoch,
+            expectedScopeRevision: 1, operationID: operationID
+        )
+        // Simulate termination before SQLite records the JSON commit.
+        let recoveredCatalog = try CatalogDatabase.open(at: fixture.databaseURL)
+        let recoveredImporter = VerifiedPhoneArchiveImporter(database: recoveredCatalog)
+        let recoveredStore = try RemoteLocalLibrarySyncStore(
+            hostID: hostID, storageURL: ledgerURL
+        )
+        XCTAssertEqual(try recoveredImporter.outboundTagIntents(
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID
+        ).map(\.id), [operationID])
+        let recoveredValue = await recoveredStore.macTagOperation(
+            deviceID: deviceID, operationID: operationID
+        )
+        let receipt = try XCTUnwrap(recoveredValue)
+        XCTAssertEqual(receipt.resultingRevision, 2)
+        let finalized = try recoveredImporter.finalizeOutboundMacTagDecision(
+            operationID: operationID, receipt: receipt, timestampMs: 11
+        )
+        XCTAssertEqual(finalized.state, .committed)
+        XCTAssertEqual(finalized.phoneChangeSequence, 1)
+        XCTAssertTrue(try recoveredImporter.outboundTagIntents(
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID
+        ).isEmpty)
+        XCTAssertEqual(try recoveredImporter.finalizeOutboundMacTagDecision(
+            operationID: operationID, receipt: receipt, timestampMs: 12
+        ).state, .committed)
     }
 
     private final class Fixture {

@@ -2322,6 +2322,7 @@ private struct PhoneArchiveAssetBindingSheet: View {
 
 private struct PhoneArchiveFactComparisonSheet: View {
     private struct TagSyncTarget {
+        let operationID = UUID()
         let tag: PhoneArchiveTagComparison
         let fact: RemoteLocalLibrarySyncStore.SharedTagFact
     }
@@ -2342,6 +2343,7 @@ private struct PhoneArchiveFactComparisonSheet: View {
     @State private var aliasTarget: PhoneArchiveTagComparison?
     @State private var revokeAliasTarget: PhoneArchiveTagComparison?
     @State private var liveProjection: RemoteLocalLibrarySyncStore.Projection?
+    @State private var outboundIntents: [PhoneArchiveMacTagOutboundIntent] = []
     @State private var sharedStatus: String?
     @State private var tagSyncTarget: TagSyncTarget?
     @State private var phoneToMacTarget: PhoneToMacTarget?
@@ -2367,6 +2369,20 @@ private struct PhoneArchiveFactComparisonSheet: View {
                 .font(.footnote).foregroundStyle(.secondary)
             if let sharedStatus {
                 Text(sharedStatus).font(.footnote).foregroundStyle(.secondary)
+            }
+            if !outboundIntents.isEmpty {
+                ForEach(outboundIntents) { intent in
+                    HStack {
+                        Text("\(intent.phoneTagName)：\(intent.state == .prepared ? "提交待核查" : "旧提交存在冲突")")
+                            .font(.footnote)
+                        if intent.state == .prepared {
+                            Button("核查并继续") {
+                                Task { await resumeOutboundTagIntent(intent) }
+                            }
+                            .disabled(isBusy)
+                        }
+                    }
+                }
             }
             if let message {
                 Text(message).foregroundStyle(.orange)
@@ -2506,13 +2522,19 @@ private struct PhoneArchiveFactComparisonSheet: View {
             message = "图库尚未就绪。"
             return
         }
+        await reconcileRecordedOutboundIntents(importer)
         do {
-            let loaded = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
-                try importer.compareBoundAssetFacts(
+            let (loaded, intents) = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                let comparison = try importer.compareBoundAssetFacts(
                     migrationID: migrationID, mediaID: mediaID, assetID: asset.id
                 )
+                let intents = try importer.outboundTagIntents(
+                    migrationID: migrationID, mediaID: mediaID, assetID: asset.id
+                )
+                return (comparison, intents)
             }
             comparison = loaded
+            outboundIntents = intents
             message = nil
             do {
                 let matches = try await RemoteHostProcessHolder.sharedPhoneProjections().filter {
@@ -2535,6 +2557,7 @@ private struct PhoneArchiveFactComparisonSheet: View {
             }
         } catch {
             comparison = nil
+            outboundIntents = []
             liveProjection = nil
             sharedStatus = nil
             message = "对账失败：\(error.localizedDescription)"
@@ -2557,6 +2580,9 @@ private struct PhoneArchiveFactComparisonSheet: View {
             && (tag.macDecision == RemoteLocalLibraryDecision.accepted.rawValue
                 || tag.macDecision == RemoteLocalLibraryDecision.rejected.rawValue)
             && tag.macDecision != fact.decision.rawValue
+            && !outboundIntents.contains(where: {
+                $0.state == .prepared && $0.phoneTagID == tag.phoneTagID
+            })
     }
 
     private func canApplySharedDecision(
@@ -2567,6 +2593,122 @@ private struct PhoneArchiveFactComparisonSheet: View {
             || tag.state == .macDecisionMissing)
             && tag.macTagID != nil
             && tag.macDecision != (fact.decision == .cleared ? nil : fact.decision.rawValue)
+    }
+
+    /// Finishes only operations already proven by the durable JSON ledger.
+    /// A prepared operation without that proof remains visible for explicit retry.
+    private func reconcileRecordedOutboundIntents(
+        _ importer: VerifiedPhoneArchiveImporter
+    ) async {
+        let intents: [PhoneArchiveMacTagOutboundIntent]
+        do {
+            intents = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.outboundTagIntents(
+                    migrationID: migrationID, mediaID: mediaID, assetID: asset.id
+                )
+            }
+        } catch { return }
+        for intent in intents where intent.state == .prepared {
+            guard let receipt = try? await RemoteHostProcessHolder.sharedPhoneMacTagOperation(
+                deviceID: intent.phoneDeviceID, operationID: intent.id
+            ) else { continue }
+            _ = try? await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.finalizeOutboundMacTagDecision(
+                    operationID: intent.id, receipt: receipt,
+                    timestampMs: Int64(Date().timeIntervalSince1970 * 1_000)
+                )
+            }
+        }
+    }
+
+    private func resumeOutboundTagIntent(
+        _ intent: PhoneArchiveMacTagOutboundIntent
+    ) async {
+        guard !isBusy, intent.state == .prepared,
+              let importer = PhoneArchiveImportProcessHolder.importer() else { return }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            if let receipt = try await RemoteHostProcessHolder.sharedPhoneMacTagOperation(
+                deviceID: intent.phoneDeviceID, operationID: intent.id
+            ) {
+                _ = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                    try importer.finalizeOutboundMacTagDecision(
+                        operationID: intent.id, receipt: receipt,
+                        timestampMs: Int64(Date().timeIntervalSince1970 * 1_000)
+                    )
+                }
+                await loadComparison()
+                message = "已凭共享账本中的操作回执确认此前提交；手机仍需主动同步。"
+                return
+            }
+            let paired = await RemoteHostProcessHolder.pairedDevices().contains {
+                $0.deviceID == intent.phoneDeviceID
+            }
+            let projection = try await RemoteHostProcessHolder.sharedPhoneProjections().first {
+                $0.deviceID == intent.phoneDeviceID
+            }
+            let catalog = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.compareBoundAssetFacts(
+                    migrationID: intent.migrationID,
+                    mediaID: intent.mediaID, assetID: intent.assetID
+                )
+            }
+            let tag = catalog.tags.first { $0.phoneTagID == intent.phoneTagID }
+            let fact = projection?.sharedTagFacts.first {
+                $0.assetID == intent.mediaID && $0.tagID == intent.phoneTagID
+            }
+            guard paired,
+                  catalog.sourceInstallID == intent.sourceInstallID,
+                  catalog.sourceEpoch == intent.sourceEpoch,
+                  catalog.bindingConfirmationEventID == intent.bindingConfirmationEventID,
+                  tag?.macTagID == intent.macTagID,
+                  tag?.macDecisionRevision == intent.macExpectedRevision,
+                  tag?.macDecision == intent.macExpectedDecision.rawValue,
+                  tag?.state == .same || tag?.state == .decisionDiffers,
+                  projection?.installID == intent.sourceInstallID,
+                  projection?.sourceEpoch == intent.sourceEpoch,
+                  projection?.scopeRevision == intent.phoneScopeRevision,
+                  projection?.selectedAssetIDs.contains(intent.mediaID) == true,
+                  projection?.assets.contains(where: { $0.id == intent.mediaID }) == true,
+                  fact?.revision == intent.phoneExpectedRevision,
+                  fact?.decision == intent.phoneExpectedDecision else {
+                try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                    try importer.markOutboundMacTagConflict(
+                        operationID: intent.id,
+                        timestampMs: Int64(Date().timeIntervalSince1970 * 1_000)
+                    )
+                }
+                await loadComparison()
+                message = "待处理提交的身份或版本已变化，已停止重试；请重新对账后创建新操作。"
+                return
+            }
+            _ = try await RemoteHostProcessHolder.setSharedPhoneTagDecision(
+                deviceID: intent.phoneDeviceID, assetID: intent.mediaID,
+                tagID: intent.phoneTagID, decision: intent.desiredDecision,
+                expectedRevision: intent.phoneExpectedRevision,
+                expectedInstallID: intent.sourceInstallID,
+                expectedSourceEpoch: intent.sourceEpoch,
+                expectedScopeRevision: intent.phoneScopeRevision,
+                operationID: intent.id
+            )
+            guard let receipt = try await RemoteHostProcessHolder.sharedPhoneMacTagOperation(
+                deviceID: intent.phoneDeviceID, operationID: intent.id
+            ) else {
+                throw PhoneArchiveImportError.missingImportJournal
+            }
+            _ = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.finalizeOutboundMacTagDecision(
+                    operationID: intent.id, receipt: receipt,
+                    timestampMs: Int64(Date().timeIntervalSince1970 * 1_000)
+                )
+            }
+            await loadComparison()
+            message = "待处理提交已按原操作 ID 完成，手机仍需主动同步。"
+        } catch {
+            await loadComparison()
+            message = "待处理提交仍需核查：\(error.localizedDescription)"
+        }
     }
 
     private func applyPhoneTagDecisionToMac(_ target: PhoneToMacTarget) async {
@@ -2638,6 +2780,7 @@ private struct PhoneArchiveFactComparisonSheet: View {
         }
         isBusy = true
         defer { isBusy = false }
+        var prepared = false
         do {
             let decision = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
                 try importer.validateBoundMacTagDecision(
@@ -2659,14 +2802,38 @@ private struct PhoneArchiveFactComparisonSheet: View {
                 message = "手机共享范围或标签字段已变化，请刷新对账。"
                 return
             }
+            let intent = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.prepareOutboundMacTagDecision(
+                    operationID: target.operationID,
+                    migrationID: migrationID, mediaID: mediaID, assetID: asset.id,
+                    expectedComparison: comparison, expectedTag: target.tag,
+                    phoneDeviceID: projection.deviceID,
+                    phoneScopeRevision: projection.scopeRevision,
+                    sharedFact: target.fact,
+                    timestampMs: Int64(Date().timeIntervalSince1970 * 1_000)
+                )
+            }
+            prepared = true
             _ = try await RemoteHostProcessHolder.setSharedPhoneTagDecision(
                 deviceID: projection.deviceID, assetID: mediaID,
                 tagID: target.tag.phoneTagID, decision: decision,
                 expectedRevision: target.fact.revision,
                 expectedInstallID: comparison.sourceInstallID,
                 expectedSourceEpoch: comparison.sourceEpoch,
-                expectedScopeRevision: projection.scopeRevision
+                expectedScopeRevision: projection.scopeRevision,
+                operationID: intent.id
             )
+            guard let receipt = try await RemoteHostProcessHolder.sharedPhoneMacTagOperation(
+                deviceID: projection.deviceID, operationID: intent.id
+            ) else {
+                throw PhoneArchiveImportError.missingImportJournal
+            }
+            _ = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.finalizeOutboundMacTagDecision(
+                    operationID: intent.id, receipt: receipt,
+                    timestampMs: Int64(Date().timeIntervalSince1970 * 1_000)
+                )
+            }
             do {
                 _ = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
                     try importer.validateBoundMacTagDecision(
@@ -2683,7 +2850,10 @@ private struct PhoneArchiveFactComparisonSheet: View {
                 message = "共享账本已提交，但 Mac 事实随后变化；请重新对账，勿将本次视为收敛完成。"
             }
         } catch {
-            message = "提交失败：\(error.localizedDescription)"
+            await loadComparison()
+            message = prepared
+                ? "提交状态待核查：\(error.localizedDescription)。请使用“核查并继续”，不要重复新建操作。"
+                : "提交失败：\(error.localizedDescription)"
         }
     }
 

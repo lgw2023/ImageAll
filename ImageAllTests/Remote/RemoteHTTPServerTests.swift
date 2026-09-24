@@ -818,6 +818,7 @@ final class RemoteHTTPServerTests: XCTestCase {
             selectedAssetIDs: [assetID], assets: [asset]
         )
         _ = try await store.submit(snapshot, authenticatedDeviceID: deviceID)
+        let macOperationID = UUID()
         do {
             _ = try await store.setTagDecisionFromMac(
                 deviceID: deviceID, assetID: assetID, tagID: tagID,
@@ -844,7 +845,7 @@ final class RemoteHTTPServerTests: XCTestCase {
             deviceID: deviceID, assetID: assetID, tagID: tagID,
             decision: .rejected, expectedRevision: 1,
             expectedInstallID: installID, expectedSourceEpoch: epoch,
-            expectedScopeRevision: 1
+            expectedScopeRevision: 1, operationID: macOperationID
         )
         XCTAssertEqual(changed.sharedTagFacts.first?.revision, 2)
         XCTAssertEqual(changed.sharedTagFacts.first?.decision, .rejected)
@@ -856,6 +857,28 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(firstPage.nextCursor, 1)
         XCTAssertFalse(firstPage.hasMore)
         let reopened = try RemoteLocalLibrarySyncStore(hostID: hostID, storageURL: url)
+        let recordedValue = await reopened.macTagOperation(
+            deviceID: deviceID, operationID: macOperationID
+        )
+        let recorded = try XCTUnwrap(recordedValue)
+        XCTAssertEqual(recorded.resultingRevision, 2)
+        XCTAssertEqual(recorded.changeSequence, 1)
+        _ = try await reopened.setTagDecisionFromMac(
+            deviceID: deviceID, assetID: assetID, tagID: tagID,
+            decision: .rejected, expectedRevision: 1,
+            expectedInstallID: installID, expectedSourceEpoch: epoch,
+            expectedScopeRevision: 1, operationID: macOperationID
+        )
+        do {
+            _ = try await reopened.setTagDecisionFromMac(
+                deviceID: deviceID, assetID: assetID, tagID: tagID,
+                decision: .cleared, expectedRevision: 1,
+                operationID: macOperationID
+            )
+            XCTFail("operation ID must not replay with another decision")
+        } catch let error as RemoteAPIError {
+            XCTAssertEqual(error.code, .conflict)
+        }
         let replayedPage = try await reopened.tagChanges(
             deviceID: deviceID, sourceEpoch: epoch, scopeRevision: 1, afterCursor: 0
         )

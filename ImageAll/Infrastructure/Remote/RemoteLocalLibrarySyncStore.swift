@@ -48,6 +48,20 @@ actor RemoteLocalLibrarySyncStore {
         let sharedFavoriteFacts: [SharedFavoriteFact]
     }
 
+    struct MacTagOperationReceipt: Codable, Sendable, Equatable {
+        let operationID: UUID
+        let deviceID: UUID
+        let installID: UUID
+        let sourceEpoch: UUID
+        let scopeRevision: Int64
+        let assetID: UUID
+        let tagID: UUID
+        let decision: RemoteLocalLibraryDecision
+        let expectedRevision: Int64
+        let resultingRevision: Int64
+        let changeSequence: Int64
+    }
+
     private struct TagOperationRecord: Codable {
         let request: RemoteLocalLibraryTagDecisionRequest
         let payloadSHA256: String
@@ -78,6 +92,9 @@ actor RemoteLocalLibrarySyncStore {
         let tagOperations: [TagOperationRecord]?
         let collectionOperations: [CollectionOperationRecord]?
         let favoriteOperations: [FavoriteOperationRecord]?
+        /// Mac-originated operations are stored atomically with the outbound change.
+        /// Old JSON ledgers decode this optional field as nil.
+        let macTagOperations: [MacTagOperationReceipt]?
         let lastPhoneOperationSequence: Int64?
         let importedAssetIDs: [UUID]?
         let tagChanges: [RemoteLocalLibraryTagChange]?
@@ -137,6 +154,26 @@ actor RemoteLocalLibrarySyncStore {
                               selectedIDs.contains($0.assetID) && $0.revision > 0
                           }
                           && Set(operationIDs).count == operationIDs.count
+                          && Set((record.macTagOperations ?? []).map(\.operationID)).count ==
+                              (record.macTagOperations ?? []).count
+                          && (record.macTagOperations ?? []).allSatisfy { operation in
+                              operation.deviceID == record.deviceID
+                                  && operation.installID == record.request.installID
+                                  && operation.sourceEpoch == record.request.sourceEpoch
+                                  && operation.scopeRevision >= 0
+                                  && operation.scopeRevision <= record.request.scopeRevision
+                                  && operation.expectedRevision > 0
+                                  && operation.expectedRevision < Int64.max
+                                  && operation.resultingRevision == operation.expectedRevision + 1
+                                  && changes.contains { change in
+                                      change.sequence == operation.changeSequence
+                                          && change.scopeRevision == operation.scopeRevision
+                                          && change.assetID == operation.assetID
+                                          && change.tagID == operation.tagID
+                                          && change.decision == operation.decision
+                                          && change.fieldRevision == operation.resultingRevision
+                                  }
+                          }
                           && (record.tagOperations ?? []).allSatisfy {
                               $0.receipt.hostID == hostID
                                   && $0.receipt.deviceID == record.deviceID
@@ -272,6 +309,7 @@ actor RemoteLocalLibrarySyncStore {
             tagOperations: previous?.tagOperations ?? [],
             collectionOperations: previous?.collectionOperations ?? [],
             favoriteOperations: previous?.favoriteOperations ?? [],
+            macTagOperations: previous?.macTagOperations ?? [],
             lastPhoneOperationSequence: previous?.lastPhoneOperationSequence ?? 0,
             importedAssetIDs: importedAssetIDs,
             tagChanges: previous?.tagChanges ?? [],
@@ -492,6 +530,7 @@ actor RemoteLocalLibrarySyncStore {
             tagOperations: (previous.tagOperations ?? []) + [operation],
             collectionOperations: previous.collectionOperations,
             favoriteOperations: previous.favoriteOperations,
+            macTagOperations: previous.macTagOperations,
             lastPhoneOperationSequence: request.deviceSequence,
             importedAssetIDs: previous.importedAssetIDs,
             tagChanges: previous.tagChanges,
@@ -626,6 +665,7 @@ actor RemoteLocalLibrarySyncStore {
                 )
             ],
             favoriteOperations: previous.favoriteOperations,
+            macTagOperations: previous.macTagOperations,
             lastPhoneOperationSequence: request.deviceSequence,
             importedAssetIDs: previous.importedAssetIDs,
             tagChanges: previous.tagChanges,
@@ -733,6 +773,7 @@ actor RemoteLocalLibrarySyncStore {
                     request: request, payloadSHA256: digest, receipt: receipt
                 )
             ],
+            macTagOperations: previous.macTagOperations,
             lastPhoneOperationSequence: request.deviceSequence,
             importedAssetIDs: previous.importedAssetIDs,
             tagChanges: previous.tagChanges,
@@ -751,10 +792,27 @@ actor RemoteLocalLibrarySyncStore {
         deviceID: UUID, assetID: UUID, tagID: UUID,
         decision: RemoteLocalLibraryDecision, expectedRevision: Int64,
         expectedInstallID: UUID? = nil, expectedSourceEpoch: UUID? = nil,
-        expectedScopeRevision: Int64? = nil
+        expectedScopeRevision: Int64? = nil,
+        operationID: UUID? = nil
     ) throws -> Projection {
-        guard let previous = records[deviceID],
-              previous.request.selectedAssetIDs.contains(assetID),
+        guard let previous = records[deviceID] else {
+            throw RemoteAPIError(code: .notFound, message: "shared phone source unavailable")
+        }
+        if let operationID,
+           let applied = previous.macTagOperations?.first(where: {
+               $0.operationID == operationID
+           }) {
+            guard applied.assetID == assetID, applied.tagID == tagID,
+                  applied.decision == decision,
+                  applied.expectedRevision == expectedRevision,
+                  expectedInstallID.map({ $0 == applied.installID }) ?? true,
+                  expectedSourceEpoch.map({ $0 == applied.sourceEpoch }) ?? true,
+                  expectedScopeRevision.map({ $0 == applied.scopeRevision }) ?? true else {
+                throw RemoteAPIError(code: .conflict, message: "Mac tag operation payload changed")
+            }
+            return projection(deviceID: deviceID)!
+        }
+        guard previous.request.selectedAssetIDs.contains(assetID),
               previous.projectedAssets.contains(where: { $0.asset.id == assetID }) else {
             throw RemoteAPIError(code: .notFound, message: "shared phone asset unavailable")
         }
@@ -791,6 +849,18 @@ actor RemoteLocalLibrarySyncStore {
             assetID: assetID, tagID: tagID,
             tagName: current.tagName, decision: decision, fieldRevision: nextRevision
         )
+        let operation = operationID.map { id in
+            MacTagOperationReceipt(
+                operationID: id, deviceID: deviceID,
+                installID: previous.request.installID,
+                sourceEpoch: previous.request.sourceEpoch,
+                scopeRevision: previous.request.scopeRevision,
+                assetID: assetID, tagID: tagID, decision: decision,
+                expectedRevision: expectedRevision,
+                resultingRevision: nextRevision,
+                changeSequence: nextSequence
+            )
+        }
         let record = Record(
             deviceID: previous.deviceID, request: previous.request,
             projectedAssets: previous.projectedAssets,
@@ -801,6 +871,8 @@ actor RemoteLocalLibrarySyncStore {
             tagOperations: previous.tagOperations,
             collectionOperations: previous.collectionOperations,
             favoriteOperations: previous.favoriteOperations,
+            macTagOperations: (previous.macTagOperations ?? []) +
+                (operation.map { [$0] } ?? []),
             lastPhoneOperationSequence: previous.lastPhoneOperationSequence,
             importedAssetIDs: previous.importedAssetIDs,
             tagChanges: (previous.tagChanges ?? []) + [change],
@@ -811,6 +883,12 @@ actor RemoteLocalLibrarySyncStore {
         updated[deviceID] = record
         try persist(updated)
         return projection(deviceID: deviceID)!
+    }
+
+    func macTagOperation(
+        deviceID: UUID, operationID: UUID
+    ) -> MacTagOperationReceipt? {
+        records[deviceID]?.macTagOperations?.first { $0.operationID == operationID }
     }
 
     func tagChanges(
@@ -903,6 +981,7 @@ actor RemoteLocalLibrarySyncStore {
             tagOperations: previous.tagOperations,
             collectionOperations: previous.collectionOperations,
             favoriteOperations: previous.favoriteOperations,
+            macTagOperations: previous.macTagOperations,
             lastPhoneOperationSequence: previous.lastPhoneOperationSequence,
             importedAssetIDs: previous.importedAssetIDs,
             tagChanges: previous.tagChanges,
@@ -993,6 +1072,7 @@ actor RemoteLocalLibrarySyncStore {
             tagOperations: previous.tagOperations,
             collectionOperations: previous.collectionOperations,
             favoriteOperations: previous.favoriteOperations,
+            macTagOperations: previous.macTagOperations,
             lastPhoneOperationSequence: previous.lastPhoneOperationSequence,
             importedAssetIDs: previous.importedAssetIDs,
             tagChanges: previous.tagChanges,

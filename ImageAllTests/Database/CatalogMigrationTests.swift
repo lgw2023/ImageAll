@@ -1584,6 +1584,11 @@ final class CatalogMigrationTests: XCTestCase {
     }
 
     private static func dropV035AndLaterTables(_ db: Database) throws {
+        try db.execute(sql: "DROP TABLE IF EXISTS phone_tag_mac_outbound_intent")
+        try db.execute(
+            sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
+            arguments: [CatalogMigrationID.v049AddPhoneTagOutboundIntent]
+        )
         try db.execute(sql: "DROP TRIGGER IF EXISTS asset_tag_decision_revision_insert")
         try db.execute(sql: "DROP TRIGGER IF EXISTS asset_tag_decision_revision_update")
         try db.execute(sql: "DROP TRIGGER IF EXISTS asset_tag_decision_revision_delete")
