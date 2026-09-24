@@ -3,6 +3,7 @@ import Foundation
 import GRDB
 import ImageAllRemoteProtocol
 import UniformTypeIdentifiers
+import os
 
 enum PhoneArchiveImportError: LocalizedError, Equatable {
     case incompleteArchive
@@ -233,6 +234,13 @@ struct PhoneArchiveMacTagOutboundIntent: Identifiable, Sendable, Equatable {
     let phoneResultingRevision: Int64?
     let phoneChangeSequence: Int64?
     let createdAtMs: Int64
+}
+
+struct PhoneArchiveMacTagRecoveryResult: Sendable, Equatable {
+    let prepared: Int
+    let committed: Int
+    let stillPending: Int
+    let failedVerification: Int
 }
 
 struct PhoneArchiveMacOnlyTagDecision: Identifiable, Sendable {
@@ -1776,6 +1784,42 @@ struct VerifiedPhoneArchiveImporter: Sendable {
         }
     }
 
+    /// Startup recovery only acknowledges a proven JSON commit. An intent with
+    /// no receipt remains prepared for explicit version checked retry in the UI.
+    func recoverPreparedOutboundMacTagDecisions(
+        receiptFor: @escaping @Sendable (UUID, UUID) async throws
+            -> RemoteLocalLibrarySyncStore.MacTagOperationReceipt?
+    ) async throws -> PhoneArchiveMacTagRecoveryResult {
+        let pending = try await database.pool.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT * FROM phone_tag_mac_outbound_intent
+                WHERE state = 'prepared' ORDER BY created_at_ms, id
+                """).map(Self.outboundTagIntent(from:))
+        }
+        var committed = 0
+        var failedVerification = 0
+        for intent in pending {
+            do {
+                guard let receipt = try await receiptFor(intent.phoneDeviceID, intent.id) else {
+                    continue
+                }
+                _ = try finalizeOutboundMacTagDecision(
+                    operationID: intent.id, receipt: receipt,
+                    timestampMs: Int64(Date().timeIntervalSince1970 * 1_000)
+                )
+                committed += 1
+            } catch {
+                // Retain prepared: a missing or mismatched receipt cannot prove a commit.
+                failedVerification += 1
+            }
+        }
+        return PhoneArchiveMacTagRecoveryResult(
+            prepared: pending.count, committed: committed,
+            stillPending: pending.count - committed,
+            failedVerification: failedVerification
+        )
+    }
+
     /// Persists the SQLite half before touching the independent JSON ledger.
     /// Pending intents block another submission for the same source field.
     func prepareOutboundMacTagDecision(
@@ -2622,6 +2666,9 @@ struct VerifiedPhoneArchiveImporter: Sendable {
 @MainActor
 enum PhoneArchiveImportProcessHolder {
     private static var database: CatalogDatabase?
+    private static let logger = Logger(
+        subsystem: "com.gwlee.ImageAll", category: "PhoneArchiveImport"
+    )
 
     static func attach(database: CatalogDatabase) {
         self.database = database
@@ -2629,5 +2676,27 @@ enum PhoneArchiveImportProcessHolder {
 
     static func importer() -> VerifiedPhoneArchiveImporter? {
         database.map { VerifiedPhoneArchiveImporter(database: $0) }
+    }
+
+    static func recoverPreparedOutboundMacTagDecisions() {
+        guard let importer = importer() else { return }
+        let recoveryLogger = logger
+        Task.detached(priority: .utility) {
+            do {
+                let result = try await importer.recoverPreparedOutboundMacTagDecisions {
+                    deviceID, operationID in
+                    try await RemoteHostProcessHolder.sharedPhoneMacTagOperation(
+                        deviceID: deviceID, operationID: operationID
+                    )
+                }
+                if result.prepared > 0 {
+                    recoveryLogger.info(
+                        "Mac tag outbound recovery: prepared=\(result.prepared), committed=\(result.committed), pending=\(result.stillPending), failed=\(result.failedVerification)"
+                    )
+                }
+            } catch {
+                recoveryLogger.error("Mac tag outbound recovery failed: \(String(describing: error))")
+            }
+        }
     }
 }

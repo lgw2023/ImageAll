@@ -1281,6 +1281,13 @@ final class PhoneArchiveImportTests: XCTestCase {
             sharedFact: fact, timestampMs: 10
         )
         XCTAssertEqual(intent.state, .prepared)
+        let beforeCommit = try await importer.recoverPreparedOutboundMacTagDecisions {
+            deviceID, operationID in
+            await store.macTagOperation(deviceID: deviceID, operationID: operationID)
+        }
+        XCTAssertEqual(beforeCommit, .init(
+            prepared: 1, committed: 0, stillPending: 1, failedVerification: 0
+        ))
         _ = try await store.setTagDecisionFromMac(
             deviceID: deviceID, assetID: item.mediaID, tagID: tagID,
             decision: .rejected, expectedRevision: 1,
@@ -1302,17 +1309,41 @@ final class PhoneArchiveImportTests: XCTestCase {
         )
         let receipt = try XCTUnwrap(recoveredValue)
         XCTAssertEqual(receipt.resultingRevision, 2)
-        let finalized = try recoveredImporter.finalizeOutboundMacTagDecision(
-            operationID: operationID, receipt: receipt, timestampMs: 11
+        let wrongReceipt = RemoteLocalLibrarySyncStore.MacTagOperationReceipt(
+            operationID: UUID(), deviceID: receipt.deviceID,
+            installID: receipt.installID, sourceEpoch: receipt.sourceEpoch,
+            scopeRevision: receipt.scopeRevision, assetID: receipt.assetID,
+            tagID: receipt.tagID, decision: receipt.decision,
+            expectedRevision: receipt.expectedRevision,
+            resultingRevision: receipt.resultingRevision,
+            changeSequence: receipt.changeSequence
         )
-        XCTAssertEqual(finalized.state, .committed)
-        XCTAssertEqual(finalized.phoneChangeSequence, 1)
+        let rejectedProof = try await recoveredImporter.recoverPreparedOutboundMacTagDecisions {
+            _, _ in wrongReceipt
+        }
+        XCTAssertEqual(rejectedProof, .init(
+            prepared: 1, committed: 0, stillPending: 1, failedVerification: 1
+        ))
+        let recovered = try await recoveredImporter.recoverPreparedOutboundMacTagDecisions {
+            deviceID, operationID in
+            await recoveredStore.macTagOperation(deviceID: deviceID, operationID: operationID)
+        }
+        XCTAssertEqual(recovered, .init(
+            prepared: 1, committed: 1, stillPending: 0, failedVerification: 0
+        ))
         XCTAssertTrue(try recoveredImporter.outboundTagIntents(
             migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID
         ).isEmpty)
         XCTAssertEqual(try recoveredImporter.finalizeOutboundMacTagDecision(
             operationID: operationID, receipt: receipt, timestampMs: 12
         ).state, .committed)
+        let replayRecovery = try await recoveredImporter.recoverPreparedOutboundMacTagDecisions {
+            deviceID, operationID in
+            await recoveredStore.macTagOperation(deviceID: deviceID, operationID: operationID)
+        }
+        XCTAssertEqual(replayRecovery, .init(
+            prepared: 0, committed: 0, stillPending: 0, failedVerification: 0
+        ))
     }
 
     private final class Fixture {

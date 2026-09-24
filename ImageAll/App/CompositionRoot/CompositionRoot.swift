@@ -628,6 +628,7 @@ struct CompositionRoot {
             ),
             hostAppVersion: BundleAppVersionProvider().currentVersion()
         )
+        PhoneArchiveImportProcessHolder.recoverPreparedOutboundMacTagDecisions()
         return workspaceModel
     }
 
