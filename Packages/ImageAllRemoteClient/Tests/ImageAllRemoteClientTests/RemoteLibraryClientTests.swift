@@ -4,6 +4,44 @@ import ImageAllRemoteProtocol
 import XCTest
 
 final class RemoteLibraryClientTests: XCTestCase {
+    func testFetchesScopedMacTagChangesWithBearerToken() async throws {
+        let hostID = UUID()
+        let deviceID = UUID()
+        let epoch = UUID()
+        let change = RemoteLocalLibraryTagChange(
+            sequence: 8, scopeRevision: 2, assetID: UUID(), tagID: UUID(),
+            tagName: "family", decision: .rejected, fieldRevision: 3
+        )
+        let transport = MockTransport { outgoing in
+            XCTAssertEqual(outgoing.httpMethod, "GET")
+            XCTAssertEqual(outgoing.url?.path, RemoteHTTPPaths.localLibraryTagChanges)
+            XCTAssertEqual(outgoing.value(forHTTPHeaderField: "Authorization"), "Bearer secret")
+            let query = URLComponents(url: try XCTUnwrap(outgoing.url), resolvingAgainstBaseURL: false)?
+                .queryItems ?? []
+            XCTAssertEqual(query.first(where: { $0.name == "sourceEpoch" })?.value, epoch.uuidString)
+            XCTAssertEqual(query.first(where: { $0.name == "scopeRevision" })?.value, "2")
+            XCTAssertEqual(query.first(where: { $0.name == "afterCursor" })?.value, "7")
+            let page = RemoteLocalLibraryTagChangesPage(
+                hostID: hostID, deviceID: deviceID, sourceEpoch: epoch,
+                scopeRevision: 2, changes: [change], nextCursor: 8, hasMore: false
+            )
+            return (
+                try JSONEncoder().encode(page),
+                HTTPURLResponse(url: outgoing.url!, statusCode: 200,
+                                httpVersion: "HTTP/1.1", headerFields: nil)!
+            )
+        }
+        let client = RemoteLibraryClient(
+            endpoint: try RemoteHostEndpoint(host: "127.0.0.1", port: 8787, accessToken: "secret"),
+            transport: transport
+        )
+        let page = try await client.fetchLocalLibraryTagChanges(
+            sourceEpoch: epoch, scopeRevision: 2, afterCursor: 7
+        )
+        XCTAssertEqual(page.changes, [change])
+        XCTAssertEqual(page.nextCursor, 8)
+    }
+
     func testPostsVersionedPhoneTagDecisionWithStableOperationID() async throws {
         let request = RemoteLocalLibraryTagDecisionRequest(
             hostID: UUID(), installID: UUID(), sourceEpoch: UUID(),

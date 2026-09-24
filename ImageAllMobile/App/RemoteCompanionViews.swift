@@ -3548,6 +3548,7 @@ private func remoteCapabilityTitle(_ capability: RemoteCapability) -> String {
     case .events: "实时事件"
     case .localLibrarySnapshot: "本机图库目录同步"
     case .localLibraryTagOperations: "本机图库标签提交"
+    case .localLibraryTagChanges: "共享标签变化回传"
     }
 }
 

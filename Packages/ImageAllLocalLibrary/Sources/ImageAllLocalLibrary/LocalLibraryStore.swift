@@ -12,6 +12,7 @@ public enum LocalLibraryError: Error, Equatable {
     case syncConflictRequiresResolution
     case syncEarlierOperationPending
     case unsupportedSharedOperation
+    case syncRemoteTagMismatch
 }
 
 public enum LocalDecision: String, Codable, Sendable {
@@ -100,6 +101,33 @@ public struct LocalPreparedSharedTagOperation: Sendable {
 
 public enum LocalSharedTagDisposition: Sendable {
     case applied, unchanged, conflict
+}
+
+public struct LocalSharedTagChange: Sendable {
+    public let sequence: Int64
+    public let assetID: UUID
+    public let tagID: UUID
+    public let tagName: String
+    public let decision: LocalDecision
+    public let fieldRevision: Int64
+
+    public init(
+        sequence: Int64, assetID: UUID, tagID: UUID, tagName: String,
+        decision: LocalDecision, fieldRevision: Int64
+    ) {
+        self.sequence = sequence
+        self.assetID = assetID
+        self.tagID = tagID
+        self.tagName = tagName
+        self.decision = decision
+        self.fieldRevision = fieldRevision
+    }
+}
+
+public struct LocalSharedTagPullResult: Sendable {
+    public let applied: Int
+    public let conflicts: Int
+    public let nextCursor: Int64
 }
 
 /// A directory and human-fact projection for assets the owner explicitly selected.
@@ -235,6 +263,7 @@ public actor LocalLibraryStore {
                 INSERT OR IGNORE INTO identity(key,value) VALUES('sync_device_id','');
                 INSERT OR IGNORE INTO identity(key,value) VALUES('sync_ack_scope_revision','0');
                 INSERT OR IGNORE INTO identity(key,value) VALUES('sync_ack_snapshot_sequence','0');
+                INSERT OR IGNORE INTO identity(key,value) VALUES('sync_tag_change_cursor','0');
                 """
             guard sqlite3_exec(db, setup, nil, nil, nil) == SQLITE_OK else {
                 throw LocalLibraryError.database(String(cString: sqlite3_errmsg(db)))
@@ -775,6 +804,111 @@ public actor LocalLibraryStore {
             }
         }
         return true
+    }
+
+    public func sharedTagChangeCursor() throws -> Int64 {
+        Int64(try requiredIdentity("sync_tag_change_cursor")) ?? 0
+    }
+
+    /// Applies one Mac change page and its cursor atomically. A pending phone intent is
+    /// never overwritten by a Mac value; a prepared request must be retried first.
+    public func applySharedTagChanges(
+        hostID: UUID, deviceID: UUID, sourceEpoch: UUID,
+        scopeRevision: Int64, afterCursor: Int64,
+        changes: [LocalSharedTagChange], nextCursor: Int64
+    ) throws -> LocalSharedTagPullResult {
+        guard try requiredIdentity("sync_host_id") == hostID.uuidString,
+              try requiredIdentity("sync_device_id") == deviceID.uuidString,
+              try requiredIdentity("source_epoch") == sourceEpoch.uuidString,
+              Int64(try requiredIdentity("share_scope_revision")) == scopeRevision,
+              Int64(try requiredIdentity("sync_ack_scope_revision")) == scopeRevision,
+              try sharedTagChangeCursor() == afterCursor,
+              nextCursor >= afterCursor,
+              changes.allSatisfy({
+                  $0.sequence > afterCursor && $0.sequence <= nextCursor && $0.fieldRevision > 0
+              }),
+              zip(changes, changes.dropFirst()).allSatisfy({ $0.0.sequence < $0.1.sequence }) else {
+            throw LocalLibraryError.syncIdentityChanged
+        }
+        var applied = 0
+        var conflicts = 0
+        try transaction {
+            for change in changes {
+                guard try isShared(assetID: change.assetID),
+                      let localName = try scalar(
+                          "SELECT name FROM tags WHERE id=?", [change.tagID.uuidString]
+                      ), localName == change.tagName else {
+                    throw LocalLibraryError.syncRemoteTagMismatch
+                }
+                let field = "tag.\(change.tagID.uuidString)"
+                let baseline = Int64(try scalar("""
+                    SELECT revision FROM shared_field_versions WHERE asset_id=? AND field=?
+                    """, [change.assetID.uuidString, field]) ?? "0") ?? 0
+                if change.fieldRevision <= baseline { continue }
+                let pending = try rows("""
+                    SELECT s.operation_id,s.value,d.state
+                    FROM shared_outbox s JOIN outbox o ON o.operation_id=s.operation_id
+                    LEFT JOIN shared_delivery d ON d.operation_id=s.operation_id
+                    WHERE s.asset_id=? AND s.field=? ORDER BY o.sequence
+                    """, [change.assetID.uuidString, field]).first
+                if let pending {
+                    guard pending[2] != "prepared" else {
+                        throw LocalLibraryError.syncEarlierOperationPending
+                    }
+                    if pending[1] == change.decision.rawValue,
+                       pending[2] == nil {
+                        try execute("DELETE FROM shared_outbox WHERE operation_id=?", [pending[0] ?? ""])
+                        applied += 1
+                    } else {
+                        try execute("""
+                            INSERT INTO shared_delivery(
+                              operation_id,host_id,device_id,base_revision,scope_revision,
+                              state,conflict_revision,conflict_value
+                            ) VALUES(?,?,?,?,?,'conflict',?,?)
+                            ON CONFLICT(operation_id) DO UPDATE SET
+                              state='conflict',conflict_revision=excluded.conflict_revision,
+                              conflict_value=excluded.conflict_value
+                            """, [
+                                pending[0] ?? "", hostID.uuidString, deviceID.uuidString,
+                                String(baseline), String(scopeRevision),
+                                String(change.fieldRevision), change.decision.rawValue
+                            ])
+                        conflicts += 1
+                    }
+                } else {
+                    let current = try scalar("""
+                        SELECT decision FROM tag_decisions WHERE asset_id=? AND tag_id=?
+                        """, [change.assetID.uuidString, change.tagID.uuidString])
+                    if current != change.decision.rawValue {
+                        try execute("""
+                            INSERT INTO tag_decisions(asset_id,tag_id,decision,revision)
+                            VALUES(?,?,?,1) ON CONFLICT(asset_id,tag_id) DO UPDATE SET
+                              decision=excluded.decision,revision=revision+1
+                            """, [
+                                change.assetID.uuidString, change.tagID.uuidString,
+                                change.decision.rawValue
+                            ])
+                        _ = try enqueue(
+                            change.assetID, field: field, value: change.decision.rawValue
+                        )
+                    }
+                    applied += 1
+                }
+                try execute("""
+                    INSERT INTO shared_field_versions(asset_id,field,revision) VALUES(?,?,?)
+                    ON CONFLICT(asset_id,field) DO UPDATE SET
+                      revision=MAX(revision,excluded.revision)
+                    """, [
+                        change.assetID.uuidString, field, String(change.fieldRevision)
+                    ])
+            }
+            try execute("UPDATE identity SET value=? WHERE key='sync_tag_change_cursor'", [
+                String(nextCursor)
+            ])
+        }
+        return LocalSharedTagPullResult(
+            applied: applied, conflicts: conflicts, nextCursor: nextCursor
+        )
     }
 
     private func bindSyncIdentity(hostID: UUID, deviceID: UUID) throws {

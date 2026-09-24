@@ -9,6 +9,9 @@ struct LocalSharedSyncSummary {
     let unchanged: Int
     let conflicts: Int
     let deferred: Int
+    let received: Int
+    let pullSupported: Bool
+    let pullHasMore: Bool
     let remaining: Int
 }
 
@@ -198,17 +201,25 @@ final class LocalLibraryModel: ObservableObject {
             var unchanged = 0
             var conflicts = 0
             var deferred = 0
+            var received = 0
+            var pullHasMore = false
+            var sent = 0
+            var blockedFields: Set<String> = []
             let visible = Dictionary(uniqueKeysWithValues: snapshot.assets.map { ($0.id, $0) })
             let pending = try await store.pendingSharedOperations()
-            for operation in pending.prefix(100) {
+            for operation in pending {
                 guard operation.field.hasPrefix("tag.") else {
                     deferred += 1 // Collection/favorite have separate authority and protocol work.
                     continue
                 }
+                let fieldKey = "\(operation.assetID.uuidString)|\(operation.field)"
+                if blockedFields.contains(fieldKey) { deferred += 1; continue }
                 if operation.isConflicted {
                     conflicts += 1
-                    break
+                    blockedFields.insert(fieldKey)
+                    continue
                 }
+                if sent >= 100 { deferred += 1; continue }
                 guard let asset = visible[operation.assetID],
                       PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized
                         || PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited else {
@@ -228,6 +239,7 @@ final class LocalLibraryModel: ObservableObject {
                     id: operation.id, hostID: receipt.hostID, deviceID: receipt.deviceID
                 ) else { continue }
                 let tagReceipt = try await remoteModel.submitLocalLibraryTagDecision(prepared)
+                sent += 1
                 let disposition: LocalSharedTagDisposition = switch tagReceipt.disposition {
                 case .applied: .applied
                 case .unchanged: .unchanged
@@ -250,15 +262,49 @@ final class LocalLibraryModel: ObservableObject {
                 case .unchanged: unchanged += 1
                 case .conflict:
                     conflicts += 1
-                    break
+                    blockedFields.insert(fieldKey)
                 }
-                if conflicts > 0 { break }
+            }
+            let pullSupported = remoteModel.supportsLocalLibraryTagChanges
+            if pullSupported {
+                for _ in 0..<20 {
+                    let cursor = try await store.sharedTagChangeCursor()
+                    let page = try await remoteModel.fetchLocalLibraryTagChanges(
+                        sourceEpoch: snapshot.sourceEpoch,
+                        scopeRevision: snapshot.scopeRevision,
+                        afterCursor: cursor
+                    )
+                    let result = try await store.applySharedTagChanges(
+                        hostID: page.hostID, deviceID: page.deviceID,
+                        sourceEpoch: page.sourceEpoch,
+                        scopeRevision: page.scopeRevision, afterCursor: cursor,
+                        changes: page.changes.map { change in
+                            let decision: LocalDecision = switch change.decision {
+                            case .accepted: .accepted
+                            case .rejected: .rejected
+                            case .cleared: .cleared
+                            }
+                            return LocalSharedTagChange(
+                                sequence: change.sequence, assetID: change.assetID,
+                                tagID: change.tagID, tagName: change.tagName,
+                                decision: decision, fieldRevision: change.fieldRevision
+                            )
+                        }, nextCursor: page.nextCursor
+                    )
+                    received += result.applied
+                    conflicts += result.conflicts
+                    pullHasMore = page.hasMore
+                    if !page.hasMore { break }
+                }
             }
             let remaining = try await store.pendingSharedOperations().count
             await reloadFacts()
             return LocalSharedSyncSummary(
                 applied: applied, unchanged: unchanged,
                 conflicts: conflicts, deferred: deferred,
+                received: received,
+                pullSupported: pullSupported,
+                pullHasMore: pullHasMore,
                 remaining: remaining
             )
         } catch {
@@ -528,7 +574,12 @@ private struct LocalShareScopeView: View {
                                     snapshot: snapshot, receipt: receipt,
                                     remoteModel: remoteModel
                                 )
-                                statusMessage = "Mac 已接收 \(receipt.acceptedAssetCount) 项目录；标签提交 \(result.applied) 项、已一致 \(result.unchanged) 项、冲突 \(result.conflicts) 项；仍待处理 \(result.remaining) 项。原件尚未传输。"
+                                let pull = result.pullSupported
+                                    ? "Mac 标签回传 \(result.received) 项"
+                                    : "当前 Mac 版本尚无标签回传"
+                                let continuation = result.pullHasMore
+                                    ? "Mac 仍有后续变化页，请再次同步。" : ""
+                                statusMessage = "Mac 已接收 \(receipt.acceptedAssetCount) 项目录；手机标签提交 \(result.applied) 项、已一致 \(result.unchanged) 项；\(pull)、冲突 \(result.conflicts) 项；仍待处理 \(result.remaining) 项。\(continuation)原件尚未传输。"
                             } catch {
                                 statusMessage = "Mac 已接收目录，但整理信息提交未完成：\(error.localizedDescription)"
                             }
@@ -541,7 +592,7 @@ private struct LocalShareScopeView: View {
                 if let statusMessage {
                     Text(statusMessage).font(.footnote).foregroundStyle(.secondary)
                 }
-                Text("先在“Mac 图库”完成设备配对。标签冲突会保留在手机；集合、收藏和 Mac 改动回传仍待后续协议接入。")
+                Text("先在“Mac 图库”完成设备配对。标签冲突会保留在手机；集合与收藏仍待后续协议接入。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
         }

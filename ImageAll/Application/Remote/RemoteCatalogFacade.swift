@@ -66,8 +66,10 @@ actor RemoteCatalogFacade {
             hostAppVersion: hostAppVersion,
             capabilities: RemoteCapability.allCases.filter {
                 $0 != .localLibrarySnapshot && $0 != .localLibraryTagOperations
+                    && $0 != .localLibraryTagChanges
             } + (supportsLocalLibrarySnapshot
-                ? [.localLibrarySnapshot, .localLibraryTagOperations] : []),
+                ? [.localLibrarySnapshot, .localLibraryTagOperations,
+                   .localLibraryTagChanges] : []),
             listenPort: listenPort,
             usesTLS: usesTLS,
             hostID: hostID,

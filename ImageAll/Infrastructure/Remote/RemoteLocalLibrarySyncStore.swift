@@ -48,13 +48,14 @@ actor RemoteLocalLibrarySyncStore {
         let tagOperations: [TagOperationRecord]?
         let lastPhoneOperationSequence: Int64?
         let importedAssetIDs: [UUID]?
+        let tagChanges: [RemoteLocalLibraryTagChange]?
     }
 
     private struct PersistedState: Codable {
         var records: [Record]
     }
 
-    private let hostID: UUID
+    nonisolated let hostID: UUID
     private let storageURL: URL
     private var records: [UUID: Record]
 
@@ -73,6 +74,7 @@ actor RemoteLocalLibrarySyncStore {
                           "\($0.assetID.uuidString)|\($0.tagID.uuidString)"
                       }
                       let operationIDs = (record.tagOperations ?? []).map(\.request.operationID)
+                      let changes = record.tagChanges ?? []
                       return record.request.hostID == hostID
                           && record.request.schemaVersion == 1
                           && Set(projectedIDs).count == projectedIDs.count
@@ -91,6 +93,14 @@ actor RemoteLocalLibrarySyncStore {
                                   && $0.receipt.operationID == $0.request.operationID
                           }
                           && (record.lastPhoneOperationSequence ?? 0) >= 0
+                          && zip(changes, changes.dropFirst()).allSatisfy {
+                              $0.0.sequence < $0.1.sequence
+                          }
+                          && changes.allSatisfy {
+                              $0.sequence > 0 && $0.fieldRevision > 0
+                                  && $0.scopeRevision >= 0
+                                  && $0.scopeRevision <= record.request.scopeRevision
+                          }
                   }) else {
                 throw RemoteAPIError(code: .internalError, message: "invalid sync store identity")
             }
@@ -163,7 +173,8 @@ actor RemoteLocalLibrarySyncStore {
             sharedTagFacts: sharedTagFacts,
             tagOperations: previous?.tagOperations ?? [],
             lastPhoneOperationSequence: previous?.lastPhoneOperationSequence ?? 0,
-            importedAssetIDs: importedAssetIDs
+            importedAssetIDs: importedAssetIDs,
+            tagChanges: previous?.tagChanges ?? []
         )
         var updated = records
         updated[authenticatedDeviceID] = record
@@ -296,12 +307,98 @@ actor RemoteLocalLibrarySyncStore {
             },
             tagOperations: (previous.tagOperations ?? []) + [operation],
             lastPhoneOperationSequence: request.deviceSequence,
-            importedAssetIDs: previous.importedAssetIDs
+            importedAssetIDs: previous.importedAssetIDs,
+            tagChanges: previous.tagChanges
         )
         var updated = records
         updated[authenticatedDeviceID] = record
         try persist(updated)
         return receipt
+    }
+
+    /// Mac owner changes a fact in the shared phone source. The field revision and
+    /// outbound change are published together in the same atomic record replacement.
+    func setTagDecisionFromMac(
+        deviceID: UUID, assetID: UUID, tagID: UUID,
+        decision: RemoteLocalLibraryDecision, expectedRevision: Int64
+    ) throws -> Projection {
+        guard let previous = records[deviceID],
+              previous.request.selectedAssetIDs.contains(assetID),
+              previous.projectedAssets.contains(where: { $0.asset.id == assetID }) else {
+            throw RemoteAPIError(code: .notFound, message: "shared phone asset unavailable")
+        }
+        var facts = previous.sharedTagFacts ?? Self.seedTagFacts(from: previous.projectedAssets)
+        guard let index = facts.firstIndex(where: {
+            $0.assetID == assetID && $0.tagID == tagID
+        }) else {
+            throw RemoteAPIError(code: .notFound, message: "shared phone tag unavailable")
+        }
+        let current = facts[index]
+        guard current.revision == expectedRevision else {
+            throw RemoteAPIError(code: .conflict, message: "shared phone tag changed")
+        }
+        if current.decision == decision {
+            return projection(deviceID: deviceID)!
+        }
+        guard current.revision < Int64.max,
+              (previous.tagChanges?.last?.sequence ?? 0) < Int64.max else {
+            throw RemoteAPIError(code: .internalError, message: "shared change revision exhausted")
+        }
+        let nextRevision = current.revision + 1
+        let nextSequence = (previous.tagChanges?.last?.sequence ?? 0) + 1
+        facts[index] = SharedTagFact(
+            assetID: assetID, tagID: tagID, tagName: current.tagName,
+            decision: decision, revision: nextRevision
+        )
+        let change = RemoteLocalLibraryTagChange(
+            sequence: nextSequence, scopeRevision: previous.request.scopeRevision,
+            assetID: assetID, tagID: tagID,
+            tagName: current.tagName, decision: decision, fieldRevision: nextRevision
+        )
+        let record = Record(
+            deviceID: previous.deviceID, request: previous.request,
+            projectedAssets: previous.projectedAssets,
+            acceptedAtMs: previous.acceptedAtMs,
+            sharedTagFacts: facts, tagOperations: previous.tagOperations,
+            lastPhoneOperationSequence: previous.lastPhoneOperationSequence,
+            importedAssetIDs: previous.importedAssetIDs,
+            tagChanges: (previous.tagChanges ?? []) + [change]
+        )
+        var updated = records
+        updated[deviceID] = record
+        try persist(updated)
+        return projection(deviceID: deviceID)!
+    }
+
+    func tagChanges(
+        deviceID: UUID, sourceEpoch: UUID, scopeRevision: Int64,
+        afterCursor: Int64, limit: Int = 100
+    ) throws -> RemoteLocalLibraryTagChangesPage {
+        guard let record = records[deviceID] else {
+            throw RemoteAPIError(code: .notFound, message: "phone share scope not established")
+        }
+        guard sourceEpoch == record.request.sourceEpoch,
+              scopeRevision == record.request.scopeRevision,
+              afterCursor >= 0, limit > 0, limit <= 100 else {
+            throw RemoteAPIError(code: .conflict, message: "shared tag cursor scope changed")
+        }
+        let all = record.tagChanges ?? []
+        guard afterCursor <= (all.last?.sequence ?? 0) else {
+            throw RemoteAPIError(code: .conflict, message: "shared tag cursor beyond log")
+        }
+        let selected = Set(record.request.selectedAssetIDs)
+        let filtered = all.filter {
+            $0.sequence > afterCursor && $0.scopeRevision == scopeRevision
+                && selected.contains($0.assetID)
+        }
+        let page = Array(filtered.prefix(limit))
+        return RemoteLocalLibraryTagChangesPage(
+            hostID: hostID, deviceID: deviceID,
+            sourceEpoch: sourceEpoch, scopeRevision: scopeRevision,
+            changes: page,
+            nextCursor: page.last?.sequence ?? (filtered.isEmpty ? (all.last?.sequence ?? afterCursor) : afterCursor),
+            hasMore: filtered.count > page.count
+        )
     }
 
     private static func payloadSHA256(

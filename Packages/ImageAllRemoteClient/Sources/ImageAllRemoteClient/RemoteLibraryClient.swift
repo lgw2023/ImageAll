@@ -130,6 +130,19 @@ public struct RemoteLibraryClient: Sendable {
         )
     }
 
+    public func fetchLocalLibraryTagChanges(
+        sourceEpoch: UUID, scopeRevision: Int64, afterCursor: Int64
+    ) async throws -> RemoteLocalLibraryTagChangesPage {
+        try await getJSON(
+            path: RemoteHTTPPaths.localLibraryTagChanges,
+            queryItems: [
+                URLQueryItem(name: "sourceEpoch", value: sourceEpoch.uuidString),
+                URLQueryItem(name: "scopeRevision", value: String(scopeRevision)),
+                URLQueryItem(name: "afterCursor", value: String(afterCursor))
+            ]
+        )
+    }
+
     public func fetchSources() async throws -> [RemoteSourceSummary] {
         try await getJSON(path: RemoteHTTPPaths.sources)
     }

@@ -313,3 +313,62 @@ import Testing
     ))
     #expect(secondPrepared.baseRevision == 1)
 }
+
+@Test func macTagChangesApplyAtomicallyAndPreservePhoneConflict() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try LocalLibraryStore(url: root.appendingPathComponent("local.sqlite"))
+    try await store.observe([
+        LocalObservedAsset(localIdentifier: "shared", kind: "image", creationDate: nil, isFavorite: false)
+    ])
+    let asset = try #require(await store.assets(visibleIdentifiers: ["shared"]).first)
+    let tagID = try await store.createTag(name: "family")
+    let hostID = UUID()
+    let deviceID = UUID()
+    try await store.setShared(assetID: asset.id, shared: true)
+    try await store.setDecision(assetID: asset.id, tagID: tagID, decision: .accepted)
+    let snapshot = try await store.prepareSharedSnapshot(visibleIdentifiers: ["shared"])
+    try await store.acknowledgeSharedSnapshot(
+        snapshot, hostID: hostID, deviceID: deviceID, importedAssetIDs: [asset.id]
+    )
+    let remote = LocalSharedTagChange(
+        sequence: 1, assetID: asset.id, tagID: tagID,
+        tagName: "family", decision: .rejected, fieldRevision: 2
+    )
+    let applied = try await store.applySharedTagChanges(
+        hostID: hostID, deviceID: deviceID, sourceEpoch: snapshot.sourceEpoch,
+        scopeRevision: snapshot.scopeRevision, afterCursor: 0,
+        changes: [remote], nextCursor: 1
+    )
+    #expect(applied.applied == 1)
+    #expect(try await store.decisions(assetID: asset.id)[tagID] == .rejected)
+    #expect(try await store.pendingSharedOperations().isEmpty)
+    #expect(try await store.sharedTagChangeCursor() == 1)
+    try await store.setDecision(assetID: asset.id, tagID: tagID, decision: .accepted)
+    let conflicting = LocalSharedTagChange(
+        sequence: 2, assetID: asset.id, tagID: tagID,
+        tagName: "family", decision: .cleared, fieldRevision: 3
+    )
+    let conflict = try await store.applySharedTagChanges(
+        hostID: hostID, deviceID: deviceID, sourceEpoch: snapshot.sourceEpoch,
+        scopeRevision: snapshot.scopeRevision, afterCursor: 1,
+        changes: [conflicting], nextCursor: 2
+    )
+    #expect(conflict.conflicts == 1)
+    #expect(try await store.decisions(assetID: asset.id)[tagID] == .accepted)
+    #expect(try await store.pendingSharedOperations().first?.isConflicted == true)
+    #expect(try await store.sharedTagChangeCursor() == 2)
+    do {
+        _ = try await store.applySharedTagChanges(
+            hostID: hostID, deviceID: deviceID, sourceEpoch: snapshot.sourceEpoch,
+            scopeRevision: snapshot.scopeRevision, afterCursor: 2,
+            changes: [.init(
+                sequence: 3, assetID: asset.id, tagID: tagID,
+                tagName: "wrong-name", decision: .accepted, fieldRevision: 4
+            )], nextCursor: 3
+        )
+        Issue.record("a tag identity mismatch must not advance the cursor")
+    } catch LocalLibraryError.syncRemoteTagMismatch {
+        #expect(try await store.sharedTagChangeCursor() == 2)
+    }
+}

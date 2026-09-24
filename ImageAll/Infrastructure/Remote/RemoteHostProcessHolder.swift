@@ -294,6 +294,7 @@ enum RemoteHostProcessHolder {
 
     private struct Runtime {
         let server: RemoteHTTPServer
+        let localLibrarySyncStore: RemoteLocalLibrarySyncStore?
         let pairingStore: RemotePairingStore
         let accessAccountStore: RemoteAccessAccountStore
         let eventBroker: RemoteEventBroker
@@ -316,6 +317,7 @@ enum RemoteHostProcessHolder {
     private actor State {
         var attachment: Attachment?
         var server: RemoteHTTPServer?
+        var localLibrarySyncStore: RemoteLocalLibrarySyncStore?
         var pairingStore: RemotePairingStore?
         var accessAccountStore: RemoteAccessAccountStore?
         var eventBroker: RemoteEventBroker?
@@ -348,8 +350,11 @@ enum RemoteHostProcessHolder {
             }
 
             do {
-                let runtime = try RemoteHostProcessHolder.makeRuntime(attachment: attachment)
+                let runtime = try RemoteHostProcessHolder.makeRuntime(
+                    attachment: attachment, retainedSyncStore: localLibrarySyncStore
+                )
                 server = runtime.server
+                localLibrarySyncStore = runtime.localLibrarySyncStore
                 pairingStore = runtime.pairingStore
                 accessAccountStore = runtime.accessAccountStore
                 eventBroker = runtime.eventBroker
@@ -382,6 +387,20 @@ enum RemoteHostProcessHolder {
             accessAccountStore = nil
             eventBroker = nil
             identity = nil
+        }
+
+        func syncStoreForUI() throws -> RemoteLocalLibrarySyncStore? {
+            guard let hostID = RemoteHostIdentity.existingHostID() else { return nil }
+            if let localLibrarySyncStore, localLibrarySyncStore.hostID == hostID {
+                return localLibrarySyncStore
+            }
+            let loaded = try RemoteLocalLibrarySyncStore(
+                hostID: hostID,
+                storageURL: RemoteHostProcessHolder.remoteHostDirectory()
+                    .appendingPathComponent("local-library-projections.json")
+            )
+            localLibrarySyncStore = loaded
+            return loaded
         }
     }
 
@@ -503,12 +522,22 @@ enum RemoteHostProcessHolder {
     /// Reads the last committed phone projection even when the Host listener is stopped.
     /// This does not open PhotoKit or create a new Host identity.
     static func sharedPhoneProjections() async throws -> [RemoteLocalLibrarySyncStore.Projection] {
-        guard let hostID = RemoteHostIdentity.existingHostID() else { return [] }
-        let store = try RemoteLocalLibrarySyncStore(
-            hostID: hostID,
-            storageURL: remoteHostDirectory().appendingPathComponent("local-library-projections.json")
-        )
+        guard let store = try await state.syncStoreForUI() else { return [] }
         return await store.projections()
+    }
+
+    static func setSharedPhoneTagDecision(
+        deviceID: UUID, assetID: UUID, tagID: UUID,
+        decision: RemoteLocalLibraryDecision, expectedRevision: Int64
+    ) async throws -> RemoteLocalLibrarySyncStore.Projection {
+        guard (await pairedDevices()).contains(where: { $0.deviceID == deviceID }),
+              let store = try await state.syncStoreForUI() else {
+            throw RemoteAPIError(code: .unauthorized, message: "paired phone unavailable")
+        }
+        return try await store.setTagDecisionFromMac(
+            deviceID: deviceID, assetID: assetID, tagID: tagID,
+            decision: decision, expectedRevision: expectedRevision
+        )
     }
 
     static func revoke(deviceID: UUID) async {
@@ -570,7 +599,9 @@ enum RemoteHostProcessHolder {
 
     // MARK: - Internals
 
-    private static func makeRuntime(attachment: Attachment) throws -> Runtime {
+    private static func makeRuntime(
+        attachment: Attachment, retainedSyncStore: RemoteLocalLibrarySyncStore?
+    ) throws -> Runtime {
         let defaults = UserDefaults.standard
         let identity = RemoteHostIdentity.loadOrCreate(defaults: defaults)
 
@@ -599,7 +630,8 @@ enum RemoteHostProcessHolder {
         )
         let localLibrarySyncStore: RemoteLocalLibrarySyncStore?
         do {
-            localLibrarySyncStore = try RemoteLocalLibrarySyncStore(
+            localLibrarySyncStore = try (retainedSyncStore?.hostID == identity.hostID
+                ? retainedSyncStore : nil) ?? RemoteLocalLibrarySyncStore(
                 hostID: identity.hostID,
                 storageURL: remoteHostDirectory().appendingPathComponent("local-library-projections.json")
             )
@@ -648,6 +680,7 @@ enum RemoteHostProcessHolder {
                 localWebPort: RemoteHTTPServer.defaultLocalWebPort,
                 hostID: identity.hostID
             ),
+            localLibrarySyncStore: localLibrarySyncStore,
             pairingStore: pairingStore,
             accessAccountStore: accessAccountStore,
             eventBroker: eventBroker,

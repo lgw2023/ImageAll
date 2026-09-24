@@ -217,6 +217,98 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(afterPermissionContraction?.sharedTagFacts.first?.revision, 3)
     }
 
+    func testMacSharedTagEditProducesScopedDurableChangeAndPhoneConflict() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("shared-tag-changes.json")
+        let hostID = UUID()
+        let deviceID = UUID()
+        let installID = UUID()
+        let epoch = UUID()
+        let assetID = UUID()
+        let tagID = UUID()
+        let asset = RemoteLocalLibraryAsset(
+            id: assetID, localIdentifier: "phone-local", mediaKind: .image,
+            createdAtMs: nil, observedFavorite: false, favoriteTarget: nil,
+            tagDecisions: [.init(tagID: tagID, tagName: "family", decision: .accepted)],
+            collections: []
+        )
+        let store = try RemoteLocalLibrarySyncStore(hostID: hostID, storageURL: url)
+        let snapshot = RemoteLocalLibrarySnapshotRequest(
+            hostID: hostID, installID: installID, sourceEpoch: epoch,
+            scopeRevision: 1, snapshotSequence: 1,
+            selectedAssetIDs: [assetID], assets: [asset]
+        )
+        _ = try await store.submit(snapshot, authenticatedDeviceID: deviceID)
+        let changed = try await store.setTagDecisionFromMac(
+            deviceID: deviceID, assetID: assetID, tagID: tagID,
+            decision: .rejected, expectedRevision: 1
+        )
+        XCTAssertEqual(changed.sharedTagFacts.first?.revision, 2)
+        XCTAssertEqual(changed.sharedTagFacts.first?.decision, .rejected)
+        let firstPage = try await store.tagChanges(
+            deviceID: deviceID, sourceEpoch: epoch, scopeRevision: 1, afterCursor: 0
+        )
+        XCTAssertEqual(firstPage.changes.count, 1)
+        XCTAssertEqual(firstPage.changes.first?.fieldRevision, 2)
+        XCTAssertEqual(firstPage.nextCursor, 1)
+        XCTAssertFalse(firstPage.hasMore)
+        let reopened = try RemoteLocalLibrarySyncStore(hostID: hostID, storageURL: url)
+        let replayedPage = try await reopened.tagChanges(
+            deviceID: deviceID, sourceEpoch: epoch, scopeRevision: 1, afterCursor: 0
+        )
+        XCTAssertEqual(replayedPage, firstPage)
+        do {
+            _ = try await reopened.setTagDecisionFromMac(
+                deviceID: deviceID, assetID: assetID, tagID: tagID,
+                decision: .cleared, expectedRevision: 1
+            )
+            XCTFail("stale Mac edit must fail")
+        } catch let error as RemoteAPIError {
+            XCTAssertEqual(error.code, .conflict)
+        }
+        let phoneEdit = RemoteLocalLibraryTagDecisionRequest(
+            hostID: hostID, installID: installID, sourceEpoch: epoch,
+            scopeRevision: 1, operationID: UUID(), deviceSequence: 1,
+            assetID: assetID, tagID: tagID, tagName: "family",
+            decision: .cleared, baseRevision: 1
+        )
+        let conflict = try await reopened.submitTagDecision(
+            phoneEdit, authenticatedDeviceID: deviceID
+        )
+        XCTAssertEqual(conflict.disposition, .conflict)
+        XCTAssertEqual(conflict.currentDecision, .rejected)
+        XCTAssertEqual(conflict.fieldRevision, 2)
+        let revoked = RemoteLocalLibrarySnapshotRequest(
+            hostID: hostID, installID: installID, sourceEpoch: epoch,
+            scopeRevision: 2, snapshotSequence: 2,
+            selectedAssetIDs: [], assets: []
+        )
+        _ = try await reopened.submit(revoked, authenticatedDeviceID: deviceID)
+        let afterRevoke = try await reopened.tagChanges(
+            deviceID: deviceID, sourceEpoch: epoch, scopeRevision: 2, afterCursor: 0
+        )
+        XCTAssertTrue(afterRevoke.changes.isEmpty)
+        do {
+            _ = try await reopened.tagChanges(
+                deviceID: deviceID, sourceEpoch: epoch, scopeRevision: 1, afterCursor: 0
+            )
+            XCTFail("old scope must not expose tag history")
+        } catch let error as RemoteAPIError {
+            XCTAssertEqual(error.code, .conflict)
+        }
+        let reselected = RemoteLocalLibrarySnapshotRequest(
+            hostID: hostID, installID: installID, sourceEpoch: epoch,
+            scopeRevision: 3, snapshotSequence: 3,
+            selectedAssetIDs: [assetID], assets: [asset]
+        )
+        _ = try await reopened.submit(reselected, authenticatedDeviceID: deviceID)
+        let afterReselect = try await reopened.tagChanges(
+            deviceID: deviceID, sourceEpoch: epoch, scopeRevision: 3, afterCursor: 0
+        )
+        XCTAssertTrue(afterReselect.changes.isEmpty)
+    }
+
     func testVersionedTagLedgerOpensEarlierDirectoryProjection() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -321,6 +413,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         )
         XCTAssertTrue(capabilities.capabilities.contains(.localLibrarySnapshot))
         XCTAssertTrue(capabilities.capabilities.contains(.localLibraryTagOperations))
+        XCTAssertTrue(capabilities.capabilities.contains(.localLibraryTagChanges))
 
         let tagOperation = RemoteLocalLibraryTagDecisionRequest(
             hostID: hostID, installID: snapshot.installID,
@@ -349,6 +442,34 @@ final class RemoteHTTPServerTests: XCTestCase {
         )
         XCTAssertEqual(tagReceipt.disposition, .applied)
         XCTAssertEqual(tagReceipt.fieldRevision, 1)
+        _ = try await syncStore.setTagDecisionFromMac(
+            deviceID: tokens.deviceID, assetID: assetID, tagID: tagOperation.tagID,
+            decision: .rejected, expectedRevision: 1
+        )
+        var changesURL = URLComponents()
+        changesURL.scheme = "http"
+        changesURL.host = "127.0.0.1"
+        changesURL.port = Int(port)
+        changesURL.path = RemoteHTTPPaths.localLibraryTagChanges
+        changesURL.queryItems = [
+            .init(name: "sourceEpoch", value: snapshot.sourceEpoch.uuidString),
+            .init(name: "scopeRevision", value: "1"),
+            .init(name: "afterCursor", value: "0")
+        ]
+        var changesRequest = URLRequest(url: try XCTUnwrap(changesURL.url))
+        changesRequest.setValue("Bearer \(tokens.accessToken)", forHTTPHeaderField: "Authorization")
+        let (changesData, changesResponse) = try await URLSession.shared.data(for: changesRequest)
+        XCTAssertEqual(try XCTUnwrap(changesResponse as? HTTPURLResponse).statusCode, 200)
+        let changes = try JSONDecoder().decode(
+            RemoteLocalLibraryTagChangesPage.self, from: changesData
+        )
+        XCTAssertEqual(changes.deviceID, tokens.deviceID)
+        XCTAssertEqual(changes.changes.first?.decision, .rejected)
+        changesRequest.setValue(
+            "Bearer \(Self.legacyDebugToken)", forHTTPHeaderField: "Authorization"
+        )
+        let (_, unpairedChanges) = try await URLSession.shared.data(for: changesRequest)
+        XCTAssertEqual(try XCTUnwrap(unpairedChanges as? HTTPURLResponse).statusCode, 401)
         let (_, untrustedTagResponse) = try await URLSession.shared.data(for: tagRequest(
             authorization: nil,
             cookie: "\(RemoteWebCompanionSession.accessCookieName)=\(tokens.accessToken)"

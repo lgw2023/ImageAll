@@ -261,9 +261,15 @@ struct RemotePhoneLibraryView: View {
     let projection: RemoteLocalLibrarySyncStore.Projection
     let deviceName: String?
     @State private var searchText = ""
+    @State private var editedProjection: RemoteLocalLibrarySyncStore.Projection?
+    @State private var tagEditError: String?
+
+    private var currentProjection: RemoteLocalLibrarySyncStore.Projection {
+        editedProjection ?? projection
+    }
 
     private var visibleAssets: [RemoteLocalLibrarySyncStore.ProjectedAsset] {
-        let sorted = projection.assets.sorted {
+        let sorted = currentProjection.assets.sorted {
             let left = $0.asset.createdAtMs ?? Int64.min
             let right = $1.asset.createdAtMs ?? Int64.min
             return left == right ? $0.id.uuidString < $1.id.uuidString : left > right
@@ -274,8 +280,9 @@ struct RemotePhoneLibraryView: View {
                 || projected.asset.collections.contains {
                     $0.collectionName.localizedCaseInsensitiveContains(searchText)
                 }
-                || projected.asset.tagDecisions.contains {
-                    $0.tagName.localizedCaseInsensitiveContains(searchText)
+                || currentProjection.sharedTagFacts.contains {
+                    $0.assetID == projected.id
+                        && $0.tagName.localizedCaseInsensitiveContains(searchText)
                 }
         }
     }
@@ -286,7 +293,7 @@ struct RemotePhoneLibraryView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(deviceName ?? "未配对设备的历史目录")
                         .font(.title3.weight(.semibold))
-                    Text("手机分享目录 · \(projection.assets.count) 项 · 快照 \(projection.snapshotSequence)")
+                    Text("手机分享目录 · \(currentProjection.assets.count) 项 · 快照 \(currentProjection.snapshotSequence)")
                         .foregroundStyle(.secondary)
                     Text("上次接收：\(receivedTime)")
                         .font(.caption)
@@ -294,9 +301,12 @@ struct RemotePhoneLibraryView: View {
                 }
                 Spacer()
             }
-            Text("仅显示上次提交的目录与整理信息。原件仍在 iPhone，尚未归档到 Mac。")
+            Text("共享标签可在 Mac 修改，并等待 iPhone 下次同步；原件仍在 iPhone，尚未归档到 Mac。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+            if let tagEditError {
+                Text(tagEditError).font(.footnote).foregroundStyle(.red)
+            }
             TextField("搜索媒体 ID、集合或标签", text: $searchText)
                 .textFieldStyle(.roundedBorder)
             if visibleAssets.isEmpty {
@@ -315,13 +325,13 @@ struct RemotePhoneLibraryView: View {
                             .lineLimit(1)
                             .truncationMode(.middle)
                         Spacer()
-                        Text(projected.lastVisibleSnapshotSequence == projection.snapshotSequence
+                        Text(projected.lastVisibleSnapshotSequence == currentProjection.snapshotSequence
                              ? "本次可见" : "当前未观测")
                             .font(.caption.weight(.medium))
-                            .foregroundStyle(projected.lastVisibleSnapshotSequence == projection.snapshotSequence
+                            .foregroundStyle(projected.lastVisibleSnapshotSequence == currentProjection.snapshotSequence
                                 ? Color.green : Color.orange)
                     }
-                    if projected.lastVisibleSnapshotSequence < projection.snapshotSequence {
+                    if projected.lastVisibleSnapshotSequence < currentProjection.snapshotSequence {
                         Text("保留上次可见记录；可能是权限、离线或来源变化，不代表照片已删除")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -337,12 +347,22 @@ struct RemotePhoneLibraryView: View {
                         Text("集合：\(projected.asset.collections.map(\.collectionName).joined(separator: "、"))")
                             .font(.caption)
                     }
-                    let sharedTags = projection.sharedTagFacts.filter {
+                    let sharedTags = currentProjection.sharedTagFacts.filter {
                         $0.assetID == projected.asset.id
                     }
                     if !sharedTags.isEmpty {
-                        Text("共享标签：\(sharedTags.map { "\($0.tagName)（\(decisionName($0.decision))，版本 \($0.revision)）" }.joined(separator: "、"))")
-                            .font(.caption)
+                        ForEach(sharedTags, id: \.tagID) { fact in
+                            HStack {
+                                Text("共享标签：\(fact.tagName)（\(decisionName(fact.decision))，版本 \(fact.revision)）")
+                                    .font(.caption)
+                                Menu("修改") {
+                                    Button("接受") { updateTag(fact, decision: .accepted) }
+                                    Button("拒绝") { updateTag(fact, decision: .rejected) }
+                                    Button("清除") { updateTag(fact, decision: .cleared) }
+                                }
+                                .menuStyle(.borderlessButton)
+                            }
+                        }
                     }
                     if Dictionary(uniqueKeysWithValues: sharedTags.map { ($0.tagID, $0.decision) })
                         != Dictionary(uniqueKeysWithValues: projected.asset.tagDecisions.map {
@@ -359,6 +379,8 @@ struct RemotePhoneLibraryView: View {
         }
         .padding(20)
         .frame(minWidth: 650, minHeight: 450)
+        .onChange(of: projection.sharedTagFacts) { _, _ in editedProjection = nil }
+        .onChange(of: projection.snapshotSequence) { _, _ in editedProjection = nil }
     }
 
     private func favoriteTarget(_ target: Bool?) -> String {
@@ -377,6 +399,24 @@ struct RemotePhoneLibraryView: View {
         case .accepted: "接受"
         case .rejected: "拒绝"
         case .cleared: "清除"
+        }
+    }
+
+    private func updateTag(
+        _ fact: RemoteLocalLibrarySyncStore.SharedTagFact,
+        decision: RemoteLocalLibraryDecision
+    ) {
+        Task {
+            do {
+                editedProjection = try await RemoteHostProcessHolder.setSharedPhoneTagDecision(
+                    deviceID: currentProjection.deviceID, assetID: fact.assetID,
+                    tagID: fact.tagID, decision: decision,
+                    expectedRevision: fact.revision
+                )
+                tagEditError = nil
+            } catch {
+                tagEditError = "更新共享标签失败：\(error.localizedDescription)"
+            }
         }
     }
 }
