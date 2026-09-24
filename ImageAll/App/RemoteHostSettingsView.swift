@@ -319,7 +319,7 @@ struct RemotePhoneLibraryView: View {
                 }
                 Spacer()
             }
-            Text("共享标签与 ImageAll 集合成员可在 Mac 修改，并等待 iPhone 下次同步；原件仍在 iPhone，尚未归档到 Mac。")
+            Text("共享标签、ImageAll 集合成员和收藏目标可在 Mac 修改，并等待 iPhone 下次同步；来源 Photos 收藏由 iPhone 另行写回。原件仍在 iPhone，尚未归档到 Mac。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             if let syncEditError {
@@ -364,6 +364,21 @@ struct RemotePhoneLibraryView: View {
                     }
                     Text("共享收藏目标：\(favoriteTarget(sharedFavorite?.target))（版本 \(sharedFavorite?.revision ?? 0)） · 上次目录观测的系统收藏：\(projected.asset.observedFavorite ? "是" : "否")")
                         .font(.caption)
+                    Menu("修改共享收藏目标") {
+                        Button("收藏") {
+                            updateFavorite(
+                                assetID: projected.asset.id, target: true,
+                                expectedRevision: sharedFavorite?.revision ?? 0
+                            )
+                        }
+                        Button("取消收藏") {
+                            updateFavorite(
+                                assetID: projected.asset.id, target: false,
+                                expectedRevision: sharedFavorite?.revision ?? 0
+                            )
+                        }
+                    }
+                    .menuStyle(.borderlessButton)
                     if let sharedFavorite,
                        sharedFavorite.target != projected.asset.observedFavorite {
                         Text("目标与上次来源观测不同；等待 iPhone 确认来源写回与回读")
@@ -490,6 +505,22 @@ struct RemotePhoneLibraryView: View {
                 syncEditError = nil
             } catch {
                 syncEditError = "更新共享集合成员失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func updateFavorite(
+        assetID: UUID, target: Bool, expectedRevision: Int64
+    ) {
+        Task {
+            do {
+                editedProjection = try await RemoteHostProcessHolder.setSharedPhoneFavoriteTarget(
+                    deviceID: currentProjection.deviceID, assetID: assetID,
+                    target: target, expectedRevision: expectedRevision
+                )
+                syncEditError = nil
+            } catch {
+                syncEditError = "更新共享收藏目标失败：\(error.localizedDescription)"
             }
         }
     }

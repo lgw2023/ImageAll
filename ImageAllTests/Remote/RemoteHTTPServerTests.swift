@@ -380,6 +380,77 @@ final class RemoteHTTPServerTests: XCTestCase {
         }
     }
 
+    func testMacFavoriteEditsAreVersionedPagedAndScopedAcrossRestart() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("favorite-edits.json")
+        let hostID = UUID()
+        let deviceID = UUID()
+        let installID = UUID()
+        let epoch = UUID()
+        let firstID = UUID()
+        let secondID = UUID()
+        func asset(_ id: UUID) -> RemoteLocalLibraryAsset {
+            .init(id: id, localIdentifier: id.uuidString, mediaKind: .image,
+                  createdAtMs: nil, observedFavorite: false, favoriteTarget: nil,
+                  tagDecisions: [], collections: [])
+        }
+        let store = try RemoteLocalLibrarySyncStore(hostID: hostID, storageURL: url)
+        _ = try await store.submit(.init(
+            hostID: hostID, installID: installID, sourceEpoch: epoch,
+            scopeRevision: 1, snapshotSequence: 1,
+            selectedAssetIDs: [firstID, secondID], assets: [asset(firstID), asset(secondID)]
+        ), authenticatedDeviceID: deviceID)
+        _ = try await store.setFavoriteTargetFromMac(
+            deviceID: deviceID, assetID: firstID, target: true, expectedRevision: 0
+        )
+        _ = try await store.setFavoriteTargetFromMac(
+            deviceID: deviceID, assetID: secondID, target: false, expectedRevision: 0
+        )
+        let first = try await store.favoriteChanges(
+            deviceID: deviceID, sourceEpoch: epoch, scopeRevision: 1,
+            afterCursor: 0, limit: 1
+        )
+        XCTAssertEqual(first.changes.map(\.assetID), [firstID])
+        XCTAssertEqual(first.changes.first?.target, true)
+        XCTAssertEqual(first.changes.first?.fieldRevision, 1)
+        XCTAssertTrue(first.hasMore)
+        let reopened = try RemoteLocalLibrarySyncStore(hostID: hostID, storageURL: url)
+        let second = try await reopened.favoriteChanges(
+            deviceID: deviceID, sourceEpoch: epoch, scopeRevision: 1,
+            afterCursor: first.nextCursor, limit: 1
+        )
+        XCTAssertEqual(second.changes.map(\.assetID), [secondID])
+        XCTAssertFalse(second.hasMore)
+        do {
+            _ = try await reopened.setFavoriteTargetFromMac(
+                deviceID: deviceID, assetID: firstID, target: false, expectedRevision: 0
+            )
+            XCTFail("stale Mac edit must not overwrite the shared favorite")
+        } catch let error as RemoteAPIError {
+            XCTAssertEqual(error.code, .conflict)
+        }
+        _ = try await reopened.submit(.init(
+            hostID: hostID, installID: installID, sourceEpoch: epoch,
+            scopeRevision: 2, snapshotSequence: 2,
+            selectedAssetIDs: [firstID], assets: []
+        ), authenticatedDeviceID: deviceID)
+        let scoped = try await reopened.favoriteChanges(
+            deviceID: deviceID, sourceEpoch: epoch, scopeRevision: 2,
+            afterCursor: 0
+        )
+        XCTAssertTrue(scoped.changes.isEmpty)
+        XCTAssertEqual(scoped.nextCursor, 2)
+        do {
+            _ = try await reopened.setFavoriteTargetFromMac(
+                deviceID: deviceID, assetID: secondID, target: true, expectedRevision: 1
+            )
+            XCTFail("revoked asset must reject a new edit")
+        } catch let error as RemoteAPIError {
+            XCTAssertEqual(error.code, .notFound)
+        }
+    }
+
     func testMacCollectionMemberEditsAreVersionedAndPagedAcrossRestart() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -704,6 +775,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(capabilities.capabilities.contains(.localLibraryCollectionMembership))
         XCTAssertTrue(capabilities.capabilities.contains(.localLibraryCollectionChanges))
         XCTAssertTrue(capabilities.capabilities.contains(.localLibraryFavoriteTarget))
+        XCTAssertTrue(capabilities.capabilities.contains(.localLibraryFavoriteChanges))
 
         let tagOperation = RemoteLocalLibraryTagDecisionRequest(
             hostID: hostID, installID: snapshot.installID,
@@ -834,6 +906,32 @@ final class RemoteHTTPServerTests: XCTestCase {
         )
         XCTAssertEqual(collectionChanges.deviceID, tokens.deviceID)
         XCTAssertEqual(collectionChanges.changes.first?.included, false)
+        _ = try await syncStore.setFavoriteTargetFromMac(
+            deviceID: tokens.deviceID, assetID: assetID,
+            target: false, expectedRevision: 1
+        )
+        var favoriteChangesURL = changesURL
+        favoriteChangesURL.path = RemoteHTTPPaths.localLibraryFavoriteChanges
+        var favoriteChangesRequest = URLRequest(url: try XCTUnwrap(favoriteChangesURL.url))
+        favoriteChangesRequest.setValue(
+            "Bearer \(tokens.accessToken)", forHTTPHeaderField: "Authorization"
+        )
+        let (favoriteChangesData, favoriteChangesResponse) = try await URLSession.shared.data(
+            for: favoriteChangesRequest
+        )
+        XCTAssertEqual(try XCTUnwrap(favoriteChangesResponse as? HTTPURLResponse).statusCode, 200)
+        let favoriteChanges = try JSONDecoder().decode(
+            RemoteLocalLibraryFavoriteChangesPage.self, from: favoriteChangesData
+        )
+        XCTAssertEqual(favoriteChanges.deviceID, tokens.deviceID)
+        XCTAssertEqual(favoriteChanges.changes.first?.target, false)
+        favoriteChangesRequest.setValue(
+            "Bearer \(Self.legacyDebugToken)", forHTTPHeaderField: "Authorization"
+        )
+        let (_, unpairedFavoriteChanges) = try await URLSession.shared.data(
+            for: favoriteChangesRequest
+        )
+        XCTAssertEqual(try XCTUnwrap(unpairedFavoriteChanges as? HTTPURLResponse).statusCode, 401)
         collectionChangesRequest.setValue(
             "Bearer \(Self.legacyDebugToken)", forHTTPHeaderField: "Authorization"
         )

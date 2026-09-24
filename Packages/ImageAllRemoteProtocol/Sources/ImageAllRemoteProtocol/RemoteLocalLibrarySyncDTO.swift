@@ -7,6 +7,50 @@ public extension RemoteHTTPPaths {
     static let localLibraryCollectionMembership = "/v1/sync/local-library/collection-membership"
     static let localLibraryCollectionChanges = "/v1/sync/local-library/collection-changes"
     static let localLibraryFavoriteTarget = "/v1/sync/local-library/favorite-target"
+    static let localLibraryFavoriteChanges = "/v1/sync/local-library/favorite-changes"
+}
+
+public struct RemoteLocalLibraryFavoriteChange: Codable, Sendable, Equatable {
+    public let sequence: Int64
+    public let scopeRevision: Int64
+    public let assetID: UUID
+    public let target: Bool
+    public let fieldRevision: Int64
+
+    public init(
+        sequence: Int64, scopeRevision: Int64, assetID: UUID,
+        target: Bool, fieldRevision: Int64
+    ) {
+        self.sequence = sequence
+        self.scopeRevision = scopeRevision
+        self.assetID = assetID
+        self.target = target
+        self.fieldRevision = fieldRevision
+    }
+}
+
+public struct RemoteLocalLibraryFavoriteChangesPage: Codable, Sendable, Equatable {
+    public let hostID: UUID
+    public let deviceID: UUID
+    public let sourceEpoch: UUID
+    public let scopeRevision: Int64
+    public let changes: [RemoteLocalLibraryFavoriteChange]
+    public let nextCursor: Int64
+    public let hasMore: Bool
+
+    public init(
+        hostID: UUID, deviceID: UUID, sourceEpoch: UUID,
+        scopeRevision: Int64, changes: [RemoteLocalLibraryFavoriteChange],
+        nextCursor: Int64, hasMore: Bool
+    ) {
+        self.hostID = hostID
+        self.deviceID = deviceID
+        self.sourceEpoch = sourceEpoch
+        self.scopeRevision = scopeRevision
+        self.changes = changes
+        self.nextCursor = nextCursor
+        self.hasMore = hasMore
+    }
 }
 
 public struct RemoteLocalLibraryCollectionChange: Codable, Sendable, Equatable {

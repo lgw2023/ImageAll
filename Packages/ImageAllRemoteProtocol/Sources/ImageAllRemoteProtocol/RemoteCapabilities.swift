@@ -35,6 +35,7 @@ public enum RemoteCapability: String, Codable, Sendable, Hashable, CaseIterable 
     case localLibraryCollectionMembership
     case localLibraryCollectionChanges
     case localLibraryFavoriteTarget
+    case localLibraryFavoriteChanges
 }
 
 public extension RemoteHTTPPaths {
@@ -61,6 +62,7 @@ public struct RemoteCapabilities: Codable, Sendable, Equatable {
                 && $0 != .localLibraryCollectionMembership
                 && $0 != .localLibraryCollectionChanges
                 && $0 != .localLibraryFavoriteTarget
+                && $0 != .localLibraryFavoriteChanges
         },
         listenPort: Int? = nil,
         usesTLS: Bool = false,

@@ -3,6 +3,25 @@ import ImageAllRemoteProtocol
 import XCTest
 
 final class RemoteProtocolRoundTripTests: XCTestCase {
+    func testFavoriteChangePageRoundTripAndLegacyCapabilityBoundary() throws {
+        let change = RemoteLocalLibraryFavoriteChange(
+            sequence: 3, scopeRevision: 2, assetID: UUID(),
+            target: false, fieldRevision: 4
+        )
+        let page = RemoteLocalLibraryFavoriteChangesPage(
+            hostID: UUID(), deviceID: UUID(), sourceEpoch: UUID(),
+            scopeRevision: 2, changes: [change], nextCursor: 3, hasMore: false
+        )
+        XCTAssertEqual(try JSONDecoder().decode(
+            RemoteLocalLibraryFavoriteChangesPage.self,
+            from: JSONEncoder().encode(page)
+        ), page)
+        XCTAssertEqual(RemoteHTTPPaths.localLibraryFavoriteChanges,
+                       "/v1/sync/local-library/favorite-changes")
+        XCTAssertFalse(RemoteCapabilities(hostAppVersion: "old").capabilities
+            .contains(.localLibraryFavoriteChanges))
+    }
+
     func testFavoriteTargetWireRoundTripAndLegacyCapabilityBoundary() throws {
         let request = RemoteLocalLibraryFavoriteTargetRequest(
             hostID: UUID(), installID: UUID(), sourceEpoch: UUID(),

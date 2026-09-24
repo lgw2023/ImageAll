@@ -735,6 +735,29 @@ final class RemoteCompanionModel: ObservableObject {
         return page
     }
 
+    func fetchLocalLibraryFavoriteChanges(
+        sourceEpoch: UUID, scopeRevision: Int64, afterCursor: Int64
+    ) async throws -> RemoteLocalLibraryFavoriteChangesPage {
+        guard isConnected, let client, let sessionTokens,
+              let capabilities,
+              capabilities.capabilities.contains(.localLibraryFavoriteChanges),
+              capabilities.hostID == sessionTokens.hostID else {
+            throw RemoteAPIError(code: .unauthorized, message: "请先连接支持共享收藏的已配对 Mac")
+        }
+        let page = try await client.fetchLocalLibraryFavoriteChanges(
+            sourceEpoch: sourceEpoch, scopeRevision: scopeRevision,
+            afterCursor: afterCursor
+        )
+        guard page.hostID == sessionTokens.hostID,
+              page.deviceID == sessionTokens.deviceID,
+              page.sourceEpoch == sourceEpoch,
+              page.scopeRevision == scopeRevision,
+              page.changes.allSatisfy({ $0.scopeRevision == scopeRevision }) else {
+            throw RemoteAPIError(code: .conflict, message: "Mac 收藏变化页身份不匹配")
+        }
+        return page
+    }
+
     var supportsLocalLibraryTagChanges: Bool {
         isConnected && capabilities?.capabilities.contains(.localLibraryTagChanges) == true
     }
@@ -749,6 +772,10 @@ final class RemoteCompanionModel: ObservableObject {
 
     var supportsLocalLibraryFavoriteTarget: Bool {
         isConnected && capabilities?.capabilities.contains(.localLibraryFavoriteTarget) == true
+    }
+
+    var supportsLocalLibraryFavoriteChanges: Bool {
+        isConnected && capabilities?.capabilities.contains(.localLibraryFavoriteChanges) == true
     }
 
     func reloadHostStatus() async {

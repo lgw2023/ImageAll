@@ -174,6 +174,19 @@ public struct RemoteLibraryClient: Sendable {
         )
     }
 
+    public func fetchLocalLibraryFavoriteChanges(
+        sourceEpoch: UUID, scopeRevision: Int64, afterCursor: Int64
+    ) async throws -> RemoteLocalLibraryFavoriteChangesPage {
+        try await getJSON(
+            path: RemoteHTTPPaths.localLibraryFavoriteChanges,
+            queryItems: [
+                URLQueryItem(name: "sourceEpoch", value: sourceEpoch.uuidString),
+                URLQueryItem(name: "scopeRevision", value: String(scopeRevision)),
+                URLQueryItem(name: "afterCursor", value: String(afterCursor))
+            ]
+        )
+    }
+
     public func fetchSources() async throws -> [RemoteSourceSummary] {
         try await getJSON(path: RemoteHTTPPaths.sources)
     }

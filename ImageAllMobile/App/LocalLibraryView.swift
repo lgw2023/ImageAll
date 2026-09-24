@@ -15,6 +15,9 @@ struct LocalSharedSyncSummary {
     let collectionReceived: Int
     let collectionPullSupported: Bool
     let collectionPullHasMore: Bool
+    let favoriteReceived: Int
+    let favoritePullSupported: Bool
+    let favoritePullHasMore: Bool
     let remaining: Int
 }
 
@@ -209,6 +212,8 @@ final class LocalLibraryModel: ObservableObject {
             var pullHasMore = false
             var collectionReceived = 0
             var collectionPullHasMore = false
+            var favoriteReceived = 0
+            var favoritePullHasMore = false
             var sent = 0
             var blockedFields: Set<String> = []
             let visible = Dictionary(uniqueKeysWithValues: snapshot.assets.map { ($0.id, $0) })
@@ -391,6 +396,33 @@ final class LocalLibraryModel: ObservableObject {
                     if !page.hasMore { break }
                 }
             }
+            let favoritePullSupported = remoteModel.supportsLocalLibraryFavoriteChanges
+            if favoritePullSupported {
+                for _ in 0..<20 {
+                    let cursor = try await store.sharedFavoriteChangeCursor()
+                    let page = try await remoteModel.fetchLocalLibraryFavoriteChanges(
+                        sourceEpoch: snapshot.sourceEpoch,
+                        scopeRevision: snapshot.scopeRevision,
+                        afterCursor: cursor
+                    )
+                    let result = try await store.applySharedFavoriteChanges(
+                        hostID: page.hostID, deviceID: page.deviceID,
+                        sourceEpoch: page.sourceEpoch,
+                        scopeRevision: page.scopeRevision, afterCursor: cursor,
+                        changes: page.changes.map { change in
+                            LocalSharedFavoriteChange(
+                                sequence: change.sequence, assetID: change.assetID,
+                                target: change.target,
+                                fieldRevision: change.fieldRevision
+                            )
+                        }, nextCursor: page.nextCursor
+                    )
+                    favoriteReceived += result.applied
+                    conflicts += result.conflicts
+                    favoritePullHasMore = page.hasMore
+                    if !page.hasMore { break }
+                }
+            }
             let remaining = try await store.pendingSharedOperations().count
             await reloadFacts()
             return LocalSharedSyncSummary(
@@ -402,6 +434,9 @@ final class LocalLibraryModel: ObservableObject {
                 collectionReceived: collectionReceived,
                 collectionPullSupported: collectionPullSupported,
                 collectionPullHasMore: collectionPullHasMore,
+                favoriteReceived: favoriteReceived,
+                favoritePullSupported: favoritePullSupported,
+                favoritePullHasMore: favoritePullHasMore,
                 remaining: remaining
             )
         } catch {
@@ -849,11 +884,15 @@ private struct LocalShareScopeView: View {
                                     : "当前 Mac 版本尚无标签回传"
                                 let continuation = result.pullHasMore
                                     || result.collectionPullHasMore
+                                    || result.favoritePullHasMore
                                     ? "Mac 仍有后续变化页，请再次同步。" : ""
                                 let collectionPull = result.collectionPullSupported
                                     ? "Mac 集合回传 \(result.collectionReceived) 项"
                                     : "当前 Mac 版本尚无集合回传"
-                                statusMessage = "Mac 已接收 \(receipt.acceptedAssetCount) 项目录；手机标签/集合成员/收藏目标提交 \(result.applied) 项、已一致 \(result.unchanged) 项；\(pull)、\(collectionPull)、冲突 \(result.conflicts) 项；仍待处理 \(result.remaining) 项。\(continuation)原件尚未传输。"
+                                let favoritePull = result.favoritePullSupported
+                                    ? "Mac 收藏目标回传 \(result.favoriteReceived) 项"
+                                    : "当前 Mac 版本尚无收藏目标回传"
+                                statusMessage = "Mac 已接收 \(receipt.acceptedAssetCount) 项目录；手机标签/集合成员/收藏目标提交 \(result.applied) 项、已一致 \(result.unchanged) 项；\(pull)、\(collectionPull)、\(favoritePull)、冲突 \(result.conflicts) 项；仍待处理 \(result.remaining) 项。\(continuation)原件尚未传输。"
                             } catch {
                                 statusMessage = "Mac 已接收目录，但整理信息提交未完成：\(error.localizedDescription)"
                             }

@@ -4,6 +4,44 @@ import ImageAllRemoteProtocol
 import XCTest
 
 final class RemoteLibraryClientTests: XCTestCase {
+    func testFetchesScopedMacFavoriteChangesWithBearerToken() async throws {
+        let hostID = UUID()
+        let deviceID = UUID()
+        let epoch = UUID()
+        let change = RemoteLocalLibraryFavoriteChange(
+            sequence: 5, scopeRevision: 2, assetID: UUID(),
+            target: true, fieldRevision: 3
+        )
+        let transport = MockTransport { outgoing in
+            XCTAssertEqual(outgoing.httpMethod, "GET")
+            XCTAssertEqual(outgoing.url?.path, RemoteHTTPPaths.localLibraryFavoriteChanges)
+            XCTAssertEqual(outgoing.value(forHTTPHeaderField: "Authorization"), "Bearer secret")
+            let query = URLComponents(url: try XCTUnwrap(outgoing.url), resolvingAgainstBaseURL: false)?
+                .queryItems ?? []
+            XCTAssertEqual(query.first(where: { $0.name == "sourceEpoch" })?.value, epoch.uuidString)
+            XCTAssertEqual(query.first(where: { $0.name == "scopeRevision" })?.value, "2")
+            XCTAssertEqual(query.first(where: { $0.name == "afterCursor" })?.value, "4")
+            let page = RemoteLocalLibraryFavoriteChangesPage(
+                hostID: hostID, deviceID: deviceID, sourceEpoch: epoch,
+                scopeRevision: 2, changes: [change], nextCursor: 5, hasMore: false
+            )
+            return (
+                try JSONEncoder().encode(page),
+                HTTPURLResponse(url: outgoing.url!, statusCode: 200,
+                                httpVersion: "HTTP/1.1", headerFields: nil)!
+            )
+        }
+        let client = RemoteLibraryClient(
+            endpoint: try RemoteHostEndpoint(host: "127.0.0.1", port: 8787, accessToken: "secret"),
+            transport: transport
+        )
+        let page = try await client.fetchLocalLibraryFavoriteChanges(
+            sourceEpoch: epoch, scopeRevision: 2, afterCursor: 4
+        )
+        XCTAssertEqual(page.changes, [change])
+        XCTAssertEqual(page.nextCursor, 5)
+    }
+
     func testPostsFavoriteTargetWithBearerAndStableOperationID() async throws {
         let request = RemoteLocalLibraryFavoriteTargetRequest(
             hostID: UUID(), installID: UUID(), sourceEpoch: UUID(),

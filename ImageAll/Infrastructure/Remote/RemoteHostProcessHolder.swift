@@ -554,6 +554,20 @@ enum RemoteHostProcessHolder {
         )
     }
 
+    static func setSharedPhoneFavoriteTarget(
+        deviceID: UUID, assetID: UUID, target: Bool,
+        expectedRevision: Int64
+    ) async throws -> RemoteLocalLibrarySyncStore.Projection {
+        guard (await pairedDevices()).contains(where: { $0.deviceID == deviceID }),
+              let store = try await state.syncStoreForUI() else {
+            throw RemoteAPIError(code: .unauthorized, message: "paired phone unavailable")
+        }
+        return try await store.setFavoriteTargetFromMac(
+            deviceID: deviceID, assetID: assetID,
+            target: target, expectedRevision: expectedRevision
+        )
+    }
+
     static func revoke(deviceID: UUID) async {
         await state.pairingStore?.revoke(deviceID: deviceID)
     }

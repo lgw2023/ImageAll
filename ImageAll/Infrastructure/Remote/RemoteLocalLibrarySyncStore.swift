@@ -82,6 +82,7 @@ actor RemoteLocalLibrarySyncStore {
         let importedAssetIDs: [UUID]?
         let tagChanges: [RemoteLocalLibraryTagChange]?
         let collectionChanges: [RemoteLocalLibraryCollectionChange]?
+        let favoriteChanges: [RemoteLocalLibraryFavoriteChange]?
     }
 
     private struct PersistedState: Codable {
@@ -114,6 +115,7 @@ actor RemoteLocalLibrarySyncStore {
                           + (record.favoriteOperations ?? []).map(\.request.operationID)
                       let changes = record.tagChanges ?? []
                       let collectionChanges = record.collectionChanges ?? []
+                      let favoriteChanges = record.favoriteChanges ?? []
                       return record.request.hostID == hostID
                           && record.request.schemaVersion == 1
                           && Set(projectedIDs).count == projectedIDs.count
@@ -163,6 +165,14 @@ actor RemoteLocalLibrarySyncStore {
                               $0.0.sequence < $0.1.sequence
                           }
                           && collectionChanges.allSatisfy {
+                              $0.sequence > 0 && $0.fieldRevision > 0
+                                  && $0.scopeRevision >= 0
+                                  && $0.scopeRevision <= record.request.scopeRevision
+                          }
+                          && zip(favoriteChanges, favoriteChanges.dropFirst()).allSatisfy {
+                              $0.0.sequence < $0.1.sequence
+                          }
+                          && favoriteChanges.allSatisfy {
                               $0.sequence > 0 && $0.fieldRevision > 0
                                   && $0.scopeRevision >= 0
                                   && $0.scopeRevision <= record.request.scopeRevision
@@ -265,7 +275,8 @@ actor RemoteLocalLibrarySyncStore {
             lastPhoneOperationSequence: previous?.lastPhoneOperationSequence ?? 0,
             importedAssetIDs: importedAssetIDs,
             tagChanges: previous?.tagChanges ?? [],
-            collectionChanges: previous?.collectionChanges ?? []
+            collectionChanges: previous?.collectionChanges ?? [],
+            favoriteChanges: previous?.favoriteChanges ?? []
         )
         var updated = records
         updated[authenticatedDeviceID] = record
@@ -421,7 +432,8 @@ actor RemoteLocalLibrarySyncStore {
             lastPhoneOperationSequence: request.deviceSequence,
             importedAssetIDs: previous.importedAssetIDs,
             tagChanges: previous.tagChanges,
-            collectionChanges: previous.collectionChanges
+            collectionChanges: previous.collectionChanges,
+            favoriteChanges: previous.favoriteChanges
         )
         var updated = records
         updated[authenticatedDeviceID] = record
@@ -554,7 +566,8 @@ actor RemoteLocalLibrarySyncStore {
             lastPhoneOperationSequence: request.deviceSequence,
             importedAssetIDs: previous.importedAssetIDs,
             tagChanges: previous.tagChanges,
-            collectionChanges: previous.collectionChanges
+            collectionChanges: previous.collectionChanges,
+            favoriteChanges: previous.favoriteChanges
         )
         var updated = records
         updated[authenticatedDeviceID] = record
@@ -660,7 +673,8 @@ actor RemoteLocalLibrarySyncStore {
             lastPhoneOperationSequence: request.deviceSequence,
             importedAssetIDs: previous.importedAssetIDs,
             tagChanges: previous.tagChanges,
-            collectionChanges: previous.collectionChanges
+            collectionChanges: previous.collectionChanges,
+            favoriteChanges: previous.favoriteChanges
         )
         var updated = records
         updated[authenticatedDeviceID] = record
@@ -720,7 +734,8 @@ actor RemoteLocalLibrarySyncStore {
             lastPhoneOperationSequence: previous.lastPhoneOperationSequence,
             importedAssetIDs: previous.importedAssetIDs,
             tagChanges: (previous.tagChanges ?? []) + [change],
-            collectionChanges: previous.collectionChanges
+            collectionChanges: previous.collectionChanges,
+            favoriteChanges: previous.favoriteChanges
         )
         var updated = records
         updated[deviceID] = record
@@ -821,7 +836,8 @@ actor RemoteLocalLibrarySyncStore {
             lastPhoneOperationSequence: previous.lastPhoneOperationSequence,
             importedAssetIDs: previous.importedAssetIDs,
             tagChanges: previous.tagChanges,
-            collectionChanges: (previous.collectionChanges ?? []) + [change]
+            collectionChanges: (previous.collectionChanges ?? []) + [change],
+            favoriteChanges: previous.favoriteChanges
         )
         var updated = records
         updated[deviceID] = record
@@ -852,6 +868,96 @@ actor RemoteLocalLibrarySyncStore {
         }
         let page = Array(filtered.prefix(limit))
         return RemoteLocalLibraryCollectionChangesPage(
+            hostID: hostID, deviceID: deviceID,
+            sourceEpoch: sourceEpoch, scopeRevision: scopeRevision,
+            changes: page,
+            nextCursor: page.last?.sequence
+                ?? (filtered.isEmpty ? (all.last?.sequence ?? afterCursor) : afterCursor),
+            hasMore: filtered.count > page.count
+        )
+    }
+
+    /// Mac changes the shared desired value only. The phone separately decides
+    /// when its authorized PhotoKit source can be written and read back.
+    func setFavoriteTargetFromMac(
+        deviceID: UUID, assetID: UUID, target: Bool,
+        expectedRevision: Int64
+    ) throws -> Projection {
+        guard let previous = records[deviceID],
+              previous.request.selectedAssetIDs.contains(assetID),
+              previous.projectedAssets.contains(where: { $0.asset.id == assetID }),
+              expectedRevision >= 0 else {
+            throw RemoteAPIError(code: .notFound, message: "shared phone asset unavailable")
+        }
+        var facts = previous.sharedFavoriteFacts
+            ?? Self.seedFavoriteFacts(from: previous.projectedAssets)
+        let index = facts.firstIndex { $0.assetID == assetID }
+        let current = index.map { facts[$0] }
+        guard (current?.revision ?? 0) == expectedRevision else {
+            throw RemoteAPIError(code: .conflict, message: "shared phone favorite target changed")
+        }
+        if current?.target == target { return projection(deviceID: deviceID)! }
+        guard expectedRevision < Int64.max,
+              (previous.favoriteChanges?.last?.sequence ?? 0) < Int64.max else {
+            throw RemoteAPIError(code: .internalError, message: "shared change revision exhausted")
+        }
+        let nextRevision = expectedRevision + 1
+        let nextSequence = (previous.favoriteChanges?.last?.sequence ?? 0) + 1
+        let fact = SharedFavoriteFact(
+            assetID: assetID, target: target, revision: nextRevision
+        )
+        if let index { facts[index] = fact } else { facts.append(fact) }
+        let change = RemoteLocalLibraryFavoriteChange(
+            sequence: nextSequence, scopeRevision: previous.request.scopeRevision,
+            assetID: assetID, target: target, fieldRevision: nextRevision
+        )
+        let record = Record(
+            deviceID: previous.deviceID, request: previous.request,
+            projectedAssets: previous.projectedAssets,
+            acceptedAtMs: previous.acceptedAtMs,
+            sharedTagFacts: previous.sharedTagFacts,
+            sharedCollectionFacts: previous.sharedCollectionFacts,
+            sharedFavoriteFacts: facts.sorted {
+                $0.assetID.uuidString < $1.assetID.uuidString
+            },
+            tagOperations: previous.tagOperations,
+            collectionOperations: previous.collectionOperations,
+            favoriteOperations: previous.favoriteOperations,
+            lastPhoneOperationSequence: previous.lastPhoneOperationSequence,
+            importedAssetIDs: previous.importedAssetIDs,
+            tagChanges: previous.tagChanges,
+            collectionChanges: previous.collectionChanges,
+            favoriteChanges: (previous.favoriteChanges ?? []) + [change]
+        )
+        var updated = records
+        updated[deviceID] = record
+        try persist(updated)
+        return projection(deviceID: deviceID)!
+    }
+
+    func favoriteChanges(
+        deviceID: UUID, sourceEpoch: UUID, scopeRevision: Int64,
+        afterCursor: Int64, limit: Int = 100
+    ) throws -> RemoteLocalLibraryFavoriteChangesPage {
+        guard let record = records[deviceID] else {
+            throw RemoteAPIError(code: .notFound, message: "phone share scope not established")
+        }
+        guard sourceEpoch == record.request.sourceEpoch,
+              scopeRevision == record.request.scopeRevision,
+              afterCursor >= 0, limit > 0, limit <= 100 else {
+            throw RemoteAPIError(code: .conflict, message: "shared favorite cursor scope changed")
+        }
+        let all = record.favoriteChanges ?? []
+        guard afterCursor <= (all.last?.sequence ?? 0) else {
+            throw RemoteAPIError(code: .conflict, message: "shared favorite cursor beyond log")
+        }
+        let selected = Set(record.request.selectedAssetIDs)
+        let filtered = all.filter {
+            $0.sequence > afterCursor && $0.scopeRevision == scopeRevision
+                && selected.contains($0.assetID)
+        }
+        let page = Array(filtered.prefix(limit))
+        return RemoteLocalLibraryFavoriteChangesPage(
             hostID: hostID, deviceID: deviceID,
             sourceEpoch: sourceEpoch, scopeRevision: scopeRevision,
             changes: page,

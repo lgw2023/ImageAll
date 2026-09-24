@@ -149,6 +149,71 @@ import Testing
     #expect(keep.target == true)
 }
 
+@Test func macFavoriteChangesCommitTargetWritebackAndCursorWithoutEcho() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("local.sqlite")
+    let store = try LocalLibraryStore(url: url)
+    try await store.observe([
+        LocalObservedAsset(localIdentifier: "shared", kind: "image", creationDate: nil, isFavorite: false)
+    ])
+    let asset = try #require(await store.assets(visibleIdentifiers: ["shared"]).first)
+    let hostID = UUID()
+    let deviceID = UUID()
+    try await store.setShared(assetID: asset.id, shared: true)
+    let snapshot = try await store.prepareSharedSnapshot(visibleIdentifiers: ["shared"])
+    try await store.acknowledgeSharedSnapshot(
+        snapshot, hostID: hostID, deviceID: deviceID, importedAssetIDs: [asset.id]
+    )
+    let auditBefore = try await store.pendingOperations().count
+    let first = try await store.applySharedFavoriteChanges(
+        hostID: hostID, deviceID: deviceID, sourceEpoch: snapshot.sourceEpoch,
+        scopeRevision: snapshot.scopeRevision, afterCursor: 0,
+        changes: [.init(sequence: 1, assetID: asset.id, target: true, fieldRevision: 1)],
+        nextCursor: 1
+    )
+    #expect(first.applied == 1)
+    #expect(first.conflicts == 0)
+    let changed = try #require(await store.assets(visibleIdentifiers: ["shared"]).first)
+    #expect(changed.favoriteTarget == true)
+    #expect(changed.observedFavorite == false)
+    #expect(changed.favoriteWritebackState == .pending)
+    #expect(try await store.pendingSharedOperations().isEmpty)
+    #expect(try await store.pendingOperations().count == auditBefore + 1)
+    let reopened = try LocalLibraryStore(url: url)
+    #expect(try await reopened.sharedFavoriteChangeCursor() == 1)
+    let duplicate = try await reopened.applySharedFavoriteChanges(
+        hostID: hostID, deviceID: deviceID, sourceEpoch: snapshot.sourceEpoch,
+        scopeRevision: snapshot.scopeRevision, afterCursor: 1,
+        changes: [], nextCursor: 1
+    )
+    #expect(duplicate.applied == 0)
+    do {
+        _ = try await reopened.applySharedFavoriteChanges(
+            hostID: hostID, deviceID: deviceID, sourceEpoch: snapshot.sourceEpoch,
+            scopeRevision: snapshot.scopeRevision, afterCursor: 1,
+            changes: [.init(sequence: 2, assetID: UUID(), target: false, fieldRevision: 2)],
+            nextCursor: 2
+        )
+        Issue.record("unknown asset must roll back the whole page")
+    } catch LocalLibraryError.unknownAsset {
+        #expect(try await reopened.sharedFavoriteChangeCursor() == 1)
+    }
+    try await reopened.setFavoriteTarget(assetID: asset.id, isFavorite: false)
+    let pending = try #require(await reopened.pendingSharedOperations().first)
+    let conflict = try await reopened.applySharedFavoriteChanges(
+        hostID: hostID, deviceID: deviceID, sourceEpoch: snapshot.sourceEpoch,
+        scopeRevision: snapshot.scopeRevision, afterCursor: 1,
+        changes: [.init(sequence: 2, assetID: asset.id, target: true, fieldRevision: 2)],
+        nextCursor: 2
+    )
+    #expect(conflict.conflicts == 1)
+    #expect(try await reopened.sharedFavoriteChangeCursor() == 2)
+    #expect(try await reopened.pendingSharedOperations().first?.id == pending.id)
+    #expect(try await reopened.pendingSharedOperations().first?.isConflicted == true)
+    #expect(try await reopened.assets(visibleIdentifiers: ["shared"]).first?.favoriteTarget == false)
+}
+
 @Test func explicitShareScopeFiltersPrivateFactsAndSurvivesPermissionContraction() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }

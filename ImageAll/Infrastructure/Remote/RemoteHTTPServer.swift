@@ -970,6 +970,26 @@ actor RemoteHTTPServer {
                     scopeRevision: scopeRevision, afterCursor: afterCursor
                 )
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("GET", RemoteHTTPPaths.localLibraryFavoriteChanges):
+                guard let deviceID = requestAuthentication.deviceID else {
+                    throw RemoteAPIError(code: .unauthorized, message: "paired device required")
+                }
+                guard let localLibrarySyncStore else {
+                    throw RemoteAPIError(code: .notFound, message: "local library sync unavailable")
+                }
+                guard let epochRaw = query["sourceEpoch"],
+                      let sourceEpoch = UUID(uuidString: epochRaw),
+                      let scopeRaw = query["scopeRevision"],
+                      let scopeRevision = Int64(scopeRaw),
+                      let cursorRaw = query["afterCursor"],
+                      let afterCursor = Int64(cursorRaw) else {
+                    throw RemoteAPIError(code: .badRequest, message: "invalid shared favorite cursor")
+                }
+                let payload = try await localLibrarySyncStore.favoriteChanges(
+                    deviceID: deviceID, sourceEpoch: sourceEpoch,
+                    scopeRevision: scopeRevision, afterCursor: afterCursor
+                )
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             case ("GET", RemoteHTTPPaths.workspaceNotice):
                 let payload = await facade.fetchWorkspaceNotice()
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
