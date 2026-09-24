@@ -4,6 +4,41 @@ import ImageAllRemoteProtocol
 import XCTest
 
 final class RemoteLibraryClientTests: XCTestCase {
+    func testPostsVersionedPhoneTagDecisionWithStableOperationID() async throws {
+        let request = RemoteLocalLibraryTagDecisionRequest(
+            hostID: UUID(), installID: UUID(), sourceEpoch: UUID(),
+            scopeRevision: 2, operationID: UUID(), deviceSequence: 18,
+            assetID: UUID(), tagID: UUID(), tagName: "家庭",
+            decision: .rejected, baseRevision: 3
+        )
+        let transport = MockTransport { outgoing in
+            XCTAssertEqual(outgoing.httpMethod, "POST")
+            XCTAssertEqual(outgoing.url?.path, RemoteHTTPPaths.localLibraryTagDecision)
+            XCTAssertEqual(outgoing.value(forHTTPHeaderField: "Authorization"), "Bearer secret")
+            XCTAssertEqual(try JSONDecoder().decode(
+                RemoteLocalLibraryTagDecisionRequest.self,
+                from: XCTUnwrap(outgoing.httpBody)
+            ), request)
+            let response = RemoteLocalLibraryTagDecisionReceipt(
+                hostID: request.hostID, deviceID: UUID(),
+                operationID: request.operationID, disposition: .applied,
+                fieldRevision: 4, currentDecision: .rejected, replayed: false
+            )
+            return (
+                try JSONEncoder().encode(response),
+                HTTPURLResponse(url: outgoing.url!, statusCode: 200,
+                                httpVersion: "HTTP/1.1", headerFields: nil)!
+            )
+        }
+        let client = RemoteLibraryClient(
+            endpoint: try RemoteHostEndpoint(host: "127.0.0.1", port: 8787, accessToken: "secret"),
+            transport: transport
+        )
+        let receipt = try await client.submitLocalLibraryTagDecision(request)
+        XCTAssertEqual(receipt.operationID, request.operationID)
+        XCTAssertEqual(receipt.fieldRevision, 4)
+    }
+
     func testPostsExplicitLocalLibrarySnapshotWithBearerToken() async throws {
         let hostID = UUID()
         let assetID = UUID()

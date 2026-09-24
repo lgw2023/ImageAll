@@ -64,8 +64,10 @@ actor RemoteCatalogFacade {
     func capabilities(supportsLocalLibrarySnapshot: Bool = false) -> RemoteCapabilities {
         RemoteCapabilities(
             hostAppVersion: hostAppVersion,
-            capabilities: RemoteCapability.allCases.filter { $0 != .localLibrarySnapshot }
-                + (supportsLocalLibrarySnapshot ? [.localLibrarySnapshot] : []),
+            capabilities: RemoteCapability.allCases.filter {
+                $0 != .localLibrarySnapshot && $0 != .localLibraryTagOperations
+            } + (supportsLocalLibrarySnapshot
+                ? [.localLibrarySnapshot, .localLibraryTagOperations] : []),
             listenPort: listenPort,
             usesTLS: usesTLS,
             hostID: hostID,

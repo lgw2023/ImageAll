@@ -121,6 +121,15 @@ public struct RemoteLibraryClient: Sendable {
         )
     }
 
+    public func submitLocalLibraryTagDecision(
+        _ request: RemoteLocalLibraryTagDecisionRequest
+    ) async throws -> RemoteLocalLibraryTagDecisionReceipt {
+        try await postJSON(
+            path: RemoteHTTPPaths.localLibraryTagDecision,
+            body: encoder.encode(request)
+        )
+    }
+
     public func fetchSources() async throws -> [RemoteSourceSummary] {
         try await getJSON(path: RemoteHTTPPaths.sources)
     }

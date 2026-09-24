@@ -30,6 +30,7 @@ public enum RemoteCapability: String, Codable, Sendable, Hashable, CaseIterable 
     case pairing
     case events
     case localLibrarySnapshot
+    case localLibraryTagOperations
 }
 
 public extension RemoteHTTPPaths {
@@ -50,7 +51,9 @@ public struct RemoteCapabilities: Codable, Sendable, Equatable {
         protocolVersion: Int = RemoteProtocolVersion.current,
         hostAppVersion: String,
         minimumClientProtocolVersion: Int = RemoteProtocolVersion.minimumClient,
-        capabilities: [RemoteCapability] = RemoteCapability.allCases.filter { $0 != .localLibrarySnapshot },
+        capabilities: [RemoteCapability] = RemoteCapability.allCases.filter {
+            $0 != .localLibrarySnapshot && $0 != .localLibraryTagOperations
+        },
         listenPort: Int? = nil,
         usesTLS: Bool = false,
         hostID: UUID? = nil,

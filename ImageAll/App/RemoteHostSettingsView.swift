@@ -337,9 +337,20 @@ struct RemotePhoneLibraryView: View {
                         Text("集合：\(projected.asset.collections.map(\.collectionName).joined(separator: "、"))")
                             .font(.caption)
                     }
-                    if !projected.asset.tagDecisions.isEmpty {
-                        Text("标签：\(projected.asset.tagDecisions.map { "\($0.tagName)（\(decisionName($0.decision))）" }.joined(separator: "、"))")
+                    let sharedTags = projection.sharedTagFacts.filter {
+                        $0.assetID == projected.asset.id
+                    }
+                    if !sharedTags.isEmpty {
+                        Text("共享标签：\(sharedTags.map { "\($0.tagName)（\(decisionName($0.decision))，版本 \($0.revision)）" }.joined(separator: "、"))")
                             .font(.caption)
+                    }
+                    if Dictionary(uniqueKeysWithValues: sharedTags.map { ($0.tagID, $0.decision) })
+                        != Dictionary(uniqueKeysWithValues: projected.asset.tagDecisions.map {
+                            ($0.tagID, $0.decision)
+                        }) {
+                        Text("手机上次目录快照与共享标签不同，等待逐项同步或冲突处理")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
                     }
                 }
                 .padding(.vertical, 5)
