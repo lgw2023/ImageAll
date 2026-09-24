@@ -154,6 +154,7 @@ struct PhoneArchiveBoundAsset: Identifiable, Sendable {
     let locatorDescription: String
     let evidenceKind: String
     let createdAtMs: Int64
+    let confirmationEventID: UUID
 }
 
 struct PhoneArchiveSourceLink: Sendable, Equatable {
@@ -1135,16 +1136,79 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                     mediaID: mediaID, assetID: candidate.id, replayed: true
                 )
             }
+            let confirmedAtMs = Int64(Date().timeIntervalSince1970 * 1_000)
             try db.execute(sql: """
                 INSERT INTO media_asset_binding (
                     media_id, asset_id, evidence_kind, created_at_ms
                 ) VALUES (?, ?, 'userConfirmed', ?)
                 """, arguments: [
                     mediaID.uuidString.lowercased(), candidate.id.uuidString.lowercased(),
-                    Int64(Date().timeIntervalSince1970 * 1_000),
+                    confirmedAtMs,
+                ])
+            try db.execute(sql: """
+                INSERT INTO media_asset_binding_event (
+                    id, media_id, asset_id, event_kind, confirmed_event_id, created_at_ms
+                ) VALUES (?, ?, ?, 'confirmed', NULL, ?)
+                """, arguments: [
+                    UUID().uuidString.lowercased(), mediaID.uuidString.lowercased(),
+                    candidate.id.uuidString.lowercased(),
+                    confirmedAtMs,
                 ])
             return PhoneArchiveAssetBindingReceipt(
                 mediaID: mediaID, assetID: candidate.id, replayed: false
+            )
+        }
+    }
+
+    func revokeAssetBinding(
+        migrationID: UUID, mediaID: UUID, assetID: UUID, confirmationEventID: UUID
+    ) throws -> PhoneArchiveAssetBindingReceipt {
+        try database.pool.write { db in
+            _ = try importedMediaKind(db, migrationID: migrationID, mediaID: mediaID)
+            let media = mediaID.uuidString.lowercased()
+            let asset = assetID.uuidString.lowercased()
+            let confirmation = confirmationEventID.uuidString.lowercased()
+            guard let event = try Row.fetchOne(db, sql: """
+                SELECT id, event_kind, confirmed_event_id
+                FROM media_asset_binding_event
+                WHERE media_id = ? AND asset_id = ?
+                ORDER BY sequence DESC LIMIT 1
+                """, arguments: [media, asset]) else {
+                throw PhoneArchiveImportError.assetBindingCandidateChanged
+            }
+            let active: String? = try String.fetchOne(db, sql: """
+                SELECT media_id FROM media_asset_binding WHERE asset_id = ?
+                """, arguments: [asset])
+            if let active, active != media {
+                throw PhoneArchiveImportError.assetAlreadyBound
+            }
+            let eventKind: String = event["event_kind"]
+            let eventID: String = event["id"]
+            if active == nil {
+                let priorConfirmation: String? = event["confirmed_event_id"]
+                guard eventKind == "revoked", priorConfirmation == confirmation else {
+                    throw PhoneArchiveImportError.assetBindingCandidateChanged
+                }
+                return PhoneArchiveAssetBindingReceipt(
+                    mediaID: mediaID, assetID: assetID, replayed: true
+                )
+            }
+            guard eventKind == "confirmed", eventID == confirmation else {
+                throw PhoneArchiveImportError.assetBindingCandidateChanged
+            }
+            try db.execute(sql: """
+                DELETE FROM media_asset_binding WHERE media_id = ? AND asset_id = ?
+                """, arguments: [media, asset])
+            try db.execute(sql: """
+                INSERT INTO media_asset_binding_event (
+                    id, media_id, asset_id, event_kind, confirmed_event_id, created_at_ms
+                ) VALUES (?, ?, ?, 'revoked', ?, ?)
+                """, arguments: [
+                    UUID().uuidString.lowercased(), media, asset, confirmation,
+                    Int64(Date().timeIntervalSince1970 * 1_000),
+                ])
+            return PhoneArchiveAssetBindingReceipt(
+                mediaID: mediaID, assetID: assetID, replayed: false
             )
         }
     }
@@ -1155,14 +1219,24 @@ struct VerifiedPhoneArchiveImporter: Sendable {
             return try Row.fetchAll(db, sql: """
                 SELECT a.id, a.file_name, a.relative_path,
                        a.photos_local_identifier, s.display_name AS source_name,
-                       b.evidence_kind, b.created_at_ms
+                       b.evidence_kind, b.created_at_ms,
+                       e.id AS confirmation_event_id, e.event_kind
                 FROM media_asset_binding b
                 JOIN asset a ON a.id = b.asset_id
                 JOIN source s ON s.id = a.source_id
+                LEFT JOIN media_asset_binding_event e ON e.sequence = (
+                    SELECT MAX(last.sequence) FROM media_asset_binding_event last
+                    WHERE last.media_id = b.media_id AND last.asset_id = b.asset_id
+                )
                 WHERE b.media_id = ? ORDER BY b.created_at_ms, a.id
                 """, arguments: [mediaID.uuidString.lowercased()]).map { row in
                 let rawID: String = row["id"]
-                guard let id = UUID(uuidString: rawID) else {
+                let rawConfirmation: String? = row["confirmation_event_id"]
+                let eventKind: String? = row["event_kind"]
+                guard let id = UUID(uuidString: rawID),
+                      let rawConfirmation,
+                      let confirmationEventID = UUID(uuidString: rawConfirmation),
+                      eventKind == "confirmed" else {
                     throw PhoneArchiveImportError.catalogDiverged
                 }
                 let fileName: String? = row["file_name"]
@@ -1174,7 +1248,8 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                         ?? "未命名 Mac 资产",
                     sourceName: row["source_name"],
                     locatorDescription: relativePath ?? photosLocator ?? rawID,
-                    evidenceKind: row["evidence_kind"], createdAtMs: row["created_at_ms"]
+                    evidenceKind: row["evidence_kind"], createdAtMs: row["created_at_ms"],
+                    confirmationEventID: confirmationEventID
                 )
             }
         }

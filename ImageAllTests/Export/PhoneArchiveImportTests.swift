@@ -495,11 +495,38 @@ final class PhoneArchiveImportTests: XCTestCase {
         let bound = try importer.boundAssets(migrationID: header.migrationID, mediaID: first.mediaID)
         XCTAssertEqual(bound.map(\.id), [assetID])
         XCTAssertEqual(bound.first?.evidenceKind, "userConfirmed")
+        let confirmationID = try XCTUnwrap(bound.first?.confirmationEventID)
         try fixture.database.pool.read { db in
             XCTAssertEqual(try String.fetchOne(
                 db, sql: "SELECT evidence_kind FROM media_asset_binding WHERE asset_id = ?",
                 arguments: [assetID.uuidString.lowercased()]
             ), "userConfirmed")
+        }
+        XCTAssertFalse(try importer.revokeAssetBinding(
+            migrationID: header.migrationID, mediaID: first.mediaID,
+            assetID: assetID, confirmationEventID: confirmationID
+        ).replayed)
+        XCTAssertTrue(try importer.revokeAssetBinding(
+            migrationID: header.migrationID, mediaID: first.mediaID,
+            assetID: assetID, confirmationEventID: confirmationID
+        ).replayed)
+        XCTAssertTrue(try importer.boundAssets(
+            migrationID: header.migrationID, mediaID: first.mediaID
+        ).isEmpty)
+        XCTAssertFalse(try importer.confirmAssetBinding(
+            migrationID: header.migrationID, mediaID: first.mediaID,
+            candidate: refreshedCandidate
+        ).replayed)
+        XCTAssertThrowsError(try importer.revokeAssetBinding(
+            migrationID: header.migrationID, mediaID: first.mediaID,
+            assetID: assetID, confirmationEventID: confirmationID
+        )) { XCTAssertEqual($0 as? PhoneArchiveImportError, .assetBindingCandidateChanged) }
+        try fixture.database.pool.read { db in
+            XCTAssertEqual(try String.fetchAll(db, sql: """
+                SELECT event_kind FROM media_asset_binding_event
+                WHERE media_id = ? AND asset_id = ? ORDER BY sequence
+                """, arguments: [first.mediaID.uuidString.lowercased(), assetID.uuidString.lowercased()]
+            ), ["confirmed", "revoked", "confirmed"])
         }
         try fixture.database.pool.write { db in
             try db.execute(sql: "UPDATE asset SET availability = 'missing' WHERE id = ?",
@@ -508,6 +535,16 @@ final class PhoneArchiveImportTests: XCTestCase {
         XCTAssertThrowsError(try importer.confirmAssetBinding(
             migrationID: header.migrationID, mediaID: first.mediaID, candidate: refreshedCandidate
         )) { XCTAssertEqual($0 as? PhoneArchiveImportError, .assetBindingCandidateChanged) }
+        let currentConfirmation = try XCTUnwrap(importer.boundAssets(
+            migrationID: header.migrationID, mediaID: first.mediaID
+        ).first?.confirmationEventID)
+        try fixture.database.pool.write { db in
+            try db.execute(sql: "DELETE FROM media_asset_binding_event WHERE id = ?",
+                           arguments: [currentConfirmation.uuidString.lowercased()])
+        }
+        XCTAssertThrowsError(try importer.boundAssets(
+            migrationID: header.migrationID, mediaID: first.mediaID
+        )) { XCTAssertEqual($0 as? PhoneArchiveImportError, .catalogDiverged) }
     }
 
     func testFactSnapshotReconcilesExactBatchAndRejectsStaleOrChangedReplay() throws {

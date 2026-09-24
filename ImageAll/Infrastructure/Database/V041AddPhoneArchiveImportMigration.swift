@@ -274,3 +274,48 @@ enum V045AddMediaIdentityReplicaMigration {
         }
     }
 }
+
+/// Append-only history for explicit binding and correction. Existing active
+/// bindings receive a confirmation event without changing their identity.
+enum V046AuditMediaAssetBindingMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v046AuditMediaAssetBinding) { db in
+            try db.execute(sql: """
+                CREATE TABLE media_asset_binding_event (
+                    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id TEXT NOT NULL UNIQUE,
+                    media_id TEXT NOT NULL REFERENCES media_item(id) ON DELETE RESTRICT,
+                    asset_id TEXT NOT NULL,
+                    event_kind TEXT NOT NULL CHECK(event_kind IN ('confirmed', 'revoked')),
+                    confirmed_event_id TEXT UNIQUE
+                        REFERENCES media_asset_binding_event(id) ON DELETE RESTRICT,
+                    created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+                    CHECK(
+                        (event_kind = 'confirmed' AND confirmed_event_id IS NULL)
+                        OR (event_kind = 'revoked' AND confirmed_event_id IS NOT NULL)
+                    )
+                ) STRICT
+                """)
+            try db.execute(sql: """
+                CREATE INDEX media_asset_binding_event_pair_idx
+                ON media_asset_binding_event(media_id, asset_id, sequence)
+                """)
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT media_id, asset_id, created_at_ms
+                FROM media_asset_binding ORDER BY media_id, asset_id
+                """)
+            for row in rows {
+                let media: String = row["media_id"]
+                let asset: String = row["asset_id"]
+                let createdAtMs: Int64 = row["created_at_ms"]
+                try db.execute(sql: """
+                    INSERT INTO media_asset_binding_event (
+                        id, media_id, asset_id, event_kind, confirmed_event_id, created_at_ms
+                    ) VALUES (?, ?, ?, 'confirmed', NULL, ?)
+                    """, arguments: [
+                        UUID().uuidString.lowercased(), media, asset, createdAtMs,
+                    ])
+            }
+        }
+    }
+}

@@ -3,6 +3,54 @@ import XCTest
 @testable import ImageAll
 
 final class CatalogMigrationTests: XCTestCase {
+    func testV046BackfillsActiveAssetBindingAuditWithoutChangingBinding() throws {
+        let url = try makeTempDatabaseURL()
+        let pool = try DatabasePool(path: url.path)
+        try CatalogDatabase.makeMigrator().migrate(
+            pool, upTo: CatalogMigrationID.v045AddMediaIdentityReplica
+        )
+        let database = CatalogDatabase(pool: pool)
+        let assetID = UUID()
+        let mediaID = UUID()
+        try DatabaseTestSupport.makeFolderSourceWithFileAsset(
+            repository: CatalogRepository(database: database), assetID: assetID
+        )
+        try pool.write { db in
+            try db.execute(sql: """
+                INSERT INTO media_item (
+                    id, source_install_id, source_epoch,
+                    source_local_identifier, media_kind
+                ) VALUES (?, ?, ?, 'synthetic-phone', 'image')
+                """, arguments: [
+                    mediaID.uuidString.lowercased(), UUID().uuidString.lowercased(),
+                    UUID().uuidString.lowercased(),
+                ])
+            try db.execute(sql: """
+                INSERT INTO media_asset_binding (
+                    media_id, asset_id, evidence_kind, created_at_ms
+                ) VALUES (?, ?, 'userConfirmed', 123)
+                """, arguments: [
+                    mediaID.uuidString.lowercased(), assetID.uuidString.lowercased(),
+                ])
+        }
+        try database.migrate()
+        try database.migrate()
+        try pool.read { db in
+            XCTAssertEqual(try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM media_asset_binding
+                """), 1)
+            let event = try XCTUnwrap(Row.fetchOne(db, sql: """
+                SELECT id, event_kind, created_at_ms FROM media_asset_binding_event
+                WHERE media_id = ? AND asset_id = ?
+                """, arguments: [
+                    mediaID.uuidString.lowercased(), assetID.uuidString.lowercased(),
+                ]))
+            XCTAssertNotNil(UUID(uuidString: event["id"]))
+            XCTAssertEqual(event["event_kind"] as String, "confirmed")
+            XCTAssertEqual(event["created_at_ms"] as Int64, 123)
+        }
+    }
+
     func testV045BackfillsCommittedPhoneReplicaWithoutBindingAnExistingAsset() throws {
         let url = try makeTempDatabaseURL()
         var configuration = Configuration()
@@ -1448,6 +1496,11 @@ final class CatalogMigrationTests: XCTestCase {
     }
 
     private static func dropV035AndLaterTables(_ db: Database) throws {
+        try db.execute(sql: "DROP TABLE IF EXISTS media_asset_binding_event")
+        try db.execute(
+            sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
+            arguments: [CatalogMigrationID.v046AuditMediaAssetBinding]
+        )
         try db.execute(sql: "DROP TABLE IF EXISTS media_asset_binding")
         try db.execute(sql: "DROP TABLE IF EXISTS media_replica")
         try db.execute(sql: "DROP TABLE IF EXISTS media_item")

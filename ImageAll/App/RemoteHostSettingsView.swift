@@ -1388,7 +1388,7 @@ final class PhoneArchiveImportModel: ObservableObject {
         await loadMore(using: importer)
     }
 
-    func refreshVisibleItemsAfterBinding() async {
+    func refreshVisibleItemsAfterBindingChange() async {
         guard !isBusy, let id = selectedBatchID,
               let importer = PhoneArchiveImportProcessHolder.importer() else { return }
         isBusy = true
@@ -1400,7 +1400,7 @@ final class PhoneArchiveImportModel: ObservableObject {
             }
             guard selectedBatchID == id else { return }
             items = loaded
-            message = "已记录用户确认的身份关联；两端整理信息仍独立，后续需按冲突规则收敛。"
+            message = "Mac 资产身份关联已更新；两端整理信息仍独立，后续需按冲突规则收敛。"
         } catch {
             message = "关联已提交，但刷新目录失败：\(error.localizedDescription)"
         }
@@ -2125,7 +2125,7 @@ struct PhoneArchiveGalleryView: View {
         .sheet(item: $bindingItem) { item in
             if let migrationID = model.selectedBatchID {
                 PhoneArchiveAssetBindingSheet(migrationID: migrationID, item: item) {
-                    Task { await model.refreshVisibleItemsAfterBinding() }
+                    Task { await model.refreshVisibleItemsAfterBindingChange() }
                 }
             }
         }
@@ -2135,12 +2135,14 @@ struct PhoneArchiveGalleryView: View {
 private struct PhoneArchiveAssetBindingSheet: View {
     let migrationID: UUID
     let item: PhoneArchiveImportedItem
-    let onBound: () -> Void
+    let onChanged: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var search = ""
     @State private var candidates: [PhoneArchiveAssetCandidate] = []
     @State private var boundAssets: [PhoneArchiveBoundAsset] = []
     @State private var selected: PhoneArchiveAssetCandidate?
+    @State private var revocationTarget: PhoneArchiveBoundAsset?
+    @State private var showRevokeConfirmation = false
     @State private var message: String?
     @State private var isBusy = false
 
@@ -2155,8 +2157,16 @@ private struct PhoneArchiveAssetBindingSheet: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("已确认的 Mac 关联").font(.subheadline.weight(.semibold))
                     ForEach(boundAssets) { asset in
-                        Text("\(asset.displayName) · \(asset.sourceName) · \(asset.id.uuidString)")
-                            .font(.caption).textSelection(.enabled)
+                        HStack {
+                            Text("\(asset.displayName) · \(asset.sourceName) · \(asset.id.uuidString)")
+                                .font(.caption).textSelection(.enabled)
+                            Spacer()
+                            Button("解除…") {
+                                revocationTarget = asset
+                                showRevokeConfirmation = true
+                            }
+                                .disabled(isBusy)
+                        }
                     }
                 }
             }
@@ -2214,6 +2224,17 @@ private struct PhoneArchiveAssetBindingSheet: View {
         .padding(20)
         .frame(minWidth: 620, minHeight: 500)
         .task { await loadBoundAssets() }
+        .confirmationDialog(
+            "解除这项 Mac 资产的身份关联？",
+            isPresented: $showRevokeConfirmation,
+            presenting: revocationTarget
+        ) { asset in
+            Button("解除关联", role: .destructive) {
+                Task { await revoke(asset) }
+            }
+        } message: { asset in
+            Text("\(asset.displayName) 将不再与此 iPhone 归档视为同一媒体。文件和两端整理信息不会删除。")
+        }
     }
 
     private func loadBoundAssets() async {
@@ -2262,9 +2283,30 @@ private struct PhoneArchiveAssetBindingSheet: View {
             candidates = []
             self.selected = nil
             message = "关联已记录；整理信息仍需单独对账。"
-            onBound()
+            onChanged()
         } catch {
             message = "关联失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func revoke(_ asset: PhoneArchiveBoundAsset) async {
+        guard !isBusy, let importer = PhoneArchiveImportProcessHolder.importer() else { return }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            _ = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.revokeAssetBinding(
+                    migrationID: migrationID, mediaID: item.id, assetID: asset.id,
+                    confirmationEventID: asset.confirmationEventID
+                )
+            }
+            await loadBoundAssets()
+            candidates = []
+            selected = nil
+            message = "关联已解除并保留审计记录。"
+            onChanged()
+        } catch {
+            message = "解除失败：\(error.localizedDescription)"
         }
     }
 }
