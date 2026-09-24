@@ -818,9 +818,33 @@ final class RemoteHTTPServerTests: XCTestCase {
             selectedAssetIDs: [assetID], assets: [asset]
         )
         _ = try await store.submit(snapshot, authenticatedDeviceID: deviceID)
+        do {
+            _ = try await store.setTagDecisionFromMac(
+                deviceID: deviceID, assetID: assetID, tagID: tagID,
+                decision: .rejected, expectedRevision: 1,
+                expectedInstallID: UUID(), expectedSourceEpoch: epoch,
+                expectedScopeRevision: 1
+            )
+            XCTFail("wrong phone installation must fail")
+        } catch let error as RemoteAPIError {
+            XCTAssertEqual(error.code, .conflict)
+        }
+        do {
+            _ = try await store.setTagDecisionFromMac(
+                deviceID: deviceID, assetID: assetID, tagID: tagID,
+                decision: .rejected, expectedRevision: 1,
+                expectedInstallID: installID, expectedSourceEpoch: epoch,
+                expectedScopeRevision: 0
+            )
+            XCTFail("stale sharing scope must fail")
+        } catch let error as RemoteAPIError {
+            XCTAssertEqual(error.code, .conflict)
+        }
         let changed = try await store.setTagDecisionFromMac(
             deviceID: deviceID, assetID: assetID, tagID: tagID,
-            decision: .rejected, expectedRevision: 1
+            decision: .rejected, expectedRevision: 1,
+            expectedInstallID: installID, expectedSourceEpoch: epoch,
+            expectedScopeRevision: 1
         )
         XCTAssertEqual(changed.sharedTagFacts.first?.revision, 2)
         XCTAssertEqual(changed.sharedTagFacts.first?.decision, .rejected)

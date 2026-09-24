@@ -2320,6 +2320,11 @@ private struct PhoneArchiveAssetBindingSheet: View {
 }
 
 private struct PhoneArchiveFactComparisonSheet: View {
+    private struct TagSyncTarget {
+        let tag: PhoneArchiveTagComparison
+        let fact: RemoteLocalLibrarySyncStore.SharedTagFact
+    }
+
     let migrationID: UUID
     let mediaID: UUID
     let asset: PhoneArchiveBoundAsset
@@ -2328,8 +2333,12 @@ private struct PhoneArchiveFactComparisonSheet: View {
     @State private var message: String?
     @State private var aliasTarget: PhoneArchiveTagComparison?
     @State private var revokeAliasTarget: PhoneArchiveTagComparison?
+    @State private var liveProjection: RemoteLocalLibrarySyncStore.Projection?
+    @State private var sharedStatus: String?
+    @State private var tagSyncTarget: TagSyncTarget?
     @State private var showAliasConfirmation = false
     @State private var showAliasRevocation = false
+    @State private var showTagSyncConfirmation = false
     @State private var isBusy = false
 
     var body: some View {
@@ -2338,12 +2347,17 @@ private struct PhoneArchiveFactComparisonSheet: View {
                 Text("整理信息对账 · \(asset.displayName)")
                     .font(.title2.weight(.semibold))
                 Spacer()
+                Button("刷新对账") { Task { await loadComparison() } }
+                    .disabled(isBusy)
                 Button("完成") { dismiss() }
             }
-            Text("对照的是 Mac catalog 与已入库 iPhone 归档快照；手机后续共享变化、权限和冲突水位仍须单独核验。此页不修改两端事实。")
+            Text("归档事实是历史快照；手机共享账本显示当前已提交的字段版本。提交 Mac 决定后，手机仍需主动同步并应用。")
                 .font(.footnote).foregroundStyle(.secondary)
             Text("明确确认同名标签映射只解决身份；两端标签决定仍需按版本单独收敛。")
                 .font(.footnote).foregroundStyle(.secondary)
+            if let sharedStatus {
+                Text(sharedStatus).font(.footnote).foregroundStyle(.secondary)
+            }
             if let message {
                 Text(message).foregroundStyle(.orange)
             }
@@ -2362,8 +2376,22 @@ private struct PhoneArchiveFactComparisonSheet: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("\(tag.phoneTagName) · \(tagStateText(tag.state))")
                                     .font(.subheadline.weight(.medium))
-                                Text("手机：\(tag.phoneDecision.rawValue) · Mac：\(tag.macDecision ?? "未设置")")
+                                Text("手机归档快照：\(tag.phoneDecision.rawValue) · Mac 当前：\(tag.macDecision ?? "未设置")")
                                     .font(.caption).foregroundStyle(.secondary)
+                                if let fact = sharedTagFact(for: tag) {
+                                    Text("手机共享账本：\(fact.decision.rawValue) · 字段版本 \(fact.revision)")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                    if canSubmitMacDecision(tag, to: fact) {
+                                        Button("把 Mac 当前决定提交到手机共享账本…") {
+                                            tagSyncTarget = TagSyncTarget(tag: tag, fact: fact)
+                                            showTagSyncConfirmation = true
+                                        }
+                                        .disabled(isBusy)
+                                    }
+                                } else if liveProjection != nil {
+                                    Text("当前共享范围没有此标签字段，暂不能从 Mac 写入。")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
                                 if let macTagName = tag.macTagName {
                                     Text("Mac 标签：\(macTagName)")
                                         .font(.caption).foregroundStyle(.secondary)
@@ -2436,6 +2464,15 @@ private struct PhoneArchiveFactComparisonSheet: View {
         } message: { tag in
             Text("手机“\(tag.phoneTagName)”与 Mac“\(tag.macTagName ?? "")”在该手机来源范围内的身份映射将解除，其他媒体的对账也会受影响；两端标签决定不变。")
         }
+        .confirmationDialog(
+            "把 Mac 标签决定提交到手机共享账本？",
+            isPresented: $showTagSyncConfirmation,
+            presenting: tagSyncTarget
+        ) { target in
+            Button("提交 Mac 决定") { Task { await submitMacTagDecision(target) } }
+        } message: { target in
+            Text("“\(target.tag.phoneTagName)”当前手机共享决定为 \(target.fact.decision.rawValue)（版本 \(target.fact.revision)），Mac 决定为 \(target.tag.macDecision ?? "未设置")。提交前会复核绑定、身份和两端版本；手机需稍后主动同步。")
+        }
     }
 
     private func loadComparison() async {
@@ -2444,14 +2481,113 @@ private struct PhoneArchiveFactComparisonSheet: View {
             return
         }
         do {
-            comparison = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+            let loaded = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
                 try importer.compareBoundAssetFacts(
                     migrationID: migrationID, mediaID: mediaID, assetID: asset.id
                 )
             }
+            comparison = loaded
             message = nil
+            do {
+                let matches = try await RemoteHostProcessHolder.sharedPhoneProjections().filter {
+                    $0.installID == loaded.sourceInstallID && $0.sourceEpoch == loaded.sourceEpoch
+                }
+                if matches.count == 1, let matched = matches.first,
+                   matched.selectedAssetIDs.contains(mediaID),
+                   matched.assets.contains(where: { $0.id == mediaID }) {
+                    liveProjection = matched
+                    sharedStatus = "手机共享来源已匹配，范围版本 \(matched.scopeRevision)；提交需确认标签字段。"
+                } else {
+                    liveProjection = nil
+                    sharedStatus = matches.count > 1
+                        ? "同一手机来源对应多个共享范围，需先解决身份歧义。"
+                        : "此归档媒体尚未出现在当前手机共享范围，暂不能提交 Mac 决定。"
+                }
+            } catch {
+                liveProjection = nil
+                sharedStatus = "读取手机共享账本失败：\(error.localizedDescription)"
+            }
         } catch {
+            comparison = nil
+            liveProjection = nil
+            sharedStatus = nil
             message = "对账失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func sharedTagFact(
+        for tag: PhoneArchiveTagComparison
+    ) -> RemoteLocalLibrarySyncStore.SharedTagFact? {
+        liveProjection?.sharedTagFacts.first {
+            $0.assetID == mediaID && $0.tagID == tag.phoneTagID
+        }
+    }
+
+    private func canSubmitMacDecision(
+        _ tag: PhoneArchiveTagComparison,
+        to fact: RemoteLocalLibrarySyncStore.SharedTagFact
+    ) -> Bool {
+        (tag.state == .same || tag.state == .decisionDiffers)
+            && (tag.macDecision == RemoteLocalLibraryDecision.accepted.rawValue
+                || tag.macDecision == RemoteLocalLibraryDecision.rejected.rawValue)
+            && tag.macDecision != fact.decision.rawValue
+    }
+
+    private func submitMacTagDecision(_ target: TagSyncTarget) async {
+        guard !isBusy, let comparison, let projection = liveProjection,
+              sharedTagFact(for: target.tag) == target.fact,
+              let importer = PhoneArchiveImportProcessHolder.importer() else {
+            message = "对账已变化，请刷新后重试。"
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let decision = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.validateBoundMacTagDecision(
+                    migrationID: migrationID, mediaID: mediaID, assetID: asset.id,
+                    expectedComparison: comparison, expectedTag: target.tag
+                )
+            }
+            let current = try await RemoteHostProcessHolder.sharedPhoneProjections().first {
+                $0.deviceID == projection.deviceID
+            }
+            guard current?.installID == comparison.sourceInstallID,
+                  current?.sourceEpoch == comparison.sourceEpoch,
+                  current?.scopeRevision == projection.scopeRevision,
+                  current?.selectedAssetIDs.contains(mediaID) == true,
+                  current?.assets.contains(where: { $0.id == mediaID }) == true,
+                  current?.sharedTagFacts.first(where: {
+                      $0.assetID == mediaID && $0.tagID == target.tag.phoneTagID
+                  }) == target.fact else {
+                message = "手机共享范围或标签字段已变化，请刷新对账。"
+                return
+            }
+            _ = try await RemoteHostProcessHolder.setSharedPhoneTagDecision(
+                deviceID: projection.deviceID, assetID: mediaID,
+                tagID: target.tag.phoneTagID, decision: decision,
+                expectedRevision: target.fact.revision,
+                expectedInstallID: comparison.sourceInstallID,
+                expectedSourceEpoch: comparison.sourceEpoch,
+                expectedScopeRevision: projection.scopeRevision
+            )
+            do {
+                _ = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                    try importer.validateBoundMacTagDecision(
+                        migrationID: migrationID, mediaID: mediaID, assetID: asset.id,
+                        expectedComparison: comparison, expectedTag: target.tag
+                    )
+                }
+                await loadComparison()
+                message = liveProjection == nil
+                    ? "Mac 决定已提交，但共享账本重新读取失败；请刷新对账确认，手机仍需主动同步。"
+                    : "Mac 决定已提交到手机共享账本；手机主动同步后才会应用。"
+            } catch {
+                await loadComparison()
+                message = "共享账本已提交，但 Mac 事实随后变化；请重新对账，勿将本次视为收敛完成。"
+            }
+        } catch {
+            message = "提交失败：\(error.localizedDescription)"
         }
     }
 

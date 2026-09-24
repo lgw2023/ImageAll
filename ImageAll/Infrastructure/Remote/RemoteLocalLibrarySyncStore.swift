@@ -749,12 +749,19 @@ actor RemoteLocalLibrarySyncStore {
     /// outbound change are published together in the same atomic record replacement.
     func setTagDecisionFromMac(
         deviceID: UUID, assetID: UUID, tagID: UUID,
-        decision: RemoteLocalLibraryDecision, expectedRevision: Int64
+        decision: RemoteLocalLibraryDecision, expectedRevision: Int64,
+        expectedInstallID: UUID? = nil, expectedSourceEpoch: UUID? = nil,
+        expectedScopeRevision: Int64? = nil
     ) throws -> Projection {
         guard let previous = records[deviceID],
               previous.request.selectedAssetIDs.contains(assetID),
               previous.projectedAssets.contains(where: { $0.asset.id == assetID }) else {
             throw RemoteAPIError(code: .notFound, message: "shared phone asset unavailable")
+        }
+        guard expectedInstallID.map({ $0 == previous.request.installID }) ?? true,
+              expectedSourceEpoch.map({ $0 == previous.request.sourceEpoch }) ?? true,
+              expectedScopeRevision.map({ $0 == previous.request.scopeRevision }) ?? true else {
+            throw RemoteAPIError(code: .conflict, message: "shared phone scope changed")
         }
         var facts = previous.sharedTagFacts ?? Self.seedTagFacts(from: previous.projectedAssets)
         guard let index = facts.firstIndex(where: {

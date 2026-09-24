@@ -558,7 +558,9 @@ enum RemoteHostProcessHolder {
 
     static func setSharedPhoneTagDecision(
         deviceID: UUID, assetID: UUID, tagID: UUID,
-        decision: RemoteLocalLibraryDecision, expectedRevision: Int64
+        decision: RemoteLocalLibraryDecision, expectedRevision: Int64,
+        expectedInstallID: UUID? = nil, expectedSourceEpoch: UUID? = nil,
+        expectedScopeRevision: Int64? = nil
     ) async throws -> RemoteLocalLibrarySyncStore.Projection {
         guard (await pairedDevices()).contains(where: { $0.deviceID == deviceID }),
               let store = try await state.syncStoreForUI() else {
@@ -566,7 +568,10 @@ enum RemoteHostProcessHolder {
         }
         return try await store.setTagDecisionFromMac(
             deviceID: deviceID, assetID: assetID, tagID: tagID,
-            decision: decision, expectedRevision: expectedRevision
+            decision: decision, expectedRevision: expectedRevision,
+            expectedInstallID: expectedInstallID,
+            expectedSourceEpoch: expectedSourceEpoch,
+            expectedScopeRevision: expectedScopeRevision
         )
     }
 

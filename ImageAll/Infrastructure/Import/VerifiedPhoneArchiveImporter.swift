@@ -24,6 +24,7 @@ enum PhoneArchiveImportError: LocalizedError, Equatable {
     case assetKindMismatch
     case tagAliasCandidateChanged
     case tagAliasAlreadyMapped
+    case tagSyncCandidateChanged
 
     var errorDescription: String? {
         switch self {
@@ -46,6 +47,7 @@ enum PhoneArchiveImportError: LocalizedError, Equatable {
         case .assetKindMismatch: "手机归档与 Mac 资产的媒体类型不一致。"
         case .tagAliasCandidateChanged: "标签身份或事实版本已变化，请重新对账。"
         case .tagAliasAlreadyMapped: "此手机或 Mac 标签已映射到另一标签，需先对账。"
+        case .tagSyncCandidateChanged: "Mac 资产或标签决定已变化，请刷新对账后重试。"
         }
     }
 }
@@ -181,6 +183,7 @@ struct PhoneArchiveTagComparison: Identifiable, Sendable {
     let macTagName: String?
     let macTagUpdatedAtMs: Int64?
     let macDecision: String?
+    let macDecisionUpdatedAtMs: Int64?
     let state: PhoneArchiveTagComparisonState
     let aliasConfirmationEventID: UUID?
 }
@@ -199,6 +202,9 @@ struct PhoneArchiveMacOnlyTagDecision: Identifiable, Sendable {
 }
 
 struct PhoneArchiveBoundFactComparison: Sendable {
+    let sourceInstallID: UUID
+    let sourceEpoch: UUID
+    let bindingConfirmationEventID: UUID
     let factSnapshotSequence: Int64
     let tags: [PhoneArchiveTagComparison]
     let macOnlyTags: [PhoneArchiveMacOnlyTagDecision]
@@ -1493,6 +1499,9 @@ struct VerifiedPhoneArchiveImporter: Sendable {
             guard let binding = try Row.fetchOne(db, sql: """
                 SELECT i.source_device_id, i.source_epoch,
                        m.fact_snapshot_sequence,
+                       (SELECT e.id FROM media_asset_binding_event e
+                        WHERE e.media_id = i.media_id AND e.asset_id = ?
+                        ORDER BY e.sequence DESC LIMIT 1) AS latest_event_id,
                        (SELECT e.event_kind FROM media_asset_binding_event e
                         WHERE e.media_id = i.media_id AND e.asset_id = ?
                         ORDER BY e.sequence DESC LIMIT 1) AS latest_event_kind
@@ -1502,15 +1511,21 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                     AND b.asset_id = ?
                 WHERE i.migration_id = ? AND i.media_id = ?
                   AND m.state = 'catalogCommitted'
-                """, arguments: [asset, asset, migration, media]) else {
+                """, arguments: [asset, asset, asset, migration, media]) else {
                 throw PhoneArchiveImportError.assetBindingCandidateChanged
             }
             let latestEvent: String? = binding["latest_event_kind"]
-            guard latestEvent == "confirmed" else {
+            let latestEventID: String? = binding["latest_event_id"]
+            guard latestEvent == "confirmed",
+                  let bindingConfirmationEventID = latestEventID.flatMap(UUID.init(uuidString:)) else {
                 throw PhoneArchiveImportError.catalogDiverged
             }
             let install: String = binding["source_device_id"]
             let epoch: String = binding["source_epoch"]
+            guard let sourceInstallID = UUID(uuidString: install),
+                  let sourceEpoch = UUID(uuidString: epoch) else {
+                throw PhoneArchiveImportError.catalogDiverged
+            }
             let phoneTags = try Row.fetchAll(db, sql: """
                 SELECT tag_id, tag_name, decision
                 FROM migration_import_tag_decision
@@ -1581,12 +1596,13 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                     aliasConfirmationEventID = nil
                 }
                 if let rawMacID { representedMacTagIDs.insert(rawMacID) }
-                let macDecision: String? = try rawMacID.flatMap { id in
-                    try String.fetchOne(db, sql: """
-                        SELECT decision FROM asset_tag_decision
+                let macDecisionRow: Row? = try rawMacID.flatMap { id in
+                    try Row.fetchOne(db, sql: """
+                        SELECT decision, updated_at_ms FROM asset_tag_decision
                         WHERE asset_id = ? AND tag_id = ?
                         """, arguments: [asset, id])
                 }
+                let macDecision: String? = macDecisionRow?["decision"]
                 let macState: String? = matched?["state"]
                 let resultState: PhoneArchiveTagComparisonState
                 if let state {
@@ -1606,7 +1622,9 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                     macTagID: rawMacID.flatMap(UUID.init(uuidString:)),
                     macTagName: matched?["name"],
                     macTagUpdatedAtMs: matched?["updated_at_ms"],
-                    macDecision: macDecision, state: resultState,
+                    macDecision: macDecision,
+                    macDecisionUpdatedAtMs: macDecisionRow?["updated_at_ms"],
+                    state: resultState,
                     aliasConfirmationEventID: aliasConfirmationEventID
                 )
             }
@@ -1641,6 +1659,8 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                 ORDER BY album_local_identifier
                 """, arguments: [migration, media])
             return PhoneArchiveBoundFactComparison(
+                sourceInstallID: sourceInstallID, sourceEpoch: sourceEpoch,
+                bindingConfirmationEventID: bindingConfirmationEventID,
                 factSnapshotSequence: binding["fact_snapshot_sequence"],
                 tags: comparisons, macOnlyTags: macOnly,
                 phoneFavoriteTarget: phoneFavoriteRaw.map { $0 == 1 },
@@ -1649,6 +1669,38 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                 phoneAppleAlbumNames: phoneAlbums
             )
         }
+    }
+
+    /// Rechecks the catalog half of an explicit Mac-to-phone tag decision.
+    /// The phone ledger's field revision is checked separately by its atomic writer.
+    func validateBoundMacTagDecision(
+        migrationID: UUID, mediaID: UUID, assetID: UUID,
+        expectedComparison: PhoneArchiveBoundFactComparison,
+        expectedTag: PhoneArchiveTagComparison
+    ) throws -> RemoteLocalLibraryDecision {
+        let current = try compareBoundAssetFacts(
+            migrationID: migrationID, mediaID: mediaID, assetID: assetID
+        )
+        guard current.sourceInstallID == expectedComparison.sourceInstallID,
+              current.sourceEpoch == expectedComparison.sourceEpoch,
+              current.bindingConfirmationEventID == expectedComparison.bindingConfirmationEventID,
+              current.factSnapshotSequence == expectedComparison.factSnapshotSequence,
+              let tag = current.tags.first(where: { $0.phoneTagID == expectedTag.phoneTagID }),
+              tag.phoneTagName == expectedTag.phoneTagName,
+              tag.macTagID == expectedTag.macTagID,
+              tag.macTagName == expectedTag.macTagName,
+              tag.macTagUpdatedAtMs == expectedTag.macTagUpdatedAtMs,
+              tag.macDecision == expectedTag.macDecision,
+              tag.macDecisionUpdatedAtMs == expectedTag.macDecisionUpdatedAtMs,
+              tag.aliasConfirmationEventID == expectedTag.aliasConfirmationEventID,
+              tag.state == expectedTag.state,
+              tag.state == .same || tag.state == .decisionDiffers,
+              let rawDecision = tag.macDecision,
+              let decision = RemoteLocalLibraryDecision(rawValue: rawDecision),
+              decision != .cleared else {
+            throw PhoneArchiveImportError.tagSyncCandidateChanged
+        }
+        return decision
     }
 
     private static func macTags(

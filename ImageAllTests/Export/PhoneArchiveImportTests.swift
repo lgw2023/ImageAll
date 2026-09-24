@@ -618,6 +618,17 @@ final class PhoneArchiveImportTests: XCTestCase {
         let compared = try importer.compareBoundAssetFacts(
             migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID
         )
+        XCTAssertEqual(compared.sourceInstallID, fixture.sourceDeviceID)
+        XCTAssertEqual(compared.sourceEpoch, fixture.sourceEpoch)
+        XCTAssertEqual(compared.bindingConfirmationEventID, try XCTUnwrap(
+            importer.boundAssets(migrationID: header.migrationID, mediaID: item.mediaID)
+                .first?.confirmationEventID
+        ))
+        let exactTag = try XCTUnwrap(compared.tags.first { $0.phoneTagID == sharedID })
+        XCTAssertEqual(try importer.validateBoundMacTagDecision(
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID,
+            expectedComparison: compared, expectedTag: exactTag
+        ), .accepted)
         XCTAssertEqual(compared.tags.first { $0.phoneTagID == sharedID }?.state, .same)
         XCTAssertEqual(compared.tags.first { $0.phoneTagID == conflictingDecisionID }?.state, .decisionDiffers)
         XCTAssertEqual(compared.tags.first { $0.phoneTagID == missingDecisionID }?.state, .macDecisionMissing)
@@ -672,6 +683,21 @@ final class PhoneArchiveImportTests: XCTestCase {
         let mappedAlias = try XCTUnwrap(mapped.tags.first { $0.phoneTagID == phoneAliasID })
         XCTAssertEqual(mappedAlias.state, .decisionDiffers)
         XCTAssertEqual(mappedAlias.macTagID, macAliasID)
+        XCTAssertEqual(try importer.validateBoundMacTagDecision(
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID,
+            expectedComparison: mapped, expectedTag: mappedAlias
+        ), .accepted)
+        try fixture.database.pool.write { db in
+            try db.execute(sql: """
+                UPDATE asset_tag_decision SET updated_at_ms = 2
+                WHERE asset_id = ? AND tag_id = ?
+                """, arguments: [assetID.uuidString.lowercased(),
+                                 macAliasID.uuidString.lowercased()])
+        }
+        XCTAssertThrowsError(try importer.validateBoundMacTagDecision(
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID,
+            expectedComparison: mapped, expectedTag: mappedAlias
+        )) { XCTAssertEqual($0 as? PhoneArchiveImportError, .tagSyncCandidateChanged) }
         let aliasConfirmation = try XCTUnwrap(mappedAlias.aliasConfirmationEventID)
         try fixture.database.pool.write { db in
             try db.execute(sql: """
@@ -722,6 +748,9 @@ final class PhoneArchiveImportTests: XCTestCase {
         let confirmationID = try XCTUnwrap(importer.boundAssets(
             migrationID: header.migrationID, mediaID: item.mediaID
         ).first?.confirmationEventID)
+        let beforeRebinding = try importer.compareBoundAssetFacts(
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID
+        )
         _ = try importer.revokeAssetBinding(
             migrationID: header.migrationID, mediaID: item.mediaID,
             assetID: assetID, confirmationEventID: confirmationID
@@ -729,6 +758,20 @@ final class PhoneArchiveImportTests: XCTestCase {
         XCTAssertThrowsError(try importer.compareBoundAssetFacts(
             migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID
         )) { XCTAssertEqual($0 as? PhoneArchiveImportError, .assetBindingCandidateChanged) }
+        let reboundCandidate = try XCTUnwrap(importer.assetBindingCandidates(
+            migrationID: header.migrationID, mediaID: item.mediaID, search: "photo.jpg"
+        ).first)
+        _ = try importer.confirmAssetBinding(
+            migrationID: header.migrationID, mediaID: item.mediaID,
+            candidate: reboundCandidate
+        )
+        XCTAssertThrowsError(try importer.validateBoundMacTagDecision(
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID,
+            expectedComparison: beforeRebinding,
+            expectedTag: try XCTUnwrap(beforeRebinding.tags.first {
+                $0.phoneTagID == sharedID
+            })
+        )) { XCTAssertEqual($0 as? PhoneArchiveImportError, .tagSyncCandidateChanged) }
     }
 
     func testFactSnapshotReconcilesExactBatchAndRejectsStaleOrChangedReplay() throws {
