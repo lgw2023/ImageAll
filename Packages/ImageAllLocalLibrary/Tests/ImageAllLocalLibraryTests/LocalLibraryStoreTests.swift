@@ -69,3 +69,46 @@ import Testing
     #expect(afterExternalChange.favoriteTarget == false)
     #expect(afterExternalChange.favoriteWritebackState == .failed)
 }
+
+@Test func explicitShareScopeFiltersPrivateFactsAndSurvivesPermissionContraction() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("local.sqlite")
+    let store = try LocalLibraryStore(url: url)
+    try await store.observe([
+        LocalObservedAsset(localIdentifier: "selected", kind: "image", creationDate: nil, isFavorite: false),
+        LocalObservedAsset(localIdentifier: "private", kind: "video", creationDate: nil, isFavorite: true),
+    ])
+    let selected = try #require(await store.assets(visibleIdentifiers: ["selected"]).first)
+    let privateAsset = try #require(await store.assets(visibleIdentifiers: ["private"]).first)
+    let usedTag = try await store.createTag(name: "visible tag")
+    let privateTag = try await store.createTag(name: "private tag")
+    let collection = try await store.createCollection(name: "visible collection")
+    try await store.setDecision(assetID: selected.id, tagID: usedTag, decision: .accepted)
+    try await store.setDecision(assetID: privateAsset.id, tagID: privateTag, decision: .rejected)
+    try await store.setMembership(assetID: selected.id, collectionID: collection, included: true)
+    try await store.setFavoriteTarget(assetID: selected.id, isFavorite: true)
+
+    let defaultSnapshot = try await store.sharedSnapshot(visibleIdentifiers: ["selected", "private"])
+    #expect(defaultSnapshot.assets.isEmpty)
+    #expect(defaultSnapshot.scopeRevision == 0)
+
+    try await store.setShared(assetID: selected.id, shared: true)
+    let shared = try await store.sharedSnapshot(visibleIdentifiers: ["selected", "private"])
+    #expect(shared.assets.count == 1)
+    #expect(shared.assets.first?.id == selected.id)
+    #expect(shared.assets.first?.observedFavorite == false)
+    #expect(shared.assets.first?.favoriteTarget == true)
+    #expect(shared.assets.first?.tagDecisions.map(\.tagName) == ["visible tag"])
+    #expect(shared.assets.first?.collections.map(\.collectionName) == ["visible collection"])
+    #expect(shared.scopeRevision == 1)
+
+    let reopened = try LocalLibraryStore(url: url)
+    #expect(try await reopened.isShared(assetID: selected.id))
+    #expect(try await reopened.sharedSnapshot(visibleIdentifiers: []).assets.isEmpty)
+    #expect(try await reopened.sharedSnapshot(visibleIdentifiers: ["selected"]).assets.count == 1)
+    try await reopened.setShared(assetID: selected.id, shared: false)
+    let revoked = try await reopened.sharedSnapshot(visibleIdentifiers: ["selected"])
+    #expect(revoked.assets.isEmpty)
+    #expect(revoked.scopeRevision == 2)
+}

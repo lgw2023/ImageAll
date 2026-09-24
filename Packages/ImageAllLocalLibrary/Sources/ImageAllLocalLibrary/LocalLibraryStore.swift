@@ -59,6 +59,37 @@ public struct LocalPendingOperation: Identifiable, Sendable {
     public let value: String
 }
 
+/// A directory and human-fact projection for assets the owner explicitly selected.
+/// It contains no media bytes, thumbnail, GPS, or unreferenced tag/collection names.
+public struct LocalSharedSnapshot: Sendable {
+    public let installID: UUID
+    public let sourceEpoch: UUID
+    public let scopeRevision: Int64
+    public let assets: [LocalSharedAsset]
+}
+
+public struct LocalSharedAsset: Identifiable, Sendable {
+    public let id: UUID
+    public let localIdentifier: String
+    public let kind: String
+    public let creationDate: Date?
+    public let observedFavorite: Bool
+    public let favoriteTarget: Bool?
+    public let tagDecisions: [LocalSharedTagDecision]
+    public let collections: [LocalSharedCollectionMembership]
+}
+
+public struct LocalSharedTagDecision: Sendable {
+    public let tagID: UUID
+    public let tagName: String
+    public let decision: LocalDecision
+}
+
+public struct LocalSharedCollectionMembership: Sendable {
+    public let collectionID: UUID
+    public let collectionName: String
+}
+
 /// Owns only ImageAll's local index and human facts. PhotoKit remains the source of media bytes.
 /// Every fact change and its future sync operation are committed in the same SQLite transaction.
 public actor LocalLibraryStore {
@@ -121,10 +152,14 @@ public actor LocalLibraryStore {
                   asset_id TEXT PRIMARY KEY REFERENCES assets(id),
                   target INTEGER NOT NULL, state TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS shared_assets (
+                  asset_id TEXT PRIMARY KEY REFERENCES assets(id)
+                );
                 """
             let setup = schema + """
                 INSERT OR IGNORE INTO identity(key,value) VALUES('install_id','\(UUID().uuidString)');
                 INSERT OR IGNORE INTO identity(key,value) VALUES('source_epoch','\(UUID().uuidString)');
+                INSERT OR IGNORE INTO identity(key,value) VALUES('share_scope_revision','0');
                 """
             guard sqlite3_exec(db, setup, nil, nil, nil) == SQLITE_OK else {
                 throw LocalLibraryError.database(String(cString: sqlite3_errmsg(db)))
@@ -143,6 +178,73 @@ public actor LocalLibraryStore {
 
     public func sourceEpoch() throws -> UUID {
         UUID(uuidString: try requiredIdentity("source_epoch"))!
+    }
+
+    /// Selection is local and persistent. It never starts a network transfer.
+    public func setShared(assetID: UUID, shared: Bool) throws {
+        guard try exists("assets", id: assetID) else { throw LocalLibraryError.unknownAsset }
+        let selected = try scalar("SELECT asset_id FROM shared_assets WHERE asset_id=?", [assetID.uuidString]) != nil
+        guard selected != shared else { return }
+        try transaction {
+            if shared {
+                try execute("INSERT INTO shared_assets(asset_id) VALUES(?)", [assetID.uuidString])
+            } else {
+                try execute("DELETE FROM shared_assets WHERE asset_id=?", [assetID.uuidString])
+            }
+            try execute("""
+                UPDATE identity SET value=CAST(value AS INTEGER)+1 WHERE key='share_scope_revision'
+                """)
+        }
+    }
+
+    public func isShared(assetID: UUID) throws -> Bool {
+        try scalar("SELECT asset_id FROM shared_assets WHERE asset_id=?", [assetID.uuidString]) != nil
+    }
+
+    /// The caller supplies the identifiers currently returned by PhotoKit. Missing permission
+    /// only hides the projection; it does not revoke sharing or generate deletion records.
+    public func sharedSnapshot(visibleIdentifiers: Set<String>) throws -> LocalSharedSnapshot {
+        let epoch = try requiredIdentity("source_epoch")
+        let revision = Int64(try requiredIdentity("share_scope_revision")) ?? 0
+        let selected = try rows("""
+            SELECT a.id,a.local_identifier,a.kind,a.creation_time,a.observed_favorite,a.favorite_target
+            FROM shared_assets s JOIN assets a ON a.id=s.asset_id
+            WHERE a.source_epoch=? ORDER BY a.id
+            """, [epoch])
+        let assets: [LocalSharedAsset] = try selected.compactMap { row in
+            guard let id = UUID(uuidString: row[0] ?? ""),
+                  let identifier = row[1], visibleIdentifiers.contains(identifier) else { return nil }
+            let tagDecisions = try rows("""
+                SELECT t.id,t.name,d.decision FROM tag_decisions d
+                JOIN tags t ON t.id=d.tag_id WHERE d.asset_id=? ORDER BY t.id
+                """, [id.uuidString]).compactMap { item -> LocalSharedTagDecision? in
+                    guard let tagID = UUID(uuidString: item[0] ?? ""),
+                          let decision = LocalDecision(rawValue: item[2] ?? "") else { return nil }
+                    return LocalSharedTagDecision(
+                        tagID: tagID, tagName: item[1] ?? "", decision: decision
+                    )
+                }
+            let collections = try rows("""
+                SELECT c.id,c.name FROM memberships m
+                JOIN collections c ON c.id=m.collection_id
+                WHERE m.asset_id=? AND m.included=1 ORDER BY c.id
+                """, [id.uuidString]).compactMap { item -> LocalSharedCollectionMembership? in
+                    guard let collectionID = UUID(uuidString: item[0] ?? "") else { return nil }
+                    return LocalSharedCollectionMembership(
+                        collectionID: collectionID, collectionName: item[1] ?? ""
+                    )
+                }
+            return LocalSharedAsset(
+                id: id, localIdentifier: identifier, kind: row[2] ?? "image",
+                creationDate: row[3].flatMap(Double.init).map(Date.init(timeIntervalSince1970:)),
+                observedFavorite: row[4] == "1", favoriteTarget: row[5].map { $0 == "1" },
+                tagDecisions: tagDecisions, collections: collections
+            )
+        }
+        return LocalSharedSnapshot(
+            installID: try installID(), sourceEpoch: try sourceEpoch(),
+            scopeRevision: revision, assets: assets
+        )
     }
 
     /// Upserts only items PhotoKit returned. Permission contraction never creates tombstones.
