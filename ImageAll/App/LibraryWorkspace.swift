@@ -12523,6 +12523,7 @@ private enum LibrarySidebarSelection: Hashable {
     case trainingWorkspace
     case timeStory
     case librarySlimming
+    case phoneSource(UUID)
     case source(UUID)
     case folder(AssetFolderScope)
 }
@@ -13319,6 +13320,9 @@ struct LibraryWorkspaceView: View {
 
     @ObservedObject var model: LibraryWorkspaceModel
     @State private var selection: LibrarySidebarSelection? = .all
+    @State private var sharedPhoneProjections: [RemoteLocalLibrarySyncStore.Projection] = []
+    @State private var sharedPhoneDeviceNames: [UUID: String] = [:]
+    @State private var sharedPhoneLoadError: String?
     @State private var worldMapNavigationState = WorldMapNavigationState.empty
     @State private var worldMapGalleryScope: WorldMapGalleryScope?
     @State private var searchText = ""
@@ -13429,7 +13433,8 @@ struct LibraryWorkspaceView: View {
             ToolbarItemGroup {
                 libraryToolbarLayoutItems
                 if selection != .galleryOverview,
-                   selection != .worldMap, selection != .timeStory
+                   selection != .worldMap, selection != .timeStory,
+                   !isPhoneSourceSelected
                 {
                     if selection == .librarySlimming || selection == .contextualTagFeed {
                         libraryGridPresentationToolbarItems
@@ -13570,6 +13575,11 @@ struct LibraryWorkspaceView: View {
         }
     }
 
+    private var isPhoneSourceSelected: Bool {
+        if case .phoneSource = selection { return true }
+        return false
+    }
+
     @ViewBuilder
     private var keyboardEnabledContent: some View {
         if selection == .timeStory {
@@ -13600,6 +13610,9 @@ struct LibraryWorkspaceView: View {
         } else if selection == .librarySlimming {
             content
                 .navigationTitle("图库瘦身")
+        } else if case .phoneSource = selection {
+            content
+                .navigationTitle("iPhone 分享目录")
         } else {
             libraryKeyboardEnabledContent
         }
@@ -14083,6 +14096,7 @@ struct LibraryWorkspaceView: View {
             }
         }
         .task { await model.start() }
+        .task { await refreshSharedPhoneProjections() }
         .onChange(of: searchText) { _, _ in
             model.noteUserInteractionForIdlePrewarm()
         }
@@ -14090,6 +14104,11 @@ struct LibraryWorkspaceView: View {
             model.noteUserInteractionForIdlePrewarm()
             if newValue == .timeStory {
                 layoutState.setInspectorPresented(false)
+                return
+            }
+            if case .phoneSource = newValue {
+                layoutState.setInspectorPresented(false)
+                Task { await refreshSharedPhoneProjections() }
                 return
             }
             let destination: LibraryBrowsingDestination = switch newValue {
@@ -14113,6 +14132,8 @@ struct LibraryWorkspaceView: View {
                 .trainingWorkspace
             case .librarySlimming:
                 .librarySlimming
+            case .phoneSource:
+                .all // handled above by the dedicated phone directory branch
             case let .source(sourceID):
                 .source(sourceID)
             case let .folder(scope):
@@ -14527,6 +14548,30 @@ struct LibraryWorkspaceView: View {
                 .contextMenu {
                     allSourceActionItems
                 }
+            }
+            Section("来自 iPhone") {
+                ForEach(sharedPhoneProjections) { projection in
+                    HStack {
+                        Label(
+                            sharedPhoneDeviceNames[projection.deviceID] ?? "未配对设备的历史目录",
+                            systemImage: "iphone.gen3"
+                        )
+                        Spacer()
+                        Text("\(projection.assets.count)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .tag(LibrarySidebarSelection.phoneSource(projection.deviceID))
+                }
+                if sharedPhoneProjections.isEmpty {
+                    Text(sharedPhoneLoadError ?? "尚未收到分享目录")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Button("刷新手机目录", systemImage: "arrow.clockwise") {
+                    Task { await refreshSharedPhoneProjections() }
+                }
+                .buttonStyle(.plain)
             }
             Section("标签") {
                 ForEach(model.tagGroupSections) { section in
@@ -15462,6 +15507,8 @@ struct LibraryWorkspaceView: View {
     private var content: some View {
         if selection == .timeStory {
             storyWorkspaceContent
+        } else if case let .phoneSource(deviceID) = selection {
+            phoneLibraryContent(deviceID: deviceID)
         } else if selection == .galleryOverview {
             GalleryOverviewView(model: model)
         } else if selection == .worldMap {
@@ -15498,6 +15545,38 @@ struct LibraryWorkspaceView: View {
             )
         } else {
             libraryContent
+        }
+    }
+
+    @ViewBuilder
+    private func phoneLibraryContent(deviceID: UUID) -> some View {
+        if let projection = sharedPhoneProjections.first(where: { $0.deviceID == deviceID }) {
+            RemotePhoneLibraryView(
+                projection: projection,
+                deviceName: sharedPhoneDeviceNames[deviceID]
+            )
+            .id(deviceID)
+        } else {
+            ContentUnavailableView(
+                sharedPhoneLoadError ?? "手机分享目录暂不可用",
+                systemImage: "iphone.gen3"
+            )
+        }
+    }
+
+    private func refreshSharedPhoneProjections() async {
+        do {
+            let projections = try await RemoteHostProcessHolder.sharedPhoneProjections()
+            let devices = await RemoteHostProcessHolder.pairedDevices()
+            sharedPhoneProjections = projections
+            sharedPhoneDeviceNames = Dictionary(uniqueKeysWithValues: devices.map {
+                ($0.deviceID, $0.deviceName)
+            })
+            sharedPhoneLoadError = nil
+        } catch {
+            sharedPhoneProjections = []
+            sharedPhoneDeviceNames = [:]
+            sharedPhoneLoadError = "读取手机分享目录失败：\(error.localizedDescription)"
         }
     }
 
@@ -16402,7 +16481,8 @@ struct LibraryWorkspaceView: View {
             detail: "显示或隐藏左侧边栏，包含来源、标签分组与导航。"
         )
 
-        if selection != .galleryOverview, selection != .worldMap {
+        if selection != .galleryOverview, selection != .worldMap,
+           !isPhoneSourceSelected {
             Button {
                 layoutState.toggleInspector()
             } label: {

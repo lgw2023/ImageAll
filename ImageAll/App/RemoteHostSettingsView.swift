@@ -257,17 +257,39 @@ final class RemoteHostSettingsModel: ObservableObject {
     }
 }
 
-private struct RemotePhoneProjectionView: View {
+struct RemotePhoneLibraryView: View {
     let projection: RemoteLocalLibrarySyncStore.Projection
     let deviceName: String?
+    @State private var searchText = ""
+
+    private var visibleAssets: [RemoteLocalLibrarySyncStore.ProjectedAsset] {
+        let sorted = projection.assets.sorted {
+            let left = $0.asset.createdAtMs ?? Int64.min
+            let right = $1.asset.createdAtMs ?? Int64.min
+            return left == right ? $0.id.uuidString < $1.id.uuidString : left > right
+        }
+        guard !searchText.isEmpty else { return sorted }
+        return sorted.filter { projected in
+            projected.asset.id.uuidString.localizedCaseInsensitiveContains(searchText)
+                || projected.asset.collections.contains {
+                    $0.collectionName.localizedCaseInsensitiveContains(searchText)
+                }
+                || projected.asset.tagDecisions.contains {
+                    $0.tagName.localizedCaseInsensitiveContains(searchText)
+                }
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(deviceName ?? "已撤销或离线的 iPhone")
+                    Text(deviceName ?? "未配对设备的历史目录")
                         .font(.title3.weight(.semibold))
                     Text("手机分享目录 · \(projection.assets.count) 项 · 快照 \(projection.snapshotSequence)")
+                        .foregroundStyle(.secondary)
+                    Text("上次接收：\(receivedTime)")
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -275,7 +297,16 @@ private struct RemotePhoneProjectionView: View {
             Text("仅显示上次提交的目录与整理信息。原件仍在 iPhone，尚未归档到 Mac。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-            List(projection.assets) { projected in
+            TextField("搜索媒体 ID、集合或标签", text: $searchText)
+                .textFieldStyle(.roundedBorder)
+            if visibleAssets.isEmpty {
+                ContentUnavailableView(
+                    searchText.isEmpty ? "分享目录暂无可见记录" : "没有匹配的项目",
+                    systemImage: "photo.on.rectangle.angled"
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List(visibleAssets) { projected in
                 VStack(alignment: .leading, spacing: 5) {
                     HStack {
                         Image(systemName: projected.asset.mediaKind == .video ? "video" : "photo")
@@ -295,6 +326,11 @@ private struct RemotePhoneProjectionView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    if let createdAtMs = projected.asset.createdAtMs {
+                        Text("拍摄时间：\(Date(timeIntervalSince1970: TimeInterval(createdAtMs) / 1_000).formatted(date: .abbreviated, time: .shortened))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     Text("系统收藏观测：\(projected.asset.observedFavorite ? "是" : "否") · ImageAll 收藏目标：\(favoriteTarget(projected.asset.favoriteTarget))")
                         .font(.caption)
                     if !projected.asset.collections.isEmpty {
@@ -307,15 +343,22 @@ private struct RemotePhoneProjectionView: View {
                     }
                 }
                 .padding(.vertical, 5)
+                }
             }
         }
         .padding(20)
-        .frame(minWidth: 720, minHeight: 500)
+        .frame(minWidth: 650, minHeight: 450)
     }
 
     private func favoriteTarget(_ target: Bool?) -> String {
         guard let target else { return "未指定" }
         return target ? "收藏" : "取消收藏"
+    }
+
+    private var receivedTime: String {
+        guard let milliseconds = projection.acceptedAtMs else { return "时间未知" }
+        return Date(timeIntervalSince1970: TimeInterval(milliseconds) / 1_000)
+            .formatted(date: .abbreviated, time: .shortened)
     }
 
     private func decisionName(_ decision: RemoteLocalLibraryDecision) -> String {
@@ -357,7 +400,7 @@ struct RemoteHostSettingsView: View {
         .animation(.easeInOut(duration: 0.2), value: model.statusMessage)
         .task { await model.refreshUntilStartupSettles() }
         .sheet(item: $selectedPhoneProjection) { projection in
-            RemotePhoneProjectionView(
+            RemotePhoneLibraryView(
                 projection: projection,
                 deviceName: model.devices.first(where: { $0.deviceID == projection.deviceID })?.deviceName
             )
