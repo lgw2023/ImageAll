@@ -265,6 +265,19 @@ final class PhoneArchiveImportTests: XCTestCase {
         XCTAssertEqual(listed.tagCount, 1)
         XCTAssertEqual(listed.collectionCount, 1)
         XCTAssertEqual(listed.appleAlbumCount, 1)
+        try fixture.database.pool.read { db in
+            XCTAssertEqual(try String.fetchOne(
+                db, sql: "SELECT source_local_identifier FROM media_item WHERE id = ?",
+                arguments: [mediaID.uuidString.lowercased()]
+            ), "phone-local-id")
+            XCTAssertEqual(try String.fetchOne(
+                db, sql: "SELECT storage_kind FROM media_replica WHERE media_id = ?",
+                arguments: [mediaID.uuidString.lowercased()]
+            ), "macArchive")
+            XCTAssertEqual(try Int.fetchOne(
+                db, sql: "SELECT COUNT(*) FROM media_asset_binding"
+            ), 0)
+        }
         let sourceLink = try XCTUnwrap(importer.sourceLinks(
             sourceInstallID: header.sourceDeviceID, sourceEpoch: header.sourceEpoch
         )[mediaID])
@@ -372,6 +385,9 @@ final class PhoneArchiveImportTests: XCTestCase {
         XCTAssertEqual(try fixture.database.pool.read { db in
             try String.fetchOne(db, sql: "SELECT state FROM migration_import")
         }, "prepared")
+        XCTAssertEqual(try fixture.database.pool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM media_replica")
+        }, 0)
         XCTAssertTrue(try importer.sourceLinks(
             sourceInstallID: header.sourceDeviceID, sourceEpoch: header.sourceEpoch
         ).isEmpty)
@@ -400,6 +416,27 @@ final class PhoneArchiveImportTests: XCTestCase {
         XCTAssertThrowsError(try importer.verifiedGalleryOriginalURLs(
             migrationID: header.migrationID, archiveRoot: receipt.archiveURL
         ))
+    }
+
+    func testAuditRejectsMissingMediaReplicaBinding() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let item = fixture.item(resource: try fixture.resource(
+            "original", bytes: Data("replica-binding".utf8)
+        ))
+        let header = fixture.header(count: 1)
+        try fixture.write(header: header, items: [item])
+        let importer = VerifiedPhoneArchiveImporter(database: fixture.database)
+        let receipt = try importer.importArchive(from: fixture.incoming, to: fixture.target)
+        try fixture.database.pool.write { db in
+            try db.execute(
+                sql: "DELETE FROM media_replica WHERE media_id = ?",
+                arguments: [item.mediaID.uuidString.lowercased()]
+            )
+        }
+        XCTAssertThrowsError(try importer.auditImportedArchive(
+            migrationID: header.migrationID, archiveRoot: receipt.archiveURL
+        )) { XCTAssertEqual($0 as? PhoneArchiveImportError, .catalogDiverged) }
     }
 
     func testFactSnapshotReconcilesExactBatchAndRejectsStaleOrChangedReplay() throws {
@@ -652,6 +689,70 @@ final class PhoneArchiveImportTests: XCTestCase {
         XCTAssertEqual(try fixture.database.pool.read { db in
             try Int.fetchOne(db, sql: "SELECT count(*) FROM migration_import_item")
         }, 1)
+    }
+
+    func testDifferentPhoneInstallCannotClaimExistingGlobalMediaID() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let item = fixture.item(resource: try fixture.resource(
+            "original", bytes: Data("same-bytes-do-not-merge-identity".utf8)
+        ))
+        let firstHeader = fixture.header(count: 1)
+        try fixture.write(header: firstHeader, items: [item])
+        let importer = VerifiedPhoneArchiveImporter(database: fixture.database)
+        _ = try importer.importArchive(from: fixture.incoming, to: fixture.target)
+
+        let second = fixture.root.appendingPathComponent("other-install", isDirectory: true)
+        try FileManager.default.copyItem(at: fixture.incoming, to: second)
+        try FileManager.default.removeItem(
+            at: second.appendingPathComponent(ImageAllMigrationArchive.manifestFilename)
+        )
+        let otherHeader = ImageAllMigrationHeader(
+            migrationID: UUID(), sourceDeviceID: UUID(), sourceEpoch: UUID(),
+            scopeRevision: firstHeader.scopeRevision,
+            inventoryWatermark: firstHeader.inventoryWatermark,
+            declaredItemCount: 1
+        )
+        try ImageAllMigrationArchive.write(header: otherHeader, items: [item], to: second)
+        XCTAssertThrowsError(try importer.importArchive(from: second, to: fixture.target)) {
+            XCTAssertEqual($0 as? PhoneArchiveImportError, .migrationIdentityConflict)
+        }
+        try fixture.database.pool.read { db in
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM media_item"), 1)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM media_replica"), 1)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM migration_import_item"), 1)
+            XCTAssertEqual(try String.fetchOne(
+                db, sql: "SELECT state FROM migration_import WHERE id = ?",
+                arguments: [otherHeader.migrationID.uuidString.lowercased()]
+            ), "prepared")
+        }
+    }
+
+    func testByteIdenticalPhoneItemsKeepSeparateMediaIdentity() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let bytes = Data("identical-bytes-distinct-user-items".utf8)
+        let first = fixture.item(resource: try fixture.resource("original", bytes: bytes))
+        let second = ImageAllMigrationItem(
+            mediaID: UUID(), sourceLocalIdentifier: "phone-second",
+            mediaKind: .image, createdAtMs: nil,
+            favoriteTarget: nil, observedFavorite: false, factRevision: 0,
+            tagDecisions: [], collections: [],
+            resources: [try fixture.resource("original", bytes: bytes)]
+        )
+        let header = fixture.header(count: 2)
+        try fixture.write(header: header, items: [first, second])
+        let importer = VerifiedPhoneArchiveImporter(database: fixture.database)
+        let receipt = try importer.importArchive(from: fixture.incoming, to: fixture.target)
+        XCTAssertEqual(receipt.itemCount, 2)
+        try fixture.database.pool.read { db in
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM media_item"), 2)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM media_replica"), 2)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM media_asset_binding"), 0)
+        }
+        XCTAssertEqual(try importer.auditImportedArchive(
+            migrationID: header.migrationID, archiveRoot: receipt.archiveURL
+        ).itemCount, 2)
     }
 
     private final class Fixture {

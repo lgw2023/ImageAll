@@ -477,6 +477,24 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                           rowRevision == (latest?.factWatermark ?? item.factRevision) else {
                         throw PhoneArchiveImportError.catalogDiverged
                     }
+                    guard let identity = try Row.fetchOne(db, sql: """
+                        SELECT mi.source_install_id, mi.source_epoch,
+                               mi.source_local_identifier, mi.media_kind,
+                               r.storage_kind, r.source_install_id AS replica_install_id,
+                               r.source_epoch AS replica_epoch
+                        FROM media_item mi
+                        JOIN media_replica r ON r.media_id = mi.id
+                        WHERE mi.id = ? AND r.migration_id = ?
+                        """, arguments: [mediaKey, migrationKey]),
+                          (identity["source_install_id"] as String) == deviceKey,
+                          (identity["source_epoch"] as String) == epochKey,
+                          (identity["source_local_identifier"] as String) == rowIdentifier,
+                          (identity["media_kind"] as String) == rowKind,
+                          (identity["storage_kind"] as String) == "macArchive",
+                          (identity["replica_install_id"] as String) == deviceKey,
+                          (identity["replica_epoch"] as String) == epochKey else {
+                        throw PhoneArchiveImportError.catalogDiverged
+                    }
                     try auditResources(
                         item.resources, db: db, device: deviceKey,
                         epoch: epochKey, media: mediaKey
@@ -500,8 +518,13 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                 db, sql: "SELECT COUNT(*) FROM migration_import_item WHERE migration_id = ?",
                 arguments: [migrationKey]
             ) ?? 0
+            let catalogReplicas = try Int.fetchOne(
+                db, sql: "SELECT COUNT(*) FROM media_replica WHERE migration_id = ?",
+                arguments: [migrationKey]
+            ) ?? 0
             guard seen.count == verification.itemCount,
-                  catalogItems == verification.itemCount else {
+                  catalogItems == verification.itemCount,
+                  catalogReplicas == verification.itemCount else {
                 throw PhoneArchiveImportError.catalogDiverged
             }
             return PhoneArchiveIntegrityReport(
@@ -896,6 +919,16 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                        i.source_local_identifier, i.media_kind
                 FROM migration_import_item i
                 JOIN migration_import m ON m.id = i.migration_id
+                JOIN media_item mi ON mi.id = i.media_id
+                    AND mi.source_install_id = i.source_device_id
+                    AND mi.source_epoch = i.source_epoch
+                    AND mi.source_local_identifier = i.source_local_identifier
+                    AND mi.media_kind = i.media_kind
+                JOIN media_replica r ON r.media_id = mi.id
+                    AND r.migration_id = i.migration_id
+                    AND r.source_install_id = i.source_device_id
+                    AND r.source_epoch = i.source_epoch
+                    AND r.storage_kind = 'macArchive'
                 WHERE i.source_device_id = ? AND i.source_epoch = ?
                   AND m.state = 'catalogCommitted'
                 ORDER BY i.media_id
@@ -1314,6 +1347,31 @@ struct VerifiedPhoneArchiveImporter: Sendable {
         } catch let error as DatabaseError where error.resultCode == .SQLITE_CONSTRAINT {
             // A second archive for the same source identity needs explicit
             // revision reconciliation, even when bytes happen to match.
+            throw PhoneArchiveImportError.migrationIdentityConflict
+        }
+        do {
+            try db.execute(sql: """
+                INSERT INTO media_item (
+                    id, source_install_id, source_epoch,
+                    source_local_identifier, media_kind
+                ) VALUES (?, ?, ?, ?, ?)
+                """, arguments: [
+                    media, device, epoch, item.sourceLocalIdentifier,
+                    item.mediaKind.rawValue,
+                ])
+            try db.execute(sql: """
+                INSERT INTO media_replica (
+                    id, media_id, storage_kind, migration_id,
+                    source_install_id, source_epoch, created_at_ms
+                ) VALUES (?, ?, 'macArchive', ?, ?, ?, ?)
+                """, arguments: [
+                    UUID().uuidString.lowercased(), media,
+                    header.migrationID.uuidString.lowercased(), device, epoch,
+                    Int64(Date().timeIntervalSince1970 * 1_000),
+                ])
+        } catch let error as DatabaseError where error.resultCode == .SQLITE_CONSTRAINT {
+            // A global media ID or origin locator may not silently become a
+            // second logical item or point at a different storage instance.
             throw PhoneArchiveImportError.migrationIdentityConflict
         }
         for resource in item.resources {

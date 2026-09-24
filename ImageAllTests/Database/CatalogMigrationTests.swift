@@ -3,6 +3,74 @@ import XCTest
 @testable import ImageAll
 
 final class CatalogMigrationTests: XCTestCase {
+    func testV045BackfillsCommittedPhoneReplicaWithoutBindingAnExistingAsset() throws {
+        let url = try makeTempDatabaseURL()
+        var configuration = Configuration()
+        configuration.prepareDatabase { db in
+            try db.execute(sql: "PRAGMA foreign_keys = ON")
+        }
+        let pool = try DatabasePool(path: url.path, configuration: configuration)
+        try CatalogDatabase.makeMigrator().migrate(
+            pool, upTo: CatalogMigrationID.v044AddPhoneArchiveValidation
+        )
+        let migration = UUID().uuidString.lowercased()
+        let pending = UUID().uuidString.lowercased()
+        let install = UUID().uuidString.lowercased()
+        let epoch = UUID().uuidString.lowercased()
+        let media = UUID().uuidString.lowercased()
+        let pendingMedia = UUID().uuidString.lowercased()
+        try pool.write { db in
+            for (id, state) in [(migration, "catalogCommitted"), (pending, "prepared")] {
+                try db.execute(sql: """
+                    INSERT INTO migration_import (
+                        id, source_device_id, source_epoch, scope_revision,
+                        inventory_watermark, manifest_sha256, target_parent_path,
+                        archive_path, item_count, resource_count, verified_bytes,
+                        state, created_at_ms, updated_at_ms
+                    ) VALUES (?, ?, ?, 1, 7, ?, '/synthetic', ?,
+                              1, 1, 10, ?, 1, 2)
+                    """, arguments: [
+                        id, install, epoch, String(repeating: "a", count: 64),
+                        "/synthetic/\(id)", state,
+                    ])
+            }
+            for (id, itemID, locator) in [
+                (migration, media, "phone-committed"),
+                (pending, pendingMedia, "phone-pending"),
+            ] {
+                try db.execute(sql: """
+                    INSERT INTO migration_import_item (
+                        source_device_id, source_epoch, media_id, migration_id,
+                        source_local_identifier, media_kind, created_at_ms,
+                        observed_favorite, favorite_target, fact_revision
+                    ) VALUES (?, ?, ?, ?, ?, 'image', NULL, 0, NULL, 0)
+                    """, arguments: [install, epoch, itemID, id, locator])
+            }
+        }
+        let database = CatalogDatabase(pool: pool)
+        try database.migrate()
+        try database.migrate()
+        try pool.read { db in
+            XCTAssertEqual(try String.fetchOne(
+                db, sql: "SELECT source_local_identifier FROM media_item WHERE id = ?",
+                arguments: [media]
+            ), "phone-committed")
+            XCTAssertEqual(try String.fetchOne(
+                db, sql: "SELECT migration_id FROM media_replica WHERE media_id = ?",
+                arguments: [media]
+            ), migration)
+            XCTAssertEqual(try Int.fetchOne(
+                db, sql: "SELECT COUNT(*) FROM media_item"
+            ), 1)
+            XCTAssertEqual(try Int.fetchOne(
+                db, sql: "SELECT COUNT(*) FROM media_replica"
+            ), 1)
+            XCTAssertEqual(try Int.fetchOne(
+                db, sql: "SELECT COUNT(*) FROM media_asset_binding"
+            ), 0)
+        }
+    }
+
     func testV043PreservesExistingPhoneImportWhileAddingAlbumCoverage() throws {
         let url = try makeTempDatabaseURL()
         let pool = try DatabasePool(path: url.path)
@@ -1380,6 +1448,13 @@ final class CatalogMigrationTests: XCTestCase {
     }
 
     private static func dropV035AndLaterTables(_ db: Database) throws {
+        try db.execute(sql: "DROP TABLE IF EXISTS media_asset_binding")
+        try db.execute(sql: "DROP TABLE IF EXISTS media_replica")
+        try db.execute(sql: "DROP TABLE IF EXISTS media_item")
+        try db.execute(
+            sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
+            arguments: [CatalogMigrationID.v045AddMediaIdentityReplica]
+        )
         try db.execute(sql: "DROP TABLE IF EXISTS migration_import_validation")
         try db.execute(
             sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
