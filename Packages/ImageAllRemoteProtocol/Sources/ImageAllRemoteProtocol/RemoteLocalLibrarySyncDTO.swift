@@ -213,6 +213,12 @@ public enum RemoteLocalLibraryTagDecisionDisposition: String, Codable, Sendable,
     case applied, unchanged, conflict
 }
 
+public enum RemoteLocalLibraryTagConflictReason: String, Codable, Sendable, Equatable {
+    case fieldVersion
+    case tagIdentity
+    case nameAlias
+}
+
 public struct RemoteLocalLibraryTagDecisionReceipt: Codable, Sendable, Equatable {
     public let hostID: UUID
     public let deviceID: UUID
@@ -221,11 +227,14 @@ public struct RemoteLocalLibraryTagDecisionReceipt: Codable, Sendable, Equatable
     public let fieldRevision: Int64
     public let currentDecision: RemoteLocalLibraryDecision?
     public let replayed: Bool
+    /// Absent on older Hosts; a client must leave that conflict unresolved.
+    public let conflictReason: RemoteLocalLibraryTagConflictReason?
 
     public init(
         hostID: UUID, deviceID: UUID, operationID: UUID,
         disposition: RemoteLocalLibraryTagDecisionDisposition,
-        fieldRevision: Int64, currentDecision: RemoteLocalLibraryDecision?, replayed: Bool
+        fieldRevision: Int64, currentDecision: RemoteLocalLibraryDecision?, replayed: Bool,
+        conflictReason: RemoteLocalLibraryTagConflictReason? = nil
     ) {
         self.hostID = hostID
         self.deviceID = deviceID
@@ -234,5 +243,6 @@ public struct RemoteLocalLibraryTagDecisionReceipt: Codable, Sendable, Equatable
         self.fieldRevision = fieldRevision
         self.currentDecision = currentDecision
         self.replayed = replayed
+        self.conflictReason = conflictReason
     }
 }

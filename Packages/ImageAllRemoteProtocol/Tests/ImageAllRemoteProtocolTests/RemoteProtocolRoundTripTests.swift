@@ -3,6 +3,31 @@ import ImageAllRemoteProtocol
 import XCTest
 
 final class RemoteProtocolRoundTripTests: XCTestCase {
+    func testSharedTagConflictReasonRoundTripAndLegacyAbsence() throws {
+        let receipt = RemoteLocalLibraryTagDecisionReceipt(
+            hostID: UUID(), deviceID: UUID(), operationID: UUID(),
+            disposition: .conflict, fieldRevision: 4,
+            currentDecision: .rejected, replayed: false,
+            conflictReason: .fieldVersion
+        )
+        XCTAssertEqual(
+            try JSONDecoder().decode(
+                RemoteLocalLibraryTagDecisionReceipt.self,
+                from: JSONEncoder().encode(receipt)
+            ), receipt
+        )
+        let legacy = RemoteLocalLibraryTagDecisionReceipt(
+            hostID: receipt.hostID, deviceID: receipt.deviceID,
+            operationID: receipt.operationID, disposition: .conflict,
+            fieldRevision: 4, currentDecision: .rejected, replayed: false
+        )
+        let decodedLegacy = try JSONDecoder().decode(
+            RemoteLocalLibraryTagDecisionReceipt.self,
+            from: JSONEncoder().encode(legacy)
+        )
+        XCTAssertNil(decodedLegacy.conflictReason)
+    }
+
     func testLocalLibrarySnapshotKeepsExplicitGrantsSeparateFromVisiblePayload() throws {
         let visible = UUID()
         let temporarilyHidden = UUID()

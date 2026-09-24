@@ -75,6 +75,7 @@ final class RemoteLibraryClientTests: XCTestCase {
         let receipt = try await client.submitLocalLibraryTagDecision(request)
         XCTAssertEqual(receipt.operationID, request.operationID)
         XCTAssertEqual(receipt.fieldRevision, 4)
+        XCTAssertNil(receipt.conflictReason)
     }
 
     func testPostsExplicitLocalLibrarySnapshotWithBearerToken() async throws {

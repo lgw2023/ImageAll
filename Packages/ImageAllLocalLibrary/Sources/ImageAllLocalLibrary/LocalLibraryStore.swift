@@ -13,6 +13,7 @@ public enum LocalLibraryError: Error, Equatable {
     case syncEarlierOperationPending
     case unsupportedSharedOperation
     case syncRemoteTagMismatch
+    case syncConflictDetailsUnavailable
 }
 
 public enum LocalDecision: String, Codable, Sendable {
@@ -85,6 +86,10 @@ public struct LocalSharedPendingOperation: Identifiable, Sendable {
     public let scopeRevision: Int64
     public let preparedBaseRevision: Int64?
     public let isConflicted: Bool
+    public let conflictRevision: Int64?
+    public let conflictDecision: LocalDecision?
+    public let conflictReason: LocalSharedTagConflictReason?
+    public let localCurrentDecision: LocalDecision?
 }
 
 public struct LocalPreparedSharedTagOperation: Sendable {
@@ -101,6 +106,14 @@ public struct LocalPreparedSharedTagOperation: Sendable {
 
 public enum LocalSharedTagDisposition: Sendable {
     case applied, unchanged, conflict
+}
+
+public enum LocalSharedTagConflictReason: String, Sendable {
+    case fieldVersion, tagIdentity, nameAlias
+}
+
+public enum LocalSharedTagConflictResolution: Sendable {
+    case acceptMac, keepPhone
 }
 
 public struct LocalSharedTagChange: Sendable {
@@ -249,6 +262,10 @@ public actor LocalLibraryStore {
                   base_revision INTEGER NOT NULL, scope_revision INTEGER NOT NULL,
                   state TEXT NOT NULL, conflict_revision INTEGER,
                   conflict_value TEXT
+                );
+                CREATE TABLE IF NOT EXISTS shared_conflict_details (
+                  operation_id TEXT PRIMARY KEY REFERENCES shared_delivery(operation_id) ON DELETE CASCADE,
+                  reason TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS shared_snapshot_delivery (
                   id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL
@@ -622,10 +639,13 @@ public actor LocalLibraryStore {
     public func pendingSharedOperations() throws -> [LocalSharedPendingOperation] {
         try rows("""
             SELECT o.sequence,s.operation_id,s.asset_id,s.field,s.value,s.reference_name,
-                   s.scope_revision,d.base_revision,d.state
+                   s.scope_revision,d.base_revision,d.state,d.conflict_revision,
+                   d.conflict_value,c.reason,t.decision
             FROM shared_outbox s JOIN outbox o ON o.operation_id=s.operation_id
             JOIN shared_assets a ON a.asset_id=s.asset_id
             LEFT JOIN shared_delivery d ON d.operation_id=s.operation_id
+            LEFT JOIN shared_conflict_details c ON c.operation_id=s.operation_id
+            LEFT JOIN tag_decisions t ON t.asset_id=s.asset_id AND s.field='tag.' || t.tag_id
             ORDER BY o.sequence
             """).map { row in
                 guard let sequence = Int64(row[0] ?? ""),
@@ -640,7 +660,11 @@ public actor LocalLibraryStore {
                     referenceName: row[5].flatMap { $0.isEmpty ? nil : $0 },
                     scopeRevision: scopeRevision,
                     preparedBaseRevision: row[7].flatMap(Int64.init),
-                    isConflicted: row[8] == "conflict"
+                    isConflicted: row[8] == "conflict",
+                    conflictRevision: row[9].flatMap(Int64.init),
+                    conflictDecision: row[10].flatMap(LocalDecision.init(rawValue:)),
+                    conflictReason: row[11].flatMap(LocalSharedTagConflictReason.init(rawValue:)),
+                    localCurrentDecision: row[12].flatMap(LocalDecision.init(rawValue:))
                 )
             }
     }
@@ -764,7 +788,8 @@ public actor LocalLibraryStore {
     public func recordSharedTagResult(
         operationID: UUID, hostID: UUID, deviceID: UUID,
         disposition: LocalSharedTagDisposition,
-        fieldRevision: Int64, currentDecision: LocalDecision?
+        fieldRevision: Int64, currentDecision: LocalDecision?,
+        conflictReason: LocalSharedTagConflictReason? = nil
     ) throws -> Bool {
         guard fieldRevision >= 0 else { throw LocalLibraryError.database("invalid shared revision") }
         guard let operation = try pendingSharedOperations().first(where: { $0.id == operationID })
@@ -801,9 +826,97 @@ public actor LocalLibraryStore {
                         String(fieldRevision), currentDecision?.rawValue ?? "",
                         operationID.uuidString
                     ])
+                if let conflictReason {
+                    try execute("""
+                        INSERT INTO shared_conflict_details(operation_id,reason) VALUES(?,?)
+                        ON CONFLICT(operation_id) DO UPDATE SET reason=excluded.reason
+                        """, [operationID.uuidString, conflictReason.rawValue])
+                }
             }
         }
         return true
+    }
+
+    /// An explicit owner choice consumes the conflicted wire operation. Keeping the phone
+    /// creates a new operation ID and sequence at the observed Mac revision; old audit rows stay.
+    @discardableResult
+    public func resolveSharedTagConflict(
+        operationID: UUID, resolution: LocalSharedTagConflictResolution
+    ) throws -> UUID? {
+        guard let conflict = try pendingSharedOperations().first(where: { $0.id == operationID }),
+              conflict.isConflicted,
+              conflict.conflictReason == .fieldVersion,
+              let revision = conflict.conflictRevision,
+              let macDecision = conflict.conflictDecision,
+              conflict.field.hasPrefix("tag."),
+              let tagID = UUID(uuidString: String(conflict.field.dropFirst(4))),
+              let tagName = try scalar("SELECT name FROM tags WHERE id=?", [tagID.uuidString]),
+              let localRaw = try scalar("""
+                  SELECT decision FROM tag_decisions WHERE asset_id=? AND tag_id=?
+                  """, [conflict.assetID.uuidString, tagID.uuidString]),
+              let localDecision = LocalDecision(rawValue: localRaw),
+              conflict.scopeRevision == Int64(try requiredIdentity("share_scope_revision")),
+              conflict.scopeRevision == Int64(try requiredIdentity("sync_ack_scope_revision")) else {
+            throw LocalLibraryError.syncConflictDetailsUnavailable
+        }
+        let hostID = try requiredIdentity("sync_host_id")
+        let deviceID = try requiredIdentity("sync_device_id")
+        let rowsForField = try rows("""
+            SELECT s.operation_id,o.sequence,d.state,d.host_id,d.device_id
+            FROM shared_outbox s JOIN outbox o ON o.operation_id=s.operation_id
+            LEFT JOIN shared_delivery d ON d.operation_id=s.operation_id
+            WHERE s.asset_id=? AND s.field=? ORDER BY o.sequence
+            """, [conflict.assetID.uuidString, conflict.field])
+        guard let first = rowsForField.first,
+              first[0] == operationID.uuidString,
+              first[3] == hostID, first[4] == deviceID,
+              rowsForField.dropFirst().allSatisfy({ $0[2] == nil }) else {
+            throw LocalLibraryError.syncEarlierOperationPending
+        }
+        let baseline = Int64(try scalar("""
+            SELECT revision FROM shared_field_versions WHERE asset_id=? AND field=?
+            """, [conflict.assetID.uuidString, conflict.field]) ?? "0") ?? 0
+        guard baseline <= revision else { throw LocalLibraryError.syncIdentityChanged }
+        var newOperationID: UUID?
+        try transaction {
+            for row in rowsForField {
+                try execute("DELETE FROM shared_outbox WHERE operation_id=?", [row[0] ?? ""])
+            }
+            try execute("""
+                INSERT INTO shared_field_versions(asset_id,field,revision) VALUES(?,?,?)
+                ON CONFLICT(asset_id,field) DO UPDATE SET
+                  revision=MAX(revision,excluded.revision)
+                """, [conflict.assetID.uuidString, conflict.field, String(revision)])
+            switch resolution {
+            case .acceptMac:
+                if localDecision != macDecision {
+                    try execute("""
+                        UPDATE tag_decisions SET decision=?,revision=revision+1
+                        WHERE asset_id=? AND tag_id=?
+                        """, [
+                            macDecision.rawValue, conflict.assetID.uuidString,
+                            tagID.uuidString
+                        ])
+                    _ = try enqueue(
+                        conflict.assetID, field: conflict.field,
+                        value: macDecision.rawValue
+                    )
+                }
+            case .keepPhone:
+                if localDecision != macDecision {
+                    let id = try enqueue(
+                        conflict.assetID, field: conflict.field,
+                        value: localDecision.rawValue
+                    )
+                    try enqueueShared(
+                        id, assetID: conflict.assetID, field: conflict.field,
+                        value: localDecision.rawValue, referenceName: tagName
+                    )
+                    newOperationID = id
+                }
+            }
+        }
+        return newOperationID
     }
 
     public func sharedTagChangeCursor() throws -> Int64 {
@@ -873,6 +986,11 @@ public actor LocalLibraryStore {
                                 String(baseline), String(scopeRevision),
                                 String(change.fieldRevision), change.decision.rawValue
                             ])
+                        try execute("""
+                            INSERT INTO shared_conflict_details(operation_id,reason)
+                            VALUES(?,'fieldVersion')
+                            ON CONFLICT(operation_id) DO UPDATE SET reason=excluded.reason
+                            """, [pending[0] ?? ""])
                         conflicts += 1
                     }
                 } else {

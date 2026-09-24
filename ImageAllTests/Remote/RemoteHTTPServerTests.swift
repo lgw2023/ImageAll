@@ -177,6 +177,7 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(conflict.disposition, .conflict)
         XCTAssertEqual(conflict.fieldRevision, 2)
         XCTAssertEqual(conflict.currentDecision, .rejected)
+        XCTAssertEqual(conflict.conflictReason, .fieldVersion)
         let resolved = operation(sequence: 4, base: 2, decision: .accepted)
         let resolution = try await store.submitTagDecision(resolved, authenticatedDeviceID: deviceID)
         XCTAssertEqual(resolution.disposition, .applied)
@@ -189,6 +190,12 @@ final class RemoteHTTPServerTests: XCTestCase {
             resolved, authenticatedDeviceID: deviceID
         )
         XCTAssertTrue(persistedReplay.replayed)
+        let conflictReplay = try await reopened.submitTagDecision(
+            operation(id: conflict.operationID, sequence: 3, base: 1, decision: .accepted),
+            authenticatedDeviceID: deviceID
+        )
+        XCTAssertEqual(conflictReplay.conflictReason, .fieldVersion)
+        XCTAssertTrue(conflictReplay.replayed)
         do {
             _ = try await reopened.submitTagDecision(
                 operation(sequence: 3, base: 3, decision: .rejected),
@@ -215,6 +222,51 @@ final class RemoteHTTPServerTests: XCTestCase {
         }
         let afterPermissionContraction = await reopened.projection(deviceID: deviceID)
         XCTAssertEqual(afterPermissionContraction?.sharedTagFacts.first?.revision, 3)
+    }
+
+    func testSharedTagIdentityConflictsHaveDistinctReasons() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let hostID = UUID()
+        let deviceID = UUID()
+        let installID = UUID()
+        let epoch = UUID()
+        let assetID = UUID()
+        let tagID = UUID()
+        let store = try RemoteLocalLibrarySyncStore(
+            hostID: hostID, storageURL: root.appendingPathComponent("sync.json")
+        )
+        _ = try await store.submit(.init(
+            hostID: hostID, installID: installID, sourceEpoch: epoch,
+            scopeRevision: 1, snapshotSequence: 1, selectedAssetIDs: [assetID],
+            assets: [.init(
+                id: assetID, localIdentifier: "phone-local", mediaKind: .image,
+                createdAtMs: nil, observedFavorite: false, favoriteTarget: nil,
+                tagDecisions: [.init(tagID: tagID, tagName: "family", decision: .accepted)],
+                collections: []
+            )]
+        ), authenticatedDeviceID: deviceID)
+        let mismatchedName = RemoteLocalLibraryTagDecisionRequest(
+            hostID: hostID, installID: installID, sourceEpoch: epoch,
+            scopeRevision: 1, operationID: UUID(), deviceSequence: 1,
+            assetID: assetID, tagID: tagID, tagName: "renamed",
+            decision: .rejected, baseRevision: 1
+        )
+        let identityConflict = try await store.submitTagDecision(
+            mismatchedName, authenticatedDeviceID: deviceID
+        )
+        XCTAssertEqual(identityConflict.conflictReason, .tagIdentity)
+        let duplicateName = RemoteLocalLibraryTagDecisionRequest(
+            hostID: hostID, installID: installID, sourceEpoch: epoch,
+            scopeRevision: 1, operationID: UUID(), deviceSequence: 2,
+            assetID: assetID, tagID: UUID(), tagName: "family",
+            decision: .rejected, baseRevision: 0
+        )
+        let aliasConflict = try await store.submitTagDecision(
+            duplicateName, authenticatedDeviceID: deviceID
+        )
+        XCTAssertEqual(aliasConflict.conflictReason, .nameAlias)
+        XCTAssertNil(aliasConflict.currentDecision)
     }
 
     func testMacSharedTagEditProducesScopedDurableChangeAndPhoneConflict() async throws {

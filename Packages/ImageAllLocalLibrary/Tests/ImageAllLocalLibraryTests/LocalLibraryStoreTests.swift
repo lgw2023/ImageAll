@@ -357,6 +357,7 @@ import Testing
     #expect(conflict.conflicts == 1)
     #expect(try await store.decisions(assetID: asset.id)[tagID] == .accepted)
     #expect(try await store.pendingSharedOperations().first?.isConflicted == true)
+    #expect(try await store.pendingSharedOperations().first?.conflictReason == .fieldVersion)
     #expect(try await store.sharedTagChangeCursor() == 2)
     do {
         _ = try await store.applySharedTagChanges(
@@ -370,5 +371,111 @@ import Testing
         Issue.record("a tag identity mismatch must not advance the cursor")
     } catch LocalLibraryError.syncRemoteTagMismatch {
         #expect(try await store.sharedTagChangeCursor() == 2)
+    }
+}
+
+@Test func explicitPhoneConflictChoiceCreatesNewOperationAtMacRevision() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("local.sqlite")
+    let store = try LocalLibraryStore(url: url)
+    try await store.observe([
+        LocalObservedAsset(localIdentifier: "shared", kind: "image", creationDate: nil, isFavorite: false)
+    ])
+    let asset = try #require(await store.assets(visibleIdentifiers: ["shared"]).first)
+    let tagID = try await store.createTag(name: "family")
+    let hostID = UUID()
+    let deviceID = UUID()
+    try await store.setShared(assetID: asset.id, shared: true)
+    try await store.setDecision(assetID: asset.id, tagID: tagID, decision: .accepted)
+    let snapshot = try await store.prepareSharedSnapshot(visibleIdentifiers: ["shared"])
+    try await store.acknowledgeSharedSnapshot(
+        snapshot, hostID: hostID, deviceID: deviceID, importedAssetIDs: [asset.id]
+    )
+    try await store.setDecision(assetID: asset.id, tagID: tagID, decision: .rejected)
+    let conflicted = try #require(await store.pendingSharedOperations().first)
+    _ = try await store.prepareSharedTagOperation(
+        id: conflicted.id, hostID: hostID, deviceID: deviceID
+    )
+    try await store.recordSharedTagResult(
+        operationID: conflicted.id, hostID: hostID, deviceID: deviceID,
+        disposition: .conflict, fieldRevision: 2,
+        currentDecision: .accepted, conflictReason: .fieldVersion
+    )
+    try await store.setDecision(assetID: asset.id, tagID: tagID, decision: .cleared)
+    let auditCount = try await store.pendingOperations().count
+    let reopened = try LocalLibraryStore(url: url)
+    let conflict = try #require(await reopened.pendingSharedOperations().first)
+    #expect(conflict.conflictDecision == .accepted)
+    #expect(conflict.conflictRevision == 2)
+    #expect(conflict.conflictReason == .fieldVersion)
+    #expect(conflict.localCurrentDecision == .cleared)
+    let replacementID = try #require(await reopened.resolveSharedTagConflict(
+        operationID: conflict.id, resolution: .keepPhone
+    ))
+    let pending = try await reopened.pendingSharedOperations()
+    #expect(pending.count == 1)
+    #expect(pending.first?.id == replacementID)
+    #expect(pending.first?.value == LocalDecision.cleared.rawValue)
+    #expect(try await reopened.pendingOperations().count == auditCount + 1)
+    let prepared = try #require(await reopened.prepareSharedTagOperation(
+        id: replacementID, hostID: hostID, deviceID: deviceID
+    ))
+    #expect(prepared.baseRevision == 2)
+    #expect(prepared.operation.sequence > conflict.sequence)
+}
+
+@Test func acceptingMacConflictUpdatesLocalFactButAliasConflictStaysPending() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try LocalLibraryStore(url: root.appendingPathComponent("local.sqlite"))
+    try await store.observe([
+        LocalObservedAsset(localIdentifier: "shared", kind: "image", creationDate: nil, isFavorite: false)
+    ])
+    let asset = try #require(await store.assets(visibleIdentifiers: ["shared"]).first)
+    let tagID = try await store.createTag(name: "family")
+    let hostID = UUID()
+    let deviceID = UUID()
+    try await store.setShared(assetID: asset.id, shared: true)
+    try await store.setDecision(assetID: asset.id, tagID: tagID, decision: .accepted)
+    let snapshot = try await store.prepareSharedSnapshot(visibleIdentifiers: ["shared"])
+    try await store.acknowledgeSharedSnapshot(
+        snapshot, hostID: hostID, deviceID: deviceID, importedAssetIDs: [asset.id]
+    )
+    try await store.setDecision(assetID: asset.id, tagID: tagID, decision: .rejected)
+    let first = try #require(await store.pendingSharedOperations().first)
+    _ = try await store.prepareSharedTagOperation(
+        id: first.id, hostID: hostID, deviceID: deviceID
+    )
+    try await store.recordSharedTagResult(
+        operationID: first.id, hostID: hostID, deviceID: deviceID,
+        disposition: .conflict, fieldRevision: 2,
+        currentDecision: .cleared, conflictReason: .fieldVersion
+    )
+    let auditCount = try await store.pendingOperations().count
+    _ = try await store.resolveSharedTagConflict(
+        operationID: first.id, resolution: .acceptMac
+    )
+    #expect(try await store.decisions(assetID: asset.id)[tagID] == .cleared)
+    #expect(try await store.pendingSharedOperations().isEmpty)
+    #expect(try await store.pendingOperations().count == auditCount + 1)
+    try await store.setDecision(assetID: asset.id, tagID: tagID, decision: .accepted)
+    let second = try #require(await store.pendingSharedOperations().first)
+    let prepared = try #require(await store.prepareSharedTagOperation(
+        id: second.id, hostID: hostID, deviceID: deviceID
+    ))
+    #expect(prepared.baseRevision == 2)
+    try await store.recordSharedTagResult(
+        operationID: second.id, hostID: hostID, deviceID: deviceID,
+        disposition: .conflict, fieldRevision: 2,
+        currentDecision: nil, conflictReason: .nameAlias
+    )
+    do {
+        _ = try await store.resolveSharedTagConflict(
+            operationID: second.id, resolution: .keepPhone
+        )
+        Issue.record("same-name different-ID tag must not be silently rebased")
+    } catch LocalLibraryError.syncConflictDetailsUnavailable {
+        #expect(try await store.pendingSharedOperations().first?.isConflicted == true)
     }
 }

@@ -231,7 +231,7 @@ actor RemoteLocalLibrarySyncStore {
                 hostID: saved.hostID, deviceID: saved.deviceID,
                 operationID: saved.operationID, disposition: saved.disposition,
                 fieldRevision: saved.fieldRevision, currentDecision: saved.currentDecision,
-                replayed: true
+                replayed: true, conflictReason: saved.conflictReason
             )
         }
         guard request.installID == previous.request.installID,
@@ -254,10 +254,12 @@ actor RemoteLocalLibrarySyncStore {
         let disposition: RemoteLocalLibraryTagDecisionDisposition
         let resultingRevision: Int64
         let resultingDecision: RemoteLocalLibraryDecision?
+        let conflictReason: RemoteLocalLibraryTagConflictReason?
         if let current, current.tagName != request.tagName {
             disposition = .conflict
             resultingRevision = revision
             resultingDecision = current.decision
+            conflictReason = .tagIdentity
         } else if facts.contains(where: {
             $0.tagID != request.tagID
                 && $0.tagName.localizedCaseInsensitiveCompare(request.tagName) == .orderedSame
@@ -266,14 +268,17 @@ actor RemoteLocalLibrarySyncStore {
             disposition = .conflict
             resultingRevision = revision
             resultingDecision = current?.decision
+            conflictReason = .nameAlias
         } else if current?.decision == request.decision {
             disposition = .unchanged
             resultingRevision = revision
             resultingDecision = current?.decision
+            conflictReason = nil
         } else if request.baseRevision != revision {
             disposition = .conflict
             resultingRevision = revision
             resultingDecision = current?.decision
+            conflictReason = .fieldVersion
         } else {
             guard revision < Int64.max else {
                 throw RemoteAPIError(code: .internalError, message: "shared field revision exhausted")
@@ -281,6 +286,7 @@ actor RemoteLocalLibrarySyncStore {
             disposition = .applied
             resultingRevision = revision + 1
             resultingDecision = request.decision
+            conflictReason = nil
             let fact = SharedTagFact(
                 assetID: request.assetID, tagID: request.tagID,
                 tagName: request.tagName, decision: request.decision,
@@ -292,7 +298,7 @@ actor RemoteLocalLibrarySyncStore {
             hostID: hostID, deviceID: authenticatedDeviceID,
             operationID: request.operationID, disposition: disposition,
             fieldRevision: resultingRevision, currentDecision: resultingDecision,
-            replayed: false
+            replayed: false, conflictReason: conflictReason
         )
         let operation = TagOperationRecord(
             request: request, payloadSHA256: digest, receipt: receipt
