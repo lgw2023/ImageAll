@@ -63,6 +63,39 @@ final class ImageAllMigrationArchiveTests: XCTestCase {
         XCTAssertThrowsError(try ImageAllMigrationArchive.verify(at: root))
     }
 
+    func testRejectsDuplicateSourceAlbumMembership() throws {
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = try makeItem(
+            root: root, resourceID: UUID(), bytes: Data("album-original".utf8)
+        )
+        let album = ImageAllMigrationAppleAlbumMembership(
+            albumLocalIdentifier: "album-1", albumTitle: "Travel",
+            folderPath: [.init(localIdentifier: "folder-1", title: "Trips")],
+            sourceOrdinal: 2
+        )
+        let item = ImageAllMigrationItem(
+            mediaID: original.mediaID,
+            sourceLocalIdentifier: original.sourceLocalIdentifier,
+            mediaKind: original.mediaKind, createdAtMs: original.createdAtMs,
+            favoriteTarget: original.favoriteTarget,
+            observedFavorite: original.observedFavorite,
+            factRevision: original.factRevision,
+            tagDecisions: original.tagDecisions, collections: original.collections,
+            resources: original.resources, appleAlbums: [album, album]
+        )
+        try ImageAllMigrationArchive.write(
+            header: .init(
+                migrationID: UUID(), sourceDeviceID: UUID(), sourceEpoch: UUID(),
+                scopeRevision: 1, inventoryWatermark: 9, declaredItemCount: 1,
+                appleAlbumCoverage: .selectedAssetsOnly
+            ), items: [item], to: root
+        )
+        XCTAssertThrowsError(try ImageAllMigrationArchive.verify(at: root)) { error in
+            XCTAssertEqual(error as? ImageAllMigrationArchiveError, .duplicateIdentity)
+        }
+    }
+
     func testDanglingFactsSymlinkDoesNotPassArchiveVerification() throws {
         let root = makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }

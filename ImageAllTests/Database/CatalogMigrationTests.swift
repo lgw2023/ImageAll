@@ -3,6 +3,41 @@ import XCTest
 @testable import ImageAll
 
 final class CatalogMigrationTests: XCTestCase {
+    func testV043PreservesExistingPhoneImportWhileAddingAlbumCoverage() throws {
+        let url = try makeTempDatabaseURL()
+        let pool = try DatabasePool(path: url.path)
+        try CatalogDatabase.makeMigrator().migrate(
+            pool, upTo: CatalogMigrationID.v042AddPhoneArchiveFactCheckpoint
+        )
+        let migrationID = UUID().uuidString.lowercased()
+        try pool.write { db in
+            try db.execute(sql: """
+                INSERT INTO migration_import (
+                    id, source_device_id, source_epoch, scope_revision,
+                    inventory_watermark, manifest_sha256, target_parent_path,
+                    archive_path, item_count, resource_count, verified_bytes,
+                    state, created_at_ms, updated_at_ms
+                ) VALUES (?, ?, ?, 1, 7, ?, '/synthetic', '/synthetic/archive',
+                          1, 1, 10, 'catalogCommitted', 1, 1)
+                """, arguments: [
+                    migrationID, UUID().uuidString.lowercased(),
+                    UUID().uuidString.lowercased(), String(repeating: "a", count: 64),
+                ])
+        }
+        let database = CatalogDatabase(pool: pool)
+        try database.migrate()
+        try database.migrate()
+        try pool.read { db in
+            let row = try XCTUnwrap(Row.fetchOne(
+                db, sql: "SELECT state, apple_album_coverage FROM migration_import WHERE id = ?",
+                arguments: [migrationID]
+            ))
+            XCTAssertEqual(row["state"] as String, "catalogCommitted")
+            XCTAssertNil(row["apple_album_coverage"] as String?)
+            XCTAssertTrue(try db.tableExists("migration_import_apple_album_member"))
+        }
+    }
+
     func testV040RetiresPDFDocumentsWithoutDeletingCatalogKnowledge() throws {
         let url = try makeTempDatabaseURL()
         var configuration = Configuration()
@@ -1344,6 +1379,11 @@ final class CatalogMigrationTests: XCTestCase {
     }
 
     private static func dropV035AndLaterTables(_ db: Database) throws {
+        try db.execute(sql: "DROP TABLE IF EXISTS migration_import_apple_album_member")
+        try db.execute(
+            sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
+            arguments: [CatalogMigrationID.v043AddPhoneArchiveAppleAlbums]
+        )
         try db.execute(
             sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
             arguments: [CatalogMigrationID.v042AddPhoneArchiveFactCheckpoint]

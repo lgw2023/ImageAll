@@ -110,3 +110,38 @@ enum V042AddPhoneArchiveFactCheckpointMigration {
         }
     }
 }
+
+/// Keep the source Photos album identity separate from ImageAll collections.
+/// These rows describe only members inside the selected migration scope.
+enum V043AddPhoneArchiveAppleAlbumsMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v043AddPhoneArchiveAppleAlbums) { db in
+            try db.execute(sql: """
+                ALTER TABLE migration_import ADD COLUMN apple_album_coverage
+                TEXT CHECK(apple_album_coverage IS NULL OR
+                           apple_album_coverage = 'selectedAssetsOnly')
+                """)
+            try db.execute(sql: """
+                CREATE TABLE migration_import_apple_album_member (
+                    migration_id TEXT NOT NULL REFERENCES migration_import(id) ON DELETE RESTRICT,
+                    source_device_id TEXT NOT NULL,
+                    source_epoch TEXT NOT NULL,
+                    media_id TEXT NOT NULL,
+                    album_local_identifier TEXT NOT NULL,
+                    album_title TEXT,
+                    folder_path_json TEXT NOT NULL,
+                    source_ordinal INTEGER NOT NULL CHECK(source_ordinal >= 0),
+                    PRIMARY KEY (migration_id, album_local_identifier, media_id),
+                    UNIQUE (migration_id, album_local_identifier, source_ordinal),
+                    FOREIGN KEY (source_device_id, source_epoch, media_id)
+                        REFERENCES migration_import_item(source_device_id, source_epoch, media_id)
+                        ON DELETE RESTRICT
+                ) STRICT
+                """)
+            try db.execute(sql: """
+                CREATE INDEX migration_import_apple_album_item_idx
+                ON migration_import_apple_album_member(migration_id, media_id)
+                """)
+        }
+    }
+}

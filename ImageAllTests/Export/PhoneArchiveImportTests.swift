@@ -14,14 +14,19 @@ final class PhoneArchiveImportTests: XCTestCase {
         let pair = try fixture.resource("pairedVideo", bytes: Data("paired-video".utf8))
         let tagID = UUID()
         let collectionID = UUID()
-        let header = fixture.header(count: 1)
+        let header = fixture.header(count: 1, appleAlbumCoverage: .selectedAssetsOnly)
         let item = ImageAllMigrationItem(
             mediaID: mediaID, sourceLocalIdentifier: "phone-local-id",
             mediaKind: .image, createdAtMs: 1_000,
             favoriteTarget: true, observedFavorite: false, factRevision: 7,
             tagDecisions: [.init(tagID: tagID, tagName: "旅途", decision: .rejected)],
             collections: [.init(collectionID: collectionID, collectionName: "相册", included: true)],
-            resources: [original, pair]
+            resources: [original, pair],
+            appleAlbums: [.init(
+                albumLocalIdentifier: "photos-album-1", albumTitle: "周末",
+                folderPath: [.init(localIdentifier: "photos-folder-1", title: "出游")],
+                sourceOrdinal: 4
+            )]
         )
         try fixture.write(header: header, items: [item])
         let importer = VerifiedPhoneArchiveImporter(database: fixture.database)
@@ -33,11 +38,13 @@ final class PhoneArchiveImportTests: XCTestCase {
         let batch = try XCTUnwrap(importer.importedBatches().first)
         XCTAssertEqual(batch.id, header.migrationID)
         XCTAssertEqual(batch.itemCount, 1)
+        XCTAssertEqual(batch.appleAlbumCoverage, .selectedAssetsOnly)
         let listed = try XCTUnwrap(importer.importedItems(migrationID: batch.id, offset: 0).first)
         XCTAssertEqual(listed.id, mediaID)
         XCTAssertEqual(listed.resourceCount, 2)
         XCTAssertEqual(listed.tagCount, 1)
         XCTAssertEqual(listed.collectionCount, 1)
+        XCTAssertEqual(listed.appleAlbumCount, 1)
         let opened = try importer.verifiedOriginalURL(
             migrationID: batch.id, mediaID: listed.id, archiveRoot: receipt.archiveURL
         )
@@ -52,6 +59,12 @@ final class PhoneArchiveImportTests: XCTestCase {
             XCTAssertEqual(try String.fetchOne(
                 db, sql: "SELECT collection_name FROM migration_import_collection"
             ), "相册")
+            XCTAssertEqual(try String.fetchOne(
+                db, sql: "SELECT album_title FROM migration_import_apple_album_member"
+            ), "周末")
+            XCTAssertEqual(try Int64.fetchOne(
+                db, sql: "SELECT source_ordinal FROM migration_import_apple_album_member"
+            ), 4)
             XCTAssertEqual(try Int.fetchOne(
                 db, sql: "SELECT favorite_target FROM migration_import_item"
             ), 1)
@@ -80,6 +93,12 @@ final class PhoneArchiveImportTests: XCTestCase {
         XCTAssertEqual(try cleanCatalog.pool.read { db in
             try String.fetchOne(db, sql: "SELECT decision FROM migration_import_tag_decision")
         }, "rejected")
+        XCTAssertEqual(try cleanCatalog.pool.read { db in
+            try String.fetchOne(db, sql: "SELECT folder_path_json FROM migration_import_apple_album_member")
+        }, "[{\"localIdentifier\":\"photos-folder-1\",\"title\":\"出游\"}]")
+        XCTAssertEqual(try cleanCatalog.pool.read { db in
+            try Int64.fetchOne(db, sql: "SELECT source_ordinal FROM migration_import_apple_album_member")
+        }, 4)
         XCTAssertEqual(try ImageAllMigrationArchive.verify(at: restored.archiveURL).resourceCount, 2)
     }
 
@@ -399,10 +418,13 @@ final class PhoneArchiveImportTests: XCTestCase {
 
         func remove() { try? FileManager.default.removeItem(at: root) }
 
-        func header(count: Int) -> ImageAllMigrationHeader {
+        func header(
+            count: Int, appleAlbumCoverage: ImageAllMigrationAppleAlbumCoverage? = nil
+        ) -> ImageAllMigrationHeader {
             .init(migrationID: UUID(), sourceDeviceID: sourceDeviceID,
                   sourceEpoch: sourceEpoch, scopeRevision: 1,
-                  inventoryWatermark: 7, declaredItemCount: count)
+                  inventoryWatermark: 7, declaredItemCount: count,
+                  appleAlbumCoverage: appleAlbumCoverage)
         }
 
         func resource(_ role: String, bytes: Data) throws -> ImageAllMigrationResource {

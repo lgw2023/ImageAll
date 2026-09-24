@@ -1443,6 +1443,10 @@ private struct PhoneArchiveImportCard: View {
             }
             if let batch = model.selectedBatch {
                 Divider()
+                Text(batch.appleAlbumCoverage == .selectedAssetsOnly
+                     ? "来源 Photos 相册仅记录本次所选资产的可访问成员与文件夹路径。"
+                     : "此旧归档未记录来源 Photos 相册；0 个来源相册不代表手机没有相册。")
+                    .font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Text(batch.archivePath)
                         .font(.caption).foregroundStyle(.secondary)
@@ -1457,7 +1461,7 @@ private struct PhoneArchiveImportCard: View {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(item.sourceLocalIdentifier)
                                 .font(.callout).lineLimit(1).truncationMode(.middle)
-                            Text("\(item.mediaKind == "video" ? "视频" : "照片") · \(item.resourceCount) 个资源 · \(item.tagCount) 项标签决定 · \(item.collectionCount) 个相册")
+                            Text("\(item.mediaKind == "video" ? "视频" : "照片") · \(item.resourceCount) 个资源 · \(item.tagCount) 项标签决定 · \(item.collectionCount) 个 ImageAll 集合 · \(item.appleAlbumCount) 个来源相册")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()

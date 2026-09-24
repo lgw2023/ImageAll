@@ -59,6 +59,7 @@ struct PhoneArchiveImportedBatch: Identifiable, Sendable {
     let verifiedBytes: Int64
     let importedAtMs: Int64
     let factSnapshotSequence: Int64
+    let appleAlbumCoverage: ImageAllMigrationAppleAlbumCoverage?
 }
 
 struct PhoneArchiveImportedItem: Identifiable, Sendable {
@@ -69,6 +70,7 @@ struct PhoneArchiveImportedItem: Identifiable, Sendable {
     let resourceCount: Int
     let tagCount: Int
     let collectionCount: Int
+    let appleAlbumCount: Int
 }
 
 /// Imports a verified phone package into dedicated catalog bindings. The
@@ -279,7 +281,7 @@ struct VerifiedPhoneArchiveImporter: Sendable {
             try Row.fetchAll(db, sql: """
                 SELECT id, archive_path, target_parent_path, target_bookmark,
                        item_count, resource_count, verified_bytes, updated_at_ms,
-                       fact_snapshot_sequence
+                       fact_snapshot_sequence, apple_album_coverage
                 FROM migration_import WHERE state = 'catalogCommitted'
                 ORDER BY updated_at_ms DESC
                 """).compactMap { row in
@@ -293,7 +295,9 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                     resourceCount: row["resource_count"],
                     verifiedBytes: row["verified_bytes"],
                     importedAtMs: row["updated_at_ms"],
-                    factSnapshotSequence: row["fact_snapshot_sequence"]
+                    factSnapshotSequence: row["fact_snapshot_sequence"],
+                    appleAlbumCoverage: (row["apple_album_coverage"] as String?)
+                        .flatMap(ImageAllMigrationAppleAlbumCoverage.init(rawValue:))
                 )
             }
         }
@@ -311,7 +315,10 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                           AND t.media_id = i.media_id) AS tag_count,
                        (SELECT COUNT(*) FROM migration_import_collection c
                         WHERE c.source_device_id = i.source_device_id AND c.source_epoch = i.source_epoch
-                          AND c.media_id = i.media_id AND c.included = 1) AS collection_count
+                          AND c.media_id = i.media_id AND c.included = 1) AS collection_count,
+                       (SELECT COUNT(*) FROM migration_import_apple_album_member a
+                        WHERE a.migration_id = i.migration_id AND a.media_id = i.media_id)
+                        AS apple_album_count
                 FROM migration_import_item i
                 JOIN migration_import m ON m.id = i.migration_id
                 WHERE i.migration_id = ? AND m.state = 'catalogCommitted'
@@ -322,7 +329,8 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                     id: id, sourceLocalIdentifier: row["source_local_identifier"],
                     mediaKind: row["media_kind"], createdAtMs: row["created_at_ms"],
                     resourceCount: row["resource_count"], tagCount: row["tag_count"],
-                    collectionCount: row["collection_count"]
+                    collectionCount: row["collection_count"],
+                    appleAlbumCount: row["apple_album_count"]
                 )
             }
         }
@@ -416,12 +424,14 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                 let savedItemCount: Int = row["item_count"]
                 let savedResourceCount: Int = row["resource_count"]
                 let savedBytes: Int64 = row["verified_bytes"]
+                let savedAppleAlbumCoverage: String? = row["apple_album_coverage"]
                 guard savedHash == verification.manifestSHA256,
                       savedDevice == header.sourceDeviceID.uuidString.lowercased(),
                       savedEpoch == header.sourceEpoch.uuidString.lowercased(),
                       savedItemCount == verification.itemCount,
                       savedResourceCount == verification.resourceCount,
-                      savedBytes == verification.verifiedBytes else {
+                      savedBytes == verification.verifiedBytes,
+                      savedAppleAlbumCoverage == header.appleAlbumCoverage?.rawValue else {
                     throw PhoneArchiveImportError.migrationIdentityConflict
                 }
                 guard savedPath == final.path, savedParent == parent.path else {
@@ -435,14 +445,16 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                     id, source_device_id, source_epoch, scope_revision,
                     inventory_watermark, manifest_sha256, target_parent_path, target_bookmark,
                     archive_path, item_count, resource_count, verified_bytes,
+                    apple_album_coverage,
                     state, created_at_ms, updated_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', ?, ?)
                 """, arguments: [
                     id, header.sourceDeviceID.uuidString.lowercased(),
                     header.sourceEpoch.uuidString.lowercased(), header.scopeRevision,
                     header.inventoryWatermark, verification.manifestSHA256,
                     parent.path, targetBookmark, final.path, verification.itemCount,
-                    verification.resourceCount, verification.verifiedBytes, now, now,
+                    verification.resourceCount, verification.verifiedBytes,
+                    header.appleAlbumCoverage?.rawValue, now, now,
                 ])
             return false
         }
@@ -580,6 +592,23 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                 """, arguments: [
                     device, epoch, media, collection.collectionID.uuidString.lowercased(),
                     collection.collectionName, collection.included ? 1 : 0,
+                ])
+        }
+        let folderEncoder = JSONEncoder()
+        folderEncoder.outputFormatting = [.sortedKeys]
+        for album in item.appleAlbums ?? [] {
+            let folderPath = String(
+                decoding: try folderEncoder.encode(album.folderPath), as: UTF8.self
+            )
+            try db.execute(sql: """
+                INSERT INTO migration_import_apple_album_member (
+                    migration_id, source_device_id, source_epoch, media_id,
+                    album_local_identifier, album_title, folder_path_json, source_ordinal
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, arguments: [
+                    header.migrationID.uuidString.lowercased(), device, epoch, media,
+                    album.albumLocalIdentifier, album.albumTitle, folderPath,
+                    album.sourceOrdinal,
                 ])
         }
     }

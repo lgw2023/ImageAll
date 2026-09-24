@@ -97,6 +97,7 @@ struct CatalogDatabase: Sendable {
         V040RetirePDFDocumentsMigration.register(on: &migrator)
         V041AddPhoneArchiveImportMigration.register(on: &migrator)
         V042AddPhoneArchiveFactCheckpointMigration.register(on: &migrator)
+        V043AddPhoneArchiveAppleAlbumsMigration.register(on: &migrator)
         return migrator
     }
 

@@ -1200,6 +1200,8 @@ private enum LocalPhotoArchiveExporter {
             throw LocalArchiveExportError.selectionNotVisible
         }
         let sourceVersions = byLocator.mapValues(sourceVersion)
+        let selectedLocators = Set(byLocator.keys)
+        let albumMemberships = try captureAlbumMemberships(selectedLocators: selectedLocators)
 
         var items: [ImageAllMigrationItem] = []
         for selected in snapshot.assets {
@@ -1293,7 +1295,8 @@ private enum LocalPhotoArchiveExporter {
                 favoriteTarget: selected.favoriteTarget,
                 observedFavorite: selected.observedFavorite,
                 factRevision: snapshot.outboxWatermark,
-                tagDecisions: decisions, collections: collections, resources: exported
+                tagDecisions: decisions, collections: collections, resources: exported,
+                appleAlbums: albumMemberships[selected.localIdentifier] ?? []
             ))
         }
         let finalResult = PHAsset.fetchAssets(
@@ -1302,13 +1305,17 @@ private enum LocalPhotoArchiveExporter {
         var finalByLocator: [String: PHAsset] = [:]
         finalResult.enumerateObjects { asset, _, _ in finalByLocator[asset.localIdentifier] = asset }
         guard finalByLocator.count == byLocator.count,
-              finalByLocator.allSatisfy({ sourceVersions[$0.key] == sourceVersion($0.value) }) else {
+              finalByLocator.allSatisfy({ sourceVersions[$0.key] == sourceVersion($0.value) }),
+              albumMemberships == (try captureAlbumMemberships(
+                  selectedLocators: selectedLocators
+              )) else {
             throw LocalArchiveExportError.sourceChanged
         }
         let header = ImageAllMigrationHeader(
             migrationID: migrationID, sourceDeviceID: snapshot.installID,
             sourceEpoch: snapshot.sourceEpoch, scopeRevision: snapshot.scopeRevision,
-            inventoryWatermark: snapshot.snapshotSequence, declaredItemCount: items.count
+            inventoryWatermark: snapshot.snapshotSequence, declaredItemCount: items.count,
+            appleAlbumCoverage: .selectedAssetsOnly
         )
         let resourcesDirectory = staging.appendingPathComponent("resources", isDirectory: true)
         if manager.fileExists(atPath: resourcesDirectory.path),
@@ -1324,6 +1331,52 @@ private enum LocalPhotoArchiveExporter {
         try manager.moveItem(at: staging, to: published)
         shouldRemoveStaging = false
         return (published, verification)
+    }
+
+    /// Traverse only user-created Photos albums/folders. A membership is kept
+    /// only for an asset in the explicit export scope; unrelated album members
+    /// never enter the portable manifest.
+    private static func captureAlbumMemberships(
+        selectedLocators: Set<String>
+    ) throws -> [String: [ImageAllMigrationAppleAlbumMembership]] {
+        var result: [String: [ImageAllMigrationAppleAlbumMembership]] = [:]
+        var visited: Set<String> = []
+        func walk(
+            _ collections: PHFetchResult<PHCollection>,
+            folders: [ImageAllMigrationAppleAlbumMembership.Folder]
+        ) throws {
+            for index in 0..<collections.count {
+                let collection = collections.object(at: index)
+                guard visited.insert(collection.localIdentifier).inserted else {
+                    throw LocalArchiveExportError.sourceChanged
+                }
+                if let folder = collection as? PHCollectionList {
+                    let path = folders + [.init(
+                        localIdentifier: folder.localIdentifier, title: folder.localizedTitle
+                    )]
+                    try walk(PHCollection.fetchCollections(in: folder, options: nil), folders: path)
+                } else if let album = collection as? PHAssetCollection,
+                          album.assetCollectionType == .album {
+                    let assets = PHAsset.fetchAssets(in: album, options: nil)
+                    for ordinal in 0..<assets.count {
+                        let locator = assets.object(at: ordinal).localIdentifier
+                        guard selectedLocators.contains(locator) else { continue }
+                        result[locator, default: []].append(.init(
+                            albumLocalIdentifier: album.localIdentifier,
+                            albumTitle: album.localizedTitle, folderPath: folders,
+                            sourceOrdinal: Int64(ordinal)
+                        ))
+                    }
+                }
+            }
+        }
+        try walk(PHCollection.fetchTopLevelUserCollections(with: nil), folders: [])
+        for locator in result.keys {
+            result[locator]?.sort {
+                $0.albumLocalIdentifier < $1.albumLocalIdentifier
+            }
+        }
+        return result
     }
 
     private static func primaryResourceIndex(

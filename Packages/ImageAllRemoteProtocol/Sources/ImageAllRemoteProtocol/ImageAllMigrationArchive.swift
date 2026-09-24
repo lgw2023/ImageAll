@@ -13,10 +13,13 @@ public struct ImageAllMigrationHeader: Codable, Sendable, Equatable {
     public let scopeRevision: Int64
     public let inventoryWatermark: Int64
     public let declaredItemCount: Int
+    /// Nil on archives created before Photos album capture existed.
+    public let appleAlbumCoverage: ImageAllMigrationAppleAlbumCoverage?
 
     public init(
         migrationID: UUID, sourceDeviceID: UUID, sourceEpoch: UUID,
-        scopeRevision: Int64, inventoryWatermark: Int64, declaredItemCount: Int
+        scopeRevision: Int64, inventoryWatermark: Int64, declaredItemCount: Int,
+        appleAlbumCoverage: ImageAllMigrationAppleAlbumCoverage? = nil
     ) {
         recordType = "header"
         formatVersion = 1
@@ -26,7 +29,14 @@ public struct ImageAllMigrationHeader: Codable, Sendable, Equatable {
         self.scopeRevision = scopeRevision
         self.inventoryWatermark = inventoryWatermark
         self.declaredItemCount = declaredItemCount
+        self.appleAlbumCoverage = appleAlbumCoverage
     }
+}
+
+public enum ImageAllMigrationAppleAlbumCoverage: String, Codable, Sendable {
+    /// User-created albums/folders observed by PhotoKit, retaining only
+    /// members in the explicit migration scope.
+    case selectedAssetsOnly
 }
 
 public enum ImageAllMigrationResourceStatus: String, Codable, Sendable {
@@ -89,6 +99,36 @@ public struct ImageAllMigrationCollectionMembership: Codable, Sendable, Equatabl
     }
 }
 
+/// A user-created Photos album as observed within the explicitly selected
+/// migration scope. The ordinal is its position in PhotoKit's album result,
+/// including assets outside that scope; gaps are therefore expected.
+public struct ImageAllMigrationAppleAlbumMembership: Codable, Sendable, Equatable {
+    public struct Folder: Codable, Sendable, Equatable {
+        public let localIdentifier: String
+        public let title: String?
+
+        public init(localIdentifier: String, title: String?) {
+            self.localIdentifier = localIdentifier
+            self.title = title
+        }
+    }
+
+    public let albumLocalIdentifier: String
+    public let albumTitle: String?
+    public let folderPath: [Folder]
+    public let sourceOrdinal: Int64
+
+    public init(
+        albumLocalIdentifier: String, albumTitle: String?,
+        folderPath: [Folder], sourceOrdinal: Int64
+    ) {
+        self.albumLocalIdentifier = albumLocalIdentifier
+        self.albumTitle = albumTitle
+        self.folderPath = folderPath
+        self.sourceOrdinal = sourceOrdinal
+    }
+}
+
 public struct ImageAllMigrationItem: Codable, Sendable, Equatable {
     public let recordType: String
     public let mediaID: UUID
@@ -100,6 +140,8 @@ public struct ImageAllMigrationItem: Codable, Sendable, Equatable {
     public let factRevision: Int64
     public let tagDecisions: [ImageAllMigrationTagDecision]
     public let collections: [ImageAllMigrationCollectionMembership]
+    /// Nil on older archives. Only memberships of selected assets are recorded.
+    public let appleAlbums: [ImageAllMigrationAppleAlbumMembership]?
     public let resources: [ImageAllMigrationResource]
 
     public init(
@@ -108,7 +150,8 @@ public struct ImageAllMigrationItem: Codable, Sendable, Equatable {
         favoriteTarget: Bool?, observedFavorite: Bool, factRevision: Int64,
         tagDecisions: [ImageAllMigrationTagDecision],
         collections: [ImageAllMigrationCollectionMembership],
-        resources: [ImageAllMigrationResource]
+        resources: [ImageAllMigrationResource],
+        appleAlbums: [ImageAllMigrationAppleAlbumMembership] = []
     ) {
         recordType = "item"
         self.mediaID = mediaID
@@ -120,6 +163,7 @@ public struct ImageAllMigrationItem: Codable, Sendable, Equatable {
         self.factRevision = factRevision
         self.tagDecisions = tagDecisions
         self.collections = collections
+        self.appleAlbums = appleAlbums.isEmpty ? nil : appleAlbums
         self.resources = resources
     }
 }
@@ -214,6 +258,9 @@ public enum ImageAllMigrationArchive {
         var sourceLocators: Set<String> = []
         var resourceIDs: Set<UUID> = []
         var paths: Set<String> = []
+        var albumMetadata: [String: (String?, [ImageAllMigrationAppleAlbumMembership.Folder])] = [:]
+        var albumOrdinals: [String: Set<Int64>] = [:]
+        var folderMetadata: [String: (String?, String?)] = [:]
         let decoder = JSONDecoder()
         while let block = try handle.read(upToCount: readBlockBytes), !block.isEmpty {
             manifestHash.update(data: block)
@@ -249,6 +296,47 @@ public enum ImageAllMigrationArchive {
                 guard mediaIDs.insert(item.mediaID).inserted,
                       sourceLocators.insert(item.sourceLocalIdentifier).inserted else {
                     throw ImageAllMigrationArchiveError.duplicateIdentity
+                }
+                let albums = item.appleAlbums ?? []
+                guard albums.isEmpty || header?.appleAlbumCoverage == .selectedAssetsOnly else {
+                    throw ImageAllMigrationArchiveError.invalidManifest
+                }
+                guard Set(albums.map(\.albumLocalIdentifier)).count == albums.count else {
+                    throw ImageAllMigrationArchiveError.duplicateIdentity
+                }
+                for album in albums {
+                    guard !album.albumLocalIdentifier.isEmpty, album.sourceOrdinal >= 0,
+                          album.folderPath.allSatisfy({ !$0.localIdentifier.isEmpty }),
+                          Set(album.folderPath.map(\.localIdentifier)).count == album.folderPath.count,
+                          !album.folderPath.contains(where: {
+                              $0.localIdentifier == album.albumLocalIdentifier
+                          }) else {
+                        throw ImageAllMigrationArchiveError.invalidManifest
+                    }
+                    if let previous = albumMetadata[album.albumLocalIdentifier] {
+                        guard previous.0 == album.albumTitle,
+                              previous.1 == album.folderPath else {
+                            throw ImageAllMigrationArchiveError.invalidManifest
+                        }
+                    } else {
+                        albumMetadata[album.albumLocalIdentifier] =
+                            (album.albumTitle, album.folderPath)
+                    }
+                    for (index, folder) in album.folderPath.enumerated() {
+                        let parentID = index == 0
+                            ? nil : album.folderPath[index - 1].localIdentifier
+                        if let previous = folderMetadata[folder.localIdentifier] {
+                            guard previous.0 == folder.title, previous.1 == parentID else {
+                                throw ImageAllMigrationArchiveError.invalidManifest
+                            }
+                        } else {
+                            folderMetadata[folder.localIdentifier] = (folder.title, parentID)
+                        }
+                    }
+                    guard albumOrdinals[album.albumLocalIdentifier, default: []]
+                        .insert(album.sourceOrdinal).inserted else {
+                        throw ImageAllMigrationArchiveError.duplicateIdentity
+                    }
                 }
                 highestFactRevision = max(highestFactRevision, item.factRevision)
                 var itemComplete = true
