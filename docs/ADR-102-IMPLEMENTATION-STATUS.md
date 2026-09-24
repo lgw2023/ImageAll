@@ -19,6 +19,7 @@
 - `xcodebuild build -project ImageAllMobile.xcodeproj -scheme ImageAllMobile -configuration Debug -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO`：构建通过。
 - 收藏写回改动后两种 iOS 目的地重新构建通过。模拟器首次并行构建因项目共享 `build.db` 锁退出，随后指定独立 Products/OBJROOT 顺序重跑通过。
 - 本轮 Mac `build-for-testing` 在隔离 Products/Intermediates 中通过；直接执行 `ImageAllTests.xctest` 的 2 项新增合成测试通过：持久投影、权限收缩、重启回放、显式撤销、迟到序号，以及路由只接受配对设备、原生 Bearer 可提交而无同源 Cookie 被拒绝。
+- 提交 `64596429` 后另建干净 detached worktree，向其私有目录复制 OpenMontage Runtime 依赖；该提交独立完成隔离 Mac `build-for-testing`、上述两项直接 XCTest 和 iOS Simulator 构建。没有把共享 Runtime 种子作为构建输出目录，也没有将并行 OpenMontage 草稿纳入提交。
 - 当前主线 Mac `build-for-testing` 在独立 Products/Intermediates 中通过；直接执行 `ImageAllTests.xctest` 的 6 项合成 Host 测试通过：高级图库筛选、原子建标签并应用、标签撤销回放、审核概览、配对和视频 Range。使用直接 XCTest，未启动生产 App 测试宿主。首次无签名构建因现有 OpenMontage 脚本要求 `embedded.provisionprofile` 失败；改用项目原有签名设置并隔离构建输出后通过。
 - 本轮测试只用合成身份、临时 SQLite/JSON 和独立 XCTest bundle；没有访问 HDD2 受保护照片，没有启动生产 Photos 测试宿主，也没有执行源端写入。当前 Mac/iOS 代码构建通过，尚未更新日常 App；OpenMontage 发布门禁和实际界面验收仍待执行。
 
