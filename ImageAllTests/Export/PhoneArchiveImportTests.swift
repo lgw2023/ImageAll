@@ -98,6 +98,26 @@ final class PhoneArchiveImportTests: XCTestCase {
         )
         XCTAssertEqual(integrity.factSnapshotSequence, 8)
         XCTAssertNotNil(integrity.phoneSyncCheckpoint)
+        let recoveryDirectory = fixture.root.appendingPathComponent(
+            "independent-recovery", isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: recoveryDirectory, withIntermediateDirectories: false
+        )
+        let recovery = try importer.verifyIndependentRecovery(
+            migrationID: header.migrationID, archiveRoot: imported.archiveURL,
+            into: recoveryDirectory
+        )
+        XCTAssertEqual(recovery.integrity, integrity)
+        XCTAssertNotEqual(recovery.restoredArchiveURL, imported.archiveURL)
+        XCTAssertEqual(try Data(contentsOf: recovery.restoredArchiveURL.appendingPathComponent(
+            try XCTUnwrap(resource.relativePath)
+        )), Data("network-stage-original".utf8))
+        XCTAssertNotNil(recovery.integrity.phoneSyncCheckpoint)
+        XCTAssertThrowsError(try importer.verifyIndependentRecovery(
+            migrationID: header.migrationID, archiveRoot: imported.archiveURL,
+            into: recoveryDirectory
+        )) { XCTAssertEqual($0 as? PhoneArchiveImportError, .recoveryDestinationNotEmpty) }
         try await fixture.database.pool.write { db in
             try db.execute(sql: """
                 UPDATE migration_import_tag_decision SET tag_name = '被改动'

@@ -15,6 +15,8 @@ enum PhoneArchiveImportError: LocalizedError, Equatable {
     case staleFactSnapshot
     case factSnapshotConflict
     case catalogDiverged
+    case recoveryDestinationNotEmpty
+    case insufficientRecoverySpace
 
     var errorDescription: String? {
         switch self {
@@ -29,6 +31,8 @@ enum PhoneArchiveImportError: LocalizedError, Equatable {
         case .staleFactSnapshot: "整理信息快照早于已导入版本，请从手机重新导出。"
         case .factSnapshotConflict: "同一整理信息版本的内容不一致，需要先对账。"
         case .catalogDiverged: "Mac 归档与入库账本不一致，不能通过完整性核查。"
+        case .recoveryDestinationNotEmpty: "恢复验收需要单独的空目录，以免覆盖现有文件或 catalog。"
+        case .insufficientRecoverySpace: "恢复目录可用空间不足以容纳独立归档副本，请选择其他磁盘。"
         }
     }
 }
@@ -63,6 +67,12 @@ struct PhoneArchiveIntegrityReport: Sendable, Equatable {
     let factSnapshot: ImageAllMigrationFactSnapshot?
 }
 
+struct PhoneArchiveRecoveryReport: Sendable, Equatable {
+    let integrity: PhoneArchiveIntegrityReport
+    let restoredArchiveURL: URL
+    let recoveredCatalogURL: URL
+}
+
 struct PhoneArchiveImportedBatch: Identifiable, Sendable {
     let id: UUID
     let archivePath: String
@@ -93,6 +103,56 @@ struct PhoneArchiveImportedItem: Identifiable, Sendable {
 /// exposes them in the unified gallery.
 struct VerifiedPhoneArchiveImporter: Sendable {
     let database: CatalogDatabase
+
+    /// Reconstructs a separate catalog and archive copy from the published
+    /// package, then audits both ledgers against the same verified bytes and
+    /// latest fact checkpoint. The caller chooses and retains an empty target.
+    func verifyIndependentRecovery(
+        migrationID: UUID, archiveRoot: URL, into emptyDirectory: URL
+    ) throws -> PhoneArchiveRecoveryReport {
+        let original = try auditImportedArchive(
+            migrationID: migrationID, archiveRoot: archiveRoot
+        )
+        let source = archiveRoot.standardizedFileURL.resolvingSymlinksInPath().path
+        let destination = emptyDirectory.standardizedFileURL.resolvingSymlinksInPath().path
+        guard destination != source,
+              !destination.hasPrefix(source + "/"),
+              !source.hasPrefix(destination + "/") else {
+            throw ImageAllMigrationArchiveError.destinationOverlap
+        }
+        try validateTargetDirectory(emptyDirectory)
+        guard try FileManager.default.contentsOfDirectory(
+            atPath: emptyDirectory.path
+        ).isEmpty else {
+            throw PhoneArchiveImportError.recoveryDestinationNotEmpty
+        }
+        let reserve = max(Int64(64 * 1_024 * 1_024), original.verifiedBytes / 10)
+        let (requiredBytes, overflow) = original.verifiedBytes.addingReportingOverflow(reserve)
+        guard !overflow else { throw PhoneArchiveImportError.insufficientRecoverySpace }
+        let capacity = try emptyDirectory.resourceValues(
+            forKeys: [.volumeAvailableCapacityForImportantUsageKey]
+        ).volumeAvailableCapacityForImportantUsage
+        if let capacity, capacity < requiredBytes {
+            throw PhoneArchiveImportError.insufficientRecoverySpace
+        }
+        let catalogURL = emptyDirectory.appendingPathComponent("recovered-catalog.sqlite")
+        let recovered = VerifiedPhoneArchiveImporter(
+            database: try CatalogDatabase.open(at: catalogURL)
+        )
+        let receipt = try recovered.importArchive(
+            from: archiveRoot, to: emptyDirectory
+        )
+        let integrity = try recovered.auditImportedArchive(
+            migrationID: migrationID, archiveRoot: receipt.archiveURL
+        )
+        guard integrity == original else {
+            throw PhoneArchiveImportError.catalogDiverged
+        }
+        return PhoneArchiveRecoveryReport(
+            integrity: integrity, restoredArchiveURL: receipt.archiveURL,
+            recoveredCatalogURL: catalogURL
+        )
+    }
 
     /// Re-verifies the independently published media package and compares each
     /// portable record with the dedicated Mac import ledger. This is a local

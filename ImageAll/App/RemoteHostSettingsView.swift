@@ -1472,6 +1472,43 @@ private final class PhoneArchiveImportModel: ObservableObject {
         }
     }
 
+    func verifySelectedBatchRecovery() async {
+        guard !isBusy, let batch = selectedBatch,
+              let importer = PhoneArchiveImportProcessHolder.importer(),
+              let destination = await chooseDirectory(
+                title: "选择空的隔离恢复目录",
+                message: "ImageAll 会复制完整归档并新建独立 catalog；目录需要有足够空间且保持为空。"
+              ) else { return }
+        guard !isProtectedPhotoVolume(destination) else {
+            message = "受保护的 HDD2 真实照片目录不能作为恢复验收目标。"
+            return
+        }
+        isBusy = true
+        message = "正在从 Mac 归档恢复到独立目录并逐资源对账；请保持目标磁盘连接。"
+        defer { isBusy = false }
+        do {
+            let parent = try targetParent(for: batch)
+            let sourceAccess = parent.startAccessingSecurityScopedResource()
+            let targetAccess = destination.startAccessingSecurityScopedResource()
+            defer {
+                if targetAccess { destination.stopAccessingSecurityScopedResource() }
+                if sourceAccess { parent.stopAccessingSecurityScopedResource() }
+            }
+            let archive = parent.appendingPathComponent(
+                "ImageAll-Archive-\(batch.id.uuidString.lowercased())", isDirectory: true
+            )
+            let report = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.verifyIndependentRecovery(
+                    migrationID: batch.id, archiveRoot: archive,
+                    into: destination
+                )
+            }
+            message = "独立恢复核查通过：\(report.integrity.itemCount) 项、\(report.integrity.resourceCount) 个资源及整理事实已在空 catalog 重建。恢复目录：\(destination.path)。候选检查点与实时同步状态仍须分别核对；此副本不是第二份备份或迁移完成回执。"
+        } catch {
+            message = "独立恢复核查未通过：\(error.localizedDescription)。目标目录可能留有未完成的恢复文件，请检查后另选空目录重试。"
+        }
+    }
+
     private func targetParent(for batch: PhoneArchiveImportedBatch) throws -> URL {
         if let bookmark = batch.targetBookmark {
             var stale = false
@@ -1590,6 +1627,11 @@ private struct PhoneArchiveImportCard: View {
                     Button("核查 Mac 归档") { Task { await model.auditSelectedBatch() } }
                         .buttonStyle(.bordered)
                         .disabled(model.isBusy)
+                    Button("验证独立恢复") {
+                        Task { await model.verifySelectedBatchRecovery() }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(model.isBusy)
                 }
                 ForEach(model.items) { item in
                     HStack {
