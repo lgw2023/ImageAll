@@ -47,8 +47,13 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(hiddenProjection?.assets.map(\.asset.id), [visibleID])
         XCTAssertEqual(hiddenProjection?.assets.first?.lastVisibleSnapshotSequence, 1)
         XCTAssertEqual(hiddenProjection?.snapshotSequence, 2)
+        XCTAssertNotNil(hiddenProjection?.acceptedAtMs)
 
         let reopened = try RemoteLocalLibrarySyncStore(hostID: hostID, storageURL: url)
+        let offlineProjections = await reopened.projections()
+        XCTAssertEqual(offlineProjections.count, 1)
+        XCTAssertEqual(offlineProjections.first?.deviceID, deviceID)
+        XCTAssertEqual(offlineProjections.first?.acceptedAtMs, hiddenProjection?.acceptedAtMs)
         let replay = try await reopened.submit(permissionContracted, authenticatedDeviceID: deviceID)
         XCTAssertTrue(replay.replayed)
         let wrongSource = RemoteLocalLibrarySnapshotRequest(

@@ -54,6 +54,10 @@ struct RemoteHostIdentity: @unchecked Sendable {
         return id
     }
 
+    static func existingHostID(defaults: UserDefaults = .standard) -> UUID? {
+        defaults.string(forKey: hostIDDefaultsKey).flatMap(UUID.init(uuidString:))
+    }
+
     // MARK: - Keychain lookup
 
     private static func loadExistingIdentity(hostID: UUID) -> RemoteHostIdentity? {

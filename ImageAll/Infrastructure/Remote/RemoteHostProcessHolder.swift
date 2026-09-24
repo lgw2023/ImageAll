@@ -485,7 +485,30 @@ enum RemoteHostProcessHolder {
     }
 
     static func pairedDevices() async -> [RemotePairedDeviceSummary] {
-        await state.pairingStore?.listDevices() ?? []
+        if let running = await state.pairingStore { return await running.listDevices() }
+        guard let hostID = RemoteHostIdentity.existingHostID() else { return [] }
+        let persisted = RemotePairingStore(
+            hostContext: .init(
+                hostID: hostID,
+                hostDisplayName: RemoteHTTPServer.defaultAdvertisementName(),
+                listenPort: Int(RemoteHTTPServer.defaultPort),
+                usesTLS: false,
+                certificateFingerprintSHA256: ""
+            ),
+            storageURL: remoteHostDirectory().appendingPathComponent("pairing.json")
+        )
+        return await persisted.listDevices()
+    }
+
+    /// Reads the last committed phone projection even when the Host listener is stopped.
+    /// This does not open PhotoKit or create a new Host identity.
+    static func sharedPhoneProjections() async throws -> [RemoteLocalLibrarySyncStore.Projection] {
+        guard let hostID = RemoteHostIdentity.existingHostID() else { return [] }
+        let store = try RemoteLocalLibrarySyncStore(
+            hostID: hostID,
+            storageURL: remoteHostDirectory().appendingPathComponent("local-library-projections.json")
+        )
+        return await store.projections()
     }
 
     static func revoke(deviceID: UUID) async {

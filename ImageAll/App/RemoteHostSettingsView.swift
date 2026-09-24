@@ -14,6 +14,8 @@ final class RemoteHostSettingsModel: ObservableObject {
     @Published private(set) var fingerprintText = "—"
     @Published private(set) var offer: RemotePairingOffer?
     @Published private(set) var devices: [RemotePairedDeviceSummary] = []
+    @Published private(set) var phoneProjections: [RemoteLocalLibrarySyncStore.Projection] = []
+    @Published private(set) var phoneProjectionError: String?
     @Published private(set) var accessAccounts: [RemoteAccessAccountSummary] = []
     @Published private(set) var statusMessage: String?
     @Published private(set) var legacyDebugToken: String?
@@ -44,10 +46,20 @@ final class RemoteHostSettingsModel: ObservableObject {
         }
         offer = await RemoteHostProcessHolder.currentOffer()
         devices = await RemoteHostProcessHolder.pairedDevices()
+        await refreshPhoneProjections()
         accessAccounts = await RemoteHostProcessHolder.accessAccounts()
 #if DEBUG
         legacyDebugToken = RemoteHostProcessHolder.currentAccessToken()
 #endif
+    }
+
+    func refreshPhoneProjections() async {
+        do {
+            phoneProjections = try await RemoteHostProcessHolder.sharedPhoneProjections()
+            phoneProjectionError = nil
+        } catch {
+            phoneProjectionError = "读取手机分享目录失败：\(error.localizedDescription)"
+        }
     }
 
     func refreshUntilStartupSettles() async {
@@ -245,8 +257,79 @@ final class RemoteHostSettingsModel: ObservableObject {
     }
 }
 
+private struct RemotePhoneProjectionView: View {
+    let projection: RemoteLocalLibrarySyncStore.Projection
+    let deviceName: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(deviceName ?? "已撤销或离线的 iPhone")
+                        .font(.title3.weight(.semibold))
+                    Text("手机分享目录 · \(projection.assets.count) 项 · 快照 \(projection.snapshotSequence)")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            Text("仅显示上次提交的目录与整理信息。原件仍在 iPhone，尚未归档到 Mac。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            List(projection.assets) { projected in
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack {
+                        Image(systemName: projected.asset.mediaKind == .video ? "video" : "photo")
+                        Text(projected.asset.id.uuidString)
+                            .font(.system(.caption, design: .monospaced))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer()
+                        Text(projected.lastVisibleSnapshotSequence == projection.snapshotSequence
+                             ? "本次可见" : "当前未观测")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(projected.lastVisibleSnapshotSequence == projection.snapshotSequence
+                                ? Color.green : Color.orange)
+                    }
+                    if projected.lastVisibleSnapshotSequence < projection.snapshotSequence {
+                        Text("保留上次可见记录；可能是权限、离线或来源变化，不代表照片已删除")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("系统收藏观测：\(projected.asset.observedFavorite ? "是" : "否") · ImageAll 收藏目标：\(favoriteTarget(projected.asset.favoriteTarget))")
+                        .font(.caption)
+                    if !projected.asset.collections.isEmpty {
+                        Text("集合：\(projected.asset.collections.map(\.collectionName).joined(separator: "、"))")
+                            .font(.caption)
+                    }
+                    if !projected.asset.tagDecisions.isEmpty {
+                        Text("标签：\(projected.asset.tagDecisions.map { "\($0.tagName)（\(decisionName($0.decision))）" }.joined(separator: "、"))")
+                            .font(.caption)
+                    }
+                }
+                .padding(.vertical, 5)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 720, minHeight: 500)
+    }
+
+    private func favoriteTarget(_ target: Bool?) -> String {
+        guard let target else { return "未指定" }
+        return target ? "收藏" : "取消收藏"
+    }
+
+    private func decisionName(_ decision: RemoteLocalLibraryDecision) -> String {
+        switch decision {
+        case .accepted: "接受"
+        case .rejected: "拒绝"
+        case .cleared: "清除"
+        }
+    }
+}
+
 struct RemoteHostSettingsView: View {
     @StateObject private var model = RemoteHostSettingsModel()
+    @State private var selectedPhoneProjection: RemoteLocalLibrarySyncStore.Projection?
 
     var body: some View {
         ScrollView {
@@ -263,6 +346,7 @@ struct RemoteHostSettingsView: View {
                 accessAccountsCard
                 pairingCard
                 pairedDevicesCard
+                phoneSharesCard
             }
             .frame(maxWidth: 680)
             .padding(.horizontal, 24)
@@ -272,6 +356,12 @@ struct RemoteHostSettingsView: View {
         .background(Color(nsColor: .windowBackgroundColor))
         .animation(.easeInOut(duration: 0.2), value: model.statusMessage)
         .task { await model.refreshUntilStartupSettles() }
+        .sheet(item: $selectedPhoneProjection) { projection in
+            RemotePhoneProjectionView(
+                projection: projection,
+                deviceName: model.devices.first(where: { $0.deviceID == projection.deviceID })?.deviceName
+            )
+        }
     }
 
     private var hostOverviewCard: some View {
@@ -662,6 +752,55 @@ struct RemoteHostSettingsView: View {
                 }
             }
         }
+    }
+
+    private var phoneSharesCard: some View {
+        settingsCard {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    sectionHeading(
+                        "来自 iPhone 的分享目录",
+                        subtitle: "显示上次手动提交的目录与整理信息；原件仍保留在手机",
+                        systemImage: "photo.on.rectangle.angled"
+                    )
+                    Spacer()
+                    Button("刷新") { Task { await model.refreshPhoneProjections() } }
+                        .buttonStyle(.bordered)
+                }
+
+                if let error = model.phoneProjectionError {
+                    Text(error).font(.footnote).foregroundStyle(.red)
+                } else if model.phoneProjections.isEmpty {
+                    Text("尚未收到手机分享目录。iPhone 需先选择资产并手动提交。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                } else {
+                    ForEach(model.phoneProjections) { projection in
+                        HStack(spacing: 12) {
+                            Image(systemName: "iphone.gen3")
+                                .foregroundStyle(Color.accentColor)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(model.devices.first(where: {
+                                    $0.deviceID == projection.deviceID
+                                })?.deviceName ?? "已撤销或离线的 iPhone")
+                                    .font(.callout.weight(.medium))
+                                Text("保留目录 \(projection.assets.count) 项 · 已选择 \(projection.selectedAssetIDs.count) 项 · 上次提交 \(projectionTime(projection.acceptedAtMs))")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("查看目录") { selectedPhoneProjection = projection }
+                                .buttonStyle(.bordered)
+                        }
+                        .padding(.vertical, 5)
+                    }
+                }
+            }
+        }
+    }
+
+    private func projectionTime(_ milliseconds: Int64?) -> String {
+        guard let milliseconds else { return "时间未知" }
+        return Date(timeIntervalSince1970: TimeInterval(milliseconds) / 1_000)
+            .formatted(date: .abbreviated, time: .shortened)
     }
 
     @ViewBuilder

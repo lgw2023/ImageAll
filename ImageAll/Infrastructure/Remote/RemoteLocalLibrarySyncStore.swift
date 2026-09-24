@@ -4,17 +4,20 @@ import ImageAllRemoteProtocol
 /// Mac-owned projection of explicitly shared iPhone directory and human facts.
 /// It never receives media bytes and never treats temporary PhotoKit invisibility as deletion.
 actor RemoteLocalLibrarySyncStore {
-    struct ProjectedAsset: Codable, Sendable {
+    struct ProjectedAsset: Codable, Sendable, Identifiable {
+        var id: UUID { asset.id }
         let asset: RemoteLocalLibraryAsset
         let lastVisibleSnapshotSequence: Int64
     }
 
-    struct Projection: Sendable {
+    struct Projection: Sendable, Identifiable {
+        var id: UUID { deviceID }
         let deviceID: UUID
         let installID: UUID
         let sourceEpoch: UUID
         let scopeRevision: Int64
         let snapshotSequence: Int64
+        let acceptedAtMs: Int64?
         let selectedAssetIDs: [UUID]
         let assets: [ProjectedAsset]
     }
@@ -23,6 +26,7 @@ actor RemoteLocalLibrarySyncStore {
         let deviceID: UUID
         let request: RemoteLocalLibrarySnapshotRequest
         let projectedAssets: [ProjectedAsset]
+        let acceptedAtMs: Int64?
     }
 
     private struct PersistedState: Codable {
@@ -95,7 +99,8 @@ actor RemoteLocalLibrarySyncStore {
             deviceID: authenticatedDeviceID, request: request,
             projectedAssets: projection.values.sorted {
                 $0.asset.id.uuidString < $1.asset.id.uuidString
-            }
+            },
+            acceptedAtMs: Int64((Date().timeIntervalSince1970 * 1_000).rounded())
         )
         var updated = records
         updated[authenticatedDeviceID] = record
@@ -121,9 +126,15 @@ actor RemoteLocalLibrarySyncStore {
             sourceEpoch: record.request.sourceEpoch,
             scopeRevision: record.request.scopeRevision,
             snapshotSequence: record.request.snapshotSequence,
+            acceptedAtMs: record.acceptedAtMs,
             selectedAssetIDs: record.request.selectedAssetIDs,
             assets: record.projectedAssets
         )
+    }
+
+    func projections() -> [Projection] {
+        records.keys.sorted { $0.uuidString < $1.uuidString }
+            .compactMap { projection(deviceID: $0) }
     }
 
     private func receipt(
