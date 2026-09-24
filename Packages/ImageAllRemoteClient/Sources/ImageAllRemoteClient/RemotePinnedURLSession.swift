@@ -27,7 +27,7 @@ public enum RemotePinnedURLSessionFactory {
     }
 }
 
-private final class PinningDelegate: NSObject, URLSessionDelegate, @unchecked Sendable {
+final class PinningDelegate: NSObject, URLSessionDelegate, @unchecked Sendable {
     private let expectedFingerprint: String
 
     init(expectedFingerprint: String) {
@@ -37,6 +37,20 @@ private final class PinningDelegate: NSObject, URLSessionDelegate, @unchecked Se
     func urlSession(
         _ session: URLSession,
         didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        RemoteTLSPinning.handle(
+            challenge: challenge,
+            expectedFingerprint: expectedFingerprint,
+            completionHandler: completionHandler
+        )
+    }
+}
+
+enum RemoteTLSPinning {
+    static func handle(
+        challenge: URLAuthenticationChallenge,
+        expectedFingerprint: String,
         completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
     ) {
         guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,

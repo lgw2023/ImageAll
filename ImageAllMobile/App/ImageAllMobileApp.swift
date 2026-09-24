@@ -6,6 +6,7 @@ import ImageAllRemoteProtocol
 struct ImageAllMobileApp: App {
     @StateObject private var model = RemoteCompanionModel()
     @StateObject private var localModel = LocalLibraryModel()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
@@ -17,6 +18,9 @@ struct ImageAllMobileApp: App {
 
                 RemoteCompanionRootView(model: model)
                     .tabItem { Label("Mac 图库", systemImage: "desktopcomputer") }
+            }
+            .onChange(of: scenePhase) { _, phase in
+                model.setSceneActive(phase == .active)
             }
         }
     }

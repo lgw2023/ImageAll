@@ -120,6 +120,10 @@ public struct RemoteLibraryClient: Sendable {
         try await getJSON(path: RemoteHTTPPaths.tags)
     }
 
+    public func fetchTagGroups() async throws -> [RemoteTagGroupSummary] {
+        try await getJSON(path: RemoteHTTPPaths.tagGroups)
+    }
+
     public func installPresetTags(
         _ request: RemoteInstallPresetTagsRequest
     ) async throws -> RemoteInstallPresetTagsResponse {
@@ -147,6 +151,48 @@ public struct RemoteLibraryClient: Sendable {
         }
         if let cursor = request.cursor, !cursor.isEmpty {
             items.append(URLQueryItem(name: "cursor", value: cursor))
+        }
+        let acceptedTagIDs = request.tagDecisionFilters
+            .filter { $0.decision == .accepted }
+            .map(\.tagID.uuidString)
+        if !acceptedTagIDs.isEmpty {
+            items.append(URLQueryItem(name: "acceptedTagIDs", value: acceptedTagIDs.joined(separator: ",")))
+        }
+        let rejectedTagIDs = request.tagDecisionFilters
+            .filter { $0.decision == .rejected }
+            .map(\.tagID.uuidString)
+        if !rejectedTagIDs.isEmpty {
+            items.append(URLQueryItem(name: "rejectedTagIDs", value: rejectedTagIDs.joined(separator: ",")))
+        }
+        if !request.excludedTagIDs.isEmpty {
+            items.append(URLQueryItem(
+                name: "excludedTagIDs",
+                value: request.excludedTagIDs.map(\.uuidString).joined(separator: ",")
+            ))
+        }
+        if !request.tagDecisionFilters.isEmpty
+            || !request.excludedTagIDs.isEmpty
+            || request.tagMatchMode != .all
+        {
+            items.append(URLQueryItem(name: "tagMatchMode", value: request.tagMatchMode.rawValue))
+        }
+        if !request.availabilities.isEmpty {
+            items.append(URLQueryItem(
+                name: "availabilities",
+                value: request.availabilities.map(\.rawValue).joined(separator: ",")
+            ))
+        }
+        if !request.mediaKinds.isEmpty {
+            items.append(URLQueryItem(
+                name: "mediaKinds",
+                value: request.mediaKinds.map(\.rawValue).joined(separator: ",")
+            ))
+        }
+        if !request.mediaTypes.isEmpty {
+            items.append(URLQueryItem(name: "mediaTypes", value: request.mediaTypes.joined(separator: ",")))
+        }
+        if request.tagPresence != .any {
+            items.append(URLQueryItem(name: "tagPresence", value: request.tagPresence.rawValue))
         }
         return try await getJSON(path: RemoteHTTPPaths.assets, queryItems: items)
     }
@@ -190,6 +236,70 @@ public struct RemoteLibraryClient: Sendable {
     ) async throws -> RemoteBatchTagDecisionResponse {
         let body = try encoder.encode(request)
         return try await postJSON(path: RemoteHTTPPaths.tagDecisionsBatch, body: body)
+    }
+
+    public func createTagAndApply(
+        _ request: RemoteCreateTagAndApplyRequest
+    ) async throws -> RemoteCreateTagAndApplyResponse {
+        try await postJSON(path: RemoteHTTPPaths.tagsCreateAndApply, body: encoder.encode(request))
+    }
+
+    public func undoTagDecision(
+        _ request: RemoteUndoTagDecisionRequest
+    ) async throws -> RemoteUndoTagDecisionResponse {
+        try await postJSON(path: RemoteHTTPPaths.tagDecisionsUndo, body: encoder.encode(request))
+    }
+
+    public func renameTag(
+        tagID: UUID, request: RemoteRenameTagRequest
+    ) async throws -> RemoteTagMutationResponse {
+        try await postJSON(path: RemoteHTTPPaths.tagRename(tagID: tagID), body: encoder.encode(request))
+    }
+
+    public func archiveTag(
+        tagID: UUID, request: RemoteArchiveTagRequest
+    ) async throws -> RemoteTagMutationResponse {
+        try await postJSON(path: RemoteHTTPPaths.tagArchive(tagID: tagID), body: encoder.encode(request))
+    }
+
+    public func moveTag(
+        tagID: UUID, request: RemoteMoveTagRequest
+    ) async throws -> RemoteTagMutationResponse {
+        try await postJSON(path: RemoteHTTPPaths.tagMove(tagID: tagID), body: encoder.encode(request))
+    }
+
+    public func createTagGroup(
+        _ request: RemoteCreateTagGroupRequest
+    ) async throws -> RemoteTagGroupMutationResponse {
+        try await postJSON(path: RemoteHTTPPaths.tagGroups, body: encoder.encode(request))
+    }
+
+    public func renameTagGroup(
+        groupID: UUID, request: RemoteRenameTagGroupRequest
+    ) async throws -> RemoteTagGroupMutationResponse {
+        try await postJSON(
+            path: RemoteHTTPPaths.tagGroupRename(groupID: groupID), body: encoder.encode(request)
+        )
+    }
+
+    public func deleteTagGroup(
+        groupID: UUID, request: RemoteDeleteTagGroupRequest
+    ) async throws -> RemoteTagGroupMutationResponse {
+        try await postJSON(
+            path: RemoteHTTPPaths.tagGroupDelete(groupID: groupID), body: encoder.encode(request)
+        )
+    }
+
+    public func fetchReviewOverview(
+        mediaKind: RemoteAssetMediaKind, sourceIDs: [UUID] = []
+    ) async throws -> RemoteReviewOverview {
+        var items = [URLQueryItem(name: "mediaKind", value: mediaKind.rawValue)]
+        if !sourceIDs.isEmpty {
+            items.append(URLQueryItem(
+                name: "sourceIDs", value: sourceIDs.map(\.uuidString).joined(separator: ",")
+            ))
+        }
+        return try await getJSON(path: RemoteHTTPPaths.reviewOverview, queryItems: items)
     }
 
     public func fetchReviewQueue(

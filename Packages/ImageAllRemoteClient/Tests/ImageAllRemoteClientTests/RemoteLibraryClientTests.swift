@@ -30,6 +30,8 @@ final class RemoteLibraryClientTests: XCTestCase {
 
     func testBuildsAssetPageQuery() async throws {
         let sourceID = UUID(uuidString: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")!
+        let acceptedTagID = UUID(uuidString: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")!
+        let excludedTagID = UUID(uuidString: "cccccccc-cccc-cccc-cccc-cccccccccccc")!
         let transport = MockTransport { request in
             XCTAssertEqual(request.url?.path, "/v1/assets")
             let items = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
@@ -39,6 +41,12 @@ final class RemoteLibraryClientTests: XCTestCase {
             XCTAssertEqual(map["limit"], "40")
             XCTAssertEqual(map["q"], "beach")
             XCTAssertEqual(map["cursor"], "abc")
+            XCTAssertEqual(map["acceptedTagIDs"], acceptedTagID.uuidString)
+            XCTAssertEqual(map["excludedTagIDs"], excludedTagID.uuidString)
+            XCTAssertEqual(map["tagMatchMode"], "any")
+            XCTAssertEqual(map["availabilities"], "available")
+            XCTAssertEqual(map["mediaKinds"], "video")
+            XCTAssertEqual(map["tagPresence"], "tagged")
             let payload = try JSONEncoder().encode(RemoteAssetPage(items: [], nextCursor: nil))
             let response = HTTPURLResponse(
                 url: request.url!,
@@ -58,7 +66,15 @@ final class RemoteLibraryClientTests: XCTestCase {
                 searchText: "beach",
                 sort: .newest,
                 limit: 40,
-                cursor: "abc"
+                cursor: "abc",
+                tagDecisionFilters: [
+                    RemoteAssetTagDecisionFilter(tagID: acceptedTagID, decision: .accepted)
+                ],
+                excludedTagIDs: [excludedTagID],
+                tagMatchMode: .any,
+                availabilities: [.available],
+                mediaKinds: [.video],
+                tagPresence: .tagged
             )
         )
     }
@@ -171,6 +187,221 @@ final class RemoteLibraryClientTests: XCTestCase {
         )
         XCTAssertEqual(response.createdTags, [tag])
         XCTAssertFalse(response.replayed)
+    }
+
+    func testCreatesTagAndAppliesItToSelectedAssets() async throws {
+        let operationID = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+        let tagID = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
+        let assetIDs = [
+            UUID(uuidString: "33333333-3333-3333-3333-333333333333")!,
+            UUID(uuidString: "44444444-4444-4444-4444-444444444444")!,
+        ]
+        let transport = MockTransport { request in
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.url?.path, RemoteHTTPPaths.tagsCreateAndApply)
+            let body = try XCTUnwrap(request.httpBody)
+            let decoded = try JSONDecoder().decode(RemoteCreateTagAndApplyRequest.self, from: body)
+            XCTAssertEqual(decoded.operationID, operationID)
+            XCTAssertEqual(decoded.name, "旅行")
+            XCTAssertEqual(decoded.assetIDs, assetIDs)
+            return try Self.jsonResponse(
+                RemoteCreateTagAndApplyResponse(
+                    operationID: operationID,
+                    tagID: tagID,
+                    displayName: "旅行",
+                    appliedAssetCount: 2,
+                    replayed: false
+                ),
+                for: request
+            )
+        }
+        let client = RemoteLibraryClient(
+            endpoint: try RemoteHostEndpoint(
+                host: "127.0.0.1",
+                port: 8787,
+                accessToken: "secret"
+            ),
+            transport: transport
+        )
+
+        let response = try await client.createTagAndApply(
+            RemoteCreateTagAndApplyRequest(
+                operationID: operationID,
+                name: "旅行",
+                assetIDs: assetIDs
+            )
+        )
+
+        XCTAssertEqual(response.tagID, tagID)
+        XCTAssertEqual(response.appliedAssetCount, 2)
+    }
+
+    func testFetchesReviewOverviewAndUndoesLatestTagDecision() async throws {
+        let sourceID = UUID(uuidString: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")!
+        let undoID = UUID(uuidString: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")!
+        let operationID = UUID(uuidString: "cccccccc-cccc-cccc-cccc-cccccccccccc")!
+        let transport = MockTransport { request in
+            if request.httpMethod == "GET" {
+                XCTAssertEqual(request.url?.path, RemoteHTTPPaths.reviewOverview)
+                let items = URLComponents(
+                    url: request.url!,
+                    resolvingAgainstBaseURL: false
+                )?.queryItems ?? []
+                let map = Dictionary(uniqueKeysWithValues: items.map { ($0.name, $0.value ?? "") })
+                XCTAssertEqual(map["mediaKind"], "video")
+                XCTAssertEqual(map["sourceIDs"], sourceID.uuidString)
+                return try Self.jsonResponse(
+                    RemoteReviewOverview(totalPendingSuggestionCount: 3, tags: []),
+                    for: request
+                )
+            }
+
+            XCTAssertEqual(request.url?.path, RemoteHTTPPaths.tagDecisionsUndo)
+            let body = try XCTUnwrap(request.httpBody)
+            let decoded = try JSONDecoder().decode(RemoteUndoTagDecisionRequest.self, from: body)
+            XCTAssertEqual(decoded.operationID, operationID)
+            XCTAssertEqual(decoded.undoID, undoID)
+            return try Self.jsonResponse(
+                RemoteUndoTagDecisionResponse(
+                    operationID: operationID,
+                    restoredAssetCount: 2,
+                    replayed: false
+                ),
+                for: request
+            )
+        }
+        let client = RemoteLibraryClient(
+            endpoint: try RemoteHostEndpoint(
+                host: "127.0.0.1",
+                port: 8787,
+                accessToken: "secret"
+            ),
+            transport: transport
+        )
+
+        let overview = try await client.fetchReviewOverview(
+            mediaKind: .video,
+            sourceIDs: [sourceID]
+        )
+        let undo = try await client.undoTagDecision(
+            RemoteUndoTagDecisionRequest(operationID: operationID, undoID: undoID)
+        )
+
+        XCTAssertEqual(overview.totalPendingSuggestionCount, 3)
+        XCTAssertEqual(undo.restoredAssetCount, 2)
+    }
+
+    func testManagesTagsAndTagGroupsThroughNarrowRoutes() async throws {
+        let tagID = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+        let groupID = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
+        let operationID = UUID(uuidString: "33333333-3333-3333-3333-333333333333")!
+        let tag = RemoteTagSummary(
+            id: tagID,
+            displayName: "旅行",
+            state: .active,
+            groupID: groupID
+        )
+        let group = RemoteTagGroupSummary(
+            id: groupID,
+            displayName: "主题",
+            sortOrder: 1,
+            isSystem: false
+        )
+        let transport = MockTransport { request in
+            switch request.url?.path {
+            case RemoteHTTPPaths.tagGroups where request.httpMethod == "GET":
+                return try Self.jsonResponse([group], for: request)
+            case RemoteHTTPPaths.tagRename(tagID: tagID):
+                let body = try XCTUnwrap(request.httpBody)
+                XCTAssertEqual(
+                    try JSONDecoder().decode(RemoteRenameTagRequest.self, from: body).name,
+                    "新旅行"
+                )
+                return try Self.jsonResponse(
+                    RemoteTagMutationResponse(operationID: operationID, tag: tag, replayed: false),
+                    for: request
+                )
+            case RemoteHTTPPaths.tagMove(tagID: tagID):
+                let body = try XCTUnwrap(request.httpBody)
+                XCTAssertEqual(
+                    try JSONDecoder().decode(RemoteMoveTagRequest.self, from: body).groupID,
+                    groupID
+                )
+                return try Self.jsonResponse(
+                    RemoteTagMutationResponse(operationID: operationID, tag: tag, replayed: false),
+                    for: request
+                )
+            case RemoteHTTPPaths.tagArchive(tagID: tagID):
+                return try Self.jsonResponse(
+                    RemoteTagMutationResponse(operationID: operationID, tag: nil, replayed: false),
+                    for: request
+                )
+            case RemoteHTTPPaths.tagGroups where request.httpMethod == "POST":
+                return try Self.jsonResponse(
+                    RemoteTagGroupMutationResponse(
+                        operationID: operationID,
+                        group: group,
+                        replayed: false
+                    ),
+                    for: request
+                )
+            case RemoteHTTPPaths.tagGroupRename(groupID: groupID):
+                return try Self.jsonResponse(
+                    RemoteTagGroupMutationResponse(
+                        operationID: operationID,
+                        group: group,
+                        replayed: false
+                    ),
+                    for: request
+                )
+            case RemoteHTTPPaths.tagGroupDelete(groupID: groupID):
+                return try Self.jsonResponse(
+                    RemoteTagGroupMutationResponse(
+                        operationID: operationID,
+                        group: nil,
+                        replayed: false
+                    ),
+                    for: request
+                )
+            default:
+                XCTFail("unexpected route \(request.url?.path ?? "nil")")
+                throw URLError(.badURL)
+            }
+        }
+        let client = RemoteLibraryClient(
+            endpoint: try RemoteHostEndpoint(
+                host: "127.0.0.1",
+                port: 8787,
+                accessToken: "secret"
+            ),
+            transport: transport
+        )
+
+        let groups = try await client.fetchTagGroups()
+        XCTAssertEqual(groups, [group])
+        _ = try await client.renameTag(
+            tagID: tagID,
+            request: RemoteRenameTagRequest(operationID: operationID, name: "新旅行")
+        )
+        _ = try await client.moveTag(
+            tagID: tagID,
+            request: RemoteMoveTagRequest(operationID: operationID, groupID: groupID)
+        )
+        _ = try await client.archiveTag(
+            tagID: tagID,
+            request: RemoteArchiveTagRequest(operationID: operationID)
+        )
+        _ = try await client.createTagGroup(
+            RemoteCreateTagGroupRequest(operationID: operationID, name: "主题")
+        )
+        _ = try await client.renameTagGroup(
+            groupID: groupID,
+            request: RemoteRenameTagGroupRequest(operationID: operationID, name: "新主题")
+        )
+        _ = try await client.deleteTagGroup(
+            groupID: groupID,
+            request: RemoteDeleteTagGroupRequest(operationID: operationID)
+        )
     }
 
     func testLoadsAssetDetailAndPreviewAtRequestedWidth() async throws {
