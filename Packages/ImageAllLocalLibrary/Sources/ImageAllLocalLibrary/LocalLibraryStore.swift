@@ -1514,16 +1514,38 @@ public actor LocalLibraryStore {
         var conflicts = 0
         try transaction {
             for change in changes {
-                guard try isShared(assetID: change.assetID),
-                      let localName = try scalar(
-                          "SELECT name FROM tags WHERE id=?", [change.tagID.uuidString]
-                      ), localName == change.tagName else {
+                guard try isShared(assetID: change.assetID) else {
                     throw LocalLibraryError.syncRemoteTagMismatch
                 }
                 let field = "tag.\(change.tagID.uuidString)"
                 let baseline = Int64(try scalar("""
                     SELECT revision FROM shared_field_versions WHERE asset_id=? AND field=?
                     """, [change.assetID.uuidString, field]) ?? "0") ?? 0
+                if let localName = try scalar(
+                    "SELECT name FROM tags WHERE id=?", [change.tagID.uuidString]
+                ) {
+                    guard localName == change.tagName else {
+                        throw LocalLibraryError.syncRemoteTagMismatch
+                    }
+                } else {
+                    let trimmed = change.tagName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let normalizedName = Self.syncTagNameKey(trimmed)
+                    let existingNames = try rows("SELECT name FROM tags").compactMap { $0[0] }
+                    guard baseline == 0, change.fieldRevision == 1,
+                          change.decision != .cleared,
+                          trimmed == change.tagName, !trimmed.isEmpty,
+                          trimmed.count <= 120, trimmed.utf8.count <= 512,
+                          !existingNames.contains(where: {
+                              Self.syncTagNameKey($0) == normalizedName
+                          }) else {
+                        throw LocalLibraryError.syncRemoteTagMismatch
+                    }
+                    // A Mac-issued tag identity is installed with the fact and cursor.
+                    // It does not create a phone outbox operation of its own.
+                    try execute("INSERT INTO tags(id,name) VALUES(?,?)", [
+                        change.tagID.uuidString, trimmed
+                    ])
+                }
                 if change.fieldRevision <= baseline { continue }
                 let pending = try rows("""
                     SELECT s.operation_id,s.value,d.state
@@ -1825,6 +1847,27 @@ public actor LocalLibraryStore {
             throw LocalLibraryError.database("missing identity")
         }
         return value
+    }
+
+    private static func syncTagNameKey(_ rawName: String) -> String {
+        let scalars = Array(rawName.precomposedStringWithCanonicalMapping.unicodeScalars)
+        var normalized: [Unicode.Scalar] = []
+        var inWhiteSpace = false
+        for scalar in scalars {
+            if scalar.properties.isWhitespace {
+                if !inWhiteSpace {
+                    normalized.append(Unicode.Scalar(0x20)!)
+                    inWhiteSpace = true
+                }
+            } else {
+                normalized.append(scalar)
+                inWhiteSpace = false
+            }
+        }
+        return String(String.UnicodeScalarView(normalized))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: .caseInsensitive, locale: nil)
+            .precomposedStringWithCanonicalMapping
     }
 
     private func exists(_ table: String, id: UUID) throws -> Bool {

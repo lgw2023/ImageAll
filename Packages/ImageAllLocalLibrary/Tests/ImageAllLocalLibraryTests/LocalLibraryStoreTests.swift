@@ -570,6 +570,62 @@ import Testing
     }
 }
 
+@Test func macNewTagIdentityAppliesWithoutEchoAndNameCollisionRollsBackPage() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try LocalLibraryStore(url: root.appendingPathComponent("local.sqlite"))
+    try await store.observe([
+        LocalObservedAsset(
+            localIdentifier: "shared", kind: "image", creationDate: nil, isFavorite: false
+        )
+    ])
+    let asset = try #require(await store.assets(visibleIdentifiers: ["shared"]).first)
+    let hostID = UUID()
+    let deviceID = UUID()
+    try await store.setShared(assetID: asset.id, shared: true)
+    let snapshot = try await store.prepareSharedSnapshot(visibleIdentifiers: ["shared"])
+    try await store.acknowledgeSharedSnapshot(
+        snapshot, hostID: hostID, deviceID: deviceID, importedAssetIDs: [asset.id]
+    )
+    let macTagID = UUID()
+    let received = try await store.applySharedTagChanges(
+        hostID: hostID, deviceID: deviceID, sourceEpoch: snapshot.sourceEpoch,
+        scopeRevision: snapshot.scopeRevision, afterCursor: 0,
+        changes: [.init(
+            sequence: 1, assetID: asset.id, tagID: macTagID,
+            tagName: "Journey", decision: .accepted, fieldRevision: 1
+        )], nextCursor: 1
+    )
+    #expect(received.applied == 1)
+    #expect(try await store.tags().contains { $0.id == macTagID && $0.name == "Journey" })
+    #expect(try await store.decisions(assetID: asset.id)[macTagID] == .accepted)
+    #expect(try await store.sharedTagChangeCursor() == 1)
+    #expect(try await store.pendingSharedOperations().isEmpty)
+
+    let localTagID = try await store.createTag(name: "Café")
+    let wouldBeCreated = UUID()
+    let colliding = UUID()
+    do {
+        _ = try await store.applySharedTagChanges(
+            hostID: hostID, deviceID: deviceID, sourceEpoch: snapshot.sourceEpoch,
+            scopeRevision: snapshot.scopeRevision, afterCursor: 1,
+            changes: [
+                .init(sequence: 2, assetID: asset.id, tagID: wouldBeCreated,
+                      tagName: "Other", decision: .rejected, fieldRevision: 1),
+                .init(sequence: 3, assetID: asset.id, tagID: colliding,
+                      tagName: "Cafe\u{301}", decision: .accepted, fieldRevision: 1),
+            ], nextCursor: 3
+        )
+        Issue.record("same-name different-ID must stop the whole page")
+    } catch LocalLibraryError.syncRemoteTagMismatch {
+        #expect(try await store.sharedTagChangeCursor() == 1)
+        #expect(try await store.tags().contains { $0.id == localTagID })
+        #expect(try await !store.tags().contains { $0.id == wouldBeCreated })
+        #expect(try await !store.tags().contains { $0.id == colliding })
+        #expect(try await store.pendingSharedOperations().isEmpty)
+    }
+}
+
 @Test func explicitPhoneConflictChoiceCreatesNewOperationAtMacRevision() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }

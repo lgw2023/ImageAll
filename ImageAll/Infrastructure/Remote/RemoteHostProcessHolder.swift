@@ -561,7 +561,8 @@ enum RemoteHostProcessHolder {
         decision: RemoteLocalLibraryDecision, expectedRevision: Int64,
         expectedInstallID: UUID? = nil, expectedSourceEpoch: UUID? = nil,
         expectedScopeRevision: Int64? = nil,
-        operationID: UUID? = nil
+        operationID: UUID? = nil,
+        tagNameForCreate: String? = nil
     ) async throws -> RemoteLocalLibrarySyncStore.Projection {
         guard (await pairedDevices()).contains(where: { $0.deviceID == deviceID }),
               let store = try await state.syncStoreForUI() else {
@@ -573,7 +574,8 @@ enum RemoteHostProcessHolder {
             expectedInstallID: expectedInstallID,
             expectedSourceEpoch: expectedSourceEpoch,
             expectedScopeRevision: expectedScopeRevision,
-            operationID: operationID
+            operationID: operationID,
+            tagNameForCreate: tagNameForCreate
         )
     }
 

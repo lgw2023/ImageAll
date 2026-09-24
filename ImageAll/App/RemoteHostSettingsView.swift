@@ -2327,6 +2327,11 @@ private struct PhoneArchiveFactComparisonSheet: View {
         let fact: RemoteLocalLibrarySyncStore.SharedTagFact
     }
 
+    private struct MacOnlyTagSyncTarget {
+        let operationID = UUID()
+        let tag: PhoneArchiveMacOnlyTagDecision
+    }
+
     private struct PhoneToMacTarget {
         let operationID = UUID()
         let tag: PhoneArchiveTagComparison
@@ -2346,6 +2351,7 @@ private struct PhoneArchiveFactComparisonSheet: View {
     @State private var outboundIntents: [PhoneArchiveMacTagOutboundIntent] = []
     @State private var sharedStatus: String?
     @State private var tagSyncTarget: TagSyncTarget?
+    @State private var macOnlyTagSyncTarget: MacOnlyTagSyncTarget?
     @State private var phoneToMacTarget: PhoneToMacTarget?
     @State private var showAliasConfirmation = false
     @State private var showAliasRevocation = false
@@ -2455,6 +2461,13 @@ private struct PhoneArchiveFactComparisonSheet: View {
                             ForEach(comparison.macOnlyTags) { tag in
                                 Text("\(tag.tagName)：\(tag.decision)")
                                     .font(.subheadline)
+                                if canSubmitMacOnlyTag(tag) {
+                                    Button("把新标签及决定提交到手机共享账本…") {
+                                        macOnlyTagSyncTarget = MacOnlyTagSyncTarget(tag: tag)
+                                        showTagSyncConfirmation = false
+                                    }
+                                    .disabled(isBusy)
+                                }
                             }
                         }
                         Text("ImageAll 收藏目标").font(.headline)
@@ -2505,6 +2518,18 @@ private struct PhoneArchiveFactComparisonSheet: View {
             Button("提交 Mac 决定") { Task { await submitMacTagDecision(target) } }
         } message: { target in
             Text("“\(target.tag.phoneTagName)”当前手机共享决定为 \(target.fact.decision.rawValue)（版本 \(target.fact.revision)），Mac 决定为 \(target.tag.macDecision ?? "清除")。提交前会复核绑定、身份和两端版本；手机需稍后主动同步。")
+        }
+        .confirmationDialog(
+            "把 Mac 新标签提交到手机共享账本？",
+            isPresented: Binding(
+                get: { macOnlyTagSyncTarget != nil },
+                set: { if !$0 { macOnlyTagSyncTarget = nil } }
+            ),
+            presenting: macOnlyTagSyncTarget
+        ) { target in
+            Button("提交新标签") { Task { await submitMacOnlyTagDecision(target) } }
+        } message: { target in
+            Text("将 Mac 标签“\(target.tag.tagName)”及其 \(target.tag.decision) 决定按 Mac 标签 ID 建立为手机共享字段。手机需主动同步；若本机已有同名不同 ID 标签，手机会暂停该变化页并保留现有整理信息。")
         }
         .confirmationDialog(
             "把手机共享标签决定应用到 Mac 资产？",
@@ -2588,6 +2613,33 @@ private struct PhoneArchiveFactComparisonSheet: View {
             })
     }
 
+    private func canSubmitMacOnlyTag(_ tag: PhoneArchiveMacOnlyTagDecision) -> Bool {
+        guard let projection = liveProjection, tag.isActive,
+              tag.decision == RemoteLocalLibraryDecision.accepted.rawValue
+                || tag.decision == RemoteLocalLibraryDecision.rejected.rawValue,
+              !tag.tagName.isEmpty,
+              tag.tagName == tag.tagName.trimmingCharacters(in: .whitespacesAndNewlines),
+              tag.tagName.count <= 120, tag.tagName.utf8.count <= 512,
+              !outboundIntents.contains(where: {
+                  $0.state == .prepared && $0.phoneTagID == tag.tagID
+              }) else { return false }
+        return phoneTagIdentityAvailable(tag, in: projection)
+    }
+
+    private func phoneTagIdentityAvailable(
+        _ tag: PhoneArchiveMacOnlyTagDecision,
+        in projection: RemoteLocalLibrarySyncStore.Projection
+    ) -> Bool {
+        !projection.sharedTagFacts.contains { fact in
+            (fact.assetID == mediaID && fact.tagID == tag.tagID)
+                || (fact.tagID == tag.tagID && fact.tagName != tag.tagName)
+                || (fact.tagID != tag.tagID
+                    && RemoteLocalLibrarySyncStore.sameTagIdentityName(
+                        fact.tagName, tag.tagName
+                    ))
+        }
+    }
+
     private func canApplySharedDecision(
         _ tag: PhoneArchiveTagComparison,
         fact: RemoteLocalLibrarySyncStore.SharedTagFact
@@ -2658,26 +2710,44 @@ private struct PhoneArchiveFactComparisonSheet: View {
                 )
             }
             let tag = catalog.tags.first { $0.phoneTagID == intent.phoneTagID }
+            let macOnlyTag = catalog.macOnlyTags.first { $0.tagID == intent.macTagID }
             let fact = projection?.sharedTagFacts.first {
                 $0.assetID == intent.mediaID && $0.tagID == intent.phoneTagID
+            }
+            let catalogFieldMatches: Bool
+            let phoneFieldMatches: Bool
+            if intent.phoneExpectedRevision == 0 {
+                catalogFieldMatches = macOnlyTag?.tagName == intent.phoneTagName
+                    && macOnlyTag?.tagUpdatedAtMs == intent.macTagUpdatedAtMs
+                    && macOnlyTag?.decisionRevision == intent.macExpectedRevision
+                    && macOnlyTag?.decision == intent.macExpectedDecision.rawValue
+                    && macOnlyTag?.isActive == true
+                phoneFieldMatches = fact == nil && projection.map { currentProjection in
+                    macOnlyTag.map { currentTag in
+                        phoneTagIdentityAvailable(currentTag, in: currentProjection)
+                    } ?? false
+                } ?? false
+            } else {
+                catalogFieldMatches = tag?.macTagID == intent.macTagID
+                    && tag?.macDecisionRevision == intent.macExpectedRevision
+                    && (tag?.macDecision ?? RemoteLocalLibraryDecision.cleared.rawValue)
+                        == intent.macExpectedDecision.rawValue
+                    && (tag?.state == .same || tag?.state == .decisionDiffers
+                        || tag?.state == .macDecisionMissing)
+                phoneFieldMatches = fact?.revision == intent.phoneExpectedRevision
+                    && fact?.decision == intent.phoneExpectedDecision
             }
             guard paired,
                   catalog.sourceInstallID == intent.sourceInstallID,
                   catalog.sourceEpoch == intent.sourceEpoch,
                   catalog.bindingConfirmationEventID == intent.bindingConfirmationEventID,
-                  tag?.macTagID == intent.macTagID,
-                  tag?.macDecisionRevision == intent.macExpectedRevision,
-                  (tag?.macDecision ?? RemoteLocalLibraryDecision.cleared.rawValue)
-                    == intent.macExpectedDecision.rawValue,
-                  tag?.state == .same || tag?.state == .decisionDiffers
-                    || tag?.state == .macDecisionMissing,
+                  catalogFieldMatches,
                   projection?.installID == intent.sourceInstallID,
                   projection?.sourceEpoch == intent.sourceEpoch,
                   projection?.scopeRevision == intent.phoneScopeRevision,
                   projection?.selectedAssetIDs.contains(intent.mediaID) == true,
                   projection?.assets.contains(where: { $0.id == intent.mediaID }) == true,
-                  fact?.revision == intent.phoneExpectedRevision,
-                  fact?.decision == intent.phoneExpectedDecision else {
+                  phoneFieldMatches else {
                 try await CatalogBlockingExecutor.shared.run(priority: .utility) {
                     try importer.markOutboundMacTagConflict(
                         operationID: intent.id,
@@ -2695,7 +2765,9 @@ private struct PhoneArchiveFactComparisonSheet: View {
                 expectedInstallID: intent.sourceInstallID,
                 expectedSourceEpoch: intent.sourceEpoch,
                 expectedScopeRevision: intent.phoneScopeRevision,
-                operationID: intent.id
+                operationID: intent.id,
+                tagNameForCreate: intent.phoneExpectedRevision == 0
+                    ? intent.phoneTagName : nil
             )
             guard let receipt = try await RemoteHostProcessHolder.sharedPhoneMacTagOperation(
                 deviceID: intent.phoneDeviceID, operationID: intent.id
@@ -2859,6 +2931,81 @@ private struct PhoneArchiveFactComparisonSheet: View {
             message = prepared
                 ? "提交状态待核查：\(error.localizedDescription)。请使用“核查并继续”，不要重复新建操作。"
                 : "提交失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func submitMacOnlyTagDecision(_ target: MacOnlyTagSyncTarget) async {
+        guard !isBusy, let comparison, let projection = liveProjection,
+              canSubmitMacOnlyTag(target.tag),
+              let decision = RemoteLocalLibraryDecision(rawValue: target.tag.decision),
+              let importer = PhoneArchiveImportProcessHolder.importer() else {
+            message = "对账已变化，请刷新后重试。"
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+        var prepared = false
+        do {
+            let current = try await RemoteHostProcessHolder.sharedPhoneProjections().first {
+                $0.deviceID == projection.deviceID
+            }
+            guard let current,
+                  current.installID == comparison.sourceInstallID,
+                  current.sourceEpoch == comparison.sourceEpoch,
+                  current.scopeRevision == projection.scopeRevision,
+                  current.selectedAssetIDs.contains(mediaID),
+                  current.assets.contains(where: { $0.id == mediaID }),
+                  phoneTagIdentityAvailable(target.tag, in: current) else {
+                message = "手机共享范围或标签身份已变化，请刷新对账。"
+                return
+            }
+            let intent = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.prepareOutboundMacOnlyTagDecision(
+                    operationID: target.operationID,
+                    migrationID: migrationID, mediaID: mediaID, assetID: asset.id,
+                    expectedComparison: comparison, expectedTag: target.tag,
+                    phoneDeviceID: projection.deviceID,
+                    phoneScopeRevision: projection.scopeRevision,
+                    timestampMs: Int64(Date().timeIntervalSince1970 * 1_000)
+                )
+            }
+            prepared = true
+            _ = try await RemoteHostProcessHolder.setSharedPhoneTagDecision(
+                deviceID: projection.deviceID, assetID: mediaID,
+                tagID: target.tag.tagID, decision: decision,
+                expectedRevision: 0,
+                expectedInstallID: comparison.sourceInstallID,
+                expectedSourceEpoch: comparison.sourceEpoch,
+                expectedScopeRevision: projection.scopeRevision,
+                operationID: intent.id,
+                tagNameForCreate: target.tag.tagName
+            )
+            guard let receipt = try await RemoteHostProcessHolder.sharedPhoneMacTagOperation(
+                deviceID: projection.deviceID, operationID: intent.id
+            ) else {
+                throw PhoneArchiveImportError.missingImportJournal
+            }
+            _ = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.finalizeOutboundMacTagDecision(
+                    operationID: intent.id, receipt: receipt,
+                    timestampMs: Int64(Date().timeIntervalSince1970 * 1_000)
+                )
+            }
+            let latest = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.compareBoundAssetFacts(
+                    migrationID: migrationID, mediaID: mediaID, assetID: asset.id
+                )
+            }
+            await loadComparison()
+            message = latest.bindingConfirmationEventID == comparison.bindingConfirmationEventID
+                && latest.macOnlyTags.contains(target.tag)
+                ? "Mac 新标签已写入手机共享账本；手机主动同步后才会应用。"
+                : "共享账本已写入，但 Mac 标签随后变化；请重新对账。"
+        } catch {
+            await loadComparison()
+            message = prepared
+                ? "新标签提交状态待核查：\(error.localizedDescription)。请使用“核查并继续”。"
+                : "新标签提交失败：\(error.localizedDescription)"
         }
     }
 

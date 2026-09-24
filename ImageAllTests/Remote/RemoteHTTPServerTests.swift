@@ -934,6 +934,92 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertTrue(afterReselect.changes.isEmpty)
     }
 
+    func testMacCreatesSharedTagFieldWithDurableIdentityAndRejectsNameAlias() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("new-shared-tag.json")
+        let hostID = UUID()
+        let deviceID = UUID()
+        let installID = UUID()
+        let epoch = UUID()
+        let assetID = UUID()
+        let tagID = UUID()
+        let store = try RemoteLocalLibrarySyncStore(hostID: hostID, storageURL: url)
+        _ = try await store.submit(.init(
+            hostID: hostID, installID: installID, sourceEpoch: epoch,
+            scopeRevision: 1, snapshotSequence: 1,
+            selectedAssetIDs: [assetID], assets: [.init(
+                id: assetID, localIdentifier: "phone-local", mediaKind: .image,
+                createdAtMs: nil, observedFavorite: false, favoriteTarget: nil,
+                tagDecisions: [], collections: []
+            )]
+        ), authenticatedDeviceID: deviceID)
+        do {
+            _ = try await store.setTagDecisionFromMac(
+                deviceID: deviceID, assetID: assetID, tagID: tagID,
+                decision: .accepted, expectedRevision: 0,
+                tagNameForCreate: "Journey"
+            )
+            XCTFail("new fields require a durable operation ID")
+        } catch let error as RemoteAPIError {
+            XCTAssertEqual(error.code, .conflict)
+        }
+        let operationID = UUID()
+        _ = try await store.setTagDecisionFromMac(
+            deviceID: deviceID, assetID: assetID, tagID: tagID,
+            decision: .accepted, expectedRevision: 0,
+            expectedInstallID: installID, expectedSourceEpoch: epoch,
+            expectedScopeRevision: 1, operationID: operationID,
+            tagNameForCreate: "Journey"
+        )
+        let reopened = try RemoteLocalLibrarySyncStore(hostID: hostID, storageURL: url)
+        let receipt = await reopened.macTagOperation(
+            deviceID: deviceID, operationID: operationID
+        )
+        XCTAssertEqual(receipt?.createdTagName, "Journey")
+        XCTAssertEqual(receipt?.expectedRevision, 0)
+        XCTAssertEqual(receipt?.resultingRevision, 1)
+        _ = try await reopened.setTagDecisionFromMac(
+            deviceID: deviceID, assetID: assetID, tagID: tagID,
+            decision: .accepted, expectedRevision: 0,
+            expectedInstallID: installID, expectedSourceEpoch: epoch,
+            expectedScopeRevision: 1, operationID: operationID,
+            tagNameForCreate: "Journey"
+        )
+        let page = try await reopened.tagChanges(
+            deviceID: deviceID, sourceEpoch: epoch,
+            scopeRevision: 1, afterCursor: 0
+        )
+        XCTAssertEqual(page.changes.count, 1)
+        XCTAssertEqual(page.changes.first?.tagName, "Journey")
+        XCTAssertEqual(page.changes.first?.fieldRevision, 1)
+        do {
+            _ = try await reopened.setTagDecisionFromMac(
+                deviceID: deviceID, assetID: assetID, tagID: UUID(),
+                decision: .rejected, expectedRevision: 0,
+                operationID: UUID(), tagNameForCreate: "journey"
+            )
+            XCTFail("same-name different-ID must be an identity conflict")
+        } catch let error as RemoteAPIError {
+            XCTAssertEqual(error.code, .conflict)
+        }
+        _ = try await reopened.setTagDecisionFromMac(
+            deviceID: deviceID, assetID: assetID, tagID: UUID(),
+            decision: .accepted, expectedRevision: 0,
+            operationID: UUID(), tagNameForCreate: "Café"
+        )
+        do {
+            _ = try await reopened.setTagDecisionFromMac(
+                deviceID: deviceID, assetID: assetID, tagID: UUID(),
+                decision: .accepted, expectedRevision: 0,
+                operationID: UUID(), tagNameForCreate: "Cafe\u{301}"
+            )
+            XCTFail("canonically equivalent name with another ID must conflict")
+        } catch let error as RemoteAPIError {
+            XCTAssertEqual(error.code, .conflict)
+        }
+    }
+
     func testVersionedTagLedgerOpensEarlierDirectoryProjection() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

@@ -996,7 +996,11 @@ private struct LocalShareScopeView: View {
                                     : "当前 Mac 版本尚无收藏目标回传"
                                 statusMessage = "Mac 已接收 \(receipt.acceptedAssetCount) 项目录；手机标签/集合成员/收藏目标提交 \(result.applied) 项、已一致 \(result.unchanged) 项；\(pull)、\(collectionPull)、\(favoritePull)、冲突 \(result.conflicts) 项；仍待处理 \(result.remaining) 项。\(continuation)原件尚未传输。"
                             } catch {
-                                statusMessage = "Mac 已接收目录，但整理信息提交未完成：\(error.localizedDescription)"
+                                if case LocalLibraryError.syncRemoteTagMismatch = error {
+                                    statusMessage = "Mac 已接收目录，但回传标签与本机标签身份冲突。该变化页和 cursor 均未提交；请先核对同名不同 ID 或标签名称差异，当前版本不会自动合并。"
+                                } else {
+                                    statusMessage = "Mac 已接收目录，但整理信息提交未完成：\(error.localizedDescription)"
+                                }
                             }
                         } catch {
                             statusMessage = "同步未完成：\(error.localizedDescription)"

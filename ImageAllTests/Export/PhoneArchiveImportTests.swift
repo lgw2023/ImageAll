@@ -716,7 +716,7 @@ final class PhoneArchiveImportTests: XCTestCase {
             operationID: outboundOperationID, deviceID: prepared.phoneDeviceID,
             installID: fixture.sourceDeviceID, sourceEpoch: fixture.sourceEpoch,
             scopeRevision: 1, assetID: item.mediaID, tagID: phoneAliasID,
-            decision: .accepted, expectedRevision: 1,
+            createdTagName: nil, decision: .accepted, expectedRevision: 1,
             resultingRevision: 2, changeSequence: 1
         )
         let committed = try reopenedImporter.finalizeOutboundMacTagDecision(
@@ -1313,7 +1313,8 @@ final class PhoneArchiveImportTests: XCTestCase {
             operationID: UUID(), deviceID: receipt.deviceID,
             installID: receipt.installID, sourceEpoch: receipt.sourceEpoch,
             scopeRevision: receipt.scopeRevision, assetID: receipt.assetID,
-            tagID: receipt.tagID, decision: receipt.decision,
+            tagID: receipt.tagID, createdTagName: receipt.createdTagName,
+            decision: receipt.decision,
             expectedRevision: receipt.expectedRevision,
             resultingRevision: receipt.resultingRevision,
             changeSequence: receipt.changeSequence
@@ -1388,6 +1389,57 @@ final class PhoneArchiveImportTests: XCTestCase {
         ).state, .committed)
         let clearedProjection = await recoveredStore.projection(deviceID: deviceID)
         XCTAssertEqual(clearedProjection?.sharedTagFacts.first?.decision, .cleared)
+
+        let newMacTagID = UUID()
+        try await recoveredCatalog.pool.write { db in
+            try db.execute(sql: """
+                INSERT INTO tag (id, name, normalized_name, state,
+                                 created_at_ms, updated_at_ms)
+                VALUES (?, 'New Journey', 'new journey', 'active', 15, 15)
+                """, arguments: [newMacTagID.uuidString.lowercased()])
+            try db.execute(sql: """
+                INSERT INTO asset_tag_decision (asset_id, tag_id, decision, updated_at_ms)
+                VALUES (?, ?, 'accepted', 15)
+                """, arguments: [assetID.uuidString.lowercased(),
+                                 newMacTagID.uuidString.lowercased()])
+        }
+        let newComparison = try recoveredImporter.compareBoundAssetFacts(
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID
+        )
+        let newTag = try XCTUnwrap(newComparison.macOnlyTags.first {
+            $0.tagID == newMacTagID
+        })
+        let newOperationID = UUID()
+        let newIntent = try recoveredImporter.prepareOutboundMacOnlyTagDecision(
+            operationID: newOperationID,
+            migrationID: header.migrationID, mediaID: item.mediaID, assetID: assetID,
+            expectedComparison: newComparison, expectedTag: newTag,
+            phoneDeviceID: deviceID, phoneScopeRevision: 1, timestampMs: 16
+        )
+        XCTAssertEqual(newIntent.phoneExpectedRevision, 0)
+        XCTAssertNil(newIntent.phoneExpectedDecision)
+        _ = try await recoveredStore.setTagDecisionFromMac(
+            deviceID: deviceID, assetID: item.mediaID, tagID: newMacTagID,
+            decision: .accepted, expectedRevision: 0,
+            expectedInstallID: fixture.sourceDeviceID,
+            expectedSourceEpoch: fixture.sourceEpoch,
+            expectedScopeRevision: 1, operationID: newOperationID,
+            tagNameForCreate: "New Journey"
+        )
+        let secondRestart = try RemoteLocalLibrarySyncStore(
+            hostID: hostID, storageURL: ledgerURL
+        )
+        let newRecovery = try await recoveredImporter.recoverPreparedOutboundMacTagDecisions {
+            deviceID, operationID in
+            await secondRestart.macTagOperation(deviceID: deviceID, operationID: operationID)
+        }
+        XCTAssertEqual(newRecovery, .init(
+            prepared: 1, committed: 1, stillPending: 0, failedVerification: 0
+        ))
+        let newProjection = await secondRestart.projection(deviceID: deviceID)
+        XCTAssertEqual(newProjection?.sharedTagFacts.first(where: {
+            $0.tagID == newMacTagID
+        })?.revision, 1)
     }
 
     private final class Fixture {

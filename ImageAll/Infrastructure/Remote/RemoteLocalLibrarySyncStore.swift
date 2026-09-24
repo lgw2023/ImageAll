@@ -56,6 +56,8 @@ actor RemoteLocalLibrarySyncStore {
         let scopeRevision: Int64
         let assetID: UUID
         let tagID: UUID
+        /// Present when this operation created the shared field and tag identity.
+        let createdTagName: String?
         let decision: RemoteLocalLibraryDecision
         let expectedRevision: Int64
         let resultingRevision: Int64
@@ -162,14 +164,18 @@ actor RemoteLocalLibrarySyncStore {
                                   && operation.sourceEpoch == record.request.sourceEpoch
                                   && operation.scopeRevision >= 0
                                   && operation.scopeRevision <= record.request.scopeRevision
-                                  && operation.expectedRevision > 0
+                                  && operation.expectedRevision >= 0
                                   && operation.expectedRevision < Int64.max
                                   && operation.resultingRevision == operation.expectedRevision + 1
+                                  && (operation.expectedRevision > 0
+                                      || operation.createdTagName != nil)
                                   && changes.contains { change in
                                       change.sequence == operation.changeSequence
                                           && change.scopeRevision == operation.scopeRevision
                                           && change.assetID == operation.assetID
                                           && change.tagID == operation.tagID
+                                          && (operation.createdTagName == nil
+                                              || change.tagName == operation.createdTagName)
                                           && change.decision == operation.decision
                                           && change.fieldRevision == operation.resultingRevision
                                   }
@@ -793,7 +799,8 @@ actor RemoteLocalLibrarySyncStore {
         decision: RemoteLocalLibraryDecision, expectedRevision: Int64,
         expectedInstallID: UUID? = nil, expectedSourceEpoch: UUID? = nil,
         expectedScopeRevision: Int64? = nil,
-        operationID: UUID? = nil
+        operationID: UUID? = nil,
+        tagNameForCreate: String? = nil
     ) throws -> Projection {
         guard let previous = records[deviceID] else {
             throw RemoteAPIError(code: .notFound, message: "shared phone source unavailable")
@@ -803,6 +810,7 @@ actor RemoteLocalLibrarySyncStore {
                $0.operationID == operationID
            }) {
             guard applied.assetID == assetID, applied.tagID == tagID,
+                  applied.createdTagName == tagNameForCreate,
                   applied.decision == decision,
                   applied.expectedRevision == expectedRevision,
                   expectedInstallID.map({ $0 == applied.installID }) ?? true,
@@ -822,32 +830,65 @@ actor RemoteLocalLibrarySyncStore {
             throw RemoteAPIError(code: .conflict, message: "shared phone scope changed")
         }
         var facts = previous.sharedTagFacts ?? Self.seedTagFacts(from: previous.projectedAssets)
-        guard let index = facts.firstIndex(where: {
-            $0.assetID == assetID && $0.tagID == tagID
-        }) else {
-            throw RemoteAPIError(code: .notFound, message: "shared phone tag unavailable")
+        let index = facts.firstIndex { $0.assetID == assetID && $0.tagID == tagID }
+        let nextRevision: Int64
+        let tagName: String
+        if let index {
+            guard tagNameForCreate == nil else {
+                throw RemoteAPIError(code: .conflict, message: "shared tag already exists")
+            }
+            let current = facts[index]
+            guard current.revision == expectedRevision else {
+                throw RemoteAPIError(code: .conflict, message: "shared phone tag changed")
+            }
+            if current.decision == decision {
+                return projection(deviceID: deviceID)!
+            }
+            guard current.revision < Int64.max else {
+                throw RemoteAPIError(code: .internalError, message: "shared change revision exhausted")
+            }
+            nextRevision = current.revision + 1
+            tagName = current.tagName
+            facts[index] = SharedTagFact(
+                assetID: assetID, tagID: tagID, tagName: tagName,
+                decision: decision, revision: nextRevision
+            )
+        } else {
+            guard expectedRevision == 0, operationID != nil,
+                  decision != .cleared,
+                  let candidate = tagNameForCreate,
+                  candidate == candidate.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !candidate.isEmpty, candidate.count <= 120,
+                  candidate.utf8.count <= 512,
+                  !facts.contains(where: {
+                      ($0.tagID == tagID && $0.tagName != candidate)
+                          || ($0.tagID != tagID
+                              && Self.sameTagIdentityName($0.tagName, candidate))
+                  }),
+                  !previous.projectedAssets.contains(where: { projected in
+                      projected.asset.tagDecisions.contains { tag in
+                          (tag.tagID == tagID && tag.tagName != candidate)
+                              || (tag.tagID != tagID
+                                  && Self.sameTagIdentityName(tag.tagName, candidate))
+                      }
+                  }) else {
+                throw RemoteAPIError(code: .conflict, message: "new shared tag identity changed")
+            }
+            nextRevision = 1
+            tagName = candidate
+            facts.append(SharedTagFact(
+                assetID: assetID, tagID: tagID, tagName: candidate,
+                decision: decision, revision: 1
+            ))
         }
-        let current = facts[index]
-        guard current.revision == expectedRevision else {
-            throw RemoteAPIError(code: .conflict, message: "shared phone tag changed")
-        }
-        if current.decision == decision {
-            return projection(deviceID: deviceID)!
-        }
-        guard current.revision < Int64.max,
-              (previous.tagChanges?.last?.sequence ?? 0) < Int64.max else {
+        guard (previous.tagChanges?.last?.sequence ?? 0) < Int64.max else {
             throw RemoteAPIError(code: .internalError, message: "shared change revision exhausted")
         }
-        let nextRevision = current.revision + 1
         let nextSequence = (previous.tagChanges?.last?.sequence ?? 0) + 1
-        facts[index] = SharedTagFact(
-            assetID: assetID, tagID: tagID, tagName: current.tagName,
-            decision: decision, revision: nextRevision
-        )
         let change = RemoteLocalLibraryTagChange(
             sequence: nextSequence, scopeRevision: previous.request.scopeRevision,
             assetID: assetID, tagID: tagID,
-            tagName: current.tagName, decision: decision, fieldRevision: nextRevision
+            tagName: tagName, decision: decision, fieldRevision: nextRevision
         )
         let operation = operationID.map { id in
             MacTagOperationReceipt(
@@ -855,7 +896,8 @@ actor RemoteLocalLibrarySyncStore {
                 installID: previous.request.installID,
                 sourceEpoch: previous.request.sourceEpoch,
                 scopeRevision: previous.request.scopeRevision,
-                assetID: assetID, tagID: tagID, decision: decision,
+                assetID: assetID, tagID: tagID,
+                createdTagName: tagNameForCreate, decision: decision,
                 expectedRevision: expectedRevision,
                 resultingRevision: nextRevision,
                 changeSequence: nextSequence
@@ -1142,6 +1184,14 @@ actor RemoteLocalLibrarySyncStore {
         encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(request)
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func sameTagIdentityName(_ lhs: String, _ rhs: String) -> Bool {
+        if case .success(let left) = TagNameNormalizer.validateAndNormalize(lhs),
+           case .success(let right) = TagNameNormalizer.validateAndNormalize(rhs) {
+            return left.normalizedName == right.normalizedName
+        }
+        return lhs.localizedCaseInsensitiveCompare(rhs) == .orderedSame
     }
 
     private static func seedTagFacts(from assets: [ProjectedAsset]) -> [SharedTagFact] {

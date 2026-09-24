@@ -3,7 +3,7 @@ import XCTest
 @testable import ImageAll
 
 final class CatalogMigrationTests: XCTestCase {
-    func testV050PreservesPendingOutboundIntentAndAllowsClear() throws {
+    func testV050AndV051PreservePendingIntentAndAllowClearAndNewField() throws {
         let url = try makeTempDatabaseURL()
         let pool = try DatabasePool(path: url.path)
         try CatalogDatabase.makeMigrator().migrate(
@@ -14,6 +14,7 @@ final class CatalogMigrationTests: XCTestCase {
         let bindingEvent = UUID().uuidString.lowercased()
         let firstOperation = UUID().uuidString.lowercased()
         let secondOperation = UUID().uuidString.lowercased()
+        let thirdOperation = UUID().uuidString.lowercased()
         let asset = UUID().uuidString.lowercased()
         let install = UUID().uuidString.lowercased()
         let epoch = UUID().uuidString.lowercased()
@@ -76,9 +77,24 @@ final class CatalogMigrationTests: XCTestCase {
                     secondOperation, migration, media, asset, bindingEvent,
                     install, epoch, device, tag, tag,
                 ])
+            try db.execute(sql: """
+                INSERT INTO phone_tag_mac_outbound_intent (
+                    id, migration_id, media_id, asset_id,
+                    binding_confirmation_event_id, source_install_id, source_epoch,
+                    phone_device_id, phone_scope_revision, phone_tag_id, phone_tag_name,
+                    mac_tag_id, mac_tag_updated_at_ms, mac_expected_revision,
+                    mac_expected_decision, phone_expected_revision,
+                    phone_expected_decision, desired_decision, state, created_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 'New Journey', ?, 3, 1,
+                          'accepted', 0, NULL, 'accepted', 'prepared', 3)
+                """, arguments: [
+                    thirdOperation, migration, media, asset, bindingEvent,
+                    install, epoch, device, UUID().uuidString.lowercased(),
+                    UUID().uuidString.lowercased(),
+                ])
             XCTAssertEqual(try Int.fetchOne(db, sql: """
                 SELECT COUNT(*) FROM phone_tag_mac_outbound_intent
-                """), 2)
+                """), 3)
         }
     }
 
@@ -1664,6 +1680,10 @@ final class CatalogMigrationTests: XCTestCase {
 
     private static func dropV035AndLaterTables(_ db: Database) throws {
         try db.execute(sql: "DROP TABLE IF EXISTS phone_tag_mac_outbound_intent")
+        try db.execute(
+            sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
+            arguments: [CatalogMigrationID.v051AllowNewPhoneTagOutboundIntent]
+        )
         try db.execute(
             sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
             arguments: [CatalogMigrationID.v050AllowClearedPhoneTagOutboundIntent]
