@@ -11,6 +11,7 @@ final class LocalLibraryModel: ObservableObject {
     @Published private(set) var collections: [LocalCollection] = []
     @Published private(set) var pendingCount = 0
     @Published private(set) var hasMore = false
+    @Published private(set) var favoriteWritesInFlight: Set<UUID> = []
     @Published var errorMessage: String?
 
     private let store: LocalLibraryStore?
@@ -129,16 +130,70 @@ final class LocalLibraryModel: ObservableObject {
     }
 
     func setFavoriteTarget(_ favorite: Bool, asset: LocalAsset) async {
+        await writeFavorite(favorite, asset: asset, saveNewIntent: true)
+    }
+
+    func retryFavoriteWriteback(asset: LocalAsset) async {
+        guard let target = asset.favoriteTarget else { return }
+        await writeFavorite(target, asset: asset, saveNewIntent: false)
+    }
+
+    private func writeFavorite(
+        _ favorite: Bool, asset: LocalAsset, saveNewIntent: Bool
+    ) async {
         guard let store else { return }
-        do {
-            try await store.setFavoriteTarget(assetID: asset.id, isFavorite: favorite)
-            if let index = assets.firstIndex(where: { $0.id == asset.id }) {
-                // Refresh from the durable row rather than assuming the write succeeded.
-                let result = try await store.assets(visibleIdentifiers: [asset.localIdentifier])
-                if let refreshed = result.first { assets[index] = refreshed }
+        guard !favoriteWritesInFlight.contains(asset.id) else { return }
+        favoriteWritesInFlight.insert(asset.id)
+        defer { favoriteWritesInFlight.remove(asset.id) }
+        if saveNewIntent {
+            do {
+                try await store.setFavoriteTarget(assetID: asset.id, isFavorite: favorite)
+                try await refreshStoredAsset(asset)
+                await reloadFacts()
+            } catch {
+                errorMessage = "保存收藏目标失败：\(error.localizedDescription)"
+                return
             }
-            await reloadFacts()
-        } catch { errorMessage = "保存收藏目标失败：\(error.localizedDescription)" }
+        }
+
+        do {
+            let authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+            guard authorization == .authorized || authorization == .limited else {
+                throw LocalFavoriteSourceError.authorizationRequired
+            }
+            let fetched = PHAsset.fetchAssets(
+                withLocalIdentifiers: [asset.localIdentifier], options: nil
+            )
+            guard let sourceAsset = fetched.firstObject else {
+                throw LocalFavoriteSourceError.assetUnavailable
+            }
+            try await PHPhotoLibrary.shared().performChanges {
+                PHAssetChangeRequest(for: sourceAsset).isFavorite = favorite
+            }
+            let readback = PHAsset.fetchAssets(
+                withLocalIdentifiers: [asset.localIdentifier], options: nil
+            ).firstObject?.isFavorite
+            try await store.finishFavoriteWriteback(
+                assetID: asset.id, requestedValue: favorite, observedValue: readback
+            )
+            try await refreshStoredAsset(asset)
+            if readback != favorite {
+                errorMessage = "已保存 ImageAll 收藏目标，但 Photos 回读尚未一致，可稍后刷新或重试。"
+            }
+        } catch {
+            try? await store.finishFavoriteWriteback(
+                assetID: asset.id, requestedValue: favorite, observedValue: nil
+            )
+            try? await refreshStoredAsset(asset)
+            errorMessage = "已保存 ImageAll 收藏目标，Photos 写回未完成：\(error.localizedDescription)"
+        }
+    }
+
+    private func refreshStoredAsset(_ asset: LocalAsset) async throws {
+        guard let store, let index = assets.firstIndex(where: { $0.id == asset.id }) else { return }
+        if let refreshed = try await store.assets(visibleIdentifiers: [asset.localIdentifier]).first {
+            assets[index] = refreshed
+        }
     }
 
     private func reloadFacts() async {
@@ -148,6 +203,18 @@ final class LocalLibraryModel: ObservableObject {
             collections = try await store.collections()
             pendingCount = try await store.pendingOperations().count
         } catch { errorMessage = "读取本机资料失败：\(error.localizedDescription)" }
+    }
+}
+
+private enum LocalFavoriteSourceError: LocalizedError {
+    case authorizationRequired
+    case assetUnavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .authorizationRequired: "本机照片授权已变化"
+        case .assetUnavailable: "这张照片已不在当前授权范围内"
+        }
     }
 }
 
@@ -280,14 +347,29 @@ private struct LocalAssetDetailView: View {
                 .frame(maxWidth: .infinity)
                 .frame(height: 280)
             Section("收藏") {
-                Button(currentAsset.favoriteTarget ?? currentAsset.observedFavorite ? "取消收藏目标" : "设为收藏目标") {
+                Button(currentAsset.favoriteTarget ?? currentAsset.observedFavorite ? "取消 Photos 收藏" : "收藏到 Photos") {
                     Task {
                         await model.setFavoriteTarget(
                             !(currentAsset.favoriteTarget ?? currentAsset.observedFavorite), asset: currentAsset
                         )
                     }
                 }
-                Text("这是 ImageAll 本机收藏目标；Photos 写回状态需要单独确认。")
+                .disabled(model.favoriteWritesInFlight.contains(asset.id))
+                if let target = currentAsset.favoriteTarget,
+                   target != currentAsset.observedFavorite,
+                   (currentAsset.favoriteWritebackState == .failed
+                        || currentAsset.favoriteWritebackState == .pending)
+                {
+                    Button("重试写回收藏目标") {
+                        Task { await model.retryFavoriteWriteback(asset: currentAsset) }
+                    }
+                    .disabled(model.favoriteWritesInFlight.contains(asset.id))
+                }
+                LabeledContent("Photos 观测", value: currentAsset.observedFavorite ? "已收藏" : "未收藏")
+                if let target = currentAsset.favoriteTarget {
+                    LabeledContent("ImageAll 目标", value: target ? "收藏" : "不收藏")
+                }
+                Text(favoriteWritebackMessage(currentAsset.favoriteWritebackState))
                     .font(.footnote).foregroundStyle(.secondary)
             }
             Section("标签决定") {
@@ -327,6 +409,15 @@ private struct LocalAssetDetailView: View {
         .task(id: asset.id) {
             decisions = await model.decisions(for: asset)
             memberships = await model.memberships(for: asset)
+        }
+    }
+
+    private func favoriteWritebackMessage(_ state: LocalFavoriteWritebackState) -> String {
+        switch state {
+        case .notRequested: "尚未从 ImageAll 更改系统收藏。"
+        case .pending: "收藏目标已保存在本机，等待 Photos 回读。"
+        case .matched: "Photos 回读与本机收藏目标一致。"
+        case .failed: "Photos 写回未完成；本机目标已保留，可重新操作。"
         }
     }
 }

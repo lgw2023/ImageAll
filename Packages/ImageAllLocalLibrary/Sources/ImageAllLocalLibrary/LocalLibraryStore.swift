@@ -13,6 +13,10 @@ public enum LocalDecision: String, Codable, Sendable {
     case accepted, rejected, cleared
 }
 
+public enum LocalFavoriteWritebackState: String, Codable, Sendable {
+    case notRequested, pending, matched, failed
+}
+
 public struct LocalObservedAsset: Sendable {
     public let localIdentifier: String
     public let kind: String
@@ -34,6 +38,7 @@ public struct LocalAsset: Identifiable, Sendable {
     public let creationDate: Date?
     public let observedFavorite: Bool
     public let favoriteTarget: Bool?
+    public let favoriteWritebackState: LocalFavoriteWritebackState
 }
 
 public struct LocalTag: Identifiable, Sendable {
@@ -112,6 +117,10 @@ public actor LocalLibraryStore {
                   field TEXT NOT NULL, value TEXT NOT NULL,
                   created_time REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS favorite_writebacks (
+                  asset_id TEXT PRIMARY KEY REFERENCES assets(id),
+                  target INTEGER NOT NULL, state TEXT NOT NULL
+                );
                 """
             let setup = schema + """
                 INSERT OR IGNORE INTO identity(key,value) VALUES('install_id','\(UUID().uuidString)');
@@ -153,6 +162,14 @@ public actor LocalLibraryStore {
                         asset.creationDate.map { String($0.timeIntervalSince1970) } ?? "",
                         asset.isFavorite ? "1" : "0"
                     ])
+                // Source observation resolves an interrupted write and detects later drift.
+                try execute("""
+                    UPDATE favorite_writebacks SET state=CASE
+                      WHEN target=? THEN 'matched'
+                      WHEN state='matched' THEN 'failed'
+                      ELSE state END
+                    WHERE asset_id=(SELECT id FROM assets WHERE source_epoch=? AND local_identifier=?)
+                    """, [asset.isFavorite ? "1" : "0", epoch, asset.localIdentifier])
             }
         }
     }
@@ -162,7 +179,7 @@ public actor LocalLibraryStore {
         let epoch = try requiredIdentity("source_epoch")
         let placeholders = Array(repeating: "?", count: visibleIdentifiers.count).joined(separator: ",")
         return try rows(
-            "SELECT id,local_identifier,kind,creation_time,observed_favorite,favorite_target FROM assets WHERE source_epoch=? AND local_identifier IN (\(placeholders))",
+            "SELECT a.id,a.local_identifier,a.kind,a.creation_time,a.observed_favorite,a.favorite_target,w.state FROM assets a LEFT JOIN favorite_writebacks w ON w.asset_id=a.id WHERE a.source_epoch=? AND a.local_identifier IN (\(placeholders))",
             [epoch] + visibleIdentifiers.sorted()
         )
             .compactMap { row in
@@ -172,7 +189,9 @@ public actor LocalLibraryStore {
                     id: id, localIdentifier: row[1] ?? "", kind: row[2] ?? "image",
                     creationDate: (row[3].flatMap(Double.init)).map(Date.init(timeIntervalSince1970:)),
                     observedFavorite: row[4] == "1",
-                    favoriteTarget: row[5].map { $0 == "1" }
+                    favoriteTarget: row[5].map { $0 == "1" },
+                    favoriteWritebackState: LocalFavoriteWritebackState(rawValue: row[6] ?? "")
+                        ?? .notRequested
                 )
             }
     }
@@ -257,12 +276,35 @@ public actor LocalLibraryStore {
     }
 
     /// Records ImageAll's desired favorite separately from PhotoKit's last observed state.
-    /// A PhotoKit write-back needs its own source receipt in a later slice.
+    /// Pending intent survives a crash between source mutation and readback.
     public func setFavoriteTarget(assetID: UUID, isFavorite: Bool) throws {
         guard try exists("assets", id: assetID) else { throw LocalLibraryError.unknownAsset }
         try transaction {
             try execute("UPDATE assets SET favorite_target=? WHERE id=?", [isFavorite ? "1" : "0", assetID.uuidString])
+            try execute("""
+                INSERT INTO favorite_writebacks(asset_id,target,state) VALUES(?,?,'pending')
+                ON CONFLICT(asset_id) DO UPDATE SET target=excluded.target,state='pending'
+                """, [assetID.uuidString, isFavorite ? "1" : "0"])
             try enqueue(assetID, field: "favorite.target", value: isFavorite ? "1" : "0")
+        }
+    }
+
+    /// A late result for an older target cannot acknowledge or overwrite a newer user intent.
+    public func finishFavoriteWriteback(
+        assetID: UUID, requestedValue: Bool, observedValue: Bool?
+    ) throws {
+        let value = requestedValue ? "1" : "0"
+        guard try scalar("SELECT favorite_target FROM assets WHERE id=?", [assetID.uuidString]) == value
+        else { return }
+        try transaction {
+            if let observedValue {
+                try execute("UPDATE assets SET observed_favorite=? WHERE id=?", [
+                    observedValue ? "1" : "0", assetID.uuidString
+                ])
+            }
+            try execute("UPDATE favorite_writebacks SET state=? WHERE asset_id=? AND target=?", [
+                observedValue == requestedValue ? "matched" : "failed", assetID.uuidString, value
+            ])
         }
     }
 
