@@ -58,6 +58,36 @@ final class ImageAllMigrationArchiveTests: XCTestCase {
         XCTAssertEqual(result.verifiedBytes, 0)
     }
 
+    func testMissingLivePhotoPairKeepsArchiveIncompleteEvenWithOriginalPhoto() throws {
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = try makeItem(
+            root: root, resourceID: UUID(), bytes: Data("synthetic-live-photo".utf8)
+        )
+        let item = ImageAllMigrationItem(
+            mediaID: original.mediaID,
+            sourceLocalIdentifier: original.sourceLocalIdentifier,
+            mediaKind: .image, createdAtMs: original.createdAtMs,
+            favoriteTarget: original.favoriteTarget,
+            observedFavorite: original.observedFavorite,
+            factRevision: original.factRevision,
+            tagDecisions: original.tagDecisions, collections: original.collections,
+            resources: original.resources + [.init(
+                id: UUID(), role: "pairedVideo", version: 1,
+                uniformTypeIdentifier: "com.apple.quicktime-movie",
+                required: true, status: .notLocal,
+                relativePath: nil, byteCount: nil, sha256: nil
+            )]
+        )
+        try ImageAllMigrationArchive.write(
+            header: header(migrationID: UUID(), count: 1), items: [item], to: root
+        )
+        let verification = try ImageAllMigrationArchive.verify(at: root)
+        XCTAssertFalse(verification.isComplete)
+        XCTAssertEqual(verification.resourceCount, 1)
+        XCTAssertEqual(verification.incompleteMediaIDs, [item.mediaID])
+    }
+
     func testRejectsSymlinkAndUnfinishedOrDuplicateManifest() throws {
         let root = makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }

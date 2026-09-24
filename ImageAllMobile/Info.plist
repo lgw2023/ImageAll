@@ -32,6 +32,25 @@
 	<array>
 		<string>_imageall._tcp</string>
 	</array>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.gwlee.imageall.migration-archive</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>com.apple.package</string>
+				<string>public.content</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>ImageAll Migration Archive</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<string>imageallarchive</string>
+			</dict>
+		</dict>
+	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

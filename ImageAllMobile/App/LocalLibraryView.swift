@@ -1,8 +1,11 @@
+import CryptoKit
+import CoreTransferable
 import ImageAllLocalLibrary
 import ImageAllRemoteProtocol
 import Photos
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 struct LocalSharedSyncSummary {
     let applied: Int
@@ -188,6 +191,32 @@ final class LocalLibraryModel: ObservableObject {
         return try await store.prepareSharedSnapshot(
             visibleIdentifiers: Set(visible.map(\.localIdentifier))
         )
+    }
+
+    /// An explicit, local-only export of the current selected scope. A reduced
+    /// Photos permission must never silently turn this into a smaller archive.
+    func exportSelectedArchive() async throws -> (URL, ImageAllMigrationVerification) {
+        let snapshot = try await prepareSharedSnapshot()
+        guard !snapshot.selectedAssetIDs.isEmpty else {
+            throw LocalArchiveExportError.emptySelection
+        }
+        guard Set(snapshot.selectedAssetIDs) == Set(snapshot.assets.map(\.id)) else {
+            throw LocalArchiveExportError.selectionNotVisible
+        }
+        let result = try await LocalPhotoArchiveExporter.export(snapshot: snapshot)
+        do {
+            let current = try await prepareSharedSnapshot()
+            guard current.sourceEpoch == snapshot.sourceEpoch,
+                  current.scopeRevision == snapshot.scopeRevision,
+                  Set(current.selectedAssetIDs) == Set(snapshot.selectedAssetIDs),
+                  Set(current.assets.map(\.id)) == Set(snapshot.assets.map(\.id)) else {
+                throw LocalArchiveExportError.selectionChanged
+            }
+            return result
+        } catch {
+            try? FileManager.default.removeItem(at: result.0)
+            throw error
+        }
     }
 
     func completeSharedSync(
@@ -719,7 +748,10 @@ private struct LocalShareScopeView: View {
     @ObservedObject var model: LocalLibraryModel
     @ObservedObject var remoteModel: RemoteCompanionModel
     @State private var isSending = false
+    @State private var isExporting = false
+    @State private var exportedArchive: URL?
     @State private var statusMessage: String?
+    @State private var archiveStatusMessage: String?
 
     var body: some View {
         List {
@@ -905,11 +937,41 @@ private struct LocalShareScopeView: View {
                 if let statusMessage {
                     Text(statusMessage).font(.footnote).foregroundStyle(.secondary)
                 }
-                Text("先在“Mac 图库”完成设备配对。冲突会保留在手机；收藏目标同步仍待接入。")
+                Text("连接 Mac 后可手动同步目录与整理信息；原件归档需单独点按下方按钮。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            archiveSection
         }
         .navigationTitle("待分享范围")
+    }
+
+    private var archiveSection: some View {
+        Section("本机原件归档") {
+            Button(isExporting ? "正在读取并核对原件…" : "生成所选项目的本机归档包") {
+                Task {
+                    isExporting = true
+                    exportedArchive = nil
+                    archiveStatusMessage = nil
+                    defer { isExporting = false }
+                    do {
+                        let (url, verification) = try await model.exportSelectedArchive()
+                        exportedArchive = url
+                        archiveStatusMessage = "归档 \(verification.itemCount) 项，已校验 \(verification.resourceCount) 个资源；必需原件缺失 \(verification.incompleteMediaIDs.count) 项。缺失项不能视为迁移完成。"
+                    } catch {
+                        archiveStatusMessage = "归档未完成：\(error.localizedDescription)"
+                    }
+                }
+            }
+            .disabled(isExporting || isSending || model.sharedSelections.isEmpty)
+            if let exportedArchive {
+                LocalArchiveShareButton(url: exportedArchive)
+            }
+            if let archiveStatusMessage {
+                Text(archiveStatusMessage).font(.footnote).foregroundStyle(.secondary)
+            }
+            Text("仅读取当前获准访问的所选项目，不从 iCloud 下载。归档包由用户选择导出位置；Mac 入库与迁移完成校验仍需后续步骤。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
     }
 
     private func decisionName(_ decision: LocalDecision?) -> String {
@@ -935,6 +997,280 @@ private struct LocalShareScopeView: View {
         case false: "取消收藏"
         case nil: "未知"
         }
+    }
+}
+
+private enum LocalArchiveExportError: LocalizedError {
+    case emptySelection
+    case selectionNotVisible
+    case selectionChanged
+    case sourceChanged
+
+    var errorDescription: String? {
+        switch self {
+        case .emptySelection: "请先选择要归档的照片或视频。"
+        case .selectionNotVisible: "所选项目中有当前无权访问或已隐藏的资产；请先恢复访问，再生成完整范围归档。"
+        case .selectionChanged: "导出期间分享范围已变化；请重新生成归档。"
+        case .sourceChanged: "导出期间来源照片或视频已变化；请重新生成归档。"
+        }
+    }
+}
+
+private struct LocalMigrationArchiveTransfer: Transferable, Sendable {
+    let url: URL
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(
+            exportedContentType: UTType(exportedAs: "com.gwlee.imageall.migration-archive")
+        ) { archive in
+            SentTransferredFile(archive.url)
+        }
+    }
+}
+
+private struct LocalArchiveShareButton: View {
+    let url: URL
+
+    var body: some View {
+        ShareLink(
+            item: LocalMigrationArchiveTransfer(url: url),
+            preview: SharePreview("ImageAll 原件归档包")
+        ) {
+            Text("导出归档包到文件或其他 App")
+        }
+    }
+}
+
+@MainActor
+private enum LocalPhotoArchiveExporter {
+    private struct SourceVersion: Equatable {
+        let modificationDate: Date?
+        let resourceSignature: [String]
+    }
+
+    static func export(
+        snapshot: LocalSharedSnapshot
+    ) async throws -> (URL, ImageAllMigrationVerification) {
+        let manager = FileManager.default
+        let support = try manager.url(
+            for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: true
+        )
+        let parent = support.appendingPathComponent("LocalLibrary/MigrationArchives", isDirectory: true)
+        try manager.createDirectory(at: parent, withIntermediateDirectories: true)
+        var parentValues = URLResourceValues()
+        parentValues.isExcludedFromBackup = true
+        var mutableParent = parent
+        try mutableParent.setResourceValues(parentValues)
+        let migrationID = UUID()
+        let staging = parent.appendingPathComponent(".staging-\(migrationID.uuidString)", isDirectory: true)
+        let published = parent.appendingPathComponent("\(migrationID.uuidString).imageallarchive", isDirectory: true)
+        try manager.createDirectory(at: staging, withIntermediateDirectories: false)
+        try manager.setAttributes(
+            [.protectionKey: FileProtectionType.complete], ofItemAtPath: staging.path
+        )
+        var shouldRemoveStaging = true
+        defer { if shouldRemoveStaging { try? manager.removeItem(at: staging) } }
+
+        let options = PHFetchOptions()
+        options.includeHiddenAssets = false
+        options.includeAssetSourceTypes = .typeUserLibrary
+        let result = PHAsset.fetchAssets(
+            withLocalIdentifiers: snapshot.assets.map(\.localIdentifier), options: options
+        )
+        var byLocator: [String: PHAsset] = [:]
+        result.enumerateObjects { asset, _, _ in byLocator[asset.localIdentifier] = asset }
+        guard byLocator.count == snapshot.assets.count else {
+            throw LocalArchiveExportError.selectionNotVisible
+        }
+        let sourceVersions = byLocator.mapValues(sourceVersion)
+
+        var items: [ImageAllMigrationItem] = []
+        for selected in snapshot.assets {
+            guard let source = byLocator[selected.localIdentifier] else {
+                throw LocalArchiveExportError.selectionNotVisible
+            }
+            let sourceResources = PHAssetResource.assetResources(for: source)
+            let primary = primaryResourceIndex(mediaType: source.mediaType, resources: sourceResources)
+            var exported: [ImageAllMigrationResource] = []
+            for (index, resource) in sourceResources.enumerated() {
+                let id = UUID()
+                let uti = resource.uniformTypeIdentifier.isEmpty
+                    ? UTType.data.identifier : resource.uniformTypeIdentifier
+                let role = index == primary ? "original" : resourceRole(resource.type)
+                let preferredExtension = UTType(uti)?.preferredFilenameExtension ?? "bin"
+                let fileExtension = preferredExtension.count <= 12
+                    && preferredExtension.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) })
+                    ? preferredExtension : "bin"
+                let relativePath = "resources/\(id.uuidString.lowercased()).\(fileExtension)"
+                let destination = staging.appendingPathComponent(relativePath)
+                try manager.createDirectory(
+                    at: destination.deletingLastPathComponent(), withIntermediateDirectories: true
+                )
+                do {
+                    try await writeLocalResource(resource, to: destination)
+                    let digest = try await Task.detached {
+                        try hashFile(destination)
+                    }.value
+                    try manager.setAttributes(
+                        [.protectionKey: FileProtectionType.complete], ofItemAtPath: destination.path
+                    )
+                    exported.append(ImageAllMigrationResource(
+                        id: id, role: role, version: 1, uniformTypeIdentifier: uti,
+                        required: true, status: .present, relativePath: relativePath,
+                        byteCount: digest.0, sha256: digest.1
+                    ))
+                } catch {
+                    try? manager.removeItem(at: destination)
+                    let current = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+                    let failure = error as NSError
+                    let photoCode = failure.domain == PHPhotosError.errorDomain
+                        ? PHPhotosError.Code(rawValue: failure.code) : nil
+                    let resourceStatus: ImageAllMigrationResourceStatus
+                    if current != .authorized && current != .limited {
+                        resourceStatus = .permissionDenied
+                    } else if photoCode == .accessRestricted || photoCode == .accessUserDenied {
+                        resourceStatus = .permissionDenied
+                    } else if photoCode == .networkAccessRequired || photoCode == .missingResource {
+                        resourceStatus = .notLocal
+                    } else if photoCode == .requestNotSupportedForAsset {
+                        resourceStatus = .unsupported
+                    } else {
+                        throw error
+                    }
+                    exported.append(ImageAllMigrationResource(
+                        id: id, role: role, version: 1, uniformTypeIdentifier: uti,
+                        required: true, status: resourceStatus, relativePath: nil,
+                        byteCount: nil, sha256: nil
+                    ))
+                }
+            }
+            if primary == nil {
+                exported.append(ImageAllMigrationResource(
+                    id: UUID(), role: "original", version: 1,
+                    uniformTypeIdentifier: UTType.data.identifier,
+                    required: true, status: .unsupported,
+                    relativePath: nil, byteCount: nil, sha256: nil
+                ))
+            }
+            let decisions = selected.tagDecisions.map {
+                let decision: RemoteLocalLibraryDecision
+                switch $0.decision {
+                case .accepted: decision = .accepted
+                case .rejected: decision = .rejected
+                case .cleared: decision = .cleared
+                }
+                return ImageAllMigrationTagDecision(
+                    tagID: $0.tagID, tagName: $0.tagName,
+                    decision: decision
+                )
+            }
+            let collections = selected.collections.map {
+                ImageAllMigrationCollectionMembership(
+                    collectionID: $0.collectionID, collectionName: $0.collectionName, included: true
+                )
+            }
+            items.append(ImageAllMigrationItem(
+                mediaID: selected.id, sourceLocalIdentifier: selected.localIdentifier,
+                mediaKind: selected.kind == "video" ? .video : .image,
+                createdAtMs: selected.creationDate.map { Int64($0.timeIntervalSince1970 * 1_000) },
+                favoriteTarget: selected.favoriteTarget,
+                observedFavorite: selected.observedFavorite,
+                factRevision: snapshot.outboxWatermark,
+                tagDecisions: decisions, collections: collections, resources: exported
+            ))
+        }
+        let finalResult = PHAsset.fetchAssets(
+            withLocalIdentifiers: snapshot.assets.map(\.localIdentifier), options: options
+        )
+        var finalByLocator: [String: PHAsset] = [:]
+        finalResult.enumerateObjects { asset, _, _ in finalByLocator[asset.localIdentifier] = asset }
+        guard finalByLocator.count == byLocator.count,
+              finalByLocator.allSatisfy({ sourceVersions[$0.key] == sourceVersion($0.value) }) else {
+            throw LocalArchiveExportError.sourceChanged
+        }
+        let header = ImageAllMigrationHeader(
+            migrationID: migrationID, sourceDeviceID: snapshot.installID,
+            sourceEpoch: snapshot.sourceEpoch, scopeRevision: snapshot.scopeRevision,
+            inventoryWatermark: snapshot.snapshotSequence, declaredItemCount: items.count
+        )
+        let resourcesDirectory = staging.appendingPathComponent("resources", isDirectory: true)
+        if manager.fileExists(atPath: resourcesDirectory.path),
+           try manager.contentsOfDirectory(atPath: resourcesDirectory.path).isEmpty {
+            try manager.removeItem(at: resourcesDirectory)
+        }
+        try ImageAllMigrationArchive.write(header: header, items: items, to: staging)
+        let verification = try ImageAllMigrationArchive.verify(at: staging)
+        try manager.setAttributes(
+            [.protectionKey: FileProtectionType.complete],
+            ofItemAtPath: staging.appendingPathComponent(ImageAllMigrationArchive.manifestFilename).path
+        )
+        try manager.moveItem(at: staging, to: published)
+        shouldRemoveStaging = false
+        return (published, verification)
+    }
+
+    private static func primaryResourceIndex(
+        mediaType: PHAssetMediaType, resources: [PHAssetResource]
+    ) -> Int? {
+        let preferred: [PHAssetResourceType] = mediaType == .video ? [.video] : [.photo]
+        for type in preferred {
+            if let index = resources.firstIndex(where: { $0.type == type }) { return index }
+        }
+        return nil
+    }
+
+    private static func sourceVersion(_ asset: PHAsset) -> SourceVersion {
+        SourceVersion(
+            modificationDate: asset.modificationDate,
+            resourceSignature: PHAssetResource.assetResources(for: asset).map {
+                "\($0.type.rawValue):\($0.uniformTypeIdentifier)"
+            }
+        )
+    }
+
+    private static func resourceRole(_ type: PHAssetResourceType) -> String {
+        switch type {
+        case .photo: "photo"
+        case .video: "video"
+        case .audio: "audio"
+        case .alternatePhoto: "alternatePhoto"
+        case .fullSizePhoto: "fullSizePhoto"
+        case .fullSizeVideo: "fullSizeVideo"
+        case .adjustmentData: "adjustmentData"
+        case .adjustmentBasePhoto: "adjustmentBasePhoto"
+        case .pairedVideo: "pairedVideo"
+        case .fullSizePairedVideo: "fullSizePairedVideo"
+        case .adjustmentBasePairedVideo: "adjustmentBasePairedVideo"
+        case .adjustmentBaseVideo: "adjustmentBaseVideo"
+        case .photoProxy: "photoProxy"
+        @unknown default: "unknown-\(type.rawValue)"
+        }
+    }
+
+    private static func writeLocalResource(_ resource: PHAssetResource, to url: URL) async throws {
+        let options = PHAssetResourceRequestOptions()
+        options.isNetworkAccessAllowed = false
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            PHAssetResourceManager.default().writeData(
+                for: resource, toFile: url, options: options
+            ) { error in
+                if let error { continuation.resume(throwing: error) }
+                else { continuation.resume(returning: ()) }
+            }
+        }
+    }
+
+    nonisolated private static func hashFile(_ url: URL) throws -> (Int64, String) {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hash = SHA256()
+        var count: Int64 = 0
+        while let block = try handle.read(upToCount: 1_048_576), !block.isEmpty {
+            count += Int64(block.count)
+            hash.update(data: block)
+        }
+        return (count, hash.finalize().map { String(format: "%02x", $0) }.joined())
     }
 }
 
