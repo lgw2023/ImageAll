@@ -10,6 +10,8 @@
 		MB0000010000000000000001 /* ImageAllMobileApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = MB0001010000000000000001 /* ImageAllMobileApp.swift */; };
 		MB0000010000000000000002 /* RemoteCompanionModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = MB0001010000000000000002 /* RemoteCompanionModel.swift */; };
 		MB0000010000000000000003 /* RemoteCompanionViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = MB0001010000000000000003 /* RemoteCompanionViews.swift */; };
+		MB0000010000000000000007 /* LocalLibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = MB0001010000000000000007 /* LocalLibraryView.swift */; };
+		MB0000010000000000000008 /* ImageAllLocalLibrary in Frameworks */ = {isa = PBXBuildFile; productRef = MB0003010000000000000003 /* ImageAllLocalLibrary */; };
 		MB0000010000000000000004 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = MB0001010000000000000004 /* Assets.xcassets */; };
 		MB0000010000000000000005 /* ImageAllRemoteClient in Frameworks */ = {isa = PBXBuildFile; productRef = MB0003010000000000000001 /* ImageAllRemoteClient */; };
 		MB0000010000000000000006 /* ImageAllRemoteProtocol in Frameworks */ = {isa = PBXBuildFile; productRef = MB0003010000000000000002 /* ImageAllRemoteProtocol */; };
@@ -19,6 +21,7 @@
 		MB0001010000000000000001 /* ImageAllMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageAllMobileApp.swift; sourceTree = "<group>"; };
 		MB0001010000000000000002 /* RemoteCompanionModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteCompanionModel.swift; sourceTree = "<group>"; };
 		MB0001010000000000000003 /* RemoteCompanionViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteCompanionViews.swift; sourceTree = "<group>"; };
+		MB0001010000000000000007 /* LocalLibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalLibraryView.swift; sourceTree = "<group>"; };
 		MB0001010000000000000004 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		MB0001010000000000000005 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		MB0001010000000000000006 /* ImageAllMobile.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ImageAllMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -31,6 +34,7 @@
 			files = (
 				MB0000010000000000000005 /* ImageAllRemoteClient in Frameworks */,
 				MB0000010000000000000006 /* ImageAllRemoteProtocol in Frameworks */,
+				MB0000010000000000000008 /* ImageAllLocalLibrary in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -61,6 +65,7 @@
 				MB0001010000000000000001 /* ImageAllMobileApp.swift */,
 				MB0001010000000000000002 /* RemoteCompanionModel.swift */,
 				MB0001010000000000000003 /* RemoteCompanionViews.swift */,
+				MB0001010000000000000007 /* LocalLibraryView.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -92,6 +97,7 @@
 			packageProductDependencies = (
 				MB0003010000000000000001 /* ImageAllRemoteClient */,
 				MB0003010000000000000002 /* ImageAllRemoteProtocol */,
+				MB0003010000000000000003 /* ImageAllLocalLibrary */,
 			);
 			productName = ImageAllMobile;
 			productReference = MB0001010000000000000006 /* ImageAllMobile.app */;
@@ -124,6 +130,7 @@
 			packageReferences = (
 				MB0009010000000000000001 /* XCLocalSwiftPackageReference "Packages/ImageAllRemoteClient" */,
 				MB0009010000000000000002 /* XCLocalSwiftPackageReference "Packages/ImageAllRemoteProtocol" */,
+				MB0009010000000000000003 /* XCLocalSwiftPackageReference "Packages/ImageAllLocalLibrary" */,
 			);
 			productRefGroup = MB0004010000000000000004 /* Products */;
 			projectDirPath = "";
@@ -153,6 +160,7 @@
 				MB0000010000000000000001 /* ImageAllMobileApp.swift in Sources */,
 				MB0000010000000000000002 /* RemoteCompanionModel.swift in Sources */,
 				MB0000010000000000000003 /* RemoteCompanionViews.swift in Sources */,
+				MB0000010000000000000007 /* LocalLibraryView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -277,6 +285,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Packages/ImageAllRemoteProtocol;
 		};
+		MB0009010000000000000003 /* XCLocalSwiftPackageReference "Packages/ImageAllLocalLibrary" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/ImageAllLocalLibrary;
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -289,6 +301,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = MB0009010000000000000002 /* XCLocalSwiftPackageReference "Packages/ImageAllRemoteProtocol" */;
 			productName = ImageAllRemoteProtocol;
+		};
+		MB0003010000000000000003 /* ImageAllLocalLibrary */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = MB0009010000000000000003 /* XCLocalSwiftPackageReference "Packages/ImageAllLocalLibrary" */;
+			productName = ImageAllLocalLibrary;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
