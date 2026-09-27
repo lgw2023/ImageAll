@@ -9196,6 +9196,16 @@ final class LibraryWorkspaceModel: ObservableObject {
         return try await videoPlaybackProvider.prepareVideoPlayback(assetID: assetID)
     }
 
+    func downloadCloudVideoForViewing(
+        assetID: UUID, expectedRevision: Int, grant: PhotosCloudDownloadGrant,
+        onProgress: @escaping @Sendable (Double) -> Void
+    ) async throws -> LibraryVideoPlaybackResource {
+        stopVideoHoverPlayback()
+        return try await videoPlaybackProvider.downloadCloudVideoForPlayback(
+            assetID: assetID, expectedRevision: expectedRevision, grant: grant, onProgress: onProgress
+        )
+    }
+
     func beginVideoHover(assetID: UUID) {
         guard !isSinglePhotoPresented, librarySlimmingPreviewAssetID == nil,
               let item = items.first(where: { $0.assetID == assetID }),

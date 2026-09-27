@@ -252,3 +252,14 @@
 - 未读取真实 Photos、未触发云端下载、未外部传输、未启动生产 Photos 测试宿主、未 push／替换 App。仅修改原生查看器、对应既有合成测试及本目标记录；Workspace 原有 75/5 和 OpenMontage 并行差异保留，Web 工作区无新改动。
 - viewer-technical-build-final.log：Mac TEST BUILD SUCCEEDED。viewer-technical-tests.log：直接 XCTest LibraryVideoViewingTests 3/3 PASS，复用本地合成 H.264 无音轨素材，验证编码 avc1、正帧率／码率、音轨 0、状态清理及原有 seek／标签持久事实／旧请求隔离／损坏视频失败回归。没有真实 PhotoKit 读取或新弹窗人工交互证据，不扩大该合成通过范围。
 - git diff --check PASS，源摘要 viewer-technical-source-sha256.json。下一步仍是 PhotoKit 持久技术信息及显式云端视频获取，随后继续 P3–P7；目标保持 active，未将本轮查看器入口当作完整 P2。
+
+
+## P2 原生显式获取云端视频（2026-09-27）
+
+- 上轮为 progress：57cb3a78 提供本地播放资源技术信息。本轮基于该提交，把 cloudOnly 失败后的明确获取入口接到独立 grant-bearing PhotoKit 视频方法；普通本地请求仍禁网络。确认绑定当前资产／修订，允许一个前台获取请求，显示进度并可取消。
+- 资源准备任务由 session 持有，关闭、切换、取消及后台停止会传递取消，迟到结果／进度按请求身份拒绝。后台恢复和普通重载不复用云端 grant。provider 在获取前后检查来源、定位符、媒体域、可用性和内容修订，禁用来源不能发起获取。
+- 原件落盘及缓存由 Photos 系统管理，App 不另复制、不删除系统原件。UI 说明网络／空间成本、取消不等于清缓存。空间不足有明确恢复原因；PhotoKit 返回编辑合成 AVAsset 而非本地文件时明确说明限制及“照片”播放／导出文件恢复路径。未对未知原件大小或缓存卷做不可靠预估，不宣称 App 有固定字节配额。
+- 本轮是原生共用查看器入口；Web／iPhone 显式云端视频能力仍需声明／恢复路线核对，静态 cloud preview 不算视频原件获取。PhotoKit 持久技术元数据与 Inspector 缺口仍在。P1、P2 IN_PROGRESS；P3–P7 NOT_STARTED。
+- cloud-video-build-verified.log：最终 Mac TEST BUILD SUCCEEDED。cloud-video-tests.log：直接 XCTest 8/8 PASS（LibraryVideoViewingTests 5 项、PhotosIntegrationTests 3 项），覆盖显式 grant 网络策略、fake 下载／进度／取消／重试、禁用来源／请求前过期修订／返回后变化拒绝、PhotoKit 请求取消安装竞态、编辑合成资源明确拒绝和空间不足恢复原因。仍包含本地合成视频解码／seek／标签持久化回归。真实 iCloud 和 SwiftUI 确认弹窗人工验收 NOT_RUN。
+- cloud-video-workspace.patch 仅暂存本轮 10 行 model 转接，原有 Workspace 75/5 保留；源摘要 cloud-video-source-sha256.json，git diff --check PASS。未访问受保护媒体、未源端写入、未实际云端下载、未外部传输、未 push／替换 App。
+- 下一具体动作：补齐 PhotoKit 技术信息的按需持久化与 Inspector 刷新，核对远端云端视频能力提示；继续 P2 智能推流时间／位置语义并进入 P3。目标 active；不以本轮原生 fake 验收宣称 P1／P2 或整个目标完成。

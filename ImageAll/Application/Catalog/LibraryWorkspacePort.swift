@@ -354,6 +354,19 @@ final class LibraryVideoPlaybackResource {
 @MainActor
 protocol LibraryVideoPlaybackProviding: Sendable {
     func prepareVideoPlayback(assetID: UUID) async throws -> LibraryVideoPlaybackResource
+    func downloadCloudVideoForPlayback(
+        assetID: UUID, expectedRevision: Int, grant: PhotosCloudDownloadGrant,
+        onProgress: @escaping @Sendable (Double) -> Void
+    ) async throws -> LibraryVideoPlaybackResource
+}
+
+extension LibraryVideoPlaybackProviding {
+    func downloadCloudVideoForPlayback(
+        assetID: UUID, expectedRevision: Int, grant: PhotosCloudDownloadGrant,
+        onProgress: @escaping @Sendable (Double) -> Void
+    ) async throws -> LibraryVideoPlaybackResource {
+        throw LibraryOriginalAssetOpenError.unavailable
+    }
 }
 
 @MainActor

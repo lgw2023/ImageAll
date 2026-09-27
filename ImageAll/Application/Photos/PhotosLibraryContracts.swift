@@ -256,3 +256,18 @@ extension PhotosLibraryMutationPort {
         return facts
     }
 }
+
+/// Local browsing never grants network access. Only an explicit foreground action
+/// may obtain the original video through the separate grant-bearing operation.
+protocol PhotosVideoResourcePort: Sendable {
+    func requestOriginalVideoURL(localIdentifier: String) async throws -> URL
+    func requestCloudOriginalVideoURL(
+        localIdentifier: String, grant: PhotosCloudDownloadGrant,
+        onProgress: @escaping @Sendable (Double) -> Void
+    ) async throws -> URL
+}
+
+enum PhotosVideoResourceError: Error, Equatable, Sendable {
+    case unsupportedAssetRepresentation
+    case insufficientSpace
+}

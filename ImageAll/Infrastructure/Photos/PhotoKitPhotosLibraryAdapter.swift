@@ -6,7 +6,7 @@ import Photos
 
 final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, PhotosChangeHistoryPort,
     PhotosChangeObserverPort, PhotosLibraryAvailabilityObserverPort, PhotosCloudPreviewPort,
-    PhotosOriginalContentPort, PhotosFeaturePrintImagePort,
+    PhotosOriginalContentPort, PhotosFeaturePrintImagePort, PhotosVideoResourcePort,
     PHPhotoLibraryChangeObserver,
     PHPhotoLibraryAvailabilityObserver,
     @unchecked Sendable
@@ -440,6 +440,20 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
     }
 
     func requestOriginalVideoURL(localIdentifier: String) async throws -> URL {
+        try await requestVideoURL(localIdentifier: localIdentifier,
+                                  options: Self.makeLocalOnlyOriginalVideoRequestOptions())
+    }
+
+    func requestCloudOriginalVideoURL(
+        localIdentifier: String, grant: PhotosCloudDownloadGrant,
+        onProgress: @escaping @Sendable (Double) -> Void
+    ) async throws -> URL {
+        try await requestVideoURL(localIdentifier: localIdentifier,
+                                  options: Self.makeCloudOriginalVideoRequestOptions(
+                                    grant: grant, onProgress: onProgress))
+    }
+
+    private func requestVideoURL(localIdentifier: String, options: PHVideoRequestOptions) async throws -> URL {
         guard authorizationState() == .authorized else {
             throw PhotosLibraryError.authorizationDenied
         }
@@ -448,28 +462,35 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
             throw PhotosLibraryError.libraryUnavailable
         }
 
+        let allowsNetwork = options.isNetworkAccessAllowed
         let cancellation = PhotoKitImageRequestCancellation(manager: imageManager)
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 let completion = OneShotContinuation(continuation)
                 let requestID = imageManager.requestAVAsset(
                     forVideo: asset,
-                    options: Self.makeLocalOnlyOriginalVideoRequestOptions()
+                    options: options
                 ) { avAsset, _, info in
-                    if let url = (avAsset as? AVURLAsset)?.url {
-                        completion.resume(returning: url)
+                    if (info?[PHImageCancelledKey] as? Bool) == true {
+                        completion.resume(throwing: CancellationError())
                         return
                     }
-                    if (info?[PHImageResultIsInCloudKey] as? Bool) == true {
+                    if !allowsNetwork, avAsset == nil,
+                       (info?[PHImageResultIsInCloudKey] as? Bool) == true {
                         completion.resume(throwing: PhotosLibraryError.cloudOnly)
                         return
                     }
                     if let error = info?[PHImageErrorKey] as? Error {
-                        completion.resume(throwing: error)
+                        completion.resume(throwing: Self.mapVideoRequestError(error))
                         return
                     }
-                    if (info?[PHImageCancelledKey] as? Bool) == true {
-                        completion.resume(throwing: CancellationError())
+                    if let avAsset {
+                        do { completion.resume(returning: try Self.localOriginalVideoURL(avAsset)) }
+                        catch { completion.resume(throwing: error) }
+                        return
+                    }
+                    if (info?[PHImageResultIsInCloudKey] as? Bool) == true {
+                        completion.resume(throwing: PhotosLibraryError.cloudOnly)
                         return
                     }
                     completion.resume(throwing: PhotosLibraryError.libraryUnavailable)
@@ -481,6 +502,22 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
         } onCancel: {
             cancellation.cancel()
         }
+    }
+
+    static func localOriginalVideoURL(_ asset: AVAsset) throws -> URL {
+        guard let url = (asset as? AVURLAsset)?.url, url.isFileURL else {
+            throw PhotosVideoResourceError.unsupportedAssetRepresentation
+        }
+        return url
+    }
+
+    static func mapVideoRequestError(_ error: Error) -> Error {
+        let nsError = error as NSError
+        if (nsError.domain == PHPhotosErrorDomain && nsError.code == PHPhotosError.Code.notEnoughSpace.rawValue)
+            || (nsError.domain == NSCocoaErrorDomain && nsError.code == NSFileWriteOutOfSpaceError) {
+            return PhotosVideoResourceError.insufficientSpace
+        }
+        return error
     }
 
     static func makeOriginalContentEditingInputRequestOptions() -> PHContentEditingInputRequestOptions {
@@ -703,6 +740,19 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
         options.version = .original
         options.deliveryMode = .highQualityFormat
         options.isNetworkAccessAllowed = false
+        return options
+    }
+
+    static func makeCloudOriginalVideoRequestOptions(
+        grant _: PhotosCloudDownloadGrant,
+        onProgress: @escaping @Sendable (Double) -> Void
+    ) -> PHVideoRequestOptions {
+        let options = makeLocalOnlyOriginalVideoRequestOptions()
+        options.isNetworkAccessAllowed = true
+        options.progressHandler = { progress, _, _, _ in
+            guard progress.isFinite else { return }
+            onProgress(min(max(progress, 0), 1))
+        }
         return options
     }
 

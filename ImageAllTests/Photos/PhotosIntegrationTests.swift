@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import GRDB
 import Photos
@@ -110,6 +111,28 @@ final class PhotosIntegrationTests: XCTestCase {
             PhotoKitPhotosLibraryAdapter.makeLocalOnlyOriginalVideoRequestOptions()
                 .isNetworkAccessAllowed
         )
+    }
+
+    func testVideoCompositionHasExplicitUnsupportedResultAndDiskFullHasRecoveryReason() {
+        XCTAssertThrowsError(try PhotoKitPhotosLibraryAdapter.localOriginalVideoURL(AVMutableComposition())) {
+            XCTAssertEqual($0 as? PhotosVideoResourceError, .unsupportedAssetRepresentation)
+        }
+        let diskFull = NSError(domain: PHPhotosErrorDomain, code: PHPhotosError.Code.notEnoughSpace.rawValue)
+        XCTAssertEqual(PhotoKitPhotosLibraryAdapter.mapVideoRequestError(diskFull) as? PhotosVideoResourceError,
+                       .insufficientSpace)
+    }
+
+    func testOriginalVideoNetworkRequiresExplicitGrantAndRetainsOriginalVersion() {
+        let local = PhotoKitPhotosLibraryAdapter.makeLocalOnlyOriginalVideoRequestOptions()
+        XCTAssertFalse(local.isNetworkAccessAllowed)
+        XCTAssertEqual(local.version, .original)
+        let granted = PhotoKitPhotosLibraryAdapter.makeCloudOriginalVideoRequestOptions(
+            grant: .issue(), onProgress: { _ in }
+        )
+        XCTAssertTrue(granted.isNetworkAccessAllowed)
+        XCTAssertEqual(granted.version, .original)
+        XCTAssertEqual(granted.deliveryMode, .highQualityFormat)
+        XCTAssertNotNil(granted.progressHandler)
     }
 
     func testPhotoKitCloudPreviewPolicyOnlyEnablesNetworkForExplicit2048Request() {

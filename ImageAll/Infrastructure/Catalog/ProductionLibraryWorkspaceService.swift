@@ -3276,14 +3276,16 @@ struct LibraryAssetAbsolutePathResolver: LibraryAssetAbsolutePathResolving {
     }
 }
 
-private struct LibraryOriginalAssetLocator: Sendable {
+private struct LibraryOriginalAssetLocator: Sendable, Equatable {
     let sourceID: UUID
     let sourceKind: SourceKind
+    let sourceState: SourceState
     let locatorKind: AssetLocatorKind
     let mediaKind: MediaKind
     let relativePath: String?
     let photosLocalIdentifier: String?
     let availability: AssetAvailability
+    let contentRevision: Int
 }
 
 @MainActor
@@ -3364,7 +3366,28 @@ struct AppKitLibraryOriginalAssetOpener: LibraryOriginalAssetOpening {
 struct AppKitLibraryVideoPlaybackProvider: LibraryVideoPlaybackProviding {
     let database: CatalogDatabase
     let folderAuthorization: FolderAuthorizationCoordinator
-    let photosLibrary: PhotoKitPhotosLibraryAdapter
+    let photosLibrary: any PhotosVideoResourcePort
+
+    func downloadCloudVideoForPlayback(
+        assetID: UUID, expectedRevision: Int, grant: PhotosCloudDownloadGrant,
+        onProgress: @escaping @Sendable (Double) -> Void
+    ) async throws -> LibraryVideoPlaybackResource {
+        let before = try fetchLibraryOriginalAssetLocator(database: database, assetID: assetID)
+        guard before.sourceKind == .photos, before.sourceState == .active, before.locatorKind == .photos,
+              before.mediaKind == .video, before.availability == .available,
+              before.contentRevision == expectedRevision,
+              let identifier = before.photosLocalIdentifier else {
+            throw LibraryOriginalAssetOpenError.unavailable
+        }
+        let url = try await photosLibrary.requestCloudOriginalVideoURL(
+            localIdentifier: identifier, grant: grant, onProgress: onProgress
+        )
+        try Task.checkCancellation()
+        let after = try fetchLibraryOriginalAssetLocator(database: database, assetID: assetID)
+        guard before == after, url.isFileURL else { throw LibraryOriginalAssetOpenError.unavailable }
+        // PhotoKit owns this original. Do not copy it or delete it on release.
+        return LibraryVideoPlaybackResource(url: url)
+    }
 
     func prepareVideoPlayback(assetID: UUID) async throws -> LibraryVideoPlaybackResource {
         let locator = try fetchLibraryOriginalAssetLocator(
@@ -3417,11 +3440,13 @@ private func fetchLibraryOriginalAssetLocator(
             SELECT
                 asset.source_id,
                 source.kind AS source_kind,
+                source.state AS source_state,
                 asset.locator_kind,
                 asset.media_kind,
                 asset.relative_path,
                 asset.photos_local_identifier,
-                asset.availability
+                asset.availability,
+                asset.content_revision
             FROM asset
             INNER JOIN source ON source.id = asset.source_id
             WHERE asset.id = ? AND asset.locator_state = 'current'
@@ -3430,6 +3455,7 @@ private func fetchLibraryOriginalAssetLocator(
         ),
             let sourceID = UUID(uuidString: row["source_id"]),
             let sourceKind = SourceKind(rawValue: row["source_kind"]),
+            let sourceState = SourceState(rawValue: row["source_state"]),
             let locatorKind = AssetLocatorKind(rawValue: row["locator_kind"]),
             let mediaKind = MediaKind(rawValue: row["media_kind"]),
             let availability = AssetAvailability(rawValue: row["availability"])
@@ -3439,11 +3465,13 @@ private func fetchLibraryOriginalAssetLocator(
         return LibraryOriginalAssetLocator(
             sourceID: sourceID,
             sourceKind: sourceKind,
+            sourceState: sourceState,
             locatorKind: locatorKind,
             mediaKind: mediaKind,
             relativePath: row["relative_path"],
             photosLocalIdentifier: row["photos_local_identifier"],
-            availability: availability
+            availability: availability,
+            contentRevision: row["content_revision"]
         )
     }
 }

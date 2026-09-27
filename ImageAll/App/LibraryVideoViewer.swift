@@ -25,21 +25,33 @@ final class LibraryVideoViewingSession: ObservableObject {
     @Published private(set) var technicalMetadata: VideoTechnicalMetadata?
     @Published private(set) var technicalMetadataLoadFinished = false
     private(set) var identity: Identity?
+    @Published private(set) var canRequestCloudDownload = false
+    @Published private(set) var cloudDownloadProgress: Double?
+    private var cloudRequestID: UUID?
+    private var preparationTask: Task<LibraryVideoPlaybackResource, Error>?
     private var requestID: UUID?
     private var resource: LibraryVideoPlaybackResource?
     private var itemObservation: NSKeyValueObservation?
 
     func load(
         identity: Identity,
-        prepare: @MainActor () async throws -> LibraryVideoPlaybackResource
+        cloudDownloadRequestID: UUID? = nil,
+        prepare: @escaping @MainActor () async throws -> LibraryVideoPlaybackResource
     ) async {
         stop()
         let request = UUID()
         requestID = request
         self.identity = identity
         state = .loading
+        cloudRequestID = cloudDownloadRequestID
+        cloudDownloadProgress = cloudDownloadRequestID == nil ? nil : 0
         do {
-            let prepared = try await prepare()
+            let task = Task { @MainActor in try await prepare() }
+            preparationTask = task
+            let prepared = try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: { task.cancel() }
+            if requestID == request { preparationTask = nil }
             guard requestID == request, !Task.isCancelled else {
                 prepared.release()
                 if requestID == request { stop() }
@@ -60,6 +72,8 @@ final class LibraryVideoViewingSession: ObservableObject {
                     self?.fail(request: request, message: "此视频无法解码，请使用系统播放器检查文件。")
                 }
             }
+            cloudDownloadProgress = nil
+            cloudRequestID = nil
             state = .ready
             // Playback is usable immediately; optional metadata failure must not fail the player.
             let observed = try? await Self.readTechnicalMetadata(asset)
@@ -73,8 +87,19 @@ final class LibraryVideoViewingSession: ObservableObject {
                 stop()
             } else {
                 fail(request: request, message: Self.message(for: error))
+                canRequestCloudDownload = error as? PhotosLibraryError == .cloudOnly
+                    || (cloudDownloadRequestID != nil
+                        && error as? PhotosVideoResourceError != .unsupportedAssetRepresentation
+                        && error as? PhotosLibraryError != .authorizationDenied
+                        && error as? PhotosLibraryError != .authorizationRestricted)
+
             }
         }
+    }
+
+    func reportCloudProgress(_ value: Double, request: UUID) {
+        guard cloudRequestID == request, state == .loading, value.isFinite else { return }
+        cloudDownloadProgress = max(cloudDownloadProgress ?? 0, min(max(value, 0), 1))
     }
 
     func togglePlayback() {
@@ -92,6 +117,11 @@ final class LibraryVideoViewingSession: ObservableObject {
     func stop(ifMatching expected: Identity? = nil) {
         if let expected, identity != expected { return }
         requestID = nil
+        preparationTask?.cancel()
+        preparationTask = nil
+        cloudRequestID = nil
+        cloudDownloadProgress = nil
+        canRequestCloudDownload = false
         identity = nil
         technicalMetadata = nil
         technicalMetadataLoadFinished = false
@@ -131,7 +161,11 @@ final class LibraryVideoViewingSession: ObservableObject {
     private static func message(for error: Error) -> String {
         switch error {
         case PhotosLibraryError.cloudOnly:
-            "原始视频尚不在本机。浏览不会自动从 iCloud 下载；请先让原件在本机可用后重试。"
+            "原始视频尚不在本机。浏览不会自动从 iCloud 下载；可明确获取当前视频，或先在“照片”中下载后重试。"
+        case PhotosVideoResourceError.unsupportedAssetRepresentation:
+            "Photos 返回了编辑合成资源，当前播放器仅支持本地文件原件。请在“照片”中播放，或导出视频文件后接入文件夹。"
+        case PhotosVideoResourceError.insufficientSpace:
+            "Photos 无法取得原件：本机可用空间不足。请释放空间后再次明确获取；已下载的 Photos 缓存由系统管理。"
         case PhotosLibraryError.authorizationDenied, PhotosLibraryError.authorizationRestricted:
             "无法读取 Photos 视频，请检查照片访问授权后重试。"
         case LibraryOriginalAssetOpenError.unsafeLocator:
@@ -149,6 +183,9 @@ struct LibraryVideoViewer: View {
     @ObservedObject private var session: LibraryVideoViewingSession
     @State private var reloadGeneration = 0
     @State private var showsTechnicalInformation = false
+    @State private var confirmsCloudDownload = false
+    @State private var cloudConfirmationIdentity: LibraryVideoViewingSession.Identity?
+    @State private var pendingCloudDownload: (identity: LibraryVideoViewingSession.Identity, request: UUID, grant: PhotosCloudDownloadGrant)?
 
     init(assetID: UUID, contentRevision: Int, model: LibraryWorkspaceModel) {
         self.assetID = assetID
@@ -171,9 +208,23 @@ struct LibraryVideoViewer: View {
                 case let .failed(message):
                     ContentUnavailableView {
                         Label("暂时无法播放视频", systemImage: "video.slash")
-                    } description: { Text(message) }
+                    } description: { Text(message) } actions: {
+                        if session.canRequestCloudDownload {
+                            Button("从 iCloud 获取当前视频") {
+                                cloudConfirmationIdentity = identity
+                                confirmsCloudDownload = true
+                            }
+                        }
+                    }
                 case .loading:
-                    ProgressView("正在准备本机视频…")
+                    if let progress = session.cloudDownloadProgress {
+                        VStack {
+                            ProgressView("正在从 iCloud 获取当前视频…", value: progress, total: 1)
+                            Button("取消获取") { session.stop(ifMatching: identity) }
+                        }.padding()
+                    } else {
+                        ProgressView("正在准备本机视频…")
+                    }
                 default:
                     ContentUnavailableView("视频已停止", systemImage: "pause.circle",
                                            description: Text("点击重新载入以继续观看。"))
@@ -225,9 +276,31 @@ struct LibraryVideoViewer: View {
         }
         .accessibilityIdentifier("libraryVideoViewer")
         .task(id: "\(assetID):\(contentRevision):\(reloadGeneration)") {
-            await session.load(identity: identity) {
-                try await model.prepareVideoForViewing(assetID: assetID)
+            let download = pendingCloudDownload
+            pendingCloudDownload = nil
+            if let download, download.identity == identity {
+                await session.load(identity: identity, cloudDownloadRequestID: download.request) {
+                    try await model.downloadCloudVideoForViewing(
+                        assetID: assetID, expectedRevision: contentRevision, grant: download.grant
+                    ) { progress in
+                        Task { @MainActor in session.reportCloudProgress(progress, request: download.request) }
+                    }
+                }
+            } else {
+                await session.load(identity: identity) {
+                    try await model.prepareVideoForViewing(assetID: assetID)
+                }
             }
+        }
+        .confirmationDialog("从 iCloud 获取当前视频原件？", isPresented: $confirmsCloudDownload) {
+            Button("获取当前视频") {
+                guard cloudConfirmationIdentity == identity, session.canRequestCloudDownload else { return }
+                pendingCloudDownload = (identity, UUID(), .issue())
+                reloadGeneration &+= 1
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("将使用网络获取此视频原件，可能消耗流量与本机空间。最多处理一个当前视频，不会批量下载；空间不足时会停止并提示。你可以取消等待。Photos 已接收的本地缓存由系统管理。")
         }
         .onDisappear { session.stop(ifMatching: identity) }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
