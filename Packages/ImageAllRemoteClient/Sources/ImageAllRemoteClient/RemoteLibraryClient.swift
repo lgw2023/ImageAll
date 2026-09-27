@@ -87,9 +87,8 @@ public struct URLSessionRemoteHTTPTransport: RemoteHTTPTransporting {
     public func data(for request: URLRequest, maximumBytes: Int) async throws -> (Data, URLResponse) {
         let (stream, response) = try await session.bytes(for: request)
         defer { stream.task.cancel() }
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            return (Data(), response)
-        }
+        // Error JSON is needed to distinguish recoverable media states. Read it
+        // through the same hard byte budget instead of discarding every non-2xx body.
         guard response.expectedContentLength <= maximumBytes else { throw RemoteVideoError.responseTooLarge }
         var data = Data()
         data.reserveCapacity(maximumBytes)
@@ -530,13 +529,23 @@ public struct RemoteLibraryClient: Sendable {
         )
         request.setValue("bytes=\(offset)-\(offset + Int64(count) - 1)", forHTTPHeaderField: "Range")
         request.cachePolicy = .reloadIgnoringLocalCacheData
-        let (data, response) = try await transport.data(for: request, maximumBytes: count)
+        let (data, response) = try await transport.data(for: request, maximumBytes: max(count, 8 * 1_024))
         try Task.checkCancellation()
         guard let http = response as? HTTPURLResponse else { throw RemoteVideoError.invalidResponse }
         guard http.statusCode == 206 else {
             if http.statusCode == 401 || http.statusCode == 403 { throw RemoteVideoError.authorizationRequired }
             if http.statusCode == 409 { throw RemoteVideoError.contentChanged }
-            if http.statusCode == 404 { throw RemoteVideoError.unavailable }
+            if http.statusCode == 404 {
+                if data.count <= 8 * 1_024,
+                   let error = try? JSONDecoder().decode(RemoteAPIError.self, from: data) {
+                    switch error.mediaFailureReason {
+                    case .cloudVideoOriginalRequired: throw RemoteVideoError.cloudOriginalRequired
+                    case .unsupportedVideoRepresentation: throw RemoteVideoError.unsupportedRepresentation
+                    case nil: break
+                    }
+                }
+                throw RemoteVideoError.unavailable
+            }
             throw RemoteVideoError.invalidResponse
         }
         guard http.value(forHTTPHeaderField: "X-ImageAll-Content-Revision") == String(contentRevision) else {

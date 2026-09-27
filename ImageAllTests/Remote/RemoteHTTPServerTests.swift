@@ -7198,6 +7198,39 @@ final class RemoteHTTPServerTests: XCTestCase {
         )
     }
 
+    func testCloudVideoReasonSurvivesHostHTTPAndSmallRangeClientRequest() async throws {
+        let failure = ProductionRemoteMediaResourceProvider.mapPhotosMediaError(
+            PhotosLibraryError.cloudOnly, mediaKind: .video, purpose: "video"
+        )
+        XCTAssertEqual(failure.mediaFailureReason, .cloudVideoOriginalRequired)
+        XCTAssertEqual(ProductionRemoteMediaResourceProvider.mapPhotosMediaError(
+            PhotosVideoResourceError.unsupportedAssetRepresentation, mediaKind: .video, purpose: "video"
+        ).mediaFailureReason, .unsupportedVideoRepresentation)
+        XCTAssertNil(ProductionRemoteMediaResourceProvider.mapPhotosMediaError(
+            PhotosLibraryError.cloudOnly, mediaKind: .image, purpose: "original"
+        ).mediaFailureReason)
+        let port = UInt16.random(in: 19_000...29_000)
+        let (server, _) = makeServer(port: port, mediaResources: RemoteHTTPServerTestMediaProvider(
+            url: URL(fileURLWithPath: "/synthetic-unused"), failure: failure
+        ))
+        try await server.start()
+        defer { Task { await server.stop() } }
+        var diagnostic = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/assets/\(UUID().uuidString.lowercased())/media?revision=1")!)
+        diagnostic.setValue("Bearer \(Self.legacyDebugToken)", forHTTPHeaderField: "Authorization")
+        diagnostic.setValue("bytes=0-1", forHTTPHeaderField: "Range")
+        let (body, response) = try await URLSession.shared.data(for: diagnostic)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 404)
+        let decoded = try JSONDecoder().decode(RemoteAPIError.self, from: body)
+        XCTAssertEqual(decoded.mediaFailureReason, .cloudVideoOriginalRequired, String(decoding: body, as: UTF8.self))
+        let client = RemoteLibraryClient(endpoint: try RemoteHostEndpoint(
+            host: "127.0.0.1", port: Int(port), accessToken: Self.legacyDebugToken
+        ))
+        do {
+            _ = try await client.readVideoRange(assetID: UUID(), contentRevision: 1, offset: 0, count: 2)
+            XCTFail("Expected cloud original recovery reason")
+        } catch let error as RemoteVideoError { XCTAssertEqual(error, .cloudOriginalRequired) }
+    }
+
     @MainActor
     func testVideoClientDecodesAndSeeksThroughAuthenticatedSwiftHost() async throws {
         let fixture = URL(fileURLWithPath: #filePath)
@@ -9157,8 +9190,10 @@ private struct RemoteHTTPServerTestMediaProvider: RemoteMediaResourceProviding {
     var supportsRevisionedVideoRanges: Bool { true }
     let url: URL
     var contentType = "video/mp4"
+    var failure: RemoteAPIError? = nil
 
     func openMediaResource(assetID _: UUID) async throws -> RemoteMediaResource {
+        if let failure { throw failure }
         let descriptor = try DerivedImageSecureIO.openReadOnlyNoFollow(at: url)
         do {
             let facts = try DerivedImageSecureIO.fstatRegularFile(fd: descriptor)

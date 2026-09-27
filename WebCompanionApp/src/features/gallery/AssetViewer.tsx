@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 
 import { assetMediaURL, assetPreviewURL, fetchAssetDetail, openOriginalAsset } from '@/api/assets';
+import { inspectVideoFailure } from '@/api/client';
 import { fetchCapabilities } from '@/api/capabilities';
 import type { AssetDetail, AssetSummary } from '@/api/contracts/asset';
 import type { TagDecisionAction, TagGroupSummary, TagSummary } from '@/api/contracts/tag';
@@ -177,6 +178,15 @@ export function AssetViewer({
     capabilities.data?.capabilities.includes('assetLocalSuggestions') === true &&
     resolvedMediaKind(detail.data) === 'image';
   const previewFailed = failedPreviewAssetID === assetID;
+  const videoFailure = useQuery({
+    queryKey: ['video-failure', assetID, detail.data?.contentRevision],
+    enabled:
+      previewFailed && detail.data !== undefined && resolvedMediaKind(detail.data) === 'video',
+    retry: false,
+    queryFn: ({ signal }) =>
+      inspectVideoFailure(assetMediaURL(assetID, detail.data?.contentRevision ?? 0), signal),
+  });
+
   const pendingSuggestions = detail.data?.pendingSuggestions ?? [];
   const suggestionsExpanded = expandedSuggestionAssetID === assetID;
   const visibleSuggestions = suggestionsExpanded
@@ -407,11 +417,32 @@ export function AssetViewer({
               !resolvedMediaKind(detail.data) ? (
                 <div className="viewer-media-placeholder">
                   <ImageOff aria-hidden="true" size={30} />
-                  <span>当前无法显示预览</span>
+                  {resolvedMediaKind(detail.data) === 'video' ? (
+                    <>
+                      <strong>暂时无法播放视频</strong>
+                      <p>
+                        {videoFailure.isFetching
+                          ? '正在检查 Mac 视频状态…'
+                          : (videoFailure.data ?? '视频当前不可用，请检查 Mac 连接和来源后重试。')}
+                      </p>
+                      <button
+                        className="button"
+                        type="button"
+                        onClick={() => {
+                          setFailedPreviewAssetID(null);
+                          setPreviewReloadGeneration((value) => value + 1);
+                        }}
+                      >
+                        重试播放
+                      </button>
+                    </>
+                  ) : (
+                    <span>当前无法显示预览</span>
+                  )}
                 </div>
               ) : resolvedMediaKind(detail.data) === 'video' ? (
                 <video
-                  key={`${detail.data.assetID}:${String(detail.data.contentRevision)}`}
+                  key={`${detail.data.assetID}:${String(detail.data.contentRevision)}:${String(previewReloadGeneration)}`}
                   aria-label="视频播放"
                   preload="metadata"
                   controls

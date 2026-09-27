@@ -95,3 +95,49 @@ export async function requestBlob(
   if (!response.ok) throw await errorFromResponse(response);
   return response.blob();
 }
+
+/** Diagnose only after a failed media element request. Never fetch a full original. */
+export async function inspectVideoFailure(path: string, signal: AbortSignal): Promise<string> {
+  const response = await rawFetch(path, { signal, headers: { Range: 'bytes=0-0' } });
+  if (response.status !== 404) {
+    await response.body?.cancel();
+    if (response.status === 401 || response.status === 403)
+      return '视频访问授权已失效，请重新连接 Mac 后重试。';
+    if (response.status === 409) return '视频已变化，请刷新详情后重试。';
+    if (response.ok)
+      return 'Mac 已能读取视频，但浏览器未能播放。请重试，或在 Mac ImageAll／系统播放器中查看。';
+    return '视频当前不可用，请检查 Mac 连接和来源后重试。';
+  }
+  const reader = response.body?.getReader();
+  if (!reader) return '视频当前不可用，请检查 Mac 来源后重试。';
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    let part = await reader.read();
+    while (!part.done) {
+      const value = part.value;
+      total += value.byteLength;
+      if (total > 8192) return 'Mac 返回了无法识别的视频状态，请重试。';
+      chunks.push(value);
+      part = await reader.read();
+    }
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    const payload: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    if (payload && typeof payload === 'object' && 'mediaFailureReason' in payload) {
+      if (payload.mediaFailureReason === 'cloudVideoOriginalRequired')
+        return '视频原件仍在 iCloud。请在 Mac ImageAll 打开此视频并明确获取原件，完成后重试播放；网页不会自动下载原件。';
+      if (payload.mediaFailureReason === 'unsupportedVideoRepresentation')
+        return 'Photos 返回了编辑合成资源。请在 Mac“照片”中播放，或导出视频文件并接入 ImageAll 后重试。';
+    }
+    return '视频原件在 Mac 本机不可用。请检查来源；若原件在 iCloud，请先在 Mac 明确获取后重试。';
+  } catch {
+    return '视频当前不可用，请检查 Mac 来源后重试。';
+  } finally {
+    await reader.cancel();
+  }
+}

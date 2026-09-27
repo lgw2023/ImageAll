@@ -92,6 +92,18 @@ struct ProductionRemoteMediaResourceProvider: RemoteMediaResourceProviding {
     let folderAuthorization: FolderAuthorizationCoordinator
     let photosLibrary: PhotoKitPhotosLibraryAdapter
 
+    static func mapPhotosMediaError(_ error: Error, mediaKind: MediaKind, purpose: String) -> RemoteAPIError {
+        if mediaKind == .video, error as? PhotosLibraryError == .cloudOnly {
+            return RemoteAPIError(code: .notFound, message: "Video original must be explicitly acquired on Mac",
+                                  mediaFailureReason: .cloudVideoOriginalRequired)
+        }
+        if mediaKind == .video, error as? PhotosVideoResourceError == .unsupportedAssetRepresentation {
+            return RemoteAPIError(code: .notFound, message: "Edited Photos video requires a local file export",
+                                  mediaFailureReason: .unsupportedVideoRepresentation)
+        }
+        return RemoteAPIError(code: .notFound, message: "Photos \(purpose) unavailable")
+    }
+
     func openMediaResource(assetID: UUID) async throws -> RemoteMediaResource {
         let locator = try fetchLocator(assetID: assetID)
         guard locator.availability == .available, locator.mediaKind == .video else {
@@ -187,7 +199,7 @@ struct ProductionRemoteMediaResourceProvider: RemoteMediaResourceProviding {
                     )
                 }
             } catch {
-                throw RemoteAPIError(code: .notFound, message: "Photos \(purpose) unavailable")
+                throw Self.mapPhotosMediaError(error, mediaKind: locator.mediaKind, purpose: purpose)
             }
             do {
                 let descriptor = try DerivedImageSecureIO.openReadOnlyNoFollow(at: url)

@@ -1,12 +1,14 @@
 import Foundation
 
 public enum RemoteVideoError: Error, Equatable, Sendable, LocalizedError {
-    case invalidRange, invalidResponse, responseTooLarge, contentChanged, authorizationRequired, unavailable
+    case invalidRange, invalidResponse, responseTooLarge, contentChanged, authorizationRequired, unavailable, cloudOriginalRequired, unsupportedRepresentation
 
     public var errorDescription: String? {
         switch self {
         case .authorizationRequired: "视频访问授权已失效，请重新连接 Mac。"
         case .contentChanged: "视频已变化或 Mac 不支持修订校验，请刷新详情或升级 Mac 后重试。"
+        case .cloudOriginalRequired: "视频原件仍在 iCloud。请在 Mac ImageAll 打开此视频并明确获取原件，完成后在此重试；远端播放不会自动下载。"
+        case .unsupportedRepresentation: "Photos 返回了编辑合成资源。请在 Mac“照片”中播放，或导出视频文件并接入 ImageAll 后重试。"
         case .unavailable: "原始视频在 Mac 本机不可用；不会自动下载 iCloud 原件。"
         default: "无法读取视频，请检查连接和文件后重试。"
         }

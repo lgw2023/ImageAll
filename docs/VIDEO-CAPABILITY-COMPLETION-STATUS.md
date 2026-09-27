@@ -273,3 +273,14 @@
 - video-metadata-persist-build.log：Mac TEST BUILD SUCCEEDED。video-metadata-persist-tests.log：直接 XCTest 8/8 PASS，包括合成本地播放 → 条件写入 → Inspector 重读、内容修订和标签不变、旧修订／照片拒绝，PhotoKit 未变保留／变化清除，以及既有收藏写入不误增修订与播放／云端 fake 回归。没有真实 PhotoKit 或 Inspector 人工点击证据。
 - video-metadata-workspace.patch 只暂存本轮 13 行 model 方法，原有 Workspace 75/5 保留；git diff --check PASS，源摘要 video-metadata-persist-source-sha256.json。未读取真实媒体、未源端写入、未额外云端获取／外部传输、未 push／替换 App；Web 工作区本轮无变更。
 - 下一动作：远端云端视频状态与恢复提示，P2 智能推流跨媒体时间／位置范围核查，然后接 P3 已有视频 AI 的远端命令与审核链路。整体目标尚未达到完成条件。
+
+
+## P2 远端云端视频状态与恢复提示（2026-09-27）
+
+- 上轮为 progress：cef51719 交付 PhotoKit 播放后技术信息写回。本轮 Host 将云端视频原件缺失／不支持的编辑资源映射为兼容 404 加可选原因字段；共享客户端提供明确 Mac 获取／导出恢复说明，旧 Host 普通 404 仍可处理。
+- Web 本地提交 5da99143：视频失败后最多 1 字节 Range 探测及 8 KiB 错误体解析，区分已知原因并允许重试播放。合成浏览器验证无静态 cloud-preview 请求、云端提示和恢复后实际解码／seek。仅 3 个源文件最小补丁集成 main，生成资源留在 Web worktree。
+- media-reasons-protocol.log 76/76 PASS；media-reasons-client-final.log 65/65 PASS。media-reasons-mac-accepted.log Mac TEST BUILD SUCCEEDED，media-reasons-ios.log iOS Simulator BUILD SUCCEEDED。
+- 首轮真实 Host 测试 1/2：生产 URLSession bounded transport 对所有非 2xx 返回空 Data，fake transport 未暴露此差异。修复为有界错误体读取，并补实际响应字段断言；media-reasons-host-tests-final.log 2/2 PASS（HTTP 原因传递、2 字节请求、正常解码／seek／授权／修订回归）。不将首轮失败记为通过。
+- Web 首轮 lint 指出 while(true) 不必要条件，改为按 reader done 条件循环；media-reasons-web-lint-final.log、media-reasons-web-build-final.log、media-reasons-web-typecheck.log 及 main typecheck 均 PASS。media-reasons-web-e2e-final.log 1/1 PASS，包含播放、切换、云端失败、无预览下载和重试恢复的完整浏览器路径；使用合成 HTTP mock，非实际浏览器到 Swift Host UI 联调。
+- Web 3 文件字节一致；源摘要 media-reasons-source-sha256.json，git diff --check PASS。原 Workspace 75/5 与 OpenMontage 等并行差异保留。未访问真实媒体、未云端获取／源端写入／外部传输、未 push／替换 App；真实 iPhone 和 iCloud 均 NOT_RUN。
+- 下一具体动作：核对智能推流的视频时间／位置与跨媒体候选规则，继续 P3 远端视频 AI 命令／训练／审核。P1／P2 尚有完整 UI、资源集成与上述语义待验；目标 active，不能标记完成。

@@ -138,3 +138,12 @@ PhotoKit 使用原件版本 requestAVAsset、显式允许网络并报告进度�
 已获准的本地视频播放资源读取技术信息后，可按 assetID + contentRevision 条件写回当前可用 PhotoKit 视频行；来源必须 active，历史定位符、照片、旧修订均拒绝。仅更新技术 JSON 与目录记录时间，不修改内容修订、媒体日期、标签或源文件。技术信息写入失败不影响播放，当前播放信息仍可查看；不得据此声称写入成功。
 
 原生当前 Inspector 在写入成功后重新查询，共享 Host 详情沿既有 DTO 投影读取持久字段。此路径不为获取元数据额外下载原件、不在枚举时打开视频，不自动补全全库。PhotoKit reconcile 判断内容变化并增加修订时清空旧技术 JSON；未变内容保留观察结果，下一次本地播放可重新填充。
+
+
+### P2 远端视频失败原因与恢复（2026-09-27）
+
+保留原有 HTTP 404 / notFound，错误 JSON 增加可选 mediaFailureReason，区分 cloudVideoOriginalRequired 与 unsupportedVideoRepresentation；旧错误缺字段继续可用，旧客户端可忽略附加字段。Host 仍只读取本地原视频，不接受远端隐式下载。客户端对云端原件明确引导到 Mac ImageAll 确认获取后重试，对编辑合成资源说明“照片”播放或导出文件路径。
+
+共享流式传输保留有界错误体，视频请求允许至多 8 KiB 错误诊断预算，成功范围仍逐项校验请求长度／总长／修订。此前生产 transport 丢弃所有非 2xx body，会使 typed error 丢失；改为同样的硬预算读取并以实际 Swift Host 回归验证。
+
+Web 在 video 元素失败后发一个 bytes=0-0 本地媒体探测，成功响应立即取消 body；404 JSON 最多读取 8 KiB，只解释白名单原因，不展示服务器任意内容。提供重试播放并重建 media 元素；静态云端预览 hook 仍只用于照片，不能作为视频原件获取。此轮不新增 Web／iPhone 云端下载命令。

@@ -8,13 +8,20 @@ public enum RemoteAPIErrorCode: String, Codable, Sendable, Equatable {
     case internalError
 }
 
+public enum RemoteMediaFailureReason: String, Codable, Sendable, Equatable {
+    case cloudVideoOriginalRequired
+    case unsupportedVideoRepresentation
+}
+
 public struct RemoteAPIError: Codable, Sendable, Equatable, Error {
     public let code: RemoteAPIErrorCode
     public let message: String
+    public let mediaFailureReason: RemoteMediaFailureReason?
 
-    public init(code: RemoteAPIErrorCode, message: String) {
+    public init(code: RemoteAPIErrorCode, message: String, mediaFailureReason: RemoteMediaFailureReason? = nil) {
         self.code = code
         self.message = message
+        self.mediaFailureReason = mediaFailureReason
     }
 }
 

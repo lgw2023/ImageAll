@@ -34,6 +34,10 @@ test('production UTI video plays, seeks, switches and reports unavailable format
     let format = 'public.mpeg-4';
     let broken = false;
     let mediaRequests = 0;
+    let cloudPreviewRequests = 0;
+    page.on('request', (request) => {
+      if (request.url().includes('cloud-preview')) cloudPreviewRequests += 1;
+    });
     await page.route(/\/v1\/assets\/[0-9a-f-]+$/i, (route) =>
       route.fulfill({
         json: {
@@ -53,7 +57,15 @@ test('production UTI video plays, seeks, switches and reports unavailable format
     );
     await page.route(/\/v1\/assets\/[0-9a-f-]+\/media\?/, (route) => {
       mediaRequests += 1;
-      if (broken) return route.fulfill({ status: 404 });
+      if (broken)
+        return route.fulfill({
+          status: 404,
+          json: {
+            code: 'notFound',
+            message: 'fixture',
+            mediaFailureReason: 'cloudVideoOriginalRequired',
+          },
+        });
       const range = /^bytes=(\d+)-(\d*)$/.exec(route.request().headers().range ?? '');
       const start = range ? Number(range[1]) : 0;
       const end = range?.[2] ? Math.min(Number(range[2]), bytes.length - 1) : bytes.length - 1;
@@ -64,7 +76,9 @@ test('production UTI video plays, seeks, switches and reports unavailable format
         headers: {
           'accept-ranges': 'bytes',
           'content-length': String(end - start + 1),
-          ...(range ? { 'content-range': `bytes ${String(start)}-${String(end)}/${String(bytes.length)}` } : {}),
+          ...(range
+            ? { 'content-range': `bytes ${String(start)}-${String(end)}/${String(bytes.length)}` }
+            : {}),
         },
       });
     });
@@ -101,7 +115,14 @@ test('production UTI video plays, seeks, switches and reports unavailable format
     await page.getByRole('button', { name: '关闭照片详情' }).click();
     broken = true;
     await page.getByRole('button', { name: '查看 IMG_0003.jpg' }).click();
-    await expect(page.getByText('当前无法显示预览')).toBeVisible();
+    await expect(page.getByText('暂时无法播放视频')).toBeVisible();
+    await expect(page.getByText(/视频原件仍在 iCloud/)).toBeVisible();
+    expect(cloudPreviewRequests).toBe(0);
+    broken = false;
+    await page.getByRole('button', { name: '重试播放' }).click();
+    await expect
+      .poll(() => player.evaluate((node: HTMLVideoElement) => node.readyState))
+      .toBeGreaterThan(1);
     await page.getByRole('button', { name: '关闭照片详情' }).click();
     format = 'vendor.unknown';
     const before = mediaRequests;

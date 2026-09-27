@@ -6,6 +6,25 @@ import XCTest
 
 @MainActor
 final class RemoteVideoTests: XCTestCase {
+    func testCloudAndCompositionFailuresHaveRecoveryReasonsWhileLegacy404StillDecodes() async throws {
+        for reason in [RemoteMediaFailureReason?.none, .cloudVideoOriginalRequired, .unsupportedVideoRepresentation] {
+            let client = RemoteLibraryClient(
+                endpoint: try RemoteHostEndpoint(host: "fixture.invalid", port: 8787, accessToken: "test-token"),
+                transport: VideoTransport { request in
+                    let bytes = try JSONEncoder().encode(RemoteAPIError(code: .notFound, message: "fixture", mediaFailureReason: reason))
+                    return (bytes, HTTPURLResponse(url: request.url!, statusCode: 404, httpVersion: nil, headerFields: nil)!)
+                }
+            )
+            do {
+                _ = try await client.readVideoRange(assetID: UUID(), contentRevision: 1, offset: 0, count: 2)
+                XCTFail("Expected a recoverable video error")
+            } catch let error as RemoteVideoError {
+                XCTAssertEqual(error, reason == .cloudVideoOriginalRequired ? .cloudOriginalRequired
+                               : reason == .unsupportedVideoRepresentation ? .unsupportedRepresentation : .unavailable)
+            }
+        }
+    }
+
     func testAuthenticatedSyntheticVideoDecodesSeeksAndStops() async throws {
         var root = URL(fileURLWithPath: #filePath)
         for _ in 0..<5 { root.deleteLastPathComponent() }
