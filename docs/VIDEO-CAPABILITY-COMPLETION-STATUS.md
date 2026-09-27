@@ -19,7 +19,7 @@
 | P0 | VERIFIED | PASS（静态盘点） | 基线、边界、首个切片与测试路径明确；不等于功能通过 |
 | P1 | IN_PROGRESS | 分切片 PASS；完整闭环未验 | 媒体契约已交付；Mac／iPhone 查看器构建／合成测试 PASS；跨端联调待补 |
 | P2 | IN_PROGRESS | 首切片 PASS | 文件夹元数据、查询／地图／回填、原生云端获取及 PhotoKit 播放后技术信息持久化已分切片验；远端恢复提示、智能推流与完整 UI 待验 |
-| P3 | NOT_STARTED | NOT_RUN | 复核代表帧模型隔离，接远端建议与审核持久事实 |
+| P3 | IN_PROGRESS | 远端样本建议与媒体槽回归 PASS；完整持久审核链待验 | 继续全库建议、训练命令与审核持久事实闭环 |
 | P4 | NOT_STARTED | NOT_RUN | 有界完整字节摘要、修订复核、合成回收恢复 |
 | P5 | NOT_STARTED | NOT_RUN | 版本化有限多帧与时间点证据、内容相似独立候选 |
 | P6 | NOT_STARTED | NOT_RUN | 显式片段与原声规则，合成混合故事可解码验证 |
@@ -294,3 +294,13 @@
 - feed-media-build-final.log：Mac TEST BUILD SUCCEEDED。feed-media-tests.log：直接 XCTest ContextualTagFeedTests 8/8 PASS；涵盖照片模型不能覆盖视频、混合组补齐视频模型后的排序、时间／位置证据及既有事务回归。仅合成目录数据库，不代表真实 Photos 或智能推流 UI 手工验收。
 - git diff --check PASS；源摘要 feed-media-source-sha256.json。Workspace 原有 75/5 与 OpenMontage 并行改动保留，Web 工作区本轮未修改。未读取真实媒体、未源端写入／云端获取／外部传输、未 push 或替换 App。
 - P1／P2 仍 IN_PROGRESS，P3 主链路仍待推进，P4–P7 NOT_STARTED；目标 active。下一具体动作：追踪远端视频 AI 命令／训练的照片限定与原生视频采样、缓存及模型域契约，完成有验证依据的跨端能力对齐。
+
+
+## P3 远端视频个人样本建议（2026-09-27）
+
+- 上轮为 progress：76799745 修复智能推流跨媒体排序。本轮追踪至 AppPersonalSampleSuggestionRuntime，确认其使用 mediaKind 选择线性模型目录、发布记录和建议 capability；原生既有代表帧输入与远端 loadPreview 共用底层路径。
+- 去除远端样本建议的照片限定，能力快照的视频个人建议模式改为 sample。取帧前后核对媒体类型、内容修订、active 来源与 available 状态；缓存仍绑定资产修订和完整编码器身份，未引入多帧缓存策略。标准外部服务／单资产建议／全库质心和 AdamW 命令仍需各自接通，不宣称全部远端 AI 已可用。
+- 首轮直接 XCTest 54/55 PASS：旧来源筛选测试未提供匹配 Inspector 详情，被新修订检查拒绝；补齐候选 revision=3 的夹具。video-sample-build-accepted.log 最终 Mac TEST BUILD SUCCEEDED；video-sample-tests-final.log 最终 56/56 PASS（RemoteCatalogFacadeTests 55 项及照片／视频独立模型发布指针 1 项）。
+- 新增视频样本命令测试验证媒体参数、一次 embedding、操作 ID 重放不重复计算、照片命令拒绝视频；建议运行时为 stub，仅证明调度与参数／重放，不作为真实模型打分、持久建议或完整审核链的证据。模型槽测试使用真实合成产物存储。P3 的样本→训练→建议→审核→撤销完整链仍为必需未验项。
+- git diff --check PASS；源摘要 video-sample-source-sha256.json。Workspace 原有 75/5 及 OpenMontage 并行差异保留；本轮未改 Web，未读取真实媒体、未云端获取／源端写入／外部传输、未 push 或替换 App。
+- P1／P2／P3 IN_PROGRESS，P4–P7 NOT_STARTED，目标 active。下一动作：接通有底层视频模型支持的全库质心／AdamW 建议命令，补一条真实合成目录持久建议到审核／撤销链，并核对训练、标准建议与客户端能力入口。

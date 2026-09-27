@@ -435,8 +435,7 @@ actor RemoteTrainingCommandService: RemoteTrainingCommandPort {
             service: librarySuggestionService,
             standardAvailable: mediaKind == .image && localModelSuggestions != nil,
             personalMode: {
-                if mediaKind != .image { return .unavailable }
-                if localModelSuggestions != nil { return .fullLibrary }
+                if mediaKind == .image, localModelSuggestions != nil { return .fullLibrary }
                 if sampleSuggester != nil, embeddingCache != nil { return .sample }
                 return .unavailable
             }(),
@@ -929,7 +928,7 @@ actor RemoteTrainingCommandService: RemoteTrainingCommandPort {
     }
 
     func sampleSuggestionsAvailable(mediaKind: MediaKind) async -> Bool {
-        mediaKind == .image && sampleSuggester != nil && embeddingCache != nil
+        sampleSuggester != nil && embeddingCache != nil
     }
 
     func sampleSuggestionMaximumCount() async -> Int {
@@ -949,9 +948,6 @@ actor RemoteTrainingCommandService: RemoteTrainingCommandPort {
             return SampleSuggestionReceipt(activity: activity, replayed: true)
         }
         guard sampleSuggester != nil, embeddingCache != nil else {
-            throw TrainingCommandError.unavailable
-        }
-        guard command.mediaKind == .image else {
             throw TrainingCommandError.unavailable
         }
         guard activeSampleSuggestionOperationID == nil,
@@ -1081,11 +1077,24 @@ actor RemoteTrainingCommandService: RemoteTrainingCommandPort {
                 maximumSuggestionsPerAsset:
                     AppPersonalSampleSuggestionLimits.defaultMaximumSuggestionsPerAsset,
                 embedding: { [catalog] candidate in
+                    let detail = try catalog.fetchInspectorDetail(assetID: candidate.assetID)
+                    guard detail.mediaKind == mediaKind,
+                          detail.contentRevision == candidate.contentRevision,
+                          detail.sourceState == .active,
+                          detail.availability == .available
+                    else { throw TrainingCommandError.invalidSelection }
                     let result = try await embeddingCache.cacheSelectedAsset(
                         assetID: candidate.assetID,
                         contentRevision: candidate.contentRevision,
                         imageData: {
-                            try await catalog.loadPreview(assetID: candidate.assetID)
+                            let data = try await catalog.loadPreview(assetID: candidate.assetID)
+                            let current = try catalog.fetchInspectorDetail(assetID: candidate.assetID)
+                            guard current.mediaKind == mediaKind,
+                                  current.contentRevision == candidate.contentRevision,
+                                  current.sourceState == .active,
+                                  current.availability == .available
+                            else { throw TrainingCommandError.invalidSelection }
+                            return data
                         }
                     )
                     try Task.checkCancellation()

@@ -1111,6 +1111,88 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         XCTAssertEqual(cache.callCount, 1)
     }
 
+    func testVideoSampleSuggestionServicePreservesMediaDomainAndReplaysCompletedActivity() async throws {
+        let operationID = UUID(uuidString: "99666666-6666-6666-6666-666666666666")!
+        let assetID = UUID(uuidString: "99777777-7777-7777-7777-777777777777")!
+        let cache = RemoteEmbeddingCacheStub()
+        let suggester = RemoteSampleSuggesterStub()
+        let catalog = RemoteCatalogServingStub(
+            previewData: Data([1, 2, 3]),
+            detail: AssetInspectorDetail(
+                assetID: assetID,
+                sourceID: UUID(),
+                sourceDisplayName: "Fixture",
+                sourceState: .active,
+                relativePath: "fixture.mov",
+                fileName: "fixture.mov",
+                mediaKind: .video,
+                mediaType: "public.mpeg-4",
+                mediaCreatedAtMs: nil,
+                mediaModifiedAtMs: nil,
+                width: 10,
+                height: 10,
+                availability: .available,
+                contentRevision: 4,
+                acceptedTagCount: 0,
+                rejectedTagCount: 0,
+                fingerprintSizeBytes: nil,
+                fingerprintModifiedAtNs: nil,
+                tags: []
+            )
+        )
+        let service = RemoteTrainingCommandService(
+            catalog: catalog,
+            review: EmptyPersonalizationReviewPort(),
+            centroidRebuilder: nil,
+            adamWRebuilder: nil,
+            embeddingCache: cache,
+            sampleSuggester: suggester,
+            sampleSuggestionLimit: { 12 }
+        )
+        let command = SampleSuggestionCommand(
+            operationID: operationID,
+            mediaKind: .video,
+            assetIDs: [assetID]
+        )
+
+        let isAvailable = await service.sampleSuggestionsAvailable(mediaKind: .video)
+        let maximumCount = await service.sampleSuggestionMaximumCount()
+        XCTAssertTrue(isAvailable)
+        XCTAssertEqual(maximumCount, 12)
+        let first = try await service.generateSampleSuggestions(command)
+        XCTAssertFalse(first.replayed)
+        var activities = await service.sampleSuggestionActivities(mediaKind: .video)
+        for _ in 0..<50 where activities.first?.phase == .running {
+            try await Task.sleep(for: .milliseconds(10))
+            activities = await service.sampleSuggestionActivities(mediaKind: .video)
+        }
+        XCTAssertEqual(activities.first?.phase, .completed)
+        XCTAssertEqual(activities.first?.totalUnitCount, 1)
+        XCTAssertEqual(activities.first?.skippedCount, 1)
+        let requestedCandidates = await suggester.candidates()
+        XCTAssertEqual(requestedCandidates, [
+            PersonalSuggestionCandidate(assetID: assetID, contentRevision: 4),
+        ])
+        XCTAssertEqual(cache.callCount, 1)
+
+        let requestedMedia = await suggester.mediaKind()
+        XCTAssertEqual(requestedMedia, .video)
+        do {
+            _ = try await service.generateSampleSuggestions(SampleSuggestionCommand(
+                operationID: UUID(), mediaKind: .image, assetIDs: [assetID]
+            ))
+            XCTFail("A photo command must reject a video asset")
+        } catch let error as TrainingCommandError {
+            XCTAssertEqual(error, .invalidSelection)
+        }
+        let replay = try await service.generateSampleSuggestions(command)
+        XCTAssertTrue(replay.replayed)
+        XCTAssertEqual(replay.activity.phase, .completed)
+        let suggestionCallCount = await suggester.callCount()
+        XCTAssertEqual(suggestionCallCount, 1)
+        XCTAssertEqual(cache.callCount, 1)
+    }
+
     func testLibrarySuggestionServiceLaunchesValidatedStandardJobAndReplays() async throws {
         let operationID = UUID(uuidString: "99611111-1111-1111-1111-111111111111")!
         let sourceID = UUID(uuidString: "99622222-2222-2222-2222-222222222222")!
@@ -1555,7 +1637,15 @@ final class RemoteCatalogFacadeTests: XCTestCase {
                     state: .active
                 ),
             ],
-            previewData: Data([1, 2, 3])
+            previewData: Data([1, 2, 3]),
+            detail: AssetInspectorDetail(
+                assetID: assetID, sourceID: sourceID, sourceDisplayName: "Archive",
+                sourceState: .active, relativePath: "fixture.jpg", fileName: "fixture.jpg",
+                mediaKind: .image, mediaType: "public.jpeg", mediaCreatedAtMs: nil,
+                mediaModifiedAtMs: nil, width: 10, height: 10, availability: .available,
+                contentRevision: 3, acceptedTagCount: 0, rejectedTagCount: 0,
+                fingerprintSizeBytes: nil, fingerprintModifiedAtNs: nil, tags: []
+            )
         )
         let service = RemoteTrainingCommandService(
             catalog: catalog,
@@ -4866,6 +4956,7 @@ private actor RemoteBatchRebuilderStub: AppPersonalModelRebuilding {
 private actor RemoteSampleSuggesterStub: AppPersonalSampleSuggesting {
     private var storedCandidates: [PersonalSuggestionCandidate] = []
     private var storedCallCount = 0
+    private var storedMediaKind: MediaKind = .image
 
     func suggest(
         candidates: [PersonalSuggestionCandidate],
@@ -4884,6 +4975,19 @@ private actor RemoteSampleSuggesterStub: AppPersonalSampleSuggesting {
         )
     }
 
+    func suggest(
+        mediaKind: MediaKind,
+        candidates: [PersonalSuggestionCandidate],
+        maximumSuggestionsPerAsset: Int,
+        embedding: @escaping @Sendable (PersonalSuggestionCandidate) async throws -> AppCoreMLEmbedding
+    ) async throws -> AppPersonalSampleSuggestionBatch {
+        storedMediaKind = mediaKind
+        return try await suggest(candidates: candidates,
+                                 maximumSuggestionsPerAsset: maximumSuggestionsPerAsset,
+                                 embedding: embedding)
+    }
+
+    func mediaKind() -> MediaKind { storedMediaKind }
     func candidates() -> [PersonalSuggestionCandidate] { storedCandidates }
     func callCount() -> Int { storedCallCount }
 }
