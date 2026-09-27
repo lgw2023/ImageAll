@@ -1677,6 +1677,26 @@ final class RemoteCatalogFacadeTests: XCTestCase {
     }
 
     func testTagLibrarySuggestionServiceScansSelectedSourcesPublishesAndReplays() async throws {
+        try await verifyTagLibrarySuggestions(mediaKind: .image, method: .personalCentroid)
+    }
+
+    func testVideoCentroidLibrarySuggestionsUseVideoDomainAndReplay() async throws {
+        try await verifyTagLibrarySuggestions(mediaKind: .video, method: .personalCentroid)
+    }
+
+    func testVideoAdamWLibrarySuggestionsUseVideoDomainAndReplay() async throws {
+        try await verifyTagLibrarySuggestions(mediaKind: .video, method: .personalAdamW)
+    }
+
+    func testVideoLibrarySuggestionsRejectPhotoModelBeforePublishing() async throws {
+        try await verifyTagLibrarySuggestions(mediaKind: .video, method: .personalCentroid,
+                                              returnedMediaKind: .image)
+    }
+
+    private func verifyTagLibrarySuggestions(
+        mediaKind: MediaKind, method: TagLibrarySuggestionMethod,
+        returnedMediaKind: MediaKind? = nil
+    ) async throws {
         let operationID = UUID(uuidString: "99911111-1111-1111-1111-111111111111")!
         let tagID = UUID(uuidString: "99922222-2222-2222-2222-222222222222")!
         let sourceID = UUID(uuidString: "99933333-3333-3333-3333-333333333333")!
@@ -1727,7 +1747,7 @@ final class RemoteCatalogFacadeTests: XCTestCase {
             previewData: Data([1, 2, 3])
         )
         let cache = RemoteEmbeddingCacheStub()
-        let suggester = RemoteTagLibrarySuggesterStub(tagID: tagID)
+        let suggester = RemoteTagLibrarySuggesterStub(tagID: tagID, returnedMediaKind: returnedMediaKind)
         let service = RemoteTrainingCommandService(
             catalog: catalog,
             review: review,
@@ -1735,6 +1755,7 @@ final class RemoteCatalogFacadeTests: XCTestCase {
             adamWRebuilder: nil,
             embeddingCache: cache,
             centroidTagSuggester: suggester,
+            adamWTagSuggester: suggester,
             sampleSuggestionLimit: { 17 },
             tagSuggestionMinimumScore: { requestedTagID, method in
                 guard requestedTagID == tagID else {
@@ -1745,30 +1766,37 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         )
 
         let available = await service.tagLibrarySuggestionsAvailable(
-            mediaKind: .image,
-            method: .personalCentroid
+            mediaKind: mediaKind,
+            method: method
         )
         XCTAssertTrue(available)
-        let options = try await service.tagLibrarySuggestionTagOptions(mediaKind: .image)
+        let options = try await service.tagLibrarySuggestionTagOptions(mediaKind: mediaKind)
         XCTAssertEqual(options.first?.personalCentroidMinScore, 0.42)
 
         let command = TagLibrarySuggestionCommand(
             operationID: operationID,
-            mediaKind: .image,
-            method: .personalCentroid,
+            mediaKind: mediaKind,
+            method: method,
             tagID: tagID,
             sourceIDs: [sourceID]
         )
         let first = try await service.generateTagLibrarySuggestions(command)
         XCTAssertFalse(first.replayed)
-        var activities = await service.tagLibrarySuggestionActivities(mediaKind: .image)
+        var activities = await service.tagLibrarySuggestionActivities(mediaKind: mediaKind)
         for _ in 0..<80 where activities.first.map({
             [.preparingCandidates, .scoring, .publishing].contains($0.phase)
         }) == true {
             try await Task.sleep(for: .milliseconds(10))
-            activities = await service.tagLibrarySuggestionActivities(mediaKind: .image)
+            activities = await service.tagLibrarySuggestionActivities(mediaKind: mediaKind)
         }
 
+        if let returnedMediaKind, returnedMediaKind != mediaKind {
+            XCTAssertEqual(activities.first?.phase, .failed)
+            XCTAssertEqual(activities.first?.errorCode, "identityMismatch")
+            XCTAssertNil(review.publishedTagID)
+            XCTAssertTrue(review.publishedHits.isEmpty)
+            return
+        }
         XCTAssertEqual(activities.first?.phase, .completed)
         XCTAssertEqual(activities.first?.completedUnitCount, 2)
         XCTAssertEqual(activities.first?.aboveThresholdCount, 1)
@@ -1783,7 +1811,8 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         XCTAssertEqual(invocation?.tagID, tagID)
         XCTAssertEqual(invocation?.candidates, candidates)
         XCTAssertEqual(invocation?.maximumPendingCount, 17)
-        XCTAssertEqual(invocation?.minimumScore, 0.42)
+        XCTAssertEqual(invocation?.minimumScore, method == .personalCentroid ? 0.42 : 0.61)
+        XCTAssertEqual(invocation?.mediaKind, mediaKind)
 
         let replay = try await service.generateTagLibrarySuggestions(command)
         XCTAssertTrue(replay.replayed)
@@ -4512,6 +4541,9 @@ private final class RemoteReviewPortStub: PersonalizationReviewPort, @unchecked 
         lock.withLock { storedPendingCountSourceIDs = sourceIDs }
         return totalPendingCount
     }
+    func tagOverviews(mediaKind: MediaKind, sourceIDs: [UUID]?) throws -> [SuggestionTagOverview] {
+        try tagOverviews(sourceIDs: sourceIDs)
+    }
     func tagOverviews(sourceIDs: [UUID]?) throws -> [SuggestionTagOverview] {
         lock.withLock { storedOverviewSourceIDs = sourceIDs }
         return overviews
@@ -4549,6 +4581,14 @@ private final class RemoteReviewPortStub: PersonalizationReviewPort, @unchecked 
     func pendingSuggestionsForAsset(assetID: UUID) throws -> [AssetPendingSuggestion] {
         _ = assetID
         return pendingSuggestions
+    }
+    func personalSuggestionCandidates(
+        mediaKind: MediaKind, afterAssetID: UUID?, limit: Int,
+        sourceIDs: [UUID]?, excludingDecisionsForTagID: UUID?
+    ) throws -> [PersonalSuggestionCandidate] {
+        try personalSuggestionCandidates(afterAssetID: afterAssetID, limit: limit,
+                                         sourceIDs: sourceIDs,
+                                         excludingDecisionsForTagID: excludingDecisionsForTagID)
     }
     func personalSuggestionCandidates(
         afterAssetID: UUID?,
@@ -4994,6 +5034,7 @@ private actor RemoteSampleSuggesterStub: AppPersonalSampleSuggesting {
 
 private actor RemoteTagLibrarySuggesterStub: AppPersonalTagLibrarySuggesting {
     struct Invocation: Equatable, Sendable {
+        let mediaKind: MediaKind
         let tagID: UUID
         let candidates: [PersonalSuggestionCandidate]
         let maximumPendingCount: Int
@@ -5004,8 +5045,24 @@ private actor RemoteTagLibrarySuggesterStub: AppPersonalTagLibrarySuggesting {
     private var storedInvocation: Invocation?
     private var storedCallCount = 0
 
-    init(tagID: UUID) {
+    private var requestedMediaKind: MediaKind = .image
+    private let returnedMediaKind: MediaKind?
+
+    init(tagID: UUID, returnedMediaKind: MediaKind? = nil) {
         self.tagID = tagID
+        self.returnedMediaKind = returnedMediaKind
+    }
+
+    func suggest(
+        mediaKind: MediaKind, tagID: UUID, candidates: [PersonalSuggestionCandidate],
+        maximumPendingCount: Int, minimumScore: Double,
+        embedding: @escaping @Sendable (PersonalSuggestionCandidate) async throws -> AppCoreMLEmbedding,
+        progress: (@Sendable (Int, Int, Int) -> Void)?
+    ) async throws -> AppPersonalTagLibrarySuggestionBatch {
+        requestedMediaKind = mediaKind
+        return try await suggest(tagID: tagID, candidates: candidates,
+                                 maximumPendingCount: maximumPendingCount, minimumScore: minimumScore,
+                                 embedding: embedding, progress: progress)
     }
 
     func suggest(
@@ -5018,6 +5075,7 @@ private actor RemoteTagLibrarySuggesterStub: AppPersonalTagLibrarySuggesting {
     ) async throws -> AppPersonalTagLibrarySuggestionBatch {
         storedCallCount += 1
         storedInvocation = Invocation(
+            mediaKind: requestedMediaKind,
             tagID: tagID,
             candidates: candidates,
             maximumPendingCount: maximumPendingCount,
@@ -5029,6 +5087,7 @@ private actor RemoteTagLibrarySuggesterStub: AppPersonalTagLibrarySuggesting {
         }
         let target = PersonalModelSuggestionTarget(
             catalogScopeID: "fixture-scope",
+            mediaKind: returnedMediaKind ?? requestedMediaKind,
             bundleID: "fixture-bundle",
             bundleRevision: "1",
             provider: "fixture",

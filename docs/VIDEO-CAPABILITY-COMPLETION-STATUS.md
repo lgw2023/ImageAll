@@ -304,3 +304,13 @@
 - 新增视频样本命令测试验证媒体参数、一次 embedding、操作 ID 重放不重复计算、照片命令拒绝视频；建议运行时为 stub，仅证明调度与参数／重放，不作为真实模型打分、持久建议或完整审核链的证据。模型槽测试使用真实合成产物存储。P3 的样本→训练→建议→审核→撤销完整链仍为必需未验项。
 - git diff --check PASS；源摘要 video-sample-source-sha256.json。Workspace 原有 75/5 及 OpenMontage 并行差异保留；本轮未改 Web，未读取真实媒体、未云端获取／源端写入／外部传输、未 push 或替换 App。
 - P1／P2／P3 IN_PROGRESS，P4–P7 NOT_STARTED，目标 active。下一动作：接通有底层视频模型支持的全库质心／AdamW 建议命令，补一条真实合成目录持久建议到审核／撤销链，并核对训练、标准建议与客户端能力入口。
+
+
+## P3 远端视频质心／AdamW 全库建议（2026-09-27）
+
+- 上轮为 progress：7439ada8 开放远端视频个人样本建议。本轮核对 AppPersonalTagLibrarySuggestionRuntime 按 mediaKind／family／tagID 查发布产物，候选查询与执行已有媒体参数；去除按标签全库命令和可用性中的照片限定。
+- 发布增加结果身份检查：模型媒体类型与命令一致、单标签身份一致、命中项属于本轮候选且分数有限。错媒体模型在激活／写入前失败。原有来源筛选、人工事实排除、方法最低分、样本上限与重放规则保留。
+- 首轮 58 项测试中 3 个新增视频测试失败，原因为 review stub 的默认视频接口返回空标签／候选；补明确媒体接口后，video-tag-library-build-final.log Mac TEST BUILD SUCCEEDED；video-tag-library-tests-final.log 最终 58/58 PASS。新增质心／AdamW 视频调度与重放、错媒体模型发布拒绝，既有照片及远端事实回归通过。
+- 本轮建议器与 review 为 stub，因此 insertedCount 只证明服务调用契约，不是数据库持久结果证据。完整合成模型／数据库建议 → Review → 人工事实 → 撤销，以及标准服务／单资产建议、训练与 Web／iPhone 入口仍待完成；不得以本轮绿色回归宣称 P3 完成。
+- git diff --check PASS；video-tag-library-source-sha256.json 绑定源码。Workspace 原有 75/5 及项目／OpenMontage 并行差异保留；未修改 Web、未读真实媒体、未云端下载／源端写入／外部传输、未 push／替换 App。
+- P1／P2／P3 IN_PROGRESS，P4–P7 NOT_STARTED，目标 active。下一具体动作：在真实合成目录和既有模型存储上验证视频个人建议持久化、审核与撤销，并继续剩余远端 AI 入口，不能再用 stub 发布计数替代完整链路证据。

@@ -1157,7 +1157,7 @@ actor RemoteTrainingCommandService: RemoteTrainingCommandPort {
         mediaKind: MediaKind,
         method: TagLibrarySuggestionMethod
     ) async -> Bool {
-        guard mediaKind == .image, embeddingCache != nil else { return false }
+        guard embeddingCache != nil else { return false }
         return switch method {
         case .personalCentroid: centroidTagSuggester != nil
         case .personalAdamW: adamWTagSuggester != nil
@@ -1196,7 +1196,7 @@ actor RemoteTrainingCommandService: RemoteTrainingCommandPort {
             }
             return TagLibrarySuggestionReceipt(activity: activity, replayed: true)
         }
-        guard command.mediaKind == .image, embeddingCache != nil else {
+        guard embeddingCache != nil else {
             throw TrainingCommandError.unavailable
         }
         let suggester: any AppPersonalTagLibrarySuggesting
@@ -1368,6 +1368,11 @@ actor RemoteTrainingCommandService: RemoteTrainingCommandPort {
                     skippedCount: skipped,
                     errorCode: nil
                 )
+            guard batch.tagID == command.tagID,
+                  batch.capability.target.mediaKind == command.mediaKind,
+                  batch.capability.tagIDs == [command.tagID],
+                  batch.hits.allSatisfy({ candidates.contains($0.candidate) && $0.score.isFinite })
+            else { throw AppPersonalTagLibrarySuggestionError.identityMismatch }
             try review.activatePersonalSuggestionBundle(batch.capability)
             inserted = try review.replacePersonalTagLibrarySuggestions(
                 tagID: batch.tagID,
