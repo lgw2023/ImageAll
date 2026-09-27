@@ -30,7 +30,23 @@ test('production UTI video plays, seeks, switches and reports unavailable format
       file,
     ]);
     const bytes = readFileSync(file);
-    await installSyntheticAuthenticatedHost(page);
+    await installSyntheticAuthenticatedHost(page, { extraCapabilities: ['assetLocalSuggestions'] });
+    let analysisCount = 0;
+    await page.route(/\/v1\/assets\/[0-9a-f-]+\/local-suggestions$/i, (route) => {
+      const request = route.request().postDataJSON() as { operationID: string; track: string };
+      expect(request.track).toBe('standard');
+      analysisCount += 1;
+      return route.fulfill({
+        json: {
+          operationID: request.operationID,
+          assetID: new URL(route.request().url()).pathname.split('/')[3],
+          track: 'standard',
+          state: 'results',
+          suggestions: [],
+          replayed: false,
+        },
+      });
+    });
     let format = 'public.mpeg-4';
     let broken = false;
     let mediaRequests = 0;
@@ -86,6 +102,10 @@ test('production UTI video plays, seeks, switches and reports unavailable format
     await page.getByRole('button', { name: '查看 IMG_0001.jpg' }).click();
     const player = page.getByLabel('视频播放');
     await expect(player).toBeVisible();
+    await expect(page.getByRole('button', { name: '运行个人标签模型' })).toBeDisabled();
+    await page.getByRole('button', { name: '运行标准场景模型' }).click();
+    await expect(page.getByText('当前模型没有给出建议。')).toBeVisible();
+    expect(analysisCount).toBe(1);
     await expect
       .poll(() => player.evaluate((node: HTMLVideoElement) => node.readyState))
       .toBeGreaterThan(1);
@@ -133,4 +153,46 @@ test('production UTI video plays, seeks, switches and reports unavailable format
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('older Host without video standard capability does not offer video analysis', async ({
+  page,
+}) => {
+  await installSyntheticAuthenticatedHost(page, { extraCapabilities: ['assetLocalSuggestions'] });
+  await page.route(/\/v1\/assets\/[0-9a-f-]+$/i, (route) =>
+    route.fulfill({
+      json: {
+        assetID: assetIDs[0],
+        sourceID,
+        sourceName: 'Synthetic',
+        fileName: 'Video',
+        mediaKind: 'video',
+        mediaType: 'public.mpeg-4',
+        availability: 'available',
+        contentRevision: 1,
+        acceptedTagCount: 0,
+        rejectedTagCount: 0,
+        tags: [],
+      },
+    }),
+  );
+  let capabilityChecked = false;
+  await page.route('**/v1/library-suggestions?*', (route) => {
+    expect(new URL(route.request().url()).searchParams.get('mediaKind')).toBe('video');
+    capabilityChecked = true;
+    return route.fulfill({
+      json: {
+        mediaKind: 'video',
+        service: { state: 'unavailable', serviceVersion: null, provider: null, modelID: null },
+        standardAvailable: false,
+        personalMode: 'unavailable',
+        standardJob: null,
+        personalJob: null,
+      },
+    });
+  });
+  await page.goto('gallery');
+  await page.getByRole('button', { name: '查看 IMG_0001.jpg' }).click();
+  await expect.poll(() => capabilityChecked).toBe(true);
+  await expect(page.getByRole('button', { name: '运行标准场景模型' })).toHaveCount(0);
 });

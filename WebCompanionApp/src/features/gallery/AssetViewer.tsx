@@ -23,6 +23,7 @@ import {
 import { assetMediaURL, assetPreviewURL, fetchAssetDetail, openOriginalAsset } from '@/api/assets';
 import { inspectVideoFailure } from '@/api/client';
 import { fetchCapabilities } from '@/api/capabilities';
+import { fetchLibrarySuggestions } from '@/api/training';
 import type { AssetDetail, AssetSummary } from '@/api/contracts/asset';
 import type { TagDecisionAction, TagGroupSummary, TagSummary } from '@/api/contracts/tag';
 import { errorMessage } from '@/api/errors';
@@ -174,9 +175,19 @@ export function AssetViewer({
     onCompleted: handleCloudPreviewCompleted,
   });
   const localSuggestions = useLocalSuggestions(assetID);
+  const videoStandardCapability = useQuery({
+    queryKey: ['library-suggestions', 'video'],
+    enabled:
+      resolvedMediaKind(detail.data) === 'video' &&
+      capabilities.data?.capabilities.includes('assetLocalSuggestions') === true &&
+      connection.phase === 'online',
+    queryFn: ({ signal }) => fetchLibrarySuggestions('video', false, signal),
+  });
   const supportsLocalSuggestions =
     capabilities.data?.capabilities.includes('assetLocalSuggestions') === true &&
-    resolvedMediaKind(detail.data) === 'image';
+    (resolvedMediaKind(detail.data) === 'image' ||
+      (resolvedMediaKind(detail.data) === 'video' &&
+        videoStandardCapability.data?.standardAvailable === true));
   const previewFailed = failedPreviewAssetID === assetID;
   const videoFailure = useQuery({
     queryKey: ['video-failure', assetID, detail.data?.contentRevision],
@@ -709,10 +720,15 @@ export function AssetViewer({
                   className="asset-local-suggestions"
                 >
                   <div className="asset-tags-heading">
-                    <h3 id="asset-local-suggestions-title">当前照片模型</h3>
+                    <h3 id="asset-local-suggestions-title">
+                      {resolvedMediaKind(detail.data) === 'video' ? '当前视频模型' : '当前照片模型'}
+                    </h3>
                     <span>ON DEVICE</span>
                   </div>
                   <p>{localSuggestions.state.message}</p>
+                  {resolvedMediaKind(detail.data) === 'video' ? (
+                    <p>标准模型分析视频代表帧。视频个人建议请在训练页使用样本或按标签建议。</p>
+                  ) : null}
                   <div aria-label="本地模型" className="asset-local-suggestion-track" role="group">
                     <button
                       aria-pressed={localSuggestions.state.track === 'standard'}
@@ -733,7 +749,8 @@ export function AssetViewer({
                       disabled={
                         mutationPending ||
                         connection.phase !== 'online' ||
-                        localSuggestions.state.status === 'loading'
+                        localSuggestions.state.status === 'loading' ||
+                        resolvedMediaKind(detail.data) === 'video'
                       }
                       onClick={() => void localSuggestions.run('personal')}
                       type="button"
@@ -743,7 +760,7 @@ export function AssetViewer({
                   </div>
                   {localSuggestions.state.status === 'loading' ? (
                     <span className="asset-local-suggestion-loading" role="status">
-                      <span aria-hidden="true" className="spinner" /> 正在分析当前照片…
+                      <span aria-hidden="true" className="spinner" /> 正在分析当前影像…
                     </span>
                   ) : null}
                   {localSuggestions.state.suggestions.length > 0 ? (

@@ -332,3 +332,12 @@
 - 首轮编译发现测试把内部 MediaKind 传到 RemoteAssetMediaKind 接口，修正后 video-standard-build-final.log Mac TEST BUILD SUCCEEDED。video-standard-tests.log 64/64 PASS（远端 60 项，实际后台标准任务 4 项）。视频单资产与全库命令重放只执行一次；后台混合目录仅 1 项视频进入视频任务，完成后持久建议存在、照片待审计数 0，原照片后台任务和模型身份／推理期间内容变化回归通过。
 - 后台使用真实队列／GRDB 与 fake 标准推理输出，未调用真实模型或真实媒体。此证据比 stub 排队更强，但不是浏览器→Swift Host→真实编码器的完整端到端证据。客户端按钮与能力入口、个人训练产物的远端持久链仍为 P3 必需未验项。
 - git diff --check PASS；源摘要 video-standard-source-sha256.json。Workspace 原有 75/5 与 OpenMontage 并行改动保留，Web 本轮未改。未读取真实媒体、未云端获取／源端写入／外部传输、未 push／替换 App。P1／P2／P3 IN_PROGRESS，P4–P7 NOT_STARTED；目标 active。下一动作：核对 Web／iPhone 标准与个人建议按钮、训练页面的媒体硬编码，并接视频能力；继续真实合成训练到审核链。
+
+
+## P3 Web 视频标准分析入口（2026-09-27）
+
+- 上轮为 progress：8e2b1088 接通远端视频标准建议。本轮先复核 main 与 lgw/imageall-web-dev 的独立路径／并行改动；Web 训练页已经按所选媒体发送请求，详情页仍硬编码只允许照片。
+- Web 本地提交 c5b4a78b：详情页对视频查询既有 library-suggestions 视频快照，仅 Host 声明 standardAvailable 时显示标准模型入口；旧 Host 不显示可执行按钮。显示代表帧分析说明，单资产个人按钮对视频禁用，并指向训练页的样本／按标签建议。照片入口保留，预览失败文案不再错误引导视频静态云预览下载。
+- 首轮浏览器使用旧生成资源，按钮缺失失败；重新构建后 video-ai-web-e2e-final.log 2/2 PASS（播放／切换／标准命令／无云预览请求／旧 Host 门控），video-ai-web-photo-regression.log 1/1 PASS（照片标准／个人分析及决策）。typecheck、局部 eslint、Web build 均 PASS。使用合成 HTTP mock，非浏览器到真实 Swift Host 联调。
+- 仅 3 个源码／测试文件最小补丁集成 main，逐字节核对一致；生成资源仍只留 Web worktree。既有 review、地图与样式并行差异未纳入提交。Workspace 原有 75/5 保留，git diff --check PASS，video-ai-web-source-sha256.json 绑定源码。
+- iPhone 原生 Companion 当前没有对应训练／建议操作页面，仅共享 API 支持不能算原生入口完成。Web review 控件仍发现硬编码 image（位于并行修改文件），需要后续按最小差异接媒体上下文；这些和训练产物→远端持久审核整链均为必需缺口。P1／P2／P3 IN_PROGRESS，P4–P7 NOT_STARTED，目标 active。未读取真实媒体、未云端下载／源端写入／外部传输、未 push／替换 App。

@@ -19,15 +19,15 @@ const READY_STATE: LocalSuggestionViewState = {
   status: 'ready',
   track: 'standard',
   suggestions: [],
-  message: '选择一个模型，只分析当前照片。',
+  message: '选择一个模型，只分析当前影像。',
 };
 
 function stateMessage(state: AssetLocalSuggestionState): string {
   return {
     results: '分析完成。',
-    previewUnavailable: '本地预览尚不可用，请先从 iCloud 获取当前照片预览。',
+    previewUnavailable: '本地分析预览尚不可用，请在 Mac 检查当前影像的本地可用性。',
     personalUnavailable: '当前目录还没有可用于这些标签的个人模型。',
-    serviceUnavailable: '本地模型服务当前不可用；照片和已有标签不受影响。',
+    serviceUnavailable: '本地模型服务当前不可用；影像和已有标签不受影响。',
     failed: '结果未通过安全校验，已忽略本次分析。',
   }[state];
 }
