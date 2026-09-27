@@ -38,11 +38,13 @@ final class LocalLibraryModel: ObservableObject {
     @Published var errorMessage: String?
 
     private let store: LocalLibraryStore?
+    private let favoriteSource: any LocalFavoriteSource
     private var fetchedAssets: PHFetchResult<PHAsset>?
     private var loadedCount = 0
     private let pageSize = 100
 
-    init() {
+    init(favoriteSource: any LocalFavoriteSource = PhotoKitLocalFavoriteSource()) {
+        self.favoriteSource = favoriteSource
         do {
             let root = try FileManager.default.url(
                 for: .applicationSupportDirectory, in: .userDomainMask,
@@ -699,33 +701,19 @@ final class LocalLibraryModel: ObservableObject {
         }
 
         do {
-            let authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
-            guard authorization == .authorized || authorization == .limited else {
-                throw LocalFavoriteSourceError.authorizationRequired
-            }
-            let fetched = PHAsset.fetchAssets(
-                withLocalIdentifiers: [asset.localIdentifier], options: nil
+            let intent = try await store.prepareFavoriteWriteback(
+                assetID: asset.id, expectedTarget: favorite
             )
-            guard let sourceAsset = fetched.firstObject else {
-                throw LocalFavoriteSourceError.assetUnavailable
-            }
-            try await PHPhotoLibrary.shared().performChanges {
-                PHAssetChangeRequest(for: sourceAsset).isFavorite = favorite
-            }
-            let readback = PHAsset.fetchAssets(
-                withLocalIdentifiers: [asset.localIdentifier], options: nil
-            ).firstObject?.isFavorite
-            try await store.finishFavoriteWriteback(
-                assetID: asset.id, requestedValue: favorite, observedValue: readback
-            )
+            let outcome = try await LocalFavoriteWriteback.perform(intent, store: store, source: favoriteSource)
             try await refreshStoredAsset(asset)
-            if readback != favorite {
+            switch outcome {
+            case .matched: break
+            case .readbackMismatch:
                 errorMessage = "已保存 ImageAll 收藏目标，但 Photos 回读尚未一致，可稍后刷新或重试。"
+            case .superseded:
+                errorMessage = "收藏目标已更新，旧写回结果未确认新目标；请刷新后按当前目标重试。"
             }
         } catch {
-            try? await store.finishFavoriteWriteback(
-                assetID: asset.id, requestedValue: favorite, observedValue: nil
-            )
             try? await refreshStoredAsset(asset)
             errorMessage = "已保存 ImageAll 收藏目标，Photos 写回未完成：\(error.localizedDescription)"
         }
@@ -748,6 +736,32 @@ final class LocalLibraryModel: ObservableObject {
             pendingCount = pending.count
             sharedConflicts = pending.filter(\.isConflicted)
         } catch { errorMessage = "读取本机资料失败：\(error.localizedDescription)" }
+    }
+}
+
+@MainActor
+private final class PhotoKitLocalFavoriteSource: LocalFavoriteSource {
+    private func asset(_ identifier: String) throws -> PHAsset {
+        let authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        guard authorization == .authorized || authorization == .limited else {
+            throw LocalFavoriteSourceError.authorizationRequired
+        }
+        guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil).firstObject else {
+            throw LocalFavoriteSourceError.assetUnavailable
+        }
+        return asset
+    }
+
+    func writeFavorite(_ favorite: Bool, localIdentifier: String) async throws {
+        try Task.checkCancellation()
+        let sourceAsset = try asset(localIdentifier)
+        try await PHPhotoLibrary.shared().performChanges {
+            PHAssetChangeRequest(for: sourceAsset).isFavorite = favorite
+        }
+    }
+
+    func readFavorite(localIdentifier: String) async throws -> Bool {
+        try asset(localIdentifier).isFavorite
     }
 }
 

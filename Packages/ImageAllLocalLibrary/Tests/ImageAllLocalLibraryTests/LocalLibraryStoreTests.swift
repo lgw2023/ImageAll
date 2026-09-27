@@ -247,17 +247,19 @@ func explicitCollectionRenameRecoveryKeepsIdentityChecks(scenario: CollectionRec
     let asset = try #require(await store.assets(visibleIdentifiers: ["fixture-favorite"]).first)
 
     try await store.setFavoriteTarget(assetID: asset.id, isFavorite: true)
-    try await store.finishFavoriteWriteback(assetID: asset.id, requestedValue: true, observedValue: nil)
+    let firstIntent = try await store.prepareFavoriteWriteback(assetID: asset.id, expectedTarget: true)
+    try await store.finishFavoriteWriteback(firstIntent, observedValue: nil)
     #expect(try await store.assets(visibleIdentifiers: ["fixture-favorite"]).first?.favoriteWritebackState == .failed)
 
     try await store.setFavoriteTarget(assetID: asset.id, isFavorite: false)
-    try await store.finishFavoriteWriteback(assetID: asset.id, requestedValue: true, observedValue: true)
+    try await store.finishFavoriteWriteback(firstIntent, observedValue: true)
     let afterLateReply = try #require(await store.assets(visibleIdentifiers: ["fixture-favorite"]).first)
     #expect(afterLateReply.favoriteTarget == false)
     #expect(afterLateReply.observedFavorite == false)
     #expect(afterLateReply.favoriteWritebackState == .pending)
 
-    try await store.finishFavoriteWriteback(assetID: asset.id, requestedValue: false, observedValue: false)
+    let secondIntent = try await store.prepareFavoriteWriteback(assetID: asset.id, expectedTarget: false)
+    try await store.finishFavoriteWriteback(secondIntent, observedValue: false)
     #expect(try await store.assets(visibleIdentifiers: ["fixture-favorite"]).first?.favoriteWritebackState == .matched)
 
     try await store.observe([LocalObservedAsset(

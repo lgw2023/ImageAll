@@ -998,23 +998,57 @@ public actor LocalLibraryStore {
         }
     }
 
-    /// A late result for an older target cannot acknowledge or overwrite a newer user intent.
+    public func prepareFavoriteWriteback(
+        assetID: UUID, expectedTarget: Bool
+    ) throws -> LocalFavoriteWritebackIntent {
+        let epoch = try sourceEpoch()
+        guard let row = try rows("""
+            SELECT a.local_identifier,a.favorite_target,o.operation_id
+            FROM assets a JOIN outbox o ON o.entity_id=a.id AND o.field='favorite.target'
+            WHERE a.id=? AND a.source_epoch=? ORDER BY o.sequence DESC LIMIT 1
+            """, [assetID.uuidString, epoch.uuidString]).first,
+              let locator = row[0], row[1] == (expectedTarget ? "1" : "0"),
+              let operationID = row[2].flatMap(UUID.init(uuidString:)) else {
+            throw LocalLibraryError.syncIdentityChanged
+        }
+        return LocalFavoriteWritebackIntent(
+            assetID: assetID, sourceEpoch: epoch, localIdentifier: locator,
+            operationID: operationID, target: expectedTarget
+        )
+    }
+
+    public func isCurrentFavoriteWriteback(_ intent: LocalFavoriteWritebackIntent) throws -> Bool {
+        guard intent.sourceEpoch == (try sourceEpoch()),
+              let row = try rows("""
+                SELECT local_identifier,favorite_target FROM assets WHERE id=? AND source_epoch=?
+                """, [intent.assetID.uuidString, intent.sourceEpoch.uuidString]).first,
+              row[0] == intent.localIdentifier, row[1] == (intent.target ? "1" : "0") else { return false }
+        return try scalar("""
+            SELECT operation_id FROM outbox WHERE entity_id=? AND field='favorite.target'
+            ORDER BY sequence DESC LIMIT 1
+            """, [intent.assetID.uuidString]) == intent.operationID.uuidString
+    }
+
+    /// The exact durable operation must still be current, including A→B→A changes.
+    @discardableResult
     public func finishFavoriteWriteback(
-        assetID: UUID, requestedValue: Bool, observedValue: Bool?
-    ) throws {
-        let value = requestedValue ? "1" : "0"
-        guard try scalar("SELECT favorite_target FROM assets WHERE id=?", [assetID.uuidString]) == value
-        else { return }
+        _ intent: LocalFavoriteWritebackIntent, observedValue: Bool?
+    ) throws -> Bool {
+        let value = intent.target ? "1" : "0"
+        var accepted = false
         try transaction {
+            guard try isCurrentFavoriteWriteback(intent) else { return }
             if let observedValue {
                 try execute("UPDATE assets SET observed_favorite=? WHERE id=?", [
-                    observedValue ? "1" : "0", assetID.uuidString
+                    observedValue ? "1" : "0", intent.assetID.uuidString
                 ])
             }
             try execute("UPDATE favorite_writebacks SET state=? WHERE asset_id=? AND target=?", [
-                observedValue == requestedValue ? "matched" : "failed", assetID.uuidString, value
+                observedValue == intent.target ? "matched" : "failed", intent.assetID.uuidString, value
             ])
+            accepted = true
         }
+        return accepted
     }
 
     public func pendingOperations() throws -> [LocalPendingOperation] {
