@@ -1,3 +1,4 @@
+import type { VideoDuration, VideoOrientation } from '@/api/contracts/videoQuery';
 import { requestBlob, requestEmpty, requestJSON } from './client';
 import {
   assetDetailSchema,
@@ -27,6 +28,8 @@ export type AssetQuery = {
   searchText: string;
   sort: AssetSort;
   mediaKind: AssetMediaKind | null;
+  videoDuration?: VideoDuration;
+  videoOrientation?: VideoOrientation;
   tagConditions: { tagID: string; decision: 'accepted' | 'rejected' }[];
   tagMatchMode: 'all' | 'any';
   tagPresence: 'any' | 'tagged' | 'untagged';
@@ -47,6 +50,10 @@ export async function fetchAssetPage(
   const searchText = query.searchText.trim();
   if (searchText) parameters.set('q', searchText);
   if (query.mediaKind) parameters.set('mediaKinds', query.mediaKind);
+  if (query.videoDuration && query.videoDuration !== 'any')
+    parameters.set('videoDuration', query.videoDuration);
+  if (query.videoOrientation && query.videoOrientation !== 'any')
+    parameters.set('videoOrientation', query.videoOrientation);
   const acceptedTagIDs = query.tagConditions
     .filter((condition) => condition.decision === 'accepted')
     .map((condition) => condition.tagID);

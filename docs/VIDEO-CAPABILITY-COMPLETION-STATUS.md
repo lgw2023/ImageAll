@@ -18,7 +18,7 @@
 |---|---|---|---|
 | P0 | VERIFIED | PASS（静态盘点） | 基线、边界、首个切片与测试路径明确；不等于功能通过 |
 | P1 | IN_PROGRESS | 分切片 PASS；完整闭环未验 | 媒体契约已交付；Mac／iPhone 查看器构建／合成测试 PASS；跨端联调待补 |
-| P2 | IN_PROGRESS | 首切片 PASS | 文件夹时间／位置／技术信息与按需补读已验；原生与 Host／iPhone 查询已补齐，Web 条件、地图／云端待做 |
+| P2 | IN_PROGRESS | 首切片 PASS | 文件夹时间／位置／技术信息与按需补读已验；原生与 Host／iPhone 查询已补齐，Web 查询已补齐，地图／云端待做 |
 | P3 | NOT_STARTED | NOT_RUN | 复核代表帧模型隔离，接远端建议与审核持久事实 |
 | P4 | NOT_STARTED | NOT_RUN | 有界完整字节摘要、修订复核、合成回收恢复 |
 | P5 | NOT_STARTED | NOT_RUN | 版本化有限多帧与时间点证据、内容相似独立候选 |
@@ -167,3 +167,15 @@
 - 源文件摘要 `p2-remote-query-source-sha256.json`，`git diff --check` PASS。原有 LibraryWorkspace 75/5、项目文件与 OpenMontage 等并行差异保留；Web worktree 本轮只核对状态，没有修改或生成资源。
 - 下一具体动作：在 `/Volumes/SSD1/ImageAll-Web-Dev` 补能力门控、视频条件／排序与必要浏览器请求验证，再以最小源码补丁集成 main。之后继续地图范围、PhotoKit 技术信息和显式云端获取；P1 的资源／UI 联调缺口仍保留，P3–P7 NOT_STARTED。
 - 真实媒体、真机、iCloud、付费模型与发布安装仍 NOT_RUN；未访问受保护媒体、未源端写入、未外部传输、未 push。
+
+
+## P2 Web 视频条件与源码集成（2026-09-27）
+
+- Web 工作区 `lgw/imageall-web-dev` 本地提交 `1640279d`：时长／方向、时长及大小双向排序、Host 能力门控、URL 保留与选择缓存身份。切换照片清除视频条件；旧 Host 的带条件链接明确拒绝，不发送未筛选查询，并提供重置入口。
+- 类型检查、改动文件 eslint、Web build 均 PASS，日志 `web-video-query-typecheck.log`、`web-video-query-lint.log`、`web-video-query-build.log`。生成资源仅位于 Web worktree。契约测试 `web-video-query-contracts.log` PASS 15/15。
+- 浏览器 `video-query.spec.ts` 首轮 1/2：控件存在但 getByLabel exact 定位不匹配；改用实际 combobox 可访问名称，最终 `web-video-query-e2e-final.log` PASS 2/2。验证新条件请求、刷新保留、切回照片清除，以及旧 Host 零资产请求／重置恢复。此测试使用合成 HTTP mock，不是实际 Swift Host 浏览器联调。
+- 既有照片浏览／范围选择／标签／撤销／收藏／详情回归 `web-video-query-photo-regression.log` PASS 1/1。
+- main 仅应用此提交的 7 文件补丁，未合并长期 Web 分支或复制生成资源；`web-video-query-main-parity.json` 确认源文件逐字节一致，主线 typecheck 日志 `web-video-query-main-typecheck.log`。原生文件本轮未修改，既有 OpenMontage／Workspace 等并行差异保留。
+- 新发现的必需缺口：分析跨页范围未包含时长／方向，本轮明确提示并阻止扩大范围，后续 P3/P4 分析切片补齐，不能视为完整分析闭环已实现。
+- 下一具体动作：扩大地图可用视频与回填统计范围、保持媒体计数一致；再补 PhotoKit 技术信息／云端明确状态。P1 内置网页资源和实际跨端 UI 验收未完成；P2 IN_PROGRESS；P3–P7 NOT_STARTED。
+- 未访问真实媒体、未源端写入、未云端下载、未外部传输、未 push；真机与生产发布仍 NOT_RUN。

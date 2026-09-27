@@ -10,6 +10,10 @@ export const assetSortSchema = z.enum([
   'fileModifiedNewest',
   'fileModifiedOldest',
   'fileNameAscending',
+  'durationShortest',
+  'durationLongest',
+  'fileSizeSmallest',
+  'fileSizeLargest',
 ]);
 export const assetAvailabilitySchema = z.enum([
   'available',

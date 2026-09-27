@@ -1,3 +1,9 @@
+import { fetchCapabilities } from '@/api/capabilities';
+import {
+  parseVideoDuration,
+  parseVideoOrientation,
+  requiresVideoQuery,
+} from '@/api/contracts/videoQuery';
 import { resolvedMediaKind } from '@/api/contracts/mediaKind';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
@@ -62,6 +68,7 @@ const galleryViewCache = new Map<string, { ids: Set<string>; scrollOffset: numbe
 
 function parseSort(value: string | null): AssetSort {
   if (
+    requiresVideoQuery(value as AssetSort) ||
     value === 'oldest' ||
     value === 'embeddedTimeNewest' ||
     value === 'embeddedTimeOldest' ||
@@ -69,7 +76,7 @@ function parseSort(value: string | null): AssetSort {
     value === 'fileModifiedOldest' ||
     value === 'fileNameAscending'
   )
-    return value;
+    return value as AssetSort;
   return 'newest';
 }
 
@@ -227,6 +234,8 @@ export function GalleryRoute() {
     () => ({
       searchText: searchParameters.get('q') ?? '',
       sort: parseSort(searchParameters.get('sort')),
+      videoDuration: parseVideoDuration(searchParameters.get('videoDuration')),
+      videoOrientation: parseVideoOrientation(searchParameters.get('videoOrientation')),
       mediaKind:
         searchParameters.get('media') === 'image' || searchParameters.get('media') === 'video'
           ? (searchParameters.get('media') as 'image' | 'video')
@@ -250,6 +259,8 @@ export function GalleryRoute() {
     () => ({
       searchText: filters.searchText,
       sort: filters.sort,
+      videoDuration: filters.videoDuration,
+      videoOrientation: filters.videoOrientation,
       mediaKind: filters.mediaKind,
       tagConditions: filters.tagConditions,
       tagMatchMode: filters.tagMatchMode,
@@ -308,9 +319,25 @@ export function GalleryRoute() {
       fetchSourceFolders(filters.sourceID ?? '', filters.folderRelativePath, signal),
     enabled: Boolean(filters.sourceID && selectedSource?.kind === 'folder'),
   });
+  const capabilities = useQuery({
+    queryKey: ['capabilities'],
+    queryFn: ({ signal }) => fetchCapabilities(signal),
+    staleTime: 60_000,
+  });
+  const supportsVideoQueries = capabilities.data?.videoQueryVersion === 1;
+  const needsVideoQuery =
+    requiresVideoQuery(filters.sort) ||
+    filters.videoDuration !== 'any' ||
+    filters.videoOrientation !== 'any';
   const assetsQuery = useInfiniteQuery({
     queryKey: ['assets', assetQuery],
-    queryFn: ({ pageParam, signal }) => fetchAssetPage(assetQuery, pageParam, signal),
+    enabled: !needsVideoQuery || !capabilities.isPending,
+    retry: needsVideoQuery ? false : 3,
+    queryFn: ({ pageParam, signal }) => {
+      if (needsVideoQuery && !supportsVideoQueries)
+        throw new Error('此 Mac 尚不支持视频条件，请升级 Host 或重置筛选与排序。');
+      return fetchAssetPage(assetQuery, pageParam, signal);
+    },
     initialPageParam: null as string | null,
     getNextPageParam: (page) => page.nextCursor ?? undefined,
   });
@@ -546,6 +573,10 @@ export function GalleryRoute() {
     deletionMutation.isPending;
 
   function openCurrentFilterAnalysis() {
+    if (filters.videoDuration !== 'any' || filters.videoOrientation !== 'any') {
+      setStatusMessage('当前分析入口尚未支持视频时长与方向条件；请先清除这两项条件。');
+      return;
+    }
     if (!filters.mediaKind) {
       setStatusMessage('请先把图库筛选为照片或视频，再分析当前筛选。');
       return;
@@ -567,6 +598,10 @@ export function GalleryRoute() {
   }
 
   function openSeedAnalysis() {
+    if (filters.videoDuration !== 'any' || filters.videoOrientation !== 'any') {
+      setStatusMessage('当前分析入口尚未支持视频时长与方向条件；请先清除这两项条件。');
+      return;
+    }
     try {
       const [mediaKind, ids] = selectedMediaScope(selectedAssetIDs);
       const parameters = new URLSearchParams({
@@ -594,6 +629,8 @@ export function GalleryRoute() {
     if (next.searchText) parameters.set('q', next.searchText);
     if (next.sort !== 'newest') parameters.set('sort', next.sort);
     if (next.mediaKind) parameters.set('media', next.mediaKind);
+    if (next.videoDuration !== 'any') parameters.set('videoDuration', next.videoDuration);
+    if (next.videoOrientation !== 'any') parameters.set('videoOrientation', next.videoOrientation);
     const acceptedTagIDs = next.tagConditions
       .filter((condition) => condition.decision === 'accepted')
       .map((condition) => condition.tagID);
@@ -621,6 +658,8 @@ export function GalleryRoute() {
     const nextSignature = JSON.stringify({
       searchText: next.searchText,
       sort: next.sort,
+      videoDuration: next.videoDuration,
+      videoOrientation: next.videoOrientation,
       mediaKind: next.mediaKind,
       tagConditions: next.tagConditions,
       tagMatchMode: next.tagMatchMode,
@@ -872,6 +911,7 @@ export function GalleryRoute() {
       ) : null}
 
       <GalleryToolbar
+        supportsVideoQueries={supportsVideoQueries}
         boxSelectionMode={boxSelectionMode}
         folders={sourceFolders.data?.folders ?? []}
         foldersLoading={sourceFolders.isFetching}
@@ -938,6 +978,22 @@ export function GalleryRoute() {
           <button className="button" onClick={() => void assetsQuery.refetch()} type="button">
             重试
           </button>
+          {needsVideoQuery && !supportsVideoQueries ? (
+            <button
+              className="button"
+              type="button"
+              onClick={() =>
+                applyFilters({
+                  ...filters,
+                  videoDuration: 'any',
+                  videoOrientation: 'any',
+                  sort: 'newest',
+                })
+              }
+            >
+              重置视频条件与排序
+            </button>
+          ) : null}
         </div>
       ) : null}
       {!assetsQuery.isPending && !assetsQuery.isError && assets.length === 0 ? (

@@ -1,3 +1,8 @@
+import {
+  isDurationSort,
+  type VideoDuration,
+  type VideoOrientation,
+} from '@/api/contracts/videoQuery';
 import { useState, type SyntheticEvent } from 'react';
 
 import {
@@ -71,6 +76,8 @@ export type GalleryFilters = {
   searchText: string;
   sort: AssetSort;
   mediaKind: AssetMediaKind | null;
+  videoDuration: VideoDuration;
+  videoOrientation: VideoOrientation;
   tagConditions: { tagID: string; decision: 'accepted' | 'rejected' }[];
   tagMatchMode: 'all' | 'any';
   tagPresence: 'any' | 'tagged' | 'untagged';
@@ -82,6 +89,7 @@ export type GalleryFilters = {
 };
 
 type GalleryToolbarProps = {
+  supportsVideoQueries: boolean;
   filters: GalleryFilters;
   tags: TagSummary[];
   sources: SourceSummary[];
@@ -99,6 +107,7 @@ type GalleryToolbarProps = {
 };
 
 export function GalleryToolbar({
+  supportsVideoQueries,
   filters,
   tags,
   sources,
@@ -128,7 +137,9 @@ export function GalleryToolbar({
     filters.tagConditions.length +
     filters.availabilities.length +
     selectedFormatGroupCount +
-    Number(filters.tagPresence !== 'any');
+    Number(filters.tagPresence !== 'any') +
+    Number(filters.videoDuration !== 'any') +
+    Number(filters.videoOrientation !== 'any');
 
   function submit(event: SyntheticEvent<HTMLFormElement, SubmitEvent>) {
     event.preventDefault();
@@ -210,6 +221,10 @@ export function GalleryToolbar({
               onApply({
                 ...filters,
                 mediaKind,
+                videoDuration: mediaKind === 'video' ? filters.videoDuration : 'any',
+                videoOrientation: mediaKind === 'video' ? filters.videoOrientation : 'any',
+                sort:
+                  mediaKind !== 'video' && isDurationSort(filters.sort) ? 'newest' : filters.sort,
                 mediaTypes: filters.mediaTypes.filter((type) => permittedTypes.has(type)),
               });
             }}
@@ -221,6 +236,48 @@ export function GalleryToolbar({
           </select>
         </label>
 
+        {supportsVideoQueries ? (
+          <>
+            <label className="compact-field">
+              <span>视频时长</span>
+              <select
+                value={filters.videoDuration}
+                onChange={(event) =>
+                  onApply({
+                    ...filters,
+                    mediaKind: 'video',
+                    mediaTypes: [],
+                    videoDuration: event.target.value as VideoDuration,
+                  })
+                }
+              >
+                <option value="any">不限</option>
+                <option value="underMinute">少于 1 分钟</option>
+                <option value="oneToTenMinutes">1 至 10 分钟</option>
+                <option value="tenMinutesOrMore">10 分钟及以上</option>
+              </select>
+            </label>
+            <label className="compact-field">
+              <span>视频方向</span>
+              <select
+                value={filters.videoOrientation}
+                onChange={(event) =>
+                  onApply({
+                    ...filters,
+                    mediaKind: 'video',
+                    mediaTypes: [],
+                    videoOrientation: event.target.value as VideoOrientation,
+                  })
+                }
+              >
+                <option value="any">不限</option>
+                <option value="landscape">横屏</option>
+                <option value="portrait">竖屏</option>
+                <option value="square">方形</option>
+              </select>
+            </label>
+          </>
+        ) : null}
         <label className="compact-field">
           <span>标签范围</span>
           <select
@@ -398,7 +455,14 @@ export function GalleryToolbar({
         <label className="compact-field">
           <span>排序</span>
           <select
-            onChange={(event) => onApply({ ...filters, sort: event.target.value as AssetSort })}
+            onChange={(event) => {
+              const sort = event.target.value as AssetSort;
+              onApply({
+                ...filters,
+                sort,
+                ...(isDurationSort(sort) ? { mediaKind: 'video', mediaTypes: [] } : {}),
+              });
+            }}
             value={filters.sort}
           >
             <option value="newest">最新优先</option>
@@ -408,6 +472,14 @@ export function GalleryToolbar({
             <option value="fileModifiedNewest">文件修改时间：新到旧</option>
             <option value="fileModifiedOldest">文件修改时间：旧到新</option>
             <option value="fileNameAscending">文件名</option>
+            {supportsVideoQueries ? (
+              <>
+                <option value="durationShortest">时长最短</option>
+                <option value="durationLongest">时长最长</option>
+                <option value="fileSizeSmallest">文件最小</option>
+                <option value="fileSizeLargest">文件最大</option>
+              </>
+            ) : null}
           </select>
         </label>
 
@@ -436,6 +508,8 @@ export function GalleryToolbar({
                 tagPresence: 'any',
                 availabilities: [],
                 mediaTypes: [],
+                videoDuration: 'any',
+                videoOrientation: 'any',
               })
             }
             type="button"

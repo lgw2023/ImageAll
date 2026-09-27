@@ -27,6 +27,7 @@ export const remoteCapabilitySchema = z.enum([
 ]);
 
 export const capabilitiesSchema = z.object({
+  videoQueryVersion: z.int().positive().nullish(),
   protocolVersion: z.int().nonnegative(),
   hostAppVersion: z.string(),
   minimumClientProtocolVersion: z.int().nonnegative(),
