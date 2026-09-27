@@ -141,6 +141,12 @@ function parseWorldMapSelection(parameters: URLSearchParams): WorldMapSelectionQ
     boundValues.every(Number.isFinite);
   const [west, south, east, north] = boundValues;
   return {
+    mediaScope:
+      parameters.get('worldMapMediaScope') === 'videos'
+        ? 'videos'
+        : parameters.get('worldMapMediaScope') === 'all'
+          ? 'all'
+          : undefined,
     cellDegrees,
     longitudeBucket,
     latitudeBucket,
@@ -161,6 +167,7 @@ function appendWorldMapSelection(
   selection: WorldMapSelectionQuery | null,
 ) {
   if (!selection) return;
+  if (selection.mediaScope) parameters.set('worldMapMediaScope', selection.mediaScope);
   parameters.set('worldMapCellDegrees', String(selection.cellDegrees));
   parameters.set('worldMapLongitudeBucket', String(selection.longitudeBucket));
   parameters.set('worldMapLatitudeBucket', String(selection.latitudeBucket));
@@ -329,13 +336,17 @@ export function GalleryRoute() {
     requiresVideoQuery(filters.sort) ||
     filters.videoDuration !== 'any' ||
     filters.videoOrientation !== 'any';
+  const needsMapMediaScope =
+    worldMapSelection?.mediaScope === 'videos' || worldMapSelection?.mediaScope === 'all';
   const assetsQuery = useInfiniteQuery({
     queryKey: ['assets', assetQuery],
-    enabled: !needsVideoQuery || !capabilities.isPending,
-    retry: needsVideoQuery ? false : 3,
+    enabled: (!needsVideoQuery && !needsMapMediaScope) || !capabilities.isPending,
+    retry: needsVideoQuery || needsMapMediaScope ? false : 3,
     queryFn: ({ pageParam, signal }) => {
       if (needsVideoQuery && !supportsVideoQueries)
         throw new Error('此 Mac 尚不支持视频条件，请升级 Host 或重置筛选与排序。');
+      if (needsMapMediaScope && capabilities.data?.worldMapMediaScopeVersion !== 1)
+        throw new Error('此 Mac 尚不支持视频地图范围，请升级 Host 或返回地图选择照片。');
       return fetchAssetPage(assetQuery, pageParam, signal);
     },
     initialPageParam: null as string | null,

@@ -16635,7 +16635,7 @@ final class WorldMapWebKitSmokeTests: XCTestCase {
         )
         XCTAssertEqual(snapshot["clusterID"] as? String, "paris")
         XCTAssertEqual(snapshot["selectedClusterID"] as? String, "paris")
-        XCTAssertTrue((snapshot["label"] as? String)?.contains("巴黎，30 张照片") == true)
+        XCTAssertTrue((snapshot["label"] as? String)?.contains("巴黎，30 项影像") == true)
         XCTAssertEqual(snapshot["previousDisabled"] as? Bool, false)
         XCTAssertEqual(snapshot["nextDisabled"] as? Bool, false)
         XCTAssertEqual(handler.clusterClickedIDs, ["paris"])

@@ -27,6 +27,7 @@ export const remoteCapabilitySchema = z.enum([
 ]);
 
 export const capabilitiesSchema = z.object({
+  worldMapMediaScopeVersion: z.int().positive().nullish(),
   videoQueryVersion: z.int().positive().nullish(),
   protocolVersion: z.int().nonnegative(),
   hostAppVersion: z.string(),

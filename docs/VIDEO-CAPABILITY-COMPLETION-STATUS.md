@@ -1,6 +1,6 @@
 # 视频能力补全推进记录
 
-更新：2026-09-27。目标工具状态 active；任务范围为目标提示词 P0–P7，不含第 10 节扩展。
+更新：2026-09-27。目标工具状态 paused（本轮收尾查询）；任务范围为目标提示词 P0–P7，不含第 10 节扩展。
 
 ## 工作区与边界
 
@@ -18,7 +18,7 @@
 |---|---|---|---|
 | P0 | VERIFIED | PASS（静态盘点） | 基线、边界、首个切片与测试路径明确；不等于功能通过 |
 | P1 | IN_PROGRESS | 分切片 PASS；完整闭环未验 | 媒体契约已交付；Mac／iPhone 查看器构建／合成测试 PASS；跨端联调待补 |
-| P2 | IN_PROGRESS | 首切片 PASS | 文件夹时间／位置／技术信息与按需补读已验；原生与 Host／iPhone 查询已补齐，Web 查询已补齐，地图／云端待做 |
+| P2 | IN_PROGRESS | 首切片 PASS | 文件夹元数据、查询及原生／Web 地图范围切片已验；远端混合回填、PhotoKit 技术信息与云端待做 |
 | P3 | NOT_STARTED | NOT_RUN | 复核代表帧模型隔离，接远端建议与审核持久事实 |
 | P4 | NOT_STARTED | NOT_RUN | 有界完整字节摘要、修订复核、合成回收恢复 |
 | P5 | NOT_STARTED | NOT_RUN | 版本化有限多帧与时间点证据、内容相似独立候选 |
@@ -221,3 +221,13 @@
 - `map-media-remote-protocol.log` PASS 76/76；`map-media-remote-client.log` PASS 64/64。`map-media-remote-build.log` Mac TEST BUILD SUCCEEDED；`map-media-remote-host-tests.log` 直接 XCTest PASS 3/3，涵盖 facade 的范围双向映射／资产媒体域、HTTP 地图路由和拒绝未知范围、图库空间范围映射与缺参拒绝。HTTP 测试使用合成 catalog，未宣称真实地图浏览器联调。
 - `map-media-remote-source-sha256.json` 绑定本轮源文件；git diff --check PASS。Workspace 原有 75/5 和项目／OpenMontage 并行改动未变，未读取真实媒体、源端写入、云端下载、外部传输或 push。
 - 下一动作：在独立 Web worktree 接能力门控、地图媒体选择、点选预览和图库 URL 范围传递；之后补远端混合回填，再继续 PhotoKit 技术信息与云端可用性。P1、P2 IN_PROGRESS，P3–P7 NOT_STARTED。
+
+
+## P2 Web 地图媒体范围与主线集成（2026-09-27）
+
+- main 基线 af3980d6。Web 工作区本地提交 8af6068e，补充数量单位提交 ba4caecb；地图可选照片／视频／混合范围，能力门控、URL 保留、点选到图库空间范围和详情上下文保持一致。旧 Host 保存链接不发送不受支持的地图请求，可切回照片恢复。
+- web-map-media-typecheck.log、web-map-media-lint.log、web-map-media-build-final.log PASS；web-map-media-contracts.log 3/3 PASS。首次浏览器回归 4/5，发现改动误关闭默认照片地图的既有重试；恢复默认重试，仅对旧 Host 不支持范围禁重试，web-map-media-e2e-final.log 最终 5/5 PASS。全部使用合成 HTTP mock，非实际 Swift Host 浏览器联调。
+- main 应用最小源码补丁，不合并长期 Web 分支、不复制生成资源。9 个 Web TS／测试文件与 Web 提交逐字节一致；共享地图 JS 的两分支原有基线不同，仅集成 7 处数量／影像文案，未宣称整文件字节相同。Web 既有该文件 38/8 改动保留。main typecheck PASS。
+- 回填统计／命令尚未扩展到远端混合范围；P1 生成网页资源集成及跨端实际 UI 验收仍待做。P1、P2 IN_PROGRESS，P3–P7 NOT_STARTED。目标工具本轮实际查询为 paused，收尾后不自动开启下一切片。
+- 未访问真实媒体、未源端写入、未云端下载、未外部传输、未 push、未替换 App；Workspace 原有 75/5 与 OpenMontage 并行改动保留。
+- web-map-media-mac-build-final.log：Mac TEST BUILD SUCCEEDED；web-map-media-native-tests.log：直接 XCTest 1/1 PASS，合成 WKWebView 验证内置地图键盘切换、选中消息桥及“项影像”标签。没有启动生产 Photos 宿主；此窄回归不代表完整原生地图手工运行验收。git diff --check 与 JS 语法检查 PASS。

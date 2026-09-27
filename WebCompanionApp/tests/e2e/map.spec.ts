@@ -17,9 +17,9 @@ test('world map bridge selects a cluster and opens a reversible gallery scope', 
   await expect(page.getByText('62', { exact: true })).toBeVisible();
 
   const renderer = page.frameLocator('iframe[title="照片世界地图"]');
-  await renderer.getByRole('button', { name: '深圳，9 张照片' }).click();
+  await renderer.getByRole('button', { name: '深圳，9 项影像' }).click();
   await expect(page.getByRole('heading', { name: '深圳', level: 3 })).toBeVisible();
-  await expect(page.getByRole('button', { name: '在图库查看全部 18 张' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: '在图库查看全部 18 项' })).toBeEnabled();
   const pageWidths = await page.evaluate(() => ({
     viewport: window.innerWidth,
     document: document.documentElement.scrollWidth,
@@ -47,7 +47,7 @@ test('world map bridge selects a cluster and opens a reversible gallery scope', 
     const url = new URL(request.url());
     return url.pathname === '/v1/assets' && url.searchParams.has('worldMapCellDegrees');
   });
-  await page.getByRole('button', { name: '在图库查看全部 18 张' }).click();
+  await page.getByRole('button', { name: '在图库查看全部 18 项' }).click();
   expect((await scopedRequest).url()).toContain('worldMapLongitudeBucket=456');
   await expect(page.getByText('深圳', { exact: true })).toBeVisible();
   await expect(page.getByText('图库结果保持地图聚合边界')).toBeVisible();

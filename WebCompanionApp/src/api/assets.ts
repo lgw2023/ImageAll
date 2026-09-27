@@ -75,6 +75,8 @@ export async function fetchAssetPage(
   }
   if (query.favoritesOnly) parameters.set('favorite', 'favorited');
   if (query.worldMapSelection) {
+    if (query.worldMapSelection.mediaScope)
+      parameters.set('worldMapMediaScope', query.worldMapSelection.mediaScope);
     parameters.set('worldMapCellDegrees', String(query.worldMapSelection.cellDegrees));
     parameters.set('worldMapLongitudeBucket', String(query.worldMapSelection.longitudeBucket));
     parameters.set('worldMapLatitudeBucket', String(query.worldMapSelection.latitudeBucket));

@@ -207,7 +207,7 @@ const syntheticWorldMapHTML = `<!doctype html>
         button.type = 'button';
         button.style.left = ((cluster.longitude + 180) / 360 * 100) + '%';
         button.style.top = ((90 - cluster.latitude) / 180 * 100) + '%';
-        button.setAttribute('aria-label', cluster.displayName + '，' + cluster.photoCount + ' 张照片');
+        button.setAttribute('aria-label', cluster.displayName + '，' + cluster.photoCount + ' 项影像');
         button.setAttribute('aria-pressed', String(cluster.id === selected));
         button.textContent = String(cluster.photoCount);
         const label = document.createElement('span');

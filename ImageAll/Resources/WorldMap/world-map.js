@@ -229,8 +229,8 @@ function keyboardClusterPresentation(cluster, index, count) {
   const name = cluster.displayName || "未命名地点";
   return {
     name: `${name} · ${index + 1} / ${count}`,
-    meta: `${cluster.photoCount.toLocaleString()} 张 · GPS ${cluster.gpsCount.toLocaleString()} · 标签 ${cluster.tagCount.toLocaleString()}`,
-    ariaLabel: `${name}，${cluster.photoCount.toLocaleString()} 张照片，GPS ${cluster.gpsCount.toLocaleString()}，地点标签 ${cluster.tagCount.toLocaleString()}，第 ${index + 1} 个，共 ${count} 个；按 Enter 打开`,
+    meta: `${cluster.photoCount.toLocaleString()} 项 · GPS ${cluster.gpsCount.toLocaleString()} · 标签 ${cluster.tagCount.toLocaleString()}`,
+    ariaLabel: `${name}，${cluster.photoCount.toLocaleString()} 项影像，GPS ${cluster.gpsCount.toLocaleString()}，地点标签 ${cluster.tagCount.toLocaleString()}，第 ${index + 1} 个，共 ${count} 个；按 Enter 打开`,
   };
 }
 
@@ -250,13 +250,13 @@ function syncClusterNavigator({ announce = false, preferSelected = false } = {})
   if (!current) {
     clusterNavigator.dataset.empty = "true";
     delete clusterNavigatorCurrent.dataset.clusterId;
-    clusterNavigatorName.textContent = "当前视口没有照片塔";
+    clusterNavigatorName.textContent = "当前视口没有影像塔";
     clusterNavigatorMeta.textContent = "拖动或缩放地图后重试";
-    clusterNavigatorCurrent.setAttribute("aria-label", "当前视口没有照片塔");
+    clusterNavigatorCurrent.setAttribute("aria-label", "当前视口没有影像塔");
     clusterNavigatorCurrent.disabled = true;
     clusterNavigatorPrevious.disabled = true;
     clusterNavigatorNext.disabled = true;
-    if (announce) clusterNavigatorStatus.textContent = "当前视口没有可浏览的照片塔";
+    if (announce) clusterNavigatorStatus.textContent = "当前视口没有可浏览的影像塔";
     return;
   }
 
@@ -267,7 +267,7 @@ function syncClusterNavigator({ announce = false, preferSelected = false } = {})
   clusterNavigatorName.textContent = presentation.name;
   clusterNavigatorMeta.textContent = presentation.meta;
   clusterNavigatorCurrent.setAttribute("aria-label", presentation.ariaLabel);
-  clusterNavigatorCurrent.title = `${current.displayName || "未命名地点"} · 按 Enter 打开照片塔`;
+  clusterNavigatorCurrent.title = `${current.displayName || "未命名地点"} · 按 Enter 打开影像塔`;
   clusterNavigatorCurrent.disabled = false;
   clusterNavigatorPrevious.disabled = index === 0;
   clusterNavigatorNext.disabled = index === candidates.length - 1;
@@ -418,7 +418,7 @@ function showTooltip(object, x, y) {
   const title = document.createElement("strong");
   title.textContent = object.displayName;
   const count = document.createElement("div");
-  count.textContent = `${object.photoCount.toLocaleString()} 张照片`;
+  count.textContent = `${object.photoCount.toLocaleString()} 项影像`;
   const composition = document.createElement("span");
   composition.textContent = `GPS ${object.gpsCount.toLocaleString()} · 标签 ${object.tagCount.toLocaleString()}`;
   tooltip.append(title, count, composition);

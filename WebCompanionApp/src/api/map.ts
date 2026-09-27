@@ -9,11 +9,17 @@ import {
   worldMapSelectionSchema,
   worldMapSnapshotSchema,
   type WorldMapBounds,
+  type WorldMapMediaScope,
   type WorldMapSelectionQuery,
 } from './contracts/map';
 
-export function fetchWorldMap(bounds: WorldMapBounds | null, signal?: AbortSignal) {
+export function fetchWorldMap(
+  bounds: WorldMapBounds | null,
+  signal?: AbortSignal,
+  mediaScope: WorldMapMediaScope = 'photos',
+) {
   const parameters = new URLSearchParams({ maximumClusters: '2000' });
+  if (mediaScope !== 'photos') parameters.set('mediaScope', mediaScope);
   if (bounds) {
     for (const [key, value] of Object.entries(bounds)) parameters.set(key, String(value));
   }

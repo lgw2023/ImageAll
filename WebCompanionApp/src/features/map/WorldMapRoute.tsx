@@ -2,9 +2,11 @@ import { useEffect, useMemo, useRef, useState, type SyntheticEvent } from 'react
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Image as ImageIcon, LocateFixed, MapPin, RefreshCw, Search, Square } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 
+import { fetchCapabilities } from '@/api/capabilities';
 import type {
+  WorldMapMediaScope,
   LocationBackfill,
   WorldMapBounds,
   WorldMapCluster,
@@ -159,6 +161,8 @@ function galleryURL(cluster: WorldMapCluster): string {
     worldMapLatitudeBucket: String(cluster.selectionQuery.latitudeBucket),
     worldMapMaximumAssets: String(cluster.selectionQuery.maximumAssets),
   });
+  if (cluster.selectionQuery.mediaScope)
+    parameters.set('worldMapMediaScope', cluster.selectionQuery.mediaScope);
   const bounds = cluster.selectionQuery.bounds;
   if (bounds) {
     parameters.set('worldMapWest', String(bounds.west));
@@ -413,12 +417,31 @@ function PlaceTagPanel() {
 
 export function WorldMapRoute() {
   const navigate = useNavigate();
+  const [parameters, setParameters] = useSearchParams();
+  const mediaScope: WorldMapMediaScope =
+    parameters.get('mediaScope') === 'videos'
+      ? 'videos'
+      : parameters.get('mediaScope') === 'all'
+        ? 'all'
+        : 'photos';
+  const capabilities = useQuery({
+    queryKey: ['capabilities'],
+    queryFn: ({ signal }) => fetchCapabilities(signal),
+    staleTime: 60_000,
+  });
+  const supported = capabilities.data?.worldMapMediaScopeVersion === 1;
   const [requestedBounds, setRequestedBounds] = useState<WorldMapBounds | null>(null);
   const [viewport, setViewport] = useState<MapViewport | null>(null);
   const [selectedClusterID, setSelectedClusterID] = useState<string | null>(null);
   const map = useQuery({
-    queryKey: ['world-map', requestedBounds],
-    queryFn: ({ signal }) => fetchWorldMap(requestedBounds, signal),
+    queryKey: ['world-map', requestedBounds, mediaScope],
+    enabled: mediaScope === 'photos' || !capabilities.isPending,
+    retry: mediaScope !== 'photos' && !supported ? false : 1,
+    queryFn: ({ signal }) => {
+      if (mediaScope !== 'photos' && !supported)
+        throw new Error('此 Mac 尚不支持视频地图，请选择照片或升级 Host。');
+      return fetchWorldMap(requestedBounds, signal, mediaScope);
+    },
   });
   const clusters = useMemo(() => map.data?.clusters ?? [], [map.data]);
   const selectedCluster =
@@ -441,6 +464,24 @@ export function WorldMapRoute() {
           <p>地图只显示 Mac Host 提供的位置聚合；网页不会请求浏览器定位。</p>
         </div>
         <div className="inline-actions">
+          {supported ? (
+            <label>
+              地图媒体
+              <select
+                value={mediaScope}
+                onChange={(event) => {
+                  setSelectedClusterID(null);
+                  setParameters(
+                    event.target.value === 'photos' ? {} : { mediaScope: event.target.value },
+                  );
+                }}
+              >
+                <option value="photos">照片</option>
+                <option value="videos">视频</option>
+                <option value="all">照片与视频</option>
+              </select>
+            </label>
+          ) : null}
           {viewport ? (
             <button
               className="button"
@@ -464,11 +505,16 @@ export function WorldMapRoute() {
       </header>
       {map.isPending ? (
         <div className="workspace-state" role="status">
-          正在载入照片地图…
+          正在载入影像地图…
         </div>
       ) : map.isError ? (
         <div className="workspace-state workspace-state-error" role="alert">
           <strong>无法载入世界地图</strong>
+          {mediaScope !== 'photos' && !supported ? (
+            <button className="button" type="button" onClick={() => setParameters({})}>
+              切回照片地图
+            </button>
+          ) : null}
           <p>{errorMessage(map.error)}</p>
           <button className="button" onClick={() => void map.refetch()} type="button">
             重试
@@ -482,11 +528,11 @@ export function WorldMapRoute() {
               <strong>{clusters.length.toLocaleString('zh-CN')}</strong>
             </div>
             <div>
-              <span>已定位照片</span>
+              <span>已定位影像</span>
               <strong>{map.data.locatedPhotoCount.toLocaleString('zh-CN')}</strong>
             </div>
             <div>
-              <span>待定位照片</span>
+              <span>待定位影像</span>
               <strong>{map.data.unlocatedPhotoCount.toLocaleString('zh-CN')}</strong>
             </div>
           </div>
@@ -512,14 +558,14 @@ export function WorldMapRoute() {
                     <span>
                       <strong>{cluster.displayName}</strong>
                       <small>
-                        {cluster.photoCount.toLocaleString('zh-CN')} 张 · GPS{' '}
+                        {cluster.photoCount.toLocaleString('zh-CN')} 项 · GPS{' '}
                         {cluster.gpsCount.toLocaleString('zh-CN')}
                       </small>
                     </span>
                   </button>
                 ))
               ) : (
-                <p className="panel-note">当前范围没有已定位照片。</p>
+                <p className="panel-note">当前范围没有已定位影像。</p>
               )}
             </aside>
           </div>
@@ -544,11 +590,11 @@ export function WorldMapRoute() {
                   }
                   type="button"
                 >
-                  在图库查看全部 {selection.data?.totalPhotoCount ?? selectedCluster.photoCount} 张
+                  在图库查看全部 {selection.data?.totalPhotoCount ?? selectedCluster.photoCount} 项
                 </button>
               </div>
               {selection.isPending ? (
-                <p role="status">正在读取地点照片…</p>
+                <p role="status">正在读取地点影像…</p>
               ) : selection.isError ? (
                 <div role="alert">
                   <p>{errorMessage(selection.error)}</p>
@@ -557,12 +603,17 @@ export function WorldMapRoute() {
                   </button>
                 </div>
               ) : (
-                <div className="map-photo-strip" aria-label="地点照片预览">
+                <div className="map-photo-strip" aria-label="地点影像预览">
                   {selection.data.assets.map((asset) => (
                     <button
                       className="map-photo-card"
                       key={asset.id}
-                      onClick={() => void navigate(`/assets/${encodeURIComponent(asset.id)}`)}
+                      onClick={() =>
+                        void navigate(
+                          `/assets/${encodeURIComponent(asset.id)}${galleryURL(selectedCluster).replace('/gallery', '')}`,
+                          { state: { fromMap: true, mapLabel: selectedCluster.displayName } },
+                        )
+                      }
                       type="button"
                     >
                       {asset.availability === 'available' ? (
@@ -575,7 +626,7 @@ export function WorldMapRoute() {
                           <ImageIcon aria-hidden="true" size={22} /> 不可预览
                         </span>
                       )}
-                      <span>{asset.fileName ?? '未命名照片'}</span>
+                      <span>{asset.fileName ?? '未命名影像'}</span>
                     </button>
                   ))}
                 </div>

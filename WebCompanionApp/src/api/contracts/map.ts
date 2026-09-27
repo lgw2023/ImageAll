@@ -10,7 +10,11 @@ export const worldMapBoundsSchema = z.object({
   north: z.number().min(-90).max(90),
 });
 
+export const worldMapMediaScopeSchema = z.enum(['photos', 'videos', 'all']);
+export type WorldMapMediaScope = z.infer<typeof worldMapMediaScopeSchema>;
+
 export const worldMapSelectionQuerySchema = z.object({
+  mediaScope: worldMapMediaScopeSchema.nullish(),
   cellDegrees: z.number().positive(),
   longitudeBucket: z.int(),
   latitudeBucket: z.int(),
@@ -37,6 +41,7 @@ export const worldMapSnapshotSchema = z.object({
 });
 
 export const worldMapAssetSchema = z.object({
+  mediaKind: z.enum(['image', 'video']).nullish(),
   id: uuidSchema,
   fileName: nullishToNull(z.string()),
   availability: assetAvailabilitySchema,
