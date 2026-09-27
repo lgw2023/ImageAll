@@ -886,6 +886,14 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             throw LibrarySlimmingRecycleError.cleanupPlanChanged
         }
         let current = try loadIdenticalCleanupFacts(assetIDs: Array(plannedAssetIDs))
+        // Favorites can change after preview without changing content identity.
+        // Abort the entire plan before any file or PhotoKit mutation.
+        let deletionIDs = Set(plan.assetIDsToRecycle)
+        guard !current.contains(where: {
+            deletionIDs.contains($0.candidate.assetID) && $0.candidate.isFavoriteProtected
+        }) else {
+            throw LibrarySlimmingRecycleError.cleanupPlanChanged
+        }
         let currentProofs = Dictionary(
             current.map { ($0.proof.assetID, $0.proof) },
             uniquingKeysWith: { first, _ in first }

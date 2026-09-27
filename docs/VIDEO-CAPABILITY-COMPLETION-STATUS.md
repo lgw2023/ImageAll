@@ -454,3 +454,10 @@
 - video-recycle-evidence-tests-final.log 11/11 PASS：真实生产摘要服务→合成文件回收→恢复、过期修订拒绝、改写且恢复 mtime 的快速删除拒绝、hash 后写入竞态移动／删除拒绝；同卷普通视频、跨卷元数据、恢复防篡改、快速删除和收藏策略回归。video-recycle-evidence-build-final.log Mac TEST BUILD SUCCEEDED；git diff --check PASS。
 - 测试源和回收目录全部来自当前 fixture，未读取真实媒体。字节文件不证明真实容器播放；这里证明单资产 mutation 的强证据沿用，不把它称为精确组保留／收藏保护／回收恢复的完整闭环。下一动作补组计划成员与保留项物理证据复核、视频精确组收藏保护和整组恢复，再处理 PhotoKit 原件与跨端呈现。
 - video-recycle-evidence-source-sha256.json 绑定源码。Workspace 75/5、项目 OpenMontage 4 行及其他并行差异保留；Web 未改。未真实媒体写入／云端获取／外部传输、未 push／替换 App。P1–P4 IN_PROGRESS，P5–P7 NOT_STARTED，目标 active。
+
+## P4 整组清理执行前收藏保护（2026-09-28）
+
+- 发现并修复预览后新增收藏未参与计划复核的问题。执行回收或快速删除前，重新读取所有成员的本地／Photos 已观测收藏事实；任何待删除成员变为收藏即拒绝整个旧计划，要求重新预览。内容摘要或修订不变也不会绕过保护。
+- 新测试覆盖两种收藏来源乘以两种执行方式，使用三个合成副本验证拒绝发生在任何文件修改前、回收记录为空，重新生成计划保留收藏项。与修订变化、视觉证明变化和正常计划回归一起直接 XCTest 4/4 PASS。
+- Mac TEST BUILD SUCCEEDED；证据根的 `cleanup-favorite-build.log`、`cleanup-favorite-tests.log` 和 `cleanup-favorite-source-sha256.json` 记录本切片。未启动生产 Photos 宿主、未访问真实媒体。
+- 本切片补齐整组安全前置条件；视频精确组事实加载与保留副本物理校验仍待接入，不能据此宣称 P4 完成。

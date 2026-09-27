@@ -732,6 +732,55 @@ final class LibrarySlimmingRecycleTests: XCTestCase {
         XCTAssertEqual(plan.skippedGroupCount, 1)
     }
 
+    func testIdenticalCleanupRejectsNewFavoriteBeforeAnyGroupMutation() throws {
+        // Exercise local and PhotoKit-observed protection for both execution modes.
+        for observed in [false, true] {
+            for immediate in [false, true] {
+                let env = try RecycleTestEnv(label: #function)
+                defer { env.cleanup() }
+                let bytes = Data("same favorite-protected bytes".utf8)
+                let first = try env.seedAsset(relativePath: "first.jpg", contents: bytes)
+                let second = try env.seedAsset(relativePath: "second.jpg", contents: bytes)
+                let third = try env.seedAsset(relativePath: "third.jpg", contents: bytes)
+                let assets = [first, second, third]
+                for asset in assets {
+                    try env.seedVerifiedSimilarityFingerprint(
+                        assetID: asset.assetID, sha256: Data(SHA256.hash(data: bytes)))
+                }
+                let service = env.makeRecycleService()
+                let cluster = SlimmingCluster(
+                    id: UUID(), kind: .byteIdentical,
+                    memberAssetIDs: assets.map(\.assetID),
+                    representativeAssetID: first.assetID, score: 0,
+                    modelIdentity: .featurePrintOnly)
+                let plan = try service.makeIdenticalCleanupPlan(clusters: [cluster])
+                XCTAssertEqual(plan.assetIDsToRecycle.count, 2)
+                let protectedID = try XCTUnwrap(plan.assetIDsToRecycle.last)
+                try env.database.pool.write { db in
+                    try db.execute(sql: """
+                        INSERT INTO asset_favorite_state (
+                            asset_id, desired_value, photos_observed_value, sync_status,
+                            intent_revision, requested_at_ms, updated_at_ms
+                        ) VALUES (?, ?, ?, 'localOnly', 1, 1, 1)
+                        """, arguments: [protectedID.uuidString.lowercased(),
+                                         observed ? 0 : 1, observed ? 1 : 0])
+                }
+                XCTAssertThrowsError(try immediate
+                    ? service.deleteIdenticalCleanupAssetsImmediately(plan: plan, onProgress: { _ in })
+                    : service.moveIdenticalCleanupAssetsToRecycle(plan: plan, onProgress: { _ in })) {
+                    XCTAssertEqual($0 as? LibrarySlimmingRecycleError, .cleanupPlanChanged)
+                }
+                for asset in assets {
+                    XCTAssertEqual(try Data(contentsOf: asset.fileURL), bytes)
+                }
+                XCTAssertTrue(try service.listRecycleBinEntries().isEmpty)
+                let refreshed = try service.makeIdenticalCleanupPlan(clusters: [cluster])
+                XCTAssertTrue(refreshed.survivorAssetIDs.contains(protectedID))
+                XCTAssertFalse(refreshed.assetIDsToRecycle.contains(protectedID))
+            }
+        }
+    }
+
     func testIdenticalCleanupExecutionRejectsChangedContentRevisionBeforeMutation() throws {
         let env = try RecycleTestEnv(label: #function)
         defer { env.cleanup() }
