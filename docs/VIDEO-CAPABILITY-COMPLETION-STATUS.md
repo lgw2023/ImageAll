@@ -104,3 +104,12 @@
 - main `WebCompanionApp` 执行 `npm run typecheck` PASS、`npm run test:run -- src/api/contracts/mediaKind.test.ts src/api/contracts/asset.test.ts` PASS 14/14；日志 `web-main-typecheck.log`、`web-main-contract-tests.log`。这些是集成后的类型与契约证据，浏览器解码证据仍绑定先前 Web 切片。
 - 未在主工作区生成或覆盖网页资源。受当前网页产物隔离规则约束，生产资源更新与运行验收仍须单独安排；不以源码合入代替完整集成完成。
 - iPhone 上轮本地提交 `90db409d`。下一切片补 Swift Host 与真实媒体客户端的隔离联调；P1 尚未达到完整退出标准。
+
+## P1 实际 Host → 视频客户端联调（2026-09-27）
+
+- Web 源码集成本地提交 `da2bf908`；源码已在 main，内置网页资源尚待处理。
+- XCTest 测试目标单独链接 `ImageAllRemoteClient`，未改变生产 App 依赖；项目文件仅暂存本轮 13 行，保留已有 OpenMontage 的 4 行工作树改动。
+- 新测试以 `RemoteHTTPServer` 回环监听、合成媒体 provider 和生产 URLSession 客户端，实际完成 HTTP 认证 → AVFoundation 解码 → 0.5 秒寻址 → 关闭释放，并验证错误修订和错误认证被拒绝。无 mock transport，无生产 composition root，无真实 Photos。
+- `host-video-joint-build.log`：Mac TEST BUILD SUCCEEDED；`host-video-joint-tests.log`：新联调与原 Range 回归 PASS 2/2。直接 XCTest 命令沿用上一切片私有路径，选择 `testVideoClientDecodesAndSeeksThroughAuthenticatedSwiftHost` 与 `testMediaRouteStreamsRealMIMEAndSingleByteRange`。
+- 此证据补上客户端与实际 Swift HTTP 服务的连接，不等于完整 iPhone UI／Web 浏览器 Host 联调；合成 provider 也不代替实际文件夹入库与 PhotoKit adapter 的证明。
+- 下一动作：补 Web 实际 Host 浏览器证据与观看整理必要缺口；随后推进 P2 元数据。P1 总状态仍 IN_PROGRESS，目标仍 active。

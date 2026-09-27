@@ -1,3 +1,5 @@
+@preconcurrency import AVFoundation
+import ImageAllRemoteClient
 import Darwin
 import CryptoKit
 import Foundation
@@ -7175,6 +7177,50 @@ final class RemoteHTTPServerTests: XCTestCase {
             RemoteHTTPServer.parseByteRange("bytes=0-1,4-5", contentLength: 10),
             .unsatisfiable
         )
+    }
+
+    @MainActor
+    func testVideoClientDecodesAndSeeksThroughAuthenticatedSwiftHost() async throws {
+        let fixture = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("docs/evidence/time-story-phase-1-20260918/synthetic-silent.mp4")
+        let port = UInt16.random(in: 19_000...29_000)
+        let (server, _) = makeServer(port: port,
+                                    mediaResources: RemoteHTTPServerTestMediaProvider(url: fixture))
+        try await server.start()
+        defer { Task { await server.stop() } }
+        let client = RemoteLibraryClient(endpoint: try RemoteHostEndpoint(
+            host: "127.0.0.1", port: Int(port), accessToken: Self.legacyDebugToken))
+        let playback = RemoteVideoPlayback()
+        defer { playback.stop() }
+        let assetID = UUID()
+        let loading = Task { await playback.load(assetID: assetID, contentRevision: 1, client: client) }
+        defer { loading.cancel() }
+        for _ in 0..<500 where playback.state == .idle || playback.state == .loading {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(playback.state, .ready)
+        guard playback.state == .ready else { return }
+        let item = try XCTUnwrap(playback.player.currentItem)
+        for _ in 0..<500 where item.status == .unknown { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(item.status, .readyToPlay)
+        let sought = await playback.player.seek(to: CMTime(seconds: 0.5, preferredTimescale: 600),
+                                               toleranceBefore: .zero, toleranceAfter: .zero)
+        XCTAssertTrue(sought)
+        XCTAssertEqual(playback.player.currentTime().seconds, 0.5, accuracy: 0.1)
+        playback.stop()
+        XCTAssertNil(playback.player.currentItem)
+        do {
+            _ = try await client.readVideoRange(assetID: assetID, contentRevision: 2, offset: 0, count: 2)
+            XCTFail("Changed Host revision must be rejected")
+        } catch let error as RemoteVideoError { XCTAssertEqual(error, .contentChanged) }
+        let unauthorized = RemoteLibraryClient(endpoint: try RemoteHostEndpoint(
+            host: "127.0.0.1", port: Int(port), accessToken: "invalid-synthetic-token"))
+        do {
+            _ = try await unauthorized.readVideoRange(assetID: assetID, contentRevision: 1, offset: 0, count: 2)
+            XCTFail("Media requires authentication")
+        } catch let error as RemoteVideoError { XCTAssertEqual(error, .authorizationRequired) }
+        await server.stop()
     }
 
     func testMediaRouteStreamsRealMIMEAndSingleByteRange() async throws {

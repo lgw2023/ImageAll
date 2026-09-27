@@ -348,6 +348,7 @@
 		NN000001000000000000000C /* PersonalLibrarySuggestionsHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = NN000101000000000000000C /* PersonalLibrarySuggestionsHandler.swift */; };
 		NN000001000000000000000D /* PersonalLibrarySuggestionsJobEnqueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = NN000101000000000000000D /* PersonalLibrarySuggestionsJobEnqueue.swift */; };
 		NN0000010000000000000101 /* FullLibrarySuggestionsJobTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = NN0001010000000000000101 /* FullLibrarySuggestionsJobTests.swift */; };
+		VC2900010000000000000001 /* ImageAllRemoteClient in Frameworks */ = {isa = PBXBuildFile; productRef = VC2900020000000000000001 /* ImageAllRemoteClient */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -718,6 +719,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				RH0000010000000000000006 /* ImageAllRemoteProtocol in Frameworks */,
+				VC2900010000000000000001 /* ImageAllRemoteClient in Frameworks */,
 				CC0000010000000000000004 /* GRDB in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1479,6 +1481,7 @@
 			);
 			name = ImageAllTests;
 			packageProductDependencies = (
+				VC2900020000000000000001 /* ImageAllRemoteClient */,
 				CC0000020000000000000001 /* GRDB */,
 				RH0000020000000000000001 /* ImageAllRemoteProtocol */,
 			);
@@ -1518,6 +1521,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			packageReferences = (
+				VC2900030000000000000001 /* XCLocalSwiftPackageReference "Packages/ImageAllRemoteClient" */,
 				CC0000030000000000000001 /* XCRemoteSwiftPackageReference "GRDB" */,
 				RH0000030000000000000001 /* XCLocalSwiftPackageReference "Packages/ImageAllRemoteProtocol" */,
 			);
@@ -2240,6 +2244,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Packages/ImageAllRemoteProtocol;
 		};
+		VC2900030000000000000001 /* XCLocalSwiftPackageReference "Packages/ImageAllRemoteClient" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/ImageAllRemoteClient;
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
@@ -2263,6 +2271,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = RH0000030000000000000001 /* XCLocalSwiftPackageReference "Packages/ImageAllRemoteProtocol" */;
 			productName = ImageAllRemoteProtocol;
+		};
+		VC2900020000000000000001 /* ImageAllRemoteClient */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = VC2900030000000000000001 /* XCLocalSwiftPackageReference "Packages/ImageAllRemoteClient" */;
+			productName = ImageAllRemoteClient;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
