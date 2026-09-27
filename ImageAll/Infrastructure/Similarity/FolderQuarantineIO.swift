@@ -48,6 +48,7 @@ struct FolderQuarantineExpectedIdentity: Sendable, Equatable {
     let modifiedAtNs: Int64
     let resourceID: Data?
     let sha256: Data?
+    var requiresDigestVerification: Bool = false
 }
 
 /// FD-based move/copy between a writable source root and the app quarantine root.
@@ -135,6 +136,8 @@ struct FolderQuarantineIO: Sendable {
         defer { Darwin.close(openedSource.fd) }
 
         if sameVolume {
+            beforeSourceFinalVerification()
+            try requireOpenFileMetadataUnchanged(fd: openedSource.fd, openedStat: openedSource.stat)
             try requirePathStillReferencesOpenFile(
                 parentFD: sourceParentFD,
                 name: sourceName,
@@ -226,6 +229,8 @@ struct FolderQuarantineIO: Sendable {
         defer { Darwin.close(openedSource.fd) }
 
         if sameVolume {
+            beforeSourceFinalVerification()
+            try requireOpenFileMetadataUnchanged(fd: openedSource.fd, openedStat: openedSource.stat)
             try requirePathStillReferencesOpenFile(
                 parentFD: qParentFD,
                 name: qName,
@@ -321,7 +326,7 @@ struct FolderQuarantineIO: Sendable {
             parentFD: sourceParentFD,
             name: sourceName,
             expectedIdentity: expectedIdentity,
-            verifyExpectedDigest: expectedIdentity.resourceID == nil
+            verifyExpectedDigest: expectedIdentity.requiresDigestVerification || expectedIdentity.resourceID == nil
         )
         defer { Darwin.close(openedSource.fd) }
 
@@ -473,6 +478,10 @@ struct FolderQuarantineIO: Sendable {
 
         var digest: Data?
         if let expectedIdentity {
+            if expectedIdentity.requiresDigestVerification, expectedIdentity.sha256?.count != SHA256.byteCount {
+                Darwin.close(fd)
+                throw FolderQuarantineIOError.verificationFailed
+            }
             let currentResourceID = resourceIdentifier(forOpenFileFD: fd)
             guard let currentModifiedAtNs = modificationTimeNanoseconds(sourceStat),
                   sourceStat.st_size == expectedIdentity.sizeBytes,
@@ -690,7 +699,9 @@ struct FolderQuarantineIO: Sendable {
               currentStat.st_ino == openedStat.st_ino,
               currentStat.st_size == openedStat.st_size,
               modificationTimeNanoseconds(currentStat)
-                == modificationTimeNanoseconds(openedStat)
+                == modificationTimeNanoseconds(openedStat),
+              currentStat.st_ctimespec.tv_sec == openedStat.st_ctimespec.tv_sec,
+              currentStat.st_ctimespec.tv_nsec == openedStat.st_ctimespec.tv_nsec
         else {
             throw FolderQuarantineIOError.verificationFailed
         }

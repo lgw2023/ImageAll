@@ -6,6 +6,77 @@ import XCTest
 @testable import ImageAll
 
 final class LibrarySlimmingRecycleTests: XCTestCase {
+    func testOriginalVideoEvidenceProtectsMoveRestoreAndRejectsChangedBytesOnFastDelete() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let bytes = Data(repeating: 7, count: 800_000)
+        let asset = try env.seedAsset(relativePath: "video.mov", contents: bytes)
+        try env.prepareOriginalVideoEvidence(assetID: asset.assetID)
+        let service = env.makeRecycleService()
+        let moved = try service.moveFolderAssetsToRecycle(assetIDs: [asset.assetID])
+        XCTAssertEqual(moved.recycledEntryIDs.count, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: asset.fileURL.path))
+        let entry = try XCTUnwrap(try service.listRecycledEntries().first)
+        try service.restore(entryID: entry.id)
+        XCTAssertEqual(try Data(contentsOf: asset.fileURL), bytes)
+
+        var before = stat()
+        XCTAssertEqual(stat(asset.fileURL.path, &before), 0)
+        let handle = try FileHandle(forWritingTo: asset.fileURL)
+        try handle.write(contentsOf: Data(repeating: 9, count: bytes.count))
+        try handle.close()
+        var times = [before.st_atimespec, before.st_mtimespec]
+        XCTAssertEqual(utimensat(AT_FDCWD, asset.fileURL.path, &times, 0), 0)
+        let blocked = try service.deleteAssetsImmediately(assetIDs: [asset.assetID], onProgress: { _ in })
+        XCTAssertTrue(blocked.recycledEntryIDs.isEmpty)
+        XCTAssertEqual(blocked.sourceChangedAssetIDs, [asset.assetID])
+        XCTAssertEqual(try Data(contentsOf: asset.fileURL), Data(repeating: 9, count: bytes.count))
+    }
+
+    func testOriginalVideoEvidenceRejectsStaleRevisionBeforeSourceMutation() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let bytes = Data(repeating: 5, count: 1_000)
+        let asset = try env.seedAsset(relativePath: "stale.mp4", contents: bytes)
+        try env.prepareOriginalVideoEvidence(assetID: asset.assetID)
+        try env.database.pool.write { db in
+            try db.execute(sql: "UPDATE asset SET content_revision = 2 WHERE id = ?", arguments: [asset.assetID.uuidString.lowercased()])
+        }
+        let result = try env.makeRecycleService().moveFolderAssetsToRecycle(assetIDs: [asset.assetID])
+        XCTAssertTrue(result.recycledEntryIDs.isEmpty)
+        XCTAssertEqual(result.sourceChangedAssetIDs, [asset.assetID])
+        XCTAssertEqual(try Data(contentsOf: asset.fileURL), bytes)
+    }
+
+    func testOriginalVideoRejectsRestoredMtimeWriteAfterHashBeforeMoveOrDelete() throws {
+        for deleteImmediately in [false, true] {
+            let env = try RecycleTestEnv(label: "\(#function)-\(deleteImmediately)")
+            defer { env.cleanup() }
+            let bytes = Data(repeating: 3, count: 10_000)
+            let replacement = Data(repeating: 4, count: bytes.count)
+            let asset = try env.seedAsset(relativePath: "race.mp4", contents: bytes)
+            try env.prepareOriginalVideoEvidence(assetID: asset.assetID)
+            var service = env.makeRecycleService()
+            service.quarantineIO.beforeSourceFinalVerification = {
+                var before = stat()
+                XCTAssertEqual(stat(asset.fileURL.path, &before), 0)
+                do {
+                    let handle = try FileHandle(forWritingTo: asset.fileURL)
+                    try handle.write(contentsOf: replacement)
+                    try handle.close()
+                    var times = [before.st_atimespec, before.st_mtimespec]
+                    XCTAssertEqual(utimensat(AT_FDCWD, asset.fileURL.path, &times, 0), 0)
+                } catch { XCTFail("fixture mutation failed: \(error)") }
+            }
+            let result = try deleteImmediately
+                ? service.deleteAssetsImmediately(assetIDs: [asset.assetID], onProgress: { _ in })
+                : service.moveFolderAssetsToRecycle(assetIDs: [asset.assetID])
+            XCTAssertTrue(result.recycledEntryIDs.isEmpty)
+            XCTAssertEqual(result.sourceChangedAssetIDs, [asset.assetID])
+            XCTAssertEqual(try Data(contentsOf: asset.fileURL), replacement)
+        }
+    }
+
     func testIdenticalCleanupRetainsEveryFavoriteAndDeletesOnlyOrdinaryCopies() {
         let favoriteA = UUID()
         let favoriteB = UUID()
@@ -3268,6 +3339,19 @@ private final class RecycleTestEnv {
             photosMutation: photosMutation,
             pixelCachePurger: makePixelCachePurger(clock: clock)
         )
+    }
+
+    func prepareOriginalVideoEvidence(assetID: UUID) throws {
+        try database.pool.write { db in
+            try db.execute(sql: "UPDATE asset SET media_kind = 'video', media_type = 'public.mpeg-4', duration_ms = 1000 WHERE id = ?",
+                arguments: [assetID.uuidString.lowercased()])
+            try db.execute(sql: "UPDATE file_fingerprint SET sha256 = NULL WHERE asset_id = ?", arguments: [assetID.uuidString.lowercased()])
+        }
+        let bookmarks = FolderReconcileTestSupport.TestBookmarkPort(rootByBookmark: [Data("bookmark".utf8): sourceRoot])
+        let access = FolderReconcileSourceAccessService(repository: GRDBFolderSourceAuthorizationRepository(database: database),
+            bookmarkPort: bookmarks, rootValidator: FolderRootValidator(), clock: FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs))
+        _ = try OriginalVideoDigestService(database: database, sourceAccess: access,
+            clock: FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs)).completeFolderVideo(assetID: assetID)
     }
 
     func makePixelCachePurger(

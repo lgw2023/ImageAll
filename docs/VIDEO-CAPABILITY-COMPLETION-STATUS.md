@@ -20,7 +20,7 @@
 | P1 | IN_PROGRESS | 分切片 PASS；完整闭环未验 | 媒体契约已交付；Mac／iPhone 查看器构建／合成测试 PASS；跨端联调待补 |
 | P2 | IN_PROGRESS | 首切片 PASS | 文件夹元数据、查询／地图／回填、原生云端获取及 PhotoKit 播放后技术信息持久化已分切片验；远端恢复提示、智能推流与完整 UI 待验 |
 | P3 | IN_PROGRESS | 远端服务到真实质心模型和持久审核链 PASS；跨端运行待验 | 继续全库建议、训练命令与审核持久事实闭环 |
-| P4 | IN_PROGRESS | 原件摘要／分组 6/6、migration 4/4 PASS | 文件夹有界摘要、独立证据与显式任务已实现；PhotoKit 原件、回收恢复待接 |
+| P4 | IN_PROGRESS | 原件摘要／分组 6/6、migration 4/4 PASS | 文件夹显式摘要及单项回收／恢复已验；精确组计划、PhotoKit 原件待接 |
 | P5 | NOT_STARTED | NOT_RUN | 版本化有限多帧与时间点证据、内容相似独立候选 |
 | P6 | NOT_STARTED | NOT_RUN | 显式片段与原声规则，合成混合故事可解码验证 |
 | P7 | NOT_STARTED | NOT_RUN | 必需集成、最终构建与人工路线 |
@@ -435,3 +435,12 @@
 - video-explicit-job-tests-accepted.log 最终 10/10 PASS：新任务主路／取消／旧任务、照片分析回归、原件服务与分组、聚类心跳与无回调续期。修正资格条件时曾误用另文件的 fileprivate isSuccess 辅助属性导致编译失败，改为匹配校验 Result 后 video-explicit-job-build-accepted.log Mac TEST BUILD SUCCEEDED；git diff --check PASS。
 - 仍是合成字节文件与 stub 代表帧，非实际容器或原生 UI 点击验收。视频一键清理仍被既有图片原件证据门禁拦截；下一步接清理前完整原件摘要复核及合成保留／回收／恢复，不可直接解除图片 guard。PhotoKit 原始资源、跨端说明与运行验收仍需完成。
 - video-explicit-job-source-sha256.json 绑定源文件。Workspace 75/5、项目 OpenMontage 4 行及其他并行改动保留；Web 未修改。未读取真实媒体、未云端获取／源端写入／外部传输、未 push／替换 App。P1–P4 IN_PROGRESS，P5–P7 NOT_STARTED，目标 active。
+
+
+## P4 完整视频证据接入安全回收／恢复（2026-09-28）
+
+- 上轮为 progress：910ef0d2 接入显式任务。本轮沿 loadAsset 将独立视频摘要绑定到当前修订、来源、路径和文件事实；存在证据但不再匹配时强制拒绝，不能退回 resource ID 或旧 file_fingerprint 的弱路径。回收、恢复和快速删除均携带强制摘要验证标记。
+- 修复快速删除在 resource ID 存在时跳过摘要校验的问题：强标记要求重新按 64 KiB 块计算当前文件 SHA。最终元数据检查增加 ctime，同卷移动／恢复也补最终句柄校验，阻止 hash 后同长度改写再恢复 mtime。未启用视频一键清理计划，现有图片原件门禁仍在。
+- video-recycle-evidence-tests-final.log 11/11 PASS：真实生产摘要服务→合成文件回收→恢复、过期修订拒绝、改写且恢复 mtime 的快速删除拒绝、hash 后写入竞态移动／删除拒绝；同卷普通视频、跨卷元数据、恢复防篡改、快速删除和收藏策略回归。video-recycle-evidence-build-final.log Mac TEST BUILD SUCCEEDED；git diff --check PASS。
+- 测试源和回收目录全部来自当前 fixture，未读取真实媒体。字节文件不证明真实容器播放；这里证明单资产 mutation 的强证据沿用，不把它称为精确组保留／收藏保护／回收恢复的完整闭环。下一动作补组计划成员与保留项物理证据复核、视频精确组收藏保护和整组恢复，再处理 PhotoKit 原件与跨端呈现。
+- video-recycle-evidence-source-sha256.json 绑定源码。Workspace 75/5、项目 OpenMontage 4 行及其他并行差异保留；Web 未改。未真实媒体写入／云端获取／外部传输、未 push／替换 App。P1–P4 IN_PROGRESS，P5–P7 NOT_STARTED，目标 active。

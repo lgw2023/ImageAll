@@ -1461,6 +1461,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
         let modifiedAtNs: Int64?
         let resourceID: Data?
         let sha256: Data?
+        let requiresDigestVerification: Bool
     }
 
     private struct EntrySnapshot {
@@ -1504,7 +1505,8 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             sizeBytes: sizeBytes,
             modifiedAtNs: modifiedAtNs,
             resourceID: asset.resourceID,
-            sha256: asset.sha256
+            sha256: asset.sha256,
+            requiresDigestVerification: asset.requiresDigestVerification
         )
 
         try database.pool.write { db in
@@ -1640,7 +1642,8 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             sizeBytes: sizeBytes,
             modifiedAtNs: modifiedAtNs,
             resourceID: asset.resourceID,
-            sha256: asset.sha256
+            sha256: asset.sha256,
+            requiresDigestVerification: asset.requiresDigestVerification
         )
 
         try database.pool.write { db in
@@ -1998,7 +2001,8 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
             sizeBytes: sizeBytes,
             modifiedAtNs: modifiedAtNs,
             resourceID: nil,
-            sha256: asset.sha256
+            sha256: asset.sha256,
+            requiresDigestVerification: asset.requiresDigestVerification
         )
         try transitionEntry(
             entryID: snapshot.id,
@@ -2692,7 +2696,7 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                     a.photos_local_identifier, a.file_name, a.availability,
                     f.size_bytes, f.modified_at_ns, f.resource_id,
                     CASE a.media_kind
-                        WHEN 'video' THEN f.sha256
+                        WHEN 'video' THEN CASE WHEN evidence.asset_id IS NOT NULL THEN original.sha256 ELSE f.sha256 END
                         ELSE COALESCE(
                             f.sha256,
                             CASE
@@ -2700,9 +2704,17 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                                 THEN sf.content_sha256
                             END
                         )
-                    END AS sha256
+                    END AS sha256,
+                    CASE WHEN a.media_kind = 'video' AND evidence.asset_id IS NOT NULL THEN 1 ELSE 0 END AS requires_digest
                 FROM asset a
                 LEFT JOIN file_fingerprint f ON f.asset_id = a.id
+                LEFT JOIN asset_original_content_digest evidence ON evidence.asset_id = a.id
+                LEFT JOIN asset_original_content_digest original
+                    ON original.asset_id = a.id AND original.content_revision = a.content_revision
+                   AND original.source_id = a.source_id AND original.relative_path = a.relative_path
+                   AND original.size_bytes = f.size_bytes AND original.modified_at_ns = f.modified_at_ns
+                   AND original.catalog_resource_id IS f.resource_id
+                   AND original.provenance = 'folder-original-sha256-v1'
                 LEFT JOIN asset_similarity_fingerprint sf
                     ON sf.asset_id = a.id
                    AND sf.content_revision = a.content_revision
@@ -2726,7 +2738,8 @@ struct LibrarySlimmingRecycleService: LibrarySlimmingRecyclePort {
                 sizeBytes: row["size_bytes"],
                 modifiedAtNs: row["modified_at_ns"],
                 resourceID: row["resource_id"],
-                sha256: row["sha256"]
+                sha256: row["sha256"],
+                requiresDigestVerification: (row["requires_digest"] as Int) == 1
             )
         }
     }
