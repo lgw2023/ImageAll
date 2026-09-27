@@ -19,7 +19,7 @@
 | P0 | VERIFIED | PASS（静态盘点） | 基线、边界、首个切片与测试路径明确；不等于功能通过 |
 | P1 | IN_PROGRESS | 分切片 PASS；完整闭环未验 | 媒体契约已交付；Mac／iPhone 查看器构建／合成测试 PASS；跨端联调待补 |
 | P2 | IN_PROGRESS | 首切片 PASS | 文件夹元数据、查询／地图／回填、原生云端获取及 PhotoKit 播放后技术信息持久化已分切片验；远端恢复提示、智能推流与完整 UI 待验 |
-| P3 | IN_PROGRESS | 远端样本建议与媒体槽回归 PASS；完整持久审核链待验 | 继续全库建议、训练命令与审核持久事实闭环 |
+| P3 | IN_PROGRESS | 远端服务到真实质心模型和持久审核链 PASS；跨端运行待验 | 继续全库建议、训练命令与审核持久事实闭环 |
 | P4 | NOT_STARTED | NOT_RUN | 有界完整字节摘要、修订复核、合成回收恢复 |
 | P5 | NOT_STARTED | NOT_RUN | 版本化有限多帧与时间点证据、内容相似独立候选 |
 | P6 | NOT_STARTED | NOT_RUN | 显式片段与原声规则，合成混合故事可解码验证 |
@@ -369,3 +369,13 @@
 - 首轮播放测试 PASS，lint 字符串类型已修正；扩展云端恢复测试发现诊断函数返回展示文字却被当作错误码比较，改为直接展示既有提示。review-video-e2e-accepted.log 最终 2/2 PASS（合成视频真实浏览器解码／seek、切换停止旧播放器、云端失败提示／重试、关闭、无云预览请求，加照片连续审核回归）。review-video-lint-accepted.log、review-video-build-accepted.log、Web 与 main typecheck PASS，git diff --check PASS。
 - 运行证据来自独立 Web 工作区的合成 HTTP Host，不代表主线内置资源、真实 Swift Host 或真实 Photos 验收；主线生成资源仍待 P1/P7 集成。源摘要 review-video-source-sha256.json。
 - Workspace 原有 75/5、项目／OpenMontage、Web review／地图并行差异保留。未读取真实媒体、未云端下载／源端写入／外部传输、未 push／替换 App。P1／P2／P3 IN_PROGRESS，P4–P7 NOT_STARTED，目标 active。下一动作：补 iPhone 个人建议／训练入口与真实合成训练产物的远端持久审核链，随后进入完整视频去重和多帧分析主路径。
+
+
+## P3 真实视频模型训练到持久审核整链（2026-09-27）
+
+- 上轮为 progress：19c8bbb0 增加 Web 视频审核播放。本轮使用真实 SQLite、内置 Core ML 编码器、生产 embedding cache、AppPersonalModelRebuildRuntime、AppPersonalSampleSuggestionRuntime 和 RemoteTrainingCommandService 串成同一个测试；复用测试 catalog 适配器提供合成详情，无真实媒体／网络模型。
+- 两个人工确认视频样本先生成真实 embedding，远端训练服务接收 video 质心命令后发布成功 Run 和模型；重放同一 operationID 仍只有一个 Run。随后远端样本建议命令使用刚发布的模型实际打分，写入一条持久审核建议；重放返回 replayed。接受后离开队列，撤销恢复队列；照片人工事实逐行快照相同，照片模型和预测槽保持空。
+- video-training-chain-tests.log 1/1 PASS（2.285 秒）。video-training-chain-regressions.log 2/2 PASS：模型未启用不创建缓存／模型状态，既有照片质心／AdamW 发布和失败后保留回归。首次编译遇到 GRDB Row 不可跨 Sendable 闭包捕获，改为闭包内字符串快照后 video-training-chain-build-final.log Mac TEST BUILD SUCCEEDED；git diff --check PASS。
+- 此证据已跨越此前分段的“训练产物→远端服务命令→实际建议计算→数据库审核→人工事实→撤销”，但输入为生成图像的缓存，未证明真实视频解码取帧、HTTP 通道或 UI 全链。照片已有非空模型保留另由既有独立模型槽回归证明，本测试仅证明照片槽未被创建。不得把这些边界描述成已完成真实 Photos／真机验收。
+- 仅修改两份测试文件与推进记录，源码摘要 video-training-chain-source-sha256.json。Workspace 原有 75/5、项目／OpenMontage 并行差异保留，Web 本轮未改。未读真实媒体、未云端获取／源端写入／外部传输、未 push／替换 App。
+- P1／P2／P3 IN_PROGRESS，P4–P7 NOT_STARTED，目标 active。P3 后端主链已有整体验证，剩余 iPhone 个人建议／训练和跨端 UI 能力仍需补；随后进入完整字节视频去重与多帧主路径，不能以本轮测试宣布总体完成。

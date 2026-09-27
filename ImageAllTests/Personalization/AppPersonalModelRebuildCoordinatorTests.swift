@@ -1,10 +1,95 @@
 import CoreGraphics
+import GRDB
 import XCTest
 @testable import ImageAll
 
 private struct InjectedPersonalPublishFailure: Error {}
 
 final class AppPersonalModelRebuildCoordinatorTests: XCTestCase {
+    func testRemoteVideoTrainingPublishesScoresPersistsReviewsAndReplaysWithoutPhotoChanges() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let database = try CatalogDatabase.open(at: root.appendingPathComponent("catalog.sqlite"))
+        let tags = GRDBTagCatalogRepository(database: database)
+        let tag = try tags.createTag(rawName: "Synthetic Video", timestampMs: DatabaseTestSupport.timestampMs)
+        let samples = [UUID(), UUID()], candidateID = UUID(), photoID = UUID()
+        for id in samples + [candidateID, photoID] {
+            try DatabaseTestSupport.makeFolderSourceWithFileAsset(repository: CatalogRepository(database: database), assetID: id)
+        }
+        try await database.pool.write { db in
+            try db.execute(sql: "UPDATE asset SET media_kind = 'video', media_type = 'public.mpeg-4', duration_ms = 2000 WHERE id <> ?",
+                           arguments: [photoID.uuidString.lowercased()])
+        }
+        _ = try tags.batchAccept(tagID: tag.id, assetIDs: samples + [photoID], timestampMs: DatabaseTestSupport.timestampMs)
+        let photoFacts = try await database.pool.read { db in
+            try Row.fetchAll(db, sql: "SELECT * FROM asset_tag_decision WHERE asset_id = ?", arguments: [photoID.uuidString.lowercased()]).map { $0.description }
+        }
+        let catalogID = try XCTUnwrap(UUID(uuidString: database.catalogScopeID()))
+        let activation = AppModelActivationCoordinator(preferenceStore: InMemoryModelEnablementPreferenceStore(),
+            serviceFactory: { AppCoreMLEmbeddingService(isEnabled: true, artifactDirectory: Self.projectArtifactDirectory()) })
+        guard case .ready = await activation.setEnabled(true), let encoder = await activation.readyService() else {
+            return XCTFail("synthetic training requires the bundled local encoder")
+        }
+        let cacheDirectory = root.appendingPathComponent("Caches")
+        let cache = AppCoreMLEmbeddingCache(cachesDirectory: cacheDirectory, service: encoder)
+        let image = try generatedImage(samples[0])
+        for id in samples + [candidateID] {
+            _ = try cache.embedding(for: image, key: .init(catalogScopeID: catalogID, assetID: id, contentRevision: 1))
+        }
+        let support = root.appendingPathComponent("Support")
+        let runtime = AppPersonalModelRebuildRuntime(expectedCatalogScopeID: catalogID.uuidString.lowercased(),
+            activationCoordinator: activation, cachesDirectory: cacheDirectory,
+            applicationSupportDirectory: support, database: database)
+        let embedding = AppSelectedAssetEmbeddingCacheRuntime(catalogScopeID: catalogID,
+            activationCoordinator: activation, cachesDirectory: cacheDirectory)
+        let suggester = AppPersonalSampleSuggestionRuntime(expectedCatalogScopeID: catalogID.uuidString.lowercased(),
+            activationCoordinator: activation, applicationSupportDirectory: support, database: database)
+        let queue = JobTestSupport.makeQueue(database: database, nowMs: DatabaseTestSupport.timestampMs, retryDelayMs: 0)
+        let review = PersonalizationReviewService(database: database, queue: queue,
+            executionCoordinator: JobExecutionCoordinator(queue: queue, registry: MultiJobHandlerRegistry(handlers: []),
+                leaseContextProvider: GRDBJobLeaseContextProvider(queue: queue)),
+            tags: tags, clock: FixedJobClock(nowMs: DatabaseTestSupport.timestampMs))
+        let detail = try GRDBAssetCatalogQueryRepository(database: database).fetchInspectorDetail(assetID: candidateID)
+        let commands = RemoteTrainingCommandService(catalog: RemoteCatalogServingStub(detail: detail), review: review,
+            centroidRebuilder: runtime, adamWRebuilder: nil, embeddingCache: embedding, sampleSuggester: suggester)
+        let launch = TrainingLaunchCommand(operationID: UUID(), mediaKind: .video, method: .personalCentroid,
+            tagIDs: [tag.id], sourceIDs: [], assetIDs: [])
+        _ = try await commands.launch(launch)
+        var activities = await commands.activities(mediaKind: .video)
+        for _ in 0..<500 where activities.first?.phase != .completed && activities.first?.phase != .failed {
+            try await Task.sleep(for: .milliseconds(20))
+            activities = await commands.activities(mediaKind: .video)
+        }
+        XCTAssertEqual(activities.first?.phase, .completed)
+        _ = try await commands.launch(launch)
+        let runs = try GRDBTrainingRunRepository(database: database).list(mediaKind: .video, method: .personalCentroid)
+        XCTAssertEqual(runs.count, 1)
+        XCTAssertEqual(runs.first?.state, .succeeded)
+        let request = SampleSuggestionCommand(operationID: UUID(), mediaKind: .video, assetIDs: [candidateID])
+        _ = try await commands.generateSampleSuggestions(request)
+        var suggestions = await commands.sampleSuggestionActivities(mediaKind: .video)
+        for _ in 0..<500 where suggestions.first?.phase == .running {
+            try await Task.sleep(for: .milliseconds(20))
+            suggestions = await commands.sampleSuggestionActivities(mediaKind: .video)
+        }
+        XCTAssertEqual(suggestions.first?.phase, .completed)
+        XCTAssertEqual(suggestions.first?.suggestedCount, 1)
+        let replay = try await commands.generateSampleSuggestions(request)
+        XCTAssertTrue(replay.replayed)
+        let persisted = GRDBPersonalizationReviewRepository(database: database)
+        XCTAssertEqual(try persisted.fetchReviewQueuePage(mediaKind: .video, tagID: tag.id, cursor: nil, limit: 10).items.map(\.assetID), [candidateID])
+        let accepted = try tags.batchAccept(tagID: tag.id, assetIDs: [candidateID], timestampMs: DatabaseTestSupport.timestampMs + 1)
+        XCTAssertTrue(try persisted.fetchReviewQueuePage(mediaKind: .video, tagID: tag.id, cursor: nil, limit: 10).items.isEmpty)
+        try tags.restorePriorStates(.init(tagID: tag.id, priorStates: accepted.priorStates), timestampMs: DatabaseTestSupport.timestampMs + 2)
+        XCTAssertEqual(try persisted.fetchReviewQueuePage(mediaKind: .video, tagID: tag.id, cursor: nil, limit: 10).items.map(\.assetID), [candidateID])
+        try await database.pool.read { db in
+            XCTAssertEqual(try Row.fetchAll(db, sql: "SELECT * FROM asset_tag_decision WHERE asset_id = ?", arguments: [photoID.uuidString.lowercased()]).map { $0.description }, photoFacts)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM personal_suggestion_model WHERE media_kind = 'image'"), 0)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM personal_prediction WHERE media_kind = 'image'"), 0)
+        }
+    }
+
     func testStartupReconciliationFailsOnlyInterruptedPersonalRuns() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

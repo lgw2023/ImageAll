@@ -3938,7 +3938,7 @@ final class RemoteCatalogFacadeTests: XCTestCase {
     }
 }
 
-private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked Sendable {
+final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked Sendable {
     private let lock = NSLock()
     private let sources: [LibrarySourceSummary]
     private let tags: [TagListItem]
