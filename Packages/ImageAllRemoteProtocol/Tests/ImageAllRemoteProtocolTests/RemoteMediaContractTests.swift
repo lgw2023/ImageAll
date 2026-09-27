@@ -54,6 +54,17 @@ final class RemoteMediaContractTests: XCTestCase {
         }
     }
 
+    func testMapMediaScopeRetainsLegacyPhotoQueriesAndNewDomain() throws {
+        let legacy = RemoteWorldMapSelectionQuery(cellDegrees: 7.5, longitudeBucket: 1, latitudeBucket: 1)
+        XCTAssertNil(try JSONDecoder().decode(RemoteWorldMapSelectionQuery.self, from: JSONEncoder().encode(legacy)).mediaScope)
+        for scope in [RemoteWorldMapMediaScope.photos, .videos, .all] {
+            let query = RemoteWorldMapSelectionQuery(cellDegrees: 7.5, longitudeBucket: 1, latitudeBucket: 1, mediaScope: scope)
+            XCTAssertEqual(try JSONDecoder().decode(RemoteWorldMapSelectionQuery.self, from: JSONEncoder().encode(query)), query)
+        }
+        let oldAsset = RemoteWorldMapAsset(id: UUID(), fileName: nil, availability: .available, contentRevision: 1)
+        XCTAssertNil(try JSONDecoder().decode(RemoteWorldMapAsset.self, from: JSONEncoder().encode(oldAsset)).mediaKind)
+    }
+
     private func payload(format: String, kind: String?) throws -> Data {
         var object: [String: Any] = [
             "id": UUID().uuidString, "assetID": UUID().uuidString,

@@ -413,6 +413,11 @@ final class RemoteLibraryClientTests: XCTestCase {
             XCTAssertEqual(map["videoDuration"], "oneToTenMinutes")
             XCTAssertEqual(map["videoOrientation"], "portrait")
             XCTAssertEqual(map["tagPresence"], "tagged")
+            XCTAssertEqual(map["worldMapCellDegrees"], "7.5")
+            XCTAssertEqual(map["worldMapLongitudeBucket"], "24")
+            XCTAssertEqual(map["worldMapLatitudeBucket"], "12")
+            XCTAssertEqual(map["worldMapMediaScope"], "all")
+            XCTAssertEqual(map["worldMapWest"], "-180.0")
             let payload = try JSONEncoder().encode(RemoteAssetPage(items: [], nextCursor: nil))
             let response = HTTPURLResponse(
                 url: request.url!,
@@ -442,7 +447,9 @@ final class RemoteLibraryClientTests: XCTestCase {
                 mediaKinds: [.video],
                 videoDuration: .oneToTenMinutes,
                 videoOrientation: .portrait,
-                tagPresence: .tagged
+                tagPresence: .tagged,
+                worldMapSelection: RemoteWorldMapSelectionQuery(cellDegrees: 7.5, longitudeBucket: 24,
+                    latitudeBucket: 12, bounds: RemoteWorldMapBounds(west: -180, south: -90, east: 180, north: 90), mediaScope: .all)
             )
         )
     }

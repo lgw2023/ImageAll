@@ -211,3 +211,13 @@
 - `video-backfill-ui-build.log`：Mac TEST BUILD SUCCEEDED；`video-backfill-ui-tests.log`：直接 XCTest PASS 6/6。覆盖仅视频来源旧策略排队、重复启动幂等、当前无 GPS 不重复回填、打开面板不扫描、照片统计、任务重试／取消和三种地图范围一致性。测试全部合成目录库，没有执行真实来源扫描。
 - 源摘要 `video-backfill-ui-source-sha256.json`。Workspace 仅暂存独立 `video-backfill-ui-workspace.patch`，保留既有 75/5；git diff --check PASS。原生 UI 本身仍待合成运行验收，不把 model／repository 通过写成实际点击通过。
 - 下一动作：Host／Companion 地图范围、聚合／点选／图库跳转和回填版本契约；之后继续 PhotoKit 技术信息与显式云端视频可用性。P1、P2 IN_PROGRESS；P3–P7 NOT_STARTED。未真实媒体读取、源端写入、云端下载、外部传输、push 或 App 替换。
+
+
+## P2 远端地图范围查询契约（2026-09-27）
+
+- main 基线 `813df44a`。新增可选 worldMapMediaScopeVersion=1 能力字段，地图聚合 GET 接收 mediaScope，点选 query 与响应 cluster selectionQuery 保留同一范围，图库空间 GET 使用 worldMapMediaScope；缺字段仍为照片，未知范围或孤立媒体范围参数明确拒绝。
+- RemoteWorldMapAsset 新增可选 mediaKind。既有计数键保持兼容；新范围使用者必须以所选范围解释数量。回填接口尚未纳入本版本，旧远端回填仍为照片语义。
+- 修复共享 RemoteLibraryClient 先前虽有 worldMapSelection DTO 却未发送其参数的问题：完整编码空间桶、视口边界、限量和媒体范围，防止地图进入图库范围丢失。
+- `map-media-remote-protocol.log` PASS 76/76；`map-media-remote-client.log` PASS 64/64。`map-media-remote-build.log` Mac TEST BUILD SUCCEEDED；`map-media-remote-host-tests.log` 直接 XCTest PASS 3/3，涵盖 facade 的范围双向映射／资产媒体域、HTTP 地图路由和拒绝未知范围、图库空间范围映射与缺参拒绝。HTTP 测试使用合成 catalog，未宣称真实地图浏览器联调。
+- `map-media-remote-source-sha256.json` 绑定本轮源文件；git diff --check PASS。Workspace 原有 75/5 和项目／OpenMontage 并行改动未变，未读取真实媒体、源端写入、云端下载、外部传输或 push。
+- 下一动作：在独立 Web worktree 接能力门控、地图媒体选择、点选预览和图库 URL 范围传递；之后补远端混合回填，再继续 PhotoKit 技术信息与云端可用性。P1、P2 IN_PROGRESS，P3–P7 NOT_STARTED。

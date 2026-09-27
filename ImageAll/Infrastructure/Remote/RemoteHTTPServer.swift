@@ -1300,7 +1300,8 @@ actor RemoteHTTPServer {
             case ("GET", RemoteHTTPPaths.worldMapSnapshot):
                 let payload = try await facade.fetchWorldMapSnapshot(
                     bounds: try Self.parseWorldMapBounds(query: query),
-                    maximumClusters: Int(query["maximumClusters"] ?? "") ?? 2_000
+                    maximumClusters: Int(query["maximumClusters"] ?? "") ?? 2_000,
+                    mediaScope: try Self.parseWorldMapMediaScope(query["mediaScope"])
                 )
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             case ("POST", RemoteHTTPPaths.worldMapSelection):
@@ -2462,7 +2463,7 @@ actor RemoteHTTPServer {
             "worldMapLatitudeBucket",
         ]
         let supplied = keys.compactMap { query[$0] }
-        guard !supplied.isEmpty else { return nil }
+        guard !supplied.isEmpty || query["worldMapMediaScope"] != nil else { return nil }
         guard supplied.count == keys.count,
               let cellDegrees = Double(query["worldMapCellDegrees"] ?? ""),
               cellDegrees.isFinite,
@@ -2486,8 +2487,17 @@ actor RemoteHTTPServer {
             latitudeBucket: latitudeBucket,
             bounds: bounds,
             maximumAssets: Int(query["worldMapMaximumAssets"] ?? "")
-                ?? WorldMapCatalogSelectionQuery.defaultAssetLimit
+                ?? WorldMapCatalogSelectionQuery.defaultAssetLimit,
+            mediaScope: try parseWorldMapMediaScope(query["worldMapMediaScope"])
         )
+    }
+
+    private static func parseWorldMapMediaScope(_ raw: String?) throws -> RemoteWorldMapMediaScope? {
+        guard let raw else { return nil }
+        guard let scope = RemoteWorldMapMediaScope(rawValue: raw) else {
+            throw RemoteAPIError(code: .badRequest, message: "未知地图媒体范围")
+        }
+        return scope
     }
 
     private static func parseWorldMapBounds(

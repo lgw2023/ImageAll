@@ -1,5 +1,9 @@
 import Foundation
 
+public enum RemoteWorldMapMediaScope: String, Codable, Sendable, Equatable {
+    case photos, videos, all
+}
+
 public struct RemoteWorldMapBounds: Codable, Sendable, Equatable {
     public let west: Double
     public let south: Double
@@ -19,6 +23,7 @@ public struct RemoteWorldMapSelectionQuery: Codable, Sendable, Equatable {
     public let longitudeBucket: Int
     public let latitudeBucket: Int
     public let bounds: RemoteWorldMapBounds?
+    public let mediaScope: RemoteWorldMapMediaScope?
     public let maximumAssets: Int
 
     public init(
@@ -26,13 +31,15 @@ public struct RemoteWorldMapSelectionQuery: Codable, Sendable, Equatable {
         longitudeBucket: Int,
         latitudeBucket: Int,
         bounds: RemoteWorldMapBounds? = nil,
-        maximumAssets: Int = 36
+        maximumAssets: Int = 36,
+        mediaScope: RemoteWorldMapMediaScope? = nil
     ) {
         self.cellDegrees = cellDegrees
         self.longitudeBucket = longitudeBucket
         self.latitudeBucket = latitudeBucket
         self.bounds = bounds
         self.maximumAssets = maximumAssets
+        self.mediaScope = mediaScope
     }
 }
 
@@ -100,19 +107,22 @@ public struct RemoteWorldMapAsset: Codable, Sendable, Equatable, Identifiable {
     public let availability: RemoteAssetAvailability
     public let contentRevision: Int
     public let favorite: RemoteAssetFavoriteState?
+    public let mediaKind: RemoteAssetMediaKind?
 
     public init(
         id: UUID,
         fileName: String?,
         availability: RemoteAssetAvailability,
         contentRevision: Int,
-        favorite: RemoteAssetFavoriteState? = nil
+        favorite: RemoteAssetFavoriteState? = nil,
+        mediaKind: RemoteAssetMediaKind? = nil
     ) {
         self.id = id
         self.fileName = fileName
         self.availability = availability
         self.contentRevision = contentRevision
         self.favorite = favorite
+        self.mediaKind = mediaKind
     }
 }
 

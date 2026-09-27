@@ -89,7 +89,8 @@ actor RemoteCatalogFacade {
             localLibrarySnapshotChunkBytes: supportsLocalLibrarySnapshot
                 ? RemoteLocalLibrarySnapshotChunk.maximumChunkBytes : nil,
             videoRangeStreamingVersion: supportsRevisionedVideoRanges ? 1 : nil,
-            videoQueryVersion: 1
+            videoQueryVersion: 1,
+            worldMapMediaScopeVersion: 1
         )
     }
 
@@ -716,11 +717,13 @@ actor RemoteCatalogFacade {
 
     func fetchWorldMapSnapshot(
         bounds: RemoteWorldMapBounds?,
-        maximumClusters: Int = 2_000
+        maximumClusters: Int = 2_000,
+        mediaScope: RemoteWorldMapMediaScope? = nil
     ) throws -> RemoteWorldMapSnapshot {
         let query = WorldMapCatalogQuery(
             bounds: bounds.map(Self.mapWorldMapBounds),
-            maximumClusters: max(1, min(maximumClusters, WorldMapCatalogQuery.maximumClusterLimit))
+            maximumClusters: max(1, min(maximumClusters, WorldMapCatalogQuery.maximumClusterLimit)),
+            mediaScope: mediaScope.flatMap { WorldMapMediaScope(rawValue: $0.rawValue) }
         )
         do {
             let snapshot = try catalog.fetchWorldMapSnapshot(query: query)
@@ -755,7 +758,8 @@ actor RemoteCatalogFacade {
                         fileName: asset.fileName,
                         availability: Self.mapAvailability(detail.availability),
                         contentRevision: detail.contentRevision,
-                        favorite: favoriteStates[asset.assetID].map(Self.mapFavorite)
+                        favorite: favoriteStates[asset.assetID].map(Self.mapFavorite),
+                        mediaKind: asset.mediaKind == .video ? .video : .image
                     )
                 } catch {
                     return RemoteWorldMapAsset(
@@ -763,7 +767,8 @@ actor RemoteCatalogFacade {
                         fileName: asset.fileName,
                         availability: .missing,
                         contentRevision: 0,
-                        favorite: favoriteStates[asset.assetID].map(Self.mapFavorite)
+                        favorite: favoriteStates[asset.assetID].map(Self.mapFavorite),
+                        mediaKind: asset.mediaKind == .video ? .video : .image
                     )
                 }
             }
@@ -3059,7 +3064,8 @@ actor RemoteCatalogFacade {
             maximumAssets: max(
                 1,
                 min(query.maximumAssets, WorldMapCatalogSelectionQuery.maximumAssetLimit)
-            )
+            ),
+            mediaScope: query.mediaScope.flatMap { WorldMapMediaScope(rawValue: $0.rawValue) }
         )
     }
 
@@ -3078,7 +3084,8 @@ actor RemoteCatalogFacade {
                     north: $0.north
                 )
             },
-            maximumAssets: query.maximumAssets
+            maximumAssets: query.maximumAssets,
+            mediaScope: query.mediaScope.flatMap { RemoteWorldMapMediaScope(rawValue: $0.rawValue) }
         )
     }
 

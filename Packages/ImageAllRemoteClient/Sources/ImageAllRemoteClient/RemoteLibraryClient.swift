@@ -442,6 +442,25 @@ public struct RemoteLibraryClient: Sendable {
         if let cursor = request.cursor, !cursor.isEmpty {
             items.append(URLQueryItem(name: "cursor", value: cursor))
         }
+        if let selection = request.worldMapSelection {
+            items.append(contentsOf: [
+                URLQueryItem(name: "worldMapCellDegrees", value: String(selection.cellDegrees)),
+                URLQueryItem(name: "worldMapLongitudeBucket", value: String(selection.longitudeBucket)),
+                URLQueryItem(name: "worldMapLatitudeBucket", value: String(selection.latitudeBucket)),
+                URLQueryItem(name: "worldMapMaximumAssets", value: String(selection.maximumAssets)),
+            ])
+            if let scope = selection.mediaScope {
+                items.append(URLQueryItem(name: "worldMapMediaScope", value: scope.rawValue))
+            }
+            if let bounds = selection.bounds {
+                items.append(contentsOf: [
+                    URLQueryItem(name: "worldMapWest", value: String(bounds.west)),
+                    URLQueryItem(name: "worldMapSouth", value: String(bounds.south)),
+                    URLQueryItem(name: "worldMapEast", value: String(bounds.east)),
+                    URLQueryItem(name: "worldMapNorth", value: String(bounds.north)),
+                ])
+            }
+        }
         let acceptedTagIDs = request.tagDecisionFilters
             .filter { $0.decision == .accepted }
             .map(\.tagID.uuidString)

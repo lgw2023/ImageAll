@@ -3337,7 +3337,8 @@ final class RemoteCatalogFacadeTests: XCTestCase {
             cellDegrees: 0.25,
             longitudeBucket: 1_205,
             latitudeBucket: 485,
-            maximumAssets: 36
+            maximumAssets: 36,
+            mediaScope: .videos
         )
         let cluster = WorldMapCatalogCluster(
             id: "shanghai",
@@ -3378,7 +3379,7 @@ final class RemoteCatalogFacadeTests: XCTestCase {
                 unlocatedPhotoCount: 30
             ),
             worldMapSelection: WorldMapCatalogSelection(
-                assets: [WorldMapCatalogAsset(assetID: assetID, fileName: "IMG_0001.HEIC")],
+                assets: [WorldMapCatalogAsset(assetID: assetID, fileName: "clip.mov", mediaKind: .video, contentRevision: 7)],
                 totalPhotoCount: 42
             ),
             favoriteStates: [
@@ -3397,12 +3398,16 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         let facade = makeFacade(catalog: catalog)
 
         let snapshot = try await facade.fetchWorldMapSnapshot(
-            bounds: RemoteWorldMapBounds(west: 118, south: 30, east: 123, north: 33)
+            bounds: RemoteWorldMapBounds(west: 118, south: 30, east: 123, north: 33), mediaScope: .videos
         )
         let selection = try await facade.fetchWorldMapSelection(
             RemoteWorldMapSelectionRequest(query: snapshot.clusters[0].selectionQuery)
         )
 
+        XCTAssertEqual(catalog.lastMapSnapshotQuery?.effectiveMediaScope, .videos)
+        XCTAssertEqual(catalog.lastMapSelectionQuery?.effectiveMediaScope, .videos)
+        XCTAssertEqual(snapshot.clusters.first?.selectionQuery.mediaScope, .videos)
+        XCTAssertEqual(selection.assets.first?.mediaKind, .video)
         XCTAssertEqual(snapshot.clusters.first?.displayName, "上海")
         XCTAssertEqual(snapshot.locatedPhotoCount, 70)
         XCTAssertEqual(selection.totalPhotoCount, 42)
@@ -3810,6 +3815,10 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
     private var storedLastCreateTagName: String?
     private var storedLastCreateTagAssetIDs: [UUID]?
     private var storedLastRequestedLimit: Int?
+    private var storedMapSnapshotQuery: WorldMapCatalogQuery?
+    private var storedMapSelectionQuery: WorldMapCatalogSelectionQuery?
+    var lastMapSnapshotQuery: WorldMapCatalogQuery? { lock.withLock { storedMapSnapshotQuery } }
+    var lastMapSelectionQuery: WorldMapCatalogSelectionQuery? { lock.withLock { storedMapSelectionQuery } }
     private var storedLastRequestedFilter: AssetPageFilter?
     private var storedLastRequestedSort: AssetPageSort?
     private var storedAssetPageError: CatalogQueryError?
@@ -4165,7 +4174,7 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
     }
 
     func fetchWorldMapSnapshot(query: WorldMapCatalogQuery) throws -> WorldMapCatalogSnapshot {
-        _ = query
+        lock.withLock { storedMapSnapshotQuery = query }
         return worldMapSnapshot
     }
 
@@ -4176,7 +4185,7 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
     func fetchWorldMapSelection(
         query: WorldMapCatalogSelectionQuery
     ) throws -> WorldMapCatalogSelection {
-        _ = query
+        lock.withLock { storedMapSelectionQuery = query }
         return worldMapSelection
     }
 

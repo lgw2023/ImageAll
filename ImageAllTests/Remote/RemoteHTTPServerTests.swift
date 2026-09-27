@@ -2906,12 +2906,15 @@ final class RemoteHTTPServerTests: XCTestCase {
 
         let (snapshotData, snapshotResponse) = try await URLSession.shared.data(
             for: authorizedRequest(
-                path: "\(RemoteHTTPPaths.worldMapSnapshot)?west=118&south=30&east=123&north=33"
+                path: "\(RemoteHTTPPaths.worldMapSnapshot)?west=118&south=30&east=123&north=33&mediaScope=videos"
             )
         )
         XCTAssertEqual(try XCTUnwrap(snapshotResponse as? HTTPURLResponse).statusCode, 200)
         let snapshot = try JSONDecoder().decode(RemoteWorldMapSnapshot.self, from: snapshotData)
         XCTAssertTrue(snapshot.clusters.isEmpty)
+        let (_, invalidScope) = try await URLSession.shared.data(for: authorizedRequest(
+            path: "\(RemoteHTTPPaths.worldMapSnapshot)?mediaScope=future"))
+        XCTAssertEqual((invalidScope as? HTTPURLResponse)?.statusCode, 400)
 
         let (overviewData, overviewResponse) = try await URLSession.shared.data(
             for: authorizedRequest(path: RemoteHTTPPaths.galleryOverview)
@@ -7602,6 +7605,7 @@ final class RemoteHTTPServerTests: XCTestCase {
             URLQueryItem(name: "worldMapEast", value: "123"),
             URLQueryItem(name: "worldMapNorth", value: "33"),
             URLQueryItem(name: "worldMapMaximumAssets", value: "36"),
+            URLQueryItem(name: "worldMapMediaScope", value: "videos"),
         ]
         var request = URLRequest(url: try XCTUnwrap(components.url))
         request.setValue(
@@ -7642,7 +7646,8 @@ final class RemoteHTTPServerTests: XCTestCase {
                     east: 123,
                     north: 33
                 ),
-                maximumAssets: 36
+                maximumAssets: 36,
+                mediaScope: .videos
             )
         )
         XCTAssertEqual(catalog.lastRequestedSort, .fileSizeLargest)
@@ -7661,7 +7666,7 @@ final class RemoteHTTPServerTests: XCTestCase {
             try XCTUnwrap(invalidResponse as? HTTPURLResponse).statusCode,
             400
         )
-        for query in ["videoDuration=future", "videoOrientation=diagonal", "sort=future"] {
+        for query in ["videoDuration=future", "videoOrientation=diagonal", "sort=future", "worldMapMediaScope=all", "worldMapCellDegrees=1&worldMapLongitudeBucket=1&worldMapLatitudeBucket=1&worldMapMediaScope=future"] {
             var invalid = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/assets?\(query)")!)
             invalid.setValue("Bearer \(Self.legacyDebugToken)", forHTTPHeaderField: "Authorization")
             let (_, result) = try await URLSession.shared.data(for: invalid)
