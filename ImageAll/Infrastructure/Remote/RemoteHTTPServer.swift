@@ -2379,7 +2379,15 @@ actor RemoteHTTPServer {
         let excludedTagIDs = (query["excludedTagIDs"] ?? "")
             .split(separator: ",")
             .compactMap { UUID(uuidString: String($0)) }
-        let sort = RemoteAssetSort(rawValue: query["sort"] ?? "") ?? .fileNameAscending
+        guard let sort = RemoteAssetSort(rawValue: query["sort"] ?? "fileNameAscending") else {
+            throw RemoteAPIError(code: .badRequest, message: "未知排序条件")
+        }
+        let videoDuration = query["videoDuration"].flatMap(RemoteVideoDurationFilter.init(rawValue:))
+        let videoOrientation = query["videoOrientation"].flatMap(RemoteVideoOrientationFilter.init(rawValue:))
+        guard query["videoDuration"] == nil || videoDuration != nil,
+              query["videoOrientation"] == nil || videoOrientation != nil else {
+            throw RemoteAPIError(code: .badRequest, message: "未知视频筛选条件")
+        }
         let limit = Int(query["limit"] ?? "60") ?? 60
         return RemoteAssetPageRequest(
             sourceIDs: sourceIDs,
@@ -2403,6 +2411,8 @@ actor RemoteHTTPServer {
             mediaTypes: (query["mediaTypes"] ?? "")
                 .split(separator: ",")
                 .map(String.init),
+            videoDuration: videoDuration,
+            videoOrientation: videoOrientation,
             tagPresence: RemoteAssetTagPresence(rawValue: query["tagPresence"] ?? "") ?? .any,
             favorite: RemoteAssetFavoriteFilter(rawValue: query["favorite"] ?? ""),
             worldMapSelection: try parseAssetWorldMapSelection(query: query),

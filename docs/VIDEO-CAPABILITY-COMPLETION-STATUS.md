@@ -18,7 +18,7 @@
 |---|---|---|---|
 | P0 | VERIFIED | PASS（静态盘点） | 基线、边界、首个切片与测试路径明确；不等于功能通过 |
 | P1 | IN_PROGRESS | 分切片 PASS；完整闭环未验 | 媒体契约已交付；Mac／iPhone 查看器构建／合成测试 PASS；跨端联调待补 |
-| P2 | IN_PROGRESS | 首切片 PASS | 文件夹时间／位置／技术信息与按需补读已验；原生查询本轮补齐，地图／云端与远端条件待做 |
+| P2 | IN_PROGRESS | 首切片 PASS | 文件夹时间／位置／技术信息与按需补读已验；原生与 Host／iPhone 查询已补齐，Web 条件、地图／云端待做 |
 | P3 | NOT_STARTED | NOT_RUN | 复核代表帧模型隔离，接远端建议与审核持久事实 |
 | P4 | NOT_STARTED | NOT_RUN | 有界完整字节摘要、修订复核、合成回收恢复 |
 | P5 | NOT_STARTED | NOT_RUN | 版本化有限多帧与时间点证据、内容相似独立候选 |
@@ -155,3 +155,15 @@
 
 - `video-query-build-accepted.log`：Mac TEST BUILD SUCCEEDED；`video-query-model-tests.log`：`LibraryWorkspaceModelTests/testMediaKindSwitchDefaultsToPhotosAndClearsCrossPageSelection` PASS 1/1，验证模型向服务传递视频条件／排序、切回照片清除条件并恢复照片结果。直接 bundle 与私有 TMPDIR 沿用既有路径，未启动生产 Photos 宿主。
 - 本轮原生 Workspace 以启动副本生成独立 staging 补丁，保留原有故事相关改动；源码摘要见 `p2-query-source-sha256.json`。`git diff --check` PASS。P1 未完成项继续保留，P2 下步推进远端查询契约与对应客户端入口，然后继续地图与 PhotoKit 差异。
+
+
+## P2 Host 查询契约与 iPhone 控件（2026-09-27）
+
+- 本轮 main 基线 `0a90fef0`；新增可选视频时长／方向请求字段与 `videoQueryVersion=1`，共享客户端编码 HTTP 参数，Host 严格校验并映射既有目录过滤和四种数值排序。旧请求继续可解码，旧 Host 不显示新控件，不静默忽略残留新条件。
+- iPhone 筛选表单增加时长／方向，排序增加时长和大小双向；视频条件自动切到视频范围，切离视频清空相关条件。仅构建验证 UI，未宣称真机交互通过。
+- `remote-video-query-ios.log`：iOS Simulator BUILD SUCCEEDED。`remote-video-query-mac.log`：Mac TEST BUILD SUCCEEDED。构建沿用证据根私有 DerivedData／Products／Intermediates，未替换或启动日常 App。
+- `remote-video-query-protocol.log`：Swift package 75/75 PASS，含旧请求缺字段与新排序往返。`remote-video-query-client.log`：64/64 PASS，含实际 query 编码断言。
+- `remote-video-query-host-tests.log`：直接 XCTest 2/2 PASS，选择 `RemoteCatalogFacadeTests/testMapsSourcesAndAssets` 和 `RemoteHTTPServerTests/testAssetRouteMapsAdvancedWebQueryFilters`；合成回环 HTTP 验证视频条件／大小排序到达 catalog，并拒绝未知时长、方向和排序。SQL 数值分页沿用上一切片已通过的独立测试，不把本轮 fake catalog 说成完整 DB 联调。
+- 源文件摘要 `p2-remote-query-source-sha256.json`，`git diff --check` PASS。原有 LibraryWorkspace 75/5、项目文件与 OpenMontage 等并行差异保留；Web worktree 本轮只核对状态，没有修改或生成资源。
+- 下一具体动作：在 `/Volumes/SSD1/ImageAll-Web-Dev` 补能力门控、视频条件／排序与必要浏览器请求验证，再以最小源码补丁集成 main。之后继续地图范围、PhotoKit 技术信息和显式云端获取；P1 的资源／UI 联调缺口仍保留，P3–P7 NOT_STARTED。
+- 真实媒体、真机、iCloud、付费模型与发布安装仍 NOT_RUN；未访问受保护媒体、未源端写入、未外部传输、未 push。

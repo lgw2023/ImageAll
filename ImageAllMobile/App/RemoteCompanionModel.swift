@@ -49,7 +49,22 @@ final class RemoteCompanionModel: ObservableObject {
     @Published var libraryExcludedTagIDs: Set<UUID> = []
     @Published var libraryTagMatchMode: RemoteAssetTagMatchMode = .all
     @Published var libraryAvailabilities: Set<RemoteAssetAvailability> = []
-    @Published var libraryMediaKinds: Set<RemoteAssetMediaKind> = []
+    @Published var libraryMediaKinds: Set<RemoteAssetMediaKind> = [] {
+        didSet {
+            if !libraryMediaKinds.contains(.video) {
+                libraryVideoDuration = .any
+                libraryVideoOrientation = .any
+                if librarySort.isDurationSort { librarySort = .fileNameAscending }
+            }
+        }
+    }
+    @Published var libraryVideoDuration: RemoteVideoDurationFilter = .any {
+        didSet { if libraryVideoDuration != .any { libraryMediaKinds = [.video] } }
+    }
+    @Published var libraryVideoOrientation: RemoteVideoOrientationFilter = .any {
+        didSet { if libraryVideoOrientation != .any { libraryMediaKinds = [.video] } }
+    }
+    var supportsVideoQueries: Bool { capabilities?.videoQueryVersion == 1 }
     @Published var libraryTagPresence: RemoteAssetTagPresence = .any
     @Published var reviewMediaKind: RemoteAssetMediaKind = .image
     @Published var isReviewOverviewPresented = true
@@ -114,6 +129,8 @@ final class RemoteCompanionModel: ObservableObject {
             + (libraryAvailabilities.isEmpty ? 0 : 1)
             + (libraryMediaKinds.isEmpty ? 0 : 1)
             + (libraryTagPresence == .any ? 0 : 1)
+            + (libraryVideoDuration == .any ? 0 : 1)
+            + (libraryVideoOrientation == .any ? 0 : 1)
     }
 
     private enum DefaultsKey {
@@ -456,6 +473,11 @@ final class RemoteCompanionModel: ObservableObject {
         preservingLoadedWindow: Bool = false
     ) async {
         guard let client else { return }
+        guard supportsVideoQueries || (!librarySort.requiresVideoQueryCapability
+            && libraryVideoDuration == .any && libraryVideoOrientation == .any) else {
+            statusMessage = "此 Mac 尚不支持视频条件，请升级 Host 或重置筛选与排序。"
+            return
+        }
         if reset {
             assetQueryGeneration &+= 1
         }
@@ -488,6 +510,8 @@ final class RemoteCompanionModel: ObservableObject {
                     tagMatchMode: libraryTagMatchMode,
                     availabilities: libraryAvailabilities.sorted { $0.rawValue < $1.rawValue },
                     mediaKinds: libraryMediaKinds.sorted { $0.rawValue < $1.rawValue },
+                    videoDuration: supportsVideoQueries ? libraryVideoDuration : nil,
+                    videoOrientation: supportsVideoQueries ? libraryVideoOrientation : nil,
                     tagPresence: libraryTagPresence
                 )
             )

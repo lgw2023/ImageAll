@@ -40,6 +40,20 @@ final class RemoteMediaContractTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(RemoteAssetDetail.self, from: JSONEncoder().encode(detail)), detail)
     }
 
+    func testVideoQueryContractIsOptionalForLegacyPayloads() throws {
+        let legacy = try JSONEncoder().encode(RemoteAssetPageRequest())
+        let decoded = try JSONDecoder().decode(RemoteAssetPageRequest.self, from: legacy)
+        XCTAssertNil(decoded.videoDuration)
+        XCTAssertNil(decoded.videoOrientation)
+        XCTAssertNil(try JSONDecoder().decode(RemoteCapabilities.self, from:
+            JSONEncoder().encode(RemoteCapabilities(hostAppVersion: "old"))).videoQueryVersion)
+        for sort in [RemoteAssetSort.durationShortest, .durationLongest, .fileSizeSmallest, .fileSizeLargest] {
+            let request = RemoteAssetPageRequest(sort: sort, videoDuration: .oneToTenMinutes, videoOrientation: .portrait)
+            XCTAssertEqual(try JSONDecoder().decode(RemoteAssetPageRequest.self, from: JSONEncoder().encode(request)), request)
+            XCTAssertTrue(sort.requiresVideoQueryCapability)
+        }
+    }
+
     private func payload(format: String, kind: String?) throws -> Data {
         var object: [String: Any] = [
             "id": UUID().uuidString, "assetID": UUID().uuidString,

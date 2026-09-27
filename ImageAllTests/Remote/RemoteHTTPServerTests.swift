@@ -7589,6 +7589,9 @@ final class RemoteHTTPServerTests: XCTestCase {
             URLQueryItem(name: "availabilities", value: "available,missing"),
             URLQueryItem(name: "mediaKinds", value: "video"),
             URLQueryItem(name: "mediaTypes", value: "public.mpeg-4"),
+            URLQueryItem(name: "videoDuration", value: "underMinute"),
+            URLQueryItem(name: "videoOrientation", value: "landscape"),
+            URLQueryItem(name: "sort", value: "fileSizeLargest"),
             URLQueryItem(name: "tagPresence", value: "tagged"),
             URLQueryItem(name: "favorite", value: "favorited"),
             URLQueryItem(name: "worldMapCellDegrees", value: "0.25"),
@@ -7623,6 +7626,8 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(filter.availabilities, [.available, .missing])
         XCTAssertEqual(filter.mediaKinds, [.video])
         XCTAssertEqual(filter.mediaTypes, ["public.mpeg-4"])
+        XCTAssertEqual(filter.videoDuration, .underMinute)
+        XCTAssertEqual(filter.videoOrientation, .landscape)
         XCTAssertEqual(filter.tagPresence, .tagged)
         XCTAssertEqual(filter.favorite, .favorited)
         XCTAssertEqual(
@@ -7640,7 +7645,7 @@ final class RemoteHTTPServerTests: XCTestCase {
                 maximumAssets: 36
             )
         )
-        XCTAssertEqual(catalog.lastRequestedSort, .fileNameAscending)
+        XCTAssertEqual(catalog.lastRequestedSort, .fileSizeLargest)
 
         var invalidRequest = URLRequest(
             url: URL(
@@ -7656,6 +7661,13 @@ final class RemoteHTTPServerTests: XCTestCase {
             try XCTUnwrap(invalidResponse as? HTTPURLResponse).statusCode,
             400
         )
+        for query in ["videoDuration=future", "videoOrientation=diagonal", "sort=future"] {
+            var invalid = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/assets?\(query)")!)
+            invalid.setValue("Bearer \(Self.legacyDebugToken)", forHTTPHeaderField: "Authorization")
+            let (_, result) = try await URLSession.shared.data(for: invalid)
+            XCTAssertEqual((result as? HTTPURLResponse)?.statusCode, 400)
+        }
+
     }
 
     func testPreviewRouteConvertsPhotoKitTIFFIntoBrowserCompatibleImage() async throws {

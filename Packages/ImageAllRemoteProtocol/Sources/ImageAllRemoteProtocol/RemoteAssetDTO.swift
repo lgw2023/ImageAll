@@ -8,6 +8,27 @@ public enum RemoteAssetSort: String, Codable, Sendable, Equatable {
     case fileModifiedNewest
     case fileModifiedOldest
     case fileNameAscending
+    case durationShortest
+    case durationLongest
+    case fileSizeSmallest
+    case fileSizeLargest
+
+    public var requiresVideoQueryCapability: Bool {
+        switch self {
+        case .durationShortest, .durationLongest, .fileSizeSmallest, .fileSizeLargest: true
+        default: false
+        }
+    }
+
+    public var isDurationSort: Bool { self == .durationShortest || self == .durationLongest }
+}
+
+public enum RemoteVideoDurationFilter: String, Codable, Sendable, CaseIterable {
+    case any, underMinute, oneToTenMinutes, tenMinutesOrMore
+}
+
+public enum RemoteVideoOrientationFilter: String, Codable, Sendable, CaseIterable {
+    case any, landscape, portrait, square
 }
 
 public enum RemoteAssetAvailability: String, Codable, Sendable, Equatable {
@@ -180,6 +201,8 @@ public struct RemoteAssetPageRequest: Codable, Sendable, Equatable {
     public var availabilities: [RemoteAssetAvailability]
     public var mediaKinds: [RemoteAssetMediaKind]
     public var mediaTypes: [String]
+    public var videoDuration: RemoteVideoDurationFilter?
+    public var videoOrientation: RemoteVideoOrientationFilter?
     public var tagPresence: RemoteAssetTagPresence
     /// `nil` means no favorite constraint and remains compatible with older clients.
     public var favorite: RemoteAssetFavoriteFilter?
@@ -202,6 +225,8 @@ public struct RemoteAssetPageRequest: Codable, Sendable, Equatable {
         availabilities: [RemoteAssetAvailability] = [],
         mediaKinds: [RemoteAssetMediaKind] = [],
         mediaTypes: [String] = [],
+        videoDuration: RemoteVideoDurationFilter? = nil,
+        videoOrientation: RemoteVideoOrientationFilter? = nil,
         tagPresence: RemoteAssetTagPresence = .any,
         favorite: RemoteAssetFavoriteFilter? = nil,
         worldMapSelection: RemoteWorldMapSelectionQuery? = nil,
@@ -218,6 +243,8 @@ public struct RemoteAssetPageRequest: Codable, Sendable, Equatable {
         self.availabilities = availabilities
         self.mediaKinds = mediaKinds
         self.mediaTypes = mediaTypes
+        self.videoDuration = videoDuration
+        self.videoOrientation = videoOrientation
         self.tagPresence = tagPresence
         self.favorite = favorite
         self.worldMapSelection = worldMapSelection

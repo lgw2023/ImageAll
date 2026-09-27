@@ -592,6 +592,12 @@ private struct RemoteLibraryView: View {
                 Button("文件名") { setLibrarySort(.fileNameAscending) }
                 Button("最新优先") { setLibrarySort(.newest) }
                 Button("最早优先") { setLibrarySort(.oldest) }
+                if model.supportsVideoQueries {
+                    Button("时长最短") { setLibrarySort(.durationShortest) }
+                    Button("时长最长") { setLibrarySort(.durationLongest) }
+                    Button("文件最小") { setLibrarySort(.fileSizeSmallest) }
+                    Button("文件最大") { setLibrarySort(.fileSizeLargest) }
+                }
             } label: {
                 Label(librarySortTitle(model.librarySort), systemImage: "arrow.up.arrow.down")
                     .lineLimit(1)
@@ -792,6 +798,7 @@ private struct RemoteLibraryView: View {
     }
 
     private func setLibrarySort(_ sort: RemoteAssetSort) {
+        if sort.isDurationSort { model.libraryMediaKinds = [.video] }
         model.librarySort = sort
         Task { await model.reloadAssets(reset: true) }
     }
@@ -1117,6 +1124,23 @@ private struct RemoteLibraryFilterSheet: View {
                         value: .video,
                         values: $model.libraryMediaKinds
                     ))
+                }
+
+                if model.supportsVideoQueries {
+                    Section("视频条件") {
+                        Picker("时长", selection: $model.libraryVideoDuration) {
+                            Text("不限").tag(RemoteVideoDurationFilter.any)
+                            Text("少于 1 分钟").tag(RemoteVideoDurationFilter.underMinute)
+                            Text("1 至 10 分钟").tag(RemoteVideoDurationFilter.oneToTenMinutes)
+                            Text("10 分钟及以上").tag(RemoteVideoDurationFilter.tenMinutesOrMore)
+                        }
+                        Picker("方向", selection: $model.libraryVideoOrientation) {
+                            Text("不限").tag(RemoteVideoOrientationFilter.any)
+                            Text("横屏").tag(RemoteVideoOrientationFilter.landscape)
+                            Text("竖屏").tag(RemoteVideoOrientationFilter.portrait)
+                            Text("方形").tag(RemoteVideoOrientationFilter.square)
+                        }
+                    }
                 }
 
                 Section("文件状态") {
@@ -3510,6 +3534,10 @@ private func librarySortTitle(_ sort: RemoteAssetSort) -> String {
     case .embeddedTimeOldest: "拍摄时间最早"
     case .fileModifiedNewest: "文件修改最新"
     case .fileModifiedOldest: "文件修改最早"
+    case .durationShortest: "时长最短"
+    case .durationLongest: "时长最长"
+    case .fileSizeSmallest: "文件最小"
+    case .fileSizeLargest: "文件最大"
     }
 }
 

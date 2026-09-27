@@ -481,6 +481,12 @@ public struct RemoteLibraryClient: Sendable {
         if !request.mediaTypes.isEmpty {
             items.append(URLQueryItem(name: "mediaTypes", value: request.mediaTypes.joined(separator: ",")))
         }
+        if let duration = request.videoDuration, duration != .any {
+            items.append(URLQueryItem(name: "videoDuration", value: duration.rawValue))
+        }
+        if let orientation = request.videoOrientation, orientation != .any {
+            items.append(URLQueryItem(name: "videoOrientation", value: orientation.rawValue))
+        }
         if request.tagPresence != .any {
             items.append(URLQueryItem(name: "tagPresence", value: request.tagPresence.rawValue))
         }

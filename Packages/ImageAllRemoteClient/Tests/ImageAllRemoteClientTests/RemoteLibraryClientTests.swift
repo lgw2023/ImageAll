@@ -401,7 +401,7 @@ final class RemoteLibraryClientTests: XCTestCase {
             let items = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
             let map = Dictionary(uniqueKeysWithValues: items.map { ($0.name, $0.value ?? "") })
             XCTAssertEqual(map["sourceIDs"], sourceID.uuidString)
-            XCTAssertEqual(map["sort"], "newest")
+            XCTAssertEqual(map["sort"], "durationLongest")
             XCTAssertEqual(map["limit"], "40")
             XCTAssertEqual(map["q"], "beach")
             XCTAssertEqual(map["cursor"], "abc")
@@ -410,6 +410,8 @@ final class RemoteLibraryClientTests: XCTestCase {
             XCTAssertEqual(map["tagMatchMode"], "any")
             XCTAssertEqual(map["availabilities"], "available")
             XCTAssertEqual(map["mediaKinds"], "video")
+            XCTAssertEqual(map["videoDuration"], "oneToTenMinutes")
+            XCTAssertEqual(map["videoOrientation"], "portrait")
             XCTAssertEqual(map["tagPresence"], "tagged")
             let payload = try JSONEncoder().encode(RemoteAssetPage(items: [], nextCursor: nil))
             let response = HTTPURLResponse(
@@ -428,7 +430,7 @@ final class RemoteLibraryClientTests: XCTestCase {
             RemoteAssetPageRequest(
                 sourceIDs: [sourceID],
                 searchText: "beach",
-                sort: .newest,
+                sort: .durationLongest,
                 limit: 40,
                 cursor: "abc",
                 tagDecisionFilters: [
@@ -438,6 +440,8 @@ final class RemoteLibraryClientTests: XCTestCase {
                 tagMatchMode: .any,
                 availabilities: [.available],
                 mediaKinds: [.video],
+                videoDuration: .oneToTenMinutes,
+                videoOrientation: .portrait,
                 tagPresence: .tagged
             )
         )

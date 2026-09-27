@@ -283,6 +283,7 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         XCTAssertTrue(capabilities.usesTLS)
         XCTAssertEqual(capabilities.hostID, UUID(uuidString: "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"))
         XCTAssertEqual(capabilities.certificateFingerprintSHA256, "deadbeef")
+        XCTAssertEqual(capabilities.videoQueryVersion, 1)
 
         let sources = try await facade.fetchSources()
         XCTAssertEqual(sources.count, 1)
@@ -307,6 +308,10 @@ final class RemoteCatalogFacadeTests: XCTestCase {
             (.embeddedTimeOldest, .embeddedTimeOldest),
             (.fileModifiedNewest, .fileModifiedNewest),
             (.fileModifiedOldest, .fileModifiedOldest),
+            (.durationShortest, .durationShortest),
+            (.durationLongest, .durationLongest),
+            (.fileSizeSmallest, .fileSizeSmallest),
+            (.fileSizeLargest, .fileSizeLargest),
         ] {
             _ = try await facade.fetchAssets(RemoteAssetPageRequest(sort: remoteSort, limit: 10))
             XCTAssertEqual(catalog.lastRequestedSort, catalogSort)

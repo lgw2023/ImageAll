@@ -88,7 +88,8 @@ actor RemoteCatalogFacade {
             certificateFingerprintSHA256: certificateFingerprintSHA256,
             localLibrarySnapshotChunkBytes: supportsLocalLibrarySnapshot
                 ? RemoteLocalLibrarySnapshotChunk.maximumChunkBytes : nil,
-            videoRangeStreamingVersion: supportsRevisionedVideoRanges ? 1 : nil
+            videoRangeStreamingVersion: supportsRevisionedVideoRanges ? 1 : nil,
+            videoQueryVersion: 1
         )
     }
 
@@ -3017,6 +3018,8 @@ actor RemoteCatalogFacade {
             },
             mediaKinds: request.mediaKinds.map(Self.mapMediaKind),
             mediaTypes: request.mediaTypes,
+            videoDuration: request.videoDuration.flatMap { VideoDurationFilter(rawValue: $0.rawValue) } ?? .any,
+            videoOrientation: request.videoOrientation.flatMap { VideoOrientationFilter(rawValue: $0.rawValue) } ?? .any,
             tagPresence: {
                 switch request.tagPresence {
                 case .any: .any
@@ -4555,6 +4558,10 @@ actor RemoteCatalogFacade {
         case .fileModifiedNewest: .fileModifiedNewest
         case .fileModifiedOldest: .fileModifiedOldest
         case .fileNameAscending: .fileNameAscending
+        case .durationShortest: .durationShortest
+        case .durationLongest: .durationLongest
+        case .fileSizeSmallest: .fileSizeSmallest
+        case .fileSizeLargest: .fileSizeLargest
         }
     }
 
