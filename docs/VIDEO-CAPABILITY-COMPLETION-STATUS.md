@@ -314,3 +314,12 @@
 - 本轮建议器与 review 为 stub，因此 insertedCount 只证明服务调用契约，不是数据库持久结果证据。完整合成模型／数据库建议 → Review → 人工事实 → 撤销，以及标准服务／单资产建议、训练与 Web／iPhone 入口仍待完成；不得以本轮绿色回归宣称 P3 完成。
 - git diff --check PASS；video-tag-library-source-sha256.json 绑定源码。Workspace 原有 75/5 及项目／OpenMontage 并行差异保留；未修改 Web、未读真实媒体、未云端下载／源端写入／外部传输、未 push／替换 App。
 - P1／P2／P3 IN_PROGRESS，P4–P7 NOT_STARTED，目标 active。下一具体动作：在真实合成目录和既有模型存储上验证视频个人建议持久化、审核与撤销，并继续剩余远端 AI 入口，不能再用 stub 发布计数替代完整链路证据。
+
+
+## P3 视频个人建议持久审核与撤销（2026-09-27）
+
+- 上轮为 progress：693d6b1b 开放视频质心／AdamW 远端全库建议。本轮新增真实 SQLite 合成混合目录验收，直接经过 GRDBPersonalizationReviewRepository 与 GRDBTagCatalogRepository，不再用 stub 的 insertedCount 证明持久行为。
+- 同标签分别激活照片／视频模型身份并写入个人建议，重新构造 repository 读取各自队列；接受视频后该视频离开审核队列、人工事实为 accepted，按返回 priorStates 撤销后恢复 unknown 并重新进入视频队列。全过程照片队列保持原项，照片模型记录和全部照片人工事实逐行一致。
+- 首次测试编译错误为 TagMutationResult 无 restoreSnapshot 便捷方法，改用既有 TagMutationPriorStateSnapshot；video-review-build-final.log 最终 Mac TEST BUILD SUCCEEDED。video-review-tests.log 3/3 PASS：新增混合目录持久审核／撤销、照片 Top-N 人工事实排除、视频 Feature KNN 模型槽隔离。git diff --check PASS。
+- 个人建议测试的模型身份和分数为明确合成输入，未调用真实编码器训练；它证明持久审核后半链，不证明训练→模型发布→远端命令→持久审核整条链。后者、标准建议与剩余跨端入口仍为 P3 必需缺口，不能把这些分段测试累加为完整端到端验收。
+- 源摘要 video-review-source-sha256.json。Workspace 原有 75/5 与 OpenMontage 并行改动保留；未读取真实媒体、未云端获取／源端写入／外部传输、未 push／替换 App。P1／P2／P3 IN_PROGRESS，P4–P7 NOT_STARTED，目标 active。下一动作：接通视频标准建议及单资产外部模型入口，串真实合成训练产物的远端持久链并核对 Web／iPhone 能力。

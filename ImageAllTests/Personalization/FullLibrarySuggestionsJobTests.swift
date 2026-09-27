@@ -1438,6 +1438,61 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         XCTAssertEqual(item.height, 900)
     }
 
+    func testVideoPersonalSuggestionsPersistReviewAcceptAndUndoWithoutChangingPhotos() throws {
+        let fixture = try makeLargeLibraryFixture(assetCount: 12)
+        let review = GRDBPersonalizationReviewRepository(database: fixture.database)
+        let candidates = try review.personalSuggestionCandidates(
+            afterAssetID: nil, limit: 100, sourceIDs: nil,
+            excludingDecisionsForTagID: fixture.tagID
+        )
+        XCTAssertGreaterThanOrEqual(candidates.count, 2)
+        let photo = candidates[0]
+        let video = candidates[1]
+        try fixture.database.pool.write { db in
+            try db.execute(sql: "UPDATE asset SET media_kind = 'video', media_type = 'public.mpeg-4', duration_ms = 2000 WHERE id = ?",
+                           arguments: [video.assetID.uuidString.lowercased()])
+        }
+        let photoCapability = try makePersonalCapability(database: fixture.database,
+            tagIDs: [fixture.tagID], bundleRevision: "photo-isolation")
+        let videoCapability = try makePersonalCapability(database: fixture.database,
+            tagIDs: [fixture.tagID], bundleRevision: "video-isolation", mediaKind: .video)
+        try review.activatePersonalSuggestionBundle(photoCapability, activatedAtMs: fixture.cutoffMs)
+        XCTAssertEqual(try review.replacePersonalTagLibrarySuggestions(tagID: fixture.tagID,
+            hits: [.init(candidate: photo, score: 0.8)], expectedCapability: photoCapability,
+            maximumPendingCount: 3, createdAtMs: fixture.cutoffMs), 1)
+        let photoModelsBefore = try fixture.database.pool.read { db in
+            try Row.fetchAll(db, sql: "SELECT * FROM personal_suggestion_model WHERE media_kind = 'image' ORDER BY tag_id")
+        }
+        let photoFactsBefore = try fixture.database.pool.read { db in
+            try Row.fetchAll(db, sql: "SELECT d.* FROM asset_tag_decision d JOIN asset a ON a.id = d.asset_id WHERE a.media_kind = 'image' ORDER BY d.asset_id, d.tag_id")
+        }
+        try review.activatePersonalSuggestionBundle(videoCapability, activatedAtMs: fixture.cutoffMs + 1)
+        XCTAssertEqual(try review.replacePersonalTagLibrarySuggestions(tagID: fixture.tagID,
+            hits: [.init(candidate: video, score: 0.9)], expectedCapability: videoCapability,
+            maximumPendingCount: 3, createdAtMs: fixture.cutoffMs + 1), 1)
+        func queued(_ kind: MediaKind) throws -> [UUID] {
+            try GRDBPersonalizationReviewRepository(database: fixture.database).fetchReviewQueuePage(
+                mediaKind: kind, tagID: fixture.tagID, cursor: nil, limit: 10
+            ).items.map(\.assetID)
+        }
+        XCTAssertEqual(try queued(.video), [video.assetID])
+        XCTAssertEqual(try queued(.image), [photo.assetID])
+        let accepted = try fixture.tags.batchAccept(tagID: fixture.tagID,
+            assetIDs: [video.assetID], timestampMs: fixture.cutoffMs + 2)
+        XCTAssertTrue(try queued(.video).isEmpty)
+        XCTAssertEqual(try fixture.tags.selectionAggregate(tagIDs: [fixture.tagID],
+            assetIDs: [video.assetID]).first?.acceptedCount, 1)
+        try fixture.tags.restorePriorStates(TagMutationPriorStateSnapshot(tagID: fixture.tagID, priorStates: accepted.priorStates), timestampMs: fixture.cutoffMs + 3)
+        XCTAssertEqual(try queued(.video), [video.assetID])
+        XCTAssertEqual(try fixture.tags.selectionAggregate(tagIDs: [fixture.tagID],
+            assetIDs: [video.assetID]).first?.unknownCount, 1)
+        XCTAssertEqual(try queued(.image), [photo.assetID])
+        try fixture.database.pool.read { db in
+            XCTAssertEqual(try Row.fetchAll(db, sql: "SELECT * FROM personal_suggestion_model WHERE media_kind = 'image' ORDER BY tag_id"), photoModelsBefore)
+            XCTAssertEqual(try Row.fetchAll(db, sql: "SELECT d.* FROM asset_tag_decision d JOIN asset a ON a.id = d.asset_id WHERE a.media_kind = 'image' ORDER BY d.asset_id, d.tag_id"), photoFactsBefore)
+        }
+    }
+
     func testPersonalTagLibrarySuggestionsSkipDecidedAssetsWhenSelectingTopN() throws {
         let fixture = try makeLargeLibraryFixture(assetCount: 12)
         let review = GRDBPersonalizationReviewRepository(database: fixture.database)
@@ -4947,11 +5002,13 @@ private func makePersonalCapability(
     database: CatalogDatabase,
     tagIDs: [UUID],
     bundleRevision: String,
-    method: PersonalSuggestionMethod = .personalCentroid
+    method: PersonalSuggestionMethod = .personalCentroid,
+    mediaKind: MediaKind = .image
 ) throws -> PersonalModelSuggestionCapability {
     PersonalModelSuggestionCapability(
         target: PersonalModelSuggestionTarget(
             catalogScopeID: try database.catalogScopeID(),
+            mediaKind: mediaKind,
             bundleID: method == .personalCentroid
                 ? PersonalSuggestionMethod.linearHeadBundleID
                 : PersonalSuggestionMethod.adamWHeadBundleID,
