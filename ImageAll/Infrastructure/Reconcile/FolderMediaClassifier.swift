@@ -60,6 +60,7 @@ struct FolderVideoMetadata: Equatable, Sendable {
     let height: Int
     let durationMs: Int64
     let mediaCreatedAtMs: Int64?
+    var location: AssetLocationCoordinate? = nil
 }
 
 protocol FolderVideoMetadataReading: Sendable {
@@ -90,9 +91,56 @@ struct AVFoundationFolderVideoMetadataReader: FolderVideoMetadataReading {
                 width: width,
                 height: height,
                 durationMs: max(1, Int64((durationSeconds * 1_000).rounded())),
-                mediaCreatedAtMs: nil
+                mediaCreatedAtMs: Self.embeddedDate(asset.metadata),
+                location: Self.embeddedLocation(asset.metadata)
             )
         }
+    }
+
+    // Only explicit, timezone-qualified container dates represent capture time.
+    // No filesystem date or local-timezone fallback is used.
+    static func parseEmbeddedDate(_ raw: String) -> Int64? {
+        guard raw.count <= 128,
+              raw.range(of: #"(Z|[+-][0-9]{2}:?[0-9]{2})$"#, options: .regularExpression) != nil else { return nil }
+        let formatter = ISO8601DateFormatter()
+        for options: ISO8601DateFormatter.Options in [[.withInternetDateTime, .withFractionalSeconds], [.withInternetDateTime]] {
+            formatter.formatOptions = options
+            if let date = formatter.date(from: raw) {
+                let ms = date.timeIntervalSince1970 * 1_000
+                guard ms.isFinite, ms > Double(Int64.min), ms < Double(Int64.max) else { return nil }
+                return Int64(ms.rounded())
+            }
+        }
+        return nil
+    }
+
+    static func parseISO6709(_ raw: String) -> AssetLocationCoordinate? {
+        // Decimal degrees only. Optional altitude is ignored; malformed suffixes
+        // and degrees/minutes variants are not guessed into coordinates.
+        guard raw.count <= 128,
+              let regex = try? NSRegularExpression(pattern: #"^([+-][0-9]{2}(?:\.[0-9]+)?)([+-][0-9]{3}(?:\.[0-9]+)?)(?:[+-][0-9]+(?:\.[0-9]+)?)?/$"#),
+              let match = regex.firstMatch(in: raw, range: NSRange(raw.startIndex..., in: raw)),
+              let latRange = Range(match.range(at: 1), in: raw),
+              let lonRange = Range(match.range(at: 2), in: raw),
+              let latitude = Double(raw[latRange]), let longitude = Double(raw[lonRange]),
+              (-90...90).contains(latitude), (-180...180).contains(longitude) else { return nil }
+        return AssetLocationCoordinate(latitude: latitude, longitude: longitude)
+    }
+
+    private static func embeddedDate(_ items: [AVMetadataItem]) -> Int64? {
+        for identifier in [AVMetadataIdentifier.quickTimeMetadataCreationDate, .commonIdentifierCreationDate] {
+            for item in AVMetadataItem.metadataItems(from: items, filteredByIdentifier: identifier) {
+                if let value = item.stringValue, let date = parseEmbeddedDate(value) { return date }
+            }
+        }
+        return nil
+    }
+
+    private static func embeddedLocation(_ items: [AVMetadataItem]) -> AssetLocationCoordinate? {
+        for item in AVMetadataItem.metadataItems(from: items, filteredByIdentifier: .quickTimeMetadataLocationISO6709) {
+            if let value = item.stringValue, let coordinate = parseISO6709(value) { return coordinate }
+        }
+        return nil
     }
 }
 
@@ -138,6 +186,7 @@ struct FolderMediaClassifier: Sendable {
                         width: video.width,
                         height: video.height,
                         mediaCreatedAtMs: video.mediaCreatedAtMs,
+                        location: video.location,
                         sizeBytes: fingerprint.sizeBytes,
                         modifiedAtNs: fingerprint.modifiedAtNs,
                         resourceID: fingerprint.resourceID

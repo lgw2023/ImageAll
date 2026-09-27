@@ -7,6 +7,57 @@ import XCTest
 @testable import ImageAll
 
 final class FolderMediaClassificationTests: XCTestCase {
+    func testEmbeddedVideoTimeLocationAndRotationPersistDuringReconcile() async throws {
+        let fixture = FolderReconcileTestSupport.TempFixtureRoot()
+        defer { fixture.cleanup() }
+        let root = try fixture.makeRoot(label: "video-embedded-metadata")
+        let file = root.appendingPathComponent("capture.mov")
+        let date = AVMutableMetadataItem()
+        date.identifier = .quickTimeMetadataCreationDate
+        date.value = "2026-09-27T00:30:00+08:00" as NSString
+        let location = AVMutableMetadataItem()
+        location.identifier = .quickTimeMetadataLocationISO6709
+        location.value = "-33.8688+151.2093+012.5/" as NSString
+        try await Self.writeSyntheticMOV(to: file, embeddedMetadata: [date, location], rotated: true)
+        let before = try fixture.snapshotDetailed(root: root)
+        guard case let .available(metadata) = FolderMediaClassifier().classify(fileURL: file, fileName: "capture.mov") else {
+            return XCTFail("Expected available synthetic video")
+        }
+        let expected = try XCTUnwrap(AVFoundationFolderVideoMetadataReader.parseEmbeddedDate("2026-09-26T16:30:00Z"))
+        XCTAssertEqual(metadata.mediaCreatedAtMs, expected)
+        XCTAssertEqual(metadata.width, 48)
+        XCTAssertEqual(metadata.height, 64)
+        XCTAssertEqual(try XCTUnwrap(metadata.location).latitude, -33.8688, accuracy: 0.000001)
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let queue = FolderReconcileTestSupport.makeQueue(database: database)
+        let sourceID = UUID()
+        let bookmark = Data(root.path.utf8)
+        try FolderReconcileTestSupport.seedActiveFolderSource(database: database, sourceID: sourceID, bookmark: bookmark)
+        _ = try FolderReconcileTestSupport.enqueueReconcileJob(queue: queue, sourceID: sourceID)
+        let (handler, _) = FolderReconcileTestSupport.makeHandler(database: database, root: root, bookmark: bookmark)
+        let coordinator = FolderReconcileTestSupport.makeCoordinator(queue: queue, handler: handler)
+        XCTAssertEqual(try coordinator.claimAndExecuteOnce(ClaimNextInput(owner: "video-gps", leaseDurationMs: FolderReconcileTestSupport.leaseDurationMs))?.snapshot.state, .completed)
+        let row = try database.pool.read { db in
+            try Row.fetchOne(db, sql: "SELECT a.media_kind, a.media_created_at_ms, l.latitude, l.longitude, l.source_kind FROM asset a JOIN asset_location l ON l.asset_id = a.id")
+        }
+        XCTAssertEqual(row?["media_kind"] as String?, "video")
+        XCTAssertEqual(row?["media_created_at_ms"] as Int64?, expected)
+        XCTAssertEqual(row?["latitude"] as Double?, -33.8688)
+        XCTAssertEqual(row?["longitude"] as Double?, 151.2093)
+        XCTAssertEqual(row?["source_kind"] as String?, "embeddedGPS")
+        XCTAssertEqual(try fixture.snapshotDetailed(root: root), before)
+    }
+
+    func testVideoMetadataDoesNotGuessMissingTimezoneOrMalformedCoordinates() {
+        let reader = AVFoundationFolderVideoMetadataReader.self
+        XCTAssertNil(reader.parseEmbeddedDate("2026-09-27T00:30:00"))
+        XCTAssertNil(reader.parseEmbeddedDate("not-a-date"))
+        XCTAssertNil(reader.parseISO6709("+91.0000+151.0000/"))
+        XCTAssertNil(reader.parseISO6709("+33.0+181.0/"))
+        XCTAssertNil(reader.parseISO6709("+33.0+151.0/trailing"))
+        XCTAssertEqual(reader.parseISO6709("+00.0+000.0/")?.latitude, 0)
+    }
+
     func testProductionMOVMetadataAndPosterExtraction() async throws {
         let fixture = FolderReconcileTestSupport.TempFixtureRoot()
         defer { fixture.cleanup() }
@@ -24,6 +75,8 @@ final class FolderMediaClassificationTests: XCTestCase {
         XCTAssertEqual(metadata.width, 64)
         XCTAssertEqual(metadata.height, 48)
         XCTAssertGreaterThan(metadata.durationMs ?? 0, 0)
+        XCTAssertNil(metadata.mediaCreatedAtMs)
+        XCTAssertNil(metadata.location)
 
         let fd = Darwin.open(file.path, O_RDONLY)
         XCTAssertGreaterThanOrEqual(fd, 0)
@@ -341,8 +394,9 @@ final class FolderMediaClassificationTests: XCTestCase {
         XCTAssertEqual(try fixture.snapshotDetailed(root: root), before)
     }
 
-    private static func writeSyntheticMOV(to url: URL) async throws {
+    private static func writeSyntheticMOV(to url: URL, embeddedMetadata: [AVMetadataItem] = [], rotated: Bool = false) async throws {
         let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
+        writer.metadata = embeddedMetadata
         let input = AVAssetWriterInput(
             mediaType: .video,
             outputSettings: [
@@ -352,6 +406,7 @@ final class FolderMediaClassificationTests: XCTestCase {
             ]
         )
         input.expectsMediaDataInRealTime = false
+        if rotated { input.transform = CGAffineTransform(rotationAngle: .pi / 2) }
         let adaptor = AVAssetWriterInputPixelBufferAdaptor(
             assetWriterInput: input,
             sourcePixelBufferAttributes: [

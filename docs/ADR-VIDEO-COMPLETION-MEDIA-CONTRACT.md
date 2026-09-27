@@ -25,3 +25,13 @@ AVPlayer 不接收 Bearer URL、查询参数凭据或非公开的 AVURLAsset 请
 能力通过新增可选 `videoRangeStreamingVersion=1` 字段声明，不增加会导致旧 Swift 客户端枚举解码失败的 capability 值。缺字段的旧 Host 明确显示升级提示。媒体路由在提供器具备修订事实时返回 `X-ImageAll-Content-Revision`，带 revision 的请求必须匹配；播放器拒绝没有修订头、修订变化、Range／长度／媒体类型不匹配的响应。旧无 revision 请求继续按既有路由服务。该目录修订保护不是完整文件摘要证据，来源文件同修订下外部改写的精确去重保护仍属 P4。
 
 切换资产、退出预览、断开连接与进入后台时清空 AVPlayerItem 并取消加载请求。同一视频的标签／收藏刷新在媒体身份与修订不变时保持播放位置；不会因为更新整理事实自动从头加载。视频邻居不进入照片预览预取。云端原件不可用明确报错，不授权或触发下载。
+
+## P2 文件夹视频内嵌时间与位置（2026-09-27）
+
+P1 的 Web 资源集成与各端 UI 验收保留未完成状态；为缩短到最终可运行功能的路径，先并行推进不依赖这些事项的 P2 元数据纵切片（仍由同一代理顺序实施）。不据此跳过 P1 门禁。
+
+- 复用 `FolderVideoMetadata` → `FolderMediaMetadata` → reconcile → `asset` / `asset_location`，不创建第二份位置事实。
+- 时间优先 QuickTime `creationdate`，再读取标准 common creation date。只解析带明确 UTC 或偏移的 ISO 8601 字符串，保存 UTC 毫秒；无时区、缺失与畸形值保持 nil，不用文件时间或本机时区猜测。遵循 ADR-069。
+- GPS 读取 QuickTime ISO 6709 十进制度格式，校验纬经度边界，允许可忽略的高度；度分秒和不明后缀明确不解析。本地来源仍登记现有 `embeddedGPS` provenance。缺 GPS 不影响视频可用性。
+- 宽高继续使用视频轨 preferredTransform 后的尺寸；测试覆盖旋转 90 度。读取容器元数据不解码全片，不写来源媒体。
+- 本切片覆盖新扫描及已有 reconcile 读取路径。历史有界回填、技术规格存储／展示、筛选、地图媒体范围与显式云端获取仍属 P2 后续必需工作；不能用本次提取通过代替整阶段完成。

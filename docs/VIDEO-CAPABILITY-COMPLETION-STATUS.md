@@ -18,7 +18,7 @@
 |---|---|---|---|
 | P0 | VERIFIED | PASS（静态盘点） | 基线、边界、首个切片与测试路径明确；不等于功能通过 |
 | P1 | IN_PROGRESS | 分切片 PASS；完整闭环未验 | 媒体契约已交付；Mac／iPhone 查看器构建／合成测试 PASS；跨端联调待补 |
-| P2 | NOT_STARTED | NOT_RUN | 文件夹视频时间与位置，再接筛选／地图／显式云端获取 |
+| P2 | IN_PROGRESS | 首切片 PASS | 文件夹视频内嵌时间／位置入库已验；回填、规格、筛选／地图／云端获取待做 |
 | P3 | NOT_STARTED | NOT_RUN | 复核代表帧模型隔离，接远端建议与审核持久事实 |
 | P4 | NOT_STARTED | NOT_RUN | 有界完整字节摘要、修订复核、合成回收恢复 |
 | P5 | NOT_STARTED | NOT_RUN | 版本化有限多帧与时间点证据、内容相似独立候选 |
@@ -34,7 +34,7 @@
 | 文件夹、本地 PhotoKit 视频浏览 | 图库／审核／瘦身共用播放器已实现，控制器／模型合成 PASS；UI 待验 | UTI／显式媒体域视频分支通过合成验证，主线集成待办 | 认证分段播放已实现，合成解码／seek PASS；实体设备待验 |
 | 云端原件不可用 | 本地视频请求默认禁下载；显式获取待做 | 不得借照片下载状态冒充视频支持 | 待核明确失败状态 |
 | 手机独立归档 | 由 ADR-102 并行实施；不等同主图库视频身份 | 不适用当前主资产闭环 | 独立本地图库不在本目标重建 |
-| 视频时间／GPS／地图 | 文件夹视频时间 nil；地图 SQL 限 image | 依赖 Host，未验 | 依赖 Host，未验 |
+| 视频时间／GPS／地图 | 文件夹视频内嵌时间／GPS 已提取并入库；地图 SQL 仍限 image | 依赖 Host，未验 | 依赖 Host，未验 |
 | 标签／审核／AI | 已有视频域，需合成串联 | 远端建议部分硬编码 image | 共享 Host 持久事实，未验 |
 | 完整视频精确去重 | 待复核并补全 | 比较入口待对齐 | 能力声明待对齐 |
 | 多帧／混合故事 | 故事仍筛 image；多帧待做 | 按支持入口声明 | 按支持入口声明 |
@@ -113,3 +113,12 @@
 - `host-video-joint-build.log`：Mac TEST BUILD SUCCEEDED；`host-video-joint-tests.log`：新联调与原 Range 回归 PASS 2/2。直接 XCTest 命令沿用上一切片私有路径，选择 `testVideoClientDecodesAndSeeksThroughAuthenticatedSwiftHost` 与 `testMediaRouteStreamsRealMIMEAndSingleByteRange`。
 - 此证据补上客户端与实际 Swift HTTP 服务的连接，不等于完整 iPhone UI／Web 浏览器 Host 联调；合成 provider 也不代替实际文件夹入库与 PhotoKit adapter 的证明。
 - 下一动作：补 Web 实际 Host 浏览器证据与观看整理必要缺口；随后推进 P2 元数据。P1 总状态仍 IN_PROGRESS，目标仍 active。
+
+## P2 文件夹视频时间／GPS 首切片（2026-09-27）
+
+- 重排理由见媒体契约 ADR：P1 的资源集成／UI 验收保留，本切片不依赖它们，先形成视频元数据入库能力；未把 P1 标记完成。
+- `FolderVideoMetadata` 新增可选位置；生产 AVFoundation 读取器提取明确时区的容器创建日期与 ISO 6709 十进制 GPS，经现有 reconcile 写入 `asset.media_created_at_ms` 与 `asset_location`，来源 `embeddedGPS`。无时区／缺失／非法字段保持未知，文件修改时间独立。
+- 合成 AVAssetWriter MOV：`2026-09-27T00:30:00+08:00` 入库为上一 UTC 日，GPS 为 -33.8688 / 151.2093，90° 旋转后 48×64；唯一临时来源目录扫描前后快照一致。此切片未扫描真实目录。
+- `video-metadata-build.log`：Mac TEST BUILD SUCCEEDED。直接 XCTest `ImageAllTests.FolderMediaClassificationTests`，`video-metadata-tests.log`：PASS 18/18，含真实合成 MOV → 生产分类 → reconcile → SQL 持久字段、无时区／非法坐标拒绝、视频资源释放及照片格式／GPS 回归。
+- 测试和构建沿用证据根私有路径。源摘要 `p2-metadata-source-sha256.json`；`git diff --check` PASS。仅本轮读取器、分类测试、ADR 和本进度文件提交；不纳入并行改动。
+- 下一具体动作：接入有界历史视频元数据回填与技术信息存储，然后完善视频条件／地图范围；P1 未验项继续保留。P3–P7 未开始，真实媒体／云端下载／真机／发布全部 NOT_RUN。
