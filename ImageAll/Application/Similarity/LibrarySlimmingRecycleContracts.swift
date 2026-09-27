@@ -282,6 +282,8 @@ struct LibrarySlimmingIdenticalCleanupAssetProof: Sendable, Equatable {
     let locatorIdentity: String
     let contentRevision: Int
     let verifiedOriginalSHA256: Data
+    var mediaKind: MediaKind = .image
+    var originalDescriptorIdentity: String? = nil
     var encodedByteCount: Int64? = nil
     var mediaDateMs: Int64? = nil
     var perceptualAlgoVersion: String? = nil

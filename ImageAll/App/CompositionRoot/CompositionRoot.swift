@@ -139,6 +139,8 @@ struct CompositionRoot {
             clock: clock,
             jobQueue: runtime.jobQueue,
             photosMutation: photosMutation,
+            originalVideoDigest: OriginalVideoDigestService(
+                database: runtime.database, sourceAccess: sourceAccess, clock: clock),
             pixelCachePurger: appOwnedAssetPixelCachePurger,
             interactiveIOGate: interactiveIOGate
         )

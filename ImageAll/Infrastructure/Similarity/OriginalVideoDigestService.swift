@@ -105,6 +105,44 @@ struct OriginalVideoDigestService: Sendable {
         }
     }
 
+    /// Read-only revalidation of previously hashed bytes. Reuse is permitted only
+    /// while the open file and current locator retain the exact recorded identity,
+    /// including ctime. No new digest is published as a side effect of cleanup.
+    func validateFolderVideoEvidence(
+        assetID: UUID, contentRevision: Int, sha256: Data, descriptorIdentity: String
+    ) throws {
+        guard let context = try GRDBDerivedImageCacheRepository(database: database)
+            .fetchGenerationContext(assetID: assetID),
+              context.mediaKind == .video, context.contentRevision == contentRevision,
+              context.locatorKind == AssetLocatorKind.file.rawValue,
+              context.locatorState == AssetLocatorState.current.rawValue,
+              context.availability == AssetAvailability.available.rawValue else {
+            throw FingerprintCompletionError.sourceChanged
+        }
+        try sourceAccess.withActiveSourceRootURL(sourceID: context.sourceID) { rootURL in
+            let rootFD = try DerivedImageSecureIO.openDirectoryNoFollow(at: rootURL)
+            defer { Darwin.close(rootFD) }
+            let fileFD = try DerivedImageSecureIO.openRelativeReadOnlyNoFollow(
+                directoryFD: rootFD, relativePath: context.relativePath)
+            defer { Darwin.close(fileFD) }
+            let before = try FileIdentity.read(fileFD)
+            let catalogFacts = try DerivedImageSourceFingerprintFacts.handleFacts(
+                fd: fileFD, reader: FoundationFolderFileResourceReader())
+            guard before.token == descriptorIdentity,
+                  context.matchesHandleFacts(catalogFacts),
+                  try reusableDigest(context: context, identity: before) == sha256 else {
+                throw FingerprintCompletionError.sourceChanged
+            }
+            let currentFD = try DerivedImageSecureIO.openRelativeReadOnlyNoFollow(
+                directoryFD: rootFD, relativePath: context.relativePath)
+            defer { Darwin.close(currentFD) }
+            guard try FileIdentity.read(fileFD) == before,
+                  try FileIdentity.read(currentFD) == before else {
+                throw FingerprintCompletionError.sourceChanged
+            }
+        }
+    }
+
     private struct FileIdentity: Equatable {
         let size: Int64
         let modifiedAtNs: Int64

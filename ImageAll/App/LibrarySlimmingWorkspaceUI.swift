@@ -778,7 +778,9 @@ struct LibrarySlimmingWorkspaceView: View {
                         .disabled(!model.canPrepareLibrarySlimmingIdenticalCleanup)
                         .persistentHelp(
                             model.librarySlimmingIdenticalCleanupDisabledReason
-                                ?? "处理原文件完全相同及视觉匹配 100% 的照片；每组保留文件最大、同大小时日期最早的一项。"
+                                ?? (model.selectedMediaKind == .video
+                                    ? "仅处理已核验完整文件相同的文件夹视频；保留全部红心项，其他组按大小、日期选择保留项。代表帧相似不自动清理。"
+                                    : "处理原文件完全相同及视觉匹配 100% 的照片；保留全部红心项，其他组按大小、日期选择保留项。")
                         )
                     }
 
@@ -3221,7 +3223,9 @@ private struct LibrarySlimmingIdenticalCleanupConfirmationSheet: View {
             VStack(alignment: .leading, spacing: 5) {
                 Text("一键清理重复媒体")
                     .font(.title2.weight(.semibold))
-                Text("包含原文件完全相同与视觉特征匹配 100% 的照片；这是基于当前状态生成的实际清理预览。")
+                Text(plan.assetProofs.contains(where: { $0.mediaKind == .video })
+                     ? "视频仅按已核验的完整原件字节清理；代表帧相似不在自动清理范围内。执行前会再次核对保留副本与当前状态。"
+                     : "包含原文件完全相同与视觉特征匹配 100% 的照片；这是基于当前状态生成的实际清理预览。")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -3298,7 +3302,7 @@ private struct LibrarySlimmingIdenticalCleanupConfirmationSheet: View {
                         VStack(spacing: 2) {
                             Text(plan.verifiedAssetCount.formatted())
                                 .font(.title3.weight(.semibold))
-                            Text("张已核验")
+                            Text("项已核验")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -3368,7 +3372,7 @@ private struct LibrarySlimmingIdenticalCleanupConfirmationSheet: View {
             }
             .font(.callout)
             .frame(maxWidth: .infinity, alignment: .leading)
-            Text("红心照片始终保留；无红心组优先保留编码文件最大者，大小相同时保留拍摄或媒体日期最早者；缺失值后置，仍相同时使用稳定顺序。")
+            Text("红心媒体始终保留；无红心组优先保留编码文件最大者，大小相同时保留拍摄或媒体日期最早者；缺失值后置，仍相同时使用稳定顺序。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(.top, 6)

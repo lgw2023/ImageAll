@@ -1,3 +1,4 @@
+@preconcurrency import AVFoundation
 import CryptoKit
 import Darwin
 import Foundation
@@ -6,6 +7,165 @@ import XCTest
 @testable import ImageAll
 
 final class LibrarySlimmingRecycleTests: XCTestCase {
+    func testOriginalVideoExactGroupKeepsFavoritesRecyclesAndRestoresPlayableCopies() async throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("docs/evidence/time-story-phase-1-20260918/synthetic-silent.mp4")
+        let bytes = try Data(contentsOf: fixture)
+        let first = try env.seedAsset(relativePath: "favorite-a.mp4", contents: bytes)
+        let second = try env.seedAsset(relativePath: "favorite-b.mp4", contents: bytes)
+        let third = try env.seedAsset(relativePath: "ordinary-a.mp4", contents: bytes)
+        let fourth = try env.seedAsset(relativePath: "ordinary-b.mp4", contents: bytes)
+        let assets = [first, second, third, fourth]
+        for asset in assets { try env.prepareOriginalVideoEvidence(assetID: asset.assetID) }
+        try await env.database.pool.write { db in
+            for id in [first.assetID, second.assetID] {
+                try db.execute(sql: """
+                    INSERT INTO asset_favorite_state (
+                        asset_id, desired_value, photos_observed_value, sync_status,
+                        intent_revision, requested_at_ms, updated_at_ms
+                    ) VALUES (?, 1, NULL, 'localOnly', 1, 1, 1)
+                    """, arguments: [id.uuidString.lowercased()])
+            }
+        }
+        let detected = try IdenticalDuplicateClusterService(database: env.database)
+            .clusterIdenticalDuplicates(assetIDs: assets.map(\.assetID), mediaKind: .video)
+        XCTAssertEqual(detected.count, 1)
+        let exact = try XCTUnwrap(detected.first)
+        XCTAssertEqual(exact.kind, .byteIdentical)
+        let cluster = SlimmingCluster(id: UUID(), kind: .byteIdentical,
+            memberAssetIDs: exact.memberAssetIDs, representativeAssetID: exact.representativeAssetID,
+            score: Double(exact.score), modelIdentity: .featurePrintOnly)
+        let service = env.makeRecycleService()
+        let plan = try service.makeIdenticalCleanupPlan(clusters: [cluster])
+        XCTAssertEqual(Set(plan.survivorAssetIDs), Set([first.assetID, second.assetID]))
+        XCTAssertEqual(Set(plan.assetIDsToRecycle), Set([third.assetID, fourth.assetID]))
+        XCTAssertTrue(plan.assetProofs.allSatisfy { $0.mediaKind == .video && $0.originalDescriptorIdentity != nil })
+        let moved = try service.moveIdenticalCleanupAssetsToRecycle(plan: plan, onProgress: { _ in })
+        XCTAssertEqual(moved.recycledEntryIDs.count, 2)
+        XCTAssertTrue(moved.failedAssetIDs.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: first.fileURL), bytes)
+        XCTAssertEqual(try Data(contentsOf: second.fileURL), bytes)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: third.fileURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fourth.fileURL.path))
+        for entry in try service.listRecycledEntries() { try service.restore(entryID: entry.id) }
+        for asset in assets { XCTAssertEqual(try Data(contentsOf: asset.fileURL), bytes) }
+        let restored = AVURLAsset(url: third.fileURL)
+        let duration = try await restored.load(.duration)
+        XCTAssertGreaterThan(duration.seconds, 0)
+        let tracks = try await restored.loadTracks(withMediaType: .video)
+        XCTAssertFalse(tracks.isEmpty)
+        let frame = try await AVAssetImageGenerator(asset: restored).image(at: .zero)
+        XCTAssertGreaterThan(frame.image.width, 0)
+        // Restore changes physical identity; an old plan must be rejected until rescan.
+        XCTAssertThrowsError(try service.moveIdenticalCleanupAssetsToRecycle(plan: plan, onProgress: { _ in }))
+    }
+
+    func testOriginalVideoCleanupRejectsChangedRetainedCopyBeforeAnyMutation() throws {
+        for mutation in ["missing", "rewritten", "revision", "media", "symlink"] {
+            for immediate in [false, true] {
+                let env = try RecycleTestEnv(label: #function)
+                defer { env.cleanup() }
+                let bytes = Data(repeating: 11, count: 30_000)
+                let first = try env.seedAsset(relativePath: "a.mp4", contents: bytes)
+                let second = try env.seedAsset(relativePath: "b.mp4", contents: bytes)
+                for asset in [first, second] { try env.prepareOriginalVideoEvidence(assetID: asset.assetID) }
+                let service = env.makeRecycleService()
+                let cluster = SlimmingCluster(id: UUID(), kind: .byteIdentical,
+                    memberAssetIDs: [first.assetID, second.assetID], representativeAssetID: first.assetID,
+                    score: 0, modelIdentity: .featurePrintOnly)
+                let plan = try service.makeIdenticalCleanupPlan(clusters: [cluster])
+                let keeperID = try XCTUnwrap(plan.survivorAssetIDs.first)
+                let keeper = keeperID == first.assetID ? first : second
+                let other = keeperID == first.assetID ? second : first
+                switch mutation {
+                case "missing": try FileManager.default.removeItem(at: keeper.fileURL)
+                case "rewritten":
+                    var before = stat()
+                    XCTAssertEqual(stat(keeper.fileURL.path, &before), 0)
+                    let handle = try FileHandle(forWritingTo: keeper.fileURL)
+                    try handle.write(contentsOf: Data(repeating: 12, count: bytes.count))
+                    try handle.close()
+                    var times = [before.st_atimespec, before.st_mtimespec]
+                    XCTAssertEqual(utimensat(AT_FDCWD, keeper.fileURL.path, &times, 0), 0)
+                case "symlink":
+                    try FileManager.default.removeItem(at: keeper.fileURL)
+                    try FileManager.default.createSymbolicLink(at: keeper.fileURL, withDestinationURL: other.fileURL)
+                default:
+                    try env.database.pool.write { db in
+                        let change = mutation == "revision" ? "content_revision = 2" : "media_kind = 'image'"
+                        try db.execute(sql: "UPDATE asset SET \(change) WHERE id = ?",
+                            arguments: [keeperID.uuidString.lowercased()])
+                    }
+                }
+                XCTAssertThrowsError(try immediate
+                    ? service.deleteIdenticalCleanupAssetsImmediately(plan: plan, onProgress: { _ in })
+                    : service.moveIdenticalCleanupAssetsToRecycle(plan: plan, onProgress: { _ in })) {
+                    XCTAssertEqual($0 as? LibrarySlimmingRecycleError, .cleanupPlanChanged)
+                }
+                XCTAssertEqual(try Data(contentsOf: other.fileURL), bytes)
+                XCTAssertTrue(try service.listRecycleBinEntries().isEmpty)
+            }
+        }
+    }
+
+    func testOriginalVideoCleanupRejectsPosterAndMixedMediaGroups() throws {
+        let env = try RecycleTestEnv(label: #function)
+        defer { env.cleanup() }
+        let bytes = Data("same bytes different media domains".utf8)
+        let first = try env.seedAsset(relativePath: "first.mp4", contents: bytes)
+        let second = try env.seedAsset(relativePath: "second.mp4", contents: bytes)
+        let photo = try env.seedAsset(relativePath: "photo.jpg", contents: bytes)
+        for asset in [first, second] { try env.prepareOriginalVideoEvidence(assetID: asset.assetID) }
+        for asset in [first, second, photo] {
+            try env.seedVerifiedSimilarityFingerprint(assetID: asset.assetID, sha256: Data(SHA256.hash(data: bytes)))
+        }
+        let service = env.makeRecycleService()
+        let poster = SlimmingCluster(id: UUID(), kind: .perceptualDuplicate,
+            memberAssetIDs: [first.assetID, second.assetID], representativeAssetID: first.assetID,
+            score: 1, modelIdentity: .featurePrintOnly)
+        let mixed = SlimmingCluster(id: UUID(), kind: .byteIdentical,
+            memberAssetIDs: [first.assetID, photo.assetID], representativeAssetID: first.assetID,
+            score: 0, modelIdentity: .featurePrintOnly)
+        let plan = try service.makeIdenticalCleanupPlan(clusters: [poster, mixed])
+        XCTAssertTrue(plan.isEmpty)
+        XCTAssertEqual(plan.skippedGroupCount, 2)
+    }
+
+    func testOriginalVideoCleanupStopsRemainingCopiesWhenKeeperDisappearsMidBatch() throws {
+        for immediate in [false, true] {
+            let env = try RecycleTestEnv(label: #function)
+            defer { env.cleanup() }
+            let bytes = Data(repeating: 6, count: 10_000)
+            let first = try env.seedAsset(relativePath: "a.mp4", contents: bytes)
+            let second = try env.seedAsset(relativePath: "b.mp4", contents: bytes)
+            let third = try env.seedAsset(relativePath: "c.mp4", contents: bytes)
+            let assets = [first, second, third]
+            for asset in assets { try env.prepareOriginalVideoEvidence(assetID: asset.assetID) }
+            let service = env.makeRecycleService()
+            let cluster = SlimmingCluster(id: UUID(), kind: .byteIdentical,
+                memberAssetIDs: assets.map(\.assetID), representativeAssetID: first.assetID,
+                score: 0, modelIdentity: .featurePrintOnly)
+            let plan = try service.makeIdenticalCleanupPlan(clusters: [cluster])
+            let keeperID = try XCTUnwrap(plan.survivorAssetIDs.first)
+            let keeperURL = try XCTUnwrap(assets.first { $0.assetID == keeperID }?.fileURL)
+            let progress: LibrarySlimmingRecycleMoveProgressHandler = { value in
+                if value.completedAssetCount == 1 && value.phase == .completedAsset {
+                    try? FileManager.default.removeItem(at: keeperURL)
+                }
+            }
+            let outcome = try immediate
+                ? service.deleteIdenticalCleanupAssetsImmediately(plan: plan, onProgress: progress)
+                : service.moveIdenticalCleanupAssetsToRecycle(plan: plan, onProgress: progress)
+            XCTAssertEqual(outcome.sourceChangedAssetIDs.count, 1)
+            XCTAssertEqual(outcome.recycledEntryIDs.count + outcome.permanentlyDeletedAssetIDs.count, 1)
+            let retained = try XCTUnwrap(assets.first { $0.assetID == outcome.sourceChangedAssetIDs.first })
+            XCTAssertEqual(try Data(contentsOf: retained.fileURL), bytes)
+        }
+    }
+
     func testOriginalVideoEvidenceProtectsMoveRestoreAndRejectsChangedBytesOnFastDelete() throws {
         let env = try RecycleTestEnv(label: #function)
         defer { env.cleanup() }
@@ -3386,6 +3546,7 @@ private final class RecycleTestEnv {
             clock: clock,
             jobQueue: jobQueue,
             photosMutation: photosMutation,
+            originalVideoDigest: makeOriginalVideoDigest(clock: clock),
             pixelCachePurger: makePixelCachePurger(clock: clock)
         )
     }
@@ -3396,11 +3557,16 @@ private final class RecycleTestEnv {
                 arguments: [assetID.uuidString.lowercased()])
             try db.execute(sql: "UPDATE file_fingerprint SET sha256 = NULL WHERE asset_id = ?", arguments: [assetID.uuidString.lowercased()])
         }
+        _ = try makeOriginalVideoDigest().completeFolderVideo(assetID: assetID)
+    }
+
+    func makeOriginalVideoDigest(
+        clock: any JobClock = FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs)
+    ) -> OriginalVideoDigestService {
         let bookmarks = FolderReconcileTestSupport.TestBookmarkPort(rootByBookmark: [Data("bookmark".utf8): sourceRoot])
         let access = FolderReconcileSourceAccessService(repository: GRDBFolderSourceAuthorizationRepository(database: database),
             bookmarkPort: bookmarks, rootValidator: FolderRootValidator(), clock: FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs))
-        _ = try OriginalVideoDigestService(database: database, sourceAccess: access,
-            clock: FixedJobClock(nowMs: FolderReconcileTestSupport.baseTimeMs)).completeFolderVideo(assetID: assetID)
+        return OriginalVideoDigestService(database: database, sourceAccess: access, clock: clock)
     }
 
     func makePixelCachePurger(
