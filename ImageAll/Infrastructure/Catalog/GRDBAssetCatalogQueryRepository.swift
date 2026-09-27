@@ -4,6 +4,25 @@ import GRDB
 struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
     let database: CatalogDatabase
 
+    /// Only the current PhotoKit video revision may accept observations from its
+    /// already-authorized playback resource. This does not modify media identity.
+    func recordPhotoKitVideoTechnicalMetadata(
+        assetID: UUID, expectedRevision: Int, metadata: VideoTechnicalMetadata, timestampMs: Int64
+    ) throws -> Bool {
+        guard let json = metadata.encodedJSON, json.utf8.count <= 4096,
+              metadata.codec != nil || metadata.nominalFrameRate != nil
+                || metadata.estimatedDataRate != nil || metadata.audioTrackCount != nil else { return false }
+        return try database.pool.write { db in
+            try db.execute(sql: """
+                UPDATE asset SET video_technical_metadata_json = ?, record_updated_at_ms = MAX(record_updated_at_ms, ?)
+                WHERE id = ? AND content_revision = ? AND media_kind = 'video'
+                  AND locator_kind = 'photos' AND locator_state = 'current' AND availability = 'available'
+                  AND source_id IN (SELECT id FROM source WHERE kind = 'photos' AND state = 'active')
+                """, arguments: [json, timestampMs, assetID.uuidString.lowercased(), expectedRevision])
+            return db.changesCount == 1
+        }
+    }
+
     func fetchSourceFolders(sourceID: UUID) throws -> [LibrarySourceFolder] {
         try CatalogQueryErrorMapping.perform {
             try database.pool.read { db in

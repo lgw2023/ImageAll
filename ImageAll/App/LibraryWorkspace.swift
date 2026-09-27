@@ -9196,6 +9196,19 @@ final class LibraryWorkspaceModel: ObservableObject {
         return try await videoPlaybackProvider.prepareVideoPlayback(assetID: assetID)
     }
 
+    func recordVideoTechnicalMetadataForViewing(
+        assetID: UUID, expectedRevision: Int, metadata: VideoTechnicalMetadata
+    ) async {
+        let service = service
+        let persisted = try? await Self.offMain {
+            try service.recordVideoTechnicalMetadata(
+                assetID: assetID, expectedRevision: expectedRevision, metadata: metadata
+            )
+        }
+        guard persisted == true, primarySelectedAssetID == assetID else { return }
+        _ = await refreshInspector()
+    }
+
     func downloadCloudVideoForViewing(
         assetID: UUID, expectedRevision: Int, grant: PhotosCloudDownloadGrant,
         onProgress: @escaping @Sendable (Double) -> Void

@@ -844,6 +844,39 @@ final class PhotosIntegrationTests: XCTestCase {
         XCTAssertEqual(videos.items.map(\.fileName), ["Clip.MOV"])
         XCTAssertEqual(videos.items.first?.mediaKind, .video)
         XCTAssertEqual(videos.items.first?.durationMs, 12_345)
+
+        let assetID = try XCTUnwrap(videos.items.first?.assetID)
+        let current = try query.fetchInspectorDetail(assetID: assetID)
+        let technical = VideoTechnicalMetadata(codec: "avc1", nominalFrameRate: 30,
+                                               estimatedDataRate: 120_000, audioTrackCount: 1)
+        XCTAssertTrue(try query.recordPhotoKitVideoTechnicalMetadata(
+            assetID: assetID, expectedRevision: current.contentRevision, metadata: technical, timestampMs: clock.nowMs
+        ))
+        for changesContent in [false, true] {
+            let next = PhotosAssetMetadata(
+                localIdentifier: video.localIdentifier, fileName: video.fileName, mediaType: video.mediaType,
+                width: video.width, height: video.height, createdAtMs: video.createdAtMs,
+                modifiedAtMs: changesContent ? clock.nowMs + 1 : video.modifiedAtMs,
+                mediaKind: .video, durationMs: video.durationMs
+            )
+            let nextAccess = FakePhotosLibraryAccess(state: .authorized, batches: [[next]])
+            _ = try queue.enqueue(PhotosReconcileJobFactory.makeEnqueueCommand(
+                jobID: UUID(), sourceID: sourceID, notBeforeMs: clock.nowMs
+            ))
+            let nextCoordinator = JobExecutionCoordinator(
+                queue: queue,
+                registry: MultiJobHandlerRegistry(handlers: [PhotosReconcileHandler(
+                    database: database, queue: queue, access: nextAccess, clock: clock
+                )]), leaseContextProvider: GRDBJobLeaseContextProvider(queue: queue)
+            )
+            XCTAssertEqual(try nextCoordinator.claimAndExecuteOnce(ClaimNextInput(
+                owner: "photos-video-technical-invalidation", leaseDurationMs: 60_000,
+                allowedKinds: [PhotosReconcileJobFactory.kind]
+            ))?.snapshot.state, .completed)
+            let refreshed = try query.fetchInspectorDetail(assetID: assetID)
+            XCTAssertEqual(refreshed.videoTechnicalMetadata, changesContent ? nil : technical)
+            XCTAssertEqual(refreshed.contentRevision, current.contentRevision + (changesContent ? 1 : 0))
+        }
     }
 
     func testReconcileUsesPersistedChangeCursorForIncrementalAssetChanges() async throws {

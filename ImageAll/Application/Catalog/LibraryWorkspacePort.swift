@@ -551,6 +551,9 @@ protocol LibraryWorkspacePort: Sendable {
         _ package: StandardOntologyPackageInput
     ) throws -> StandardOntologyInstallResult
     func fetchInspectorDetail(assetID: UUID) throws -> AssetInspectorDetail
+    func recordVideoTechnicalMetadata(
+        assetID: UUID, expectedRevision: Int, metadata: VideoTechnicalMetadata
+    ) throws -> Bool
     func selectionAggregate(tagIDs: [UUID], assetIDs: [UUID]) throws -> [TagSelectionAggregate]
     func mutateTag(
         tagID: UUID,
@@ -572,6 +575,10 @@ protocol LibraryWorkspacePort: Sendable {
 }
 
 extension LibraryWorkspacePort {
+    func recordVideoTechnicalMetadata(
+        assetID: UUID, expectedRevision: Int, metadata: VideoTechnicalMetadata
+    ) throws -> Bool { false }
+
     func nextCatalogReconcileRetryAtMs() throws -> Int64? {
         JobActivityRetrySchedule.nextCatalogReconcileRetryAtMs(in: try fetchJobActivity())
     }

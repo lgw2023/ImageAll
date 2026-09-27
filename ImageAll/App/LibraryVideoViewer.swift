@@ -36,6 +36,7 @@ final class LibraryVideoViewingSession: ObservableObject {
     func load(
         identity: Identity,
         cloudDownloadRequestID: UUID? = nil,
+        onTechnicalMetadata: (@MainActor (VideoTechnicalMetadata) async -> Void)? = nil,
         prepare: @escaping @MainActor () async throws -> LibraryVideoPlaybackResource
     ) async {
         stop()
@@ -81,6 +82,7 @@ final class LibraryVideoViewingSession: ObservableObject {
             guard !Task.isCancelled else { stop(); return }
             technicalMetadata = observed
             technicalMetadataLoadFinished = true
+            if let observed { await onTechnicalMetadata?(observed) }
         } catch {
             guard requestID == request else { return }
             if Task.isCancelled || error is CancellationError {
@@ -198,6 +200,12 @@ struct LibraryVideoViewer: View {
         .init(assetID: assetID, revision: contentRevision)
     }
 
+    private func recordTechnicalMetadata(_ metadata: VideoTechnicalMetadata) async {
+        await model.recordVideoTechnicalMetadataForViewing(
+            assetID: assetID, expectedRevision: contentRevision, metadata: metadata
+        )
+    }
+
     var body: some View {
         VStack(spacing: 8) {
             ZStack {
@@ -279,7 +287,8 @@ struct LibraryVideoViewer: View {
             let download = pendingCloudDownload
             pendingCloudDownload = nil
             if let download, download.identity == identity {
-                await session.load(identity: identity, cloudDownloadRequestID: download.request) {
+                await session.load(identity: identity, cloudDownloadRequestID: download.request,
+                                   onTechnicalMetadata: recordTechnicalMetadata) {
                     try await model.downloadCloudVideoForViewing(
                         assetID: assetID, expectedRevision: contentRevision, grant: download.grant
                     ) { progress in
@@ -287,7 +296,7 @@ struct LibraryVideoViewer: View {
                     }
                 }
             } else {
-                await session.load(identity: identity) {
+                await session.load(identity: identity, onTechnicalMetadata: recordTechnicalMetadata) {
                     try await model.prepareVideoForViewing(assetID: assetID)
                 }
             }

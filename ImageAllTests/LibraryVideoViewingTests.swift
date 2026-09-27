@@ -132,6 +132,43 @@ final class LibraryVideoViewingTests: XCTestCase {
         XCTAssertEqual(releases.value, 3)
     }
 
+    func testPlaybackObservationsPersistForCurrentPhotoKitRevisionAndReachInspector() async throws {
+        let (database, query) = try CatalogQueryTestSupport.openGalleryOverviewDatabase()
+        let assetID = UUID(uuidString: "42000000-0000-4000-8000-000000000006")!
+        let before = try query.fetchInspectorDetail(assetID: assetID)
+        XCTAssertNil(before.videoTechnicalMetadata)
+        let session = LibraryVideoViewingSession()
+        var persisted = false
+        await session.load(identity: .init(assetID: assetID, revision: before.contentRevision),
+                           onTechnicalMetadata: { metadata in
+            persisted = (try? query.recordPhotoKitVideoTechnicalMetadata(
+                assetID: assetID, expectedRevision: before.contentRevision, metadata: metadata, timestampMs: 10
+            )) == true
+        }) {
+            LibraryVideoPlaybackResource(url: self.syntheticVideo)
+        }
+        XCTAssertTrue(persisted)
+        let after = try query.fetchInspectorDetail(assetID: assetID)
+        XCTAssertEqual(after.videoTechnicalMetadata, session.technicalMetadata)
+        XCTAssertEqual(after.contentRevision, before.contentRevision)
+        XCTAssertEqual(after.tags, before.tags)
+        let oldObservation = try XCTUnwrap(session.technicalMetadata)
+        try await database.pool.write { db in
+            try db.execute(sql: "UPDATE asset SET content_revision = content_revision + 1, video_technical_metadata_json = NULL WHERE id = ?",
+                           arguments: [assetID.uuidString.lowercased()])
+        }
+        XCTAssertFalse(try query.recordPhotoKitVideoTechnicalMetadata(
+            assetID: assetID, expectedRevision: before.contentRevision, metadata: oldObservation, timestampMs: 11
+        ))
+        XCTAssertNil(try query.fetchInspectorDetail(assetID: assetID).videoTechnicalMetadata)
+        let photoID = UUID(uuidString: "42000000-0000-4000-8000-000000000002")!
+        XCTAssertFalse(try query.recordPhotoKitVideoTechnicalMetadata(
+            assetID: photoID, expectedRevision: 1, metadata: oldObservation, timestampMs: 11
+        ))
+        XCTAssertNil(try query.fetchInspectorDetail(assetID: photoID).videoTechnicalMetadata)
+        session.stop()
+    }
+
     func testCloudVideoProviderRequiresCurrentPhotoKitRevisionAndRejectsLateChanges() async throws {
         let (database, query) = try CatalogQueryTestSupport.openGalleryOverviewDatabase()
         let assetID = UUID(uuidString: "42000000-0000-4000-8000-000000000006")!

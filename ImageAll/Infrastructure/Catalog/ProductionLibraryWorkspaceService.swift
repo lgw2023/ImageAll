@@ -3102,6 +3102,14 @@ struct ProductionLibraryWorkspaceService:
         try tags.installStandardOntologyPackage(package, timestampMs: clock.nowMs)
     }
 
+    func recordVideoTechnicalMetadata(
+        assetID: UUID, expectedRevision: Int, metadata: VideoTechnicalMetadata
+    ) throws -> Bool {
+        try query.recordPhotoKitVideoTechnicalMetadata(
+            assetID: assetID, expectedRevision: expectedRevision, metadata: metadata, timestampMs: clock.nowMs
+        )
+    }
+
     func fetchInspectorDetail(assetID: UUID) throws -> AssetInspectorDetail {
         try query.fetchInspectorDetail(assetID: assetID)
     }

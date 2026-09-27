@@ -18,7 +18,7 @@
 |---|---|---|---|
 | P0 | VERIFIED | PASS（静态盘点） | 基线、边界、首个切片与测试路径明确；不等于功能通过 |
 | P1 | IN_PROGRESS | 分切片 PASS；完整闭环未验 | 媒体契约已交付；Mac／iPhone 查看器构建／合成测试 PASS；跨端联调待补 |
-| P2 | IN_PROGRESS | 首切片 PASS | 文件夹元数据、查询及原生／Web 地图范围切片已验；远端混合回填、PhotoKit 技术信息与云端待做 |
+| P2 | IN_PROGRESS | 首切片 PASS | 文件夹元数据、查询／地图／回填、原生云端获取及 PhotoKit 播放后技术信息持久化已分切片验；远端恢复提示、智能推流与完整 UI 待验 |
 | P3 | NOT_STARTED | NOT_RUN | 复核代表帧模型隔离，接远端建议与审核持久事实 |
 | P4 | NOT_STARTED | NOT_RUN | 有界完整字节摘要、修订复核、合成回收恢复 |
 | P5 | NOT_STARTED | NOT_RUN | 版本化有限多帧与时间点证据、内容相似独立候选 |
@@ -263,3 +263,13 @@
 - cloud-video-build-verified.log：最终 Mac TEST BUILD SUCCEEDED。cloud-video-tests.log：直接 XCTest 8/8 PASS（LibraryVideoViewingTests 5 项、PhotosIntegrationTests 3 项），覆盖显式 grant 网络策略、fake 下载／进度／取消／重试、禁用来源／请求前过期修订／返回后变化拒绝、PhotoKit 请求取消安装竞态、编辑合成资源明确拒绝和空间不足恢复原因。仍包含本地合成视频解码／seek／标签持久化回归。真实 iCloud 和 SwiftUI 确认弹窗人工验收 NOT_RUN。
 - cloud-video-workspace.patch 仅暂存本轮 10 行 model 转接，原有 Workspace 75/5 保留；源摘要 cloud-video-source-sha256.json，git diff --check PASS。未访问受保护媒体、未源端写入、未实际云端下载、未外部传输、未 push／替换 App。
 - 下一具体动作：补齐 PhotoKit 技术信息的按需持久化与 Inspector 刷新，核对远端云端视频能力提示；继续 P2 智能推流时间／位置语义并进入 P3。目标 active；不以本轮原生 fake 验收宣称 P1／P2 或整个目标完成。
+
+
+## P2 PhotoKit 技术信息按需持久化与 Inspector 刷新（2026-09-27）
+
+- 上轮为 progress：16218166 完成原生明确云端获取链路。本轮接通播放技术信息回调 → revision 条件写入 → 当前 Inspector 重读。仅当前可用 PhotoKit 视频／active 来源接受写入，不改 contentRevision 或标签。文件夹技术信息沿既有扫描路径，照片与历史资产不接收该写入。
+- PhotoKit reconcile 内容变化时清空技术 JSON，未变时保留；既有 Host 详情投影读取同一字段，远端下次详情查询可见持久信息。仅在原生播放已获得的本地资源后补充，不触发额外网络、全库读取或批量回填；远端独立播放尚不触发这条原生观察回调，不宣称各端首次浏览都会补全。
+- 原生云端能力的远端提示、P2 智能推流时间／位置证据与 P1 完整 UI／生成资源集成仍待核对；P1、P2 IN_PROGRESS，P3–P7 NOT_STARTED，目标 active。
+- video-metadata-persist-build.log：Mac TEST BUILD SUCCEEDED。video-metadata-persist-tests.log：直接 XCTest 8/8 PASS，包括合成本地播放 → 条件写入 → Inspector 重读、内容修订和标签不变、旧修订／照片拒绝，PhotoKit 未变保留／变化清除，以及既有收藏写入不误增修订与播放／云端 fake 回归。没有真实 PhotoKit 或 Inspector 人工点击证据。
+- video-metadata-workspace.patch 只暂存本轮 13 行 model 方法，原有 Workspace 75/5 保留；git diff --check PASS，源摘要 video-metadata-persist-source-sha256.json。未读取真实媒体、未源端写入、未额外云端获取／外部传输、未 push／替换 App；Web 工作区本轮无变更。
+- 下一动作：远端云端视频状态与恢复提示，P2 智能推流跨媒体时间／位置范围核查，然后接 P3 已有视频 AI 的远端命令与审核链路。整体目标尚未达到完成条件。

@@ -712,6 +712,7 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
                     file_name = ?, media_type = ?, width = ?, height = ?,
                     media_created_at_ms = ?, media_modified_at_ms = ?,
                     media_kind = ?, duration_ms = ?,
+                    video_technical_metadata_json = CASE WHEN ? THEN NULL ELSE video_technical_metadata_json END,
                     last_seen_generation = ?, availability = 'available',
                     content_revision = content_revision + ?, record_updated_at_ms = ?
                 WHERE id = ?
@@ -719,7 +720,7 @@ struct PhotosReconcileHandler: LeaseBoundJobHandler, Sendable {
                 arguments: [
                     metadata.fileName, metadata.mediaType, metadata.width, metadata.height,
                     metadata.createdAtMs, metadata.modifiedAtMs,
-                    metadata.mediaKind.rawValue, metadata.durationMs,
+                    metadata.mediaKind.rawValue, metadata.durationMs, changed,
                     generation, changed ? 1 : 0,
                     clock.nowMs, row["id"] as String,
                 ]
