@@ -3,6 +3,100 @@ import SQLite3
 import Testing
 @testable import ImageAllLocalLibrary
 
+enum CollectionRecoveryScenario: CaseIterable, Sendable { case acceptMac, keepPhone, changedScope }
+
+@Test(arguments: CollectionRecoveryScenario.allCases, [false, true])
+func explicitCollectionRenameRecoveryKeepsIdentityChecks(scenario: CollectionRecoveryScenario, legacy: Bool) async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("local.sqlite")
+    var store = try LocalLibraryStore(url: url)
+    try await store.observe([.init(localIdentifier: "shared", kind: "image", creationDate: nil, isFavorite: false)])
+    let asset = try #require(await store.assets(visibleIdentifiers: ["shared"]).first)
+    let localID = try await store.createCollection(name: "Journey")
+    let remoteID = UUID(), hostID = UUID(), deviceID = UUID()
+    try await store.setShared(assetID: asset.id, shared: true)
+    let snapshot = try await store.prepareSharedSnapshot(visibleIdentifiers: ["shared"])
+    try await store.acknowledgeSharedSnapshot(snapshot, hostID: hostID, deviceID: deviceID, importedAssetIDs: [asset.id])
+    let created = LocalSharedCollectionChange(sequence: 1, assetID: asset.id, collectionID: remoteID,
+                                             collectionName: "Journey", included: true, fieldRevision: 1)
+    do {
+        _ = try await store.applySharedCollectionChanges(
+            hostID: hostID, deviceID: deviceID, sourceEpoch: snapshot.sourceEpoch,
+            scopeRevision: snapshot.scopeRevision, afterCursor: 0, changes: [created], nextCursor: 1
+        )
+        Issue.record("an alias must require confirmation")
+    } catch LocalLibraryError.syncRemoteCollectionAliasRequired(let candidate) {
+        try await store.confirmSharedCollectionAlias(candidate)
+    }
+    _ = try await store.applySharedCollectionChanges(
+        hostID: hostID, deviceID: deviceID, sourceEpoch: snapshot.sourceEpoch,
+        scopeRevision: snapshot.scopeRevision, afterCursor: 0, changes: [created], nextCursor: 1
+    )
+    try await store.setMembership(assetID: asset.id, collectionID: localID, included: false)
+    let pending = try #require(await store.pendingSharedOperations().first)
+    _ = try await store.prepareSharedCollectionOperation(id: pending.id, hostID: hostID, deviceID: deviceID)
+    try await store.recordSharedCollectionResult(
+        operationID: pending.id, hostID: hostID, deviceID: deviceID, disposition: .conflict,
+        fieldRevision: 1, currentIncluded: true, conflictReason: .collectionIdentity
+    )
+    #expect(try await store.pendingSharedOperations().first?.verifiedCollectionRename == nil)
+    do {
+        _ = try await store.resolveSharedCollectionConflict(operationID: pending.id, resolution: .keepPhone)
+        Issue.record("identity conflict without rename proof must remain pending")
+    } catch LocalLibraryError.syncConflictDetailsUnavailable {}
+    if legacy {
+        var rawDB: OpaquePointer?
+        #expect(sqlite3_open(url.path, &rawDB) == SQLITE_OK)
+        #expect(sqlite3_exec(rawDB, "DROP TABLE shared_collection_delivery_identity", nil, nil, nil) == SQLITE_OK)
+        sqlite3_close(rawDB)
+        store = try LocalLibraryStore(url: url)
+    }
+    for (sequence, oldName, newName) in [(Int64(2), "Journey", "Trip"), (Int64(3), "Trip", "Holiday")] {
+        _ = try await store.applySharedCollectionChanges(
+            hostID: hostID, deviceID: deviceID, sourceEpoch: snapshot.sourceEpoch,
+            scopeRevision: snapshot.scopeRevision, afterCursor: sequence - 1,
+            changes: [.init(sequence: sequence, assetID: asset.id, collectionID: remoteID,
+                            collectionName: newName, included: true, fieldRevision: 1, renamedFrom: oldName)],
+            nextCursor: sequence
+        )
+    }
+    store = try LocalLibraryStore(url: url)
+    let conflict = try #require(await store.pendingSharedOperations().first)
+    #expect(conflict.isConflicted)
+    #expect(conflict.conflictReason == .collectionIdentity)
+    #expect(conflict.verifiedCollectionRename == "Holiday")
+    if scenario == .changedScope {
+        try await store.observe([.init(localIdentifier: "another", kind: "image", creationDate: nil, isFavorite: false)])
+        let another = try #require(await store.assets(visibleIdentifiers: ["another"]).first)
+        try await store.setShared(assetID: another.id, shared: true)
+        let nextScope = try await store.prepareSharedSnapshot(visibleIdentifiers: ["shared", "another"])
+        try await store.acknowledgeSharedSnapshot(nextScope, hostID: hostID, deviceID: deviceID, importedAssetIDs: [another.id])
+        #expect(try await store.pendingSharedOperations().first?.verifiedCollectionRename == nil)
+        do {
+            _ = try await store.resolveSharedCollectionConflict(operationID: pending.id, resolution: .keepPhone)
+            Issue.record("rename proof from an old share scope must not resolve the conflict")
+        } catch LocalLibraryError.syncConflictDetailsUnavailable {}
+        return
+    }
+    let newID = try await store.resolveSharedCollectionConflict(
+        operationID: pending.id, resolution: scenario == .keepPhone ? .keepPhone : .acceptMac
+    )
+    if scenario == .keepPhone {
+        let id = try #require(newID)
+        #expect(id != pending.id)
+        let request = try #require(await store.prepareSharedCollectionOperation(id: id, hostID: hostID, deviceID: deviceID))
+        #expect(request.collectionID == remoteID)
+        #expect(request.collectionName == "Holiday")
+        #expect(request.baseRevision == 1)
+        #expect(!request.included)
+    } else {
+        #expect(newID == nil)
+        #expect(try await store.pendingSharedOperations().isEmpty)
+        #expect(try await store.memberships(assetID: asset.id).contains(localID))
+    }
+}
+
 @Test func migrationCheckpointRequiresVisibleAcknowledgedConflictFreeScope() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }

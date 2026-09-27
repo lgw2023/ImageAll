@@ -915,7 +915,11 @@ private struct LocalShareScopeView: View {
                                     Text("已知 Mac 版本 \(revision)：\(membershipName(operation.conflictValue.map { $0 == "1" }))")
                                         .font(.footnote)
                                 }
-                                if operation.conflictReason == .fieldVersion,
+                                if let name = operation.verifiedCollectionRename {
+                                    Text("已核对为同一集合，Mac 已将其改名为“\(name)”。请选择成员状态。")
+                                        .font(.footnote)
+                                }
+                                if operation.conflictReason == .fieldVersion || operation.verifiedCollectionRename != nil,
                                    operation.conflictValue == "0" || operation.conflictValue == "1",
                                    operation.conflictRevision != nil {
                                     HStack {

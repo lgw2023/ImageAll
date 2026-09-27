@@ -95,6 +95,7 @@ public struct LocalSharedPendingOperation: Identifiable, Sendable {
     public let conflictValue: String?
     public let conflictDecision: LocalDecision?
     public let conflictReason: LocalSharedConflictReason?
+    public let verifiedCollectionRename: String?
     public let localCurrentDecision: LocalDecision?
     public let localCurrentIncluded: Bool?
     public let localCurrentFavoriteTarget: Bool?
@@ -452,6 +453,11 @@ public actor LocalLibraryStore {
                   operation_id TEXT PRIMARY KEY REFERENCES shared_delivery(operation_id) ON DELETE CASCADE,
                   local_collection_id TEXT NOT NULL REFERENCES collections(id),
                   wire_collection_id TEXT NOT NULL, wire_name TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS shared_collection_rename_recovery (
+                  operation_id TEXT PRIMARY KEY REFERENCES shared_delivery(operation_id) ON DELETE CASCADE,
+                  source_epoch TEXT NOT NULL, current_name TEXT NOT NULL,
+                  change_sequence INTEGER NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS shared_snapshot_delivery (
                   id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL
@@ -1026,11 +1032,38 @@ public actor LocalLibraryStore {
                     conflictValue: row[10],
                     conflictDecision: row[10].flatMap(LocalDecision.init(rawValue:)),
                     conflictReason: row[11].flatMap(LocalSharedConflictReason.init(rawValue:)),
+                    verifiedCollectionRename: try verifiedCollectionRename(operationID: id),
                     localCurrentDecision: row[12].flatMap(LocalDecision.init(rawValue:)),
                     localCurrentIncluded: row[13].map { $0 == "1" },
                     localCurrentFavoriteTarget: row[14].map { $0 == "1" }
                 )
             }
+    }
+
+    private func verifiedCollectionRename(operationID: UUID) throws -> String? {
+        guard let row = try rows("""
+            SELECT f.local_collection_id,f.wire_collection_id,p.current_name,p.source_epoch,
+                   d.host_id,d.device_id,d.scope_revision,p.change_sequence,d.state,c.reason
+            FROM shared_collection_rename_recovery p
+            JOIN shared_collection_delivery_identity f ON f.operation_id=p.operation_id
+            JOIN shared_delivery d ON d.operation_id=p.operation_id
+            JOIN shared_conflict_details c ON c.operation_id=p.operation_id
+            WHERE p.operation_id=?
+            """, [operationID.uuidString]).first,
+              row[8] == "conflict", row[9] == "collectionIdentity",
+              row[3] == (try requiredIdentity("source_epoch")),
+              row[4] == (try requiredIdentity("sync_host_id")),
+              row[5] == (try requiredIdentity("sync_device_id")),
+              row[6] == (try requiredIdentity("share_scope_revision")),
+              row[6] == (try requiredIdentity("sync_ack_scope_revision")),
+              let sequence = Int64(row[7] ?? ""),
+              sequence <= (try sharedCollectionChangeCursor()),
+              let localID = UUID(uuidString: row[0] ?? ""),
+              let currentName = row[2],
+              try scalar("SELECT name FROM collections WHERE id=?", [localID.uuidString]) == currentName,
+              let wire = try? wireCollectionIdentity(for: localID, localName: currentName),
+              wire.id.uuidString == row[1], wire.name == currentName else { return nil }
+        return currentName
     }
 
     /// Commits the authenticated Mac snapshot ACK and its first-import field baseline.
@@ -1473,15 +1506,17 @@ public actor LocalLibraryStore {
         return true
     }
 
-    /// Rebases only a known version conflict. Alias and identity conflicts need a
-    /// separate mapping decision and must not be silently merged by name.
+    /// Resolves version conflicts or identity conflicts explained by an applied
+    /// rename of this exact collection. Other identity conflicts stay pending.
     @discardableResult
     public func resolveSharedCollectionConflict(
         operationID: UUID, resolution: LocalSharedCollectionConflictResolution
     ) throws -> UUID? {
         guard let conflict = try pendingSharedOperations().first(where: { $0.id == operationID }),
               conflict.isConflicted,
-              conflict.conflictReason == .fieldVersion,
+              (conflict.conflictReason == .fieldVersion
+                || (conflict.conflictReason == .collectionIdentity
+                    && conflict.verifiedCollectionRename != nil)),
               let revision = conflict.conflictRevision,
               let macRaw = conflict.conflictValue,
               macRaw == "0" || macRaw == "1",
@@ -2127,16 +2162,23 @@ public actor LocalLibraryStore {
                             // Upgrade legacy prepared deliveries before an alias
                             // changes. Retries must keep the original wire payload.
                             let legacyPrepared = try rows("""
-                                SELECT s.operation_id,s.reference_name
+                                SELECT s.operation_id,s.reference_name,d.state
                                 FROM shared_outbox s JOIN shared_delivery d
                                   ON d.operation_id=s.operation_id
                                 LEFT JOIN shared_collection_delivery_identity f
                                   ON f.operation_id=s.operation_id
-                                WHERE s.field=? AND d.state='prepared' AND f.operation_id IS NULL
+                                LEFT JOIN shared_conflict_details c ON c.operation_id=s.operation_id
+                                WHERE s.field=? AND f.operation_id IS NULL
+                                  AND (d.state='prepared' OR (d.state='conflict' AND c.reason='collectionIdentity'))
                                 """, [field])
                             for pending in legacyPrepared {
                                 guard let referenceName = pending[1], referenceName == localName else {
-                                    throw LocalLibraryError.syncRemoteCollectionMismatch
+                                    if pending[2] == "prepared" {
+                                        throw LocalLibraryError.syncRemoteCollectionMismatch
+                                    }
+                                    // No original wire identity can be proven for
+                                    // this older record; keep it pending for review.
+                                    continue
                                 }
                                 try execute("""
                                     INSERT INTO shared_collection_delivery_identity(
@@ -2144,6 +2186,27 @@ public actor LocalLibraryStore {
                                     ) VALUES(?,?,?,?)
                                     """, [pending[0] ?? "", localCollectionID.uuidString,
                                            change.collectionID.uuidString, alias?[1] ?? referenceName])
+                            }
+                            let recoverable = try rows("""
+                                SELECT f.operation_id,f.wire_name,p.current_name,p.source_epoch
+                                FROM shared_collection_delivery_identity f
+                                JOIN shared_delivery d ON d.operation_id=f.operation_id
+                                LEFT JOIN shared_collection_rename_recovery p ON p.operation_id=f.operation_id
+                                WHERE f.local_collection_id=? AND f.wire_collection_id=?
+                                  AND d.host_id=? AND d.device_id=? AND d.scope_revision=?
+                                """, [localCollectionID.uuidString, change.collectionID.uuidString,
+                                       hostID.uuidString, deviceID.uuidString, String(scopeRevision)])
+                            for pending in recoverable where pending[1] == oldName
+                                || (pending[2] == oldName && pending[3] == sourceEpoch.uuidString) {
+                                try execute("""
+                                    INSERT INTO shared_collection_rename_recovery(
+                                      operation_id,source_epoch,current_name,change_sequence
+                                    ) VALUES(?,?,?,?)
+                                    ON CONFLICT(operation_id) DO UPDATE SET
+                                      source_epoch=excluded.source_epoch,current_name=excluded.current_name,
+                                      change_sequence=excluded.change_sequence
+                                    """, [pending[0] ?? "", sourceEpoch.uuidString,
+                                           change.collectionName, String(change.sequence)])
                             }
                             // Unsent intents have no remote receipt yet and can
                             // use the newly acknowledged name when first prepared.
