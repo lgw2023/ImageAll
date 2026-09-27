@@ -1383,14 +1383,14 @@ struct ContextualTagFeedService: ContextualTagFeedPort, Sendable {
     private struct PendingFeedRank {
         let id: UUID
         let affinity: ContextualTagFeedAffinity
-        let hasImageModel: Bool
+        let hasModelsForCandidateMedia: Bool
         let acceptedCount: Int
         let candidateCount: Int
         let createdAtMs: Int64
 
         static func precedes(_ lhs: Self, _ rhs: Self) -> Bool {
             if lhs.affinity != rhs.affinity { return lhs.affinity < rhs.affinity }
-            if lhs.hasImageModel != rhs.hasImageModel { return !lhs.hasImageModel }
+            if lhs.hasModelsForCandidateMedia != rhs.hasModelsForCandidateMedia { return !lhs.hasModelsForCandidateMedia }
             if lhs.acceptedCount != rhs.acceptedCount {
                 return lhs.acceptedCount < rhs.acceptedCount
             }
@@ -1447,30 +1447,42 @@ struct ContextualTagFeedService: ContextualTagFeedPort, Sendable {
             let ranked = try Row.fetchAll(
                 db,
                 sql: """
+                WITH candidate_media AS (
+                    SELECT DISTINCT member.feed_id, asset.media_kind
+                    FROM contextual_tag_feed_member member
+                    JOIN asset ON asset.id = member.asset_id
+                    WHERE member.role = 'candidate'
+                ), model_media AS (
+                    SELECT tag_id, media_kind FROM tag_model
+                    UNION SELECT tag_id, media_kind FROM personal_suggestion_model
+                ), accepted_media AS (
+                    SELECT decision.tag_id, asset.media_kind, COUNT(*) AS accepted_count
+                    FROM asset_tag_decision decision
+                    JOIN asset ON asset.id = decision.asset_id
+                    WHERE decision.decision = 'accepted'
+                    GROUP BY decision.tag_id, asset.media_kind
+                ), media_status AS (
+                    SELECT candidate_media.feed_id,
+                           MIN(model_media.tag_id IS NOT NULL) AS has_models,
+                           MIN(coalesce(accepted_media.accepted_count, 0)) AS accepted_count
+                    FROM candidate_media
+                    JOIN contextual_tag_feed scoped_feed ON scoped_feed.id = candidate_media.feed_id
+                    LEFT JOIN model_media ON model_media.tag_id = scoped_feed.tag_id
+                        AND model_media.media_kind = candidate_media.media_kind
+                    LEFT JOIN accepted_media ON accepted_media.tag_id = scoped_feed.tag_id
+                        AND accepted_media.media_kind = candidate_media.media_kind
+                    GROUP BY candidate_media.feed_id
+                )
                 SELECT feed.id, feed.tag_id, feed.created_at_ms,
                        coalesce(tag.group_id, ?) AS group_id,
                        coalesce(tag_group.name, '') AS group_name,
-                       (
-                           EXISTS (
-                               SELECT 1 FROM tag_model
-                               WHERE media_kind = 'image' AND tag_id = feed.tag_id
-                           )
-                           OR EXISTS (
-                               SELECT 1 FROM personal_suggestion_model
-                               WHERE media_kind = 'image' AND tag_id = feed.tag_id
-                           )
-                       ) AS has_image_model,
-                       coalesce(decision_count.accepted_count, 0) AS accepted_count,
+                       coalesce(media_status.has_models, 0) AS has_media_models,
+                       coalesce(media_status.accepted_count, 0) AS accepted_count,
                        coalesce(candidate_count.candidate_count, 0) AS candidate_count
                 FROM contextual_tag_feed feed
                 JOIN tag ON tag.id = feed.tag_id AND tag.state = 'active'
                 LEFT JOIN tag_group ON tag_group.id = tag.group_id
-                LEFT JOIN (
-                    SELECT tag_id, COUNT(*) AS accepted_count
-                    FROM asset_tag_decision
-                    WHERE decision = 'accepted'
-                    GROUP BY tag_id
-                ) decision_count ON decision_count.tag_id = feed.tag_id
+                LEFT JOIN media_status ON media_status.feed_id = feed.id
                 LEFT JOIN (
                     SELECT feed_id, COUNT(*) AS candidate_count
                     FROM contextual_tag_feed_member
@@ -1491,7 +1503,7 @@ struct ContextualTagFeedService: ContextualTagFeedPort, Sendable {
                         groupID: groupID,
                         groupDisplayName: groupName
                     ),
-                    hasImageModel: row["has_image_model"],
+                    hasModelsForCandidateMedia: row["has_media_models"],
                     acceptedCount: row["accepted_count"],
                     candidateCount: row["candidate_count"],
                     createdAtMs: row["created_at_ms"]

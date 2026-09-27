@@ -284,3 +284,13 @@
 - Web 首轮 lint 指出 while(true) 不必要条件，改为按 reader done 条件循环；media-reasons-web-lint-final.log、media-reasons-web-build-final.log、media-reasons-web-typecheck.log 及 main typecheck 均 PASS。media-reasons-web-e2e-final.log 1/1 PASS，包含播放、切换、云端失败、无预览下载和重试恢复的完整浏览器路径；使用合成 HTTP mock，非实际浏览器到 Swift Host UI 联调。
 - Web 3 文件字节一致；源摘要 media-reasons-source-sha256.json，git diff --check PASS。原 Workspace 75/5 与 OpenMontage 等并行差异保留。未访问真实媒体、未云端获取／源端写入／外部传输、未 push／替换 App；真实 iPhone 和 iCloud 均 NOT_RUN。
 - 下一具体动作：核对智能推流的视频时间／位置与跨媒体候选规则，继续 P3 远端视频 AI 命令／训练／审核。P1／P2 尚有完整 UI、资源集成与上述语义待验；目标 active，不能标记完成。
+
+
+## P2/P3 智能推流媒体证据与优先级（2026-09-27）
+
+- 上轮为 progress：cced5607 完成远端视频失败原因与恢复提示。本轮确认既有推流支持照片／视频混合候选，但排序硬编码照片模型并合并两类正样本计数，会掩盖视频模型和标注缺口。
+- 排序改为核对候选涉及的每个媒体域；混合组各域都有模型才视为已覆盖，样本量取候选媒体域的最小正样本数。保留标签情境优先级、候选数量、时间及稳定 ID 排序。模型存在只用于排序，不代表模型质量已验收。ADR 已记录产品取舍。
+- PhotoKit 时间／位置合成测试加入视频候选：已有时间与 GPS 证据可进入同源混合候选，缺 GPS 视频不被推测加入；候选仍保持 unknown，不自动接受或拒绝标签。既有忽略、确认、撤销及新决策保护继续通过。
+- feed-media-build-final.log：Mac TEST BUILD SUCCEEDED。feed-media-tests.log：直接 XCTest ContextualTagFeedTests 8/8 PASS；涵盖照片模型不能覆盖视频、混合组补齐视频模型后的排序、时间／位置证据及既有事务回归。仅合成目录数据库，不代表真实 Photos 或智能推流 UI 手工验收。
+- git diff --check PASS；源摘要 feed-media-source-sha256.json。Workspace 原有 75/5 与 OpenMontage 并行改动保留，Web 工作区本轮未修改。未读取真实媒体、未源端写入／云端获取／外部传输、未 push 或替换 App。
+- P1／P2 仍 IN_PROGRESS，P3 主链路仍待推进，P4–P7 NOT_STARTED；目标 active。下一具体动作：追踪远端视频 AI 命令／训练的照片限定与原生视频采样、缓存及模型域契约，完成有验证依据的跨端能力对齐。

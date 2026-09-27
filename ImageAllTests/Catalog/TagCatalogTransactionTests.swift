@@ -1114,6 +1114,29 @@ final class TagCatalogTransactionTests: XCTestCase {
 }
 
 final class ContextualTagFeedTests: XCTestCase {
+    func testVideoAndMixedFeedPriorityRequiresModelsInEachCandidateMediaDomain() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let service = ContextualTagFeedService(database: database)
+        let photoModelOnly = try makePendingFeed(named: "视频甲", group: .activities, sequence: 100,
+                                                mediaKind: .video, database: database, service: service)
+        try installImageModel(tagID: photoModelOnly.tagID, database: database)
+        let videoModel = try makePendingFeed(named: "视频乙", group: .activities, sequence: 200,
+                                            mediaKind: .video, database: database, service: service)
+        try installImageModel(tagID: videoModel.tagID, database: database, mediaKind: .video)
+        let untrained = try makePendingFeed(named: "视频丙", group: .activities, sequence: 300,
+                                           mediaKind: .video, database: database, service: service)
+        let mixed = try makePendingFeed(named: "混合活动", group: .activities, sequence: 400,
+                                       additionalAcceptedSamples: 5, mediaKind: .image,
+                                       additionalCandidateKind: .video, database: database, service: service)
+        try installImageModel(tagID: mixed.tagID, database: database)
+        XCTAssertEqual(Set(mixed.members.filter { $0.role == .candidate }.map(\.mediaKind)), [.image, .video])
+        XCTAssertEqual(try service.fetchPendingGroups(limit: 10).map(\.tagID),
+                       [mixed.tagID, photoModelOnly.tagID, untrained.tagID, videoModel.tagID])
+        try installImageModel(tagID: mixed.tagID, database: database, mediaKind: .video)
+        XCTAssertEqual(try service.fetchPendingGroups(limit: 10).map(\.tagID),
+                       [photoModelOnly.tagID, untrained.tagID, mixed.tagID, videoModel.tagID])
+    }
+
     func testPendingGroupsPreferContextDependentTagsThenUntrainedModelsAndSupportCustomScope() throws {
         let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
         let service = ContextualTagFeedService(database: database)
@@ -1312,6 +1335,8 @@ final class ContextualTagFeedTests: XCTestCase {
             )
         }
         try database.pool.write { db in
+            try db.execute(sql: "UPDATE asset SET media_kind = 'video', media_type = 'public.mpeg-4', duration_ms = 1000 WHERE id IN (?, ?)",
+                           arguments: [nearbyAssetID.uuidString.lowercased(), missingGPSAssetID.uuidString.lowercased()])
             for (assetID, deltaMs) in [
                 (anchorAssetID, Int64(0)),
                 (nearbyAssetID, Int64(20 * 60_000)),
@@ -1365,6 +1390,11 @@ final class ContextualTagFeedTests: XCTestCase {
             [.captureTime, .spatialProximity, .sourceContext]
         )
         XCTAssertFalse(group.members.contains { $0.assetID == missingGPSAssetID })
+        XCTAssertEqual(nearby.mediaKind, .video)
+        let aggregate = try XCTUnwrap(tags.selectionAggregate(tagIDs: [tag.id], assetIDs: [nearbyAssetID, missingGPSAssetID]).first)
+        XCTAssertEqual(aggregate.unknownCount, 2, "Context evidence must not auto-accept a cross-media label")
+        XCTAssertEqual(aggregate.rejectedCount, 0)
+
     }
 
     func testOverlappingAcceptedAnchorsReuseOnePendingFeed() throws {
@@ -1768,9 +1798,12 @@ final class ContextualTagFeedTests: XCTestCase {
         group: TagGroupSeed,
         sequence: Int,
         additionalAcceptedSamples: Int = 0,
+        mediaKind: MediaKind = .image,
+        additionalCandidateKind: MediaKind? = nil,
         database: CatalogDatabase,
         service: ContextualTagFeedService
     ) throws -> ContextualTagFeedGroup {
+        let suffix = mediaKind == .video ? "MOV" : "JPG"
         let catalog = CatalogRepository(database: database)
         let tags = GRDBTagCatalogRepository(database: database)
         let sourceID = UUID()
@@ -1793,9 +1826,9 @@ final class ContextualTagFeedTests: XCTestCase {
                 bookmark: DatabaseTestSupport.folderBookmark(),
                 assetID: anchorAssetID,
                 locatorKind: .file,
-                relativePath: "Feed-\(sequence)/IMG_\(sequence).JPG",
+                relativePath: "Feed-\(sequence)/IMG_\(sequence).\(suffix)",
                 photosLocalIdentifier: nil,
-                mediaType: "public.jpeg",
+                mediaType: mediaKind == .video ? "public.mpeg-4" : "public.jpeg",
                 timestampMs: DatabaseTestSupport.timestampMs + Int64(sequence)
             )
         )
@@ -1804,16 +1837,16 @@ final class ContextualTagFeedTests: XCTestCase {
                 assetID: candidateAssetID,
                 sourceID: sourceID,
                 locatorKind: .file,
-                relativePath: "Feed-\(sequence)/IMG_\(sequence + 1).JPG",
+                relativePath: "Feed-\(sequence)/IMG_\(sequence + 1).\(suffix)",
                 photosLocalIdentifier: nil,
-                mediaType: "public.jpeg",
+                mediaType: mediaKind == .video ? "public.mpeg-4" : "public.jpeg",
                 timestampMs: DatabaseTestSupport.timestampMs + Int64(sequence)
             )
         )
         try database.pool.write { db in
             for (assetID, fileName) in [
-                (anchorAssetID, "IMG_\(sequence).JPG"),
-                (candidateAssetID, "IMG_\(sequence + 1).JPG"),
+                (anchorAssetID, "IMG_\(sequence).\(suffix)"),
+                (candidateAssetID, "IMG_\(sequence + 1).\(suffix)"),
             ] {
                 try db.execute(
                     sql: "UPDATE asset SET file_name = ? WHERE id = ?",
@@ -1829,13 +1862,31 @@ final class ContextualTagFeedTests: XCTestCase {
                     assetID: assetID,
                     sourceID: sourceID,
                     locatorKind: .file,
-                    relativePath: "Feed-\(sequence)/Samples/SAMPLE_\(offset).JPG",
+                    relativePath: "Feed-\(sequence)/Samples/SAMPLE_\(offset).\(suffix)",
                     photosLocalIdentifier: nil,
-                    mediaType: "public.jpeg",
+                    mediaType: mediaKind == .video ? "public.mpeg-4" : "public.jpeg",
                     timestampMs: DatabaseTestSupport.timestampMs + Int64(sequence)
                 )
             )
             additionalAcceptedAssetIDs.append(assetID)
+        }
+        try database.pool.write { db in
+            try db.execute(sql: "UPDATE asset SET media_kind = ? WHERE source_id = ?",
+                           arguments: [mediaKind.rawValue, sourceID.uuidString.lowercased()])
+        }
+        if let additionalCandidateKind {
+            let additionalID = UUID()
+            try catalog.insertAsset(NewAssetInput(
+                assetID: additionalID, sourceID: sourceID, locatorKind: .file,
+                relativePath: "Feed-\(sequence)/IMG_\(sequence + 2).\(suffix)", photosLocalIdentifier: nil,
+                mediaType: additionalCandidateKind == .video ? "public.mpeg-4" : "public.jpeg",
+                timestampMs: DatabaseTestSupport.timestampMs
+            ))
+            try database.pool.write { db in
+                try db.execute(sql: "UPDATE asset SET file_name = ?, media_kind = ? WHERE id = ?",
+                               arguments: ["IMG_\(sequence + 2).\(suffix)", additionalCandidateKind.rawValue,
+                                           additionalID.uuidString.lowercased()])
+            }
         }
         _ = try tags.batchAccept(
             tagID: tag.id,
@@ -1849,7 +1900,7 @@ final class ContextualTagFeedTests: XCTestCase {
         ))
     }
 
-    private func installImageModel(tagID: UUID, database: CatalogDatabase) throws {
+    private func installImageModel(tagID: UUID, database: CatalogDatabase, mediaKind: MediaKind = .image) throws {
         try database.pool.write { db in
             try db.execute(
                 sql: """
@@ -1857,20 +1908,20 @@ final class ContextualTagFeedTests: XCTestCase {
                     media_kind, tag_id, revision, provider, request_revision,
                     preprocessing_revision, threshold, positive_count, negative_count,
                     neighbor_count, sample_budget_per_role, created_at_ms
-                ) VALUES ('image', ?, 1, 'vision-feature-print', 1, 1, 0, 2, 2, 2, 2, ?)
+                ) VALUES (?, ?, 1, 'vision-feature-print', 1, 1, 0, 2, 2, 2, 2, ?)
                 """,
                 arguments: [
-                    tagID.uuidString.lowercased(),
+                    mediaKind.rawValue, tagID.uuidString.lowercased(),
                     DatabaseTestSupport.timestampMs,
                 ]
             )
             try db.execute(
                 sql: """
                 INSERT INTO tag_model (media_kind, tag_id, current_revision, updated_at_ms)
-                VALUES ('image', ?, 1, ?)
+                VALUES (?, ?, 1, ?)
                 """,
                 arguments: [
-                    tagID.uuidString.lowercased(),
+                    mediaKind.rawValue, tagID.uuidString.lowercased(),
                     DatabaseTestSupport.timestampMs,
                 ]
             )
