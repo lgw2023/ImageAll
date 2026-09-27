@@ -3,6 +3,24 @@ import XCTest
 @testable import ImageAll
 
 final class CatalogMigrationTests: XCTestCase {
+    func testV055DoesNotPromoteLegacyDigestsAndReopensIdempotently() throws {
+        let url = try makeTempDatabaseURL()
+        let pool = try DatabasePool(path: url.path)
+        try CatalogDatabase.makeMigrator().migrate(pool, upTo: CatalogMigrationID.v054AddVideoTechnicalMetadata)
+        let database = CatalogDatabase(pool: pool)
+        let ids = try CatalogQueryTestSupport.seedCatalogFixture(database: database, repository: CatalogRepository(database: database))
+        try pool.write { db in
+            try db.execute(sql: "UPDATE asset SET media_kind = 'video', media_type = 'public.mpeg-4', duration_ms = 1000 WHERE id = ?",
+                arguments: [ids.assetNewest.uuidString.lowercased()])
+            try db.execute(sql: "UPDATE file_fingerprint SET sha256 = ?", arguments: [Data(repeating: 7, count: 32)])
+        }
+        let before = try pool.read { db in try Row.fetchAll(db, sql: "SELECT * FROM file_fingerprint ORDER BY asset_id") }
+        try CatalogDatabase.makeMigrator().migrate(pool)
+        try CatalogDatabase.makeMigrator().migrate(pool)
+        XCTAssertEqual(try pool.read { db in try Row.fetchAll(db, sql: "SELECT * FROM file_fingerprint ORDER BY asset_id") }, before)
+        XCTAssertEqual(try pool.read { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset_original_content_digest") }, 0)
+    }
+
     func testV053MarksLegacyVideoMetadataPendingWithoutChangingMediaFacts() throws {
         let url = try makeTempDatabaseURL()
         let pool = try DatabasePool(path: url.path)
@@ -1698,6 +1716,9 @@ final class CatalogMigrationTests: XCTestCase {
     }
 
     private static func dropV035AndLaterTables(_ db: Database) throws {
+        try db.execute(sql: "DROP TABLE IF EXISTS asset_original_content_digest")
+        try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
+                       arguments: [CatalogMigrationID.v055AddOriginalContentDigest])
         try db.execute(sql: "ALTER TABLE asset DROP COLUMN video_technical_metadata_json")
         try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
                        arguments: [CatalogMigrationID.v054AddVideoTechnicalMetadata])

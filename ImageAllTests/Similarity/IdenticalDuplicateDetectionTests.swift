@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import GRDB
 import ImageIO
 import UniformTypeIdentifiers
@@ -6,6 +7,130 @@ import XCTest
 @testable import ImageAll
 
 final class IdenticalDuplicateDetectionTests: XCTestCase {
+    func testExplicitOriginalVideoDigestStreamsReusesAndKeepsPosterIndependent() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+        let bytes = Data((0..<(OriginalVideoDigestService.chunkByteCount * 3 + 71)).map { UInt8($0 % 251) })
+        let asset = try env.seedAsset(relativePath: "original.mp4", contents: bytes,
+            mediaType: "public.mpeg-4", mediaKind: .video, durationMs: 4_000)
+        let completion = env.makeCompletionService(videoPosterGenerator: SimilarityVideoPosterStub())
+        let poster = try completion.completeAsset(assetID: asset.assetID)
+        let service = OriginalVideoDigestService(database: env.database,
+            sourceAccess: completion.sourceAccess, clock: completion.clock)
+        var counts: [Int64] = []
+        let first = try service.completeFolderVideo(assetID: asset.assetID, onProgress: { done, total in
+            XCTAssertEqual(total, Int64(bytes.count)); counts.append(done)
+        })
+        XCTAssertEqual(first.sha256, Data(SHA256.hash(data: bytes)))
+        XCTAssertFalse(first.reused)
+        XCTAssertEqual(counts, [0, 262_144, 524_288, 786_432, 786_503])
+        let reused = try service.completeFolderVideo(assetID: asset.assetID)
+        XCTAssertTrue(reused.reused)
+        XCTAssertEqual(reused.sha256, first.sha256)
+        XCTAssertEqual(try completion.completeAsset(assetID: asset.assetID), poster)
+        XCTAssertNotEqual(poster.sha256, first.sha256)
+        let rows = try env.database.pool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset_original_content_digest")
+        }
+        XCTAssertEqual(rows, 1)
+    }
+
+    func testOriginalVideoDigestRejectsCancellationMutationReplacementAndRevisionRace() throws {
+        for scenario in 0..<4 {
+            let env = try SimilarityTestSupport.Environment(label: "\(#function)-\(scenario)")
+            defer { env.cleanup() }
+            let bytes = Data(repeating: 17, count: OriginalVideoDigestService.chunkByteCount * 2 + 7)
+            let asset = try env.seedAsset(relativePath: "video.mp4", contents: bytes,
+                mediaType: "public.mpeg-4", mediaKind: .video, durationMs: 4_000)
+            let completion = env.makeCompletionService()
+            let service = OriginalVideoDigestService(database: env.database,
+                sourceAccess: completion.sourceAccess, clock: completion.clock)
+            var changed = false
+            XCTAssertThrowsError(try service.completeFolderVideo(assetID: asset.assetID,
+                checkCancellation: { if scenario == 0 && changed { throw CancellationError() } },
+                onProgress: { done, _ in
+                    guard done > 0, !changed else { return }
+                    changed = true
+                    switch scenario {
+                    case 1:
+                        let handle = try FileHandle(forWritingTo: asset.fileURL)
+                        defer { try? handle.close() }
+                        try handle.write(contentsOf: Data([99]))
+                    case 2:
+                        let replacement = env.sourceRoot.appendingPathComponent("replacement.mp4")
+                        try bytes.write(to: replacement)
+                        try FileManager.default.removeItem(at: asset.fileURL)
+                        try FileManager.default.moveItem(at: replacement, to: asset.fileURL)
+                    case 3:
+                        try env.database.pool.write { db in
+                            try db.execute(sql: "UPDATE asset SET content_revision = content_revision + 1 WHERE id = ?",
+                                arguments: [asset.assetID.uuidString.lowercased()])
+                        }
+                    default: break
+                    }
+                })) { error in
+                    if scenario == 0 { XCTAssertTrue(error is CancellationError) }
+                    else { XCTAssertEqual(error as? FingerprintCompletionError, .sourceChanged) }
+                }
+            XCTAssertEqual(try env.database.pool.read { db in
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset_original_content_digest")
+            }, 0)
+        }
+    }
+
+    func testOriginalVideoDigestDoesNotReuseAfterWriteWithRestoredModificationTime() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+        let asset = try env.seedAsset(relativePath: "video.mp4", contents: Data(repeating: 1, count: 100),
+            mediaType: "public.mpeg-4", mediaKind: .video, durationMs: 4_000)
+        let completion = env.makeCompletionService()
+        let service = OriginalVideoDigestService(database: env.database,
+            sourceAccess: completion.sourceAccess, clock: completion.clock)
+        let first = try service.completeFolderVideo(assetID: asset.assetID)
+        var original = stat()
+        XCTAssertEqual(stat(asset.fileURL.path, &original), 0)
+        let handle = try FileHandle(forWritingTo: asset.fileURL)
+        try handle.write(contentsOf: Data(repeating: 2, count: 100))
+        try handle.close()
+        var times = [original.st_atimespec, original.st_mtimespec]
+        XCTAssertEqual(utimensat(AT_FDCWD, asset.fileURL.path, &times, 0), 0)
+        let second = try service.completeFolderVideo(assetID: asset.assetID)
+        XCTAssertFalse(second.reused)
+        XCTAssertNotEqual(second.sha256, first.sha256)
+    }
+
+    func testVideoExactGroupsRequireFullBytesAndCurrentRevisionWithoutPosterDependency() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+        let a = try env.seedAsset(relativePath: "a.mp4", contents: Data([1, 2, 3]),
+            mediaType: "public.mpeg-4", mediaKind: .video, durationMs: 4_000)
+        let copy = try env.seedAsset(relativePath: "copy.mp4", contents: Data([1, 2, 3]),
+            mediaType: "public.mpeg-4", mediaKind: .video, durationMs: 4_000)
+        let different = try env.seedAsset(relativePath: "same-poster.mp4", contents: Data([1, 7, 8]),
+            mediaType: "public.mpeg-4", mediaKind: .video, durationMs: 4_000)
+        let container = try env.seedAsset(relativePath: "rewrapped.mov", contents: Data([1, 2, 3, 0]),
+            mediaType: "com.apple.quicktime-movie", mediaKind: .video, durationMs: 4_000)
+        let completion = env.makeCompletionService(videoPosterGenerator: SimilarityVideoPosterStub())
+        let service = OriginalVideoDigestService(database: env.database,
+            sourceAccess: completion.sourceAccess, clock: completion.clock)
+        let ids = [a.assetID, copy.assetID, different.assetID, container.assetID]
+        for id in ids { _ = try service.completeFolderVideo(assetID: id) }
+        let clusterer = IdenticalDuplicateClusterService(database: env.database)
+        let withoutPosters = try clusterer.clusterIdenticalDuplicates(assetIDs: ids, mediaKind: .video)
+        XCTAssertEqual(withoutPosters.count, 1)
+        XCTAssertEqual(withoutPosters.first?.kind, .byteIdentical)
+        XCTAssertEqual(Set(withoutPosters.first?.memberAssetIDs ?? []), Set([a.assetID, copy.assetID]))
+        for id in ids { _ = try completion.completeAsset(assetID: id) }
+        let withPosters = try clusterer.clusterIdenticalDuplicates(assetIDs: ids, mediaKind: .video)
+        XCTAssertEqual(withPosters.filter { $0.kind == .byteIdentical }, withoutPosters)
+        XCTAssertEqual(withPosters.filter { $0.kind == .perceptualDuplicate }.count, 1)
+        XCTAssertTrue(try clusterer.clusterIdenticalDuplicates(assetIDs: ids, mediaKind: .image).isEmpty)
+        try env.database.pool.write { db in
+            try db.execute(sql: "UPDATE asset SET content_revision = 2 WHERE id = ?", arguments: [copy.assetID.uuidString.lowercased()])
+        }
+        XCTAssertFalse(try clusterer.clusterIdenticalDuplicates(assetIDs: ids, mediaKind: .video).contains { $0.kind == .byteIdentical })
+    }
+
     func testVideoFingerprintUsesOnlyRepresentativePosterAcrossFolderAndPhotoKit() throws {
         let env = try SimilarityTestSupport.Environment(label: #function)
         defer { env.cleanup() }

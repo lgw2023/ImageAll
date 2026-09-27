@@ -1,6 +1,6 @@
 # 视频能力补全推进记录
 
-更新：2026-09-27。目标工具状态 active（用户续跑后已核验）；任务范围为目标提示词 P0–P7，不含第 10 节扩展。
+更新：2026-09-28。目标工具状态 active（用户续跑后已核验）；任务范围为目标提示词 P0–P7，不含第 10 节扩展。
 
 ## 工作区与边界
 
@@ -20,7 +20,7 @@
 | P1 | IN_PROGRESS | 分切片 PASS；完整闭环未验 | 媒体契约已交付；Mac／iPhone 查看器构建／合成测试 PASS；跨端联调待补 |
 | P2 | IN_PROGRESS | 首切片 PASS | 文件夹元数据、查询／地图／回填、原生云端获取及 PhotoKit 播放后技术信息持久化已分切片验；远端恢复提示、智能推流与完整 UI 待验 |
 | P3 | IN_PROGRESS | 远端服务到真实质心模型和持久审核链 PASS；跨端运行待验 | 继续全库建议、训练命令与审核持久事实闭环 |
-| P4 | NOT_STARTED | NOT_RUN | 有界完整字节摘要、修订复核、合成回收恢复 |
+| P4 | IN_PROGRESS | 原件摘要／分组 6/6、migration 4/4 PASS | 文件夹有界摘要与独立证据已实现；显式任务、PhotoKit 原件、回收恢复待接 |
 | P5 | NOT_STARTED | NOT_RUN | 版本化有限多帧与时间点证据、内容相似独立候选 |
 | P6 | NOT_STARTED | NOT_RUN | 显式片段与原声规则，合成混合故事可解码验证 |
 | P7 | NOT_STARTED | NOT_RUN | 必需集成、最终构建与人工路线 |
@@ -415,3 +415,13 @@
 - ios-multisample-client-tests.log 全套 72/72 PASS，新增测试证明精确发送三个视频 ID、来源为空、重放回执保留，且空／重复选择不触发任何 HTTP。ios-multisample-build.log iOS Simulator BUILD SUCCEEDED；git diff --check PASS。未执行模拟器交互、真机或实际 Host UI 联调。
 - ios-multisample-source-sha256.json 绑定源码。Workspace 原有 75/5、项目／OpenMontage 并行差异保留；Web 未修改。未读取真实媒体、未云端获取／源端写入／外部传输、未 push／替换 App。
 - P1／P2／P3 IN_PROGRESS，P4–P7 NOT_STARTED，目标 active。本轮已补当前列出的 iPhone 个人建议／训练最小入口，但跨端运行验收仍未完成。下一动作进入 P4：已复核 IdenticalDuplicateClusterService 的完整字节分组仍仅图片，FingerprintCompletionService 视频摘要仍代表帧；需要新 ADR、独立完整原件摘要 provenance 与显式分块扫描，不能直接解除图片 guard。
+
+
+## P4 文件夹视频完整摘要与独立精确分组（2026-09-28）
+
+- 上轮为 progress：fc10eb75 补 iPhone 固定多选个人建议。本轮新 ADR-VIDEO-ORIGINAL-BYTE-DIGEST 决定独立完整原件证据。V055 新表不迁入旧 file_fingerprint／视觉 SHA；OriginalVideoDigestService 沿授权根 no-follow 读取，固定 256 KiB 缓冲，支持逐块进度／取消、内容修订和来源事实事务复核、设备／inode／ctime／原始 mtime 重用检查，失败复核移除该修订旧证据。
+- 精确分组可读取独立原件表，无代表帧依赖；相同摘要和大小才分组，严格约束来源、路径、可用性和当前修订。原有视频代表帧摘要与图片精确分组保持原语义；未将视觉摘要写成完整文件 SHA。
+- 首轮 7 项中 3 项失败，发现 Foundation 目录 mtime 与 fstat 原始纳秒表示不完全一致；修正为目录事实沿既有表示、句柄物理身份另存原始时间后，original-video-tests-accepted.log 6/6 PASS。覆盖分块／重用／代表帧不变、取消／改写／替换／修订变化、恢复 mtime 后不复用、完整副本分组／不同字节不误判，以及已有照片精确和视频代表帧回归。
+- original-video-migration-tests.log 4/4 PASS：V054 升级不提升旧摘要、反复迁移稳定、新库与重开、旧媒体 migration 回放。同步扩展旧 migration 回放测试的清理 helper，未改写已批准 migration。original-video-build-delivery.log Mac TEST BUILD SUCCEEDED；git diff --check PASS。
+- 测试是临时合成字节文件与 stub 代表帧，不能称为真实视频解码／重封装验收。当前服务与分组已具备底层实现，但显式用户分析任务尚未调用新服务；下一动作接入任务进度／取消和再验证，再处理 PhotoKit 原始资源、比较／回收／恢复闭环。P4 IN_PROGRESS，不是完整交付；P1／P2／P3 仍 IN_PROGRESS，P5–P7 NOT_STARTED，目标 active。
+- original-video-source-sha256.json 绑定源码；项目文件仅用 original-video-project.patch 暂存本服务的 4 行注册，原有 OpenMontage 4 行留在工作区。Workspace 75/5 保留；Web 未修改。未读取真实媒体、未云端获取／源端写入／外部传输、未 push／替换 App。

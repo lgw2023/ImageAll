@@ -11,14 +11,14 @@ struct IdenticalDuplicateClusterService: IdenticalDuplicateScanPort {
         let uniqueIDs = Array(Set(assetIDs)).sorted { $0.uuidString.lowercased() < $1.uuidString.lowercased() }
         guard !uniqueIDs.isEmpty else { return [] }
 
+        var clusters = mediaKind == .video ? try originalVideoClusters(assetIDs: uniqueIDs) : []
         let records = try loadRecords(assetIDs: uniqueIDs, mediaKind: mediaKind)
-        guard !records.isEmpty else { return [] }
+        guard !records.isEmpty else { return clusters.sorted(by: Self.clusterSort) }
 
-        var claimed = Set<UUID>()
-        var clusters: [IdenticalDuplicateCluster] = []
+        var claimed = Set(clusters.flatMap(\.memberAssetIDs))
 
-        // A representative frame cannot prove that two full videos are byte
-        // identical. Only still images may enter deletion-grade SHA groups.
+        // Video exact evidence comes only from the independent original-byte table.
+        // Poster hashes below never enter the byte-identical lane.
         if mediaKind == .image {
             var bySHA: [Data: [FingerprintRecord]] = [:]
             for record in records where record.digestOrigin == .verifiedOriginalBytes {
@@ -93,6 +93,39 @@ struct IdenticalDuplicateClusterService: IdenticalDuplicateScanPort {
         }
 
         return clusters.sorted(by: Self.clusterSort)
+    }
+
+    private func originalVideoClusters(assetIDs: [UUID]) throws -> [IdenticalDuplicateCluster] {
+        try database.pool.read { db in
+            let placeholders = Array(repeating: "?", count: assetIDs.count).joined(separator: ",")
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT d.asset_id, d.sha256, d.size_bytes
+                FROM asset_original_content_digest d
+                JOIN asset a ON a.id = d.asset_id
+                JOIN source s ON s.id = a.source_id
+                JOIN file_fingerprint f ON f.asset_id = a.id
+                WHERE a.id IN (\(placeholders)) AND a.media_kind = 'video'
+                  AND a.locator_kind = 'file' AND a.locator_state = 'current'
+                  AND a.availability = 'available' AND s.kind = 'folder' AND s.state = 'active'
+                  AND d.content_revision = a.content_revision AND d.source_id = a.source_id
+                  AND d.relative_path = a.relative_path AND d.size_bytes = f.size_bytes
+                  AND d.modified_at_ns = f.modified_at_ns AND d.catalog_resource_id IS f.resource_id
+                  AND d.provenance = ?
+                """, arguments: StatementArguments(assetIDs.map { $0.uuidString.lowercased() } + [OriginalVideoDigestService.policy]))
+            struct Key: Hashable { let digest: Data; let size: Int64 }
+            var groups: [Key: [UUID]] = [:]
+            for row in rows {
+                guard let id = UUID(uuidString: row["asset_id"]),
+                      let digest: Data = row["sha256"], digest.count == 32 else { continue }
+                groups[Key(digest: digest, size: row["size_bytes"]), default: []].append(id)
+            }
+            return groups.values.compactMap { members in
+                guard members.count > 1 else { return nil }
+                let sorted = members.sorted { $0.uuidString.lowercased() < $1.uuidString.lowercased() }
+                return IdenticalDuplicateCluster(kind: .byteIdentical, memberAssetIDs: sorted,
+                    representativeAssetID: sorted[0], score: 0)
+            }
+        }
     }
 
     private static func clusterSort(_ lhs: IdenticalDuplicateCluster, _ rhs: IdenticalDuplicateCluster) -> Bool {

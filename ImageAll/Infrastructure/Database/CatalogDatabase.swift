@@ -109,6 +109,7 @@ struct CatalogDatabase: Sendable {
         V052AddPhoneArchiveCompletionReceiptMigration.register(on: &migrator)
         V053AddVideoMetadataPolicyMigration.register(on: &migrator)
         V054AddVideoTechnicalMetadataMigration.register(on: &migrator)
+        V055AddOriginalContentDigestMigration.register(on: &migrator)
         return migrator
     }
 
@@ -3479,6 +3480,31 @@ enum V054AddVideoTechnicalMetadataMigration {
     static func register(on migrator: inout DatabaseMigrator) {
         migrator.registerMigration(CatalogMigrationID.v054AddVideoTechnicalMetadata) { db in
             try db.execute(sql: "ALTER TABLE asset ADD COLUMN video_technical_metadata_json TEXT")
+        }
+    }
+}
+
+
+/// No legacy video or poster SHA is promoted to original-byte evidence.
+enum V055AddOriginalContentDigestMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v055AddOriginalContentDigest) { db in
+            try db.execute(sql: """
+                CREATE TABLE asset_original_content_digest (
+                    asset_id TEXT PRIMARY KEY REFERENCES asset(id) ON DELETE CASCADE,
+                    content_revision INTEGER NOT NULL CHECK(content_revision > 0),
+                    source_id TEXT NOT NULL REFERENCES source(id),
+                    provenance TEXT NOT NULL CHECK(provenance = 'folder-original-sha256-v1'),
+                    relative_path TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL CHECK(size_bytes > 0),
+                    modified_at_ns INTEGER NOT NULL,
+                    descriptor_identity TEXT NOT NULL,
+                    catalog_resource_id BLOB,
+                    sha256 BLOB NOT NULL CHECK(length(sha256) = 32),
+                    verified_at_ms INTEGER NOT NULL
+                );
+                CREATE INDEX idx_original_content_digest_sha ON asset_original_content_digest(sha256, size_bytes);
+                """)
         }
     }
 }

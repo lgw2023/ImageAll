@@ -269,6 +269,7 @@
 		LL0000010000000000000001 /* FeaturePrintCacheService.swift in Sources */ = {isa = PBXBuildFile; fileRef = LL0001010000000000000001 /* FeaturePrintCacheService.swift */; };
 		SL0000010000000000000001 /* IdenticalDuplicateContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000001 /* IdenticalDuplicateContracts.swift */; };
 		SL0000010000000000000002 /* PerceptualImageHash.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000002 /* PerceptualImageHash.swift */; };
+		VD0000010000000000000001 /* OriginalVideoDigestService.swift in Sources */ = {isa = PBXBuildFile; fileRef = VD0001010000000000000001 /* OriginalVideoDigestService.swift */; };
 		SL0000010000000000000003 /* FingerprintCompletionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000003 /* FingerprintCompletionService.swift */; };
 		SL0000010000000000000004 /* IdenticalDuplicateClusterService.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000004 /* IdenticalDuplicateClusterService.swift */; };
 		SL0000010000000000000101 /* IdenticalDuplicateDetectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = SL0001010000000000000101 /* IdenticalDuplicateDetectionTests.swift */; };
@@ -624,6 +625,7 @@
 		RH0001010000000000000105 /* RemoteHostIdentityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteHostIdentityTests.swift; sourceTree = "<group>"; };
 		SL0001010000000000000001 /* IdenticalDuplicateContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IdenticalDuplicateContracts.swift; sourceTree = "<group>"; };
 		SL0001010000000000000002 /* PerceptualImageHash.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerceptualImageHash.swift; sourceTree = "<group>"; };
+		VD0001010000000000000001 /* OriginalVideoDigestService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OriginalVideoDigestService.swift; sourceTree = "<group>"; };
 		SL0001010000000000000003 /* FingerprintCompletionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FingerprintCompletionService.swift; sourceTree = "<group>"; };
 		SL0001010000000000000004 /* IdenticalDuplicateClusterService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IdenticalDuplicateClusterService.swift; sourceTree = "<group>"; };
 		SL0001010000000000000101 /* IdenticalDuplicateDetectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IdenticalDuplicateDetectionTests.swift; sourceTree = "<group>"; };
@@ -1363,6 +1365,7 @@
 			isa = PBXGroup;
 			children = (
 				SL0001010000000000000002 /* PerceptualImageHash.swift */,
+				VD0001010000000000000001 /* OriginalVideoDigestService.swift */,
 				SL0001010000000000000003 /* FingerprintCompletionService.swift */,
 				SL0001010000000000000004 /* IdenticalDuplicateClusterService.swift */,
 				SL0001010000000000000006 /* SimilarityVectorMath.swift */,
@@ -1675,6 +1678,7 @@
 				RH0000010000000000000011 /* RemoteHostSettingsView.swift in Sources */,
 				SL0000010000000000000001 /* IdenticalDuplicateContracts.swift in Sources */,
 				SL0000010000000000000002 /* PerceptualImageHash.swift in Sources */,
+				VD0000010000000000000001 /* OriginalVideoDigestService.swift in Sources */,
 				SL0000010000000000000003 /* FingerprintCompletionService.swift in Sources */,
 				SL0000010000000000000004 /* IdenticalDuplicateClusterService.swift in Sources */,
 				SL0000010000000000000005 /* NearDuplicateSceneContracts.swift in Sources */,
