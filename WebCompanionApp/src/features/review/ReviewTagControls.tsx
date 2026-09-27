@@ -1,3 +1,4 @@
+import type { AssetMediaKind } from '@/api/contracts/asset';
 import { useMemo, useState } from 'react';
 
 import { useQueryClient } from '@tanstack/react-query';
@@ -15,6 +16,7 @@ import {
 } from '@/api/training';
 
 type ReviewTagControlsProps = {
+  mediaKind: AssetMediaKind;
   settings: GeneralSettings | undefined;
   sourceIDs: string[];
   suggestions: TagLibrarySuggestionSnapshot | undefined;
@@ -30,6 +32,7 @@ const methodLabels: Record<SuggestionThresholdMethod, string> = {
 const activeTagSuggestionPhases = new Set(['preparingCandidates', 'scoring', 'publishing']);
 
 export function ReviewTagControls({
+  mediaKind,
   settings,
   sourceIDs,
   suggestions,
@@ -53,8 +56,8 @@ export function ReviewTagControls({
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ['general-settings'] }),
       queryClient.invalidateQueries({ queryKey: ['review-overview'] }),
-      queryClient.invalidateQueries({ queryKey: ['tag-library-suggestions', 'image'] }),
-      queryClient.invalidateQueries({ queryKey: ['training-activities', 'image'] }),
+      queryClient.invalidateQueries({ queryKey: ['tag-library-suggestions', mediaKind] }),
+      queryClient.invalidateQueries({ queryKey: ['training-activities', mediaKind] }),
       queryClient.invalidateQueries({ queryKey: ['jobs'] }),
     ]);
   }
@@ -106,7 +109,7 @@ export function ReviewTagControls({
       'feature',
       () =>
         launchTraining({
-          mediaKind: 'image',
+          mediaKind,
           method: 'featureKnn',
           tagIDs: [tag.id],
           sourceIDs,
@@ -118,7 +121,7 @@ export function ReviewTagControls({
   function generatePersonalSuggestions(method: 'personalCentroid' | 'personalAdamW') {
     void perform(
       method,
-      () => generateTagLibrarySuggestions({ mediaKind: 'image', method, tagID: tag.id, sourceIDs }),
+      () => generateTagLibrarySuggestions({ mediaKind, method, tagID: tag.id, sourceIDs }),
       `Mac 已接受${methodLabels[method]}建议任务。`,
     );
   }

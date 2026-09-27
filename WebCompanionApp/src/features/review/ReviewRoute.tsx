@@ -116,10 +116,11 @@ function ReviewOverview({
   sourceScope,
   search,
 }: ReviewWorkspaceProps) {
-  const sourceScopeKey = scopeKey(sourceIDs);
+  const mediaKind = new URLSearchParams(search).get('mediaKind') === 'video' ? 'video' : 'image';
+  const sourceScopeKey = `${mediaKind}:${scopeKey(sourceIDs)}`;
   const overview = useQuery({
     queryKey: ['review-overview', sourceScopeKey],
-    queryFn: ({ signal }) => fetchReviewOverview(sourceIDs, signal),
+    queryFn: ({ signal }) => fetchReviewOverview(sourceIDs, signal, mediaKind),
     placeholderData: (previous) => previous,
   });
   const tags = useQuery({
@@ -147,8 +148,8 @@ function ReviewOverview({
     enabled: supportsGeneralSettings,
   });
   const tagSuggestions = useQuery({
-    queryKey: ['tag-library-suggestions', 'image'],
-    queryFn: ({ signal }) => fetchTagLibrarySuggestions('image', signal),
+    queryKey: ['tag-library-suggestions', mediaKind],
+    queryFn: ({ signal }) => fetchTagLibrarySuggestions(mediaKind, signal),
     enabled: supportsLibrarySuggestions,
     refetchInterval: (query) =>
       query.state.data?.activities.some((activity) =>
@@ -269,6 +270,7 @@ function ReviewOverview({
                             </p>
                           ) : null}
                           <ReviewTagControls
+                            mediaKind={mediaKind}
                             settings={settings.data}
                             sourceIDs={effectiveSourceIDs}
                             suggestions={tagSuggestions.data}
@@ -311,7 +313,8 @@ function ReviewQueue({
   const queryClient = useQueryClient();
   const gridRef = useRef<HTMLDivElement>(null);
   const hasFocusedGrid = useRef(false);
-  const sourceScopeKey = scopeKey(sourceIDs);
+  const mediaKind = new URLSearchParams(search).get('mediaKind') === 'video' ? 'video' : 'image';
+  const sourceScopeKey = `${mediaKind}:${scopeKey(sourceIDs)}`;
   const queueScopeKey = `${tagID}:${sourceScopeKey}`;
   const density = reviewDensity(viewParameters);
   const aspect = viewParameters.get('aspect') === 'original' ? 'original' : 'square';
@@ -323,12 +326,12 @@ function ReviewQueue({
   const [previewItemKey, setPreviewItemKey] = useState<string | null>(null);
   const overview = useQuery({
     queryKey: ['review-overview', sourceScopeKey],
-    queryFn: ({ signal }) => fetchReviewOverview(sourceIDs, signal),
+    queryFn: ({ signal }) => fetchReviewOverview(sourceIDs, signal, mediaKind),
     placeholderData: (previous) => previous,
   });
   const queue = useInfiniteQuery({
     queryKey: ['review-queue', tagID, sourceScopeKey],
-    queryFn: ({ pageParam, signal }) => fetchReviewQueue(tagID, sourceIDs, pageParam, signal),
+    queryFn: ({ pageParam, signal }) => fetchReviewQueue(tagID, sourceIDs, pageParam, signal, mediaKind),
     initialPageParam: null as string | null,
     getNextPageParam: (page) => page.nextCursor ?? undefined,
     placeholderData: (previous) => previous,
@@ -783,6 +786,7 @@ export function ReviewRoute() {
   const [parameters, setParameters] = useSearchParams();
   const search = parameters.toString();
   const tagID = parameters.get('tag');
+  const mediaKind = parameters.get('mediaKind') === 'video' ? 'video' : 'image';
   const sourceIDs = useMemo(() => reviewSourceIDs(new URLSearchParams(search)), [search]);
   const sources = useQuery({
     queryKey: ['sources'],
@@ -805,6 +809,17 @@ export function ReviewRoute() {
     [search, setParameters],
   );
   const sourceScope = (
+    <>
+      <label>媒体范围
+        <select aria-label="审核媒体范围" value={mediaKind} onChange={(event) => {
+          const next = new URLSearchParams(search);
+          next.set('mediaKind', event.target.value);
+          setParameters(next, { replace: true });
+        }}>
+          <option value="image">照片</option>
+          <option value="video">视频</option>
+        </select>
+      </label>
     <ReviewSourceScope
       isError={sources.isError}
       isPending={sources.isPending}
@@ -812,10 +827,12 @@ export function ReviewRoute() {
       sourceIDs={sourceIDs}
       sources={activeSources}
     />
+    </>
   );
 
   return tagID ? (
     <ReviewQueue
+      key={`${mediaKind}:${tagID}:${scopeKey(sourceIDs)}`}
       availableSourceIDs={activeSources.map((source) => source.id)}
       search={search}
       sourceIDs={sourceIDs}
@@ -824,6 +841,7 @@ export function ReviewRoute() {
     />
   ) : (
     <ReviewOverview
+      key={mediaKind}
       availableSourceIDs={activeSources.map((source) => source.id)}
       search={search}
       sourceIDs={sourceIDs}

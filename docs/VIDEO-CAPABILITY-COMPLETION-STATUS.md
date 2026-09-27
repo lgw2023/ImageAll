@@ -350,3 +350,12 @@
 - ios-standard-client-tests.log：共享客户端全套 66/66 PASS，新增视频能力与标准命令鉴权／身份检查，保留视频范围播放等回归。ios-standard-build-final.log：iOS Simulator BUILD SUCCEEDED；git diff --check PASS。未执行模拟器 UI 点击、真机或实际 Swift Host 联调，不将编译成功称为端到端运行验收。
 - iPhone 个人训练／样本建议／按标签建议及 Web review 媒体硬编码仍为缺口；标准按钮不能代替这些页面。P1／P2／P3 IN_PROGRESS，P4–P7 NOT_STARTED，目标 active。下一动作：补跨端训练／个人建议的媒体上下文与最小入口，以及真实合成训练产物→远端持久审核整链。
 - 源摘要 ios-standard-source-sha256.json。Workspace 原有 75/5 和项目／OpenMontage 并行差异保留；Web 本轮未改。未读取真实媒体、未云端下载／源端写入／外部传输、未 push／替换 App。
+
+
+## P3 Web 审核范围与命令媒体对齐（2026-09-27）
+
+- 上轮为 progress：91b1afe4 增加 iPhone 标准分析。本轮修复 Web review API 固定 image，以及 ReviewTagControls 的训练／个人建议固定 image。审核页新增照片／视频 URL 范围，概览、队列、模型查询、命令及缓存使用同一媒体；切换范围重建页面实例，避免选择／撤销串域。
+- Web 本地提交 211a8ac4 只包含本轮 4 文件差异：对原 HEAD 应用同一媒体变换生成隔离暂存补丁，不把已有 review 交互改动一起提交；主线应用该补丁和新增测试。Web 原有 review、地图、样式差异保留，生成资源只留 Web 工作区。由于两工作区已有页面结构差异，不宣称整个 ReviewRoute 字节一致。
+- review-media-typecheck.log、review-media-main-typecheck.log、review-media-lint.log、review-media-build.log PASS；review-media-e2e.log 1/1 PASS，覆盖 video 概览／按标签模型查询、特征训练请求、队列、刷新保留和切回 image；review-media-photo-regression.log 1/1 PASS，照片门槛与建议命令回归。合成 HTTP 浏览器测试运行于独立 Web 工作区，非主线生成资源或真实 Swift Host UI 验收。
+- git diff --check PASS，review-media-source-sha256.json 绑定主线源文件。Workspace 原有 75/5、项目／OpenMontage 并行改动保留。未读真实媒体、未云端获取／源端写入／外部传输、未 push／替换 App。
+- 视频审核单项预览播放、iPhone 个人训练／建议入口和真实合成训练产物→远端持久审核整链仍需补齐；媒体请求对齐不能替代视频审核播放验收。P1／P2／P3 IN_PROGRESS，P4–P7 NOT_STARTED，目标 active。下一动作：补 Web 视频审核预览与播放，继续剩余跨端与完整训练链。

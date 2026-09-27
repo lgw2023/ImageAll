@@ -1,3 +1,4 @@
+import type { AssetMediaKind } from './contracts/asset';
 import { requestJSON } from './client';
 import {
   reviewDecisionResponseSchema,
@@ -11,8 +12,8 @@ function appendSourceScope(parameters: URLSearchParams, sourceIDs: string[] | nu
   if (sourceIDs !== null) parameters.set('sourceIDs', sourceIDs.join(','));
 }
 
-export function fetchReviewOverview(sourceIDs: string[] | null, signal?: AbortSignal) {
-  const parameters = new URLSearchParams({ mediaKind: 'image' });
+export function fetchReviewOverview(sourceIDs: string[] | null, signal?: AbortSignal, mediaKind: AssetMediaKind = 'image') {
+  const parameters = new URLSearchParams({ mediaKind });
   appendSourceScope(parameters, sourceIDs);
   return requestJSON(`/v1/review/overview?${parameters.toString()}`, reviewOverviewSchema, {
     signal: signal ?? null,
@@ -24,8 +25,9 @@ export function fetchReviewQueue(
   sourceIDs: string[] | null,
   cursor: string | null,
   signal?: AbortSignal,
+  mediaKind: AssetMediaKind = 'image',
 ) {
-  const parameters = new URLSearchParams({ tagID, mediaKind: 'image', limit: '40' });
+  const parameters = new URLSearchParams({ tagID, mediaKind, limit: '40' });
   appendSourceScope(parameters, sourceIDs);
   if (cursor) parameters.set('cursor', cursor);
   return requestJSON(`/v1/review/queue?${parameters.toString()}`, reviewQueuePageSchema, {
