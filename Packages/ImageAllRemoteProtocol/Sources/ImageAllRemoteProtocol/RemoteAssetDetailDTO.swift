@@ -8,6 +8,11 @@ public struct RemoteAssetDetail: Codable, Sendable, Equatable, Identifiable {
     public let fileName: String?
     public let relativePath: String?
     public let mediaType: String
+    /// Explicit business domain; absent on older Hosts. Resource format remains in mediaType.
+    public let mediaKind: RemoteAssetMediaKind?
+    public var resolvedMediaKind: RemoteAssetMediaKind? {
+        mediaKind ?? RemoteAssetMediaKind.legacyMediaType(mediaType)
+    }
     public let availability: RemoteAssetAvailability
     public let contentRevision: Int
     public let acceptedTagCount: Int
@@ -32,6 +37,7 @@ public struct RemoteAssetDetail: Codable, Sendable, Equatable, Identifiable {
         fileName: String?,
         relativePath: String?,
         mediaType: String,
+        mediaKind: RemoteAssetMediaKind? = nil,
         availability: RemoteAssetAvailability,
         contentRevision: Int,
         acceptedTagCount: Int,
@@ -53,6 +59,7 @@ public struct RemoteAssetDetail: Codable, Sendable, Equatable, Identifiable {
         self.fileName = fileName
         self.relativePath = relativePath
         self.mediaType = mediaType
+        self.mediaKind = mediaKind
         self.availability = availability
         self.contentRevision = contentRevision
         self.acceptedTagCount = acceptedTagCount

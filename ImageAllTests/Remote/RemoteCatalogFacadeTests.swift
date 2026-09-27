@@ -3160,6 +3160,8 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         let detail = try await facade.fetchInspectorDetail(assetID: assetID)
         XCTAssertEqual(detail.assetID, assetID)
         XCTAssertEqual(detail.tags.first?.decision, .accepted)
+        XCTAssertEqual(detail.mediaKind, .video)
+        XCTAssertEqual(detail.mediaType, "public.mpeg-4")
         XCTAssertEqual(detail.durationMs, 12_345)
         XCTAssertEqual(detail.fingerprintSizeBytes, 4_500_000)
         XCTAssertEqual(detail.pendingSuggestions?.first?.tagID, suggestionTagID)
