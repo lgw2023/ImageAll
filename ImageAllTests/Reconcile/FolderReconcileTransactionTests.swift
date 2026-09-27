@@ -109,6 +109,7 @@ final class FolderReconcileTransactionTests: XCTestCase {
                 UPDATE asset SET
                     file_name = 'unchanged.mov',
                     media_kind = 'video',
+                    video_metadata_version = ?,
                     duration_ms = 4_321,
                     width = 1_920,
                     height = 1_080,
@@ -116,7 +117,7 @@ final class FolderReconcileTransactionTests: XCTestCase {
                     availability = 'available'
                 WHERE id = ?
                 """,
-                arguments: [assetID.uuidString.lowercased()]
+                arguments: [AVFoundationFolderVideoMetadataReader.policyVersion, assetID.uuidString.lowercased()]
             )
         }
 
@@ -140,6 +141,7 @@ final class FolderReconcileTransactionTests: XCTestCase {
                 width: 1_920,
                 height: 1_080,
                 mediaCreatedAtMs: 1_700_000_000_000,
+                videoMetadataVersion: AVFoundationFolderVideoMetadataReader.policyVersion,
                 availability: .available,
                 sizeBytes: 1_234,
                 modifiedAtNs: 5_678,

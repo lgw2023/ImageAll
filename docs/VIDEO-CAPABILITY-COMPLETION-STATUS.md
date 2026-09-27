@@ -122,3 +122,15 @@
 - `video-metadata-build.log`：Mac TEST BUILD SUCCEEDED。直接 XCTest `ImageAllTests.FolderMediaClassificationTests`，`video-metadata-tests.log`：PASS 18/18，含真实合成 MOV → 生产分类 → reconcile → SQL 持久字段、无时区／非法坐标拒绝、视频资源释放及照片格式／GPS 回归。
 - 测试和构建沿用证据根私有路径。源摘要 `p2-metadata-source-sha256.json`；`git diff --check` PASS。仅本轮读取器、分类测试、ADR 和本进度文件提交；不纳入并行改动。
 - 下一具体动作：接入有界历史视频元数据回填与技术信息存储，然后完善视频条件／地图范围；P1 未验项继续保留。P3–P7 未开始，真实媒体／云端下载／真机／发布全部 NOT_RUN。
+
+## P2 历史视频元数据版本与按需补读（2026-09-27）
+
+- 发现上一切片对历史记录的实际缺口：旧视频指纹未变时复用旧观察，新增的时间／GPS 提取不会被调用。修复在已有扫描路径完成，入口为文件夹来源“立即重扫”，不另建批量扫描器。
+- 新增 V053 `video_metadata_version`，旧资产默认 0；当前分类策略 1。版本不足时补读容器，完成后按指纹复用（缺失字段也不无限重读），记录随既有批次事务写入。元数据升级不递增内容修订号，已有位置／place_id 保留。
+- 原扫描队列的分批、检查点、取消及恢复机制继续使用。版本 migration 本身不读媒体、不启动扫描。技术规格存储与地图回填范围还未完成，不能将此切片称为整个 P2 回填验收。
+- 新增 V052→V053 合成升级测试，验证幂等及已有媒体时间／内容修订不变。扩展真实合成 MOV 入库测试，先退回旧版本和空元数据，再重扫恢复，最后验证当前版本复用及已有坐标保留。
+- 第一轮编译修复了 throwing 短路表达式和异步测试缺 await。第一轮回归 74 项有 6 项失败：5 项为历史迁移回放夹具未剥离 V053，1 项为当前版本复用夹具仍使用默认版本 0；已分别修正夹具，最终 74/74 通过。
+
+- 最终 `video-backfill-build-accepted.log`：TEST BUILD SUCCEEDED；`video-backfill-tests-final.log`：直接 XCTest 74/74 PASS（`FolderMediaClassificationTests`、`FolderReconcileLeaseMatrixTests`、`FolderReconcileTransactionTests`、`CatalogMigrationTests`）。复用私有 TMPDIR／构建路径，未启动生产测试宿主。
+- 验证范围包括历史迁移回放、V053 幂等、合成视频旧策略补读与复用、原坐标保留、文件内容修订不变，以及现有中断恢复、取消、批次原子性。地图界面的混合媒体计数与单独回填按钮尚未完成，不能从这些测试推出其已可用。
+- 证据源摘要 `p2-backfill-source-sha256.json`；`git diff --check` PASS。没有读取真实媒体、源端写入、云端请求或外部传输。下一步补技术信息存储／详情与视频查询条件，P1 未验项继续在原列表保留。

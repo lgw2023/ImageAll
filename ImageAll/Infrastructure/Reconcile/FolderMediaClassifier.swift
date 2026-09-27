@@ -17,6 +17,7 @@ struct FolderMediaMetadata: Equatable, Sendable {
     let width: Int?
     let height: Int?
     let mediaCreatedAtMs: Int64?
+    let videoMetadataVersion: Int
     let location: AssetLocationCoordinate?
     let sizeBytes: Int64?
     let modifiedAtNs: Int64?
@@ -31,6 +32,7 @@ struct FolderMediaMetadata: Equatable, Sendable {
         height: Int?,
         mediaCreatedAtMs: Int64?,
         location: AssetLocationCoordinate? = nil,
+        videoMetadataVersion: Int = 0,
         sizeBytes: Int64?,
         modifiedAtNs: Int64?,
         resourceID: Data?,
@@ -43,6 +45,7 @@ struct FolderMediaMetadata: Equatable, Sendable {
         self.height = height
         self.mediaCreatedAtMs = mediaCreatedAtMs
         self.location = location
+        self.videoMetadataVersion = videoMetadataVersion
         self.sizeBytes = sizeBytes
         self.modifiedAtNs = modifiedAtNs
         self.resourceID = resourceID
@@ -68,6 +71,7 @@ protocol FolderVideoMetadataReading: Sendable {
 }
 
 struct AVFoundationFolderVideoMetadataReader: FolderVideoMetadataReading {
+    static let policyVersion = 1
     func metadata(fileURL: URL, declaredType: String) -> FolderVideoMetadata? {
         autoreleasepool {
             let asset = AVURLAsset(url: fileURL)
@@ -187,6 +191,7 @@ struct FolderMediaClassifier: Sendable {
                         height: video.height,
                         mediaCreatedAtMs: video.mediaCreatedAtMs,
                         location: video.location,
+                        videoMetadataVersion: AVFoundationFolderVideoMetadataReader.policyVersion,
                         sizeBytes: fingerprint.sizeBytes,
                         modifiedAtNs: fingerprint.modifiedAtNs,
                         resourceID: fingerprint.resourceID
@@ -200,6 +205,7 @@ struct FolderMediaClassifier: Sendable {
                     width: nil,
                     height: nil,
                     mediaCreatedAtMs: nil,
+                    videoMetadataVersion: AVFoundationFolderVideoMetadataReader.policyVersion,
                     sizeBytes: fingerprint.sizeBytes,
                     modifiedAtNs: fingerprint.modifiedAtNs,
                     resourceID: fingerprint.resourceID,

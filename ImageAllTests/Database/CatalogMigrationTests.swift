@@ -3,6 +3,25 @@ import XCTest
 @testable import ImageAll
 
 final class CatalogMigrationTests: XCTestCase {
+    func testV053MarksLegacyVideoMetadataPendingWithoutChangingMediaFacts() throws {
+        let url = try makeTempDatabaseURL()
+        let pool = try DatabasePool(path: url.path)
+        try CatalogDatabase.makeMigrator().migrate(pool, upTo: CatalogMigrationID.v052AddPhoneArchiveCompletionReceipt)
+        let database = CatalogDatabase(pool: pool)
+        let ids = try CatalogQueryTestSupport.seedCatalogFixture(database: database, repository: CatalogRepository(database: database))
+        try pool.write { db in
+            try db.execute(sql: "UPDATE asset SET media_kind = 'video', media_type = 'public.mpeg-4', duration_ms = 1000 WHERE id = ?", arguments: [ids.assetNewest.uuidString.lowercased()])
+        }
+        let before = try pool.read { db in try Row.fetchAll(db, sql: "SELECT id, media_created_at_ms, content_revision FROM asset ORDER BY id") }
+        try CatalogDatabase.makeMigrator().migrate(pool)
+        try CatalogDatabase.makeMigrator().migrate(pool)
+        let after = try pool.read { db in try Row.fetchAll(db, sql: "SELECT id, media_created_at_ms, content_revision FROM asset ORDER BY id") }
+        XCTAssertEqual(before, after)
+        let versions = try pool.read { db in try Int.fetchAll(db, sql: "SELECT video_metadata_version FROM asset") }
+        XCTAssertFalse(versions.isEmpty)
+        XCTAssertTrue(versions.allSatisfy { $0 == 0 })
+    }
+
     func testV050AndV051PreservePendingIntentAndAllowClearAndNewField() throws {
         let url = try makeTempDatabaseURL()
         let pool = try DatabasePool(path: url.path)
@@ -1679,6 +1698,9 @@ final class CatalogMigrationTests: XCTestCase {
     }
 
     private static func dropV035AndLaterTables(_ db: Database) throws {
+        try db.execute(sql: "ALTER TABLE asset DROP COLUMN video_metadata_version")
+        try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
+                       arguments: [CatalogMigrationID.v053AddVideoMetadataPolicy])
         try db.execute(sql: "DROP TABLE IF EXISTS migration_completion_receipt")
         try db.execute(
             sql: "DELETE FROM grdb_migrations WHERE identifier = ?",

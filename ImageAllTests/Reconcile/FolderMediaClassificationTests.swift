@@ -45,6 +45,33 @@ final class FolderMediaClassificationTests: XCTestCase {
         XCTAssertEqual(row?["latitude"] as Double?, -33.8688)
         XCTAssertEqual(row?["longitude"] as Double?, 151.2093)
         XCTAssertEqual(row?["source_kind"] as String?, "embeddedGPS")
+        // Simulate an unchanged legacy video that was scanned before GPS/date support.
+        try await database.pool.write { db in
+            try db.execute(sql: "UPDATE asset SET video_metadata_version = 0, media_created_at_ms = NULL")
+            try db.execute(sql: "UPDATE asset_location SET latitude = NULL, longitude = NULL, source_kind = 'none'")
+        }
+        let repository = GRDBFolderReconcileRepository(queue: queue)
+        func reusable() throws -> FolderReconcileAssetObservation? {
+            try repository.lookupReusableObservation(sourceID: sourceID, relativePath: "capture.mov", fileName: "capture.mov",
+                sizeBytes: try XCTUnwrap(metadata.sizeBytes), modifiedAtNs: try XCTUnwrap(metadata.modifiedAtNs), resourceID: metadata.resourceID)
+        }
+        XCTAssertNil(try reusable(), "Old policy must force one metadata read despite matching fingerprint")
+        _ = try FolderReconcileTestSupport.enqueueReconcileJob(queue: queue, sourceID: sourceID)
+        XCTAssertEqual(try coordinator.claimAndExecuteOnce(ClaimNextInput(owner: "video-backfill", leaseDurationMs: FolderReconcileTestSupport.leaseDurationMs))?.snapshot.state, .completed)
+        let refreshed = try XCTUnwrap(reusable())
+        XCTAssertEqual(refreshed.videoMetadataVersion, AVFoundationFolderVideoMetadataReader.policyVersion)
+        XCTAssertEqual(refreshed.mediaCreatedAtMs, expected)
+        XCTAssertEqual(refreshed.location?.latitude, -33.8688)
+        let revision = try await database.pool.read { db in try Int.fetchOne(db, sql: "SELECT content_revision FROM asset") }
+        XCTAssertEqual(revision, 1, "Metadata-only upgrade must not claim original bytes changed")
+        // A later metadata policy must not erase an existing confirmed coordinate.
+        try await database.pool.write { db in
+            try db.execute(sql: "UPDATE asset SET video_metadata_version = 0")
+            try db.execute(sql: "UPDATE asset_location SET latitude = 10, longitude = 20")
+        }
+        _ = try FolderReconcileTestSupport.enqueueReconcileJob(queue: queue, sourceID: sourceID)
+        XCTAssertEqual(try coordinator.claimAndExecuteOnce(ClaimNextInput(owner: "video-preserve", leaseDurationMs: FolderReconcileTestSupport.leaseDurationMs))?.snapshot.state, .completed)
+        XCTAssertEqual(try reusable()?.location?.latitude, 10)
         XCTAssertEqual(try fixture.snapshotDetailed(root: root), before)
     }
 

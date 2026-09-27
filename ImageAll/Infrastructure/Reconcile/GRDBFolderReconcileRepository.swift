@@ -30,7 +30,7 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
                 db,
                 sql: """
                 SELECT a.media_kind, a.media_type, a.duration_ms, a.width, a.height,
-                       a.media_created_at_ms, a.availability,
+                       a.media_created_at_ms, a.availability, a.video_metadata_version,
                        location.asset_id AS location_observation_asset_id,
                        location.latitude, location.longitude
                 FROM asset a
@@ -60,6 +60,10 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
             let mediaKind = MediaKind(rawValue: row["media_kind"]),
             let availability = AssetAvailability(rawValue: row["availability"])
             else {
+                return nil
+            }
+            let videoMetadataVersion: Int = row["video_metadata_version"]
+            if mediaKind == .video, videoMetadataVersion < AVFoundationFolderVideoMetadataReader.policyVersion {
                 return nil
             }
             let mediaType: String = row["media_type"]
@@ -99,6 +103,7 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
                 height: row["height"],
                 mediaCreatedAtMs: row["media_created_at_ms"],
                 location: location,
+                videoMetadataVersion: videoMetadataVersion,
                 availability: availability,
                 sizeBytes: sizeBytes,
                 modifiedAtNs: modifiedAtNs,
@@ -837,11 +842,11 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
             sql: """
             INSERT INTO asset (
                 id, source_id, locator_kind, relative_path, file_name, locator_state,
-                media_kind, media_type, duration_ms, width, height,
+                media_kind, media_type, video_metadata_version, duration_ms, width, height,
                 media_created_at_ms, media_modified_at_ms, file_modified_at_ms,
                 content_revision, last_seen_generation, availability,
                 record_created_at_ms, record_updated_at_ms
-            ) VALUES (?, ?, 'file', ?, ?, 'current', ?, ?, ?, ?, ?, ?, NULL, ?, 1, ?, ?, ?, ?)
+            ) VALUES (?, ?, 'file', ?, ?, 'current', ?, ?, ?, ?, ?, ?, ?, NULL, ?, 1, ?, ?, ?, ?)
             """,
             arguments: [
                 assetID.uuidString.lowercased(),
@@ -850,6 +855,7 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
                 observation.fileName,
                 observation.mediaKind.rawValue,
                 observation.mediaType,
+                observation.mediaKind == .video ? observation.videoMetadataVersion : 0,
                 observation.durationMs,
                 observation.width,
                 observation.height,
@@ -879,12 +885,23 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
         refreshLocation: Bool,
         nowMs: Int64
     ) throws {
+        let previousVideoVersion: Int
+        if observation.mediaKind == .video {
+            previousVideoVersion = try Int.fetchOne(
+                db, sql: "SELECT video_metadata_version FROM asset WHERE id = ?",
+                arguments: [assetID.uuidString.lowercased()]
+            ) ?? 0
+        } else {
+            previousVideoVersion = 0
+        }
+        let upgradesVideoMetadata = observation.mediaKind == .video && previousVideoVersion < observation.videoMetadataVersion
         try db.execute(
             sql: """
             UPDATE asset SET
                 file_name = ?,
                 media_kind = ?,
                 media_type = ?,
+                video_metadata_version = ?,
                 duration_ms = ?,
                 width = ?,
                 height = ?,
@@ -900,6 +917,7 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
                 observation.fileName,
                 observation.mediaKind.rawValue,
                 observation.mediaType,
+                observation.mediaKind == .video ? observation.videoMetadataVersion : 0,
                 observation.durationMs,
                 observation.width,
                 observation.height,
@@ -916,7 +934,8 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
         // A stable fingerprint means this is the same content. Preserve any
         // richer Photos or manually resolved location row, including place_id,
         // instead of replacing it with the folder decoder's best-effort facts.
-        if refreshLocation {
+        let canFillUnlocated = try upgradesVideoMetadata && (Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset_location WHERE asset_id = ? AND (latitude IS NOT NULL OR longitude IS NOT NULL OR place_id IS NOT NULL)", arguments: [assetID.uuidString.lowercased()]) ?? 0) == 0
+        if refreshLocation || canFillUnlocated {
             try upsertLocation(
                 db: db,
                 assetID: assetID,
@@ -1092,6 +1111,7 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
                 file_name = ?,
                 media_kind = ?,
                 media_type = ?,
+                video_metadata_version = ?,
                 duration_ms = ?,
                 width = ?,
                 height = ?,
@@ -1108,6 +1128,7 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
                 observation.fileName,
                 observation.mediaKind.rawValue,
                 observation.mediaType,
+                observation.mediaKind == .video ? observation.videoMetadataVersion : 0,
                 observation.durationMs,
                 observation.width,
                 observation.height,

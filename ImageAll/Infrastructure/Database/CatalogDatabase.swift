@@ -107,6 +107,7 @@ struct CatalogDatabase: Sendable {
         V050AllowClearedPhoneTagOutboundIntentMigration.register(on: &migrator)
         V051AllowNewPhoneTagOutboundIntentMigration.register(on: &migrator)
         V052AddPhoneArchiveCompletionReceiptMigration.register(on: &migrator)
+        V053AddVideoMetadataPolicyMigration.register(on: &migrator)
         return migrator
     }
 
@@ -3458,6 +3459,16 @@ enum V027PartitionPersonalizationByMediaKindMigration {
                 """
             )
             try db.execute(sql: "PRAGMA foreign_keys = ON")
+        }
+    }
+}
+
+
+/// Existing videos remain version zero until an explicit reconcile inspects them.
+enum V053AddVideoMetadataPolicyMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v053AddVideoMetadataPolicy) { db in
+            try db.execute(sql: "ALTER TABLE asset ADD COLUMN video_metadata_version INTEGER NOT NULL DEFAULT 0 CHECK(video_metadata_version >= 0)")
         }
     }
 }
