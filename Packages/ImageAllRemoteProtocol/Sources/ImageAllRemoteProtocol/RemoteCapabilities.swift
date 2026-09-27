@@ -53,6 +53,8 @@ public struct RemoteCapabilities: Codable, Sendable, Equatable {
     public let hostID: UUID?
     public let certificateFingerprintSHA256: String?
     public let localLibrarySnapshotChunkBytes: Int?
+    /// Optional so older clients ignore this without decoding a new capability enum case.
+    public let videoRangeStreamingVersion: Int?
 
     public init(
         protocolVersion: Int = RemoteProtocolVersion.current,
@@ -71,7 +73,8 @@ public struct RemoteCapabilities: Codable, Sendable, Equatable {
         usesTLS: Bool = false,
         hostID: UUID? = nil,
         certificateFingerprintSHA256: String? = nil,
-        localLibrarySnapshotChunkBytes: Int? = nil
+        localLibrarySnapshotChunkBytes: Int? = nil,
+        videoRangeStreamingVersion: Int? = nil
     ) {
         self.protocolVersion = protocolVersion
         self.hostAppVersion = hostAppVersion
@@ -82,5 +85,6 @@ public struct RemoteCapabilities: Codable, Sendable, Equatable {
         self.hostID = hostID
         self.certificateFingerprintSHA256 = certificateFingerprintSHA256
         self.localLibrarySnapshotChunkBytes = localLibrarySnapshotChunkBytes
+        self.videoRangeStreamingVersion = videoRangeStreamingVersion
     }
 }

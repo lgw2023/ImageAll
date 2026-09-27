@@ -2257,7 +2257,7 @@ private struct RemoteAssetPreviewView: View {
             }
             .task(id: currentAssetID) {
                 guard !reviewCompleted else { return }
-                await model.loadPreview(assetID: currentAssetID)
+                await model.loadPreview(assetID: currentAssetID, mediaKindHint: currentPreviewMediaKind)
                 guard !Task.isCancelled else { return }
                 if target.context == .library,
                    let currentAsset = model.assets.first(where: { $0.id == currentAssetID })
@@ -2469,9 +2469,24 @@ private struct RemoteAssetPreviewView: View {
         .accessibilityIdentifier("library-preview-tag-controls")
     }
 
+    private var currentPreviewMediaKind: RemoteAssetMediaKind? {
+        if let detail = model.previewDetail, detail.assetID == currentAssetID { return detail.resolvedMediaKind }
+        return model.assets.first(where: { $0.id == currentAssetID })?.resolvedMediaKind
+            ?? (target.context == .review ? model.reviewMediaKind : nil)
+    }
+
     @ViewBuilder
     private var preview: some View {
-        if model.isLoadingPreview {
+        if currentPreviewMediaKind == .video {
+            RemoteVideoPreviewView(playback: model.videoPlayback, message: model.videoPreviewMessage) {
+                Task { await model.loadPreview(assetID: currentAssetID, mediaKindHint: currentPreviewMediaKind) }
+            }
+            .frame(minHeight: 280, maxHeight: 520)
+        } else if model.previewDetail?.assetID == currentAssetID,
+                  model.previewDetail?.resolvedMediaKind == nil {
+            ContentUnavailableView("无法识别媒体类型", systemImage: "questionmark.video",
+                                   description: Text("请刷新目录或升级 Mac Host 后重试。"))
+        } else if model.isLoadingPreview {
             RoundedRectangle(cornerRadius: 16)
                 .fill(.secondary.opacity(0.12))
                 .aspectRatio(4 / 3, contentMode: .fit)

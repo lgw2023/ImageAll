@@ -17,7 +17,7 @@
 | 阶段 | 工程状态 | 验证 | 当前切片 |
 |---|---|---|---|
 | P0 | VERIFIED | PASS（静态盘点） | 基线、边界、首个切片与测试路径明确；不等于功能通过 |
-| P1 | IN_PROGRESS | 分切片 PASS；完整闭环未验 | 媒体契约已交付；Mac 查看器构建／合成测试 PASS；iPhone 待补 |
+| P1 | IN_PROGRESS | 分切片 PASS；完整闭环未验 | 媒体契约已交付；Mac／iPhone 查看器构建／合成测试 PASS；跨端联调待补 |
 | P2 | NOT_STARTED | NOT_RUN | 文件夹视频时间与位置，再接筛选／地图／显式云端获取 |
 | P3 | NOT_STARTED | NOT_RUN | 复核代表帧模型隔离，接远端建议与审核持久事实 |
 | P4 | NOT_STARTED | NOT_RUN | 有界完整字节摘要、修订复核、合成回收恢复 |
@@ -31,7 +31,7 @@
 
 | 能力／来源 | Mac | Web | iPhone Companion |
 |---|---|---|---|
-| 文件夹、本地 PhotoKit 视频浏览 | 图库／审核／瘦身共用播放器已实现，控制器／模型合成 PASS；UI 待验 | UTI／显式媒体域视频分支通过合成验证，主线集成待办 | 已有筛选；播放待核接 |
+| 文件夹、本地 PhotoKit 视频浏览 | 图库／审核／瘦身共用播放器已实现，控制器／模型合成 PASS；UI 待验 | UTI／显式媒体域视频分支通过合成验证，主线集成待办 | 认证分段播放已实现，合成解码／seek PASS；实体设备待验 |
 | 云端原件不可用 | 本地视频请求默认禁下载；显式获取待做 | 不得借照片下载状态冒充视频支持 | 待核明确失败状态 |
 | 手机独立归档 | 由 ADR-102 并行实施；不等同主图库视频身份 | 不适用当前主资产闭环 | 独立本地图库不在本目标重建 |
 | 视频时间／GPS／地图 | 文件夹视频时间 nil；地图 SQL 限 image | 依赖 Host，未验 | 依赖 Host，未验 |
@@ -45,7 +45,7 @@
 - Web 本地提交 `f84bff8b`：显式媒体域 schema、UTI/MIME 兼容、查看器／网格／Inspector／批量操作域选择、契约与浏览器合成测试。未包含已有审核、地图与生成资源改动；未 push。
 - Web 必需主线集成：`f84bff8b` → main，尚未执行；后续准备只包含本切片的集成，不合并长期分支。当前生产网页资源仍不包含该分支结果。
 - Swift 摘要／详情新增可选媒体域与兼容解析；Host 两个投影显式传领域媒体域。Mac 构建与直接 XCTest 已通过。
-- 下一条动作：主线契约提交 `6cc5a6ca` 已保存；完成 Mac 播放器定向合成验收与独立提交后，继续 iPhone 带认证的视频播放。
+- 下一条动作：主线契约提交 `6cc5a6ca` 已保存；Mac 播放器已提交 `83c5ceb1`；iPhone 认证播放本轮收尾后，继续 Web 必需集成与跨端联调。
 - 已确认复用点：`LibraryVideoPlaybackProviding` / `LibraryVideoPlaybackResource` 与既有 hover 生命周期测试；审核投影无媒体域但队列已有 `selectedMediaKind`；iPhone 当前仍解码图片预览，后续须接带认证的受控视频加载。
 - 基线静态检查退出码 0；素材、DB 与输出均计划置于上述私有根；日志绑定具体切片 diff / commit。
 - 真实图库、实体 iPhone、iCloud 下载、付费模型、发布安装：全部 NOT_RUN。
@@ -77,7 +77,7 @@
 ## P1 Mac 播放器切片（实现与定向合成通过）
 
 - 基于 `6cc5a6ca`；新增 `LibraryVideoViewer.swift`，系统播放／进度／音量／全屏控件和速度选择接入图库、审核、瘦身大图，保留系统播放器入口。空格在视频大图中控制播放／暂停，Esc 退出；照片路径保留。
-- 本轮准备独立提交；`LibraryWorkspace.swift` 和 `project.pbxproj` 含他人改动，启动副本保存在证据根 `p1-native-baseline/`，提交只取与该副本相比的本轮差异。
+- 本轮已独立提交 `83c5ceb1`；`LibraryWorkspace.swift` 和 `project.pbxproj` 含他人改动，启动副本保存在证据根 `p1-native-baseline/`，提交只取与该副本相比的本轮差异。
 - 复用 `LibraryVideoPlaybackProviding`，默认不下载云端原件。请求身份隔离迟到资源，选择／来源／媒体域切换和关闭／失焦释放租约。新组件不把显示封面或播放器资源提升为去重证据。
 - 合成测试文件 `LibraryVideoViewingTests.swift`：复用已登记 `synthetic-silent.mp4`；实际 AVPlayer 解码、seek、速度和音量、标签写入与数据库重开、照片人工事实回归、迟到请求、取消与损坏输入；Workspace 定向测试核对悬停互斥、视频大图标签动作与来源导航停止。
 - 构建中曾遇 Swift IRGen 对 actor 方法 Binding 引用的编译器崩溃，改为显式闭包；测试 GRDB async write 缺 await 已修正。最终构建与 7 项定向测试均通过，见下列日志。
@@ -87,3 +87,13 @@
 - `TMPDIR=<证据根>/test-tmp DYLD_INSERT_LIBRARIES=<私有 App>/Contents/MacOS/ImageAll.debug.dylib xctest -XCTest ImageAllTests.LibraryVideoViewingTests,ImageAllTests.LibraryWorkspaceModelTests/testVideoViewingKeepsTagActionsAndStopsOnSourceNavigation,ImageAllTests.LibraryWorkspaceModelTests/testVideoHoverStartsOnePlaybackAndReleasesItOnExit,ImageAllTests.LibraryWorkspaceModelTests/testSinglePhotoModeMovesPrimarySelectionAndReturnsToGrid,ImageAllTests.LibraryWorkspaceModelTests/testClosingLibrarySlimmingPreviewKeepsTheCurrentMemberSelected <私有 App>/Contents/PlugIns/ImageAllTests.xctest`：退出 0，7/7，`native-viewer-tests.log`。
 - 新主路径包含合成目录 DB → 实际视频加载／seek → 标签 repository 写入 → 下一视频 → 重开数据库读取，照片已有人工决定保持不变；另一个模型测试证明视频大图保留标签动作、悬停互斥与来源导航停止。尚未以完整原生 UI 点击或真实图库验证，不能称原生端全验收。
 - 构建及测试对应源文件摘要保存在 `p1-native-source-sha256.json`；`git diff --check` PASS。复用无声合成素材，未触及真实照片／视频或付费模型；未启动生产 Photos 宿主。
+
+## P1 iPhone 认证视频播放切片（2026-09-27）
+
+- 新增共享 `RemoteVideoPlayback` 与 iPhone `RemoteVideoPreviewView`。播放器使用不含凭据的私有 URL；请求通过已配对客户端发送 Bearer，复用证书绑定与禁止重定向策略。每次最多读取 256 KiB，无完整原件落盘缓存。系统预缓冲 10 秒只是提示，不宣称系统播放器总内存硬限额。
+- Host 可选 `videoRangeStreamingVersion=1` 保持旧协议解码兼容；分段请求携带预期修订号，Host 返回修订头，双方校验。打开资源后再查 locator；版本变化返回 409，不向播放器拼接另一版本。
+- 选择切换、关闭、后台与断连停止资源；同一资产同修订号的标签／收藏刷新保留播放器与进度。视频不进入照片预览预取路径；旧 Host、不可用原件、损坏响应和连接失败有明确提示，不自动下载 iCloud。
+- `client-regression-final.log`：共享客户端 PASS 64/64，含视频 5 项。合成 MP4 通过 AVFoundation 实际解码、seek、停止；错误状态／修订／偏移／MIME、取消及超量响应拒绝通过。URLSession 流式实现还验证未声明长度的超量 body 会中止。
+- `protocol-video-regression.log`：协议 PASS 73/73；`ios-video-build-final.log`：iOS Simulator 目标 BUILD SUCCEEDED。没有启动实体 iPhone 或生产 Photos 宿主。
+- `revision-range-host-build-final.log`：Mac TEST BUILD SUCCEEDED；`revision-range-host-tests.log`：直接 XCTest PASS 2/2，含匹配修订 Range 206 和过期修订 409。客户端实际解码使用假 transport，Host HTTP 测试独立验证合成字节 Range；尚不构成 iPhone UI → 真实 Swift Host → 整理持久化的完整联调。
+- P1 仍 IN_PROGRESS：必需 Web 主线集成、原生／iPhone 合成 UI 与 Host 联调未完成；P2–P7 尚未开始。

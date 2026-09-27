@@ -1071,7 +1071,8 @@ actor RemoteHTTPServer {
             case ("GET", RemoteHTTPPaths.capabilities):
                 let payload = await facade.capabilities(
                     supportsLocalLibrarySnapshot: localLibrarySyncStore != nil,
-                    supportsMigrationTransfer: migrationTransferStore != nil
+                    supportsMigrationTransfer: migrationTransferStore != nil,
+                    supportsRevisionedVideoRanges: mediaResources.supportsRevisionedVideoRanges
                 )
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             case ("POST", RemoteHTTPPaths.localLibrarySnapshot):
@@ -1686,6 +1687,13 @@ actor RemoteHTTPServer {
                     )
                 } else if ["GET", "HEAD"].contains(method), let assetID = Self.mediaAssetID(from: path) {
                     let resource = try await mediaResources.openMediaResource(assetID: assetID)
+                    if let rawRevision = query["revision"] {
+                        guard let expectedRevision = Int(rawRevision), expectedRevision >= 0,
+                              resource.contentRevision == expectedRevision else {
+                            resource.release()
+                            throw RemoteAPIError(code: .conflict, message: "video revision changed or unavailable")
+                        }
+                    }
                     await respondMedia(
                         connection,
                         method: method,
@@ -2278,6 +2286,9 @@ actor RemoteHTTPServer {
         header += "Cache-Control: no-store\r\n"
         header += "Pragma: no-cache\r\n"
         header += "X-Content-Type-Options: nosniff\r\n"
+        if let revision = resource.contentRevision {
+            header += "X-ImageAll-Content-Revision: \(revision)\r\n"
+        }
         if status == 206 {
             header += "Content-Range: bytes \(selectedRange.lowerBound)-\(selectedRange.upperBound)/\(resource.contentLength)\r\n"
         }

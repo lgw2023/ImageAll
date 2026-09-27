@@ -63,7 +63,8 @@ actor RemoteCatalogFacade {
 
     func capabilities(
         supportsLocalLibrarySnapshot: Bool = false,
-        supportsMigrationTransfer: Bool = false
+        supportsMigrationTransfer: Bool = false,
+        supportsRevisionedVideoRanges: Bool = false
     ) -> RemoteCapabilities {
         RemoteCapabilities(
             hostAppVersion: hostAppVersion,
@@ -86,7 +87,8 @@ actor RemoteCatalogFacade {
             hostID: hostID,
             certificateFingerprintSHA256: certificateFingerprintSHA256,
             localLibrarySnapshotChunkBytes: supportsLocalLibrarySnapshot
-                ? RemoteLocalLibrarySnapshotChunk.maximumChunkBytes : nil
+                ? RemoteLocalLibrarySnapshotChunk.maximumChunkBytes : nil,
+            videoRangeStreamingVersion: supportsRevisionedVideoRanges ? 1 : nil
         )
     }
 

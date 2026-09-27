@@ -7200,9 +7200,11 @@ final class RemoteHTTPServerTests: XCTestCase {
         )
         func request(
             method: String = "GET",
-            range: String? = nil
+            range: String? = nil,
+            revision: Int? = nil
         ) async throws -> (Data, HTTPURLResponse) {
-            var request = URLRequest(url: endpointURL)
+            let url = revision.map { URL(string: endpointURL.absoluteString + "?revision=\($0)")! } ?? endpointURL
+            var request = URLRequest(url: url)
             request.httpMethod = method
             request.setValue(
                 "Bearer \(Self.legacyDebugToken)",
@@ -7218,6 +7220,11 @@ final class RemoteHTTPServerTests: XCTestCase {
         let (data, http) = try await request(range: "bytes=2-5")
         XCTAssertEqual(http.statusCode, 206)
         XCTAssertEqual(data, Data("2345".utf8))
+        let (revisionBytes, revisionResponse) = try await request(range: "bytes=0-1", revision: 1)
+        XCTAssertEqual(revisionBytes, Data("01".utf8))
+        XCTAssertEqual(revisionResponse.value(forHTTPHeaderField: "X-ImageAll-Content-Revision"), "1")
+        let (_, staleResponse) = try await request(range: "bytes=0-1", revision: 2)
+        XCTAssertEqual(staleResponse.statusCode, 409)
         XCTAssertEqual(http.value(forHTTPHeaderField: "Content-Type"), "video/mp4")
         XCTAssertEqual(http.value(forHTTPHeaderField: "Accept-Ranges"), "bytes")
         XCTAssertEqual(http.value(forHTTPHeaderField: "Content-Range"), "bytes 2-5/10")
@@ -9054,6 +9061,7 @@ private final class RemoteHTTPNoRedirectDelegate: NSObject, URLSessionTaskDelega
 }
 
 private struct RemoteHTTPServerTestMediaProvider: RemoteMediaResourceProviding {
+    var supportsRevisionedVideoRanges: Bool { true }
     let url: URL
     var contentType = "video/mp4"
 
@@ -9064,7 +9072,8 @@ private struct RemoteHTTPServerTestMediaProvider: RemoteMediaResourceProviding {
             return RemoteMediaResource(
                 descriptor: descriptor,
                 contentType: contentType,
-                contentLength: facts.sizeBytes
+                contentLength: facts.sizeBytes,
+                contentRevision: 1
             ) {
                 Darwin.close(descriptor)
             }

@@ -55,6 +55,15 @@ public struct RemoteHostEndpoint: Sendable, Equatable {
 
 public protocol RemoteHTTPTransporting: Sendable {
     func data(for request: URLRequest) async throws -> (Data, URLResponse)
+    func data(for request: URLRequest, maximumBytes: Int) async throws -> (Data, URLResponse)
+}
+
+public extension RemoteHTTPTransporting {
+    func data(for request: URLRequest, maximumBytes: Int) async throws -> (Data, URLResponse) {
+        let result = try await data(for: request)
+        guard result.0.count <= maximumBytes else { throw RemoteVideoError.responseTooLarge }
+        return result
+    }
 }
 
 public struct URLSessionRemoteHTTPTransport: RemoteHTTPTransporting {
@@ -73,6 +82,23 @@ public struct URLSessionRemoteHTTPTransport: RemoteHTTPTransporting {
 
     public func data(for request: URLRequest) async throws -> (Data, URLResponse) {
         try await session.data(for: request)
+    }
+
+    public func data(for request: URLRequest, maximumBytes: Int) async throws -> (Data, URLResponse) {
+        let (stream, response) = try await session.bytes(for: request)
+        defer { stream.task.cancel() }
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            return (Data(), response)
+        }
+        guard response.expectedContentLength <= maximumBytes else { throw RemoteVideoError.responseTooLarge }
+        var data = Data()
+        data.reserveCapacity(maximumBytes)
+        for try await byte in stream {
+            try Task.checkCancellation()
+            guard data.count < maximumBytes else { throw RemoteVideoError.responseTooLarge }
+            data.append(byte)
+        }
+        return (data, response)
     }
 }
 
@@ -463,6 +489,35 @@ public struct RemoteLibraryClient: Sendable {
 
     public func fetchAssetDetail(assetID: UUID) async throws -> RemoteAssetDetail {
         try await getJSON(path: RemoteHTTPPaths.assetDetail(assetID: assetID))
+    }
+
+    /// A bounded authenticated read. Credentials never enter the AVPlayer URL.
+    public func readVideoRange(
+        assetID: UUID, contentRevision: Int, offset: Int64, count: Int
+    ) async throws -> RemoteVideoChunk {
+        guard contentRevision >= 0, offset >= 0, count > 0,
+              count <= RemoteVideoChunk.maximumBytes,
+              offset <= Int64.max - Int64(count) else { throw RemoteVideoError.invalidRange }
+        try Task.checkCancellation()
+        var request = try makeRequest(
+            path: "/v1/assets/\(assetID.uuidString.lowercased())/media", method: "GET",
+            queryItems: [URLQueryItem(name: "revision", value: String(contentRevision))]
+        )
+        request.setValue("bytes=\(offset)-\(offset + Int64(count) - 1)", forHTTPHeaderField: "Range")
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        let (data, response) = try await transport.data(for: request, maximumBytes: count)
+        try Task.checkCancellation()
+        guard let http = response as? HTTPURLResponse else { throw RemoteVideoError.invalidResponse }
+        guard http.statusCode == 206 else {
+            if http.statusCode == 401 || http.statusCode == 403 { throw RemoteVideoError.authorizationRequired }
+            if http.statusCode == 409 { throw RemoteVideoError.contentChanged }
+            if http.statusCode == 404 { throw RemoteVideoError.unavailable }
+            throw RemoteVideoError.invalidResponse
+        }
+        guard http.value(forHTTPHeaderField: "X-ImageAll-Content-Revision") == String(contentRevision) else {
+            throw RemoteVideoError.contentChanged
+        }
+        return try RemoteVideoChunk(data: data, response: http, requestedOffset: offset, requestedCount: count)
     }
 
     public func loadThumbnail(assetID: UUID, targetPixelWidth: Int = 320) async throws -> Data {

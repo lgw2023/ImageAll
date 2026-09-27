@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        VC2800010000000000000001 = {isa = PBXBuildFile; fileRef = VC2800020000000000000001; };
 		MB0000010000000000000001 /* ImageAllMobileApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = MB0001010000000000000001 /* ImageAllMobileApp.swift */; };
 		MB0000010000000000000002 /* RemoteCompanionModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = MB0001010000000000000002 /* RemoteCompanionModel.swift */; };
 		MB0000010000000000000003 /* RemoteCompanionViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = MB0001010000000000000003 /* RemoteCompanionViews.swift */; };
@@ -18,6 +19,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+        VC2800020000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteVideoPreviewView.swift; sourceTree = "<group>"; };
 		MB0001010000000000000001 /* ImageAllMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageAllMobileApp.swift; sourceTree = "<group>"; };
 		MB0001010000000000000002 /* RemoteCompanionModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteCompanionModel.swift; sourceTree = "<group>"; };
 		MB0001010000000000000003 /* RemoteCompanionViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteCompanionViews.swift; sourceTree = "<group>"; };
@@ -65,6 +67,7 @@
 				MB0001010000000000000001 /* ImageAllMobileApp.swift */,
 				MB0001010000000000000002 /* RemoteCompanionModel.swift */,
 				MB0001010000000000000003 /* RemoteCompanionViews.swift */,
+                VC2800020000000000000001,
 				MB0001010000000000000007 /* LocalLibraryView.swift */,
 			);
 			path = App;
@@ -160,6 +163,7 @@
 				MB0000010000000000000001 /* ImageAllMobileApp.swift in Sources */,
 				MB0000010000000000000002 /* RemoteCompanionModel.swift in Sources */,
 				MB0000010000000000000003 /* RemoteCompanionViews.swift in Sources */,
+                VC2800010000000000000001,
 				MB0000010000000000000007 /* LocalLibraryView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

@@ -8,6 +8,7 @@ import os
 final class RemoteMediaResource: @unchecked Sendable {
     let contentType: String
     let contentLength: Int64
+    let contentRevision: Int?
 
     private let descriptor: Int32
     private let lock = NSLock()
@@ -17,11 +18,13 @@ final class RemoteMediaResource: @unchecked Sendable {
         descriptor: Int32,
         contentType: String,
         contentLength: Int64,
+        contentRevision: Int? = nil,
         release: @escaping @Sendable () -> Void
     ) {
         self.descriptor = descriptor
         self.contentType = contentType
         self.contentLength = contentLength
+        self.contentRevision = contentRevision
         releaseAction = release
     }
 
@@ -53,11 +56,13 @@ final class RemoteMediaResource: @unchecked Sendable {
 }
 
 protocol RemoteMediaResourceProviding: Sendable {
+    var supportsRevisionedVideoRanges: Bool { get }
     func openMediaResource(assetID: UUID) async throws -> RemoteMediaResource
     func openOriginalResource(assetID: UUID) async throws -> RemoteMediaResource
 }
 
 extension RemoteMediaResourceProviding {
+    var supportsRevisionedVideoRanges: Bool { false }
     func openOriginalResource(assetID: UUID) async throws -> RemoteMediaResource {
         try await openMediaResource(assetID: assetID)
     }
@@ -70,12 +75,14 @@ struct UnavailableRemoteMediaResourceProvider: RemoteMediaResourceProviding {
 }
 
 struct ProductionRemoteMediaResourceProvider: RemoteMediaResourceProviding {
-    private struct Locator: Sendable {
+    var supportsRevisionedVideoRanges: Bool { true }
+    private struct Locator: Sendable, Equatable {
         let sourceID: UUID
         let sourceKind: SourceKind
         let locatorKind: AssetLocatorKind
         let mediaKind: MediaKind
         let mediaType: String
+        let contentRevision: Int
         let relativePath: String?
         let photosLocalIdentifier: String?
         let availability: AssetAvailability
@@ -90,7 +97,16 @@ struct ProductionRemoteMediaResourceProvider: RemoteMediaResourceProviding {
         guard locator.availability == .available, locator.mediaKind == .video else {
             throw RemoteAPIError(code: .notFound, message: "video unavailable")
         }
-        return try await openResource(locator, purpose: "video")
+        let resource = try await openResource(locator, purpose: "video")
+        do {
+            guard try fetchLocator(assetID: assetID) == locator else {
+                throw RemoteAPIError(code: .conflict, message: "video changed while opening")
+            }
+            return resource
+        } catch {
+            resource.release()
+            throw error
+        }
     }
 
     func openOriginalResource(assetID: UUID) async throws -> RemoteMediaResource {
@@ -140,7 +156,8 @@ struct ProductionRemoteMediaResourceProvider: RemoteMediaResourceProviding {
                             mediaType: locator.mediaType,
                             url: URL(fileURLWithPath: validatedPath)
                         ),
-                        contentLength: facts.sizeBytes
+                        contentLength: facts.sizeBytes,
+                        contentRevision: locator.contentRevision
                     ) {
                         Darwin.close(descriptor)
                         accessLease.release()
@@ -182,7 +199,8 @@ struct ProductionRemoteMediaResourceProvider: RemoteMediaResourceProviding {
                     return RemoteMediaResource(
                         descriptor: descriptor,
                         contentType: Self.contentType(mediaType: locator.mediaType, url: url),
-                        contentLength: facts.sizeBytes
+                        contentLength: facts.sizeBytes,
+                        contentRevision: locator.contentRevision
                     ) {
                         Darwin.close(descriptor)
                     }
@@ -212,6 +230,7 @@ struct ProductionRemoteMediaResourceProvider: RemoteMediaResourceProviding {
                     asset.locator_kind,
                     asset.media_kind,
                     asset.media_type,
+                    asset.content_revision,
                     asset.relative_path,
                     asset.photos_local_identifier,
                     asset.availability
@@ -235,6 +254,7 @@ struct ProductionRemoteMediaResourceProvider: RemoteMediaResourceProviding {
                 locatorKind: locatorKind,
                 mediaKind: mediaKind,
                 mediaType: row["media_type"],
+                contentRevision: row["content_revision"],
                 relativePath: row["relative_path"],
                 photosLocalIdentifier: row["photos_local_identifier"],
                 availability: availability

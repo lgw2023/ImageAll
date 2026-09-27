@@ -63,6 +63,8 @@ final class RemoteCompanionModel: ObservableObject {
     @Published var thumbnailDataByAssetID: [UUID: Data] = [:]
     @Published var reviewThumbnailDataByAssetID: [UUID: Data] = [:]
     @Published var previewDetail: RemoteAssetDetail?
+    let videoPlayback = RemoteVideoPlayback()
+    @Published private(set) var videoPreviewMessage: String?
     @Published var previewData: Data?
     @Published var isLoadingPreview = false
     @Published var jobActionInFlightIDs: Set<UUID> = []
@@ -87,6 +89,7 @@ final class RemoteCompanionModel: ObservableObject {
     private var storedRefreshToken: String?
     private var previewRequestID: UUID?
     private var activePreviewAssetID: UUID?
+    private var activePreviewMediaKind: RemoteAssetMediaKind?
     private var previewImageCacheByAssetID: [UUID: RemotePreviewImageCacheEntry] = [:]
     private var previewImageLRU: [UUID] = []
     private let previewImageCacheLimit = 8
@@ -339,6 +342,7 @@ final class RemoteCompanionModel: ObservableObject {
 
     func disconnect() {
         stopEventRecovery()
+        videoPlayback.stop()
         client = nil
         sessionTokens = nil
         accessToken = ""
@@ -386,6 +390,7 @@ final class RemoteCompanionModel: ObservableObject {
         }
 
         stopEventRecovery()
+        videoPlayback.stop()
         client = nil
         sessionTokens = nil
         storedRefreshToken = nil
@@ -1371,8 +1376,14 @@ final class RemoteCompanionModel: ObservableObject {
         }
     }
 
-    func loadPreview(assetID: UUID) async {
+    func loadPreview(assetID: UUID, mediaKindHint: RemoteAssetMediaKind? = nil) async {
         guard let client else { return }
+        let retainPlayingVideo = videoPlayback.assetID == assetID && videoPlayback.state == .ready
+        if !retainPlayingVideo { videoPlayback.stop() }
+        videoPreviewMessage = nil
+        let knownKind = mediaKindHint ?? assets.first(where: { $0.id == assetID })?.resolvedMediaKind
+            ?? (previewDetail?.assetID == assetID ? previewDetail?.resolvedMediaKind : nil)
+            ?? (activePreviewAssetID == assetID ? activePreviewMediaKind : nil)
         let requestID = UUID()
         let cacheGeneration = previewCacheGeneration
         let expectedRevision = assets.first(where: { $0.id == assetID })?.contentRevision
@@ -1382,7 +1393,8 @@ final class RemoteCompanionModel: ObservableObject {
         )
         previewRequestID = requestID
         activePreviewAssetID = assetID
-        previewDetail = nil
+        activePreviewMediaKind = knownKind
+        if !retainPlayingVideo { previewDetail = nil }
         previewData = cachedData
         isLoadingPreview = cachedData == nil
         defer {
@@ -1402,11 +1414,36 @@ final class RemoteCompanionModel: ObservableObject {
                 client: client,
                 assetID: assetID,
                 supportsPreview: supportsPreview,
-                shouldFetch: cachedData == nil
+                shouldFetch: cachedData == nil && knownKind != .video
             )
             let (detail, data) = try await (fetchedDetail, fetchedData)
             guard previewRequestID == requestID else { return }
             previewDetail = detail
+            activePreviewMediaKind = detail?.resolvedMediaKind ?? knownKind
+            if detail == nil, knownKind == .video {
+                videoPlayback.stop()
+                videoPreviewMessage = "此 Mac 不提供视频详情，请升级 Mac Host 后重试。"
+                return
+            }
+            if let detail, detail.resolvedMediaKind == .video {
+                previewData = nil
+                guard capabilities?.videoRangeStreamingVersion == 1 else {
+                    videoPlayback.stop()
+                    videoPreviewMessage = "此 Mac 尚不支持受控视频播放，请升级 Mac Host 后重试。"
+                    return
+                }
+                guard detail.availability == .available else {
+                    videoPlayback.stop()
+                    videoPreviewMessage = "视频来源当前不可读取，请在 Mac 检查来源与原件是否可用。"
+                    return
+                }
+                if videoPlayback.assetID == assetID, videoPlayback.contentRevision == detail.contentRevision,
+                   videoPlayback.state == .ready { return }
+                await videoPlayback.load(assetID: assetID, contentRevision: detail.contentRevision, client: client)
+                guard previewRequestID == requestID else { return }
+                return
+            }
+            videoPlayback.stop()
             if let data {
                 previewData = data
                 if previewCacheGeneration == cacheGeneration {
@@ -1419,6 +1456,8 @@ final class RemoteCompanionModel: ObservableObject {
             }
         } catch {
             guard previewRequestID == requestID else { return }
+            videoPlayback.stop()
+            videoPreviewMessage = "视频详情暂不可用，请检查 Mac 连接后重试。"
             statusMessage = error.localizedDescription
         }
     }
@@ -1429,7 +1468,8 @@ final class RemoteCompanionModel: ObservableObject {
         let supportsPreview = capabilities?.capabilities.contains(.previews) == true
         var seen: Set<UUID> = []
         let candidates = assetIDs.filter { assetID in
-            guard seen.insert(assetID).inserted else { return false }
+            guard seen.insert(assetID).inserted,
+                  assets.first(where: { $0.id == assetID })?.resolvedMediaKind == .image else { return false }
             let revision = assets.first(where: { $0.id == assetID })?.contentRevision
             return cachedPreviewData(assetID: assetID, expectedRevision: revision) == nil
         }.prefix(2)
@@ -1466,8 +1506,11 @@ final class RemoteCompanionModel: ObservableObject {
     }
 
     func resetPreview() {
+        videoPlayback.stop()
+        videoPreviewMessage = nil
         previewRequestID = nil
         activePreviewAssetID = nil
+        activePreviewMediaKind = nil
         previewDetail = nil
         previewData = nil
         isLoadingPreview = false
@@ -1790,6 +1833,7 @@ final class RemoteCompanionModel: ObservableObject {
         guard recoveryMachine.isCurrent(generation) else { return }
         stopEventRecovery()
         isConnected = false
+        videoPlayback.stop()
         client = nil
         if !(error is CancellationError) {
             statusMessage = connectionStatusMessage(for: error)
