@@ -43,7 +43,7 @@
 
 - Web 必须在专用分支修改；必需切片的主线集成待准备可审查提交，不合并整个长期分支。
 - Web 本地提交 `f84bff8b`：显式媒体域 schema、UTI/MIME 兼容、查看器／网格／Inspector／批量操作域选择、契约与浏览器合成测试。未包含已有审核、地图与生成资源改动；未 push。
-- Web 必需主线集成：`f84bff8b` → main，尚未执行；后续准备只包含本切片的集成，不合并长期分支。当前生产网页资源仍不包含该分支结果。
+- Web 必需主线集成：`f84bff8b` 的 8 个源码／测试文件已逐字节集成 main；未合并长期分支。当前生产网页生成资源仍不包含该结果，资源集成待单独处理，不能宣称 Xcode 内置网页已更新。
 - Swift 摘要／详情新增可选媒体域与兼容解析；Host 两个投影显式传领域媒体域。Mac 构建与直接 XCTest 已通过。
 - 下一条动作：主线契约提交 `6cc5a6ca` 已保存；Mac 播放器已提交 `83c5ceb1`；iPhone 认证播放本轮收尾后，继续 Web 必需集成与跨端联调。
 - 已确认复用点：`LibraryVideoPlaybackProviding` / `LibraryVideoPlaybackResource` 与既有 hover 生命周期测试；审核投影无媒体域但队列已有 `selectedMediaKind`；iPhone 当前仍解码图片预览，后续须接带认证的受控视频加载。
@@ -97,3 +97,10 @@
 - `protocol-video-regression.log`：协议 PASS 73/73；`ios-video-build-final.log`：iOS Simulator 目标 BUILD SUCCEEDED。没有启动实体 iPhone 或生产 Photos 宿主。
 - `revision-range-host-build-final.log`：Mac TEST BUILD SUCCEEDED；`revision-range-host-tests.log`：直接 XCTest PASS 2/2，含匹配修订 Range 206 和过期修订 409。客户端实际解码使用假 transport，Host HTTP 测试独立验证合成字节 Range；尚不构成 iPhone UI → 真实 Swift Host → 整理持久化的完整联调。
 - P1 仍 IN_PROGRESS：必需 Web 主线集成、原生／iPhone 合成 UI 与 Host 联调未完成；P2–P7 尚未开始。
+
+## P1 Web 源码主线集成（2026-09-27）
+
+- 仅应用 `f84bff8b` 的 8 文件补丁，预检无冲突；未纳入长期 Web 分支的审核／地图／生成资源改动。源提交与 main 工作树逐字节相同，摘要见证据根 `web-main-source-parity.json`。
+- main `WebCompanionApp` 执行 `npm run typecheck` PASS、`npm run test:run -- src/api/contracts/mediaKind.test.ts src/api/contracts/asset.test.ts` PASS 14/14；日志 `web-main-typecheck.log`、`web-main-contract-tests.log`。这些是集成后的类型与契约证据，浏览器解码证据仍绑定先前 Web 切片。
+- 未在主工作区生成或覆盖网页资源。受当前网页产物隔离规则约束，生产资源更新与运行验收仍须单独安排；不以源码合入代替完整集成完成。
+- iPhone 上轮本地提交 `90db409d`。下一切片补 Swift Host 与真实媒体客户端的隔离联调；P1 尚未达到完整退出标准。

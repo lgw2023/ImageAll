@@ -1,3 +1,4 @@
+import { resolvedMediaKind } from '@/api/contracts/mediaKind';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { useQuery } from '@tanstack/react-query';
@@ -154,7 +155,7 @@ export function AssetViewer({
   );
   const { collapsedGroups, toggleGroup } = useCollapsedTagGroups();
   const imagePreviewEnabled =
-    detail.data?.availability === 'available' && detail.data.mediaType.startsWith('image');
+    detail.data?.availability === 'available' && resolvedMediaKind(detail.data) === 'image';
   const imagePreview = useAssetPreview(
     assetID,
     detail.data?.contentRevision ?? 0,
@@ -174,7 +175,7 @@ export function AssetViewer({
   const localSuggestions = useLocalSuggestions(assetID);
   const supportsLocalSuggestions =
     capabilities.data?.capabilities.includes('assetLocalSuggestions') === true &&
-    detail.data?.mediaType.startsWith('image') === true;
+    resolvedMediaKind(detail.data) === 'image';
   const previewFailed = failedPreviewAssetID === assetID;
   const pendingSuggestions = detail.data?.pendingSuggestions ?? [];
   const suggestionsExpanded = expandedSuggestionAssetID === assetID;
@@ -199,7 +200,7 @@ export function AssetViewer({
 
   useEffect(() => {
     const adjacent = [previousAsset, nextAsset].filter(
-      (asset): asset is AssetSummary => asset?.mediaType.startsWith('image') === true,
+      (asset): asset is AssetSummary => resolvedMediaKind(asset) === 'image',
     );
     const preloaders = adjacent.map((asset) => {
       const image = new Image();
@@ -401,13 +402,18 @@ export function AssetViewer({
               }}
               ref={mediaRef}
             >
-              {detail.data.availability !== 'available' || previewFailed ? (
+              {detail.data.availability !== 'available' ||
+              previewFailed ||
+              !resolvedMediaKind(detail.data) ? (
                 <div className="viewer-media-placeholder">
                   <ImageOff aria-hidden="true" size={30} />
                   <span>当前无法显示预览</span>
                 </div>
-              ) : detail.data.mediaType.startsWith('video') ? (
+              ) : resolvedMediaKind(detail.data) === 'video' ? (
                 <video
+                  key={`${detail.data.assetID}:${String(detail.data.contentRevision)}`}
+                  aria-label="视频播放"
+                  preload="metadata"
                   controls
                   onError={() => setFailedPreviewAssetID(assetID)}
                   src={assetMediaURL(detail.data.assetID, detail.data.contentRevision)}
@@ -477,7 +483,7 @@ export function AssetViewer({
                   }}
                 />
               )}
-              {!detail.data.mediaType.startsWith('video') && imagePreview.status === 'ready' ? (
+              {resolvedMediaKind(detail.data) === 'image' && imagePreview.status === 'ready' ? (
                 <div className="viewer-media-controls" aria-label="预览缩放">
                   <button
                     aria-label="缩小预览"

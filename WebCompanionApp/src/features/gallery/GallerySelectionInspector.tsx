@@ -1,3 +1,4 @@
+import { resolvedMediaKind } from '@/api/contracts/mediaKind';
 import { useEffect, useState } from 'react';
 
 import { useQuery } from '@tanstack/react-query';
@@ -153,7 +154,13 @@ export function GallerySelectionInspector({
         ) : (
           <>
             <div className="context-inspector-identity">
-              <span>{detail.data.mediaType.startsWith('video') ? '视频' : '照片'}</span>
+              <span>
+                {resolvedMediaKind(detail.data) === 'video'
+                  ? '视频'
+                  : resolvedMediaKind(detail.data) === 'image'
+                    ? '照片'
+                    : '未知媒体'}
+              </span>
               <strong>
                 {detail.data.fileName ??
                   detail.data.relativePath ??
@@ -176,7 +183,13 @@ export function GallerySelectionInspector({
               </div>
               <div>
                 <dt>媒体</dt>
-                <dd>{detail.data.mediaType.startsWith('video') ? '视频' : '照片'}</dd>
+                <dd>
+                  {resolvedMediaKind(detail.data) === 'video'
+                    ? '视频'
+                    : resolvedMediaKind(detail.data) === 'image'
+                      ? '照片'
+                      : '未知媒体'}
+                </dd>
               </div>
               <div>
                 <dt>格式</dt>

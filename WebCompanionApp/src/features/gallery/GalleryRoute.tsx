@@ -1,3 +1,4 @@
+import { resolvedMediaKind } from '@/api/contracts/mediaKind';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
@@ -473,8 +474,9 @@ export function GalleryRoute() {
         ['video', []],
       ]);
       for (const id of assetIDs) {
-        const mediaType = assets.find((asset) => asset.id === id)?.mediaType ?? 'image/jpeg';
-        groups.get(mediaType.startsWith('video/') ? 'video' : 'image')?.push(id);
+        const kind = resolvedMediaKind(assets.find((asset) => asset.id === id));
+        if (!kind) throw new Error('无法识别媒体类型，请刷新图库或升级 Mac Host。');
+        groups.get(kind)?.push(id);
       }
       const requests = [...groups].filter(([, ids]) => ids.length > 0);
       if (requests.length !== 1) {
@@ -497,8 +499,9 @@ export function GalleryRoute() {
       ['video', []],
     ]);
     for (const id of assetIDs) {
-      const mediaType = assets.find((asset) => asset.id === id)?.mediaType ?? 'image/jpeg';
-      groups.get(mediaType.startsWith('video/') ? 'video' : 'image')?.push(id);
+      const kind = resolvedMediaKind(assets.find((asset) => asset.id === id));
+      if (!kind) throw new Error('无法识别媒体类型，请刷新图库或升级 Mac Host。');
+      groups.get(kind)?.push(id);
     }
     const requests = [...groups].filter(([, ids]) => ids.length > 0);
     if (requests.length !== 1) {

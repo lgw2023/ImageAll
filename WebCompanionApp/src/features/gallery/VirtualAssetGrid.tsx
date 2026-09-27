@@ -1,3 +1,4 @@
+import { resolvedMediaKind } from '@/api/contracts/mediaKind';
 import {
   useCallback,
   useEffect,
@@ -387,7 +388,7 @@ export function VirtualAssetGrid({
                           {asset.availability === 'missing' ? '文件不可用' : '无法预览'}
                         </span>
                       )}
-                      {asset.mediaType.startsWith('video') ? (
+                      {resolvedMediaKind(asset) === 'video' ? (
                         <span className="asset-video-badge">
                           <Film aria-hidden="true" size={13} /> 视频
                         </span>
