@@ -511,6 +511,43 @@ public struct RemoteLibraryClient: Sendable {
         return try await getJSON(path: RemoteHTTPPaths.assets, queryItems: items)
     }
 
+    public func fetchTrainingSetup(mediaKind: RemoteAssetMediaKind) async throws -> RemoteTrainingSetupSnapshot {
+        let result: RemoteTrainingSetupSnapshot = try await getJSON(path: RemoteHTTPPaths.trainingSetup,
+            queryItems: [URLQueryItem(name: "mediaKind", value: mediaKind.rawValue)])
+        guard result.mediaKind == mediaKind else {
+            throw RemoteAPIError(code: .conflict, message: "training setup media mismatch")
+        }
+        return result
+    }
+
+    public func fetchTrainingActivities(mediaKind: RemoteAssetMediaKind) async throws -> [RemoteTrainingActivity] {
+        let result: [RemoteTrainingActivity] = try await getJSON(path: RemoteHTTPPaths.trainingActivities,
+            queryItems: [URLQueryItem(name: "mediaKind", value: mediaKind.rawValue)])
+        guard result.allSatisfy({ $0.mediaKind == mediaKind }) else {
+            throw RemoteAPIError(code: .conflict, message: "training activity media mismatch")
+        }
+        return result
+    }
+
+    public func launchTraining(_ request: RemoteTrainingLaunchRequest) async throws -> RemoteTrainingLaunchResponse {
+        let result: RemoteTrainingLaunchResponse = try await postJSON(path: RemoteHTTPPaths.trainingLaunch,
+            body: JSONEncoder().encode(request))
+        guard result.operationID == request.operationID, result.method == request.method else {
+            throw RemoteAPIError(code: .conflict, message: "training receipt identity mismatch")
+        }
+        return result
+    }
+
+    public func cancelTraining(operationID: UUID, mediaKind: RemoteAssetMediaKind) async throws -> RemoteTrainingActivityActionResponse {
+        let result: RemoteTrainingActivityActionResponse = try await postJSON(
+            path: RemoteHTTPPaths.trainingActivityAction(operationID: operationID),
+            body: JSONEncoder().encode(RemoteTrainingActivityActionRequest(action: .cancel)))
+        guard result.activity.operationID == operationID, result.activity.mediaKind == mediaKind else {
+            throw RemoteAPIError(code: .conflict, message: "training cancellation identity mismatch")
+        }
+        return result
+    }
+
     public func fetchSampleSuggestions(mediaKind: RemoteAssetMediaKind) async throws -> RemoteSampleSuggestionSnapshot {
         let result: RemoteSampleSuggestionSnapshot = try await getJSON(path: RemoteHTTPPaths.sampleSuggestions,
             queryItems: [URLQueryItem(name: "mediaKind", value: mediaKind.rawValue)])

@@ -388,3 +388,12 @@
 - ios-personal-client-tests.log 共享客户端全套 67/67 PASS，新测试覆盖视频查询／提交／重放响应／取消／错媒体响应；ios-personal-build-final.log iOS Simulator BUILD SUCCEEDED，git diff --check PASS。尚无模拟器点击、真机或实际 Host UI 联调证据。
 - 源摘要 ios-personal-source-sha256.json。Workspace 原有 75/5、项目／OpenMontage 并行改动保留，Web 本轮未改。未读取真实媒体、未云端获取／源端写入／外部传输、未 push／替换 App。
 - P1／P2／P3 IN_PROGRESS，P4–P7 NOT_STARTED，目标 active。iPhone 当前资产标准与个人建议入口已有实现，但训练启动／多资产与按标签入口、跨端运行及主线内置网页资源仍待完成；随后进入完整视频去重和多帧主路径，不得据此标记阶段整体完成。
+
+
+## P3 iPhone 训练启动与活动（2026-09-27）
+
+- 上轮为 progress：d6643194 补 iPhone 当前资产个人建议。本轮 Host 页新增训练入口：照片／视频分域，按 Host setup 选择可用方法和满足样本条件的标签；质心／AdamW 使用所选媒体域全库已审核样本，特征近邻要求一个标签与至少一个来源。
+- 显示个人训练活动、各标签阶段、失败及显式取消；特征建议连接既有任务页。离页仅停止等待，网络失败保留原请求用于幂等重试，改变选择提示先检查已有活动。共享客户端校验能力快照／活动媒体域及回执／取消操作身份。
+- ios-training-client-tests.log 全套 69/69 PASS；新增正常链覆盖鉴权、video 查询、三种方法的请求范围、重放响应、活动与取消，失败链覆盖错媒体／operationID／method 响应。ios-training-build-final.log iOS Simulator BUILD SUCCEEDED，git diff --check PASS。未运行模拟器点击、真机或实际 Host UI 联调，编译与 mock HTTP 不能替代这些证据。
+- 源摘要 ios-training-source-sha256.json。Workspace 原有 75/5、项目／OpenMontage 并行改动保留；Web 工作区核对但未修改。未读真实媒体、未云端获取／源端写入／外部传输、未 push／替换 App。
+- P1／P2／P3 IN_PROGRESS，P4–P7 NOT_STARTED，目标 active。iPhone 多资产样本建议、按标签全库建议与跨端 UI 运行仍需补齐；下一动作补必要建议入口后进入 P4 完整字节视频去重主路径，主线内置网页资源的最终集成仍列 P7。

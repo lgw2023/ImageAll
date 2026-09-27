@@ -352,6 +352,219 @@ private struct RemoteConnectionHealthBanner: View {
     }
 }
 
+private struct RemoteTrainingView: View {
+    @ObservedObject var model: RemoteCompanionModel
+    @State private var mediaKind: RemoteAssetMediaKind = .image
+    @State private var method: RemoteTrainingRunMethod = .personalCentroid
+    @State private var setup: RemoteTrainingSetupSnapshot?
+    @State private var tagIDs: Set<UUID> = []
+    @State private var sourceIDs: Set<UUID> = []
+    @State private var activities: [RemoteTrainingActivity] = []
+    @State private var message: String?
+    @State private var loadError: String?
+    @State private var reloadID = 0
+    @State private var pendingRequest: RemoteTrainingLaunchRequest?
+    @State private var sending = false
+    @State private var commandTask: Task<Void, Never>?
+
+    private var eligibleTags: [RemoteTrainingTagOption] {
+        guard setup?.mediaKind == mediaKind else { return [] }
+        return (setup?.tags ?? []).filter { method == .featureKnn ? $0.featureMode != nil : $0.personalEligible }
+    }
+
+    private var canLaunch: Bool {
+        model.canSendCommands && !sending && setup?.mediaKind == mediaKind
+            && setup?.methods.contains(where: { $0.method == method && $0.isAvailable }) == true
+            && !tagIDs.isEmpty && tagIDs.isSubset(of: Set(eligibleTags.map(\.id)))
+            && (method != .featureKnn || (tagIDs.count == 1 && !sourceIDs.isEmpty))
+    }
+
+    var body: some View {
+        Form {
+            Section("训练范围") {
+                Picker("媒体", selection: $mediaKind) {
+                    Text("照片").tag(RemoteAssetMediaKind.image)
+                    Text("视频").tag(RemoteAssetMediaKind.video)
+                }
+                .disabled(sending)
+                Picker("方法", selection: $method) {
+                    ForEach(RemoteTrainingRunMethod.allCases, id: \.rawValue) { item in
+                        Text(methodTitle(item)).tag(item)
+                    }
+                }
+                .disabled(sending)
+                if setup?.methods.contains(where: { $0.method == method && $0.isAvailable }) != true {
+                    Text("Host 尚未提供此方法，或正在加载能力。")
+                        .foregroundStyle(.secondary)
+                }
+                Text(method == .featureKnn
+                    ? "选择一个标签和来源，为该范围生成或更新特征建议。"
+                    : "使用 Mac 上此媒体类型的已审核正负样本训练所选标签；照片与视频分别训练。")
+                    .font(.caption)
+            }
+            Section("符合样本条件的标签") {
+                if eligibleTags.isEmpty {
+                    Text("暂无符合条件的标签。请先在审核中补充接受／拒绝样本。")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(eligibleTags) { tag in
+                    Toggle(isOn: Binding(get: { tagIDs.contains(tag.id) }, set: { selected in
+                        if selected {
+                            if method == .featureKnn { tagIDs = [tag.id] } else { tagIDs.insert(tag.id) }
+                        } else { tagIDs.remove(tag.id) }
+                        pendingRequest = nil
+                    })) {
+                        VStack(alignment: .leading) {
+                            Text(tag.displayName)
+                            Text("接受 \(tag.acceptedSampleCount) · 拒绝 \(tag.rejectedSampleCount)")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    .disabled(sending)
+                }
+            }
+            if method == .featureKnn {
+                Section("生成建议的来源") {
+                    ForEach(setup?.sources ?? []) { source in
+                        Toggle(source.displayName, isOn: Binding(get: { sourceIDs.contains(source.id) }, set: { selected in
+                            if selected { sourceIDs.insert(source.id) } else { sourceIDs.remove(source.id) }
+                            pendingRequest = nil
+                        }))
+                        .disabled(sending)
+                    }
+                }
+            }
+            Section {
+                Button(sending ? "正在提交…" : pendingRequest == nil ? "启动训练" : "重试同一训练请求") {
+                    submit()
+                }
+                .disabled(!canLaunch)
+                if let message { Text(message).font(.caption).textSelection(.enabled) }
+                if pendingRequest != nil && !sending {
+                    Text("网络失败时，Host 可能已接受任务。保持选择不变重试会复用同一请求；修改选择前请检查下面的活动。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Section("此媒体类型的训练活动") {
+                if activities.isEmpty { Text("暂无个人模型训练活动").foregroundStyle(.secondary) }
+                ForEach(activities) { activity in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(methodTitle(activity.method)).font(.headline)
+                        Text("\(phaseTitle(activity.phase)) · \(activity.completedUnitCount)/\(activity.totalUnitCount)")
+                        ForEach(activity.tagActivities) { tag in
+                            Text("\(tag.displayName) · \(tagPhaseTitle(tag.phase))").font(.caption)
+                        }
+                        if let code = activity.errorCode { Text(code).font(.caption).foregroundStyle(.red) }
+                        if activity.availableActions.contains(.cancel) {
+                            Button("取消此训练", role: .destructive) { cancel(activity) }
+                                .disabled(sending || !model.canSendCommands)
+                        }
+                    }
+                }
+                NavigationLink("查看特征建议及其他后台任务") { RemoteJobsView(model: model).navigationTitle("任务") }
+            }
+            if let loadError {
+                Section {
+                    Text(loadError).foregroundStyle(.red)
+                    Button("重新加载") { reloadID += 1 }.disabled(sending)
+                }
+            }
+            Section {
+                Text("离开页面只停止刷新，Mac 上已提交的任务继续运行；取消需点击对应活动按钮。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .navigationTitle("训练")
+        .onChange(of: mediaKind) { _, _ in
+            tagIDs = []; sourceIDs = []; pendingRequest = nil; message = nil
+        }
+        .onChange(of: method) { _, _ in tagIDs = []; pendingRequest = nil; message = nil }
+        .task(id: "\(mediaKind.rawValue)-\(reloadID)") {
+            let scope = mediaKind
+            setup = nil; activities = []; loadError = nil
+            do {
+                let loaded = try await model.trainingSetup(mediaKind: scope)
+                try Task.checkCancellation()
+                setup = loaded
+                while !Task.isCancelled {
+                    let current = try await model.trainingActivities(mediaKind: scope)
+                    try Task.checkCancellation()
+                    activities = current
+                    try await Task.sleep(for: .seconds(2))
+                }
+            } catch is CancellationError { }
+            catch { if !Task.isCancelled { loadError = error.localizedDescription } }
+        }
+        .onDisappear { commandTask?.cancel(); commandTask = nil; sending = false }
+    }
+
+    private func submit() {
+        let request = pendingRequest ?? RemoteTrainingLaunchRequest(operationID: UUID(), mediaKind: mediaKind,
+            method: method, tagIDs: tagIDs.sorted { $0.uuidString < $1.uuidString },
+            sourceIDs: method == .featureKnn ? sourceIDs.sorted { $0.uuidString < $1.uuidString } : [])
+        pendingRequest = request
+        sending = true
+        commandTask = Task {
+            defer { if !Task.isCancelled { sending = false } }
+            do {
+                let receipt = try await model.launchTraining(request)
+                try Task.checkCancellation()
+                message = "Host 已接受 \(receipt.scheduledTagCount) 个标签" + (receipt.replayed ? "（重复请求已复用）" : "")
+                if let jobID = receipt.jobID { message = "特征建议任务已提交，可在任务页查看：\(jobID.uuidString)" }
+                pendingRequest = nil
+                reloadID += 1
+            } catch is CancellationError { }
+            catch { if !Task.isCancelled { message = error.localizedDescription } }
+        }
+    }
+
+    private func cancel(_ activity: RemoteTrainingActivity) {
+        sending = true
+        commandTask = Task {
+            defer { if !Task.isCancelled { sending = false } }
+            do {
+                try await model.cancelTraining(operationID: activity.operationID, mediaKind: activity.mediaKind)
+                try Task.checkCancellation()
+                message = "已提交取消请求"
+                reloadID += 1
+            } catch is CancellationError { }
+            catch { if !Task.isCancelled { message = error.localizedDescription } }
+        }
+    }
+
+    private func methodTitle(_ method: RemoteTrainingRunMethod) -> String {
+        switch method {
+        case .featureKnn: "特征近邻"
+        case .personalCentroid: "个人质心模型"
+        case .personalAdamW: "个人 AdamW 模型"
+        }
+    }
+
+    private func tagPhaseTitle(_ phase: RemoteTrainingTagActivityPhase) -> String {
+        switch phase {
+        case .pending: "等待中"
+        case .preparingSamples: "准备样本"
+        case .preparingEmbeddings: "准备特征"
+        case .trainingAndPublishing: "训练并发布"
+        case .succeeded: "已完成"
+        case .skipped: "已跳过"
+        case .failed: "失败"
+        case .cancelled: "已取消"
+        }
+    }
+
+    private func phaseTitle(_ phase: RemoteTrainingActivityPhase) -> String {
+        switch phase {
+        case .preparingSamples: "准备样本"
+        case .preparingEmbeddings: "准备特征"
+        case .trainingAndPublishing: "训练并发布"
+        case .completed: "已完成"
+        case .failed: "失败"
+        case .cancelled: "已取消"
+        }
+    }
+}
+
 private struct RemoteHostDashboardView: View {
     @ObservedObject var model: RemoteCompanionModel
     let openSource: (UUID) -> Void
@@ -394,6 +607,14 @@ private struct RemoteHostDashboardView: View {
                     }
                 }
                 .disabled(model.isRefreshingHostStatus)
+            }
+
+            if model.capabilities?.capabilities.contains(.trainingActivities) == true {
+                Section("模型与建议") {
+                    NavigationLink("训练照片／视频模型") {
+                        RemoteTrainingView(model: model)
+                    }
+                }
             }
 
             Section("内容来源") {

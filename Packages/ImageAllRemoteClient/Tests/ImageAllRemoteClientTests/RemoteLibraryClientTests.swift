@@ -4,6 +4,92 @@ import ImageAllRemoteProtocol
 import XCTest
 
 final class RemoteLibraryClientTests: XCTestCase {
+    func testVideoTrainingSetupLaunchPollAndCancelPreserveScope() async throws {
+        let operation = UUID(), tag = UUID(), source = UUID()
+        let activity = RemoteTrainingActivity(operationID: operation, mediaKind: .video,
+            method: .personalCentroid, phase: .preparingEmbeddings,
+            completedUnitCount: 1, totalUnitCount: 2, availableActions: [.cancel])
+        let transport = MockTransport { outgoing in
+            XCTAssertEqual(outgoing.value(forHTTPHeaderField: "Authorization"), "Bearer secret")
+            let bytes: Data
+            switch outgoing.url?.path {
+            case RemoteHTTPPaths.trainingSetup, RemoteHTTPPaths.trainingActivities:
+                XCTAssertEqual(outgoing.httpMethod, "GET")
+                XCTAssertEqual(URLComponents(url: outgoing.url!, resolvingAgainstBaseURL: false)?
+                    .queryItems?.first(where: { $0.name == "mediaKind" })?.value, "video")
+                if outgoing.url?.path == RemoteHTTPPaths.trainingSetup {
+                    bytes = try JSONEncoder().encode(RemoteTrainingSetupSnapshot(mediaKind: .video,
+                        tags: [.init(id: tag, displayName: "动作", acceptedSampleCount: 3,
+                            rejectedSampleCount: 2, featureMode: .generate, personalEligible: true)],
+                        sources: [.init(id: source, displayName: "合成视频")],
+                        methods: [.init(method: .personalCentroid, isAvailable: true)]))
+                } else { bytes = try JSONEncoder().encode([activity]) }
+            case RemoteHTTPPaths.trainingLaunch:
+                XCTAssertEqual(outgoing.httpMethod, "POST")
+                let request = try JSONDecoder().decode(RemoteTrainingLaunchRequest.self, from: XCTUnwrap(outgoing.httpBody))
+                XCTAssertEqual(request.operationID, operation)
+                XCTAssertEqual(request.mediaKind, .video)
+                XCTAssertEqual(request.tagIDs, [tag])
+                XCTAssertEqual(request.sourceIDs, request.method == .featureKnn ? [source] : [])
+                XCTAssertTrue(request.assetIDs.isEmpty)
+                bytes = try JSONEncoder().encode(RemoteTrainingLaunchResponse(operationID: operation,
+                    method: request.method, acceptedAtMs: 1, scheduledTagCount: 1, replayed: true))
+            default:
+                XCTAssertEqual(outgoing.httpMethod, "POST")
+                XCTAssertEqual(outgoing.url?.path, RemoteHTTPPaths.trainingActivityAction(operationID: operation))
+                let request = try JSONDecoder().decode(RemoteTrainingActivityActionRequest.self, from: XCTUnwrap(outgoing.httpBody))
+                XCTAssertEqual(request.action, .cancel)
+                bytes = try JSONEncoder().encode(RemoteTrainingActivityActionResponse(activity: activity))
+            }
+            return (bytes, HTTPURLResponse(url: outgoing.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil)!)
+        }
+        let client = RemoteLibraryClient(endpoint: try RemoteHostEndpoint(host: "127.0.0.1", port: 8787, accessToken: "secret"), transport: transport)
+        let setup = try await client.fetchTrainingSetup(mediaKind: .video)
+        XCTAssertTrue(setup.tags[0].personalEligible)
+        for method in RemoteTrainingRunMethod.allCases {
+            let receipt = try await client.launchTraining(.init(operationID: operation, mediaKind: .video,
+                method: method, tagIDs: [tag], sourceIDs: method == .featureKnn ? [source] : []))
+            XCTAssertTrue(receipt.replayed)
+        }
+        let activities = try await client.fetchTrainingActivities(mediaKind: .video)
+        XCTAssertEqual(activities, [activity])
+        let result = try await client.cancelTraining(operationID: operation, mediaKind: .video)
+        XCTAssertEqual(result.activity.operationID, operation)
+    }
+
+    func testTrainingRejectsWrongMediaOperationAndMethodResponses() async throws {
+        let operation = UUID()
+        let wrongActivity = RemoteTrainingActivity(operationID: operation, mediaKind: .image,
+            method: .personalCentroid, phase: .completed, completedUnitCount: 1, totalUnitCount: 1)
+        for scenario in 0..<5 {
+            let transport = MockTransport { outgoing in
+                let bytes: Data
+                switch scenario {
+                case 0:
+                    bytes = try JSONEncoder().encode(RemoteTrainingSetupSnapshot(mediaKind: .image, tags: [], sources: [], methods: []))
+                case 1: bytes = try JSONEncoder().encode([wrongActivity])
+                case 2, 3:
+                    bytes = try JSONEncoder().encode(RemoteTrainingLaunchResponse(
+                        operationID: scenario == 2 ? UUID() : operation,
+                        method: scenario == 3 ? .personalAdamW : .personalCentroid,
+                        acceptedAtMs: 1, scheduledTagCount: 1, replayed: false))
+                default: bytes = try JSONEncoder().encode(RemoteTrainingActivityActionResponse(activity: wrongActivity))
+                }
+                return (bytes, HTTPURLResponse(url: outgoing.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil)!)
+            }
+            let client = RemoteLibraryClient(endpoint: try RemoteHostEndpoint(host: "127.0.0.1", port: 8787, accessToken: "secret"), transport: transport)
+            do {
+                switch scenario {
+                case 0: _ = try await client.fetchTrainingSetup(mediaKind: .video)
+                case 1: _ = try await client.fetchTrainingActivities(mediaKind: .video)
+                case 2, 3: _ = try await client.launchTraining(.init(operationID: operation, mediaKind: .video, method: .personalCentroid, tagIDs: [UUID()]))
+                default: _ = try await client.cancelTraining(operationID: operation, mediaKind: .video)
+                }
+                XCTFail("mismatched response must fail")
+            } catch let error as RemoteAPIError { XCTAssertEqual(error.code, .conflict) }
+        }
+    }
+
     func testVideoPersonalSampleQuerySubmitAndCancelPreserveScope() async throws {
         let operation = UUID(), asset = UUID()
         let running = RemoteSampleSuggestionActivity(operationID: operation, mediaKind: .video,

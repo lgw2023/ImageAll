@@ -1400,6 +1400,30 @@ final class RemoteCompanionModel: ObservableObject {
         }
     }
 
+    private func trainingClient() throws -> RemoteLibraryClient {
+        guard canSendCommands, capabilities?.capabilities.contains(.trainingActivities) == true,
+              let client else {
+            throw RemoteAPIError(code: .conflict, message: "Mac Host 当前不支持远程训练")
+        }
+        return client
+    }
+
+    func trainingSetup(mediaKind: RemoteAssetMediaKind) async throws -> RemoteTrainingSetupSnapshot {
+        try await trainingClient().fetchTrainingSetup(mediaKind: mediaKind)
+    }
+
+    func trainingActivities(mediaKind: RemoteAssetMediaKind) async throws -> [RemoteTrainingActivity] {
+        try await trainingClient().fetchTrainingActivities(mediaKind: mediaKind)
+    }
+
+    func launchTraining(_ request: RemoteTrainingLaunchRequest) async throws -> RemoteTrainingLaunchResponse {
+        try await trainingClient().launchTraining(request)
+    }
+
+    func cancelTraining(operationID: UUID, mediaKind: RemoteAssetMediaKind) async throws {
+        _ = try await trainingClient().cancelTraining(operationID: operationID, mediaKind: mediaKind)
+    }
+
     func supportsPersonalSampleSuggestions(mediaKind: RemoteAssetMediaKind) async -> Bool {
         guard canSendCommands, let client else { return false }
         return (try? await client.fetchSampleSuggestions(mediaKind: mediaKind).isAvailable) == true
