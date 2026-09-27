@@ -2877,6 +2877,10 @@ actor RemoteCatalogFacade {
             width: detail.width,
             height: detail.height,
             durationMs: detail.durationMs,
+            videoTechnicalMetadata: detail.videoTechnicalMetadata.map {
+                RemoteVideoTechnicalMetadata(codec: $0.codec, nominalFrameRate: $0.nominalFrameRate,
+                                             estimatedDataRate: $0.estimatedDataRate, audioTrackCount: $0.audioTrackCount)
+            },
             fingerprintSizeBytes: detail.fingerprintSizeBytes,
             favorite: mapFavorite(favorite),
             tags: detail.tags.map(mapInspectorTagState),

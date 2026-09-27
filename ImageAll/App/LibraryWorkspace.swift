@@ -16443,6 +16443,18 @@ struct LibraryWorkspaceView: View {
                     value: VideoDurationText.format(milliseconds: durationMs)
                 )
             }
+            if detail.mediaKind == .video {
+                LabeledContent("视频编码", value: detail.videoTechnicalMetadata?.codec ?? "未知／尚未读取")
+                LabeledContent("标称帧率", value: detail.videoTechnicalMetadata?.nominalFrameRate.map {
+                    String(format: "%.2f fps（非恒定帧率保证）", $0)
+                } ?? "未知／尚未读取")
+                LabeledContent("轨道估算码率", value: detail.videoTechnicalMetadata?.estimatedDataRate.map {
+                    String(format: "%.0f kb/s", $0 / 1000)
+                } ?? "未知／尚未读取")
+                LabeledContent("音轨", value: detail.videoTechnicalMetadata?.audioTrackCount.map {
+                    $0 == 0 ? "未发现音轨" : "\($0) 条（不代表音频内容已分析）"
+                } ?? "未知／尚未读取")
+            }
             if let bytes = detail.fingerprintSizeBytes {
                 LabeledContent(
                     "文件大小",

@@ -398,6 +398,25 @@ struct InspectorTagState: Sendable, Equatable {
     let decision: TagDecisionQueryState
 }
 
+
+/// Container observations, not a promise of constant frame rate or playable audio.
+struct VideoTechnicalMetadata: Codable, Sendable, Equatable {
+    let codec: String?
+    let nominalFrameRate: Double?
+    let estimatedDataRate: Double?
+    let audioTrackCount: Int?
+
+    var encodedJSON: String? {
+        guard let bytes = try? JSONEncoder().encode(self) else { return nil }
+        return String(data: bytes, encoding: .utf8)
+    }
+
+    static func decode(_ raw: String?) -> Self? {
+        guard let raw, raw.utf8.count <= 4096 else { return nil }
+        return try? JSONDecoder().decode(Self.self, from: Data(raw.utf8))
+    }
+}
+
 struct AssetInspectorDetail: Sendable, Equatable {
     let assetID: UUID
     let sourceID: UUID
@@ -407,6 +426,7 @@ struct AssetInspectorDetail: Sendable, Equatable {
     let fileName: String?
     let mediaKind: MediaKind
     let mediaType: String
+    let videoTechnicalMetadata: VideoTechnicalMetadata?
     let durationMs: Int64?
     let mediaCreatedAtMs: Int64?
     let mediaModifiedAtMs: Int64?
@@ -431,6 +451,7 @@ struct AssetInspectorDetail: Sendable, Equatable {
         mediaKind: MediaKind = .image,
         mediaType: String,
         durationMs: Int64? = nil,
+        videoTechnicalMetadata: VideoTechnicalMetadata? = nil,
         mediaCreatedAtMs: Int64?,
         mediaModifiedAtMs: Int64?,
         fileModifiedAtMs: Int64? = nil,
@@ -453,6 +474,7 @@ struct AssetInspectorDetail: Sendable, Equatable {
         self.mediaKind = mediaKind
         self.mediaType = mediaType
         self.durationMs = durationMs
+        self.videoTechnicalMetadata = videoTechnicalMetadata
         self.mediaCreatedAtMs = mediaCreatedAtMs
         self.mediaModifiedAtMs = mediaModifiedAtMs
         self.fileModifiedAtMs = fileModifiedAtMs

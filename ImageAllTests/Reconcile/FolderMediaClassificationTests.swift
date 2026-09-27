@@ -38,13 +38,19 @@ final class FolderMediaClassificationTests: XCTestCase {
         let coordinator = FolderReconcileTestSupport.makeCoordinator(queue: queue, handler: handler)
         XCTAssertEqual(try coordinator.claimAndExecuteOnce(ClaimNextInput(owner: "video-gps", leaseDurationMs: FolderReconcileTestSupport.leaseDurationMs))?.snapshot.state, .completed)
         let row = try database.pool.read { db in
-            try Row.fetchOne(db, sql: "SELECT a.media_kind, a.media_created_at_ms, l.latitude, l.longitude, l.source_kind FROM asset a JOIN asset_location l ON l.asset_id = a.id")
+            try Row.fetchOne(db, sql: "SELECT a.id AS asset_id, a.media_kind, a.media_created_at_ms, l.latitude, l.longitude, l.source_kind FROM asset a JOIN asset_location l ON l.asset_id = a.id")
         }
         XCTAssertEqual(row?["media_kind"] as String?, "video")
         XCTAssertEqual(row?["media_created_at_ms"] as Int64?, expected)
         XCTAssertEqual(row?["latitude"] as Double?, -33.8688)
         XCTAssertEqual(row?["longitude"] as Double?, 151.2093)
         XCTAssertEqual(row?["source_kind"] as String?, "embeddedGPS")
+        let detail = try GRDBAssetCatalogQueryRepository(database: database).fetchInspectorDetail(
+            assetID: try XCTUnwrap(UUID(uuidString: try XCTUnwrap(row?["asset_id"] as String?))))
+        XCTAssertEqual(detail.videoTechnicalMetadata?.codec, "avc1")
+        XCTAssertEqual(detail.videoTechnicalMetadata?.audioTrackCount, 0)
+        XCTAssertGreaterThan(detail.videoTechnicalMetadata?.nominalFrameRate ?? 0, 0)
+        XCTAssertGreaterThan(detail.videoTechnicalMetadata?.estimatedDataRate ?? 0, 0)
         // Simulate an unchanged legacy video that was scanned before GPS/date support.
         try await database.pool.write { db in
             try db.execute(sql: "UPDATE asset SET video_metadata_version = 0, media_created_at_ms = NULL")
@@ -61,6 +67,7 @@ final class FolderMediaClassificationTests: XCTestCase {
         let refreshed = try XCTUnwrap(reusable())
         XCTAssertEqual(refreshed.videoMetadataVersion, AVFoundationFolderVideoMetadataReader.policyVersion)
         XCTAssertEqual(refreshed.mediaCreatedAtMs, expected)
+        XCTAssertEqual(refreshed.videoTechnicalMetadata, detail.videoTechnicalMetadata)
         XCTAssertEqual(refreshed.location?.latitude, -33.8688)
         let revision = try await database.pool.read { db in try Int.fetchOne(db, sql: "SELECT content_revision FROM asset") }
         XCTAssertEqual(revision, 1, "Metadata-only upgrade must not claim original bytes changed")

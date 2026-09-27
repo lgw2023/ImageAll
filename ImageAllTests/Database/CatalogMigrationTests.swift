@@ -1698,6 +1698,9 @@ final class CatalogMigrationTests: XCTestCase {
     }
 
     private static func dropV035AndLaterTables(_ db: Database) throws {
+        try db.execute(sql: "ALTER TABLE asset DROP COLUMN video_technical_metadata_json")
+        try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
+                       arguments: [CatalogMigrationID.v054AddVideoTechnicalMetadata])
         try db.execute(sql: "ALTER TABLE asset DROP COLUMN video_metadata_version")
         try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
                        arguments: [CatalogMigrationID.v053AddVideoMetadataPolicy])

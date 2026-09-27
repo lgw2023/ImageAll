@@ -80,6 +80,7 @@ enum CatalogMigrationID {
         "v050_allow_cleared_phone_tag_outbound_intent"
     static let v051AllowNewPhoneTagOutboundIntent =
         "v051_allow_new_phone_tag_outbound_intent"
+    static let v054AddVideoTechnicalMetadata = "v054_add_video_technical_metadata"
     static let v053AddVideoMetadataPolicy = "v053_add_video_metadata_policy"
     static let v052AddPhoneArchiveCompletionReceipt =
         "v052_add_phone_archive_completion_receipt"
@@ -138,5 +139,6 @@ enum CatalogMigrationID {
         v051AllowNewPhoneTagOutboundIntent,
         v052AddPhoneArchiveCompletionReceipt,
         v053AddVideoMetadataPolicy,
+        v054AddVideoTechnicalMetadata,
     ]
 }

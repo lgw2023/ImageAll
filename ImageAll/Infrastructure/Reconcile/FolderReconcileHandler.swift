@@ -659,6 +659,7 @@ struct FolderReconcileHandler: LeaseBoundJobHandler {
             mediaCreatedAtMs: metadata.mediaCreatedAtMs,
             location: metadata.location,
             videoMetadataVersion: metadata.videoMetadataVersion,
+            videoTechnicalMetadata: metadata.videoTechnicalMetadata,
             availability: availability,
             sizeBytes: metadata.sizeBytes,
             modifiedAtNs: metadata.modifiedAtNs,

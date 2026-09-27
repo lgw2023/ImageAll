@@ -2363,6 +2363,15 @@ private struct RemoteAssetPreviewView: View {
                     }
                 }
                 LabeledContent("媒体类型", value: detail.mediaType)
+                if detail.resolvedMediaKind == .video {
+                    LabeledContent("视频编码", value: detail.videoTechnicalMetadata?.codec ?? "未知／尚未读取")
+                    LabeledContent("标称帧率", value: detail.videoTechnicalMetadata?.nominalFrameRate.map {
+                        String(format: "%.2f fps", $0)
+                    } ?? "未知／尚未读取")
+                    LabeledContent("音轨", value: detail.videoTechnicalMetadata?.audioTrackCount.map {
+                        $0 == 0 ? "未发现音轨" : "\($0) 条"
+                    } ?? "未知／尚未读取")
+                }
                 LabeledContent("文件状态", value: availabilityTitle(detail.availability))
                 if let width = detail.width, let height = detail.height {
                     LabeledContent("像素尺寸", value: "\(width) × \(height)")

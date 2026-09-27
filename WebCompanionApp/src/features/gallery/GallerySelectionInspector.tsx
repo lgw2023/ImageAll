@@ -203,6 +203,32 @@ export function GallerySelectionInspector({
                     : '—'}
                 </dd>
               </div>
+              {resolvedMediaKind(detail.data) === 'video' ? (
+                <>
+                  <div>
+                    <dt>视频编码</dt>
+                    <dd>{detail.data.videoTechnicalMetadata?.codec ?? '未知／尚未读取'}</dd>
+                  </div>
+                  <div>
+                    <dt>标称帧率</dt>
+                    <dd>
+                      {detail.data.videoTechnicalMetadata?.nominalFrameRate != null
+                        ? `${detail.data.videoTechnicalMetadata.nominalFrameRate.toFixed(2)} fps`
+                        : '未知／尚未读取'}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>音轨</dt>
+                    <dd>
+                      {detail.data.videoTechnicalMetadata?.audioTrackCount != null
+                        ? detail.data.videoTechnicalMetadata.audioTrackCount === 0
+                          ? '未发现音轨'
+                          : `${String(detail.data.videoTechnicalMetadata.audioTrackCount)} 条`
+                        : '未知／尚未读取'}
+                    </dd>
+                  </div>
+                </>
+              ) : null}
               {detail.data.durationMs !== null ? (
                 <div>
                   <dt>时长</dt>

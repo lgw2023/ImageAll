@@ -28,6 +28,18 @@ final class RemoteMediaContractTests: XCTestCase {
         XCTAssertThrowsError(try decodeSummary(format: "public.jpeg", kind: "future-domain"))
     }
 
+    func testOptionalVideoTechnicalMetadataRoundTripsAndLegacyRemainsUnknown() throws {
+        let legacy = try payload(format: "public.mpeg-4", kind: "video")
+        XCTAssertNil(try JSONDecoder().decode(RemoteAssetDetail.self, from: legacy).videoTechnicalMetadata)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: legacy) as? [String: Any])
+        object["videoTechnicalMetadata"] = ["codec": "avc1", "nominalFrameRate": 29.97, "audioTrackCount": 0]
+        let detail = try JSONDecoder().decode(RemoteAssetDetail.self, from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertEqual(detail.videoTechnicalMetadata?.codec, "avc1")
+        XCTAssertEqual(detail.videoTechnicalMetadata?.audioTrackCount, 0)
+        XCTAssertNil(detail.videoTechnicalMetadata?.estimatedDataRate)
+        XCTAssertEqual(try JSONDecoder().decode(RemoteAssetDetail.self, from: JSONEncoder().encode(detail)), detail)
+    }
+
     private func payload(format: String, kind: String?) throws -> Data {
         var object: [String: Any] = [
             "id": UUID().uuidString, "assetID": UUID().uuidString,

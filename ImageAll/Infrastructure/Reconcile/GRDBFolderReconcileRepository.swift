@@ -30,7 +30,7 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
                 db,
                 sql: """
                 SELECT a.media_kind, a.media_type, a.duration_ms, a.width, a.height,
-                       a.media_created_at_ms, a.availability, a.video_metadata_version,
+                       a.media_created_at_ms, a.availability, a.video_metadata_version, a.video_technical_metadata_json,
                        location.asset_id AS location_observation_asset_id,
                        location.latitude, location.longitude
                 FROM asset a
@@ -104,6 +104,7 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
                 mediaCreatedAtMs: row["media_created_at_ms"],
                 location: location,
                 videoMetadataVersion: videoMetadataVersion,
+                videoTechnicalMetadata: VideoTechnicalMetadata.decode(row["video_technical_metadata_json"]),
                 availability: availability,
                 sizeBytes: sizeBytes,
                 modifiedAtNs: modifiedAtNs,
@@ -842,11 +843,11 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
             sql: """
             INSERT INTO asset (
                 id, source_id, locator_kind, relative_path, file_name, locator_state,
-                media_kind, media_type, video_metadata_version, duration_ms, width, height,
+                media_kind, media_type, video_metadata_version, video_technical_metadata_json, duration_ms, width, height,
                 media_created_at_ms, media_modified_at_ms, file_modified_at_ms,
                 content_revision, last_seen_generation, availability,
                 record_created_at_ms, record_updated_at_ms
-            ) VALUES (?, ?, 'file', ?, ?, 'current', ?, ?, ?, ?, ?, ?, ?, NULL, ?, 1, ?, ?, ?, ?)
+            ) VALUES (?, ?, 'file', ?, ?, 'current', ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 1, ?, ?, ?, ?)
             """,
             arguments: [
                 assetID.uuidString.lowercased(),
@@ -856,6 +857,7 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
                 observation.mediaKind.rawValue,
                 observation.mediaType,
                 observation.mediaKind == .video ? observation.videoMetadataVersion : 0,
+                observation.mediaKind == .video ? observation.videoTechnicalMetadata?.encodedJSON : nil,
                 observation.durationMs,
                 observation.width,
                 observation.height,
@@ -902,6 +904,7 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
                 media_kind = ?,
                 media_type = ?,
                 video_metadata_version = ?,
+                video_technical_metadata_json = ?,
                 duration_ms = ?,
                 width = ?,
                 height = ?,
@@ -918,6 +921,7 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
                 observation.mediaKind.rawValue,
                 observation.mediaType,
                 observation.mediaKind == .video ? observation.videoMetadataVersion : 0,
+                observation.mediaKind == .video ? observation.videoTechnicalMetadata?.encodedJSON : nil,
                 observation.durationMs,
                 observation.width,
                 observation.height,
@@ -1112,6 +1116,7 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
                 media_kind = ?,
                 media_type = ?,
                 video_metadata_version = ?,
+                video_technical_metadata_json = ?,
                 duration_ms = ?,
                 width = ?,
                 height = ?,
@@ -1129,6 +1134,7 @@ struct GRDBFolderReconcileRepository: FolderReconcileBatchPort, Sendable {
                 observation.mediaKind.rawValue,
                 observation.mediaType,
                 observation.mediaKind == .video ? observation.videoMetadataVersion : 0,
+                observation.mediaKind == .video ? observation.videoTechnicalMetadata?.encodedJSON : nil,
                 observation.durationMs,
                 observation.width,
                 observation.height,

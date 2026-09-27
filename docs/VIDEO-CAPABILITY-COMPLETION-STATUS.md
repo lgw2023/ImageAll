@@ -134,3 +134,13 @@
 - 最终 `video-backfill-build-accepted.log`：TEST BUILD SUCCEEDED；`video-backfill-tests-final.log`：直接 XCTest 74/74 PASS（`FolderMediaClassificationTests`、`FolderReconcileLeaseMatrixTests`、`FolderReconcileTransactionTests`、`CatalogMigrationTests`）。复用私有 TMPDIR／构建路径，未启动生产测试宿主。
 - 验证范围包括历史迁移回放、V053 幂等、合成视频旧策略补读与复用、原坐标保留、文件内容修订不变，以及现有中断恢复、取消、批次原子性。地图界面的混合媒体计数与单独回填按钮尚未完成，不能从这些测试推出其已可用。
 - 证据源摘要 `p2-backfill-source-sha256.json`；`git diff --check` PASS。没有读取真实媒体、源端写入、云端请求或外部传输。下一步补技术信息存储／详情与视频查询条件，P1 未验项继续在原列表保留。
+
+## P2 视频技术信息入库与跨端详情（2026-09-27）
+
+- V054 新增可空技术信息 JSON；视频元数据策略版本升至 2，复用 V053 的按需补读机制。读取轨道 FourCC、标称帧率、估算码率、音轨数量，随既有批次原子入库并投影到 Inspector。旧 migration 未改写。
+- Mac 信息面板展示四项；iPhone 与 Web 展示编码、标称帧率和音轨。DTO 字段可选，旧 Host 缺字段显示未知／尚未读取；文件格式、大小和时长沿用独立字段。标称帧率不当作恒定帧率，音轨数量不代表声音内容分析。
+- Web 工作区提交 `cc90f69c`（3 个源码／契约测试文件），已只取本提交补丁集成 main，未夹带长期分支的审核、地图或生成资源。当前 Xcode 内置 Web 资源仍待集成，不能把源码集成称为完整 UI 交付。
+- `video-technical-build.log`：Mac TEST BUILD SUCCEEDED；`video-technical-ios-build.log`：iOS Simulator BUILD SUCCEEDED。直接 XCTest `FolderMediaClassificationTests`、`FolderReconcileTransactionTests`、`CatalogMigrationTests` 和 Host 详情投影定向测试：`video-technical-tests.log` PASS 64/64。合成 H.264 MOV 的技术信息经过生产读取 → 数据库存储 → Inspector 查询，历史重扫与复用保持相同值；Host 投影测试检查可选字段。
+- `video-technical-protocol-tests.log`：协议 74/74 PASS，含新字段往返与旧 Host 缺字段兼容。Web 独立工作区 typecheck / lint / build PASS、契约 15/15 PASS，日志 `video-technical-web-*.log`；main 集成后 typecheck 与契约再次验证，日志 `video-technical-main-*.log`。
+- LibraryWorkspace 只暂存本轮信息区改动，保存启动副本和独立补丁；其余并行工作保持原样。源码摘要见 `p2-technical-source-sha256.json`。没有真实媒体读取、源端写入、云端获取或付费调用。
+- 范围仍不完整：PhotoKit 技术信息提取、视频筛选／排序、混合地图范围、云端主动获取未完成；P1 的资源集成与 UI 验收继续保留。下一切片优先视频筛选与稳定分页，再接地图和 PhotoKit 差异。

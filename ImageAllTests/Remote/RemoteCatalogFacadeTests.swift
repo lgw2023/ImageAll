@@ -3116,6 +3116,8 @@ final class RemoteCatalogFacadeTests: XCTestCase {
                 mediaKind: .video,
                 mediaType: "public.mpeg-4",
                 durationMs: 12_345,
+                videoTechnicalMetadata: VideoTechnicalMetadata(codec: "avc1", nominalFrameRate: 29.97,
+                                                               estimatedDataRate: 500_000, audioTrackCount: 1),
                 mediaCreatedAtMs: nil,
                 mediaModifiedAtMs: nil,
                 width: nil,
@@ -3159,6 +3161,8 @@ final class RemoteCatalogFacadeTests: XCTestCase {
 
         let detail = try await facade.fetchInspectorDetail(assetID: assetID)
         XCTAssertEqual(detail.assetID, assetID)
+        XCTAssertEqual(detail.videoTechnicalMetadata?.codec, "avc1")
+        XCTAssertEqual(detail.videoTechnicalMetadata?.audioTrackCount, 1)
         XCTAssertEqual(detail.tags.first?.decision, .accepted)
         XCTAssertEqual(detail.mediaKind, .video)
         XCTAssertEqual(detail.mediaType, "public.mpeg-4")

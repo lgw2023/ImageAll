@@ -47,3 +47,24 @@ describe('production UTI and explicit media domain', () => {
     expect(resolvedMediaKind(undefined)).toBeNull();
   });
 });
+
+it('preserves technical observations and keeps old Hosts unknown', () => {
+  expect(
+    assetDetailSchema.parse({ ...payload, mediaType: 'public.mpeg-4' }).videoTechnicalMetadata,
+  ).toBeUndefined();
+  const detail = assetDetailSchema.parse({
+    ...payload,
+    mediaType: 'public.mpeg-4',
+    videoTechnicalMetadata: {
+      codec: 'avc1',
+      nominalFrameRate: 29.97,
+      audioTrackCount: 0,
+    },
+  });
+  expect(detail.videoTechnicalMetadata).toEqual({
+    codec: 'avc1',
+    nominalFrameRate: 29.97,
+    audioTrackCount: 0,
+    estimatedDataRate: null,
+  });
+});

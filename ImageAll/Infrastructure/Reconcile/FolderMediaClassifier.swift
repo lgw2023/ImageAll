@@ -17,6 +17,7 @@ struct FolderMediaMetadata: Equatable, Sendable {
     let width: Int?
     let height: Int?
     let mediaCreatedAtMs: Int64?
+    let videoTechnicalMetadata: VideoTechnicalMetadata?
     let videoMetadataVersion: Int
     let location: AssetLocationCoordinate?
     let sizeBytes: Int64?
@@ -33,6 +34,7 @@ struct FolderMediaMetadata: Equatable, Sendable {
         mediaCreatedAtMs: Int64?,
         location: AssetLocationCoordinate? = nil,
         videoMetadataVersion: Int = 0,
+        videoTechnicalMetadata: VideoTechnicalMetadata? = nil,
         sizeBytes: Int64?,
         modifiedAtNs: Int64?,
         resourceID: Data?,
@@ -46,6 +48,7 @@ struct FolderMediaMetadata: Equatable, Sendable {
         self.mediaCreatedAtMs = mediaCreatedAtMs
         self.location = location
         self.videoMetadataVersion = videoMetadataVersion
+        self.videoTechnicalMetadata = videoTechnicalMetadata
         self.sizeBytes = sizeBytes
         self.modifiedAtNs = modifiedAtNs
         self.resourceID = resourceID
@@ -64,6 +67,7 @@ struct FolderVideoMetadata: Equatable, Sendable {
     let durationMs: Int64
     let mediaCreatedAtMs: Int64?
     var location: AssetLocationCoordinate? = nil
+    var technicalMetadata: VideoTechnicalMetadata? = nil
 }
 
 protocol FolderVideoMetadataReading: Sendable {
@@ -71,7 +75,7 @@ protocol FolderVideoMetadataReading: Sendable {
 }
 
 struct AVFoundationFolderVideoMetadataReader: FolderVideoMetadataReading {
-    static let policyVersion = 1
+    static let policyVersion = 2
     func metadata(fileURL: URL, declaredType: String) -> FolderVideoMetadata? {
         autoreleasepool {
             let asset = AVURLAsset(url: fileURL)
@@ -96,9 +100,23 @@ struct AVFoundationFolderVideoMetadataReader: FolderVideoMetadataReading {
                 height: height,
                 durationMs: max(1, Int64((durationSeconds * 1_000).rounded())),
                 mediaCreatedAtMs: Self.embeddedDate(asset.metadata),
-                location: Self.embeddedLocation(asset.metadata)
+                location: Self.embeddedLocation(asset.metadata),
+                technicalMetadata: VideoTechnicalMetadata(
+                    codec: (track.formatDescriptions as? [CMFormatDescription])?.first.map {
+                        let code = CMFormatDescriptionGetMediaSubType($0)
+                        return String(bytes: [UInt8((code >> 24) & 255), UInt8((code >> 16) & 255),
+                                              UInt8((code >> 8) & 255), UInt8(code & 255)], encoding: .ascii)
+                    } ?? nil,
+                    nominalFrameRate: Self.positiveFinite(track.nominalFrameRate),
+                    estimatedDataRate: Self.positiveFinite(track.estimatedDataRate),
+                    audioTrackCount: asset.tracks(withMediaType: .audio).count
+                )
             )
         }
+    }
+
+    private static func positiveFinite(_ value: Float) -> Double? {
+        value.isFinite && value > 0 ? Double(value) : nil
     }
 
     // Only explicit, timezone-qualified container dates represent capture time.
@@ -192,6 +210,7 @@ struct FolderMediaClassifier: Sendable {
                         mediaCreatedAtMs: video.mediaCreatedAtMs,
                         location: video.location,
                         videoMetadataVersion: AVFoundationFolderVideoMetadataReader.policyVersion,
+                        videoTechnicalMetadata: video.technicalMetadata,
                         sizeBytes: fingerprint.sizeBytes,
                         modifiedAtNs: fingerprint.modifiedAtNs,
                         resourceID: fingerprint.resourceID

@@ -87,6 +87,13 @@ export const pendingSuggestionSchema = z.object({
   suggestionOrigin: z.enum(['featurePrint', 'standardModel', 'personalModel', 'personalAdamW']),
 });
 
+export const videoTechnicalMetadataSchema = z.object({
+  codec: nullishToNull(z.string().max(16)),
+  nominalFrameRate: nullishToNull(z.number().positive()),
+  estimatedDataRate: nullishToNull(z.number().positive()),
+  audioTrackCount: nullishToNull(z.int().nonnegative()),
+});
+
 export const assetDetailSchema = z.object({
   assetID: uuidSchema,
   sourceID: uuidSchema,
@@ -105,6 +112,7 @@ export const assetDetailSchema = z.object({
   width: nullishToNull(z.int().nonnegative()),
   height: nullishToNull(z.int().nonnegative()),
   durationMs: nullishToNull(z.int().nonnegative()),
+  videoTechnicalMetadata: videoTechnicalMetadataSchema.nullish(),
   fingerprintSizeBytes: nullishToNull(z.int().nonnegative()),
   favorite: nullishToNull(favoriteStateSchema),
   tags: z.array(inspectorTagStateSchema),

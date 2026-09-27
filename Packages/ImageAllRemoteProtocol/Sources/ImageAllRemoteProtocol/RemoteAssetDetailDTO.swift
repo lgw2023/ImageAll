@@ -22,6 +22,7 @@ public struct RemoteAssetDetail: Codable, Sendable, Equatable, Identifiable {
     public let fileModifiedAtMs: Int64?
     public let width: Int?
     public let height: Int?
+    public let videoTechnicalMetadata: RemoteVideoTechnicalMetadata?
     public let durationMs: Int64?
     public let fingerprintSizeBytes: Int64?
     /// `nil` when decoded from an older Host without the favorites capability.
@@ -48,6 +49,7 @@ public struct RemoteAssetDetail: Codable, Sendable, Equatable, Identifiable {
         width: Int?,
         height: Int?,
         durationMs: Int64? = nil,
+        videoTechnicalMetadata: RemoteVideoTechnicalMetadata? = nil,
         fingerprintSizeBytes: Int64? = nil,
         favorite: RemoteAssetFavoriteState? = nil,
         tags: [RemoteInspectorTagState],
@@ -70,6 +72,7 @@ public struct RemoteAssetDetail: Codable, Sendable, Equatable, Identifiable {
         self.width = width
         self.height = height
         self.durationMs = durationMs
+        self.videoTechnicalMetadata = videoTechnicalMetadata
         self.fingerprintSizeBytes = fingerprintSizeBytes
         self.favorite = favorite
         self.tags = tags
@@ -212,5 +215,20 @@ public struct RemoteTagSelectionRequest: Codable, Sendable, Equatable {
     public init(tagIDs: [UUID], assetIDs: [UUID]) {
         self.tagIDs = tagIDs
         self.assetIDs = assetIDs
+    }
+}
+
+
+public struct RemoteVideoTechnicalMetadata: Codable, Sendable, Equatable {
+    public let codec: String?
+    public let nominalFrameRate: Double?
+    public let estimatedDataRate: Double?
+    public let audioTrackCount: Int?
+
+    public init(codec: String?, nominalFrameRate: Double?, estimatedDataRate: Double?, audioTrackCount: Int?) {
+        self.codec = codec
+        self.nominalFrameRate = nominalFrameRate
+        self.estimatedDataRate = estimatedDataRate
+        self.audioTrackCount = audioTrackCount
     }
 }

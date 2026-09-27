@@ -108,6 +108,7 @@ struct CatalogDatabase: Sendable {
         V051AllowNewPhoneTagOutboundIntentMigration.register(on: &migrator)
         V052AddPhoneArchiveCompletionReceiptMigration.register(on: &migrator)
         V053AddVideoMetadataPolicyMigration.register(on: &migrator)
+        V054AddVideoTechnicalMetadataMigration.register(on: &migrator)
         return migrator
     }
 
@@ -3469,6 +3470,15 @@ enum V053AddVideoMetadataPolicyMigration {
     static func register(on migrator: inout DatabaseMigrator) {
         migrator.registerMigration(CatalogMigrationID.v053AddVideoMetadataPolicy) { db in
             try db.execute(sql: "ALTER TABLE asset ADD COLUMN video_metadata_version INTEGER NOT NULL DEFAULT 0 CHECK(video_metadata_version >= 0)")
+        }
+    }
+}
+
+
+enum V054AddVideoTechnicalMetadataMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v054AddVideoTechnicalMetadata) { db in
+            try db.execute(sql: "ALTER TABLE asset ADD COLUMN video_technical_metadata_json TEXT")
         }
     }
 }
