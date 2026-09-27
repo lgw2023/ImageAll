@@ -37,6 +37,7 @@ struct WorldMapViewport: Codable, Equatable, Sendable {
 }
 
 struct WorldMapNavigationState: Equatable, Sendable {
+    var mediaScope: WorldMapMediaScope = .photos
     var viewport: WorldMapViewport?
     var selectedClusterID: String?
 
@@ -229,6 +230,7 @@ struct WorldMapWorkspaceView: View {
     let model: LibraryWorkspaceModel
     @Binding var navigationState: WorldMapNavigationState
     let onBrowseCluster: (WorldMapGalleryScope) -> Void
+    @State private var mediaScope: WorldMapMediaScope = .photos
     @State private var rendererState: RendererState = .starting
     @State private var catalogState: CatalogState = .loading
     @State private var catalogSnapshot = WorldMapCatalogSnapshot.empty
@@ -253,7 +255,11 @@ struct WorldMapWorkspaceView: View {
         self.model = model
         _navigationState = navigationState
         self.onBrowseCluster = onBrowseCluster
-        let initialQuery = navigationState.wrappedValue.viewport?.catalogQuery ?? .global
+        let scope = navigationState.wrappedValue.mediaScope
+        _mediaScope = State(initialValue: scope)
+        let viewportQuery = navigationState.wrappedValue.viewport?.catalogQuery ?? .global
+        let initialQuery = WorldMapCatalogQuery(bounds: viewportQuery.bounds,
+            maximumClusters: viewportQuery.maximumClusters, mediaScope: scope == .photos ? nil : scope)
         let cachedSnapshot = model.cachedWorldMapSnapshot(query: initialQuery)
         let cachedClusters = cachedSnapshot?.clusters.map(Self.renderCluster) ?? []
         _catalogState = State(
@@ -321,6 +327,17 @@ struct WorldMapWorkspaceView: View {
         .accessibilityIdentifier("worldMapWorkspace")
         .task {
             await loadCatalog(query: navigationState.viewport?.catalogQuery ?? .global)
+        }
+        .onChange(of: mediaScope) { _, _ in
+            navigationState.mediaScope = mediaScope
+            catalogRequestID = UUID()
+            catalogClustersByID = [:]
+            clearSelection()
+            previewAsset = nil
+            hasCatalogSnapshot = false
+            catalogSnapshot = .empty
+            clusters = []
+            Task { await loadCatalog(query: viewport?.catalogQuery ?? .global) }
         }
         .sheet(item: $previewAsset) { asset in
             WorldMapPhotoPreview(asset: asset, model: model)
@@ -396,10 +413,17 @@ struct WorldMapWorkspaceView: View {
                     .tracking(1.6)
                     .foregroundStyle(Palette.sage)
             }
-            Text("你的照片，长成一座世界。")
+            Picker("地图媒体", selection: $mediaScope) {
+                ForEach(WorldMapMediaScope.allCases, id: \.self) { scope in
+                    Text(scope.title).tag(scope)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 300)
+            Text("你的影像，长成一座世界。")
                 .font(.system(size: 27, weight: .bold, design: .rounded))
                 .foregroundStyle(Palette.ink)
-            Text("拖拽探索 · 双指缩放 · ⌃拖拽旋转与俯仰 · Tab 键浏览照片塔")
+            Text("拖拽探索 · 双指缩放 · ⌃拖拽旋转与俯仰 · Tab 键浏览影像塔")
                 .font(.caption)
                 .foregroundStyle(Palette.secondaryInk)
         }
@@ -468,7 +492,7 @@ struct WorldMapWorkspaceView: View {
 
     private var footerLegend: some View {
         VStack(alignment: .leading, spacing: 9) {
-            Text("照片越多，建筑越高")
+            Text("影像越多，建筑越高")
                 .font(.caption2.monospaced().weight(.bold))
                 .tracking(1.3)
                 .foregroundStyle(Palette.secondaryInk)
@@ -510,7 +534,7 @@ struct WorldMapWorkspaceView: View {
                 .foregroundStyle(Palette.secondaryInk)
                 .accessibilityLabel("关闭地点详情")
             }
-            Text("\(cluster.photoCount.formatted()) 张照片")
+            Text("\(cluster.photoCount.formatted()) 项影像")
                 .font(.title3.monospacedDigit().weight(.semibold))
                 .foregroundStyle(Palette.mistBlue)
             HStack(spacing: 12) {
@@ -519,7 +543,7 @@ struct WorldMapWorkspaceView: View {
             }
             .font(.caption)
             .foregroundStyle(Palette.secondaryInk)
-            Text("GPS 始终优先；已确认的城市或景区标签只为无 GPS 照片补全位置。")
+            Text("GPS 始终优先；已确认的城市或景区标签只为无 GPS 影像补全位置。")
                 .font(.caption2)
                 .foregroundStyle(Palette.secondaryInk.opacity(0.78))
                 .fixedSize(horizontal: false, vertical: true)
@@ -530,7 +554,7 @@ struct WorldMapWorkspaceView: View {
                     openClusterInGallery(clusterID: cluster.id)
                 } label: {
                     Label(
-                        "在图库中查看全部 \(selection.totalPhotoCount.formatted()) 张",
+                        "在图库中查看全部 \(selection.totalPhotoCount.formatted()) 项",
                         systemImage: "photo.on.rectangle.angled"
                     )
                     .font(.caption.weight(.semibold))
@@ -543,7 +567,7 @@ struct WorldMapWorkspaceView: View {
                     }
                 }
                 .buttonStyle(.plain)
-                .help("使用这座照片塔的精确地点范围打开现有图库")
+                .help("使用这座影像塔的精确地点范围打开现有图库")
                 .accessibilityIdentifier("worldMapBrowseClusterButton")
             }
             clusterPhotoStrip
@@ -569,13 +593,13 @@ struct WorldMapWorkspaceView: View {
             HStack(spacing: 8) {
                 ProgressView()
                     .controlSize(.small)
-                Text("正在取回这座照片塔里的照片…")
+                Text("正在取回这座影像塔里的影像…")
                     .font(.caption)
                     .foregroundStyle(Palette.secondaryInk)
             }
             .frame(height: 76)
         case let .loaded(selection) where selection.assets.isEmpty:
-            Label("这座照片塔目前没有可预览照片", systemImage: "photo.on.rectangle.angled")
+            Label("这座影像塔目前没有可预览影像", systemImage: "photo.on.rectangle.angled")
                 .font(.caption)
                 .foregroundStyle(Palette.secondaryInk)
                 .frame(height: 76)
@@ -662,9 +686,9 @@ struct WorldMapWorkspaceView: View {
         case .refreshingCached:
             "已显示上次地图，正在后台同步最新位置…"
         case .loaded where clusters.isEmpty:
-            "当前视口暂无已定位照片；重新扫描来源可回填 GPS"
+            "当前视口暂无已定位影像；重新扫描来源可回填 GPS"
         case .loaded:
-            "选择一座照片建筑查看构成"
+            "选择一座影像建筑查看构成"
         case let .cachedFallback(message):
             "已显示上次地图；\(message)"
         case let .failed(message):
@@ -708,6 +732,8 @@ struct WorldMapWorkspaceView: View {
     }
 
     private func loadCatalog(query: WorldMapCatalogQuery) async {
+        let query = WorldMapCatalogQuery(bounds: query.bounds, maximumClusters: query.maximumClusters,
+                                        mediaScope: mediaScope == .photos ? nil : mediaScope)
         let requestID = UUID()
         catalogRequestID = requestID
         let canKeepShowingSnapshot = hasCatalogSnapshot
@@ -759,7 +785,7 @@ struct WorldMapWorkspaceView: View {
     private func loadSelection(clusterID: String) async {
         guard let cluster = catalogClustersByID[clusterID] else {
             guard selectedClusterID == clusterID else { return }
-            clusterSelectionState = .failed("地点范围已变化，请重新选择照片塔")
+            clusterSelectionState = .failed("地点范围已变化，请重新选择影像塔")
             return
         }
         let requestID = UUID()
@@ -807,9 +833,9 @@ struct WorldMapWorkspaceView: View {
 
     private func selectionSummary(_ selection: WorldMapCatalogSelection) -> String {
         if selection.isTruncated {
-            return "按拍摄时间显示最近 \(selection.assets.count) 张，共 \(selection.totalPhotoCount) 张"
+            return "按拍摄时间显示最近 \(selection.assets.count) 项，共 \(selection.totalPhotoCount) 项"
         }
-        return "已显示这座照片塔的 \(selection.totalPhotoCount) 张照片"
+        return "已显示这座影像塔的 \(selection.totalPhotoCount) 项影像"
     }
 }
 
@@ -1652,7 +1678,10 @@ private struct WorldMapPhotoPreview: View {
             Color(red: 0.957, green: 0.945, blue: 0.922)
                 .ignoresSafeArea()
 
-            if let image {
+            if asset.mediaKind == .video {
+                LibraryVideoViewer(assetID: asset.assetID, contentRevision: asset.contentRevision, model: model)
+                    .padding(.top, 60)
+            } else if let image {
                 Image(nsImage: image)
                     .resizable()
                     .scaledToFit()
@@ -1669,7 +1698,7 @@ private struct WorldMapPhotoPreview: View {
 
             VStack {
                 HStack {
-                    Text(asset.fileName ?? "照片预览")
+                    Text(asset.fileName ?? "媒体预览")
                         .font(.headline)
                         .lineLimit(1)
                     Spacer()
@@ -1687,7 +1716,7 @@ private struct WorldMapPhotoPreview: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(Color.secondary)
-                    .accessibilityLabel("关闭照片预览")
+                    .accessibilityLabel("关闭媒体预览")
                 }
                 .padding(18)
                 .background(.ultraThinMaterial)
@@ -1698,7 +1727,8 @@ private struct WorldMapPhotoPreview: View {
         .task(id: asset.assetID) {
             await model.ensureFavoriteStatesLoaded(assetIDs: [asset.assetID])
             defer { loadFinished = true }
-            guard let data = await model.previewData(assetID: asset.assetID) else { return }
+            guard asset.mediaKind == .image,
+                  let data = await model.previewData(assetID: asset.assetID) else { return }
             image = NSImage(data: data)
         }
     }

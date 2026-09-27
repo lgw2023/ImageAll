@@ -190,3 +190,14 @@
 - 新合成 fixture 包含同地点照片／视频、无坐标视频和不可用视频；验证计数、cluster、selection、gallery ID 集合及照片／视频缓存隔离。未访问真实目录或启动 Photos 宿主。源摘要 `map-video-scope-source-sha256.json`；git diff --check PASS。
 - 下一具体动作：原生地图范围选择器、数量单位与视频预览／图库跳转；将范围传到 Companion 协议；使视频来源回填启动条件与上述统计一致。P2 仍 IN_PROGRESS，不能以后台查询测试替代这些入口验收。
 - 无真实媒体访问、源端写入、云端下载、外部传输或 push；既有 LibraryWorkspace 75/5、项目和 OpenMontage 并行差异保留。
+
+
+## P2 原生地图入口与混合图库（2026-09-27）
+
+- main 基线 `b3b2bf0b`。原生地图增加照片／视频／照片与视频选择器，媒体范围保存在地图导航状态中；切换时清除旧聚合、点选及预览并使旧请求失效。数量使用“项影像”，不再把视频数量标作张照片。
+- 地图点选资产投影带 mediaKind / contentRevision；视频弹窗复用 LibraryVideoViewer，封面仍只读取缩略图，不自动播放。地图跳转图库保留空间和媒体范围；混合列表提供“仅照片／仅视频”缩小同一地点，横条明确显示媒体范围。单片播放空格键按实际选中资产媒体域判断。
+- `map-video-native-build-accepted.log`：Mac TEST BUILD SUCCEEDED；`map-video-native-tests-final.log`：直接 XCTest PASS 5/5，包括 LibraryWorkspaceModelTests 地图导航、WorldMapCatalogS1Tests 三域查询投影、LibraryVideoViewingTests 三项播放生命周期／失败回归。播放器测试使用合成视频，不代表真实地图 UI 点击已验。
+- 中间模型测试在旧照片断言处两次得到空列表。核查夹具发现 startsConnected 默认同时创建待扫描任务，start 后后台 reconcile 刷新会覆盖导航请求；纯导航夹具显式设置 hasPendingCatalogReconcileJobs=false 后重建并通过。生产扫描行为未改动，失败日志保留，不用重试结果冒充原轮通过。
+- `map-ui-workspace.patch` 只暂存本轮 Workspace hunk，保留其既有 75/5 故事差异；源摘要 `map-video-native-source-sha256.json`；git diff --check PASS。已有项目／OpenMontage 改动未纳入。
+- 下一动作：把地图范围传到 Host／Companion；接原生视频回填启动条件与统计／文案。混合范围的分析操作继续列为 P3/P4 必需核查，实际原生地图 UI 与 Web Swift Host 联调仍待验。P1、P2 IN_PROGRESS；P3–P7 NOT_STARTED。
+- 未读取真实媒体、未启动生产 Photos 测试宿主、未源端写入／云端下载／外部传输／push；未发布或替换日常 App。

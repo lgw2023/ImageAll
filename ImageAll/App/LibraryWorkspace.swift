@@ -5388,7 +5388,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             return "待审核建议"
         }
         if let worldMapGalleryScope {
-            return "\(worldMapGalleryScope.displayName) · 照片世界"
+            return "\(worldMapGalleryScope.displayName) · \(worldMapGalleryScope.selectionQuery.effectiveMediaScope.title)世界"
         }
         if selectedFolderScope != nil {
             return folderBreadcrumb.map(\.title).joined(separator: " › ")
@@ -10333,7 +10333,16 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     func setMediaKind(_ mediaKind: MediaKind) async {
-        guard selectedMediaKind != mediaKind else { return }
+        guard selectedMediaKind != mediaKind || worldMapGalleryScope?.selectionQuery.effectiveMediaScope == .all else { return }
+        if let scope = worldMapGalleryScope {
+            let query = scope.selectionQuery
+            worldMapGalleryScope = WorldMapGalleryScope(
+                clusterID: scope.clusterID, displayName: scope.displayName, photoCount: scope.photoCount,
+                selectionQuery: WorldMapCatalogSelectionQuery(
+                    cellDegrees: query.cellDegrees, longitudeBucket: query.longitudeBucket,
+                    latitudeBucket: query.latitudeBucket, bounds: query.bounds,
+                    maximumAssets: query.maximumAssets, mediaScope: mediaKind == .video ? .videos : .photos))
+        }
         stopVideoHoverPlayback()
         videoViewingSession.stop()
         assetPageRequestID = UUID()
@@ -10446,7 +10455,13 @@ final class LibraryWorkspaceModel: ObservableObject {
             excludedTagIDs: Array(excludedTagFilterIDs),
             tagMatchMode: tagMatchMode,
             availabilities: selectedAvailabilities,
-            mediaKinds: [selectedMediaKind],
+            mediaKinds: worldMapGalleryScope.map { scope in
+                switch scope.selectionQuery.effectiveMediaScope {
+                case .photos: [.image]
+                case .videos: [.video]
+                case .all: []
+                }
+            } ?? [selectedMediaKind],
             mediaTypes: selectedMediaTypes,
             videoDuration: selectedMediaKind == .video ? videoDurationFilter : .any,
             videoOrientation: selectedMediaKind == .video ? videoOrientationFilter : .any,
@@ -11717,7 +11732,7 @@ extension LibraryWorkspaceModel {
             isBrowsingFavorites = false
             searchDebounceTask?.cancel()
             searchDebounceTask = nil
-            selectedMediaKind = .image
+            selectedMediaKind = scope.selectionQuery.effectiveMediaScope == .videos ? .video : .image
             selectedSourceID = nil
             selectedFolderScope = nil
             selectedTagFilterDecisions = [:]
@@ -13697,7 +13712,7 @@ struct LibraryWorkspaceView: View {
             .focusEffectDisabled()
             .onKeyPress(.space) {
                 guard model.primarySelectedAssetID != nil else { return .ignored }
-                if model.isSinglePhotoPresented, model.selectedMediaKind == .video {
+                if model.isSinglePhotoPresented, model.items.first(where: { $0.assetID == model.primarySelectedAssetID })?.mediaKind == .video {
                     model.videoViewingSession.togglePlayback()
                 } else {
                     model.toggleSinglePhotoView()
@@ -15769,7 +15784,7 @@ struct LibraryWorkspaceView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(scope.displayName)
                     .font(.callout.weight(.semibold))
-                Text("来自照片世界的精确地点范围 · \(scope.photoCount.formatted()) 张照片")
+                Text("地图精确地点范围 · \(model.worldMapGalleryScope?.selectionQuery.effectiveMediaScope.title ?? scope.selectionQuery.effectiveMediaScope.title)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -15780,12 +15795,12 @@ struct LibraryWorkspaceView: View {
             .buttonStyle(.borderedProminent)
             .tint(Color(red: 0.590, green: 0.690, blue: 0.625))
             .persistentHelp("回到原来的地图镜头和已选照片塔。")
-            Button("查看全部照片") {
+            Button("离开地点范围") {
                 worldMapGalleryScope = nil
                 selection = .all
             }
             .buttonStyle(.bordered)
-            .persistentHelp("清除地点范围，恢复完整照片图库。")
+            .persistentHelp("清除地点范围，恢复当前媒体图库。")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
@@ -15793,13 +15808,22 @@ struct LibraryWorkspaceView: View {
         .accessibilityIdentifier("worldMapGalleryScopeBanner")
     }
 
+    @ViewBuilder
     private var mediaKindTabs: some View {
+        if model.worldMapGalleryScope?.selectionQuery.effectiveMediaScope == .all {
+            HStack {
+                Label("照片与视频", systemImage: "photo.stack")
+                Button("仅照片") { Task { await model.setMediaKind(.image) } }
+                Button("仅视频") { Task { await model.setMediaKind(.video) } }
+            }
+        } else {
         MediaKindWorkspaceTabs(
             selection: model.selectedMediaKind,
             accessibilityIdentifier: "libraryMediaKindTabs",
             help: "在当前入口内切换照片和视频；两个页面的数据和选择严格隔离。"
         ) { mediaKind in
             Task { await model.setMediaKind(mediaKind) }
+        }
         }
     }
 

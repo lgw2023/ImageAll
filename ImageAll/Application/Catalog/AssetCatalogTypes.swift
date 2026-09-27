@@ -637,6 +637,8 @@ struct WorldMapCatalogAsset: Sendable, Equatable, Identifiable {
 
     let assetID: UUID
     let fileName: String?
+    var mediaKind: MediaKind = .image
+    var contentRevision: Int = 1
 }
 
 struct WorldMapCatalogSelection: Sendable, Equatable {

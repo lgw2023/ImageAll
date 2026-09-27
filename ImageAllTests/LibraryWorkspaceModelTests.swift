@@ -5805,7 +5805,8 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             ),
             reconciledItems: [image, video],
             initialItems: [image, video],
-            startsConnected: true
+            startsConnected: true,
+            hasPendingCatalogReconcileJobs: false
         )
         let model = LibraryWorkspaceModel(service: service)
         let selectionQuery = WorldMapCatalogSelectionQuery(
@@ -5843,6 +5844,26 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(service.lastFilter.worldMapSelection, selectionQuery)
         XCTAssertEqual(service.lastFilter.mediaKinds, [.image])
         XCTAssertEqual(service.lastFilter.searchText, "")
+
+        for (mediaScope, expectedIDs, expectedKinds) in [
+            (WorldMapMediaScope.videos, Set([video.assetID]), [MediaKind.video]),
+            (.all, Set([image.assetID, video.assetID]), []),
+        ] {
+            let mixedScope = WorldMapGalleryScope(clusterID: scope.clusterID, displayName: scope.displayName,
+                photoCount: 2, selectionQuery: WorldMapCatalogSelectionQuery(
+                    cellDegrees: selectionQuery.cellDegrees, longitudeBucket: selectionQuery.longitudeBucket,
+                    latitudeBucket: selectionQuery.latitudeBucket, bounds: selectionQuery.bounds, mediaScope: mediaScope))
+            let destination = LibraryBrowsingDestination.worldMapGallery(mixedScope)
+            model.applyImmediateBrowsingPresentation(for: destination)
+            await model.navigate(to: destination, requestID: model.beginBrowsingNavigation())
+            XCTAssertEqual(Set(model.items.map(\.assetID)), expectedIDs)
+            XCTAssertEqual(service.lastFilter.mediaKinds, expectedKinds)
+            XCTAssertEqual(service.lastFilter.worldMapSelection?.effectiveMediaScope, mediaScope)
+        }
+        await model.setMediaKind(.image)
+        XCTAssertEqual(service.lastFilter.mediaKinds, [.image])
+        XCTAssertEqual(service.lastFilter.worldMapSelection?.effectiveMediaScope, .photos)
+        XCTAssertEqual(service.lastFilter.worldMapSelection?.bounds, selectionQuery.bounds)
     }
 
     func testImmediateBrowsingPresentationAppliesSourceFilterBeforeAsyncNavigate() async {
@@ -15893,6 +15914,10 @@ final class WorldMapCatalogS1Tests: XCTestCase {
             XCTAssertEqual(cluster.selectionQuery.effectiveMediaScope, scope)
             let selection = try map.fetchSelection(query: cluster.selectionQuery)
             XCTAssertEqual(Set(selection.assets.map(\.assetID)), expected)
+            for asset in selection.assets {
+                XCTAssertEqual(asset.mediaKind, asset.assetID == photo ? .image : .video)
+                XCTAssertEqual(asset.contentRevision, 1)
+            }
             let limited = cluster.selectionQuery.limited(to: 1)
             XCTAssertEqual(limited.effectiveMediaScope, scope)
             XCTAssertEqual(try map.fetchSelection(query: limited).totalPhotoCount, expected.count)

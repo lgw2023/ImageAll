@@ -371,7 +371,7 @@ struct GRDBWorldMapCatalogRepository: Sendable {
             let rows = try Row.fetchAll(
                 db,
                 sql: """
-                SELECT asset.id AS asset_id, asset.file_name AS file_name
+                SELECT asset.id AS asset_id, asset.file_name AS file_name, asset.media_kind, asset.content_revision
                 FROM asset
                 JOIN asset_location AS location ON location.asset_id = asset.id
                 WHERE \(Self.eligibleMediaWhereSQL(scope: query.effectiveMediaScope))
@@ -399,7 +399,9 @@ struct GRDBWorldMapCatalogRepository: Sendable {
                 }
                 return WorldMapCatalogAsset(
                     assetID: assetID,
-                    fileName: row["file_name"]
+                    fileName: row["file_name"],
+                    mediaKind: MediaKind(rawValue: row["media_kind"]) ?? .image,
+                    contentRevision: row["content_revision"]
                 )
             }
             return WorldMapCatalogSelection(
