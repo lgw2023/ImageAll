@@ -242,3 +242,13 @@
 - P1、P2 仍 IN_PROGRESS；P3–P7 NOT_STARTED。下一具体动作：PhotoKit 视频技术信息／云端资源明确状态与显式获取，再推进标签、AI、精确去重、多帧和混合故事主路径。地图地点标签解析仍为照片计数，纳入后续标签／地图对齐检查，不宣称地图全部语义均已完成。
 - 未读取真实媒体、未执行真实来源回填、未云端下载、未源端写入、未外部传输、未 push 或替换 App。Workspace 原有 75/5、项目与 OpenMontage 并行改动均保留。
 - main 类型检查 backfill-scope-main-typecheck.log PASS，Web 5/5 文件字节一致；源摘要 backfill-scope-source-sha256.json，git diff --check PASS。共享客户端旧 scratch 链接失败，符号为变更前 RemoteCapabilities 构造器；保留失败日志，使用全新 client-backfill-scope 构建目录后的 backfill-scope-client-final.log 64/64 PASS，证实源码兼容。
+
+
+## P2 本地视频查看器技术信息（2026-09-27）
+
+- 上轮为 progress：主线 e186784e 完成远端 scoped 回填，本轮先复核 PhotoKit 数据路径。PhotoKit 枚举已有日期／位置／时长，但不读取轨道规格；原视频请求默认本地、禁网络。既有 cloud preview 使用 requestImage，属于静态预览，不能当作视频原件获取。
+- 共用原生查看器增加“视频信息”：从已取得的本地 AVAsset 异步读取 FourCC 编码、标称帧率、估算码率和音轨数。先让播放器就绪，技术信息失败不阻塞观看；加载中、失败及字段未知分开呈现。关闭／切换清除状态，并拒绝旧请求覆盖新资产。
+- 这是播放资源观察入口，不是目录持久字段补齐；PhotoKit 技术信息持久化／远端详情、显式云端视频获取仍为必需缺口。本轮未改目录扫描、源端元数据或资产内容修订，未声明 P2 完成。
+- 未读取真实 Photos、未触发云端下载、未外部传输、未启动生产 Photos 测试宿主、未 push／替换 App。仅修改原生查看器、对应既有合成测试及本目标记录；Workspace 原有 75/5 和 OpenMontage 并行差异保留，Web 工作区无新改动。
+- viewer-technical-build-final.log：Mac TEST BUILD SUCCEEDED。viewer-technical-tests.log：直接 XCTest LibraryVideoViewingTests 3/3 PASS，复用本地合成 H.264 无音轨素材，验证编码 avc1、正帧率／码率、音轨 0、状态清理及原有 seek／标签持久事实／旧请求隔离／损坏视频失败回归。没有真实 PhotoKit 读取或新弹窗人工交互证据，不扩大该合成通过范围。
+- git diff --check PASS，源摘要 viewer-technical-source-sha256.json。下一步仍是 PhotoKit 持久技术信息及显式云端视频获取，随后继续 P3–P7；目标保持 active，未将本轮查看器入口当作完整 P2。

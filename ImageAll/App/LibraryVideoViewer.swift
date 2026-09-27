@@ -22,6 +22,8 @@ final class LibraryVideoViewingSession: ObservableObject {
     let player = AVPlayer()
     @Published private(set) var state: State = .idle
     @Published private(set) var speed: Float = 1
+    @Published private(set) var technicalMetadata: VideoTechnicalMetadata?
+    @Published private(set) var technicalMetadataLoadFinished = false
     private(set) var identity: Identity?
     private var requestID: UUID?
     private var resource: LibraryVideoPlaybackResource?
@@ -59,6 +61,12 @@ final class LibraryVideoViewingSession: ObservableObject {
                 }
             }
             state = .ready
+            // Playback is usable immediately; optional metadata failure must not fail the player.
+            let observed = try? await Self.readTechnicalMetadata(asset)
+            guard requestID == request else { return }
+            guard !Task.isCancelled else { stop(); return }
+            technicalMetadata = observed
+            technicalMetadataLoadFinished = true
         } catch {
             guard requestID == request else { return }
             if Task.isCancelled || error is CancellationError {
@@ -85,6 +93,8 @@ final class LibraryVideoViewingSession: ObservableObject {
         if let expected, identity != expected { return }
         requestID = nil
         identity = nil
+        technicalMetadata = nil
+        technicalMetadataLoadFinished = false
         itemObservation = nil
         player.pause()
         player.replaceCurrentItem(with: nil)
@@ -97,6 +107,25 @@ final class LibraryVideoViewingSession: ObservableObject {
         guard requestID == request else { return }
         stop()
         state = .failed(message)
+    }
+
+    private static func readTechnicalMetadata(_ asset: AVAsset) async throws -> VideoTechnicalMetadata? {
+        guard let track = try await asset.loadTracks(withMediaType: .video).first else { return nil }
+        let (formats, frameRate, dataRate) = try await track.load(
+            .formatDescriptions, .nominalFrameRate, .estimatedDataRate
+        )
+        let audio = try await asset.loadTracks(withMediaType: .audio)
+        let codec = formats.first.flatMap { format -> String? in
+            let code = CMFormatDescriptionGetMediaSubType(format)
+            return String(bytes: [UInt8((code >> 24) & 255), UInt8((code >> 16) & 255),
+                                  UInt8((code >> 8) & 255), UInt8(code & 255)], encoding: .ascii)
+        }
+        return VideoTechnicalMetadata(
+            codec: codec,
+            nominalFrameRate: frameRate.isFinite && frameRate > 0 ? Double(frameRate) : nil,
+            estimatedDataRate: dataRate.isFinite && dataRate > 0 ? Double(dataRate) : nil,
+            audioTrackCount: audio.count
+        )
     }
 
     private static func message(for error: Error) -> String {
@@ -119,6 +148,7 @@ struct LibraryVideoViewer: View {
     @ObservedObject var model: LibraryWorkspaceModel
     @ObservedObject private var session: LibraryVideoViewingSession
     @State private var reloadGeneration = 0
+    @State private var showsTechnicalInformation = false
 
     init(assetID: UUID, contentRevision: Int, model: LibraryWorkspaceModel) {
         self.assetID = assetID
@@ -158,6 +188,32 @@ struct LibraryVideoViewer: View {
                 }
                 .frame(width: 160)
                 Spacer()
+                Button("视频信息", systemImage: "info.circle") { showsTechnicalInformation.toggle() }
+                    .disabled(session.identity != identity || session.state != .ready)
+                    .popover(isPresented: $showsTechnicalInformation) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("本地播放资源信息").font(.headline)
+                            if !session.technicalMetadataLoadFinished {
+                                ProgressView("正在读取技术信息…")
+                            } else if session.technicalMetadata == nil {
+                                Text("无法读取此资源的技术信息，仍可继续播放或重新载入。")
+                                    .foregroundStyle(.secondary)
+                            }
+                            LabeledContent("编码", value: session.technicalMetadata?.codec ?? "未知")
+                            LabeledContent("标称帧率", value: session.technicalMetadata?.nominalFrameRate.map {
+                                String(format: "%.2f fps", $0)
+                            } ?? "未知")
+                            LabeledContent("估算码率", value: session.technicalMetadata?.estimatedDataRate.map {
+                                String(format: "%.0f kb/s", $0 / 1000)
+                            } ?? "未知")
+                            LabeledContent("音轨", value: session.technicalMetadata?.audioTrackCount.map {
+                                $0 == 0 ? "未发现音轨" : "\($0) 条"
+                            } ?? "未知")
+                            Text("标称帧率不保证恒定帧率；音轨数量不表示已分析音频内容。")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        .padding().frame(width: 320)
+                    }
                 Button("重新载入", systemImage: "arrow.clockwise") { reloadGeneration &+= 1 }
                 Button("使用系统播放器打开", systemImage: "arrow.up.forward.app") {
                     session.stop()

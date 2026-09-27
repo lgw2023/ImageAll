@@ -34,6 +34,13 @@ final class LibraryVideoViewingTests: XCTestCase {
         }
         XCTAssertEqual(session.state, .ready)
         XCTAssertEqual(session.identity, identity)
+        XCTAssertTrue(session.technicalMetadataLoadFinished)
+        let metadata = try XCTUnwrap(session.technicalMetadata)
+        XCTAssertEqual(metadata.codec, "avc1")
+        XCTAssertGreaterThan(try XCTUnwrap(metadata.nominalFrameRate), 0)
+        XCTAssertGreaterThan(try XCTUnwrap(metadata.estimatedDataRate), 0)
+        XCTAssertEqual(metadata.audioTrackCount, 0)
+
         XCTAssertEqual(session.player.rate, 0, "Opening a viewer must not autoplay audio")
         session.setSpeed(1.5)
         XCTAssertEqual(session.player.defaultRate, 1.5)
@@ -73,6 +80,8 @@ final class LibraryVideoViewingTests: XCTestCase {
         XCTAssertNil(session.player.currentItem)
         XCTAssertEqual(releases.value, 2)
         XCTAssertEqual(session.state, .idle)
+        XCTAssertNil(session.technicalMetadata)
+        XCTAssertFalse(session.technicalMetadataLoadFinished)
     }
 
     func testLatePreparationCannotReplaceNewSelectionAndCancelledViewReleases() async throws {
@@ -96,6 +105,7 @@ final class LibraryVideoViewingTests: XCTestCase {
         })
         await firstTask.value
         XCTAssertEqual(session.identity, second)
+        XCTAssertEqual(session.technicalMetadata?.codec, "avc1")
         XCTAssertEqual(session.state, .ready)
         XCTAssertEqual(releases.value, 1)
         session.stop(ifMatching: first)
