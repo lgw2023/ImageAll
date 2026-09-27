@@ -4,6 +4,38 @@ import ImageAllRemoteProtocol
 import XCTest
 
 final class RemoteLibraryClientTests: XCTestCase {
+    func testSelectedVideoSampleSuggestionsKeepExactIDsAndCannotBecomeWholeLibrary() async throws {
+        let operation = UUID(), ids = [UUID(), UUID(), UUID()]
+        let transport = MockTransport { outgoing in
+            XCTAssertEqual(outgoing.url?.path, RemoteHTTPPaths.sampleSuggestionRequests)
+            XCTAssertEqual(outgoing.httpMethod, "POST")
+            let request = try JSONDecoder().decode(RemoteSampleSuggestionRequest.self, from: XCTUnwrap(outgoing.httpBody))
+            XCTAssertEqual(request.operationID, operation)
+            XCTAssertEqual(request.mediaKind, .video)
+            XCTAssertEqual(request.assetIDs, ids)
+            XCTAssertNil(request.sourceIDs)
+            let result = RemoteSampleSuggestionResponse(activity: .init(operationID: operation,
+                mediaKind: .video, phase: .running, completedUnitCount: 0, totalUnitCount: 3), replayed: true)
+            return (try JSONEncoder().encode(result), HTTPURLResponse(url: outgoing.url!, statusCode: 200,
+                httpVersion: "HTTP/1.1", headerFields: nil)!)
+        }
+        let endpoint = try RemoteHostEndpoint(host: "127.0.0.1", port: 8787, accessToken: "secret")
+        let client = RemoteLibraryClient(endpoint: endpoint, transport: transport)
+        let result = try await client.submitSelectedSampleSuggestions(assetIDs: ids, mediaKind: .video, operationID: operation)
+        XCTAssertTrue(result.replayed)
+        let forbiddenTransport = MockTransport { _ in
+            XCTFail("invalid selected IDs must never reach whole-library API")
+            throw URLError(.badURL)
+        }
+        let guarded = RemoteLibraryClient(endpoint: endpoint, transport: forbiddenTransport)
+        for invalid in [[], [ids[0], ids[0]]] {
+            do {
+                _ = try await guarded.submitSelectedSampleSuggestions(assetIDs: invalid, mediaKind: .video, operationID: operation)
+                XCTFail("empty or duplicate selection must fail")
+            } catch let error as RemoteAPIError { XCTAssertEqual(error.code, .conflict) }
+        }
+    }
+
     func testVideoTagSuggestionsQuerySubmitReplayCancelAndIdentityChecks() async throws {
         let operation = UUID(), tag = UUID(), source = UUID()
         for method in [RemoteTagLibrarySuggestionMethod.personalCentroid, .personalAdamW] {

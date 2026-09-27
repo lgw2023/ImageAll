@@ -1455,9 +1455,21 @@ final class RemoteCompanionModel: ObservableObject {
     func generatePersonalSampleSuggestions(assetID: UUID, mediaKind: RemoteAssetMediaKind,
         operationID: UUID, progress: @MainActor (RemoteSampleSuggestionActivity) -> Void
     ) async throws -> RemoteSampleSuggestionActivity {
+        try await generatePersonalSampleSuggestions(assetIDs: [assetID], mediaKind: mediaKind,
+            operationID: operationID, progress: progress)
+    }
+
+    func sampleSuggestionSetup(mediaKind: RemoteAssetMediaKind) async throws -> RemoteSampleSuggestionSnapshot {
         guard canSendCommands, let client else { throw RemoteAPIError(code: .conflict, message: "Mac Host 当前不可用") }
-        var activity = try await client.submitSampleSuggestions(.init(operationID: operationID,
-            mediaKind: mediaKind, assetIDs: [assetID])).activity
+        return try await client.fetchSampleSuggestions(mediaKind: mediaKind)
+    }
+
+    func generatePersonalSampleSuggestions(assetIDs: [UUID], mediaKind: RemoteAssetMediaKind,
+        operationID: UUID, progress: @MainActor (RemoteSampleSuggestionActivity) -> Void
+    ) async throws -> RemoteSampleSuggestionActivity {
+        guard canSendCommands, let client else { throw RemoteAPIError(code: .conflict, message: "Mac Host 当前不可用") }
+        var activity = try await client.submitSelectedSampleSuggestions(assetIDs: assetIDs,
+            mediaKind: mediaKind, operationID: operationID).activity
         progress(activity)
         while activity.phase == .running {
             try await Task.sleep(for: .seconds(1))

@@ -895,6 +895,158 @@ private struct RemoteHostDashboardView: View {
     }
 }
 
+private struct RemoteFrozenSampleSelection: Identifiable {
+    let id = UUID()
+    let assets: [RemoteAssetSummary]
+}
+
+private struct RemoteSelectedSuggestionsView: View {
+    @ObservedObject var model: RemoteCompanionModel
+    let selection: RemoteFrozenSampleSelection
+    @Environment(\.dismiss) private var dismiss
+    @State private var mediaKind: RemoteAssetMediaKind = .video
+    @State private var snapshot: RemoteSampleSuggestionSnapshot?
+    @State private var operationID: UUID?
+    @State private var activity: RemoteSampleSuggestionActivity?
+    @State private var running = false
+    @State private var cancelling = false
+    @State private var message: String?
+    @State private var reloadID = 0
+    @State private var commandTask: Task<Void, Never>?
+    @State private var cancelTask: Task<Void, Never>?
+
+    init(model: RemoteCompanionModel, selection: RemoteFrozenSampleSelection) {
+        self.model = model
+        self.selection = selection
+        _mediaKind = State(initialValue: selection.assets.contains { $0.resolvedMediaKind == .video } ? .video : .image)
+    }
+
+    private var assetIDs: [UUID] {
+        selection.assets.filter { $0.resolvedMediaKind == mediaKind }.map(\.id)
+    }
+    private var terminal: Bool {
+        activity.map { $0.phase != .running } ?? false
+    }
+    private var canSubmit: Bool {
+        model.canSendCommands && !running && !terminal && snapshot?.mediaKind == mediaKind
+            && snapshot?.isAvailable == true && !assetIDs.isEmpty
+            && assetIDs.count <= (snapshot?.maximumSampleCount ?? 0)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("固定的选择范围") {
+                    Text("已固定 \(selection.assets.count) 项。混合选择按媒体类型分别提交。")
+                    Picker("本次分析", selection: $mediaKind) {
+                        Text("照片（\(selection.assets.filter { $0.resolvedMediaKind == .image }.count)）")
+                            .tag(RemoteAssetMediaKind.image)
+                        Text("视频（\(selection.assets.filter { $0.resolvedMediaKind == .video }.count)）")
+                            .tag(RemoteAssetMediaKind.video)
+                    }
+                    .disabled(running || cancelling)
+                    let unknown = selection.assets.filter { $0.resolvedMediaKind == nil }.count
+                    if unknown > 0 { Text("\(unknown) 项媒体类型无法识别，不会提交；请更新 Host 或重新载入详情。").foregroundStyle(.orange) }
+                    if let snapshot {
+                        Text("本次 \(assetIDs.count) 项 · Host 单次上限 \(snapshot.maximumSampleCount) 项")
+                        if !snapshot.isAvailable { Text("Host 尚未提供个人样本建议。").foregroundStyle(.secondary) }
+                        if assetIDs.count > snapshot.maximumSampleCount {
+                            Text("选择超过上限，请返回减少选择；不会自动截断或拆分任务。").foregroundStyle(.orange)
+                        }
+                    }
+                    Text("使用该媒体类型的已发布个人模型，结果进入审核；不会自动训练、确认标签或获取云端原件。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Section {
+                    Button(running ? "正在分析…" : operationID == nil ? "分析本次所选项目" : "重试同一请求") { submit() }
+                        .disabled(!canSubmit || cancelling)
+                    if let activity {
+                        Text(phaseTitle(activity.phase))
+                        Text("已处理 \(activity.completedUnitCount)/\(activity.totalUnitCount) · 建议 \(activity.suggestedCount) · 跳过 \(activity.skippedCount)")
+                            .font(.caption)
+                        if let code = activity.errorCode {
+                            Text(code == "modelUnavailable" || code == "personalUnavailable"
+                                ? "缺少可用的个人模型，请到 Host 页训练对应媒体的模型。" : "任务失败：\(code)")
+                                .foregroundStyle(.red)
+                        }
+                        if activity.availableActions.contains(.cancel), let operationID {
+                            Button(cancelling ? "正在取消…" : "取消 Host 任务", role: .destructive) {
+                                cancel(operationID)
+                            }
+                            .disabled(cancelling || !model.canSendCommands)
+                        }
+                    }
+                    if let message { Text(message).font(.caption) }
+                    if !running {
+                        Button("刷新能力") { reloadID += 1 }.disabled(cancelling)
+                    }
+                }
+                Section {
+                    Text("关闭仅停止等待，Host 上已提交的任务继续。网络失败时保持范围不变重试，可复用同一请求；更改范围前请检查 Host 任务。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("所选项目建议")
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("关闭") { dismiss() } } }
+        }
+        .onChange(of: mediaKind) { _, _ in operationID = nil; activity = nil; message = nil }
+        .task(id: "\(mediaKind.rawValue)-\(reloadID)") {
+            snapshot = nil
+            do {
+                let loaded = try await model.sampleSuggestionSetup(mediaKind: mediaKind)
+                try Task.checkCancellation()
+                snapshot = loaded
+            } catch is CancellationError { }
+            catch { if !Task.isCancelled { message = error.localizedDescription } }
+        }
+        .onDisappear { commandTask?.cancel(); cancelTask?.cancel(); commandTask = nil; cancelTask = nil; running = false }
+    }
+
+    private func submit() {
+        let operation = operationID ?? UUID(), ids = assetIDs, scope = mediaKind
+        operationID = operation
+        running = true
+        message = nil
+        commandTask = Task {
+            defer { if !Task.isCancelled { running = false } }
+            do {
+                let result = try await model.generatePersonalSampleSuggestions(assetIDs: ids,
+                    mediaKind: scope, operationID: operation, progress: { value in
+                        if !Task.isCancelled { activity = value }
+                    })
+                try Task.checkCancellation()
+                activity = result
+                if result.phase == .completed { message = "已完成，请在审核页选择对应媒体查看建议。" }
+            } catch is CancellationError { }
+            catch { if !Task.isCancelled { message = error.localizedDescription } }
+        }
+    }
+
+    private func cancel(_ operation: UUID) {
+        cancelling = true
+        let scope = mediaKind
+        cancelTask = Task {
+            defer { cancelling = false }
+            do {
+                try await model.cancelPersonalSampleSuggestions(operationID: operation)
+                let current = try await model.sampleSuggestionSetup(mediaKind: scope)
+                try Task.checkCancellation()
+                if operationID == operation { activity = current.activities.first { $0.operationID == operation } }
+            } catch is CancellationError { }
+            catch { if !Task.isCancelled { message = error.localizedDescription } }
+        }
+    }
+
+    private func phaseTitle(_ phase: RemoteSampleSuggestionPhase) -> String {
+        switch phase {
+        case .running: "正在分析"
+        case .completed: "已完成"
+        case .failed: "失败"
+        case .cancelled: "已取消"
+        }
+    }
+}
+
 private struct RemoteLibraryView: View {
     @ObservedObject var model: RemoteCompanionModel
     @AppStorage("imageall.mobile.library.gridDensity")
@@ -902,6 +1054,7 @@ private struct RemoteLibraryView: View {
     @State private var previewTarget: RemotePreviewTarget?
     @State private var isFilterPresented = false
     @State private var isBatchTagWorkbenchPresented = false
+    @State private var sampleSelection: RemoteFrozenSampleSelection?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -980,6 +1133,9 @@ private struct RemoteLibraryView: View {
         }
         .sheet(isPresented: $isBatchTagWorkbenchPresented) {
             RemoteBatchTagWorkbench(model: model)
+        }
+        .sheet(item: $sampleSelection) { selection in
+            RemoteSelectedSuggestionsView(model: model, selection: selection)
         }
     }
 
@@ -1108,6 +1264,16 @@ private struct RemoteLibraryView: View {
                 .disabled(model.selectedAssetIDs.isEmpty)
                 .accessibilityIdentifier("library-batch-tag-workbench-button")
             }
+
+            Button("为所选项目生成个人建议", systemImage: "sparkles") {
+                let selected = model.assets.filter { model.selectedAssetIDs.contains($0.id) }
+                guard selected.count == model.selectedAssetIDs.count else {
+                    model.statusMessage = "部分选择已不在当前列表，请重新选择后再试"
+                    return
+                }
+                sampleSelection = RemoteFrozenSampleSelection(assets: selected)
+            }
+            .disabled(!model.canSendCommands || model.selectedAssetIDs.isEmpty)
 
             RemoteDecisionBar(
                 isDisabled: !model.canSendCommands

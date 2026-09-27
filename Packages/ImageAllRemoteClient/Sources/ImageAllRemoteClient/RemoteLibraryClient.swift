@@ -587,6 +587,17 @@ public struct RemoteLibraryClient: Sendable {
         return result
     }
 
+    /// A selected-assets command must never fall back to the API's empty-list whole-library meaning.
+    public func submitSelectedSampleSuggestions(assetIDs: [UUID], mediaKind: RemoteAssetMediaKind,
+        operationID: UUID
+    ) async throws -> RemoteSampleSuggestionResponse {
+        guard !assetIDs.isEmpty, Set(assetIDs).count == assetIDs.count else {
+            throw RemoteAPIError(code: .conflict, message: "请选择非空且不重复的媒体集合")
+        }
+        return try await submitSampleSuggestions(.init(operationID: operationID,
+            mediaKind: mediaKind, assetIDs: assetIDs))
+    }
+
     public func submitSampleSuggestions(_ request: RemoteSampleSuggestionRequest) async throws -> RemoteSampleSuggestionResponse {
         let result: RemoteSampleSuggestionResponse = try await postJSON(path: RemoteHTTPPaths.sampleSuggestionRequests,
             body: JSONEncoder().encode(request))

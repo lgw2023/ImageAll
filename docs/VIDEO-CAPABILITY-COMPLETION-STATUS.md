@@ -406,3 +406,12 @@
 - ios-tag-client-tests.log 全套 71/71 PASS，新正常链覆盖两种方法、鉴权、视频查询、来源、重放和取消；失败链拒绝错操作／媒体／方法／标签，含 envelope 正确但内部活动媒体错误。ios-tag-build.log iOS Simulator BUILD SUCCEEDED，git diff --check PASS。未执行模拟器界面点击、真机或实际 Host UI 联调，仍需后续跨端验收。
 - ios-tag-source-sha256.json 绑定源文件。Workspace 原有 75/5、项目／OpenMontage 并行改动保留；Web 未修改。未读取真实媒体、未云端获取／源端写入／外部传输、未 push／替换 App。
 - P1／P2／P3 IN_PROGRESS，P4–P7 NOT_STARTED，目标 active。下一步补图库多选资产的个人建议入口，随后推进 P4 完整文件摘要与安全去重；跨端运行及主线内置网页资源最终集成仍未完成。
+
+
+## P3 iPhone 多选资产个人建议（2026-09-28）
+
+- 上轮为 progress：81028c9a 补按标签建议与审核入口。本轮图库多选新增个人建议面板，固定资产集合、按媒体分开明确提交；未知类型显示数量，缺失选择阻止打开，超限不截断。能力／上限来自 Host，显示进度、结果条数、跳过、缺模型与取消。
+- 专用 selected-assets 客户端拒绝空列表和重复 ID，防止空列表变成既有协议的全库采样；当前单资产入口复用此方法。网络失败同范围重试保留 operationID，关闭取消等待而不声称撤回 Host 任务。
+- ios-multisample-client-tests.log 全套 72/72 PASS，新增测试证明精确发送三个视频 ID、来源为空、重放回执保留，且空／重复选择不触发任何 HTTP。ios-multisample-build.log iOS Simulator BUILD SUCCEEDED；git diff --check PASS。未执行模拟器交互、真机或实际 Host UI 联调。
+- ios-multisample-source-sha256.json 绑定源码。Workspace 原有 75/5、项目／OpenMontage 并行差异保留；Web 未修改。未读取真实媒体、未云端获取／源端写入／外部传输、未 push／替换 App。
+- P1／P2／P3 IN_PROGRESS，P4–P7 NOT_STARTED，目标 active。本轮已补当前列出的 iPhone 个人建议／训练最小入口，但跨端运行验收仍未完成。下一动作进入 P4：已复核 IdenticalDuplicateClusterService 的完整字节分组仍仅图片，FingerprintCompletionService 视频摘要仍代表帧；需要新 ADR、独立完整原件摘要 provenance 与显式分块扫描，不能直接解除图片 guard。
