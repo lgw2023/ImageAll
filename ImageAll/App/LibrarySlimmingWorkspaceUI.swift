@@ -749,7 +749,9 @@ struct LibrarySlimmingWorkspaceView: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(!model.canAnalyzeLibrarySlimmingCatalog)
                     .persistentHelp(
-                        "\(model.librarySlimmingCatalogSourceScopeCaption)；不会取消已有分析记录"
+                        model.selectedMediaKind == .video
+                            ? "读取所选来源中文件夹视频的完整字节以检查精确重复，并分析代表帧相似；可暂停或取消，不自动下载 Photos 原件。"
+                            : "\(model.librarySlimmingCatalogSourceScopeCaption)；不会取消已有分析记录"
                     )
 
                     catalogSourceMenu
@@ -2700,7 +2702,7 @@ struct LibrarySlimmingInspectorView: View {
                     .font(.headline)
                 Text(
                     model.selectedMediaKind == .video
-                        ? "按代表缩略图查找视觉重复或相似的视频。文件夹资产默认快速永久删除以释放来源空间，也可选择 ImageAll 的 30 天可恢复回收；Photos 使用系统“最近删除”。"
+                        ? "新分析读取文件夹视频的完整字节以识别完全相同文件，同时按代表帧查找视觉相似。Photos 当前仅分析代表帧，不自动获取原件。完整摘要与代表帧匹配分开展示；处理前请核对保留项与回收方式。"
                         : "查找相同与相似照片。文件夹资产默认快速永久删除以释放来源空间，也可选择 ImageAll 的 30 天可恢复回收；Photos 使用系统“最近删除”。"
                 )
                     .font(.callout)

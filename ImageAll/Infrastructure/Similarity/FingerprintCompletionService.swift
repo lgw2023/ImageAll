@@ -42,6 +42,19 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
         self.videoPosterGenerator = videoPosterGenerator
     }
 
+    func completeExplicitAnalysisAsset(assetID: UUID, checkCancellation: () throws -> Void,
+        onByteProgress: (Int64, Int64) -> Void) throws {
+        try checkCancellation()
+        if let context = try assetRepository.fetchGenerationContext(assetID: assetID),
+           context.mediaKind == .video, context.locatorKind == AssetLocatorKind.file.rawValue {
+            let originals = OriginalVideoDigestService(database: database, sourceAccess: sourceAccess, clock: clock)
+            _ = try originals.completeFolderVideo(assetID: assetID,
+                checkCancellation: checkCancellation, onProgress: onByteProgress)
+        }
+        try checkCancellation()
+        _ = try completeAsset(assetID: assetID)
+    }
+
     func completeAsset(assetID: UUID) throws -> AssetContentFingerprint {
         switch try loadLocatorKind(assetID: assetID) {
         case .file:

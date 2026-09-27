@@ -30,7 +30,16 @@ struct OriginalVideoDigestService: Sendable {
         guard let context = try repository.fetchGenerationContext(assetID: assetID) else {
             throw FingerprintCompletionError.notFound
         }
-        guard context.mediaKind == .video, context.isEligibleForGeneration else {
+        // Original bytes do not require a known duration or a decodable poster.
+        guard context.mediaKind == .video,
+              context.locatorKind == AssetLocatorKind.file.rawValue,
+              context.locatorState == AssetLocatorState.current.rawValue,
+              context.availability == AssetAvailability.available.rawValue,
+              context.sourceKind == SourceKind.folder.rawValue,
+              context.sourceState == SourceState.active.rawValue,
+              case .success(_) = RelativePathRules.validate(context.relativePath),
+              RelativePathRules.fileName(from: context.relativePath) == context.fileName,
+              context.fingerprintSizeBytes > 0, context.fingerprintModifiedAtNs >= 0 else {
             throw FingerprintCompletionError.ineligible
         }
         do {
@@ -82,6 +91,7 @@ struct OriginalVideoDigestService: Sendable {
                 defer { Darwin.close(currentFD) }
                 guard try FileIdentity.read(currentFD) == before else { throw FingerprintCompletionError.sourceChanged }
                 try persist(digest: digest, context: context, identity: before, checkCancellation: checkCancellation)
+                try checkCancellation()
                 return Result(assetID: assetID, contentRevision: context.contentRevision,
                     sha256: digest, byteCount: before.size, reused: cached != nil)
             }
@@ -130,8 +140,10 @@ struct OriginalVideoDigestService: Sendable {
     private func persist(digest: Data, context: DerivedImageAssetGenerationContext, identity: FileIdentity,
         checkCancellation: () throws -> Void
     ) throws {
+        // Cancellation can query the job queue and heartbeat; never invoke it while
+        // holding the catalog writer, which the heartbeat also needs.
+        try checkCancellation()
         try database.pool.write { db in
-            try checkCancellation()
             let valid = try Bool.fetchOne(db, sql: """
                 SELECT EXISTS(
                     SELECT 1 FROM asset a JOIN source s ON s.id = a.source_id

@@ -281,9 +281,16 @@ struct LibrarySlimmingScanProgress: Sendable, Equatable, Codable {
     let completed: Int
     let total: Int
     var completionPass: Int? = nil
+    var completedBytes: Int64? = nil
+    var totalBytes: Int64? = nil
 
     var caption: String {
         let prefix = completionPass.map { "第 \($0) 轮 · " } ?? ""
+        if let completedBytes, let totalBytes, phase == .preparingFingerprints {
+            let completedSize = ByteCountFormatter.string(fromByteCount: completedBytes, countStyle: .file)
+            let totalSize = ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)
+            return prefix + "完整视频摘要 \(completedSize)/\(totalSize) · 项目 \(completed + 1)/\(total)"
+        }
         return prefix + phaseCaption
     }
 

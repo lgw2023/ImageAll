@@ -20,7 +20,7 @@
 | P1 | IN_PROGRESS | 分切片 PASS；完整闭环未验 | 媒体契约已交付；Mac／iPhone 查看器构建／合成测试 PASS；跨端联调待补 |
 | P2 | IN_PROGRESS | 首切片 PASS | 文件夹元数据、查询／地图／回填、原生云端获取及 PhotoKit 播放后技术信息持久化已分切片验；远端恢复提示、智能推流与完整 UI 待验 |
 | P3 | IN_PROGRESS | 远端服务到真实质心模型和持久审核链 PASS；跨端运行待验 | 继续全库建议、训练命令与审核持久事实闭环 |
-| P4 | IN_PROGRESS | 原件摘要／分组 6/6、migration 4/4 PASS | 文件夹有界摘要与独立证据已实现；显式任务、PhotoKit 原件、回收恢复待接 |
+| P4 | IN_PROGRESS | 原件摘要／分组 6/6、migration 4/4 PASS | 文件夹有界摘要、独立证据与显式任务已实现；PhotoKit 原件、回收恢复待接 |
 | P5 | NOT_STARTED | NOT_RUN | 版本化有限多帧与时间点证据、内容相似独立候选 |
 | P6 | NOT_STARTED | NOT_RUN | 显式片段与原声规则，合成混合故事可解码验证 |
 | P7 | NOT_STARTED | NOT_RUN | 必需集成、最终构建与人工路线 |
@@ -425,3 +425,13 @@
 - original-video-migration-tests.log 4/4 PASS：V054 升级不提升旧摘要、反复迁移稳定、新库与重开、旧媒体 migration 回放。同步扩展旧 migration 回放测试的清理 helper，未改写已批准 migration。original-video-build-delivery.log Mac TEST BUILD SUCCEEDED；git diff --check PASS。
 - 测试是临时合成字节文件与 stub 代表帧，不能称为真实视频解码／重封装验收。当前服务与分组已具备底层实现，但显式用户分析任务尚未调用新服务；下一动作接入任务进度／取消和再验证，再处理 PhotoKit 原始资源、比较／回收／恢复闭环。P4 IN_PROGRESS，不是完整交付；P1／P2／P3 仍 IN_PROGRESS，P5–P7 NOT_STARTED，目标 active。
 - original-video-source-sha256.json 绑定源码；项目文件仅用 original-video-project.patch 暂存本服务的 4 行注册，原有 OpenMontage 4 行留在工作区。Workspace 75/5 保留；Web 未修改。未读取真实媒体、未云端获取／源端写入／外部传输、未 push／替换 App。
+
+
+## P4 显式任务、字节进度与暂停／取消（2026-09-28）
+
+- 上轮为 progress：41ecb961 实现原件摘要与独立分组。本轮新建视频分析任务写入明确摘要策略，FingerprintCompletionPort 增加显式分析方法；生产实现先读取文件夹视频完整字节，再沿既有代表帧路径。后台 completeAsset 与旧任务不扩大读取范围，未知策略拒绝。
+- 每文件复用任务租约心跳、持久字节进度和控制请求，暂停／取消停在当前 ordinal，恢复重试当前文件。控制回调移到数据库写锁之外并在提交后复核，避免回调访问队列／心跳形成锁循环。完整摘要资格与代表帧资格分开，未知时长或无法解码代表帧不阻止字节比较。
+- 新任务测试实际通过队列调用生产摘要／持久分组，读取中请求暂停与取消；恢复后缺少时长的字节副本生成精确组，取消不留下摘要或完成结果。旧 payload 暂停／恢复不读取完整字节；旧策略和未知策略边界分别核对。原生帮助及 Inspector 更新范围说明，原生 checkpoint 字幕含字节量；远端字节级进度与完整范围文案仍待对齐。
+- video-explicit-job-tests-accepted.log 最终 10/10 PASS：新任务主路／取消／旧任务、照片分析回归、原件服务与分组、聚类心跳与无回调续期。修正资格条件时曾误用另文件的 fileprivate isSuccess 辅助属性导致编译失败，改为匹配校验 Result 后 video-explicit-job-build-accepted.log Mac TEST BUILD SUCCEEDED；git diff --check PASS。
+- 仍是合成字节文件与 stub 代表帧，非实际容器或原生 UI 点击验收。视频一键清理仍被既有图片原件证据门禁拦截；下一步接清理前完整原件摘要复核及合成保留／回收／恢复，不可直接解除图片 guard。PhotoKit 原始资源、跨端说明与运行验收仍需完成。
+- video-explicit-job-source-sha256.json 绑定源文件。Workspace 75/5、项目 OpenMontage 4 行及其他并行改动保留；Web 未修改。未读取真实媒体、未云端获取／源端写入／外部传输、未 push／替换 App。P1–P4 IN_PROGRESS，P5–P7 NOT_STARTED，目标 active。

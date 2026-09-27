@@ -7,6 +7,112 @@ import XCTest
 @testable import ImageAll
 
 final class IdenticalDuplicateDetectionTests: XCTestCase {
+    func testExplicitVideoAnalysisJobPausesInsideOriginalReadThenResumesToExactResult() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+        let bytes = Data(repeating: 1, count: OriginalVideoDigestService.chunkByteCount * 3)
+        let a = try env.seedAsset(relativePath: "a.mp4", contents: bytes,
+            mediaType: "public.mpeg-4", mediaKind: .video, durationMs: nil)
+        let b = try env.seedAsset(relativePath: "b.mp4", contents: bytes,
+            mediaType: "public.mpeg-4", mediaKind: .video, durationMs: nil)
+        let base = env.makeCompletionService(videoPosterGenerator: SimilarityVideoPosterStub())
+        let completion = ExplicitVideoAnalysisTestCompletion(base: base)
+        let features = DictionarySlimmingFeatureLoader(vectors: [:])
+        let embeddings = DictionarySlimmingEmbeddingLoader(vectors: [:])
+        let queue = JobTestSupport.makeQueue(database: env.database)
+        let scanner = LibrarySlimmingScanService(database: env.database,
+            identicalScan: IdenticalDuplicateClusterService(database: env.database), fingerprintCompletion: base,
+            featureLoader: features, embeddingLoader: embeddings)
+        let analysis = LibrarySlimmingAnalysisService(database: env.database, queue: queue,
+            fingerprintCompletion: completion, featureLoader: features, embeddingLoader: embeddings,
+            scanner: scanner, clock: FixedJobClock(nowMs: JobTestSupport.baseTimeMs))
+        let job = try analysis.enqueue(mode: .catalog, assetIDs: [a.assetID, b.assetID], seedAssetIDs: [], mediaKind: .video)
+        var requested = false
+        completion.onChunk = { done, _ in
+            guard done > 0, !requested else { return }
+            requested = true
+            let running = try analysis.snapshot(jobID: job.jobID)
+            XCTAssertNotNil(running.scanProgress?.totalBytes)
+            _ = try analysis.pause(jobID: job.jobID)
+        }
+        try analysis.runPending()
+        let paused = try analysis.snapshot(jobID: job.jobID)
+        XCTAssertTrue(requested)
+        XCTAssertEqual(paused.state, .paused)
+        XCTAssertNil(paused.result)
+        XCTAssertEqual(try env.database.pool.read { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset_original_content_digest") }, 0)
+        completion.onChunk = nil
+        _ = try analysis.resume(jobID: job.jobID)
+        try analysis.runPending()
+        let finished = try analysis.snapshot(jobID: job.jobID)
+        XCTAssertEqual(finished.state, .completed)
+        XCTAssertEqual(finished.result?.clusters.map(\.kind), [.byteIdentical])
+        XCTAssertEqual(Set(finished.result?.clusters.first?.memberAssetIDs ?? []), Set([a.assetID, b.assetID]))
+        XCTAssertEqual(try env.database.pool.read { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset_original_content_digest") }, 2)
+        let digestService = OriginalVideoDigestService(database: env.database, sourceAccess: base.sourceAccess, clock: base.clock)
+        XCTAssertTrue(try digestService.completeFolderVideo(assetID: a.assetID).reused)
+    }
+
+    func testExplicitVideoAnalysisCancellationPublishesNeitherDigestNorResult() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+        let asset = try env.seedAsset(relativePath: "cancel.mp4",
+            contents: Data(repeating: 1, count: OriginalVideoDigestService.chunkByteCount * 2),
+            mediaType: "public.mpeg-4", mediaKind: .video, durationMs: 4_000)
+        let base = env.makeCompletionService(videoPosterGenerator: SimilarityVideoPosterStub())
+        let completion = ExplicitVideoAnalysisTestCompletion(base: base)
+        let features = DictionarySlimmingFeatureLoader(vectors: [:])
+        let embeddings = DictionarySlimmingEmbeddingLoader(vectors: [:])
+        let queue = JobTestSupport.makeQueue(database: env.database)
+        let scanner = LibrarySlimmingScanService(database: env.database,
+            identicalScan: IdenticalDuplicateClusterService(database: env.database), fingerprintCompletion: base,
+            featureLoader: features, embeddingLoader: embeddings)
+        let analysis = LibrarySlimmingAnalysisService(database: env.database, queue: queue,
+            fingerprintCompletion: completion, featureLoader: features, embeddingLoader: embeddings,
+            scanner: scanner, clock: FixedJobClock(nowMs: JobTestSupport.baseTimeMs))
+        let job = try analysis.enqueue(mode: .catalog, assetIDs: [asset.assetID], seedAssetIDs: [], mediaKind: .video)
+        completion.onChunk = { done, _ in
+            if done > 0 { _ = try queue.applyStateCommand(.init(jobID: job.jobID, operation: .cancel)) }
+        }
+        try analysis.runPending()
+        let cancelled = try analysis.snapshot(jobID: job.jobID)
+        XCTAssertEqual(cancelled.state, .cancelled)
+        XCTAssertNil(cancelled.result)
+        XCTAssertEqual(try env.database.pool.read { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset_original_content_digest") }, 0)
+    }
+
+    func testLegacyVideoAnalysisDoesNotAcquireOriginalByteAuthorityOnResume() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+        let asset = try env.seedAsset(relativePath: "legacy.mp4", contents: Data([1, 2, 3]),
+            mediaType: "public.mpeg-4", mediaKind: .video, durationMs: 4_000)
+        let base = env.makeCompletionService(videoPosterGenerator: SimilarityVideoPosterStub())
+        let completion = ExplicitVideoAnalysisTestCompletion(base: base)
+        completion.onChunk = { _, _ in XCTFail("legacy job must not read full video bytes") }
+        let features = DictionarySlimmingFeatureLoader(vectors: [:])
+        let embeddings = DictionarySlimmingEmbeddingLoader(vectors: [:])
+        let queue = JobTestSupport.makeQueue(database: env.database)
+        let scanner = LibrarySlimmingScanService(database: env.database,
+            identicalScan: IdenticalDuplicateClusterService(database: env.database), fingerprintCompletion: base,
+            featureLoader: features, embeddingLoader: embeddings)
+        let analysis = LibrarySlimmingAnalysisService(database: env.database, queue: queue,
+            fingerprintCompletion: completion, featureLoader: features, embeddingLoader: embeddings,
+            scanner: scanner, clock: FixedJobClock(nowMs: JobTestSupport.baseTimeMs))
+        let job = try analysis.enqueue(mode: .catalog, assetIDs: [asset.assetID], seedAssetIDs: [], mediaKind: .video)
+        let legacy = Data(#"{"mode":"catalog","mediaKind":"video"}"#.utf8)
+        XCTAssertNil(try LibrarySlimmingAnalysisJobFactory.decodePayload(legacy).originalVideoDigestPolicy)
+        try env.database.pool.write { db in
+            try db.execute(sql: "UPDATE job SET payload = ? WHERE id = ?", arguments: [legacy, job.jobID.uuidString.lowercased()])
+        }
+        _ = try analysis.pause(jobID: job.jobID)
+        _ = try analysis.resume(jobID: job.jobID)
+        try analysis.runPending()
+        XCTAssertEqual(try analysis.snapshot(jobID: job.jobID).state, .completed)
+        XCTAssertEqual(try env.database.pool.read { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset_original_content_digest") }, 0)
+        let unknown = Data(#"{"mode":"catalog","mediaKind":"video","originalVideoDigestPolicy":"unknown"}"#.utf8)
+        XCTAssertThrowsError(try LibrarySlimmingAnalysisJobFactory.decodePayload(unknown))
+    }
+
     func testExplicitOriginalVideoDigestStreamsReusesAndKeepsPosterIndependent() throws {
         let env = try SimilarityTestSupport.Environment(label: #function)
         defer { env.cleanup() }
@@ -1737,5 +1843,29 @@ private final class SimilarityPhotosFeatureImageStub: PhotosFeaturePrintImagePor
             }
             return bytes
         }
+    }
+}
+
+
+/// Test-only hook requests control after the real service has consumed a chunk.
+private final class ExplicitVideoAnalysisTestCompletion: FingerprintCompletionPort, @unchecked Sendable {
+    let base: FingerprintCompletionService
+    var onChunk: ((Int64, Int64) throws -> Void)?
+    init(base: FingerprintCompletionService) { self.base = base }
+    func validatePrerequisites(assetIDs: [UUID]) throws { try base.validatePrerequisites(assetIDs: assetIDs) }
+    func completeAsset(assetID: UUID) throws -> AssetContentFingerprint { try base.completeAsset(assetID: assetID) }
+    func completeFolderAsset(assetID: UUID) throws -> AssetContentFingerprint { try base.completeFolderAsset(assetID: assetID) }
+    func completePendingAssets(limit: Int) throws -> [AssetContentFingerprint] { try base.completePendingAssets(limit: limit) }
+    func completePendingFolderAssets(limit: Int) throws -> [AssetContentFingerprint] { try base.completePendingFolderAssets(limit: limit) }
+    func completeExplicitAnalysisAsset(assetID: UUID, checkCancellation: () throws -> Void,
+        onByteProgress: (Int64, Int64) -> Void) throws {
+        var callbackError: Error?
+        try base.completeExplicitAnalysisAsset(assetID: assetID, checkCancellation: {
+            if let callbackError { throw callbackError }
+            try checkCancellation()
+        }, onByteProgress: { done, total in
+            onByteProgress(done, total)
+            do { try self.onChunk?(done, total) } catch { callbackError = error }
+        })
     }
 }

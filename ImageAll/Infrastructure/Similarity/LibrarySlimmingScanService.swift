@@ -857,21 +857,30 @@ enum LibrarySlimmingAnalysisJobFactory {
     struct Payload: Codable, Sendable, Equatable {
         let mode: LibrarySlimmingAnalyzeMode
         let mediaKind: MediaKind
+        let originalVideoDigestPolicy: String?
 
-        init(mode: LibrarySlimmingAnalyzeMode, mediaKind: MediaKind = .image) {
+        init(mode: LibrarySlimmingAnalyzeMode, mediaKind: MediaKind = .image,
+            originalVideoDigestPolicy: String? = nil) {
             self.mode = mode
             self.mediaKind = mediaKind
+            self.originalVideoDigestPolicy = originalVideoDigestPolicy
         }
 
         private enum CodingKeys: String, CodingKey {
             case mode
             case mediaKind
+            case originalVideoDigestPolicy
         }
 
         init(from decoder: Decoder) throws {
             let values = try decoder.container(keyedBy: CodingKeys.self)
             mode = try values.decode(LibrarySlimmingAnalyzeMode.self, forKey: .mode)
             mediaKind = try values.decodeIfPresent(MediaKind.self, forKey: .mediaKind) ?? .image
+            originalVideoDigestPolicy = try values.decodeIfPresent(String.self, forKey: .originalVideoDigestPolicy)
+            if let originalVideoDigestPolicy, originalVideoDigestPolicy != OriginalVideoDigestService.policy {
+                throw DecodingError.dataCorruptedError(forKey: .originalVideoDigestPolicy, in: values,
+                    debugDescription: "unsupported original video digest policy")
+            }
         }
     }
 
@@ -892,7 +901,7 @@ enum LibrarySlimmingAnalysisJobFactory {
             var value: LibrarySlimmingScanProgress
             switch phase {
             case .fingerprints:
-                value = .init(
+                value = scanProgress ?? .init(
                     phase: .preparingFingerprints,
                     completed: min(nextOrdinal, memberCount),
                     total: memberCount
@@ -924,7 +933,8 @@ enum LibrarySlimmingAnalysisJobFactory {
             id: jobID,
             kind: kind,
             payloadVersion: payloadVersion,
-            payload: try JSONEncoder().encode(Payload(mode: mode, mediaKind: mediaKind)),
+            payload: try JSONEncoder().encode(Payload(mode: mode, mediaKind: mediaKind,
+                originalVideoDigestPolicy: mediaKind == .video ? OriginalVideoDigestService.policy : nil)),
             sourceID: nil,
             coalescingKey: nil,
             priority: priority,
@@ -1522,6 +1532,7 @@ private struct LibrarySlimmingAnalysisHandler: LeaseBoundJobHandler {
                     )
                     if batch.isEmpty {
                         state.phase = .vectors
+                        state.scanProgress = nil
                         state.nextOrdinal = 0
                         (featureLoader as? SlimmingBudgetResetting)?
                             .resetScanBudgets(forAssetCount: total)
@@ -1530,12 +1541,55 @@ private struct LibrarySlimmingAnalysisHandler: LeaseBoundJobHandler {
                         continue
                     }
                     for member in batch {
+                        state.nextOrdinal = member.ordinal
+                        state.scanProgress = nil
+                        let currentCheckpoint = try LibrarySlimmingAnalysisJobFactory.encodeCheckpoint(state)
+                        let currentProgress = progress(state: state, total: total, progressTotal: progressTotal)
+                        let heartbeat = LibrarySlimmingAnalysisLeaseHeartbeat(queue: queue, clock: clock,
+                            lease: lease, checkpoint: currentCheckpoint, progress: currentProgress,
+                            leaseDurationMs: leaseDurationMs)
+                        heartbeat.start()
+                        defer { heartbeat.stop() }
                         do {
-                            _ = try fingerprintCompletion.completeAsset(assetID: member.assetID)
+                            if payload.originalVideoDigestPolicy == OriginalVideoDigestService.policy {
+                                try fingerprintCompletion.completeExplicitAnalysisAsset(assetID: member.assetID,
+                                    checkCancellation: {
+                                        switch heartbeat.status() {
+                                        case .active:
+                                            if try hasControlRequest(jobID: lease.jobID) { throw CancellationError() }
+                                        case .settled: throw CancellationError()
+                                        case let .failed(error): throw error
+                                        }
+                                    }, onByteProgress: { completedBytes, totalBytes in
+                                        heartbeat.report(.init(phase: .preparingFingerprints,
+                                            completed: member.ordinal, total: total,
+                                            completedBytes: completedBytes, totalBytes: totalBytes))
+                                    })
+                            } else {
+                                _ = try fingerprintCompletion.completeAsset(assetID: member.assetID)
+                            }
+                        } catch is CancellationError {
+                            heartbeat.stop()
+                            let settled: Bool
+                            switch heartbeat.status() {
+                            case .settled: settled = true
+                            case .active: settled = false
+                            case let .failed(error): throw error
+                            }
+                            return JobHandlerExecutionResult(outcome: .continue,
+                                checkpoint: currentCheckpoint, progress: currentProgress, settledByHandler: settled)
                         } catch FingerprintCompletionError.photosOriginalStorageNotConfigured {
                             throw FingerprintCompletionError.photosOriginalStorageNotConfigured
                         } catch {
-                            continue
+                            // Ineligible/changed assets retain no new original evidence.
+                        }
+                        heartbeat.stop()
+                        switch heartbeat.status() {
+                        case .active: break
+                        case .settled:
+                            return JobHandlerExecutionResult(outcome: .continue,
+                                checkpoint: currentCheckpoint, progress: currentProgress, settledByHandler: true)
+                        case let .failed(error): throw error
                         }
                     }
                     state.nextOrdinal = (batch.last?.ordinal ?? state.nextOrdinal) + 1

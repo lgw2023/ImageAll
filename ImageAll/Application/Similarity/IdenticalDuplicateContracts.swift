@@ -78,6 +78,10 @@ protocol FingerprintCompletionPort: Sendable {
     /// Photos asset. Missing Photos originals require a user-configured durable root.
     func completeAsset(assetID: UUID) throws -> AssetContentFingerprint
 
+    /// User-initiated analysis may read original video bytes; background poster work must not.
+    func completeExplicitAnalysisAsset(assetID: UUID, checkCancellation: () throws -> Void,
+        onByteProgress: (Int64, Int64) -> Void) throws
+
     /// Backward-compatible folder-only entry point.
     func completeFolderAsset(assetID: UUID) throws -> AssetContentFingerprint
 
@@ -90,6 +94,12 @@ protocol FingerprintCompletionPort: Sendable {
 
 extension FingerprintCompletionPort {
     func validatePrerequisites(assetIDs _: [UUID]) throws {}
+
+    func completeExplicitAnalysisAsset(assetID: UUID, checkCancellation: () throws -> Void,
+        onByteProgress: (Int64, Int64) -> Void) throws {
+        try checkCancellation()
+        _ = try completeAsset(assetID: assetID)
+    }
 }
 
 protocol IdenticalDuplicateScanPort: Sendable {
