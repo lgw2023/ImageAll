@@ -473,7 +473,11 @@ struct GRDBWorldMapLocationBackfillRepository: Sendable {
                     source.display_name,
                     source.state,
                     COUNT(asset.id) AS total_photo_count,
-                    COUNT(location.asset_id) AS inspected_photo_count,
+                    COALESCE(SUM(CASE WHEN location.asset_id IS NOT NULL AND (
+                        source.kind != 'folder' OR asset.media_kind != 'video'
+                        OR location.latitude IS NOT NULL
+                        OR asset.video_metadata_version >= \(AVFoundationFolderVideoMetadataReader.policyVersion)
+                    ) THEN 1 ELSE 0 END), 0) AS inspected_photo_count,
                     COALESCE(SUM(CASE
                         WHEN location.latitude IS NOT NULL
                          AND location.longitude IS NOT NULL THEN 1
@@ -596,8 +600,8 @@ struct WorldMapLocationBackfillControl {
     let enqueueFolder: (UUID) throws -> Void
     let requestPhotosFullRepair: (UUID) throws -> Void
 
-    func start(sourceID: UUID) throws {
-        guard let snapshot = try repository.fetchSnapshots().first(where: {
+    func start(sourceID: UUID, mediaScope: WorldMapMediaScope = .photos) throws {
+        guard let snapshot = try repository.fetchSnapshots(mediaScope: mediaScope).first(where: {
             $0.sourceID == sourceID
         }), snapshot.sourceState == .active
         else {
@@ -2326,6 +2330,14 @@ struct ProductionLibraryWorkspaceService:
     {
         try GRDBWorldMapLocationBackfillRepository(database: query.database)
             .fetchSnapshots()
+    }
+
+    func fetchWorldMapLocationBackfillSnapshots(mediaScope: WorldMapMediaScope) throws -> [WorldMapLocationBackfillSnapshot] {
+        try GRDBWorldMapLocationBackfillRepository(database: query.database).fetchSnapshots(mediaScope: mediaScope)
+    }
+
+    func startWorldMapLocationBackfill(sourceID: UUID, mediaScope: WorldMapMediaScope) throws {
+        try worldMapLocationBackfillControl.start(sourceID: sourceID, mediaScope: mediaScope)
     }
 
     func startWorldMapLocationBackfill(sourceID: UUID) throws {

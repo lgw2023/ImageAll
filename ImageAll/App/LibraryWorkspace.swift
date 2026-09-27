@@ -11824,14 +11824,14 @@ extension LibraryWorkspaceModel {
     {
         let service = service
         return try await Self.offMain(priority: .utility) {
-            try service.fetchWorldMapLocationBackfillSnapshots()
+            try service.fetchWorldMapLocationBackfillSnapshots(mediaScope: .all)
         }
     }
 
     func startWorldMapLocationBackfill(sourceID: UUID) async throws {
         let service = service
         try await Self.offMain(priority: .utility) {
-            try service.startWorldMapLocationBackfill(sourceID: sourceID)
+            try service.startWorldMapLocationBackfill(sourceID: sourceID, mediaScope: .all)
         }
         startCatalogReconcileRunnerIfNeeded(sourceIDs: [sourceID])
     }

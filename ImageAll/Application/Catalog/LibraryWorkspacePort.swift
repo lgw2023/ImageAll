@@ -469,6 +469,8 @@ protocol LibraryWorkspacePort: Sendable {
     ) throws -> WorldMapCatalogSelection
     func fetchWorldMapLocationBackfillSnapshots() throws
         -> [WorldMapLocationBackfillSnapshot]
+    func fetchWorldMapLocationBackfillSnapshots(mediaScope: WorldMapMediaScope) throws -> [WorldMapLocationBackfillSnapshot]
+    func startWorldMapLocationBackfill(sourceID: UUID, mediaScope: WorldMapMediaScope) throws
     func startWorldMapLocationBackfill(sourceID: UUID) throws
     func cancelWorldMapLocationBackfill(sourceID: UUID) throws
     func fetchWorldMapPlaceTagResolutions() throws -> [WorldMapPlaceTagResolution]
@@ -658,6 +660,16 @@ extension LibraryWorkspacePort {
         -> [WorldMapLocationBackfillSnapshot]
     {
         []
+    }
+
+    func fetchWorldMapLocationBackfillSnapshots(mediaScope: WorldMapMediaScope) throws -> [WorldMapLocationBackfillSnapshot] {
+        guard mediaScope == .photos else { throw WorldMapCatalogError.invalidQuery }
+        return try fetchWorldMapLocationBackfillSnapshots()
+    }
+
+    func startWorldMapLocationBackfill(sourceID: UUID, mediaScope: WorldMapMediaScope) throws {
+        guard mediaScope == .photos else { throw WorldMapCatalogError.invalidQuery }
+        try startWorldMapLocationBackfill(sourceID: sourceID)
     }
 
     func startWorldMapLocationBackfill(sourceID _: UUID) throws {}

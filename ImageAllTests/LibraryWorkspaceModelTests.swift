@@ -14946,6 +14946,49 @@ final class WorldMapCatalogS1Tests: XCTestCase {
         XCTAssertEqual(jobCount, 0, "reading backfill status must never enqueue a scan")
     }
 
+    func testVideoOnlyBackfillRechecksLegacyUnknownGPSAndStopsAfterCurrentInspection() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let sourceID = UUID(), assetID = UUID(), jobID = UUID()
+        try database.pool.write { db in
+            try Self.seedSource(db, id: sourceID)
+            try Self.seedAsset(db, id: assetID, sourceID: sourceID, index: 0)
+            try db.execute(sql: "UPDATE asset SET media_kind = 'video', video_metadata_version = 0 WHERE id = ?",
+                           arguments: [assetID.uuidString.lowercased()])
+            try Self.seedLocation(db, assetID: assetID, latitude: nil, longitude: nil, sourceKind: "none")
+        }
+        let repository = GRDBWorldMapLocationBackfillRepository(database: database)
+        XCTAssertEqual(try repository.fetchSnapshots().first?.totalPhotoCount, 0)
+        let pending = try XCTUnwrap(repository.fetchSnapshots(mediaScope: .all).first)
+        XCTAssertEqual(pending.totalPhotoCount, 1)
+        XCTAssertEqual(pending.inspectedPhotoCount, 0)
+        XCTAssertTrue(pending.canStart)
+        let queue = JobTestSupport.makeQueue(database: database)
+        var enqueues = 0
+        let control = WorldMapLocationBackfillControl(repository: repository, queue: queue,
+            clock: FixedJobClock(nowMs: JobTestSupport.baseTimeMs),
+            enqueueFolder: { id in
+                enqueues += 1
+                _ = try queue.enqueue(FolderReconcileJobFactory.makeEnqueueCommand(
+                    jobID: jobID, sourceID: id, notBeforeMs: JobTestSupport.baseTimeMs))
+            }, requestPhotosFullRepair: { _ in XCTFail("folder must not request Photos") })
+        try control.start(sourceID: sourceID, mediaScope: .all)
+        XCTAssertEqual(enqueues, 1)
+        XCTAssertEqual(try repository.fetchSnapshots(mediaScope: .all).first?.phase, .queued)
+        try control.start(sourceID: sourceID, mediaScope: .all)
+        XCTAssertEqual(enqueues, 1)
+        try control.cancel(sourceID: sourceID)
+        try database.pool.write { db in
+            try db.execute(sql: "UPDATE asset SET video_metadata_version = ? WHERE id = ?",
+                arguments: [AVFoundationFolderVideoMetadataReader.policyVersion, assetID.uuidString.lowercased()])
+        }
+        let inspected = try XCTUnwrap(repository.fetchSnapshots(mediaScope: .all).first)
+        XCTAssertEqual(inspected.inspectedPhotoCount, 1)
+        XCTAssertEqual(inspected.locatedPhotoCount, 0)
+        XCTAssertEqual(inspected.phase, .completed)
+        try control.start(sourceID: sourceID, mediaScope: .all)
+        XCTAssertEqual(enqueues, 1)
+    }
+
     func testLocationBackfillRetryResumesTheExistingSourceJob() throws {
         let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
         let sourceID = UUID()
@@ -18286,6 +18329,16 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
             storedEnqueueReconcileCalls.append(sourceIDs)
             storedHasPendingCatalogReconcileJobs = true
         }
+    }
+
+    func fetchWorldMapLocationBackfillSnapshots(mediaScope: WorldMapMediaScope) throws -> [WorldMapLocationBackfillSnapshot] {
+        XCTAssertEqual(mediaScope, .all)
+        return []
+    }
+
+    func startWorldMapLocationBackfill(sourceID: UUID, mediaScope: WorldMapMediaScope) throws {
+        XCTAssertEqual(mediaScope, .all)
+        try startWorldMapLocationBackfill(sourceID: sourceID)
     }
 
     func startWorldMapLocationBackfill(sourceID: UUID) throws {

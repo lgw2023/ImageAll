@@ -452,7 +452,7 @@ struct WorldMapWorkspaceView: View {
         Button {
             showLocationBackfill = true
         } label: {
-            Label("更新照片位置", systemImage: "location.viewfinder")
+            Label("更新影像位置", systemImage: "location.viewfinder")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(Palette.ink)
                 .padding(.horizontal, 12)
@@ -463,7 +463,7 @@ struct WorldMapWorkspaceView: View {
                 }
         }
         .buttonStyle(.plain)
-        .help("按来源显式扫描旧照片的位置元数据；打开面板本身不会开始扫描")
+        .help("按来源显式扫描照片与视频的位置元数据；打开面板本身不会开始扫描")
         .accessibilityIdentifier("worldMapLocationBackfillButton")
     }
 
@@ -891,7 +891,7 @@ private struct WorldMapLocationBackfillSheet: View {
             .frame(width: 48, height: 48)
 
             VStack(alignment: .leading, spacing: 5) {
-                Text("把旧照片的位置带回地图")
+                Text("把照片与视频的位置带回地图")
                     .font(.system(size: 24, weight: .bold, design: .rounded))
                     .foregroundStyle(Palette.ink)
                 Text("选择一个来源开始；不会因为打开地图或此面板自动扫描。")
@@ -916,7 +916,7 @@ private struct WorldMapLocationBackfillSheet: View {
             ContentUnavailableView {
                 Label("还没有照片来源", systemImage: "externaldrive.badge.questionmark")
             } description: {
-                Text("连接文件夹或 Apple Photos 后，可在这里显式更新旧照片的位置。")
+                Text("连接文件夹或 Apple Photos 后，可在这里显式更新照片与视频的位置。")
             }
             .foregroundStyle(Palette.ink)
         } else {
@@ -947,7 +947,7 @@ private struct WorldMapLocationBackfillSheet: View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "hand.tap.fill")
                 .foregroundStyle(Palette.peach)
-            Text("开始后只读取所选来源的图片元数据：文件夹通过 ImageIO 检查内嵌 GPS，Apple Photos 通过正常授权的 PhotoKit 读取位置。不会移动、重命名、覆盖或写回原照片。")
+            Text("开始后读取所选来源的照片与视频元数据：文件夹照片通过 ImageIO、视频通过 AVFoundation 检查内嵌 GPS；Apple Photos 通过正常授权的 PhotoKit 读取位置。不下载云端原件，不移动、重命名、覆盖或写回原媒体。")
                 .font(.caption)
                 .foregroundStyle(Palette.secondaryInk)
                 .fixedSize(horizontal: false, vertical: true)

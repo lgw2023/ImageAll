@@ -201,3 +201,13 @@
 - `map-ui-workspace.patch` 只暂存本轮 Workspace hunk，保留其既有 75/5 故事差异；源摘要 `map-video-native-source-sha256.json`；git diff --check PASS。已有项目／OpenMontage 改动未纳入。
 - 下一动作：把地图范围传到 Host／Companion；接原生视频回填启动条件与统计／文案。混合范围的分析操作继续列为 P3/P4 必需核查，实际原生地图 UI 与 Web Swift Host 联调仍待验。P1、P2 IN_PROGRESS；P3–P7 NOT_STARTED。
 - 未读取真实媒体、未启动生产 Photos 测试宿主、未源端写入／云端下载／外部传输／push；未发布或替换日常 App。
+
+
+## P2 原生照片／视频位置回填（2026-09-27）
+
+- main 基线 `33ea8185`。原生面板通过新增带 mediaScope 的 service 方法读取 all 统计，并以相同范围判断显式启动；仅含视频的来源不再被照片数为零误判为已完成。界面说明更新为照片与视频、ImageIO／AVFoundation／PhotoKit 路径，默认禁云端原件下载。
+- 旧无参数 service／远端方法仍保持照片统计及启动语义。视频／混合范围未被悄悄塞入旧 DTO，后续由版本化远端地图契约对齐。取消仍按来源既有任务执行。
+- 旧文件夹视频若仅有无坐标行且策略版本过旧，不计入已检查；已知 GPS 或当前策略的缺失结果计入已检查，避免无坐标视频反复回填。只读统计不打开媒体，实际执行继续沿既有扫描／原子批次路径。
+- `video-backfill-ui-build.log`：Mac TEST BUILD SUCCEEDED；`video-backfill-ui-tests.log`：直接 XCTest PASS 6/6。覆盖仅视频来源旧策略排队、重复启动幂等、当前无 GPS 不重复回填、打开面板不扫描、照片统计、任务重试／取消和三种地图范围一致性。测试全部合成目录库，没有执行真实来源扫描。
+- 源摘要 `video-backfill-ui-source-sha256.json`。Workspace 仅暂存独立 `video-backfill-ui-workspace.patch`，保留既有 75/5；git diff --check PASS。原生 UI 本身仍待合成运行验收，不把 model／repository 通过写成实际点击通过。
+- 下一动作：Host／Companion 地图范围、聚合／点选／图库跳转和回填版本契约；之后继续 PhotoKit 技术信息与显式云端视频可用性。P1、P2 IN_PROGRESS；P3–P7 NOT_STARTED。未真实媒体读取、源端写入、云端下载、外部传输、push 或 App 替换。
