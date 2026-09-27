@@ -290,7 +290,7 @@ actor RemoteTrainingCommandService: RemoteTrainingCommandPort {
         do {
             let requestedDetail = try catalog.fetchInspectorDetail(assetID: command.assetID)
             guard requestedDetail.assetID == command.assetID,
-                  requestedDetail.mediaKind == .image,
+                  (requestedDetail.mediaKind == .image || command.track == .standard),
                   requestedDetail.contentRevision > 0
             else {
                 throw TrainingCommandError.invalidSelection
@@ -314,7 +314,10 @@ actor RemoteTrainingCommandService: RemoteTrainingCommandPort {
                 )
                 let currentDetail = try catalog.fetchInspectorDetail(assetID: command.assetID)
                 guard currentDetail.assetID == command.assetID,
-                      currentDetail.contentRevision == requestedDetail.contentRevision
+                      currentDetail.contentRevision == requestedDetail.contentRevision,
+                      currentDetail.mediaKind == requestedDetail.mediaKind,
+                      currentDetail.sourceState == .active,
+                      currentDetail.availability == .available
                 else {
                     throw LocalModelSuggestionClientError.identityMismatch
                 }
@@ -433,7 +436,7 @@ actor RemoteTrainingCommandService: RemoteTrainingCommandPort {
         return LibrarySuggestionWorkspaceSnapshot(
             mediaKind: mediaKind,
             service: librarySuggestionService,
-            standardAvailable: mediaKind == .image && localModelSuggestions != nil,
+            standardAvailable: localModelSuggestions != nil,
             personalMode: {
                 if mediaKind == .image, localModelSuggestions != nil { return .fullLibrary }
                 if sampleSuggester != nil, embeddingCache != nil { return .sample }
@@ -464,7 +467,7 @@ actor RemoteTrainingCommandService: RemoteTrainingCommandPort {
                 replayed: true
             )
         }
-        guard command.mediaKind == .image, let runtime = localModelSuggestions else {
+        guard (command.mediaKind == .image || command.track == .standard), let runtime = localModelSuggestions else {
             throw TrainingCommandError.unavailable
         }
         let sourceIDs = try validatedLibrarySuggestionSourceIDs(command.sourceIDs)

@@ -973,7 +973,21 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
     }
 
     func testReviewServiceAsyncRunnerPublishesDurableStandardLibrarySuggestions() async throws {
+        try await verifyDurableStandardSuggestions(mediaKind: .image)
+    }
+
+    func testVideoStandardJobPublishesDurableSuggestionsWithoutPhotoCandidates() async throws {
+        try await verifyDurableStandardSuggestions(mediaKind: .video)
+    }
+
+    private func verifyDurableStandardSuggestions(mediaKind: MediaKind) async throws {
         let fixture = try makeLargeLibraryFixture(assetCount: 6)
+        if mediaKind == .video {
+            try await fixture.database.pool.write { db in
+                try db.execute(sql: "UPDATE asset SET media_kind = 'video', media_type = 'public.mpeg-4', duration_ms = 2000 WHERE id = ?",
+                               arguments: [fixture.positiveIDs[0].uuidString.lowercased()])
+            }
+        }
         let queue = JobTestSupport.makeQueue(
             database: fixture.database,
             nowMs: fixture.cutoffMs,
@@ -1012,7 +1026,7 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
             standardLibrarySuggestionsEnabled: true
         )
 
-        let jobID = try service.enqueueStandardLibrarySuggestions(target: target)
+        let jobID = try service.enqueueStandardLibrarySuggestions(mediaKind: mediaKind, target: target, sourceIDs: nil)
         let didRun = try await service.runPendingSuggestionJobsAsync(maxSteps: 1)
 
         XCTAssertTrue(didRun)
@@ -1021,9 +1035,13 @@ final class FullLibrarySuggestionsJobTests: XCTestCase {
         let checkpoint = try StandardLibrarySuggestionsCodec.checkpoint(from: completed.checkpoint)
         XCTAssertEqual(checkpoint.checkedCount, completed.progress.total)
         XCTAssertGreaterThan(checkpoint.checkedCount, 0)
+        if mediaKind == .video {
+            XCTAssertEqual(checkpoint.checkedCount, 1)
+            XCTAssertEqual(try service.totalPendingSuggestionCount(mediaKind: .image, sourceIDs: nil), 0)
+        }
         XCTAssertEqual(checkpoint.skippedCount, 0)
         XCTAssertGreaterThan(checkpoint.suggestedCount, 0)
-        XCTAssertGreaterThan(try service.totalPendingSuggestionCount(), 0)
+        XCTAssertGreaterThan(try service.totalPendingSuggestionCount(mediaKind: mediaKind, sourceIDs: nil), 0)
     }
 
     func testStandardLibraryJobRejectsMismatchedModelIdentityWithoutPublishing() async throws {

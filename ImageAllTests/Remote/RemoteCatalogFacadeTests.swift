@@ -1194,6 +1194,14 @@ final class RemoteCatalogFacadeTests: XCTestCase {
     }
 
     func testLibrarySuggestionServiceLaunchesValidatedStandardJobAndReplays() async throws {
+        try await verifyStandardLibrarySuggestions(mediaKind: .image)
+    }
+
+    func testVideoStandardLibrarySuggestionsEnqueueVideoAndReplay() async throws {
+        try await verifyStandardLibrarySuggestions(mediaKind: .video)
+    }
+
+    private func verifyStandardLibrarySuggestions(mediaKind: MediaKind) async throws {
         let operationID = UUID(uuidString: "99611111-1111-1111-1111-111111111111")!
         let sourceID = UUID(uuidString: "99622222-2222-2222-2222-222222222222")!
         let jobID = UUID(uuidString: "99633333-3333-3333-3333-333333333333")!
@@ -1253,7 +1261,7 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         let facade = makeFacade(catalog: catalog, review: review, trainingCommands: service)
         let request = RemoteLibrarySuggestionRequest(
             operationID: operationID,
-            mediaKind: .image,
+            mediaKind: mediaKind == .image ? .image : .video,
             track: .standard,
             sourceIDs: [sourceID]
         )
@@ -1261,7 +1269,7 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         let first = try await facade.submitLibrarySuggestions(request)
         let replay = try await facade.submitLibrarySuggestions(request)
         let snapshot = try await facade.fetchLibrarySuggestions(
-            mediaKind: .image,
+            mediaKind: mediaKind == .image ? .image : .video,
             refreshServiceHealth: true
         )
 
@@ -1275,12 +1283,21 @@ final class RemoteCatalogFacadeTests: XCTestCase {
         XCTAssertEqual(client.healthCount, 1)
         XCTAssertEqual(snapshot.service.state, .ready)
         XCTAssertTrue(snapshot.standardAvailable)
-        XCTAssertEqual(snapshot.personalMode, .fullLibrary)
+        XCTAssertEqual(snapshot.personalMode, mediaKind == .image ? .fullLibrary : .unavailable)
+        XCTAssertEqual(review.standardSuggestionMediaKind, mediaKind)
         XCTAssertEqual(snapshot.standardJob?.jobID, jobID)
         XCTAssertEqual(snapshot.standardJob?.availableActions, [.pause, .cancel])
     }
 
     func testAssetLocalStandardSuggestionRunsOncePersistsReviewAndRedactsResponse() async throws {
+        try await verifyAssetStandardSuggestions(mediaKind: .image)
+    }
+
+    func testVideoAssetStandardSuggestionsUsePreviewAndReplay() async throws {
+        try await verifyAssetStandardSuggestions(mediaKind: .video)
+    }
+
+    private func verifyAssetStandardSuggestions(mediaKind: MediaKind) async throws {
         let operationID = UUID(uuidString: "99601111-1111-1111-1111-111111111111")!
         let assetID = UUID(uuidString: "99602222-2222-2222-2222-222222222222")!
         let package = StandardOntologyCatalog.bundledSceneFixture
@@ -1337,7 +1354,8 @@ final class RemoteCatalogFacadeTests: XCTestCase {
                 sourceState: .active,
                 relativePath: "fixture.jpg",
                 fileName: "fixture.jpg",
-                mediaType: "public.jpeg",
+                mediaKind: mediaKind,
+                mediaType: mediaKind == .video ? "public.mpeg-4" : "public.jpeg",
                 mediaCreatedAtMs: nil,
                 mediaModifiedAtMs: nil,
                 width: 1200,
@@ -4667,6 +4685,18 @@ private final class RemoteReviewPortStub: PersonalizationReviewPort, @unchecked 
     }
     func personalLibrarySuggestionJob() throws -> PersonalLibrarySuggestionJobProjection? {
         lock.withLock { storedPersonalSuggestionJob }
+    }
+    private var storedStandardMediaKind: MediaKind = .image
+    var standardSuggestionMediaKind: MediaKind { lock.withLock { storedStandardMediaKind } }
+    func enqueueStandardLibrarySuggestions(
+        mediaKind: MediaKind, target: StandardModelSuggestionTarget, sourceIDs: [UUID]?
+    ) throws -> UUID {
+        lock.withLock { storedStandardMediaKind = mediaKind }
+        return try enqueueStandardLibrarySuggestions(target: target, sourceIDs: sourceIDs)
+    }
+    func standardLibrarySuggestionJob(mediaKind: MediaKind) throws -> StandardLibrarySuggestionJobProjection? {
+        guard mediaKind == standardSuggestionMediaKind else { return nil }
+        return try standardLibrarySuggestionJob()
     }
     func enqueueStandardLibrarySuggestions(
         target: StandardModelSuggestionTarget,

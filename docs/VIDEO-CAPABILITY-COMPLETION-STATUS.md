@@ -323,3 +323,12 @@
 - 首次测试编译错误为 TagMutationResult 无 restoreSnapshot 便捷方法，改用既有 TagMutationPriorStateSnapshot；video-review-build-final.log 最终 Mac TEST BUILD SUCCEEDED。video-review-tests.log 3/3 PASS：新增混合目录持久审核／撤销、照片 Top-N 人工事实排除、视频 Feature KNN 模型槽隔离。git diff --check PASS。
 - 个人建议测试的模型身份和分数为明确合成输入，未调用真实编码器训练；它证明持久审核后半链，不证明训练→模型发布→远端命令→持久审核整条链。后者、标准建议与剩余跨端入口仍为 P3 必需缺口，不能把这些分段测试累加为完整端到端验收。
 - 源摘要 video-review-source-sha256.json。Workspace 原有 75/5 与 OpenMontage 并行改动保留；未读取真实媒体、未云端获取／源端写入／外部传输、未 push／替换 App。P1／P2／P3 IN_PROGRESS，P4–P7 NOT_STARTED，目标 active。下一动作：接通视频标准建议及单资产外部模型入口，串真实合成训练产物的远端持久链并核对 Web／iPhone 能力。
+
+
+## P3 视频标准建议远端与后台持久任务（2026-09-27）
+
+- 上轮为 progress：e6e8bb1a 验证视频个人建议持久审核与撤销。本轮确认 StandardLibrarySuggestionsHandler 已使用 payload.mediaKind 限定冻结候选，开放远端视频单资产／全库标准建议并同步 standardAvailable。个人外部模型照片限制仍保留，不能误用照片 capability。
+- 单资产推理返回后除修订外还校验媒体域、active 来源与可用性，避免状态变化后写入。标准概念包共享，结果绑定资产 ID／修订，未新增媒体同步账本。
+- 首轮编译发现测试把内部 MediaKind 传到 RemoteAssetMediaKind 接口，修正后 video-standard-build-final.log Mac TEST BUILD SUCCEEDED。video-standard-tests.log 64/64 PASS（远端 60 项，实际后台标准任务 4 项）。视频单资产与全库命令重放只执行一次；后台混合目录仅 1 项视频进入视频任务，完成后持久建议存在、照片待审计数 0，原照片后台任务和模型身份／推理期间内容变化回归通过。
+- 后台使用真实队列／GRDB 与 fake 标准推理输出，未调用真实模型或真实媒体。此证据比 stub 排队更强，但不是浏览器→Swift Host→真实编码器的完整端到端证据。客户端按钮与能力入口、个人训练产物的远端持久链仍为 P3 必需未验项。
+- git diff --check PASS；源摘要 video-standard-source-sha256.json。Workspace 原有 75/5 与 OpenMontage 并行改动保留，Web 本轮未改。未读取真实媒体、未云端获取／源端写入／外部传输、未 push／替换 App。P1／P2／P3 IN_PROGRESS，P4–P7 NOT_STARTED；目标 active。下一动作：核对 Web／iPhone 标准与个人建议按钮、训练页面的媒体硬编码，并接视频能力；继续真实合成训练到审核链。
