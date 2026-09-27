@@ -288,6 +288,9 @@ struct LibrarySlimmingScanProgress: Sendable, Equatable, Codable {
         let prefix = completionPass.map { "第 \($0) 轮 · " } ?? ""
         if let completedBytes, let totalBytes, phase == .preparingFingerprints {
             let completedSize = ByteCountFormatter.string(fromByteCount: completedBytes, countStyle: .file)
+            if totalBytes <= 0 {
+                return prefix + "完整视频原件已读取 \(completedSize) · 项目 \(completed + 1)/\(total)"
+            }
             let totalSize = ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)
             return prefix + "完整视频摘要 \(completedSize)/\(totalSize) · 项目 \(completed + 1)/\(total)"
         }
@@ -348,6 +351,21 @@ struct LibrarySlimmingScanResult: Sendable, Equatable, Codable {
     let pendingAnalysisAssetIDs: [UUID]
     let analyzedAssetCount: Int
     let policyVersion: String
+    var photosOriginalVideoSummary: PhotosOriginalVideoAnalysisSummary? = nil
+}
+
+struct PhotosOriginalVideoAnalysisSummary: Sendable, Equatable, Codable {
+    var cloudOnlyCount = 0
+    var unavailableCount = 0
+    var adjustedOriginalCount = 0
+
+    var caption: String? {
+        var parts: [String] = []
+        if cloudOnlyCount > 0 { parts.append("\(cloudOnlyCount) 个 Photos 视频原件在云端，未下载；显式获取原件后可重试") }
+        if unavailableCount > 0 { parts.append("\(unavailableCount) 个 Photos 视频原件未能核验，请检查可用性或重新扫描") }
+        if adjustedOriginalCount > 0 { parts.append("\(adjustedOriginalCount) 个视频存在编辑；原件相同不代表编辑结果相同") }
+        return parts.isEmpty ? nil : parts.joined(separator: "；")
+    }
 }
 
 protocol SlimmingBudgetResetting: Sendable {

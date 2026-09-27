@@ -271,3 +271,20 @@ enum PhotosVideoResourceError: Error, Equatable, Sendable {
     case unsupportedAssetRepresentation
     case insufficientSpace
 }
+
+/// The complete encoded PHAssetResourceType.video resource, never a playback URL
+/// or fullSizeVideo (edited rendition). Implementations must forbid networking.
+struct PhotosOriginalVideoDigest: Sendable, Equatable {
+    let sha256: Data
+    let byteCount: Int64
+    let resourceIdentity: String
+    let hasAdjustments: Bool
+}
+
+protocol PhotosOriginalVideoContentPort: Sendable {
+    func requestLocalOriginalVideoDigest(
+        localIdentifier: String,
+        checkCancellation: () throws -> Void,
+        onByteProgress: (Int64, Int64) -> Void
+    ) throws -> PhotosOriginalVideoDigest
+}

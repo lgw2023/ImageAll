@@ -97,8 +97,11 @@ struct IdenticalDuplicateClusterService: IdenticalDuplicateScanPort {
 
     private func originalVideoClusters(assetIDs: [UUID]) throws -> [IdenticalDuplicateCluster] {
         try database.pool.read { db in
-            let placeholders = Array(repeating: "?", count: assetIDs.count).joined(separator: ",")
-            let rows = try Row.fetchAll(db, sql: """
+            var rows: [Row] = []
+            for offset in stride(from: 0, to: assetIDs.count, by: 400) {
+                let batchIDs = Array(assetIDs[offset..<min(offset + 400, assetIDs.count)])
+                let placeholders = Array(repeating: "?", count: batchIDs.count).joined(separator: ",")
+                rows += try Row.fetchAll(db, sql: """
                 SELECT d.asset_id, d.sha256, d.size_bytes
                 FROM asset_original_content_digest d
                 JOIN asset a ON a.id = d.asset_id
@@ -111,7 +114,21 @@ struct IdenticalDuplicateClusterService: IdenticalDuplicateScanPort {
                   AND d.relative_path = a.relative_path AND d.size_bytes = f.size_bytes
                   AND d.modified_at_ns = f.modified_at_ns AND d.catalog_resource_id IS f.resource_id
                   AND d.provenance = ?
-                """, arguments: StatementArguments(assetIDs.map { $0.uuidString.lowercased() } + [OriginalVideoDigestService.policy]))
+                UNION ALL
+                SELECT d.asset_id, d.sha256, d.size_bytes
+                FROM asset_photos_original_video_digest d
+                JOIN asset a ON a.id = d.asset_id
+                JOIN source s ON s.id = a.source_id
+                WHERE a.id IN (\(placeholders)) AND a.media_kind = 'video'
+                  AND a.locator_kind = 'photos' AND a.locator_state = 'current'
+                  AND a.availability = 'available' AND s.kind = 'photos' AND s.state = 'active'
+                  AND d.content_revision = a.content_revision AND d.source_id = a.source_id
+                  AND d.photos_local_identifier = a.photos_local_identifier
+                  AND d.status = 'verified' AND d.provenance = ?
+                """, arguments: StatementArguments(
+                    batchIDs.map { $0.uuidString.lowercased() } + [OriginalVideoDigestService.policy]
+                    + batchIDs.map { $0.uuidString.lowercased() } + [PhotosOriginalVideoDigestService.policy]))
+            }
             struct Key: Hashable { let digest: Data; let size: Int64 }
             var groups: [Key: [UUID]] = [:]
             for row in rows {

@@ -86,6 +86,8 @@ enum CatalogMigrationID {
     static let v052AddPhoneArchiveCompletionReceipt =
         "v052_add_phone_archive_completion_receipt"
 
+    static let v056AddPhotosOriginalVideoDigest = "v056_add_photos_original_video_digest"
+
     static let knownOrdered: [String] = [
         v001CreateCatalogCore,
         v002AddStage1CatalogQuerySupport,
@@ -142,5 +144,6 @@ enum CatalogMigrationID {
         v053AddVideoMetadataPolicy,
         v054AddVideoTechnicalMetadata,
         v055AddOriginalContentDigest,
+        v056AddPhotosOriginalVideoDigest,
     ]
 }

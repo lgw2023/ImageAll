@@ -82,6 +82,9 @@ protocol FingerprintCompletionPort: Sendable {
     func completeExplicitAnalysisAsset(assetID: UUID, checkCancellation: () throws -> Void,
         onByteProgress: (Int64, Int64) -> Void) throws
 
+    func completeExplicitAnalysisAsset(assetID: UUID, includePhotosOriginals: Bool,
+        checkCancellation: () throws -> Void, onByteProgress: (Int64, Int64) -> Void) throws
+
     /// Backward-compatible folder-only entry point.
     func completeFolderAsset(assetID: UUID) throws -> AssetContentFingerprint
 
@@ -94,6 +97,13 @@ protocol FingerprintCompletionPort: Sendable {
 
 extension FingerprintCompletionPort {
     func validatePrerequisites(assetIDs _: [UUID]) throws {}
+
+    func completeExplicitAnalysisAsset(assetID: UUID, includePhotosOriginals: Bool,
+        checkCancellation: () throws -> Void, onByteProgress: (Int64, Int64) -> Void) throws {
+        try completeExplicitAnalysisAsset(assetID: assetID,
+            checkCancellation: checkCancellation, onByteProgress: onByteProgress)
+    }
+
 
     func completeExplicitAnalysisAsset(assetID: UUID, checkCancellation: () throws -> Void,
         onByteProgress: (Int64, Int64) -> Void) throws {

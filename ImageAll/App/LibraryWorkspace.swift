@@ -4542,6 +4542,9 @@ final class LibraryWorkspaceModel: ObservableObject {
             librarySlimmingStatusMessage =
                 "完成：\(filteredClusters.count) 个簇 · \(result.pendingAnalysisAssetIDs.count) 张因不可读取或格式问题待处理。"
         }
+        if let notice = result.photosOriginalVideoSummary?.caption {
+            librarySlimmingStatusMessage = (librarySlimmingStatusMessage ?? "") + " " + notice
+        }
     }
 
     private func visibleUnclusteredLibrarySlimmingSeedAssetIDs(

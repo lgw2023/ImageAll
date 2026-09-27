@@ -48,3 +48,15 @@ PhotoKit 需要另行明确原始资源类型与版本，并通过禁止网络�
 执行前重新核对整个计划的当前修订、来源、定位、摘要和收藏，并在取得交互 I/O 优先权后再次复核。视频保留项和待清理项均使用已有只读来源授权打开真实 locator，以设备／inode／ctime／mtime／大小、目录指纹及当前原件表检查缓存证据仍属于该文件；复核不重新发布摘要，也不要求保留项具备写权限。实际移动／删除仍以固定块重新计算待处理文件 SHA-256。
 
 整组预检失败时不修改任何成员。批次中每个视频副本开始处理前，再检查该项及全部保留项；保留项消失、替换、修订变化或待处理项新设收藏时停止相关剩余副本。已完成的回收继续遵循既有可恢复记录，快速删除保持用户已确认的不可恢复语义，不宣称多文件文件系统操作原子。外部程序可在检查后继续改写文件，不能把这些复核宣称为对其他进程的排他锁。
+
+## PhotoKit 本地原始资源（2026-09-28）
+
+Apple 将 [`PHAssetResourceType.video`](https://developer.apple.com/documentation/photos/phassetresourcetype/video) 定义为原始视频数据，而 [`fullSizeVideo`](https://developer.apple.com/documentation/photos/phassetresourcetype/fullsizevideo) 可为编辑版本。本实现只选择唯一 `.video`；不退回播放 URL、AVComposition、`.fullSizeVideo` 或 Live Photo 的 `.pairedVideo`。资源列表、资产修改／创建时间、时长和尺寸构成资源描述摘要；读取完成后重新获取资产并复核。编辑状态单独记录，原件相同不得宣称编辑效果相同。
+
+使用 `PHAssetResourceManager.requestData` 逐回调哈希，应用不累积完整视频、不写原件缓存；回调块大小由系统控制，不能宣称 PhotoKit 总内存有固定上界。请求显式 `isNetworkAccessAllowed = false`，网络必需错误转换为云端不可用；[Apple 的选项说明](https://developer.apple.com/documentation/photos/phassetresourcerequestoptions/isnetworkaccessallowed)确认该设置禁止请求下载云端资源。顺序任务每 100 ms 检查暂停／取消并取消 PhotoKit 请求；连续 300 秒无数据进展视为不可用。未有公开稳定的资源字节修订号，因此每次显式扫描的第一轮重新读取，不以元数据缓存跳过原件哈希；同一任务后续仅用于补代表帧的轮次不重复读取完整 Photos 视频。
+
+追加 V056 独立 Photos 原件表，V055 和历史摘要均不改写、不自动提升。记录当前资产修订、来源、Photos localIdentifier、资源描述、编辑状态、字节数、SHA、核验时间，以及云端／不可用／不支持／变化的跳过状态。取消清除本次修订证据；源修订改变不发布旧读结果。分组将两类完整原件摘要按 SHA 与大小比较，仍只限视频域。
+
+新视频任务使用 `video-original-sha256-v2`，旧 `folder-original-sha256-v1` 仍只读取文件夹原件，无策略的历史任务仍走代表帧。分析结果持久保存 Photos 云端跳过、不可核验及编辑原件数量，并在 Mac 状态说明中展示。Photos 资源没有公开可靠总字节数时，进度显示已读取字节而非伪造百分比。
+
+Photos 视频精确组当前只提供原件比较结果，尚不进入自动清理计划；需下一切片完成资源与保留项执行前重读、编辑资产保护和系统删除／恢复验证。该未完成项仍属于 P4，不能以文件夹门禁替代最终 Photos 支持。真实 Photos／iCloud 操作保持 NOT_RUN；自动验证只调用注入的合成资源 reader 与纯策略／流式哈希状态，不创建或读取用户 Photos 资产。

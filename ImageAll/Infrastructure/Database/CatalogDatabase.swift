@@ -110,6 +110,7 @@ struct CatalogDatabase: Sendable {
         V053AddVideoMetadataPolicyMigration.register(on: &migrator)
         V054AddVideoTechnicalMetadataMigration.register(on: &migrator)
         V055AddOriginalContentDigestMigration.register(on: &migrator)
+        V056AddPhotosOriginalVideoDigestMigration.register(on: &migrator)
         return migrator
     }
 
@@ -3504,6 +3505,33 @@ enum V055AddOriginalContentDigestMigration {
                     verified_at_ms INTEGER NOT NULL
                 );
                 CREATE INDEX idx_original_content_digest_sha ON asset_original_content_digest(sha256, size_bytes);
+                """)
+        }
+    }
+}
+
+/// Independent resource provenance; no playback URL or legacy digest is imported.
+enum V056AddPhotosOriginalVideoDigestMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v056AddPhotosOriginalVideoDigest) { db in
+            try db.execute(sql: """
+                CREATE TABLE asset_photos_original_video_digest (
+                    asset_id TEXT PRIMARY KEY REFERENCES asset(id) ON DELETE CASCADE,
+                    content_revision INTEGER NOT NULL CHECK(content_revision > 0),
+                    source_id TEXT NOT NULL REFERENCES source(id),
+                    photos_local_identifier TEXT NOT NULL,
+                    provenance TEXT NOT NULL CHECK(provenance = 'photokit-video-resource-sha256-v1'),
+                    resource_identity TEXT,
+                    has_adjustments INTEGER NOT NULL DEFAULT 0 CHECK(has_adjustments IN (0, 1)),
+                    size_bytes INTEGER,
+                    sha256 BLOB,
+                    status TEXT NOT NULL CHECK(status IN ('verified', 'cloudOnly', 'unavailable', 'unsupported', 'sourceChanged')),
+                    checked_at_ms INTEGER NOT NULL,
+                    CHECK((status = 'verified' AND resource_identity IS NOT NULL AND size_bytes IS NOT NULL AND size_bytes > 0 AND sha256 IS NOT NULL AND length(sha256) = 32)
+                       OR (status != 'verified' AND sha256 IS NULL AND size_bytes IS NULL))
+                );
+                CREATE INDEX idx_photos_original_video_digest_sha
+                    ON asset_photos_original_video_digest(sha256, size_bytes);
                 """)
         }
     }

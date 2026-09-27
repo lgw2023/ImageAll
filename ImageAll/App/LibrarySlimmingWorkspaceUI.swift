@@ -27,7 +27,7 @@ struct LibrarySlimmingClusterPresentation: Identifiable, Equatable, Sendable {
         }
         if mediaKind == .video {
             switch kind {
-            case .byteIdentical: return "完全相同视频"
+            case .byteIdentical: return "视频原件相同"
             case .perceptualDuplicate: return "代表缩略图重复"
             case .nearDuplicateScene: return "相似视频（按代表缩略图）"
             }
@@ -46,7 +46,7 @@ struct LibrarySlimmingClusterPresentation: Identifiable, Equatable, Sendable {
         if mediaKind == .video {
             switch kind {
             case .byteIdentical:
-                return "完整视频文件一致"
+                return "完整原件字节一致 · 编辑效果可能不同"
             case .perceptualDuplicate:
                 return String(format: "代表缩略图匹配度 %.0f%%", score * 100)
             case .nearDuplicateScene:
@@ -750,7 +750,7 @@ struct LibrarySlimmingWorkspaceView: View {
                     .disabled(!model.canAnalyzeLibrarySlimmingCatalog)
                     .persistentHelp(
                         model.selectedMediaKind == .video
-                            ? "读取所选来源中文件夹视频的完整字节以检查精确重复，并分析代表帧相似；可暂停或取消，不自动下载 Photos 原件。"
+                            ? "读取文件夹视频及本地 Photos 原始视频资源以检查原件重复，并分析代表帧相似；可暂停或取消，不自动下载云端原件。"
                             : "\(model.librarySlimmingCatalogSourceScopeCaption)；不会取消已有分析记录"
                     )
 
@@ -2704,7 +2704,7 @@ struct LibrarySlimmingInspectorView: View {
                     .font(.headline)
                 Text(
                     model.selectedMediaKind == .video
-                        ? "新分析读取文件夹视频的完整字节以识别完全相同文件，同时按代表帧查找视觉相似。Photos 当前仅分析代表帧，不自动获取原件。完整摘要与代表帧匹配分开展示；处理前请核对保留项与回收方式。"
+                        ? "新分析读取文件夹视频与本地 Photos 原始视频资源，同时按代表帧查找视觉相似。Photos 原件不可用时跳过并说明，不自动下载。Photos 的原件相同不保证编辑结果相同；当前自动清理仅支持已核验的文件夹视频组。"
                         : "查找相同与相似照片。文件夹资产默认快速永久删除以释放来源空间，也可选择 ImageAll 的 30 天可恢复回收；Photos 使用系统“最近删除”。"
                 )
                     .font(.callout)

@@ -3,6 +3,27 @@ import XCTest
 @testable import ImageAll
 
 final class CatalogMigrationTests: XCTestCase {
+    func testV056CreatesIndependentPhotoKitEvidenceWithoutPromotingLegacyBytes() throws {
+        let url = try makeTempDatabaseURL()
+        let pool = try DatabasePool(path: url.path)
+        try CatalogDatabase.makeMigrator().migrate(pool, upTo: CatalogMigrationID.v055AddOriginalContentDigest)
+        let database = CatalogDatabase(pool: pool)
+        let ids = try CatalogQueryTestSupport.seedCatalogFixture(database: database, repository: CatalogRepository(database: database))
+        try CatalogDatabase.makeMigrator().migrate(pool)
+        try CatalogDatabase.makeMigrator().migrate(pool)
+        XCTAssertEqual(try database.appliedMigrationIDs(), CatalogMigrationID.knownOrdered)
+        XCTAssertEqual(try pool.read { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset_photos_original_video_digest") }, 0)
+        XCTAssertThrowsError(try pool.write { db in
+            try db.execute(sql: """
+                INSERT INTO asset_photos_original_video_digest
+                    (asset_id, content_revision, source_id, photos_local_identifier, provenance,
+                     resource_identity, status, checked_at_ms)
+                SELECT id, content_revision, source_id, 'fixture', 'photokit-video-resource-sha256-v1',
+                       'identity', 'verified', 1 FROM asset WHERE id = ?
+                """, arguments: [ids.assetNewest.uuidString.lowercased()])
+        })
+    }
+
     func testV055DoesNotPromoteLegacyDigestsAndReopensIdempotently() throws {
         let url = try makeTempDatabaseURL()
         let pool = try DatabasePool(path: url.path)
@@ -1716,6 +1737,9 @@ final class CatalogMigrationTests: XCTestCase {
     }
 
     private static func dropV035AndLaterTables(_ db: Database) throws {
+        try db.execute(sql: "DROP TABLE IF EXISTS asset_photos_original_video_digest")
+        try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
+                       arguments: [CatalogMigrationID.v056AddPhotosOriginalVideoDigest])
         try db.execute(sql: "DROP TABLE IF EXISTS asset_original_content_digest")
         try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = ?",
                        arguments: [CatalogMigrationID.v055AddOriginalContentDigest])

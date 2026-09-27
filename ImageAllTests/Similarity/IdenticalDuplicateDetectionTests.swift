@@ -7,6 +7,107 @@ import XCTest
 @testable import ImageAll
 
 final class IdenticalDuplicateDetectionTests: XCTestCase {
+    func testPhotoKitOriginalVideoJobGroupsResourcesAndExplainsCloudAndEditedResults() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+        let bytes = Data(repeating: 23, count: 700_001)
+        let folder = try env.seedAsset(relativePath: "copy.mp4", contents: bytes,
+            mediaType: "public.mpeg-4", mediaKind: .video, durationMs: nil)
+        let photos = try env.seedPhotosAsset(mediaType: "public.mpeg-4", mediaKind: .video)
+        let edited = try env.seedPhotosAsset(mediaType: "public.mpeg-4", mediaKind: .video)
+        let cloud = try env.seedPhotosAsset(mediaType: "public.mpeg-4", mediaKind: .video)
+        let reader = SyntheticPhotosVideoDigestReader(bytes: bytes)
+        reader.cloudIDs = ["LOCAL-\(cloud.uuidString.lowercased())"]
+        reader.editedIDs = ["LOCAL-\(edited.uuidString.lowercased())"]
+        let base = env.makeCompletionService(videoPosterGenerator: SimilarityVideoPosterStub())
+        let completion = FingerprintCompletionService(database: env.database, sourceAccess: base.sourceAccess,
+            photosVideoOriginals: reader, clock: base.clock, videoPosterGenerator: SimilarityVideoPosterStub())
+        let features = DictionarySlimmingFeatureLoader(vectors: [:])
+        let embeddings = DictionarySlimmingEmbeddingLoader(vectors: [:])
+        let queue = JobTestSupport.makeQueue(database: env.database)
+        let scanner = LibrarySlimmingScanService(database: env.database,
+            identicalScan: IdenticalDuplicateClusterService(database: env.database), fingerprintCompletion: completion,
+            featureLoader: features, embeddingLoader: embeddings)
+        let analysis = LibrarySlimmingAnalysisService(database: env.database, queue: queue,
+            fingerprintCompletion: completion, featureLoader: features, embeddingLoader: embeddings,
+            scanner: scanner, clock: FixedJobClock(nowMs: JobTestSupport.baseTimeMs))
+        let job = try analysis.enqueue(mode: .catalog, assetIDs: [folder.assetID, photos, edited, cloud],
+            seedAssetIDs: [], mediaKind: .video)
+        try analysis.runPending()
+        let finished = try analysis.snapshot(jobID: job.jobID)
+        XCTAssertEqual(finished.state, .completed)
+        let exact = try XCTUnwrap(finished.result?.clusters.first { $0.kind == .byteIdentical })
+        XCTAssertEqual(Set(exact.memberAssetIDs), Set([folder.assetID, photos, edited]))
+        let summary = try XCTUnwrap(finished.result?.photosOriginalVideoSummary)
+        XCTAssertEqual(summary.cloudOnlyCount, 1)
+        XCTAssertEqual(summary.adjustedOriginalCount, 1)
+        XCTAssertTrue(summary.caption?.contains("未下载") == true)
+        XCTAssertTrue(summary.caption?.contains("编辑结果") == true)
+        XCTAssertEqual(reader.calls, 3, "Poster completion retries must not reread entire Photos resources")
+        XCTAssertEqual(LibrarySlimmingClusterPresentation(exact, mediaKind: .video).kindTitle, "视频原件相同")
+        let rows = try env.database.pool.read { db in
+            try Row.fetchAll(db, sql: "SELECT status, sha256 FROM asset_photos_original_video_digest")
+        }
+        XCTAssertEqual(rows.count, 3)
+        XCTAssertEqual(rows.filter { ($0["status"] as String) == "verified" }.count, 2)
+        XCTAssertNil(rows.first { ($0["status"] as String) == "cloudOnly" }?["sha256"] as Data?)
+        let progress = LibrarySlimmingScanProgress(phase: .preparingFingerprints, completed: 0, total: 1,
+            completedBytes: 256 * 1024, totalBytes: 0)
+        XCTAssertTrue(progress.caption.contains("已读取"))
+    }
+
+    func testPhotoKitOriginalVideoCancellationRevisionAndCloudRefreshDiscardOldProof() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+        let asset = try env.seedPhotosAsset(mediaType: "public.mpeg-4", mediaKind: .video)
+        let reader = SyntheticPhotosVideoDigestReader(bytes: Data(repeating: 13, count: 500_000))
+        let service = PhotosOriginalVideoDigestService(database: env.database, reader: reader,
+            clock: FixedJobClock(nowMs: JobTestSupport.baseTimeMs))
+        func evidenceCount() throws -> Int {
+            try env.database.pool.read { db in
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset_photos_original_video_digest WHERE status = 'verified'") ?? 0
+            }
+        }
+        try service.complete(assetID: asset)
+        XCTAssertEqual(try evidenceCount(), 1)
+        var checks = 0
+        XCTAssertThrowsError(try service.complete(assetID: asset, checkCancellation: {
+            checks += 1
+            if checks > 2 { throw CancellationError() }
+        })) { XCTAssertTrue($0 is CancellationError) }
+        XCTAssertEqual(try evidenceCount(), 0)
+        try service.complete(assetID: asset)
+        reader.cloudIDs = ["LOCAL-\(asset.uuidString.lowercased())"]
+        try service.complete(assetID: asset)
+        XCTAssertEqual(try evidenceCount(), 0)
+        XCTAssertEqual(try PhotosOriginalVideoDigestService.summary(database: env.database, assetIDs: [asset]).cloudOnlyCount, 1)
+        reader.cloudIDs = []
+        reader.onCompletedRead = {
+            try env.database.pool.write { db in
+                try db.execute(sql: "UPDATE asset SET content_revision = content_revision + 1 WHERE id = ?",
+                    arguments: [asset.uuidString.lowercased()])
+            }
+        }
+        try service.complete(assetID: asset)
+        XCTAssertEqual(try evidenceCount(), 0)
+    }
+
+    func testLegacyExplicitVideoMethodDoesNotReadPhotoKitOriginals() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+        let asset = try env.seedPhotosAsset(mediaType: "public.mpeg-4", mediaKind: .video)
+        let base = env.makeCompletionService()
+        let reader = SyntheticPhotosVideoDigestReader(bytes: Data([1, 2, 3]))
+        let completion = FingerprintCompletionService(database: env.database, sourceAccess: base.sourceAccess,
+            photosVideoOriginals: reader, clock: base.clock)
+        _ = try? completion.completeExplicitAnalysisAsset(assetID: asset,
+            checkCancellation: {}, onByteProgress: { _, _ in })
+        XCTAssertEqual(reader.calls, 0)
+        let legacy = Data(#"{"mode":"catalog","mediaKind":"video","originalVideoDigestPolicy":"folder-original-sha256-v1"}"#.utf8)
+        XCTAssertEqual(try LibrarySlimmingAnalysisJobFactory.decodePayload(legacy).originalVideoDigestPolicy,
+            OriginalVideoDigestService.policy)
+    }
+
     func testExplicitVideoAnalysisJobPausesInsideOriginalReadThenResumesToExactResult() throws {
         let env = try SimilarityTestSupport.Environment(label: #function)
         defer { env.cleanup() }
@@ -1867,5 +1968,31 @@ private final class ExplicitVideoAnalysisTestCompletion: FingerprintCompletionPo
             onByteProgress(done, total)
             do { try self.onChunk?(done, total) } catch { callbackError = error }
         })
+    }
+}
+
+private final class SyntheticPhotosVideoDigestReader: PhotosOriginalVideoContentPort, @unchecked Sendable {
+    let bytes: Data
+    var cloudIDs = Set<String>()
+    var editedIDs = Set<String>()
+    var calls = 0
+    var onCompletedRead: (() throws -> Void)?
+    init(bytes: Data) { self.bytes = bytes }
+    func requestLocalOriginalVideoDigest(localIdentifier: String, checkCancellation: () throws -> Void,
+        onByteProgress: (Int64, Int64) -> Void) throws -> PhotosOriginalVideoDigest {
+        calls += 1
+        try checkCancellation()
+        if cloudIDs.contains(localIdentifier) { throw PhotosLibraryError.cloudOnly }
+        let state = PhotosOriginalVideoStreamState()
+        for offset in stride(from: 0, to: bytes.count, by: 256 * 1024) {
+            try checkCancellation()
+            state.receive(bytes.subdata(in: offset..<min(offset + 256 * 1024, bytes.count)))
+            onByteProgress(state.snapshot().byteCount, 0)
+        }
+        state.complete(nil)
+        try onCompletedRead?()
+        let result = try state.finalDigest()
+        return PhotosOriginalVideoDigest(sha256: result.sha256, byteCount: result.byteCount,
+            resourceIdentity: "synthetic-original-\(localIdentifier)", hasAdjustments: editedIDs.contains(localIdentifier))
     }
 }

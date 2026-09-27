@@ -877,7 +877,7 @@ enum LibrarySlimmingAnalysisJobFactory {
             mode = try values.decode(LibrarySlimmingAnalyzeMode.self, forKey: .mode)
             mediaKind = try values.decodeIfPresent(MediaKind.self, forKey: .mediaKind) ?? .image
             originalVideoDigestPolicy = try values.decodeIfPresent(String.self, forKey: .originalVideoDigestPolicy)
-            if let originalVideoDigestPolicy, originalVideoDigestPolicy != OriginalVideoDigestService.policy {
+            if let originalVideoDigestPolicy, ![OriginalVideoDigestService.policy, OriginalVideoDigestService.analysisPolicy].contains(originalVideoDigestPolicy) {
                 throw DecodingError.dataCorruptedError(forKey: .originalVideoDigestPolicy, in: values,
                     debugDescription: "unsupported original video digest policy")
             }
@@ -934,7 +934,7 @@ enum LibrarySlimmingAnalysisJobFactory {
             kind: kind,
             payloadVersion: payloadVersion,
             payload: try JSONEncoder().encode(Payload(mode: mode, mediaKind: mediaKind,
-                originalVideoDigestPolicy: mediaKind == .video ? OriginalVideoDigestService.policy : nil)),
+                originalVideoDigestPolicy: mediaKind == .video ? OriginalVideoDigestService.analysisPolicy : nil)),
             sourceID: nil,
             coalescingKey: nil,
             priority: priority,
@@ -1551,8 +1551,10 @@ private struct LibrarySlimmingAnalysisHandler: LeaseBoundJobHandler {
                         heartbeat.start()
                         defer { heartbeat.stop() }
                         do {
-                            if payload.originalVideoDigestPolicy == OriginalVideoDigestService.policy {
+                            if payload.originalVideoDigestPolicy != nil {
                                 try fingerprintCompletion.completeExplicitAnalysisAsset(assetID: member.assetID,
+                                    includePhotosOriginals: payload.originalVideoDigestPolicy == OriginalVideoDigestService.analysisPolicy
+                                        && state.completionPass == 1,
                                     checkCancellation: {
                                         switch heartbeat.status() {
                                         case .active:
@@ -1667,7 +1669,7 @@ private struct LibrarySlimmingAnalysisHandler: LeaseBoundJobHandler {
                     let scanProgress: LibrarySlimmingScanProgressHandler = { progress in
                         heartbeat.report(progress)
                     }
-                    let result: LibrarySlimmingScanResult
+                    var result: LibrarySlimmingScanResult
                     do {
                         if payload.mode == .seeds {
                             result = try scanner.scanSeeds(
@@ -1720,6 +1722,10 @@ private struct LibrarySlimmingAnalysisHandler: LeaseBoundJobHandler {
                             return settled
                         }
                         continue
+                    }
+                    if payload.originalVideoDigestPolicy == OriginalVideoDigestService.analysisPolicy {
+                        result.photosOriginalVideoSummary = try PhotosOriginalVideoDigestService.summary(
+                            database: database, assetIDs: assetIDs)
                     }
                     let encodedResult = try JSONEncoder().encode(result)
                     let finalCheckpoint = try LibrarySlimmingAnalysisJobFactory.encodeCheckpoint(state)

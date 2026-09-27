@@ -1,4 +1,5 @@
 import AVFoundation
+import CryptoKit
 import Foundation
 import GRDB
 import Photos
@@ -6,6 +7,31 @@ import XCTest
 @testable import ImageAll
 
 final class PhotosIntegrationTests: XCTestCase {
+    func testOriginalVideoResourcePolicyAndStreamingDigestNeverUseEditedRendition() throws {
+        let original = PHAssetResourceType.video.rawValue
+        let edited = PHAssetResourceType.fullSizeVideo.rawValue
+        let paired = PHAssetResourceType.pairedVideo.rawValue
+        XCTAssertEqual(PhotoKitPhotosLibraryAdapter.originalVideoResourceIndex(types: [edited, original]), 1)
+        XCTAssertNil(PhotoKitPhotosLibraryAdapter.originalVideoResourceIndex(types: [edited, paired]))
+        XCTAssertNil(PhotoKitPhotosLibraryAdapter.originalVideoResourceIndex(types: [original, original]))
+        XCTAssertFalse(PhotoKitPhotosLibraryAdapter.makeLocalOnlyVideoResourceRequestOptions().isNetworkAccessAllowed)
+        let stream = PhotosOriginalVideoStreamState()
+        let chunk = Data(repeating: 21, count: 256 * 1024)
+        var expected = SHA256()
+        for _ in 0..<9 { stream.receive(chunk); expected.update(data: chunk) }
+        stream.complete(nil)
+        stream.receive(Data([0])) // Ignore late callbacks after completion.
+        let result = try stream.finalDigest()
+        XCTAssertEqual(result.byteCount, Int64(chunk.count * 9))
+        XCTAssertEqual(result.sha256, Data(expected.finalize()))
+        let cancelled = PhotosOriginalVideoStreamState()
+        cancelled.receive(chunk)
+        cancelled.cancel()
+        cancelled.receive(chunk)
+        XCTAssertEqual(cancelled.snapshot().byteCount, Int64(chunk.count))
+        XCTAssertThrowsError(try cancelled.finalDigest()) { XCTAssertTrue($0 is CancellationError) }
+    }
+
     func testPhotoKitImageRequestCancellationHandlesBothInstallationOrdersOnce() {
         var cancelledRequestIDs: [PHImageRequestID] = []
         var cancellationCompletions = 0

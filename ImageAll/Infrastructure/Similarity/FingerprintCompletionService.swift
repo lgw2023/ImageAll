@@ -7,6 +7,7 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
     let sourceAccess: FolderReconcileSourceAccessService
     let sourceReader: DerivedImageSourceReader
     let photosOriginals: (any PhotosOriginalContentPort)?
+    let photosVideoOriginals: (any PhotosOriginalVideoContentPort)?
     let photosOriginalCache: PhotosOriginalCacheService?
     let photosFeatureImages: (any PhotosFeaturePrintImagePort)?
     let downloadedPreviews: (any DownloadedPreviewCachePort)?
@@ -20,6 +21,7 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
         sourceAccess: FolderReconcileSourceAccessService,
         sourceReader: DerivedImageSourceReader = DerivedImageSourceReader(),
         photosOriginals: (any PhotosOriginalContentPort)? = nil,
+        photosVideoOriginals: (any PhotosOriginalVideoContentPort)? = nil,
         photosOriginalCache: PhotosOriginalCacheService? = nil,
         photosFeatureImages: (any PhotosFeaturePrintImagePort)? = nil,
         downloadedPreviews: (any DownloadedPreviewCachePort)? = nil,
@@ -33,6 +35,7 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
         self.sourceAccess = sourceAccess
         self.sourceReader = sourceReader
         self.photosOriginals = photosOriginals
+        self.photosVideoOriginals = photosVideoOriginals ?? (photosOriginals as? any PhotosOriginalVideoContentPort)
         self.photosOriginalCache = photosOriginalCache
         self.photosFeatureImages = photosFeatureImages
         self.downloadedPreviews = downloadedPreviews
@@ -44,7 +47,19 @@ struct FingerprintCompletionService: FingerprintCompletionPort {
 
     func completeExplicitAnalysisAsset(assetID: UUID, checkCancellation: () throws -> Void,
         onByteProgress: (Int64, Int64) -> Void) throws {
+        try completeExplicitAnalysisAsset(assetID: assetID, includePhotosOriginals: false,
+            checkCancellation: checkCancellation, onByteProgress: onByteProgress)
+    }
+
+    func completeExplicitAnalysisAsset(assetID: UUID, includePhotosOriginals: Bool,
+        checkCancellation: () throws -> Void, onByteProgress: (Int64, Int64) -> Void) throws {
         try checkCancellation()
+        if includePhotosOriginals, let photosVideoOriginals,
+           try loadLocatorKind(assetID: assetID) == .photos,
+           try loadPhotosContext(assetID: assetID).mediaKind == .video {
+            try PhotosOriginalVideoDigestService(database: database, reader: photosVideoOriginals, clock: clock)
+                .complete(assetID: assetID, checkCancellation: checkCancellation, onByteProgress: onByteProgress)
+        }
         if let context = try assetRepository.fetchGenerationContext(assetID: assetID),
            context.mediaKind == .video, context.locatorKind == AssetLocatorKind.file.rawValue {
             let originals = OriginalVideoDigestService(database: database, sourceAccess: sourceAccess, clock: clock)

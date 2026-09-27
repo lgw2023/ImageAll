@@ -1,12 +1,13 @@
 import AppKit
 import AVFoundation
+import CryptoKit
 import Foundation
 import OSLog
 import Photos
 
 final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, PhotosChangeHistoryPort,
     PhotosChangeObserverPort, PhotosLibraryAvailabilityObserverPort, PhotosCloudPreviewPort,
-    PhotosOriginalContentPort, PhotosFeaturePrintImagePort, PhotosVideoResourcePort,
+    PhotosOriginalContentPort, PhotosOriginalVideoContentPort, PhotosFeaturePrintImagePort, PhotosVideoResourcePort,
     PHPhotoLibraryChangeObserver,
     PHPhotoLibraryAvailabilityObserver,
     @unchecked Sendable
@@ -588,6 +589,94 @@ final class PhotoKitPhotosLibraryAdapter: NSObject, PhotosLibraryAccessPort, Pho
         return options
     }
 
+    func requestLocalOriginalVideoDigest(
+        localIdentifier: String, checkCancellation: () throws -> Void,
+        onByteProgress: (Int64, Int64) -> Void
+    ) throws -> PhotosOriginalVideoDigest {
+        try checkCancellation()
+        guard authorizationState() == .authorized else { throw PhotosLibraryError.authorizationDenied }
+        guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil).firstObject,
+              asset.mediaType == .video else { throw PhotosLibraryError.libraryUnavailable }
+        let resources = PHAssetResource.assetResources(for: asset)
+        guard let index = Self.originalVideoResourceIndex(types: resources.map { $0.type.rawValue }) else {
+            throw FingerprintCompletionError.ineligible
+        }
+        let identity = try Self.originalVideoIdentity(asset: asset, resources: resources)
+        let hasAdjustments = resources.contains {
+            $0.type == .adjustmentData || $0.type == .fullSizeVideo || $0.type == .adjustmentBaseVideo
+        }
+        let state = PhotosOriginalVideoStreamState()
+        let manager = PHAssetResourceManager.default()
+        let request = manager.requestData(for: resources[index],
+            options: Self.makeLocalOnlyVideoResourceRequestOptions(),
+            dataReceivedHandler: { state.receive($0) }, completionHandler: { state.complete($0) })
+        do {
+            var lastBytes: Int64 = -1
+            var lastActivity = Date()
+            while true {
+                try checkCancellation()
+                let snapshot = state.snapshot()
+                if snapshot.byteCount != lastBytes {
+                    lastBytes = snapshot.byteCount
+                    lastActivity = Date()
+                    onByteProgress(snapshot.byteCount, 0) // PhotoKit has no public resource length.
+                }
+                if snapshot.finished { break }
+                guard Date().timeIntervalSince(lastActivity) < 300 else {
+                    throw PhotosLibraryError.libraryUnavailable
+                }
+                _ = state.completion.wait(timeout: .now() + 0.1)
+            }
+            let result = try state.finalDigest()
+            try checkCancellation()
+            guard let current = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil).firstObject,
+                  current.mediaType == .video,
+                  try Self.originalVideoIdentity(asset: current,
+                    resources: PHAssetResource.assetResources(for: current)) == identity else {
+                throw FingerprintCompletionError.sourceChanged
+            }
+            onByteProgress(result.byteCount, result.byteCount)
+            return PhotosOriginalVideoDigest(sha256: result.sha256, byteCount: result.byteCount,
+                resourceIdentity: identity, hasAdjustments: hasAdjustments)
+        } catch {
+            state.cancel()
+            manager.cancelDataRequest(request)
+            let nsError = error as NSError
+            if nsError.domain == PHPhotosErrorDomain,
+               nsError.code == PHPhotosError.Code.networkAccessRequired.rawValue {
+                throw PhotosLibraryError.cloudOnly
+            }
+            throw error
+        }
+    }
+
+    /// A fullSizeVideo or a paired-video resource cannot stand in for .video.
+    static func originalVideoResourceIndex(types: [Int]) -> Int? {
+        let matches = types.indices.filter { types[$0] == PHAssetResourceType.video.rawValue }
+        return matches.count == 1 ? matches[0] : nil
+    }
+
+    private static func originalVideoIdentity(asset: PHAsset, resources: [PHAssetResource]) throws -> String {
+        struct Identity: Encodable {
+            let localIdentifier: String
+            let modified: Double?
+            let created: Double?
+            let duration: Double
+            let width: Int
+            let height: Int
+            let resources: [[String]]
+        }
+        let value = Identity(localIdentifier: asset.localIdentifier,
+            modified: asset.modificationDate?.timeIntervalSince1970,
+            created: asset.creationDate?.timeIntervalSince1970, duration: asset.duration,
+            width: asset.pixelWidth, height: asset.pixelHeight,
+            resources: resources.map { [String($0.type.rawValue), $0.uniformTypeIdentifier, $0.originalFilename] }
+                .sorted { $0.lexicographicallyPrecedes($1) })
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        return Data(SHA256.hash(data: try encoder.encode(value))).base64EncodedString()
+    }
+
     func requestOriginalImageData(localIdentifier: String) throws -> Data {
         guard authorizationState() == .authorized else {
             throw PhotosLibraryError.authorizationDenied
@@ -941,5 +1030,52 @@ final class PhotoKitImageRequestCancellation: @unchecked Sendable {
             cancelRequest(requestID)
         }
         current.1?()
+    }
+}
+
+/// Hashes callbacks immediately; it never retains resource chunks or accumulates a movie.
+/// PhotoKit controls callback chunk size; app-owned hash state is constant-size.
+final class PhotosOriginalVideoStreamState: @unchecked Sendable {
+    let completion = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var hasher = SHA256()
+    private var byteCount: Int64 = 0
+    private var finished = false
+    private var failure: Error?
+
+    func receive(_ data: Data) {
+        lock.lock(); defer { lock.unlock() }
+        guard !finished else { return }
+        let count = byteCount.addingReportingOverflow(Int64(data.count))
+        guard !count.overflow else {
+            failure = FingerprintCompletionError.sourceChanged
+            finished = true
+            completion.signal()
+            return
+        }
+        hasher.update(data: data)
+        byteCount = count.partialValue
+    }
+
+    func complete(_ error: Error?) {
+        lock.lock(); defer { lock.unlock() }
+        guard !finished else { return }
+        failure = error
+        finished = true
+        completion.signal()
+    }
+
+    func cancel() { complete(CancellationError()) }
+
+    func snapshot() -> (byteCount: Int64, finished: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        return (byteCount, finished)
+    }
+
+    func finalDigest() throws -> (sha256: Data, byteCount: Int64) {
+        lock.lock(); defer { lock.unlock() }
+        if let failure { throw failure }
+        guard finished, byteCount > 0 else { throw FingerprintCompletionError.sourceUnavailable }
+        return (Data(hasher.finalize()), byteCount)
     }
 }

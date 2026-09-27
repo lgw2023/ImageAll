@@ -7,6 +7,7 @@ import GRDB
 /// One file descriptor and one 256 KiB buffer per call; callers schedule files serially.
 struct OriginalVideoDigestService: Sendable {
     static let policy = "folder-original-sha256-v1"
+    static let analysisPolicy = "video-original-sha256-v2"
     static let chunkByteCount = 256 * 1_024
     let database: CatalogDatabase
     let sourceAccess: FolderReconcileSourceAccessService
@@ -211,6 +212,133 @@ struct OriginalVideoDigestService: Sendable {
                     context.sourceID.uuidString.lowercased(), Self.policy, context.relativePath,
                     identity.size, context.fingerprintModifiedAtNs, identity.token, context.fingerprintResourceID,
                     digest, clock.nowMs])
+        }
+    }
+}
+
+struct PhotosOriginalVideoDigestService: Sendable {
+    static let policy = "photokit-video-resource-sha256-v1"
+    let database: CatalogDatabase
+    let reader: any PhotosOriginalVideoContentPort
+    let clock: any JobClock
+
+    func complete(assetID: UUID, checkCancellation: () throws -> Void = {},
+        onByteProgress: (Int64, Int64) -> Void = { _, _ in }) throws {
+        let before = try context(assetID: assetID)
+        try checkCancellation()
+        do {
+            // PhotoKit exposes no stable public resource byte revision. Re-read the
+            // resource on every explicit scan instead of trusting metadata-only reuse.
+            let digest = try reader.requestLocalOriginalVideoDigest(localIdentifier: before.localIdentifier,
+                checkCancellation: checkCancellation, onByteProgress: onByteProgress)
+            try checkCancellation()
+            guard digest.sha256.count == 32, digest.byteCount > 0, !digest.resourceIdentity.isEmpty else {
+                throw FingerprintCompletionError.sourceChanged
+            }
+            try persist(before, digest: digest, status: "verified")
+            try checkCancellation()
+        } catch is CancellationError {
+            try removeEvidence(before)
+            throw CancellationError()
+        } catch {
+            let status: String
+            switch error {
+            case PhotosLibraryError.cloudOnly: status = "cloudOnly"
+            case FingerprintCompletionError.ineligible: status = "unsupported"
+            case FingerprintCompletionError.sourceChanged: status = "sourceChanged"
+            default: status = "unavailable"
+            }
+            try removeEvidence(before)
+            if (try? context(assetID: assetID)) == before {
+                try persist(before, digest: nil, status: status)
+            }
+            // The job can still analyze a locally available poster independently.
+            if error is PhotosLibraryError || error is FingerprintCompletionError { return }
+            throw error
+        }
+    }
+
+    private struct Context: Equatable {
+        let assetID: UUID
+        let sourceID: String
+        let revision: Int
+        let localIdentifier: String
+    }
+
+    private func context(assetID: UUID) throws -> Context {
+        try database.pool.read { db in try context(assetID: assetID, db: db) }
+    }
+
+    private func context(assetID: UUID, db: Database) throws -> Context {
+        guard let row = try Row.fetchOne(db, sql: """
+            SELECT a.source_id, a.content_revision, a.photos_local_identifier
+            FROM asset a JOIN source s ON s.id = a.source_id
+            WHERE a.id = ? AND a.media_kind = 'video' AND a.locator_kind = 'photos'
+              AND a.locator_state = 'current' AND a.availability = 'available'
+              AND s.kind = 'photos' AND s.state = 'active'
+            """, arguments: [assetID.uuidString.lowercased()]),
+              let localIdentifier: String = row["photos_local_identifier"], !localIdentifier.isEmpty else {
+            throw FingerprintCompletionError.ineligible
+        }
+        return Context(assetID: assetID, sourceID: row["source_id"], revision: row["content_revision"],
+            localIdentifier: localIdentifier)
+    }
+
+    private func persist(_ before: Context, digest: PhotosOriginalVideoDigest?, status: String) throws {
+        try database.pool.write { db in
+            guard try context(assetID: before.assetID, db: db) == before else {
+                throw FingerprintCompletionError.sourceChanged
+            }
+            try db.execute(sql: """
+                INSERT INTO asset_photos_original_video_digest
+                    (asset_id, content_revision, source_id, photos_local_identifier, provenance,
+                     resource_identity, has_adjustments, size_bytes, sha256, status, checked_at_ms)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(asset_id) DO UPDATE SET
+                    content_revision = excluded.content_revision, source_id = excluded.source_id,
+                    photos_local_identifier = excluded.photos_local_identifier, provenance = excluded.provenance,
+                    resource_identity = excluded.resource_identity, has_adjustments = excluded.has_adjustments,
+                    size_bytes = excluded.size_bytes, sha256 = excluded.sha256,
+                    status = excluded.status, checked_at_ms = excluded.checked_at_ms
+                """, arguments: [before.assetID.uuidString.lowercased(), before.revision, before.sourceID,
+                    before.localIdentifier, Self.policy, digest?.resourceIdentity, digest?.hasAdjustments == true ? 1 : 0,
+                    digest?.byteCount, digest?.sha256, status, clock.nowMs])
+        }
+    }
+
+    private func removeEvidence(_ before: Context) throws {
+        try database.pool.write { db in
+            try db.execute(sql: "DELETE FROM asset_photos_original_video_digest WHERE asset_id = ? AND content_revision = ?",
+                arguments: [before.assetID.uuidString.lowercased(), before.revision])
+        }
+    }
+}
+
+extension PhotosOriginalVideoDigestService {
+    static func summary(database: CatalogDatabase, assetIDs: [UUID]) throws -> PhotosOriginalVideoAnalysisSummary {
+        try database.pool.read { db in
+            var result = PhotosOriginalVideoAnalysisSummary()
+            let ids = Array(Set(assetIDs)).map { $0.uuidString.lowercased() }
+            for offset in stride(from: 0, to: ids.count, by: 400) {
+                let batch = Array(ids[offset..<min(offset + 400, ids.count)])
+                let placeholders = Array(repeating: "?", count: batch.count).joined(separator: ",")
+                let rows = try Row.fetchAll(db, sql: """
+                    SELECT d.status, d.has_adjustments
+                    FROM asset_photos_original_video_digest d JOIN asset a ON a.id = d.asset_id
+                    WHERE a.id IN (\(placeholders)) AND a.media_kind = 'video'
+                      AND a.locator_kind = 'photos' AND a.content_revision = d.content_revision
+                      AND a.source_id = d.source_id AND a.photos_local_identifier = d.photos_local_identifier
+                    """, arguments: StatementArguments(batch))
+                for row in rows {
+                    let status: String = row["status"]
+                    if status == "cloudOnly" { result.cloudOnlyCount += 1 }
+                    else if status != "verified" { result.unavailableCount += 1 }
+                    if status == "verified", (row["has_adjustments"] as Int) == 1 {
+                        result.adjustedOriginalCount += 1
+                    }
+                }
+            }
+            return result
         }
     }
 }
