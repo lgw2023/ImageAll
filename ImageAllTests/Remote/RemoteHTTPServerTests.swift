@@ -789,6 +789,47 @@ final class RemoteHTTPServerTests: XCTestCase {
         let persisted = await reopened.projection(deviceID: deviceID)
         XCTAssertEqual(persisted?.sharedCollectionFacts.first?.collectionID, collectionID)
         XCTAssertEqual(persisted?.sharedCollectionFacts.first?.collectionName, "Trip")
+        // The old name can now belong to another collection. A frozen offline
+        // member request must still target its original stable identity.
+        _ = try await reopened.createCollectionFromMac(
+            deviceID: deviceID, assetID: assetID,
+            collectionID: UUID(), collectionName: "Journey",
+            expectedInstallID: installID, expectedSourceEpoch: epoch,
+            expectedScopeRevision: 1, expectedSnapshotSequence: 2
+        )
+        func member(sequence: Int64, name: String, included: Bool, base: Int64)
+            -> RemoteLocalLibraryCollectionMembershipRequest {
+            .init(hostID: hostID, installID: installID, sourceEpoch: epoch,
+                  scopeRevision: 1, operationID: UUID(), deviceSequence: sequence,
+                  assetID: assetID, collectionID: collectionID, collectionName: name,
+                  included: included, baseRevision: base)
+        }
+        let offline = member(sequence: 1, name: "Journey", included: false, base: 1)
+        let offlineReceipt = try await reopened.submitCollectionMembership(
+            offline, authenticatedDeviceID: deviceID
+        )
+        XCTAssertEqual(offlineReceipt.disposition, .applied)
+        XCTAssertEqual(offlineReceipt.fieldRevision, 2)
+        let afterRestart = try RemoteLocalLibrarySyncStore(hostID: hostID, storageURL: url)
+        let lostACKRetry = try await afterRestart.submitCollectionMembership(
+            offline, authenticatedDeviceID: deviceID
+        )
+        XCTAssertTrue(lostACKRetry.replayed)
+        XCTAssertEqual(lostACKRetry.fieldRevision, 2)
+        let finalProjection = await afterRestart.projection(deviceID: deviceID)
+        XCTAssertEqual(finalProjection?.sharedCollectionFacts.first {
+            $0.collectionID == collectionID
+        }?.collectionName, "Trip")
+        let staleMember = try await afterRestart.submitCollectionMembership(
+            member(sequence: 2, name: "Journey", included: true, base: 1),
+            authenticatedDeviceID: deviceID
+        )
+        XCTAssertEqual(staleMember.conflictReason, .fieldVersion)
+        let unknownName = try await afterRestart.submitCollectionMembership(
+            member(sequence: 3, name: "Unrelated", included: true, base: 2),
+            authenticatedDeviceID: deviceID
+        )
+        XCTAssertEqual(unknownName.conflictReason, .collectionIdentity)
     }
 
     func testMigrationCheckpointRejectsLaterMacChangesAndHiddenScope() async throws {

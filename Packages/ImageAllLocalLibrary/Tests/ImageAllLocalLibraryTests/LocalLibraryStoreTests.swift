@@ -1192,10 +1192,12 @@ import Testing
     #expect(try await store.collections().first { $0.id == collectionID }?.name == "Later")
 }
 
-@Test func confirmedCollectionAliasFollowsExplicitMacRename() async throws {
+@Test(arguments: [false, true])
+func confirmedCollectionAliasFollowsExplicitMacRename(legacyPrepared: Bool) async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
-    let store = try LocalLibraryStore(url: root.appendingPathComponent("local.sqlite"))
+    let url = root.appendingPathComponent("local.sqlite")
+    var store = try LocalLibraryStore(url: url)
     try await store.observe([.init(
         localIdentifier: "shared", kind: "image", creationDate: nil, isFavorite: false
     )])
@@ -1227,6 +1229,20 @@ import Testing
         scopeRevision: snapshot.scopeRevision, afterCursor: 0,
         changes: [created], nextCursor: 1
     )
+    try await store.setMembership(assetID: asset.id, collectionID: localID, included: false)
+    let firstOperation = try #require(await store.pendingSharedOperations().first)
+    let beforeRename = try #require(await store.prepareSharedCollectionOperation(
+        id: firstOperation.id, hostID: hostID, deviceID: deviceID
+    ))
+    try await store.setMembership(assetID: asset.id, collectionID: localID, included: true)
+    if legacyPrepared {
+        // Emulate a database prepared by the preceding app version.
+        var rawDB: OpaquePointer?
+        #expect(sqlite3_open(url.path, &rawDB) == SQLITE_OK)
+        #expect(sqlite3_exec(rawDB, "DROP TABLE shared_collection_delivery_identity", nil, nil, nil) == SQLITE_OK)
+        sqlite3_close(rawDB)
+        store = try LocalLibraryStore(url: url)
+    }
     _ = try await store.applySharedCollectionChanges(
         hostID: hostID, deviceID: deviceID, sourceEpoch: snapshot.sourceEpoch,
         scopeRevision: snapshot.scopeRevision, afterCursor: 1,
@@ -1237,6 +1253,30 @@ import Testing
         )], nextCursor: 2
     )
     #expect(try await store.collections().first { $0.id == localID }?.name == "Trip")
+    store = try LocalLibraryStore(url: url)
+    let retry = try #require(await store.prepareSharedCollectionOperation(
+        id: firstOperation.id, hostID: hostID, deviceID: deviceID
+    ))
+    #expect(retry.collectionID == beforeRename.collectionID)
+    #expect(retry.collectionName == beforeRename.collectionName)
+    #expect(Array(retry.collectionName.utf8) == Array(beforeRename.collectionName.utf8))
+    #expect(retry.baseRevision == beforeRename.baseRevision)
+    #expect(retry.included == beforeRename.included)
+    try await store.recordSharedCollectionResult(
+        operationID: firstOperation.id, hostID: hostID, deviceID: deviceID,
+        disposition: .applied, fieldRevision: 2, currentIncluded: false
+    )
+    let nextOperation = try #require(await store.pendingSharedOperations().first)
+    let next = try #require(await store.prepareSharedCollectionOperation(
+        id: nextOperation.id, hostID: hostID, deviceID: deviceID
+    ))
+    #expect(next.collectionID == remoteID)
+    #expect(next.collectionName == "Trip")
+    #expect(next.baseRevision == 2)
+    try await store.recordSharedCollectionResult(
+        operationID: nextOperation.id, hostID: hostID, deviceID: deviceID,
+        disposition: .applied, fieldRevision: 3, currentIncluded: true
+    )
     let wire = try await store.prepareSharedSnapshot(visibleIdentifiers: ["shared"])
     #expect(wire.assets.first?.collections.contains {
         $0.collectionID == remoteID && $0.collectionName == "Trip"

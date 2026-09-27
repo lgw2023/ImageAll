@@ -713,15 +713,27 @@ actor RemoteLocalLibrarySyncStore {
         let resultingRevision: Int64
         let resultingIncluded: Bool?
         let conflictReason: RemoteLocalLibraryCollectionConflictReason?
-        if facts.contains(where: {
+        let knownNames = Set(facts.filter {
             $0.collectionID == request.collectionID
-                && $0.collectionName != request.collectionName
-        }) {
+        }.map(\.collectionName))
+        let currentName = knownNames.first
+        // Offline member edits carry the name from when the request was made.
+        // Only this stable ID's explicit Mac rename history can explain it.
+        let hasKnownHistoricalName = currentName != nil
+            && currentName != request.collectionName
+            && (previous.collectionChanges ?? []).contains {
+            $0.createdCollectionID == request.collectionID
+        } && (previous.collectionChanges ?? []).contains {
+            $0.collectionID == request.collectionID
+                && $0.renamedFrom == request.collectionName
+        }
+        if knownNames.count > 1 || (currentName != nil
+            && currentName != request.collectionName && !hasKnownHistoricalName) {
             disposition = .conflict
             resultingRevision = revision
             resultingIncluded = current?.included
             conflictReason = .collectionIdentity
-        } else if facts.contains(where: {
+        } else if !hasKnownHistoricalName && facts.contains(where: {
             $0.collectionID != request.collectionID
                 && $0.collectionName.localizedCaseInsensitiveCompare(request.collectionName) == .orderedSame
         }) {
@@ -749,7 +761,7 @@ actor RemoteLocalLibrarySyncStore {
             conflictReason = nil
             let fact = SharedCollectionFact(
                 assetID: request.assetID, collectionID: request.collectionID,
-                collectionName: request.collectionName,
+                collectionName: currentName ?? request.collectionName,
                 included: request.included, revision: resultingRevision
             )
             if let index { facts[index] = fact } else { facts.append(fact) }

@@ -448,6 +448,11 @@ public actor LocalLibraryStore {
                   operation_id TEXT PRIMARY KEY REFERENCES shared_delivery(operation_id) ON DELETE CASCADE,
                   reason TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS shared_collection_delivery_identity (
+                  operation_id TEXT PRIMARY KEY REFERENCES shared_delivery(operation_id) ON DELETE CASCADE,
+                  local_collection_id TEXT NOT NULL REFERENCES collections(id),
+                  wire_collection_id TEXT NOT NULL, wire_name TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS shared_snapshot_delivery (
                   id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL
                 );
@@ -1185,9 +1190,23 @@ public actor LocalLibraryStore {
               pending.scopeRevision == (Int64(try requiredIdentity("sync_ack_scope_revision")) ?? -1) else {
             throw LocalLibraryError.syncScopeNotAcknowledged
         }
-        let wireCollection = try wireCollectionIdentity(
-            for: collectionID, localName: collectionName
-        )
+        let frozenIdentity = try rows("""
+            SELECT local_collection_id,wire_collection_id,wire_name
+            FROM shared_collection_delivery_identity WHERE operation_id=?
+            """, [id.uuidString]).first
+        let wireCollection: (id: UUID, name: String)
+        if let frozenIdentity {
+            guard frozenIdentity[0] == collectionID.uuidString,
+                  let wireID = UUID(uuidString: frozenIdentity[1] ?? ""),
+                  let wireName = frozenIdentity[2], !wireName.isEmpty else {
+                throw LocalLibraryError.syncIdentityChanged
+            }
+            wireCollection = (wireID, wireName)
+        } else {
+            wireCollection = try wireCollectionIdentity(
+                for: collectionID, localName: collectionName
+            )
+        }
         let earlier = try scalar("""
             SELECT MIN(o.sequence) FROM shared_outbox s
             JOIN outbox o ON o.operation_id=s.operation_id
@@ -1211,7 +1230,9 @@ public actor LocalLibraryStore {
             baseRevision = Int64(try scalar("""
                 SELECT revision FROM shared_field_versions WHERE asset_id=? AND field=?
                 """, [pending.assetID.uuidString, pending.field]) ?? "0") ?? 0
-            try transaction {
+        }
+        try transaction {
+            if pending.preparedBaseRevision == nil {
                 try execute("""
                     INSERT INTO shared_delivery(
                       operation_id,host_id,device_id,base_revision,scope_revision,state
@@ -1220,6 +1241,14 @@ public actor LocalLibraryStore {
                         id.uuidString, hostID.uuidString, deviceID.uuidString,
                         String(baseRevision), String(pending.scopeRevision)
                     ])
+            }
+            if frozenIdentity == nil {
+                try execute("""
+                    INSERT INTO shared_collection_delivery_identity(
+                      operation_id,local_collection_id,wire_collection_id,wire_name
+                    ) VALUES(?,?,?,?)
+                    """, [id.uuidString, collectionID.uuidString,
+                           wireCollection.id.uuidString, wireCollection.name])
             }
         }
         return LocalPreparedSharedCollectionOperation(
@@ -2095,6 +2124,34 @@ public actor LocalLibraryStore {
                                   }) else {
                                 throw LocalLibraryError.syncRemoteCollectionMismatch
                             }
+                            // Upgrade legacy prepared deliveries before an alias
+                            // changes. Retries must keep the original wire payload.
+                            let legacyPrepared = try rows("""
+                                SELECT s.operation_id,s.reference_name
+                                FROM shared_outbox s JOIN shared_delivery d
+                                  ON d.operation_id=s.operation_id
+                                LEFT JOIN shared_collection_delivery_identity f
+                                  ON f.operation_id=s.operation_id
+                                WHERE s.field=? AND d.state='prepared' AND f.operation_id IS NULL
+                                """, [field])
+                            for pending in legacyPrepared {
+                                guard let referenceName = pending[1], referenceName == localName else {
+                                    throw LocalLibraryError.syncRemoteCollectionMismatch
+                                }
+                                try execute("""
+                                    INSERT INTO shared_collection_delivery_identity(
+                                      operation_id,local_collection_id,wire_collection_id,wire_name
+                                    ) VALUES(?,?,?,?)
+                                    """, [pending[0] ?? "", localCollectionID.uuidString,
+                                           change.collectionID.uuidString, alias?[1] ?? referenceName])
+                            }
+                            // Unsent intents have no remote receipt yet and can
+                            // use the newly acknowledged name when first prepared.
+                            try execute("""
+                                UPDATE shared_outbox SET reference_name=?
+                                WHERE field=? AND reference_name=? AND operation_id NOT IN
+                                  (SELECT operation_id FROM shared_delivery)
+                                """, [change.collectionName, field, localName])
                             if localName != change.collectionName {
                                 try execute("UPDATE collections SET name=? WHERE id=?", [
                                     change.collectionName, localCollectionID.uuidString
