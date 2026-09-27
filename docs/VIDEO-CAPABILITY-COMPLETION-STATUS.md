@@ -17,7 +17,7 @@
 | 阶段 | 工程状态 | 验证 | 当前切片 |
 |---|---|---|---|
 | P0 | VERIFIED | PASS（静态盘点） | 基线、边界、首个切片与测试路径明确；不等于功能通过 |
-| P1 | IN_PROGRESS | NOT_RUN | 摘要／详情显式媒体域、旧 Host 兼容、Web 视频分支 |
+| P1 | IN_PROGRESS | 分切片 PASS；完整闭环未验 | 媒体契约已交付；Mac 查看器构建／合成测试 PASS；iPhone 待补 |
 | P2 | NOT_STARTED | NOT_RUN | 文件夹视频时间与位置，再接筛选／地图／显式云端获取 |
 | P3 | NOT_STARTED | NOT_RUN | 复核代表帧模型隔离，接远端建议与审核持久事实 |
 | P4 | NOT_STARTED | NOT_RUN | 有界完整字节摘要、修订复核、合成回收恢复 |
@@ -31,7 +31,7 @@
 
 | 能力／来源 | Mac | Web | iPhone Companion |
 |---|---|---|---|
-| 文件夹、本地 PhotoKit 视频浏览 | 已有媒体域／时长；大图播放待补 | 已有媒体 URL，但 UTI 被 MIME 前缀误判 | 已有筛选；播放待核接 |
+| 文件夹、本地 PhotoKit 视频浏览 | 图库／审核／瘦身共用播放器已实现，控制器／模型合成 PASS；UI 待验 | UTI／显式媒体域视频分支通过合成验证，主线集成待办 | 已有筛选；播放待核接 |
 | 云端原件不可用 | 本地视频请求默认禁下载；显式获取待做 | 不得借照片下载状态冒充视频支持 | 待核明确失败状态 |
 | 手机独立归档 | 由 ADR-102 并行实施；不等同主图库视频身份 | 不适用当前主资产闭环 | 独立本地图库不在本目标重建 |
 | 视频时间／GPS／地图 | 文件夹视频时间 nil；地图 SQL 限 image | 依赖 Host，未验 | 依赖 Host，未验 |
@@ -45,7 +45,7 @@
 - Web 本地提交 `f84bff8b`：显式媒体域 schema、UTI/MIME 兼容、查看器／网格／Inspector／批量操作域选择、契约与浏览器合成测试。未包含已有审核、地图与生成资源改动；未 push。
 - Web 必需主线集成：`f84bff8b` → main，尚未执行；后续准备只包含本切片的集成，不合并长期分支。当前生产网页资源仍不包含该分支结果。
 - Swift 摘要／详情新增可选媒体域与兼容解析；Host 两个投影显式传领域媒体域。Mac 构建与直接 XCTest 已通过。
-- 下一条动作：保存本轮主线本地提交；继续 P1 Mac 复用视频查看器（图库、审核、瘦身），停止悬停、取消与释放租约。
+- 下一条动作：主线契约提交 `6cc5a6ca` 已保存；完成 Mac 播放器定向合成验收与独立提交后，继续 iPhone 带认证的视频播放。
 - 已确认复用点：`LibraryVideoPlaybackProviding` / `LibraryVideoPlaybackResource` 与既有 hover 生命周期测试；审核投影无媒体域但队列已有 `selectedMediaKind`；iPhone 当前仍解码图片预览，后续须接带认证的受控视频加载。
 - 基线静态检查退出码 0；素材、DB 与输出均计划置于上述私有根；日志绑定具体切片 diff / commit。
 - 真实图库、实体 iPhone、iCloud 下载、付费模型、发布安装：全部 NOT_RUN。
@@ -73,3 +73,17 @@
 - 直接 `xctest -XCTest ImageAllTests.RemoteCatalogFacadeTests/testFetchesPreviewInspectorDetailAggregateAndJobs,ImageAllTests.RemoteHTTPServerTests/testMediaRouteStreamsRealMIMEAndSingleByteRange`：退出 0，2/2；`host-contract-tests.log`。通过 DYLD_INSERT_LIBRARIES 加载私有构建 dylib，未启动生产 App 宿主。HTTP 测试使用唯一临时合成字节文件和 fake catalog；证明 MIME/Range，实际视频解码由浏览器合成测试单独证明。
 - Mac 构建时主线由并行会话前进到 `27750a0788f3751610f400882c35c66b4da34942`；本轮 4 个受跟踪源码／测试文件差异仅 36 行新增，保存在 `p1-contract.diff`。构建含已有 OpenMontage 等工作树依赖，不宣称独立干净提交发布验收。
 - 双工作区 `git diff --check` PASS。完整 P1 仍 IN_PROGRESS；尚缺 Mac/iPhone 播放整理闭环及必需 Web 集成。
+
+## P1 Mac 播放器切片（实现与定向合成通过）
+
+- 基于 `6cc5a6ca`；新增 `LibraryVideoViewer.swift`，系统播放／进度／音量／全屏控件和速度选择接入图库、审核、瘦身大图，保留系统播放器入口。空格在视频大图中控制播放／暂停，Esc 退出；照片路径保留。
+- 本轮准备独立提交；`LibraryWorkspace.swift` 和 `project.pbxproj` 含他人改动，启动副本保存在证据根 `p1-native-baseline/`，提交只取与该副本相比的本轮差异。
+- 复用 `LibraryVideoPlaybackProviding`，默认不下载云端原件。请求身份隔离迟到资源，选择／来源／媒体域切换和关闭／失焦释放租约。新组件不把显示封面或播放器资源提升为去重证据。
+- 合成测试文件 `LibraryVideoViewingTests.swift`：复用已登记 `synthetic-silent.mp4`；实际 AVPlayer 解码、seek、速度和音量、标签写入与数据库重开、照片人工事实回归、迟到请求、取消与损坏输入；Workspace 定向测试核对悬停互斥、视频大图标签动作与来源导航停止。
+- 构建中曾遇 Swift IRGen 对 actor 方法 Binding 引用的编译器崩溃，改为显式闭包；测试 GRDB async write 缺 await 已修正。最终构建与 7 项定向测试均通过，见下列日志。
+- P1 剩余：iPhone 受控认证播放、Web 必需主线集成、各端合成 UI／Host 联调证据；不把 Mac 局部播放器测试当完整 P1。
+
+- 最终 `xcodebuild ... build-for-testing` 沿用 P1 的私有 DerivedData / Products / Intermediates，退出 0，`native-viewer-build.log` 的 TEST BUILD SUCCEEDED。
+- `TMPDIR=<证据根>/test-tmp DYLD_INSERT_LIBRARIES=<私有 App>/Contents/MacOS/ImageAll.debug.dylib xctest -XCTest ImageAllTests.LibraryVideoViewingTests,ImageAllTests.LibraryWorkspaceModelTests/testVideoViewingKeepsTagActionsAndStopsOnSourceNavigation,ImageAllTests.LibraryWorkspaceModelTests/testVideoHoverStartsOnePlaybackAndReleasesItOnExit,ImageAllTests.LibraryWorkspaceModelTests/testSinglePhotoModeMovesPrimarySelectionAndReturnsToGrid,ImageAllTests.LibraryWorkspaceModelTests/testClosingLibrarySlimmingPreviewKeepsTheCurrentMemberSelected <私有 App>/Contents/PlugIns/ImageAllTests.xctest`：退出 0，7/7，`native-viewer-tests.log`。
+- 新主路径包含合成目录 DB → 实际视频加载／seek → 标签 repository 写入 → 下一视频 → 重开数据库读取，照片已有人工决定保持不变；另一个模型测试证明视频大图保留标签动作、悬停互斥与来源导航停止。尚未以完整原生 UI 点击或真实图库验证，不能称原生端全验收。
+- 构建及测试对应源文件摘要保存在 `p1-native-source-sha256.json`；`git diff --check` PASS。复用无声合成素材，未触及真实照片／视频或付费模型；未启动生产 Photos 宿主。

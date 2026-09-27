@@ -12451,6 +12451,49 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertFalse(model.isSinglePhotoPresented)
     }
 
+    func testVideoViewingKeepsTagActionsAndStopsOnSourceNavigation() async throws {
+        let sourceID = UUID()
+        let video = Self.makeAsset(sourceID: sourceID, fileName: "watch.mov",
+                                   mediaType: "com.apple.quicktime-movie", mediaKind: .video,
+                                   durationMs: 2_000)
+        let tag = TagListItem(id: UUID(), displayName: "观看整理", state: .active)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [video], tags: [tag], startsConnected: true
+        )
+        let provider = FakeLibraryVideoPlaybackProvider()
+        let model = LibraryWorkspaceModel(service: service, videoPlaybackProvider: provider,
+                                          videoHoverDelay: .zero, idlePrewarmInstallEventMonitor: false)
+        await model.start()
+        await waitForCatalogScanToFinish(model)
+        await model.setMediaKind(.video)
+        await waitForItems([video.assetID], model: model)
+        model.beginVideoHover(assetID: video.assetID)
+        await waitForVideoHoverPlayback(video.assetID, model: model)
+        let resource = try await model.prepareVideoForViewing(assetID: video.assetID)
+        XCTAssertNil(model.videoHoverPlayback)
+        resource.release()
+        XCTAssertEqual(provider.releaseCount, 2)
+        await model.openSinglePhotoView(assetID: video.assetID)
+        model.beginVideoHover(assetID: video.assetID)
+        XCTAssertNil(model.videoHoverPlayback)
+        await model.applyTagDecision(tagID: tag.id, action: .accept)
+        XCTAssertTrue(model.isSinglePhotoPresented)
+        XCTAssertEqual(model.primarySelectedAssetID, video.assetID)
+        XCTAssertEqual(service.mutateTagCallCount, 1)
+        XCTAssertEqual(try service.fetchInspectorDetail(assetID: video.assetID).tags
+            .first(where: { $0.tagID == tag.id })?.decision, .accepted)
+        let sample = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("docs/evidence/time-story-phase-1-20260918/synthetic-silent.mp4")
+        await model.videoViewingSession.load(identity: .init(assetID: video.assetID, revision: 1)) {
+            LibraryVideoPlaybackResource(url: sample)
+        }
+        XCTAssertEqual(model.videoViewingSession.state, .ready)
+        _ = model.beginBrowsingNavigation()
+        XCTAssertEqual(model.videoViewingSession.state, .idle)
+        XCTAssertNil(model.videoViewingSession.player.currentItem)
+    }
+
     func testVideoHoverStartsOnePlaybackAndReleasesItOnExit() async {
         let sourceID = UUID()
         let video = Self.makeAsset(

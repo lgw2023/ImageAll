@@ -1770,6 +1770,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     private let assetAbsolutePathResolver: any LibraryAssetAbsolutePathResolving
     private let assetPathClipboard: any LibraryAssetPathClipboardWriting
     private let originalAssetOpener: any LibraryOriginalAssetOpening
+    let videoViewingSession = LibraryVideoViewingSession()
     private let videoPlaybackProvider: any LibraryVideoPlaybackProviding
     private let timeStoryRuntime: TimeStoryFeatureRuntime?
     private let sourceOrderPreferences: LibrarySourceOrderPreferences
@@ -2347,6 +2348,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     func selectLibrarySlimmingCluster(_ clusterID: UUID?) {
+        videoViewingSession.stop()
         librarySlimmingPreviewAssetID = nil
         selectedLibrarySlimmingClusterID = clusterID
         selectedLibrarySlimmingMemberIDs = []
@@ -2379,6 +2381,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     func closeLibrarySlimmingPreview() {
+        videoViewingSession.stop()
         librarySlimmingPreviewAssetID = nil
     }
 
@@ -7115,6 +7118,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     func selectSource(_ sourceID: UUID?) async {
         guard selectedSourceID != sourceID || selectedFolderScope != nil else { return }
         stopVideoHoverPlayback()
+        videoViewingSession.stop()
         selectedSourceID = sourceID
         selectedFolderScope = nil
         // Navigation only swaps the visible filter. Photos integrity / sync is
@@ -7125,6 +7129,7 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     func beginBrowsingNavigation() -> UUID {
         stopVideoHoverPlayback()
+        videoViewingSession.stop()
         let requestID = UUID()
         browsingNavigationRequestID = requestID
         // Invalidate a page query started by the prior sidebar selection even
@@ -9146,6 +9151,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     func toggleSinglePhotoView() {
         guard primarySelectedAssetID != nil else { return }
         stopVideoHoverPlayback()
+        if isSinglePhotoPresented { videoViewingSession.stop() }
         isSinglePhotoPresented.toggle()
     }
 
@@ -9166,11 +9172,18 @@ final class LibraryWorkspaceModel: ObservableObject {
     }
 
     func closeSinglePhotoView() {
+        videoViewingSession.stop()
         isSinglePhotoPresented = false
     }
 
+    func prepareVideoForViewing(assetID: UUID) async throws -> LibraryVideoPlaybackResource {
+        stopVideoHoverPlayback()
+        return try await videoPlaybackProvider.prepareVideoPlayback(assetID: assetID)
+    }
+
     func beginVideoHover(assetID: UUID) {
-        guard let item = items.first(where: { $0.assetID == assetID }),
+        guard !isSinglePhotoPresented, librarySlimmingPreviewAssetID == nil,
+              let item = items.first(where: { $0.assetID == assetID }),
               item.mediaKind == .video,
               item.availability == .available
         else {
@@ -9233,6 +9246,7 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     func moveSinglePhotoSelection(by offset: Int) async {
         guard isSinglePhotoPresented, offset != 0 else { return }
+        videoViewingSession.stop()
         if reviewMode != nil {
             await moveReviewPrimarySelection(
                 in: offset > 0 ? .right : .left,
@@ -9299,6 +9313,11 @@ final class LibraryWorkspaceModel: ObservableObject {
               let assetID = primarySelectedAssetID,
               !isOpeningOriginal
         else { return }
+        await openOriginalAssetInSystemPlayer(assetID: assetID)
+    }
+
+    func openOriginalAssetInSystemPlayer(assetID: UUID) async {
+        guard !isOpeningOriginal else { return }
         isOpeningOriginal = true
         defer { isOpeningOriginal = false }
         do {
@@ -10289,6 +10308,7 @@ final class LibraryWorkspaceModel: ObservableObject {
     func setMediaKind(_ mediaKind: MediaKind) async {
         guard selectedMediaKind != mediaKind else { return }
         stopVideoHoverPlayback()
+        videoViewingSession.stop()
         assetPageRequestID = UUID()
         searchDebounceTask?.cancel()
         selectedMediaKind = mediaKind
@@ -13642,7 +13662,11 @@ struct LibraryWorkspaceView: View {
             .focusEffectDisabled()
             .onKeyPress(.space) {
                 guard model.primarySelectedAssetID != nil else { return .ignored }
-                model.toggleSinglePhotoView()
+                if model.isSinglePhotoPresented, model.selectedMediaKind == .video {
+                    model.videoViewingSession.togglePlayback()
+                } else {
+                    model.toggleSinglePhotoView()
+                }
                 return .handled
             }
             .onKeyPress(.escape) {
@@ -17752,7 +17776,10 @@ private struct SinglePhotoReviewView: View {
             Divider()
             ZStack {
                 Color(nsColor: .windowBackgroundColor)
-                if let image {
+                if model.selectedMediaKind == .video {
+                    LibraryVideoViewer(assetID: item.assetID, contentRevision: item.contentRevision, model: model)
+                        .padding(12)
+                } else if let image {
                     Image(nsImage: image)
                         .resizable()
                         .scaledToFit()
@@ -17766,12 +17793,13 @@ private struct SinglePhotoReviewView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .accessibilityIdentifier("singlePhotoView")
-        .accessibilityLabel(item.fileName ?? "照片")
+        .accessibilityLabel(item.fileName ?? model.selectedMediaKind.displayName)
         .task(id: item.assetID) {
             image = nil
-            guard item.availability == .available,
+            guard model.selectedMediaKind == .image, item.availability == .available,
                   let data = await model.previewData(assetID: item.assetID)
             else { return }
+            guard !Task.isCancelled else { return }
             image = NSImage(data: data)
         }
     }
@@ -17789,7 +17817,10 @@ private struct SinglePhotoView: View {
             Divider()
             ZStack {
                 Color(nsColor: .windowBackgroundColor)
-                if let image {
+                if item.mediaKind == .video {
+                    LibraryVideoViewer(assetID: item.assetID, contentRevision: item.contentRevision, model: model)
+                        .padding(12)
+                } else if let image {
                     Image(nsImage: image)
                         .resizable()
                         .scaledToFit()
@@ -17799,21 +17830,7 @@ private struct SinglePhotoView: View {
                         .font(.system(size: 48))
                         .foregroundStyle(.secondary)
                 }
-                if item.mediaKind == .video {
-                    VStack {
-                        Spacer()
-                        Button {
-                            Task { await model.openSelectedOriginal() }
-                        } label: {
-                            Label("使用系统播放器打开", systemImage: "play.fill")
-                                .font(.headline)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.large)
-                        .disabled(item.availability != .available || model.isOpeningOriginal)
-                        .padding(.bottom, 28)
-                    }
-                }
+
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -17821,11 +17838,12 @@ private struct SinglePhotoView: View {
         .accessibilityLabel(item.fileName ?? item.mediaKind.displayName)
         .task(id: item.assetID) {
             image = nil
-            guard item.availability == .available,
+            guard item.mediaKind == .image, item.availability == .available,
                   let data = await model.previewData(assetID: item.assetID)
             else {
                 return
             }
+            guard !Task.isCancelled else { return }
             image = NSImage(data: data)
         }
     }
@@ -17864,7 +17882,7 @@ private struct SinglePhotoNavigationBar: View {
                 Button("返回网格", systemImage: "square.grid.2x2") {
                     model.closeSinglePhotoView()
                 }
-                .persistentHelp("关闭单图查看并返回当前照片网格；也可按 Esc。")
+                .persistentHelp("关闭查看并返回当前媒体网格；也可按 Esc。")
 
                 Spacer()
 
@@ -17872,12 +17890,12 @@ private struct SinglePhotoNavigationBar: View {
                     Text(navigation.fileName)
                         .font(.headline)
                         .lineLimit(1)
-                        .persistentHelp("当前照片文件名：\(navigation.fileName)")
+                        .persistentHelp("当前\(model.selectedMediaKind.displayName)文件名：\(navigation.fileName)")
                     Text("\(navigation.position) / \(navigation.loadedCount)")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                         .accessibilityLabel(
-                            "第 \(navigation.position) 张，已载入 \(navigation.loadedCount) 张"
+                            "第 \(navigation.position) 项，已载入 \(navigation.loadedCount) \(model.selectedMediaKind.countingNoun)"
                         )
                 }
 
@@ -17907,17 +17925,17 @@ private struct SinglePhotoNavigationBar: View {
                         ?? "打开删除确认；文件夹原始媒体将永久删除，Apple Photos 资产将由系统移入“最近删除”。也可按 Delete。"
                 )
 
-                Button("上一张", systemImage: "chevron.left") {
+                Button(model.selectedMediaKind == .video ? "上一个视频" : "上一张", systemImage: "chevron.left") {
                     Task { await model.moveSinglePhotoSelection(by: -1) }
                 }
                 .disabled(!navigation.canMovePrevious)
-                .persistentHelp("显示当前列表中的上一张照片。")
+                .persistentHelp("显示当前列表中的上一项。")
 
-                Button("下一张", systemImage: "chevron.right") {
+                Button(model.selectedMediaKind == .video ? "下一个视频" : "下一张", systemImage: "chevron.right") {
                     Task { await model.moveSinglePhotoSelection(by: 1) }
                 }
                 .disabled(!navigation.canMoveNext)
-                .persistentHelp("显示当前列表中的下一张照片。")
+                .persistentHelp("显示当前列表中的下一项。")
             }
             .buttonStyle(.borderless)
             .padding(.horizontal, 12)

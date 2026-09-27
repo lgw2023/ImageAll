@@ -1058,7 +1058,11 @@ struct LibrarySlimmingWorkspaceView: View {
               model.librarySlimmingPreviewAssetID != nil
                 || !model.selectedLibrarySlimmingMemberIDs.isEmpty
         else { return .ignored }
-        model.toggleLibrarySlimmingPreview()
+        if model.librarySlimmingPreviewAssetID != nil, model.selectedMediaKind == .video {
+            model.videoViewingSession.togglePlayback()
+        } else {
+            model.toggleLibrarySlimmingPreview()
+        }
         return .handled
     }
 
@@ -2405,7 +2409,9 @@ private struct LibrarySlimmingQuickLookView: View {
                     quickLookToolbar
                     Spacer()
                     Text(
-                        "滚轮缩放  ·  放大后按住左键拖动  ·  空格 / Esc 退出  ·  ← → 切换  ·  Delete 删除"
+                        model.selectedMediaKind == .video
+                            ? "播放控件可拖动进度和调节音量  ·  Esc 退出  ·  ← → 切换"
+                            : "滚轮缩放  ·  放大后按住左键拖动  ·  空格 / Esc 退出  ·  ← → 切换  ·  Delete 删除"
                     )
                         .font(.caption)
                         .foregroundStyle(.white.opacity(0.78))
@@ -2452,12 +2458,14 @@ private struct LibrarySlimmingQuickLookView: View {
             }
         }
         .accessibilityIdentifier("librarySlimmingQuickLook")
-        .accessibilityLabel("图库瘦身大图预览，当前缩放 \(zoomPercentage)%")
+        .accessibilityLabel(model.selectedMediaKind == .video
+            ? "图库瘦身视频预览" : "图库瘦身大图预览，当前缩放 \(zoomPercentage)%")
         .task(id: navigation.assetID) {
             image = nil
             loadFailed = false
             viewport = LibrarySlimmingPreviewViewportState()
             lastDragTranslation = .zero
+            guard model.selectedMediaKind == .image else { return }
             guard let data = await model.previewData(assetID: navigation.assetID),
                   let decoded = NSImage(data: data)
             else {
@@ -2489,13 +2497,15 @@ private struct LibrarySlimmingQuickLookView: View {
             ) {
                 Task { await model.toggleFavorite(assetID: navigation.assetID) }
             }
-            Text("\(zoomPercentage)%")
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.white.opacity(0.78))
-                .padding(.horizontal, 9)
-                .padding(.vertical, 5)
-                .background(.white.opacity(0.12), in: Capsule())
-                .accessibilityLabel("当前缩放 \(zoomPercentage)%")
+            if model.selectedMediaKind == .image {
+                Text("\(zoomPercentage)%")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.78))
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(.white.opacity(0.12), in: Capsule())
+                    .accessibilityLabel("当前缩放 \(zoomPercentage)%")
+            }
             Button(role: .destructive, action: onRequestDelete) {
                 Label("删除", systemImage: "trash")
             }
@@ -2519,7 +2529,10 @@ private struct LibrarySlimmingQuickLookView: View {
 
     @ViewBuilder
     private func previewContent(viewportSize: CGSize) -> some View {
-        if let image {
+        if model.selectedMediaKind == .video {
+            LibraryVideoViewer(assetID: navigation.assetID, contentRevision: 0, model: model)
+                .frame(width: viewportSize.width, height: viewportSize.height)
+        } else if let image {
             let fittedImageSize = Self.fittedImageSize(for: image, in: viewportSize)
             ZStack {
                 Image(nsImage: image)
