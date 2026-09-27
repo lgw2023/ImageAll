@@ -511,6 +511,36 @@ public struct RemoteLibraryClient: Sendable {
         return try await getJSON(path: RemoteHTTPPaths.assets, queryItems: items)
     }
 
+    public func fetchTagLibrarySuggestions(mediaKind: RemoteAssetMediaKind) async throws -> RemoteTagLibrarySuggestionSnapshot {
+        let result: RemoteTagLibrarySuggestionSnapshot = try await getJSON(path: RemoteHTTPPaths.tagLibrarySuggestions,
+            queryItems: [URLQueryItem(name: "mediaKind", value: mediaKind.rawValue)])
+        guard result.mediaKind == mediaKind, result.activities.allSatisfy({ $0.mediaKind == mediaKind }) else {
+            throw RemoteAPIError(code: .conflict, message: "tag suggestion media mismatch")
+        }
+        return result
+    }
+
+    public func submitTagLibrarySuggestions(_ request: RemoteTagLibrarySuggestionRequest) async throws -> RemoteTagLibrarySuggestionResponse {
+        let result: RemoteTagLibrarySuggestionResponse = try await postJSON(path: RemoteHTTPPaths.tagLibrarySuggestionRequests,
+            body: JSONEncoder().encode(request))
+        guard result.activity.operationID == request.operationID, result.activity.mediaKind == request.mediaKind,
+              result.activity.tagID == request.tagID, result.activity.method == request.method else {
+            throw RemoteAPIError(code: .conflict, message: "tag suggestion response identity mismatch")
+        }
+        return result
+    }
+
+    public func cancelTagLibrarySuggestions(activity: RemoteTagLibrarySuggestionActivity) async throws -> RemoteTagLibrarySuggestionActionResponse {
+        let result: RemoteTagLibrarySuggestionActionResponse = try await postJSON(
+            path: RemoteHTTPPaths.tagLibrarySuggestionAction(operationID: activity.operationID),
+            body: JSONEncoder().encode(RemoteTagLibrarySuggestionActionRequest(action: .cancel)))
+        guard result.activity.operationID == activity.operationID, result.activity.mediaKind == activity.mediaKind,
+              result.activity.tagID == activity.tagID, result.activity.method == activity.method else {
+            throw RemoteAPIError(code: .conflict, message: "tag suggestion cancellation identity mismatch")
+        }
+        return result
+    }
+
     public func fetchTrainingSetup(mediaKind: RemoteAssetMediaKind) async throws -> RemoteTrainingSetupSnapshot {
         let result: RemoteTrainingSetupSnapshot = try await getJSON(path: RemoteHTTPPaths.trainingSetup,
             queryItems: [URLQueryItem(name: "mediaKind", value: mediaKind.rawValue)])

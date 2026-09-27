@@ -397,3 +397,12 @@
 - ios-training-client-tests.log 全套 69/69 PASS；新增正常链覆盖鉴权、video 查询、三种方法的请求范围、重放响应、活动与取消，失败链覆盖错媒体／operationID／method 响应。ios-training-build-final.log iOS Simulator BUILD SUCCEEDED，git diff --check PASS。未运行模拟器点击、真机或实际 Host UI 联调，编译与 mock HTTP 不能替代这些证据。
 - 源摘要 ios-training-source-sha256.json。Workspace 原有 75/5、项目／OpenMontage 并行改动保留；Web 工作区核对但未修改。未读真实媒体、未云端获取／源端写入／外部传输、未 push／替换 App。
 - P1／P2／P3 IN_PROGRESS，P4–P7 NOT_STARTED，目标 active。iPhone 多资产样本建议、按标签全库建议与跨端 UI 运行仍需补齐；下一动作补必要建议入口后进入 P4 完整字节视频去重主路径，主线内置网页资源的最终集成仍列 P7。
+
+
+## P3 iPhone 按标签个人建议与审核入口（2026-09-28）
+
+- 上轮为 progress：769b1af3 补 iPhone 训练启动。本轮 Host 页新增按标签建议，按媒体、质心／AdamW、单标签和来源调用既有后端，展示样本条件／最低分、进度、命中／入队／跳过、失败与取消。没有把方法可用解释为模型已存在，界面明确缺少模型需要先训练。
+- 网络失败保留请求，点击同一已选标签不丢失 operationID。审核入口使用活动媒体／标签，清除旧队列选择和游标、递增查询代数，避免旧媒体迟到结果；复用现有接受、拒绝与撤销。提交和取消检查操作、媒体、标签、方法身份。
+- ios-tag-client-tests.log 全套 71/71 PASS，新正常链覆盖两种方法、鉴权、视频查询、来源、重放和取消；失败链拒绝错操作／媒体／方法／标签，含 envelope 正确但内部活动媒体错误。ios-tag-build.log iOS Simulator BUILD SUCCEEDED，git diff --check PASS。未执行模拟器界面点击、真机或实际 Host UI 联调，仍需后续跨端验收。
+- ios-tag-source-sha256.json 绑定源文件。Workspace 原有 75/5、项目／OpenMontage 并行改动保留；Web 未修改。未读取真实媒体、未云端获取／源端写入／外部传输、未 push／替换 App。
+- P1／P2／P3 IN_PROGRESS，P4–P7 NOT_STARTED，目标 active。下一步补图库多选资产的个人建议入口，随后推进 P4 完整文件摘要与安全去重；跨端运行及主线内置网页资源最终集成仍未完成。

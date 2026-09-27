@@ -4,6 +4,88 @@ import ImageAllRemoteProtocol
 import XCTest
 
 final class RemoteLibraryClientTests: XCTestCase {
+    func testVideoTagSuggestionsQuerySubmitReplayCancelAndIdentityChecks() async throws {
+        let operation = UUID(), tag = UUID(), source = UUID()
+        for method in [RemoteTagLibrarySuggestionMethod.personalCentroid, .personalAdamW] {
+            let activity = RemoteTagLibrarySuggestionActivity(operationID: operation, mediaKind: .video,
+                method: method, tagID: tag, phase: .scoring, completedUnitCount: 1,
+                totalUnitCount: 2, availableActions: [.cancel])
+            let transport = MockTransport { outgoing in
+                XCTAssertEqual(outgoing.value(forHTTPHeaderField: "Authorization"), "Bearer secret")
+                let bytes: Data
+                switch outgoing.url?.path {
+                case RemoteHTTPPaths.tagLibrarySuggestions:
+                    XCTAssertEqual(outgoing.httpMethod, "GET")
+                    XCTAssertEqual(URLComponents(url: outgoing.url!, resolvingAgainstBaseURL: false)?
+                        .queryItems?.first(where: { $0.name == "mediaKind" })?.value, "video")
+                    bytes = try JSONEncoder().encode(RemoteTagLibrarySuggestionSnapshot(mediaKind: .video,
+                        maximumPendingCount: 0, personalCentroidAvailable: true, personalAdamWAvailable: true,
+                        activities: [activity]))
+                case RemoteHTTPPaths.tagLibrarySuggestionRequests:
+                    XCTAssertEqual(outgoing.httpMethod, "POST")
+                    let request = try JSONDecoder().decode(RemoteTagLibrarySuggestionRequest.self, from: XCTUnwrap(outgoing.httpBody))
+                    XCTAssertEqual(request.operationID, operation)
+                    XCTAssertEqual(request.mediaKind, .video)
+                    XCTAssertEqual(request.method, method)
+                    XCTAssertEqual(request.tagID, tag)
+                    XCTAssertEqual(request.sourceIDs, [source])
+                    bytes = try JSONEncoder().encode(RemoteTagLibrarySuggestionResponse(activity: activity, replayed: true))
+                default:
+                    XCTAssertEqual(outgoing.httpMethod, "POST")
+                    XCTAssertEqual(outgoing.url?.path, RemoteHTTPPaths.tagLibrarySuggestionAction(operationID: operation))
+                    let request = try JSONDecoder().decode(RemoteTagLibrarySuggestionActionRequest.self, from: XCTUnwrap(outgoing.httpBody))
+                    XCTAssertEqual(request.action, .cancel)
+                    bytes = try JSONEncoder().encode(RemoteTagLibrarySuggestionActionResponse(activity: activity))
+                }
+                return (bytes, HTTPURLResponse(url: outgoing.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil)!)
+            }
+            let client = RemoteLibraryClient(endpoint: try RemoteHostEndpoint(host: "127.0.0.1", port: 8787, accessToken: "secret"), transport: transport)
+            let snapshot = try await client.fetchTagLibrarySuggestions(mediaKind: .video)
+            XCTAssertEqual(snapshot.activities, [activity])
+            let receipt = try await client.submitTagLibrarySuggestions(.init(operationID: operation, mediaKind: .video,
+                method: method, tagID: tag, sourceIDs: [source]))
+            XCTAssertTrue(receipt.replayed)
+            let cancelled = try await client.cancelTagLibrarySuggestions(activity: activity)
+            XCTAssertEqual(cancelled.activity.operationID, operation)
+        }
+    }
+
+    func testTagSuggestionsRejectWrongMediaTagMethodAndOperation() async throws {
+        let operation = UUID(), tag = UUID()
+        let expected = RemoteTagLibrarySuggestionActivity(operationID: operation, mediaKind: .video,
+            method: .personalCentroid, tagID: tag, phase: .scoring, completedUnitCount: 0, totalUnitCount: 1)
+        for mismatch in 0..<4 {
+            let wrong = RemoteTagLibrarySuggestionActivity(operationID: mismatch == 0 ? UUID() : operation,
+                mediaKind: mismatch == 1 ? .image : .video,
+                method: mismatch == 2 ? .personalAdamW : .personalCentroid,
+                tagID: mismatch == 3 ? UUID() : tag, phase: .completed, completedUnitCount: 1, totalUnitCount: 1)
+            let transport = MockTransport { outgoing in
+                let bytes: Data
+                if outgoing.url?.path == RemoteHTTPPaths.tagLibrarySuggestionRequests {
+                    bytes = try JSONEncoder().encode(RemoteTagLibrarySuggestionResponse(activity: wrong, replayed: false))
+                } else if outgoing.httpMethod == "GET" {
+                    // Correct envelope with a wrong-media activity must also fail.
+                    bytes = try JSONEncoder().encode(RemoteTagLibrarySuggestionSnapshot(mediaKind: .video,
+                        maximumPendingCount: 0, personalCentroidAvailable: true, personalAdamWAvailable: true, activities: [wrong]))
+                } else {
+                    bytes = try JSONEncoder().encode(RemoteTagLibrarySuggestionActionResponse(activity: wrong))
+                }
+                return (bytes, HTTPURLResponse(url: outgoing.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil)!)
+            }
+            let client = RemoteLibraryClient(endpoint: try RemoteHostEndpoint(host: "127.0.0.1", port: 8787, accessToken: "secret"), transport: transport)
+            for action in 0..<(mismatch == 1 ? 3 : 2) {
+                do {
+                    if action == 0 {
+                        _ = try await client.submitTagLibrarySuggestions(.init(operationID: operation, mediaKind: .video,
+                            method: .personalCentroid, tagID: tag, sourceIDs: [UUID()]))
+                    } else if action == 1 { _ = try await client.cancelTagLibrarySuggestions(activity: expected) }
+                    else { _ = try await client.fetchTagLibrarySuggestions(mediaKind: .video) }
+                    XCTFail("wrong identity must fail")
+                } catch let error as RemoteAPIError { XCTAssertEqual(error.code, .conflict) }
+            }
+        }
+    }
+
     func testVideoTrainingSetupLaunchPollAndCancelPreserveScope() async throws {
         let operation = UUID(), tag = UUID(), source = UUID()
         let activity = RemoteTrainingActivity(operationID: operation, mediaKind: .video,

@@ -921,6 +921,17 @@ final class RemoteCompanionModel: ObservableObject {
         await reloadReviewOverview()
     }
 
+    func prepareReviewQueue(mediaKind: RemoteAssetMediaKind, tagID: UUID) {
+        reviewQueryGeneration &+= 1
+        reviewMediaKind = mediaKind
+        reviewTagID = tagID
+        reviewSourceID = nil
+        isReviewOverviewPresented = false
+        reviewItems = []
+        reviewNextCursor = nil
+        selectedReviewAssetIDs = []
+    }
+
     func openReviewQueue(tagID: UUID) async {
         reviewTagID = tagID
         isReviewOverviewPresented = false
@@ -1406,6 +1417,18 @@ final class RemoteCompanionModel: ObservableObject {
             throw RemoteAPIError(code: .conflict, message: "Mac Host 当前不支持远程训练")
         }
         return client
+    }
+
+    func tagLibrarySuggestions(mediaKind: RemoteAssetMediaKind) async throws -> RemoteTagLibrarySuggestionSnapshot {
+        try await trainingClient().fetchTagLibrarySuggestions(mediaKind: mediaKind)
+    }
+
+    func submitTagLibrarySuggestions(_ request: RemoteTagLibrarySuggestionRequest) async throws -> RemoteTagLibrarySuggestionResponse {
+        try await trainingClient().submitTagLibrarySuggestions(request)
+    }
+
+    func cancelTagLibrarySuggestions(activity: RemoteTagLibrarySuggestionActivity) async throws {
+        _ = try await trainingClient().cancelTagLibrarySuggestions(activity: activity)
     }
 
     func trainingSetup(mediaKind: RemoteAssetMediaKind) async throws -> RemoteTrainingSetupSnapshot {

@@ -352,6 +352,195 @@ private struct RemoteConnectionHealthBanner: View {
     }
 }
 
+private struct RemoteTagSuggestionsView: View {
+    @ObservedObject var model: RemoteCompanionModel
+    @State private var mediaKind: RemoteAssetMediaKind = .image
+    @State private var method: RemoteTagLibrarySuggestionMethod = .personalCentroid
+    @State private var setup: RemoteTrainingSetupSnapshot?
+    @State private var snapshot: RemoteTagLibrarySuggestionSnapshot?
+    @State private var tagID: UUID?
+    @State private var sourceIDs: Set<UUID> = []
+    @State private var pendingRequest: RemoteTagLibrarySuggestionRequest?
+    @State private var sending = false
+    @State private var message: String?
+    @State private var loadError: String?
+    @State private var reloadID = 0
+    @State private var commandTask: Task<Void, Never>?
+    @State private var showsReview = false
+
+    private var eligibleTags: [RemoteTrainingTagOption] {
+        guard setup?.mediaKind == mediaKind, snapshot?.mediaKind == mediaKind else { return [] }
+        let eligible = Set((snapshot?.tags ?? []).filter(\.personalEligible).map(\.tagID))
+        return (setup?.tags ?? []).filter { eligible.contains($0.id) }
+    }
+
+    private var methodAvailable: Bool {
+        guard snapshot?.mediaKind == mediaKind else { return false }
+        return method == .personalCentroid ? snapshot?.personalCentroidAvailable == true : snapshot?.personalAdamWAvailable == true
+    }
+
+    private var canSubmit: Bool {
+        model.canSendCommands && !sending && methodAvailable
+            && eligibleTags.contains(where: { $0.id == tagID }) && !sourceIDs.isEmpty
+            && sourceIDs.isSubset(of: Set((setup?.sources ?? []).map(\.id)))
+    }
+
+    var body: some View {
+        Form {
+            Section("建议范围") {
+                Picker("媒体", selection: $mediaKind) {
+                    Text("照片").tag(RemoteAssetMediaKind.image)
+                    Text("视频").tag(RemoteAssetMediaKind.video)
+                }
+                .disabled(sending)
+                Picker("模型", selection: $method) {
+                    Text("个人质心模型").tag(RemoteTagLibrarySuggestionMethod.personalCentroid)
+                    Text("个人 AdamW 模型").tag(RemoteTagLibrarySuggestionMethod.personalAdamW)
+                }
+                .disabled(sending)
+                if !methodAvailable { Text("Host 未提供此方法，或正在加载能力。").foregroundStyle(.secondary) }
+                Text("使用已发布的对应媒体模型分析所选来源；建议进入审核，不会自动接受标签。缺少模型时请先训练。")
+                    .font(.caption).foregroundStyle(.secondary)
+                NavigationLink("训练模型") { RemoteTrainingView(model: model) }
+            }
+            Section("选择一个标签") {
+                if eligibleTags.isEmpty { Text("暂无满足样本条件的标签").foregroundStyle(.secondary) }
+                ForEach(eligibleTags) { tag in
+                    Button {
+                        if tagID != tag.id { tagID = tag.id; pendingRequest = nil }
+                    } label: {
+                        HStack {
+                            Text(tag.displayName)
+                            Spacer()
+                            if tagID == tag.id { Image(systemName: "checkmark") }
+                        }
+                    }
+                    .disabled(sending)
+                }
+                if let option = snapshot?.tags.first(where: { $0.tagID == tagID }) {
+                    Text("最低建议分数：\(method == .personalCentroid ? option.personalCentroidMinScore : option.personalAdamWMinScore, format: .number.precision(.fractionLength(2)))")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Section("来源") {
+                ForEach(setup?.sources ?? []) { source in
+                    Toggle(source.displayName, isOn: Binding(get: { sourceIDs.contains(source.id) }, set: { selected in
+                        if selected { sourceIDs.insert(source.id) } else { sourceIDs.remove(source.id) }
+                        pendingRequest = nil
+                    }))
+                    .disabled(sending)
+                }
+            }
+            Section {
+                Button(sending ? "正在提交…" : pendingRequest == nil ? "生成待审核建议" : "重试同一建议请求") { submit() }
+                    .disabled(!canSubmit)
+                if let message { Text(message).font(.caption) }
+                if pendingRequest != nil && !sending {
+                    Text("Host 可能已接受请求。保持选择不变重试会复用原请求；改变选择前请先检查活动。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Section("此媒体类型的建议活动") {
+                if snapshot?.activities.isEmpty == true { Text("暂无活动").foregroundStyle(.secondary) }
+                ForEach(snapshot?.activities ?? []) { activity in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(setup?.tags.first(where: { $0.id == activity.tagID })?.displayName ?? "标签已不可用")
+                            .font(.headline)
+                        Text(activity.method == .personalCentroid ? "个人质心模型" : "个人 AdamW 模型").font(.caption)
+                        Text("\(phaseTitle(activity.phase)) · \(activity.completedUnitCount)/\(activity.totalUnitCount)")
+                        Text("达到阈值 \(activity.aboveThresholdCount) · 入队 \(activity.insertedCount) · 跳过 \(activity.skippedCount)")
+                            .font(.caption)
+                        if let error = activity.errorCode { Text(error).font(.caption).foregroundStyle(.red) }
+                        if activity.availableActions.contains(.cancel) {
+                            Button("取消此建议任务", role: .destructive) { cancel(activity) }
+                                .disabled(sending || !model.canSendCommands)
+                        }
+                        Button("审核此标签") {
+                            model.prepareReviewQueue(mediaKind: activity.mediaKind, tagID: activity.tagID)
+                            showsReview = true
+                        }
+                    }
+                }
+            }
+            if let loadError {
+                Section {
+                    Text(loadError).foregroundStyle(.red)
+                    Button("重新加载") { reloadID += 1 }.disabled(sending)
+                }
+            }
+            Section {
+                Text("离开页面仅停止刷新，Mac 上任务继续。取消不会撤回已进入审核的建议。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .navigationTitle("按标签建议")
+        .navigationDestination(isPresented: $showsReview) { RemoteReviewQueueView(model: model).navigationTitle("审核") }
+        .onChange(of: mediaKind) { _, _ in tagID = nil; sourceIDs = []; pendingRequest = nil; message = nil }
+        .onChange(of: method) { _, _ in pendingRequest = nil; message = nil }
+        .task(id: "\(mediaKind.rawValue)-\(reloadID)") {
+            let scope = mediaKind
+            setup = nil; snapshot = nil; loadError = nil
+            do {
+                let loaded = try await model.trainingSetup(mediaKind: scope)
+                try Task.checkCancellation()
+                setup = loaded
+                while !Task.isCancelled {
+                    let current = try await model.tagLibrarySuggestions(mediaKind: scope)
+                    try Task.checkCancellation()
+                    snapshot = current
+                    try await Task.sleep(for: .seconds(2))
+                }
+            } catch is CancellationError { }
+            catch { if !Task.isCancelled { loadError = error.localizedDescription } }
+        }
+        .onDisappear { commandTask?.cancel(); commandTask = nil; sending = false }
+    }
+
+    private func submit() {
+        guard let tagID else { return }
+        let request = pendingRequest ?? RemoteTagLibrarySuggestionRequest(operationID: UUID(), mediaKind: mediaKind,
+            method: method, tagID: tagID, sourceIDs: sourceIDs.sorted { $0.uuidString < $1.uuidString })
+        pendingRequest = request
+        sending = true
+        commandTask = Task {
+            defer { if !Task.isCancelled { sending = false } }
+            do {
+                let receipt = try await model.submitTagLibrarySuggestions(request)
+                try Task.checkCancellation()
+                message = receipt.replayed ? "已复用 Host 接受的请求" : "Host 已接受建议请求"
+                pendingRequest = nil
+                reloadID += 1
+            } catch is CancellationError { }
+            catch { if !Task.isCancelled { message = error.localizedDescription } }
+        }
+    }
+
+    private func cancel(_ activity: RemoteTagLibrarySuggestionActivity) {
+        sending = true
+        commandTask = Task {
+            defer { if !Task.isCancelled { sending = false } }
+            do {
+                try await model.cancelTagLibrarySuggestions(activity: activity)
+                try Task.checkCancellation()
+                message = "已提交取消请求"
+                reloadID += 1
+            } catch is CancellationError { }
+            catch { if !Task.isCancelled { message = error.localizedDescription } }
+        }
+    }
+
+    private func phaseTitle(_ phase: RemoteTagLibrarySuggestionPhase) -> String {
+        switch phase {
+        case .preparingCandidates: "准备候选"
+        case .scoring: "计算建议分数"
+        case .publishing: "写入审核队列"
+        case .completed: "已完成"
+        case .failed: "失败"
+        case .cancelled: "已取消"
+        }
+    }
+}
+
 private struct RemoteTrainingView: View {
     @ObservedObject var model: RemoteCompanionModel
     @State private var mediaKind: RemoteAssetMediaKind = .image
@@ -613,6 +802,9 @@ private struct RemoteHostDashboardView: View {
                 Section("模型与建议") {
                     NavigationLink("训练照片／视频模型") {
                         RemoteTrainingView(model: model)
+                    }
+                    NavigationLink("按标签生成照片／视频建议") {
+                        RemoteTagSuggestionsView(model: model)
                     }
                 }
             }
