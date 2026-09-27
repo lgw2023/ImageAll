@@ -2172,6 +2172,11 @@ private struct RemoteAssetPreviewView: View {
     @State private var isReviewActionInFlight = false
     @State private var lastReviewDecision: RemoteReviewDecisionRecord?
     @State private var reviewCompleted = false
+    @State private var personalSupported = false
+    @State private var personalOperation: UUID?
+    @State private var personalTask: Task<Void, Never>?
+    @State private var personalPending = false
+    @State private var personalMessage = ""
     @State private var standardSupported = false
     @State private var standardResponse: RemoteAssetLocalSuggestionResponse?
     @State private var standardMessage = ""
@@ -2199,6 +2204,7 @@ private struct RemoteAssetPreviewView: View {
 
                     if !reviewCompleted, let detail = model.previewDetail {
                         previewMetadata(detail)
+                        if personalSupported { personalSuggestions(detail) }
                         if standardSupported {
                             standardSuggestions(detail)
                         }
@@ -2288,6 +2294,12 @@ private struct RemoteAssetPreviewView: View {
                 }
             }
             .task(id: currentAssetID) {
+                personalTask?.cancel()
+                personalTask = nil
+                personalOperation = nil
+                personalPending = false
+                personalMessage = ""
+                personalSupported = false
                 standardTask?.cancel()
                 standardTask = nil
                 standardOperation = nil
@@ -2301,6 +2313,9 @@ private struct RemoteAssetPreviewView: View {
                     let supported = await model.supportsStandardSuggestions(mediaKind: kind)
                     guard !Task.isCancelled else { return }
                     standardSupported = supported
+                    let personal = await model.supportsPersonalSampleSuggestions(mediaKind: kind)
+                    guard !Task.isCancelled else { return }
+                    personalSupported = personal
                 }
                 if target.context == .library,
                    let currentAsset = model.assets.first(where: { $0.id == currentAssetID })
@@ -2314,6 +2329,8 @@ private struct RemoteAssetPreviewView: View {
                 reconcileReviewQueue(nextIDs)
             }
             .onDisappear {
+                personalTask?.cancel()
+                personalOperation = nil
                 standardTask?.cancel()
                 standardOperation = nil
                 reviewActionGeneration &+= 1
@@ -2364,6 +2381,60 @@ private struct RemoteAssetPreviewView: View {
                         Text(suggestion.displayName)
                     }
                 }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func personalSuggestions(_ detail: RemoteAssetDetail) -> some View {
+        GroupBox("个人标签建议") {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("使用 Mac 上当前媒体类型的个人模型，只分析当前项目。关闭详情只停止等待，不撤回 Mac 已生成的建议。")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button(personalPending ? "正在生成…" : "生成个人建议") {
+                    guard let kind = detail.resolvedMediaKind else { return }
+                    let assetID = detail.assetID
+                    let operation = personalOperation ?? UUID()
+                    personalOperation = operation
+                    personalPending = true
+                    personalTask = Task { @MainActor in
+                        defer { if personalOperation == operation { personalPending = false } }
+                        do {
+                            let activity = try await model.generatePersonalSampleSuggestions(assetID: assetID,
+                                mediaKind: kind, operationID: operation) { progress in
+                                if currentAssetID == assetID, personalOperation == operation {
+                                    personalMessage = "已处理 \(progress.completedUnitCount) / \(progress.totalUnitCount) 项"
+                                }
+                            }
+                            guard !Task.isCancelled, currentAssetID == assetID, personalOperation == operation else { return }
+                            switch activity.phase {
+                            case .completed:
+                                personalMessage = "已生成 \(activity.suggestedCount) 条建议，跳过 \(activity.skippedCount) 项。请在审核页处理。"
+                                await model.loadPreview(assetID: assetID, mediaKindHint: kind)
+                            case .cancelled: personalMessage = "任务已取消。"
+                            case .failed:
+                                personalMessage = ["modelUnavailable", "personalUnavailable"].contains(activity.errorCode ?? "")
+                                    ? "Mac 尚无可用的当前媒体模型，请先在 Mac 训练或启用模型。" : "个人建议生成失败，请在 Mac 检查任务后重试。"
+                            case .running: break
+                            }
+                            if personalOperation == operation {
+                                personalPending = false
+                                personalOperation = nil
+                            }
+                        } catch {
+                            guard !Task.isCancelled, currentAssetID == assetID, personalOperation == operation else { return }
+                            personalMessage = error.localizedDescription
+                        }
+                    }
+                }.disabled(personalPending || !model.canSendCommands)
+                if personalPending, let operation = personalOperation {
+                    Button("取消个人建议任务") {
+                        Task { @MainActor in
+                            do { try await model.cancelPersonalSampleSuggestions(operationID: operation) }
+                            catch { if personalOperation == operation { personalMessage = error.localizedDescription } }
+                        }
+                    }.disabled(!model.canSendCommands)
+                }
+                if !personalMessage.isEmpty { Text(personalMessage).font(.caption) }
             }.frame(maxWidth: .infinity, alignment: .leading)
         }
     }

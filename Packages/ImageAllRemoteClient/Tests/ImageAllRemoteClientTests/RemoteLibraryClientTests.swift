@@ -4,6 +4,48 @@ import ImageAllRemoteProtocol
 import XCTest
 
 final class RemoteLibraryClientTests: XCTestCase {
+    func testVideoPersonalSampleQuerySubmitAndCancelPreserveScope() async throws {
+        let operation = UUID(), asset = UUID()
+        let running = RemoteSampleSuggestionActivity(operationID: operation, mediaKind: .video,
+            phase: .running, completedUnitCount: 0, totalUnitCount: 1, availableActions: [.cancel])
+        let transport = MockTransport { outgoing in
+            XCTAssertEqual(outgoing.value(forHTTPHeaderField: "Authorization"), "Bearer secret")
+            let bytes: Data
+            switch outgoing.url?.path {
+            case RemoteHTTPPaths.sampleSuggestions:
+                XCTAssertEqual(outgoing.httpMethod, "GET")
+                XCTAssertNotNil(URLComponents(url: outgoing.url!, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "mediaKind" }))
+                bytes = try JSONEncoder().encode(RemoteSampleSuggestionSnapshot(mediaKind: .video,
+                    isAvailable: true, maximumSampleCount: 100, activities: [running]))
+            case RemoteHTTPPaths.sampleSuggestionRequests:
+                let body = try JSONDecoder().decode(RemoteSampleSuggestionRequest.self, from: XCTUnwrap(outgoing.httpBody))
+                XCTAssertEqual(body.operationID, operation)
+                XCTAssertEqual(body.mediaKind, .video)
+                XCTAssertEqual(body.assetIDs, [asset])
+                XCTAssertNil(body.sourceIDs)
+                bytes = try JSONEncoder().encode(RemoteSampleSuggestionResponse(activity: running, replayed: true))
+            default:
+                XCTAssertEqual(outgoing.url?.path, RemoteHTTPPaths.sampleSuggestionAction(operationID: operation))
+                let body = try JSONDecoder().decode(RemoteSampleSuggestionActionRequest.self, from: XCTUnwrap(outgoing.httpBody))
+                XCTAssertEqual(body.action, .cancel)
+                bytes = try JSONEncoder().encode(RemoteSampleSuggestionActionResponse(activity: .init(
+                    operationID: operation, mediaKind: .video, phase: .cancelled, completedUnitCount: 0, totalUnitCount: 1)))
+            }
+            return (bytes, HTTPURLResponse(url: outgoing.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil)!)
+        }
+        let client = RemoteLibraryClient(endpoint: try RemoteHostEndpoint(host: "127.0.0.1", port: 8787, accessToken: "secret"), transport: transport)
+        let snapshot = try await client.fetchSampleSuggestions(mediaKind: .video)
+        XCTAssertTrue(snapshot.isAvailable)
+        let result = try await client.submitSampleSuggestions(.init(operationID: operation, mediaKind: .video, assetIDs: [asset]))
+        XCTAssertTrue(result.replayed)
+        let cancelled = try await client.cancelSampleSuggestions(operationID: operation)
+        XCTAssertEqual(cancelled.activity.phase, .cancelled)
+        do {
+            _ = try await client.fetchSampleSuggestions(mediaKind: .image)
+            XCTFail("wrong media response must fail")
+        } catch let error as RemoteAPIError { XCTAssertEqual(error.code, .conflict) }
+    }
+
     func testVideoStandardSuggestionRequestsPreserveIdentityAndRejectMismatches() async throws {
         let assetID = UUID(), operationID = UUID()
         for mismatch in [false, true] {

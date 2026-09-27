@@ -511,6 +511,33 @@ public struct RemoteLibraryClient: Sendable {
         return try await getJSON(path: RemoteHTTPPaths.assets, queryItems: items)
     }
 
+    public func fetchSampleSuggestions(mediaKind: RemoteAssetMediaKind) async throws -> RemoteSampleSuggestionSnapshot {
+        let result: RemoteSampleSuggestionSnapshot = try await getJSON(path: RemoteHTTPPaths.sampleSuggestions,
+            queryItems: [URLQueryItem(name: "mediaKind", value: mediaKind.rawValue)])
+        guard result.mediaKind == mediaKind, result.activities.allSatisfy({ $0.mediaKind == mediaKind }) else {
+            throw RemoteAPIError(code: .conflict, message: "sample media identity mismatch")
+        }
+        return result
+    }
+
+    public func submitSampleSuggestions(_ request: RemoteSampleSuggestionRequest) async throws -> RemoteSampleSuggestionResponse {
+        let result: RemoteSampleSuggestionResponse = try await postJSON(path: RemoteHTTPPaths.sampleSuggestionRequests,
+            body: JSONEncoder().encode(request))
+        guard result.activity.operationID == request.operationID, result.activity.mediaKind == request.mediaKind else {
+            throw RemoteAPIError(code: .conflict, message: "sample response identity mismatch")
+        }
+        return result
+    }
+
+    public func cancelSampleSuggestions(operationID: UUID) async throws -> RemoteSampleSuggestionActionResponse {
+        let result: RemoteSampleSuggestionActionResponse = try await postJSON(path: RemoteHTTPPaths.sampleSuggestionAction(operationID: operationID),
+            body: JSONEncoder().encode(RemoteSampleSuggestionActionRequest(action: .cancel)))
+        guard result.activity.operationID == operationID else {
+            throw RemoteAPIError(code: .conflict, message: "sample cancellation identity mismatch")
+        }
+        return result
+    }
+
     public func fetchLibrarySuggestions(mediaKind: RemoteAssetMediaKind) async throws -> RemoteLibrarySuggestionSnapshot {
         let result: RemoteLibrarySuggestionSnapshot = try await getJSON(
             path: RemoteHTTPPaths.librarySuggestions,

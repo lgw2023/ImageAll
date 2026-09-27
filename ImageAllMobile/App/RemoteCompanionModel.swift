@@ -1400,6 +1400,35 @@ final class RemoteCompanionModel: ObservableObject {
         }
     }
 
+    func supportsPersonalSampleSuggestions(mediaKind: RemoteAssetMediaKind) async -> Bool {
+        guard canSendCommands, let client else { return false }
+        return (try? await client.fetchSampleSuggestions(mediaKind: mediaKind).isAvailable) == true
+    }
+
+    func generatePersonalSampleSuggestions(assetID: UUID, mediaKind: RemoteAssetMediaKind,
+        operationID: UUID, progress: @MainActor (RemoteSampleSuggestionActivity) -> Void
+    ) async throws -> RemoteSampleSuggestionActivity {
+        guard canSendCommands, let client else { throw RemoteAPIError(code: .conflict, message: "Mac Host 当前不可用") }
+        var activity = try await client.submitSampleSuggestions(.init(operationID: operationID,
+            mediaKind: mediaKind, assetIDs: [assetID])).activity
+        progress(activity)
+        while activity.phase == .running {
+            try await Task.sleep(for: .seconds(1))
+            let snapshot = try await client.fetchSampleSuggestions(mediaKind: mediaKind)
+            guard let current = snapshot.activities.first(where: { $0.operationID == operationID }) else {
+                throw RemoteAPIError(code: .notFound, message: "Mac 任务已不可查询，请在 Mac 检查结果")
+            }
+            activity = current
+            progress(activity)
+        }
+        return activity
+    }
+
+    func cancelPersonalSampleSuggestions(operationID: UUID) async throws {
+        guard canSendCommands, let client else { throw RemoteAPIError(code: .conflict, message: "Mac Host 当前不可用") }
+        _ = try await client.cancelSampleSuggestions(operationID: operationID)
+    }
+
     func supportsStandardSuggestions(mediaKind: RemoteAssetMediaKind) async -> Bool {
         guard canSendCommands, capabilities?.capabilities.contains(.assetLocalSuggestions) == true,
               let client else { return false }
