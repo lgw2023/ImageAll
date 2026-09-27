@@ -39,21 +39,27 @@ final class LocalLibraryModel: ObservableObject {
 
     private let store: LocalLibraryStore?
     private let favoriteSource: any LocalFavoriteSource
-    private var fetchedAssets: PHFetchResult<PHAsset>?
-    private var loadedCount = 0
-    private let pageSize = 100
+    private let browser: LocalLibraryBrowser?
+    private var photoChanges: LocalPhotoChangeObserver?
 
-    init(favoriteSource: any LocalFavoriteSource = PhotoKitLocalFavoriteSource()) {
+    init(favoriteSource: any LocalFavoriteSource = PhotoKitLocalFavoriteSource(),
+         browsingSource: any LocalLibraryBrowsingSource = PhotoKitLocalBrowsingSource()) {
         self.favoriteSource = favoriteSource
         do {
             let root = try FileManager.default.url(
                 for: .applicationSupportDirectory, in: .userDomainMask,
                 appropriateFor: nil, create: true
             )
-            store = try LocalLibraryStore(url: root.appendingPathComponent("LocalLibrary/local.sqlite"))
+            let opened = try LocalLibraryStore(url: root.appendingPathComponent("LocalLibrary/local.sqlite"))
+            store = opened
+            browser = LocalLibraryBrowser(store: opened, source: browsingSource)
         } catch {
             store = nil
+            browser = nil
             errorMessage = "本机资料库无法打开：\(error.localizedDescription)"
+        }
+        photoChanges = LocalPhotoChangeObserver { [weak self] in
+            Task { await self?.refresh() }
         }
     }
 
@@ -63,53 +69,32 @@ final class LocalLibraryModel: ObservableObject {
     }
 
     func refresh() async {
-        authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
-        guard authorization == .authorized || authorization == .limited else {
-            // Permission loss hides the projection. The local facts and outbox remain intact.
-            fetchedAssets = nil
-            loadedCount = 0
-            assets = []
-            hasMore = false
-            await reloadFacts()
-            return
-        }
-        let options = PHFetchOptions()
-        options.includeHiddenAssets = false
-        options.includeAssetSourceTypes = .typeUserLibrary
-        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-        fetchedAssets = PHAsset.fetchAssets(with: options)
-        loadedCount = 0
+        // Hide the old projection immediately, including while SQLite work yields.
         assets = []
-        await loadMore()
+        hasMore = false
+        authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        do { try await browser?.refresh() }
+        catch { errorMessage = "本机资料保存失败：\(error.localizedDescription)" }
+        await publishBrowseProjection()
     }
 
     func loadMore() async {
-        guard let fetchedAssets, let store else { return }
-        let end = min(fetchedAssets.count, loadedCount + pageSize)
-        guard end > loadedCount else {
+        do { try await browser?.loadMore() }
+        catch { errorMessage = "本机资料保存失败：\(error.localizedDescription)" }
+        await publishBrowseProjection()
+    }
+
+    private func publishBrowseProjection() async {
+        authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        if authorization == .authorized || authorization == .limited {
+            assets = browser?.assets ?? []
+            hasMore = browser?.hasMore ?? false
+        } else {
+            browser?.invalidate()
+            assets = []
             hasMore = false
-            return
         }
-        let page = (loadedCount..<end).map { fetchedAssets.object(at: $0) }
-        do {
-            try await store.observe(page.map {
-                LocalObservedAsset(
-                    localIdentifier: $0.localIdentifier,
-                    kind: $0.mediaType == .video ? "video" : "image",
-                    creationDate: $0.creationDate,
-                    isFavorite: $0.isFavorite
-                )
-            })
-            let pageIDs = Set(page.map(\.localIdentifier))
-            let indexed = try await store.assets(visibleIdentifiers: pageIDs)
-            let byLocator = Dictionary(uniqueKeysWithValues: indexed.map { ($0.localIdentifier, $0) })
-            assets += page.compactMap { byLocator[$0.localIdentifier] }
-            loadedCount = end
-            hasMore = end < fetchedAssets.count
-            await reloadFacts()
-        } catch {
-            errorMessage = "本机资料保存失败：\(error.localizedDescription)"
-        }
+        await reloadFacts()
     }
 
     func createTag(_ name: String) async {
@@ -720,8 +705,9 @@ final class LocalLibraryModel: ObservableObject {
     }
 
     private func refreshStoredAsset(_ asset: LocalAsset) async throws {
-        guard let store, let index = assets.firstIndex(where: { $0.id == asset.id }) else { return }
-        if let refreshed = try await store.assets(visibleIdentifiers: [asset.localIdentifier]).first {
+        guard let store else { return }
+        if let refreshed = try await store.assets(visibleIdentifiers: [asset.localIdentifier]).first,
+           let index = assets.firstIndex(where: { $0.id == asset.id }) {
             assets[index] = refreshed
         }
     }
@@ -737,6 +723,57 @@ final class LocalLibraryModel: ObservableObject {
             sharedConflicts = pending.filter(\.isConflicted)
         } catch { errorMessage = "读取本机资料失败：\(error.localizedDescription)" }
     }
+}
+
+@MainActor
+private final class PhotoKitLocalBrowsingSource: LocalLibraryBrowsingSource {
+    private var fetched: PHFetchResult<PHAsset>?
+    var canRead: Bool {
+        let value = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        return value == .authorized || value == .limited
+    }
+    private func options() -> PHFetchOptions {
+        let value = PHFetchOptions()
+        value.includeHiddenAssets = false
+        value.includeAssetSourceTypes = .typeUserLibrary
+        return value
+    }
+    func refresh() async throws -> Int {
+        guard canRead else { fetched = nil; return 0 }
+        let value = options()
+        value.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        fetched = PHAsset.fetchAssets(with: value)
+        return fetched?.count ?? 0
+    }
+    func observations(in range: Range<Int>) async throws -> [LocalObservedAsset] {
+        guard canRead, let fetched else { return [] }
+        return range.filter { $0 < fetched.count }.map {
+            let asset = fetched.object(at: $0)
+            return LocalObservedAsset(localIdentifier: asset.localIdentifier,
+                kind: asset.mediaType == .video ? "video" : "image", creationDate: asset.creationDate,
+                isFavorite: asset.isFavorite)
+        }
+    }
+    func visibleIdentifiers(in candidates: Set<String>) throws -> Set<String> {
+        guard canRead, !candidates.isEmpty else { return [] }
+        let result = PHAsset.fetchAssets(withLocalIdentifiers: Array(candidates), options: options())
+        var visible = Set<String>()
+        result.enumerateObjects { asset, _, _ in visible.insert(asset.localIdentifier) }
+        return visible
+    }
+}
+
+private final class LocalPhotoChangeObserver: NSObject, PHPhotoLibraryChangeObserver, @unchecked Sendable {
+    private let onChange: @MainActor @Sendable () -> Void
+    init(onChange: @escaping @MainActor @Sendable () -> Void) {
+        self.onChange = onChange
+        super.init()
+        PHPhotoLibrary.shared().register(self)
+    }
+    func photoLibraryDidChange(_ changeInstance: PHChange) {
+        Task { @MainActor [onChange] in onChange() }
+    }
+    deinit { PHPhotoLibrary.shared().unregisterChangeObserver(self) }
 }
 
 @MainActor
@@ -780,6 +817,7 @@ private enum LocalFavoriteSourceError: LocalizedError {
 }
 
 struct LocalLibraryView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @ObservedObject var model: LocalLibraryModel
     @ObservedObject var remoteModel: RemoteCompanionModel
     @State private var newTagName = ""
@@ -820,6 +858,9 @@ struct LocalLibraryView: View {
             }
         }
         .task { await model.refresh() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { Task { await model.refresh() } }
+        }
         .alert("本机图库", isPresented: Binding(
             get: { model.errorMessage != nil },
             set: { if !$0 { model.errorMessage = nil } }
