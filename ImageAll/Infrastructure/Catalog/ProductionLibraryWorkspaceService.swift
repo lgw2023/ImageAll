@@ -202,6 +202,17 @@ final class WorldMapSnapshotCache: @unchecked Sendable {
     }
 }
 
+extension WorldMapMediaScope {
+    // Fixed domain values only; never interpolate external text into SQL.
+    var assetPredicateSQL: String {
+        switch self {
+        case .photos: "asset.media_kind = 'image'"
+        case .videos: "asset.media_kind = 'video'"
+        case .all: "asset.media_kind IN ('image', 'video')"
+        }
+    }
+}
+
 struct GRDBWorldMapCatalogRepository: Sendable {
     let database: CatalogDatabase
 
@@ -213,7 +224,7 @@ struct GRDBWorldMapCatalogRepository: Sendable {
                 sql: """
                 SELECT COUNT(*)
                 FROM asset
-                WHERE \(Self.eligiblePhotoWhereSQL)
+                WHERE \(Self.eligibleMediaWhereSQL(scope: query.effectiveMediaScope))
                 """
             ) ?? 0
             let locatedPhotoCount = try Int.fetchOne(
@@ -222,7 +233,7 @@ struct GRDBWorldMapCatalogRepository: Sendable {
                 SELECT COUNT(*)
                 FROM asset
                 JOIN asset_location AS location ON location.asset_id = asset.id
-                WHERE \(Self.eligiblePhotoWhereSQL)
+                WHERE \(Self.eligibleMediaWhereSQL(scope: query.effectiveMediaScope))
                   AND location.latitude IS NOT NULL
                   AND location.longitude IS NOT NULL
                 """
@@ -254,7 +265,7 @@ struct GRDBWorldMapCatalogRepository: Sendable {
                     FROM asset
                     JOIN asset_location AS location ON location.asset_id = asset.id
                     LEFT JOIN place ON place.id = location.place_id
-                    WHERE \(Self.eligiblePhotoWhereSQL)
+                    WHERE \(Self.eligibleMediaWhereSQL(scope: query.effectiveMediaScope))
                       AND location.latitude IS NOT NULL
                       AND location.longitude IS NOT NULL
                       \(spatialWhereSQL)
@@ -308,7 +319,8 @@ struct GRDBWorldMapCatalogRepository: Sendable {
                         cellDegrees: normalized.cellDegrees,
                         longitudeBucket: longitudeBucket,
                         latitudeBucket: latitudeBucket,
-                        bounds: normalized.selectionBounds
+                        bounds: normalized.selectionBounds,
+                        mediaScope: query.mediaScope
                     )
                 )
             }
@@ -345,7 +357,7 @@ struct GRDBWorldMapCatalogRepository: Sendable {
                 SELECT COUNT(*)
                 FROM asset
                 JOIN asset_location AS location ON location.asset_id = asset.id
-                WHERE \(Self.eligiblePhotoWhereSQL)
+                WHERE \(Self.eligibleMediaWhereSQL(scope: query.effectiveMediaScope))
                   AND location.latitude IS NOT NULL
                   AND location.longitude IS NOT NULL
                   AND CAST((location.longitude + 180.0) / ? AS INTEGER) = ?
@@ -362,7 +374,7 @@ struct GRDBWorldMapCatalogRepository: Sendable {
                 SELECT asset.id AS asset_id, asset.file_name AS file_name
                 FROM asset
                 JOIN asset_location AS location ON location.asset_id = asset.id
-                WHERE \(Self.eligiblePhotoWhereSQL)
+                WHERE \(Self.eligibleMediaWhereSQL(scope: query.effectiveMediaScope))
                   AND location.latitude IS NOT NULL
                   AND location.longitude IS NOT NULL
                   AND CAST((location.longitude + 180.0) / ? AS INTEGER) = ?
@@ -428,25 +440,27 @@ struct GRDBWorldMapCatalogRepository: Sendable {
         }
     }
 
-    private static let eligiblePhotoWhereSQL = """
-    asset.locator_state = 'current'
-    AND asset.availability = 'available'
-    AND asset.media_kind = 'image'
-    AND asset.id NOT IN (
-        SELECT recycle.asset_id
-        FROM recycle_entry AS recycle
-        WHERE recycle.asset_id IS NOT NULL
-          AND recycle.state IN (
-              'pending', 'recycled', 'restoring', 'purging', 'purged'
-          )
-    )
-    """
+    private static func eligibleMediaWhereSQL(scope: WorldMapMediaScope) -> String {
+        """
+        asset.locator_state = 'current'
+        AND asset.availability = 'available'
+        AND \(scope.assetPredicateSQL)
+        AND asset.id NOT IN (
+            SELECT recycle.asset_id
+            FROM recycle_entry AS recycle
+            WHERE recycle.asset_id IS NOT NULL
+              AND recycle.state IN (
+                  'pending', 'recycled', 'restoring', 'purging', 'purged'
+              )
+        )
+        """
+    }
 }
 
 struct GRDBWorldMapLocationBackfillRepository: Sendable {
     let database: CatalogDatabase
 
-    func fetchSnapshots() throws -> [WorldMapLocationBackfillSnapshot] {
+    func fetchSnapshots(mediaScope: WorldMapMediaScope = .photos) throws -> [WorldMapLocationBackfillSnapshot] {
         try database.pool.read { db in
             try Row.fetchAll(
                 db,
@@ -468,7 +482,7 @@ struct GRDBWorldMapLocationBackfillRepository: Sendable {
                   ON asset.source_id = source.id
                  AND asset.locator_state = 'current'
                  AND asset.availability = 'available'
-                 AND asset.media_kind = 'image'
+                 AND \(mediaScope.assetPredicateSQL)
                  AND NOT EXISTS (
                     SELECT 1
                     FROM recycle_entry AS recycle

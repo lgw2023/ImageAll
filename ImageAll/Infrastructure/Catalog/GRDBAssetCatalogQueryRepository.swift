@@ -1211,7 +1211,7 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
 
         return """
         asset.availability = 'available'
-        AND asset.media_kind = 'image'
+        AND \(selection.effectiveMediaScope.assetPredicateSQL)
         AND \(Self.nonBrowseableRecycleEntryExclusionSQL)
         AND EXISTS (
             SELECT 1

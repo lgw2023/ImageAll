@@ -179,3 +179,14 @@
 - 新发现的必需缺口：分析跨页范围未包含时长／方向，本轮明确提示并阻止扩大范围，后续 P3/P4 分析切片补齐，不能视为完整分析闭环已实现。
 - 下一具体动作：扩大地图可用视频与回填统计范围、保持媒体计数一致；再补 PhotoKit 技术信息／云端明确状态。P1 内置网页资源和实际跨端 UI 验收未完成；P2 IN_PROGRESS；P3–P7 NOT_STARTED。
 - 未访问真实媒体、未源端写入、未云端下载、未外部传输、未 push；真机与生产发布仍 NOT_RUN。
+
+
+## P2 地图共享媒体范围（2026-09-27）
+
+- main 基线 `8fa9707d`。目录地图查询与点选查询新增可选 `mediaScope`，支持 photos / videos / all；历史缺字段默认照片。三条路径（聚合、点选、图库空间过滤）使用同一个固定枚举 SQL 条件，范围纳入缓存身份且在点选限量时保留。
+- 位置回填 repository 的只读统计也支持显式范围，旧调用仍默认照片。尚未更改回填启动 controller、UI 或远端 DTO，不宣称视频地图用户闭环已完成；默认界面仍显示照片。计数旧属性名的解释与后续 UI 要求写入媒体契约 ADR。
+- `map-video-scope-build.log` 首轮失败来自新增测试临时路径调用缺少 try；修复后 `map-video-scope-build-final.log` TEST BUILD SUCCEEDED。构建仍使用证据根私有目录。
+- 首次直接 XCTest 误选 WorldMapSpikeTests，执行 0 项，不计通过。改为实际 WorldMapCatalogS1Tests 后，`map-video-scope-tests-final.log` PASS 8/8：新三域一致性、旧聚合、回收隐藏、点选限量、视口裁剪、反经线图库范围、回填只读统计、持久缓存恢复。
+- 新合成 fixture 包含同地点照片／视频、无坐标视频和不可用视频；验证计数、cluster、selection、gallery ID 集合及照片／视频缓存隔离。未访问真实目录或启动 Photos 宿主。源摘要 `map-video-scope-source-sha256.json`；git diff --check PASS。
+- 下一具体动作：原生地图范围选择器、数量单位与视频预览／图库跳转；将范围传到 Companion 协议；使视频来源回填启动条件与上述统计一致。P2 仍 IN_PROGRESS，不能以后台查询测试替代这些入口验收。
+- 无真实媒体访问、源端写入、云端下载、外部传输或 push；既有 LibraryWorkspace 75/5、项目和 OpenMontage 并行差异保留。

@@ -541,19 +541,36 @@ struct WorldMapCatalogBounds: Sendable, Equatable, Hashable, Codable {
     let north: Double
 }
 
+enum WorldMapMediaScope: String, Sendable, Equatable, Hashable, Codable, CaseIterable {
+    case photos, videos, all
+
+    var title: String {
+        switch self {
+        case .photos: "照片"
+        case .videos: "视频"
+        case .all: "照片与视频"
+        }
+    }
+}
+
 struct WorldMapCatalogQuery: Sendable, Equatable, Hashable, Codable {
     static let maximumClusterLimit = 2_000
     static let global = WorldMapCatalogQuery(bounds: nil)
 
     let bounds: WorldMapCatalogBounds?
     let maximumClusters: Int
+    /// Absent in legacy persisted queries; keeps their photo-only semantics.
+    let mediaScope: WorldMapMediaScope?
+    var effectiveMediaScope: WorldMapMediaScope { mediaScope ?? .photos }
 
     init(
         bounds: WorldMapCatalogBounds?,
-        maximumClusters: Int = WorldMapCatalogQuery.maximumClusterLimit
+        maximumClusters: Int = WorldMapCatalogQuery.maximumClusterLimit,
+        mediaScope: WorldMapMediaScope? = nil
     ) {
         self.bounds = bounds
         self.maximumClusters = maximumClusters
+        self.mediaScope = mediaScope
     }
 }
 
@@ -566,19 +583,23 @@ struct WorldMapCatalogSelectionQuery: Sendable, Equatable, Codable {
     let latitudeBucket: Int
     let bounds: WorldMapCatalogBounds?
     let maximumAssets: Int
+    let mediaScope: WorldMapMediaScope?
+    var effectiveMediaScope: WorldMapMediaScope { mediaScope ?? .photos }
 
     init(
         cellDegrees: Double,
         longitudeBucket: Int,
         latitudeBucket: Int,
         bounds: WorldMapCatalogBounds? = nil,
-        maximumAssets: Int = WorldMapCatalogSelectionQuery.defaultAssetLimit
+        maximumAssets: Int = WorldMapCatalogSelectionQuery.defaultAssetLimit,
+        mediaScope: WorldMapMediaScope? = nil
     ) {
         self.cellDegrees = cellDegrees
         self.longitudeBucket = longitudeBucket
         self.latitudeBucket = latitudeBucket
         self.bounds = bounds
         self.maximumAssets = maximumAssets
+        self.mediaScope = mediaScope
     }
 
     func limited(to maximumAssets: Int) -> WorldMapCatalogSelectionQuery {
@@ -587,7 +608,8 @@ struct WorldMapCatalogSelectionQuery: Sendable, Equatable, Codable {
             longitudeBucket: longitudeBucket,
             latitudeBucket: latitudeBucket,
             bounds: bounds,
-            maximumAssets: maximumAssets
+            maximumAssets: maximumAssets,
+            mediaScope: mediaScope
         )
     }
 }

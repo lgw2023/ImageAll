@@ -15853,6 +15853,69 @@ final class WorldMapCatalogS1Tests: XCTestCase {
         )
     }
 
+    func testMapMediaScopesKeepCountsSelectionAndGalleryInAgreement() throws {
+        let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
+        let sourceID = UUID()
+        let photo = UUID(), video = UUID(), unlocated = UUID(), missing = UUID()
+        try database.pool.write { db in
+            try Self.seedSource(db, id: sourceID)
+            for (index, id) in [photo, video, unlocated, missing].enumerated() {
+                try Self.seedAsset(db, id: id, sourceID: sourceID, index: index)
+                if id != photo {
+                    try db.execute(sql: "UPDATE asset SET media_kind = 'video' WHERE id = ?",
+                                   arguments: [id.uuidString.lowercased()])
+                }
+                if id != unlocated {
+                    try Self.seedLocation(db, assetID: id, latitude: 39.9, longitude: 116.4, sourceKind: "embeddedGPS")
+                }
+            }
+            try db.execute(sql: "UPDATE asset SET availability = 'missing' WHERE id = ?",
+                           arguments: [missing.uuidString.lowercased()])
+        }
+        let map = GRDBWorldMapCatalogRepository(database: database)
+        let gallery = GRDBAssetCatalogQueryRepository(database: database)
+        for (scope, expected, eligible) in [
+            (WorldMapMediaScope.photos, Set([photo]), 1),
+            (.videos, Set([video]), 2),
+            (.all, Set([photo, video]), 3),
+        ] {
+            let query = WorldMapCatalogQuery(bounds: nil, mediaScope: scope)
+            let snapshot = try map.fetchSnapshot(query: query)
+            XCTAssertEqual(snapshot.eligiblePhotoCount, eligible)
+            XCTAssertEqual(snapshot.locatedPhotoCount, expected.count)
+            XCTAssertEqual(snapshot.unlocatedPhotoCount, eligible - expected.count)
+            let backfill = try XCTUnwrap(GRDBWorldMapLocationBackfillRepository(database: database)
+                .fetchSnapshots(mediaScope: scope).first)
+            XCTAssertEqual(backfill.totalPhotoCount, eligible)
+            XCTAssertEqual(backfill.locatedPhotoCount, expected.count)
+            let cluster = try XCTUnwrap(snapshot.clusters.first)
+            XCTAssertEqual(cluster.photoCount, expected.count)
+            XCTAssertEqual(cluster.selectionQuery.effectiveMediaScope, scope)
+            let selection = try map.fetchSelection(query: cluster.selectionQuery)
+            XCTAssertEqual(Set(selection.assets.map(\.assetID)), expected)
+            let limited = cluster.selectionQuery.limited(to: 1)
+            XCTAssertEqual(limited.effectiveMediaScope, scope)
+            XCTAssertEqual(try map.fetchSelection(query: limited).totalPhotoCount, expected.count)
+            let page = try gallery.fetchAssetPage(AssetPageRequest(
+                filter: AssetPageFilter(worldMapSelection: cluster.selectionQuery),
+                sort: .fileNameAscending, cursor: nil, limit: 50))
+            XCTAssertEqual(Set(page.items.map(\.assetID)), expected)
+        }
+        let legacy = try JSONDecoder().decode(WorldMapCatalogQuery.self,
+            from: JSONEncoder().encode(WorldMapCatalogQuery.global))
+        XCTAssertNil(legacy.mediaScope)
+        XCTAssertEqual(try map.fetchSnapshot(query: legacy).locatedPhotoCount, 1)
+        let cacheRoot = try makeTempDatabaseURL().deletingLastPathComponent()
+        let cache = WorldMapSnapshotCache(cachesDirectory: cacheRoot)
+        let photos = try map.fetchSnapshot(query: .global)
+        let videosQuery = WorldMapCatalogQuery(bounds: nil, mediaScope: .videos)
+        let videos = try map.fetchSnapshot(query: videosQuery)
+        cache.store(photos, for: .global)
+        cache.store(videos, for: videosQuery)
+        XCTAssertEqual(cache.snapshot(for: .global), photos)
+        XCTAssertEqual(cache.snapshot(for: videosQuery), videos)
+    }
+
     func testClusterSelectionDrillsDownToOnlyThatPhotoTowerAndReportsTruncation() throws {
         let database = try CatalogDatabase.open(at: makeTempDatabaseURL())
         let sourceID = UUID()
