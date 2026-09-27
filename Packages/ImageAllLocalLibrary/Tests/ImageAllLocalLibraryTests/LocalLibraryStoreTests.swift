@@ -3,7 +3,9 @@ import SQLite3
 import Testing
 @testable import ImageAllLocalLibrary
 
-enum CollectionRecoveryScenario: CaseIterable, Sendable { case acceptMac, keepPhone, changedScope }
+enum CollectionRecoveryScenario: CaseIterable, Sendable {
+    case acceptMac, keepPhone, changedScope, historyRecovery, missingHistory, historyScopeRace
+}
 
 @Test(arguments: CollectionRecoveryScenario.allCases, [false, true])
 func explicitCollectionRenameRecoveryKeepsIdentityChecks(scenario: CollectionRecoveryScenario, legacy: Bool) async throws {
@@ -62,6 +64,61 @@ func explicitCollectionRenameRecoveryKeepsIdentityChecks(scenario: CollectionRec
         )
     }
     store = try LocalLibraryStore(url: url)
+    if scenario == .historyRecovery || scenario == .missingHistory || scenario == .historyScopeRace {
+        // An older app already consumed these renames, leaving no recovery proof.
+        var rawDB: OpaquePointer?
+        #expect(sqlite3_open(url.path, &rawDB) == SQLITE_OK)
+        #expect(sqlite3_exec(rawDB, "DROP TABLE shared_collection_rename_recovery", nil, nil, nil) == SQLITE_OK)
+        if legacy {
+            #expect(sqlite3_exec(rawDB, "DROP TABLE shared_collection_delivery_identity", nil, nil, nil) == SQLITE_OK)
+        }
+        sqlite3_close(rawDB)
+        store = try LocalLibraryStore(url: url)
+        #expect(try await store.pendingSharedOperations().first?.verifiedCollectionRename == nil)
+        try await store.observe([.init(localIdentifier: "race", kind: "image", creationDate: nil, isFavorite: false)])
+        let raceAsset = try #require(await store.assets(visibleIdentifiers: ["race"]).first)
+        let recoveryStore = store
+        do {
+            let name = try await recoveryStore.recoverSharedCollectionRenameHistory(operationID: pending.id) {
+                epoch, scope, cursor in
+                if scenario == .historyScopeRace, cursor == 1 {
+                    try await recoveryStore.setShared(assetID: raceAsset.id, shared: true)
+                }
+                let change: LocalSharedCollectionChange
+                switch cursor {
+                case 0:
+                    change = .init(sequence: 1, assetID: asset.id, collectionID: remoteID,
+                                   collectionName: "Journey", included: true, fieldRevision: 1,
+                                   createdCollectionID: scenario == .missingHistory ? nil : remoteID)
+                case 1:
+                    change = .init(sequence: 2, assetID: asset.id, collectionID: remoteID,
+                                   collectionName: "Trip", included: true, fieldRevision: 1, renamedFrom: "Journey")
+                case 2:
+                    change = .init(sequence: 3, assetID: asset.id, collectionID: remoteID,
+                                   collectionName: "Holiday", included: true, fieldRevision: 1, renamedFrom: "Trip")
+                default: throw LocalLibraryError.syncIdentityChanged
+                }
+                return .init(hostID: hostID, deviceID: deviceID, sourceEpoch: epoch, scopeRevision: scope,
+                             changes: [change], nextCursor: cursor + 1)
+            }
+            #expect(scenario == .historyRecovery)
+            #expect(name == "Holiday")
+        } catch {
+            if scenario == .historyRecovery { throw error }
+            switch error {
+            case LocalLibraryError.syncRemoteCollectionMismatch:
+                #expect(scenario == .missingHistory)
+            case LocalLibraryError.syncConflictDetailsUnavailable, LocalLibraryError.syncIdentityChanged:
+                #expect(scenario == .historyScopeRace)
+            default: throw error
+            }
+            #expect(try await recoveryStore.pendingSharedOperations().first?.verifiedCollectionRename == nil)
+            #expect(try await recoveryStore.sharedCollectionChangeCursor() == 3)
+            return
+        }
+        #expect(try await store.sharedCollectionChangeCursor() == 3)
+        store = try LocalLibraryStore(url: url)
+    }
     let conflict = try #require(await store.pendingSharedOperations().first)
     #expect(conflict.isConflicted)
     #expect(conflict.conflictReason == .collectionIdentity)
@@ -80,9 +137,9 @@ func explicitCollectionRenameRecoveryKeepsIdentityChecks(scenario: CollectionRec
         return
     }
     let newID = try await store.resolveSharedCollectionConflict(
-        operationID: pending.id, resolution: scenario == .keepPhone ? .keepPhone : .acceptMac
+        operationID: pending.id, resolution: scenario == .keepPhone || scenario == .historyRecovery ? .keepPhone : .acceptMac
     )
-    if scenario == .keepPhone {
+    if scenario == .keepPhone || scenario == .historyRecovery {
         let id = try #require(newID)
         #expect(id != pending.id)
         let request = try #require(await store.prepareSharedCollectionOperation(id: id, hostID: hostID, deviceID: deviceID))

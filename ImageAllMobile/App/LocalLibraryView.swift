@@ -601,6 +601,32 @@ final class LocalLibraryModel: ObservableObject {
         try await store.confirmSharedCollectionAlias(candidate)
     }
 
+    func recoverSharedCollectionRenameHistory(
+        _ operation: LocalSharedPendingOperation, remoteModel: RemoteCompanionModel
+    ) async throws -> String {
+        guard let store else { throw LocalFavoriteSourceError.storeUnavailable }
+        let name = try await store.recoverSharedCollectionRenameHistory(operationID: operation.id) {
+            epoch, scope, cursor in
+            let page = try await remoteModel.fetchLocalLibraryCollectionChanges(
+                sourceEpoch: epoch, scopeRevision: scope, afterCursor: cursor
+            )
+            return LocalSharedCollectionHistoryPage(
+                hostID: page.hostID, deviceID: page.deviceID, sourceEpoch: page.sourceEpoch,
+                scopeRevision: page.scopeRevision,
+                changes: page.changes.map {
+                    LocalSharedCollectionChange(
+                        sequence: $0.sequence, assetID: $0.assetID, collectionID: $0.collectionID,
+                        collectionName: $0.collectionName, included: $0.included,
+                        fieldRevision: $0.fieldRevision, renamedFrom: $0.renamedFrom,
+                        createdCollectionID: $0.createdCollectionID
+                    )
+                }, nextCursor: page.nextCursor
+            )
+        }
+        await reloadFacts()
+        return name
+    }
+
     func resolveSharedCollectionConflict(
         _ operation: LocalSharedPendingOperation,
         resolution: LocalSharedCollectionConflictResolution
@@ -856,6 +882,7 @@ private struct LocalShareScopeView: View {
     @ObservedObject var model: LocalLibraryModel
     @ObservedObject var remoteModel: RemoteCompanionModel
     @State private var isSending = false
+    @State private var isCheckingCollectionHistory = false
     @State private var isExporting = false
     @State private var isExportingFacts = false
     @State private var isUploadingArchive = false
@@ -943,6 +970,23 @@ private struct LocalShareScopeView: View {
                                     Text("集合身份需要先对账；当前保留本机意图。")
                                         .font(.footnote)
                                         .foregroundStyle(.orange)
+                                    if operation.conflictReason == .collectionIdentity {
+                                        Button(isCheckingCollectionHistory ? "正在核对改名历史…" : "从 Mac 核对改名历史") {
+                                            Task {
+                                                isCheckingCollectionHistory = true
+                                                defer { isCheckingCollectionHistory = false }
+                                                do {
+                                                    let name = try await model.recoverSharedCollectionRenameHistory(
+                                                        operation, remoteModel: remoteModel
+                                                    )
+                                                    statusMessage = "已核对为集合“\(name)”。请在冲突项中选择成员状态；尚未重发操作。"
+                                                } catch {
+                                                    statusMessage = "改名历史尚不能证明此身份。请先完成同步；历史缺失、范围或身份变化仍需对账。\(error.localizedDescription)"
+                                                }
+                                            }
+                                        }
+                                        .disabled(isCheckingCollectionHistory || isSending || !remoteModel.supportsLocalLibraryCollectionChanges)
+                                    }
                                 }
                             } else if operation.field == "favorite.target" {
                                 Text("资产 \(operation.assetID.uuidString.prefix(8)) · 本机收藏目标：\(favoriteName(operation.localCurrentFavoriteTarget))")
@@ -1115,7 +1159,7 @@ private struct LocalShareScopeView: View {
                         }
                     }
                 }
-                .disabled(isSending || !remoteModel.isConnected)
+                .disabled(isSending || isCheckingCollectionHistory || !remoteModel.isConnected)
                 if let statusMessage {
                     Text(statusMessage).font(.footnote).foregroundStyle(.secondary)
                 }

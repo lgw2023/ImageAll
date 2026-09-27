@@ -222,11 +222,12 @@ public struct LocalSharedCollectionChange: Sendable {
     public let included: Bool
     public let fieldRevision: Int64
     public let renamedFrom: String?
+    public let createdCollectionID: UUID?
 
     public init(
         sequence: Int64, assetID: UUID, collectionID: UUID,
         collectionName: String, included: Bool, fieldRevision: Int64,
-        renamedFrom: String? = nil
+        renamedFrom: String? = nil, createdCollectionID: UUID? = nil
     ) {
         self.sequence = sequence
         self.assetID = assetID
@@ -235,6 +236,26 @@ public struct LocalSharedCollectionChange: Sendable {
         self.included = included
         self.fieldRevision = fieldRevision
         self.renamedFrom = renamedFrom
+        self.createdCollectionID = createdCollectionID
+    }
+}
+
+public struct LocalSharedCollectionHistoryPage: Sendable {
+    public let hostID: UUID
+    public let deviceID: UUID
+    public let sourceEpoch: UUID
+    public let scopeRevision: Int64
+    public let changes: [LocalSharedCollectionChange]
+    public let nextCursor: Int64
+
+    public init(hostID: UUID, deviceID: UUID, sourceEpoch: UUID, scopeRevision: Int64,
+                changes: [LocalSharedCollectionChange], nextCursor: Int64) {
+        self.hostID = hostID
+        self.deviceID = deviceID
+        self.sourceEpoch = sourceEpoch
+        self.scopeRevision = scopeRevision
+        self.changes = changes
+        self.nextCursor = nextCursor
     }
 }
 
@@ -1064,6 +1085,140 @@ public actor LocalLibraryStore {
               let wire = try? wireCollectionIdentity(for: localID, localName: currentName),
               wire.id.uuidString == row[1], wire.name == currentName else { return nil }
         return currentName
+    }
+
+    private struct CollectionHistoryContext: Equatable {
+        let hostID: UUID
+        let deviceID: UUID
+        let sourceEpoch: UUID
+        let scopeRevision: Int64
+        let cursor: Int64
+        let localID: UUID
+        let wireID: UUID
+        let currentName: String
+        let referenceName: String
+        let frozenName: String?
+    }
+
+    private func collectionHistoryContext(operationID: UUID) throws -> CollectionHistoryContext {
+        guard let pending = try pendingSharedOperations().first(where: { $0.id == operationID }),
+              pending.isConflicted, pending.conflictReason == .collectionIdentity,
+              pending.field.hasPrefix("collection."),
+              let localID = UUID(uuidString: String(pending.field.dropFirst(11))),
+              let referenceName = pending.referenceName,
+              let currentName = try scalar("SELECT name FROM collections WHERE id=?", [localID.uuidString]),
+              let hostID = UUID(uuidString: try requiredIdentity("sync_host_id")),
+              let deviceID = UUID(uuidString: try requiredIdentity("sync_device_id")),
+              pending.scopeRevision == Int64(try requiredIdentity("share_scope_revision")),
+              pending.scopeRevision == Int64(try requiredIdentity("sync_ack_scope_revision")),
+              let delivery = try rows("SELECT host_id,device_id FROM shared_delivery WHERE operation_id=?",
+                                      [operationID.uuidString]).first,
+              delivery[0] == hostID.uuidString, delivery[1] == deviceID.uuidString else {
+            throw LocalLibraryError.syncConflictDetailsUnavailable
+        }
+        let wire = try wireCollectionIdentity(for: localID, localName: currentName)
+        guard wire.name == currentName else { throw LocalLibraryError.syncRemoteCollectionMismatch }
+        let frozen = try rows("""
+            SELECT local_collection_id,wire_collection_id,wire_name
+            FROM shared_collection_delivery_identity WHERE operation_id=?
+            """, [operationID.uuidString]).first
+        if let frozen {
+            guard frozen[0] == localID.uuidString, frozen[1] == wire.id.uuidString else {
+                throw LocalLibraryError.syncRemoteCollectionMismatch
+            }
+        }
+        return CollectionHistoryContext(
+            hostID: hostID, deviceID: deviceID, sourceEpoch: try sourceEpoch(),
+            scopeRevision: pending.scopeRevision, cursor: try sharedCollectionChangeCursor(),
+            localID: localID, wireID: wire.id, currentName: currentName,
+            referenceName: referenceName, frozenName: frozen?[2]
+        )
+    }
+
+    /// Reads history only through the already applied cursor. It reconstructs
+    /// identity evidence, without replaying facts or advancing sync cursors.
+    public func recoverSharedCollectionRenameHistory(
+        operationID: UUID,
+        fetchPage: @Sendable (UUID, Int64, Int64) async throws -> LocalSharedCollectionHistoryPage
+    ) async throws -> String {
+        let context = try collectionHistoryContext(operationID: operationID)
+        guard context.cursor > 0 else { throw LocalLibraryError.syncConflictDetailsUnavailable }
+        var cursor: Int64 = 0
+        var name: String?
+        var lastTransition: (old: String, new: String)?
+        var originalWireName: String?
+        var verifiedSequence: Int64?
+        while cursor < context.cursor {
+            try Task.checkCancellation()
+            let page = try await fetchPage(context.sourceEpoch, context.scopeRevision, cursor)
+            guard page.hostID == context.hostID, page.deviceID == context.deviceID,
+                  page.sourceEpoch == context.sourceEpoch, page.scopeRevision == context.scopeRevision,
+                  page.nextCursor > cursor,
+                  page.changes.allSatisfy({ $0.sequence > cursor && $0.sequence <= page.nextCursor }),
+                  zip(page.changes, page.changes.dropFirst()).allSatisfy({ $0.0.sequence < $0.1.sequence }) else {
+                throw LocalLibraryError.syncIdentityChanged
+            }
+            for change in page.changes where change.sequence <= context.cursor
+                && change.collectionID == context.wireID {
+                if change.createdCollectionID != nil {
+                    guard change.createdCollectionID == context.wireID, name == nil,
+                          change.renamedFrom == nil, change.included, change.fieldRevision == 1 else {
+                        throw LocalLibraryError.syncRemoteCollectionMismatch
+                    }
+                    name = change.collectionName
+                } else if let oldName = change.renamedFrom {
+                    guard let current = name, !change.collectionName.isEmpty,
+                          oldName != change.collectionName else {
+                        throw LocalLibraryError.syncRemoteCollectionMismatch
+                    }
+                    if current == oldName {
+                        if originalWireName == nil,
+                           context.frozenName.map({ $0 == oldName })
+                            ?? (Self.syncTagNameKey(context.referenceName) == Self.syncTagNameKey(oldName)) {
+                            originalWireName = oldName
+                        }
+                        name = change.collectionName
+                        lastTransition = (oldName, change.collectionName)
+                        if originalWireName != nil { verifiedSequence = change.sequence }
+                    } else {
+                        // A collection rename is repeated for its other members.
+                        guard current == change.collectionName,
+                              lastTransition?.old == oldName,
+                              lastTransition?.new == change.collectionName else {
+                            throw LocalLibraryError.syncRemoteCollectionMismatch
+                        }
+                    }
+                } else if name != change.collectionName {
+                    throw LocalLibraryError.syncRemoteCollectionMismatch
+                }
+            }
+            cursor = page.nextCursor
+        }
+        guard name == context.currentName, let originalWireName, let verifiedSequence else {
+            throw LocalLibraryError.syncConflictDetailsUnavailable
+        }
+        try Task.checkCancellation()
+        guard try collectionHistoryContext(operationID: operationID) == context else {
+            throw LocalLibraryError.syncIdentityChanged
+        }
+        try transaction {
+            if context.frozenName == nil {
+                try execute("""
+                    INSERT INTO shared_collection_delivery_identity(
+                      operation_id,local_collection_id,wire_collection_id,wire_name
+                    ) VALUES(?,?,?,?)
+                    """, [operationID.uuidString, context.localID.uuidString,
+                           context.wireID.uuidString, originalWireName])
+            }
+            try execute("""
+                INSERT INTO shared_collection_rename_recovery(operation_id,source_epoch,current_name,change_sequence)
+                VALUES(?,?,?,?) ON CONFLICT(operation_id) DO UPDATE SET
+                  source_epoch=excluded.source_epoch,current_name=excluded.current_name,
+                  change_sequence=excluded.change_sequence
+                """, [operationID.uuidString, context.sourceEpoch.uuidString,
+                       context.currentName, String(verifiedSequence)])
+        }
+        return context.currentName
     }
 
     /// Commits the authenticated Mac snapshot ACK and its first-import field baseline.
