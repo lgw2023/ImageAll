@@ -161,6 +161,7 @@ public struct RemoteWorldMapLocationBackfillSnapshot: Codable, Sendable, Equatab
     public let scanProgress: RemoteJobProgress?
     public let canStart: Bool
     public let canCancel: Bool
+    public let mediaScope: RemoteWorldMapMediaScope?
 
     public var id: UUID { sourceID }
 
@@ -176,7 +177,8 @@ public struct RemoteWorldMapLocationBackfillSnapshot: Codable, Sendable, Equatab
         activeJobID: UUID? = nil,
         scanProgress: RemoteJobProgress? = nil,
         canStart: Bool,
-        canCancel: Bool
+        canCancel: Bool,
+        mediaScope: RemoteWorldMapMediaScope? = nil
     ) {
         self.sourceID = sourceID
         self.sourceKind = sourceKind
@@ -190,6 +192,7 @@ public struct RemoteWorldMapLocationBackfillSnapshot: Codable, Sendable, Equatab
         self.scanProgress = scanProgress
         self.canStart = canStart
         self.canCancel = canCancel
+        self.mediaScope = mediaScope
     }
 }
 
@@ -202,15 +205,18 @@ public struct RemoteWorldMapLocationBackfillCommandRequest: Codable, Sendable, E
     public let operationID: UUID
     public let sourceID: UUID
     public let action: RemoteWorldMapLocationBackfillAction
+    public let mediaScope: RemoteWorldMapMediaScope?
 
     public init(
         operationID: UUID,
         sourceID: UUID,
-        action: RemoteWorldMapLocationBackfillAction
+        action: RemoteWorldMapLocationBackfillAction,
+        mediaScope: RemoteWorldMapMediaScope? = nil
     ) {
         self.operationID = operationID
         self.sourceID = sourceID
         self.action = action
+        self.mediaScope = mediaScope
     }
 }
 

@@ -2104,6 +2104,15 @@ final class RemoteProtocolRoundTripTests: XCTestCase {
             canCancel: true
         )
         try assertRoundTrip(backfill)
+        XCTAssertNil(try decoder.decode(
+            RemoteWorldMapLocationBackfillSnapshot.self, from: encoder.encode(backfill)
+        ).mediaScope)
+        for scope in [RemoteWorldMapMediaScope.photos, .videos, .all] {
+            try assertRoundTrip(RemoteWorldMapLocationBackfillCommandRequest(
+                operationID: UUID(), sourceID: sourceID, action: .start, mediaScope: scope
+            ))
+        }
+
         let command = RemoteWorldMapLocationBackfillCommandRequest(
             operationID: UUID(),
             sourceID: sourceID,

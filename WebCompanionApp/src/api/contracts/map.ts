@@ -84,6 +84,7 @@ export const locationBackfillSchema = z.object({
   scanProgress: nullishToNull(jobProgressSchema),
   canStart: z.boolean(),
   canCancel: z.boolean(),
+  mediaScope: worldMapMediaScopeSchema.nullish(),
 });
 
 export const locationBackfillResponseSchema = z.object({

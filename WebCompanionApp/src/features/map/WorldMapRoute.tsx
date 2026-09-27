@@ -173,12 +173,19 @@ function galleryURL(cluster: WorldMapCluster): string {
   return `/gallery?${parameters.toString()}`;
 }
 
-function LocationBackfillPanel() {
+function LocationBackfillPanel({
+  mediaScope,
+  supported,
+}: {
+  mediaScope: WorldMapMediaScope;
+  supported: boolean;
+}) {
   const queryClient = useQueryClient();
   const [message, setMessage] = useState('');
   const backfills = useQuery({
-    queryKey: ['world-map-backfills'],
-    queryFn: ({ signal }) => fetchLocationBackfills(signal),
+    queryKey: ['world-map-backfills', mediaScope],
+    enabled: mediaScope === 'photos' || supported,
+    queryFn: ({ signal }) => fetchLocationBackfills(signal, mediaScope),
     refetchInterval: (query) =>
       query.state.data?.some((row) => ['queued', 'running', 'cancelling'].includes(row.phase))
         ? 1500
@@ -186,12 +193,14 @@ function LocationBackfillPanel() {
   });
   const action = useMutation({
     mutationFn: ({ sourceID, command }: { sourceID: string; command: 'start' | 'cancel' }) =>
-      applyLocationBackfill(sourceID, command),
+      applyLocationBackfill(sourceID, command, mediaScope),
     onSuccess: (response) => {
-      queryClient.setQueryData<LocationBackfill[]>(['world-map-backfills'], (current = []) =>
-        current.map((row) =>
-          row.sourceID === response.snapshot.sourceID ? response.snapshot : row,
-        ),
+      queryClient.setQueryData<LocationBackfill[]>(
+        ['world-map-backfills', mediaScope],
+        (current = []) =>
+          current.map((row) =>
+            row.sourceID === response.snapshot.sourceID ? response.snapshot : row,
+          ),
       );
       setMessage(
         response.replayed
@@ -204,12 +213,27 @@ function LocationBackfillPanel() {
     onError: (error) => setMessage(errorMessage(error)),
   });
 
+  if (mediaScope !== 'photos' && !supported) {
+    return (
+      <section className="map-tool-panel">
+        <h3>位置回填</h3>
+        <p>此 Mac 尚不支持视频位置回填；请更新 Mac，或切回照片地图。</p>
+      </section>
+    );
+  }
+
   return (
     <section className="map-tool-panel" aria-labelledby="location-backfill-title">
       <div className="panel-title-row">
         <div>
-          <h3 id="location-backfill-title">照片位置回填</h3>
-          <p>仅由 Mac 读取来源元数据；网页不取得文件路径。</p>
+          <h3 id="location-backfill-title">
+            {mediaScope === 'photos' ? '照片' : mediaScope === 'videos' ? '视频' : '照片与视频'}
+            位置回填
+          </h3>
+          <p>
+            仅在点击后由 Mac
+            扫描来源元数据，不下载云端原件；扫描任务覆盖整个来源，以下统计对应当前媒体范围。
+          </p>
         </div>
         <LocateFixed aria-hidden="true" size={19} />
       </div>
@@ -234,8 +258,9 @@ function LocationBackfillPanel() {
                   <div>
                     <strong>{row.sourceDisplayName}</strong>
                     <span>
-                      已检查 {completed.toLocaleString('zh-CN')} / {total.toLocaleString('zh-CN')} ·
-                      已定位 {row.locatedPhotoCount.toLocaleString('zh-CN')}
+                      范围内已检查 {row.inspectedPhotoCount.toLocaleString('zh-CN')} /{' '}
+                      {row.totalPhotoCount.toLocaleString('zh-CN')} 项 · 已定位{' '}
+                      {row.locatedPhotoCount.toLocaleString('zh-CN')}
                     </span>
                   </div>
                   <span className="state-pill" data-state={row.phase}>
@@ -244,7 +269,7 @@ function LocationBackfillPanel() {
                 </div>
                 {total > 0 ? (
                   <progress
-                    aria-label={`${row.sourceDisplayName}位置回填进度`}
+                    aria-label={`${row.sourceDisplayName}来源扫描进度`}
                     max={total}
                     value={completed}
                   />
@@ -634,7 +659,11 @@ export function WorldMapRoute() {
             </section>
           ) : null}
           <div className="map-tools-grid">
-            <LocationBackfillPanel />
+            <LocationBackfillPanel
+              key={mediaScope}
+              mediaScope={mediaScope}
+              supported={capabilities.data?.worldMapBackfillMediaScopeVersion === 1}
+            />
             <PlaceTagPanel />
           </div>
         </>

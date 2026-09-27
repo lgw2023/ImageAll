@@ -2951,6 +2951,19 @@ final class RemoteHTTPServerTests: XCTestCase {
             from: backfillData
         )
         XCTAssertEqual(backfills.first?.sourceDisplayName, "Synthetic Folder")
+        XCTAssertNil(backfills.first?.mediaScope)
+        let (mixedData, mixedResponse) = try await URLSession.shared.data(
+            for: authorizedRequest(path: RemoteHTTPPaths.worldMapLocationBackfill + "?mediaScope=all")
+        )
+        XCTAssertEqual(try XCTUnwrap(mixedResponse as? HTTPURLResponse).statusCode, 200)
+        let mixed = try JSONDecoder().decode([RemoteWorldMapLocationBackfillSnapshot].self, from: mixedData)
+        XCTAssertEqual(mixed.first?.mediaScope, .all)
+        XCTAssertEqual(catalog.backfillScopes.last, .all)
+        let (_, invalidScopeResponse) = try await URLSession.shared.data(
+            for: authorizedRequest(path: RemoteHTTPPaths.worldMapLocationBackfill + "?mediaScope=audio")
+        )
+        XCTAssertEqual(try XCTUnwrap(invalidScopeResponse as? HTTPURLResponse).statusCode, 400)
+
 
         var backfillCommand = authorizedRequest(
             path: RemoteHTTPPaths.worldMapLocationBackfillRequests,
@@ -2960,7 +2973,8 @@ final class RemoteHTTPServerTests: XCTestCase {
             RemoteWorldMapLocationBackfillCommandRequest(
                 operationID: UUID(),
                 sourceID: sourceID,
-                action: .start
+                action: .start,
+                mediaScope: .videos
             )
         )
         let (commandData, commandResponse) = try await URLSession.shared.data(for: backfillCommand)
@@ -2970,6 +2984,8 @@ final class RemoteHTTPServerTests: XCTestCase {
             from: commandData
         )
         XCTAssertEqual(command.snapshot.sourceID, sourceID)
+        XCTAssertEqual(command.snapshot.mediaScope, .videos)
+        XCTAssertEqual(Array(catalog.backfillScopes.suffix(2)), [.videos, .videos])
         XCTAssertEqual(catalog.worldMapLocationBackfillStartCount, 1)
 
         let (placeData, placeResponse) = try await URLSession.shared.data(
@@ -8330,6 +8346,8 @@ private final class RemoteHTTPServerTestCatalog: RemoteCatalogServing, @unchecke
     private var storedOriginalAspectThumbnailCallCount = 0
     private var storedPresetInstallCallCount = 0
     private var storedWorldMapLocationBackfillStartCount = 0
+    private var storedBackfillScopes: [WorldMapMediaScope] = []
+    var backfillScopes: [WorldMapMediaScope] { lock.withLock { storedBackfillScopes } }
     private var storedWorldMapPlaceSearchCount = 0
     private var storedFavoriteMutationCallCount = 0
     private var storedFavoriteRetryCallCount = 0
@@ -8574,6 +8592,18 @@ private final class RemoteHTTPServerTestCatalog: RemoteCatalogServing, @unchecke
         -> [WorldMapLocationBackfillSnapshot]
     {
         worldMapLocationBackfills
+    }
+
+    func fetchWorldMapLocationBackfillSnapshots(mediaScope: WorldMapMediaScope) throws
+        -> [WorldMapLocationBackfillSnapshot]
+    {
+        lock.withLock { storedBackfillScopes.append(mediaScope) }
+        return worldMapLocationBackfills
+    }
+
+    func startWorldMapLocationBackfill(sourceID: UUID, mediaScope: WorldMapMediaScope) throws {
+        lock.withLock { storedBackfillScopes.append(mediaScope) }
+        try startWorldMapLocationBackfill(sourceID: sourceID)
     }
 
     func startWorldMapLocationBackfill(sourceID: UUID) throws {

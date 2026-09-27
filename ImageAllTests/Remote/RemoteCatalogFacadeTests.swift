@@ -3527,6 +3527,25 @@ final class RemoteCatalogFacadeTests: XCTestCase {
             )
         )
         XCTAssertEqual(catalog.worldMapLocationBackfillCancelCount, 1)
+        let mixed = RemoteWorldMapLocationBackfillCommandRequest(
+            operationID: UUID(), sourceID: sourceID, action: .start, mediaScope: .all
+        )
+        let mixedResult = try await facade.submitWorldMapLocationBackfillCommand(mixed)
+        XCTAssertEqual(mixedResult.snapshot.mediaScope, .all)
+        XCTAssertEqual(Array(catalog.backfillScopes.suffix(2)), [.all, .all])
+        do {
+            _ = try await facade.submitWorldMapLocationBackfillCommand(
+                RemoteWorldMapLocationBackfillCommandRequest(
+                    operationID: mixed.operationID, sourceID: sourceID,
+                    action: .start, mediaScope: .videos
+                )
+            )
+            XCTFail("Reusing an operation ID with another scope must conflict")
+        } catch let error as RemoteAPIError {
+            XCTAssertEqual(error.code, .conflict)
+        }
+        XCTAssertEqual(catalog.worldMapLocationBackfillStartCount, 2)
+
     }
 
     func testWorldMapPlaceTagsMapSearchConfirmAndReplayWithoutPhotoIdentifiers() async throws {
@@ -3825,6 +3844,8 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
     private var storedLastJobAction: JobActivityAction?
     private var storedLastJobActionID: UUID?
     private var storedWorldMapLocationBackfillStartCount = 0
+    private var storedBackfillScopes: [WorldMapMediaScope] = []
+    var backfillScopes: [WorldMapMediaScope] { lock.withLock { storedBackfillScopes } }
     private var storedWorldMapLocationBackfillCancelCount = 0
     private var storedWorldMapLocationBackfillRunnerCount = 0
     private var storedWorldMapPlaceSearchCount = 0
@@ -4193,6 +4214,18 @@ private final class RemoteCatalogServingStub: RemoteCatalogServing, @unchecked S
         -> [WorldMapLocationBackfillSnapshot]
     {
         worldMapLocationBackfills
+    }
+
+    func fetchWorldMapLocationBackfillSnapshots(mediaScope: WorldMapMediaScope) throws
+        -> [WorldMapLocationBackfillSnapshot]
+    {
+        lock.withLock { storedBackfillScopes.append(mediaScope) }
+        return worldMapLocationBackfills
+    }
+
+    func startWorldMapLocationBackfill(sourceID: UUID, mediaScope: WorldMapMediaScope) throws {
+        lock.withLock { storedBackfillScopes.append(mediaScope) }
+        try startWorldMapLocationBackfill(sourceID: sourceID)
     }
 
     func startWorldMapLocationBackfill(sourceID: UUID) throws {

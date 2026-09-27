@@ -1312,7 +1312,9 @@ actor RemoteHTTPServer {
                 let payload = try await facade.fetchWorldMapSelection(request)
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             case ("GET", RemoteHTTPPaths.worldMapLocationBackfill):
-                let payload = try await facade.fetchWorldMapLocationBackfillSnapshots()
+                let payload = try await facade.fetchWorldMapLocationBackfillSnapshots(
+                    mediaScope: try Self.parseWorldMapMediaScope(query["mediaScope"])
+                )
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             case ("POST", RemoteHTTPPaths.worldMapLocationBackfillRequests):
                 let request = try jsonDecoder.decode(

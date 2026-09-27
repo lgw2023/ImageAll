@@ -58,6 +58,7 @@ public struct RemoteCapabilities: Codable, Sendable, Equatable {
     /// Version 1 supports duration/orientation filters and numeric asset sorts.
     public let videoQueryVersion: Int?
     public let worldMapMediaScopeVersion: Int?
+    public let worldMapBackfillMediaScopeVersion: Int?
 
     public init(
         protocolVersion: Int = RemoteProtocolVersion.current,
@@ -79,7 +80,8 @@ public struct RemoteCapabilities: Codable, Sendable, Equatable {
         localLibrarySnapshotChunkBytes: Int? = nil,
         videoRangeStreamingVersion: Int? = nil,
         videoQueryVersion: Int? = nil,
-        worldMapMediaScopeVersion: Int? = nil
+        worldMapMediaScopeVersion: Int? = nil,
+        worldMapBackfillMediaScopeVersion: Int? = nil
     ) {
         self.protocolVersion = protocolVersion
         self.hostAppVersion = hostAppVersion
@@ -93,5 +95,6 @@ public struct RemoteCapabilities: Codable, Sendable, Equatable {
         self.videoRangeStreamingVersion = videoRangeStreamingVersion
         self.videoQueryVersion = videoQueryVersion
         self.worldMapMediaScopeVersion = worldMapMediaScopeVersion
+        self.worldMapBackfillMediaScopeVersion = worldMapBackfillMediaScopeVersion
     }
 }

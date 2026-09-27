@@ -90,7 +90,8 @@ actor RemoteCatalogFacade {
                 ? RemoteLocalLibrarySnapshotChunk.maximumChunkBytes : nil,
             videoRangeStreamingVersion: supportsRevisionedVideoRanges ? 1 : nil,
             videoQueryVersion: 1,
-            worldMapMediaScopeVersion: 1
+            worldMapMediaScopeVersion: 1,
+            worldMapBackfillMediaScopeVersion: 1
         )
     }
 
@@ -783,13 +784,15 @@ actor RemoteCatalogFacade {
         }
     }
 
-    func fetchWorldMapLocationBackfillSnapshots() throws
+    func fetchWorldMapLocationBackfillSnapshots(
+        mediaScope: RemoteWorldMapMediaScope? = nil
+    ) throws
         -> [RemoteWorldMapLocationBackfillSnapshot]
     {
         do {
-            return try catalog.fetchWorldMapLocationBackfillSnapshots().map(
-                Self.mapWorldMapLocationBackfillSnapshot
-            )
+            return try catalog.fetchWorldMapLocationBackfillSnapshots(
+                mediaScope: WorldMapMediaScope(rawValue: (mediaScope ?? .photos).rawValue)!
+            ).map { Self.mapWorldMapLocationBackfillSnapshot($0, mediaScope: mediaScope) }
         } catch {
             throw RemoteAPIError(code: .internalError, message: "位置目录状态读取失败")
         }
@@ -799,23 +802,26 @@ actor RemoteCatalogFacade {
         _ request: RemoteWorldMapLocationBackfillCommandRequest
     ) async throws -> RemoteWorldMapLocationBackfillCommandResponse {
         let catalog = self.catalog
+        let mediaScope = WorldMapMediaScope(rawValue: (request.mediaScope ?? .photos).rawValue)!
         let key = RemoteIdempotencyStore.MutationKey(
             kind: "worldMapLocationBackfill",
             subject: request.sourceID.uuidString.lowercased(),
             assetIDs: [],
-            action: request.action.rawValue
+            action: request.action.rawValue + (mediaScope == .photos ? "" : ":" + mediaScope.rawValue)
         )
         do {
             let (snapshot, replayed): (RemoteWorldMapLocationBackfillSnapshot, Bool) =
                 try await idempotency.perform(operationID: request.operationID, key: key) {
                     switch request.action {
                     case .start:
-                        try catalog.startWorldMapLocationBackfill(sourceID: request.sourceID)
+                        try catalog.startWorldMapLocationBackfill(
+                            sourceID: request.sourceID, mediaScope: mediaScope
+                        )
                     case .cancel:
                         try catalog.cancelWorldMapLocationBackfill(sourceID: request.sourceID)
                     }
                     guard let snapshot = try catalog
-                        .fetchWorldMapLocationBackfillSnapshots()
+                        .fetchWorldMapLocationBackfillSnapshots(mediaScope: mediaScope)
                         .first(where: { $0.sourceID == request.sourceID })
                     else {
                         throw ProductionLibraryWorkspaceError
@@ -829,7 +835,9 @@ actor RemoteCatalogFacade {
                             )
                         }
                     }
-                    return Self.mapWorldMapLocationBackfillSnapshot(snapshot)
+                    return Self.mapWorldMapLocationBackfillSnapshot(
+                        snapshot, mediaScope: request.mediaScope
+                    )
                 }
             return RemoteWorldMapLocationBackfillCommandResponse(
                 operationID: request.operationID,
@@ -838,7 +846,7 @@ actor RemoteCatalogFacade {
             )
         } catch ProductionLibraryWorkspaceError.worldMapLocationBackfillSourceUnavailable,
                 CatalogQueryError.notFound {
-            throw RemoteAPIError(code: .notFound, message: "照片来源当前不可用")
+            throw RemoteAPIError(code: .notFound, message: "媒体来源当前不可用")
         } catch RemoteIdempotencyStore.IdempotencyError.conflict {
             throw RemoteAPIError(code: .conflict, message: "operationID 已用于不同的位置目录操作")
         } catch let error as RemoteAPIError {
@@ -3105,7 +3113,8 @@ actor RemoteCatalogFacade {
     }
 
     private static func mapWorldMapLocationBackfillSnapshot(
-        _ snapshot: WorldMapLocationBackfillSnapshot
+        _ snapshot: WorldMapLocationBackfillSnapshot,
+        mediaScope: RemoteWorldMapMediaScope? = nil
     ) -> RemoteWorldMapLocationBackfillSnapshot {
         RemoteWorldMapLocationBackfillSnapshot(
             sourceID: snapshot.sourceID,
@@ -3136,7 +3145,8 @@ actor RemoteCatalogFacade {
                 )
             },
             canStart: snapshot.canStart,
-            canCancel: snapshot.canCancel
+            canCancel: snapshot.canCancel,
+            mediaScope: mediaScope
         )
     }
 

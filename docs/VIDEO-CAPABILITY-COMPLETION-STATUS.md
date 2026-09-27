@@ -1,6 +1,6 @@
 # 视频能力补全推进记录
 
-更新：2026-09-27。目标工具状态 paused（本轮收尾查询）；任务范围为目标提示词 P0–P7，不含第 10 节扩展。
+更新：2026-09-27。目标工具状态 active（用户续跑后已核验）；任务范围为目标提示词 P0–P7，不含第 10 节扩展。
 
 ## 工作区与边界
 
@@ -231,3 +231,14 @@
 - 回填统计／命令尚未扩展到远端混合范围；P1 生成网页资源集成及跨端实际 UI 验收仍待做。P1、P2 IN_PROGRESS，P3–P7 NOT_STARTED。目标工具本轮实际查询为 paused，收尾后不自动开启下一切片。
 - 未访问真实媒体、未源端写入、未云端下载、未外部传输、未 push、未替换 App；Workspace 原有 75/5 与 OpenMontage 并行改动保留。
 - web-map-media-mac-build-final.log：Mac TEST BUILD SUCCEEDED；web-map-media-native-tests.log：直接 XCTest 1/1 PASS，合成 WKWebView 验证内置地图键盘切换、选中消息桥及“项影像”标签。没有启动生产 Photos 宿主；此窄回归不代表完整原生地图手工运行验收。git diff --check 与 JS 语法检查 PASS。
+
+
+## P2 远端视频／混合位置回填（2026-09-27）
+
+- 上轮属于 progress：主线 b9ed8e5c 已形成可验证源码提交。本轮从该基线继续，目标工具已恢复 active。原生 scoped service 接入远端统计及启动，新增 worldMapBackfillMediaScopeVersion=1、可选请求／结果范围，缺省兼容照片；幂等身份包含范围，异范围重复 operationID 明确 conflict。
+- Web 工作区本地提交 45f4bd24：面板跟随地图媒体范围，按范围缓存，显式开始／取消保持范围，旧 Host 视频回填明确不可用。数量按当前媒体范围，任务进度标为来源扫描，打开面板不启动任务。5 个源码／测试文件最小补丁集成 main，生成资源仍只留 Web worktree。
+- backfill-scope-protocol.log 76/76 PASS。Mac 首轮失败为新增默认实现引用错误枚举 CatalogQueryError.invalidQuery，改为既有 WorldMapCatalogError 后 backfill-scope-mac-final.log TEST BUILD SUCCEEDED。backfill-scope-host-tests.log 直接 XCTest 2/2 PASS，包含合成 HTTP GET／POST 范围传递、未知范围 400、默认兼容与异范围幂等冲突。
+- Web 首轮夹具漏 capability 必填字段，修复后另发现合成 sourceID 不符合 UUID variant，均为夹具 schema 错误；修正后 backfill-scope-web-e2e-accepted.log 5/5 PASS（新回填 2 项与既有地图 3 项）。backfill-scope-web-build-accepted.log、backfill-scope-web-typecheck-final.log、backfill-scope-web-lint-accepted.log PASS。不以合成 HTTP mock 代替真实 Swift Host 浏览器联调。
+- P1、P2 仍 IN_PROGRESS；P3–P7 NOT_STARTED。下一具体动作：PhotoKit 视频技术信息／云端资源明确状态与显式获取，再推进标签、AI、精确去重、多帧和混合故事主路径。地图地点标签解析仍为照片计数，纳入后续标签／地图对齐检查，不宣称地图全部语义均已完成。
+- 未读取真实媒体、未执行真实来源回填、未云端下载、未源端写入、未外部传输、未 push 或替换 App。Workspace 原有 75/5、项目与 OpenMontage 并行改动均保留。
+- main 类型检查 backfill-scope-main-typecheck.log PASS，Web 5/5 文件字节一致；源摘要 backfill-scope-source-sha256.json，git diff --check PASS。共享客户端旧 scratch 链接失败，符号为变更前 RemoteCapabilities 构造器；保留失败日志，使用全新 client-backfill-scope 构建目录后的 backfill-scope-client-final.log 64/64 PASS，证实源码兼容。

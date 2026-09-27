@@ -36,16 +36,29 @@ export function fetchWorldMapSelection(query: WorldMapSelectionQuery, signal?: A
   });
 }
 
-export function fetchLocationBackfills(signal?: AbortSignal) {
-  return requestJSON('/v1/world-map/location-backfill', z.array(locationBackfillSchema), {
+export function fetchLocationBackfills(
+  signal?: AbortSignal,
+  mediaScope: WorldMapMediaScope = 'photos',
+) {
+  const suffix = mediaScope === 'photos' ? '' : `?mediaScope=${mediaScope}`;
+  return requestJSON(`/v1/world-map/location-backfill${suffix}`, z.array(locationBackfillSchema), {
     signal: signal ?? null,
   });
 }
 
-export function applyLocationBackfill(sourceID: string, action: 'start' | 'cancel') {
+export function applyLocationBackfill(
+  sourceID: string,
+  action: 'start' | 'cancel',
+  mediaScope: WorldMapMediaScope = 'photos',
+) {
   return requestJSON('/v1/world-map/location-backfill/requests', locationBackfillResponseSchema, {
     method: 'POST',
-    body: JSON.stringify({ operationID: crypto.randomUUID(), sourceID, action }),
+    body: JSON.stringify({
+      operationID: crypto.randomUUID(),
+      sourceID,
+      action,
+      ...(mediaScope === 'photos' ? {} : { mediaScope }),
+    }),
   });
 }
 
