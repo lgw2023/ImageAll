@@ -2,6 +2,57 @@ import XCTest
 @testable import ImageAll
 
 final class AssetCatalogQueryTests: XCTestCase {
+    func testVideoDurationOrientationAndNumericSortsHaveStableNullLastPages() throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+        let ids = [fixture.ids.assetNewest, fixture.ids.assetMiddle, fixture.ids.assetOldest, fixture.ids.assetNoTime]
+        let durations: [Int64?] = [59_999, 60_000, 600_000, nil]
+        let sizes: [Int64?] = [100, 100, 200, nil]
+        let widths: [Int?] = [640, 480, 640, nil]
+        let heights: [Int?] = [480, 640, 640, nil]
+        try fixture.database.pool.write { db in
+            for (index, id) in ids.enumerated() {
+                try db.execute(sql: "UPDATE asset SET media_kind = 'video', media_type = 'public.mpeg-4', duration_ms = ?, width = ?, height = ?, availability = 'available' WHERE id = ?",
+                               arguments: [durations[index], widths[index], heights[index], id.uuidString.lowercased()])
+                try db.execute(sql: "DELETE FROM file_fingerprint WHERE asset_id = ?", arguments: [id.uuidString.lowercased()])
+                if let size = sizes[index] {
+                    try db.execute(sql: "INSERT INTO file_fingerprint(asset_id, size_bytes, modified_at_ns) VALUES (?, ?, 1)", arguments: [id.uuidString.lowercased(), size])
+                }
+            }
+        }
+        func page(_ filter: AssetPageFilter, sort: AssetPageSort = .durationShortest, cursor: AssetPageCursor? = nil, limit: Int = 100) throws -> AssetPageResult {
+            try fixture.query.fetchAssetPage(AssetPageRequest(filter: filter, sort: sort, cursor: cursor, limit: limit))
+        }
+        let base = AssetPageFilter(mediaKinds: [.video])
+        XCTAssertEqual(try page(AssetPageFilter(mediaKinds: [.video], videoDuration: .underMinute)).items.map(\.assetID), [ids[0]])
+        XCTAssertEqual(try page(AssetPageFilter(mediaKinds: [.video], videoDuration: .oneToTenMinutes)).items.map(\.assetID), [ids[1]])
+        XCTAssertEqual(try page(AssetPageFilter(mediaKinds: [.video], videoDuration: .tenMinutesOrMore)).items.map(\.assetID), [ids[2]])
+        XCTAssertEqual(try page(AssetPageFilter(mediaKinds: [.video], videoOrientation: .square)).items.map(\.assetID), [ids[2]])
+        XCTAssertEqual(try page(AssetPageFilter(mediaKinds: [.video], videoOrientation: .portrait)).items.map(\.assetID), [ids[1]])
+        XCTAssertEqual(try page(AssetPageFilter(mediaKinds: [.video], videoOrientation: .landscape)).items.map(\.assetID), [ids[0]])
+        XCTAssertTrue(try page(AssetPageFilter(mediaKinds: [.image], videoDuration: .underMinute)).items.isEmpty)
+        let ascendingTie = [ids[0], ids[1]].sorted { $0.uuidString < $1.uuidString }
+        let expected: [(AssetPageSort, [UUID])] = [
+            (.durationShortest, ids), (.durationLongest, [ids[2], ids[1], ids[0], ids[3]]),
+            (.fileSizeSmallest, ascendingTie + [ids[2], ids[3]]),
+            (.fileSizeLargest, [ids[2]] + ascendingTie.reversed() + [ids[3]])
+        ]
+        for (sort, expectedIDs) in expected {
+            XCTAssertEqual(try page(base, sort: sort).items.map(\.assetID), expectedIDs)
+            var collected: [UUID] = []
+            var cursor: AssetPageCursor?
+            repeat {
+                let next = try page(base, sort: sort, cursor: cursor, limit: 1)
+                collected += next.items.map(\.assetID)
+                cursor = next.nextCursor
+                XCTAssertLessThanOrEqual(collected.count, ids.count)
+            } while cursor != nil && collected.count <= ids.count
+            XCTAssertEqual(collected, expectedIDs)
+        }
+        let first = try page(base, sort: .durationShortest, limit: 1)
+        XCTAssertThrowsError(try page(base, sort: .fileSizeSmallest, cursor: first.nextCursor))
+        XCTAssertTrue(try page(AssetPageFilter(mediaKinds: [.image])).items.allSatisfy { $0.mediaKind == .image })
+    }
+
     func testSourceFolderPagesLoadOnlyDirectChildrenWithinLimit() throws {
         let fixture = try CatalogQueryTestSupport.openQueryDatabase()
         let sourceID = fixture.ids.sourceA

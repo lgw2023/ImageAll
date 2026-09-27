@@ -59,6 +59,7 @@ enum AssetPageSort: String, Sendable, Equatable, Codable {
     case fileModifiedNewest
     case fileModifiedOldest
     case fileNameAscending
+    case durationShortest, durationLongest, fileSizeSmallest, fileSizeLargest
 }
 
 enum TagMatchMode: String, Sendable, Equatable {
@@ -155,6 +156,30 @@ struct LibrarySourceFolderPage: Sendable, Equatable {
     let nextOffset: Int?
 }
 
+enum VideoDurationFilter: String, Sendable, Equatable, Codable, CaseIterable {
+    case any, underMinute, oneToTenMinutes, tenMinutesOrMore
+    var title: String {
+        switch self {
+        case .any: "全部时长"
+        case .underMinute: "少于 1 分钟"
+        case .oneToTenMinutes: "1 至 10 分钟（不含 10）"
+        case .tenMinutesOrMore: "10 分钟及以上"
+        }
+    }
+}
+
+enum VideoOrientationFilter: String, Sendable, Equatable, Codable, CaseIterable {
+    case any, landscape, portrait, square
+    var title: String {
+        switch self {
+        case .any: "全部方向"
+        case .landscape: "横屏"
+        case .portrait: "竖屏"
+        case .square: "正方形"
+        }
+    }
+}
+
 struct AssetPageFilter: Sendable, Equatable {
     var sourceIDs: [UUID] = []
     var folderScope: AssetFolderScope?
@@ -164,6 +189,8 @@ struct AssetPageFilter: Sendable, Equatable {
     var availabilities: [AssetAvailability] = []
     var mediaKinds: [MediaKind] = []
     var mediaTypes: [String] = []
+    var videoDuration: VideoDurationFilter = .any
+    var videoOrientation: VideoOrientationFilter = .any
     var tagPresence: TagPresenceFilter = .any
     var favorite: FavoriteFilter = .any
     var searchText: String?
@@ -178,6 +205,8 @@ struct AssetPageFilter: Sendable, Equatable {
         availabilities: [AssetAvailability] = [],
         mediaKinds: [MediaKind] = [],
         mediaTypes: [String] = [],
+        videoDuration: VideoDurationFilter = .any,
+        videoOrientation: VideoOrientationFilter = .any,
         tagPresence: TagPresenceFilter = .any,
         favorite: FavoriteFilter = .any,
         searchText: String? = nil,
@@ -191,6 +220,8 @@ struct AssetPageFilter: Sendable, Equatable {
         self.availabilities = availabilities
         self.mediaKinds = mediaKinds
         self.mediaTypes = mediaTypes
+        self.videoDuration = videoDuration
+        self.videoOrientation = videoOrientation
         self.tagPresence = tagPresence
         self.favorite = favorite
         self.searchText = searchText
@@ -199,6 +230,7 @@ struct AssetPageFilter: Sendable, Equatable {
 }
 
 enum AssetPageCursorPayload: Sendable, Equatable, Codable {
+    case numericSort(emptyMarker: Int, value: Int64?, assetID: UUID)
     case timeSort(timeEmptyMarker: Int, coalescedTimeMs: Int64?, assetID: UUID)
     case embeddedTimeSort(timeEmptyMarker: Int, embeddedTimeMs: Int64?, assetID: UUID)
     case fileModifiedTimeSort(timeEmptyMarker: Int, fileModifiedTimeMs: Int64?, assetID: UUID)

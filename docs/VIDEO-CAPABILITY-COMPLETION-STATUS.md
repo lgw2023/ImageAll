@@ -18,7 +18,7 @@
 |---|---|---|---|
 | P0 | VERIFIED | PASS（静态盘点） | 基线、边界、首个切片与测试路径明确；不等于功能通过 |
 | P1 | IN_PROGRESS | 分切片 PASS；完整闭环未验 | 媒体契约已交付；Mac／iPhone 查看器构建／合成测试 PASS；跨端联调待补 |
-| P2 | IN_PROGRESS | 首切片 PASS | 文件夹视频内嵌时间／位置入库已验；回填、规格、筛选／地图／云端获取待做 |
+| P2 | IN_PROGRESS | 首切片 PASS | 文件夹时间／位置／技术信息与按需补读已验；原生查询本轮补齐，地图／云端与远端条件待做 |
 | P3 | NOT_STARTED | NOT_RUN | 复核代表帧模型隔离，接远端建议与审核持久事实 |
 | P4 | NOT_STARTED | NOT_RUN | 有界完整字节摘要、修订复核、合成回收恢复 |
 | P5 | NOT_STARTED | NOT_RUN | 版本化有限多帧与时间点证据、内容相似独立候选 |
@@ -144,3 +144,14 @@
 - `video-technical-protocol-tests.log`：协议 74/74 PASS，含新字段往返与旧 Host 缺字段兼容。Web 独立工作区 typecheck / lint / build PASS、契约 15/15 PASS，日志 `video-technical-web-*.log`；main 集成后 typecheck 与契约再次验证，日志 `video-technical-main-*.log`。
 - LibraryWorkspace 只暂存本轮信息区改动，保存启动副本和独立补丁；其余并行工作保持原样。源码摘要见 `p2-technical-source-sha256.json`。没有真实媒体读取、源端写入、云端获取或付费调用。
 - 范围仍不完整：PhotoKit 技术信息提取、视频筛选／排序、混合地图范围、云端主动获取未完成；P1 的资源集成与 UI 验收继续保留。下一切片优先视频筛选与稳定分页，再接地图和 PhotoKit 差异。
+
+## P2 原生视频筛选与时长／大小排序（2026-09-27）
+
+- 新增共享目录查询条件：少于 1 分钟、1–10 分钟（不含 10）、10 分钟及以上，以及按已归一化宽高判断的横屏／竖屏／正方形。缺失元数据不命中相关条件。SQL 对视频条件显式限定媒体域，计数与分页共用条件构造。
+- Mac 筛选菜单与排序菜单接入实际模型和查询；新增时长／文件大小双向排序，未知值后置，同值以资产 ID 稳定排序，使用独立 numericSort 游标。不同排序拒绝游标混用；筛选变化重载首屏，所有媒体域切换路径统一清除视频条件，照片不保留时长排序。
+- `video-query-tests.log`：6/6 PASS，覆盖新查询的边界时长、三种方向、未知值、同大小、四种数值排序逐条分页，以及已有照片排序、时间排序、键集翻页、插入前项和游标错误回归。素材仅临时数据库记录，无源媒体读取。
+- 首轮编译发现测试 fake 的游标 payload switch 需要处理新数值分支，已补齐；查询实现测试通过。最终模型状态测试与构建结果如下。
+- 该切片为原生入口与目录层；Web／iPhone 尚未开放这些新条件与排序，Host 协议／能力声明待下一切片对齐。未以当前小型合成目录宣称大库排序性能，亦未完成地图与云端能力。
+
+- `video-query-build-accepted.log`：Mac TEST BUILD SUCCEEDED；`video-query-model-tests.log`：`LibraryWorkspaceModelTests/testMediaKindSwitchDefaultsToPhotosAndClearsCrossPageSelection` PASS 1/1，验证模型向服务传递视频条件／排序、切回照片清除条件并恢复照片结果。直接 bundle 与私有 TMPDIR 沿用既有路径，未启动生产 Photos 宿主。
+- 本轮原生 Workspace 以启动副本生成独立 staging 补丁，保留原有故事相关改动；源码摘要见 `p2-query-source-sha256.json`。`git diff --check` PASS。P1 未完成项继续保留，P2 下步推进远端查询契约与对应客户端入口，然后继续地图与 PhotoKit 差异。

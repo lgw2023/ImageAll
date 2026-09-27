@@ -1601,8 +1601,19 @@ final class LibraryWorkspaceModel: ObservableObject {
     @Published private(set) var tagMatchMode: TagMatchMode = .all
     @Published private(set) var tagPresence: TagPresenceFilter = .any
     @Published private(set) var selectedAvailabilities: [AssetAvailability] = []
-    @Published private(set) var selectedMediaKind: MediaKind = .image
+    @Published private(set) var selectedMediaKind: MediaKind = .image {
+        didSet {
+            guard oldValue != selectedMediaKind else { return }
+            videoDurationFilter = .any
+            videoOrientationFilter = .any
+            if selectedMediaKind == .image && (sort == .durationShortest || sort == .durationLongest) {
+                sort = .fileNameAscending
+            }
+        }
+    }
     @Published private(set) var selectedMediaTypes: [String] = []
+    @Published private(set) var videoDurationFilter: VideoDurationFilter = .any
+    @Published private(set) var videoOrientationFilter: VideoOrientationFilter = .any
     @Published private(set) var worldMapGalleryScope: WorldMapGalleryScope?
     @Published private(set) var sort: AssetPageSort = .fileNameAscending
     @Published private(set) var gridDensity: LibraryGridDensity = .default
@@ -2675,6 +2686,7 @@ final class LibraryWorkspaceModel: ObservableObject {
             || hasActiveTagFilters
             || !selectedAvailabilities.isEmpty
             || !selectedMediaTypes.isEmpty
+            || videoDurationFilter != .any || videoOrientationFilter != .any
             || !TagNameNormalizer.trimUnicodeWhiteSpace(searchText).isEmpty
     }
 
@@ -2696,6 +2708,8 @@ final class LibraryWorkspaceModel: ObservableObject {
         if !selectedMediaTypes.isEmpty {
             parts.append("格式筛选")
         }
+        if videoDurationFilter != .any { parts.append(videoDurationFilter.title) }
+        if videoOrientationFilter != .any { parts.append(videoOrientationFilter.title) }
         return parts.joined(separator: " · ")
     }
 
@@ -5348,6 +5362,7 @@ final class LibraryWorkspaceModel: ObservableObject {
 
     var hasAssetPropertyFilters: Bool {
         !selectedAvailabilities.isEmpty || !selectedMediaTypes.isEmpty
+            || videoDurationFilter != .any || videoOrientationFilter != .any
     }
 
     var selectedSourceIsPhotos: Bool {
@@ -10305,6 +10320,18 @@ final class LibraryWorkspaceModel: ObservableObject {
         await loadFirstPage()
     }
 
+    func setVideoDurationFilter(_ filter: VideoDurationFilter) async {
+        guard selectedMediaKind == .video else { return }
+        videoDurationFilter = filter
+        await loadFirstPage()
+    }
+
+    func setVideoOrientationFilter(_ filter: VideoOrientationFilter) async {
+        guard selectedMediaKind == .video else { return }
+        videoOrientationFilter = filter
+        await loadFirstPage()
+    }
+
     func setMediaKind(_ mediaKind: MediaKind) async {
         guard selectedMediaKind != mediaKind else { return }
         stopVideoHoverPlayback()
@@ -10313,6 +10340,8 @@ final class LibraryWorkspaceModel: ObservableObject {
         searchDebounceTask?.cancel()
         selectedMediaKind = mediaKind
         selectedMediaTypes = []
+        videoDurationFilter = .any
+        videoOrientationFilter = .any
         selectedAssetIDs = []
         selectionAnchorID = nil
         isSinglePhotoPresented = false
@@ -10338,6 +10367,8 @@ final class LibraryWorkspaceModel: ObservableObject {
         guard hasAssetPropertyFilters else { return }
         selectedAvailabilities = []
         selectedMediaTypes = []
+        videoDurationFilter = .any
+        videoOrientationFilter = .any
         await loadFirstPage()
     }
 
@@ -10417,6 +10448,8 @@ final class LibraryWorkspaceModel: ObservableObject {
             availabilities: selectedAvailabilities,
             mediaKinds: [selectedMediaKind],
             mediaTypes: selectedMediaTypes,
+            videoDuration: selectedMediaKind == .video ? videoDurationFilter : .any,
+            videoOrientation: selectedMediaKind == .video ? videoOrientationFilter : .any,
             tagPresence: tagPresence,
             favorite: isBrowsingFavorites ? .favorited : .any,
             searchText: searchText,
@@ -11693,6 +11726,8 @@ extension LibraryWorkspaceModel {
             tagPresence = .any
             selectedAvailabilities = []
             selectedMediaTypes = []
+            videoDurationFilter = .any
+            videoOrientationFilter = .any
             searchText = ""
             worldMapGalleryScope = scope
         case .all:
@@ -16941,10 +16976,27 @@ struct LibraryWorkspaceView: View {
 
     private var filterMenu: some View {
         Menu {
+            if model.selectedMediaKind == .video {
+                Menu("视频时长") {
+                    ForEach(VideoDurationFilter.allCases, id: \.self) { value in
+                        Button { Task { await model.setVideoDurationFilter(value) } } label: {
+                            Label(value.title, systemImage: model.videoDurationFilter == value ? "checkmark" : "circle")
+                        }
+                    }
+                }
+                Menu("画面方向") {
+                    ForEach(VideoOrientationFilter.allCases, id: \.self) { value in
+                        Button { Task { await model.setVideoOrientationFilter(value) } } label: {
+                            Label(value.title, systemImage: model.videoOrientationFilter == value ? "checkmark" : "circle")
+                        }
+                    }
+                }
+                Divider()
+            }
             Button {
                 Task { await model.setTagPresence(.any) }
             } label: {
-                Label("全部照片", systemImage: model.tagPresence == .any ? "checkmark" : "circle")
+                Label(model.selectedMediaKind == .video ? "全部视频" : "全部照片", systemImage: model.tagPresence == .any ? "checkmark" : "circle")
             }
             .persistentHelp("取消“无标签”条件，显示当前范围内有标签和无标签的照片。")
             Button {
@@ -17053,7 +17105,7 @@ struct LibraryWorkspaceView: View {
         }
         .libraryToolbarHelp(
             "筛选",
-            detail: "按标签、可用状态与文件格式筛选当前照片列表。"
+            detail: "按标签、状态、格式筛选媒体；视频还可筛选时长和画面方向。"
         )
     }
 
@@ -17108,6 +17160,13 @@ struct LibraryWorkspaceView: View {
             sortButton(.fileModifiedOldest, title: "文件修改时间：旧到新")
             Divider()
             sortButton(.fileNameAscending, title: "文件名升序")
+            Divider()
+            sortButton(.fileSizeLargest, title: "文件大小：大到小")
+            sortButton(.fileSizeSmallest, title: "文件大小：小到大")
+            if model.selectedMediaKind == .video {
+                sortButton(.durationLongest, title: "视频时长：长到短")
+                sortButton(.durationShortest, title: "视频时长：短到长")
+            }
         } label: {
             switch toolbarDisplayModeSettings.displayMode {
             case .iconOnly:
@@ -17118,7 +17177,7 @@ struct LibraryWorkspaceView: View {
         }
         .libraryToolbarHelp(
             "排序",
-            detail: "可分别按媒体内嵌时间、文件修改时间或文件名排列照片；原有综合时间排序保持兼容。"
+            detail: "按时间、文件名或大小排序，视频还可按时长排序；未知值位于末尾。"
         )
     }
 
@@ -17128,7 +17187,7 @@ struct LibraryWorkspaceView: View {
         } label: {
             Label(title, systemImage: model.sort == sort ? "checkmark" : "circle")
         }
-        .persistentHelp("按“\(title)”重新排列当前照片列表。")
+        .persistentHelp("按“\(title)”重新排列当前媒体列表。")
     }
 
     private func sortTitle(_ sort: AssetPageSort) -> String {
@@ -17140,6 +17199,10 @@ struct LibraryWorkspaceView: View {
         case .fileModifiedNewest: "文件时间↓"
         case .fileModifiedOldest: "文件时间↑"
         case .fileNameAscending: "文件名升序"
+        case .durationShortest: "时长↑"
+        case .durationLongest: "时长↓"
+        case .fileSizeSmallest: "大小↑"
+        case .fileSizeLargest: "大小↓"
         }
     }
 
@@ -17220,6 +17283,8 @@ struct LibraryWorkspaceView: View {
         model.excludedTagFilterIDs.count +
         (model.tagPresence == .any ? 0 : 1) +
         model.selectedAvailabilities.count +
+        (model.videoDurationFilter == .any ? 0 : 1) +
+        (model.videoOrientationFilter == .any ? 0 : 1) +
         Self.mediaFormatFilterOptions.filter {
             model.isMediaTypeFilterGroupSelected($0.mediaTypes)
         }.count

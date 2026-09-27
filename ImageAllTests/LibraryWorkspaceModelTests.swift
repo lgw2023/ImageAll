@@ -12449,6 +12449,18 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertEqual(model.items.map(\.assetID), [video.assetID])
         XCTAssertTrue(model.selectedAssetIDs.isEmpty)
         XCTAssertFalse(model.isSinglePhotoPresented)
+        await model.setVideoDurationFilter(.underMinute)
+        await model.setVideoOrientationFilter(.portrait)
+        XCTAssertEqual(service.lastFilter.videoDuration, .underMinute)
+        XCTAssertEqual(service.lastFilter.videoOrientation, .portrait)
+        await model.setSort(.durationLongest)
+        XCTAssertEqual(service.lastSort, .durationLongest)
+        await model.setMediaKind(.image)
+        XCTAssertEqual(service.lastFilter.videoDuration, .any)
+        XCTAssertEqual(service.lastFilter.videoOrientation, .any)
+        XCTAssertEqual(model.sort, .fileNameAscending)
+        XCTAssertEqual(model.items.map(\.assetID), [photo.assetID])
+
     }
 
     func testVideoViewingKeepsTagActionsAndStopsOnSourceNavigation() async throws {
@@ -18334,7 +18346,8 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
             }
             let cursorAssetID: UUID? = cursor.map {
                 switch $0.payload {
-                case let .timeSort(_, _, assetID),
+                case let .numericSort(_, _, assetID),
+                     let .timeSort(_, _, assetID),
                      let .embeddedTimeSort(_, _, assetID),
                      let .fileModifiedTimeSort(_, _, assetID),
                      let .fileNameSort(_, _, assetID):

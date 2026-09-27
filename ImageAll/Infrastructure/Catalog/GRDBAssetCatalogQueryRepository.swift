@@ -203,6 +203,7 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
                     asset.media_kind AS media_kind,
                     asset.media_type AS media_type,
                     asset.duration_ms AS duration_ms,
+                    \(numericSortValueSQL(for: request.sort)) AS numeric_sort_value,
                     asset.media_created_at_ms AS media_created_at_ms,
                     asset.media_modified_at_ms AS media_modified_at_ms,
                     asset.file_modified_at_ms AS file_modified_at_ms,
@@ -250,6 +251,7 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
                 asset.media_kind AS media_kind,
                 asset.media_type AS media_type,
                 asset.duration_ms AS duration_ms,
+                    \(numericSortValueSQL(for: request.sort)) AS numeric_sort_value,
                 asset.media_created_at_ms AS media_created_at_ms,
                 asset.media_modified_at_ms AS media_modified_at_ms,
                 asset.file_modified_at_ms AS file_modified_at_ms,
@@ -587,8 +589,21 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
         return AssetPageResult(items: items, nextCursor: nextCursor)
     }
 
+    private func numericSortValueSQL(for sort: AssetPageSort) -> String {
+        switch sort {
+        case .durationShortest, .durationLongest: "asset.duration_ms"
+        case .fileSizeSmallest, .fileSizeLargest:
+            "(SELECT size_bytes FROM file_fingerprint WHERE asset_id = asset.id)"
+        default: "NULL"
+        }
+    }
+
     private func makeCursor(from row: Row, sort: AssetPageSort, assetID: UUID) -> AssetPageCursor {
         switch sort {
+        case .durationShortest, .durationLongest, .fileSizeSmallest, .fileSizeLargest:
+            let value: Int64? = row["numeric_sort_value"]
+            return AssetPageCursor(sort: sort, payload: .numericSort(emptyMarker: value == nil ? 1 : 0,
+                                                                    value: value, assetID: assetID))
         case .newest, .oldest:
             let marker = row.intValue(named: "time_empty_marker")
             let coalesced: Int64? = row["coalesced_time_ms"]
@@ -630,6 +645,10 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
 
     private func orderClause(for sort: AssetPageSort) -> String {
         switch sort {
+        case .durationShortest, .durationLongest, .fileSizeSmallest, .fileSizeLargest:
+            let value = numericSortValueSQL(for: sort)
+            let direction = (sort == .durationLongest || sort == .fileSizeLargest) ? "DESC" : "ASC"
+            return "(\(value) IS NULL) ASC, \(value) \(direction), asset.id \(direction)"
         case .newest:
             return """
             \(CatalogQuerySQLHelpers.timeEmptyMarkerSQL) ASC,
@@ -680,6 +699,8 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
     /// cost estimate and forcing SQLite to sort the whole matching result set.
     private func assetFromClause(for sort: AssetPageSort) -> String {
         switch sort {
+        case .durationShortest, .durationLongest, .fileSizeSmallest, .fileSizeLargest:
+            return "FROM asset"
         case .newest:
             return "FROM asset INDEXED BY asset_current_time_desc_idx"
         case .oldest:
@@ -699,6 +720,15 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
 
     private func buildCursorClause(cursor: AssetPageCursor, arguments: inout StatementArguments) throws -> String {
         switch (cursor.sort, cursor.payload) {
+        case (.durationShortest, .numericSort(let marker, let value, let id)),
+             (.durationLongest, .numericSort(let marker, let value, let id)),
+             (.fileSizeSmallest, .numericSort(let marker, let value, let id)),
+             (.fileSizeLargest, .numericSort(let marker, let value, let id)):
+            let expression = numericSortValueSQL(for: cursor.sort)
+            return buildTimeCursorClause(marker: marker, time: value, assetID: id,
+                                         markerSQL: "(\(expression) IS NULL)", timeSQL: expression,
+                                         descending: cursor.sort == .durationLongest || cursor.sort == .fileSizeLargest,
+                                         arguments: &arguments)
         case (.newest, .timeSort(let marker, let time, let assetID)):
             return buildTimeCursorClause(
                 marker: marker,
@@ -929,6 +959,25 @@ struct GRDBAssetCatalogQueryRepository: AssetCatalogQueryPort, Sendable {
             clauses.append("asset.media_kind IN (\(placeholders))")
             for mediaKind in filter.mediaKinds {
                 arguments += [mediaKind.rawValue]
+            }
+        }
+
+        if filter.videoDuration != .any || filter.videoOrientation != .any {
+            clauses.append("asset.media_kind = 'video'")
+        }
+        switch filter.videoDuration {
+        case .any: break
+        case .underMinute: clauses.append("asset.duration_ms > 0 AND asset.duration_ms < 60000")
+        case .oneToTenMinutes: clauses.append("asset.duration_ms >= 60000 AND asset.duration_ms < 600000")
+        case .tenMinutesOrMore: clauses.append("asset.duration_ms >= 600000")
+        }
+        if filter.videoOrientation != .any {
+            clauses.append("asset.width > 0 AND asset.height > 0")
+            switch filter.videoOrientation {
+            case .any: break
+            case .landscape: clauses.append("asset.width > asset.height")
+            case .portrait: clauses.append("asset.width < asset.height")
+            case .square: clauses.append("asset.width = asset.height")
             }
         }
 
