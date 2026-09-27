@@ -1,6 +1,26 @@
 import CryptoKit
 import Foundation
 
+/// Historical local fact events, not commands to replay. The local audit does
+/// not distinguish every remote-origin edit from a direct user gesture.
+public struct ImageAllMigrationAuditRecord: Codable, Sendable, Equatable {
+    public let operationID: UUID
+    public let sequence: Int64
+    public let mediaID: UUID
+    public let field: String
+    public let value: String
+    public let createdAtMs: Int64
+
+    public init(operationID: UUID, sequence: Int64, mediaID: UUID, field: String, value: String, createdAtMs: Int64) {
+        self.operationID = operationID
+        self.sequence = sequence
+        self.mediaID = mediaID
+        self.field = field
+        self.value = value
+        self.createdAtMs = createdAtMs
+    }
+}
+
 /// A user-exported, fact-only checkpoint for the exact media IDs in one archive.
 /// It carries no source locator, media bytes, bookmark, or Photos credential.
 public struct ImageAllMigrationFactSnapshot: Codable, Sendable, Equatable {
@@ -14,12 +34,15 @@ public struct ImageAllMigrationFactSnapshot: Codable, Sendable, Equatable {
     /// Phone-local delivery checkpoint. Mac must compare these cursors with
     /// its change-log heads before any completion decision.
     public let syncCheckpoint: ImageAllMigrationSyncCheckpoint?
+    /// Nil means that this older exporter did not declare audit coverage.
+    public let auditRecords: [ImageAllMigrationAuditRecord]?
 
     public init(
         sourceDeviceID: UUID, sourceEpoch: UUID, scopeRevision: Int64,
         snapshotSequence: Int64, factWatermark: Int64,
         items: [ImageAllMigrationFactItem],
-        syncCheckpoint: ImageAllMigrationSyncCheckpoint? = nil
+        syncCheckpoint: ImageAllMigrationSyncCheckpoint? = nil,
+        auditRecords: [ImageAllMigrationAuditRecord]? = nil
     ) {
         formatVersion = 1
         self.sourceDeviceID = sourceDeviceID
@@ -29,6 +52,7 @@ public struct ImageAllMigrationFactSnapshot: Codable, Sendable, Equatable {
         self.factWatermark = factWatermark
         self.items = items
         self.syncCheckpoint = syncCheckpoint
+        self.auditRecords = auditRecords
     }
 }
 
@@ -279,6 +303,18 @@ public enum ImageAllMigrationFacts {
                   item.collections.allSatisfy({ !$0.collectionName.isEmpty }) else {
                 throw ImageAllMigrationFactsError.invalidSnapshot
             }
+        }
+        if let records = snapshot.auditRecords {
+            let ids = Set(snapshot.items.map(\.mediaID))
+            guard Set(records.map(\.operationID)).count == records.count,
+                  Set(records.map(\.sequence)).count == records.count,
+                  records.map(\.sequence) == records.map(\.sequence).sorted(),
+                  records.allSatisfy({ record in
+                      ids.contains(record.mediaID) && record.sequence > 0
+                        && record.sequence <= snapshot.factWatermark && record.createdAtMs >= 0
+                        && !record.field.isEmpty && record.field.utf8.count <= 256
+                        && record.value.utf8.count <= 4_096
+                  }) else { throw ImageAllMigrationFactsError.invalidSnapshot }
         }
         if let checkpoint = snapshot.syncCheckpoint {
             let aliases = checkpoint.tagAliases ?? []

@@ -255,6 +255,12 @@ final class LocalLibraryModel: ObservableObject {
                   Set(current.assets.map(\.id)) == Set(snapshot.assets.map(\.id)) else {
                 throw LocalArchiveExportError.selectionChanged
             }
+            if result.1.isComplete {
+                let facts = try LocalMigrationFactExporter.export(snapshot: current)
+                defer { try? FileManager.default.removeItem(at: facts) }
+                try LocalMigrationFactExporter.attach(facts, to: result.0)
+                return (result.0, try ImageAllMigrationArchive.verify(at: result.0))
+            }
             return result
         } catch {
             try? FileManager.default.removeItem(at: result.0)
@@ -1680,6 +1686,10 @@ private enum LocalMigrationFactExporter {
                     archiveManifestSHA256: archiveManifestSHA256,
                     sourceVerifiedAtMs: sourceVerifiedAtMs
                 )
+            },
+            auditRecords: snapshot.auditRecords?.map {
+                ImageAllMigrationAuditRecord(operationID: $0.operationID, sequence: $0.sequence,
+                    mediaID: $0.assetID, field: $0.field, value: $0.value, createdAtMs: $0.createdAtMs)
             }
         )
         let manager = FileManager.default

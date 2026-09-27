@@ -471,6 +471,31 @@ func explicitCollectionRenameRecoveryKeepsIdentityChecks(scenario: CollectionRec
     #expect(revoked.scopeRevision == 2)
 }
 
+@Test func migrationAuditPreservesOnlySelectedVisibleAssetHistory() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try LocalLibraryStore(url: root.appendingPathComponent("local.sqlite"))
+    try await store.observe(["selected", "private"].map {
+        LocalObservedAsset(localIdentifier: $0, kind: "image", creationDate: nil, isFavorite: false)
+    })
+    let assets = try await store.assets(visibleIdentifiers: ["selected", "private"])
+    let selected = try #require(assets.first { $0.localIdentifier == "selected" })
+    for asset in assets { try await store.setFavoriteTarget(assetID: asset.id, isFavorite: true) }
+    try await store.setShared(assetID: selected.id, shared: true)
+    let network = try await store.prepareSharedSnapshot(visibleIdentifiers: ["selected", "private"])
+    #expect(network.auditRecords == nil)
+    let frozen = try await store.migrationFactSnapshot(visibleIdentifiers: ["selected", "private"])
+    #expect(frozen.auditRecords?.count == 1)
+    #expect(frozen.auditRecords?.first?.assetID == selected.id)
+    #expect(frozen.auditRecords?.first?.value == "1")
+    try await store.setFavoriteTarget(assetID: selected.id, isFavorite: false)
+    let newer = try await store.migrationFactSnapshot(visibleIdentifiers: ["selected"])
+    #expect(newer.auditRecords?.map(\.value) == ["1", "0"])
+    #expect(newer.auditRecords?.allSatisfy { $0.sequence <= newer.outboxWatermark } == true)
+    #expect(try await store.migrationFactSnapshot(visibleIdentifiers: []).auditRecords == [])
+    #expect(try await store.pendingSharedSnapshot()?.auditRecords == nil)
+}
+
 @Test func sharedSnapshotRetryKeepsPayloadAndWatermarkAcrossRestart() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }

@@ -316,6 +316,15 @@ public struct LocalSharedFavoritePullResult: Sendable {
     public let nextCursor: Int64
 }
 
+public struct LocalMigrationAuditRecord: Codable, Sendable, Equatable {
+    public let operationID: UUID
+    public let sequence: Int64
+    public let assetID: UUID
+    public let field: String
+    public let value: String
+    public let createdAtMs: Int64
+}
+
 /// A directory and human-fact projection for assets the owner explicitly selected.
 /// It contains no media bytes, thumbnail, GPS, or unreferenced tag/collection names.
 public struct LocalSharedSnapshot: Codable, Sendable, Equatable {
@@ -328,6 +337,8 @@ public struct LocalSharedSnapshot: Codable, Sendable, Equatable {
     /// Explicit grants, including items temporarily hidden by PhotoKit permission changes.
     public let selectedAssetIDs: [UUID]
     public let assets: [LocalSharedAsset]
+    /// Included only in explicit migration exports, never normal directory delivery.
+    public var auditRecords: [LocalMigrationAuditRecord]? = nil
 }
 
 /// Captured in the same SQLite transaction as a migration fact snapshot. It
@@ -643,7 +654,7 @@ public actor LocalLibraryStore {
             try execute("""
                 UPDATE identity SET value=CAST(value AS INTEGER)+1 WHERE key='share_snapshot_sequence'
                 """)
-            snapshot = try sharedSnapshot(visibleIdentifiers: visibleIdentifiers)
+            snapshot = try addingMigrationAudit(to: sharedSnapshot(visibleIdentifiers: visibleIdentifiers))
         }
         guard let snapshot else { throw LocalLibraryError.database("missing migration fact snapshot") }
         return snapshot
@@ -683,7 +694,7 @@ public actor LocalLibraryStore {
                 UPDATE identity SET value=CAST(value AS INTEGER)+1
                 WHERE key='share_snapshot_sequence'
                 """)
-            let snapshot = try sharedSnapshot(visibleIdentifiers: visibleIdentifiers)
+            let snapshot = try addingMigrationAudit(to: sharedSnapshot(visibleIdentifiers: visibleIdentifiers))
             let referencedTagIDs = Set(snapshot.assets.flatMap {
                 $0.tagDecisions.map(\.tagID)
             })
@@ -747,6 +758,27 @@ public actor LocalLibraryStore {
 
     /// The caller supplies the identifiers currently returned by PhotoKit. Missing permission
     /// only hides the projection; it does not revoke sharing or generate deletion records.
+    private func addingMigrationAudit(to snapshot: LocalSharedSnapshot) throws -> LocalSharedSnapshot {
+        let ids = Set(snapshot.assets.map(\.id))
+        var result = snapshot
+        result.auditRecords = try rows("""
+            SELECT o.operation_id,o.sequence,o.entity_id,o.field,o.value,o.created_time
+            FROM outbox o JOIN shared_assets s ON s.asset_id=o.entity_id
+            WHERE o.sequence<=? ORDER BY o.sequence
+            """, [String(snapshot.outboxWatermark)]).compactMap { row in
+                guard let assetID = UUID(uuidString: row[2] ?? ""), ids.contains(assetID) else { return nil }
+                guard let operationID = UUID(uuidString: row[0] ?? ""),
+                      let sequence = Int64(row[1] ?? ""), let field = row[3], let value = row[4],
+                      let time = Double(row[5] ?? ""), time.isFinite, time >= 0,
+                      time * 1_000 < Double(Int64.max) else {
+                    throw LocalLibraryError.database("invalid migration audit record")
+                }
+                return LocalMigrationAuditRecord(operationID: operationID, sequence: sequence,
+                    assetID: assetID, field: field, value: value, createdAtMs: Int64(time * 1_000))
+            }
+        return result
+    }
+
     public func sharedSnapshot(visibleIdentifiers: Set<String>) throws -> LocalSharedSnapshot {
         let epoch = try requiredIdentity("source_epoch")
         let revision = Int64(try requiredIdentity("share_scope_revision")) ?? 0

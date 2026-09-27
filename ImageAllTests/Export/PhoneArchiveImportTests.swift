@@ -116,7 +116,9 @@ final class PhoneArchiveImportTests: XCTestCase {
                 favoriteChangeCursor: 0,
                 archiveManifestSHA256: verification.manifestSHA256,
                 sourceVerifiedAtMs: 1_000
-            )
+            ),
+            auditRecords: [.init(operationID: UUID(), sequence: 8, mediaID: item.mediaID,
+                                 field: "favorite.target", value: "1", createdAtMs: 900)]
         )
         let factsFile = fixture.root.appendingPathComponent("latest.imageallfacts")
         try ImageAllMigrationFacts.write(facts, to: factsFile)
@@ -165,6 +167,7 @@ final class PhoneArchiveImportTests: XCTestCase {
             into: recoveryDirectory
         )
         XCTAssertEqual(recovery.integrity, integrity)
+        XCTAssertEqual(recovery.integrity.factSnapshot?.auditRecords, facts.auditRecords)
         XCTAssertNotEqual(recovery.restoredArchiveURL, imported.archiveURL)
         XCTAssertEqual(try Data(contentsOf: recovery.restoredArchiveURL.appendingPathComponent(
             try XCTUnwrap(resource.relativePath)

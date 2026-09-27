@@ -24,10 +24,25 @@ final class ImageAllMigrationArchiveTests: XCTestCase {
                 favoriteChangeCursor: 6,
                 archiveManifestSHA256: String(repeating: "a", count: 64),
                 sourceVerifiedAtMs: 1_000
-            )
+            ),
+            auditRecords: [.init(operationID: UUID(), sequence: 7, mediaID: item.mediaID,
+                                 field: "favorite.target", value: "0", createdAtMs: 100)]
         )
         try ImageAllMigrationFacts.write(snapshot, to: url)
         XCTAssertEqual(try ImageAllMigrationFacts.read(at: url), snapshot)
+        for records in [
+            snapshot.auditRecords! + snapshot.auditRecords!,
+            [.init(operationID: UUID(), sequence: 8, mediaID: item.mediaID,
+                   field: "favorite.target", value: "1", createdAtMs: 101)],
+            [.init(operationID: UUID(), sequence: 7, mediaID: UUID(),
+                   field: "favorite.target", value: "1", createdAtMs: 101)]
+        ] {
+            let invalidAudit = ImageAllMigrationFactSnapshot(
+                sourceDeviceID: snapshot.sourceDeviceID, sourceEpoch: snapshot.sourceEpoch,
+                scopeRevision: 2, snapshotSequence: 4, factWatermark: 7, items: [item], auditRecords: records
+            )
+            XCTAssertThrowsError(try ImageAllMigrationFacts.validate(invalidAudit))
+        }
         let duplicate = ImageAllMigrationFactSnapshot(
             sourceDeviceID: snapshot.sourceDeviceID, sourceEpoch: snapshot.sourceEpoch,
             scopeRevision: 2, snapshotSequence: 4, factWatermark: 7,

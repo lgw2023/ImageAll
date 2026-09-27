@@ -1781,7 +1781,10 @@ final class PhoneArchiveImportModel: ObservableObject {
             } else {
                 checkpoint = "手机尚未附带验收检查点。"
             }
-            message = "Mac 归档逐资源与入库账本核对通过：\(report.itemCount) 项、\(report.resourceCount) 个资源，整理快照序号 \(report.factSnapshotSequence)。\(checkpoint)独立恢复仍待验收。"
+            let audit = report.factSnapshot?.auditRecords.map {
+                "归档保留 \($0.count) 条所选资产操作历史，不重放为当前命令。"
+            } ?? "此版本未声明操作历史覆盖。"
+            message = "Mac 归档逐资源与入库账本核对通过：\(report.itemCount) 项、\(report.resourceCount) 个资源，整理快照序号 \(report.factSnapshotSequence)。\(audit)\(checkpoint)独立恢复仍待验收。"
         } catch {
             message = "Mac 归档完整性核查未通过：\(error.localizedDescription)"
         }
