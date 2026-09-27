@@ -68,6 +68,13 @@ final class LocalLibraryModel: ObservableObject {
         await refresh()
     }
 
+    func exportLocalBackup() async throws -> LocalLibraryBackupReport {
+        guard let store else { throw LocalFavoriteSourceError.storeUnavailable }
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ImageAll-Facts-\(UUID().uuidString)", isDirectory: true)
+        return try await store.exportBackup(to: root.appendingPathComponent("ImageAll-LocalFacts.sqlite"))
+    }
+
     func refresh() async {
         // Hide the old projection immediately, including while SQLite work yields.
         assets = []
@@ -854,7 +861,10 @@ struct LocalLibraryView: View {
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
-                Button("刷新", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
+                Menu {
+                    Button("刷新", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
+                    NavigationLink("备份本机整理库") { LocalLibraryBackupView(model: model) }
+                } label: { Image(systemName: "ellipsis.circle") }
             }
         }
         .task { await model.refresh() }
@@ -936,6 +946,58 @@ struct LocalLibraryView: View {
             }
         }
         .refreshable { await model.refresh() }
+    }
+}
+
+private struct LocalLibraryBackupTransfer: Transferable {
+    let url: URL
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(exportedContentType: .database) { value in SentTransferredFile(value.url) }
+    }
+}
+
+private struct LocalLibraryBackupView: View {
+    @ObservedObject var model: LocalLibraryModel
+    @State private var report: LocalLibraryBackupReport?
+    @State private var busy = false
+    @State private var failure: String?
+
+    var body: some View {
+        List {
+            Section {
+                Text("保存此 iPhone 已记录的标签、集合、收藏目标和离线待同步记录，包括当前无权访问照片的本地记录。")
+                Text("不包含照片或视频原件。此备份用于保全整理信息，不是完整图库迁移包；恢复前仍需核对设备身份与同步状态。")
+                    .foregroundStyle(.secondary)
+                Button(busy ? "正在生成并校验…" : "生成本机整理库备份") {
+                    Task {
+                        busy = true
+                        report = nil
+                        failure = nil
+                        defer { busy = false }
+                        do { report = try await model.exportLocalBackup() }
+                        catch { failure = "备份未完成：\(error.localizedDescription)" }
+                    }
+                }
+                .disabled(busy)
+            }
+            if let report {
+                Section("快照已校验") {
+                    LabeledContent("已记录资产", value: "\(report.assetCount)")
+                    LabeledContent("标签", value: "\(report.tagCount)")
+                    LabeledContent("集合", value: "\(report.collectionCount)")
+                    LabeledContent("待同步记录", value: "\(report.pendingSharedCount)")
+                    LabeledContent("文件大小", value: ByteCountFormatter.string(fromByteCount: report.byteCount, countStyle: .file))
+                    ShareLink(item: LocalLibraryBackupTransfer(url: report.url),
+                              preview: SharePreview("ImageAll 本机整理库备份")) {
+                        Label("保存或分享备份文件", systemImage: "square.and.arrow.up")
+                    }
+                    Text("请保存到你选择的位置。生成快照不会自动上传，也不会替换当前资料库。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+            if let failure { Text(failure).foregroundStyle(.red) }
+        }
+        .navigationTitle("备份本机整理库")
     }
 }
 

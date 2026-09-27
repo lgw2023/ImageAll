@@ -387,6 +387,10 @@ public struct LocalSharedCollectionMembership: Codable, Sendable, Equatable {
 public actor LocalLibraryStore {
     nonisolated(unsafe) private let db: OpaquePointer
 
+    public func exportBackup(to destination: URL) throws -> LocalLibraryBackupReport {
+        try LocalLibraryBackup.write(source: db, to: destination)
+    }
+
     public init(url: URL) throws {
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true
