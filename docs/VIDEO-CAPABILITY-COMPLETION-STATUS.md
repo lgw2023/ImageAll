@@ -341,3 +341,12 @@
 - 首轮浏览器使用旧生成资源，按钮缺失失败；重新构建后 video-ai-web-e2e-final.log 2/2 PASS（播放／切换／标准命令／无云预览请求／旧 Host 门控），video-ai-web-photo-regression.log 1/1 PASS（照片标准／个人分析及决策）。typecheck、局部 eslint、Web build 均 PASS。使用合成 HTTP mock，非浏览器到真实 Swift Host 联调。
 - 仅 3 个源码／测试文件最小补丁集成 main，逐字节核对一致；生成资源仍只留 Web worktree。既有 review、地图与样式并行差异未纳入提交。Workspace 原有 75/5 保留，git diff --check PASS，video-ai-web-source-sha256.json 绑定源码。
 - iPhone 原生 Companion 当前没有对应训练／建议操作页面，仅共享 API 支持不能算原生入口完成。Web review 控件仍发现硬编码 image（位于并行修改文件），需要后续按最小差异接媒体上下文；这些和训练产物→远端持久审核整链均为必需缺口。P1／P2／P3 IN_PROGRESS，P4–P7 NOT_STARTED，目标 active。未读取真实媒体、未云端下载／源端写入／外部传输、未 push／替换 App。
+
+
+## P3 iPhone 标准场景分析入口（2026-09-27）
+
+- 上轮为 progress：d0ebf8e1 集成 Web 视频标准分析。本轮发现共享 Swift 客户端原先没有标准能力查询／单资产建议方法，补 GET 媒体查询与 POST 显式命令，验证返回媒体类型、资产 ID、operationID 和 track，错身份返回 conflict。
+- iPhone 详情页按 Host 媒体能力显示标准分析按钮，视频说明代表帧，显示返回建议和资源／服务／校验失败提示。切换／关闭取消本地等待，结果绑定当前资产及修订；成功后重读详情，复用已有视频播放保留逻辑。未增加自动模型调用或云端获取。
+- ios-standard-client-tests.log：共享客户端全套 66/66 PASS，新增视频能力与标准命令鉴权／身份检查，保留视频范围播放等回归。ios-standard-build-final.log：iOS Simulator BUILD SUCCEEDED；git diff --check PASS。未执行模拟器 UI 点击、真机或实际 Swift Host 联调，不将编译成功称为端到端运行验收。
+- iPhone 个人训练／样本建议／按标签建议及 Web review 媒体硬编码仍为缺口；标准按钮不能代替这些页面。P1／P2／P3 IN_PROGRESS，P4–P7 NOT_STARTED，目标 active。下一动作：补跨端训练／个人建议的媒体上下文与最小入口，以及真实合成训练产物→远端持久审核整链。
+- 源摘要 ios-standard-source-sha256.json。Workspace 原有 75/5 和项目／OpenMontage 并行差异保留；Web 本轮未改。未读取真实媒体、未云端下载／源端写入／外部传输、未 push／替换 App。

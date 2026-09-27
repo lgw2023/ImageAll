@@ -511,6 +511,31 @@ public struct RemoteLibraryClient: Sendable {
         return try await getJSON(path: RemoteHTTPPaths.assets, queryItems: items)
     }
 
+    public func fetchLibrarySuggestions(mediaKind: RemoteAssetMediaKind) async throws -> RemoteLibrarySuggestionSnapshot {
+        let result: RemoteLibrarySuggestionSnapshot = try await getJSON(
+            path: RemoteHTTPPaths.librarySuggestions,
+            queryItems: [URLQueryItem(name: "mediaKind", value: mediaKind.rawValue)]
+        )
+        guard result.mediaKind == mediaKind else {
+            throw RemoteAPIError(code: .conflict, message: "suggestion media identity mismatch")
+        }
+        return result
+    }
+
+    public func analyzeAssetLocalSuggestions(
+        assetID: UUID, request: RemoteAssetLocalSuggestionRequest
+    ) async throws -> RemoteAssetLocalSuggestionResponse {
+        let result: RemoteAssetLocalSuggestionResponse = try await postJSON(
+            path: RemoteHTTPPaths.assetDetail(assetID: assetID) + "/local-suggestions",
+            body: JSONEncoder().encode(request)
+        )
+        guard result.assetID == assetID, result.operationID == request.operationID,
+              result.track == request.track else {
+            throw RemoteAPIError(code: .conflict, message: "suggestion response identity mismatch")
+        }
+        return result
+    }
+
     public func fetchAssetDetail(assetID: UUID) async throws -> RemoteAssetDetail {
         try await getJSON(path: RemoteHTTPPaths.assetDetail(assetID: assetID))
     }

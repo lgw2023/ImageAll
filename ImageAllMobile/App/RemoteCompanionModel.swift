@@ -1400,6 +1400,21 @@ final class RemoteCompanionModel: ObservableObject {
         }
     }
 
+    func supportsStandardSuggestions(mediaKind: RemoteAssetMediaKind) async -> Bool {
+        guard canSendCommands, capabilities?.capabilities.contains(.assetLocalSuggestions) == true,
+              let client else { return false }
+        return (try? await client.fetchLibrarySuggestions(mediaKind: mediaKind).standardAvailable) == true
+    }
+
+    func analyzeStandardSuggestions(assetID: UUID, operationID: UUID) async throws -> RemoteAssetLocalSuggestionResponse {
+        guard canSendCommands, capabilities?.capabilities.contains(.assetLocalSuggestions) == true,
+              let client else {
+            throw RemoteAPIError(code: .conflict, message: "Mac Host 当前不可用")
+        }
+        return try await client.analyzeAssetLocalSuggestions(assetID: assetID,
+            request: RemoteAssetLocalSuggestionRequest(operationID: operationID, track: .standard))
+    }
+
     func loadPreview(assetID: UUID, mediaKindHint: RemoteAssetMediaKind? = nil) async {
         guard let client else { return }
         let retainPlayingVideo = videoPlayback.assetID == assetID && videoPlayback.state == .ready

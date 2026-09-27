@@ -2172,6 +2172,11 @@ private struct RemoteAssetPreviewView: View {
     @State private var isReviewActionInFlight = false
     @State private var lastReviewDecision: RemoteReviewDecisionRecord?
     @State private var reviewCompleted = false
+    @State private var standardSupported = false
+    @State private var standardResponse: RemoteAssetLocalSuggestionResponse?
+    @State private var standardMessage = ""
+    @State private var standardOperation: UUID?
+    @State private var standardTask: Task<Void, Never>?
 
     init(target: RemotePreviewTarget, model: RemoteCompanionModel) {
         self.target = target
@@ -2194,6 +2199,9 @@ private struct RemoteAssetPreviewView: View {
 
                     if !reviewCompleted, let detail = model.previewDetail {
                         previewMetadata(detail)
+                        if standardSupported {
+                            standardSuggestions(detail)
+                        }
 
                         if !detail.tags.isEmpty {
                             GroupBox {
@@ -2280,9 +2288,20 @@ private struct RemoteAssetPreviewView: View {
                 }
             }
             .task(id: currentAssetID) {
+                standardTask?.cancel()
+                standardTask = nil
+                standardOperation = nil
+                standardResponse = nil
+                standardMessage = ""
+                standardSupported = false
                 guard !reviewCompleted else { return }
                 await model.loadPreview(assetID: currentAssetID, mediaKindHint: currentPreviewMediaKind)
                 guard !Task.isCancelled else { return }
+                if let kind = model.previewDetail?.resolvedMediaKind {
+                    let supported = await model.supportsStandardSuggestions(mediaKind: kind)
+                    guard !Task.isCancelled else { return }
+                    standardSupported = supported
+                }
                 if target.context == .library,
                    let currentAsset = model.assets.first(where: { $0.id == currentAssetID })
                 {
@@ -2295,9 +2314,57 @@ private struct RemoteAssetPreviewView: View {
                 reconcileReviewQueue(nextIDs)
             }
             .onDisappear {
+                standardTask?.cancel()
+                standardOperation = nil
                 reviewActionGeneration &+= 1
                 model.resetPreview()
             }
+        }
+    }
+
+    private func standardSuggestions(_ detail: RemoteAssetDetail) -> some View {
+        GroupBox("标准场景建议") {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(detail.resolvedMediaKind == .video ? "分析当前视频的代表帧，结果需人工审核。" : "分析当前照片，结果需人工审核。")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button(standardOperation == nil ? "运行标准场景模型" : "正在分析…") {
+                    let assetID = detail.assetID
+                    let revision = detail.contentRevision
+                    let operation = UUID()
+                    standardOperation = operation
+                    standardResponse = nil
+                    standardMessage = ""
+                    standardTask = Task { @MainActor in
+                        defer { if standardOperation == operation { standardOperation = nil } }
+                        do {
+                            let response = try await model.analyzeStandardSuggestions(assetID: assetID, operationID: operation)
+                            guard !Task.isCancelled, currentAssetID == assetID,
+                                  model.previewDetail?.contentRevision == revision else { return }
+                            standardResponse = response
+                            switch response.state {
+                            case .results: standardMessage = response.suggestions.isEmpty ? "当前模型没有给出建议。" : "建议已保存在 Mac，可在审核队列处理。"
+                            case .previewUnavailable: standardMessage = "分析预览不可用，请在 Mac 检查本地资源。"
+                            case .serviceUnavailable: standardMessage = "Mac 模型服务当前不可用。"
+                            case .personalUnavailable: standardMessage = "模型当前不可用。"
+                            case .failed: standardMessage = "结果未通过校验，请重试。"
+                            }
+                            if response.state == .results {
+                                await model.loadPreview(assetID: assetID, mediaKindHint: detail.resolvedMediaKind)
+                            }
+                        } catch {
+                            guard !Task.isCancelled, currentAssetID == assetID else { return }
+                            standardMessage = error.localizedDescription
+                        }
+                    }
+                }
+                .disabled(standardOperation != nil || !model.canSendCommands)
+                if !standardMessage.isEmpty { Text(standardMessage).font(.caption) }
+                if let response = standardResponse, response.state == .results {
+                    ForEach(response.suggestions) { suggestion in
+                        Text(suggestion.displayName)
+                    }
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 

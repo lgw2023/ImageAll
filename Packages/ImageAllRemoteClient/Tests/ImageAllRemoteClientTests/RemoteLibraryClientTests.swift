@@ -4,6 +4,53 @@ import ImageAllRemoteProtocol
 import XCTest
 
 final class RemoteLibraryClientTests: XCTestCase {
+    func testVideoStandardSuggestionRequestsPreserveIdentityAndRejectMismatches() async throws {
+        let assetID = UUID(), operationID = UUID()
+        for mismatch in [false, true] {
+            let transport = MockTransport { outgoing in
+                XCTAssertEqual(outgoing.value(forHTTPHeaderField: "Authorization"), "Bearer secret")
+                let bytes: Data
+                if outgoing.httpMethod == "GET" {
+                    XCTAssertEqual(outgoing.url?.path, RemoteHTTPPaths.librarySuggestions)
+                    XCTAssertEqual(URLComponents(url: outgoing.url!, resolvingAgainstBaseURL: false)?.queryItems?.first?.value, "video")
+                    bytes = try JSONEncoder().encode(RemoteLibrarySuggestionSnapshot(
+                        mediaKind: mismatch ? .image : .video,
+                        service: .init(state: .ready, serviceVersion: "1", provider: "synthetic", modelID: "fixture"),
+                        standardAvailable: true, personalMode: .unavailable
+                    ))
+                } else {
+                    XCTAssertEqual(outgoing.url?.path, RemoteHTTPPaths.assetDetail(assetID: assetID) + "/local-suggestions")
+                    let request = try JSONDecoder().decode(RemoteAssetLocalSuggestionRequest.self, from: XCTUnwrap(outgoing.httpBody))
+                    XCTAssertEqual(request.operationID, operationID)
+                    XCTAssertEqual(request.track, .standard)
+                    bytes = try JSONEncoder().encode(RemoteAssetLocalSuggestionResponse(
+                        operationID: operationID, assetID: mismatch ? UUID() : assetID,
+                        track: .standard, state: .results, suggestions: [], replayed: false
+                    ))
+                }
+                return (bytes, HTTPURLResponse(url: outgoing.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil)!)
+            }
+            let client = RemoteLibraryClient(endpoint: try RemoteHostEndpoint(host: "127.0.0.1", port: 8787, accessToken: "secret"), transport: transport)
+            do {
+                let snapshot = try await client.fetchLibrarySuggestions(mediaKind: .video)
+                XCTAssertFalse(mismatch)
+                XCTAssertTrue(snapshot.standardAvailable)
+            } catch let error as RemoteAPIError {
+                XCTAssertTrue(mismatch)
+                XCTAssertEqual(error.code, .conflict)
+            }
+            do {
+                let result = try await client.analyzeAssetLocalSuggestions(assetID: assetID,
+                    request: .init(operationID: operationID, track: .standard))
+                XCTAssertFalse(mismatch)
+                XCTAssertEqual(result.assetID, assetID)
+            } catch let error as RemoteAPIError {
+                XCTAssertTrue(mismatch)
+                XCTAssertEqual(error.code, .conflict)
+            }
+        }
+    }
+
     func testChunkedSnapshotResumesAndStopsWhenScopeValidationFails() async throws {
         let deviceID = UUID(), hostID = UUID()
         let ids = (0..<1_100).map { _ in UUID() }
