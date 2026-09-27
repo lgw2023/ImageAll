@@ -230,6 +230,32 @@ actor RemoteLocalLibrarySyncStore {
         }
     }
 
+    func submitChunk(
+        _ chunk: RemoteLocalLibrarySnapshotChunk, authenticatedDeviceID: UUID
+    ) throws -> RemoteLocalLibrarySnapshotChunkReceipt {
+        let lookup = try lookupSnapshotReceipt(chunk.snapshot, authenticatedDeviceID: authenticatedDeviceID)
+        let staging = RemoteLocalLibrarySnapshotChunkStaging(root: storageURL.appendingPathExtension("uploads"))
+        if let receipt = lookup.receipt {
+            try? staging.discard(snapshotSHA256: chunk.snapshot.requestSHA256, deviceID: authenticatedDeviceID)
+            return .init(hostID: hostID, deviceID: authenticatedDeviceID,
+                         requestSHA256: chunk.snapshot.requestSHA256, receivedBytes: chunk.totalBytes,
+                         snapshotReceipt: receipt)
+        }
+        let result = try staging.receive(chunk, deviceID: authenticatedDeviceID)
+        var receipt: RemoteLocalLibrarySnapshotReceipt?
+        if let bytes = result.complete {
+            let request = try JSONDecoder().decode(RemoteLocalLibrarySnapshotRequest.self, from: bytes)
+            guard try RemoteLocalLibrarySnapshotReceiptLookup(request: request) == chunk.snapshot else {
+                throw RemoteAPIError(code: .conflict, message: "assembled snapshot identity changed")
+            }
+            receipt = try submit(request, authenticatedDeviceID: authenticatedDeviceID)
+            try? staging.discard(snapshotSHA256: chunk.snapshot.requestSHA256, deviceID: authenticatedDeviceID)
+        }
+        return .init(hostID: hostID, deviceID: authenticatedDeviceID,
+                     requestSHA256: chunk.snapshot.requestSHA256, receivedBytes: result.receivedBytes,
+                     snapshotReceipt: receipt)
+    }
+
     func submit(
         _ request: RemoteLocalLibrarySnapshotRequest, authenticatedDeviceID: UUID
     ) throws -> RemoteLocalLibrarySnapshotReceipt {
@@ -1575,8 +1601,8 @@ actor RemoteLocalLibrarySyncStore {
               request.hostID == hostID,
               request.scopeRevision >= 0,
               request.snapshotSequence > 0,
-              request.selectedAssetIDs.count <= 1_024,
-              request.assets.count <= 1_024,
+              request.selectedAssetIDs.count <= RemoteLocalLibrarySnapshotChunk.maximumAssetCount,
+              request.assets.count <= RemoteLocalLibrarySnapshotChunk.maximumAssetCount,
               Set(request.selectedAssetIDs).count == request.selectedAssetIDs.count,
               Set(request.assets.map(\.id)).count == request.assets.count
         else {

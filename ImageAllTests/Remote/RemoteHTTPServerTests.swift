@@ -11,6 +11,53 @@ import XCTest
 final class RemoteHTTPServerTests: XCTestCase {
     private static let legacyDebugToken = "secret-token"
 
+    func testLargeSnapshotCommitsOnlyAfterAllChunksAndResumesAcrossRestart() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("sync.json")
+        let hostID = UUID(), deviceID = UUID()
+        let ids = (0..<1_100).map { _ in UUID() }
+        let request = RemoteLocalLibrarySnapshotRequest(
+            hostID: hostID, installID: UUID(), sourceEpoch: UUID(), scopeRevision: 1, snapshotSequence: 1,
+            selectedAssetIDs: ids, assets: ids.map { .init(id: $0, localIdentifier: String(repeating: "x", count: 200),
+                mediaKind: .image, createdAtMs: nil, observedFavorite: false, favoriteTarget: nil,
+                tagDecisions: [], collections: []) }
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let bytes = try encoder.encode(request)
+        let lookup = try RemoteLocalLibrarySnapshotReceiptLookup(request: request)
+        let size = RemoteLocalLibrarySnapshotChunk.maximumChunkBytes
+        func chunk(_ offset: Int) -> RemoteLocalLibrarySnapshotChunk {
+            .init(snapshot: lookup, totalBytes: bytes.count, offset: offset,
+                  bytes: bytes.subdata(in: offset..<min(offset + size, bytes.count)))
+        }
+        var store = try RemoteLocalLibrarySyncStore(hostID: hostID, storageURL: url)
+        _ = try await store.submitChunk(chunk(0), authenticatedDeviceID: deviceID)
+        _ = try await store.submitChunk(chunk(size), authenticatedDeviceID: deviceID)
+        let partial = await store.projection(deviceID: deviceID)
+        XCTAssertNil(partial)
+        store = try RemoteLocalLibrarySyncStore(hostID: hostID, storageURL: url)
+        let resumed = try await store.submitChunk(chunk(0), authenticatedDeviceID: deviceID)
+        XCTAssertEqual(resumed.receivedBytes, size * 2)
+        XCTAssertNil(resumed.snapshotReceipt)
+        var offset = resumed.receivedBytes
+        var completed: RemoteLocalLibrarySnapshotReceipt?
+        while offset < bytes.count {
+            let response = try await store.submitChunk(chunk(offset), authenticatedDeviceID: deviceID)
+            offset = response.receivedBytes
+            completed = response.snapshotReceipt
+        }
+        XCTAssertEqual(completed?.acceptedAssetCount, ids.count)
+        XCTAssertEqual(Set(completed?.importedAssetIDs ?? []), Set(ids))
+        store = try RemoteLocalLibrarySyncStore(hostID: hostID, storageURL: url)
+        let replay = try await store.submitChunk(chunk(0), authenticatedDeviceID: deviceID)
+        XCTAssertTrue(replay.snapshotReceipt?.replayed == true)
+        XCTAssertEqual(replay.receivedBytes, bytes.count)
+        let lookupResult = try await store.lookupSnapshotReceipt(lookup, authenticatedDeviceID: deviceID)
+        XCTAssertEqual(lookupResult.receipt?.importedAssetIDs, completed?.importedAssetIDs)
+    }
+
     func testPairedMigrationChunkRouteStreamsBeyondJSONLimitAndSealsPackage() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "RemoteMigrationTransfer-\(UUID().uuidString)", isDirectory: true
@@ -1393,6 +1440,21 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(receipt.deviceID, tokens.deviceID)
         XCTAssertEqual(receipt.acceptedAssetCount, 1)
         let lookup = try RemoteLocalLibrarySnapshotReceiptLookup(request: snapshot)
+        let canonical = JSONEncoder()
+        canonical.outputFormatting = [.sortedKeys]
+        let snapshotBytes = try canonical.encode(snapshot)
+        var chunkRequest = request(authorization: "Bearer \(tokens.accessToken)")
+        chunkRequest.url = URL(string: "http://127.0.0.1:\(port)\(RemoteHTTPPaths.localLibrarySnapshotChunk)")!
+        chunkRequest.httpBody = try JSONEncoder().encode(RemoteLocalLibrarySnapshotChunk(
+            snapshot: lookup, totalBytes: snapshotBytes.count, offset: 0, bytes: snapshotBytes
+        ))
+        let (chunkData, chunkResponse) = try await URLSession.shared.data(for: chunkRequest)
+        XCTAssertEqual((chunkResponse as? HTTPURLResponse)?.statusCode, 200)
+        XCTAssertTrue(try JSONDecoder().decode(RemoteLocalLibrarySnapshotChunkReceipt.self, from: chunkData)
+            .snapshotReceipt?.replayed == true)
+        chunkRequest.setValue(nil, forHTTPHeaderField: "Authorization")
+        let (_, deniedChunk) = try await URLSession.shared.data(for: chunkRequest)
+        XCTAssertEqual((deniedChunk as? HTTPURLResponse)?.statusCode, 401)
         func lookupRequest(_ candidate: RemoteLocalLibrarySnapshotReceiptLookup,
                            authorization: String?) throws -> URLRequest {
             var request = URLRequest(url: URL(string:

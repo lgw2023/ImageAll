@@ -516,7 +516,8 @@ final class RemoteCompanionModel: ObservableObject {
     }
 
     func submitLocalLibrarySnapshot(
-        _ snapshot: LocalSharedSnapshot
+        _ snapshot: LocalSharedSnapshot,
+        validateScope: @Sendable () async throws -> Void
     ) async throws -> RemoteLocalLibrarySnapshotReceipt {
         guard isConnected, let client, let sessionTokens,
               let capabilities,
@@ -529,13 +530,18 @@ final class RemoteCompanionModel: ObservableObject {
             )
         }
         let request = Self.localLibraryRequest(snapshot, hostID: sessionTokens.hostID)
-        guard try JSONEncoder().encode(request).count <= 200 * 1_024 else {
-            throw RemoteAPIError(
-                code: .badRequest,
-                message: "待分享目录超过当前单次提交大小，请缩小选择范围"
+        let receipt: RemoteLocalLibrarySnapshotReceipt
+        if try JSONEncoder().encode(request).count > 200 * 1_024 || request.selectedAssetIDs.count > 1_024 {
+            guard capabilities.localLibrarySnapshotChunkBytes == RemoteLocalLibrarySnapshotChunk.maximumChunkBytes else {
+                throw RemoteAPIError(code: .badRequest, message: "请升级 Mac，以分批同步这份较大的目录；手机整理信息仍保留")
+            }
+            receipt = try await client.submitLocalLibrarySnapshotInChunks(
+                request, deviceID: sessionTokens.deviceID, beforeChunk: validateScope
             )
+        } else {
+            try await validateScope()
+            receipt = try await client.submitLocalLibrarySnapshot(request)
         }
-        let receipt = try await client.submitLocalLibrarySnapshot(request)
         guard receipt.hostID == sessionTokens.hostID,
               receipt.deviceID == sessionTokens.deviceID,
               receipt.sourceEpoch == snapshot.sourceEpoch,

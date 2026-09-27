@@ -482,6 +482,10 @@ func explicitCollectionRenameRecoveryKeepsIdentityChecks(scenario: CollectionRec
     try await store.setShared(assetID: asset.id, shared: true)
     try await store.setDecision(assetID: asset.id, tagID: tag, decision: .accepted)
     let first = try await store.prepareSharedSnapshot(visibleIdentifiers: ["selected"])
+    try await store.validateSharedSnapshotScope(first, visibleIdentifiers: ["selected"])
+    await #expect(throws: LocalLibraryError.syncIdentityChanged) {
+        try await store.validateSharedSnapshotScope(first, visibleIdentifiers: [])
+    }
     try await store.setDecision(assetID: asset.id, tagID: tag, decision: .rejected)
     let facts = try await store.migrationFactSnapshot(visibleIdentifiers: ["selected"])
     #expect(facts.snapshotSequence > first.snapshotSequence)
@@ -500,6 +504,10 @@ func explicitCollectionRenameRecoveryKeepsIdentityChecks(scenario: CollectionRec
     let fresh = try await reopened.prepareSharedSnapshot(visibleIdentifiers: ["selected"])
     #expect(fresh.snapshotSequence == facts.snapshotSequence + 1)
     #expect(fresh.assets.first?.tagDecisions.first?.decision == .rejected)
+    try await reopened.setShared(assetID: asset.id, shared: false)
+    await #expect(throws: LocalLibraryError.syncIdentityChanged) {
+        try await reopened.validateSharedSnapshotScope(fresh, visibleIdentifiers: ["selected"])
+    }
 }
 
 @Test func lostSnapshotReceiptCanBeAppliedAfterVisibilityContracts() async throws {

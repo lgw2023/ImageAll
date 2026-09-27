@@ -584,6 +584,14 @@ public actor LocalLibraryStore {
             }
     }
 
+    public func validateSharedSnapshotScope(_ snapshot: LocalSharedSnapshot, visibleIdentifiers: Set<String>) throws {
+        guard snapshot.installID == (try installID()), snapshot.sourceEpoch == (try sourceEpoch()),
+              snapshot.scopeRevision == Int64(try requiredIdentity("share_scope_revision")),
+              Set(snapshot.assets.map(\.localIdentifier)).isSubset(of: visibleIdentifiers) else {
+            throw LocalLibraryError.syncIdentityChanged
+        }
+    }
+
     /// Reads the frozen request for a digest-only receipt lookup after ACK loss.
     public func pendingSharedSnapshot() throws -> LocalSharedSnapshot? {
         guard let encoded = try scalar("SELECT payload FROM shared_snapshot_delivery WHERE id=1"),

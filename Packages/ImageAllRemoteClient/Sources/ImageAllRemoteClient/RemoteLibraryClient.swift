@@ -257,6 +257,50 @@ public struct RemoteLibraryClient: Sendable {
         )
     }
 
+    public func submitLocalLibrarySnapshotInChunks(
+        _ request: RemoteLocalLibrarySnapshotRequest, deviceID: UUID,
+        beforeChunk: @Sendable () async throws -> Void = {}
+    ) async throws -> RemoteLocalLibrarySnapshotReceipt {
+        let canonical = JSONEncoder()
+        canonical.outputFormatting = [.sortedKeys]
+        let bytes = try canonical.encode(request)
+        guard bytes.count <= RemoteLocalLibrarySnapshotChunk.maximumSnapshotBytes else {
+            throw RemoteAPIError(code: .badRequest, message: "snapshot exceeds negotiated transfer capacity")
+        }
+        let lookup = try RemoteLocalLibrarySnapshotReceiptLookup(request: request)
+        var offset = 0
+        while offset < bytes.count {
+            try Task.checkCancellation()
+            try await beforeChunk()
+            let end = min(offset + RemoteLocalLibrarySnapshotChunk.maximumChunkBytes, bytes.count)
+            let chunk = RemoteLocalLibrarySnapshotChunk(snapshot: lookup, totalBytes: bytes.count,
+                                                        offset: offset, bytes: bytes.subdata(in: offset..<end))
+            let progress: RemoteLocalLibrarySnapshotChunkReceipt = try await postJSON(
+                path: RemoteHTTPPaths.localLibrarySnapshotChunk, body: encoder.encode(chunk)
+            )
+            guard progress.hostID == request.hostID, progress.deviceID == deviceID,
+                  progress.requestSHA256 == lookup.requestSHA256,
+                  progress.receivedBytes >= end, progress.receivedBytes <= bytes.count,
+                  progress.receivedBytes == bytes.count
+                    || progress.receivedBytes % RemoteLocalLibrarySnapshotChunk.maximumChunkBytes == 0 else {
+                throw RemoteAPIError(code: .conflict, message: "snapshot chunk receipt mismatch")
+            }
+            if let receipt = progress.snapshotReceipt {
+                guard progress.receivedBytes == bytes.count, receipt.hostID == request.hostID,
+                      receipt.deviceID == deviceID, receipt.sourceEpoch == request.sourceEpoch,
+                      receipt.snapshotSequence == request.snapshotSequence else {
+                    throw RemoteAPIError(code: .conflict, message: "snapshot commit receipt mismatch")
+                }
+                return receipt
+            }
+            guard progress.receivedBytes < bytes.count else {
+                throw RemoteAPIError(code: .conflict, message: "snapshot complete without commit receipt")
+            }
+            offset = progress.receivedBytes
+        }
+        throw RemoteAPIError(code: .internalError, message: "snapshot transfer incomplete")
+    }
+
     public func lookupLocalLibrarySnapshotReceipt(
         _ lookup: RemoteLocalLibrarySnapshotReceiptLookup
     ) async throws -> RemoteLocalLibrarySnapshotReceiptLookupResult {

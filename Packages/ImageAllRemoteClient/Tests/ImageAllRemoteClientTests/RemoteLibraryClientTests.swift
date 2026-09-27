@@ -4,6 +4,69 @@ import ImageAllRemoteProtocol
 import XCTest
 
 final class RemoteLibraryClientTests: XCTestCase {
+    func testChunkedSnapshotResumesAndStopsWhenScopeValidationFails() async throws {
+        let deviceID = UUID(), hostID = UUID()
+        let ids = (0..<1_100).map { _ in UUID() }
+        let snapshot = RemoteLocalLibrarySnapshotRequest(
+            hostID: hostID, installID: UUID(), sourceEpoch: UUID(), scopeRevision: 1, snapshotSequence: 1,
+            selectedAssetIDs: ids, assets: ids.map { .init(id: $0, localIdentifier: String(repeating: "x", count: 200),
+                mediaKind: .image, createdAtMs: nil, observedFavorite: false, favoriteTarget: nil,
+                tagDecisions: [], collections: []) }
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let bytes = try encoder.encode(snapshot)
+        let size = RemoteLocalLibrarySnapshotChunk.maximumChunkBytes
+        actor Receiver {
+            var offsets: [Int] = []
+            var validations = 0
+            func validate(failAt: Int? = nil) throws {
+                validations += 1
+                if validations == failAt { throw CancellationError() }
+            }
+            func accept(_ offset: Int) { offsets.append(offset) }
+        }
+        let receiver = Receiver()
+        let transport = MockTransport { outgoing in
+            XCTAssertEqual(outgoing.url?.path, RemoteHTTPPaths.localLibrarySnapshotChunk)
+            XCTAssertEqual(outgoing.value(forHTTPHeaderField: "Authorization"), "Bearer secret")
+            let body = try XCTUnwrap(outgoing.httpBody)
+            XCTAssertLessThan(body.count, 200 * 1_024)
+            let chunk = try JSONDecoder().decode(RemoteLocalLibrarySnapshotChunk.self, from: body)
+            await receiver.accept(chunk.offset)
+            let end = min(chunk.offset + size, bytes.count)
+            XCTAssertEqual(chunk.bytes, bytes.subdata(in: chunk.offset..<end))
+            let received = chunk.offset == 0 ? 2 * size : end
+            let response = RemoteLocalLibrarySnapshotChunkReceipt(
+                hostID: hostID, deviceID: deviceID, requestSHA256: chunk.snapshot.requestSHA256,
+                receivedBytes: received, snapshotReceipt: received == bytes.count ? .init(
+                    hostID: hostID, deviceID: deviceID, sourceEpoch: snapshot.sourceEpoch,
+                    snapshotSequence: 1, acceptedAssetCount: ids.count, replayed: false
+                ) : nil
+            )
+            return (try JSONEncoder().encode(response), HTTPURLResponse(
+                url: outgoing.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil)!)
+        }
+        let client = RemoteLibraryClient(
+            endpoint: try RemoteHostEndpoint(host: "127.0.0.1", port: 8787, accessToken: "secret"), transport: transport
+        )
+        let receipt = try await client.submitLocalLibrarySnapshotInChunks(snapshot, deviceID: deviceID) {
+            try await receiver.validate()
+        }
+        XCTAssertEqual(receipt.acceptedAssetCount, ids.count)
+        let offsets = await receiver.offsets
+        XCTAssertEqual(offsets, [0] + Array(stride(from: size * 2, to: bytes.count, by: size)))
+        let stopAt = await receiver.validations + 2
+        do {
+            _ = try await client.submitLocalLibrarySnapshotInChunks(snapshot, deviceID: deviceID) {
+                try await receiver.validate(failAt: stopAt)
+            }
+            XCTFail("changed scope must stop further chunks")
+        } catch is CancellationError { }
+        let stoppedOffsets = await receiver.offsets
+        XCTAssertEqual(stoppedOffsets, offsets + [0])
+    }
+
     func testLooksUpFrozenSnapshotReceiptWithoutResendingAssetMetadata() async throws {
         let hostID = UUID(), deviceID = UUID(), assetID = UUID()
         let snapshot = RemoteLocalLibrarySnapshotRequest(

@@ -84,7 +84,9 @@ actor RemoteCatalogFacade {
             listenPort: listenPort,
             usesTLS: usesTLS,
             hostID: hostID,
-            certificateFingerprintSHA256: certificateFingerprintSHA256
+            certificateFingerprintSHA256: certificateFingerprintSHA256,
+            localLibrarySnapshotChunkBytes: supportsLocalLibrarySnapshot
+                ? RemoteLocalLibrarySnapshotChunk.maximumChunkBytes : nil
         )
     }
 

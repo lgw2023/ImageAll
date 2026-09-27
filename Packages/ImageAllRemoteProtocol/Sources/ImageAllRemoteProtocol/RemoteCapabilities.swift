@@ -52,6 +52,7 @@ public struct RemoteCapabilities: Codable, Sendable, Equatable {
     public let usesTLS: Bool
     public let hostID: UUID?
     public let certificateFingerprintSHA256: String?
+    public let localLibrarySnapshotChunkBytes: Int?
 
     public init(
         protocolVersion: Int = RemoteProtocolVersion.current,
@@ -69,7 +70,8 @@ public struct RemoteCapabilities: Codable, Sendable, Equatable {
         listenPort: Int? = nil,
         usesTLS: Bool = false,
         hostID: UUID? = nil,
-        certificateFingerprintSHA256: String? = nil
+        certificateFingerprintSHA256: String? = nil,
+        localLibrarySnapshotChunkBytes: Int? = nil
     ) {
         self.protocolVersion = protocolVersion
         self.hostAppVersion = hostAppVersion
@@ -79,5 +81,6 @@ public struct RemoteCapabilities: Codable, Sendable, Equatable {
         self.usesTLS = usesTLS
         self.hostID = hostID
         self.certificateFingerprintSHA256 = certificateFingerprintSHA256
+        self.localLibrarySnapshotChunkBytes = localLibrarySnapshotChunkBytes
     }
 }

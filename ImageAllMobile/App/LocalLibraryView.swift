@@ -205,6 +205,12 @@ final class LocalLibraryModel: ObservableObject {
         )
     }
 
+    func validateSharedSnapshotScope(_ snapshot: LocalSharedSnapshot) async throws {
+        guard let store else { throw LocalFavoriteSourceError.storeUnavailable }
+        let visible = try await observedSharedVisibleIdentifiers()
+        try await store.validateSharedSnapshotScope(snapshot, visibleIdentifiers: visible)
+    }
+
     private func makeMigrationFactSnapshot() async throws -> LocalSharedSnapshot {
         guard let store else { throw LocalFavoriteSourceError.storeUnavailable }
         let identifiers = try await observedSharedVisibleIdentifiers()
@@ -1115,7 +1121,9 @@ private struct LocalShareScopeView: View {
                             let snapshot = try await model.prepareSharedSnapshotRecoveringReceipt(
                                 from: remoteModel
                             )
-                            let receipt = try await remoteModel.submitLocalLibrarySnapshot(snapshot)
+                            let receipt = try await remoteModel.submitLocalLibrarySnapshot(snapshot) {
+                                try await model.validateSharedSnapshotScope(snapshot)
+                            }
                             do {
                                 let result = try await model.completeSharedSync(
                                     snapshot: snapshot, receipt: receipt,
