@@ -1,3 +1,5 @@
+import type { AssetMediaKind } from '@/api/contracts/asset';
+import { ReviewVideoPreview } from './ReviewVideoPreview';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { useQuery } from '@tanstack/react-query';
@@ -20,6 +22,7 @@ import { useConnection } from '@/features/session/ConnectionContext';
 import { formatSuggestionScore, reviewOriginLabels } from './reviewPresentation';
 
 type ReviewSinglePhotoDialogProps = {
+  mediaKind: AssetMediaKind;
   canMoveNext: boolean;
   canMovePrevious: boolean;
   item: ReviewQueueItem;
@@ -34,6 +37,7 @@ type ReviewSinglePhotoDialogProps = {
 };
 
 export function ReviewSinglePhotoDialog({
+  mediaKind,
   canMoveNext,
   canMovePrevious,
   item,
@@ -54,7 +58,7 @@ export function ReviewSinglePhotoDialog({
   const preview = useAssetPreview(
     item.assetID,
     revision,
-    item.availability === 'available',
+    item.availability === 'available' && mediaKind === 'image',
     previewReloadGeneration,
   );
   const capabilities = useQuery({
@@ -85,7 +89,7 @@ export function ReviewSinglePhotoDialog({
   useEffect(() => {
     function handleShortcut(event: KeyboardEvent) {
       const target = event.target as HTMLElement | null;
-      if (target?.matches('input, select, textarea')) return;
+      if (target?.matches('input, select, textarea, video')) return;
       if (target?.matches('button, a') && (event.key === ' ' || event.key === 'Enter')) return;
       const key = event.key.toLowerCase();
       if (key === 'p' && !pending) onDecision('accept');
@@ -136,6 +140,8 @@ export function ReviewSinglePhotoDialog({
               <ImageOff aria-hidden="true" size={30} />
               <span>当前照片不可在本机读取</span>
             </div>
+          ) : mediaKind === 'video' ? (
+            <ReviewVideoPreview key={`${item.assetID}:${String(revision)}`} assetID={item.assetID} revision={revision} />
           ) : preview.status === 'cloudRequired' ? (
             <div className="viewer-cloud-preview review-cloud-preview" role="status">
               <CloudDownload aria-hidden="true" size={32} />

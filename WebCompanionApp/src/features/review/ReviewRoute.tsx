@@ -763,6 +763,7 @@ function ReviewQueue({
 
       {previewItem ? (
         <ReviewSinglePhotoDialog
+          mediaKind={mediaKind}
           canMoveNext={previewIndex < items.length - 1}
           canMovePrevious={previewIndex > 0}
           item={previewItem}

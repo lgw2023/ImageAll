@@ -359,3 +359,13 @@
 - review-media-typecheck.log、review-media-main-typecheck.log、review-media-lint.log、review-media-build.log PASS；review-media-e2e.log 1/1 PASS，覆盖 video 概览／按标签模型查询、特征训练请求、队列、刷新保留和切回 image；review-media-photo-regression.log 1/1 PASS，照片门槛与建议命令回归。合成 HTTP 浏览器测试运行于独立 Web 工作区，非主线生成资源或真实 Swift Host UI 验收。
 - git diff --check PASS，review-media-source-sha256.json 绑定主线源文件。Workspace 原有 75/5、项目／OpenMontage 并行改动保留。未读真实媒体、未云端获取／源端写入／外部传输、未 push／替换 App。
 - 视频审核单项预览播放、iPhone 个人训练／建议入口和真实合成训练产物→远端持久审核整链仍需补齐；媒体请求对齐不能替代视频审核播放验收。P1／P2／P3 IN_PROGRESS，P4–P7 NOT_STARTED，目标 active。下一动作：补 Web 视频审核预览与播放，继续剩余跨端与完整训练链。
+
+
+## P1/P3 Web 视频审核播放与恢复（2026-09-27）
+
+- 上轮为 progress：de825e04 对齐 Web 审核媒体范围。本轮将该范围传入审核弹窗：照片沿既有预览，视频读取详情并校验媒体类型和内容修订，使用受控媒体 URL 播放。视频不请求静态云预览；原生 controls 聚焦时不触发弹窗审核快捷键。
+- 新 ReviewVideoPreview 按资产／修订挂载，切换或关闭暂停并清除旧播放器 src；页面隐藏暂停播放。失败使用既有有界视频诊断和重试，不自动获取云端原件。
+- Web 本地提交 1bf611ea，隔离暂存仅本轮 4 文件差异；主线接相同最小补丁和新增组件／测试，不合并原有 review 交互改动，不复制生成资源。
+- 首轮播放测试 PASS，lint 字符串类型已修正；扩展云端恢复测试发现诊断函数返回展示文字却被当作错误码比较，改为直接展示既有提示。review-video-e2e-accepted.log 最终 2/2 PASS（合成视频真实浏览器解码／seek、切换停止旧播放器、云端失败提示／重试、关闭、无云预览请求，加照片连续审核回归）。review-video-lint-accepted.log、review-video-build-accepted.log、Web 与 main typecheck PASS，git diff --check PASS。
+- 运行证据来自独立 Web 工作区的合成 HTTP Host，不代表主线内置资源、真实 Swift Host 或真实 Photos 验收；主线生成资源仍待 P1/P7 集成。源摘要 review-video-source-sha256.json。
+- Workspace 原有 75/5、项目／OpenMontage、Web review／地图并行差异保留。未读取真实媒体、未云端下载／源端写入／外部传输、未 push／替换 App。P1／P2／P3 IN_PROGRESS，P4–P7 NOT_STARTED，目标 active。下一动作：补 iPhone 个人建议／训练入口与真实合成训练产物的远端持久审核链，随后进入完整视频去重和多帧分析主路径。
