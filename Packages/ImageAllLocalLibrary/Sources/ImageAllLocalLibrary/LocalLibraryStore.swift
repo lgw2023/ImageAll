@@ -473,6 +473,17 @@ public actor LocalLibraryStore {
                   previous_decision TEXT NOT NULL, context TEXT NOT NULL,
                   UNIQUE(asset_id,tag_id)
                 );
+                CREATE TABLE IF NOT EXISTS collection_undo (
+                  operation_id TEXT PRIMARY KEY REFERENCES outbox(operation_id),
+                  asset_id TEXT NOT NULL REFERENCES assets(id),
+                  collection_id TEXT NOT NULL REFERENCES collections(id),
+                  previous_included INTEGER NOT NULL, context TEXT NOT NULL,
+                  UNIQUE(asset_id,collection_id)
+                );
+                CREATE TABLE IF NOT EXISTS collection_undo_receipts (
+                  original_operation_id TEXT PRIMARY KEY REFERENCES outbox(operation_id),
+                  compensation_operation_id TEXT NOT NULL UNIQUE REFERENCES outbox(operation_id)
+                );
                 CREATE TABLE IF NOT EXISTS favorite_writebacks (
                   asset_id TEXT PRIMARY KEY REFERENCES assets(id),
                   target INTEGER NOT NULL, state TEXT NOT NULL
@@ -1076,26 +1087,98 @@ public actor LocalLibraryStore {
         return result
     }
 
-    public func setMembership(assetID: UUID, collectionID: UUID, included: Bool) throws {
+    @discardableResult
+    public func setMembership(assetID: UUID, collectionID: UUID, included: Bool) throws -> UUID {
         guard try exists("assets", id: assetID) else { throw LocalLibraryError.unknownAsset }
         guard try exists("collections", id: collectionID) else { throw LocalLibraryError.unknownCollection }
+        var operationID = UUID()
         try transaction {
+            let previous = try scalar("SELECT included FROM memberships WHERE asset_id=? AND collection_id=?",
+                                      [assetID.uuidString, collectionID.uuidString]) ?? "0"
+            operationID = try writeMembership(assetID: assetID, collectionID: collectionID, included: included)
+            let context = try collectionUndoContext(assetID: assetID, collectionID: collectionID)
             try execute("""
-                INSERT INTO memberships(collection_id,asset_id,included,revision) VALUES(?,?,?,1)
-                ON CONFLICT(collection_id,asset_id) DO UPDATE SET
-                  included=excluded.included, revision=revision+1
-                """, [collectionID.uuidString, assetID.uuidString, included ? "1" : "0"])
-            let field = "collection.\(collectionID.uuidString)"
-            let value = included ? "1" : "0"
-            let operationID = try enqueue(assetID, field: field, value: value, origin: .localEdit)
-            if try isShared(assetID: assetID) {
-                let collectionName = try scalar("SELECT name FROM collections WHERE id=?", [collectionID.uuidString])
-                try enqueueShared(
-                    operationID, assetID: assetID, field: field,
-                    value: value, referenceName: collectionName
-                )
+                INSERT INTO collection_undo(operation_id,asset_id,collection_id,previous_included,context)
+                VALUES(?,?,?,?,?) ON CONFLICT(asset_id,collection_id) DO UPDATE SET
+                  operation_id=excluded.operation_id,previous_included=excluded.previous_included,context=excluded.context
+                """, [operationID.uuidString, assetID.uuidString, collectionID.uuidString, previous, context])
+        }
+        return operationID
+    }
+
+    // Caller supplies the transaction so fact, audit and shared queue commit atomically.
+    private func writeMembership(assetID: UUID, collectionID: UUID, included: Bool) throws -> UUID {
+        try execute("""
+            INSERT INTO memberships(collection_id,asset_id,included,revision) VALUES(?,?,?,1)
+            ON CONFLICT(collection_id,asset_id) DO UPDATE SET
+              included=excluded.included, revision=revision+1
+            """, [collectionID.uuidString, assetID.uuidString, included ? "1" : "0"])
+        let field = "collection.\(collectionID.uuidString)"
+        let value = included ? "1" : "0"
+        let operationID = try enqueue(assetID, field: field, value: value, origin: .localEdit)
+        if try isShared(assetID: assetID) {
+            let name = try scalar("SELECT name FROM collections WHERE id=?", [collectionID.uuidString])
+            try enqueueShared(operationID, assetID: assetID, field: field, value: value, referenceName: name)
+        }
+        return operationID
+    }
+
+    private func collectionUndoContext(assetID: UUID, collectionID: UUID) throws -> String {
+        let name = try scalar("SELECT name FROM collections WHERE id=?", [collectionID.uuidString]) ?? ""
+        let wire = try wireCollectionIdentity(for: collectionID, localName: name)
+        let field = "collection.\(collectionID.uuidString)"
+        let context = try [
+            requiredIdentity("source_epoch"), requiredIdentity("share_scope_revision"),
+            requiredIdentity("sync_host_id"), requiredIdentity("sync_device_id"),
+            isShared(assetID: assetID) ? "shared" : "private",
+            scalar("SELECT revision FROM shared_field_versions WHERE asset_id=? AND field=?",
+                   [assetID.uuidString, field]) ?? "0",
+            wire.id.uuidString, wire.name, name
+        ]
+        return String(decoding: try JSONEncoder().encode(context), as: UTF8.self)
+    }
+
+    private func validatedCollectionUndo(operationID: UUID) throws -> (asset: UUID, collection: UUID, previous: Bool) {
+        guard let row = try rows("""
+            SELECT asset_id,collection_id,previous_included,context FROM collection_undo WHERE operation_id=?
+            """, [operationID.uuidString]).first,
+              let asset = UUID(uuidString: row[0] ?? ""), let collection = UUID(uuidString: row[1] ?? ""),
+              let previous = row[2], ["0", "1"].contains(previous),
+              row[3] == (try collectionUndoContext(assetID: asset, collectionID: collection)) else {
+            throw LocalLibraryError.undoUnavailable
+        }
+        let field = "collection.\(collection.uuidString)"
+        guard try scalar("SELECT operation_id FROM outbox WHERE entity_id=? AND field=? ORDER BY sequence DESC LIMIT 1",
+                         [asset.uuidString, field]) == operationID.uuidString,
+              try scalar("""
+                  SELECT d.operation_id FROM shared_delivery d JOIN shared_outbox s ON s.operation_id=d.operation_id
+                  WHERE s.asset_id=? AND s.field=? LIMIT 1
+                  """, [asset.uuidString, field]) == nil else { throw LocalLibraryError.undoUnavailable }
+        return (asset, collection, previous == "1")
+    }
+
+    public func collectionUndoCandidates(assetID: UUID) throws -> [UUID: UUID] {
+        var result: [UUID: UUID] = [:]
+        for row in try rows("SELECT operation_id FROM collection_undo WHERE asset_id=?", [assetID.uuidString]) {
+            if let id = UUID(uuidString: row[0] ?? ""), let token = try? validatedCollectionUndo(operationID: id) {
+                result[token.collection] = id
             }
         }
+        return result
+    }
+
+    /// Appends one compensation without rewriting the original membership history.
+    @discardableResult
+    public func undoMembership(operationID: UUID) throws -> UUID {
+        var compensation = UUID()
+        try transaction {
+            let token = try validatedCollectionUndo(operationID: operationID)
+            compensation = try writeMembership(assetID: token.asset, collectionID: token.collection, included: token.previous)
+            try execute("INSERT INTO collection_undo_receipts(original_operation_id,compensation_operation_id) VALUES(?,?)",
+                        [operationID.uuidString, compensation.uuidString])
+            try execute("DELETE FROM collection_undo WHERE operation_id=?", [operationID.uuidString])
+        }
+        return compensation
     }
 
     public func memberships(assetID: UUID) throws -> Set<UUID> {
@@ -2539,6 +2622,9 @@ public actor LocalLibraryStore {
                                   (SELECT operation_id FROM shared_delivery)
                                 """, [change.collectionName, field, localName])
                             if localName != change.collectionName {
+                                // A later rename back to the same text must not revive old undo.
+                                try execute("DELETE FROM collection_undo WHERE collection_id=?",
+                                            [localCollectionID.uuidString])
                                 try execute("UPDATE collections SET name=? WHERE id=?", [
                                     change.collectionName, localCollectionID.uuidString
                                 ])

@@ -161,6 +161,21 @@ final class LocalLibraryModel: ObservableObject {
         } catch { errorMessage = "保存集合失败：\(error.localizedDescription)" }
     }
 
+    func collectionUndoCandidates(for asset: LocalAsset) async -> [UUID: UUID] {
+        guard let store else { return [:] }
+        return (try? await store.collectionUndoCandidates(assetID: asset.id)) ?? [:]
+    }
+
+    func undoMembership(_ operationID: UUID) async {
+        guard let store else { return }
+        do {
+            try await store.undoMembership(operationID: operationID)
+            await reloadFacts()
+        } catch LocalLibraryError.undoUnavailable {
+            errorMessage = "这次集合修改已不能撤销：本机或 Mac 状态已有变化，或同步尚待完成。请核对当前成员状态后重新编辑。"
+        } catch { errorMessage = "撤销集合修改失败：\(error.localizedDescription)" }
+    }
+
     func setShared(_ shared: Bool, assetID: UUID, localIdentifier: String) async {
         guard let store else { return }
         do {
@@ -2227,6 +2242,8 @@ private struct LocalAssetDetailView: View {
     @State private var memberships: Set<UUID> = []
     @State private var tagUndo: [UUID: UUID] = [:]
     @State private var isEditingTags = false
+    @State private var collectionUndo: [UUID: UUID] = [:]
+    @State private var isEditingCollections = false
 
     private var currentAsset: LocalAsset {
         model.assets.first(where: { $0.id == asset.id }) ?? asset
@@ -2306,14 +2323,35 @@ private struct LocalAssetDetailView: View {
             }
             Section("ImageAll 集合") {
                 ForEach(model.collections) { collection in
-                    Toggle(collection.name, isOn: Binding(
-                        get: { memberships.contains(collection.id) },
-                        set: { included in
-                            if included { memberships.insert(collection.id) }
-                            else { memberships.remove(collection.id) }
-                            Task { await model.setMembership(included, asset: asset, collection: collection) }
+                    HStack {
+                        Toggle(collection.name, isOn: Binding(
+                            get: { memberships.contains(collection.id) },
+                            set: { included in
+                                if included { memberships.insert(collection.id) }
+                                else { memberships.remove(collection.id) }
+                                isEditingCollections = true
+                                Task {
+                                    await model.setMembership(included, asset: asset, collection: collection)
+                                    await reloadCollectionState()
+                                    isEditingCollections = false
+                                }
+                            }
+                        ))
+                        .disabled(isEditingCollections)
+                        if let operation = collectionUndo[collection.id] {
+                            Button("撤销") {
+                                isEditingCollections = true
+                                Task {
+                                    await model.undoMembership(operation)
+                                    await reloadCollectionState()
+                                    isEditingCollections = false
+                                }
+                            }
+                            .buttonStyle(.borderless)
+                            .disabled(isEditingCollections)
+                            .accessibilityLabel("撤销集合“\(collection.name)”的上次成员修改")
                         }
-                    ))
+                    }
                 }
             }
             Section("跨端分享") {
@@ -2335,8 +2373,13 @@ private struct LocalAssetDetailView: View {
         .navigationTitle("本机照片")
         .task(id: asset.id) {
             await reloadTagState()
-            memberships = await model.memberships(for: asset)
+            await reloadCollectionState()
         }
+    }
+
+    private func reloadCollectionState() async {
+        memberships = await model.memberships(for: asset)
+        collectionUndo = await model.collectionUndoCandidates(for: asset)
     }
 
     private func reloadTagState() async {
