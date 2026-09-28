@@ -827,3 +827,9 @@
 - 新增testHostedViewerReleasesOnResignAndReloadsPausedOnBecomeActive，直接承载正式LibraryVideoViewer，播放后向正式订阅发送应用失活/激活通知，确认idle/rate0/currentItem=nil，重新载入为新item且不自动恢复声音。video-view-lifecycle-tests.log 1/1 PASS，0.281秒。此为通知集成测试，明确不是OS焦点切换UI证据。
 - video-audio-controls-ui/verification.json绑定本轮源文件、App dylib、测试bundle和合成媒体SHA及样本摘要。测试进程均已退出；未启动生产Photos宿主、未读真实资料、未付费调用、未发布安装。
 - 本轮没有生产行为修改，补充P1控件/资源证据与可复跑工具。完成矩阵已更新；完整Mac工作流、最终条款证据和人工路线仍待收口，目标active。并行改动保持不动、只作本地提交、不push。
+
+## P7 Mac人工路线与可重建合成输入（2026-09-28）
+
+- 上轮7cb0ef63为progress；本轮核对main及并行脏文件后继续P7.8，不重复播放器测试。新增VIDEO-MAC-ACCEPTANCE.md，以实际源码按钮名称编写Xcode、观看/整理、元数据/地图、分析/审核/精确比较、混合故事导出重开路线，明确每项预期与未运行范围。
+- 新增create_video_acceptance_fixtures.py，只创建不存在的新输出目录，拒绝HDD2输出；FFmpeg生成3秒有声已知时间/GPS、字节副本、MOV重封装、2秒竖屏无声和照片，共五媒体。运行到manual-acceptance-inputs退出0，逐文件ffprobe与全片解码通过；完整摘要确认01/02相同、03不同，manifest保留输入信息。未连接日常App、未读取真实媒体、未执行回收。
+- 人工指南交付完成不等于UI路线执行。P7.8文档缺口已补；其他完整入口操作、逐条证据链接和最终版本收口仍继续。脚本/指南/矩阵/记录仅本地提交，不夹带并行改动，不push。
