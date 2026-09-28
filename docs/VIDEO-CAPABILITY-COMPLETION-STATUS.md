@@ -678,3 +678,10 @@
 - `mixed_story_contract.py` 校验文档结构、有限JSON数值、唯一身份、顺序/转场/总帧、资源类型及片段范围/源时长/镜头帧数一致。这是文档契约验证，不替代运行时文件摘要、路径/符号链接、解码和权限检查。
 - `story-mixed-contract-tests-final.log` 3/3 PASS（含12组非法变体）：混合/静音/无音轨结构、旧照片可读、旧0.1拒绝0.2及伪装0.1的新字段。新schema SHA256=2fbd8d755e7cd684b372b64ac221d90594d6b0baff82d6861af1019215030873。旧seed schema仍匹配既有integration-contract摘要；未修改Runtime种子。
 - 新契约尚未加入集成常量或生产执行器；下一步在独立可写引擎中接adapter/渲染/能力广告，再由integration-contract.json统一生成Swift身份、接Swift混合包导出并验收。P6/整体 active，不将单独schema测试视为协议交付。
+
+## P6 混合包实际资源只读验证（2026-09-28）
+
+- 新增独立 `mixed_story_assets.py`，先验证0.2文档，再用目录FD逐级O_NOFOLLOW打开资源，要求普通文件；按256KiB分块SHA256验证冻结摘要。ffprobe/ffmpeg通过继承FD读取同一inode，避免探测时再次解析资产路径。
+- 视频核对真实非封面视频轨时长及音轨存在性，解码实际首帧；有声视频及配乐解码一小段PCM，无声视频合法。照片实际解码并核对格式/方向。结束时复核inode/size/mtime/ctime、摘要和路径身份，拒绝验证期间修改或替换。
+- `story-mixed-assets-tests-final.log` 8/8 PASS（5项实际资源测试+3项文档契约回归）：合成JPEG/2秒有声MP4/WAV、无声MP4；虚报时长/音轨、摘要不符、损坏MP4、目录和叶符号链接、FIFO、探测期间同字节不同inode替换均拒绝。测试目录独立且自动清理，未访问真实媒体，Runtime种子未改动。
+- 此检查只证明该次读取的资源事实，不授权后续无保护地重开可变路径；接adapter时应在私有冻结副本上使用并保持复制/身份门禁。首帧和短音频解码不代表全片解码验收，最终渲染仍须完整验证输出。当前仍未激活生产0.2能力；继续接独立引擎adapter/视频渲染、Swift包导出和统一协议身份。P6/整体 active。
