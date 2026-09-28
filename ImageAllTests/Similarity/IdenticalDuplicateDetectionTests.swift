@@ -8,6 +8,37 @@ import XCTest
 @testable import ImageAll
 
 final class IdenticalDuplicateDetectionTests: XCTestCase {
+    func testStoryVideoFreezePreservesOriginalBytesAndCleansCancelledCopy() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("docs/evidence/time-story-phase-1-20260918/synthetic-silent.mp4")
+        let bytes = try Data(contentsOf: fixture)
+        let item = try env.seedAsset(relativePath: "clip.mp4", contents: bytes,
+            mediaType: "public.mpeg-4", mediaKind: .video, durationMs: 1000)
+        let base = env.makeCompletionService()
+        let service = FolderVideoAnalysisService(database: env.database, sourceAccess: base.sourceAccess, clock: base.clock)
+        let output = env.root.appendingPathComponent("frozen.mp4")
+        let frozen = try service.freezeStoryVideo(assetID: item.assetID, expectedRevision: 1, destination: output)
+        XCTAssertEqual(try Data(contentsOf: output), bytes)
+        XCTAssertEqual(frozen.sha256, Data(SHA256.hash(data: bytes)))
+        XCTAssertEqual(frozen.byteCount, Int64(bytes.count))
+        XCTAssertEqual(frozen.durationMs, 1000)
+        XCTAssertThrowsError(try service.freezeStoryVideo(assetID: item.assetID, expectedRevision: 1, destination: output))
+        XCTAssertEqual(try Data(contentsOf: output), bytes)
+        let cancelled = env.root.appendingPathComponent("cancelled.mp4")
+        var calls = 0
+        XCTAssertThrowsError(try service.freezeStoryVideo(assetID: item.assetID, expectedRevision: 1, destination: cancelled) {
+            calls += 1
+            if calls >= 3 { throw CancellationError() }
+        })
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cancelled.path))
+        XCTAssertThrowsError(try service.freezeStoryVideo(assetID: item.assetID, expectedRevision: 2, destination: cancelled))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cancelled.path))
+        XCTAssertEqual(try Data(contentsOf: item.fileURL), bytes)
+    }
+
     func testPhotosMultiFrameUsesLocalResourceIdentityAndRejectsCloudOrChangedSource() throws {
         let env = try SimilarityTestSupport.Environment(label: #function)
         defer { env.cleanup() }

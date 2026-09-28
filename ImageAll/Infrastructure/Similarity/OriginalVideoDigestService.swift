@@ -732,3 +732,106 @@ struct VideoPredictionEvidenceReader: Sendable {
         }
     }
 }
+
+extension FolderVideoAnalysisService {
+    struct FrozenStoryVideo: Sendable {
+        let url: URL
+        let contentRevision: Int
+        let durationMs: Int64
+        let mediaType: String
+        let byteCount: Int64
+        let sha256: Data
+    }
+
+    /// Destination must be inside the caller's private task directory. Never overwrites an existing file.
+    func freezeStoryVideo(assetID: UUID, expectedRevision: Int, destination: URL,
+                          checkCancellation: () throws -> Void = {}) throws -> FrozenStoryVideo {
+        guard destination.isFileURL else { throw FeaturePrintError.assetIneligible }
+        let directory = try DerivedImageSecureIO.openDirectoryNoFollow(at: destination.deletingLastPathComponent())
+        defer { Darwin.close(directory) }
+        let leaf = destination.lastPathComponent
+        guard !leaf.isEmpty, leaf != ".", leaf != "..", !leaf.contains("/") else { throw FeaturePrintError.assetIneligible }
+        var created = false
+        var completed = false
+        defer { if created && !completed { _ = Darwin.unlinkat(directory, leaf, 0) } }
+        func copy(_ fd: Int32, duration: Int64, type: String, validate: () throws -> Void) throws -> FrozenStoryVideo {
+            try validate()
+            let identity = try OriginalVideoDigestService.FileIdentity.read(fd)
+            let output = Darwin.openat(directory, leaf, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, mode_t(0o600))
+            guard output >= 0 else { throw FeaturePrintError.generationFailed }
+            created = true
+            defer { Darwin.close(output) }
+            var buffer = [UInt8](repeating: 0, count: OriginalVideoDigestService.chunkByteCount)
+            var offset: Int64 = 0
+            var hash = SHA256()
+            while offset < identity.size {
+                try validate()
+                let count = buffer.withUnsafeMutableBytes {
+                    Darwin.pread(fd, $0.baseAddress, min($0.count, Int(identity.size - offset)), off_t(offset))
+                }
+                guard count > 0 else { throw FeaturePrintError.sourceChanged }
+                hash.update(data: Data(buffer.prefix(count)))
+                var written = 0
+                while written < count {
+                    try checkCancellation()
+                    let result = buffer.withUnsafeBytes {
+                        Darwin.write(output, $0.baseAddress!.advanced(by: written), count - written)
+                    }
+                    guard result > 0 else { throw FeaturePrintError.generationFailed }
+                    written += result
+                }
+                offset += Int64(count)
+            }
+            try validate()
+            guard offset > 0, try OriginalVideoDigestService.FileIdentity.read(fd) == identity,
+                  Darwin.fsync(output) == 0 else { throw FeaturePrintError.sourceChanged }
+            return FrozenStoryVideo(url: destination, contentRevision: expectedRevision, durationMs: duration,
+                mediaType: type, byteCount: offset, sha256: Data(hash.finalize()))
+        }
+        let result: FrozenStoryVideo
+        if let context = try photosContext(assetID: assetID) {
+            guard context.revision == expectedRevision, let photosSource else { throw FeaturePrintError.sourceChanged }
+            result = try photosSource.withLocalVideoAnalysisSource(localIdentifier: context.localIdentifier,
+                checkCancellation: checkCancellation) { source in
+                    let fd = try DerivedImageSecureIO.openReadOnlyNoFollow(at: source.url)
+                    defer { Darwin.close(fd) }
+                    let identity = try OriginalVideoDigestService.FileIdentity.read(fd)
+                    return try copy(fd, duration: source.durationMs, type: source.mediaType) {
+                        try checkCancellation()
+                        guard source.durationMs > 0, !source.resourceIdentity.isEmpty,
+                              try photosContext(assetID: assetID) == context,
+                              try OriginalVideoDigestService.FileIdentity.read(fd) == identity else { throw FeaturePrintError.sourceChanged }
+                        let current = try DerivedImageSecureIO.openReadOnlyNoFollow(at: source.url)
+                        defer { Darwin.close(current) }
+                        guard try OriginalVideoDigestService.FileIdentity.read(current) == identity else { throw FeaturePrintError.sourceChanged }
+                    }
+                }
+        } else {
+            let repository = GRDBDerivedImageCacheRepository(database: database)
+            guard let context = try repository.fetchGenerationContext(assetID: assetID),
+                  context.contentRevision == expectedRevision, context.isEligibleForGeneration,
+                  context.mediaKind == .video, context.locatorKind == AssetLocatorKind.file.rawValue,
+                  let duration = context.durationMs, duration > 0 else { throw FeaturePrintError.assetIneligible }
+            result = try sourceAccess.withActiveSourceRootURL(sourceID: context.sourceID) { root in
+                let rootFD = try DerivedImageSecureIO.openDirectoryNoFollow(at: root)
+                defer { Darwin.close(rootFD) }
+                let fd = try DerivedImageSecureIO.openRelativeReadOnlyNoFollow(directoryFD: rootFD, relativePath: context.relativePath)
+                defer { Darwin.close(fd) }
+                let identity = try OriginalVideoDigestService.FileIdentity.read(fd)
+                guard context.matchesHandleFacts(try DerivedImageSourceFingerprintFacts.handleFacts(
+                    fd: fd, reader: FoundationFolderFileResourceReader())) else { throw FeaturePrintError.sourceChanged }
+                return try copy(fd, duration: duration, type: context.mediaType) {
+                    try checkCancellation()
+                    guard try repository.fetchGenerationContext(assetID: assetID) == context,
+                          try OriginalVideoDigestService.FileIdentity.read(fd) == identity else { throw FeaturePrintError.sourceChanged }
+                    let current = try DerivedImageSecureIO.openRelativeReadOnlyNoFollow(directoryFD: rootFD, relativePath: context.relativePath)
+                    defer { Darwin.close(current) }
+                    guard try OriginalVideoDigestService.FileIdentity.read(current) == identity else { throw FeaturePrintError.sourceChanged }
+                }
+            }
+        }
+        try checkCancellation()
+        completed = true
+        return result
+    }
+}
