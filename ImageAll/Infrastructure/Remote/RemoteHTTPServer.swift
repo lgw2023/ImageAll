@@ -317,6 +317,12 @@ actor RemoteHTTPServer {
         Task { await eventBroker.startPingLoop() }
     }
 
+    func updateMigrationTransferMaximumBytes(_ bytes: Int64) async throws -> Bool {
+        guard let migrationTransferStore else { return false }
+        try await migrationTransferStore.updateMaximumSessionBytes(bytes)
+        return true
+    }
+
     func stop() {
         listener?.cancel()
         listener = nil
@@ -753,8 +759,11 @@ actor RemoteHTTPServer {
         _ error: ImageAllMigrationTransferError
     ) -> RemoteAPIError {
         switch error {
-        case .unsafeRoot, .unsafePath, .invalidSession, .chunkTooLarge,
-             .quotaExceeded, .insufficientSpace, .changedChunk:
+        case .quotaExceeded:
+            .init(code: .badRequest, message: "已达到 Mac 每批接收容量上限；请在 Mac 的 iPhone 原件归档设置中提高上限后重试续传。已接收数据保留。")
+        case .insufficientSpace:
+            .init(code: .badRequest, message: "Mac 接收卷空间不足，需要保留至少 1 GiB 余量；释放目标卷空间后可继续原批次。")
+        case .unsafeRoot, .unsafePath, .invalidSession, .chunkTooLarge, .changedChunk:
             .init(code: .badRequest, message: String(describing: error))
         case .identityConflict, .offsetConflict, .sealed, .incompleteArchive:
             .init(code: .conflict, message: String(describing: error))
@@ -1657,8 +1666,20 @@ actor RemoteHTTPServer {
                             guard body.isEmpty else {
                                 throw RemoteAPIError(code: .badRequest, message: "body must be empty")
                             }
+                            var sourceInstallID: UUID?
+                            if let raw = headers["x-imageall-source-install-id"] {
+                                guard let declared = UUID(uuidString: raw),
+                                      let localLibrarySyncStore,
+                                      let source = await localLibrarySyncStore.projection(deviceID: deviceID),
+                                      source.installID == declared else {
+                                    throw RemoteAPIError(code: .conflict,
+                                        message: "请先将此 iPhone 的目录与整理信息同步到 Mac，再传输归档；来源安装身份尚未确认。")
+                                }
+                                sourceInstallID = declared
+                            }
                             payload = try await migrationTransferStore.begin(
-                                migrationID: migrationID, authenticatedDeviceID: deviceID
+                                migrationID: migrationID, authenticatedDeviceID: deviceID,
+                                sourceInstallID: sourceInstallID
                             )
                         } else {
                             payload = try await migrationTransferStore.status(

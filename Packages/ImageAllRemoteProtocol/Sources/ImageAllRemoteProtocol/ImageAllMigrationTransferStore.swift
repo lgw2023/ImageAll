@@ -26,6 +26,7 @@ public struct ImageAllMigrationTransferProgress: Codable, Sendable, Equatable {
     public let maximumSessionBytes: Int64
     public let files: [ImageAllMigrationTransferFileProgress]
     public let sealed: Bool
+    public let sourceInstallID: UUID?
 }
 
 /// A verified staging receipt. It is not a Mac catalog import receipt or a
@@ -94,12 +95,13 @@ public actor ImageAllMigrationTransferStore {
         let deviceID: UUID
         var chunksByPath: [String: [Chunk]]
         var sealed: Bool
+        var sourceInstallID: UUID? = nil
         var verifiedResources: [String: ImageAllMigrationResourceVerificationReceipt]? = nil
     }
 
     private let root: URL
     private let maximumChunkBytes: Int
-    private let maximumSessionBytes: Int64
+    private var maximumSessionBytes: Int64
     private var loaded: [UUID: Session] = [:]
 
     public init(
@@ -120,11 +122,29 @@ public actor ImageAllMigrationTransferStore {
         self.maximumSessionBytes = maximumSessionBytes
     }
 
-    public func begin(migrationID: UUID, authenticatedDeviceID: UUID) throws
+    /// Serializes policy changes with writes in this receiver. Lowering the
+    /// limit never removes committed data or prevents read-only verification.
+    public func updateMaximumSessionBytes(_ value: Int64) throws {
+        guard value > 0 else { throw ImageAllMigrationTransferError.invalidSession }
+        maximumSessionBytes = value
+    }
+
+    public func begin(migrationID: UUID, authenticatedDeviceID: UUID, sourceInstallID: UUID? = nil) throws
         -> ImageAllMigrationTransferProgress {
-        if let session = try load(migrationID: migrationID) {
+        if var session = try load(migrationID: migrationID) {
             guard session.deviceID == authenticatedDeviceID else {
                 throw ImageAllMigrationTransferError.identityConflict
+            }
+            if let sourceInstallID {
+                guard session.sourceInstallID == nil || session.sourceInstallID == sourceInstallID,
+                      !session.sealed || (session.sourceInstallID ?? authenticatedDeviceID) == sourceInstallID else {
+                    throw ImageAllMigrationTransferError.identityConflict
+                }
+                if session.sourceInstallID == nil {
+                    session.sourceInstallID = sourceInstallID
+                    try persist(session)
+                    loaded[migrationID] = session
+                }
             }
             return progress(session)
         }
@@ -154,7 +174,7 @@ public actor ImageAllMigrationTransferStore {
         )
         let session = Session(
             formatVersion: 1, migrationID: migrationID, deviceID: authenticatedDeviceID,
-            chunksByPath: [:], sealed: false
+            chunksByPath: [:], sealed: false, sourceInstallID: sourceInstallID
         )
         do {
             try persist(session)
@@ -461,7 +481,7 @@ public actor ImageAllMigrationTransferStore {
             at: package
         )
         guard verification.migrationID == migrationID,
-              header.sourceDeviceID == authenticatedDeviceID,
+              header.sourceDeviceID == (session.sourceInstallID ?? authenticatedDeviceID),
               verification.isComplete else {
             throw ImageAllMigrationTransferError.incompleteArchive
         }
@@ -484,7 +504,7 @@ public actor ImageAllMigrationTransferStore {
                   name == ".imageall-transfer-\(id.uuidString.lowercased())" else {
                 continue
             }
-            guard let session = try load(migrationID: id), session.sealed,
+            guard let session = try load(migrationID: id, repair: false), session.sealed,
                   let verification = try? ImageAllMigrationArchive.verify(
                     at: packageDirectory(id)
                   ), verification.isComplete else { continue }
@@ -493,7 +513,7 @@ public actor ImageAllMigrationTransferStore {
         return archives.sorted { $0.id.uuidString < $1.id.uuidString }
     }
 
-    private func load(migrationID: UUID) throws -> Session? {
+    private func load(migrationID: UUID, repair: Bool = true) throws -> Session? {
         if let cached = loaded[migrationID] { return cached }
         let url = sessionDirectory(migrationID).appendingPathComponent("session.json")
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
@@ -506,8 +526,14 @@ public actor ImageAllMigrationTransferStore {
               session.chunksByPath.keys.allSatisfy(Self.isAllowed) else {
             throw ImageAllMigrationTransferError.invalidSession
         }
-        try repairFiles(in: session, verifyCommittedHashes: true)
-        loaded[migrationID] = session
+        if repair {
+            try repairFiles(in: session, verifyCommittedHashes: true)
+            loaded[migrationID] = session
+        } else {
+            // A separate UI reader must not truncate an active writer's
+            // not-yet-journaled tail or cache an unrecovered session.
+            try validateDirectories(for: migrationID)
+        }
         return session
     }
 
@@ -581,7 +607,7 @@ public actor ImageAllMigrationTransferStore {
             files: session.chunksByPath.map { path, chunks in
                 .init(relativePath: path, committedBytes: Self.committedLength(chunks))
             }.sorted { $0.relativePath < $1.relativePath },
-            sealed: session.sealed
+            sealed: session.sealed, sourceInstallID: session.sourceInstallID
         )
     }
 

@@ -16,6 +16,7 @@ final class MigrationTransferClientTests: XCTestCase {
         try FileManager.default.createDirectory(at: receiver, withIntermediateDirectories: true)
         let migrationID = UUID()
         let deviceID = UUID()
+        let installID = UUID()
         let resourceID = UUID()
         let path = "resources/\(resourceID.uuidString.lowercased()).bin"
         let resourceBytes = Data(repeating: 0x33, count: 160 * 1_024)
@@ -25,7 +26,7 @@ final class MigrationTransferClientTests: XCTestCase {
         )
         try resourceBytes.write(to: resourceURL)
         let header = ImageAllMigrationHeader(
-            migrationID: migrationID, sourceDeviceID: deviceID, sourceEpoch: UUID(),
+            migrationID: migrationID, sourceDeviceID: installID, sourceEpoch: UUID(),
             scopeRevision: 1, inventoryWatermark: 1, declaredItemCount: 1
         )
         let item = ImageAllMigrationItem(
@@ -66,7 +67,7 @@ final class MigrationTransferClientTests: XCTestCase {
             relativePath: path, offset: 0, bytes: resourcePrefix, sha256: hash(resourcePrefix))
         let uploaded = try await client.uploadMigrationFile(
             at: resourceURL, migrationID: migrationID, relativePath: path,
-            byteCount: Int64(resourceBytes.count), sha256: hash(resourceBytes)
+            byteCount: Int64(resourceBytes.count), sha256: hash(resourceBytes), sourceInstallID: installID
         )
         XCTAssertFalse(uploaded.sealed)
         XCTAssertEqual(uploaded.files.first { $0.relativePath == path }?.committedBytes,
@@ -109,7 +110,7 @@ final class MigrationTransferClientTests: XCTestCase {
 
         let factFile = root.appendingPathComponent("tail.imageallfacts")
         try ImageAllMigrationFacts.write(.init(
-            sourceDeviceID: deviceID, sourceEpoch: header.sourceEpoch,
+            sourceDeviceID: installID, sourceEpoch: header.sourceEpoch,
             scopeRevision: header.scopeRevision, snapshotSequence: 2,
             factWatermark: 2, items: [.init(
                 mediaID: item.mediaID, observedFavorite: true,
@@ -230,6 +231,60 @@ final class MigrationTransferClientTests: XCTestCase {
         }
     }
 
+    func testSourceBindingMustBeAcknowledgedBeforeUploading() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let bytes = Data([1, 2, 3])
+        try bytes.write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let migrationID = UUID(), installID = UUID()
+        for echoedID in [nil, UUID().uuidString] as [String?] {
+            var payload: [String: Any] = ["migrationID": migrationID.uuidString,
+                "maximumChunkBytes": 32, "maximumSessionBytes": 1024, "files": [], "sealed": false]
+            if let echoedID { payload["sourceInstallID"] = echoedID }
+            let transport = InvalidProgressTransport(payload: try JSONSerialization.data(withJSONObject: payload))
+            let client = RemoteLibraryClient(endpoint: try RemoteHostEndpoint(
+                host: "127.0.0.1", port: 8787, accessToken: "synthetic-bearer"), transport: transport)
+            do {
+                _ = try await client.uploadMigrationFile(at: file, migrationID: migrationID,
+                    relativePath: "resources/\(UUID().uuidString.lowercased()).bin",
+                    byteCount: 3, sha256: hash(bytes), sourceInstallID: installID)
+                XCTFail("unconfirmed source identity accepted")
+            } catch let error as RemoteAPIError { XCTAssertEqual(error.code, .conflict) }
+            let count = await transport.requestCount
+            XCTAssertEqual(count, 1, "no media chunks may be sent to an unbound receiver")
+        }
+    }
+
+    func testPreparedFileChecksRemainingQuotaBeforeSendingButAllowsCommittedReplay() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let bytes = Data([1, 2, 3])
+        try bytes.write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let id = UUID()
+        let path = "resources/\(UUID().uuidString.lowercased()).bin"
+        for committed in [0, 3] {
+            let progress: [String: Any] = ["migrationID": id.uuidString, "maximumChunkBytes": 32,
+                "maximumSessionBytes": 1, "files": [["relativePath": path, "committedBytes": committed]],
+                "sealed": false]
+            let transport = InvalidProgressTransport(payload: try JSONSerialization.data(withJSONObject: progress))
+            let client = RemoteLibraryClient(endpoint: try RemoteHostEndpoint(
+                host: "127.0.0.1", port: 8787, accessToken: "synthetic-bearer"
+            ), transport: transport)
+            do {
+                let result = try await client.uploadMigrationFile(at: file, migrationID: id,
+                    relativePath: path, byteCount: 3, sha256: hash(bytes))
+                XCTAssertEqual(committed, 3, "uncommitted file exceeds capacity")
+                XCTAssertEqual(result.files.first?.committedBytes, 3)
+            } catch let error as RemoteAPIError {
+                XCTAssertEqual(committed, 0)
+                XCTAssertEqual(error.code, .badRequest)
+                XCTAssertTrue(error.message.contains("接收额度"))
+            }
+            let count = await transport.requestCount
+            XCTAssertEqual(count, 1, "quota failure and full replay both need no chunk writes")
+        }
+    }
+
     private func hash(_ data: Data) -> String {
         Data(SHA256.hash(data: data)).map { String(format: "%02x", $0) }.joined()
     }
@@ -259,7 +314,8 @@ private struct TransferFixtureTransport: RemoteHTTPTransporting {
                   path == RemoteHTTPPaths.migrationTransfer(migrationID),
                   request.httpMethod == "POST" {
             payload = try JSONEncoder().encode(try await store.begin(
-                migrationID: migrationID, authenticatedDeviceID: deviceID
+                migrationID: migrationID, authenticatedDeviceID: deviceID,
+                sourceInstallID: request.value(forHTTPHeaderField: "X-ImageAll-Source-Install-ID").flatMap(UUID.init(uuidString:))
             ))
         } else if let migrationID,
                   path == RemoteHTTPPaths.migrationTransferChunks(migrationID),

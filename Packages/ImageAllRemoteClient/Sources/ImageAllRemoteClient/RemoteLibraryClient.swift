@@ -159,11 +159,21 @@ public struct RemoteLibraryClient: Sendable {
     }
 
     public func beginMigrationTransfer(
-        migrationID: UUID
+        migrationID: UUID, sourceInstallID: UUID? = nil
     ) async throws -> ImageAllMigrationTransferProgress {
-        try await postJSON(
-            path: RemoteHTTPPaths.migrationTransfer(migrationID), body: Data()
-        )
+        guard let sourceInstallID else {
+            return try await postJSON(path: RemoteHTTPPaths.migrationTransfer(migrationID), body: Data())
+        }
+        var request = try makeRequest(path: RemoteHTTPPaths.migrationTransfer(migrationID), method: "POST")
+        request.httpBody = Data()
+        request.setValue(sourceInstallID.uuidString, forHTTPHeaderField: "X-ImageAll-Source-Install-ID")
+        let (data, response) = try await transport.data(for: request)
+        try Self.validate(response: response, data: data)
+        let progress = try decoder.decode(ImageAllMigrationTransferProgress.self, from: data)
+        guard progress.migrationID == migrationID, progress.sourceInstallID == sourceInstallID else {
+            throw RemoteAPIError(code: .conflict, message: "Mac 未确认来源安装身份，请更新 Mac 并先同步目录与整理信息。")
+        }
+        return progress
     }
 
     public func migrationTransferProgress(
@@ -228,7 +238,7 @@ public struct RemoteLibraryClient: Sendable {
     @discardableResult
     public func uploadMigrationFile(
         at file: URL, migrationID: UUID, relativePath: String,
-        byteCount: Int64, sha256: String,
+        byteCount: Int64, sha256: String, sourceInstallID: UUID? = nil,
         beforeChunk: @Sendable () async throws -> Void = {}
     ) async throws -> ImageAllMigrationTransferProgress {
         guard byteCount > 0, sha256.count == 64,
@@ -243,7 +253,7 @@ public struct RemoteLibraryClient: Sendable {
         try handle.seek(toOffset: 0)
         try Task.checkCancellation()
         try await beforeChunk()
-        var progress = try await beginMigrationTransfer(migrationID: migrationID)
+        var progress = try await beginMigrationTransfer(migrationID: migrationID, sourceInstallID: sourceInstallID)
         func committedOffset(_ value: ImageAllMigrationTransferProgress) throws -> Int64 {
             guard value.migrationID == migrationID,
                   value.maximumChunkBytes > 0,
@@ -259,6 +269,23 @@ public struct RemoteLibraryClient: Sendable {
             return committed
         }
         let committed = try committedOffset(progress)
+        var used: Int64 = 0
+        guard progress.maximumSessionBytes > 0 else {
+            throw RemoteAPIError(code: .conflict, message: "invalid receiver capacity")
+        }
+        for entry in progress.files {
+            guard entry.committedBytes <= Int64.max - used else {
+                throw RemoteAPIError(code: .conflict, message: "invalid receiver byte count")
+            }
+            used += entry.committedBytes
+        }
+        let remaining = byteCount - committed
+        if remaining > 0, used > progress.maximumSessionBytes
+            || remaining > progress.maximumSessionBytes - used {
+            let limit = ByteCountFormatter.string(fromByteCount: progress.maximumSessionBytes, countStyle: .binary)
+            throw RemoteAPIError(code: .badRequest,
+                message: "当前文件超过此批次剩余接收额度（上限 \(limit)）；请在 Mac 调高每批接收上限后重试原批次。")
+        }
         var offset: Int64 = 0
         var digest = SHA256()
         while offset < byteCount {
@@ -366,7 +393,8 @@ public struct RemoteLibraryClient: Sendable {
             let file = planningRoot.appendingPathComponent(path)
             let digest = try Self.migrationFileDigest(at: file)
             _ = try await uploadMigrationFile(at: file, migrationID: header.migrationID,
-                relativePath: path, byteCount: digest.bytes, sha256: digest.sha256, beforeChunk: beforeChunk)
+                relativePath: path, byteCount: digest.bytes, sha256: digest.sha256,
+                sourceInstallID: header.sourceDeviceID, beforeChunk: beforeChunk)
         }
         try Task.checkCancellation()
         try await beforeChunk()
@@ -410,7 +438,7 @@ public struct RemoteLibraryClient: Sendable {
             let digest = try Self.migrationFileDigest(at: file)
             _ = try await uploadMigrationFile(
                 at: file, migrationID: header.migrationID, relativePath: path,
-                byteCount: digest.bytes, sha256: digest.sha256
+                byteCount: digest.bytes, sha256: digest.sha256, sourceInstallID: header.sourceDeviceID
             )
             if path.hasPrefix("resources/"), let pairedDeviceID,
                capabilities.capabilities.contains(.migrationResourceVerification) {

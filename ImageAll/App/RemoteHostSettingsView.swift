@@ -1360,6 +1360,8 @@ final class PhoneArchiveImportModel: ObservableObject {
     @Published private(set) var completionReceiptIsCurrent = false
     @Published private(set) var isBusy = false
     @Published private(set) var message: String?
+    @Published var transferMaximumGiB = RemoteHostProcessHolder.migrationTransferMaximumGiB()
+    @Published private(set) var savedTransferMaximumGiB = RemoteHostProcessHolder.migrationTransferMaximumGiB()
     @Published private(set) var transferTargetPath: String? =
         RemoteHostProcessHolder.migrationTransferTargetURL()?.path
     @Published private(set) var sealedTransfers: [ImageAllMigrationTransferSealedArchive] = []
@@ -1430,6 +1432,24 @@ final class PhoneArchiveImportModel: ObservableObject {
         } catch {
             message = "网络接收目录未启用：\(error.localizedDescription)"
         }
+    }
+
+    func applyTransferMaximum() async {
+        guard !isBusy else { return }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let result = try await RemoteHostProcessHolder.configureMigrationTransferMaximumGiB(transferMaximumGiB)
+            savedTransferMaximumGiB = RemoteHostProcessHolder.migrationTransferMaximumGiB()
+            switch result {
+            case .running:
+                message = "批次容量上限已生效；手机可重试原批次，已接收资源保留。"
+            case .failed(let detail):
+                message = "容量上限已保存，但接收器更新失败：\(detail)"
+            case .stopped, .waitingForAttachment, .superseded:
+                message = "容量上限已保存，将在网络接收器就绪后采用。"
+            }
+        } catch { message = "容量上限未保存：\(error.localizedDescription)" }
     }
 
     private func refreshSealedTransfers() async {
@@ -2087,6 +2107,19 @@ private struct PhoneArchiveImportCard: View {
                     .font(.caption).foregroundStyle(.secondary)
                     .lineLimit(1).truncationMode(.middle)
             }
+            HStack {
+                Picker("每批接收上限", selection: $model.transferMaximumGiB) {
+                    ForEach(RemoteHostProcessHolder.migrationTransferLimitOptions, id: \.self) { value in
+                        Text("\(value) GiB").tag(value)
+                    }
+                }
+                .frame(maxWidth: 250)
+                .disabled(model.isBusy)
+                Button("应用上限") { Task { await model.applyTransferMaximum() } }
+                    .disabled(model.isBusy || model.transferMaximumGiB == model.savedTransferMaximumGiB)
+            }
+            Text("上限包含资源、清单和整理信息，不是磁盘预留。请按目标卷余量选择；写入时仍至少保留 1 GiB。应用后可在手机重试受额度限制的批次；调低上限不会删除已接收数据。")
+                .font(.footnote).foregroundStyle(.secondary)
             ForEach(model.sealedTransfers) { transfer in
                 HStack {
                     Text("已校验归档 · \(transfer.id.uuidString)")

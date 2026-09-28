@@ -123,6 +123,22 @@ final class RemoteHTTPServerTests: XCTestCase {
         XCTAssertEqual(lookupResult.receipt?.importedAssetIDs, completed?.importedAssetIDs)
     }
 
+    func testMigrationReceiveLimitSettingsUseIsolatedDefaultsAndRejectInvalidValues() throws {
+        let suite = "MigrationReceiveLimit-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertEqual(RemoteHostProcessHolder.migrationTransferMaximumBytes(defaults: defaults),
+                       ImageAllMigrationTransferStore.defaultMaximumSessionBytes)
+        try RemoteHostProcessHolder.saveMigrationTransferMaximumGiB(4096, defaults: defaults)
+        XCTAssertEqual(RemoteHostProcessHolder.migrationTransferMaximumGiB(defaults: defaults), 4096)
+        XCTAssertEqual(RemoteHostProcessHolder.migrationTransferMaximumBytes(defaults: defaults),
+                       Int64(4096) * 1_024 * 1_024 * 1_024)
+        XCTAssertThrowsError(try RemoteHostProcessHolder.saveMigrationTransferMaximumGiB(Int.max, defaults: defaults))
+        XCTAssertEqual(RemoteHostProcessHolder.migrationTransferMaximumGiB(defaults: defaults), 4096)
+        try RemoteHostProcessHolder.saveMigrationTransferMaximumGiB(128, defaults: defaults)
+        XCTAssertEqual(RemoteHostProcessHolder.migrationTransferMaximumGiB(defaults: defaults), 128)
+    }
+
     func testPairedMigrationChunkRouteStreamsBeyondJSONLimitAndSealsPackage() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "RemoteMigrationTransfer-\(UUID().uuidString)", isDirectory: true
@@ -145,11 +161,16 @@ final class RemoteHTTPServerTests: XCTestCase {
             Data(SHA256.hash(data: data)).map { String(format: "%02x", $0) }.joined()
         }
         let port = UInt16.random(in: 19_000...29_000)
-        let pairing = makePairingStore(listenPort: Int(port))
+        let hostID = UUID(), installID = UUID()
+        let pairing = makePairingStore(hostID: hostID, listenPort: Int(port))
+        let sync = try RemoteLocalLibrarySyncStore(hostID: hostID,
+            storageURL: root.appendingPathComponent("sync.json"))
         let transfer = try ImageAllMigrationTransferStore(root: receiver)
         let (server, _) = makeServer(
-            port: port, pairingStore: pairing, migrationTransferStore: transfer
+            port: port, pairingStore: pairing, localLibrarySyncStore: sync, migrationTransferStore: transfer
         )
+        let quotaApplied = try await server.updateMigrationTransferMaximumBytes(8 * 1_024 * 1_024)
+        XCTAssertTrue(quotaApplied)
         try await server.start()
         try await Task.sleep(nanoseconds: 150_000_000)
         defer { Task { await server.stop() } }
@@ -160,7 +181,7 @@ final class RemoteHTTPServerTests: XCTestCase {
             devicePublicKeySPKI_SHA256: "migration-test-device"
         ))
         let header = ImageAllMigrationHeader(
-            migrationID: migrationID, sourceDeviceID: tokens.deviceID, sourceEpoch: UUID(),
+            migrationID: migrationID, sourceDeviceID: installID, sourceEpoch: UUID(),
             scopeRevision: 1, inventoryWatermark: 1, declaredItemCount: 1
         )
         let item = ImageAllMigrationItem(
@@ -185,13 +206,28 @@ final class RemoteHTTPServerTests: XCTestCase {
             return value
         }
         let base = RemoteHTTPPaths.migrationTransfer(migrationID)
+        var begin = request(base, method: "POST", body: Data())
+        begin.setValue(installID.uuidString, forHTTPHeaderField: "X-ImageAll-Source-Install-ID")
+        let (_, unsyncedResponse) = try await URLSession.shared.data(for: begin)
+        XCTAssertEqual(try XCTUnwrap(unsyncedResponse as? HTTPURLResponse).statusCode, 409)
+        _ = try await sync.submit(.init(hostID: hostID, installID: installID,
+            sourceEpoch: header.sourceEpoch, scopeRevision: 1, snapshotSequence: 1,
+            selectedAssetIDs: [], assets: []), authenticatedDeviceID: tokens.deviceID)
         let (beginData, beginResponse) = try await URLSession.shared.data(
-            for: request(base, method: "POST", body: Data())
+            for: begin
         )
         XCTAssertEqual(try XCTUnwrap(beginResponse as? HTTPURLResponse).statusCode, 200)
         XCTAssertEqual(try JSONDecoder().decode(
             ImageAllMigrationTransferProgress.self, from: beginData
         ).maximumChunkBytes, 4 * 1_024 * 1_024)
+        XCTAssertEqual(try JSONDecoder().decode(
+            ImageAllMigrationTransferProgress.self, from: beginData).maximumSessionBytes, 8 * 1_024 * 1_024)
+
+        XCTAssertEqual(try JSONDecoder().decode(ImageAllMigrationTransferProgress.self,
+            from: beginData).sourceInstallID, installID)
+        begin.setValue(UUID().uuidString, forHTTPHeaderField: "X-ImageAll-Source-Install-ID")
+        let (_, wrongSourceResponse) = try await URLSession.shared.data(for: begin)
+        XCTAssertEqual(try XCTUnwrap(wrongSourceResponse as? HTTPURLResponse).statusCode, 409)
 
         for (path, contents) in [("manifest.jsonl", manifest), (relativePath, bytes)] {
             var upload = request(
@@ -239,7 +275,7 @@ final class RemoteHTTPServerTests: XCTestCase {
 
         let factFile = root.appendingPathComponent("new-facts.imageallfacts")
         try ImageAllMigrationFacts.write(.init(
-            sourceDeviceID: tokens.deviceID, sourceEpoch: header.sourceEpoch,
+            sourceDeviceID: installID, sourceEpoch: header.sourceEpoch,
             scopeRevision: header.scopeRevision, snapshotSequence: 2,
             factWatermark: 2, items: [.init(
                 mediaID: item.mediaID, observedFavorite: true,

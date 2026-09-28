@@ -397,7 +397,7 @@ final class LocalLibraryModel: ObservableObject {
                       let hash = resource.sha256 else { throw LocalArchiveExportError.incompleteArchive }
                 _ = try await connection.client.uploadMigrationFile(
                     at: file, migrationID: migrationID, relativePath: path,
-                    byteCount: size, sha256: hash, beforeChunk: check)
+                    byteCount: size, sha256: hash, sourceInstallID: snapshot.installID, beforeChunk: check)
                 try await check()
                 let receipt = try await connection.client.verifyMigrationResource(
                     migrationID: migrationID, deviceID: connection.deviceID,

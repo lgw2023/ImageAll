@@ -299,6 +299,8 @@ enum RemoteHostProcessHolder {
     private static let portKey = "imageall.remoteHost.port"
     static let publicBaseURLKey = "imageall.remoteHost.publicBaseURL"
     private static let migrationTransferBookmarkKey = "imageall.remoteHost.migrationTransferBookmark"
+    private static let migrationTransferLimitKey = "imageall.remoteHost.migrationTransferMaximumGiB"
+    static let migrationTransferLimitOptions = [64, 128, 256, 512, 1024, 2048, 4096]
     private static let state = State()
 
     enum LifecycleResult: Equatable, Sendable {
@@ -413,6 +415,16 @@ enum RemoteHostProcessHolder {
             }
         }
 
+        func applyMigrationTransferMaximum(_ bytes: Int64) async -> LifecycleResult {
+            guard let server else { return .stopped }
+            let generation = configurationGeneration
+            do {
+                let applied = try await server.updateMigrationTransferMaximumBytes(bytes)
+                guard generation == configurationGeneration else { return .superseded }
+                return applied ? .running : .waitingForAttachment
+            } catch { return .failed(error.localizedDescription) }
+        }
+
         private func stopRuntime() async {
             await server?.stop()
             server = nil
@@ -498,6 +510,27 @@ enum RemoteHostProcessHolder {
 
     static func reloadConfiguration() async -> LifecycleResult {
         await state.apply(enabled: isEnabled(), forceRestart: true)
+    }
+
+    static func migrationTransferMaximumGiB(defaults: UserDefaults = .standard) -> Int {
+        let value = defaults.integer(forKey: migrationTransferLimitKey)
+        return migrationTransferLimitOptions.contains(value) ? value : 64
+    }
+
+    static func migrationTransferMaximumBytes(defaults: UserDefaults = .standard) -> Int64 {
+        Int64(migrationTransferMaximumGiB(defaults: defaults)) * 1_024 * 1_024 * 1_024
+    }
+
+    static func saveMigrationTransferMaximumGiB(_ value: Int, defaults: UserDefaults) throws {
+        guard migrationTransferLimitOptions.contains(value) else {
+            throw RemoteAPIError(code: .badRequest, message: "请选择支持的批次容量上限")
+        }
+        defaults.set(value, forKey: migrationTransferLimitKey)
+    }
+
+    static func configureMigrationTransferMaximumGiB(_ value: Int) async throws -> LifecycleResult {
+        try saveMigrationTransferMaximumGiB(value, defaults: .standard)
+        return await state.applyMigrationTransferMaximum(migrationTransferMaximumBytes())
     }
 
     static func migrationTransferTargetURL(defaults: UserDefaults = .standard) -> URL? {
@@ -792,7 +825,8 @@ enum RemoteHostProcessHolder {
         if let target = migrationTransferTargetURL(defaults: defaults),
            target.startAccessingSecurityScopedResource() {
             do {
-                migrationTransferStore = try ImageAllMigrationTransferStore(root: target)
+                migrationTransferStore = try ImageAllMigrationTransferStore(
+                    root: target, maximumSessionBytes: migrationTransferMaximumBytes(defaults: defaults))
                 migrationTransferScopeURL = target
             } catch {
                 target.stopAccessingSecurityScopedResource()
