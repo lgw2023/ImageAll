@@ -32,6 +32,7 @@ final class LocalLibraryModel: ObservableObject {
     @Published private(set) var collections: [LocalCollection] = []
     @Published private(set) var sharedSelections: [LocalShareSelection] = []
     @Published private(set) var sharedConflicts: [LocalSharedPendingOperation] = []
+    @Published private(set) var privateCollectionRevisions: [UUID: Int64] = [:]
     @Published private(set) var pendingCollectionRename: LocalCollectionRenameCommand?
     @Published private(set) var pendingCount = 0
     @Published private(set) var hasMore = false
@@ -175,6 +176,18 @@ final class LocalLibraryModel: ObservableObject {
         } catch LocalLibraryError.undoUnavailable {
             errorMessage = "这次集合修改已不能撤销：本机或 Mac 状态已有变化，或同步尚待完成。请核对当前成员状态后重新编辑。"
         } catch { errorMessage = "撤销集合修改失败：\(error.localizedDescription)" }
+    }
+
+    func renamePrivateCollection(_ collection: LocalCollection, revision: Int64, name: String) async throws {
+        guard let store else { throw LocalFavoriteSourceError.storeUnavailable }
+        do {
+            try await store.renamePrivateCollection(collectionID: collection.id, expectedName: collection.name,
+                                                    expectedRevision: revision, newName: name)
+            await reloadFacts()
+        } catch {
+            await reloadFacts()
+            throw error
+        }
     }
 
     func prepareCollectionRename(collectionID: UUID, name: String) async throws -> LocalCollectionRenameCommand {
@@ -804,6 +817,7 @@ final class LocalLibraryModel: ObservableObject {
     private func reloadFacts() async {
         guard let store else { return }
         do {
+            privateCollectionRevisions = try await store.privateCollectionNameRevisions()
             pendingCollectionRename = try await store.pendingCollectionRename()
             tags = try await store.tags()
             collections = try await store.collections()
@@ -998,7 +1012,19 @@ struct LocalLibraryView: View {
                     }
                     .disabled(newCollectionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
-                ForEach(model.collections) { collection in Text(collection.name) }
+                ForEach(model.collections) { collection in
+                    if let revision = model.privateCollectionRevisions[collection.id] {
+                        NavigationLink {
+                            LocalPrivateCollectionRenameView(model: model, collection: collection, revision: revision)
+                        } label: {
+                            HStack { Text(collection.name); Spacer(); Text("改名").foregroundStyle(.secondary) }
+                        }
+                    } else {
+                        Text(collection.name)
+                    }
+                }
+                Text("本机新建且未进入分享范围的集合可直接改名。共享集合请到“待分享”中改名；旧集合的共享历史不足时，保留身份核对要求。")
+                    .font(.footnote).foregroundStyle(.secondary)
             }
             Section("已授权照片") {
                 ForEach(model.assets) { asset in
@@ -1081,6 +1107,47 @@ private struct LocalLibraryBackupView: View {
             if let failure { Text(failure).foregroundStyle(.red) }
         }
         .navigationTitle("备份本机整理库")
+    }
+}
+
+private struct LocalPrivateCollectionRenameView: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var model: LocalLibraryModel
+    @State private var collection: LocalCollection
+    @State private var revision: Int64
+    @State private var name: String
+    @State private var busy = false
+    @State private var failure: String?
+
+    init(model: LocalLibraryModel, collection: LocalCollection, revision: Int64) {
+        self.model = model
+        _collection = State(initialValue: collection)
+        _revision = State(initialValue: revision)
+        _name = State(initialValue: collection.name)
+    }
+
+    var body: some View {
+        Form {
+            LabeledContent("当前名称", value: collection.name)
+            TextField("新名称", text: $name)
+            Button("保存本机名称") {
+                busy = true
+                Task {
+                    defer { busy = false }
+                    do {
+                        try await model.renamePrivateCollection(collection, revision: revision, name: name)
+                        dismiss()
+                    } catch {
+                        failure = "未保存：名称、集合版本或分享状态已有变化，或新名称已占用。请返回列表核对后重试。"
+                    }
+                }
+            }
+            .disabled(busy || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Text("离线保存 ImageAll 集合名称，成员保持不变，不修改 Photos 相册。进入分享范围后须使用共享集合改名。")
+                .font(.footnote)
+            if let failure { Text(failure).foregroundStyle(.red) }
+        }
+        .navigationTitle("本机集合改名")
     }
 }
 

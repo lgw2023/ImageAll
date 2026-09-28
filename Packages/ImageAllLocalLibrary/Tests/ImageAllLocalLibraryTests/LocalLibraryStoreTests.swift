@@ -1232,6 +1232,7 @@ func explicitCollectionRenameRecoveryKeepsIdentityChecks(scenario: CollectionRec
         #expect(candidate.localCollectionID == existingID)
         #expect(candidate.remoteCollectionID == collidingID)
         try await store.confirmSharedCollectionAlias(candidate)
+        #expect(try await store.privateCollectionNameRevisions()[existingID] == nil)
     }
     let received = try await store.applySharedCollectionChanges(
         hostID: hostID, deviceID: deviceID, sourceEpoch: snapshot.sourceEpoch,

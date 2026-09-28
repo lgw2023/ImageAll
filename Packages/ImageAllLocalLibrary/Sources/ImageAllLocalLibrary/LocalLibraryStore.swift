@@ -500,6 +500,14 @@ public actor LocalLibraryStore {
                   original_operation_id TEXT PRIMARY KEY REFERENCES outbox(operation_id),
                   compensation_operation_id TEXT NOT NULL UNIQUE REFERENCES outbox(operation_id)
                 );
+                CREATE TABLE IF NOT EXISTS private_collection_names (
+                  collection_id TEXT PRIMARY KEY REFERENCES collections(id), revision INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS private_collection_rename_events (
+                  operation_id TEXT PRIMARY KEY REFERENCES outbox(operation_id),
+                  collection_id TEXT NOT NULL REFERENCES collections(id),
+                  old_name TEXT NOT NULL, new_name TEXT NOT NULL, previous_revision INTEGER NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS collection_rename_commands (
                   command_id TEXT PRIMARY KEY, payload TEXT NOT NULL,
                   state TEXT NOT NULL CHECK(state IN ('pending','completed','abandoned')),
@@ -611,6 +619,10 @@ public actor LocalLibraryStore {
         try transaction {
             if shared {
                 try execute("INSERT INTO shared_assets(asset_id) VALUES(?)", [assetID.uuidString])
+                try execute("""
+                    DELETE FROM private_collection_names WHERE collection_id IN
+                      (SELECT collection_id FROM memberships WHERE asset_id=?)
+                    """, [assetID.uuidString])
             } else {
                 try execute("DELETE FROM shared_assets WHERE asset_id=?", [assetID.uuidString])
                 try execute("DELETE FROM shared_outbox WHERE asset_id=?", [assetID.uuidString])
@@ -999,6 +1011,40 @@ public actor LocalLibraryStore {
         return id
     }
 
+    /// Positive provenance exists only for collections created after this feature was installed.
+    /// It is permanently retired at the first shared identity boundary.
+    public func privateCollectionNameRevisions() throws -> [UUID: Int64] {
+        var result: [UUID: Int64] = [:]
+        for row in try rows("SELECT collection_id,revision FROM private_collection_names") {
+            if let id = UUID(uuidString: row[0] ?? ""), let revision = Int64(row[1] ?? "") { result[id] = revision }
+        }
+        return result
+    }
+
+    public func renamePrivateCollection(collectionID: UUID, expectedName: String,
+                                        expectedRevision: Int64, newName: String) throws {
+        let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name.count <= 160, name.utf8.count <= 640 else { throw LocalLibraryError.invalidName }
+        try transaction {
+            guard expectedRevision >= 0, expectedRevision < Int64.max,
+                  try scalar("SELECT name FROM collections WHERE id=?", [collectionID.uuidString]) == expectedName,
+                  try scalar("SELECT revision FROM private_collection_names WHERE collection_id=?", [collectionID.uuidString]) == String(expectedRevision),
+                  try pendingCollectionRename()?.localCollectionID != collectionID,
+                  !(try collections()).contains(where: { $0.id != collectionID && Self.syncTagNameKey($0.name) == Self.syncTagNameKey(name) }) else {
+                throw LocalLibraryError.syncRemoteCollectionMismatch
+            }
+            guard name != expectedName else { return }
+            try execute("UPDATE collections SET name=? WHERE id=?", [name, collectionID.uuidString])
+            try execute("UPDATE private_collection_names SET revision=revision+1 WHERE collection_id=?", [collectionID.uuidString])
+            try execute("DELETE FROM collection_undo WHERE collection_id=?", [collectionID.uuidString])
+            let operation = try enqueue(collectionID, field: "collection.rename", value: name, origin: .localEdit)
+            try execute("""
+                INSERT INTO private_collection_rename_events(operation_id,collection_id,old_name,new_name,previous_revision)
+                VALUES(?,?,?,?,?)
+                """, [operation.uuidString, collectionID.uuidString, expectedName, name, String(expectedRevision)])
+        }
+    }
+
     public func pendingCollectionRename() throws -> LocalCollectionRenameCommand? {
         guard let payload = try scalar("SELECT payload FROM collection_rename_commands WHERE state='pending'") else { return nil }
         return try JSONDecoder().decode(LocalCollectionRenameCommand.self, from: Data(payload.utf8))
@@ -1084,6 +1130,7 @@ public actor LocalLibraryStore {
         let id = UUID()
         try transaction {
             try execute("INSERT INTO collections(id,name) VALUES(?,?)", [id.uuidString, trimmed])
+            try execute("INSERT INTO private_collection_names(collection_id,revision) VALUES(?,0)", [id.uuidString])
             try enqueue(id, field: "collection.create", value: trimmed, origin: .localEdit)
         }
         return id
@@ -1219,6 +1266,7 @@ public actor LocalLibraryStore {
         let value = included ? "1" : "0"
         let operationID = try enqueue(assetID, field: field, value: value, origin: .localEdit)
         if try isShared(assetID: assetID) {
+            try execute("DELETE FROM private_collection_names WHERE collection_id=?", [collectionID.uuidString])
             let name = try scalar("SELECT name FROM collections WHERE id=?", [collectionID.uuidString])
             try enqueueShared(operationID, assetID: assetID, field: field, value: value, referenceName: name)
         }
@@ -2531,6 +2579,7 @@ public actor LocalLibraryStore {
             throw LocalLibraryError.syncRemoteCollectionMismatch
         }
         try transaction {
+            try execute("DELETE FROM private_collection_names WHERE collection_id=?", [candidate.localCollectionID.uuidString])
             try execute("""
                 INSERT INTO shared_collection_aliases(
                   host_id,device_id,source_epoch,remote_collection_id,
@@ -2632,6 +2681,7 @@ public actor LocalLibraryStore {
                     hostID: hostID, deviceID: deviceID, sourceEpoch: sourceEpoch,
                     renamedFrom: change.renamedFrom
                 )
+                try execute("DELETE FROM private_collection_names WHERE collection_id=?", [localCollectionID.uuidString])
                 let field = "collection.\(localCollectionID.uuidString)"
                 let value = change.included ? "1" : "0"
                 let baseline = Int64(try scalar("""
