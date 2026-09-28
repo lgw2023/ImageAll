@@ -374,6 +374,7 @@ func explicitCollectionRenameRecoveryKeepsIdentityChecks(scenario: CollectionRec
     )
     #expect(first.applied == 1)
     #expect(first.conflicts == 0)
+    #expect(try await store.migrationFactSnapshot(visibleIdentifiers: ["shared"]).auditRecords?.last?.origin == .remoteSync)
     let changed = try #require(await store.assets(visibleIdentifiers: ["shared"]).first)
     #expect(changed.favoriteTarget == true)
     #expect(changed.observedFavorite == false)
@@ -412,6 +413,8 @@ func explicitCollectionRenameRecoveryKeepsIdentityChecks(scenario: CollectionRec
     #expect(try await reopened.pendingSharedOperations().first?.id == pending.id)
     #expect(try await reopened.pendingSharedOperations().first?.isConflicted == true)
     #expect(try await reopened.assets(visibleIdentifiers: ["shared"]).first?.favoriteTarget == false)
+    _ = try await reopened.resolveSharedFavoriteConflict(operationID: pending.id, resolution: .acceptMac)
+    #expect(try await reopened.migrationFactSnapshot(visibleIdentifiers: ["shared"]).auditRecords?.last?.origin == .conflictResolution)
 }
 
 @Test func explicitShareScopeFiltersPrivateFactsAndSurvivesPermissionContraction() async throws {
@@ -488,6 +491,7 @@ func explicitCollectionRenameRecoveryKeepsIdentityChecks(scenario: CollectionRec
     #expect(frozen.auditRecords?.count == 1)
     #expect(frozen.auditRecords?.first?.assetID == selected.id)
     #expect(frozen.auditRecords?.first?.value == "1")
+    #expect(frozen.auditRecords?.first?.origin == .localEdit)
     try await store.setFavoriteTarget(assetID: selected.id, isFavorite: false)
     let newer = try await store.migrationFactSnapshot(visibleIdentifiers: ["selected"])
     #expect(newer.auditRecords?.map(\.value) == ["1", "0"])
@@ -1477,4 +1481,35 @@ func confirmedCollectionAliasFollowsExplicitMacRename(legacyPrepared: Bool) asyn
         localCollectionID: localID, localCollectionName: "Trip",
         remoteCollectionID: remoteID, remoteCollectionName: "Trip"
     )])
+}
+
+@Test func migrationAuditKeepsHistoricalNamesAndLegacyUnknownOrigin() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("local.sqlite")
+    let store = try LocalLibraryStore(url: url)
+    try await store.observe([.init(localIdentifier: "selected", kind: "image", creationDate: nil, isFavorite: false)])
+    let asset = try #require(await store.assets(visibleIdentifiers: ["selected"]).first)
+    try await store.setShared(assetID: asset.id, shared: true)
+    let tag = try await store.createTag(name: "旧标签")
+    let collection = try await store.createCollection(name: "旧集合")
+    try await store.setDecision(assetID: asset.id, tagID: tag, decision: .accepted)
+    try await store.setMembership(assetID: asset.id, collectionID: collection, included: true)
+    var rawDB: OpaquePointer?
+    #expect(sqlite3_open(url.path, &rawDB) == SQLITE_OK)
+    defer { sqlite3_close(rawDB) }
+    #expect(sqlite3_exec(rawDB, "UPDATE tags SET name='新标签'; UPDATE collections SET name='新集合'", nil, nil, nil) == SQLITE_OK)
+    let reopened = try LocalLibraryStore(url: url)
+    let snapshot = try await reopened.migrationFactSnapshot(visibleIdentifiers: ["selected"])
+    #expect(snapshot.auditRecords?.map(\.referenceName) == ["旧标签", "旧集合"])
+    #expect(snapshot.assets.first?.tagDecisions.first?.tagName == "新标签")
+    // Simulate an earlier database that has no event context table.
+    #expect(sqlite3_exec(rawDB, "DROP TABLE audit_context", nil, nil, nil) == SQLITE_OK)
+    let upgraded = try LocalLibraryStore(url: url)
+    let legacy = try await upgraded.migrationFactSnapshot(visibleIdentifiers: ["selected"])
+    #expect(legacy.auditRecords?.allSatisfy { $0.origin == nil && $0.referenceName == nil } == true)
+    try await upgraded.setDecision(assetID: asset.id, tagID: tag, decision: .rejected)
+    let current = try await upgraded.migrationFactSnapshot(visibleIdentifiers: ["selected"])
+    #expect(current.auditRecords?.last?.origin == .localEdit)
+    #expect(current.auditRecords?.last?.referenceName == "新标签")
 }

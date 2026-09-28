@@ -1689,7 +1689,8 @@ private enum LocalMigrationFactExporter {
             },
             auditRecords: snapshot.auditRecords?.map {
                 ImageAllMigrationAuditRecord(operationID: $0.operationID, sequence: $0.sequence,
-                    mediaID: $0.assetID, field: $0.field, value: $0.value, createdAtMs: $0.createdAtMs)
+                    mediaID: $0.assetID, field: $0.field, value: $0.value, createdAtMs: $0.createdAtMs,
+                    origin: $0.origin?.rawValue, referenceName: $0.referenceName)
             }
         )
         let manager = FileManager.default

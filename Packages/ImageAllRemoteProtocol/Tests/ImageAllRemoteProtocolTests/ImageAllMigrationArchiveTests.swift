@@ -26,12 +26,28 @@ final class ImageAllMigrationArchiveTests: XCTestCase {
                 sourceVerifiedAtMs: 1_000
             ),
             auditRecords: [.init(operationID: UUID(), sequence: 7, mediaID: item.mediaID,
-                                 field: "favorite.target", value: "0", createdAtMs: 100)]
+                                 field: "favorite.target", value: "0", createdAtMs: 100, origin: "remoteSync")]
         )
         try ImageAllMigrationFacts.write(snapshot, to: url)
         XCTAssertEqual(try ImageAllMigrationFacts.read(at: url), snapshot)
+        let legacyEvent = Data("""
+            {"operationID":"\(UUID().uuidString)","sequence":1,"mediaID":"\(item.mediaID.uuidString)",
+             "field":"favorite.target","value":"1","createdAtMs":100}
+            """.utf8)
+        let legacy = try JSONDecoder().decode(ImageAllMigrationAuditRecord.self, from: legacyEvent)
+        XCTAssertNil(legacy.origin)
+        XCTAssertNil(legacy.referenceName)
+        let named = ImageAllMigrationAuditRecord(operationID: UUID(), sequence: 1,
+            mediaID: item.mediaID, field: "tag.\(UUID().uuidString)", value: "accepted",
+            createdAtMs: 100, origin: "localEdit", referenceName: "操作时名称")
+        XCTAssertEqual(try JSONDecoder().decode(ImageAllMigrationAuditRecord.self,
+            from: JSONEncoder().encode(named)), named)
         for records in [
             snapshot.auditRecords! + snapshot.auditRecords!,
+            [.init(operationID: UUID(), sequence: 7, mediaID: item.mediaID,
+                   field: "favorite.target", value: "1", createdAtMs: 101, origin: "invented")],
+            [.init(operationID: UUID(), sequence: 7, mediaID: item.mediaID,
+                   field: "tag.example", value: "accepted", createdAtMs: 101, referenceName: "")],
             [.init(operationID: UUID(), sequence: 8, mediaID: item.mediaID,
                    field: "favorite.target", value: "1", createdAtMs: 101)],
             [.init(operationID: UUID(), sequence: 7, mediaID: UUID(),

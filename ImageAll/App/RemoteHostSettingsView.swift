@@ -1781,8 +1781,12 @@ final class PhoneArchiveImportModel: ObservableObject {
             } else {
                 checkpoint = "手机尚未附带验收检查点。"
             }
-            let audit = report.factSnapshot?.auditRecords.map {
-                "归档保留 \($0.count) 条所选资产操作历史，不重放为当前命令。"
+            let audit = report.factSnapshot?.auditRecords.map { records in
+                let local = records.filter { $0.origin == "localEdit" }.count
+                let remote = records.filter { $0.origin == "remoteSync" }.count
+                let resolutions = records.filter { $0.origin == "conflictResolution" }.count
+                let unknown = records.count - local - remote - resolutions
+                return "归档保留 \(records.count) 条所选资产操作历史：本机编辑 \(local)、同步应用 \(remote)、冲突裁决 \(resolutions)、来源未知 \(unknown)。不重放为当前命令。"
             } ?? "此版本未声明操作历史覆盖。"
             message = "Mac 归档逐资源与入库账本核对通过：\(report.itemCount) 项、\(report.resourceCount) 个资源，整理快照序号 \(report.factSnapshotSequence)。\(audit)\(checkpoint)独立恢复仍待验收。"
         } catch {

@@ -1,8 +1,8 @@
 import CryptoKit
 import Foundation
 
-/// Historical local fact events, not commands to replay. The local audit does
-/// not distinguish every remote-origin edit from a direct user gesture.
+/// Historical fact events, never commands to replay. Missing origin on legacy
+/// records means unknown; it must not be inferred from the exporting device.
 public struct ImageAllMigrationAuditRecord: Codable, Sendable, Equatable {
     public let operationID: UUID
     public let sequence: Int64
@@ -10,14 +10,19 @@ public struct ImageAllMigrationAuditRecord: Codable, Sendable, Equatable {
     public let field: String
     public let value: String
     public let createdAtMs: Int64
+    public let origin: String?
+    public let referenceName: String?
 
-    public init(operationID: UUID, sequence: Int64, mediaID: UUID, field: String, value: String, createdAtMs: Int64) {
+    public init(operationID: UUID, sequence: Int64, mediaID: UUID, field: String, value: String, createdAtMs: Int64,
+                origin: String? = nil, referenceName: String? = nil) {
         self.operationID = operationID
         self.sequence = sequence
         self.mediaID = mediaID
         self.field = field
         self.value = value
         self.createdAtMs = createdAtMs
+        self.origin = origin
+        self.referenceName = referenceName
     }
 }
 
@@ -314,6 +319,8 @@ public enum ImageAllMigrationFacts {
                         && record.sequence <= snapshot.factWatermark && record.createdAtMs >= 0
                         && !record.field.isEmpty && record.field.utf8.count <= 256
                         && record.value.utf8.count <= 4_096
+                        && (record.origin == nil || ["localEdit", "remoteSync", "conflictResolution"].contains(record.origin!))
+                        && (record.referenceName == nil || (!record.referenceName!.isEmpty && record.referenceName!.utf8.count <= 4_096))
                   }) else { throw ImageAllMigrationFactsError.invalidSnapshot }
         }
         if let checkpoint = snapshot.syncCheckpoint {

@@ -118,7 +118,7 @@ final class PhoneArchiveImportTests: XCTestCase {
                 sourceVerifiedAtMs: 1_000
             ),
             auditRecords: [.init(operationID: UUID(), sequence: 8, mediaID: item.mediaID,
-                                 field: "favorite.target", value: "1", createdAtMs: 900)]
+                                 field: "favorite.target", value: "1", createdAtMs: 900, origin: "conflictResolution")]
         )
         let factsFile = fixture.root.appendingPathComponent("latest.imageallfacts")
         try ImageAllMigrationFacts.write(facts, to: factsFile)

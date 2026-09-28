@@ -316,6 +316,10 @@ public struct LocalSharedFavoritePullResult: Sendable {
     public let nextCursor: Int64
 }
 
+public enum LocalAuditOrigin: String, Codable, Sendable {
+    case localEdit, remoteSync, conflictResolution
+}
+
 public struct LocalMigrationAuditRecord: Codable, Sendable, Equatable {
     public let operationID: UUID
     public let sequence: Int64
@@ -323,6 +327,8 @@ public struct LocalMigrationAuditRecord: Codable, Sendable, Equatable {
     public let field: String
     public let value: String
     public let createdAtMs: Int64
+    public var origin: LocalAuditOrigin? = nil
+    public var referenceName: String? = nil
 }
 
 /// A directory and human-fact projection for assets the owner explicitly selected.
@@ -454,6 +460,10 @@ public actor LocalLibraryStore {
                   operation_id TEXT NOT NULL UNIQUE, entity_id TEXT NOT NULL,
                   field TEXT NOT NULL, value TEXT NOT NULL,
                   created_time REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS audit_context (
+                  operation_id TEXT PRIMARY KEY REFERENCES outbox(operation_id),
+                  origin TEXT NOT NULL, reference_name TEXT
                 );
                 CREATE TABLE IF NOT EXISTS favorite_writebacks (
                   asset_id TEXT PRIMARY KEY REFERENCES assets(id),
@@ -762,8 +772,9 @@ public actor LocalLibraryStore {
         let ids = Set(snapshot.assets.map(\.id))
         var result = snapshot
         result.auditRecords = try rows("""
-            SELECT o.operation_id,o.sequence,o.entity_id,o.field,o.value,o.created_time
+            SELECT o.operation_id,o.sequence,o.entity_id,o.field,o.value,o.created_time,c.origin,c.reference_name
             FROM outbox o JOIN shared_assets s ON s.asset_id=o.entity_id
+            LEFT JOIN audit_context c ON c.operation_id=o.operation_id
             WHERE o.sequence<=? ORDER BY o.sequence
             """, [String(snapshot.outboxWatermark)]).compactMap { row in
                 guard let assetID = UUID(uuidString: row[2] ?? ""), ids.contains(assetID) else { return nil }
@@ -774,7 +785,8 @@ public actor LocalLibraryStore {
                     throw LocalLibraryError.database("invalid migration audit record")
                 }
                 return LocalMigrationAuditRecord(operationID: operationID, sequence: sequence,
-                    assetID: assetID, field: field, value: value, createdAtMs: Int64(time * 1_000))
+                    assetID: assetID, field: field, value: value, createdAtMs: Int64(time * 1_000),
+                    origin: row[6].flatMap(LocalAuditOrigin.init(rawValue:)), referenceName: row[7])
             }
         return result
     }
@@ -940,7 +952,7 @@ public actor LocalLibraryStore {
         let id = UUID()
         try transaction {
             try execute("INSERT INTO tags(id,name) VALUES(?,?)", [id.uuidString, trimmed])
-            try enqueue(id, field: "tag.create", value: trimmed)
+            try enqueue(id, field: "tag.create", value: trimmed, origin: .localEdit)
         }
         return id
     }
@@ -951,7 +963,7 @@ public actor LocalLibraryStore {
         let id = UUID()
         try transaction {
             try execute("INSERT INTO collections(id,name) VALUES(?,?)", [id.uuidString, trimmed])
-            try enqueue(id, field: "collection.create", value: trimmed)
+            try enqueue(id, field: "collection.create", value: trimmed, origin: .localEdit)
         }
         return id
     }
@@ -966,7 +978,7 @@ public actor LocalLibraryStore {
                 ON CONFLICT(asset_id,tag_id) DO UPDATE SET
                   decision=excluded.decision, revision=revision+1
                 """, [assetID.uuidString, tagID.uuidString, decision.rawValue])
-            let operationID = try enqueue(assetID, field: field, value: decision.rawValue)
+            let operationID = try enqueue(assetID, field: field, value: decision.rawValue, origin: .localEdit)
             if try isShared(assetID: assetID) {
                 let tagName = try scalar("SELECT name FROM tags WHERE id=?", [tagID.uuidString])
                 try enqueueShared(
@@ -997,7 +1009,7 @@ public actor LocalLibraryStore {
                 """, [collectionID.uuidString, assetID.uuidString, included ? "1" : "0"])
             let field = "collection.\(collectionID.uuidString)"
             let value = included ? "1" : "0"
-            let operationID = try enqueue(assetID, field: field, value: value)
+            let operationID = try enqueue(assetID, field: field, value: value, origin: .localEdit)
             if try isShared(assetID: assetID) {
                 let collectionName = try scalar("SELECT name FROM collections WHERE id=?", [collectionID.uuidString])
                 try enqueueShared(
@@ -1024,7 +1036,7 @@ public actor LocalLibraryStore {
                 ON CONFLICT(asset_id) DO UPDATE SET target=excluded.target,state='pending'
                 """, [assetID.uuidString, isFavorite ? "1" : "0"])
             let value = isFavorite ? "1" : "0"
-            let operationID = try enqueue(assetID, field: "favorite.target", value: value)
+            let operationID = try enqueue(assetID, field: "favorite.target", value: value, origin: .localEdit)
             if try isShared(assetID: assetID) {
                 try enqueueShared(
                     operationID, assetID: assetID, field: "favorite.target",
@@ -1802,14 +1814,14 @@ public actor LocalLibraryStore {
                             macRaw, conflict.assetID.uuidString, collectionID.uuidString
                         ])
                     _ = try enqueue(
-                        conflict.assetID, field: conflict.field, value: macRaw
+                        conflict.assetID, field: conflict.field, value: macRaw, origin: .conflictResolution
                     )
                 }
             case .keepPhone:
                 if localIncluded != macIncluded {
                     let value = localIncluded ? "1" : "0"
                     let id = try enqueue(
-                        conflict.assetID, field: conflict.field, value: value
+                        conflict.assetID, field: conflict.field, value: value, origin: .conflictResolution
                     )
                     try enqueueShared(
                         id, assetID: conflict.assetID, field: conflict.field,
@@ -1885,12 +1897,12 @@ public actor LocalLibraryStore {
                         ON CONFLICT(asset_id) DO UPDATE SET
                           target=excluded.target,state=excluded.state
                         """, [conflict.assetID.uuidString, macRaw, conflict.assetID.uuidString, macRaw])
-                    _ = try enqueue(conflict.assetID, field: "favorite.target", value: macRaw)
+                    _ = try enqueue(conflict.assetID, field: "favorite.target", value: macRaw, origin: .conflictResolution)
                 }
             case .keepPhone:
                 if localTarget != macTarget {
                     let value = localTarget ? "1" : "0"
-                    let id = try enqueue(conflict.assetID, field: "favorite.target", value: value)
+                    let id = try enqueue(conflict.assetID, field: "favorite.target", value: value, origin: .conflictResolution)
                     try enqueueShared(
                         id, assetID: conflict.assetID, field: "favorite.target",
                         value: value, referenceName: nil
@@ -1964,14 +1976,14 @@ public actor LocalLibraryStore {
                         ])
                     _ = try enqueue(
                         conflict.assetID, field: conflict.field,
-                        value: macDecision.rawValue
+                        value: macDecision.rawValue, origin: .conflictResolution
                     )
                 }
             case .keepPhone:
                 if localDecision != macDecision {
                     let id = try enqueue(
                         conflict.assetID, field: conflict.field,
-                        value: localDecision.rawValue
+                        value: localDecision.rawValue, origin: .conflictResolution
                     )
                     try enqueueShared(
                         id, assetID: conflict.assetID, field: conflict.field,
@@ -2188,7 +2200,7 @@ public actor LocalLibraryStore {
                                 change.decision.rawValue
                             ])
                         _ = try enqueue(
-                            change.assetID, field: field, value: change.decision.rawValue
+                            change.assetID, field: field, value: change.decision.rawValue, origin: .remoteSync
                         )
                     }
                     applied += 1
@@ -2537,7 +2549,7 @@ public actor LocalLibraryStore {
                             VALUES(?,?,?,1) ON CONFLICT(collection_id,asset_id) DO UPDATE SET
                               included=excluded.included,revision=revision+1
                             """, [localCollectionID.uuidString, change.assetID.uuidString, value])
-                        _ = try enqueue(change.assetID, field: field, value: value)
+                        _ = try enqueue(change.assetID, field: field, value: value, origin: .remoteSync)
                     }
                     applied += 1
                 }
@@ -2646,7 +2658,7 @@ public actor LocalLibraryStore {
                             ON CONFLICT(asset_id) DO UPDATE SET
                               target=excluded.target,state=excluded.state
                             """, [change.assetID.uuidString, value, change.assetID.uuidString, value])
-                        _ = try enqueue(change.assetID, field: "favorite.target", value: value)
+                        _ = try enqueue(change.assetID, field: "favorite.target", value: value, origin: .remoteSync)
                     }
                     applied += 1
                 }
@@ -2797,10 +2809,22 @@ public actor LocalLibraryStore {
     }
 
     @discardableResult
-    private func enqueue(_ entityID: UUID, field: String, value: String) throws -> UUID {
+    private func enqueue(_ entityID: UUID, field: String, value: String, origin: LocalAuditOrigin) throws -> UUID {
         let operationID = UUID()
         try execute("INSERT INTO outbox(operation_id,entity_id,field,value,created_time) VALUES(?,?,?,?,?)", [
             operationID.uuidString, entityID.uuidString, field, value, String(Date().timeIntervalSince1970)
+        ])
+        // Capture the display name at the event, before later rename or alias changes.
+        let referenceName: String?
+        if field.hasPrefix("tag."), let id = UUID(uuidString: String(field.dropFirst(4))) {
+            referenceName = try scalar("SELECT name FROM tags WHERE id=?", [id.uuidString])
+        } else if field.hasPrefix("collection."), let id = UUID(uuidString: String(field.dropFirst(11))) {
+            referenceName = try scalar("SELECT name FROM collections WHERE id=?", [id.uuidString])
+        } else {
+            referenceName = nil
+        }
+        try execute("INSERT INTO audit_context(operation_id,origin,reference_name) VALUES(?,?,NULLIF(?,''))", [
+            operationID.uuidString, origin.rawValue, referenceName ?? ""
         ])
         return operationID
     }
