@@ -32,7 +32,7 @@
 | P3 | IN_PROGRESS | 共享服务到真实质心模型和持久审核链 PASS；Mac 运行待验 | 继续全库建议、训练命令与审核持久事实闭环 |
 | P4 | VERIFIED（合成） | 完整原件／分组／安全清理与恢复、原生比较渲染通过 | 实现及最小合成验收已覆盖；真实 Photos／iCloud、日常配置点击和最终版本总回归仍未验证，见 P7 |
 | P5 | IN_PROGRESS | 实际合成视频解码→Vision→直接建议→审核证据 PASS | 文件夹/Photos 本地资源接线、版本化聚合、候选及原生证据条已交付；后台实际视频主路径已验；完整 UI 路线待验 |
-| P6 | IN_PROGRESS | 原生/Remotion混合成片、Swift真实任务闭环 PASS | 自动选材、同源多片段、双渲染方向及旧完成任务恢复已验；完整UI操作待核 |
+| P6 | IN_PROGRESS | 原生/Remotion混合成片、Swift真实任务与Mac故事主UI闭环 PASS | 选片/范围/调序/保存重开/实际导出/QuickTime重开已验；最终版本证据仍在P7收口 |
 | P7 | IN_PROGRESS | ac6ab717完整App构建及58项同版本合成回归通过 | 已提交依赖/内嵌契约可复现；完整Mac界面操作与逐项完成矩阵仍未收口 |
 
 首个切片输入：生产 `AssetGridItemProjection.mediaKind` / `AssetInspectorDetail.mediaKind`；输出：摘要／详情 DTO 显式字段，兼容已知 UTI 和 MIME，未知格式明确不可用；验收：新旧 JSON、MP4／MOV／照片／未知类型、Web 分支与相关构建。不能据此宣称完整 P1 通过。
@@ -857,3 +857,12 @@
 - 另尝试正式导出菜单进入NSSavePanel，期间CUA曾timeout/pipe关闭；重读后能见保存面板。但finish被测试观察并完成后续验证，进程正常结束，未产生ui-export.mp4。此尝试不称UI导出成功；保存面板到实际成片/外部重开仍待验。没有重启已终止测试来伪造结果。
 - 同构建默认两项故事模型/片段回归通过，story-workspace-ui-regression.log 2/2；生成workspace-result.mp4、restored-project.json、workspace-measurements.json。此为API渲染证据，与实际UI步骤明确分开。
 - 视频缩略图在本fixture中显示重试，是替身未提供视频封面，不据此推断生产缓存失败；实际视频片段解码和导出使用真实合成视频。源码与测试仅暂存相对启动副本的本轮补丁，保留并行内容。目标active，未生产Photos宿主/真实媒体/付费模型/发布安装/推送。
+
+## P6 系统保存面板实际导出与成片重开（2026-09-28）
+
+- 上轮f29370a7为progress。本轮不改生产代码，复用同一测试构建，以story-workspace-ui-export新目录启动已提交--story-workspace。CUA实际从空故事先加入视频0.2–0.8秒/原声100%，再加入照片3.5秒，保存，点击导出横屏MP4并通过真实NSSavePanel确认。界面先显示rendering与取消导出，随后出现完成信息和“播放上次导出的 MP4”。
+- 保存面板的name字段不会将setValue绝对路径解释为目录，而把斜杠变为冒号；本轮文件实际新建于Documents。通过精确后缀定位唯一自建合成文件，实际路径写入export-location.json。未据原预期位置不存在误称未导出；未扫描真实媒体。
+- 点击正式播放上次导出按钮，QuickTime AX返回与上述实际文件一致的URL；实际点击播放，状态on、时间轴推进，并寻址到约0.302115秒，截图显示合成视频与照片转场。仅关闭本轮视频窗口，不退出用户QuickTime应用。窗口关闭读取曾timeout，未以此作为播放成功证据。
+- 将自建成片复制到证据目录ui-export.mp4，SHA一致后仅移除该Documents合成原件；无其他文件变更。随后创建finish结束验收，story-workspace-ui-export/tests.log 1/1 PASS，143.354秒，进程exit0。测试独立重开保存项目并产生workspace-result.mp4。
+- 两个MP4均为1920×1080/30fps/3.633333秒，文件各486180字节，有音轨，FFmpeg完整解码退出0。进一步分别对完整解码视频帧与音频计算SHA：实际UI导出与独立重开后API渲染两条流完全一致；不要求容器字节相同（容器SHA不同已记录）。ui-export-verification.json保存probe、文件/流摘要、构建dylib与测试bundle SHA。UI成片SHA=84c81d8eef0128d2757250d76a489b117995c4cb9bcc5d04a92f9f4a0b53f1bb。
+- P6故事主UI闭环现已覆盖选片、范围、调序、保存重开、系统面板导出与外部播放器重开；与前两轮证据组合，不把本轮直接按顺序加入说成再次执行调序。剩余Mac图库/审核/地图/多帧完整入口和最终集成审计继续；目标active，未真实媒体/Photos宿主/付费调用/发布安装/push。
