@@ -645,3 +645,11 @@
 - CompositionRoot 将统一媒体适配器注入故事 runtime、原生 renderer 和 package exporter；此为依赖接线，现有渲染循环尚未调用新视频方法，不能据此宣称混合渲染完成。
 - `story-video-media-build.log` TEST BUILD SUCCEEDED；`story-video-media-tests.log` 3/3 PASS。Photos 本地合成替身通过异步统一接口冻结原始MP4，摘要/字节一致；复制后资源身份变化在闭包结束复核失败并清理目标，云端不可用拒绝，原件不变；文件夹冻结与旧照片包回归通过。
 - 未请求真实 PHAsset 或 iCloud。下一步让真实渲染路径消费冻结视频、校验AVAsset实际范围和音轨并验证运动；剪辑UI/新协议和最终成片仍待完成，整体 active。
+
+## P6 原生照片/静音视频逐帧混合渲染（2026-09-28）
+
+- 原生 renderer 显式允许视频时间轴，片段时长由量化范围派生。按资产冻结一次并验证同源修订/类型一致；读取AVAsset实际时长/视频轨，逐片段复核范围。照片继续原加载路径。
+- 视频按当前/下一镜头的局部时间逐帧取画面，应用 preferredTransform、限制到输出尺寸，以 shot UUID 区分同一源的多个片段。转场时分别绘制两帧，不预解码整段持有全部帧。输出仍为30fps；同步取帧内部不能即时中断，前后检查取消。
+- 首轮测试误将旧2.566667s合成素材声明为1s，被实际时长校验拒绝；改为测试内生成精确1s/30帧、白色矩形持续横移的MP4。未放宽源时长门禁来迁就错误fixture。
+- `story-motion-build-final.log` TEST BUILD SUCCEEDED；`story-motion-tests-final.log` 3/3 PASS。照片+静音视频成片可解码、时长一致，两处解码画面中白色标记质心差>5像素，证明运动保留；旧照片带/不带配乐导出及手动多片段回归通过。未保留本轮临时成片，尚无整页操作/视觉验收。
+- 原声合成未实现时明确拒绝 gain>0，不能静默丢弃音轨；旧OpenMontage包仍保持拒绝视频的默认门禁。下一步完成原声/配乐受控合成、Mac剪辑UI和新协议。整体 active，P6未完成。

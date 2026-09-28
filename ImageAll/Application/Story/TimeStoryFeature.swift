@@ -391,9 +391,9 @@ struct TimeStoryFrameTimeline: Sendable, Equatable {
 enum TimeStoryTimeline {
     /// Converts the persisted v1 second-based project into the sole authoritative
     /// render timeline. Persisted values are never rewritten by this operation.
-    static func normalize(project: TimeStoryProject) throws -> TimeStoryFrameTimeline {
+    static func normalize(project: TimeStoryProject, allowsVideoClips: Bool = false) throws -> TimeStoryFrameTimeline {
         guard !project.shots.isEmpty else { throw TimeStoryError.noSelectedShots }
-        guard project.shots.allSatisfy({ $0.videoClip == nil }) else {
+        guard allowsVideoClips || project.shots.allSatisfy({ $0.videoClip == nil }) else {
             throw TimeStoryError.invalidTimeline("视频片段渲染尚未启用，不能作为静态照片导出")
         }
         guard !project.chapters.isEmpty else {
@@ -452,7 +452,12 @@ enum TimeStoryTimeline {
                 guard shot.durationSeconds.isFinite, shot.durationSeconds > 0 else {
                     throw TimeStoryError.invalidTimeline("镜头时长必须为有限正数")
                 }
-                let quantized = Int((shot.durationSeconds * Double(TimeStoryConstants.framesPerSecond)).rounded(.toNearestOrAwayFromZero))
+                let quantized: Int
+                if let clip = shot.videoClip {
+                    quantized = Int(try clip.validatedFrameRange(actualDurationMs: clip.sourceDurationMs).frameCount)
+                } else {
+                    quantized = Int((shot.durationSeconds * Double(TimeStoryConstants.framesPerSecond)).rounded(.toNearestOrAwayFromZero))
+                }
                 guard quantized > 0 else {
                     throw TimeStoryError.invalidTimeline("镜头时长短于一个 30 fps 帧")
                 }
@@ -1392,7 +1397,10 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
         onProgress: @escaping @Sendable (TimeStoryRenderProgress) -> Void
     ) async throws {
         guard !project.shots.isEmpty else { throw TimeStoryError.noSelectedShots }
-        let timeline = try TimeStoryTimeline.normalize(project: project)
+        let timeline = try TimeStoryTimeline.normalize(project: project, allowsVideoClips: true)
+        guard project.shots.allSatisfy({ ($0.videoClip?.originalAudioGain ?? 0) == 0 }) else {
+            throw TimeStoryError.renderingFailed("视频原声合成尚未启用，请显式静音片段后再导出")
+        }
         guard destinationURL.pathExtension.lowercased() == "mp4" else {
             throw TimeStoryError.invalidDestination
         }
@@ -1406,11 +1414,36 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
         onProgress(TimeStoryRenderProgress(phase: .preparing, fraction: 0))
 
         var images: [UUID: CGImage] = [:]
+        var videos: [UUID: StoryVideoFrames] = [:]
         let uniqueAssetIDs = project.shots.reduce(into: [UUID]()) { result, shot in
             if !result.contains(shot.assetID) { result.append(shot.assetID) }
         }
         for (index, assetID) in uniqueAssetIDs.enumerated() {
             try Task.checkCancellation()
+            let shots = project.shots.filter { $0.assetID == assetID }
+            if shots.contains(where: { $0.videoClip != nil }) {
+                guard shots.allSatisfy({ $0.videoClip != nil }), Set(shots.map(\.contentRevision)).count == 1,
+                      let revision = shots.first?.contentRevision else {
+                    throw TimeStoryError.renderingFailed("同一视频的镜头类型或内容版本不一致")
+                }
+                let frozen = try await media.freezeStoryVideo(assetID: assetID, expectedRevision: revision,
+                    destination: workingDirectory.appendingPathComponent("source-\(assetID.uuidString).mov"))
+                guard frozen.contentRevision == revision else { throw TimeStoryError.renderingFailed("视频版本已变化") }
+                let asset = AVURLAsset(url: frozen.url)
+                let duration = try await asset.load(.duration)
+                guard duration.isNumeric, duration.seconds.isFinite, duration.seconds > 0,
+                      duration.seconds < Double(Int64.max / 1000),
+                      !(try await asset.loadTracks(withMediaType: .video)).isEmpty else {
+                    throw TimeStoryError.renderingFailed("视频无法解码或没有视频轨")
+                }
+                let actualMs = Int64((duration.seconds * 1000).rounded(.down))
+                for shot in shots {
+                    guard let clip = shot.videoClip else { continue }
+                    let range = try clip.validatedFrameRange(actualDurationMs: actualMs)
+                    videos[shot.id] = StoryVideoFrames(asset: asset, range: range)
+                }
+                continue
+            }
             let data = try await media.loadStoryImage(assetID: assetID)
             guard let image = Self.decodeImage(data) else {
                 throw TimeStoryError.renderingFailed("素材 \(index + 1) 无法解码")
@@ -1425,6 +1458,7 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
             timeline: timeline,
             typography: project.resolvedTypography,
             images: images,
+            videos: videos,
             outputURL: silentURL,
             onProgress: onProgress
         )
@@ -1456,6 +1490,7 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
         timeline: TimeStoryFrameTimeline,
         typography: StoryTypography,
         images: [UUID: CGImage],
+        videos: [UUID: StoryVideoFrames],
         outputURL: URL,
         onProgress: @escaping @Sendable (TimeStoryRenderProgress) -> Void
     ) async throws {
@@ -1497,8 +1532,14 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
                     try Task.checkCancellation()
                     try await Task.sleep(for: .milliseconds(2))
                 }
-                guard let state = timeline.state(atFrame: frame),
-                      let buffer = Self.makePixelBuffer(state: state, images: images, typography: typography)
+                guard let state = timeline.state(atFrame: frame) else { throw TimeStoryError.renderingFailed("时间轴为空") }
+                var videoImages: [UUID: CGImage] = [:]
+                for segment in [state.current, state.next].compactMap({ $0 }) {
+                    if let shotID = segment.shotID, let video = videos[shotID] {
+                        videoImages[shotID] = try video.image(localFrame: max(0, frame - segment.startFrame))
+                    }
+                }
+                guard let buffer = Self.makePixelBuffer(state: state, images: images, typography: typography, videoImages: videoImages)
                 else {
                     throw TimeStoryError.renderingFailed("无法绘制第 \(frame + 1) 帧")
                 }
@@ -1562,7 +1603,8 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
     private static func makePixelBuffer(
         state: TimeStoryTimelineState,
         images: [UUID: CGImage],
-        typography: StoryTypography
+        typography: StoryTypography,
+        videoImages: [UUID: CGImage] = [:]
     ) -> CVPixelBuffer? {
         var buffer: CVPixelBuffer?
         let status = CVPixelBufferCreate(
@@ -1595,7 +1637,7 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
         context.fill(CGRect(origin: .zero, size: outputSize))
         draw(
             segment: state.current,
-            image: state.current.assetID.flatMap { images[$0] },
+            image: state.current.shotID.flatMap { videoImages[$0] } ?? state.current.assetID.flatMap { images[$0] },
             in: context,
             alpha: 1 - state.blend,
             progress: state.progress, typography: typography
@@ -1603,7 +1645,7 @@ struct AVFoundationTimeStoryRenderer: TimeStoryRendering, Sendable {
         if let next = state.next {
             draw(
                 segment: next,
-                image: next.assetID.flatMap { images[$0] },
+                image: next.shotID.flatMap { videoImages[$0] } ?? next.assetID.flatMap { images[$0] },
                 in: context,
                 alpha: state.blend,
                 progress: 0, typography: typography
@@ -1820,5 +1862,26 @@ private extension JSONDecoder {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .millisecondsSince1970
         return decoder
+    }
+}
+
+/// At most the two currently composited frames are retained by the rendering loop.
+private final class StoryVideoFrames {
+    let generator: AVAssetImageGenerator
+    let range: TimeStoryVideoClip.FrameRange
+    init(asset: AVAsset, range: TimeStoryVideoClip.FrameRange) {
+        self.range = range
+        generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: TimeStoryConstants.outputWidth, height: TimeStoryConstants.outputHeight)
+        generator.requestedTimeToleranceBefore = .positiveInfinity
+        generator.requestedTimeToleranceAfter = .zero
+    }
+    func image(localFrame: Int) throws -> CGImage {
+        try Task.checkCancellation()
+        let sourceFrame = range.startFrame + min(Int64(localFrame), range.frameCount - 1)
+        let image = try generator.copyCGImage(at: CMTime(value: sourceFrame, timescale: 30), actualTime: nil)
+        try Task.checkCancellation()
+        return image
     }
 }

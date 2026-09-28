@@ -600,6 +600,53 @@ final class TimeStoryFeatureTests: XCTestCase {
         XCTAssertEqual(issues.map(\.kind), [.versionChanged, .missing])
     }
 
+    func testMixedStoryRendersMovingMutedVideoInsteadOfPoster() async throws {
+        let root = try temporaryDirectory("mixed-story-motion")
+        let photo = candidate(UUID().uuidString, time: timestamp(2024, 1, 1))
+        var video = candidate(UUID().uuidString, time: timestamp(2024, 1, 2))
+        video.mediaKind = .video; video.durationMs = 1000
+        let planner = TimeStoryPlanner()
+        var project = planner.makeFreeformProject(snapshot: makeSnapshot([photo, video]), nowMs: 1)
+        project.showsProjectTitle = false
+        project = try planner.manuallyInserting(photo, in: project, nowMs: 2)
+        project.shots[0].durationSeconds = 0.5
+        project = try planner.manuallyInserting(video, in: project, nowMs: 3,
+            videoClip: .init(inPointMs: 0, outPointMs: 1000, sourceDurationMs: 1000, originalAudioGain: 0))
+        let fixture = root.appendingPathComponent("moving.mp4")
+        try await FixtureMixedStoryMedia.makeMovingVideo(at: fixture)
+        let renderer = AVFoundationTimeStoryRenderer(media: FixtureMixedStoryMedia(
+            images: [photo.assetID: try edgeMarkedPNG(width: 300, height: 200)], video: fixture),
+            temporaryDirectory: root.appendingPathComponent("work"))
+        let output = root.appendingPathComponent("mixed.mp4")
+        try await renderer.render(project: project, destinationURL: output) { _ in }
+        let timeline = try TimeStoryTimeline.normalize(project: project, allowsVideoClips: true)
+        try await assertPlayableVideo(output, expectsAudio: false, expectedDuration: timeline.durationSeconds)
+        let segment = try XCTUnwrap(timeline.segments.first { $0.shotID == project.shots[1].id })
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: output))
+        func centroid(_ frame: Int) throws -> Double {
+            let image = try generator.copyCGImage(at: CMTime(value: Int64(frame), timescale: 30), actualTime: nil)
+            let bitmap = NSBitmapImageRep(cgImage: image)
+            var total = 0.0, count = 0.0
+            for y in stride(from: image.height / 4, to: image.height * 3 / 4, by: 4) {
+                for x in stride(from: 0, to: image.width, by: 4) {
+                    if let c = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB),
+                       c.redComponent > 0.85, c.greenComponent > 0.85, c.blueComponent > 0.85 {
+                        total += Double(x); count += 1
+                    }
+                }
+            }
+            XCTAssertGreaterThan(count, 10)
+            return total / max(1, count)
+        }
+        XCTAssertGreaterThan(abs(try centroid(segment.startFrame + 10) - centroid(segment.startFrame + 24)), 5,
+                             "Moving fixture must not become one repeated poster")
+        project.shots[1].videoClip?.originalAudioGain = 1
+        do {
+            try await renderer.render(project: project, destinationURL: root.appendingPathComponent("unsupported.mp4")) { _ in }
+            XCTFail("Original audio must not be silently discarded")
+        } catch {}
+    }
+
     func testRendererExportsPlayableMP4WithAndWithoutMusic() async throws {
         let root = try temporaryDirectory("story-render")
         let first = UUID()
@@ -2579,4 +2626,49 @@ private final class StoryTaskRootBookmarkFixture: SecurityScopedBookmarkPort, @u
     }
     func startAccessing(_ url: URL) -> Bool { if reject { return false }; active += 1; return true }
     func stopAccessing(_ url: URL) { active -= 1 }
+}
+
+private struct FixtureMixedStoryMedia: TimeStoryMediaLoading {
+    static func makeMovingVideo(at url: URL) async throws {
+        let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+            AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 128, AVVideoHeightKey: 128])
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: nil)
+        writer.add(input)
+        guard writer.startWriting() else { throw TimeStoryError.renderingFailed("fixture writer") }
+        writer.startSession(atSourceTime: .zero)
+        for frame in 0..<30 {
+            while !input.isReadyForMoreMediaData { try await Task.sleep(for: .milliseconds(2)) }
+            var buffer: CVPixelBuffer?
+            CVPixelBufferCreate(kCFAllocatorDefault, 128, 128, kCVPixelFormatType_32BGRA,
+                [kCVPixelBufferCGImageCompatibilityKey: true, kCVPixelBufferCGBitmapContextCompatibilityKey: true] as CFDictionary, &buffer)
+            guard let buffer else { throw TimeStoryError.renderingFailed("fixture buffer") }
+            CVPixelBufferLockBaseAddress(buffer, [])
+            let context = CGContext(data: CVPixelBufferGetBaseAddress(buffer), width: 128, height: 128,
+                bitsPerComponent: 8, bytesPerRow: CVPixelBufferGetBytesPerRow(buffer), space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)!
+            context.setFillColor(NSColor.black.cgColor); context.fill(CGRect(x: 0, y: 0, width: 128, height: 128))
+            context.setFillColor(NSColor.white.cgColor); context.fill(CGRect(x: 10 + frame * 3, y: 50, width: 16, height: 24))
+            CVPixelBufferUnlockBaseAddress(buffer, [])
+            guard adaptor.append(buffer, withPresentationTime: CMTime(value: Int64(frame), timescale: 30)) else {
+                throw TimeStoryError.renderingFailed("fixture append")
+            }
+        }
+        input.markAsFinished()
+        await withCheckedContinuation { continuation in writer.finishWriting { continuation.resume() } }
+        guard writer.status == .completed else { throw TimeStoryError.renderingFailed("fixture finalize") }
+    }
+
+    let images: [UUID: Data]
+    let video: URL
+    func loadStoryImage(assetID: UUID) async throws -> Data {
+        guard let image = images[assetID] else { throw TimeStoryError.noCandidates }
+        return image
+    }
+    func freezeStoryVideo(assetID: UUID, expectedRevision: Int, destination: URL) async throws -> TimeStoryFrozenVideo {
+        try FileManager.default.copyItem(at: video, to: destination)
+        let bytes = try Data(contentsOf: destination)
+        return TimeStoryFrozenVideo(url: destination, contentRevision: expectedRevision, durationMs: 1000,
+            mediaType: "public.mpeg-4", byteCount: Int64(bytes.count), sha256: Data(SHA256.hash(data: bytes)))
+    }
 }
