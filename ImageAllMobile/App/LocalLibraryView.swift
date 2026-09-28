@@ -1762,7 +1762,7 @@ private struct LocalShareScopeView: View {
                     }
                 }
             }
-            Text("仅读取当前获准访问的所选项目，不从 iCloud 下载。归档包由用户选择导出位置；Mac 入库与迁移完成校验仍需后续步骤。")
+            Text("仅读取当前获准访问的所选项目，不从 iCloud 下载。生成中断后，再次生成相同范围会核对并复用已暂存资源；来源或范围变化则另建批次。暂存占用手机空间，尚未提供自动清理。Mac 入库与迁移完成校验仍需后续步骤。")
                 .font(.footnote).foregroundStyle(.secondary)
         }
     }
@@ -2043,7 +2043,7 @@ private enum LocalMigrationFactExporter {
 
 @MainActor
 private enum LocalPhotoArchiveExporter {
-    private struct SourceVersion: Equatable {
+    private struct SourceVersion: Codable, Equatable {
         let modificationDate: Date?
         let creationDate: Date?
         let metadata: ImageAllMigrationSourceMetadata
@@ -2213,15 +2213,6 @@ private enum LocalPhotoArchiveExporter {
         parentValues.isExcludedFromBackup = true
         var mutableParent = parent
         try mutableParent.setResourceValues(parentValues)
-        let migrationID = UUID()
-        let staging = parent.appendingPathComponent(".staging-\(migrationID.uuidString)", isDirectory: true)
-        let published = parent.appendingPathComponent("\(migrationID.uuidString).imageallarchive", isDirectory: true)
-        try manager.createDirectory(at: staging, withIntermediateDirectories: false)
-        try manager.setAttributes(
-            [.protectionKey: FileProtectionType.complete], ofItemAtPath: staging.path
-        )
-        var shouldRemoveStaging = true
-        defer { if shouldRemoveStaging { try? manager.removeItem(at: staging) } }
 
         let options = PHFetchOptions()
         options.includeHiddenAssets = false
@@ -2238,8 +2229,31 @@ private enum LocalPhotoArchiveExporter {
         let selectedLocators = Set(byLocator.keys)
         let albumMemberships = try captureAlbumMemberships(selectedLocators: selectedLocators)
 
+        struct ResumeBinding: Encodable {
+            let installID: UUID
+            let sourceEpoch: UUID
+            let scopeRevision: Int64
+            let mediaLocators: [String: String]
+            let sources: [String: SourceVersion]
+            let albums: [String: [ImageAllMigrationAppleAlbumMembership]]
+        }
+        let binding = ResumeBinding(installID: snapshot.installID, sourceEpoch: snapshot.sourceEpoch,
+            scopeRevision: snapshot.scopeRevision,
+            mediaLocators: Dictionary(uniqueKeysWithValues: snapshot.assets.map { ($0.id.uuidString, $0.localIdentifier) }),
+            sources: sourceVersions, albums: albumMemberships)
+        let bindingEncoder = JSONEncoder()
+        bindingEncoder.outputFormatting = [.sortedKeys]
+        let checkpoint = try ImageAllMigrationExportCheckpoint(parent: parent, binding: bindingEncoder.encode(binding))
+        defer { checkpoint.close() }
+        let migrationID = checkpoint.migrationID
+        let staging = checkpoint.root
+        let published = parent.appendingPathComponent("\(migrationID.uuidString).imageallarchive", isDirectory: true)
+        try manager.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: staging.path)
+        try checkpoint.removeUnpublishedManifest()
+
         var items: [ImageAllMigrationItem] = []
         for selected in snapshot.assets {
+            try Task.checkCancellation()
             guard let source = byLocator[selected.localIdentifier] else {
                 throw LocalArchiveExportError.selectionNotVisible
             }
@@ -2247,7 +2261,6 @@ private enum LocalPhotoArchiveExporter {
             let primary = primaryResourceIndex(mediaType: source.mediaType, resources: sourceResources)
             var exported: [ImageAllMigrationResource] = []
             for (index, resource) in sourceResources.enumerated() {
-                let id = UUID()
                 let uti = resource.uniformTypeIdentifier.isEmpty
                     ? UTType.data.identifier : resource.uniformTypeIdentifier
                 let role = index == primary ? "original" : resourceRole(resource.type)
@@ -2255,16 +2268,31 @@ private enum LocalPhotoArchiveExporter {
                 let fileExtension = preferredExtension.count <= 12
                     && preferredExtension.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) })
                     ? preferredExtension : "bin"
-                let relativePath = "resources/\(id.uuidString.lowercased()).\(fileExtension)"
-                let destination = staging.appendingPathComponent(relativePath)
-                try manager.createDirectory(
-                    at: destination.deletingLastPathComponent(), withIntermediateDirectories: true
-                )
+                let location = try checkpoint.resourceLocation(key: "\(selected.id.uuidString)|\(index)", fileExtension: fileExtension)
+                let id = location.id, relativePath = location.relativePath, destination = location.url
+                var preserveCachedResource = manager.fileExists(atPath: destination.path)
                 do {
-                    try await writeLocalResource(resource, to: destination)
-                    let digest = try await Task.detached {
-                        try hashFile(destination)
-                    }.value
+                    try Task.checkCancellation()
+                    var verifiedCache: (Int64, String)?
+                    if preserveCachedResource {
+                        let cached = try await Task.detached { try hashFile(destination) }.value
+                        let current = try await hashSourceResource(resource)
+                        if cached.0 == current.0 && cached.1 == current.1 {
+                            verifiedCache = cached
+                        } else {
+                            // The current source has been read successfully; discard only this bad cache file.
+                            try manager.removeItem(at: destination)
+                            preserveCachedResource = false
+                        }
+                    }
+                    let digest: (Int64, String)
+                    if let verifiedCache {
+                        digest = verifiedCache
+                    } else {
+                        try Task.checkCancellation()
+                        try await writeLocalResource(resource, to: destination)
+                        digest = try await Task.detached { try hashFile(destination) }.value
+                    }
                     try manager.setAttributes(
                         [.protectionKey: FileProtectionType.complete], ofItemAtPath: destination.path
                     )
@@ -2275,6 +2303,8 @@ private enum LocalPhotoArchiveExporter {
                         originalFilename: resource.originalFilename.isEmpty ? nil : resource.originalFilename
                     ))
                 } catch {
+                    // If source revalidation fails, keep the prior cache and stop this attempt.
+                    if preserveCachedResource { throw error }
                     try? manager.removeItem(at: destination)
                     let current = PHPhotoLibrary.authorizationStatus(for: .readWrite)
                     let failure = error as NSError
@@ -2367,7 +2397,6 @@ private enum LocalPhotoArchiveExporter {
             ofItemAtPath: staging.appendingPathComponent(ImageAllMigrationArchive.manifestFilename).path
         )
         try manager.moveItem(at: staging, to: published)
-        shouldRemoveStaging = false
         return (published, verification)
     }
 
