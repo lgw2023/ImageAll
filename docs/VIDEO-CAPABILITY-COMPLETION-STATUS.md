@@ -780,3 +780,11 @@
 - story-workspace-final/保存restored-project.json、workspace-result.mp4、workspace-measurements.json和片段编辑器截图；story-workspace-chain/为首次通过证据。此为正式工作区命令链与独立NSHosting窗口证据，并非全页鼠标点击、系统播放器启动或真实图库验证。新按钮绑定已构建，实际点击仍待验。
 - 后续人工路线：当前ImageAll.xcodeproj的ImageAll scheme→故事编辑器，使用明确授权的合成图库→添加照片/视频→“使用片段”→调序保存→重新打开故事→“导出横屏 MP4（16:9）…”→“播放上次导出的 MP4”。预期顺序/范围/原声与保存值一致；该路线尚未宣称已全程执行。
 - 本轮只提交独立hunk，保留并行UI/任务可靠性/打包改动；构建仍依赖当前共享工作区，纯HEAD独立构建、完整Mac UI路线和P7总回归未完成。未生产Photos宿主、未真实媒体、未付费调用、未push，目标active。
+
+## P7入口审计：瘦身视频真实身份修复（2026-09-28）
+
+- 按P1–P6逐项追踪原生入口时发现LibrarySlimmingQuickLookView向共用LibraryVideoViewer硬编码contentRevision=0；图库、审核、地图使用实际投影修订号。瘦身入口因此可能正常播放却无法完成主动云端获取、技术信息回写与多帧证据的版本校验，属于必需接线缺口。
+- 新增工作区videoViewingIdentity按需读取正式Inspector投影，只接受当前active来源的视频；不依赖图库当前分页。瘦身预览先解析身份，再交给共用播放器，切换/关闭取消后不接纳旧身份，读取失败有明确说明，不猜测修订。视频计数与关闭/删除可访问性文案同步按视频语义显示。
+- 新增非当前分页的视频revision7→8重新解析及照片身份拒绝测试；同时修复FakeLibraryWorkspaceService的Inspector和修订替换投影遗漏mediaKind，使合成替身忠实保留媒体类型。
+- slimming-video-identity-test-build.log TEST BUILD SUCCEEDED；slimming-video-identity-tests.log 5/5 PASS：身份解析、瘦身前后导航边界、视频标签操作/来源切换释放、迟到资源释放、云端原件修订与迟到变更拒绝。均为合成数据与直接XCTest，未生产Photos宿主、未真实云下载。
+- 修复证明入口传递真实修订并通过必要服务/模型回归；未将其称为瘦身完整界面点击或实际Photos操作验收。P7仍IN_PROGRESS，P1/P2/P3/P5/P6完整Mac交互、最终统一版本回归及依赖收口继续推进。保留并行改动，未push，目标active。

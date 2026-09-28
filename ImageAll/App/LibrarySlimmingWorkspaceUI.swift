@@ -2404,6 +2404,7 @@ private struct LibrarySlimmingQuickLookView: View {
     let onRequestDelete: () -> Void
     @State private var image: NSImage?
     @State private var loadFailed = false
+    @State private var videoIdentity: LibraryVideoViewingSession.Identity?
     @State private var viewport = LibrarySlimmingPreviewViewportState()
     @State private var lastDragTranslation: CGSize = .zero
 
@@ -2473,12 +2474,23 @@ private struct LibrarySlimmingQuickLookView: View {
         .accessibilityIdentifier("librarySlimmingQuickLook")
         .accessibilityLabel(model.selectedMediaKind == .video
             ? "图库瘦身视频预览" : "图库瘦身大图预览，当前缩放 \(zoomPercentage)%")
-        .task(id: navigation.assetID) {
+        .task(id: "\(navigation.assetID):\(model.selectedMediaKind)") {
             image = nil
+            videoIdentity = nil
             loadFailed = false
             viewport = LibrarySlimmingPreviewViewportState()
             lastDragTranslation = .zero
-            guard model.selectedMediaKind == .image else { return }
+            if model.selectedMediaKind == .video {
+                do {
+                    let identity = try await model.videoViewingIdentity(assetID: navigation.assetID)
+                    guard !Task.isCancelled else { return }
+                    videoIdentity = identity
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    loadFailed = true
+                }
+                return
+            }
             guard let data = await model.previewData(assetID: navigation.assetID),
                   let decoded = NSImage(data: data)
             else {
@@ -2494,7 +2506,9 @@ private struct LibrarySlimmingQuickLookView: View {
     private var quickLookToolbar: some View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("第 \(navigation.position) 张，共 \(navigation.totalCount) 张")
+                Text(model.selectedMediaKind == .video
+                    ? "第 \(navigation.position) 段，共 \(navigation.totalCount) 段"
+                    : "第 \(navigation.position) 张，共 \(navigation.totalCount) 张")
                     .font(.headline)
                 if let sourceName = navigation.sourceName {
                     Text(sourceName)
@@ -2524,7 +2538,8 @@ private struct LibrarySlimmingQuickLookView: View {
             }
             .buttonStyle(.bordered)
             .tint(.red)
-            .accessibilityHint("保持预览并打开当前照片的快速删除确认")
+            .accessibilityHint(model.selectedMediaKind == .video
+                ? "保持预览并打开当前视频的快速删除确认" : "保持预览并打开当前照片的快速删除确认")
             Button {
                 model.closeLibrarySlimmingPreview()
             } label: {
@@ -2532,7 +2547,8 @@ private struct LibrarySlimmingQuickLookView: View {
             }
             .buttonStyle(.bordered)
             .keyboardShortcut(.cancelAction)
-            .accessibilityHint("关闭大图预览并保留当前照片选择")
+            .accessibilityHint(model.selectedMediaKind == .video
+                ? "关闭视频预览并保留当前视频选择" : "关闭大图预览并保留当前照片选择")
         }
         .foregroundStyle(.white)
         .padding(.horizontal, 16)
@@ -2543,8 +2559,15 @@ private struct LibrarySlimmingQuickLookView: View {
     @ViewBuilder
     private func previewContent(viewportSize: CGSize) -> some View {
         if model.selectedMediaKind == .video {
-            LibraryVideoViewer(assetID: navigation.assetID, contentRevision: 0, model: model)
-                .frame(width: viewportSize.width, height: viewportSize.height)
+            if let videoIdentity, videoIdentity.assetID == navigation.assetID {
+                LibraryVideoViewer(assetID: videoIdentity.assetID, contentRevision: videoIdentity.revision, model: model)
+                    .frame(width: viewportSize.width, height: viewportSize.height)
+            } else if loadFailed {
+                ContentUnavailableView("无法读取视频身份", systemImage: "exclamationmark.triangle",
+                    description: Text("请检查来源连接并重新打开预览；未使用过期修订号发起播放或分析。"))
+            } else {
+                ProgressView("正在读取视频信息…")
+            }
         } else if let image {
             let fittedImageSize = Self.fittedImageSize(for: image, in: viewportSize)
             ZStack {

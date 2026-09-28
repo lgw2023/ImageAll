@@ -12484,6 +12484,30 @@ final class LibraryWorkspaceModelTests: XCTestCase {
 
     }
 
+    func testVideoViewingResolvesOffGridRevisionAndRejectsPhotoIdentity() async throws {
+        let sourceID = UUID()
+        let video = Self.makeAsset(sourceID: sourceID, fileName: "revision.mov",
+            mediaType: "com.apple.quicktime-movie", mediaKind: .video, contentRevision: 7)
+        let photo = Self.makeAsset(sourceID: sourceID)
+        let service = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Fixture", state: .active),
+            reconciledItems: [video, photo], startsConnected: true)
+        service.replaceItems([video, photo])
+        let model = LibraryWorkspaceModel(service: service, idlePrewarmInstallEventMonitor: false)
+        XCTAssertTrue(model.items.isEmpty, "A slimming member need not be in the paged grid")
+        let identity = try await model.videoViewingIdentity(assetID: video.assetID)
+        XCTAssertEqual(identity, .init(assetID: video.assetID, revision: 7))
+        let changed = Self.makeAsset(sourceID: sourceID, assetID: video.assetID, fileName: "revision.mov",
+            mediaType: "com.apple.quicktime-movie", mediaKind: .video, contentRevision: 8)
+        service.replaceItems([changed, photo])
+        let refreshed = try await model.videoViewingIdentity(assetID: video.assetID)
+        XCTAssertEqual(refreshed.revision, 8)
+        do {
+            _ = try await model.videoViewingIdentity(assetID: photo.assetID)
+            XCTFail("Photo identities cannot start video-side actions")
+        } catch { XCTAssertEqual(error as? LibraryOriginalAssetOpenError, .unavailable) }
+    }
+
     func testVideoViewingKeepsTagActionsAndStopsOnSourceNavigation() async throws {
         let sourceID = UUID()
         let video = Self.makeAsset(sourceID: sourceID, fileName: "watch.mov",
@@ -14750,6 +14774,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         mediaType: String = "public.jpeg",
         mediaKind: MediaKind = .image,
         durationMs: Int64? = nil,
+        contentRevision: Int = 1,
         availability: AssetAvailability = .available,
         sourceDisplayName: String = "Fixture"
     ) -> AssetGridItemProjection {
@@ -14768,7 +14793,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             width: 32,
             height: 32,
             availability: availability,
-            contentRevision: 1,
+            contentRevision: contentRevision,
             acceptedTagCount: 0,
             rejectedTagCount: 0
         )
@@ -18740,6 +18765,7 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
                 sourceState: item.sourceState,
                 relativePath: item.relativePath,
                 fileName: item.fileName,
+                mediaKind: item.mediaKind,
                 mediaType: item.mediaType,
                 mediaCreatedAtMs: item.mediaCreatedAtMs,
                 mediaModifiedAtMs: item.mediaModifiedAtMs,
@@ -18784,6 +18810,7 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
                 sourceState: item.sourceState,
                 relativePath: item.relativePath,
                 fileName: item.fileName,
+                mediaKind: item.mediaKind,
                 mediaType: item.mediaType,
                 mediaCreatedAtMs: item.mediaCreatedAtMs,
                 mediaModifiedAtMs: item.mediaModifiedAtMs,

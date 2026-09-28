@@ -9195,6 +9195,20 @@ final class LibraryWorkspaceModel: ObservableObject {
         isSinglePhotoPresented = false
     }
 
+    /// Slimming members may not be in the current paged grid. Resolve their current
+    /// catalog identity instead of inventing a revision for playback-side actions.
+    func videoViewingIdentity(assetID: UUID) async throws -> LibraryVideoViewingSession.Identity {
+        let service = service
+        let detail = try await Self.offMain(priority: .userInitiated) {
+            try service.fetchInspectorDetail(assetID: assetID)
+        }
+        try Task.checkCancellation()
+        guard detail.assetID == assetID, detail.mediaKind == .video, detail.sourceState == .active else {
+            throw LibraryOriginalAssetOpenError.unavailable
+        }
+        return .init(assetID: assetID, revision: detail.contentRevision)
+    }
+
     func prepareVideoForViewing(assetID: UUID) async throws -> LibraryVideoPlaybackResource {
         stopVideoHoverPlayback()
         return try await videoPlaybackProvider.prepareVideoPlayback(assetID: assetID)
