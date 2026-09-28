@@ -904,3 +904,10 @@
 - candidate-ui-final/tests.log 1/1 PASS（117.178秒）。UI显示02-synthetic.mp4唯一候选、分数1.000、当前2.23s↔候选2.23s；先点击0.133秒帧，再点击候选时间点，真实播放器回到约2.235秒暂停。candidate-result.json保存精确匹配时间2233/2233ms、得分0.99999988与候选UUID。
 - 界面明确“仅比较最近已分析且时长接近的最多20项；分数不是重复证明”。独立数据库查询确认两份特征记录、完整原件摘要数量0；候选服务复核返回正确资产。同构建candidate-ui-regression.log 1/1 PASS，覆盖时长/已分析范围及不创建精确组。
 - candidate-ui-build.log TEST BUILD SUCCEEDED；verification.json绑定源码与产品SHA。这里只证明候选列表、当前时间点定位及安全语义；候选的系统播放器按钮未点验，不推断重编码/裁剪等真实识别质量。冻结审核证据、地图/瘦身、最终集成继续，目标active。无真实媒体/Photos/付费模型/发布安装/push。
+
+## P5 真实训练建议的冻结审核证据实际点击（2026-09-28）
+
+- 在已有真实合成训练→全库建议队列/worker→Review链增加显式--review-evidence交互分支。使用正式PersonalizationReviewService和独立数据库；正式LibraryVideoViewer按选中审核资产/标签读取VideoPredictionEvidenceReader，UI不是手工拼装的Snapshot。外围目录服务为fake，视频为合成几何控制组。
+- frozen-review-ui-final/tests.log 1/1 PASS（47.371秒）。界面显示“建议输入证据·模型版本2”，时间200/1000/2000/3000/3800ms；实际点击3.8秒定位暂停，窗口失活停止后点击重新载入，再点3秒仍正确定位。review-player-observations.json记录rate0/time3.8及3.0；不把一次窗口失活观察推广为完整系统焦点门禁。
+- 操作前后reader的modelRevision、所有时间点和JPEG字节逐项相等。交互结束后继续原测试的真实tags.batchAccept，确认待审核证据不再返回；照片模型槽仍为0，视频训练样本/Run/队列检查保持通过。frozen-review-result.json保存资产/标签/模型修订/时间点。
+- frozen-review-ui-build.log TEST BUILD SUCCEEDED；verification.json绑定源码、产物SHA。本轮正式冻结证据显示和时间点点击完成，未触发重新训练或篡改历史建议。尚需地图/瘦身、其余能力门禁及最终版本整合，目标active。未真实媒体、Photos宿主、付费模型、发布安装或push。

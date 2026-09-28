@@ -230,6 +230,11 @@ final class IdenticalDuplicateDetectionTests: XCTestCase {
             sourceIDs: [env.sourceID], cursor: nil, limit: 10)
         XCTAssertEqual(page.items.map(\.assetID), [assets[4]])
         XCTAssertNotNil(try GRDBTrainingRunRepository(database: env.database).fetch(jobID: jobID))
+        if let evidencePath = ProcessInfo.processInfo.environment["IMAGEALL_INTERACTIVE_REVIEW_EVIDENCE"] {
+            try await LibraryVideoViewingTests.verifyInteractiveFrozenReviewEvidence(
+                database: env.database, analysis: analysis, review: review, assetID: assets[4], tagID: tagID,
+                sourceURL: env.sourceRoot.appendingPathComponent("training-4.mov"), evidencePath: evidencePath)
+        }
         _ = try tags.batchAccept(tagID: tagID, assetIDs: [assets[4]], timestampMs: 3)
         XCTAssertNil(try reader.read(assetID: assets[4], revision: 1, tagID: tagID))
     }

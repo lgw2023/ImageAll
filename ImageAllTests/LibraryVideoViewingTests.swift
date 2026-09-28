@@ -13,6 +13,68 @@ final class LibraryVideoViewingTests: XCTestCase {
             .appendingPathComponent("docs/evidence/time-story-phase-1-20260918/synthetic-silent.mp4")
     }
 
+    static func verifyInteractiveFrozenReviewEvidence(database: CatalogDatabase,
+        analysis: FolderVideoAnalysisService, review: PersonalizationReviewService,
+        assetID: UUID, tagID: UUID, sourceURL: URL, evidencePath: String) async throws {
+        let evidence = URL(fileURLWithPath: evidencePath, isDirectory: true)
+        let detail = try GRDBAssetCatalogQueryRepository(database: database).fetchInspectorDetail(assetID: assetID)
+        let item = AssetGridItemProjection(assetID: assetID, sourceID: detail.sourceID,
+            sourceDisplayName: detail.sourceDisplayName, sourceState: detail.sourceState,
+            relativePath: detail.relativePath, fileName: detail.fileName, mediaKind: .video,
+            mediaType: detail.mediaType, durationMs: detail.durationMs,
+            mediaCreatedAtMs: detail.mediaCreatedAtMs, mediaModifiedAtMs: detail.mediaModifiedAtMs,
+            width: detail.width, height: detail.height, availability: detail.availability,
+            contentRevision: detail.contentRevision, acceptedTagCount: 0, rejectedTagCount: 0)
+        let workspace = FakeLibraryWorkspaceService(
+            connectedSource: LibrarySourceSummary(id: detail.sourceID, displayName: "Synthetic review", state: .active),
+            reconciledItems: [item], startsConnected: true)
+        workspace.replaceItems([item])
+        let model = LibraryWorkspaceModel(service: workspace, review: review,
+            videoPlaybackProvider: InteractiveSyntheticVideoProvider(url: sourceURL), idlePrewarmInstallEventMonitor: false)
+        model.videoAnalysisService = analysis
+        await model.setMediaKind(.video)
+        await model.enterReviewQueue(tagID: tagID, displayName: "Circle")
+        await model.selectAsset(assetID)
+        XCTAssertEqual(model.selectedReviewItemID?.assetID, assetID)
+        let reader = VideoPredictionEvidenceReader(database: database)
+        let before = try XCTUnwrap(reader.read(assetID: assetID, revision: detail.contentRevision, tagID: tagID))
+        let host = NSHostingView(rootView: LibraryVideoViewer(assetID: assetID,
+            contentRevision: detail.contentRevision, model: model).frame(width: 1100, height: 850))
+        let window = NSWindow(contentRect: NSRect(x: 50, y: 50, width: 1100, height: 850),
+            styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.title = "ImageAll Synthetic Frozen Review Evidence"
+        window.contentView = host
+        NSApplication.shared.setActivationPolicy(.regular)
+        NSApplication.shared.finishLaunching()
+        window.makeKeyAndOrderFront(nil)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        defer { model.videoViewingSession.stop(); window.close() }
+        let finish = evidence.appendingPathComponent("finish"), deadline = Date().addingTimeInterval(300)
+        var samples: [[String: Any]] = []
+        while Date() < deadline, !FileManager.default.fileExists(atPath: finish.path) {
+            let player = model.videoViewingSession.player
+            samples.append(["time": player.currentTime().seconds.isFinite ? player.currentTime().seconds : -1,
+                            "rate": player.rate, "state": String(describing: model.videoViewingSession.state)])
+            try JSONSerialization.data(withJSONObject: samples)
+                .write(to: evidence.appendingPathComponent("review-player-observations.json"), options: .atomic)
+            try await Task.sleep(for: .milliseconds(200))
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: finish.path))
+        XCTAssertTrue(before.frames.contains { frame in frame.actualTimeMs > 2000 && samples.contains {
+            abs(($0["time"] as? Double ?? -1) - Double(frame.actualTimeMs) / 1000) < 0.05
+                && ($0["rate"] as? Float) == 0
+        } }, "Click a frozen review frame after two seconds")
+        let after = try XCTUnwrap(reader.read(assetID: assetID, revision: detail.contentRevision, tagID: tagID))
+        XCTAssertEqual(after.modelRevision, before.modelRevision)
+        XCTAssertEqual(after.frames.map(\.actualTimeMs), before.frames.map(\.actualTimeMs))
+        XCTAssertEqual(after.frames.compactMap(\.jpegBytes), before.frames.compactMap(\.jpegBytes))
+        try JSONSerialization.data(withJSONObject: ["modelRevision": after.modelRevision,
+            "timesMs": after.frames.map(\.actualTimeMs), "frameCount": after.frames.count,
+            "assetID": assetID.uuidString, "tagID": tagID.uuidString])
+            .write(to: evidence.appendingPathComponent("frozen-review-result.json"))
+    }
+
     func testInteractiveNativeVideoViewerWhenRequested() async throws {
         guard let path = ProcessInfo.processInfo.environment["IMAGEALL_INTERACTIVE_VIDEO_EVIDENCE"] else {
             throw XCTSkip("Explicit synthetic interactive verification only")
