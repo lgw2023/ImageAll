@@ -11,6 +11,7 @@
         VC2700010000000000000001 /* LibraryVideoViewer.swift in Sources */ = {isa = PBXBuildFile; fileRef = VC2700020000000000000001; };
 		MA1020010000000000000001 /* V041AddPhoneArchiveImportMigration.swift in Sources */ = {isa = PBXBuildFile; fileRef = MA1020020000000000000001 /* V041AddPhoneArchiveImportMigration.swift */; };
 		MA1020010000000000000002 /* VerifiedPhoneArchiveImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = MA1020020000000000000002 /* VerifiedPhoneArchiveImporter.swift */; };
+		B06200010000000000000001 /* MigrationIndependentBackup.swift in Sources */ = {isa = PBXBuildFile; fileRef = B06200020000000000000001 /* MigrationIndependentBackup.swift */; };
 		MA1020010000000000000003 /* PhoneArchiveImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = MA1020020000000000000003 /* PhoneArchiveImportTests.swift */; };
         OM1010010000000000000001 = {isa = PBXBuildFile; fileRef = OM1010020000000000000001; };
         OM9200010000000000000001 = {isa = PBXBuildFile; fileRef = OM9200020000000000000001; };
@@ -368,6 +369,7 @@
         VC2700020000000000000001 /* LibraryVideoViewer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryVideoViewer.swift; sourceTree = "<group>"; };
 		MA1020020000000000000001 /* V041AddPhoneArchiveImportMigration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = V041AddPhoneArchiveImportMigration.swift; sourceTree = "<group>"; };
 		MA1020020000000000000002 /* VerifiedPhoneArchiveImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Import/VerifiedPhoneArchiveImporter.swift; sourceTree = "<group>"; };
+		B06200020000000000000001 /* MigrationIndependentBackup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Import/MigrationIndependentBackup.swift; sourceTree = "<group>"; };
 		MA1020020000000000000003 /* PhoneArchiveImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Export/PhoneArchiveImportTests.swift; sourceTree = "<group>"; };
         OM1010020000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Story/OpenMontageContract.swift; sourceTree = "<group>"; };
         OM9200020000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../Application/Story/OpenMontageConfiguration.swift; sourceTree = "<group>"; };
@@ -1032,6 +1034,7 @@
 				SL0006010000000000000002 /* Similarity */,
 				EX0001010000000000000001 /* PortableCatalogExporter.swift */,
 				MA1020020000000000000002 /* VerifiedPhoneArchiveImporter.swift */,
+				B06200020000000000000001 /* MigrationIndependentBackup.swift */,
 				OO0006010000000000000002 /* Photos */,
 				KK0006010000000000000002 /* Personalization */,
 				HH0006010000000000000002 /* Authorization */,
@@ -1650,6 +1653,7 @@
 				EX0000010000000000000001 /* PortableCatalogExporter.swift in Sources */,
 				MA1020010000000000000001 /* V041AddPhoneArchiveImportMigration.swift in Sources */,
 				MA1020010000000000000002 /* VerifiedPhoneArchiveImporter.swift in Sources */,
+				B06200010000000000000001 /* MigrationIndependentBackup.swift in Sources */,
 				OO0000010000000000000001 /* PhotosLibraryContracts.swift in Sources */,
 				OO0000010000000000000002 /* PhotosLibraryConnectionService.swift in Sources */,
 				OO0000010000000000000003 /* PhotosReconcileHandler.swift in Sources */,

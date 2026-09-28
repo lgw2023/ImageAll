@@ -1357,6 +1357,8 @@ final class PhoneArchiveImportModel: ObservableObject {
     @Published private(set) var selectedBatchID: UUID?
     @Published private(set) var latestValidationRecord: PhoneArchiveValidationRecord?
     @Published private(set) var latestCompletionReceipt: PhoneArchiveCompletionReceipt?
+    @Published private(set) var latestIndependentBackup: PhoneArchiveIndependentBackup?
+    @Published private(set) var backupIsCurrent = false
     @Published private(set) var completionReceiptIsCurrent = false
     @Published private(set) var isBusy = false
     @Published private(set) var message: String?
@@ -1508,17 +1510,21 @@ final class PhoneArchiveImportModel: ObservableObject {
         items = []
         latestValidationRecord = nil
         latestCompletionReceipt = nil
+        latestIndependentBackup = nil
+        backupIsCurrent = false
         completionReceiptIsCurrent = false
         await loadMore(using: importer)
         do {
             let history = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
                 (
                     try importer.latestValidationRecord(migrationID: id),
-                    try importer.latestCompletionReceipt(migrationID: id)
+                    try importer.latestCompletionReceipt(migrationID: id),
+                    try importer.latestIndependentBackup(migrationID: id)
                 )
             }
             latestValidationRecord = history.0
             latestCompletionReceipt = history.1
+            latestIndependentBackup = history.2
         } catch {
             message = "读取归档验收历史失败：\(error.localizedDescription)"
         }
@@ -1974,6 +1980,7 @@ final class PhoneArchiveImportModel: ObservableObject {
               let importer = PhoneArchiveImportProcessHolder.importer() else { return }
         isBusy = true
         completionReceiptIsCurrent = false
+        backupIsCurrent = false
         defer { isBusy = false }
         do {
             let parent = try targetParent(for: batch)
@@ -2036,6 +2043,80 @@ final class PhoneArchiveImportModel: ObservableObject {
             message = "所选范围完成回执 \(receipt.id.uuidString) 当前复核通过；若来源、归档或共享事实变化，须再次复核。"
         } catch {
             message = "完成回执当前无效或暂不可复核：\(error.localizedDescription)"
+        }
+    }
+
+    func verifyIndependentBackup(create: Bool) async {
+        guard !isBusy, let batch = selectedBatch, let completion = latestCompletionReceipt,
+              completion.migrationID == batch.id, let validation = latestValidationRecord,
+              validation.id == completion.validationID,
+              let importer = PhoneArchiveImportProcessHolder.importer() else { return }
+        let destination: URL
+        do {
+            if create {
+                guard let selected = await chooseDirectory(title: "选择另一存储设备上的空备份目录",
+                    message: "将复制完整归档并重建 catalog；来源保留。相同底层设备或无法识别的存储不会获得独立备份证明。") else { return }
+                destination = selected
+            } else {
+                guard let record = latestIndependentBackup, let bookmark = record.parentBookmark else {
+                    throw MigrationBackupError.missingRecord
+                }
+                var stale = false
+                destination = try URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope],
+                    relativeTo: nil, bookmarkDataIsStale: &stale)
+                guard !stale, destination.standardizedFileURL == URL(fileURLWithPath: record.backupCatalogPath).deletingLastPathComponent().standardizedFileURL else {
+                    throw MigrationBackupError.changed
+                }
+            }
+            guard !isProtectedPhotoVolume(destination) else {
+                message = "受保护的 HDD2 真实照片目录不能作为备份测试目标。"
+                return
+            }
+            isBusy = true
+            backupIsCurrent = false
+            defer { isBusy = false }
+            message = create ? "正在检查存储依赖、复制并逐项核验备份；请保持磁盘连接。" : "正在重新核验备份和当前存储依赖。"
+            let parent = try targetParent(for: batch)
+            let recovery = try recoveryParent(for: validation)
+            let sourceAccess = parent.startAccessingSecurityScopedResource()
+            let recoveryAccess = recovery.startAccessingSecurityScopedResource()
+            let backupAccess = destination.startAccessingSecurityScopedResource()
+            defer {
+                if sourceAccess { parent.stopAccessingSecurityScopedResource() }
+                if recoveryAccess { recovery.stopAccessingSecurityScopedResource() }
+                if backupAccess { destination.stopAccessingSecurityScopedResource() }
+            }
+            let before = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.auditCompletionReceipt(completion)
+            }
+            guard let snapshot = before.factSnapshot,
+                  try await RemoteHostProcessHolder.matchesMigrationCheckpoint(snapshot, manifestSHA256: before.manifestSHA256) else {
+                throw PhoneArchiveImportError.validationStale
+            }
+            let record: PhoneArchiveIndependentBackup
+            if create {
+                let bookmark = try destination.bookmarkData(options: [.withSecurityScope],
+                    includingResourceValuesForKeys: nil, relativeTo: nil)
+                record = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                    try importer.createIndependentBackup(completion: completion, into: destination, parentBookmark: bookmark)
+                }
+                latestIndependentBackup = record
+            } else {
+                guard let saved = latestIndependentBackup else { throw MigrationBackupError.missingRecord }
+                record = saved
+            }
+            let after = try await CatalogBlockingExecutor.shared.run(priority: .utility) {
+                try importer.auditIndependentBackup(record)
+            }
+            guard after == before, let current = after.factSnapshot,
+                  try await RemoteHostProcessHolder.matchesMigrationCheckpoint(current, manifestSHA256: after.manifestSHA256) else {
+                throw PhoneArchiveImportError.validationStale
+            }
+            backupIsCurrent = true
+            message = "所选范围的独立备份当前复核通过：\(after.itemCount) 项、\(after.resourceCount) 个资源。仅证明本次可见存储依赖分离及数据一致，不授权删除手机来源；清理前仍须再次复核。"
+        } catch {
+            backupIsCurrent = false
+            message = "独立备份未通过：\(error.localizedDescription)。若复制已经开始，目标中的部分文件保留，请检查后另选空目录重试。"
         }
     }
 
@@ -2241,6 +2322,20 @@ private struct PhoneArchiveImportCard: View {
                         }
                         .buttonStyle(.bordered)
                         .disabled(model.isBusy)
+                    }
+                }
+                if model.latestCompletionReceipt != nil {
+                    HStack {
+                        Button("创建并核验独立备份") { Task { await model.verifyIndependentBackup(create: true) } }
+                            .disabled(model.isBusy)
+                        if model.latestIndependentBackup != nil {
+                            Button("复核独立备份") { Task { await model.verifyIndependentBackup(create: false) } }
+                                .disabled(model.isBusy)
+                        }
+                    }.buttonStyle(.bordered)
+                    if model.latestIndependentBackup != nil {
+                        Text(model.backupIsCurrent ? "独立备份：当前复核通过" : "独立备份：历史记录，需复核")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 ForEach(model.items) { item in

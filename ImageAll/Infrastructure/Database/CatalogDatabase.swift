@@ -116,6 +116,7 @@ struct CatalogDatabase: Sendable {
         V059AddVideoPredictionEvidenceMigration.register(on: &migrator)
         V060AddPhoneAlbumUnavailableReasonMigration.register(on: &migrator)
         V061AddPhoneAlbumCatalogMigration.register(on: &migrator)
+        V062AddIndependentMigrationBackup.register(on: &migrator)
         return migrator
     }
 
@@ -3614,6 +3615,22 @@ enum V061AddPhoneAlbumCatalogMigration {
                     migration_id TEXT PRIMARY KEY REFERENCES migration_import(id) ON DELETE RESTRICT,
                     catalog_json BLOB NOT NULL CHECK(length(catalog_json) > 0 AND length(catalog_json) < 1048576)
                 ) STRICT
+                """)
+        }
+    }
+}
+
+enum V062AddIndependentMigrationBackup {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v062AddIndependentMigrationBackup) { db in
+            try db.execute(sql: """
+                CREATE TABLE migration_independent_backup (
+                    id TEXT PRIMARY KEY,
+                    migration_id TEXT NOT NULL REFERENCES migration_import(id) ON DELETE RESTRICT,
+                    record_json BLOB NOT NULL CHECK(length(record_json) > 0 AND length(record_json) < 1048576),
+                    created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0)
+                ) STRICT;
+                CREATE INDEX migration_independent_backup_batch ON migration_independent_backup(migration_id, created_at_ms);
                 """)
         }
     }

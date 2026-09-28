@@ -292,6 +292,44 @@ final class PhoneArchiveImportTests: XCTestCase {
             migrationID: header.migrationID
         ), completion)
         XCTAssertEqual(try reopenedImporter.auditCompletionReceipt(completion), integrity)
+        if includeCatalog {
+            let backupDirectory = fixture.root.appendingPathComponent("second-device-backup", isDirectory: true)
+            try FileManager.default.createDirectory(at: backupDirectory, withIntermediateDirectories: false)
+            let same = MigrationBackupStorageIdentity(volumeUUID: "same-volume", domains: ["same-device"])
+            XCTAssertThrowsError(try reopenedImporter.createIndependentBackup(completion: completion,
+                into: backupDirectory, parentBookmark: nil, storage: { _ in same }))
+            XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: backupDirectory.path).isEmpty)
+            let storage: VerifiedPhoneArchiveImporter.BackupStorageResolver = { url in
+                let isBackup = url.path == backupDirectory.path || url.path.hasPrefix(backupDirectory.path + "/")
+                return .init(volumeUUID: isBackup ? "backup-volume" : "source-volume",
+                    domains: [isBackup ? "usb-backup" : "usb-source"])
+            }
+            let backup = try reopenedImporter.createIndependentBackup(completion: completion,
+                into: backupDirectory, parentBookmark: nil, storage: storage)
+            XCTAssertEqual(try reopenedImporter.latestIndependentBackup(migrationID: header.migrationID), backup)
+            XCTAssertEqual(try reopenedImporter.auditIndependentBackup(backup, storage: storage), integrity)
+            let afterReboot: VerifiedPhoneArchiveImporter.BackupStorageResolver = { url in
+                let isBackup = url.path == backupDirectory.path || url.path.hasPrefix(backupDirectory.path + "/")
+                return .init(volumeUUID: isBackup ? "backup-volume" : "source-volume",
+                    domains: [isBackup ? "new-usb-backup" : "new-usb-source"])
+            }
+            XCTAssertEqual(try reopenedImporter.auditIndependentBackup(backup, storage: afterReboot), integrity)
+            XCTAssertThrowsError(try reopenedImporter.auditIndependentBackup(backup, storage: { url in
+                let isBackup = url.path == backupDirectory.path || url.path.hasPrefix(backupDirectory.path + "/")
+                return .init(volumeUUID: isBackup ? "backup-volume" : "source-volume", domains: ["shared-enclosure"])
+            }))
+            XCTAssertThrowsError(try reopenedImporter.auditIndependentBackup(backup, storage: { url in
+                let isBackup = url.path == backupDirectory.path || url.path.hasPrefix(backupDirectory.path + "/")
+                return .init(volumeUUID: isBackup ? "replaced-volume" : "source-volume",
+                    domains: [isBackup ? "usb-backup" : "usb-source"])
+            }))
+            let copiedResource = URL(fileURLWithPath: backup.backupArchivePath).appendingPathComponent(try XCTUnwrap(resource.relativePath))
+            let expected = try Data(contentsOf: copiedResource)
+            try Data("damaged-backup".utf8).write(to: copiedResource)
+            XCTAssertThrowsError(try reopenedImporter.auditIndependentBackup(backup, storage: storage))
+            try expected.write(to: copiedResource)
+            XCTAssertEqual(try reopenedImporter.auditIndependentBackup(backup, storage: storage), integrity)
+        }
         if let catalog {
             try await restoredImporter.database.pool.write { db in
                 try db.execute(sql: "UPDATE migration_import_apple_album_catalog SET catalog_json = ? WHERE migration_id = ?",

@@ -534,6 +534,10 @@ flowchart TD
 
 ### 9.6 “完全迁到 Mac”后的手机清理
 
+第二份备份新增独立入口，必须由用户选择空目录。先核对本批所选范围回执和当前共享水位，使用 Disk Arbitration / IOKit 对两个目录各自的卷和底层存储依赖做只读解析；卷 UUID 相同、底层依赖重叠、网络／虚拟／无法识别的存储均拒绝独立性证明。首版支持可识别的内部物理存储与 USB 外置存储：所有内部存储保守视为同一故障域，USB 按最近的物理 USB 设备归并，不能因不同分区／LUN 误算独立。此依据仅为系统可见依赖，不承诺识别存储设备内部实现。随后复制完整归档到新 catalog 并复验媒体、整理事实和相册目录，前后重新核对卷及依赖，保存单独的备份回执和目录 bookmark。重启后不沿用易变的 registry ID 作结论，重新解析当前拓扑、核对卷身份和全部字节。此入口不删除任何源端内容；后续手机清理仍需要来源门、收藏保护和前台二次确认。
+
+依据 [Apple Disk Arbitration：磁盘与 I/O Kit 对象](https://developer.apple.com/library/archive/documentation/DriversKernelHardware/Conceptual/DiskArbitrationProgGuide/ManipulatingDisks/ManipulatingDisks.html) 与本机 SDK 的 `IOStorageProtocolCharacteristics.h`。系统接口或 sandbox 拒绝观察时按无法证明处理，不降级为只比较路径或卷名。
+
 默认保留源端；用户可以把手机视图切到 Mac 图库，继续远程整理已经归档的内容。若进一步要求清理手机来源：
 
 1. 重新核验目标归档仍可读、版本匹配、收藏保护和必要事实已完成，源端选择范围没有变化。
