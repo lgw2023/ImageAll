@@ -1141,6 +1141,18 @@ actor RemoteHTTPServer {
                     request, authenticatedDeviceID: deviceID
                 )
                 await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
+            case ("POST", RemoteHTTPPaths.localLibraryCollectionRename):
+                guard let deviceID = requestAuthentication.deviceID else {
+                    throw RemoteAPIError(code: .unauthorized, message: "paired device required")
+                }
+                guard let localLibrarySyncStore else {
+                    throw RemoteAPIError(code: .notFound, message: "local library sync unavailable")
+                }
+                let request = try jsonDecoder.decode(RemoteLocalCollectionRenameRequest.self, from: body)
+                let payload = try await localLibrarySyncStore.submitCollectionRename(
+                    request, authenticatedDeviceID: deviceID
+                )
+                await respondJSON(connection, status: 200, value: payload, timeoutTask: timeoutTask)
             case ("POST", RemoteHTTPPaths.localLibraryFavoriteTarget):
                 guard let deviceID = requestAuthentication.deviceID else {
                     throw RemoteAPIError(code: .unauthorized, message: "paired device required")

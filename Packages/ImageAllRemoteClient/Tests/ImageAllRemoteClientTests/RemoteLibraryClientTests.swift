@@ -4,6 +4,26 @@ import ImageAllRemoteProtocol
 import XCTest
 
 final class RemoteLibraryClientTests: XCTestCase {
+    func testCollectionRenamePreservesCommandAndReceipt() async throws {
+        let request = RemoteLocalCollectionRenameRequest(commandID: UUID(), hostID: UUID(), installID: UUID(),
+            sourceEpoch: UUID(), scopeRevision: 1, snapshotSequence: 2, expectedChangeCursor: 3,
+            collectionID: UUID(), expectedName: "旧名", newName: "新名")
+        let expected = RemoteLocalCollectionRenameReceipt(request: request, deviceID: UUID(), resultingChangeCursor: 4)
+        let transport = MockTransport { outgoing in
+            XCTAssertEqual(outgoing.httpMethod, "POST")
+            XCTAssertEqual(outgoing.url?.path, RemoteHTTPPaths.localLibraryCollectionRename)
+            XCTAssertEqual(try JSONDecoder().decode(RemoteLocalCollectionRenameRequest.self,
+                                                   from: XCTUnwrap(outgoing.httpBody)), request)
+            return (try JSONEncoder().encode(expected), HTTPURLResponse(url: outgoing.url!, statusCode: 200,
+                httpVersion: "HTTP/1.1", headerFields: nil)!)
+        }
+        let client = RemoteLibraryClient(endpoint: try RemoteHostEndpoint(host: "127.0.0.1", port: 8787,
+                                                                          accessToken: "secret"), transport: transport)
+        let actual = try await client.renameLocalLibraryCollection(request)
+        XCTAssertEqual(actual, expected)
+        XCTAssertFalse(RemoteCapabilities(hostAppVersion: "test").capabilities.contains(.localLibraryCollectionRename))
+    }
+
     func testSelectedVideoSampleSuggestionsKeepExactIDsAndCannotBecomeWholeLibrary() async throws {
         let operation = UUID(), ids = [UUID(), UUID(), UUID()]
         let transport = MockTransport { outgoing in

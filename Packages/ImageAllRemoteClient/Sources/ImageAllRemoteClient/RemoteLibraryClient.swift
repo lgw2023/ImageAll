@@ -353,6 +353,12 @@ public struct RemoteLibraryClient: Sendable {
         )
     }
 
+    public func renameLocalLibraryCollection(
+        _ request: RemoteLocalCollectionRenameRequest
+    ) async throws -> RemoteLocalCollectionRenameReceipt {
+        try await postJSON(path: RemoteHTTPPaths.localLibraryCollectionRename, body: encoder.encode(request))
+    }
+
     public func submitLocalLibraryFavoriteTarget(
         _ request: RemoteLocalLibraryFavoriteTargetRequest
     ) async throws -> RemoteLocalLibraryFavoriteTargetReceipt {

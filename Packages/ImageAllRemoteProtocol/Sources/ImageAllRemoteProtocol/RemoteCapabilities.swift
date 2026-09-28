@@ -32,6 +32,7 @@ public enum RemoteCapability: String, Codable, Sendable, Hashable, CaseIterable 
     case localLibrarySnapshot
     case localLibraryTagOperations
     case localLibraryTagChanges
+    case localLibraryCollectionRename
     case localLibraryCollectionMembership
     case localLibraryCollectionChanges
     case localLibraryFavoriteTarget
@@ -67,6 +68,7 @@ public struct RemoteCapabilities: Codable, Sendable, Equatable {
         capabilities: [RemoteCapability] = RemoteCapability.allCases.filter {
             $0 != .localLibrarySnapshot && $0 != .localLibraryTagOperations
                 && $0 != .localLibraryTagChanges
+                && $0 != .localLibraryCollectionRename
                 && $0 != .localLibraryCollectionMembership
                 && $0 != .localLibraryCollectionChanges
                 && $0 != .localLibraryFavoriteTarget

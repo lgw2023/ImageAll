@@ -107,11 +107,13 @@ actor RemoteLocalLibrarySyncStore {
 
     private struct PersistedState: Codable {
         var records: [Record]
+        var collectionRenames: [RemoteLocalCollectionRenameReceipt]?
     }
 
     nonisolated let hostID: UUID
     private let storageURL: URL
     private var records: [UUID: Record]
+    private var collectionRenames: [RemoteLocalCollectionRenameReceipt] = []
 
     init(hostID: UUID, storageURL: URL) throws {
         self.hostID = hostID
@@ -120,6 +122,14 @@ actor RemoteLocalLibrarySyncStore {
             let decoded = try JSONDecoder().decode(
                 PersistedState.self, from: Data(contentsOf: storageURL)
             )
+            let renames = decoded.collectionRenames ?? []
+            guard Set(renames.map { "\($0.deviceID)|\($0.request.commandID)" }).count == renames.count,
+                  renames.allSatisfy({ $0.request.hostID == hostID
+                      && $0.request.expectedChangeCursor >= 0
+                      && $0.resultingChangeCursor > $0.request.expectedChangeCursor }) else {
+                throw RemoteAPIError(code: .internalError, message: "invalid collection rename receipts")
+            }
+            collectionRenames = renames
             guard Set(decoded.records.map(\.deviceID)).count == decoded.records.count,
                   decoded.records.allSatisfy({ record in
                       let projectedIDs = record.projectedAssets.map(\.asset.id)
@@ -747,9 +757,12 @@ actor RemoteLocalLibrarySyncStore {
         // Only this stable ID's explicit Mac rename history can explain it.
         let hasKnownHistoricalName = currentName != nil
             && currentName != request.collectionName
-            && (previous.collectionChanges ?? []).contains {
-            $0.createdCollectionID == request.collectionID
-        } && (previous.collectionChanges ?? []).contains {
+            && ((previous.collectionChanges ?? []).contains {
+                $0.createdCollectionID == request.collectionID
+            } || collectionRenames.contains {
+                $0.deviceID == authenticatedDeviceID && $0.request.sourceEpoch == request.sourceEpoch
+                    && $0.request.collectionID == request.collectionID
+            }) && (previous.collectionChanges ?? []).contains {
             $0.collectionID == request.collectionID
                 && $0.renamedFrom == request.collectionName
         }
@@ -1188,21 +1201,73 @@ actor RemoteLocalLibrarySyncStore {
         return projection(deviceID: deviceID)!
     }
 
-    /// Renames a collection created in this Mac shared namespace. The name
-    /// transition has its own change sequence and preserves member revisions.
+    func submitCollectionRename(
+        _ request: RemoteLocalCollectionRenameRequest, authenticatedDeviceID deviceID: UUID
+    ) throws -> RemoteLocalCollectionRenameReceipt {
+        guard request.hostID == hostID, let previous = records[deviceID],
+              request.installID == previous.request.installID,
+              request.sourceEpoch == previous.request.sourceEpoch,
+              request.scopeRevision == previous.request.scopeRevision else {
+            throw RemoteAPIError(code: .conflict, message: "collection rename source or scope changed")
+        }
+        if let saved = collectionRenames.first(where: {
+            $0.deviceID == deviceID && $0.request.commandID == request.commandID
+        }) {
+            guard saved.request == request else {
+                throw RemoteAPIError(code: .conflict, message: "collection rename command payload changed")
+            }
+            return saved
+        }
+        guard request.snapshotSequence == previous.request.snapshotSequence,
+              request.expectedChangeCursor >= 0,
+              request.expectedChangeCursor == (previous.collectionChanges?.last?.sequence ?? 0),
+              request.expectedName != request.newName,
+              !request.expectedName.isEmpty,
+              previous.projectedAssets.contains(where: { item in
+                  previous.request.selectedAssetIDs.contains(item.asset.id)
+                      && item.lastVisibleSnapshotSequence == previous.request.snapshotSequence
+                      && item.asset.collections.contains { $0.collectionID == request.collectionID }
+              }) else {
+            throw RemoteAPIError(code: .conflict, message: "collection rename requires current shared phone identity and cursor")
+        }
+        _ = try renameSharedCollection(
+            deviceID: deviceID, collectionID: request.collectionID,
+            expectedName: request.expectedName, newName: request.newName,
+            expectedSourceEpoch: request.sourceEpoch, expectedScopeRevision: request.scopeRevision,
+            expectedSnapshotSequence: request.snapshotSequence, phoneCommand: request
+        )
+        guard let result = collectionRenames.last else {
+            throw RemoteAPIError(code: .internalError, message: "collection rename receipt missing")
+        }
+        return result
+    }
+
+    /// Existing Mac UI entry remains restricted to explicitly Mac-created collections.
     func renameMacCreatedCollection(
+        deviceID: UUID, collectionID: UUID, expectedName: String, newName: String,
+        expectedSourceEpoch: UUID, expectedScopeRevision: Int64, expectedSnapshotSequence: Int64
+    ) throws -> Projection {
+        try renameSharedCollection(deviceID: deviceID, collectionID: collectionID,
+            expectedName: expectedName, newName: newName, expectedSourceEpoch: expectedSourceEpoch,
+            expectedScopeRevision: expectedScopeRevision, expectedSnapshotSequence: expectedSnapshotSequence)
+    }
+
+    /// Admission is checked by the phone command entry point or the Mac creation marker.
+    /// The name transition preserves member revisions.
+    private func renameSharedCollection(
         deviceID: UUID, collectionID: UUID,
         expectedName: String, newName: String,
         expectedSourceEpoch: UUID, expectedScopeRevision: Int64,
-        expectedSnapshotSequence: Int64
+        expectedSnapshotSequence: Int64,
+        phoneCommand: RemoteLocalCollectionRenameRequest? = nil
     ) throws -> Projection {
         guard let previous = records[deviceID],
               previous.request.sourceEpoch == expectedSourceEpoch,
               previous.request.scopeRevision == expectedScopeRevision,
               previous.request.snapshotSequence == expectedSnapshotSequence,
-              (previous.collectionChanges ?? []).contains(where: {
+              (phoneCommand != nil || (previous.collectionChanges ?? []).contains(where: {
                   $0.createdCollectionID == collectionID
-              }) else {
+              })) else {
             throw RemoteAPIError(code: .conflict, message: "shared collection identity changed")
         }
         guard newName == newName.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -1218,6 +1283,9 @@ actor RemoteLocalLibrarySyncStore {
             throw RemoteAPIError(code: .conflict, message: "shared collection name diverged")
         }
         if names == [newName] {
+            guard phoneCommand == nil else {
+                throw RemoteAPIError(code: .conflict, message: "collection rename name changed")
+            }
             let lastRename = (previous.collectionChanges ?? []).last {
                 $0.collectionID == collectionID && $0.renamedFrom != nil
             }
@@ -1274,7 +1342,11 @@ actor RemoteLocalLibrarySyncStore {
         )
         var updated = records
         updated[deviceID] = record
-        try persist(updated)
+        let receipt = phoneCommand.map {
+            RemoteLocalCollectionRenameReceipt(request: $0, deviceID: deviceID,
+                                               resultingChangeCursor: head + Int64(indices.count))
+        }
+        try persist(updated, appendingRename: receipt)
         return projection(deviceID: deviceID)!
     }
 
@@ -1570,10 +1642,11 @@ actor RemoteLocalLibrarySyncStore {
         }.sorted { $0.assetID.uuidString < $1.assetID.uuidString }
     }
 
-    private func persist(_ updated: [UUID: Record]) throws {
+    private func persist(_ updated: [UUID: Record], appendingRename: RemoteLocalCollectionRenameReceipt? = nil) throws {
+        let renames = collectionRenames + (appendingRename.map { [$0] } ?? [])
         let persisted = PersistedState(records: updated.values.sorted {
             $0.deviceID.uuidString < $1.deviceID.uuidString
-        })
+        }, collectionRenames: renames.isEmpty ? nil : renames)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(persisted)
@@ -1582,6 +1655,7 @@ actor RemoteLocalLibrarySyncStore {
         )
         try data.write(to: storageURL, options: .atomic)
         records = updated
+        collectionRenames = renames
     }
 
     private func receipt(

@@ -11,6 +11,69 @@ import XCTest
 @testable import ImageAll
 
 final class RemoteHTTPServerTests: XCTestCase {
+    func testPhoneCollectionRenameIsAtomicReplayableAndRejectsStaleCursor() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("phone-rename.json")
+        let host = UUID(), device = UUID(), install = UUID(), epoch = UUID()
+        let asset = UUID(), collection = UUID()
+        let store = try RemoteLocalLibrarySyncStore(hostID: host, storageURL: url)
+        _ = try await store.submit(.init(hostID: host, installID: install, sourceEpoch: epoch,
+            scopeRevision: 1, snapshotSequence: 1, selectedAssetIDs: [asset], assets: [
+                .init(id: asset, localIdentifier: "synthetic", mediaKind: .image, createdAtMs: nil,
+                      observedFavorite: false, favoriteTarget: nil, tagDecisions: [],
+                      collections: [.init(collectionID: collection, collectionName: "旧名"),
+                                    .init(collectionID: UUID(), collectionName: "已占用")])
+            ]), authenticatedDeviceID: device)
+        func request(_ old: String, _ name: String, cursor: Int64, command: UUID = UUID()) -> RemoteLocalCollectionRenameRequest {
+            .init(commandID: command, hostID: host, installID: install, sourceEpoch: epoch,
+                  scopeRevision: 1, snapshotSequence: 1, expectedChangeCursor: cursor,
+                  collectionID: collection, expectedName: old, newName: name)
+        }
+        let first = request("旧名", "新名", cursor: 0)
+        let receipt = try await store.submitCollectionRename(first, authenticatedDeviceID: device)
+        XCTAssertEqual(receipt.resultingChangeCursor, 1)
+        let reopened = try RemoteLocalLibrarySyncStore(hostID: host, storageURL: url)
+        let replay = try await reopened.submitCollectionRename(first, authenticatedDeviceID: device)
+        XCTAssertEqual(replay, receipt)
+        let page = try await reopened.collectionChanges(deviceID: device, sourceEpoch: epoch,
+                                                        scopeRevision: 1, afterCursor: 0)
+        XCTAssertEqual(page.changes.count, 1)
+        XCTAssertEqual(page.changes.first?.renamedFrom, "旧名")
+        XCTAssertEqual(page.changes.first?.fieldRevision, 1)
+        for invalid in [request("旧名", "另一名", cursor: 0, command: first.commandID),
+                        request("新名", "另一名", cursor: 0), request("新名", " ", cursor: 1),
+                        request("新名", "已占用", cursor: 1)] {
+            do {
+                _ = try await reopened.submitCollectionRename(invalid, authenticatedDeviceID: device)
+                XCTFail("changed payload, stale cursor and invalid names must reject")
+            } catch is RemoteAPIError {}
+        }
+        do {
+            _ = try await reopened.submitCollectionRename(first, authenticatedDeviceID: UUID())
+            XCTFail("a different paired device must not replay this command")
+        } catch is RemoteAPIError {}
+        _ = try await reopened.submitCollectionRename(request("新名", "旧名", cursor: 1), authenticatedDeviceID: device)
+        do {
+            _ = try await reopened.submitCollectionRename(request("旧名", "第三名", cursor: 0), authenticatedDeviceID: device)
+            XCTFail("name ABA must not revive an old command")
+        } catch is RemoteAPIError {}
+        // A frozen member edit keeps its stable collection identity across the phone rename.
+        let member = try await reopened.submitCollectionMembership(.init(hostID: host, installID: install,
+            sourceEpoch: epoch, scopeRevision: 1, operationID: UUID(), deviceSequence: 1,
+            assetID: asset, collectionID: collection, collectionName: "新名", included: false, baseRevision: 1),
+            authenticatedDeviceID: device)
+        XCTAssertEqual(member.disposition, .applied)
+        let final = try RemoteLocalLibrarySyncStore(hostID: host, storageURL: url)
+        let finalReplay = try await final.submitCollectionRename(first, authenticatedDeviceID: device)
+        XCTAssertEqual(finalReplay, receipt)
+        let projection = await final.projection(deviceID: device)
+        let fact = projection?.sharedCollectionFacts.first { $0.collectionID == collection }
+        XCTAssertEqual(fact?.collectionName, "旧名")
+        XCTAssertEqual(fact?.revision, 2)
+        XCTAssertEqual(fact?.included, false)
+    }
+
     private static let legacyDebugToken = "secret-token"
 
     func testLargeSnapshotCommitsOnlyAfterAllChunksAndResumesAcrossRestart() async throws {

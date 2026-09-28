@@ -71,6 +71,7 @@ actor RemoteCatalogFacade {
             capabilities: RemoteCapability.allCases.filter {
                 $0 != .localLibrarySnapshot && $0 != .localLibraryTagOperations
                     && $0 != .localLibraryTagChanges
+                    && $0 != .localLibraryCollectionRename
                     && $0 != .localLibraryCollectionMembership
                     && $0 != .localLibraryCollectionChanges
                     && $0 != .localLibraryFavoriteTarget
@@ -78,7 +79,7 @@ actor RemoteCatalogFacade {
                     && $0 != .migrationTransfer
             } + (supportsLocalLibrarySnapshot
                 ? [.localLibrarySnapshot, .localLibraryTagOperations,
-                   .localLibraryTagChanges, .localLibraryCollectionMembership,
+                   .localLibraryTagChanges, .localLibraryCollectionMembership, .localLibraryCollectionRename,
                    .localLibraryCollectionChanges, .localLibraryFavoriteTarget,
                    .localLibraryFavoriteChanges] : [])
                 + (supportsMigrationTransfer ? [.migrationTransfer] : []),
