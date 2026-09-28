@@ -709,3 +709,11 @@
 - `verify_mixed_story_engine.py` 在独立副本完成三次真实渲染：mixed 60帧/2秒、有AAC原声（音轨2.048秒）；muted 60帧/2秒、无音轨；legacy-photo 30帧/1秒、无音轨。所有媒体检查pass，修改入帧后一致性fail、恢复后pass。另 `python-regressions.log` 11/11 PASS。
 - 证据 `story-mixed-engine/verified-runs/acceptance.json` 列出三次任务目录，每次保留原始/语义包、冻结媒体、转换参数、一致性/完整解码/媒体报告和实际MP4；日志 `adapter-final.log`。独立副本Chrome配置用于本次验收，不写入生产配置。
 - 任务协议广告/封套仍限定0.1，Swift导出尚未启用0.2；本轮证明适配器完整渲染流程，不冒称App完整任务已交付。下一步统一版本身份、接executor能力与Mac导出。整体 active，未真实媒体访问、未修改并行工作、未push。
+
+## P6 双版本任务协议与真实执行器结果发布（2026-09-28）
+
+- 新增 `mixed_story_executor_patch.py`，先安装已验收混合引擎扩展，再从实际0.1/0.2 schema读取版本和摘要构造封套配对约束，更新独立副本的协议锁与0.2 schema锁。能力广告列出两种精确身份，任务/完成清单要求版本与摘要配对，包正文版本必须与封套一致。
+- 执行器readiness检查两种schema锁；沿用真实提交manifest、receipt、后台worker、状态、取消/恢复和结果原子发布逻辑，未用假backend。新协议实际SHA256=12a265b8bab275955b5fb1b886250de23eef14c5a438ea372466e0560a3d1bb1，仅在独立副本生成，尚未改变App集成常量。
+- `verify_mixed_story_executor.py` 合成提交验收通过：旧0.1提交可验证，0.2搭配0.1摘要拒绝；真实0.2任务经running→succeeded约12.49秒，发布result.json。输出H264/AAC、320×240、30fps、60帧、视频2秒；成片与validation/consistency/mediaVerification/render四份报告SHA逐一复核一致，源包SHA一致。
+- 证据 `story-mixed-executor/executor-1e64a6ef/acceptance.json`，完整submission/state/runs均保留；日志 `story-mixed-executor-final.log`。成片SHA256=1b79de55c8247448355e5e05e82fa6c804eb3b44b61a58726f8925b71f1c6dfc。首轮负例测试忘记传错摘要开关，未实际产生负例，修复测试后正确拒绝；未因此放宽协议。
+- 下一步通过integration-contract.json统一登记这些身份、生成Swift契约，并接Mac混合包导出/真实任务调用；当前独立执行器成功不等于App端已完成。P6/整体 active，未访问真实媒体、未改Runtime种子、未push。
