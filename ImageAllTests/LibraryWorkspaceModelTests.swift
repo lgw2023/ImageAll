@@ -12489,9 +12489,17 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             throw XCTSkip("Explicit synthetic gallery verification only")
         }
         let isReview = ProcessInfo.processInfo.environment["IMAGEALL_INTERACTIVE_REVIEW"] == "1"
+        let isAnalysis = ProcessInfo.processInfo.environment["IMAGEALL_INTERACTIVE_ANALYSIS"] == "1"
         let evidence = URL(fileURLWithPath: path, isDirectory: true)
-        let sourceID = UUID()
-        let first = Self.makeAsset(sourceID: sourceID, fileName: "01-synthetic.mp4",
+        let analysisEnvironment: SimilarityTestSupport.Environment? = isAnalysis
+            ? try SimilarityTestSupport.Environment(label: "interactive-video-analysis") : nil
+        defer { analysisEnvironment?.cleanup() }
+        let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("docs/evidence/time-story-phase-1-20260918/synthetic-silent.mp4")
+        let seeded = try analysisEnvironment?.seedAsset(relativePath: "01-synthetic.mp4",
+            contents: Data(contentsOf: source), mediaType: "public.mpeg-4", mediaKind: .video, durationMs: 3000)
+        let sourceID = analysisEnvironment?.sourceID ?? UUID()
+        let first = Self.makeAsset(sourceID: sourceID, assetID: seeded?.assetID ?? UUID(), fileName: "01-synthetic.mp4",
             mediaType: "public.mpeg-4", mediaKind: .video, durationMs: 3000)
         let second = Self.makeAsset(sourceID: sourceID, fileName: "02-synthetic.mp4",
             mediaType: "public.mpeg-4", mediaKind: .video, durationMs: 3000)
@@ -12499,8 +12507,6 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         let service = FakeLibraryWorkspaceService(
             connectedSource: LibrarySourceSummary(id: sourceID, displayName: "Synthetic video only", state: .active),
             reconciledItems: [first, second], tags: [tag], startsConnected: true)
-        let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("docs/evidence/time-story-phase-1-20260918/synthetic-silent.mp4")
         let review = FakePersonalizationReviewPort(queueMediaKind: .video, queueItems: [first, second].map {
             ReviewQueueItemProjection(assetID: $0.assetID, fileName: $0.fileName,
                 availability: $0.availability, contentRevision: $0.contentRevision,
@@ -12508,6 +12514,11 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         })
         let model = LibraryWorkspaceModel(service: service, review: review,
             videoPlaybackProvider: GallerySyntheticVideoProvider(url: source), idlePrewarmInstallEventMonitor: false)
+        if let analysisEnvironment {
+            let base = analysisEnvironment.makeCompletionService()
+            model.videoAnalysisService = FolderVideoAnalysisService(database: analysisEnvironment.database,
+                sourceAccess: base.sourceAccess, clock: base.clock)
+        }
         await model.start()
         await waitForCatalogScanToFinish(model)
         await model.setMediaKind(.video)
@@ -12530,11 +12541,32 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             samples.append(["selected": model.primarySelectedAssetID?.uuidString ?? "", "single": model.isSinglePhotoPresented,
                 "firstDecision": String(describing: try? service.fetchInspectorDetail(assetID: first.assetID).tags.first { $0.tagID == tag.id }?.decision),
                 "secondDecision": String(describing: try? service.fetchInspectorDetail(assetID: second.assetID).tags.first { $0.tagID == tag.id }?.decision),
+                "time": model.videoViewingSession.player.currentTime().seconds.isFinite ? model.videoViewingSession.player.currentTime().seconds : -1,
                 "rate": model.videoViewingSession.player.rate, "state": String(describing: model.videoViewingSession.state)])
             try JSONSerialization.data(withJSONObject: samples).write(to: evidence.appendingPathComponent("gallery-observations.json"), options: .atomic)
             try await Task.sleep(for: .milliseconds(200))
         }
         XCTAssertTrue(FileManager.default.fileExists(atPath: finish.path))
+        if let analysisEnvironment {
+            let times = try await analysisEnvironment.database.pool.read { db in
+                try Int64.fetchAll(db, sql: "SELECT actual_ms FROM video_analysis_frame ORDER BY actual_ms")
+            }
+            let features = try await analysisEnvironment.database.pool.read { db in
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM video_analysis_feature") ?? 0
+            }
+            XCTAssertGreaterThanOrEqual(times.count, 3)
+            XCTAssertLessThanOrEqual(times.count, VideoAnalysisSamplingPolicy.maximumFrameCount)
+            XCTAssertTrue(times.contains { $0 < 500 })
+            XCTAssertTrue(times.contains { (1000...2000).contains($0) })
+            XCTAssertTrue(times.contains { $0 > 2000 })
+            XCTAssertEqual(features, 1)
+            XCTAssertTrue(times.contains { time in time > 1000 && samples.contains {
+                abs(($0["time"] as? Double ?? -1) - Double(time) / 1000) < 0.05 && ($0["rate"] as? Float) == 0
+            } }, "An actual analysis-frame button must seek the paused player")
+            try JSONSerialization.data(withJSONObject: ["timesMs": times, "features": features])
+                .write(to: evidence.appendingPathComponent("analysis-result.json"))
+            return
+        }
         XCTAssertTrue(samples.contains { ($0["rate"] as? Float ?? 0) > 0 })
         XCTAssertTrue(samples.contains { ($0["selected"] as? String) == first.assetID.uuidString && ($0["single"] as? Bool) == true })
         XCTAssertTrue(samples.contains { ($0["selected"] as? String) == second.assetID.uuidString && ($0["single"] as? Bool) == true })
@@ -18833,6 +18865,7 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
                 fileName: item.fileName,
                 mediaKind: item.mediaKind,
                 mediaType: item.mediaType,
+                durationMs: item.durationMs,
                 mediaCreatedAtMs: item.mediaCreatedAtMs,
                 mediaModifiedAtMs: item.mediaModifiedAtMs,
                 width: item.width,
@@ -18878,6 +18911,7 @@ final class FakeLibraryWorkspaceService: LibraryWorkspacePort, @unchecked Sendab
                 fileName: item.fileName,
                 mediaKind: item.mediaKind,
                 mediaType: item.mediaType,
+                durationMs: item.durationMs,
                 mediaCreatedAtMs: item.mediaCreatedAtMs,
                 mediaModifiedAtMs: item.mediaModifiedAtMs,
                 width: item.width,

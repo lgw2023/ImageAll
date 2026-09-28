@@ -24,7 +24,10 @@ def main():
     parser.add_argument('--story-workspace', action='store_true', help='Operate mixed story add/edit/order/save controls, then create finish')
     parser.add_argument('--gallery', action='store_true', help='Operate the synthetic full video gallery and tag the first video, then create finish')
     parser.add_argument('--review', action='store_true', help='With --gallery: accept first video, reject second, undo, then finish')
+    parser.add_argument('--analysis', action='store_true', help='With --gallery: analyze current video, reuse or rebuild frames, click a timestamp, then finish')
     args = parser.parse_args()
+    if args.analysis and (not args.gallery or args.review):
+        parser.error('--analysis requires --gallery and excludes --review')
     if args.review and not args.gallery:
         parser.error('--review requires --gallery')
     if (args.story_clip or args.story_workspace) and (args.with_audio or args.require_focus) or (args.story_clip and args.story_workspace):
@@ -87,6 +90,8 @@ def main():
     if args.gallery:
         environment.pop('IMAGEALL_INTERACTIVE_VIDEO_EVIDENCE', None)
         environment['IMAGEALL_INTERACTIVE_GALLERY_EVIDENCE'] = str(evidence)
+        if args.analysis:
+            environment['IMAGEALL_INTERACTIVE_ANALYSIS'] = '1'
         if args.review:
             environment['IMAGEALL_INTERACTIVE_REVIEW'] = '1'
         selector = 'ImageAllTests.LibraryWorkspaceModelTests/testInteractiveVideoGalleryWhenRequested'

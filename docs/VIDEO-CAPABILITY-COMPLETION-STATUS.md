@@ -889,3 +889,11 @@
 - 首轮review-ui-final虽人工事实1/1通过，但撤销队列未恢复；定位为fake缺少无筛选参数的媒体域重载，默认实现返回空视频页。生产PersonalizationReviewService两个重载均已有实现。补齐fake并加强断言后重新完成实际UI，未修改生产查询语义。
 - review-ui-restoration-build.log TEST BUILD SUCCEEDED；同构建review-ui-regression.log 2/2 PASS，覆盖照片/视频队列隔离和照片批量接受撤销。verification.json保存隔离基线、源码与构建SHA；review-ui-owned.patch仅主共享文件本轮增量。
 - 本轮是正式视图→合成审核/目录服务，磁盘重开事实已有独立证据，不能用fake运行替代。多帧服务在此fixture未接入；瘦身、地图、多帧证据点击与最终版本审计仍待推进。未真实媒体/Photos宿主/付费调用/发布安装/push，目标active。
+
+## P5 正式多帧菜单、真实分析与时间点定位（2026-09-28）
+
+- 独立图库验收新增--gallery --analysis，使用SimilarityTestSupport临时目录/数据库与正式FolderVideoAnalysisService；目录UI仍为fake，分析解码、Vision特征和数据库缓存是真实服务。仅预置合成视频，不提前执行分析；由实际菜单触发。
+- analysis-ui-bounded/tests.log 1/1 PASS（42.708秒）：生成4帧（133/733/1500/2233ms）、1份特征记录；实际点击2.233秒后播放器暂停定位，观测时间与数据库分析帧相差小于50ms。analysis-result.json保存查询结果，gallery-observations.json保存实际player时间/状态。
+- 前一轮analysis-ui-complete实际验证初次复用0帧→再次分析复用4帧→强制重建复用0帧，均显示768维特征；其测试只因误写“恰好5帧”断言失败。现行策略最多5帧，允许不可解码时间点跳过，故改为3–5帧、前中后覆盖和实际seek断言后复跑通过，不改生产策略。
+- 更早analysis-ui-final/verified为fixture缺失Inspector时长的失败证据，均保留。补齐fake Inspector与修订更新投影的时长，正式菜单门禁保持不变。analysis-ui-build-bounded.log TEST BUILD SUCCEEDED；同产品analysis-ui-regression.log 2/2 PASS（定位身份/越界/停止保护，以及离屏修订和照片拒绝）。
+- analysis-ui-bounded/verification.json绑定源码与产品SHA。当前已验证详情分析帧和显式复用/重建菜单；冻结审核建议证据、内容候选列表、地图/瘦身及最终集成审计仍待推进。未读取真实媒体、无Photos宿主或付费调用，未push，目标active。
