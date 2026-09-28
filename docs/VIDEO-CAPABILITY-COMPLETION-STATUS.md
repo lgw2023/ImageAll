@@ -33,7 +33,7 @@
 | P4 | VERIFIED（合成） | 完整原件／分组／安全清理与恢复、原生比较渲染通过 | 实现及最小合成验收已覆盖；真实 Photos／iCloud、日常配置点击和最终版本总回归仍未验证，见 P7 |
 | P5 | IN_PROGRESS | 实际合成视频解码→Vision→直接建议→审核证据 PASS | 文件夹/Photos 本地资源接线、版本化聚合、候选及原生证据条已交付；后台实际视频主路径已验；完整 UI 路线待验 |
 | P6 | IN_PROGRESS | 原生/Remotion混合成片、Swift真实任务闭环 PASS | 自动选材、同源多片段、双渲染方向及旧完成任务恢复已验；完整UI操作待核 |
-| P7 | IN_PROGRESS | 已开始逐项要求复核 | Mac入口/运行证据、最终版本回归、依赖审计与人工路线未收口 |
+| P7 | IN_PROGRESS | ac6ab717完整App构建及58项同版本合成回归通过 | 已提交依赖/内嵌契约可复现；完整Mac界面操作与逐项完成矩阵仍未收口 |
 
 首个切片输入：生产 `AssetGridItemProjection.mediaKind` / `AssetInspectorDetail.mediaKind`；输出：摘要／详情 DTO 显式字段，兼容已知 UTI 和 MIME，未知格式明确不可用；验收：新旧 JSON、MP4／MOV／照片／未知类型、Web 分支与相关构建。不能据此宣称完整 P1 通过。
 
@@ -797,3 +797,13 @@
 - payload-committed-build.log独立构建成功；payload-committed-cache-hit.log第二次复用同一路径，完整payload内容摘要相符。payload-committed-contract-tests.log 2/2 PASS；独立复核runtime-integrity全部128项；bash -n embed.sh通过。
 - payload-committed-verification.json保存输入摘要、基线commit、payload路径/版本；payloadVersion=bf1271fd48cca6f7155fb67aa2228dcdad24dc3d7cf58f969bc56819033cd3ea。整个Runtime种子前后摘要均e4953686977be67bce9656b72b5e3158aa489e5084f766a73db3bccf62bcd9cb。一次相对路径核验命令因cwd不同失败，后以绝对路径重跑并比对成功，未据失败输出认定通过。
 - 本轮证明已提交依赖可独立生成混合payload且种子未变，不代表完整App纯提交版本Xcode构建、签名/发布安装或全界面验收。下一步是完整提交版本构建与同版本必要回归，随后继续P1–P6运行矩阵收口。目标active，未真实媒体、未付费调用、未启动或停止日常执行器、未push。
+
+## P7 完整已提交App构建与同版本58项回归（2026-09-28）
+
+- 上轮为progress：ac6ab717提交私有payload构建与正确契约配对。通过工作树工具创建并附加video-delivery-verification，固定ac6ab717f99a8d7a614d1fc5ff14f0eae6486880 detached HEAD；没有复制主工作区并行改动。隔离是为了复现性验收，不替代日常Xcode项目或安装新App。
+- 验证路径为 `/Volumes/SSD1/.codex/worktrees/video-delivery-verification/ImageAll`。准备依赖仅Runtime只读链接与runtime-version副本，LibRawDist来自提交；复用已有SPM下载目录。工作树中的旧AGENTS日常替换表述由本会话2026-09-24新指令覆盖，未执行替换。唯一额外未跟踪入口是已声明的Runtime依赖链接，所有已跟踪源码前后无差异。
+- `committed-mac-build.log` TEST BUILD SUCCEEDED；产品、DerivedData、Intermediates均在独立committed-mac根。随后直接注入该构建的ImageAll.debug.dylib运行同一构建XCTest bundle，不启动生产Photos App宿主。
+- `committed-mac-test-selection.json`记录58项既有合成选择及来源日志；`committed-mac-tests.log` 58/58 PASS、0失败、0跳过，用时约22.07秒。逐条核对实际passed名称与选择清单完全一致。覆盖视频播放身份/取消、瘦身导航、元数据/旋转/GPS、分页排序/媒体筛选、智能推流/人工确认撤销、训练发布审核重放、精确原件比较回收恢复、多帧缓存/实际Vision后台链、混合编辑/保存重开/方向/原声及旧照片/旧任务回归。
+- App内嵌helper的runtime-integrity 128项逐项SHA核对通过；直接读取内嵌engine验证story0.2/legacy0.1及任务Schema/lock，插件版本1.2.1与提交契约一致。没有使用工作区未提交1.2.2创作修复或字幕模块。
+- `committed-mac-verification.json`绑定commit、工作树/产物路径、测试bundle与App dylib SHA、测试数量、内嵌契约和限制。App dylib SHA=e5b3d3e7a57c92270f98ef7759cb0913b9659535428d75f8abe2e7d460348a80；测试bundle SHA=e368e96e0ba5683415cb1d8707d5d04774c6fc950d8150537049f4c5f40f789e。
+- 这是真正已提交版本的完整工程构建与同构建回归，解决此前依赖混合脏工作区的证据缺口。仍不是全页鼠标操作、日常图库、真实Photos/iCloud、真实模型或发布安装验收。P1–P6完整Mac UI路线、逐项完成矩阵和最终人工指南仍需收口，目标active。保留验证工作树供后续复核，未push、未真实媒体读写。
