@@ -687,6 +687,11 @@ actor FileOpenMontageStoryTaskClient: OpenMontageStoryTasking {
         }
     }
 
+    private static func isReadableStorySchema(version: String, hash: String) -> Bool {
+        (version == OpenMontageContract.storySchemaVersion && hash == OpenMontageContract.storySchemaSHA256)
+            || (version == OpenMontageContract.legacyStorySchemaVersion && hash == OpenMontageContract.legacyStorySchemaSHA256)
+    }
+
     private func readTask(taskID: String, root: URL) async throws -> OpenMontageStoryTaskSnapshot {
         if let cached = observed[taskID], cached.snapshot.phase.isTerminal {
             return cached.snapshot
@@ -716,13 +721,16 @@ actor FileOpenMontageStoryTaskClient: OpenMontageStoryTasking {
               completion.status == "complete",
               completion.storyPackage.entrypoint == taskDocument.storyPackage.entrypoint,
               completion.storyPackage.schemaVersion == taskDocument.storyPackage.schemaVersion,
-              completion.storyPackage.schemaSHA256 == taskDocument.storyPackage.schemaSHA256
+              completion.storyPackage.schemaSHA256 == taskDocument.storyPackage.schemaSHA256,
+              Self.isReadableStorySchema(version: taskDocument.storyPackage.schemaVersion,
+                                         hash: taskDocument.storyPackage.schemaSHA256)
         else { throw OpenMontageTaskError.protocolViolation("任务或完成记录身份不一致。") }
         let story = try Self.decode(
             StoryRenderPackageDocument.self,
             at: taskRoot.appendingPathComponent("submission/package/story.json")
         )
-        guard story.projectID == taskDocument.projectID,
+        guard story.schemaVersion == taskDocument.storyPackage.schemaVersion,
+              story.projectID == taskDocument.projectID,
               story.projectRevision == taskDocument.projectRevision
         else { throw OpenMontageTaskError.protocolViolation("故事与任务项目身份不一致。") }
         let aspect = try Self.aspect(width: story.export.width, height: story.export.height)

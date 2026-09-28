@@ -919,6 +919,40 @@ final class TimeStoryFeatureTests: XCTestCase {
         XCTAssertEqual(cancellableProject.shots.count, 2)
     }
 
+    func testTaskReaderAcceptsLegacySchemaAndRejectsMismatchedIdentity() async throws {
+        let root = try temporaryDirectory("legacy-schema-reader")
+        let now = Date()
+        try writeOpenMontageExecutorFixture(at: root, now: now)
+        let first = UUID(), second = UUID()
+        let client = makeOpenMontageClient(root: root, projectAssetImages: [
+            first: try pngData(color: .red, portrait: false), second: try pngData(color: .blue, portrait: false)], now: now)
+        let submitted = try await client.submit(project: renderProject(first: first, second: second), aspect: .landscape) { _ in }
+        let submission = root.appendingPathComponent("tasks/\(submitted.taskID)/submission")
+        for name in ["task.json", "complete.json"] {
+            let url = submission.appendingPathComponent(name)
+            var json = try jsonObject(at: url)
+            var package = try XCTUnwrap(json["storyPackage"] as? [String: Any])
+            package["schemaVersion"] = OpenMontageContract.legacyStorySchemaVersion
+            package["schemaSHA256"] = OpenMontageContract.legacyStorySchemaSHA256
+            json["storyPackage"] = package
+            try writeJSON(json, to: url)
+        }
+        let storyURL = submission.appendingPathComponent("package/story.json")
+        var story = try jsonObject(at: storyURL)
+        story["schemaVersion"] = OpenMontageContract.legacyStorySchemaVersion
+        try writeJSON(story, to: storyURL)
+        let reader = makeOpenMontageClient(root: root, projectAssetImages: [:], now: now)
+        let restored = try await reader.task(taskID: submitted.taskID)
+        XCTAssertEqual(restored.phase, .waitingForExecutor)
+        // This checks parsing/identity before execution, not a forged successful result.
+        story["schemaVersion"] = "0.2"
+        try writeJSON(story, to: storyURL)
+        do { _ = try await reader.task(taskID: submitted.taskID); XCTFail("Mixed envelope/body versions accepted") }
+        catch let error as OpenMontageTaskError {
+            guard case .protocolViolation = error else { return XCTFail("Unexpected error: \(error)") }
+        }
+    }
+
     func testAutomaticMixedStoryPreservesDistinctEditedClipsWhenReplanning() throws {
         let photo = candidate(UUID().uuidString, time: timestamp(2024, 1, 1))
         var video = candidate(UUID().uuidString, time: timestamp(2025, 1, 1))

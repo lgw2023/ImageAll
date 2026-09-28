@@ -7,4 +7,6 @@ enum OpenMontageContract {
     static let creativeProtocolVersion = "1.2"
     static let creativePluginVersion = "1.2.2"
     static let templateProtocolVersion = "1.0"
+    static let legacyStorySchemaVersion = "0.1"
+    static let legacyStorySchemaSHA256 = "62152ef8ff73882a459359f11f551bc3d6582a4b6d299e30cc8486846b28a1a0"
 }
