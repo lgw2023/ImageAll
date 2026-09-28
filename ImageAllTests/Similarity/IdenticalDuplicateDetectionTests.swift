@@ -8,6 +8,49 @@ import XCTest
 @testable import ImageAll
 
 final class IdenticalDuplicateDetectionTests: XCTestCase {
+    func testFolderMultiframeCheckpointsResumeAndRejectRevisionOrSourceChanges() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("docs/evidence/time-story-phase-1-20260918/synthetic-silent.mp4")
+        let bytes = try Data(contentsOf: fixture)
+        let item = try env.seedAsset(relativePath: "analysis.mp4", contents: bytes,
+            mediaType: "public.mpeg-4", mediaKind: .video, durationMs: 1_000)
+        let base = env.makeCompletionService()
+        let service = FolderVideoAnalysisService(database: env.database, sourceAccess: base.sourceAccess, clock: base.clock)
+        XCTAssertThrowsError(try service.analyze(assetID: item.assetID, onFrame: { _ in throw CancellationError() })) {
+            XCTAssertTrue($0 is CancellationError)
+        }
+        let resumed = try service.analyze(assetID: item.assetID)
+        XCTAssertEqual(resumed.reusedFrameCount, 1)
+        XCTAssertEqual(resumed.attemptedFrameCount, 2)
+        XCTAssertEqual(resumed.frames.count, 3)
+        let warm = try service.analyze(assetID: item.assetID)
+        XCTAssertEqual(warm.reusedFrameCount, 3)
+        XCTAssertEqual(warm.attemptedFrameCount, 0)
+        let cache = VideoAnalysisFrameCache(database: env.database, clock: base.clock)
+        let key = VideoAnalysisFrameCache.Key(assetID: item.assetID, contentRevision: 1,
+            policy: "future-policy", sourceIdentity: "unrelated-source")
+        XCTAssertTrue(try cache.frames(key: key).isEmpty)
+        try env.database.pool.write { db in
+            try db.execute(sql: "UPDATE asset SET content_revision = content_revision + 1 WHERE id = ?",
+                arguments: [item.assetID.uuidString.lowercased()])
+        }
+        let rebuilt = try service.analyze(assetID: item.assetID)
+        XCTAssertEqual(rebuilt.reusedFrameCount, 0)
+        XCTAssertEqual(rebuilt.attemptedFrameCount, 3)
+        try env.database.pool.write { db in
+            try db.execute(sql: "DELETE FROM video_analysis_frame")
+        }
+        XCTAssertThrowsError(try service.analyze(assetID: item.assetID, onFrame: { _ in
+            try (bytes + Data([0, 0, 0, 8, 0x66, 0x72, 0x65, 0x65]))
+                .write(to: env.sourceRoot.appendingPathComponent("analysis.mp4"))
+        }))
+        XCTAssertThrowsError(try service.analyze(assetID: item.assetID))
+        print("VIDEO_FRAME_CACHE resumeDecoded=\(resumed.attemptedFrameCount) resumeReused=\(resumed.reusedFrameCount) warmDecoded=\(warm.attemptedFrameCount) revisionDecoded=\(rebuilt.attemptedFrameCount)")
+    }
+
     func testBoundedVideoAnalysisSamplesRealFramesAndCancelsWithoutResult() throws {
         let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()

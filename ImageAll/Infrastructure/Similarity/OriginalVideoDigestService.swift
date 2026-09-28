@@ -144,7 +144,7 @@ struct OriginalVideoDigestService: Sendable {
         }
     }
 
-    private struct FileIdentity: Equatable {
+    struct FileIdentity: Equatable {
         let size: Int64
         let modifiedAtNs: Int64
         let token: String
@@ -339,6 +339,132 @@ extension PhotosOriginalVideoDigestService {
                 }
             }
             return result
+        }
+    }
+}
+
+/// Folder analysis checkpoints use the same no-follow physical identity as full
+/// original verification, without rereading the entire movie for every frame.
+struct FolderVideoAnalysisService {
+    let database: CatalogDatabase
+    let sourceAccess: FolderReconcileSourceAccessService
+    let clock: any JobClock
+
+    func analyze(assetID: UUID, checkCancellation: () throws -> Void = {},
+                 onFrame: (VideoAnalysisFrame) throws -> Void = { _ in }) throws -> VideoAnalysisSamplingResult {
+        let repository = GRDBDerivedImageCacheRepository(database: database)
+        guard let context = try repository.fetchGenerationContext(assetID: assetID),
+              context.isEligibleForGeneration, context.mediaKind == .video,
+              context.locatorKind == AssetLocatorKind.file.rawValue,
+              let duration = context.durationMs, duration > 0 else {
+            throw FingerprintCompletionError.ineligible
+        }
+        return try sourceAccess.withActiveSourceRootURL(sourceID: context.sourceID) { root in
+            let rootFD = try DerivedImageSecureIO.openDirectoryNoFollow(at: root)
+            defer { Darwin.close(rootFD) }
+            let fd = try DerivedImageSecureIO.openRelativeReadOnlyNoFollow(directoryFD: rootFD, relativePath: context.relativePath)
+            defer { Darwin.close(fd) }
+            let identity = try OriginalVideoDigestService.FileIdentity.read(fd)
+            guard context.matchesHandleFacts(try DerivedImageSourceFingerprintFacts.handleFacts(
+                fd: fd, reader: FoundationFolderFileResourceReader())) else { throw FingerprintCompletionError.sourceChanged }
+            let cache = VideoAnalysisFrameCache(database: database, clock: clock)
+            let key = VideoAnalysisFrameCache.Key(assetID: assetID, contentRevision: context.contentRevision,
+                policy: VideoAnalysisSamplingPolicy.identity,
+                sourceIdentity: "\(context.sourceID):\(context.relativePath):\(duration):\(identity.token):\(identity.size)")
+            func validate() throws {
+                try checkCancellation()
+                guard try OriginalVideoDigestService.FileIdentity.read(fd) == identity,
+                      try repository.fetchGenerationContext(assetID: assetID) == context else {
+                    throw FingerprintCompletionError.sourceChanged
+                }
+                let current = try DerivedImageSecureIO.openRelativeReadOnlyNoFollow(directoryFD: rootFD, relativePath: context.relativePath)
+                defer { Darwin.close(current) }
+                guard try OriginalVideoDigestService.FileIdentity.read(current) == identity else {
+                    throw FingerprintCompletionError.sourceChanged
+                }
+            }
+            try validate()
+            let cached = try cache.frames(key: key)
+            let result = try AVFoundationVideoAnalysisSampler().sample(
+                sourceFileDescriptorURL: DerivedImageSourceFingerprintFacts.fileDescriptorURL(for: fd),
+                mediaType: context.mediaType, durationMs: duration,
+                checkCancellation: validate, cachedFrames: cached, onFrame: { frame in
+                    try validate()
+                    try cache.store(frame, key: key)
+                    try onFrame(frame)
+                })
+            try validate()
+            return result
+        }
+    }
+}
+
+/// SQLite owns cache atomicity; no external cache paths can escape a managed root.
+/// Partial checkpoints are reusable evidence, not a completed asset analysis.
+struct VideoAnalysisFrameCache {
+    static let maximumTotalBytes = 64 * 1_024 * 1_024
+    let database: CatalogDatabase
+    let clock: any JobClock
+    struct Key {
+        let assetID: UUID
+        let contentRevision: Int
+        let policy: String
+        let sourceIdentity: String
+        var arguments: StatementArguments {
+            [assetID.uuidString.lowercased(), contentRevision, policy, sourceIdentity]
+        }
+    }
+    func frames(key: Key) throws -> [Int64: VideoAnalysisFrame] {
+        try database.pool.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT f.* FROM video_analysis_frame f JOIN asset a ON a.id = f.asset_id
+                JOIN source s ON s.id = a.source_id
+                WHERE f.asset_id = ? AND f.content_revision = ? AND f.policy = ? AND f.source_identity = ?
+                  AND a.content_revision = f.content_revision AND a.media_kind = 'video'
+                  AND a.locator_state = 'current' AND a.availability = 'available' AND s.state = 'active'
+                ORDER BY f.requested_ms LIMIT 5
+                """, arguments: key.arguments)
+            var result: [Int64: VideoAnalysisFrame] = [:]
+            for row in rows {
+                let bytes: Data = row["jpeg"]
+                guard Data(SHA256.hash(data: bytes)) == (row["sha256"] as Data) else { continue }
+                let time: Int64 = row["requested_ms"]
+                result[time] = VideoAnalysisFrame(requestedTimeMs: time, actualTimeMs: row["actual_ms"], jpegBytes: bytes)
+            }
+            return result
+        }
+    }
+    func store(_ frame: VideoAnalysisFrame, key: Key) throws {
+        guard !frame.jpegBytes.isEmpty, frame.jpegBytes.count <= VideoAnalysisSamplingPolicy.maximumEncodedBytes else {
+            throw VideoAnalysisSamplingError.encodedBudgetExceeded
+        }
+        try database.pool.write { db in
+            guard try Bool.fetchOne(db, sql: """
+                SELECT EXISTS(SELECT 1 FROM asset a JOIN source s ON s.id = a.source_id
+                WHERE a.id = ? AND a.content_revision = ? AND a.media_kind = 'video'
+                AND a.locator_state = 'current' AND a.availability = 'available' AND s.state = 'active')
+                """, arguments: [key.assetID.uuidString.lowercased(), key.contentRevision]) == true else {
+                throw FingerprintCompletionError.sourceChanged
+            }
+            // One active representation per asset; policy switches explicitly rebuild.
+            try db.execute(sql: """
+                DELETE FROM video_analysis_frame WHERE asset_id = ?
+                AND (content_revision != ? OR policy != ? OR source_identity != ?)
+                """, arguments: key.arguments)
+            var args = key.arguments
+            args += [frame.requestedTimeMs, frame.actualTimeMs, frame.jpegBytes,
+                     Data(SHA256.hash(data: frame.jpegBytes)), clock.nowMs]
+            try db.execute(sql: "INSERT OR REPLACE INTO video_analysis_frame VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", arguments: args)
+            let assetBytes = try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(length(jpeg)),0) FROM video_analysis_frame WHERE asset_id = ?",
+                arguments: [key.assetID.uuidString.lowercased()]) ?? 0
+            let count = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM video_analysis_frame WHERE asset_id = ?",
+                arguments: [key.assetID.uuidString.lowercased()]) ?? 0
+            guard assetBytes <= VideoAnalysisSamplingPolicy.maximumEncodedBytes, count <= 5 else {
+                throw VideoAnalysisSamplingError.encodedBudgetExceeded
+            }
+            while (try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(length(jpeg)),0) FROM video_analysis_frame") ?? 0) > Self.maximumTotalBytes {
+                try db.execute(sql: "DELETE FROM video_analysis_frame WHERE rowid = (SELECT rowid FROM video_analysis_frame ORDER BY created_at_ms, rowid LIMIT 1)")
+            }
         }
     }
 }

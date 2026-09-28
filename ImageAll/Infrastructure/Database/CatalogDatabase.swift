@@ -111,6 +111,7 @@ struct CatalogDatabase: Sendable {
         V054AddVideoTechnicalMetadataMigration.register(on: &migrator)
         V055AddOriginalContentDigestMigration.register(on: &migrator)
         V056AddPhotosOriginalVideoDigestMigration.register(on: &migrator)
+        V057AddVideoAnalysisFramesMigration.register(on: &migrator)
         return migrator
     }
 
@@ -3532,6 +3533,29 @@ enum V056AddPhotosOriginalVideoDigestMigration {
                 );
                 CREATE INDEX idx_photos_original_video_digest_sha
                     ON asset_photos_original_video_digest(sha256, size_bytes);
+                """)
+        }
+    }
+}
+
+/// Rebuildable analysis evidence, never original-byte identity or deletion authority.
+enum V057AddVideoAnalysisFramesMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v057AddVideoAnalysisFrames) { db in
+            try db.execute(sql: """
+                CREATE TABLE video_analysis_frame (
+                    asset_id TEXT NOT NULL REFERENCES asset(id) ON DELETE CASCADE,
+                    content_revision INTEGER NOT NULL CHECK(content_revision > 0),
+                    policy TEXT NOT NULL,
+                    source_identity TEXT NOT NULL,
+                    requested_ms INTEGER NOT NULL CHECK(requested_ms >= 0),
+                    actual_ms INTEGER NOT NULL CHECK(actual_ms >= 0),
+                    jpeg BLOB NOT NULL CHECK(length(jpeg) > 0 AND length(jpeg) <= 8388608),
+                    sha256 BLOB NOT NULL CHECK(length(sha256) = 32),
+                    created_at_ms INTEGER NOT NULL,
+                    PRIMARY KEY(asset_id, content_revision, policy, source_identity, requested_ms)
+                );
+                CREATE INDEX idx_video_analysis_frame_age ON video_analysis_frame(created_at_ms);
                 """)
         }
     }

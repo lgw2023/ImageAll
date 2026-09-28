@@ -104,6 +104,7 @@ struct VideoAnalysisSamplingResult: Sendable {
     let policyIdentity: String
     let frames: [VideoAnalysisFrame]
     let attemptedFrameCount: Int
+    let reusedFrameCount: Int
     let skippedRequestTimesMs: [Int64]
     let elapsedSeconds: Double
     var encodedByteCount: Int { frames.reduce(0) { $0 + $1.jpegBytes.count } }
@@ -117,7 +118,9 @@ struct AVFoundationVideoAnalysisSampler {
     /// The caller owns the already-authorized, revision-checked local descriptor.
     /// No remote URL, Photos fetch, original mutation or persistent cache is used.
     func sample(sourceFileDescriptorURL: URL, mediaType: String, durationMs: Int64,
-                checkCancellation: () throws -> Void = {}) throws -> VideoAnalysisSamplingResult {
+                checkCancellation: () throws -> Void = {},
+                cachedFrames: [Int64: VideoAnalysisFrame] = [:],
+                onFrame: (VideoAnalysisFrame) throws -> Void = { _ in }) throws -> VideoAnalysisSamplingResult {
         let times = VideoAnalysisSamplingPolicy.timestamps(durationMs: durationMs)
         guard sourceFileDescriptorURL.isFileURL, !times.isEmpty,
               let ext = UTType(mediaType)?.preferredFilenameExtension, !ext.isEmpty else {
@@ -141,8 +144,22 @@ struct AVFoundationVideoAnalysisSampler {
         var frames: [VideoAnalysisFrame] = []
         var skipped: [Int64] = []
         var totalBytes = 0
+        var attempts = 0
+        var reused = 0
         for time in times {
             try checkCancellation()
+            if let cached = cachedFrames[time], cached.requestedTimeMs == time,
+               cached.actualTimeMs >= 0, cached.actualTimeMs < durationMs,
+               !frames.contains(where: { $0.actualTimeMs == cached.actualTimeMs }) {
+                totalBytes += cached.jpegBytes.count
+                guard totalBytes <= VideoAnalysisSamplingPolicy.maximumEncodedBytes else {
+                    throw VideoAnalysisSamplingError.encodedBudgetExceeded
+                }
+                frames.append(cached)
+                reused += 1
+                continue
+            }
+            attempts += 1
             // Release decoder/image intermediates after each bounded frame.
             let frame: VideoAnalysisFrame? = try autoreleasepool {
                 var actual = CMTime.invalid
@@ -171,13 +188,14 @@ struct AVFoundationVideoAnalysisSampler {
                 guard totalBytes <= VideoAnalysisSamplingPolicy.maximumEncodedBytes else {
                     throw VideoAnalysisSamplingError.encodedBudgetExceeded
                 }
+                try onFrame(frame)
                 frames.append(frame)
             } else { skipped.append(time) }
         }
         try checkCancellation()
         guard !frames.isEmpty else { throw VideoAnalysisSamplingError.noDecodableFrames }
         return VideoAnalysisSamplingResult(policyIdentity: VideoAnalysisSamplingPolicy.identity,
-            frames: frames, attemptedFrameCount: times.count, skippedRequestTimesMs: skipped,
+            frames: frames, attemptedFrameCount: attempts, reusedFrameCount: reused, skippedRequestTimesMs: skipped,
             elapsedSeconds: ProcessInfo.processInfo.systemUptime - started)
     }
 }

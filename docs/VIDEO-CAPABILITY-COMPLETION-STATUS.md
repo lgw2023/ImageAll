@@ -31,7 +31,7 @@
 | P2 | IN_PROGRESS | 首切片 PASS | 文件夹元数据、查询／地图／回填、原生云端获取及 PhotoKit 播放后技术信息持久化已分切片验；Mac 智能推流与完整 UI 待验 |
 | P3 | IN_PROGRESS | 共享服务到真实质心模型和持久审核链 PASS；Mac 运行待验 | 继续全库建议、训练命令与审核持久事实闭环 |
 | P4 | VERIFIED（合成） | 完整原件／分组／安全清理与恢复、原生比较渲染通过 | 实现及最小合成验收已覆盖；真实 Photos／iCloud、日常配置点击和最终版本总回归仍未验证，见 P7 |
-| P5 | IN_PROGRESS | 采样首切片 2/2 PASS | 独立版本有界采样已验；缓存、模型聚合、审核时间点和候选接线待完成 |
+| P5 | IN_PROGRESS | 采样及文件夹缓存定向 PASS | 有界采样和取消续跑已验；模型聚合、审核时间点和候选接线待完成 |
 | P6 | NOT_STARTED | NOT_RUN | 显式片段与原声规则，合成混合故事可解码验证 |
 | P7 | NOT_STARTED | NOT_RUN | 必需集成、最终构建与人工路线 |
 
@@ -505,3 +505,9 @@
 - `video-multiframe-sampler-build.log`：TEST BUILD SUCCEEDED；`video-multiframe-sampler-tests.log`：2/2 PASS（真实合成 MP4 多帧及取消、P4 容器改写回归）。本次 1 秒输入请求／解码 3 帧，实际时间 [33, 500, 733] ms，JPEG 共 22,294 字节，采样 0.139826 秒，仅作为该 fixture 的测量。
 - 未调用真实 Photos、生产测试宿主或付费模型。此层尚无 App 按钮、持久缓存、特征聚合或建议输出，不作为 P5 用户闭环完成证据。同步 AVFoundation 解码内部资源及中断延迟尚无硬上限；取消点位于帧间／解码后。
 - 下一步接入带修订与策略身份的帧持久化及图像特征，构造前段无目标／后段有目标、同封面不同内容对照，然后接 Mac 详情／审核时间点和独立内容候选。训练与推理身份一致、策略切换重建仍是 P5 必需项。
+
+## P5 文件夹多帧检查点（2026-09-28）
+
+- V057 新增独立帧缓存，不修改既有 migration，不触碰精确去重证据。FolderVideoAnalysisService 接入授权文件描述符、内容/定位复核、逐帧保存和同策略复用。64 MiB 为有效 JPEG 载荷限额，不宣称 SQLite 文件总量硬上限。
+- `video-frame-cache-build.log` TEST BUILD SUCCEEDED；`video-frame-cache-tests.log` 3/3 PASS。取消后复用 1 帧、解码 2；全命中解码 0；内容修订解码 3；源变化拒绝；数据库重开幂等。实际源码摘要保存于证据根 `video-frame-cache-source-sha256.json`。
+- 当前只有文件夹服务接线，无用户界面成功宣称；Photos 多帧、本地特征聚合及模型身份、语义对照组、详情/审核跳转、策略切换和独立内容候选仍待交付。目标保持 active。未读真实媒体、未启动生产 Photos 宿主、无 Web/iOS 工作；LibraryWorkspace 75/5 与 project 4/0 并行差异保持。
