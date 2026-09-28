@@ -72,6 +72,9 @@ struct TimeStoryCandidate: Codable, Sendable, Equatable, Identifiable {
     let similarityState: TimeStorySimilarityState
     // Absent in v1 projects; the original timezone/precision is not stored in the catalog.
     var captureTimeSource: String? = nil
+    var mediaKind: MediaKind? = nil
+    var durationMs: Int64? = nil
+    var effectiveMediaKind: MediaKind { mediaKind ?? .image }
 }
 
 struct TimeStoryCandidateSnapshot: Codable, Sendable, Equatable {
@@ -537,7 +540,7 @@ struct TimeStoryCandidateProvider: Sendable {
                             TagDecisionFilter(tagID: tag.id, decision: .accepted),
                         ],
                         availabilities: [.available, .missing, .unreadable, .unsupported],
-                        mediaKinds: [.image]
+                        mediaKinds: [.image, .video]
                     ),
                     sort: .embeddedTimeOldest,
                     cursor: cursor,
@@ -605,7 +608,7 @@ struct TimeStoryCandidateProvider: Sendable {
                     WHERE f.tag_id = ? AND f.state = 'pending' AND m.role = 'candidate'
                 ) suggestions
                 JOIN asset a ON a.id = suggestions.asset_id
-                WHERE a.locator_state = 'current' AND a.media_kind = 'image'
+                WHERE a.locator_state = 'current' AND a.media_kind IN ('image', 'video')
                   AND NOT EXISTS (
                     SELECT 1 FROM asset_tag_decision d
                     WHERE d.asset_id = a.id AND d.tag_id = ?
@@ -628,7 +631,7 @@ struct TimeStoryCandidateProvider: Sendable {
                 try Row.fetchAll(
                     db,
                     sql: """
-                    SELECT asset.id, asset.locator_kind,
+                    SELECT asset.id, asset.locator_kind, asset.media_kind, asset.duration_ms,
                            favorite.desired_value,
                            favorite.photos_observed_value,
                            location.source_kind AS location_source_kind,
@@ -643,7 +646,7 @@ struct TimeStoryCandidateProvider: Sendable {
                     LEFT JOIN asset_location location ON location.asset_id = asset.id
                     LEFT JOIN place ON place.id = location.place_id
                     LEFT JOIN source_similarity_bucket_member similarity
-                      ON similarity.asset_id = asset.id AND similarity.media_kind = 'image'
+                      ON similarity.asset_id = asset.id AND similarity.media_kind = asset.media_kind
                     LEFT JOIN source_similarity_index similarity_index
                       ON similarity_index.source_id = similarity.source_id
                      AND similarity_index.media_kind = similarity.media_kind
@@ -700,6 +703,8 @@ struct TimeStoryCandidateProvider: Sendable {
                 similarityClusterID: similarityReady ? metadata["cluster_id"] : nil,
                 similarityState: similarityReady ? .ready : .unavailable
             )
+            candidate.mediaKind = MediaKind(rawValue: metadata["media_kind"])
+            candidate.durationMs = metadata["duration_ms"]
             let locator: String? = metadata["locator_kind"]
             if candidate.mediaCreatedAtMs != nil {
                 candidate.captureTimeSource = locator == "photos" ? "PhotoKit creationDate"
@@ -718,7 +723,7 @@ struct TimeStoryPlanner: Sendable {
     ) throws -> TimeStoryProject {
         let allCandidates = snapshot.candidates
         guard !allCandidates.isEmpty else { throw TimeStoryError.noCandidates }
-        let reliable = allCandidates.filter { $0.mediaCreatedAtMs != nil }
+        let reliable = allCandidates.filter { $0.mediaCreatedAtMs != nil && $0.effectiveMediaKind == .image }
         guard !reliable.isEmpty else { throw TimeStoryError.noReliableTime }
         let selectable = reliable.filter { $0.availability == .available }
         guard !selectable.isEmpty else { throw TimeStoryError.noSelectedShots }
@@ -979,7 +984,7 @@ struct TimeStoryPlanner: Sendable {
         let stage = stageKey(original, bounds: bounds)
         let used = Set(project.shots.filter { $0.id != shotID }.map(\.assetID))
         return project.candidateSnapshot.candidates.filter {
-            $0.assetID != original.assetID
+            $0.effectiveMediaKind == .image && $0.assetID != original.assetID
                 && $0.mediaCreatedAtMs != nil
                 && $0.availability == .available
                 && stageKey($0, bounds: bounds) == stage
@@ -998,7 +1003,7 @@ struct TimeStoryPlanner: Sendable {
         else { return [] }
         let used = Set(project.shots.map(\.assetID))
         return project.candidateSnapshot.candidates.filter {
-            $0.availability == .available
+            $0.effectiveMediaKind == .image && $0.availability == .available
                 && $0.mediaCreatedAtMs != nil
                 && $0.placeName == anchor.placeName
                 && !used.contains($0.assetID)
@@ -1041,16 +1046,28 @@ struct TimeStoryPlanner: Sendable {
     func manuallyEditableCandidates(in project: TimeStoryProject, replacing shotID: UUID? = nil) -> [TimeStoryCandidate] {
         let used = Set(project.shots.filter { $0.id != shotID }.map(\.assetID))
         return project.candidateSnapshot.candidates.filter {
-            $0.availability == .available && !used.contains($0.assetID)
+            $0.availability == .available
+                && (shotID == nil || $0.effectiveMediaKind == .image)
+                && ($0.effectiveMediaKind == .video ? ($0.durationMs ?? 0) > 0 : !used.contains($0.assetID))
                 && !project.excludedAssetIDs.contains($0.assetID)
         }.sorted(by: candidateTimeOrder)
     }
 
     func manuallyInserting(_ candidate: TimeStoryCandidate, before targetID: UUID? = nil,
-                           in project: TimeStoryProject, nowMs: Int64) throws -> TimeStoryProject {
+                           in project: TimeStoryProject, nowMs: Int64, videoClip: TimeStoryVideoClip? = nil) throws -> TimeStoryProject {
         guard manuallyEditableCandidates(in: project).contains(candidate),
               targetID == nil || project.shots.contains(where: { $0.id == targetID })
         else { throw TimeStoryError.candidateNotAddable }
+        let duration: Double
+        if candidate.effectiveMediaKind == .video {
+            guard let videoClip, let sourceDuration = candidate.durationMs else {
+                throw TimeStoryError.invalidTimeline("请先为视频选择片段范围")
+            }
+            duration = Double(try videoClip.validatedFrameRange(actualDurationMs: sourceDuration).frameCount) / 30
+        } else {
+            guard videoClip == nil else { throw TimeStoryError.candidateNotAddable }
+            duration = TimeStoryConstants.defaultShotDurationSeconds
+        }
         var updated = project
         let target = targetID.flatMap { id in updated.shots.first(where: { $0.id == id }) }
         let chapterID = target?.chapterID ?? updated.chapters.last?.id ?? UUID()
@@ -1059,8 +1076,8 @@ struct TimeStoryPlanner: Sendable {
         }
         let shot = TimeStoryShot(id: UUID(), assetID: candidate.assetID,
             contentRevision: candidate.contentRevision, chapterID: chapterID, caption: "",
-            durationSeconds: TimeStoryConstants.defaultShotDurationSeconds,
-            presentationMode: .fullFrameWithBackground, reasons: ["手动编排"], isLocked: false, isUserEdited: true, explicitLock: false, captionEdited: false, durationEdited: false)
+            durationSeconds: duration,
+            presentationMode: .fullFrameWithBackground, reasons: ["手动编排"], isLocked: false, isUserEdited: true, explicitLock: false, captionEdited: false, durationEdited: false, videoClip: videoClip)
         let index = targetID.flatMap { id in updated.shots.firstIndex(where: { $0.id == id }) } ?? updated.shots.endIndex
         updated.shots.insert(shot, at: index)
         for index in updated.chapters.indices {

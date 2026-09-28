@@ -151,6 +151,31 @@ final class TimeStoryFeatureTests: XCTestCase {
             .allSatisfy { $0.mediaCreatedAtMs != nil })
     }
 
+    func testManualVideoCandidatesRequireExplicitClipsAndAllowDistinctSegments() throws {
+        let photo = candidate(UUID().uuidString, time: timestamp(2024, 1, 1))
+        var video = candidate(UUID().uuidString, time: timestamp(2024, 1, 2))
+        video.mediaKind = .video
+        video.durationMs = 4000
+        let planner = TimeStoryPlanner()
+        let snapshot = makeSnapshot([photo, video])
+        let automatic = try planner.makeProject(snapshot: snapshot, nowMs: 1)
+        XCTAssertEqual(automatic.shots.map(\.assetID), [photo.assetID])
+        var manual = planner.makeFreeformProject(snapshot: snapshot, nowMs: 1)
+        XCTAssertThrowsError(try planner.manuallyInserting(video, in: manual, nowMs: 2))
+        let first = TimeStoryVideoClip(inPointMs: 0, outPointMs: 1000, sourceDurationMs: 4000)
+        manual = try planner.manuallyInserting(video, in: manual, nowMs: 2, videoClip: first)
+        let second = TimeStoryVideoClip(inPointMs: 2000, outPointMs: 3500, sourceDurationMs: 4000, originalAudioGain: 0)
+        manual = try planner.manuallyInserting(video, in: manual, nowMs: 3, videoClip: second)
+        XCTAssertEqual(manual.shots.map(\.videoClip), [first, second])
+        XCTAssertEqual(manual.shots.map(\.durationSeconds), [1, 1.5])
+        XCTAssertEqual(Set(manual.shots.map(\.id)).count, 2)
+        XCTAssertFalse(planner.manuallyEditableCandidates(in: manual, replacing: manual.shots[0].id).contains(video))
+        XCTAssertThrowsError(try planner.manuallyInserting(photo, in: manual, nowMs: 4, videoClip: first))
+        let restored = try JSONDecoder().decode(TimeStoryProject.self, from: JSONEncoder().encode(manual))
+        XCTAssertEqual(restored.shots, manual.shots)
+        XCTAssertThrowsError(try TimeStoryTimeline.normalize(project: restored), "Unimplemented render path must reject clips")
+    }
+
     func testCandidateProviderReadsEveryPageAndFreezesStableSnapshot() throws {
         let databaseURL = try makeTempDatabaseURL()
         let database = try CatalogDatabase.open(at: databaseURL)
@@ -169,6 +194,10 @@ final class TimeStoryFeatureTests: XCTestCase {
             sourceID: secondSource,
             assetID: secondID
         )
+        try database.pool.write { db in
+            try db.execute(sql: "UPDATE asset SET media_kind = 'video', duration_ms = 4000 WHERE id = ?",
+                arguments: [secondID.uuidString.lowercased()])
+        }
         let first = projection(firstID, sourceID: firstSource, time: timestamp(2019, 1, 1))
         let second = projection(secondID, sourceID: secondSource, time: timestamp(2025, 1, 1))
         let query = PagingStoryQuery(first: first, second: second)
@@ -184,6 +213,9 @@ final class TimeStoryFeatureTests: XCTestCase {
         ])
         XCTAssertEqual(query.requests.first?.filter.availabilities, [.available, .missing, .unreadable, .unsupported])
         XCTAssertEqual(snapshot.candidates.map(\.assetID), [firstID, secondID])
+        XCTAssertEqual(query.requests.first?.filter.mediaKinds, [.image, .video])
+        XCTAssertEqual(snapshot.candidates.map(\.effectiveMediaKind), [.image, .video])
+        XCTAssertEqual(snapshot.candidates.last?.durationMs, 4000)
         XCTAssertEqual(snapshot.candidates.map(\.locationState), [.unconfirmed, .unconfirmed])
         XCTAssertTrue(snapshot.id.hasPrefix("sha256:"))
     }
