@@ -68,3 +68,5 @@ python3 scripts/verify_video_viewer_ui.py \
 需先build-for-testing，且evidence必须是新目录。操作弹出的合成播放器后创建该目录下的`finish`文件；测试会校验实际观测并退出。要验系统焦点切换另加`--require-focus`；后台AX操作未产生失焦事件时会失败，不能省略该选项后宣称焦点验收通过。默认五分钟超时。
 
 已通过的最新专项证据：`video-audio-controls-ui/tests.log`与`video-view-lifecycle-tests.log`，位于上述公共证据根。完整纯提交构建及58项回归绑定`ac6ab717`，后续测试设施提交另行记录。真实图库、iCloud、付费模型、发布安装仍为NOT_RUN。
+
+片段编辑专项可给同一包装器传`--story-clip`（不与播放器选项合用）。填写0.2–0.8秒，原声调至30%，点击“使用片段”即触发断言并结束，不需要finish文件。该模式使用1秒合成运动视频和正式片段编辑视图；不代表整页选材、保存或导出已验。

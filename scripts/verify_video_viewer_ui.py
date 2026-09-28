@@ -20,7 +20,10 @@ def main():
     parser.add_argument('--evidence', type=Path, required=True, help='New, empty output directory')
     parser.add_argument('--with-audio', action='store_true', help='Generate a quiet synthetic tone and require volume/mute checks')
     parser.add_argument('--require-focus', action='store_true', help='Also require an actual app focus loss and return; background AX operations do not prove this')
+    parser.add_argument('--story-clip', action='store_true', help='Operate the real story clip editor: 0.2 to 0.8 seconds, gain 30%%, then Use Clip')
     args = parser.parse_args()
+    if args.story_clip and (args.with_audio or args.require_focus):
+        parser.error('Story clip mode cannot be combined with viewer options')
     products, evidence = args.products.resolve(), args.evidence.resolve()
     host = products / 'ImageAll.app/Contents'
     bundle = host / 'PlugIns/ImageAllTests.xctest'
@@ -63,10 +66,16 @@ def main():
         environment['IMAGEALL_INTERACTIVE_VIDEO_WITH_AUDIO'] = '1'
     if args.require_focus:
         environment['IMAGEALL_INTERACTIVE_VIDEO_REQUIRE_FOCUS'] = '1'
-    print(f'Synthetic viewer: {app}\nFinish marker: {evidence / "finish"}', flush=True)
+    if args.story_clip:
+        environment.pop('IMAGEALL_INTERACTIVE_VIDEO_EVIDENCE', None)
+        environment['IMAGEALL_INTERACTIVE_STORY_CLIP_EVIDENCE'] = str(evidence)
+    selector = ('ImageAllTests.TimeStoryFeatureTests/testWorkspaceVideoClipRequestApplyAndPhotoDurationProtection'
+        if args.story_clip else 'ImageAllTests.LibraryVideoViewingTests/testInteractiveNativeVideoViewerWhenRequested')
+    completion = 'Click Use Clip after entering the requested range and gain' if args.story_clip else f'Finish marker: {evidence / "finish"}'
+    print(f'Synthetic viewer: {app}\n{completion}', flush=True)
     with (evidence / 'tests.log').open('w') as log:
         result = subprocess.run([str(executable), '-XCTest',
-            'ImageAllTests.LibraryVideoViewingTests/testInteractiveNativeVideoViewerWhenRequested',
+            selector,
             str(bundle)], env=environment, stdout=log, stderr=subprocess.STDOUT)
     return result.returncode
 

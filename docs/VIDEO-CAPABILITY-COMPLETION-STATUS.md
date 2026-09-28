@@ -840,3 +840,11 @@
 - 修正五处共用入口文案：空故事标题/说明、拖入添加区、拖动帮助、总数使用“个镜头”。保留照片专用替换与外部照片创作路径的准确表述，没有扩展替换能力或改动业务逻辑。
 - TimeStoryWorkspaceUI.swift已有并行编辑，采用HEAD到五处目标字符串的独立补丁暂存；并行内容保持未暂存。xcrun swiftc -frontend -parse退出0、暂存diff检查通过。纯文案切片未新增重复测试、未声称新完整App构建或UI点击通过；此前运行证据仍按其版本生效。
 - 后续仍需正式工作区UI操作与最终证据收口，目标active；未真实媒体、未push。
+
+## P6 正式片段编辑器实际控件验收（2026-09-28）
+
+- 上轮6fab4c12为progress。本轮复用testWorkspaceVideoClipRequestApplyAndPhotoDurationProtection增加显式交互环境变量；继续直接XCTest承载正式StoryVideoClipEditor和工作区模型，不启动ImageAll生产composition root。脚本新增--story-clip，独立bundle/临时目录和证据目录；实际Use Clip回调是结束条件，不以文件标记模拟提交。
+- 首轮脚本help百分号未转义，启动前报错，修正后运行；story-clip-actual-ui首轮实际提交200–800ms/30%，因原模型测试固定25%预期而失败。AX滑块按10%步进且不可直接setValue，交互模式改为预先固定30%和浮点容差，默认模型路径仍25%。失败日志保留，不改生产音量逻辑。
+- story-clip-ui-final-build.log TEST BUILD SUCCEEDED（测试专用ad-hoc）；CUA将入出点设为0.8/0.8，AX确认错误说明、播放及使用片段均disabled；改为0.2/0.8并通过滑块30%，点击播放选定片段和使用片段。播放按钮点击本身不冒充实际播放时长观测；提交回调结果以applied-project.json和断言核对。
+- story-clip-ui-final/tests.log 1/1 PASS，47.183秒；默认非交互回归story-clip-default-regression.log 1/1 PASS。断言片段200–800ms、源1000ms、增益0.3、时长0.6秒、照片时长命令不改视频片段、重开片段请求保留值。verification.json绑定测试/脚本/产物SHA和范围限制。
+- 只暂存本轮测试增量，保留TimeStoryFeatureTests与故事工作区并行改动。矩阵和人工指南更新。整页素材选择/调序/保存/导出点击仍待验，目标active；未真实媒体、未付费模型、未push。

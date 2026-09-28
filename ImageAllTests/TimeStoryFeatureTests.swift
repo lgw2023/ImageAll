@@ -177,18 +177,26 @@ final class TimeStoryFeatureTests: XCTestCase {
         let request = try XCTUnwrap(model.videoClipRequest)
         let resource = try await model.prepareClipPreview(request, destination: root.appendingPathComponent("preview.mov"))
         XCTAssertEqual(resource.contentRevision, video.contentRevision)
+        let interactivePath = ProcessInfo.processInfo.environment["IMAGEALL_INTERACTIVE_STORY_CLIP_EVIDENCE"]
+        var appliedFromUI = false
         var loaded = false
         let host = NSHostingView(rootView: StoryVideoClipEditor(request: request,
             load: { destination in
                 let value = try await model.prepareClipPreview(request, destination: destination)
                 loaded = true
                 return value
-            }, save: { model.applyVideoClip(request, clip: $0) }, cancel: { model.videoClipRequest = nil })
+            }, save: { model.applyVideoClip(request, clip: $0); appliedFromUI = true }, cancel: { model.videoClipRequest = nil })
             .frame(width: 660, height: 560).background(Color(nsColor: .windowBackgroundColor)))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 660, height: 560), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = host
-        window.orderFront(nil)
+        window.title = "ImageAll Synthetic Story Clip Verification"
+        if interactivePath != nil {
+            NSApplication.shared.setActivationPolicy(.regular)
+            NSApplication.shared.finishLaunching()
+            window.makeKeyAndOrderFront(nil)
+            NSApplication.shared.activate(ignoringOtherApps: true)
+        } else { window.orderFront(nil) }
         defer { window.close() }
         for _ in 0..<30 where !loaded { try await Task.sleep(for: .milliseconds(100)) }
         XCTAssertTrue(loaded)
@@ -204,9 +212,21 @@ final class TimeStoryFeatureTests: XCTestCase {
             try png.write(to: target.appendingPathComponent("story-video-clip-editor.png"))
         }
         let clip = TimeStoryVideoClip(inPointMs: 200, outPointMs: 800, sourceDurationMs: 1000, originalAudioGain: 0.25)
-        model.applyVideoClip(request, clip: clip)
+        if let interactivePath {
+            let evidence = URL(fileURLWithPath: interactivePath, isDirectory: true)
+            let deadline = Date().addingTimeInterval(300)
+            while !appliedFromUI, Date() < deadline { try await Task.sleep(for: .milliseconds(200)) }
+            XCTAssertTrue(appliedFromUI, "The actual Use Clip button must apply the entered range")
+            if let project = model.project {
+                try JSONEncoder().encode(project).write(to: evidence.appendingPathComponent("applied-project.json"))
+            }
+        } else { model.applyVideoClip(request, clip: clip) }
         let shot = try XCTUnwrap(model.project?.shots.first)
-        XCTAssertEqual(shot.videoClip, clip)
+        let appliedClip = try XCTUnwrap(shot.videoClip)
+        XCTAssertEqual(appliedClip.inPointMs, clip.inPointMs)
+        XCTAssertEqual(appliedClip.outPointMs, clip.outPointMs)
+        XCTAssertEqual(appliedClip.sourceDurationMs, clip.sourceDurationMs)
+        XCTAssertEqual(appliedClip.originalAudioGain, interactivePath == nil ? 0.25 : 0.3, accuracy: 0.000001)
         XCTAssertEqual(shot.durationSeconds, 0.6, accuracy: 0.0001)
         XCTAssertGreaterThan(model.project?.timelineDurationSeconds ?? 0, 0)
         XCTAssertNil(model.videoClipRequest)
@@ -214,7 +234,7 @@ final class TimeStoryFeatureTests: XCTestCase {
         model.editShots([shot.id], duration: 10)
         XCTAssertEqual(model.project?.shots.first?.durationSeconds, 0.6)
         model.editVideoClip(shot.id)
-        XCTAssertEqual(model.videoClipRequest?.initial, clip)
+        XCTAssertEqual(model.videoClipRequest?.initial, appliedClip)
         model.setMusic(url: root.appendingPathComponent("tone.wav"))
         model.setMusicVolume(0.5)
         XCTAssertEqual(model.project?.music?.volume, 0.5)
