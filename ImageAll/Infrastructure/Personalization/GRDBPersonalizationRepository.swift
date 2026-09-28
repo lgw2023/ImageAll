@@ -122,7 +122,8 @@ struct GRDBPersonalizationRepository: PersonalizationCatalogPort, Sendable {
     func publishModelRevision(_ registration: ModelRevisionRegistration, on db: Database) throws {
         let positives = registration.samples.filter { $0.role == .positive }
         let negatives = registration.samples.filter { $0.role == .negative }
-        guard registration.revision > 0,
+        guard registration.representation.supports(registration.mediaKind),
+              registration.revision > 0,
               registration.threshold.isFinite,
               !positives.isEmpty,
               !negatives.isEmpty,
@@ -138,7 +139,7 @@ struct GRDBPersonalizationRepository: PersonalizationCatalogPort, Sendable {
               registration.samples.allSatisfy({ sample in
                   sample.identity.provider == PersonalizationConstants.provider
                       && sample.identity.requestRevision == PersonalizationConstants.requestRevision
-                      && sample.identity.preprocessingRevision == PersonalizationConstants.preprocessingRevision
+                      && sample.identity.preprocessingRevision == registration.representation.preprocessingRevision
               })
         else {
             throw PersonalizationCatalogError.invalidInput
@@ -191,7 +192,7 @@ struct GRDBPersonalizationRepository: PersonalizationCatalogPort, Sendable {
                 registration.revision,
                 PersonalizationConstants.provider,
                 PersonalizationConstants.requestRevision,
-                PersonalizationConstants.preprocessingRevision,
+                registration.representation.preprocessingRevision,
                 registration.threshold,
                 positives.count,
                 negatives.count,

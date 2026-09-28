@@ -1003,6 +1003,42 @@ final class PersonalizedSuggestionServiceTests: XCTestCase {
         }
     }
 
+    func testExplicitMultiFrameVideoModelPublishesMatchingVersionAndRejectsLegacyMode() async throws {
+        let fixture = try CatalogQueryTestSupport.openQueryDatabase()
+        let accepted = [fixture.ids.assetNewest, fixture.ids.assetMiddle]
+        let rejected = [fixture.ids.assetDuplicateTimeA, fixture.ids.assetDuplicateTimeB]
+        let candidate = fixture.ids.assetNocaseLower
+        _ = try fixture.tags.batchReject(tagID: fixture.ids.tagFamily, assetIDs: rejected,
+            timestampMs: DatabaseTestSupport.timestampMs + 1)
+        try await fixture.database.pool.write { db in
+            try db.execute(sql: "UPDATE source SET state = 'active'")
+            try db.execute(sql: "UPDATE asset SET media_kind = 'video'")
+        }
+        let loader = StubFeatureVectorLoader(database: fixture.database, vectors: [
+            accepted[0]: [0, 0], accepted[1]: [0, 1], rejected[0]: [10, 10],
+            rejected[1]: [10, 9], candidate: [0, 0.5]], preprocessingRevision: 2)
+        let service = PersonalizedSuggestionService(database: fixture.database, featureLoader: loader)
+        let result = try await service.generateSuggestions(tagID: fixture.ids.tagFamily,
+            candidateAssetIDs: [candidate], mediaKind: .video, representation: .videoMultiFrame)
+        XCTAssertEqual(result.predictedCandidateCount, 1)
+        let stored = try await fixture.database.pool.read { db in
+            (try Int.fetchOne(db, sql: "SELECT preprocessing_revision FROM tag_model_revision WHERE media_kind = 'video'"),
+             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tag_model_sample WHERE preprocessing_revision = 2"))
+        }
+        XCTAssertEqual(stored.0, 2)
+        XCTAssertEqual(stored.1, 4)
+        do {
+            _ = try await service.generateSuggestions(tagID: fixture.ids.tagFamily,
+                candidateAssetIDs: [candidate], mediaKind: .video)
+            XCTFail("A legacy request must reject multi-frame inputs")
+        } catch { XCTAssertEqual(error as? PersonalizedSuggestionError, .incompatibleFeatureIdentity) }
+        do {
+            _ = try await service.generateSuggestions(tagID: fixture.ids.tagFamily,
+                candidateAssetIDs: [candidate], mediaKind: .image, representation: .videoMultiFrame)
+            XCTFail("Multi-frame video representation must not enter the photo model")
+        } catch { XCTAssertEqual(error as? PersonalizedSuggestionError, .incompatibleFeatureIdentity) }
+    }
+
     func testLegacySuggestionsRejectSameDimensionMultiFrameSampleAndCandidateIdentity() async throws {
         for changeSample in [true, false] {
             let fixture = try CatalogQueryTestSupport.openQueryDatabase()
@@ -1276,10 +1312,12 @@ private final class ModelSuggestionURLProtocolStub: URLProtocol, @unchecked Send
 private actor StubFeatureVectorLoader: FeatureVectorLoading {
     let database: CatalogDatabase
     let vectors: [UUID: [Float]]
+    let preprocessingRevision: Int
 
-    init(database: CatalogDatabase, vectors: [UUID: [Float]]) {
+    init(database: CatalogDatabase, vectors: [UUID: [Float]], preprocessingRevision: Int = 1) {
         self.database = database
         self.vectors = vectors
+        self.preprocessingRevision = preprocessingRevision
     }
 
     func loadOrGenerate(assetID: UUID) async throws -> FeatureVectorPayload {
@@ -1300,7 +1338,7 @@ private actor StubFeatureVectorLoader: FeatureVectorLoading {
             Data(bytes: buffer.baseAddress!, count: buffer.count * MemoryLayout<Float>.size)
         }
         let digest = Data(SHA256.hash(data: data))
-        let identity = FeatureIdentity(assetID: assetID, contentRevision: contentRevision)
+        let identity = FeatureIdentity(assetID: assetID, preprocessingRevision: preprocessingRevision, contentRevision: contentRevision)
         let canonical = assetID.uuidString.lowercased()
         let shard = String(canonical.replacingOccurrences(of: "-", with: "").prefix(2))
         try GRDBPersonalizationRepository(database: database).registerFeature(

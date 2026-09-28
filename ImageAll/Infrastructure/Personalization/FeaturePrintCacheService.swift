@@ -710,3 +710,37 @@ struct VideoMultiFrameFeatureSet: Sendable, Codable, Equatable {
         return values.map { Float(Double($0) / norm) }
     }
 }
+
+/// Explicit video-only loader for preprocessing revision 2. It never falls back
+/// to a poster if multi-frame analysis fails or a source is unsupported.
+struct VideoMultiFrameFeatureLoader: FeatureVectorLoading, SyncFeatureVectorLoading {
+    let analysis: FolderVideoAnalysisService
+    let cachesDirectory: URL
+
+    func loadOrGenerate(assetID: UUID) async throws -> FeatureVectorPayload {
+        try loadOrGenerateSync(assetID: assetID)
+    }
+
+    func loadOrGenerateSync(assetID: UUID) throws -> FeatureVectorPayload {
+        let revision = try analysis.database.pool.read { db in
+            try Int.fetchOne(db, sql: "SELECT content_revision FROM asset WHERE id = ? AND media_kind = 'video'",
+                arguments: [assetID.uuidString.lowercased()])
+        }
+        guard let revision else { throw FeaturePrintError.assetIneligible }
+        let result = try analysis.analyzeWithFeatures(assetID: assetID, expectedRevision: revision,
+            checkCancellation: { try Task.checkCancellation() })
+        let values = try result.features.modelInput(expectedRepresentation: VideoMultiFrameFeatureSet.identity)
+        let bytes = values.withUnsafeBufferPointer { Data(buffer: $0) }
+        let identity = FeatureIdentity(assetID: assetID,
+            preprocessingRevision: PersonalizationRepresentation.videoMultiFrame.preprocessingRevision,
+            contentRevision: revision)
+        let digest = Data(SHA256.hash(data: bytes))
+        let key = FeaturePrintCachePathLayout.cacheKey(identity: identity)
+        try FeaturePrintCacheStore(cachesDirectory: cachesDirectory).publish(bytes, cacheKey: key)
+        try GRDBPersonalizationRepository(database: analysis.database).registerFeature(FeatureRegistration(
+            identity: identity, elementCount: values.count, byteCount: bytes.count,
+            vectorSHA256: digest, cacheKey: key, createdAtMs: analysis.clock.nowMs))
+        return FeatureVectorPayload(identity: identity, elementCount: values.count, vectorData: bytes,
+            vectorSHA256: digest, origin: result.reusedFeatures ? .cacheHit : .generated)
+    }
+}

@@ -8,6 +8,14 @@ enum PersonalizationConstants {
     static let maximumCandidateCount = 500
 }
 
+enum PersonalizationRepresentation: Int, Codable, Sendable {
+    case legacy = 1
+    case videoMultiFrame = 2
+
+    var preprocessingRevision: Int { rawValue }
+    func supports(_ mediaKind: MediaKind) -> Bool { self == .legacy || mediaKind == .video }
+}
+
 struct FeatureIdentity: Equatable, Hashable, Sendable {
     let assetID: UUID
     let provider: String
@@ -196,6 +204,7 @@ struct ModelSampleRegistration: Equatable, Sendable {
 }
 
 struct ModelRevisionRegistration: Equatable, Sendable {
+    let representation: PersonalizationRepresentation
     let tagID: UUID
     let mediaKind: MediaKind
     let revision: Int
@@ -206,6 +215,7 @@ struct ModelRevisionRegistration: Equatable, Sendable {
     let createdAtMs: Int64
 
     init(
+        representation: PersonalizationRepresentation = .legacy,
         tagID: UUID,
         mediaKind: MediaKind = .image,
         revision: Int,
@@ -215,6 +225,7 @@ struct ModelRevisionRegistration: Equatable, Sendable {
         samples: [ModelSampleRegistration],
         createdAtMs: Int64
     ) {
+        self.representation = representation
         self.tagID = tagID
         self.mediaKind = mediaKind
         self.revision = revision

@@ -556,3 +556,10 @@
 - 审计发现直接建议和全库 Feature KNN 路径在特征加载层未验证完整表示身份。新增统一旧模型身份校验（asset/provider/request/preprocessing），同维度不同表示也在评分/发布前拒绝，避免新多帧或其他载荷被写成旧身份。
 - `video-model-identity-build.log` TEST BUILD SUCCEEDED；`video-model-identity-tests.log` 3/3 PASS：正样本或候选替换为同维多帧身份均明确拒绝，模型 revision/建议无发布；旧建议及人工决定、视频 KNN 和照片槽隔离回归通过。
 - 已确认数据库支持独立 preprocessing revision；下一步以显式策略和冻结任务身份接入新表示，修改样本注册/模型发布读取/训练 artifact 的固定旧常量。本轮是混用缺陷修复，不宣称多帧正式模型已接通。整体 active。
+
+## P5 显式多帧模型版本首接入（2026-09-28）
+
+- 新 PersonalizationRepresentation：旧预处理 1、多帧视频预处理 2。真实 VideoMultiFrameFeatureLoader 将受复核的聚合向量保存到版本化 feature 注册和安全向量缓存，保持 Vision provider/request 身份，禁止失败退回 poster。
+- 直接建议服务显式选择策略并对样本/候选统一校验；模型发布和 sample 注册写入实际 preprocessing 版本。照片域拒绝视频多帧策略。旧默认不变，不改历史 Run。
+- `video-model-version-build.log` TEST BUILD SUCCEEDED；`video-model-version-tests.log` 4/4 PASS。真实多帧向量注册/解码一致；合成向量直接建议生成 1 条视频预测，model revision 和 4 个样本均版本 2；旧模式/照片域拒绝；旧建议及混用门禁回归通过。合成向量训练测试不代表真实视频模型效果。
+- 仍需将策略写入冻结后台任务、训练 artifact 和 Mac 正式选择入口，正式审核时间点绑定尚未完成；Photos 多帧及整页验收也仍未完成。P5 及整体保持 active。

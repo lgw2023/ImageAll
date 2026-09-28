@@ -15,12 +15,13 @@ enum PersonalizedSuggestionScoringCore {
 
     /// These published models explicitly use the legacy representation. A new
     /// video input needs a separately selected and persisted model identity.
-    static func validateLegacyIdentity(_ payload: FeatureVectorPayload, assetID: UUID) throws {
+    static func validateIdentity(_ payload: FeatureVectorPayload, assetID: UUID,
+                                 representation: PersonalizationRepresentation = .legacy) throws {
         let identity = payload.identity
         guard identity.assetID == assetID,
               identity.provider == PersonalizationConstants.provider,
               identity.requestRevision == PersonalizationConstants.requestRevision,
-              identity.preprocessingRevision == PersonalizationConstants.preprocessingRevision else {
+              identity.preprocessingRevision == representation.preprocessingRevision else {
             throw PersonalizedSuggestionError.incompatibleFeatureIdentity
         }
     }

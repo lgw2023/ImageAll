@@ -56,6 +56,13 @@ final class IdenticalDuplicateDetectionTests: XCTestCase {
         let service = FolderVideoAnalysisService(database: env.database, sourceAccess: base.sourceAccess, clock: base.clock)
         let cold = try service.analyzeWithFeatures(assetID: item.assetID)
         XCTAssertFalse(cold.reusedFeatures)
+        let loader = VideoMultiFrameFeatureLoader(analysis: service,
+            cachesDirectory: env.root.appendingPathComponent("feature-cache", isDirectory: true))
+        let payload = try loader.loadOrGenerateSync(assetID: item.assetID)
+        XCTAssertEqual(payload.identity.preprocessingRevision, 2)
+        XCTAssertEqual(payload.elementCount, cold.features.aggregate.count)
+        XCTAssertEqual(try PersonalizedSuggestionScoringCore.decode(payload), cold.features.aggregate)
+        XCTAssertNotNil(try GRDBPersonalizationRepository(database: env.database).featureRegistration(identity: payload.identity))
         let reopened = try CatalogDatabase.open(at: env.root.appendingPathComponent("catalog.sqlite"))
         let restarted = FolderVideoAnalysisService(database: reopened, sourceAccess: base.sourceAccess, clock: base.clock)
         let warm = try restarted.analyzeWithFeatures(assetID: item.assetID)

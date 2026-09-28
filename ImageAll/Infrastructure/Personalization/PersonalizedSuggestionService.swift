@@ -38,8 +38,10 @@ final class PersonalizedSuggestionService: @unchecked Sendable {
     func generateSuggestions(
         tagID: UUID,
         candidateAssetIDs: [UUID],
-        mediaKind: MediaKind = .image
+        mediaKind: MediaKind = .image,
+        representation: PersonalizationRepresentation = .legacy
     ) async throws -> PersonalizedSuggestionResult {
+        guard representation.supports(mediaKind) else { throw PersonalizedSuggestionError.incompatibleFeatureIdentity }
         let candidates = Self.unique(candidateAssetIDs)
         guard !candidates.isEmpty,
               candidates.count <= PersonalizationConstants.maximumCandidateCount
@@ -54,8 +56,8 @@ final class PersonalizedSuggestionService: @unchecked Sendable {
             throw PersonalizedSuggestionError.insufficientSamples
         }
 
-        let loadedPositives = try await loadSamples(positives)
-        let loadedNegatives = try await loadSamples(negatives)
+        let loadedPositives = try await loadSamples(positives, representation: representation)
+        let loadedNegatives = try await loadSamples(negatives, representation: representation)
         guard let dimension = loadedPositives.first?.values.count,
               dimension > 0,
               (loadedPositives + loadedNegatives).allSatisfy({ $0.values.count == dimension })
@@ -72,7 +74,7 @@ final class PersonalizedSuggestionService: @unchecked Sendable {
         var predictions: [PredictionRegistration] = []
         for candidate in eligibleCandidates {
             let payload = try await featureLoader.loadOrGenerate(assetID: candidate.assetID)
-            try PersonalizedSuggestionScoringCore.validateLegacyIdentity(payload, assetID: candidate.assetID)
+            try PersonalizedSuggestionScoringCore.validateIdentity(payload, assetID: candidate.assetID, representation: representation)
             guard payload.identity.contentRevision == candidate.contentRevision else {
                 throw PersonalizedSuggestionError.persistenceFailure
             }
@@ -111,6 +113,7 @@ final class PersonalizedSuggestionService: @unchecked Sendable {
         do {
             try catalog.publishModelRevision(
                 ModelRevisionRegistration(
+                    representation: representation,
                     tagID: tagID,
                     mediaKind: mediaKind,
                     revision: revision,
@@ -213,11 +216,11 @@ final class PersonalizedSuggestionService: @unchecked Sendable {
         }
     }
 
-    private func loadSamples(_ candidates: [SampleCandidate]) async throws -> [LoadedSample] {
+    private func loadSamples(_ candidates: [SampleCandidate], representation: PersonalizationRepresentation) async throws -> [LoadedSample] {
         var loaded: [LoadedSample] = []
         for candidate in candidates {
             let payload = try await featureLoader.loadOrGenerate(assetID: candidate.assetID)
-            try PersonalizedSuggestionScoringCore.validateLegacyIdentity(payload, assetID: candidate.assetID)
+            try PersonalizedSuggestionScoringCore.validateIdentity(payload, assetID: candidate.assetID, representation: representation)
             guard payload.identity.contentRevision == candidate.contentRevision else {
                 throw PersonalizedSuggestionError.persistenceFailure
             }

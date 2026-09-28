@@ -59,3 +59,9 @@ V058 新表按资产保存当前表示的完整特征，关联修订、来源身
 发现 PersonalizedSuggestionService 只核对维度和内容修订，候选载荷的 provider/request/preprocessing 身份没有与固定旧模型匹配；FullLibrarySuggestionsHandler 在生成样本注册时重新构造默认身份，可能掩盖不同表示。因此在两个管线的每次特征加载后核对资产 ID 和完整旧表示身份，使用明确 incompatibleFeatureIdentity 拒绝。该门禁是显式策略接入前的正确性要求，不将多帧接入降级为永久不可用。
 
 现有 feature/tag_model_revision/tag_model_sample 固定 provider=vision-feature-print，但 request/preprocessing revision 是正整数；多帧使用同 Vision 编码器时应保留 provider 并选择独立 preprocessing revision，同时模型发布/读取、冻结任务载荷和训练 artifact 都保存该版本。后续需将固定常量替换为用户选择并冻结的表示，保留旧默认值和历史 Run；不能只替换 loader 后沿用默认样本注册。当前尚未实施该策略切换。
+
+## 显式模型表示版本首接入
+
+PersonalizationRepresentation 固定 legacy=1、videoMultiFrame=2，对应 preprocessing_revision。provider 仍为 vision-feature-print、Vision request revision 仍为 2；预处理 2 精确对应 videoFrames.uniform5.512.jpeg80.v1/vision-r2/mean-unit-v1。VideoMultiFrameFeatureLoader 仅加载视频，实际调用受来源复核的多帧服务，将聚合向量注册到既有 feature/安全向量缓存；不支持来源报错，不回退单封面。
+
+直接 PersonalizedSuggestionService 必须显式选择 videoMultiFrame，样本和候选均校验相同表示，照片域拒绝该策略；ModelRevisionRegistration/发布仓储保存所选版本，并逐个匹配样本。旧默认保持版本 1、历史 Run 不改写。全库后台任务目前仍冻结旧流程，训练 artifact 与 Mac 正式策略选择尚待接入，不将直接服务通过等同于完整训练流水线交付。

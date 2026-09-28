@@ -669,7 +669,7 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
         }
         try heartbeat()
         let payload = try result.get()
-        try PersonalizedSuggestionScoringCore.validateLegacyIdentity(payload, assetID: assetID)
+        try PersonalizedSuggestionScoringCore.validateIdentity(payload, assetID: assetID)
         return payload
     }
 
