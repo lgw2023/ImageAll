@@ -360,6 +360,14 @@ struct PhoneArchiveVerifiedPreview: Sendable {
 struct VerifiedPhoneArchiveImporter: Sendable {
     let database: CatalogDatabase
 
+    private static func albumCoverage(from row: Row) -> String? {
+        // Independent recovery catalogs are audited read-only, including
+        // catalogs created before V060. Do not migrate them just to audit.
+        let reason: String? = row.hasColumn("apple_album_unavailable_reason")
+            ? row["apple_album_unavailable_reason"] : nil
+        return reason ?? (row["apple_album_coverage"] as String?)
+    }
+
     /// Persists a historical candidate after both catalogs independently
     /// agree. Current validity is never inferred from this row alone.
     func recordValidation(
@@ -792,7 +800,7 @@ struct VerifiedPhoneArchiveImporter: Sendable {
             let savedFactSequence: Int64 = batch["fact_snapshot_sequence"]
             let savedFactWatermark: Int64 = batch["fact_watermark"]
             let savedFactDigest: String? = batch["fact_snapshot_sha256"]
-            let savedAlbumCoverage: String? = batch["apple_album_coverage"]
+            let savedAlbumCoverage = Self.albumCoverage(from: batch)
             guard URL(fileURLWithPath: savedPath).standardizedFileURL == archiveRoot.standardizedFileURL,
                   savedDevice == deviceKey, savedEpoch == epochKey,
                   savedScope == header.scopeRevision,
@@ -1258,7 +1266,7 @@ struct VerifiedPhoneArchiveImporter: Sendable {
             try Row.fetchAll(db, sql: """
                 SELECT id, archive_path, target_parent_path, target_bookmark,
                        item_count, resource_count, verified_bytes, updated_at_ms,
-                       fact_snapshot_sequence, apple_album_coverage
+                       fact_snapshot_sequence, apple_album_coverage, apple_album_unavailable_reason
                 FROM migration_import WHERE state = 'catalogCommitted'
                 ORDER BY updated_at_ms DESC
                 """).compactMap { row in
@@ -1273,7 +1281,7 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                     verifiedBytes: row["verified_bytes"],
                     importedAtMs: row["updated_at_ms"],
                     factSnapshotSequence: row["fact_snapshot_sequence"],
-                    appleAlbumCoverage: (row["apple_album_coverage"] as String?)
+                    appleAlbumCoverage: Self.albumCoverage(from: row)
                         .flatMap(ImageAllMigrationAppleAlbumCoverage.init(rawValue:))
                 )
             }
@@ -2818,7 +2826,7 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                 let savedItemCount: Int = row["item_count"]
                 let savedResourceCount: Int = row["resource_count"]
                 let savedBytes: Int64 = row["verified_bytes"]
-                let savedAppleAlbumCoverage: String? = row["apple_album_coverage"]
+                let savedAppleAlbumCoverage = Self.albumCoverage(from: row)
                 guard savedHash == verification.manifestSHA256,
                       savedDevice == header.sourceDeviceID.uuidString.lowercased(),
                       savedEpoch == header.sourceEpoch.uuidString.lowercased(),
@@ -2839,16 +2847,18 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                     id, source_device_id, source_epoch, scope_revision,
                     inventory_watermark, manifest_sha256, target_parent_path, target_bookmark,
                     archive_path, item_count, resource_count, verified_bytes,
-                    apple_album_coverage,
+                    apple_album_coverage, apple_album_unavailable_reason,
                     state, created_at_ms, updated_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', ?, ?)
                 """, arguments: [
                     id, header.sourceDeviceID.uuidString.lowercased(),
                     header.sourceEpoch.uuidString.lowercased(), header.scopeRevision,
                     header.inventoryWatermark, verification.manifestSHA256,
                     parent.path, targetBookmark, final.path, verification.itemCount,
                     verification.resourceCount, verification.verifiedBytes,
-                    header.appleAlbumCoverage?.rawValue, now, now,
+                    header.appleAlbumCoverage == .selectedAssetsOnly ? header.appleAlbumCoverage?.rawValue : nil,
+                    header.appleAlbumCoverage == .unavailableLimitedAuthorization ? header.appleAlbumCoverage?.rawValue : nil,
+                    now, now,
                 ])
             return false
         }

@@ -94,6 +94,8 @@ enum CatalogMigrationID {
 
     static let v059AddVideoPredictionEvidence = "v059_add_video_prediction_evidence"
 
+    static let v060AddPhoneAlbumUnavailableReason = "v060_add_phone_album_unavailable_reason"
+
     static let knownOrdered: [String] = [
         v001CreateCatalogCore,
         v002AddStage1CatalogQuerySupport,
@@ -154,5 +156,6 @@ enum CatalogMigrationID {
         v057AddVideoAnalysisFrames,
         v058AddVideoAnalysisFeatures,
         v059AddVideoPredictionEvidence,
+        v060AddPhoneAlbumUnavailableReason,
     ]
 }

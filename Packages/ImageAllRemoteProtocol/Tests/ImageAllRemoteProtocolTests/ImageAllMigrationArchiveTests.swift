@@ -231,6 +231,29 @@ final class ImageAllMigrationArchiveTests: XCTestCase {
         }
     }
 
+    func testUnavailableAlbumCoverageCannotContainMembershipClaims() throws {
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = try makeItem(root: root, resourceID: UUID(), bytes: Data("local-media".utf8))
+        let header = ImageAllMigrationHeader(migrationID: UUID(), sourceDeviceID: UUID(),
+            sourceEpoch: UUID(), scopeRevision: 1, inventoryWatermark: 1, declaredItemCount: 1,
+            appleAlbumCoverage: .unavailableLimitedAuthorization)
+        try ImageAllMigrationArchive.write(header: header, items: [original], to: root)
+        let (decoded, verified) = try ImageAllMigrationArchive.readVerifiedHeader(at: root)
+        XCTAssertEqual(decoded.appleAlbumCoverage, .unavailableLimitedAuthorization)
+        XCTAssertTrue(verified.isComplete, "resource completeness does not claim album coverage")
+        let claimed = ImageAllMigrationItem(mediaID: original.mediaID,
+            sourceLocalIdentifier: original.sourceLocalIdentifier, mediaKind: original.mediaKind,
+            createdAtMs: original.createdAtMs, favoriteTarget: original.favoriteTarget,
+            observedFavorite: original.observedFavorite, factRevision: original.factRevision,
+            tagDecisions: original.tagDecisions, collections: original.collections,
+            resources: original.resources, appleAlbums: [.init(albumLocalIdentifier: "album",
+                albumTitle: "Unobservable", folderPath: [], sourceOrdinal: 0)])
+        try FileManager.default.removeItem(at: root.appendingPathComponent(ImageAllMigrationArchive.manifestFilename))
+        try ImageAllMigrationArchive.write(header: header, items: [claimed], to: root)
+        XCTAssertThrowsError(try ImageAllMigrationArchive.verify(at: root))
+    }
+
     func testDanglingFactsSymlinkDoesNotPassArchiveVerification() throws {
         let root = makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }

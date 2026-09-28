@@ -114,6 +114,7 @@ struct CatalogDatabase: Sendable {
         V057AddVideoAnalysisFramesMigration.register(on: &migrator)
         V058AddVideoAnalysisFeaturesMigration.register(on: &migrator)
         V059AddVideoPredictionEvidenceMigration.register(on: &migrator)
+        V060AddPhoneAlbumUnavailableReasonMigration.register(on: &migrator)
         return migrator
     }
 
@@ -3586,6 +3587,20 @@ enum V059AddVideoPredictionEvidenceMigration {
     static func register(on migrator: inout DatabaseMigrator) {
         migrator.registerMigration(CatalogMigrationID.v059AddVideoPredictionEvidence) { db in
             try db.execute(sql: "ALTER TABLE prediction ADD COLUMN video_evidence_json TEXT CHECK(video_evidence_json IS NULL OR length(video_evidence_json) <= 8192)")
+        }
+    }
+}
+
+/// Preserve V043: unavailable albums cannot coexist with successful coverage.
+enum V060AddPhoneAlbumUnavailableReasonMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v060AddPhoneAlbumUnavailableReason) { db in
+            try db.execute(sql: """
+                ALTER TABLE migration_import ADD COLUMN apple_album_unavailable_reason TEXT
+                CHECK(apple_album_unavailable_reason IS NULL OR
+                    (apple_album_unavailable_reason = 'unavailableLimitedAuthorization'
+                     AND apple_album_coverage IS NULL))
+                """)
         }
     }
 }

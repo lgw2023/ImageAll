@@ -37,6 +37,8 @@ public enum ImageAllMigrationAppleAlbumCoverage: String, Codable, Sendable {
     /// User-created albums/folders observed by PhotoKit, retaining only
     /// members in the explicit migration scope.
     case selectedAssetsOnly
+    /// Media is accessible, but limited PhotoKit authorization cannot enumerate user albums.
+    case unavailableLimitedAuthorization
 }
 
 public enum ImageAllMigrationResourceStatus: String, Codable, Sendable {

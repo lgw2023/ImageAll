@@ -2162,7 +2162,9 @@ private struct PhoneArchiveImportCard: View {
                 Divider()
                 Text(batch.appleAlbumCoverage == .selectedAssetsOnly
                      ? "来源 Photos 相册仅记录本次所选资产的可访问成员与文件夹路径。"
-                     : "此旧归档未记录来源 Photos 相册；0 个来源相册不代表手机没有相册。")
+                     : batch.appleAlbumCoverage == .unavailableLimitedAuthorization
+                       ? "导出时照片权限有限，来源 Photos 相册不可读取。媒体可恢复，相册完整性尚未验收；0 个相册不代表手机没有相册。"
+                       : "此旧归档未记录来源 Photos 相册；0 个来源相册不代表手机没有相册。")
                     .font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Text(batch.archivePath)

@@ -386,13 +386,20 @@ final class CatalogMigrationTests: XCTestCase {
         try database.migrate()
         try pool.read { db in
             let row = try XCTUnwrap(Row.fetchOne(
-                db, sql: "SELECT state, apple_album_coverage FROM migration_import WHERE id = ?",
+                db, sql: "SELECT state, apple_album_coverage, apple_album_unavailable_reason FROM migration_import WHERE id = ?",
                 arguments: [migrationID]
             ))
             XCTAssertEqual(row["state"] as String, "catalogCommitted")
             XCTAssertNil(row["apple_album_coverage"] as String?)
+            XCTAssertNil(row["apple_album_unavailable_reason"] as String?)
             XCTAssertTrue(try db.tableExists("migration_import_apple_album_member"))
             XCTAssertTrue(try db.tableExists("migration_import_validation"))
+        }
+        try pool.write { db in
+            try db.execute(sql: "UPDATE migration_import SET apple_album_unavailable_reason = 'unavailableLimitedAuthorization' WHERE id = ?", arguments: [migrationID])
+            XCTAssertThrowsError(try db.execute(sql: "UPDATE migration_import SET apple_album_coverage = 'selectedAssetsOnly' WHERE id = ?", arguments: [migrationID]))
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT apple_album_unavailable_reason FROM migration_import WHERE id = ?", arguments: [migrationID]), "unavailableLimitedAuthorization")
+            XCTAssertEqual(try String.fetchOne(db, sql: "SELECT state FROM migration_import WHERE id = ?", arguments: [migrationID]), "catalogCommitted")
         }
     }
 

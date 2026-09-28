@@ -1714,6 +1714,8 @@ private struct LocalShareScopeView: View {
 
     private var archiveSection: some View {
         Section("本机原件归档") {
+            Text("有限照片权限下仅归档可访问媒体，来源相册不可读取，不能完成相册完整性验收。")
+                .font(.footnote).foregroundStyle(.secondary)
             Text("归档仅通过 Wi-Fi 或有线网络发送。切到蜂窝或断网后保留已接收进度，恢复网络后可重试原批次。")
                 .font(.footnote).foregroundStyle(.secondary)
             Button(isStreamingArchive ? "正在处理逐资源批次…" : "所选项目逐资源传到 Mac（减少暂存）") {
@@ -2291,12 +2293,15 @@ private enum LocalPhotoArchiveExporter {
         let before = byLocator.mapValues(sourceVersion)
         let selectedLocators = Set(byLocator.keys)
         let albums = try captureAlbumMemberships(selectedLocators: selectedLocators)
+        guard albums.coverage == header.appleAlbumCoverage else {
+            throw LocalArchiveExportError.archiveScopeChanged
+        }
         for item in items {
             try Task.checkCancellation()
             guard let selected = assetsByID[item.mediaID],
                   selected.localIdentifier == item.sourceLocalIdentifier,
                   let asset = byLocator[item.sourceLocalIdentifier],
-                  (item.appleAlbums ?? []) == (albums[item.sourceLocalIdentifier] ?? []),
+                  (item.appleAlbums ?? []) == (albums.memberships[item.sourceLocalIdentifier] ?? []),
                   item.sourceMetadata == sourceMetadata(asset),
                   item.mediaKind == (asset.mediaType == .video ? .video : .image),
                   item.createdAtMs == asset.creationDate.map({
@@ -2469,12 +2474,15 @@ private enum LocalPhotoArchiveExporter {
             let mediaLocators: [String: String]
             let sources: [String: SourceVersion]
             let albums: [String: [ImageAllMigrationAppleAlbumMembership]]
+            let unavailableAlbumCoverage: ImageAllMigrationAppleAlbumCoverage?
             let destination: String?
         }
         let binding = ResumeBinding(installID: snapshot.installID, sourceEpoch: snapshot.sourceEpoch,
             scopeRevision: snapshot.scopeRevision,
             mediaLocators: Dictionary(uniqueKeysWithValues: snapshot.assets.map { ($0.id.uuidString, $0.localIdentifier) }),
-            sources: sourceVersions, albums: albumMemberships, destination: stream?.destination)
+            sources: sourceVersions, albums: albumMemberships.memberships,
+            unavailableAlbumCoverage: albumMemberships.coverage == .selectedAssetsOnly ? nil : albumMemberships.coverage,
+            destination: stream?.destination)
         let bindingEncoder = JSONEncoder()
         bindingEncoder.outputFormatting = [.sortedKeys]
         let checkpoint = try ImageAllMigrationExportCheckpoint(parent: parent, binding: bindingEncoder.encode(binding))
@@ -2653,7 +2661,7 @@ private enum LocalPhotoArchiveExporter {
                 observedFavorite: selected.observedFavorite,
                 factRevision: snapshot.outboxWatermark,
                 tagDecisions: decisions, collections: collections, resources: exported,
-                appleAlbums: albumMemberships[selected.localIdentifier] ?? [],
+                appleAlbums: albumMemberships.memberships[selected.localIdentifier] ?? [],
                 sourceMetadata: sourceMetadata(source)
             ))
         }
@@ -2673,7 +2681,7 @@ private enum LocalPhotoArchiveExporter {
             migrationID: migrationID, sourceDeviceID: snapshot.installID,
             sourceEpoch: snapshot.sourceEpoch, scopeRevision: snapshot.scopeRevision,
             inventoryWatermark: snapshot.snapshotSequence, declaredItemCount: items.count,
-            appleAlbumCoverage: .selectedAssetsOnly
+            appleAlbumCoverage: albumMemberships.coverage
         )
         let resourcesDirectory = staging.appendingPathComponent("resources", isDirectory: true)
         if manager.fileExists(atPath: resourcesDirectory.path),
@@ -2695,12 +2703,23 @@ private enum LocalPhotoArchiveExporter {
         return .archive(published, verification)
     }
 
+    private struct AlbumSnapshot: Equatable {
+        let coverage: ImageAllMigrationAppleAlbumCoverage
+        let memberships: [String: [ImageAllMigrationAppleAlbumMembership]]
+    }
+
     /// Traverse only user-created Photos albums/folders. A membership is kept
     /// only for an asset in the explicit export scope; unrelated album members
     /// never enter the portable manifest.
     private static func captureAlbumMemberships(
         selectedLocators: Set<String>
-    ) throws -> [String: [ImageAllMigrationAppleAlbumMembership]] {
+    ) throws -> AlbumSnapshot {
+        switch PHPhotoLibrary.authorizationStatus(for: .readWrite) {
+        case .limited:
+            return AlbumSnapshot(coverage: .unavailableLimitedAuthorization, memberships: [:])
+        case .authorized: break
+        default: throw LocalArchiveExportError.selectionNotVisible
+        }
         var result: [String: [ImageAllMigrationAppleAlbumMembership]] = [:]
         var visited: Set<String> = []
         func walk(
@@ -2738,7 +2757,10 @@ private enum LocalPhotoArchiveExporter {
                 $0.albumLocalIdentifier < $1.albumLocalIdentifier
             }
         }
-        return result
+        guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized else {
+            throw LocalArchiveExportError.sourceChanged
+        }
+        return AlbumSnapshot(coverage: .selectedAssetsOnly, memberships: result)
     }
 
     private static func fileExtension(for resource: PHAssetResource) -> String {
