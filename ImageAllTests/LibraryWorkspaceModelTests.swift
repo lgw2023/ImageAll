@@ -12490,6 +12490,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         }
         let isReview = ProcessInfo.processInfo.environment["IMAGEALL_INTERACTIVE_REVIEW"] == "1"
         let isAnalysis = ProcessInfo.processInfo.environment["IMAGEALL_INTERACTIVE_ANALYSIS"] == "1"
+        let isCandidates = ProcessInfo.processInfo.environment["IMAGEALL_INTERACTIVE_CANDIDATES"] == "1"
         let evidence = URL(fileURLWithPath: path, isDirectory: true)
         let analysisEnvironment: SimilarityTestSupport.Environment? = isAnalysis
             ? try SimilarityTestSupport.Environment(label: "interactive-video-analysis") : nil
@@ -12498,10 +12499,12 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             .appendingPathComponent("docs/evidence/time-story-phase-1-20260918/synthetic-silent.mp4")
         let seeded = try analysisEnvironment?.seedAsset(relativePath: "01-synthetic.mp4",
             contents: Data(contentsOf: source), mediaType: "public.mpeg-4", mediaKind: .video, durationMs: 3000)
+        let seededSecond = isCandidates ? try analysisEnvironment?.seedAsset(relativePath: "02-synthetic.mp4",
+            contents: Data(contentsOf: source), mediaType: "public.mpeg-4", mediaKind: .video, durationMs: 3000) : nil
         let sourceID = analysisEnvironment?.sourceID ?? UUID()
         let first = Self.makeAsset(sourceID: sourceID, assetID: seeded?.assetID ?? UUID(), fileName: "01-synthetic.mp4",
             mediaType: "public.mpeg-4", mediaKind: .video, durationMs: 3000)
-        let second = Self.makeAsset(sourceID: sourceID, fileName: "02-synthetic.mp4",
+        let second = Self.makeAsset(sourceID: sourceID, assetID: seededSecond?.assetID ?? UUID(), fileName: "02-synthetic.mp4",
             mediaType: "public.mpeg-4", mediaKind: .video, durationMs: 3000)
         let tag = TagListItem(id: UUID(), displayName: "视频验收标签", state: .active)
         let service = FakeLibraryWorkspaceService(
@@ -12549,7 +12552,8 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: finish.path))
         if let analysisEnvironment {
             let times = try await analysisEnvironment.database.pool.read { db in
-                try Int64.fetchAll(db, sql: "SELECT actual_ms FROM video_analysis_frame ORDER BY actual_ms")
+                try Int64.fetchAll(db, sql: "SELECT actual_ms FROM video_analysis_frame WHERE asset_id = ? ORDER BY actual_ms",
+                    arguments: [first.assetID.uuidString.lowercased()])
             }
             let features = try await analysisEnvironment.database.pool.read { db in
                 try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM video_analysis_feature") ?? 0
@@ -12559,7 +12563,25 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             XCTAssertTrue(times.contains { $0 < 500 })
             XCTAssertTrue(times.contains { (1000...2000).contains($0) })
             XCTAssertTrue(times.contains { $0 > 2000 })
-            XCTAssertEqual(features, 1)
+            XCTAssertEqual(features, isCandidates ? 2 : 1)
+            if isCandidates {
+                let analysis = try XCTUnwrap(model.videoAnalysisService)
+                let candidates = try analysis.contentCandidates(assetID: first.assetID, expectedRevision: 1)
+                let candidate = try XCTUnwrap(candidates.items.first)
+                XCTAssertEqual(candidates.items.count, 1)
+                XCTAssertEqual(candidate.id, second.assetID)
+                XCTAssertGreaterThan(candidate.score, 0.9)
+                XCTAssertTrue(samples.contains { ($0["selected"] as? String) == first.assetID.uuidString
+                    && abs(($0["time"] as? Double ?? -1) - Double(candidate.currentTimeMs) / 1000) < 0.05 })
+                let digests = try await analysisEnvironment.database.pool.read { db in
+                    try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM asset_original_content_digest") ?? 0
+                }
+                XCTAssertEqual(digests, 0, "Content similarity must not create original-byte proofs")
+                try JSONSerialization.data(withJSONObject: ["candidateID": candidate.id.uuidString,
+                    "fileName": candidate.fileName, "score": candidate.score,
+                    "currentTimeMs": candidate.currentTimeMs, "candidateTimeMs": candidate.candidateTimeMs,
+                    "originalDigestCount": digests]).write(to: evidence.appendingPathComponent("candidate-result.json"))
+            }
             XCTAssertTrue(times.contains { time in time > 1000 && samples.contains {
                 abs(($0["time"] as? Double ?? -1) - Double(time) / 1000) < 0.05 && ($0["rate"] as? Float) == 0
             } }, "An actual analysis-frame button must seek the paused player")

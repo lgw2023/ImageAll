@@ -25,7 +25,10 @@ def main():
     parser.add_argument('--gallery', action='store_true', help='Operate the synthetic full video gallery and tag the first video, then create finish')
     parser.add_argument('--review', action='store_true', help='With --gallery: accept first video, reject second, undo, then finish')
     parser.add_argument('--analysis', action='store_true', help='With --gallery: analyze current video, reuse or rebuild frames, click a timestamp, then finish')
+    parser.add_argument('--candidates', action='store_true', help='With --gallery --analysis: analyze both videos and compare content candidates')
     args = parser.parse_args()
+    if args.candidates and not args.analysis:
+        parser.error('--candidates requires --analysis')
     if args.analysis and (not args.gallery or args.review):
         parser.error('--analysis requires --gallery and excludes --review')
     if args.review and not args.gallery:
@@ -90,6 +93,8 @@ def main():
     if args.gallery:
         environment.pop('IMAGEALL_INTERACTIVE_VIDEO_EVIDENCE', None)
         environment['IMAGEALL_INTERACTIVE_GALLERY_EVIDENCE'] = str(evidence)
+        if args.candidates:
+            environment['IMAGEALL_INTERACTIVE_CANDIDATES'] = '1'
         if args.analysis:
             environment['IMAGEALL_INTERACTIVE_ANALYSIS'] = '1'
         if args.review:

@@ -897,3 +897,10 @@
 - 前一轮analysis-ui-complete实际验证初次复用0帧→再次分析复用4帧→强制重建复用0帧，均显示768维特征；其测试只因误写“恰好5帧”断言失败。现行策略最多5帧，允许不可解码时间点跳过，故改为3–5帧、前中后覆盖和实际seek断言后复跑通过，不改生产策略。
 - 更早analysis-ui-final/verified为fixture缺失Inspector时长的失败证据，均保留。补齐fake Inspector与修订更新投影的时长，正式菜单门禁保持不变。analysis-ui-build-bounded.log TEST BUILD SUCCEEDED；同产品analysis-ui-regression.log 2/2 PASS（定位身份/越界/停止保护，以及离屏修订和照片拒绝）。
 - analysis-ui-bounded/verification.json绑定源码与产品SHA。当前已验证详情分析帧和显式复用/重建菜单；冻结审核建议证据、内容候选列表、地图/瘦身及最终集成审计仍待推进。未读取真实媒体、无Photos宿主或付费调用，未push，目标active。
+
+## P5 内容相似候选正式菜单与时间点操作（2026-09-28）
+
+- 合成图库分析专项追加--candidates：两个独立资产及独立文件，使用相同合成视频字节作为明确阳性控制。实际先打开02分析，再打开01分析，从多帧菜单比较已分析视频，未在测试准备阶段计算特征。
+- candidate-ui-final/tests.log 1/1 PASS（117.178秒）。UI显示02-synthetic.mp4唯一候选、分数1.000、当前2.23s↔候选2.23s；先点击0.133秒帧，再点击候选时间点，真实播放器回到约2.235秒暂停。candidate-result.json保存精确匹配时间2233/2233ms、得分0.99999988与候选UUID。
+- 界面明确“仅比较最近已分析且时长接近的最多20项；分数不是重复证明”。独立数据库查询确认两份特征记录、完整原件摘要数量0；候选服务复核返回正确资产。同构建candidate-ui-regression.log 1/1 PASS，覆盖时长/已分析范围及不创建精确组。
+- candidate-ui-build.log TEST BUILD SUCCEEDED；verification.json绑定源码与产品SHA。这里只证明候选列表、当前时间点定位及安全语义；候选的系统播放器按钮未点验，不推断重编码/裁剪等真实识别质量。冻结审核证据、地图/瘦身、最终集成继续，目标active。无真实媒体/Photos/付费模型/发布安装/push。
