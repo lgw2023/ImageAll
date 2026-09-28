@@ -1760,6 +1760,8 @@ private enum LocalMigrationFactExporter {
 private enum LocalPhotoArchiveExporter {
     private struct SourceVersion: Equatable {
         let modificationDate: Date?
+        let creationDate: Date?
+        let metadata: ImageAllMigrationSourceMetadata
         let resourceSignature: [String]
     }
 
@@ -1828,6 +1830,7 @@ private enum LocalPhotoArchiveExporter {
                   selected.localIdentifier == item.sourceLocalIdentifier,
                   let asset = byLocator[item.sourceLocalIdentifier],
                   (item.appleAlbums ?? []) == (albums[item.sourceLocalIdentifier] ?? []),
+                  item.sourceMetadata == sourceMetadata(asset),
                   item.mediaKind == (asset.mediaType == .video ? .video : .image),
                   item.createdAtMs == asset.creationDate.map({
                       Int64($0.timeIntervalSince1970 * 1_000)
@@ -2037,12 +2040,13 @@ private enum LocalPhotoArchiveExporter {
             items.append(ImageAllMigrationItem(
                 mediaID: selected.id, sourceLocalIdentifier: selected.localIdentifier,
                 mediaKind: selected.kind == "video" ? .video : .image,
-                createdAtMs: selected.creationDate.map { Int64($0.timeIntervalSince1970 * 1_000) },
+                createdAtMs: source.creationDate.map { Int64($0.timeIntervalSince1970 * 1_000) },
                 favoriteTarget: selected.favoriteTarget,
                 observedFavorite: selected.observedFavorite,
                 factRevision: snapshot.outboxWatermark,
                 tagDecisions: decisions, collections: collections, resources: exported,
-                appleAlbums: albumMemberships[selected.localIdentifier] ?? []
+                appleAlbums: albumMemberships[selected.localIdentifier] ?? [],
+                sourceMetadata: sourceMetadata(source)
             ))
         }
         let finalResult = PHAsset.fetchAssets(
@@ -2138,10 +2142,34 @@ private enum LocalPhotoArchiveExporter {
     private static func sourceVersion(_ asset: PHAsset) -> SourceVersion {
         SourceVersion(
             modificationDate: asset.modificationDate,
+            creationDate: asset.creationDate, metadata: sourceMetadata(asset),
             resourceSignature: PHAssetResource.assetResources(for: asset).map {
                 "\($0.type.rawValue):\($0.uniformTypeIdentifier)"
             }
         )
+    }
+
+    private static func sourceMetadata(_ asset: PHAsset) -> ImageAllMigrationSourceMetadata {
+        func milliseconds(_ date: Date?) -> Int64? {
+            guard let value = date?.timeIntervalSince1970, value.isFinite,
+                  value * 1_000 > Double(Int64.min), value * 1_000 < Double(Int64.max) else { return nil }
+            return Int64(value * 1_000)
+        }
+        let location = asset.location.flatMap { value -> ImageAllMigrationSourceMetadata.Location? in
+            guard value.horizontalAccuracy.isFinite, value.horizontalAccuracy >= 0,
+                  value.coordinate.latitude.isFinite, (-90...90).contains(value.coordinate.latitude),
+                  value.coordinate.longitude.isFinite, (-180...180).contains(value.coordinate.longitude) else { return nil }
+            let hasAltitude = value.verticalAccuracy.isFinite && value.verticalAccuracy >= 0 && value.altitude.isFinite
+            return .init(latitude: value.coordinate.latitude, longitude: value.coordinate.longitude,
+                horizontalAccuracyMeters: value.horizontalAccuracy,
+                altitudeMeters: hasAltitude ? value.altitude : nil,
+                verticalAccuracyMeters: hasAltitude ? value.verticalAccuracy : nil,
+                observedAtMs: milliseconds(value.timestamp))
+        }
+        return .init(pixelWidth: asset.pixelWidth > 0 ? asset.pixelWidth : nil,
+            pixelHeight: asset.pixelHeight > 0 ? asset.pixelHeight : nil,
+            durationSeconds: asset.mediaType == .video && asset.duration.isFinite && asset.duration >= 0 ? asset.duration : nil,
+            modifiedAtMs: milliseconds(asset.modificationDate), location: location)
     }
 
     private static func resourceRole(_ type: PHAssetResourceType) -> String {

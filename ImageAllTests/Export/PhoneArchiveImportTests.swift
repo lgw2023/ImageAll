@@ -101,7 +101,9 @@ final class PhoneArchiveImportTests: XCTestCase {
         let resource = try fixture.resource(
             "original", bytes: Data("network-stage-original".utf8)
         )
-        let item = fixture.item(resource: resource)
+        let metadata = ImageAllMigrationSourceMetadata(pixelWidth: 4032, pixelHeight: 3024,
+            modifiedAtMs: 900, location: .init(latitude: 0, longitude: 0, horizontalAccuracyMeters: 25))
+        let item = fixture.item(resource: resource, sourceMetadata: metadata)
         let header = fixture.header(count: 1, appleAlbumCoverage: .selectedAssetsOnly)
         try fixture.write(header: header, items: [item])
         let deviceID = header.sourceDeviceID
@@ -202,6 +204,9 @@ final class PhoneArchiveImportTests: XCTestCase {
             into: recoveryDirectory
         )
         XCTAssertEqual(recovery.integrity, integrity)
+        let restoredImporter = VerifiedPhoneArchiveImporter(database: try CatalogDatabase.open(at: recovery.recoveredCatalogURL))
+        XCTAssertEqual(try restoredImporter.verifiedPreview(migrationID: header.migrationID,
+            mediaID: item.mediaID, archiveRoot: recovery.restoredArchiveURL).sourceMetadata, metadata)
         XCTAssertEqual(recovery.integrity.factSnapshot?.auditRecords, facts.auditRecords)
         XCTAssertNotEqual(recovery.restoredArchiveURL, imported.archiveURL)
         XCTAssertEqual(try Data(contentsOf: recovery.restoredArchiveURL.appendingPathComponent(
@@ -1540,11 +1545,11 @@ final class PhoneArchiveImportTests: XCTestCase {
                          byteCount: Int64(bytes.count), sha256: hash)
         }
 
-        func item(resource: ImageAllMigrationResource) -> ImageAllMigrationItem {
+        func item(resource: ImageAllMigrationResource, sourceMetadata: ImageAllMigrationSourceMetadata? = nil) -> ImageAllMigrationItem {
             .init(mediaID: UUID(), sourceLocalIdentifier: "phone-local-id",
                   mediaKind: .image, createdAtMs: nil,
                   favoriteTarget: nil, observedFavorite: false, factRevision: 0,
-                  tagDecisions: [], collections: [], resources: [resource])
+                  tagDecisions: [], collections: [], resources: [resource], sourceMetadata: sourceMetadata)
         }
 
         func write(header: ImageAllMigrationHeader, items: [ImageAllMigrationItem]) throws {

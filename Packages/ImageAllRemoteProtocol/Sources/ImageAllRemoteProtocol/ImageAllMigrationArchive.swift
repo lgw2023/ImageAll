@@ -129,6 +129,56 @@ public struct ImageAllMigrationAppleAlbumMembership: Codable, Sendable, Equatabl
     }
 }
 
+/// Public source observations, distinct from filesystem timestamps or inferred EXIF.
+/// Nil on older archives means not declared; absent location means not provided.
+public struct ImageAllMigrationSourceMetadata: Codable, Sendable, Equatable {
+    public struct Location: Codable, Sendable, Equatable {
+        public let latitude: Double
+        public let longitude: Double
+        public let horizontalAccuracyMeters: Double
+        public let altitudeMeters: Double?
+        public let verticalAccuracyMeters: Double?
+        public let observedAtMs: Int64?
+
+        public init(latitude: Double, longitude: Double, horizontalAccuracyMeters: Double,
+                    altitudeMeters: Double? = nil, verticalAccuracyMeters: Double? = nil,
+                    observedAtMs: Int64? = nil) {
+            self.latitude = latitude; self.longitude = longitude
+            self.horizontalAccuracyMeters = horizontalAccuracyMeters
+            self.altitudeMeters = altitudeMeters; self.verticalAccuracyMeters = verticalAccuracyMeters
+            self.observedAtMs = observedAtMs
+        }
+    }
+    public let pixelWidth: Int?
+    public let pixelHeight: Int?
+    public let durationSeconds: Double?
+    public let modifiedAtMs: Int64?
+    public let location: Location?
+
+    public init(pixelWidth: Int? = nil, pixelHeight: Int? = nil, durationSeconds: Double? = nil,
+                modifiedAtMs: Int64? = nil, location: Location? = nil) {
+        self.pixelWidth = pixelWidth; self.pixelHeight = pixelHeight
+        self.durationSeconds = durationSeconds; self.modifiedAtMs = modifiedAtMs; self.location = location
+    }
+
+    public func validate() throws {
+        guard pixelWidth.map({ $0 > 0 }) ?? true, pixelHeight.map({ $0 > 0 }) ?? true,
+              durationSeconds.map({ $0.isFinite && $0 >= 0 }) ?? true else {
+            throw ImageAllMigrationArchiveError.invalidManifest
+        }
+        if let location {
+            guard location.latitude.isFinite, (-90...90).contains(location.latitude),
+                  location.longitude.isFinite, (-180...180).contains(location.longitude),
+                  location.horizontalAccuracyMeters.isFinite, location.horizontalAccuracyMeters >= 0,
+                  location.altitudeMeters.map(\.isFinite) ?? true,
+                  location.verticalAccuracyMeters.map({ $0.isFinite && $0 >= 0 }) ?? true,
+                  (location.altitudeMeters == nil) == (location.verticalAccuracyMeters == nil) else {
+                throw ImageAllMigrationArchiveError.invalidManifest
+            }
+        }
+    }
+}
+
 public struct ImageAllMigrationItem: Codable, Sendable, Equatable {
     public let recordType: String
     public let mediaID: UUID
@@ -143,6 +193,7 @@ public struct ImageAllMigrationItem: Codable, Sendable, Equatable {
     /// Nil on older archives. Only memberships of selected assets are recorded.
     public let appleAlbums: [ImageAllMigrationAppleAlbumMembership]?
     public let resources: [ImageAllMigrationResource]
+    public let sourceMetadata: ImageAllMigrationSourceMetadata?
 
     public init(
         mediaID: UUID, sourceLocalIdentifier: String,
@@ -151,7 +202,8 @@ public struct ImageAllMigrationItem: Codable, Sendable, Equatable {
         tagDecisions: [ImageAllMigrationTagDecision],
         collections: [ImageAllMigrationCollectionMembership],
         resources: [ImageAllMigrationResource],
-        appleAlbums: [ImageAllMigrationAppleAlbumMembership] = []
+        appleAlbums: [ImageAllMigrationAppleAlbumMembership] = [],
+        sourceMetadata: ImageAllMigrationSourceMetadata? = nil
     ) {
         recordType = "item"
         self.mediaID = mediaID
@@ -165,6 +217,7 @@ public struct ImageAllMigrationItem: Codable, Sendable, Equatable {
         self.collections = collections
         self.appleAlbums = appleAlbums.isEmpty ? nil : appleAlbums
         self.resources = resources
+        self.sourceMetadata = sourceMetadata
     }
 }
 
@@ -298,6 +351,7 @@ public enum ImageAllMigrationArchive {
                     continue
                 }
                 let item = try decoder.decode(ImageAllMigrationItem.self, from: line)
+                try item.sourceMetadata?.validate()
                 guard item.recordType == "item", !item.sourceLocalIdentifier.isEmpty,
                       item.factRevision >= 0, !item.resources.isEmpty,
                       item.resources.contains(where: {

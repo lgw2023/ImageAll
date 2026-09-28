@@ -348,6 +348,7 @@ struct PhoneArchiveVerifiedPreview: Sendable {
     let originalURL: URL
     let resources: [PhoneArchivePreviewResource]
     let preferredResourceID: UUID
+    let sourceMetadata: ImageAllMigrationSourceMetadata?
     let facts: PhoneArchiveImportedFacts
 }
 
@@ -743,7 +744,8 @@ struct VerifiedPhoneArchiveImporter: Sendable {
     /// portable record with the dedicated Mac import ledger. This is a local
     /// integrity check, not a source-sync or migration-complete receipt.
     func auditImportedArchive(
-        migrationID: UUID, archiveRoot: URL
+        migrationID: UUID, archiveRoot: URL,
+        onVerifiedItem: ((ImageAllMigrationItem) -> Void)? = nil
     ) throws -> PhoneArchiveIntegrityReport {
         let (header, verification) = try ImageAllMigrationArchive.readVerifiedHeader(
             at: archiveRoot
@@ -813,6 +815,7 @@ struct VerifiedPhoneArchiveImporter: Sendable {
                     }
                 },
                 onItem: { item in
+                    onVerifiedItem?(item)
                     guard seen.insert(item.mediaID).inserted else {
                         throw PhoneArchiveImportError.catalogDiverged
                     }
@@ -2646,8 +2649,10 @@ struct VerifiedPhoneArchiveImporter: Sendable {
     func verifiedPreview(
         migrationID: UUID, mediaID: UUID, archiveRoot: URL
     ) throws -> PhoneArchiveVerifiedPreview {
+        var sourceMetadata: ImageAllMigrationSourceMetadata?
         _ = try auditImportedArchive(
-            migrationID: migrationID, archiveRoot: archiveRoot
+            migrationID: migrationID, archiveRoot: archiveRoot,
+            onVerifiedItem: { if $0.mediaID == mediaID { sourceMetadata = $0.sourceMetadata } }
         )
         let resources: [PhoneArchivePreviewResource] = try database.pool.read { db in
             try Row.fetchAll(db, sql: """
@@ -2687,6 +2692,7 @@ struct VerifiedPhoneArchiveImporter: Sendable {
         return PhoneArchiveVerifiedPreview(
             originalURL: original.url, resources: resources,
             preferredResourceID: edited.count == 1 ? edited[0].id : original.id,
+            sourceMetadata: sourceMetadata,
             facts: try importedFacts(migrationID: migrationID, mediaID: mediaID)
         )
     }

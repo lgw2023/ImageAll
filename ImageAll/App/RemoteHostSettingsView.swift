@@ -1346,6 +1346,7 @@ struct PhoneArchivePreview: Identifiable {
     let isVideo: Bool
     let resources: [PhoneArchivePreviewResource]
     let preferredResourceID: UUID
+    let sourceMetadata: ImageAllMigrationSourceMetadata?
     let facts: PhoneArchiveImportedFacts
 }
 
@@ -1642,6 +1643,7 @@ final class PhoneArchiveImportModel: ObservableObject {
                     id: mediaID, title: title,
                     url: verified.originalURL, isVideo: isVideo,
                     resources: verified.resources, preferredResourceID: verified.preferredResourceID,
+                    sourceMetadata: verified.sourceMetadata,
                     facts: verified.facts
                 )
                 message = nil
@@ -3399,6 +3401,19 @@ private struct PhoneArchivePreviewSheet: View {
             .background(.black.opacity(0.94))
             ScrollView {
                 VStack(alignment: .leading, spacing: 6) {
+                    if let metadata = preview.sourceMetadata {
+                        Text("来源元数据").font(.subheadline.weight(.semibold))
+                        Text("尺寸：\(metadata.pixelWidth.map(String.init) ?? "未知") × \(metadata.pixelHeight.map(String.init) ?? "未知")")
+                        if let duration = metadata.durationSeconds {
+                            Text("时长：\(duration, specifier: "%.3f") 秒")
+                        }
+                        if let modified = metadata.modifiedAtMs {
+                            Text("来源修改时间（本机时区）：\(Date(timeIntervalSince1970: Double(modified) / 1_000).formatted())")
+                        }
+                        Text(metadata.location == nil ? "位置：来源未提供有效值" : "位置：已随归档保存，未发送地图服务")
+                    } else {
+                        Text("此归档未声明来源尺寸、时长、修改时间和位置覆盖。")
+                    }
                     Text("整理信息").font(.subheadline.weight(.semibold))
                     Text("标签决定：\(tagSummary)")
                     Text("ImageAll 集合：\(collectionSummary)")

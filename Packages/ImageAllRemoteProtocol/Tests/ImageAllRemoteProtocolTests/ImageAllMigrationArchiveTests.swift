@@ -501,6 +501,43 @@ final class ImageAllMigrationArchiveTests: XCTestCase {
         }
     }
 
+    func testSourceMetadataPreservesUnknownsAndRejectsInvalidObservations() throws {
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let base = try makeItem(root: root, resourceID: UUID(), bytes: Data("metadata-fixture".utf8))
+        let metadata = ImageAllMigrationSourceMetadata(pixelWidth: 4032, pixelHeight: 3024,
+            durationSeconds: 1.25, modifiedAtMs: -1_000,
+            location: .init(latitude: 0, longitude: 0, horizontalAccuracyMeters: 12.5,
+                            altitudeMeters: -20, verticalAccuracyMeters: 3, observedAtMs: 100))
+        let item = ImageAllMigrationItem(mediaID: base.mediaID, sourceLocalIdentifier: base.sourceLocalIdentifier,
+            mediaKind: base.mediaKind, createdAtMs: base.createdAtMs, favoriteTarget: base.favoriteTarget,
+            observedFavorite: base.observedFavorite, factRevision: base.factRevision,
+            tagDecisions: base.tagDecisions, collections: base.collections, resources: base.resources,
+            sourceMetadata: metadata)
+        try ImageAllMigrationArchive.write(header: header(migrationID: UUID(), count: 1), items: [item], to: root)
+        var restored: ImageAllMigrationSourceMetadata?
+        _ = try ImageAllMigrationArchive.visitVerifiedRecords(at: root, onHeader: { _ in },
+            onItem: { restored = $0.sourceMetadata })
+        XCTAssertEqual(restored, metadata)
+        let old = try JSONDecoder().decode(ImageAllMigrationItem.self, from: JSONEncoder().encode(base))
+        XCTAssertNil(old.sourceMetadata)
+        XCTAssertNoThrow(try ImageAllMigrationSourceMetadata().validate())
+        for invalid in [
+            ImageAllMigrationSourceMetadata(pixelWidth: 0),
+            .init(durationSeconds: -.infinity),
+            .init(location: .init(latitude: 91, longitude: 0, horizontalAccuracyMeters: 1)),
+            .init(location: .init(latitude: 0, longitude: 0, horizontalAccuracyMeters: -1)),
+            .init(location: .init(latitude: 0, longitude: 0, horizontalAccuracyMeters: 1, altitudeMeters: 0))
+        ] { XCTAssertThrowsError(try invalid.validate()) }
+        let manifest = root.appendingPathComponent(ImageAllMigrationArchive.manifestFilename)
+        var lines = try String(contentsOf: manifest, encoding: .utf8).split(separator: "\n").map(String.init)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(lines[1].utf8)) as? [String: Any])
+        object["sourceMetadata"] = ["pixelWidth": -1]
+        lines[1] = String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self)
+        try Data((lines.joined(separator: "\n") + "\n").utf8).write(to: manifest)
+        XCTAssertThrowsError(try ImageAllMigrationArchive.verify(at: root))
+    }
+
     private func makeRoot() -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("ImageAllArchive-\(UUID().uuidString)", isDirectory: true)
