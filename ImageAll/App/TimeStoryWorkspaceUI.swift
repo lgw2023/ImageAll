@@ -2394,6 +2394,16 @@ struct TimeStoryWorkspaceView: View {
                     Button("取消导出") { model.cancelExport() }
                 }
             }
+            if model.exportProgress == nil, let url = model.lastExportURL {
+                HStack {
+                    Text(url.lastPathComponent).font(.caption).lineLimit(1)
+                    Spacer()
+                    Button("播放上次导出的 MP4") { NSWorkspace.shared.open(url) }
+                        .accessibilityIdentifier("timeStoryOpenNativeExport")
+                    Button("在 Finder 中显示") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+                        .accessibilityIdentifier("timeStoryRevealNativeExport")
+                }
+            }
             if let progress = model.packageExportProgress {
                 HStack {
                     ProgressView(value: progress.fraction)

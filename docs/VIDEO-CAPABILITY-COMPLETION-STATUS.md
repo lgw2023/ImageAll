@@ -770,3 +770,13 @@
 - story-native-rotation-fix-build.log TEST BUILD SUCCEEDED；story-native-rotation-exact-tests.log 2/2 PASS（旋转与混合真实运动）；story-native-rotation-audio-regression.log 2/2 PASS（原声增益/静音/配乐与旧照片有无音乐）。FFmpeg全片解码成功，代表帧已目视核对。
 - story-native-rotation-exact/保存源、输出、质心JSON，输出SHA=f163d959e675c78800a528fe8504b3fcda946f8028778c24bff971ea828ef605。构建来自含并行未提交改动的工作区，不能据此宣称纯HEAD独立构建或发布验收。
 - 原生与Remotion方向样本均已有证据，旧完成结果恢复也已通过；P6完整Mac UI选材/片段/调序/成片重开与P7最终集成仍未完成。目标active，仅合成素材与直接XCTest，未真实媒体访问、未push。
+
+## P6 工作区连续编辑、保存重开与有声成片（2026-09-28）
+
+- 新增testWorkspaceMixedStoryEditSaveReopenAndRender，使用独立数据库、合成照片/运动视频/正弦音轨，调用正式工作区addCandidate→prepareClipPreview→applyVideoClip→moveShot→save；全新模型open恢复项目后通过export调用正式原生渲染器。未用伪渲染器或内存存储绕过链路。
+- 视频入出点200...800ms、原声0.25、视频在照片之前，保存/重开保持shotID、顺序与范围。照片时长经正式UI命令夹至1.5秒，默认14帧淡入重叠后总49帧；源标记在转场前横移76像素，成片PCM RMS约0.02153，AVFoundation可播放/尺寸/30fps/时长及FFmpeg全片解码通过。
+- 入口审计发现lastExportURL此前无界面消费者，原生导出只显示文件名。状态栏补上“播放上次导出的 MP4”和“在 Finder 中显示”，仅在导出不活跃且已有成功输出时显示；名称明确表示本会话上次导出，不冒充持久历史结果。
+- story-workspace-result-build.log TEST BUILD SUCCEEDED；同一构建story-workspace-final-tests.log 3/3 PASS：连续编辑/保存/重开/渲染、片段编辑器真实窗口加载与模型保护、旧照片有无配乐。前期测试编译的Optional消息和Swift6隔离错误已修复，无状态媒体辅助函数改为static；原失败日志保留。
+- story-workspace-final/保存restored-project.json、workspace-result.mp4、workspace-measurements.json和片段编辑器截图；story-workspace-chain/为首次通过证据。此为正式工作区命令链与独立NSHosting窗口证据，并非全页鼠标点击、系统播放器启动或真实图库验证。新按钮绑定已构建，实际点击仍待验。
+- 后续人工路线：当前ImageAll.xcodeproj的ImageAll scheme→故事编辑器，使用明确授权的合成图库→添加照片/视频→“使用片段”→调序保存→重新打开故事→“导出横屏 MP4（16:9）…”→“播放上次导出的 MP4”。预期顺序/范围/原声与保存值一致；该路线尚未宣称已全程执行。
+- 本轮只提交独立hunk，保留并行UI/任务可靠性/打包改动；构建仍依赖当前共享工作区，纯HEAD独立构建、完整Mac UI路线和P7总回归未完成。未生产Photos宿主、未真实媒体、未付费调用、未push，目标active。

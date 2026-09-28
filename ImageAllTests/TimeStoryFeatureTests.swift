@@ -222,6 +222,109 @@ final class TimeStoryFeatureTests: XCTestCase {
         XCTAssertEqual(model.project?.music?.volume, 0.5)
     }
 
+    @MainActor
+    func testWorkspaceMixedStoryEditSaveReopenAndRender() async throws {
+        let root = try temporaryDirectory("story-workspace-chain")
+        let database = try CatalogDatabase.open(at: root.appendingPathComponent("catalog.sqlite"))
+        let silent = root.appendingPathComponent("moving.mp4")
+        try await FixtureMixedStoryMedia.makeMovingVideo(at: silent)
+        let tone = root.appendingPathComponent("tone.wav")
+        try writeSineWave(to: tone, seconds: 1)
+        let composition = AVMutableComposition()
+        let sourceVideoAsset = AVURLAsset(url: silent)
+        let videoTracks = try await sourceVideoAsset.loadTracks(withMediaType: .video)
+        let videoTrack = try XCTUnwrap(videoTracks.first)
+        let sourceAudioAsset = AVURLAsset(url: tone)
+        let audioTracks = try await sourceAudioAsset.loadTracks(withMediaType: .audio)
+        let audioTrack = try XCTUnwrap(audioTracks.first)
+        let range = CMTimeRange(start: .zero, duration: CMTime(value: 1, timescale: 1))
+        try composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)!
+            .insertTimeRange(range, of: videoTrack, at: .zero)
+        try composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)!
+            .insertTimeRange(range, of: audioTrack, at: .zero)
+        let source = root.appendingPathComponent("source.mp4")
+        let exporter = try XCTUnwrap(AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHighestQuality))
+        exporter.timeRange = range
+        do { try await exporter.export(to: source, as: .mp4) }
+        catch { throw TimeStoryError.renderingFailed("Fixture source export: \(error)") }
+        withExtendedLifetime([sourceVideoAsset, sourceAudioAsset]) {}
+
+        let photo = candidate(UUID().uuidString, time: timestamp(2024, 1, 1))
+        var video = candidate(UUID().uuidString, time: timestamp(2024, 1, 2))
+        video.mediaKind = .video; video.durationMs = 1000
+        let project = TimeStoryPlanner().makeFreeformProject(snapshot: makeSnapshot([photo, video]), nowMs: 1)
+        let media = FixtureMixedStoryMedia(images: [photo.assetID: try edgeMarkedPNG(width: 300, height: 200)], video: source)
+        let packageExporter = StoryRenderPackageExporter(media: media, validator: PassingStoryValidator())
+        let roots = FixtureOpenMontageRootProvider(root: root)
+        let runtime = TimeStoryFeatureRuntime(
+            candidates: TimeStoryCandidateProvider(database: database, query: GRDBAssetCatalogQueryRepository(database: database)),
+            planner: TimeStoryPlanner(), store: TimeStoryProjectStore(applicationSupportDirectory: root),
+            validator: PassingStoryValidator(), renderer: AVFoundationTimeStoryRenderer(media: media, temporaryDirectory: root),
+            packageExporter: packageExporter, openMontageTasks: FileOpenMontageStoryTaskClient(rootProvider: roots, packageExporter: packageExporter, installationID: "fixture"),
+            creativeRootProvider: roots, media: media, clock: SystemJobClock())
+        let tag = TagListItem(id: project.subjectTagID, displayName: "Synthetic", state: .active)
+        let model = TimeStoryWorkspaceModel(verificationRuntime: runtime, tag: tag, project: project, thumbnails: [:])
+        await model.addCandidate(photo)
+        let photoShot = try XCTUnwrap(model.project?.shots.first)
+        model.setDuration(photoShot.id, seconds: 0.5)
+        await model.addCandidate(video)
+        let request = try XCTUnwrap(model.videoClipRequest)
+        _ = try await model.prepareClipPreview(request, destination: root.appendingPathComponent("preview.mov"))
+        let clip = TimeStoryVideoClip(inPointMs: 200, outPointMs: 800, sourceDurationMs: 1000, originalAudioGain: 0.25)
+        model.applyVideoClip(request, clip: clip)
+        let videoShot = try XCTUnwrap(model.project?.shots.first { $0.assetID == video.assetID })
+        model.moveShot(videoShot.id, before: photoShot.id)
+        XCTAssertEqual(model.project?.shots.map(\.id), [videoShot.id, photoShot.id])
+        let saved = await model.save()
+        XCTAssertTrue(saved)
+        let reopened = TimeStoryWorkspaceModel(runtime: runtime, tag: tag)
+        await reopened.open(project.id)
+        let restored = try XCTUnwrap(reopened.project)
+        XCTAssertEqual(restored.shots.map(\.id), [videoShot.id, photoShot.id])
+        XCTAssertEqual(restored.shots.first?.videoClip, clip)
+        let timeline = try TimeStoryTimeline.normalize(project: restored, allowsVideoClips: true)
+        let output = root.appendingPathComponent("workspace-result.mp4")
+        reopened.export(to: output)
+        for _ in 0..<300 where reopened.exportProgress != nil {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertNil(reopened.exportProgress, "Export must finish within the bounded wait")
+        XCTAssertEqual(reopened.lastExportURL, output, reopened.message ?? "No export status")
+        try await Self.assertPlayableVideo(output, expectsAudio: true, expectedDuration: timeline.durationSeconds)
+        let rms = try await Self.storyAudioRMS(output)
+        XCTAssertGreaterThan(rms, 0.005)
+        let segment = try XCTUnwrap(timeline.segments.first { $0.shotID == videoShot.id })
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: output))
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .zero
+        func center(_ localFrame: Int) throws -> Double {
+            let image = try generator.copyCGImage(at: CMTime(value: Int64(segment.startFrame + localFrame), timescale: 30), actualTime: nil)
+            let bitmap = NSBitmapImageRep(cgImage: image)
+            var sum = 0.0, count = 0.0
+            for y in stride(from: image.height / 3, to: image.height * 2 / 3, by: 4) {
+                for x in stride(from: 0, to: image.width, by: 4) {
+                    if let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB),
+                       color.redComponent > 0.85, color.greenComponent > 0.85, color.blueComponent > 0.85 {
+                        sum += Double(x); count += 1
+                    }
+                }
+            }
+            XCTAssertGreaterThan(count, 10)
+            return sum / max(1, count)
+        }
+        // Measure before the default 14-frame fade into the following photo.
+        let first = try center(0), second = try center(3)
+        XCTAssertGreaterThan(second - first, 50)
+        if let evidence = ProcessInfo.processInfo.environment["IMAGEALL_VIDEO_EVIDENCE_DIR"] {
+            let directory = URL(fileURLWithPath: evidence)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try FileManager.default.copyItem(at: output, to: directory.appendingPathComponent("workspace-result.mp4"))
+            try JSONEncoder().encode(restored).write(to: directory.appendingPathComponent("restored-project.json"))
+            try writeJSON(["frames": timeline.totalFrames, "audioRMS": rms, "motionX": [first, second]],
+                          to: directory.appendingPathComponent("workspace-measurements.json"))
+        }
+    }
+
     func testManualVideoCandidatesRequireExplicitClipsAndAllowDistinctSegments() throws {
         let photo = candidate(UUID().uuidString, time: timestamp(2024, 1, 1))
         var video = candidate(UUID().uuidString, time: timestamp(2024, 1, 2))
@@ -690,7 +793,7 @@ final class TimeStoryFeatureTests: XCTestCase {
         let output = root.appendingPathComponent("rendered.mp4")
         try await AVFoundationTimeStoryRenderer(media: FixtureMixedStoryMedia(images: [:], video: source),
             temporaryDirectory: root.appendingPathComponent("work")).render(project: project, destinationURL: output) { _ in }
-        try await assertPlayableVideo(output, expectsAudio: false, expectedDuration: 1)
+        try await Self.assertPlayableVideo(output, expectsAudio: false, expectedDuration: 1)
         func centers(_ url: URL) throws -> [CGPoint] {
             let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
             generator.appliesPreferredTrackTransform = true
@@ -745,7 +848,7 @@ final class TimeStoryFeatureTests: XCTestCase {
         let output = root.appendingPathComponent("mixed.mp4")
         try await renderer.render(project: project, destinationURL: output) { _ in }
         let timeline = try TimeStoryTimeline.normalize(project: project, allowsVideoClips: true)
-        try await assertPlayableVideo(output, expectsAudio: false, expectedDuration: timeline.durationSeconds)
+        try await Self.assertPlayableVideo(output, expectsAudio: false, expectedDuration: timeline.durationSeconds)
         let segment = try XCTUnwrap(timeline.segments.first { $0.shotID == project.shots[1].id })
         let generator = AVAssetImageGenerator(asset: AVURLAsset(url: output))
         func centroid(_ frame: Int) throws -> Double {
@@ -768,7 +871,7 @@ final class TimeStoryFeatureTests: XCTestCase {
         project.shots[1].videoClip?.originalAudioGain = 1
         let noAudio = root.appendingPathComponent("source-without-audio.mp4")
         try await renderer.render(project: project, destinationURL: noAudio) { _ in }
-        try await assertPlayableVideo(noAudio, expectsAudio: false, expectedDuration: timeline.durationSeconds)
+        try await Self.assertPlayableVideo(noAudio, expectsAudio: false, expectedDuration: timeline.durationSeconds)
     }
 
     func testVideoStoryOriginalAudioGainMuteAndMusicPreserveSound() async throws {
@@ -807,29 +910,29 @@ final class TimeStoryFeatureTests: XCTestCase {
         let full = root.appendingPathComponent("original.mp4")
         do { try await renderer.render(project: project, destinationURL: full) { _ in } }
         catch { throw TimeStoryError.renderingFailed("Original audio render: \(error)") }
-        try await assertPlayableVideo(full, expectsAudio: true, expectedDuration: 0.6)
-        let fullRMS = try await storyAudioRMS(full)
+        try await Self.assertPlayableVideo(full, expectsAudio: true, expectedDuration: 0.6)
+        let fullRMS = try await Self.storyAudioRMS(full)
         XCTAssertGreaterThan(fullRMS, 0.01)
         project.shots[0].videoClip?.originalAudioGain = 0.25
         let quarter = root.appendingPathComponent("quarter.mp4")
         try await renderer.render(project: project, destinationURL: quarter) { _ in }
-        let quarterRMS = try await storyAudioRMS(quarter)
+        let quarterRMS = try await Self.storyAudioRMS(quarter)
         XCTAssertTrue((0.18...0.32).contains(quarterRMS / fullRMS))
         project.shots[0].videoClip?.originalAudioGain = 0
         let muted = root.appendingPathComponent("muted.mp4")
         try await renderer.render(project: project, destinationURL: muted) { _ in }
-        let muteRMS = try await storyAudioRMS(muted)
+        let muteRMS = try await Self.storyAudioRMS(muted)
         XCTAssertEqual(muteRMS, 0)
         project.shots[0].videoClip?.originalAudioGain = 1
         project.music = TimeStoryMusicSelection(displayName: "tone", filePath: tone.path, securityScopedBookmark: nil, volume: 0)
         let mixed = root.appendingPathComponent("original-and-muted-music.mp4")
         try await renderer.render(project: project, destinationURL: mixed) { _ in }
-        let mixedRMS = try await storyAudioRMS(mixed)
+        let mixedRMS = try await Self.storyAudioRMS(mixed)
         XCTAssertTrue((0.8...1.2).contains(mixedRMS / fullRMS), "Adding music must not drop original audio")
         project.music?.volume = 0.25
         let audible = root.appendingPathComponent("original-and-music.mp4")
         try await renderer.render(project: project, destinationURL: audible) { _ in }
-        let audibleRMS = try await storyAudioRMS(audible)
+        let audibleRMS = try await Self.storyAudioRMS(audible)
         XCTAssertGreaterThan(abs(audibleRMS - mixedRMS), fullRMS * 0.05)
         if let directory = ProcessInfo.processInfo.environment["IMAGEALL_VIDEO_EVIDENCE_DIR"] {
             let destination = URL(fileURLWithPath: directory)
@@ -844,7 +947,7 @@ final class TimeStoryFeatureTests: XCTestCase {
         }
     }
 
-    private func storyAudioRMS(_ url: URL) async throws -> Double {
+    private static func storyAudioRMS(_ url: URL) async throws -> Double {
         let asset = AVURLAsset(url: url)
         let tracks = try await asset.loadTracks(withMediaType: .audio)
         guard !tracks.isEmpty else { return 0 }
@@ -904,7 +1007,7 @@ final class TimeStoryFeatureTests: XCTestCase {
         XCTAssertEqual(project.chapters[0].title, "用户编辑的章节")
         let silent = root.appendingPathComponent("silent.mp4")
         try await renderer.render(project: project, destinationURL: silent) { _ in }
-        try await assertPlayableVideo(silent, expectsAudio: false, expectedDuration: project.timelineDurationSeconds)
+        try await Self.assertPlayableVideo(silent, expectsAudio: false, expectedDuration: project.timelineDurationSeconds)
         let silentAsset = AVURLAsset(url: silent)
         let silentTracks = try await silentAsset.loadTracks(withMediaType: .video)
         let silentTrack = try XCTUnwrap(silentTracks.first)
@@ -931,7 +1034,7 @@ final class TimeStoryFeatureTests: XCTestCase {
         project.shots[1].presentationMode = .aspectFitBlack
         let musical = root.appendingPathComponent("musical.mp4")
         try await renderer.render(project: project, destinationURL: musical) { _ in }
-        try await assertPlayableVideo(musical, expectsAudio: true, expectedDuration: project.timelineDurationSeconds)
+        try await Self.assertPlayableVideo(musical, expectsAudio: true, expectedDuration: project.timelineDurationSeconds)
         try retainEvidenceIfRequested(silent: silent, musical: musical)
     }
 
@@ -989,7 +1092,7 @@ final class TimeStoryFeatureTests: XCTestCase {
         let result = try await client.verifiedResult(taskID: taskID)
         XCTAssertEqual(result.width, 1920)
         XCTAssertEqual(result.totalFrames, 30)
-        try await assertPlayableVideo(result.fileURL, expectsAudio: false, expectedDuration: 1)
+        try await Self.assertPlayableVideo(result.fileURL, expectsAudio: false, expectedDuration: 1)
         let bytes = try Data(contentsOf: result.fileURL)
         defer { try? bytes.write(to: result.fileURL) }
         try Data("changed synthetic result".utf8).write(to: result.fileURL)
@@ -1102,7 +1205,7 @@ final class TimeStoryFeatureTests: XCTestCase {
         XCTAssertEqual(verified.fileSHA256, try fileSHA256(verified.fileURL))
         XCTAssertEqual(verified.width, 1920)
         XCTAssertEqual(verified.height, 1080)
-        try await assertPlayableVideo(verified.fileURL, expectsAudio: false, expectedDuration: timeline.durationSeconds)
+        try await Self.assertPlayableVideo(verified.fileURL, expectsAudio: false, expectedDuration: timeline.durationSeconds)
         try writeJSON(["taskID": submitted.taskID, "resultPath": verified.fileURL.path,
                        "sha256": verified.fileSHA256, "frames": verified.totalFrames,
                        "width": verified.width, "height": verified.height],
@@ -1655,7 +1758,7 @@ final class TimeStoryFeatureTests: XCTestCase {
             temporaryDirectory: evidence.appendingPathComponent("native-render-staging", isDirectory: true)
         )
         try await renderer.render(project: fixture.full, destinationURL: nativeVideo) { _ in }
-        try await assertPlayableVideo(nativeVideo, expectsAudio: true, expectedDuration: 60)
+        try await Self.assertPlayableVideo(nativeVideo, expectsAudio: true, expectedDuration: 60)
 
         let packageRows = try [
             deliveryPackageRow(name: "short-landscape", url: shortURL, document: shortDocument),
@@ -2632,7 +2735,7 @@ final class TimeStoryFeatureTests: XCTestCase {
         )
     }
 
-    private func assertPlayableVideo(
+    private static func assertPlayableVideo(
         _ url: URL,
         expectsAudio: Bool,
         expectedDuration: Double
@@ -2666,7 +2769,7 @@ final class TimeStoryFeatureTests: XCTestCase {
         }
     }
 
-    private func hasVisiblePixels(_ image: CGImage) -> Bool {
+    private static func hasVisiblePixels(_ image: CGImage) -> Bool {
         guard let data = image.dataProvider?.data,
               let bytes = CFDataGetBytePtr(data)
         else { return false }
