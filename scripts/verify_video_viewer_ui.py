@@ -23,7 +23,10 @@ def main():
     parser.add_argument('--story-clip', action='store_true', help='Operate the real story clip editor: 0.2 to 0.8 seconds, gain 30%%, then Use Clip')
     parser.add_argument('--story-workspace', action='store_true', help='Operate mixed story add/edit/order/save controls, then create finish')
     parser.add_argument('--gallery', action='store_true', help='Operate the synthetic full video gallery and tag the first video, then create finish')
+    parser.add_argument('--review', action='store_true', help='With --gallery: accept first video, reject second, undo, then finish')
     args = parser.parse_args()
+    if args.review and not args.gallery:
+        parser.error('--review requires --gallery')
     if (args.story_clip or args.story_workspace) and (args.with_audio or args.require_focus) or (args.story_clip and args.story_workspace):
         parser.error('Story clip mode cannot be combined with viewer options')
     if args.gallery and (args.story_clip or args.story_workspace or args.with_audio or args.require_focus):
@@ -84,6 +87,8 @@ def main():
     if args.gallery:
         environment.pop('IMAGEALL_INTERACTIVE_VIDEO_EVIDENCE', None)
         environment['IMAGEALL_INTERACTIVE_GALLERY_EVIDENCE'] = str(evidence)
+        if args.review:
+            environment['IMAGEALL_INTERACTIVE_REVIEW'] = '1'
         selector = 'ImageAllTests.LibraryWorkspaceModelTests/testInteractiveVideoGalleryWhenRequested'
     completion = 'Click Use Clip after entering the requested range and gain' if args.story_clip else f'Finish marker: {evidence / "finish"}'
     print(f'Synthetic viewer: {app}\n{completion}', flush=True)

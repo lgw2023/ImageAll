@@ -2152,7 +2152,7 @@ struct ReviewDecisionBar: View {
     let displayName: String
 
     private var selectionLabel: some View {
-        Text("已选 \(model.selectedAssetIDs.count) 张").font(.callout.monospacedDigit())
+        Text("已选 \(model.selectedAssetIDs.count) 项").font(.callout.monospacedDigit())
     }
 
     private var undoButton: some View {
@@ -2233,13 +2233,13 @@ struct ReviewQueueContentView: View {
                 Picker("查看方式", selection: Binding(
                     get: { model.reviewGroupsPhotos }, set: { model.setReviewGroupsPhotos($0) }
                 )) {
-                    Text("按照片").tag(true)
+                    Text("按媒体").tag(true)
                     Text("按模型").tag(false)
                 }
                 .frame(width: 130)
                 ReviewSourceFilterMenu(model: model)
                 if !model.reviewQueueItems.isEmpty {
-                    Text("已载入 \(Set(model.reviewQueueItems.map(\.assetID)).count) 张 · \(model.reviewQueueItems.count) 条建议")
+                    Text("已载入 \(Set(model.reviewQueueItems.map(\.assetID)).count) 项 · \(model.reviewQueueItems.count) 条建议")
                         .font(.caption.monospacedDigit().weight(.medium))
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 8)
@@ -2671,7 +2671,7 @@ private struct ReviewThumbnailView: View, @MainActor Equatable {
                             ForEach(state.origins) { origin in
                                 Text("\(origin.suggestionOrigin.reviewDisplayName) · \(String(format: "%.2f", origin.score))")
                             }
-                            Text("分数不可跨模型比较；审核会处理当前标签下这张照片的全部建议。")
+                            Text("分数不可跨模型比较；审核会处理当前标签下这项媒体的全部建议。")
                                 .font(.caption).foregroundStyle(.secondary)
                         }.padding(16).frame(maxWidth: 340)
                     }

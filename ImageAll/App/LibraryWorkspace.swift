@@ -12422,7 +12422,7 @@ extension LibraryWorkspaceModel {
             )
             guard reviewPageRequestID == requestID else { return }
             notice = .reviewMutationApplied(count: assetIDs.count, tagName: displayName)
-            reviewFeedback = "已\(action == .accept ? "确认" : "标记不属于") \(assetIDs.count) 张“\(displayName)”照片"
+            reviewFeedback = "已\(action == .accept ? "确认" : "标记不属于") \(assetIDs.count) 项“\(displayName)”媒体"
             reviewQueueItems.removeAll { selected.contains($0.assetID) }
             if reviewQueueItems.isEmpty, reviewNextCursor != nil {
                 await loadNextReviewQueuePage(tagID: tagID)
@@ -12540,7 +12540,7 @@ extension LibraryWorkspaceModel {
             notice = nil
             try await Self.offMain { try workspace.restoreTagMutation(undo.snapshot) }
             lastReviewMutation = nil
-            reviewFeedback = "已撤销 \(undo.affectedCount) 张“\(undo.tagDisplayName)”照片的审核。"
+            reviewFeedback = "已撤销 \(undo.affectedCount) 项“\(undo.tagDisplayName)”媒体的审核。"
             if case let .tagQueue(tagID, _) = reviewMode,
                tagID == undo.tagID, selectedMediaKind == undo.mediaKind,
                resolvedReviewSourceFilter == undo.sourceIDs {
@@ -12573,7 +12573,7 @@ extension LibraryWorkspaceModel {
                 reviewRestoreAnchorID = selectedReviewItemID
                 isSinglePhotoPresented = undo.wasPreviewing && selectedReviewItemID != nil
                 if restoredSelection.count < undo.selection.count {
-                    reviewFeedback = "已撤销人工决定；建议已更新，部分照片可能不再出现。"
+                    reviewFeedback = "已撤销人工决定；建议已更新，部分媒体可能不再出现。"
                 }
             }
             await enqueueAutomaticPersonalModelRebuildIfReady()
@@ -17493,7 +17493,7 @@ struct LibraryWorkspaceView: View {
         case let .insufficientSuggestionSamples(positive, negative):
             "正反样本对比还需确认 \(positive) 张、拒绝 \(negative) 张。样本匹配与模型识别不要求拒绝样本。"
         case let .reviewMutationApplied(count, tagName):
-            "已处理 \(count) 张“\(tagName)”照片"
+            "已处理 \(count) 项“\(tagName)”媒体"
         case let .tagBatchMutationApplied(count, tagName, action):
             tagBatchMutationNoticeText(count: count, tagName: tagName, action: action)
         case .photosAlreadyConnected:
@@ -17826,15 +17826,15 @@ struct LibraryWorkspaceView: View {
                 Button("确认属于 (P)") {
                     Task { await model.applyReviewDecision(action: .accept) }
                 }
-                .persistentHelp("确认所选照片属于当前审核标签，并进入下一项；快捷键 P。")
+                .persistentHelp("确认所选媒体属于当前审核标签，并进入下一项；快捷键 P。")
                 Button("不属于 (X)") {
                     Task { await model.applyReviewDecision(action: .reject) }
                 }
-                .persistentHelp("确认所选照片不属于当前审核标签，并进入下一项；快捷键 X。")
+                .persistentHelp("确认所选媒体不属于当前审核标签，并进入下一项；快捷键 X。")
                 Button("跳过 (U)") {
                     Task { await model.deferReviewSelection() }
                 }
-                .persistentHelp("跳过所选照片，不记录标签决定；快捷键 U。")
+                .persistentHelp("跳过所选媒体，不记录标签决定；快捷键 U。")
             }
             .disabled(model.selectedAssetIDs.isEmpty)
         }
@@ -17941,6 +17941,7 @@ private struct SinglePhotoReviewView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("singlePhotoView")
         .accessibilityLabel(item.fileName ?? model.selectedMediaKind.displayName)
         .task(id: item.assetID) {

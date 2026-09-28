@@ -881,3 +881,11 @@
 - 修正共用图库12处文案：侧栏全部媒体入口随当前照片/视频域显示名称和图标；标签空态、混合状态、完成数量、创建说明和网格缩放帮助使用媒体语义。未改变标签/收藏业务。
 - 在既有隔离验证工作树ee393455加已提交图库验收切片与本轮文案构建；gallery-media-wording-build.log为TEST BUILD SUCCEEDED。gallery-wording-ui/tests.log实际图库验收1/1 PASS（230.444秒）。实际播放01、确认标签、切至02、返回网格、切照片页；AX确认全部视频→全部照片，以及“已为1项媒体确认”和“未选择媒体”。
 - gallery-wording-owned.patch记录本轮生产增量；gallery-wording-ui/verification.json绑定工作树源码和构建产物SHA。沿用合成服务，不读取真实图库，不以此宣称当前混合主工作区整体构建或所有审核/地图页面已验。目标active；并行改动保留，仅本地提交。
+
+## P1/P3 正式审核视频播放、决定与撤销闭环（2026-09-28）
+
+- 审核大图新增独立可访问性容器，保留内部播放、前后切换和审核按钮名称。审核数量、按媒体分组、确认/拒绝/撤销反馈及检查器帮助使用媒体语义。
+- 复用独立合成图库验收，包装器新增--gallery --review；两条视频实际打开、播放、接受01、自动切02、拒绝02、撤销02。review-ui-restored/tests.log 1/1 PASS（58.888秒），断言两视频大图观测、真实播放器rate、01accepted、02曾rejected并撤销、02重入队列且恢复大图。
+- 首轮review-ui-final虽人工事实1/1通过，但撤销队列未恢复；定位为fake缺少无筛选参数的媒体域重载，默认实现返回空视频页。生产PersonalizationReviewService两个重载均已有实现。补齐fake并加强断言后重新完成实际UI，未修改生产查询语义。
+- review-ui-restoration-build.log TEST BUILD SUCCEEDED；同构建review-ui-regression.log 2/2 PASS，覆盖照片/视频队列隔离和照片批量接受撤销。verification.json保存隔离基线、源码与构建SHA；review-ui-owned.patch仅主共享文件本轮增量。
+- 本轮是正式视图→合成审核/目录服务，磁盘重开事实已有独立证据，不能用fake运行替代。多帧服务在此fixture未接入；瘦身、地图、多帧证据点击与最终版本审计仍待推进。未真实媒体/Photos宿主/付费调用/发布安装/push，目标active。

@@ -12488,6 +12488,7 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         guard let path = ProcessInfo.processInfo.environment["IMAGEALL_INTERACTIVE_GALLERY_EVIDENCE"] else {
             throw XCTSkip("Explicit synthetic gallery verification only")
         }
+        let isReview = ProcessInfo.processInfo.environment["IMAGEALL_INTERACTIVE_REVIEW"] == "1"
         let evidence = URL(fileURLWithPath: path, isDirectory: true)
         let sourceID = UUID()
         let first = Self.makeAsset(sourceID: sourceID, fileName: "01-synthetic.mp4",
@@ -12500,11 +12501,17 @@ final class LibraryWorkspaceModelTests: XCTestCase {
             reconciledItems: [first, second], tags: [tag], startsConnected: true)
         let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("docs/evidence/time-story-phase-1-20260918/synthetic-silent.mp4")
-        let model = LibraryWorkspaceModel(service: service,
+        let review = FakePersonalizationReviewPort(queueMediaKind: .video, queueItems: [first, second].map {
+            ReviewQueueItemProjection(assetID: $0.assetID, fileName: $0.fileName,
+                availability: $0.availability, contentRevision: $0.contentRevision,
+                acceptedTagCount: 0, rejectedTagCount: 0)
+        })
+        let model = LibraryWorkspaceModel(service: service, review: review,
             videoPlaybackProvider: GallerySyntheticVideoProvider(url: source), idlePrewarmInstallEventMonitor: false)
         await model.start()
         await waitForCatalogScanToFinish(model)
         await model.setMediaKind(.video)
+        if isReview { await model.enterReviewQueue(tagID: tag.id, displayName: tag.displayName) }
         let host = NSHostingView(rootView: LibraryWorkspaceView(model: model, loadsSharedPhoneProjections: false)
             .environmentObject(ToolbarDisplayModeSettingsModel()).frame(width: 1400, height: 900))
         let window = NSWindow(contentRect: NSRect(x: 50, y: 50, width: 1400, height: 900),
@@ -12521,6 +12528,8 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         let finish = evidence.appendingPathComponent("finish"), deadline = Date().addingTimeInterval(300)
         while Date() < deadline, !FileManager.default.fileExists(atPath: finish.path) {
             samples.append(["selected": model.primarySelectedAssetID?.uuidString ?? "", "single": model.isSinglePhotoPresented,
+                "firstDecision": String(describing: try? service.fetchInspectorDetail(assetID: first.assetID).tags.first { $0.tagID == tag.id }?.decision),
+                "secondDecision": String(describing: try? service.fetchInspectorDetail(assetID: second.assetID).tags.first { $0.tagID == tag.id }?.decision),
                 "rate": model.videoViewingSession.player.rate, "state": String(describing: model.videoViewingSession.state)])
             try JSONSerialization.data(withJSONObject: samples).write(to: evidence.appendingPathComponent("gallery-observations.json"), options: .atomic)
             try await Task.sleep(for: .milliseconds(200))
@@ -12531,6 +12540,14 @@ final class LibraryWorkspaceModelTests: XCTestCase {
         XCTAssertTrue(samples.contains { ($0["selected"] as? String) == second.assetID.uuidString && ($0["single"] as? Bool) == true })
         XCTAssertEqual(try service.fetchInspectorDetail(assetID: first.assetID).tags.first { $0.tagID == tag.id }?.decision, .accepted)
         XCTAssertGreaterThan(service.mutateTagCallCount, 0)
+        if isReview {
+            XCTAssertTrue(samples.contains { ($0["firstDecision"] as? String)?.contains("accepted") == true })
+            XCTAssertTrue(samples.contains { ($0["secondDecision"] as? String)?.contains("rejected") == true })
+            XCTAssertNotEqual(try service.fetchInspectorDetail(assetID: second.assetID).tags.first { $0.tagID == tag.id }?.decision, .rejected,
+                "Undo must restore the second video's decision")
+            XCTAssertTrue(model.reviewQueueItems.contains { $0.assetID == second.assetID })
+            XCTAssertTrue(model.isSinglePhotoPresented)
+        }
     }
 
     func testVideoViewingResolvesOffGridRevisionAndRejectsPhotoIdentity() async throws {
@@ -19598,6 +19615,7 @@ private final class BlockingTrainingWorkspacePort: TrainingWorkspacePort, @unche
 }
 
 private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @unchecked Sendable {
+    private let queueMediaKind: MediaKind
     private let lock = NSLock()
     private var storedOverviews: [SuggestionTagOverview]
     private var storedQueueItems: [ReviewQueueItemProjection]
@@ -19631,6 +19649,7 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
     private(set) var runPendingJobsCallCount = 0
 
     init(
+        queueMediaKind: MediaKind = .image,
         overviews: [SuggestionTagOverview] = [],
         queueItems: [ReviewQueueItemProjection] = [],
         pendingByAsset: [UUID: [AssetPendingSuggestion]] = [:],
@@ -19643,6 +19662,7 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
         queuePageSize: Int? = nil,
         featureCompletion: (candidates: Int, aboveThreshold: Int, skipped: Int)? = nil
     ) {
+        self.queueMediaKind = queueMediaKind
         storedOverviews = overviews
         storedQueueItems = queueItems
         storedPendingByAsset = pendingByAsset
@@ -19766,6 +19786,14 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
     }
 
     func fetchReviewQueue(
+        mediaKind: MediaKind, tagID: UUID, sourceIDs: [UUID]?,
+        cursor: ReviewQueueCursor?, limit: Int
+    ) throws -> ReviewQueuePage {
+        guard mediaKind == queueMediaKind else { return ReviewQueuePage(items: [], nextCursor: nil) }
+        return try fetchReviewQueue(tagID: tagID, sourceIDs: sourceIDs, cursor: cursor, limit: limit)
+    }
+
+    func fetchReviewQueue(
         mediaKind: MediaKind,
         tagID: UUID,
         sourceIDs: [UUID]?,
@@ -19774,7 +19802,7 @@ private final class FakePersonalizationReviewPort: PersonalizationReviewPort, @u
         limit: Int
     ) throws -> ReviewQueuePage {
         lock.withLock { storedLastQueueTagFilter = tagFilter }
-        guard mediaKind == .image else {
+        guard mediaKind == queueMediaKind else {
             return ReviewQueuePage(items: [], nextCursor: nil)
         }
         return try fetchReviewQueue(

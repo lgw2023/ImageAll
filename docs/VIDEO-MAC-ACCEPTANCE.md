@@ -76,3 +76,5 @@ python3 scripts/verify_video_viewer_ui.py \
 2026-09-28补充：正式系统面板导出与“播放上次导出的 MP4”已在story-workspace-ui-export通过实际操作，QuickTime确认正确URL并播放/寻址；ui-export-verification.json给出全片解码及与独立重开渲染的帧/音频一致性。手工选择保存目录时应使用面板目录控件；向文件名字段直接填绝对路径会被转换为包含冒号的文件名，本轮该自建文件已校验后归档到证据目录。
 
 图库专项使用`--gallery`及当前build-for-testing产品：完整LibraryWorkspaceView、两个合成视频、fake目录和验收标签，关闭无关的手机持久目录读取。打开01视频并播放，确认“视频验收标签”、清除后撤销、收藏、切换02再返回并关闭大图，然后创建finish。该模式证明正式控件到fake服务的调用和状态刷新；磁盘重启持久性需引用独立数据库测试，不能用此fixture替代。
+
+审核专项在图库包装器追加`--review`（即`--gallery --review`）。打开01视频并播放，点“属于”，自动切换02后点“不属于”，再点“撤销”，确认02重新进入待审大图后创建finish。断言同时检查01接受保留、02拒绝曾发生且已撤销、队列和大图恢复。合成端口不证明数据库持久性；最新实际证据为`review-ui-restored/tests.log`。
