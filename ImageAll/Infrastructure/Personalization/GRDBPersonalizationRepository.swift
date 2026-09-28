@@ -363,13 +363,23 @@ struct GRDBPersonalizationRepository: PersonalizationCatalogPort, Sendable {
                 arguments: [Self.uuid(prediction.assetID), Self.uuid(tagID)]
             ) ?? false
             guard !hasDecision else { continue }
+            var evidenceJSON: String?
+            if let evidence = prediction.videoEvidence {
+                guard mediaKind == .video,
+                      evidence.isValid(assetID: prediction.assetID, revision: prediction.contentRevision),
+                      try Int.fetchOne(db, sql: "SELECT preprocessing_revision FROM tag_model_revision WHERE media_kind = ? AND tag_id = ? AND revision = ?",
+                        arguments: [mediaKind.rawValue, Self.uuid(tagID), modelRevision]) == PersonalizationRepresentation.videoMultiFrame.preprocessingRevision else {
+                    throw PersonalizationCatalogError.invalidInput
+                }
+                evidenceJSON = String(decoding: try JSONEncoder().encode(evidence), as: UTF8.self)
+            }
 
             try db.execute(
                 sql: """
                 INSERT INTO prediction (
                     media_kind, asset_id, tag_id, content_revision, model_revision,
-                    score, state, created_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, 'pendingReview', ?)
+                    score, state, created_at_ms, video_evidence_json
+                ) VALUES (?, ?, ?, ?, ?, ?, 'pendingReview', ?, ?)
                 """,
                 arguments: [
                     mediaKind.rawValue,
@@ -379,6 +389,7 @@ struct GRDBPersonalizationRepository: PersonalizationCatalogPort, Sendable {
                     modelRevision,
                     prediction.score,
                     createdAtMs,
+                    evidenceJSON,
                 ]
             )
         }

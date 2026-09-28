@@ -11,6 +11,7 @@ enum PersonalizationConstants {
 enum PersonalizationRepresentation: Int, Codable, Sendable {
     case legacy = 1
     case videoMultiFrame = 2
+    static let videoMultiFrameIdentity = "videoFrames.uniform5.512.jpeg80.v1/vision-r2/mean-unit-v1"
 
     var preprocessingRevision: Int { rawValue }
     func supports(_ mediaKind: MediaKind) -> Bool { self == .legacy || mediaKind == .video }
@@ -52,12 +53,33 @@ enum FeatureVectorOrigin: Equatable, Sendable {
     case cacheHit
 }
 
+struct VideoPredictionEvidence: Codable, Equatable, Sendable {
+    struct Frame: Codable, Equatable, Sendable {
+        let actualTimeMs: Int64
+        let jpegSHA256: Data
+    }
+    let assetID: UUID
+    let contentRevision: Int
+    let representation: String
+    let vectorSHA256: Data
+    let frames: [Frame]
+
+    func isValid(assetID: UUID, revision: Int) -> Bool {
+        self.assetID == assetID && contentRevision == revision
+            && representation == PersonalizationRepresentation.videoMultiFrameIdentity && vectorSHA256.count == 32
+            && !frames.isEmpty && frames.count <= 5
+            && frames.allSatisfy { $0.actualTimeMs >= 0 && $0.jpegSHA256.count == 32 }
+            && Set(frames.map(\.actualTimeMs)).count == frames.count
+    }
+}
+
 struct FeatureVectorPayload: Equatable, Sendable {
     let identity: FeatureIdentity
     let elementCount: Int
     let vectorData: Data
     let vectorSHA256: Data
     let origin: FeatureVectorOrigin
+    var videoEvidence: VideoPredictionEvidence? = nil
 }
 
 struct FeaturePrintInput: Sendable {
@@ -241,6 +263,7 @@ struct PredictionRegistration: Equatable, Sendable {
     let assetID: UUID
     let contentRevision: Int
     let score: Double
+    var videoEvidence: VideoPredictionEvidence? = nil
 }
 
 struct PendingPrediction: Equatable, Sendable {

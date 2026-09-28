@@ -623,7 +623,7 @@ final class FeaturePrintCacheService: FeatureVectorLoading, SyncFeatureVectorLoa
 /// A separate representation identity prevents a poster-trained model from
 /// silently consuming multi-frame vectors of the same numeric dimension.
 struct VideoMultiFrameFeatureSet: Sendable, Codable, Equatable {
-    static let identity = "videoFrames.uniform5.512.jpeg80.v1/vision-r2/mean-unit-v1"
+    static let identity = PersonalizationRepresentation.videoMultiFrameIdentity
     struct Frame: Sendable, Codable, Equatable {
         let timeMs: Int64
         let values: [Float]
@@ -740,7 +740,11 @@ struct VideoMultiFrameFeatureLoader: FeatureVectorLoading, SyncFeatureVectorLoad
         try GRDBPersonalizationRepository(database: analysis.database).registerFeature(FeatureRegistration(
             identity: identity, elementCount: values.count, byteCount: bytes.count,
             vectorSHA256: digest, cacheKey: key, createdAtMs: analysis.clock.nowMs))
+        let evidence = VideoPredictionEvidence(assetID: assetID, contentRevision: revision,
+            representation: VideoMultiFrameFeatureSet.identity, vectorSHA256: digest,
+            frames: result.sampling.frames.map { .init(actualTimeMs: $0.actualTimeMs,
+                jpegSHA256: Data(SHA256.hash(data: $0.jpegBytes))) })
         return FeatureVectorPayload(identity: identity, elementCount: values.count, vectorData: bytes,
-            vectorSHA256: digest, origin: result.reusedFeatures ? .cacheHit : .generated)
+            vectorSHA256: digest, origin: result.reusedFeatures ? .cacheHit : .generated, videoEvidence: evidence)
     }
 }

@@ -259,7 +259,8 @@ struct FullLibrarySuggestionsHandler: LeaseBoundJobHandler, Sendable {
                             PredictionRegistration(
                                 assetID: assetID,
                                 contentRevision: context.contentRevision,
-                                score: score
+                                score: score,
+                                videoEvidence: feature.videoEvidence
                             )
                         )
                         suggestedDelta += 1

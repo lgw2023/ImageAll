@@ -24,6 +24,13 @@ enum PersonalizedSuggestionScoringCore {
               identity.preprocessingRevision == representation.preprocessingRevision else {
             throw PersonalizedSuggestionError.incompatibleFeatureIdentity
         }
+        if let evidence = payload.videoEvidence {
+            guard representation == .videoMultiFrame,
+                  evidence.isValid(assetID: assetID, revision: identity.contentRevision),
+                  evidence.vectorSHA256 == payload.vectorSHA256 else {
+                throw PersonalizedSuggestionError.incompatibleFeatureIdentity
+            }
+        }
     }
 
     static func decode(_ payload: FeatureVectorPayload) throws -> [Float] {

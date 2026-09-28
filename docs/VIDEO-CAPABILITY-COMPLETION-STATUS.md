@@ -590,3 +590,10 @@
 - 同一帧/特征缓存与版本2 loader 同时支持文件夹和 Photos 本地原件；CompositionRoot 注入 PhotoKit 入口，查看器与正式策略确认页移除“仅文件夹”限制并提示不自动下载。已分析内容候选允许 Photos，仍先重新复核来源。
 - `photos-multiframe-build.log` TEST BUILD SUCCEEDED；`photos-multiframe-tests.log` 4/4 PASS。Photos 替身实际合成 MP4 解码/真实 Vision、同资源复用、资源身份/修订更新重算、云端拒绝、进行中变化/取消拒绝、版本2特征注册，以及文件夹/候选/等待回归通过。
 - 测试未调用真实 PHAsset/图库、未下载 iCloud；真实系统联动 NOT_RUN。Photos 分支工程接线完成，但完整合成训练→建议→审核证据和原生 UI 渲染/人工路线仍待验，P5 及整体 active。
+
+## P5 预测输入证据冻结（2026-09-28）
+
+- V059 新增 prediction.video_evidence_json（旧记录 NULL，不回填）。多帧 loader 随实际评分向量携带资产/修订、表示身份、向量 SHA 和最多 5 帧实际时间/JPEG SHA；直接建议和后台任务传递至预测发布事务。
+- 发布校验视频域、模型 preprocessing=2、证据资产/修订和合法摘要；评分入口校验证据向量摘要与实际 payload 一致。证据为聚合输入，不宣称单帧因果贡献或目标“命中”解释。
+- `video-prediction-evidence-build.log` TEST BUILD SUCCEEDED；`video-prediction-evidence-tests.log` 4/4 PASS。真实多帧 loader 的帧/向量摘要一致，合成预测发布后 JSON 时间点可重读，版本2队列及 migration 重开回归通过。
+- 尚需审核读取接口和摘要匹配显示，缺失/淘汰缓存不能拿新帧补造旧证据；完整真实视频训练→审核及 UI 验收待续。整体 active。

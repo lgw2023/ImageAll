@@ -98,7 +98,8 @@ final class PersonalizedSuggestionService: @unchecked Sendable {
                     PredictionRegistration(
                         assetID: candidate.assetID,
                         contentRevision: candidate.contentRevision,
-                        score: score
+                        score: score,
+                        videoEvidence: payload.videoEvidence
                     )
                 )
             }

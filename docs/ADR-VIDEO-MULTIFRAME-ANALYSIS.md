@@ -85,3 +85,7 @@ PhotosVideoAnalysisSourcePort 只提供受控本地原件闭包，不接受云�
 既有服务增加 Photos 分支（内部类型名暂保留 FolderVideoAnalysisService），在 PhotosVideoAnalysisSourcePort 授权闭包内持有原件描述符；缓存键除 catalog asset/revision 外，包含 source/local ID、资源身份、时长、类型、inode/ctime/mtime/size。每帧、特征完成和返回前复核 catalog/文件，PhotoKit adapter 在闭包结束另复核系统资源身份。Photos 结果与文件夹使用相同表示、预算及正式版本2 loader，无云端回退。
 
 Mac 查看器、策略确认和已分析内容候选可接 Photos 本地视频。云端不可用返回错误而不下载；原件不是当前编辑渲染效果，仍遵循已有原件播放器语义。工程验收使用替身 reader 和合成 MP4，真实 PhotoKit/iCloud 系统流程保持 NOT_RUN。
+
+## 建议输入证据冻结
+
+预测事务保存 VideoPredictionEvidence：资产修订、表示身份、实际向量摘要及实际采样帧时间/JPEG 摘要。与当前分析缓存分离；旧预测没有证据，不自动回填。真实多帧 loader 生成证据，评分校验向量摘要，发布校验域/模型版本/资产修订。该证据表示全部聚合输入，不把最佳匹配帧冒充模型因果解释。审核后续只能使用摘要匹配的缓存图像，缺失应明确显示无法还原，不用新分析替换历史输入。

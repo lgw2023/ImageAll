@@ -113,6 +113,7 @@ struct CatalogDatabase: Sendable {
         V056AddPhotosOriginalVideoDigestMigration.register(on: &migrator)
         V057AddVideoAnalysisFramesMigration.register(on: &migrator)
         V058AddVideoAnalysisFeaturesMigration.register(on: &migrator)
+        V059AddVideoPredictionEvidenceMigration.register(on: &migrator)
         return migrator
     }
 
@@ -3577,6 +3578,14 @@ enum V058AddVideoAnalysisFeaturesMigration {
                     created_at_ms INTEGER NOT NULL
                 );
                 """)
+        }
+    }
+}
+
+enum V059AddVideoPredictionEvidenceMigration {
+    static func register(on migrator: inout DatabaseMigrator) {
+        migrator.registerMigration(CatalogMigrationID.v059AddVideoPredictionEvidence) { db in
+            try db.execute(sql: "ALTER TABLE prediction ADD COLUMN video_evidence_json TEXT CHECK(video_evidence_json IS NULL OR length(video_evidence_json) <= 8192)")
         }
     }
 }

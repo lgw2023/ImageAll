@@ -1027,6 +1027,13 @@ final class PersonalizedSuggestionServiceTests: XCTestCase {
         }
         XCTAssertEqual(stored.0, 2)
         XCTAssertEqual(stored.1, 4)
+        let json = try await fixture.database.pool.read { db in
+            try String.fetchOne(db, sql: "SELECT video_evidence_json FROM prediction WHERE asset_id = ?",
+                arguments: [candidate.uuidString.lowercased()])
+        }
+        let evidence = try JSONDecoder().decode(VideoPredictionEvidence.self, from: Data(try XCTUnwrap(json).utf8))
+        XCTAssertTrue(evidence.isValid(assetID: candidate, revision: 1))
+        XCTAssertEqual(evidence.frames.map(\.actualTimeMs), [500])
         do {
             _ = try await service.generateSuggestions(tagID: fixture.ids.tagFamily,
                 candidateAssetIDs: [candidate], mediaKind: .video)
@@ -1356,7 +1363,10 @@ private actor StubFeatureVectorLoader: FeatureVectorLoading {
             elementCount: values.count,
             vectorData: data,
             vectorSHA256: digest,
-            origin: .generated
+            origin: .generated,
+            videoEvidence: preprocessingRevision == 2 ? VideoPredictionEvidence(assetID: assetID,
+                contentRevision: contentRevision, representation: PersonalizationRepresentation.videoMultiFrameIdentity,
+                vectorSHA256: digest, frames: [.init(actualTimeMs: 500, jpegSHA256: Data(repeating: 1, count: 32))]) : nil
         )
     }
 }
