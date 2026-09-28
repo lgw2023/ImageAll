@@ -225,7 +225,7 @@ struct CompositionRoot {
                 featureLoader: featurePrintService,
                 clock: clock,
                 multiFrameFeatureLoader: VideoMultiFrameFeatureLoader(
-                    analysis: FolderVideoAnalysisService(database: runtime.database, sourceAccess: sourceAccess, clock: clock),
+                    analysis: FolderVideoAnalysisService(database: runtime.database, sourceAccess: sourceAccess, clock: clock, photosSource: photosAccess),
                     cachesDirectory: runtime.paths.cachesDirectory),
                 minimumScoreForTag: { tagID in
                     try suggestionThresholds.effectiveMinScore(tagID: tagID, method: .featureKnn)
@@ -636,7 +636,7 @@ struct CompositionRoot {
         )
         PhoneArchiveImportProcessHolder.recoverPreparedOutboundMacTagDecisions()
         workspaceModel.videoAnalysisService = FolderVideoAnalysisService(
-            database: runtime.database, sourceAccess: sourceAccess, clock: clock)
+            database: runtime.database, sourceAccess: sourceAccess, clock: clock, photosSource: photosAccess)
         return workspaceModel
     }
 

@@ -79,3 +79,9 @@ FullLibrarySuggestions 合同 1 绑定 legacy，合同 2 绑定 videoMultiFrame 
 ## Photos 本地资源边界
 
 PhotosVideoAnalysisSourcePort 只提供受控本地原件闭包，不接受云端下载授权。PhotoKit 请求 version original/network false，持有返回的 AVAsset 至闭包结束；非 AVURLAsset、本地文件外 URL 或云端不可用均拒绝。读取前捕获资源身份、完成后复核授权及身份；后台等待可取消且有 300s 请求等待上限。该入口尚未作为缓存/训练 UI 的可用声明；实际整合需先通过合成 reader 的资源变化/修订/取消验证。
+
+## Photos 多帧统一分析
+
+既有服务增加 Photos 分支（内部类型名暂保留 FolderVideoAnalysisService），在 PhotosVideoAnalysisSourcePort 授权闭包内持有原件描述符；缓存键除 catalog asset/revision 外，包含 source/local ID、资源身份、时长、类型、inode/ctime/mtime/size。每帧、特征完成和返回前复核 catalog/文件，PhotoKit adapter 在闭包结束另复核系统资源身份。Photos 结果与文件夹使用相同表示、预算及正式版本2 loader，无云端回退。
+
+Mac 查看器、策略确认和已分析内容候选可接 Photos 本地视频。云端不可用返回错误而不下载；原件不是当前编辑渲染效果，仍遵循已有原件播放器语义。工程验收使用替身 reader 和合成 MP4，真实 PhotoKit/iCloud 系统流程保持 NOT_RUN。

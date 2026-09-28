@@ -253,7 +253,7 @@ struct LibraryVideoViewer: View {
                 analysisMessage = "分析 \(sampling.frames.count) 帧 · 复用 \(sampling.reusedFrameCount) 帧 · \(dimensions) 维特征。点击时间点定位播放。"
             } catch {
                 guard analysisRequest == request, !Task.isCancelled else { return }
-                analysisMessage = "无法完成多帧分析。当前入口支持可读取的本地文件夹视频；请检查来源、时长及内容是否发生变化。"
+                analysisMessage = "无法完成多帧分析。当前入口支持可读取的文件夹视频及 Photos 本地原件；请检查来源、时长及内容是否发生变化。"
             }
             if analysisRequest == request { analysisTask = nil; analysisRequest = nil }
         }
@@ -296,14 +296,14 @@ struct LibraryVideoViewer: View {
                     Button("比较已分析视频的内容候选") { findContentCandidates() }
                 } label: { Label("多帧分析", systemImage: "film.stack") }
                     .disabled(model.videoAnalysisService == nil || analysisTask != nil || session.state != .ready
-                        || model.inspectorDetail?.assetID != assetID || model.inspectorDetail?.relativePath == nil
+                        || model.inspectorDetail?.assetID != assetID
                         || (model.inspectorDetail?.durationMs ?? 0) <= 0)
                     .help("仅处理当前视频。强制重建会重新解码，旧封面和精确去重证据保持不变。")
                 if analysisTask != nil {
                     ProgressView().controlSize(.small)
                     Button("取消分析") { cancelAnalysis(); analysisMessage = "已取消，可再次分析以复用有效检查点。" }
                 }
-                Text("文件夹视频 · 最多 5 帧 · 仅主动分析").font(.caption).foregroundStyle(.secondary)
+                Text("本地视频 · 最多 5 帧 · 不自动下载").font(.caption).foregroundStyle(.secondary)
             }
             if let analysisMessage { Text(analysisMessage).font(.caption).foregroundStyle(.secondary) }
             if !contentCandidates.isEmpty {

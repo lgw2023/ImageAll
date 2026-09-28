@@ -2069,7 +2069,7 @@ struct SuggestionEnqueueConfirmationSheet: View {
                     Text("单封面（旧策略）").tag(PersonalizationRepresentation.legacy)
                     Text("有限多帧（最多 5 帧）").tag(PersonalizationRepresentation.videoMultiFrame)
                 }
-                Text("选择多帧会新建对应版本的模型任务，不改历史训练记录。目前多帧支持文件夹视频；Photos 样本暂不支持。")
+                Text("选择多帧会新建对应版本的模型任务，不改历史训练记录。多帧读取文件夹或 Photos 本地原件；不会自动下载云端视频。")
                     .font(.caption).foregroundStyle(.secondary)
             }
 

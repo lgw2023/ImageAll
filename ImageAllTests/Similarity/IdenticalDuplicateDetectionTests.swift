@@ -8,6 +8,51 @@ import XCTest
 @testable import ImageAll
 
 final class IdenticalDuplicateDetectionTests: XCTestCase {
+    func testPhotosMultiFrameUsesLocalResourceIdentityAndRejectsCloudOrChangedSource() throws {
+        let env = try SimilarityTestSupport.Environment(label: #function)
+        defer { env.cleanup() }
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("docs/evidence/time-story-phase-1-20260918/synthetic-silent.mp4")
+        let local = env.sourceRoot.appendingPathComponent("photos-resource.mp4")
+        try Data(contentsOf: fixture).write(to: local)
+        let id = try env.seedPhotosAsset(mediaType: "public.mpeg-4", mediaKind: .video, durationMs: 1_000)
+        let port = SyntheticVideoAnalysisSource(url: local)
+        let base = env.makeCompletionService()
+        let service = FolderVideoAnalysisService(database: env.database, sourceAccess: base.sourceAccess,
+            clock: base.clock, photosSource: port)
+        let cold = try service.analyzeWithFeatures(assetID: id, expectedRevision: 1)
+        XCTAssertEqual(cold.sampling.frames.count, 3)
+        let warm = try service.analyzeWithFeatures(assetID: id, expectedRevision: 1)
+        XCTAssertTrue(warm.reusedFeatures)
+        XCTAssertEqual(warm.sampling.attemptedFrameCount, 0)
+        port.resourceIdentity = "changed-resource"
+        let changed = try service.analyzeWithFeatures(assetID: id, expectedRevision: 1)
+        XCTAssertFalse(changed.reusedFeatures)
+        XCTAssertEqual(changed.sampling.attemptedFrameCount, 3)
+        port.failure = PhotosLibraryError.cloudOnly
+        XCTAssertThrowsError(try service.analyzeWithFeatures(assetID: id)) {
+            XCTAssertEqual($0 as? PhotosLibraryError, .cloudOnly)
+        }
+        port.failure = nil
+        XCTAssertThrowsError(try service.analyze(assetID: id, forceRebuild: true, onFrame: { _ in
+            port.resourceIdentity = "changed-during-analysis"
+        }))
+        XCTAssertThrowsError(try service.analyzeWithFeatures(assetID: id, checkCancellation: { throw CancellationError() })) {
+            XCTAssertTrue($0 is CancellationError)
+        }
+        let recovered = try service.analyzeWithFeatures(assetID: id)
+        XCTAssertFalse(recovered.reusedFeatures)
+        XCTAssertEqual(recovered.sampling.attemptedFrameCount, 3)
+        let loader = VideoMultiFrameFeatureLoader(analysis: service, cachesDirectory: env.root.appendingPathComponent("features"))
+        XCTAssertEqual(try loader.loadOrGenerateSync(assetID: id).identity.preprocessingRevision, 2)
+        try env.database.pool.write { db in
+            try db.execute(sql: "UPDATE asset SET content_revision = 2 WHERE id = ?", arguments: [id.uuidString.lowercased()])
+        }
+        XCTAssertThrowsError(try service.analyzeWithFeatures(assetID: id, expectedRevision: 1))
+        XCTAssertEqual(try service.analyzeWithFeatures(assetID: id, expectedRevision: 2).sampling.attemptedFrameCount, 3)
+    }
+
     func testContentCandidatesUseAnalyzedDurationScopeAndNeverCreateExactGroups() throws {
         let env = try SimilarityTestSupport.Environment(label: #function)
         defer { env.cleanup() }
@@ -2325,5 +2370,23 @@ private final class SyntheticPhotosVideoDigestReader: PhotosOriginalVideoContent
         let result = try state.finalDigest()
         return PhotosOriginalVideoDigest(sha256: result.sha256, byteCount: result.byteCount,
             resourceIdentity: "synthetic-original-\(localIdentifier)", hasAdjustments: editedIDs.contains(localIdentifier))
+    }
+}
+
+private final class SyntheticVideoAnalysisSource: PhotosVideoAnalysisSourcePort, @unchecked Sendable {
+    let url: URL
+    var resourceIdentity = "synthetic-original"
+    var failure: Error?
+    init(url: URL) { self.url = url }
+    func withLocalVideoAnalysisSource<T>(localIdentifier: String,
+        checkCancellation: () throws -> Void, perform: (PhotosLocalVideoAnalysisSource) throws -> T) throws -> T {
+        try checkCancellation()
+        if let failure { throw failure }
+        let before = resourceIdentity
+        let value = try perform(PhotosLocalVideoAnalysisSource(url: url, durationMs: 1_000,
+            mediaType: "public.mpeg-4", resourceIdentity: before))
+        try checkCancellation()
+        guard resourceIdentity == before else { throw FingerprintCompletionError.sourceChanged }
+        return value
     }
 }

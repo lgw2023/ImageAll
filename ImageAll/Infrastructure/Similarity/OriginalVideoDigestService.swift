@@ -349,10 +349,16 @@ struct FolderVideoAnalysisService: Sendable {
     let database: CatalogDatabase
     let sourceAccess: FolderReconcileSourceAccessService
     let clock: any JobClock
+    var photosSource: (any PhotosVideoAnalysisSourcePort)? = nil
 
     func analyze(assetID: UUID, expectedRevision: Int? = nil, forceRebuild: Bool = false, checkCancellation: () throws -> Void = {},
                  onFrame: (VideoAnalysisFrame) throws -> Void = { _ in },
                  onCompleted: (VideoAnalysisSamplingResult, VideoAnalysisFrameCache.Key) throws -> Void = { _, _ in }) throws -> VideoAnalysisSamplingResult {
+        if let context = try photosContext(assetID: assetID) {
+            guard expectedRevision == nil || expectedRevision == context.revision else { throw FeaturePrintError.sourceChanged }
+            return try analyzePhotos(assetID: assetID, context: context, forceRebuild: forceRebuild,
+                checkCancellation: checkCancellation, onFrame: onFrame, onCompleted: onCompleted)
+        }
         let repository = GRDBDerivedImageCacheRepository(database: database)
         guard let context = try repository.fetchGenerationContext(assetID: assetID),
               expectedRevision == nil || context.contentRevision == expectedRevision,
@@ -401,6 +407,69 @@ struct FolderVideoAnalysisService: Sendable {
             try validate()
             return result
         }
+    }
+
+    private struct PhotosContext: Equatable {
+        let revision: Int
+        let sourceID: String
+        let localIdentifier: String
+        let updatedAt: Int64
+    }
+
+    private func photosContext(assetID: UUID) throws -> PhotosContext? {
+        try database.pool.read { db in
+            guard let row = try Row.fetchOne(db, sql: """
+                SELECT a.content_revision, a.source_id, a.photos_local_identifier, a.record_updated_at_ms
+                FROM asset a JOIN source s ON s.id = a.source_id
+                WHERE a.id = ? AND a.media_kind = 'video' AND a.locator_kind = 'photos'
+                AND a.locator_state = 'current' AND a.availability = 'available'
+                AND s.kind = 'photos' AND s.state = 'active'
+                """, arguments: [assetID.uuidString.lowercased()]),
+                  let local: String = row["photos_local_identifier"], !local.isEmpty else { return nil }
+            return PhotosContext(revision: row["content_revision"], sourceID: row["source_id"],
+                localIdentifier: local, updatedAt: row["record_updated_at_ms"])
+        }
+    }
+
+    private func analyzePhotos(assetID: UUID, context: PhotosContext, forceRebuild: Bool,
+        checkCancellation: () throws -> Void, onFrame: (VideoAnalysisFrame) throws -> Void,
+        onCompleted: (VideoAnalysisSamplingResult, VideoAnalysisFrameCache.Key) throws -> Void) throws -> VideoAnalysisSamplingResult {
+        guard let photosSource else { throw FeaturePrintError.sourceUnavailable }
+        return try photosSource.withLocalVideoAnalysisSource(localIdentifier: context.localIdentifier,
+            checkCancellation: checkCancellation) { source in
+                guard source.url.isFileURL, source.durationMs > 0, !source.resourceIdentity.isEmpty else {
+                    throw FeaturePrintError.assetIneligible
+                }
+                let fd = try DerivedImageSecureIO.openReadOnlyNoFollow(at: source.url)
+                defer { Darwin.close(fd) }
+                let physical = try OriginalVideoDigestService.FileIdentity.read(fd)
+                let key = VideoAnalysisFrameCache.Key(assetID: assetID, contentRevision: context.revision,
+                    policy: VideoAnalysisSamplingPolicy.identity,
+                    sourceIdentity: "photos:\(context.sourceID):\(context.localIdentifier):\(source.resourceIdentity):\(source.durationMs):\(source.mediaType):\(physical.token):\(physical.size)")
+                func validate() throws {
+                    try checkCancellation()
+                    guard try photosContext(assetID: assetID) == context,
+                          try OriginalVideoDigestService.FileIdentity.read(fd) == physical else { throw FeaturePrintError.sourceChanged }
+                    let current = try DerivedImageSecureIO.openReadOnlyNoFollow(at: source.url)
+                    defer { Darwin.close(current) }
+                    guard try OriginalVideoDigestService.FileIdentity.read(current) == physical else { throw FeaturePrintError.sourceChanged }
+                }
+                try validate()
+                let cache = VideoAnalysisFrameCache(database: database, clock: clock)
+                if forceRebuild { try cache.discardCurrentRepresentation(key: key) }
+                let result = try AVFoundationVideoAnalysisSampler().sample(
+                    sourceFileDescriptorURL: DerivedImageSourceFingerprintFacts.fileDescriptorURL(for: fd),
+                    mediaType: source.mediaType, durationMs: source.durationMs,
+                    checkCancellation: validate, cachedFrames: cache.frames(key: key), onFrame: { frame in
+                        try validate()
+                        try cache.store(frame, key: key)
+                        try onFrame(frame)
+                    })
+                try validate()
+                try onCompleted(result, key)
+                try validate()
+                return result
+            }
     }
 
     func analyzeWithFeatures(assetID: UUID, expectedRevision: Int? = nil, forceRebuild: Bool = false,
@@ -590,7 +659,7 @@ extension FolderVideoAnalysisService {
                 SELECT a.id, a.content_revision, a.file_name FROM video_analysis_feature f
                 JOIN asset a ON a.id = f.asset_id JOIN source s ON s.id = a.source_id
                 JOIN asset current ON current.id = ?
-                WHERE a.id != current.id AND a.media_kind = 'video' AND a.locator_kind = 'file'
+                WHERE a.id != current.id AND a.media_kind = 'video' AND a.locator_kind IN ('file', 'photos')
                 AND a.locator_state = 'current' AND a.availability = 'available' AND s.state = 'active'
                 AND f.content_revision = a.content_revision AND f.representation = ?
                 AND current.content_revision = ? AND current.duration_ms > 0

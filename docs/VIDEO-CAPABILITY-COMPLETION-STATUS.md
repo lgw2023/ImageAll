@@ -583,3 +583,10 @@
 - 新 PhotosVideoAnalysisSourcePort 以受控闭包持有本地原件 AVAsset，提供资源身份/时长/类型；PhotoKit 实现请求原件、明确禁网，云端/合成非文件资源拒绝，完成后再次检查授权与原资源身份。等待每 100ms 检查取消，最长等待 300s；该等待上限不代表逐帧同步解码可即时中断。
 - `photos-analysis-source-build.log` TEST BUILD SUCCEEDED；`photos-analysis-source-tests.log` 2/2 PASS，验证可取消等待、一次完成、超时、禁网配置、合成资源拒绝及原播放器回归。未执行 PHAsset.fetchAssets 或真实 Photos 请求；实际图库 API 和云端行为 NOT_RUN。
 - 这轮仅新增适配器入口，尚未接分析缓存/训练 loader 或开放 Photos UI；下一轮使用替身资源验证 Photos catalog 身份、来源复核及缓存后再接线。整体 active。
+
+## P5 Photos 多帧缓存/训练/界面接线（2026-09-28）
+
+- 多帧服务增加 Photos catalog 分支，受控本地资源入口内打开 no-follow 描述符，检查文件身份、Photos source/local ID、内容修订和 catalog 更新时间；复用键包含 PhotoKit 资源身份、时长、类型和物理文件身份。前后及逐帧复核，来源变化/取消不返回完整结果。
+- 同一帧/特征缓存与版本2 loader 同时支持文件夹和 Photos 本地原件；CompositionRoot 注入 PhotoKit 入口，查看器与正式策略确认页移除“仅文件夹”限制并提示不自动下载。已分析内容候选允许 Photos，仍先重新复核来源。
+- `photos-multiframe-build.log` TEST BUILD SUCCEEDED；`photos-multiframe-tests.log` 4/4 PASS。Photos 替身实际合成 MP4 解码/真实 Vision、同资源复用、资源身份/修订更新重算、云端拒绝、进行中变化/取消拒绝、版本2特征注册，以及文件夹/候选/等待回归通过。
+- 测试未调用真实 PHAsset/图库、未下载 iCloud；真实系统联动 NOT_RUN。Photos 分支工程接线完成，但完整合成训练→建议→审核证据和原生 UI 渲染/人工路线仍待验，P5 及整体 active。
