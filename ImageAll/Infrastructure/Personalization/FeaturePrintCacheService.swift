@@ -619,3 +619,86 @@ final class FeaturePrintCacheService: FeatureVectorLoading, SyncFeatureVectorLoa
     }
 
 }
+
+/// A separate representation identity prevents a poster-trained model from
+/// silently consuming multi-frame vectors of the same numeric dimension.
+struct VideoMultiFrameFeatureSet: Sendable {
+    static let identity = "videoFrames.uniform5.512.jpeg80.v1/vision-r2/mean-unit-v1"
+    struct Frame: Sendable {
+        let timeMs: Int64
+        let values: [Float]
+    }
+    let representationIdentity: String
+    let frames: [Frame]
+    let aggregate: [Float]
+
+    static func generate(_ sampling: VideoAnalysisSamplingResult,
+                         checkCancellation: () throws -> Void = {}) throws -> Self {
+        guard sampling.policyIdentity == VideoAnalysisSamplingPolicy.identity,
+              !sampling.frames.isEmpty, sampling.frames.count <= VideoAnalysisSamplingPolicy.maximumFrameCount else {
+            throw FeaturePrintError.generationFailed
+        }
+        var frames: [Frame] = []
+        let generator = VisionFeaturePrintGenerator()
+        for frame in sampling.frames {
+            try checkCancellation()
+            let artifact = try generator.generate(sourceBytes: frame.jpegBytes, expectedMediaType: "public.jpeg")
+            let values = artifact.vectorData.withUnsafeBytes { raw in
+                (0..<artifact.elementCount).map { raw.loadUnaligned(fromByteOffset: $0 * 4, as: Float.self) }
+            }
+            frames.append(Frame(timeMs: frame.actualTimeMs, values: try unit(values)))
+        }
+        guard let count = frames.first?.values.count, frames.allSatisfy({ $0.values.count == count }) else {
+            throw FeaturePrintError.generationFailed
+        }
+        var mean = [Float](repeating: 0, count: count)
+        for frame in frames { for index in mean.indices { mean[index] += frame.values[index] / Float(frames.count) } }
+        try checkCancellation()
+        return Self(representationIdentity: identity, frames: frames, aggregate: try unit(mean))
+    }
+
+    /// Used by both training and inference; callers must supply the model's
+    /// persisted representation identity instead of inferring it from dimensions.
+    func modelInput(expectedRepresentation: String) throws -> [Float] {
+        guard representationIdentity == expectedRepresentation else { throw FeaturePrintError.assetIneligible }
+        return aggregate
+    }
+
+    struct Match: Sendable {
+        let score: Float
+        let leftTimeMs: Int64
+        let rightTimeMs: Int64
+    }
+
+    /// Symmetric coverage penalizes videos sharing only a cover frame. This is
+    /// candidate evidence only, never an original identity or cleanup decision.
+    func contentMatch(to other: Self) throws -> Match {
+        guard representationIdentity == Self.identity, other.representationIdentity == representationIdentity,
+              !frames.isEmpty, !other.frames.isEmpty else { throw FeaturePrintError.assetIneligible }
+        var matrix: [[Float]] = []
+        var best: (score: Float, left: Int64, right: Int64) = (-Float.infinity, 0, 0)
+        for left in frames {
+            var row: [Float] = []
+            for right in other.frames {
+                guard left.values.count == right.values.count else { throw FeaturePrintError.generationFailed }
+                let score = zip(left.values, right.values).reduce(Float(0)) { $0 + $1.0 * $1.1 }
+                guard score.isFinite else { throw FeaturePrintError.generationFailed }
+                row.append(score)
+                if score > best.score { best = (score, left.timeMs, right.timeMs) }
+            }
+            matrix.append(row)
+        }
+        let forward = matrix.reduce(Float(0)) { $0 + ($1.max() ?? 0) } / Float(frames.count)
+        let reverse = other.frames.indices.reduce(Float(0)) { sum, index in
+            sum + (matrix.map { $0[index] }.max() ?? 0)
+        } / Float(other.frames.count)
+        return Match(score: min(1, max(-1, (forward + reverse) / 2)), leftTimeMs: best.left, rightTimeMs: best.right)
+    }
+
+    private static func unit(_ values: [Float]) throws -> [Float] {
+        guard !values.isEmpty, values.allSatisfy(\.isFinite) else { throw FeaturePrintError.generationFailed }
+        let norm = sqrt(values.reduce(Double(0)) { $0 + Double($1) * Double($1) })
+        guard norm.isFinite, norm > 0 else { throw FeaturePrintError.generationFailed }
+        return values.map { Float(Double($0) / norm) }
+    }
+}

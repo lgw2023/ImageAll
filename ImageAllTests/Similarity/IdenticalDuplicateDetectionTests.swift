@@ -8,6 +8,28 @@ import XCTest
 @testable import ImageAll
 
 final class IdenticalDuplicateDetectionTests: XCTestCase {
+    func testVideoMultiFrameFeaturesUseVisionAndRejectPosterModelIdentity() throws {
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("docs/evidence/time-story-phase-1-20260918/synthetic-silent.mp4")
+        let sample = try AVFoundationVideoAnalysisSampler().sample(sourceFileDescriptorURL: fixture,
+            mediaType: "public.mpeg-4", durationMs: 1_000)
+        let features = try VideoMultiFrameFeatureSet.generate(sample)
+        XCTAssertEqual(features.frames.map(\.timeMs), sample.frames.map(\.actualTimeMs))
+        XCTAssertFalse(features.aggregate.isEmpty)
+        XCTAssertEqual(try features.modelInput(expectedRepresentation: VideoMultiFrameFeatureSet.identity), features.aggregate)
+        XCTAssertThrowsError(try features.modelInput(expectedRepresentation: "videoPoster.v1"))
+        XCTAssertEqual(try features.contentMatch(to: features).score, 1, accuracy: 0.0001)
+        XCTAssertThrowsError(try VideoMultiFrameFeatureSet.generate(sample, checkCancellation: { throw CancellationError() }))
+        // A common cover alone must not imply coverage of the remaining video.
+        let left = VideoMultiFrameFeatureSet(representationIdentity: VideoMultiFrameFeatureSet.identity,
+            frames: [.init(timeMs: 0, values: [1, 0, 0]), .init(timeMs: 500, values: [0, 1, 0])], aggregate: [0.7, 0.7, 0])
+        let right = VideoMultiFrameFeatureSet(representationIdentity: VideoMultiFrameFeatureSet.identity,
+            frames: [.init(timeMs: 0, values: [1, 0, 0]), .init(timeMs: 500, values: [0, 0, 1])], aggregate: [0.7, 0, 0.7])
+        XCTAssertEqual(try left.contentMatch(to: right).score, 0.5, accuracy: 0.0001)
+        print("VIDEO_VISION_FEATURES frames=\(features.frames.count) dimension=\(features.aggregate.count) identity=\(features.representationIdentity)")
+    }
+
     func testFolderMultiframeCheckpointsResumeAndRejectRevisionOrSourceChanges() throws {
         let env = try SimilarityTestSupport.Environment(label: #function)
         defer { env.cleanup() }

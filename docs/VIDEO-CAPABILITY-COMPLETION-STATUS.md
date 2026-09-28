@@ -511,3 +511,9 @@
 - V057 新增独立帧缓存，不修改既有 migration，不触碰精确去重证据。FolderVideoAnalysisService 接入授权文件描述符、内容/定位复核、逐帧保存和同策略复用。64 MiB 为有效 JPEG 载荷限额，不宣称 SQLite 文件总量硬上限。
 - `video-frame-cache-build.log` TEST BUILD SUCCEEDED；`video-frame-cache-tests.log` 3/3 PASS。取消后复用 1 帧、解码 2；全命中解码 0；内容修订解码 3；源变化拒绝；数据库重开幂等。实际源码摘要保存于证据根 `video-frame-cache-source-sha256.json`。
 - 当前只有文件夹服务接线，无用户界面成功宣称；Photos 多帧、本地特征聚合及模型身份、语义对照组、详情/审核跳转、策略切换和独立内容候选仍待交付。目标保持 active。未读真实媒体、未启动生产 Photos 宿主、无 Web/iOS 工作；LibraryWorkspace 75/5 与 project 4/0 并行差异保持。
+
+## P5 Vision 多帧表示（2026-09-28）
+
+- VideoMultiFrameFeatureSet 复用现有 Vision 生成器，保存帧级特征/时间点及归一化均值资产向量，独立身份拒绝旧 poster 模型输入。双向帧覆盖提供独立内容候选分数和最佳帧对证据，不写去重证据。
+- 构建 `video-frame-features-build.log` 成功，`video-frame-features-tests.log` 2/2 PASS；真实三帧 Vision 输出 768 维。人工向量的封面覆盖对照不代表真实语义对照通过。
+- P5 仍 IN_PROGRESS：未接生产训练/推理、向量/建议证据持久化、Photos 多帧、策略入口、审核跳转或候选列表；下一轮应优先形成 Mac 可操作的显式多帧分析与证据查看纵向闭环，再收训练一致性与语义验收。
