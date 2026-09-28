@@ -284,19 +284,53 @@ final class TimeStoryFeatureTests: XCTestCase {
             creativeRootProvider: roots, media: media, clock: SystemJobClock())
         let tag = TagListItem(id: project.subjectTagID, displayName: "Synthetic", state: .active)
         let model = TimeStoryWorkspaceModel(verificationRuntime: runtime, tag: tag, project: project, thumbnails: [:])
-        await model.addCandidate(photo)
-        let photoShot = try XCTUnwrap(model.project?.shots.first)
-        model.setDuration(photoShot.id, seconds: 0.5)
-        await model.addCandidate(video)
-        let request = try XCTUnwrap(model.videoClipRequest)
-        _ = try await model.prepareClipPreview(request, destination: root.appendingPathComponent("preview.mov"))
-        let clip = TimeStoryVideoClip(inPointMs: 200, outPointMs: 800, sourceDurationMs: 1000, originalAudioGain: 0.25)
-        model.applyVideoClip(request, clip: clip)
+        let interactivePath = ProcessInfo.processInfo.environment["IMAGEALL_INTERACTIVE_STORY_WORKSPACE_EVIDENCE"]
+        var interactiveWindow: NSWindow?
+        defer { interactiveWindow?.close() }
+        let clip = TimeStoryVideoClip(inPointMs: 200, outPointMs: 800, sourceDurationMs: 1000,
+            originalAudioGain: interactivePath == nil ? 0.25 : 1)
+        if let interactivePath {
+            let evidence = URL(fileURLWithPath: interactivePath, isDirectory: true)
+            let host = NSHostingView(rootView: TimeStoryWorkspaceView(model: model).frame(width: 1400, height: 900))
+            let window = NSWindow(contentRect: NSRect(x: 50, y: 50, width: 1400, height: 900),
+                styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.title = "ImageAll Synthetic Mixed Story Workspace"
+            window.contentView = host
+            interactiveWindow = window
+            NSApplication.shared.setActivationPolicy(.regular)
+            NSApplication.shared.finishLaunching()
+            window.makeKeyAndOrderFront(nil)
+            NSApplication.shared.activate(ignoringOtherApps: true)
+            let finish = evidence.appendingPathComponent("finish")
+            let deadline = Date().addingTimeInterval(300)
+            while Date() < deadline, !FileManager.default.fileExists(atPath: finish.path) {
+                if let current = model.project {
+                    try JSONEncoder().encode(current).write(to: evidence.appendingPathComponent("live-project.json"), options: .atomic)
+                }
+                try await Task.sleep(for: .milliseconds(200))
+            }
+            XCTAssertTrue(FileManager.default.fileExists(atPath: finish.path), "Interactive workspace timed out")
+            // Only the actual Save button is allowed to create this persisted project in interactive mode.
+            let saved = try runtime.store.load(project.id)
+            try JSONEncoder().encode(saved).write(to: evidence.appendingPathComponent("saved-project.json"))
+            XCTAssertEqual(saved.shots, model.project?.shots)
+        } else {
+            await model.addCandidate(photo)
+            let photoShot = try XCTUnwrap(model.project?.shots.first)
+            model.setDuration(photoShot.id, seconds: 0.5)
+            await model.addCandidate(video)
+            let request = try XCTUnwrap(model.videoClipRequest)
+            _ = try await model.prepareClipPreview(request, destination: root.appendingPathComponent("preview.mov"))
+            model.applyVideoClip(request, clip: clip)
+            let videoShot = try XCTUnwrap(model.project?.shots.first { $0.assetID == video.assetID })
+            model.moveShot(videoShot.id, before: photoShot.id)
+            let saved = await model.save()
+            XCTAssertTrue(saved)
+        }
+        let photoShot = try XCTUnwrap(model.project?.shots.first { $0.assetID == photo.assetID })
         let videoShot = try XCTUnwrap(model.project?.shots.first { $0.assetID == video.assetID })
-        model.moveShot(videoShot.id, before: photoShot.id)
         XCTAssertEqual(model.project?.shots.map(\.id), [videoShot.id, photoShot.id])
-        let saved = await model.save()
-        XCTAssertTrue(saved)
         let reopened = TimeStoryWorkspaceModel(runtime: runtime, tag: tag)
         await reopened.open(project.id)
         let restored = try XCTUnwrap(reopened.project)

@@ -1236,6 +1236,22 @@ final class TimeStoryWorkspaceModel: ObservableObject {
 
 }
 
+private struct StoryTimelineClipAccessibility: ViewModifier {
+    let shot: TimeStoryShot
+    let select: () -> Void
+    let moveForward: () -> Void
+    let moveToEnd: () -> Void
+
+    func body(content: Content) -> some View {
+        content.accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(shot.videoClip == nil ? "照片" : "视频")镜头，\(String(format: "%.1f", shot.durationSeconds))秒")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { select() }
+            .accessibilityAction(named: "向前移动") { moveForward() }
+            .accessibilityAction(named: "移到末尾") { moveToEnd() }
+    }
+}
+
 private struct StoryDropFrameKey: PreferenceKey {
     static let defaultValue: [String: CGRect] = [:]
     static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
@@ -1711,6 +1727,7 @@ struct TimeStoryWorkspaceView: View {
                             Button("从素材库选图替换") { selectedShotIDs = [shot.id]; selectedShotID = shot.id; replacementShotID = shot.id }
                             Button("从故事排除", role: .destructive) { model.remove(shot.id) }
                         }
+                        .modifier(timelineAccessibility(shot, in: project))
                         .accessibilityIdentifier("timeStoryTimelineClip")
                     }
                     Label("拖入素材\n添加镜头", systemImage: "plus.rectangle.on.rectangle")
@@ -1745,6 +1762,15 @@ struct TimeStoryWorkspaceView: View {
         selectedCandidateID = project.shots.first?.assetID
         selectionAnchor = selectedShotID
         inspectorTab = "镜头"; timelineFocused = true
+    }
+
+    private func timelineAccessibility(_ shot: TimeStoryShot, in project: TimeStoryProject) -> StoryTimelineClipAccessibility {
+        StoryTimelineClipAccessibility(shot: shot, select: { selectShot(shot, in: project) },
+            moveForward: {
+                if let index = project.shots.firstIndex(where: { $0.id == shot.id }), index > 0 {
+                    model.moveShot(shot.id, before: project.shots[index - 1].id)
+                }
+            }, moveToEnd: { model.moveShot(shot.id, before: nil) })
     }
 
     private func selectShot(_ shot: TimeStoryShot, in project: TimeStoryProject) {

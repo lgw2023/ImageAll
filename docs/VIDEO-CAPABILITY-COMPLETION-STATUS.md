@@ -848,3 +848,12 @@
 - story-clip-ui-final-build.log TEST BUILD SUCCEEDED（测试专用ad-hoc）；CUA将入出点设为0.8/0.8，AX确认错误说明、播放及使用片段均disabled；改为0.2/0.8并通过滑块30%，点击播放选定片段和使用片段。播放按钮点击本身不冒充实际播放时长观测；提交回调结果以applied-project.json和断言核对。
 - story-clip-ui-final/tests.log 1/1 PASS，47.183秒；默认非交互回归story-clip-default-regression.log 1/1 PASS。断言片段200–800ms、源1000ms、增益0.3、时长0.6秒、照片时长命令不改视频片段、重开片段请求保留值。verification.json绑定测试/脚本/产物SHA和范围限制。
 - 只暂存本轮测试增量，保留TimeStoryFeatureTests与故事工作区并行改动。矩阵和人工指南更新。整页素材选择/调序/保存/导出点击仍待验，目标active；未真实媒体、未付费模型、未push。
+
+## P6 完整故事工作区加入/调序/保存重开实际验收（2026-09-28）
+
+- 上轮5bb33d05为progress。本轮扩展既有mixed story合成测试，以显式--story-workspace进入正式TimeStoryWorkspaceView，真实fixture媒体/私有数据库/真实原生renderer；交互分支不自动add/move/save，只允许实际界面创建并保存镜头。finish仅结束观察，随后独立store.load与新模型open核对实际持久结果。
+- 首轮真实加入照片和视频、片段确认及保存成功，但卡片仅暴露image、视频误称照片，无法通过辅助功能选择或排序；排序/首镜头/运动断言失败，story-workspace-actual-ui/tests.log保留。修复时间线可访问性：按照片/视频与时长命名为button、选择及“向前移动/移到末尾”动作复用现有逻辑。先遇SwiftUI类型检查超时，拆独立ViewModifier；后修正accessibilityAction调用签名。第三次story-workspace-accessibility-build-3.log TEST BUILD SUCCEEDED。
+- CUA实际加入照片→加入视频→片段0.2–0.8秒/原声100%→向前移动→选择核对属性→保存→已保存菜单重开；AX确认视频0.6秒在照片3.5秒之前，状态“故事项目已重新打开”。story-workspace-ui-final/tests.log 1/1 PASS，208.741秒，持久文件saved-project.json证明顺序/片段，随后原生渲染通过可播放、时长、音轨RMS与前段运动断言。
+- 另尝试正式导出菜单进入NSSavePanel，期间CUA曾timeout/pipe关闭；重读后能见保存面板。但finish被测试观察并完成后续验证，进程正常结束，未产生ui-export.mp4。此尝试不称UI导出成功；保存面板到实际成片/外部重开仍待验。没有重启已终止测试来伪造结果。
+- 同构建默认两项故事模型/片段回归通过，story-workspace-ui-regression.log 2/2；生成workspace-result.mp4、restored-project.json、workspace-measurements.json。此为API渲染证据，与实际UI步骤明确分开。
+- 视频缩略图在本fixture中显示重试，是替身未提供视频封面，不据此推断生产缓存失败；实际视频片段解码和导出使用真实合成视频。源码与测试仅暂存相对启动副本的本轮补丁，保留并行内容。目标active，未生产Photos宿主/真实媒体/付费模型/发布安装/推送。
