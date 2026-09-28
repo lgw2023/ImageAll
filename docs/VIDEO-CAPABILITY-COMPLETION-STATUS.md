@@ -755,3 +755,10 @@
 - `story-legacy-completed.log`实际succeeded，1920×1080、30fps、30帧/1秒、无音轨。完整任务位于 `story-legacy-completed/executor-84186ff7/`，acceptance.json保存结果与各报告摘要；执行器脚本已退出，无活跃heartbeat。
 - `story-legacy-result-build.log` TEST BUILD SUCCEEDED；`story-legacy-result-tests.log` 1/1 PASS：当前Swift客户端确认非ready后仍恢复succeeded，verifiedResult复核成片并由AVFoundation确认播放。随后改动该合成成片，用新客户端重开被拒绝；测试恢复原字节后再次独立核对SHA一致（de0423391c296b2e83e908dc32b993503089d19f39510688923ca8f936cd727a）。
 - 这证明旧schema已完成任务的合成离线恢复兼容，不代表读取任何用户历史任务。P6该项证据已补；完整UI路线、方向样本及P7总体验收继续推进。未访问真实媒体，未push。
+
+## P6 OpenMontage旋转MOV方向与帧边界验收（2026-09-28）
+
+- 新增可重跑 `verify_mixed_story_orientation.py`：生成128×64红左蓝右的H264源，封装到MOV并写90度显示矩阵；ffprobe先确认实际旋转，随后经0.2契约/资源冻结适配→真实Remotion Video组件→MP4。首轮旧rotate标签未产生矩阵，被源断言拒绝；改用本机display_rotation参数，不放宽检查。
+- `story-mixed-orientation-final.log` PASS：成片红/蓝色块质心x均159.5，y分别176.39/63.41，证明实际呈现竖向且90度方向正确，而非仅交换宽高声明。代表帧已目视检查蓝上红下；全片FFmpeg解码成功，60帧/2秒与照片1秒+源0.5...1.5秒一致。
+- `story-mixed-orientation/`保存source.mov、orientation.mp4、frame.png、props.json、verification.json；成片SHA=48364817683b703300aa5ede70bd00e221efe785ca5278bca3cb10422d19478e。仅合成素材，Runtime种子未修改，测试临时素材已清理。
+- 此证据覆盖OpenMontage/Remotion的MOV旋转路径；原生方向样本、完整Mac UI操作与P7收口仍待完成，整体active，未push。
